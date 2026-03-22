@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Test the daemon's /prompt-search endpoint directly
-const http = require("http");
+import http from "node:http";
 const query = process.argv[2] || "summarizer";
 const cwd = process.argv[3] || process.cwd();
 const data = JSON.stringify({ query, cwd });
@@ -11,7 +11,7 @@ const req = http.request(
     port: 3737,
     path: "/prompt-search",
     method: "POST",
-    headers: { "Content-Type": "application/json", "Content-Length": data.length },
+    headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) },
   },
   (res) => {
     let body = "";

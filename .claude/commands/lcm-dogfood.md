@@ -175,7 +175,7 @@ echo '{}' | node dist/bin/lcm.js restore
 
 ### Check 7.3 — UserPromptSubmit live test
 ```bash
-echo '{"prompt":"what changes were made to the summarizer","cwd":"'$(pwd)'"}' | node dist/bin/lcm.js user-prompt
+node -e 'console.log(JSON.stringify({ prompt: "what changes were made to the summarizer", cwd: process.cwd() }))' | node dist/bin/lcm.js user-prompt
 ```
 **Pass if:** returns `<memory-context>` block with hints.
 **Known issue (Bug 1):** Currently only searches promoted store (few entries). If empty, this is expected until Bug 1 is fixed. Record as ⚠️ KNOWN.
@@ -189,7 +189,7 @@ node .claude/commands/lcm-dogfood-scripts/prompt-search-test.js "summarizer"
 
 ### Check 7.5 — Hook timeout
 ```bash
-time echo '{"prompt":"test","cwd":"'$(pwd)'"}' | node dist/bin/lcm.js user-prompt
+time node -e 'console.log(JSON.stringify({ prompt: "test", cwd: process.cwd() }))' | node dist/bin/lcm.js user-prompt
 ```
 **Pass if:** completes in < 5 seconds.
 

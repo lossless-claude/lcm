@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Check integrity of all lcm project databases
-const { DatabaseSync } = require("node:sqlite");
-const fs = require("fs");
-const path = require("path");
-const os = require("os");
+import { DatabaseSync } from "node:sqlite";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
 
 const projectsDir = path.join(os.homedir(), ".lossless-claude", "projects");
 if (!fs.existsSync(projectsDir)) {
