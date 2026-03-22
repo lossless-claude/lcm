@@ -2,7 +2,6 @@ node_modules/
 node-compile-cache/
 *.tsbuildinfo
 .DS_Store
-.xgh/.DS_Store
 .brv/
 .worktrees
 .claude/
@@ -24,8 +23,9 @@ sensitive-patterns-test.txt
 .superpowers/
 .pebbles/
 
-# xgh local state
-.xgh/
+# xgh local state (inbox, cache) — specs and plans are tracked
+.xgh/inbox/
+.xgh/cache/
 
 # Environment secrets
 .env
