@@ -323,3 +323,26 @@ describe("summarizer picker", () => {
     expect(written.llm.apiKey).toBe("");
   });
 });
+
+// ─── MCP registration ────────────────────────────────────────────────────────
+
+describe("install — MCP registration", () => {
+  it("writes mcpServers.lcm to settings.json", async () => {
+    const settingsPath = join(homedir(), ".claude", "settings.json");
+    let written = "";
+    const deps = makeDeps({
+      existsSync: vi.fn().mockReturnValue(false),
+      writeFileSync: vi.fn().mockImplementation((path: string, data: string) => {
+        if (path === settingsPath) written = data;
+      }),
+    });
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await install(deps);
+    warnSpy.mockRestore();
+
+    const settings = JSON.parse(written);
+    expect(settings.mcpServers?.lcm).toBeDefined();
+    expect(settings.mcpServers.lcm.args).toContain("mcp");
+  });
+});
