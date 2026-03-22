@@ -5,7 +5,11 @@
 import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+let __dirname = dirname(fileURLToPath(import.meta.url));
+// If we're in .claude-plugin/, go up one level to find dist/
+if (__dirname.endsWith(".claude-plugin")) {
+  __dirname = join(__dirname, "..");
+}
 const serverModule = join(__dirname, "dist", "src", "mcp", "server.js");
 
 const { startMcpServer } = await import(serverModule);

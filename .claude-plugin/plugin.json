@@ -13,8 +13,8 @@
   "commands": "./commands/",
   "mcpServers": {
     "lcm": {
-      "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp.mjs"]
+      "command": "lcm",
+      "args": ["mcp"]
     }
   },
   "hooks": {
