@@ -51,7 +51,8 @@ describe("mergeClaudeSettings", () => {
     };
     const r = mergeClaudeSettings(existing);
     expect(r.hooks).toBeUndefined();
-    expect(r.mcpServers).toBeUndefined();
+    // mcpServers.lcm is now owned by settings.json and preserved
+    expect(r.mcpServers).toEqual({ lcm: { command: "lcm", args: ["mcp"] } });
   });
 
   it("REQUIRED_HOOKS contains exactly 4 expected events", () => {
@@ -321,5 +322,28 @@ describe("summarizer picker", () => {
     const written = JSON.parse(configCall![1]);
     expect(written.llm.provider).toBe("auto");
     expect(written.llm.apiKey).toBe("");
+  });
+});
+
+// ─── MCP registration ────────────────────────────────────────────────────────
+
+describe("install — MCP registration", () => {
+  it("writes mcpServers.lcm to settings.json", async () => {
+    const settingsPath = join(homedir(), ".claude", "settings.json");
+    let written = "";
+    const deps = makeDeps({
+      existsSync: vi.fn().mockReturnValue(false),
+      writeFileSync: vi.fn().mockImplementation((path: string, data: string) => {
+        if (path === settingsPath) written = data;
+      }),
+    });
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await install(deps);
+    warnSpy.mockRestore();
+
+    const settings = JSON.parse(written);
+    expect(settings.mcpServers?.lcm).toBeDefined();
+    expect(settings.mcpServers.lcm.args).toContain("mcp");
   });
 });

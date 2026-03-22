@@ -64,7 +64,8 @@ describe("validateAndFixHooks", () => {
     expect(deps.writeFileSync).toHaveBeenCalledTimes(1);
     const written = JSON.parse((deps.writeFileSync as ReturnType<typeof vi.fn>).mock.calls[0][1]);
     expect(written.hooks.PostToolUse).toEqual([{ matcher: "", hooks: [{ type: "command", command: "other" }] }]);
-    expect(written.mcpServers.lcm).toBeUndefined();
+    // mcpServers.lcm is now preserved (owned by settings.json)
+    expect(written.mcpServers.lcm).toEqual({ command: "lcm", args: ["mcp"] });
     expect(written.mcpServers.other).toEqual({ command: "other", args: ["mcp"] });
   });
 
