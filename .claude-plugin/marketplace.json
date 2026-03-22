@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "lossless-claude",
+  "owner": {
+    "name": "lossless-claude",
+    "url": "https://github.com/lossless-claude"
+  },
+  "plugins": [
+    {
+      "name": "lossless-claude",
+      "source": {
+        "source": "github",
+        "repo": "lossless-claude/lcm"
+      },
+      "description": "Lossless context management — DAG-based summarization that preserves every message",
+      "version": "0.1.0",
+      "strict": true
+    }
+  ]
+}
