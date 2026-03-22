@@ -11,6 +11,12 @@
   "license": "MIT",
   "keywords": ["context", "memory", "compaction", "summarization", "lcm"],
   "commands": "./commands/",
+  "mcpServers": {
+    "lcm": {
+      "command": "lcm",
+      "args": ["mcp"]
+    }
+  },
   "hooks": {
     "PreCompact": [
       {
