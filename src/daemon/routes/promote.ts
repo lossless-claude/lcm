@@ -47,12 +47,22 @@ export function createPromoteHandler(
       const summStore = new SummaryStore(db);
       const pid = projectId(cwd);
 
+      // Get summary IDs that have already been promoted (to avoid re-promoting)
+      const promotedStore = new PromotedStore(db);
+      const alreadyPromotedContent = new Set(
+        promotedStore.search("*", 10000).map((p) => p.content.slice(0, 100)),
+      );
+
       const conversations = await convStore.listConversations();
 
       for (const conversation of conversations) {
         const summaries = await summStore.getSummariesByConversation(conversation.conversationId);
 
         for (const summary of summaries) {
+          // Skip summaries whose content prefix is already in the promoted store
+          // This prevents re-promoting on repeated runs (which would decay confidence)
+          if (alreadyPromotedContent.has(summary.content.slice(0, 100))) continue;
+
           processed++;
 
           const promotionResult = shouldPromote(
@@ -70,7 +80,6 @@ export function createPromoteHandler(
           if (dry_run) {
             promoted++; // dry_run: count but don't insert
           } else if (summarize) {
-            const promotedStore = new PromotedStore(db);
             try {
               await deduplicateAndInsert({
                 store: promotedStore,

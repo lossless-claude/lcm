@@ -133,12 +133,12 @@ async function main() {
       let statusData: any = null;
 
       try {
-        const res = await fetch(`http://localhost:${port}/health`);
+        const res = await fetch(`http://127.0.0.1:${port}/health`);
         if (res.ok) daemonStatus = "up";
 
         // Also fetch /status endpoint if daemon is up
         if (daemonStatus === "up") {
-          const statusRes = await fetch(`http://localhost:${port}/status`, {
+          const statusRes = await fetch(`http://127.0.0.1:${port}/status`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ cwd: process.cwd() }),
@@ -385,28 +385,56 @@ async function main() {
         exit(1);
       }
 
-      const cwd = process.cwd();
       const baseUrl = `http://127.0.0.1:${port}`;
+      const { readdirSync, existsSync, readFileSync } = await import("node:fs");
 
       if (dryRun) console.log("  [dry-run] No changes will be written.\n");
 
-      const res = await fetch(`${baseUrl}/promote`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cwd, dry_run: dryRun }),
-      });
-
-      if (!res.ok) {
-        console.error(`  promote request failed: ${res.status}`);
-        exit(1);
+      // Collect project cwds to promote
+      const cwds: string[] = [];
+      if (all) {
+        const projectsDir = join(homedir(), ".lossless-claude", "projects");
+        if (existsSync(projectsDir)) {
+          for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
+            if (!entry.isDirectory()) continue;
+            const metaPath = join(projectsDir, entry.name, "meta.json");
+            if (!existsSync(metaPath)) continue;
+            try {
+              const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+              if (meta.cwd) cwds.push(meta.cwd);
+            } catch { /* skip unreadable */ }
+          }
+        }
+      } else {
+        cwds.push(process.cwd());
       }
 
-      const result = await res.json() as { processed: number; promoted: number };
+      let totalProcessed = 0;
+      let totalPromoted = 0;
 
-      if (verbose) {
-        console.log(`  Scanned ${result.processed} summaries`);
+      for (const cwd of cwds) {
+        const res = await fetch(`${baseUrl}/promote`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cwd, dry_run: dryRun }),
+        });
+
+        if (!res.ok) {
+          if (verbose) console.error(`  promote failed for ${cwd}: ${res.status}`);
+          continue;
+        }
+
+        const result = await res.json() as { processed: number; promoted: number };
+        totalProcessed += result.processed;
+        totalPromoted += result.promoted;
+
+        if (verbose) {
+          console.log(`  ${cwd}: ${result.processed} scanned, ${result.promoted} promoted`);
+        }
       }
-      console.log(`  ${result.promoted} insight${result.promoted !== 1 ? "s" : ""} promoted to long-term memory`);
+
+      console.log(`  ${totalPromoted} insight${totalPromoted !== 1 ? "s" : ""} promoted to long-term memory`);
+      if (verbose) console.log(`  (${totalProcessed} summaries scanned across ${cwds.length} project${cwds.length !== 1 ? "s" : ""})`);
       if (dryRun) console.log("  [dry-run] No changes written.");
       console.log();
       break;
