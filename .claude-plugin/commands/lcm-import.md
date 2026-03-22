@@ -10,9 +10,25 @@ Import Claude Code session transcripts into lcm memory.
 
 ## Instructions
 
-Run `lcm import` via Bash to import the current project's sessions. Display the output verbatim.
+Run the following command via Bash:
 
-If the user wants to import all projects, run `lcm import --all --verbose`.
+```bash
+lcm import
+```
+
+### Options
+
+If the user specifies options, append them to the command:
+- `--all` — Import all projects (default when no path given)
+- `--verbose` — Show per-session details
+- `--dry-run` — Preview without writing
+
+For example:
+- `/lcm-import --all` → `lcm import --all`
+- `/lcm-import --all --verbose` → `lcm import --all --verbose`
+- `/lcm-import --dry-run` → `lcm import --dry-run`
+
+Display the output verbatim.
 
 After importing, suggest running `lcm compact --all` to summarize the imported sessions.
 
