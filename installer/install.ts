@@ -199,6 +199,16 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<void> {
     try { existing = JSON.parse(deps.readFileSync(settingsPath, "utf-8")); } catch {}
   }
   const merged = mergeClaudeSettings(existing);
+
+  // Register MCP server directly in settings.json.
+  // plugin.json mcpServers isn't reliably processed for locally-installed plugins
+  // (installPath in installed_plugins.json points to wrong versioned dir).
+  if (typeof merged.mcpServers !== "object" || merged.mcpServers === null) {
+    merged.mcpServers = {};
+  }
+  const lcmBin = resolveBinaryPath(deps);
+  merged.mcpServers["lcm"] = { command: lcmBin, args: ["mcp"] };
+
   deps.mkdirSync(join(homedir(), ".claude"), { recursive: true });
   deps.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
   console.log(`Updated ${settingsPath}`);
