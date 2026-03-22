@@ -51,7 +51,8 @@ describe("mergeClaudeSettings", () => {
     };
     const r = mergeClaudeSettings(existing);
     expect(r.hooks).toBeUndefined();
-    expect(r.mcpServers).toBeUndefined();
+    // mcpServers.lcm is now owned by settings.json and preserved
+    expect(r.mcpServers).toEqual({ lcm: { command: "lcm", args: ["mcp"] } });
   });
 
   it("REQUIRED_HOOKS contains exactly 4 expected events", () => {

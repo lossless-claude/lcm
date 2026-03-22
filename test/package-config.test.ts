@@ -17,7 +17,7 @@ describe("package.json", () => {
     expect(pkg.scripts).toHaveProperty("prepublishOnly", "npm run build");
   });
 
-  it("ships the plugin MCP entrypoint referenced by the manifest", () => {
+  it("ships mcp.mjs as a fallback MCP entrypoint", () => {
     expect(pkg.files).toContain("mcp.mjs");
   });
 });

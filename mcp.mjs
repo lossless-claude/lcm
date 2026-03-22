@@ -2,7 +2,7 @@
 // MCP entrypoint for plugin system — delegates to the built lcm MCP server.
 // Uses import.meta.url to resolve paths relative to this file, so it works
 // regardless of how the plugin cache resolves ${CLAUDE_PLUGIN_ROOT}.
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { join, dirname } from "node:path";
 
 let __dirname = dirname(fileURLToPath(import.meta.url));
@@ -12,5 +12,6 @@ if (__dirname.endsWith(".claude-plugin")) {
 }
 const serverModule = join(__dirname, "dist", "src", "mcp", "server.js");
 
-const { startMcpServer } = await import(serverModule);
+// Use file:// URL for cross-platform compatibility (notably Windows)
+const { startMcpServer } = await import(pathToFileURL(serverModule).href);
 await startMcpServer();
