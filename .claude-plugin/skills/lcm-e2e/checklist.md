@@ -1,5 +1,7 @@
 # lcm E2E Validation Checklist
 
+> **Note:** Some flows reference planned CLI flags (e.g., `--cwd`, `hook` subcommand) and MCP tools not yet implemented. These serve as a roadmap for future coverage.
+
 All flows run against an isolated temp directory. No user project data is touched.
 
 ---

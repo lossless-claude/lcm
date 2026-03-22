@@ -75,7 +75,7 @@ function cleanupOrphanedProjects(): void {
       } catch {
         continue;
       }
-      if (meta.cwd && meta.cwd.includes("e2e-test-")) {
+      if (meta.cwd && meta.cwd.startsWith(tmpdir()) && meta.cwd.includes("e2e-test-")) {
         try {
           rmSync(join(PROJECTS_DIR, entry.name), { recursive: true, force: true });
         } catch {
@@ -219,6 +219,7 @@ export function openProjectDb(cwd: string): {
 } {
   const dbPath = projectDbPath(cwd);
   const db = new DatabaseSync(dbPath);
+  db.exec("PRAGMA busy_timeout = 5000");
   return {
     db,
     close: () => db.close(),

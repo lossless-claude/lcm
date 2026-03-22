@@ -50,7 +50,7 @@ export function createPromoteHandler(
       // Get summary IDs that have already been promoted (to avoid re-promoting)
       const promotedStore = new PromotedStore(db);
       const alreadyPromotedContent = new Set(
-        promotedStore.search("*", 10000).map((p) => p.content.slice(0, 100)),
+        promotedStore.listContentPrefixes(10000).map((c) => c.slice(0, 100)),
       );
 
       const conversations = await convStore.listConversations();

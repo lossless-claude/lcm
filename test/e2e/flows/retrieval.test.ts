@@ -63,21 +63,20 @@ describe("Flows 8-10: Retrieval", { timeout: 60_000 }, () => {
     const { db, close } = openProjectDb(handle.tmpDir);
     let summaryId: string | undefined;
     try {
-      const row = db.prepare("SELECT summary_id FROM summaries LIMIT 1").get() as
-        | { summary_id: string }
-        | undefined;
-      summaryId = row?.summary_id;
+      const rows = db.prepare("SELECT summary_id FROM summaries").all() as
+        | Array<{ summary_id: string }>;
+      expect(rows.length).toBeGreaterThan(0);
+      summaryId = rows[0]?.summary_id;
     } finally {
       close();
     }
 
-    if (summaryId) {
-      const result = await handle.client.post<{ expanded: unknown; error?: string }>("/expand", {
-        nodeId: summaryId,
-        cwd: handle.tmpDir,
-      });
-      expect(result).toBeDefined();
-    }
+    expect(summaryId).toBeTruthy();
+    const result = await handle.client.post<{ expanded: unknown; error?: string }>("/expand", {
+      nodeId: summaryId,
+      cwd: handle.tmpDir,
+    });
+    expect(result).toBeDefined();
   });
 
   it("Flow 8d: lcm_describe returns result for a summary node", async () => {
@@ -85,21 +84,20 @@ describe("Flows 8-10: Retrieval", { timeout: 60_000 }, () => {
     const { db, close } = openProjectDb(handle.tmpDir);
     let summaryId: string | undefined;
     try {
-      const row = db.prepare("SELECT summary_id FROM summaries LIMIT 1").get() as
-        | { summary_id: string }
-        | undefined;
-      summaryId = row?.summary_id;
+      const rows = db.prepare("SELECT summary_id FROM summaries").all() as
+        | Array<{ summary_id: string }>;
+      expect(rows.length).toBeGreaterThan(0);
+      summaryId = rows[0]?.summary_id;
     } finally {
       close();
     }
 
-    if (summaryId) {
-      const result = await handle.client.post<{ node: unknown }>("/describe", {
-        nodeId: summaryId,
-        cwd: handle.tmpDir,
-      });
-      expect(result).toBeDefined();
-    }
+    expect(summaryId).toBeTruthy();
+    const result = await handle.client.post<{ node: unknown }>("/describe", {
+      nodeId: summaryId,
+      cwd: handle.tmpDir,
+    });
+    expect(result).toBeDefined();
   });
 
   // Flow 9: Restore (SessionStart)
