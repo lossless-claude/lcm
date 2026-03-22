@@ -1,0 +1,9 @@
+# Dev-only skills (tracked in git, not shipped in npm package)
+.claude-plugin/skills/lcm-dogfood/
+.claude-plugin/skills/lcm-e2e/
+
+# Dev artifacts
+.xgh/
+test/
+vitest.config.ts
+tsconfig.json
