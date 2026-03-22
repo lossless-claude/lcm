@@ -10,14 +10,10 @@ import { upsertRedactionCounts } from "../../db/redaction-stats.js";
 import { ConversationStore } from "../../store/conversation-store.js";
 import { SummaryStore } from "../../store/summary-store.js";
 import { CompactionEngine } from "../../compaction.js";
-import { createClaudeProcessSummarizer } from "../../llm/claude-process.js";
-import { createCodexProcessSummarizer } from "../../llm/codex-process.js";
-import { shouldPromote } from "../../promotion/detector.js";
-import { PromotedStore } from "../../db/promoted.js";
-import { deduplicateAndInsert } from "../../promotion/dedup.js";
 import { parseTranscript } from "../../transcript.js";
 import type { LcmSummarizeFn } from "../../llm/types.js";
 import { ScrubEngine } from "../../scrub.js";
+import { resolveEffectiveProvider, createSummarizer, type EffectiveProvider } from "../summarizer.js";
 
 function fmtN(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
@@ -80,39 +76,6 @@ export const JUST_COMPACTED_TTL_MS = 30_000;
 const compactingNow = new Set<string>();
 
 type CompactClient = "claude" | "codex";
-type EffectiveProvider = Exclude<DaemonConfig["llm"]["provider"], "auto">;
-
-function resolveEffectiveProvider(config: DaemonConfig, client?: CompactClient): EffectiveProvider {
-  if (config.llm.provider === "auto") {
-    return client === "codex" ? "codex-process" : "claude-process";
-  }
-  return config.llm.provider;
-}
-
-async function createSummarizer(
-  provider: EffectiveProvider,
-  config: DaemonConfig,
-): Promise<LcmSummarizeFn | null> {
-  if (provider === "disabled") return null;
-  if (provider === "claude-process") return createClaudeProcessSummarizer();
-  if (provider === "codex-process") {
-    return createCodexProcessSummarizer({ model: config.llm.model });
-  }
-  if (provider === "openai") {
-    const { createOpenAISummarizer } = await import("../../llm/openai.js");
-    return createOpenAISummarizer({
-      model: config.llm.model,
-      baseURL: config.llm.baseURL,
-      apiKey: config.llm.apiKey,
-    });
-  }
-  // anthropic
-  const { createAnthropicSummarizer } = await import("../../llm/anthropic.js");
-  return createAnthropicSummarizer({
-    model: config.llm.model,
-    apiKey: config.llm.apiKey!,
-  });
-}
 
 export function createCompactHandler(config: DaemonConfig): RouteHandler {
   const summarizerCache = new Map<EffectiveProvider, Promise<LcmSummarizeFn | null>>();
@@ -227,43 +190,8 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
           const finalMsgCount = await conversationStore.getMessageCount(conversation.conversationId);
           const maxDepth = allSummaries.length > 0 ? Math.max(...allSummaries.map((s) => s.depth)) : 0;
 
-          // Promote worthy summaries to cross-session memory (SQLite promoted table)
-          let promotedCount = 0;
-          if (compactResult.actionTaken && compactResult.createdSummaryId) {
-            try {
-              const newSummary = allSummaries.find((s) => s.summaryId === compactResult.createdSummaryId);
-              if (newSummary) {
-                const promotionResult = shouldPromote(
-                  {
-                    content: newSummary.content,
-                    depth: newSummary.depth,
-                    tokenCount: newSummary.tokenCount,
-                    sourceMessageTokenCount: newSummary.sourceMessageTokenCount,
-                  },
-                  config.compaction.promotionThresholds,
-                );
-                if (promotionResult.promote) {
-                  const promotedStore = new PromotedStore(db);
-                  await deduplicateAndInsert({
-                    store: promotedStore,
-                    content: newSummary.content,
-                    tags: promotionResult.tags,
-                    projectId: pid,
-                    sessionId: session_id,
-                    depth: newSummary.depth,
-                    confidence: promotionResult.confidence,
-                    summarize,
-                    thresholds: {
-                      dedupBm25Threshold: config.compaction.promotionThresholds.dedupBm25Threshold,
-                      mergeMaxEntries: config.compaction.promotionThresholds.mergeMaxEntries,
-                      confidenceDecayRate: config.compaction.promotionThresholds.confidenceDecayRate,
-                    },
-                  });
-                  promotedCount = 1;
-                }
-              }
-            } catch { /* non-fatal */ }
-          }
+          // Promotion is now handled by the standalone /promote route
+          const promotedCount = 0;
 
           // Update meta.json
           try {

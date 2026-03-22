@@ -5,7 +5,9 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DaemonConfig } from "./config.js";
 import type { ProxyManager } from "./proxy-manager.js";
+import { resolveEffectiveProvider, createSummarizer } from "./summarizer.js";
 import { createCompactHandler } from "./routes/compact.js";
+import { createPromoteHandler } from "./routes/promote.js";
 import { createRestoreHandler } from "./routes/restore.js";
 import { createGrepHandler } from "./routes/grep.js";
 import { createSearchHandler } from "./routes/search.js";
@@ -64,6 +66,8 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   routes.set("GET /health", async (_req, res) =>
     sendJson(res, 200, { status: "ok", version: PKG_VERSION, uptime: Math.floor((Date.now() - startTime) / 1000) }));
   routes.set("POST /compact", createCompactHandler(config));
+  const promoteSummarizer = () => createSummarizer(resolveEffectiveProvider(config), config);
+  routes.set("POST /promote", createPromoteHandler(config, promoteSummarizer));
   routes.set("POST /restore", createRestoreHandler(config));
   routes.set("POST /grep", createGrepHandler(config));
   routes.set("POST /search", createSearchHandler());
