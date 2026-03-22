@@ -4,7 +4,8 @@ node-compile-cache/
 .DS_Store
 .brv/
 .worktrees
-.claude/
+.claude/*
+!.claude/commands/
 data/
 
 # Tools
