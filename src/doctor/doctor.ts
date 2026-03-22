@@ -230,7 +230,8 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>): Promise<CheckR
   let currentSettings: Record<string, unknown> = {};
   try { currentSettings = JSON.parse(deps.readFileSync(settingsPath, "utf-8")); } catch {}
   const mcpServers = currentSettings.mcpServers as Record<string, unknown> | undefined;
-  // MCP server is owned by settings.json (written by lcm install / doctor)
+  // For local installs, settings.json is the canonical source for MCP servers (written by lcm install / doctor);
+  // plugin.json may also declare mcpServers.lcm but is a secondary/optional registration path.
   if (mcpServers?.["lcm"]) {
     results.push({ name: "mcp-lcm", category: "Settings", status: "pass", message: "mcpServers.lcm registered in settings.json" });
   } else {
@@ -238,10 +239,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>): Promise<CheckR
       const merged = mergeClaudeSettings(currentSettings);
       if (typeof merged.mcpServers !== "object" || merged.mcpServers === null) merged.mcpServers = {};
       // Use resolveBinaryPath for consistent binary resolution with installer
-      const lcmBinary = resolveBinaryPath({
-        spawnSync: (cmd, args, opts) => deps.spawnSync(cmd, args, opts) as any,
-        existsSync: deps.existsSync,
-      });
+      const lcmBinary = resolveBinaryPath(deps);
       (merged.mcpServers as Record<string, unknown>)["lcm"] = { command: lcmBinary, args: ["mcp"] };
       deps.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
       results.push({ name: "mcp-lcm", category: "Settings", status: "warn", message: "mcpServers.lcm missing from settings.json — re-added automatically", fixApplied: true });
