@@ -1,0 +1,14 @@
+{
+  "name": "lossless-claude",
+  "plugins": [
+    {
+      "name": "lossless-claude",
+      "source": "./",
+      "description": "Lossless context management — DAG-based summarization that preserves every message"
+    }
+  ],
+  "owner": {
+    "name": "lossless-claude",
+    "url": "https://github.com/lossless-claude"
+  }
+}
