@@ -1,6 +1,6 @@
 ---
 name: lcm-context
-description: "Use when deciding which lcm MCP tool to call — lcm_search, lcm_grep, lcm_expand, lcm_describe, or lcm_store — or when an lcm tool returns an error."
+description: "Use when deciding which lcm MCP tool to call — lcm_search, lcm_grep, lcm_expand, lcm_describe, lcm_store, lcm_doctor, or lcm_stats — or when an lcm tool returns an error."
 ---
 
 # lcm Memory Tool Guide
