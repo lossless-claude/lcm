@@ -113,7 +113,7 @@ Add support for global install to `~/.claude/skills/lcm-context/` so the skill i
 ```typescript
 import { describe, it, expect } from 'vitest';
 import { installConnector } from '../../src/connectors/installer.js';
-import { readFileSync } from 'fs';
+import { readFileSync } from 'node:fs';
 
 describe('global skill install', () => {
   it('resolves ~ paths for claude-code skill type', () => {
@@ -153,7 +153,7 @@ export interface InstallOptions {
 In `src/connectors/installer.ts`, modify `resolveConfigPath()`:
 - If `options.global` is true and agent is `claude-code` and type is `skill`:
   - Resolve to `~/.claude/skills/lcm-context/SKILL.md` instead of `.claude/skills/`
-- For Claude Code global skill, read content from `src/connectors/configs/claude-code/SKILL.md` (use `path.resolve(__dirname, '../connectors/configs/claude-code/SKILL.md')` or equivalent for the built package)
+- For Claude Code global skill, read content from `src/connectors/configs/claude-code/SKILL.md` using the existing ESM pattern, e.g. `path.resolve(dirname(fileURLToPath(import.meta.url)), '../connectors/configs/claude-code/SKILL.md')` (consistent with how `doctor.ts` and `doctor.ts` resolve paths in the built package)
 
 - [ ] **Step 5: Run test to verify it passes**
 
