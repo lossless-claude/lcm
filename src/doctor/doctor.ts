@@ -230,17 +230,19 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>): Promise<CheckR
   let currentSettings: Record<string, unknown> = {};
   try { currentSettings = JSON.parse(deps.readFileSync(settingsPath, "utf-8")); } catch {}
   const mcpServers = currentSettings.mcpServers as Record<string, unknown> | undefined;
-  // MCP server is owned by plugin.json — if leaked into settings.json, clean up
+  // MCP server is owned by settings.json (written by lcm install)
   if (mcpServers?.["lcm"]) {
+    results.push({ name: "mcp-lcm", category: "Settings", status: "pass", message: "mcpServers.lcm registered in settings.json" });
+  } else {
     try {
       const merged = mergeClaudeSettings(currentSettings);
+      if (typeof merged.mcpServers !== "object" || merged.mcpServers === null) merged.mcpServers = {};
+      (merged.mcpServers as Record<string, unknown>)["lcm"] = { command: "lcm", args: ["mcp"] };
       deps.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
-      results.push({ name: "mcp-lcm", category: "Settings", status: "warn", message: "Removed duplicate lcm MCP from settings.json (plugin.json owns it)", fixApplied: true });
+      results.push({ name: "mcp-lcm", category: "Settings", status: "warn", message: "mcpServers.lcm missing from settings.json — re-added (run: lcm install to fix permanently)", fixApplied: true });
     } catch {
-      results.push({ name: "mcp-lcm", category: "Settings", status: "warn", message: "Duplicate lcm MCP in settings.json — run: lcm install" });
+      results.push({ name: "mcp-lcm", category: "Settings", status: "fail", message: "mcpServers.lcm missing from settings.json — run: lcm install" });
     }
-  } else {
-    results.push({ name: "mcp-lcm", category: "Settings", status: "pass", message: "No duplicate MCP in settings.json (plugin.json owns it)" });
   }
 
   // ── Summarizer (conditional) ──
