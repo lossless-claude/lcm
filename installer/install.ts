@@ -95,7 +95,12 @@ async function readlinePrompt(question: string): Promise<string> {
 
 const defaultDeps: ServiceDeps = { spawnSync: spawnSync as any, readFileSync: (path, encoding) => readFileSync(path, encoding as BufferEncoding) as string, writeFileSync, mkdirSync, existsSync, promptUser: readlinePrompt };
 
-export function resolveBinaryPath(deps: Pick<ServiceDeps, "spawnSync" | "existsSync"> = defaultDeps): string {
+export interface ResolveBinaryDeps {
+  spawnSync: (cmd: string, args: string[], opts?: object) => { status: number | null; stdout: string | Buffer };
+  existsSync: (path: string) => boolean;
+}
+
+export function resolveBinaryPath(deps: ResolveBinaryDeps = defaultDeps): string {
   const result = deps.spawnSync("sh", ["-c", "command -v lcm"], { encoding: "utf-8" });
   if (result.status === 0 && typeof result.stdout === "string" && result.stdout.trim()) {
     return result.stdout.trim();
