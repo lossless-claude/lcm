@@ -1,0 +1,757 @@
+import type { LcmDependencies } from "./types.js";
+import { loadTemplate, renderTemplate } from "./prompts/loader.js";
+
+export type LcmSummarizeOptions = {
+  previousSummary?: string;
+  isCondensed?: boolean;
+  depth?: number;
+};
+
+export type LcmSummarizeFn = (
+  text: string,
+  aggressive?: boolean,
+  options?: LcmSummarizeOptions,
+) => Promise<string>;
+
+export type LcmSummarizerLegacyParams = {
+  provider?: unknown;
+  model?: unknown;
+  config?: unknown;
+  agentDir?: unknown;
+  authProfileId?: unknown;
+};
+
+type SummaryMode = "normal" | "aggressive";
+
+const DEFAULT_CONDENSED_TARGET_TOKENS = 2000;
+export const LCM_SUMMARIZER_SYSTEM_PROMPT: string = (() =>
+  loadTemplate("system").template.trim())();
+const DIAGNOSTIC_MAX_DEPTH = 4;
+const DIAGNOSTIC_MAX_ARRAY_ITEMS = 8;
+const DIAGNOSTIC_MAX_OBJECT_KEYS = 16;
+const DIAGNOSTIC_MAX_CHARS = 1200;
+const DIAGNOSTIC_SENSITIVE_KEY_PATTERN =
+  /(api[-_]?key|authorization|token|secret|password|cookie|set-cookie|private[-_]?key|bearer)/i;
+
+/** Normalize provider ids for stable config/profile lookup. */
+function normalizeProviderId(provider: string): string {
+  return provider.trim().toLowerCase();
+}
+
+/**
+ * Resolve provider API override from legacy Claude Code config.
+ *
+ * When model ids are custom/forward-compat, this hint allows deps.complete to
+ * construct a valid pi-ai Model object even if getModel(provider, model) misses.
+ */
+function resolveProviderApiFromLegacyConfig(
+  config: unknown,
+  provider: string,
+): string | undefined {
+  if (!config || typeof config !== "object") {
+    return undefined;
+  }
+  const providers = (config as { models?: { providers?: Record<string, unknown> } }).models
+    ?.providers;
+  if (!providers || typeof providers !== "object") {
+    return undefined;
+  }
+
+  const direct = providers[provider];
+  if (direct && typeof direct === "object") {
+    const api = (direct as { api?: unknown }).api;
+    if (typeof api === "string" && api.trim()) {
+      return api.trim();
+    }
+  }
+
+  const normalizedProvider = normalizeProviderId(provider);
+  for (const [entryProvider, value] of Object.entries(providers)) {
+    if (normalizeProviderId(entryProvider) !== normalizedProvider) {
+      continue;
+    }
+    if (!value || typeof value !== "object") {
+      continue;
+    }
+    const api = (value as { api?: unknown }).api;
+    if (typeof api === "string" && api.trim()) {
+      return api.trim();
+    }
+  }
+  return undefined;
+}
+
+/** Approximate token estimate used for target-sizing prompts. */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+/** Narrow unknown values to plain object records. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Normalize text fragments from provider-specific block shapes.
+ *
+ * Deduplicates exact repeated fragments while preserving first-seen order so
+ * providers that mirror output in multiple fields don't duplicate summaries.
+ */
+function normalizeTextFragments(chunks: string[]): string {
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+
+  for (const chunk of chunks) {
+    const trimmed = chunk.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+  return normalized.join("\n").trim();
+}
+
+/** Collect all nested `type` labels for diagnostics on normalization failures. */
+function collectBlockTypes(value: unknown, out: Set<string>): void {
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectBlockTypes(entry, out);
+    }
+    return;
+  }
+  if (!isRecord(value)) {
+    return;
+  }
+
+  if (typeof value.type === "string" && value.type.trim()) {
+    out.add(value.type.trim());
+  }
+  for (const nested of Object.values(value)) {
+    collectBlockTypes(nested, out);
+  }
+}
+
+/** Collect text payloads from common provider response shapes. */
+function collectTextLikeFields(value: unknown, out: string[]): void {
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectTextLikeFields(entry, out);
+    }
+    return;
+  }
+  if (!isRecord(value)) {
+    return;
+  }
+
+  for (const key of ["text", "output_text", "thinking"]) {
+    appendTextValue(value[key], out);
+  }
+  for (const key of ["content", "summary", "output", "message", "response"]) {
+    if (key in value) {
+      collectTextLikeFields(value[key], out);
+    }
+  }
+}
+
+/** Append raw textual values and nested text wrappers (`value`, `text`). */
+function appendTextValue(value: unknown, out: string[]): void {
+  if (typeof value === "string") {
+    out.push(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      appendTextValue(entry, out);
+    }
+    return;
+  }
+  if (!isRecord(value)) {
+    return;
+  }
+
+  if (typeof value.value === "string") {
+    out.push(value.value);
+  }
+  if (typeof value.text === "string") {
+    out.push(value.text);
+  }
+}
+
+/** Normalize provider completion content into a plain-text summary payload. */
+function normalizeCompletionSummary(content: unknown): { summary: string; blockTypes: string[] } {
+  const chunks: string[] = [];
+  const blockTypeSet = new Set<string>();
+
+  collectTextLikeFields(content, chunks);
+  collectBlockTypes(content, blockTypeSet);
+
+  const blockTypes = [...blockTypeSet].sort((a, b) => a.localeCompare(b));
+  return {
+    summary: normalizeTextFragments(chunks),
+    blockTypes,
+  };
+}
+
+/** Format normalized block types for concise diagnostics. */
+function formatBlockTypes(blockTypes: string[]): string {
+  if (blockTypes.length === 0) {
+    return "(none)";
+  }
+  return blockTypes.join(",");
+}
+
+/** Truncate long diagnostic text values to keep logs bounded and readable. */
+function truncateDiagnosticText(value: string, maxChars = DIAGNOSTIC_MAX_CHARS): string {
+  if (value.length <= maxChars) {
+    return value;
+  }
+  return `${value.slice(0, maxChars)}...[truncated:${value.length - maxChars} chars]`;
+}
+
+/** Build a JSON-safe, redacted, depth-limited clone for diagnostic logging. */
+function sanitizeForDiagnostics(value: unknown, depth = 0): unknown {
+  if (depth >= DIAGNOSTIC_MAX_DEPTH) {
+    return "[max-depth]";
+  }
+  if (typeof value === "string") {
+    return truncateDiagnosticText(value);
+  }
+  if (
+    value === null ||
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    typeof value === "bigint"
+  ) {
+    return value;
+  }
+  if (value === undefined) {
+    return "[undefined]";
+  }
+  if (typeof value === "function") {
+    return "[function]";
+  }
+  if (typeof value === "symbol") {
+    return "[symbol]";
+  }
+  if (Array.isArray(value)) {
+    const head = value
+      .slice(0, DIAGNOSTIC_MAX_ARRAY_ITEMS)
+      .map((entry) => sanitizeForDiagnostics(entry, depth + 1));
+    if (value.length > DIAGNOSTIC_MAX_ARRAY_ITEMS) {
+      head.push(`[+${value.length - DIAGNOSTIC_MAX_ARRAY_ITEMS} more items]`);
+    }
+    return head;
+  }
+  if (!isRecord(value)) {
+    return String(value);
+  }
+
+  const out: Record<string, unknown> = {};
+  const entries = Object.entries(value);
+  for (const [key, entry] of entries.slice(0, DIAGNOSTIC_MAX_OBJECT_KEYS)) {
+    out[key] = DIAGNOSTIC_SENSITIVE_KEY_PATTERN.test(key)
+      ? "[redacted]"
+      : sanitizeForDiagnostics(entry, depth + 1);
+  }
+  if (entries.length > DIAGNOSTIC_MAX_OBJECT_KEYS) {
+    out.__truncated_keys__ = entries.length - DIAGNOSTIC_MAX_OBJECT_KEYS;
+  }
+  return out;
+}
+
+/** Encode diagnostic payloads in a compact JSON string with safety guards. */
+function formatDiagnosticPayload(value: unknown): string {
+  try {
+    const json = JSON.stringify(sanitizeForDiagnostics(value));
+    if (!json) {
+      return "\"\"";
+    }
+    return truncateDiagnosticText(json);
+  } catch {
+    return "\"[unserializable]\"";
+  }
+}
+
+/**
+ * Extract safe diagnostic metadata from a provider response envelope.
+ *
+ * Picks common metadata fields (request id, model echo, usage counters) without
+ * leaking secrets like API keys or auth tokens. The result object from
+ * `deps.complete` is typed narrowly but real provider responses carry extra
+ * fields that are useful for debugging empty-summary incidents.
+ */
+function extractResponseDiagnostics(result: unknown): string {
+  if (!isRecord(result)) {
+    return "";
+  }
+
+  const parts: string[] = [];
+
+  // Envelope-shape diagnostics for empty-block incidents.
+  const topLevelKeys = Object.keys(result).slice(0, 24);
+  if (topLevelKeys.length > 0) {
+    parts.push(`keys=${topLevelKeys.join(",")}`);
+  }
+  if ("content" in result) {
+    const contentVal = result.content;
+    if (Array.isArray(contentVal)) {
+      parts.push(`content_kind=array`);
+      parts.push(`content_len=${contentVal.length}`);
+    } else if (contentVal === null) {
+      parts.push(`content_kind=null`);
+    } else {
+      parts.push(`content_kind=${typeof contentVal}`);
+    }
+    parts.push(`content_preview=${formatDiagnosticPayload(contentVal)}`);
+  } else {
+    parts.push("content_kind=missing");
+  }
+
+  // Preview common non-content payload envelopes used by provider SDKs.
+  const envelopePayload: Record<string, unknown> = {};
+  for (const key of ["summary", "output", "message", "response"]) {
+    if (key in result) {
+      envelopePayload[key] = result[key];
+    }
+  }
+  if (Object.keys(envelopePayload).length > 0) {
+    parts.push(`payload_preview=${formatDiagnosticPayload(envelopePayload)}`);
+  }
+
+  // Request / response id — present in most provider envelopes.
+  for (const key of ["id", "request_id", "x-request-id"]) {
+    const val = result[key];
+    if (typeof val === "string" && val.trim()) {
+      parts.push(`${key}=${val.trim()}`);
+    }
+  }
+
+  // Model echo — useful when the provider selects a different checkpoint.
+  if (typeof result.model === "string" && result.model.trim()) {
+    parts.push(`resp_model=${result.model.trim()}`);
+  }
+  if (typeof result.provider === "string" && result.provider.trim()) {
+    parts.push(`resp_provider=${result.provider.trim()}`);
+  }
+  for (const key of [
+    "request_provider",
+    "request_model",
+    "request_api",
+    "request_reasoning",
+    "request_has_system",
+    "request_temperature",
+    "request_temperature_sent",
+  ]) {
+    const val = result[key];
+    if (typeof val === "string" && val.trim()) {
+      parts.push(`${key}=${val.trim()}`);
+    }
+  }
+
+  // Usage counters — safe numeric diagnostics.
+  if (isRecord(result.usage)) {
+    const u = result.usage;
+    const tokens: string[] = [];
+    for (const k of [
+      "prompt_tokens",
+      "completion_tokens",
+      "total_tokens",
+      "input",
+      "output",
+      "cacheRead",
+      "cacheWrite",
+    ]) {
+      if (typeof u[k] === "number") {
+        tokens.push(`${k}=${u[k]}`);
+      }
+    }
+    if (tokens.length > 0) {
+      parts.push(tokens.join(","));
+    }
+  }
+
+  // Finish reason — helps explain empty content.
+  const finishReason =
+    typeof result.finish_reason === "string"
+      ? result.finish_reason
+      : typeof result.stopReason === "string"
+        ? result.stopReason
+      : typeof result.stop_reason === "string"
+        ? result.stop_reason
+        : undefined;
+  if (finishReason) {
+    parts.push(`finish=${finishReason}`);
+  }
+
+  // Provider-level error payloads (most useful when finish=error and content is empty).
+  const errorMessage = result.errorMessage;
+  if (typeof errorMessage === "string" && errorMessage.trim()) {
+    parts.push(`error_message=${truncateDiagnosticText(errorMessage.trim(), 400)}`);
+  }
+  const errorPayload = result.error;
+  if (errorPayload !== undefined) {
+    parts.push(`error_preview=${formatDiagnosticPayload(errorPayload)}`);
+  }
+
+  return parts.join("; ");
+}
+
+/**
+ * Resolve a practical target token count for leaf and condensed summaries.
+ * Aggressive leaf mode intentionally aims lower so compaction converges faster.
+ */
+export function resolveTargetTokens(params: {
+  inputTokens: number;
+  mode: SummaryMode;
+  isCondensed: boolean;
+  condensedTargetTokens: number;
+}): number {
+  if (params.isCondensed) {
+    return Math.max(512, params.condensedTargetTokens);
+  }
+
+  const { inputTokens, mode } = params;
+  if (mode === "aggressive") {
+    return Math.max(96, Math.min(640, Math.floor(inputTokens * 0.2)));
+  }
+  return Math.max(192, Math.min(1200, Math.floor(inputTokens * 0.35)));
+}
+
+/**
+ * Build a leaf (segment) summarization prompt.
+ *
+ * Normal leaf mode preserves details; aggressive leaf mode keeps only the
+ * highest-value facts needed for follow-up turns.
+ */
+export function buildLeafSummaryPrompt(params: {
+  text: string;
+  mode: SummaryMode;
+  targetTokens: number;
+  previousSummary?: string;
+  customInstructions?: string;
+}): string {
+  const { text, mode, targetTokens, previousSummary, customInstructions } = params;
+  const previousContext = previousSummary?.trim() || "(none)";
+  const instructionBlock = customInstructions?.trim()
+    ? `Operator instructions:\n${customInstructions.trim()}`
+    : "Operator instructions: (none)";
+  const templateName = mode === "aggressive" ? "leaf-aggressive" : "leaf-normal";
+  return renderTemplate(templateName, {
+    targetTokens: String(targetTokens),
+    text,
+    previousContext,
+    instructionBlock,
+  });
+}
+
+function buildD1Prompt(params: {
+  text: string;
+  targetTokens: number;
+  previousSummary?: string;
+  customInstructions?: string;
+}): string {
+  const { text, targetTokens, previousSummary, customInstructions } = params;
+  const instructionBlock = customInstructions?.trim()
+    ? `Operator instructions:\n${customInstructions.trim()}`
+    : "Operator instructions: (none)";
+  const previousContext = previousSummary?.trim();
+  const previousContextBlock = previousContext
+    ? [
+        "It already has this preceding summary as context. Do not repeat information",
+        "that appears there unchanged. Focus on what is new, changed, or resolved:",
+        "",
+        `<previous_context>\n${previousContext}\n</previous_context>`,
+      ].join("\n")
+    : "Focus on what matters for continuation:";
+  return renderTemplate("condensed-d1", {
+    targetTokens: String(targetTokens),
+    text,
+    previousContextBlock,
+    instructionBlock,
+  });
+}
+
+function buildD2Prompt(params: {
+  text: string;
+  targetTokens: number;
+  customInstructions?: string;
+}): string {
+  const { text, targetTokens, customInstructions } = params;
+  const instructionBlock = customInstructions?.trim()
+    ? `Operator instructions:\n${customInstructions.trim()}`
+    : "Operator instructions: (none)";
+  return renderTemplate("condensed-d2", {
+    targetTokens: String(targetTokens),
+    text,
+    instructionBlock,
+  });
+}
+
+function buildD3PlusPrompt(params: {
+  text: string;
+  targetTokens: number;
+  customInstructions?: string;
+}): string {
+  const { text, targetTokens, customInstructions } = params;
+  const instructionBlock = customInstructions?.trim()
+    ? `Operator instructions:\n${customInstructions.trim()}`
+    : "Operator instructions: (none)";
+  return renderTemplate("condensed-d3plus", {
+    targetTokens: String(targetTokens),
+    text,
+    instructionBlock,
+  });
+}
+
+/** Build a condensed prompt variant based on the output node depth. */
+export function buildCondensedSummaryPrompt(params: {
+  text: string;
+  targetTokens: number;
+  depth: number;
+  previousSummary?: string;
+  customInstructions?: string;
+}): string {
+  if (params.depth <= 1) {
+    return buildD1Prompt(params);
+  }
+  if (params.depth === 2) {
+    return buildD2Prompt(params);
+  }
+  return buildD3PlusPrompt(params);
+}
+
+/**
+ * Deterministic fallback summary when model output is empty.
+ *
+ * Keeps compaction progress monotonic instead of throwing and aborting the
+ * whole compaction pass.
+ */
+function buildDeterministicFallbackSummary(text: string, targetTokens: number): string {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const maxChars = Math.max(256, targetTokens * 4);
+  if (trimmed.length <= maxChars) {
+    return trimmed;
+  }
+
+  return `${trimmed.slice(0, maxChars)}\n[LCM fallback summary; truncated for context management]`;
+}
+
+/**
+ * Builds a model-backed LCM summarize callback from runtime legacy params.
+ *
+ * Returns `undefined` when model/provider context is unavailable so callers can
+ * choose a fallback summarizer.
+ */
+export async function createLcmSummarizeFromLegacyParams(params: {
+  deps: LcmDependencies;
+  legacyParams: LcmSummarizerLegacyParams;
+  customInstructions?: string;
+}): Promise<LcmSummarizeFn | undefined> {
+  const providerHint =
+    typeof params.legacyParams.provider === "string" ? params.legacyParams.provider.trim() : "";
+  const modelHint =
+    typeof params.legacyParams.model === "string" ? params.legacyParams.model.trim() : "";
+  const modelRef = modelHint || undefined;
+
+  let resolved: { provider: string; model: string };
+  try {
+    resolved = params.deps.resolveModel(modelRef, providerHint || undefined);
+  } catch (err) {
+    console.error(`[lcm] createLcmSummarize: resolveModel FAILED:`, err instanceof Error ? err.message : err);
+    return undefined;
+  }
+
+  const { provider, model } = resolved;
+  if (!provider || !model) {
+    console.error(`[lcm] createLcmSummarize: empty provider="${provider}" or model="${model}"`);
+    return undefined;
+  }
+  const authProfileId =
+    typeof params.legacyParams.authProfileId === "string" &&
+    params.legacyParams.authProfileId.trim()
+      ? params.legacyParams.authProfileId.trim()
+      : undefined;
+  const agentDir =
+    typeof params.legacyParams.agentDir === "string" && params.legacyParams.agentDir.trim()
+      ? params.legacyParams.agentDir.trim()
+      : undefined;
+  const providerApi = resolveProviderApiFromLegacyConfig(params.legacyParams.config, provider);
+
+  const condensedTargetTokens =
+    Number.isFinite(params.deps.config.condensedTargetTokens) &&
+    params.deps.config.condensedTargetTokens > 0
+      ? params.deps.config.condensedTargetTokens
+      : DEFAULT_CONDENSED_TARGET_TOKENS;
+
+  return async (
+    text: string,
+    aggressive?: boolean,
+    options?: LcmSummarizeOptions,
+  ): Promise<string> => {
+    if (!text.trim()) {
+      return "";
+    }
+
+    const mode: SummaryMode = aggressive ? "aggressive" : "normal";
+    const isCondensed = options?.isCondensed === true;
+    const apiKey = await params.deps.getApiKey(provider, model, {
+      profileId: authProfileId,
+    });
+    const targetTokens = resolveTargetTokens({
+      inputTokens: estimateTokens(text),
+      mode,
+      isCondensed,
+      condensedTargetTokens,
+    });
+    const prompt = isCondensed
+      ? buildCondensedSummaryPrompt({
+          text,
+          targetTokens,
+          depth:
+            typeof options?.depth === "number" && Number.isFinite(options.depth)
+              ? Math.max(1, Math.floor(options.depth))
+              : 1,
+          previousSummary: options?.previousSummary,
+          customInstructions: params.customInstructions,
+        })
+      : buildLeafSummaryPrompt({
+          text,
+          mode,
+          targetTokens,
+          previousSummary: options?.previousSummary,
+          customInstructions: params.customInstructions,
+        });
+
+    const result = await params.deps.complete({
+      provider,
+      model,
+      apiKey,
+      providerApi,
+      authProfileId,
+      agentDir,
+      runtimeConfig: params.legacyParams.config,
+      system: LCM_SUMMARIZER_SYSTEM_PROMPT,
+      messages: [
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      maxTokens: targetTokens,
+      temperature: aggressive ? 0.1 : 0.2,
+    });
+
+    const normalized = normalizeCompletionSummary(result.content);
+    let summary = normalized.summary;
+    let summarySource: "content" | "envelope" | "retry" | "fallback" = "content";
+
+    // --- Empty-summary hardening: envelope → retry → deterministic fallback ---
+    if (!summary) {
+      // Envelope-aware extraction: some providers place summary text in
+      // top-level response fields (output, message, response) rather than
+      // inside the content array.  Re-run normalization against the full
+      // response envelope before spending an API call on a retry.
+      const envelopeNormalized = normalizeCompletionSummary(result);
+      if (envelopeNormalized.summary) {
+        summary = envelopeNormalized.summary;
+        summarySource = "envelope";
+        console.error(
+          `[lcm] recovered summary from response envelope; provider=${provider}; model=${model}; ` +
+            `block_types=${formatBlockTypes(envelopeNormalized.blockTypes)}; source=envelope`,
+        );
+      }
+    }
+
+    if (!summary) {
+      const responseDiag = extractResponseDiagnostics(result);
+      const diagParts = [
+        `[lcm] empty normalized summary on first attempt`,
+        `provider=${provider}`,
+        `model=${model}`,
+        `block_types=${formatBlockTypes(normalized.blockTypes)}`,
+        `response_blocks=${result.content.length}`,
+      ];
+      if (responseDiag) {
+        diagParts.push(responseDiag);
+      }
+      console.error(`${diagParts.join("; ")}; retrying with conservative settings`);
+
+      // Single retry with conservative parameters: low temperature and low
+      // reasoning budget to coax a textual response from providers that
+      // sometimes return reasoning-only or empty blocks on the first pass.
+      try {
+        const retryResult = await params.deps.complete({
+          provider,
+          model,
+          apiKey,
+          providerApi,
+          authProfileId,
+          agentDir,
+          runtimeConfig: params.legacyParams.config,
+          system: LCM_SUMMARIZER_SYSTEM_PROMPT,
+          messages: [
+            {
+              role: "user",
+              content: prompt,
+            },
+          ],
+          maxTokens: targetTokens,
+          temperature: 0.05,
+          reasoning: "low",
+        });
+
+        const retryNormalized = normalizeCompletionSummary(retryResult.content);
+        summary = retryNormalized.summary;
+
+        if (summary) {
+          summarySource = "retry";
+          console.error(
+            `[lcm] retry succeeded; provider=${provider}; model=${model}; ` +
+              `block_types=${formatBlockTypes(retryNormalized.blockTypes)}; source=retry`,
+          );
+        } else {
+          const retryDiag = extractResponseDiagnostics(retryResult);
+          const retryParts = [
+            `[lcm] retry also returned empty summary`,
+            `provider=${provider}`,
+            `model=${model}`,
+            `block_types=${formatBlockTypes(retryNormalized.blockTypes)}`,
+            `response_blocks=${retryResult.content.length}`,
+          ];
+          if (retryDiag) {
+            retryParts.push(retryDiag);
+          }
+          console.error(`${retryParts.join("; ")}; falling back to truncation`);
+        }
+      } catch (retryErr) {
+        // Retry is best-effort; log and proceed to deterministic fallback.
+        console.error(
+          `[lcm] retry failed; provider=${provider} model=${model}; error=${
+            retryErr instanceof Error ? retryErr.message : String(retryErr)
+          }; falling back to truncation`,
+        );
+      }
+    }
+
+    if (!summary) {
+      summarySource = "fallback";
+      console.error(
+        `[lcm] all extraction attempts exhausted; provider=${provider}; model=${model}; source=fallback`,
+      );
+      return buildDeterministicFallbackSummary(text, targetTokens);
+    }
+
+    if (summarySource !== "content") {
+      console.error(
+        `[lcm] summary resolved via non-content path; provider=${provider}; model=${model}; source=${summarySource}`,
+      );
+    }
+
+    return summary;
+  };
+}

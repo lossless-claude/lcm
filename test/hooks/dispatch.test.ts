@@ -1,0 +1,91 @@
+import { describe, it, expect, vi } from "vitest";
+import { HOOK_COMMANDS } from "../../src/hooks/dispatch.js";
+import { REQUIRED_HOOKS } from "../../installer/install.js";
+
+// Mock auto-heal to verify it's called
+vi.mock("../../src/hooks/auto-heal.js", () => ({
+  validateAndFixHooks: vi.fn(),
+}));
+
+// Mock all handler modules to avoid real daemon connections
+vi.mock("../../src/hooks/compact.js", () => ({
+  handlePreCompact: vi.fn().mockResolvedValue({ exitCode: 0, stdout: "" }),
+}));
+vi.mock("../../src/hooks/restore.js", () => ({
+  handleSessionStart: vi.fn().mockResolvedValue({ exitCode: 0, stdout: "" }),
+}));
+vi.mock("../../src/hooks/session-end.js", () => ({
+  handleSessionEnd: vi.fn().mockResolvedValue({ exitCode: 0, stdout: "" }),
+}));
+vi.mock("../../src/hooks/user-prompt.js", () => ({
+  handleUserPromptSubmit: vi.fn().mockResolvedValue({ exitCode: 0, stdout: "" }),
+}));
+vi.mock("../../src/daemon/client.js", () => ({
+  DaemonClient: vi.fn().mockImplementation(() => ({})),
+}));
+vi.mock("../../src/daemon/config.js", () => ({
+  loadDaemonConfig: vi.fn().mockReturnValue({ daemon: { port: 3737 } }),
+}));
+
+import { validateAndFixHooks } from "../../src/hooks/auto-heal.js";
+import { dispatchHook } from "../../src/hooks/dispatch.js";
+
+describe("HOOK_COMMANDS", () => {
+  it("has an entry for every REQUIRED_HOOKS event", () => {
+    const commandToEvent: Record<string, string> = {
+      "compact": "PreCompact",
+      "restore": "SessionStart",
+      "session-end": "SessionEnd",
+      "user-prompt": "UserPromptSubmit",
+    };
+    for (const cmd of HOOK_COMMANDS) {
+      expect(commandToEvent[cmd]).toBeDefined();
+    }
+    for (const { event } of REQUIRED_HOOKS) {
+      const cmd = Object.entries(commandToEvent).find(([, e]) => e === event)?.[0];
+      expect(HOOK_COMMANDS).toContain(cmd);
+    }
+  });
+});
+
+import { handlePreCompact } from "../../src/hooks/compact.js";
+import { handleSessionStart } from "../../src/hooks/restore.js";
+import { handleSessionEnd } from "../../src/hooks/session-end.js";
+import { handleUserPromptSubmit } from "../../src/hooks/user-prompt.js";
+import { loadDaemonConfig } from "../../src/daemon/config.js";
+
+describe("dispatchHook", () => {
+  it("calls validateAndFixHooks before every handler", async () => {
+    const callOrder: string[] = [];
+    vi.mocked(validateAndFixHooks).mockImplementation(() => { callOrder.push("heal"); });
+    vi.mocked(handlePreCompact).mockImplementation(async () => { callOrder.push("handler"); return { exitCode: 0, stdout: "" }; });
+
+    callOrder.length = 0;
+    await dispatchHook("compact", "{}");
+    expect(callOrder).toEqual(["heal", "handler"]);
+  });
+
+  it("dispatches each command to its correct handler", async () => {
+    const mapping: [typeof HOOK_COMMANDS[number], any][] = [
+      ["compact", handlePreCompact],
+      ["restore", handleSessionStart],
+      ["session-end", handleSessionEnd],
+      ["user-prompt", handleUserPromptSubmit],
+    ];
+    for (const [cmd, handler] of mapping) {
+      vi.mocked(handler).mockClear();
+      await dispatchHook(cmd, '{"test":true}');
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(handler).toHaveBeenCalledWith('{"test":true}', expect.anything(), expect.any(Number));
+    }
+  });
+
+  it("passes configured port to handlers", async () => {
+    vi.mocked(loadDaemonConfig).mockReturnValue({ daemon: { port: 9999 } } as any);
+    vi.mocked(handlePreCompact).mockClear();
+    await dispatchHook("compact", "{}");
+    expect(handlePreCompact).toHaveBeenCalledWith("{}", expect.anything(), 9999);
+    // Reset to default
+    vi.mocked(loadDaemonConfig).mockReturnValue({ daemon: { port: 3737 } } as any);
+  });
+});

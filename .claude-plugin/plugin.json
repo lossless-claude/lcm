@@ -1,0 +1,46 @@
+{
+  "name": "lossless-claude",
+  "version": "0.1.0",
+  "description": "Lossless context management — DAG-based summarization that preserves every message",
+  "author": {
+    "name": "Pedro Almeida",
+    "url": "https://github.com/ipedro"
+  },
+  "homepage": "https://lossless-claude.com",
+  "repository": "https://github.com/lossless-claude/lcm",
+  "license": "MIT",
+  "keywords": ["context", "memory", "compaction", "summarization", "lcm"],
+  "commands": "./commands/",
+  "hooks": {
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [{ "type": "command", "command": "lcm compact" }]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [{ "type": "command", "command": "lcm restore" }]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [{ "type": "command", "command": "lcm session-end" }]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [{ "type": "command", "command": "lcm user-prompt" }]
+      }
+    ]
+  },
+  "mcpServers": {
+    "lcm": {
+      "command": "lcm",
+      "args": ["mcp"]
+    }
+  }
+}

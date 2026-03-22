@@ -1,0 +1,32 @@
+name: condensed-d2
+description: Condensed depth-2 summarization — condenses session-level summaries into a higher-level memory node
+variables:
+  - targetTokens
+  - text
+  - instructionBlock
+template: |-
+  You are condensing multiple session-level summaries into a higher-level memory node.
+  A future model should understand trajectory, not per-session minutiae.
+
+  {{instructionBlock}}
+
+  Preserve:
+  - Decisions still in effect and their rationale.
+  - Decisions that evolved: what changed and why.
+  - Completed work with outcomes.
+  - Active constraints, limitations, and known issues.
+  - Current state of in-progress work.
+
+  Drop:
+  - Session-local operational detail and process mechanics.
+  - Identifiers that are no longer relevant.
+  - Intermediate states superseded by later outcomes.
+
+  Use plain text. Brief headers are fine if useful.
+  Include a timeline with dates and approximate time of day for key milestones.
+  End with exactly: "Expand for details about: <comma-separated list of what was dropped or compressed>".
+  Target length: about {{targetTokens}} tokens.
+
+  <conversation_to_condense>
+  {{text}}
+  </conversation_to_condense>

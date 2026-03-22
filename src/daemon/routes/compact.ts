@@ -1,0 +1,305 @@
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import type { DaemonConfig } from "../config.js";
+import { projectId, projectDbPath, projectDir, projectMetaPath, ensureProjectDir } from "../project.js";
+import { enqueue } from "../project-queue.js";
+import { sendJson } from "../server.js";
+import type { RouteHandler } from "../server.js";
+import { runLcmMigrations } from "../../db/migration.js";
+import { upsertRedactionCounts } from "../../db/redaction-stats.js";
+import { ConversationStore } from "../../store/conversation-store.js";
+import { SummaryStore } from "../../store/summary-store.js";
+import { CompactionEngine } from "../../compaction.js";
+import { createClaudeProcessSummarizer } from "../../llm/claude-process.js";
+import { createCodexProcessSummarizer } from "../../llm/codex-process.js";
+import { shouldPromote } from "../../promotion/detector.js";
+import { PromotedStore } from "../../db/promoted.js";
+import { deduplicateAndInsert } from "../../promotion/dedup.js";
+import { parseTranscript } from "../../transcript.js";
+import type { LcmSummarizeFn } from "../../llm/types.js";
+import { ScrubEngine } from "../../scrub.js";
+
+function fmtN(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
+  return String(n);
+}
+
+export function buildCompactionMessage(p: {
+  tokensBefore: number; tokensAfter: number;
+  messageCount: number; summaryCount: number;
+  maxDepth: number; promotedCount: number;
+}): string {
+  const saved = p.tokensBefore - p.tokensAfter;
+  const ratio = p.tokensAfter > 0 ? (p.tokensBefore / p.tokensAfter).toFixed(1) : "–";
+  const pct = p.tokensBefore > 0
+    ? ((1 - p.tokensAfter / p.tokensBefore) * 100).toFixed(1)
+    : "0.0";
+  const barWidth = 30;
+  const filled = p.tokensBefore > 0
+    ? Math.round((1 - p.tokensAfter / p.tokensBefore) * barWidth) : 0;
+  const bar = "█".repeat(filled) + "░".repeat(barWidth - filled);
+  const border = "━".repeat(46);
+  const numW = Math.max(
+    String(p.messageCount).length,
+    String(p.summaryCount).length,
+    String(p.maxDepth).length,
+    String(p.promotedCount).length,
+    1,
+  );
+  const pad = (n: number) => String(n).padStart(numW);
+  const rows = [
+    `  ${pad(p.messageCount)}  messages  →  ${p.summaryCount} summaries`,
+    `  ${pad(p.maxDepth)}  DAG layers deep`,
+    ...(p.promotedCount > 0
+      ? [`  ${pad(p.promotedCount)}  insight${p.promotedCount > 1 ? "s" : ""} promoted to long-term memory`]
+      : []),
+  ];
+  return [
+    border,
+    `  🧠  lossless-claude · compaction complete`,
+    border,
+    ``,
+    `  ${fmtN(p.tokensBefore)} ──────────────────────→ ${fmtN(p.tokensAfter)}`,
+    `  ${bar}  ${pct}% saved`,
+    `  ${ratio}×  compression  ·  ${fmtN(saved)} tokens freed`,
+    ``,
+    ...rows,
+    ``,
+    border,
+    `  Nothing was lost. Everything is remembered.`,
+    border,
+  ].join("\n");
+}
+
+// In-memory justCompacted map (session_id -> timestamp)
+export const justCompactedMap = new Map<string, number>();
+export const JUST_COMPACTED_TTL_MS = 30_000;
+
+// Guard against concurrent compactions for the same session
+const compactingNow = new Set<string>();
+
+type CompactClient = "claude" | "codex";
+type EffectiveProvider = Exclude<DaemonConfig["llm"]["provider"], "auto">;
+
+function resolveEffectiveProvider(config: DaemonConfig, client?: CompactClient): EffectiveProvider {
+  if (config.llm.provider === "auto") {
+    return client === "codex" ? "codex-process" : "claude-process";
+  }
+  return config.llm.provider;
+}
+
+async function createSummarizer(
+  provider: EffectiveProvider,
+  config: DaemonConfig,
+): Promise<LcmSummarizeFn | null> {
+  if (provider === "disabled") return null;
+  if (provider === "claude-process") return createClaudeProcessSummarizer();
+  if (provider === "codex-process") {
+    return createCodexProcessSummarizer({ model: config.llm.model });
+  }
+  if (provider === "openai") {
+    const { createOpenAISummarizer } = await import("../../llm/openai.js");
+    return createOpenAISummarizer({
+      model: config.llm.model,
+      baseURL: config.llm.baseURL,
+      apiKey: config.llm.apiKey,
+    });
+  }
+  // anthropic
+  const { createAnthropicSummarizer } = await import("../../llm/anthropic.js");
+  return createAnthropicSummarizer({
+    model: config.llm.model,
+    apiKey: config.llm.apiKey!,
+  });
+}
+
+export function createCompactHandler(config: DaemonConfig): RouteHandler {
+  const summarizerCache = new Map<EffectiveProvider, Promise<LcmSummarizeFn | null>>();
+
+  const getSummarizer = (provider: EffectiveProvider): Promise<LcmSummarizeFn | null> => {
+    let cached = summarizerCache.get(provider);
+    if (!cached) {
+      cached = createSummarizer(provider, config);
+      summarizerCache.set(provider, cached);
+    }
+    return cached;
+  };
+
+  return async (_req, res, body) => {
+    const input = JSON.parse(body || "{}");
+    const { session_id, cwd, transcript_path, skip_ingest, client } = input;
+
+    if (!session_id || !cwd) {
+      sendJson(res, 400, { error: "session_id and cwd are required" });
+      return;
+    }
+
+    const summarize = await getSummarizer(resolveEffectiveProvider(config, client));
+    if (!summarize) {
+      sendJson(res, 200, { summary: "Summarization disabled — no summarizer configured." });
+      return;
+    }
+
+    if (compactingNow.has(session_id)) {
+      sendJson(res, 200, { skipped: true, summary: "Compaction already in progress for this session." });
+      return;
+    }
+    compactingNow.add(session_id);
+
+    try {
+      const pid = projectId(cwd);
+      const result = await enqueue(pid, async () => {
+        const dbPath = projectDbPath(cwd);
+        ensureProjectDir(cwd);
+
+        const scrubber = await ScrubEngine.forProject(
+          config.security?.sensitivePatterns ?? [],
+          projectDir(cwd),
+        );
+
+        const db = new DatabaseSync(dbPath);
+        try {
+          db.exec("PRAGMA busy_timeout = 5000");
+          runLcmMigrations(db);
+
+          const conversationStore = new ConversationStore(db);
+          const summaryStore = new SummaryStore(db);
+          const conversation = await conversationStore.getOrCreateConversation(session_id);
+
+          // Ingest new messages from the transcript into the DB.
+          if (!skip_ingest && transcript_path && existsSync(transcript_path)) {
+            const parsed = parseTranscript(transcript_path);
+            const storedCount = await conversationStore.getMessageCount(conversation.conversationId);
+            const newMessages = parsed.slice(storedCount);
+            if (newMessages.length > 0) {
+              const ingestCounts = { builtIn: 0, global: 0, project: 0 };
+              const inputs = newMessages.map((m, i) => {
+                const { text: scrubbedContent, builtIn, global: globalCount, project } = scrubber.scrubWithCounts(m.content);
+                ingestCounts.builtIn += builtIn;
+                ingestCounts.global += globalCount;
+                ingestCounts.project += project;
+                return {
+                  conversationId: conversation.conversationId,
+                  seq: storedCount + i,
+                  role: m.role as "user" | "assistant" | "system",
+                  content: scrubbedContent,
+                  tokenCount: m.tokenCount,
+                };
+              });
+              await conversationStore.withTransaction(async () => {
+                const records = await conversationStore.createMessagesBulk(inputs);
+                upsertRedactionCounts(db, pid, ingestCounts);
+                await summaryStore.appendContextMessages(conversation.conversationId, records.map((r) => r.messageId));
+              });
+            }
+          }
+
+          // Check if there's anything to compact
+          const tokenCount = await summaryStore.getContextTokenCount(conversation.conversationId);
+
+          if (tokenCount === 0) {
+            return { summary: "No messages to compact." };
+          }
+
+          const engine = new CompactionEngine(conversationStore, summaryStore, {
+            contextThreshold: 0.75,
+            freshTailCount: 8,
+            leafMinFanout: 3,
+            condensedMinFanout: 2,
+            condensedMinFanoutHard: 1,
+            incrementalMaxDepth: 0,
+            leafTargetTokens: config.compaction.leafTokens,
+            condensedTargetTokens: 900,
+            maxRounds: 10,
+            scrubber,
+          });
+
+          const compactResult = await engine.compact({
+            conversationId: conversation.conversationId,
+            tokenBudget: 200_000,
+            summarize,
+            force: true,
+          });
+
+          // Gather stats for the compaction message (always, regardless of actionTaken)
+          const allSummaries = await summaryStore.getSummariesByConversation(conversation.conversationId);
+          const finalMsgCount = await conversationStore.getMessageCount(conversation.conversationId);
+          const maxDepth = allSummaries.length > 0 ? Math.max(...allSummaries.map((s) => s.depth)) : 0;
+
+          // Promote worthy summaries to cross-session memory (SQLite promoted table)
+          let promotedCount = 0;
+          if (compactResult.actionTaken && compactResult.createdSummaryId) {
+            try {
+              const newSummary = allSummaries.find((s) => s.summaryId === compactResult.createdSummaryId);
+              if (newSummary) {
+                const promotionResult = shouldPromote(
+                  {
+                    content: newSummary.content,
+                    depth: newSummary.depth,
+                    tokenCount: newSummary.tokenCount,
+                    sourceMessageTokenCount: newSummary.sourceMessageTokenCount,
+                  },
+                  config.compaction.promotionThresholds,
+                );
+                if (promotionResult.promote) {
+                  const promotedStore = new PromotedStore(db);
+                  await deduplicateAndInsert({
+                    store: promotedStore,
+                    content: newSummary.content,
+                    tags: promotionResult.tags,
+                    projectId: pid,
+                    sessionId: session_id,
+                    depth: newSummary.depth,
+                    confidence: promotionResult.confidence,
+                    summarize,
+                    thresholds: {
+                      dedupBm25Threshold: config.compaction.promotionThresholds.dedupBm25Threshold,
+                      mergeMaxEntries: config.compaction.promotionThresholds.mergeMaxEntries,
+                      confidenceDecayRate: config.compaction.promotionThresholds.confidenceDecayRate,
+                    },
+                  });
+                  promotedCount = 1;
+                }
+              }
+            } catch { /* non-fatal */ }
+          }
+
+          // Update meta.json
+          try {
+            const metaPath = projectMetaPath(cwd);
+            let meta: Record<string, unknown> = {};
+            if (existsSync(metaPath)) {
+              meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+            }
+            meta.cwd = cwd;
+            meta.lastCompact = new Date().toISOString();
+            writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+          } catch { /* non-fatal */ }
+
+          // Set justCompacted flag
+          justCompactedMap.set(session_id, Date.now());
+
+          const summaryMsg = compactResult.actionTaken
+            ? buildCompactionMessage({
+                tokensBefore: compactResult.tokensBefore,
+                tokensAfter: compactResult.tokensAfter,
+                messageCount: finalMsgCount,
+                summaryCount: allSummaries.length,
+                maxDepth,
+                promotedCount,
+              })
+            : "No compaction needed.";
+
+          return { summary: summaryMsg };
+        } finally {
+          db.close();
+        }
+      }); // end enqueue
+
+      sendJson(res, 200, result);
+    } finally {
+      compactingNow.delete(session_id);
+    }
+  };
+}

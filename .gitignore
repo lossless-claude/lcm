@@ -1,0 +1,32 @@
+node_modules/
+node-compile-cache/
+*.tsbuildinfo
+.DS_Store
+.xgh/.DS_Store
+.brv/
+.worktrees
+.claude/
+data/
+
+# Tools
+.serena/
+
+# Codex / LCM temp worktrees
+lcm-cli-*/
+lossless-codex-*/
+
+# Scratch files
+sensitive-patterns-test.txt
+*.db
+!data/
+
+# Superpowers local state
+.superpowers/
+.pebbles/
+
+# xgh local state
+.xgh/
+
+# Environment secrets
+.env
+dist/

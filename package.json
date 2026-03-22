@@ -1,0 +1,78 @@
+{
+  "name": "@lossless-claude/lcm",
+  "version": "0.1.0",
+  "description": "Never lose context again. lossless-claude compresses Claude Code sessions into searchable memory — every message preserved, every insight remembered.",
+  "type": "module",
+  "main": "dist/src/memory/index.js",
+  "exports": {
+    ".": "./dist/src/memory/index.js"
+  },
+  "bin": {
+    "lcm": "dist/bin/lcm.js"
+  },
+  "license": "MIT",
+  "author": "Pedro Almeida (https://github.com/ipedro)",
+  "keywords": [
+    "claude-code",
+    "claude-code-plugin",
+    "context-management",
+    "llm",
+    "summarization",
+    "conversation-memory",
+    "dag"
+  ],
+  "files": [
+    "dist/",
+    ".claude-plugin/",
+    "docs/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "postbuild": "mkdir -p dist/src/prompts && cp -r src/prompts/*.yaml dist/src/prompts/ && mkdir -p dist/src/connectors/templates && cp -r src/connectors/templates/. dist/src/connectors/templates/",
+    "prepublishOnly": "npm run build",
+    "changeset": "changeset",
+    "release:verify": "npm test && npm pack --dry-run",
+    "test": "vitest run --dir test",
+    "typecheck": "tsc --noEmit",
+    "version-packages": "changeset version"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@sinclair/typebox": "0.34.48",
+    "js-yaml": "^4.1.1"
+  },
+  "devDependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@changesets/cli": "^2.30.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": ">=22",
+    "openai": "^6.32.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "peerDependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "openai": "^6.32.0"
+  },
+  "peerDependenciesMeta": {
+    "@anthropic-ai/sdk": {
+      "optional": true
+    },
+    "openai": {
+      "optional": true
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lossless-claude/lcm.git"
+  },
+  "homepage": "https://github.com/lossless-claude/lcm#readme",
+  "bugs": {
+    "url": "https://github.com/lossless-claude/lcm/issues"
+  }
+}

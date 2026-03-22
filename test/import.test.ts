@@ -1,0 +1,233 @@
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { cwdToProjectHash, findSessionFiles, importSessions } from "../src/import.js";
+import type { DaemonClient } from "../src/daemon/client.js";
+
+// --- cwdToProjectHash ---
+
+describe("cwdToProjectHash", () => {
+  it("keeps leading dash from absolute path", () => {
+    expect(cwdToProjectHash("/home/user/project")).toBe("-home-user-project");
+  });
+
+  it("replaces all slashes with dashes", () => {
+    expect(cwdToProjectHash("/a/b/c")).toBe("-a-b-c");
+  });
+
+  it("handles root path", () => {
+    expect(cwdToProjectHash("/")).toBe("-");
+  });
+
+  it("handles path without leading slash", () => {
+    expect(cwdToProjectHash("home/user")).toBe("home-user");
+  });
+});
+
+// --- findSessionFiles ---
+
+describe("findSessionFiles", () => {
+  const dirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of dirs) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    dirs.length = 0;
+  });
+
+  function makeTmpDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), "lcm-import-test-"));
+    dirs.push(dir);
+    return dir;
+  }
+
+  it("returns empty array for nonexistent directory", () => {
+    const result = findSessionFiles("/nonexistent/path/that/does/not/exist");
+    expect(result).toEqual([]);
+  });
+
+  it("discovers .jsonl files at the top level", () => {
+    const dir = makeTmpDir();
+    writeFileSync(join(dir, "session-abc.jsonl"), "");
+    writeFileSync(join(dir, "session-def.jsonl"), "");
+    writeFileSync(join(dir, "readme.txt"), "");
+
+    const result = findSessionFiles(dir);
+    const sessionIds = result.map((f) => f.sessionId).sort();
+    expect(sessionIds).toEqual(["session-abc", "session-def"]);
+  });
+
+  it("discovers subagent .jsonl files", () => {
+    const dir = makeTmpDir();
+    // create a subdirectory with a subagents folder
+    const subDir = join(dir, "session-parent");
+    const subagentsDir = join(subDir, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    writeFileSync(join(subagentsDir, "subagent-1.jsonl"), "");
+    writeFileSync(join(subagentsDir, "subagent-2.jsonl"), "");
+
+    const result = findSessionFiles(dir);
+    const sessionIds = result.map((f) => f.sessionId).sort();
+    expect(sessionIds).toEqual(["subagent-1", "subagent-2"]);
+  });
+
+  it("discovers both top-level and subagent files", () => {
+    const dir = makeTmpDir();
+    writeFileSync(join(dir, "main-session.jsonl"), "");
+    const subDir = join(dir, "nested");
+    const subagentsDir = join(subDir, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    writeFileSync(join(subagentsDir, "child-session.jsonl"), "");
+
+    const result = findSessionFiles(dir);
+    const sessionIds = result.map((f) => f.sessionId).sort();
+    expect(sessionIds).toEqual(["child-session", "main-session"]);
+  });
+
+  it("ignores directories without a subagents subfolder", () => {
+    const dir = makeTmpDir();
+    const subDir = join(dir, "some-dir");
+    mkdirSync(subDir, { recursive: true });
+    writeFileSync(join(subDir, "file.jsonl"), ""); // not in subagents/
+
+    const result = findSessionFiles(dir);
+    expect(result).toEqual([]);
+  });
+});
+
+// --- importSessions ---
+
+function makeMockClient(postImpl: (path: string, body: unknown) => Promise<unknown>): DaemonClient {
+  return {
+    post: vi.fn().mockImplementation(postImpl),
+    health: vi.fn(),
+  } as unknown as DaemonClient;
+}
+
+describe("importSessions", () => {
+  const dirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of dirs) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    dirs.length = 0;
+    vi.restoreAllMocks();
+  });
+
+  function makeTmpDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), "lcm-import-sessions-"));
+    dirs.push(dir);
+    return dir;
+  }
+
+  it("does not call client.post on dry-run", async () => {
+    const claudeProjectsDir = makeTmpDir();
+    const cwd = "/home/user/myproject";
+    const projectHash = cwdToProjectHash(cwd);
+    const projectDir = join(claudeProjectsDir, projectHash);
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(join(projectDir, "session-1.jsonl"), "");
+
+    const client = makeMockClient(async () => ({ ingested: 1, totalTokens: 100 }));
+
+    const result = await importSessions(client, {
+      dryRun: true,
+      cwd,
+      _claudeProjectsDir: claudeProjectsDir,
+    });
+
+    expect(client.post).not.toHaveBeenCalled();
+    // dry-run counts found sessions as "imported" for reporting
+    expect(result.imported).toBe(1);
+    expect(result.failed).toBe(0);
+  });
+
+  it("calls /ingest with transcript_path and counts imported", async () => {
+    const claudeProjectsDir = makeTmpDir();
+    const cwd = "/home/user/myproject";
+    const projectHash = cwdToProjectHash(cwd);
+    const projectDir = join(claudeProjectsDir, projectHash);
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(join(projectDir, "session-abc.jsonl"), "");
+
+    const calls: { path: string; body: unknown }[] = [];
+    const client = makeMockClient(async (path, body) => {
+      calls.push({ path, body });
+      return { ingested: 5, totalTokens: 500 };
+    });
+
+    const result = await importSessions(client, {
+      cwd,
+      _claudeProjectsDir: claudeProjectsDir,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].path).toBe("/ingest");
+    expect((calls[0].body as { session_id: string }).session_id).toBe("session-abc");
+    expect((calls[0].body as { cwd: string }).cwd).toBe(cwd);
+    expect((calls[0].body as { transcript_path: string }).transcript_path).toContain("session-abc.jsonl");
+
+    expect(result.imported).toBe(1);
+    expect(result.totalMessages).toBe(5);
+    expect(result.failed).toBe(0);
+    expect(result.skippedEmpty).toBe(0);
+  });
+
+  it("counts empty transcripts as skippedEmpty (ingested=0, totalTokens=0)", async () => {
+    const claudeProjectsDir = makeTmpDir();
+    const cwd = "/home/user/emptyproject";
+    const projectHash = cwdToProjectHash(cwd);
+    const projectDir = join(claudeProjectsDir, projectHash);
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(join(projectDir, "empty-session.jsonl"), "");
+
+    const client = makeMockClient(async () => ({ ingested: 0, totalTokens: 0 }));
+
+    const result = await importSessions(client, {
+      cwd,
+      _claudeProjectsDir: claudeProjectsDir,
+    });
+
+    expect(result.skippedEmpty).toBe(1);
+    expect(result.imported).toBe(0);
+    expect(result.totalMessages).toBe(0);
+  });
+
+  it("counts failed ingest calls", async () => {
+    const claudeProjectsDir = makeTmpDir();
+    const cwd = "/home/user/failproject";
+    const projectHash = cwdToProjectHash(cwd);
+    const projectDir = join(claudeProjectsDir, projectHash);
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(join(projectDir, "bad-session.jsonl"), "");
+
+    const client = makeMockClient(async () => {
+      throw new Error("daemon error");
+    });
+
+    const result = await importSessions(client, {
+      cwd,
+      _claudeProjectsDir: claudeProjectsDir,
+    });
+
+    expect(result.failed).toBe(1);
+    expect(result.imported).toBe(0);
+  });
+
+  it("returns empty result if project dir does not exist", async () => {
+    const claudeProjectsDir = makeTmpDir();
+    const cwd = "/home/user/nonexistent";
+    const client = makeMockClient(async () => ({ ingested: 1, totalTokens: 100 }));
+
+    const result = await importSessions(client, {
+      cwd,
+      _claudeProjectsDir: claudeProjectsDir,
+    });
+
+    expect(client.post).not.toHaveBeenCalled();
+    expect(result.imported).toBe(0);
+  });
+});

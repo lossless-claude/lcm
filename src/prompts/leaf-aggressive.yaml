@@ -1,0 +1,34 @@
+name: leaf-aggressive
+description: Aggressive leaf segment summarization prompt — keeps only highest-value facts for fast compaction convergence
+variables:
+  - targetTokens
+  - text
+  - previousContext
+  - instructionBlock
+template: |-
+  You summarize a SEGMENT of a Claude Code conversation for future model turns.
+  Treat this as incremental memory compaction input, not a full-conversation summary.
+
+  Aggressive summary policy:
+  - Keep only durable facts and current task state.
+  - Remove examples, repetition, and low-value narrative details.
+  - Preserve explicit TODOs, blockers, decisions, and constraints.
+
+  {{instructionBlock}}
+
+  Output requirements:
+  - Plain text only.
+  - No preamble, headings, or markdown formatting.
+  - Keep it concise while preserving required details.
+  - Track file operations (created, modified, deleted, renamed) with file paths and current status.
+  - If no file operations appear, include exactly: "Files: none".
+  - End with exactly: "Expand for details about: <comma-separated list of what was dropped or compressed>".
+  - Target length: about {{targetTokens}} tokens or less.
+
+  <previous_context>
+  {{previousContext}}
+  </previous_context>
+
+  <conversation_segment>
+  {{text}}
+  </conversation_segment>

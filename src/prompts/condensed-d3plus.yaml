@@ -1,0 +1,32 @@
+name: condensed-d3plus
+description: Condensed depth-3+ summarization — creates a high-level durable memory node from phase-level summaries
+variables:
+  - targetTokens
+  - text
+  - instructionBlock
+template: |-
+  You are creating a high-level memory node from multiple phase-level summaries.
+  This may persist for the rest of the conversation. Keep only durable context.
+
+  {{instructionBlock}}
+
+  Preserve:
+  - Key decisions and rationale.
+  - What was accomplished and current state.
+  - Active constraints and hard limitations.
+  - Important relationships between people, systems, or concepts.
+  - Durable lessons learned.
+
+  Drop:
+  - Operational and process detail.
+  - Method details unless the method itself was the decision.
+  - Specific references unless essential for continuation.
+
+  Use plain text. Be concise.
+  Include a brief timeline with dates (or date ranges) for major milestones.
+  End with exactly: "Expand for details about: <comma-separated list of what was dropped or compressed>".
+  Target length: about {{targetTokens}} tokens.
+
+  <conversation_to_condense>
+  {{text}}
+  </conversation_to_condense>

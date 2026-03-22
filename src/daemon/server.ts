@@ -1,0 +1,171 @@
+import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { DaemonConfig } from "./config.js";
+import type { ProxyManager } from "./proxy-manager.js";
+import { createCompactHandler } from "./routes/compact.js";
+import { createRestoreHandler } from "./routes/restore.js";
+import { createGrepHandler } from "./routes/grep.js";
+import { createSearchHandler } from "./routes/search.js";
+import { createExpandHandler } from "./routes/expand.js";
+import { createDescribeHandler } from "./routes/describe.js";
+import { createStoreHandler } from "./routes/store.js";
+import { createRecentHandler } from "./routes/recent.js";
+import { createIngestHandler } from "./routes/ingest.js";
+import { createPromptSearchHandler } from "./routes/prompt-search.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+export const PKG_VERSION = (() => {
+  try {
+    const pkg = JSON.parse(readFileSync(join(__dirname, "..", "..", "package.json"), "utf-8"));
+    return pkg.version;
+  } catch { return "0.0.0"; }
+})();
+
+export type RouteHandler = (req: IncomingMessage, res: ServerResponse, body: string) => Promise<void>;
+export type DaemonInstance = { address: () => AddressInfo; stop: () => Promise<void>; registerRoute: (method: string, path: string, handler: RouteHandler) => void; idleTriggered: boolean };
+export type DaemonOptions = { proxyManager?: ProxyManager; onIdle?: () => void };
+
+export async function readBody(req: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+  return Buffer.concat(chunks).toString("utf-8");
+}
+
+export function sendJson(res: ServerResponse, status: number, data: unknown): void {
+  const body = JSON.stringify(data);
+  res.writeHead(status, { "Content-Type": "application/json" });
+  res.end(body);
+}
+
+export async function createDaemon(config: DaemonConfig, options?: DaemonOptions): Promise<DaemonInstance> {
+  const startTime = Date.now();
+  const proxyManager = options?.proxyManager;
+  const routes = new Map<string, RouteHandler>();
+
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  let idleTriggered = false;
+  const onIdle = options?.onIdle ?? (() => {
+    console.log("[lcm] idle timeout — shutting down");
+    process.exit(0);
+  });
+
+  function resetIdleTimer() {
+    if (config.daemon.idleTimeoutMs <= 0) return;
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      idleTriggered = true;
+      onIdle();
+    }, config.daemon.idleTimeoutMs);
+  }
+
+  routes.set("GET /health", async (_req, res) =>
+    sendJson(res, 200, { status: "ok", version: PKG_VERSION, uptime: Math.floor((Date.now() - startTime) / 1000) }));
+  routes.set("POST /compact", createCompactHandler(config));
+  routes.set("POST /restore", createRestoreHandler(config));
+  routes.set("POST /grep", createGrepHandler(config));
+  routes.set("POST /search", createSearchHandler());
+  routes.set("POST /expand", createExpandHandler(config));
+  routes.set("POST /describe", createDescribeHandler(config));
+  routes.set("POST /store", createStoreHandler());
+  routes.set("POST /recent", createRecentHandler(config));
+  routes.set("POST /ingest", createIngestHandler(config));
+  routes.set("POST /prompt-search", createPromptSearchHandler(config));
+
+  // Periodic transcript ingestion scan
+  const INGEST_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+  const ingestHandler = createIngestHandler(config);
+
+  const scanForTranscripts = async () => {
+    try {
+      const { readdirSync, existsSync, readFileSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const { homedir } = await import("node:os");
+
+      const projectsDir = join(homedir(), ".lossless-claude", "projects");
+      if (!existsSync(projectsDir)) return;
+
+      for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const metaPath = join(projectsDir, entry.name, "meta.json");
+        if (!existsSync(metaPath)) continue;
+
+        let meta: { cwd?: string; lastCompact?: string } = {};
+        try { meta = JSON.parse(readFileSync(metaPath, "utf-8")); } catch { continue; }
+        if (!meta.cwd) continue;
+
+        // Find Claude Code session files for this project's cwd
+        const cwdDashed = meta.cwd.replace(/\//g, "-").replace(/^-/, "");
+        const sessionsDir = join(homedir(), ".claude", "projects", cwdDashed);
+        if (!existsSync(sessionsDir)) continue;
+
+        for (const file of readdirSync(sessionsDir)) {
+          if (!file.endsWith(".jsonl")) continue;
+          const sessionId = file.replace(".jsonl", "");
+          const transcriptPath = join(sessionsDir, file);
+
+          // Use the ingest route logic directly
+          const mockReq = {} as any;
+          const response = { statusCode: 200, body: "" };
+          const mockRes = {
+            writeHead: (code: number) => { response.statusCode = code; },
+            end: (data: string) => { response.body = data; },
+          } as any;
+
+          await ingestHandler(mockReq, mockRes, JSON.stringify({
+            session_id: sessionId,
+            cwd: meta.cwd,
+            transcript_path: transcriptPath,
+          }));
+        }
+      }
+    } catch {
+      // non-fatal: periodic scan failure shouldn't crash daemon
+    }
+  };
+
+  const ingestInterval = setInterval(scanForTranscripts, INGEST_INTERVAL_MS);
+  ingestInterval.unref(); // don't prevent process exit
+
+  const server: Server = createServer(async (req, res) => {
+    resetIdleTimer();
+    const key = `${req.method} ${req.url?.split("?")[0]}`;
+    const handler = routes.get(key);
+    if (!handler) { sendJson(res, 404, { error: "not found" }); return; }
+    try {
+      await handler(req, res, req.method !== "GET" ? await readBody(req) : "");
+    } catch (err) {
+      sendJson(res, 500, { error: err instanceof Error ? err.message : "internal error" });
+    }
+  });
+
+  // Start proxy manager if provided (non-fatal on failure)
+  if (proxyManager) {
+    try {
+      await proxyManager.start();
+    } catch (err) {
+      console.warn(`[lcm] claude-server proxy failed to start: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  return new Promise((resolve) => {
+    server.listen(config.daemon.port, "127.0.0.1", () => {
+      resetIdleTimer();
+      resolve({
+        address: () => server.address() as AddressInfo,
+        stop: async () => {
+          clearInterval(ingestInterval);
+          if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+          if (proxyManager) {
+            try { await proxyManager.stop(); } catch { /* non-fatal */ }
+          }
+          return new Promise<void>((r) => server.close(() => r()));
+        },
+        registerRoute: (method, path, handler) => routes.set(`${method} ${path}`, handler),
+        get idleTriggered() { return idleTriggered; },
+      });
+    });
+  });
+}

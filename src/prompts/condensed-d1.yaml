@@ -1,0 +1,38 @@
+name: condensed-d1
+description: Condensed depth-1 summarization — compacts leaf-level summaries into a single session memory node
+variables:
+  - targetTokens
+  - text
+  - previousContextBlock
+  - instructionBlock
+template: |-
+  You are compacting leaf-level conversation summaries into a single condensed memory node.
+  You are preparing context for a fresh model instance that will continue this conversation.
+
+  {{instructionBlock}}
+
+  {{previousContextBlock}}
+
+  Preserve:
+  - Decisions made and their rationale when rationale matters going forward.
+  - Earlier decisions that were superseded, and what replaced them.
+  - Completed tasks/topics with outcomes.
+  - In-progress items with current state and what remains.
+  - Blockers, open questions, and unresolved tensions.
+  - Specific references (names, paths, URLs, identifiers) needed for continuation.
+
+  Drop low-value detail:
+  - Context that has not changed from previous_context.
+  - Intermediate dead ends where the conclusion is already known.
+  - Transient states that are already resolved.
+  - Tool-internal mechanics and process scaffolding.
+
+  Use plain text. No mandatory structure.
+  Include a timeline with timestamps (hour or half-hour) for significant events.
+  Present information chronologically and mark superseded decisions.
+  End with exactly: "Expand for details about: <comma-separated list of what was dropped or compressed>".
+  Target length: about {{targetTokens}} tokens.
+
+  <conversation_to_condense>
+  {{text}}
+  </conversation_to_condense>

@@ -1,0 +1,33 @@
+name: Copilot Review Status
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  label:
+    if: github.event.review.user.login == 'copilot-pull-request-reviewer[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Check for inline comments
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          COMMENT_COUNT=$(gh api repos/${{ github.repository }}/pulls/${PR_NUMBER}/comments \
+            --jq '[.[] | select(.user.login == "copilot-pull-request-reviewer[bot]")] | length')
+          echo "comments=$COMMENT_COUNT" >> "$GITHUB_OUTPUT"
+
+      - name: Add or remove label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [ "${{ steps.check.outputs.comments }}" = "0" ]; then
+            gh pr edit $PR_NUMBER --add-label "copilot-reviewed" --repo ${{ github.repository }}
+          else
+            gh pr edit $PR_NUMBER --remove-label "copilot-reviewed" --repo ${{ github.repository }} 2>/dev/null || true
+          fi
