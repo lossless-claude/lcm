@@ -36,11 +36,5 @@
         "hooks": [{ "type": "command", "command": "lcm user-prompt" }]
       }
     ]
-  },
-  "mcpServers": {
-    "lcm": {
-      "command": "lcm",
-      "args": ["mcp"]
-    }
   }
 }
