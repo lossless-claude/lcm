@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
 import { validateAndFixHooks, type AutoHealDeps } from "../../src/hooks/auto-heal.js";
-import { REQUIRED_HOOKS } from "../../installer/install.js";
 
 function makeDeps(overrides: Partial<AutoHealDeps> = {}): AutoHealDeps {
   return {
