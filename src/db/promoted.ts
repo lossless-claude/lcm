@@ -109,6 +109,13 @@ export class PromotedStore {
     return results;
   }
 
+  listContentPrefixes(limit: number): string[] {
+    const rows = this.db.prepare(
+      "SELECT content FROM promoted WHERE archived_at IS NULL LIMIT ?"
+    ).all(limit) as Array<{ content: string }>;
+    return rows.map((r) => r.content);
+  }
+
   archive(id: string): void {
     const row = this.db.prepare("SELECT rowid FROM promoted WHERE id = ?").get(id) as { rowid: number } | undefined;
     this.db.prepare("UPDATE promoted SET archived_at = datetime('now') WHERE id = ?").run(id);

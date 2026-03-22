@@ -288,6 +288,17 @@ export class ConversationStore {
       .run(conversationId);
   }
 
+  async listConversations(): Promise<ConversationRecord[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT conversation_id, session_id, title, bootstrapped_at, created_at, updated_at
+       FROM conversations
+       ORDER BY created_at`,
+      )
+      .all() as unknown as ConversationRow[];
+    return rows.map(toConversationRecord);
+  }
+
   // ── Message operations ────────────────────────────────────────────────────
 
   async createMessage(input: CreateMessageInput): Promise<MessageRecord> {

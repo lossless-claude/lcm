@@ -127,18 +127,58 @@ async function main() {
       const { homedir } = await import("node:os");
       const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
       const port = config.daemon?.port ?? 3737;
+      const jsonFlag = argv.includes("--json");
 
       let daemonStatus = "down";
+      let statusData: any = null;
+
       try {
-        const res = await fetch(`http://localhost:${port}/health`);
+        const res = await fetch(`http://127.0.0.1:${port}/health`);
         if (res.ok) daemonStatus = "up";
+
+        // Also fetch /status endpoint if daemon is up
+        if (daemonStatus === "up") {
+          const statusRes = await fetch(`http://127.0.0.1:${port}/status`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cwd: process.cwd() }),
+          });
+          if (statusRes.ok) {
+            statusData = await statusRes.json();
+          }
+        }
       } catch {}
 
-      const provider = config.llm?.provider ?? "unknown";
-      const providerDisplay = provider === "auto"
-        ? "auto (Claude->claude-process, Codex->codex-process)"
-        : provider;
-      console.log(`daemon: ${daemonStatus} · provider: ${providerDisplay}`);
+      if (jsonFlag) {
+        const result = {
+          daemon: daemonStatus === "up" ? statusData?.daemon : { status: "down" },
+          project: statusData?.project,
+        };
+        stdout.write(JSON.stringify(result, null, 2) + "\n");
+      } else {
+        const provider = config.llm?.provider ?? "unknown";
+        const providerDisplay = provider === "auto"
+          ? "auto (Claude->claude-process, Codex->codex-process)"
+          : provider;
+
+        if (statusData) {
+          console.log(`Daemon: ${daemonStatus}`);
+          console.log(`  Version: ${statusData.daemon.version}`);
+          console.log(`  Uptime: ${statusData.daemon.uptime}s`);
+          console.log(`  Port: ${statusData.daemon.port}`);
+          console.log(`  Provider: ${providerDisplay}`);
+          console.log();
+          console.log("Project:");
+          console.log(`  Messages: ${statusData.project.messageCount}`);
+          console.log(`  Summaries: ${statusData.project.summaryCount}`);
+          console.log(`  Promoted: ${statusData.project.promotedCount}`);
+          if (statusData.project.lastIngest) console.log(`  Last Ingest: ${statusData.project.lastIngest}`);
+          if (statusData.project.lastCompact) console.log(`  Last Compact: ${statusData.project.lastCompact}`);
+          if (statusData.project.lastPromote) console.log(`  Last Promote: ${statusData.project.lastPromote}`);
+        } else {
+          console.log(`daemon: ${daemonStatus} · provider: ${providerDisplay}`);
+        }
+      }
       break;
     }
     case "stats": {
@@ -326,8 +366,81 @@ async function main() {
       console.log();
       break;
     }
+    case "promote": {
+      const all = argv.includes("--all");
+      const verbose = argv.includes("--verbose");
+      const dryRun = argv.includes("--dry-run");
+
+      const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
+      const { loadDaemonConfig } = await import("../src/daemon/config.js");
+      const { join } = await import("node:path");
+      const { homedir } = await import("node:os");
+
+      const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
+      const port = config.daemon?.port ?? 3737;
+      const pidFilePath = join(homedir(), ".lossless-claude", "daemon.pid");
+      const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 5000 });
+      if (!connected) {
+        console.error("  Daemon not available. Start it with: lcm daemon start --detach");
+        exit(1);
+      }
+
+      const baseUrl = `http://127.0.0.1:${port}`;
+      const { readdirSync, existsSync, readFileSync } = await import("node:fs");
+
+      if (dryRun) console.log("  [dry-run] No changes will be written.\n");
+
+      // Collect project cwds to promote
+      const cwds: string[] = [];
+      if (all) {
+        const projectsDir = join(homedir(), ".lossless-claude", "projects");
+        if (existsSync(projectsDir)) {
+          for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
+            if (!entry.isDirectory()) continue;
+            const metaPath = join(projectsDir, entry.name, "meta.json");
+            if (!existsSync(metaPath)) continue;
+            try {
+              const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+              if (meta.cwd) cwds.push(meta.cwd);
+            } catch { /* skip unreadable */ }
+          }
+        }
+      } else {
+        cwds.push(process.cwd());
+      }
+
+      let totalProcessed = 0;
+      let totalPromoted = 0;
+
+      for (const cwd of cwds) {
+        const res = await fetch(`${baseUrl}/promote`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cwd, dry_run: dryRun }),
+        });
+
+        if (!res.ok) {
+          if (verbose) console.error(`  promote failed for ${cwd}: ${res.status}`);
+          continue;
+        }
+
+        const result = await res.json() as { processed: number; promoted: number };
+        totalProcessed += result.processed;
+        totalPromoted += result.promoted;
+
+        if (verbose) {
+          console.log(`  ${cwd}: ${result.processed} scanned, ${result.promoted} promoted`);
+        }
+      }
+
+      console.log(`  ${totalPromoted} insight${totalPromoted !== 1 ? "s" : ""} promoted to long-term memory`);
+      if (verbose) console.log(`  (${totalProcessed} summaries scanned across ${cwds.length} project${cwds.length !== 1 ? "s" : ""})`);
+      if (dryRun) console.log("  [dry-run] No changes written.");
+      console.log();
+      break;
+    }
     default:
-      console.error("Usage: lcm <daemon|compact|import|restore|session-end|user-prompt|mcp|install|uninstall|doctor|diagnose|status|stats|connectors|sensitive> [options]");
+      console.error("Usage: lcm <daemon|compact|import|promote|restore|session-end|user-prompt|mcp|install|uninstall|doctor|diagnose|status|stats|connectors|sensitive> [options]");
       exit(1);
   }
 }

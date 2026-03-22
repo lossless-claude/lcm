@@ -5,7 +5,9 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DaemonConfig } from "./config.js";
 import type { ProxyManager } from "./proxy-manager.js";
+import { resolveEffectiveProvider, createSummarizer } from "./summarizer.js";
 import { createCompactHandler } from "./routes/compact.js";
+import { createPromoteHandler } from "./routes/promote.js";
 import { createRestoreHandler } from "./routes/restore.js";
 import { createGrepHandler } from "./routes/grep.js";
 import { createSearchHandler } from "./routes/search.js";
@@ -15,6 +17,7 @@ import { createStoreHandler } from "./routes/store.js";
 import { createRecentHandler } from "./routes/recent.js";
 import { createIngestHandler } from "./routes/ingest.js";
 import { createPromptSearchHandler } from "./routes/prompt-search.js";
+import { createStatusHandler } from "./routes/status.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const PKG_VERSION = (() => {
@@ -64,6 +67,8 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   routes.set("GET /health", async (_req, res) =>
     sendJson(res, 200, { status: "ok", version: PKG_VERSION, uptime: Math.floor((Date.now() - startTime) / 1000) }));
   routes.set("POST /compact", createCompactHandler(config));
+  const promoteSummarizer = () => createSummarizer(resolveEffectiveProvider(config), config);
+  routes.set("POST /promote", createPromoteHandler(config, promoteSummarizer));
   routes.set("POST /restore", createRestoreHandler(config));
   routes.set("POST /grep", createGrepHandler(config));
   routes.set("POST /search", createSearchHandler());
@@ -73,6 +78,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   routes.set("POST /recent", createRecentHandler(config));
   routes.set("POST /ingest", createIngestHandler(config));
   routes.set("POST /prompt-search", createPromptSearchHandler(config));
+  // Status handler is registered after listen() when we know the actual port
 
   // Periodic transcript ingestion scan
   const INGEST_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
@@ -153,8 +159,14 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   return new Promise((resolve) => {
     server.listen(config.daemon.port, "127.0.0.1", () => {
       resetIdleTimer();
+      const addr = server.address() as AddressInfo;
+      const actualPort = addr.port;
+
+      // Now that we know the actual port, register the status handler
+      routes.set("POST /status", createStatusHandler(config, startTime, actualPort));
+
       resolve({
-        address: () => server.address() as AddressInfo,
+        address: () => addr,
         stop: async () => {
           clearInterval(ingestInterval);
           if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
