@@ -78,6 +78,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   routes.set("POST /recent", createRecentHandler(config));
   routes.set("POST /ingest", createIngestHandler(config));
   routes.set("POST /prompt-search", createPromptSearchHandler(config));
+  routes.set("POST /status", createStatusHandler(config, startTime));
 
   // Status handler will be registered after we know the actual port
   let statusHandler: RouteHandler | null = null;
