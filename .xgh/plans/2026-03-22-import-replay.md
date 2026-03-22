@@ -165,22 +165,23 @@ function makeMinimalStores(): { conversationStore: ConversationStore; summarySto
   const summaryStore = {
     getContextTokenCount: vi.fn().mockResolvedValue(50_000),
     getContextItems: vi.fn().mockResolvedValue([
-      { ordinal: 0, itemType: "message", messageId: "msg-1", summaryId: null, tokenCount: 50_000 },
+      { ordinal: 0, itemType: "message", messageId: 1, summaryId: null, tokenCount: 50_000 },
     ]),
     insertSummary: vi.fn().mockResolvedValue(undefined),
     linkSummaryToMessages: vi.fn().mockResolvedValue(undefined),
     replaceContextRangeWithSummary: vi.fn().mockResolvedValue(undefined),
-    getMessageContent: vi.fn().mockResolvedValue([{
-      messageId: "msg-1", role: "user", content: "hello", tokenCount: 50_000,
-      createdAt: new Date(), fileIds: [],
-    }]),
+    getDistinctDepthsInContext: vi.fn().mockResolvedValue([0]),
   } as unknown as SummaryStore;
 
   const conversationStore = {
     getConversation: vi.fn().mockResolvedValue({ conversationId: 1, sessionId: "sess-1" }),
     getMaxSeq: vi.fn().mockResolvedValue(0),
-    createMessage: vi.fn().mockResolvedValue({ messageId: "evt-1" }),
+    createMessage: vi.fn().mockResolvedValue({ messageId: 1 }),
     createMessageParts: vi.fn().mockResolvedValue(undefined),
+    getMessageById: vi.fn().mockResolvedValue({
+      messageId: 1, role: "user", content: "hello",
+      createdAt: new Date(), fileIds: [],
+    }),
     withTransaction: vi.fn().mockImplementation((fn: () => Promise<void>) => fn()),
   } as unknown as ConversationStore;
 
@@ -203,7 +204,6 @@ describe("CompactionEngine.compact — previousSummaryContent seeding", () => {
     const engine = new CompactionEngine(conversationStore, summaryStore, {
       contextThreshold: 0.5,
       freshTailCount: 0,
-      freshTailTokens: 0,
       leafMinFanout: 1,
       condensedMinFanout: 10,
       condensedMinFanoutHard: 5,
@@ -338,7 +338,7 @@ Find the `engine.compact({...})` call and add:
 ```ts
 const compactResult = await engine.compact({
   conversationId: conversation.conversationId,
-  tokenBudget: config.compaction.contextBudgetTokens,
+  tokenBudget: 200_000,
   summarize,
   force: true,
   hardTrigger: true,
@@ -621,7 +621,7 @@ Expected: all tests pass, no regressions.
 - [ ] **Step 2: Find the lcm-import skill file and add `--replay` docs**
 
 ```bash
-find /Users/pedro/Developer/lossless-claude -name "lcm-import*" | grep -v node_modules | head -5
+find . -name "lcm-import*" -not -path "*/node_modules/*" | head -5
 ```
 
 Open whichever `.md` file is returned. In the **Options** section, add:

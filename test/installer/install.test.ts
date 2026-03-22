@@ -345,5 +345,7 @@ describe("install — MCP registration", () => {
     const settings = JSON.parse(written);
     expect(settings.mcpServers?.lcm).toBeDefined();
     expect(settings.mcpServers.lcm.args).toContain("mcp");
+    expect(typeof settings.mcpServers.lcm.command).toBe("string");
+    expect(settings.mcpServers.lcm.command.length).toBeGreaterThan(0);
   });
 });

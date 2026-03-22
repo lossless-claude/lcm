@@ -44,11 +44,9 @@ export function validateAndFixHooks(deps: AutoHealDeps = defaultDeps()): void {
       const entries = hooks[event];
       return Array.isArray(entries) && hasHookCommand(entries, command);
     });
-    const hasManagedMcpServer = !!settings.mcpServers?.lcm;
+    if (!hasDuplicates) return;
 
-    if (!hasDuplicates && !hasManagedMcpServer) return;
-
-    // Clean up: remove lcm hooks and MCP config from settings.json
+    // Clean up: remove lcm hooks from settings.json (MCP config is preserved)
     const merged = mergeClaudeSettings(settings);
     deps.mkdirSync(dirname(deps.settingsPath), { recursive: true });
     deps.writeFileSync(deps.settingsPath, JSON.stringify(merged, null, 2));
