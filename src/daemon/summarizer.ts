@@ -1,6 +1,7 @@
 import type { DaemonConfig } from "./config.js";
 import { createClaudeProcessSummarizer } from "../llm/claude-process.js";
 import { createCodexProcessSummarizer } from "../llm/codex-process.js";
+import { createMockSummarizer } from "../llm/mock-summarizer.js";
 import type { LcmSummarizeFn } from "../llm/types.js";
 
 export type CompactClient = "claude" | "codex";
@@ -17,6 +18,8 @@ export async function createSummarizer(
   provider: EffectiveProvider,
   config: DaemonConfig,
 ): Promise<LcmSummarizeFn | null> {
+  // Mock summarizer for E2E testing — deterministic, no LLM calls
+  if (config.summarizer?.mock) return createMockSummarizer();
   if (provider === "disabled") return null;
   if (provider === "claude-process") return createClaudeProcessSummarizer();
   if (provider === "codex-process") {

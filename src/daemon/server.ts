@@ -78,10 +78,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   routes.set("POST /recent", createRecentHandler(config));
   routes.set("POST /ingest", createIngestHandler(config));
   routes.set("POST /prompt-search", createPromptSearchHandler(config));
-  routes.set("POST /status", createStatusHandler(config, startTime));
-
-  // Status handler will be registered after we know the actual port
-  let statusHandler: RouteHandler | null = null;
+  // Status handler is registered after listen() when we know the actual port
 
   // Periodic transcript ingestion scan
   const INGEST_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
@@ -165,9 +162,8 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
       const addr = server.address() as AddressInfo;
       const actualPort = addr.port;
 
-      // Now that we know the actual port, create and register the status handler
-      statusHandler = createStatusHandler(config, startTime, actualPort);
-      routes.set("POST /status", statusHandler);
+      // Now that we know the actual port, register the status handler
+      routes.set("POST /status", createStatusHandler(config, startTime, actualPort));
 
       resolve({
         address: () => addr,

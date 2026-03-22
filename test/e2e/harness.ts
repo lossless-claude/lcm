@@ -120,14 +120,18 @@ export async function createHarness(mode: "mock" | "live"): Promise<HarnessHandl
   // 4. Build test config using loadDaemonConfig with overrides
   //    - port: 0 → OS picks a free port
   //    - idleTimeoutMs: 0 → no idle timeout in tests
-  //    - llm.provider: "disabled" → no actual summarization in mock mode
+  //    - summarizer.mock: true → deterministic mock summarizer in mock mode
+  //    - llm.provider: "auto" in both modes (mock summarizer overrides provider)
   const configOverrides = {
     daemon: {
       port: 0,
       idleTimeoutMs: 0,
     },
     llm: {
-      provider: mode === "mock" ? "disabled" : "auto",
+      provider: mode === "mock" ? "auto" : "auto",
+    },
+    summarizer: {
+      mock: mode === "mock",
     },
   };
 

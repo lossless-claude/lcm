@@ -67,7 +67,9 @@ export function createPromoteHandler(
 
           if (!promotionResult.promote) continue;
 
-          if (!dry_run && summarize) {
+          if (dry_run) {
+            promoted++; // dry_run: count but don't insert
+          } else if (summarize) {
             const promotedStore = new PromotedStore(db);
             try {
               await deduplicateAndInsert({
@@ -85,10 +87,10 @@ export function createPromoteHandler(
                   confidenceDecayRate: config.compaction.promotionThresholds.confidenceDecayRate,
                 },
               });
-            } catch { /* non-fatal */ }
+              promoted++;
+            } catch { /* non-fatal — don't count failed promotions */ }
           }
-
-          promoted++;
+          // If summarize is null (disabled provider), skip — can't promote without a summarizer
         }
       }
 
