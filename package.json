@@ -23,6 +23,7 @@
   ],
   "files": [
     "dist/",
+    "mcp.mjs",
     ".claude-plugin/",
     "docs/",
     "README.md",

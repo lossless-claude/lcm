@@ -16,4 +16,8 @@ describe("package.json", () => {
   it("uses prepublishOnly for build (only runs during npm publish)", () => {
     expect(pkg.scripts).toHaveProperty("prepublishOnly", "npm run build");
   });
+
+  it("ships the plugin MCP entrypoint referenced by the manifest", () => {
+    expect(pkg.files).toContain("mcp.mjs");
+  });
 });
