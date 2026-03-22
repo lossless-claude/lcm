@@ -127,18 +127,58 @@ async function main() {
       const { homedir } = await import("node:os");
       const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
       const port = config.daemon?.port ?? 3737;
+      const jsonFlag = argv.includes("--json");
 
       let daemonStatus = "down";
+      let statusData: any = null;
+
       try {
         const res = await fetch(`http://localhost:${port}/health`);
         if (res.ok) daemonStatus = "up";
+
+        // Also fetch /status endpoint if daemon is up
+        if (daemonStatus === "up") {
+          const statusRes = await fetch(`http://localhost:${port}/status`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cwd: process.cwd() }),
+          });
+          if (statusRes.ok) {
+            statusData = await statusRes.json();
+          }
+        }
       } catch {}
 
-      const provider = config.llm?.provider ?? "unknown";
-      const providerDisplay = provider === "auto"
-        ? "auto (Claude->claude-process, Codex->codex-process)"
-        : provider;
-      console.log(`daemon: ${daemonStatus} · provider: ${providerDisplay}`);
+      if (jsonFlag) {
+        const result = {
+          daemon: daemonStatus === "up" ? statusData?.daemon : { status: "down" },
+          project: statusData?.project,
+        };
+        stdout.write(JSON.stringify(result, null, 2) + "\n");
+      } else {
+        const provider = config.llm?.provider ?? "unknown";
+        const providerDisplay = provider === "auto"
+          ? "auto (Claude->claude-process, Codex->codex-process)"
+          : provider;
+
+        if (statusData) {
+          console.log(`Daemon: ${daemonStatus}`);
+          console.log(`  Version: ${statusData.daemon.version}`);
+          console.log(`  Uptime: ${statusData.daemon.uptime}s`);
+          console.log(`  Port: ${statusData.daemon.port}`);
+          console.log(`  Provider: ${providerDisplay}`);
+          console.log();
+          console.log("Project:");
+          console.log(`  Messages: ${statusData.project.messageCount}`);
+          console.log(`  Summaries: ${statusData.project.summaryCount}`);
+          console.log(`  Promoted: ${statusData.project.promotedCount}`);
+          if (statusData.project.lastIngest) console.log(`  Last Ingest: ${statusData.project.lastIngest}`);
+          if (statusData.project.lastCompact) console.log(`  Last Compact: ${statusData.project.lastCompact}`);
+          if (statusData.project.lastPromote) console.log(`  Last Promote: ${statusData.project.lastPromote}`);
+        } else {
+          console.log(`daemon: ${daemonStatus} · provider: ${providerDisplay}`);
+        }
+      }
       break;
     }
     case "stats": {

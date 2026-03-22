@@ -15,6 +15,7 @@ import { createStoreHandler } from "./routes/store.js";
 import { createRecentHandler } from "./routes/recent.js";
 import { createIngestHandler } from "./routes/ingest.js";
 import { createPromptSearchHandler } from "./routes/prompt-search.js";
+import { createStatusHandler } from "./routes/status.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const PKG_VERSION = (() => {
@@ -73,6 +74,9 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   routes.set("POST /recent", createRecentHandler(config));
   routes.set("POST /ingest", createIngestHandler(config));
   routes.set("POST /prompt-search", createPromptSearchHandler(config));
+
+  // Status handler will be registered after we know the actual port
+  let statusHandler: RouteHandler | null = null;
 
   // Periodic transcript ingestion scan
   const INGEST_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
@@ -153,8 +157,15 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   return new Promise((resolve) => {
     server.listen(config.daemon.port, "127.0.0.1", () => {
       resetIdleTimer();
+      const addr = server.address() as AddressInfo;
+      const actualPort = addr.port;
+
+      // Now that we know the actual port, create and register the status handler
+      statusHandler = createStatusHandler(config, startTime, actualPort);
+      routes.set("POST /status", statusHandler);
+
       resolve({
-        address: () => server.address() as AddressInfo,
+        address: () => addr,
         stop: async () => {
           clearInterval(ingestInterval);
           if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
