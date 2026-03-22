@@ -46,7 +46,7 @@ describe("validateAndFixHooks", () => {
     expect(deps.writeFileSync).not.toHaveBeenCalled();
   });
 
-  it("removes leaked mcpServers.lcm even when no managed hooks are present", () => {
+  it("preserves mcpServers.lcm when no managed hooks are present (mcpServers.lcm is owned by settings.json)", () => {
     const deps = makeDeps({
       readFileSync: vi.fn().mockReturnValue(JSON.stringify({
         hooks: {
@@ -61,11 +61,8 @@ describe("validateAndFixHooks", () => {
 
     validateAndFixHooks(deps);
 
-    expect(deps.writeFileSync).toHaveBeenCalledTimes(1);
-    const written = JSON.parse((deps.writeFileSync as ReturnType<typeof vi.fn>).mock.calls[0][1]);
-    expect(written.hooks.PostToolUse).toEqual([{ matcher: "", hooks: [{ type: "command", command: "other" }] }]);
-    expect(written.mcpServers.lcm).toBeUndefined();
-    expect(written.mcpServers.other).toEqual({ command: "other", args: ["mcp"] });
+    // No duplicate hooks → no cleanup needed; mcpServers.lcm is intentional
+    expect(deps.writeFileSync).not.toHaveBeenCalled();
   });
 
   it("does not throw on fs errors", () => {

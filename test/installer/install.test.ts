@@ -51,7 +51,7 @@ describe("mergeClaudeSettings", () => {
     };
     const r = mergeClaudeSettings(existing);
     expect(r.hooks).toBeUndefined();
-    expect(r.mcpServers).toBeUndefined();
+    expect(r.mcpServers?.lcm).toEqual({ command: "lcm", args: ["mcp"] });
   });
 
   it("REQUIRED_HOOKS contains exactly 4 expected events", () => {
@@ -344,5 +344,7 @@ describe("install — MCP registration", () => {
     const settings = JSON.parse(written);
     expect(settings.mcpServers?.lcm).toBeDefined();
     expect(settings.mcpServers.lcm.args).toContain("mcp");
+    expect(typeof settings.mcpServers.lcm.command).toBe("string");
+    expect(settings.mcpServers.lcm.command.length).toBeGreaterThan(0);
   });
 });

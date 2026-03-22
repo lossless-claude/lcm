@@ -61,8 +61,7 @@ export function mergeClaudeSettings(existing: any): any {
   }
   if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
 
-  // MCP server also owned by plugin.json — remove from settings.json
-  delete settings.mcpServers["lcm"];
+  // Drop empty mcpServers shell; lcm is now registered via settings.json (not removed here)
   if (Object.keys(settings.mcpServers).length === 0) delete settings.mcpServers;
 
   return settings;

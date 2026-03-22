@@ -621,7 +621,7 @@ Expected: all tests pass, no regressions.
 - [ ] **Step 2: Find the lcm-import skill file and add `--replay` docs**
 
 ```bash
-find /Users/pedro/Developer/lossless-claude -name "lcm-import*" | grep -v node_modules | head -5
+find . -name "lcm-import*" -not -path "*/node_modules/*" | head -5
 ```
 
 Open whichever `.md` file is returned. In the **Options** section, add:

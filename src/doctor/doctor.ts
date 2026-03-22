@@ -4,7 +4,7 @@ import { join, dirname } from "node:path";
 import { spawnSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { CheckResult, DoctorDeps } from "./types.js";
-import { mergeClaudeSettings, REQUIRED_HOOKS } from "../../installer/install.js";
+import { mergeClaudeSettings, REQUIRED_HOOKS, resolveBinaryPath } from "../../installer/install.js";
 import { BUILT_IN_PATTERNS, ScrubEngine } from "../scrub.js";
 import { projectDir } from "../daemon/project.js";
 
@@ -237,7 +237,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>): Promise<CheckR
     try {
       const merged = mergeClaudeSettings(currentSettings);
       if (typeof merged.mcpServers !== "object" || merged.mcpServers === null) merged.mcpServers = {};
-      (merged.mcpServers as Record<string, unknown>)["lcm"] = { command: "lcm", args: ["mcp"] };
+      (merged.mcpServers as Record<string, unknown>)["lcm"] = { command: resolveBinaryPath(deps), args: ["mcp"] };
       deps.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
       results.push({ name: "mcp-lcm", category: "Settings", status: "warn", message: "mcpServers.lcm missing from settings.json — re-added (run: lcm install to fix permanently)", fixApplied: true });
     } catch {
