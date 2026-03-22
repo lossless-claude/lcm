@@ -1,6 +1,6 @@
 ---
 name: lcm-curate
-description: Run the full memory curation pipeline: import, compact, and promote.
+description: "Run the full memory curation pipeline: import, compact, and promote."
 user_invocable: true
 ---
 
