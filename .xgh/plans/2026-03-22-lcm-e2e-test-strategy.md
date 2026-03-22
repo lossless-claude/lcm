@@ -124,6 +124,7 @@ import { projectId, projectDbPath, projectDir, ensureProjectDir, projectMetaPath
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
+import { ConversationStore } from "../../store/conversation-store.js";
 import { SummaryStore } from "../../store/summary-store.js";
 import { PromotedStore } from "../../db/promoted.js";
 import { shouldPromote } from "../../promotion/detector.js";
@@ -154,21 +155,19 @@ export function createPromoteHandler(
     try {
       db.exec("PRAGMA busy_timeout = 5000");
       runLcmMigrations(db);
+      const conversationStore = new ConversationStore(db);
       const summaryStore = new SummaryStore(db);
       const promotedStore = new PromotedStore(db);
       const pid = projectId(cwd);
 
-      // Get all summaries that haven't been evaluated for promotion yet
-      // For now, iterate all summaries and let dedup handle duplicates
-      const conversations = db.prepare(
-        "SELECT DISTINCT conversation_id FROM summaries"
-      ).all() as { conversation_id: number }[];
+      // Use ConversationStore to get conversations (consistent with codebase patterns)
+      const conversations = await conversationStore.listConversations();
 
       let processed = 0;
       let promoted = 0;
 
-      for (const { conversation_id } of conversations) {
-        const summaries = await summaryStore.getSummariesByConversation(conversation_id);
+      for (const conversation of conversations) {
+        const summaries = await summaryStore.getSummariesByConversation(conversation.conversationId);
         for (const summary of summaries) {
           processed++;
           const result = shouldPromote(
@@ -188,6 +187,7 @@ export function createPromoteHandler(
               content: summary.content,
               tags: result.tags,
               projectId: pid,
+              sessionId: conversation.sessionId, // preserve session provenance
               depth: summary.depth,
               confidence: result.confidence,
               summarize,
@@ -379,15 +379,17 @@ Expected: FAIL
 Create `src/llm/mock-summarizer.ts`:
 
 ```typescript
-import type { LcmSummarizeFn } from "./types.js";
+import type { LcmSummarizeFn, SummarizeContext } from "./types.js";
 
 /**
  * Deterministic mock summarizer for E2E testing.
  * Produces structurally valid summaries by extracting key phrases from input
  * and wrapping them in a canned template. No LLM calls.
+ *
+ * Must match LcmSummarizeFn signature: (text, aggressive?, ctx?) => Promise<string>
  */
 export function createMockSummarizer(): LcmSummarizeFn {
-  return async (text: string): Promise<string> => {
+  return async (text: string, _aggressive?: boolean, _ctx?: SummarizeContext): Promise<string> => {
     // Extract first sentence or first 200 chars as "summary"
     const firstSentence = text.split(/[.!?\n]/)[0]?.trim() || text.slice(0, 200);
     // Deterministic hash for consistent output
@@ -404,7 +406,10 @@ Expected: PASS
 
 - [ ] **Step 5: Add `summarizer.mock` config option**
 
-In `src/daemon/config.ts`, add `summarizer?: { mock?: boolean }` to the config schema with a default of `false`.
+In `src/daemon/config.ts`:
+1. Add `summarizer?: { mock?: boolean }` to the `DaemonConfig` type definition
+2. Add `summarizer: { mock: false }` to the `DEFAULTS` object
+3. Ensure the `deepMerge` logic handles the new nested field
 
 - [ ] **Step 6: Wire mock summarizer into compact route**
 
@@ -451,9 +456,9 @@ Create a 5-message subagent conversation. Simpler content, just enough to verify
 
 - [ ] **Step 4: Verify fixtures parse correctly**
 
-Write a quick test or use the existing `parseTranscript` to verify the fixtures are valid:
+Build first (`npm run build`), then verify the fixtures are valid JSONL:
 
-Run: `node -e "import('./dist/src/transcript.js').then(m => console.log(m.parseTranscript('test/fixtures/e2e/session-main.jsonl').length))"`
+Run: `npm run build && node -e "import('./dist/src/transcript.js').then(m => console.log(m.parseTranscript('test/fixtures/e2e/session-main.jsonl').length))"`
 Expected: prints the message count (15-20)
 
 - [ ] **Step 5: Commit**
@@ -496,7 +501,8 @@ export interface FlowResult {
 - [ ] **Step 2: Implement `createHarness()`**
 
 The function:
-1. Creates a temp dir with `e2e-test-` prefix
+1. **Defensive cleanup first:** Scan `~/.lossless-claude/projects/` for directories whose `meta.json` has a `cwd` starting with the OS temp dir and an `e2e-test-` prefix. Remove any orphans from prior crashed runs.
+2. Creates a temp dir with `e2e-test-` prefix
 2. Copies fixtures to the temp dir
 3. Picks a random free port (mock mode) or reads existing config (live mode)
 4. Writes a test `config.json` with `summarizer.mock: true` (mock mode) or `summarizer.mock: false` (live mode)
@@ -529,11 +535,14 @@ describe("E2E harness", () => {
   it("creates and cleans up in mock mode", async () => {
     const handle = await createHarness("mock");
     expect(handle.daemonPort).toBeGreaterThan(0);
-    const health = await handle.client.post("/health", {});
+    const health = await handle.client.health();
     expect(health.status).toBe("ok");
     await handle.cleanup();
   });
 }, { timeout: 30_000 });
+// Note: E2E tests need longer timeouts than unit tests.
+// Update vitest.config.ts to add a project-level timeout for test/e2e/**:
+// test: { testTimeout: 60_000 } or use per-file { timeout } in describe blocks.
 ```
 
 - [ ] **Step 5: Run test**
@@ -566,7 +575,7 @@ Each test file uses `createHarness("mock")` in a `beforeAll` and `handle.cleanup
 ```typescript
 describe("Flow 1: Environment", () => {
   it("daemon responds to health check with version", async () => {
-    const health = await handle.client.post("/health", {});
+    const health = await handle.client.health();
     expect(health.status).toBe("ok");
     expect(health.version).toBeTruthy();
   });
@@ -606,7 +615,15 @@ describe("Flow 3: Idempotent re-import", () => {
 
 - [ ] **Step 4: Write Flow 4 — Subagent import**
 
-Test that the subagent fixture at `subagents/subagent-task-1.jsonl` is discovered and ingested.
+Subagent discovery happens in `importSessions()` (not the daemon), which scans `subagents/*.jsonl` subdirectories. Structure the temp dir to mimic Claude Code's session layout:
+```
+<tmpDir>/  (used as _claudeProjectsDir)
+  <projectHash>/
+    session-main.jsonl
+    subagents/
+      subagent-task-1.jsonl
+```
+Call `importSessions(client, { cwd: handle.tmpDir, _claudeProjectsDir: tmpDir })` directly (not via `/ingest`). Assert the subagent session is found and ingested.
 
 - [ ] **Step 5: Write Flow 5 — Compact**
 
@@ -784,7 +801,7 @@ Wraps `lcm promote`. Surfaces `--all`, `--verbose`, `--dry-run` params.
 
 - [ ] **Step 3: Create `/lcm-curate` command**
 
-Runs `lcm import` → `lcm compact --all` → `lcm promote` sequentially. Stops on first failure. Surfaces `--all`, `--verbose`, `--dry-run` params.
+Runs `lcm import` → `lcm compact --all` → `lcm promote` sequentially. Stops on first failure. Surfaces `--all`, `--verbose`, `--dry-run` params. Presents a unified summary at the end combining output from all three phases (e.g., "15 messages imported, 3 summaries created, 1 insight promoted"). Note: compact will report `promotedCount: 0` since promotion is now decoupled — the curate command must merge the promote output into the final report.
 
 - [ ] **Step 4: Create `/lcm-status` command**
 
@@ -861,7 +878,4 @@ Invoke the skill and verify the summary table shows all flows passing.
 
 - [ ] **Step 4: Final commit**
 
-```bash
-git add -A
-git commit -m "chore: E2E test strategy implementation complete"
-```
+Review any remaining unstaged files with `git status` and stage only relevant changes explicitly. Do not use `git add -A`.
