@@ -366,8 +366,53 @@ async function main() {
       console.log();
       break;
     }
+    case "promote": {
+      const all = argv.includes("--all");
+      const verbose = argv.includes("--verbose");
+      const dryRun = argv.includes("--dry-run");
+
+      const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
+      const { loadDaemonConfig } = await import("../src/daemon/config.js");
+      const { join } = await import("node:path");
+      const { homedir } = await import("node:os");
+
+      const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
+      const port = config.daemon?.port ?? 3737;
+      const pidFilePath = join(homedir(), ".lossless-claude", "daemon.pid");
+      const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 5000 });
+      if (!connected) {
+        console.error("  Daemon not available. Start it with: lcm daemon start --detach");
+        exit(1);
+      }
+
+      const cwd = process.cwd();
+      const baseUrl = `http://127.0.0.1:${port}`;
+
+      if (dryRun) console.log("  [dry-run] No changes will be written.\n");
+
+      const res = await fetch(`${baseUrl}/promote`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cwd, dry_run: dryRun }),
+      });
+
+      if (!res.ok) {
+        console.error(`  promote request failed: ${res.status}`);
+        exit(1);
+      }
+
+      const result = await res.json() as { processed: number; promoted: number };
+
+      if (verbose) {
+        console.log(`  Scanned ${result.processed} summaries`);
+      }
+      console.log(`  ${result.promoted} insight${result.promoted !== 1 ? "s" : ""} promoted to long-term memory`);
+      if (dryRun) console.log("  [dry-run] No changes written.");
+      console.log();
+      break;
+    }
     default:
-      console.error("Usage: lcm <daemon|compact|import|restore|session-end|user-prompt|mcp|install|uninstall|doctor|diagnose|status|stats|connectors|sensitive> [options]");
+      console.error("Usage: lcm <daemon|compact|import|promote|restore|session-end|user-prompt|mcp|install|uninstall|doctor|diagnose|status|stats|connectors|sensitive> [options]");
       exit(1);
   }
 }
