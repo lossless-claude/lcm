@@ -94,7 +94,7 @@ The existing `lcm status` behavior is preserved as a subset — the enhancement 
 
 ## Plugin Commands
 
-Six commands, all thin wrappers over CLI. New functionality always goes in the CLI first.
+Five commands plus one skill, all thin wrappers over CLI. New functionality always goes in the CLI first.
 
 ### `/lcm-import` (update existing)
 - Wraps: `lcm import`
@@ -135,7 +135,7 @@ Six commands, all thin wrappers over CLI. New functionality always goes in the C
 
 | # | Flow | Validates | Mock Assertions | Live Assertions |
 |---|------|-----------|-----------------|-----------------|
-| 1 | Environment | Daemon starts, version check | Exact version string | Same |
+| 1 | Environment | Daemon starts, version check via `GET /health` (returns `{ status, version, uptime }`). Note: `DaemonClient.health()` currently omits `version` — either extend it or use raw GET. | Exact version string | Same |
 | 2 | Import | Replay fixture → messages in SQLite | Exact message count, roles, token totals | Same |
 | 3 | Idempotent re-import | Re-run import → no duplicates | `ingested: 0` | Same |
 | 4 | Subagent import | `subagents/*.jsonl` discovered | Subagent session found + ingested | Same |

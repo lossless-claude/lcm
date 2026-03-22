@@ -76,7 +76,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { runLcmMigrations } from "../../src/db/migration.js";
+import { runLcmMigrations } from "../../../src/db/migration.js";
 
 describe("createPromoteHandler", () => {
   const dirs: string[] = [];
@@ -575,9 +575,12 @@ Each test file uses `createHarness("mock")` in a `beforeAll` and `handle.cleanup
 ```typescript
 describe("Flow 1: Environment", () => {
   it("daemon responds to health check with version", async () => {
-    const health = await handle.client.health();
+    // Use raw GET since DaemonClient.health() doesn't return version yet
+    const res = await fetch(`http://127.0.0.1:${handle.daemonPort}/health`);
+    const health = await res.json();
     expect(health.status).toBe("ok");
     expect(health.version).toBeTruthy();
+    expect(health.uptime).toBeGreaterThanOrEqual(0);
   });
 });
 ```
