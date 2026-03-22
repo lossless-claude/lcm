@@ -15,6 +15,8 @@ import { createStoreHandler } from "./routes/store.js";
 import { createRecentHandler } from "./routes/recent.js";
 import { createIngestHandler } from "./routes/ingest.js";
 import { createPromptSearchHandler } from "./routes/prompt-search.js";
+import { createPromoteHandler } from "./routes/promote.js";
+import { resolveEffectiveProvider, createSummarizer } from "./summarizer.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const PKG_VERSION = (() => {
@@ -64,6 +66,8 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   routes.set("GET /health", async (_req, res) =>
     sendJson(res, 200, { status: "ok", version: PKG_VERSION, uptime: Math.floor((Date.now() - startTime) / 1000) }));
   routes.set("POST /compact", createCompactHandler(config));
+  const promoteSummarizer = () => createSummarizer(resolveEffectiveProvider(config), config);
+  routes.set("POST /promote", createPromoteHandler(config, promoteSummarizer));
   routes.set("POST /restore", createRestoreHandler(config));
   routes.set("POST /grep", createGrepHandler(config));
   routes.set("POST /search", createSearchHandler());
