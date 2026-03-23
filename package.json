@@ -24,6 +24,7 @@
   "files": [
     "dist/",
     "mcp.mjs",
+    "lcm.mjs",
     ".claude-plugin/",
     "docs/",
     "README.md",
