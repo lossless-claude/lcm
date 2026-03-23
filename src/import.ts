@@ -234,9 +234,11 @@ export async function importSessions(
           } catch (err) {
             // Non-fatal: import succeeded; compact failure breaks the chain at this link.
             previousSummary = undefined;
-            if (options.verbose) {
-              console.error(`  \u26a0\ufe0f [replay] compact failed for session ${sessionId}: ${err instanceof Error ? err.message : 'unknown error'}`);
-            }
+            // Always warn on chain breakage so users know the DAG is incomplete,
+            // regardless of whether --verbose was passed.
+            console.error(`  \u26a0\ufe0f [replay] compact failed for session ${sessionId}: ${err instanceof Error ? err.message : 'unknown error'}`);
+            // Fall back to ingest's totalTokens so they aren't silently lost.
+            result.totalTokens += res.totalTokens;
           }
         }
       } catch (err) {
