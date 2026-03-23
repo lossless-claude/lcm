@@ -126,8 +126,14 @@ else
     echo "  ▸ Base URL: ${BASE_URL}"
     echo ""
 
-    # Fail fast: public OpenAI API requires a key
-    if [ -z "${API_KEY:-}" ] && [ "$BASE_URL" = "https://api.openai.com/v1" ]; then
+    # Normalise BASE_URL for comparison: strip trailing slashes and lower-case scheme/host
+    BASE_URL_NORM="${BASE_URL%/}"
+
+    # Fail fast: public OpenAI API requires a key.
+    # Match any equivalent form of api.openai.com/v1 (with or without trailing slash).
+    if [ -z "${API_KEY:-}" ] && {
+         [ "$BASE_URL_NORM" = "https://api.openai.com/v1" ] ||
+         [ "$BASE_URL_NORM" = "http://api.openai.com/v1" ]; }; then
       echo "  ERROR: OPENAI_API_KEY is required when using the public OpenAI API."
       echo ""
       echo "  Export it first, then re-run setup:"
