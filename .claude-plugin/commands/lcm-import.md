@@ -32,7 +32,7 @@ For example:
 
 Display the output verbatim.
 
-After importing, suggest running `lcm compact --all` to summarize the imported sessions. Note: when `--replay` is used, compaction is performed inline — no separate compact step is needed.
+After importing, suggest running `lcm compact` to summarize the imported sessions (or `lcm compact --all` if `--all` was used with import). Note: when `--replay` is used, compaction is performed inline — no separate compact step is needed.
 
 ## When to use
 
