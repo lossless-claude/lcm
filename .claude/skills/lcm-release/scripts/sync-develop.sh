@@ -23,6 +23,10 @@ ok()  { echo "  ✓ $*"; }
 echo ""
 echo "━━━ Sync develop←main after v$VERSION release ━━━"
 
+if [[ -n "$(git status --porcelain)" ]]; then
+  err "Working tree is dirty. Commit or stash changes first."
+fi
+
 git checkout develop
 git pull origin develop
 git fetch origin main
@@ -35,7 +39,7 @@ fi
 
 echo "  develop is $BEHIND commit(s) behind main — creating sync branch..."
 
-if git rev-parse --verify "origin/$SYNC_BRANCH" >/dev/null 2>&1; then
+if git ls-remote --exit-code --heads origin "$SYNC_BRANCH" >/dev/null 2>&1; then
   err "Branch $SYNC_BRANCH already exists on remote. Has the sync PR already been opened?"
 fi
 

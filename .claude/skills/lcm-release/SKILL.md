@@ -66,7 +66,7 @@ The script handles everything end-to-end:
 | Guard fails: tag exists | Version already tagged | Pick a higher version |
 | Guard fails: npm version exists | Already published | Pick a higher version |
 | publish.yml conclusion is `skipped` | Tag or npm version exists (race) | Pick a higher version; start over |
-| develop diverged from main | Step 9 skipped on a previous release | Script handles this automatically via pre-release sync PR |
+| develop diverged from main (cannot fast-forward) | Branches were manually changed or cherry-picked | Manually reconcile `develop` and `main` until fast-forwardable, then rerun |
 | publish.yml conclusion is not `success` | Build/test/publish failed | Check the run URL printed by the script |
 
 ## Scripts

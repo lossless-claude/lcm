@@ -63,7 +63,6 @@ fi
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 REPO="lossless-claude/lcm"
 RELEASE_BRANCH="release/v$VERSION"
-SYNC_BRANCH="chore/sync-develop-v$VERSION"
 PACKAGE_NAME=$(node -p "require('./package.json').name")
 
 err()    { echo ""; echo "✗ ERROR: $*" >&2; exit 1; }
@@ -103,12 +102,12 @@ if run_step 0; then
     PRE_BRANCH="chore/sync-develop-pre-v$VERSION"
     git checkout -b "$PRE_BRANCH"
     git push -u origin "$PRE_BRANCH"
-    PRE_URL=$(gh pr create \
+    PRE_PR=$(gh pr create \
       --repo "$REPO" \
       --base develop \
       --title "chore: sync develop with main before v$VERSION release" \
-      --body "Pre-release sync: brings develop up to date with main.")
-    PRE_PR=$(echo "$PRE_URL" | grep -o '[0-9]*$')
+      --body "Pre-release sync: brings develop up to date with main." \
+      --json number --jq '.number')
     echo "  Opened pre-release sync PR #$PRE_PR — merging..."
     gh pr merge "$PRE_PR" --repo "$REPO" --merge
     git checkout develop && git pull origin develop
@@ -139,8 +138,11 @@ fi
 # ─── STEP 2: Release branch ──────────────────────────────────────────────────
 if run_step 2; then
   step "Step 2 — Create release branch"
-  git rev-parse --verify "$RELEASE_BRANCH" >/dev/null 2>&1 && \
-    err "Branch $RELEASE_BRANCH already exists. Delete it or choose a different version."
+  git fetch origin "$RELEASE_BRANCH" >/dev/null 2>&1 || true
+  if git rev-parse --verify "$RELEASE_BRANCH" >/dev/null 2>&1 || \
+     git ls-remote --exit-code --heads origin "$RELEASE_BRANCH" >/dev/null 2>&1; then
+    err "Branch $RELEASE_BRANCH already exists locally or on origin. Delete it or choose a different version."
+  fi
   git checkout -b "$RELEASE_BRANCH"
   ok "On branch $RELEASE_BRANCH."
 else
@@ -198,12 +200,14 @@ fi
 # ─── STEP 5: Open PR to main ─────────────────────────────────────────────────
 if run_step 5; then
   step "Step 5 — Open PR targeting main"
-  PR_URL=$(gh pr create \
+  PR_JSON=$(gh pr create \
     --repo "$REPO" \
     --base main \
     --title "chore: release v$VERSION" \
-    --body "Version bump to $VERSION.")
-  PR_NUMBER=$(echo "$PR_URL" | grep -o '[0-9]*$')
+    --body "Version bump to $VERSION." \
+    --json number,url)
+  PR_NUMBER=$(node -pe "JSON.parse(process.argv[1]).number" "$PR_JSON")
+  PR_URL=$(node -pe "JSON.parse(process.argv[1]).url" "$PR_JSON")
   ok "PR #$PR_NUMBER created: $PR_URL"
 else
   step "Step 5 — Open PR targeting main"; skip
@@ -212,10 +216,15 @@ fi
 # ─── STEP 6: Wait for CI ─────────────────────────────────────────────────────
 if run_step 6; then
   step "Step 6 — Wait for CI"
-  if gh pr checks "$PR_NUMBER" --watch 2>/dev/null; then
+  if gh pr checks "$PR_NUMBER" --watch; then
     ok "CI green."
   else
-    echo "  (No CI checks configured — skipping.)"
+    CHECK_COUNT=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json statusCheckRollup --jq '.statusCheckRollup | length' 2>/dev/null || echo "0")
+    if [[ "$CHECK_COUNT" -eq 0 ]]; then
+      echo "  (No CI checks configured — skipping.)"
+    else
+      err "CI checks did not pass ($CHECK_COUNT configured). Inspect the PR and rerun with --from-step 6 when resolved."
+    fi
   fi
 else
   step "Step 6 — Wait for CI"; skip
@@ -236,7 +245,7 @@ if run_step 8; then
   echo "  Waiting for workflow to appear..."
   sleep 8
 
-  RUN_ID=$(gh run list --repo "$REPO" --workflow publish.yml --limit 1 \
+  RUN_ID=$(gh run list --repo "$REPO" --workflow publish.yml --branch main --limit 1 \
     --json databaseId --jq '.[0].databaseId')
   [[ -z "$RUN_ID" || "$RUN_ID" == "null" ]] && \
     err "Could not find a publish.yml run. Check https://github.com/$REPO/actions manually."
