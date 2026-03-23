@@ -144,4 +144,32 @@ describe("deduplicateAndInsert", () => {
     // Only 1 result: the canonical (incoming is archived and not searchable)
     expect(results.length).toBe(1);
   });
+
+  it("upgrades confidence when incoming is higher than canonical", async () => {
+    const db = makeDb();
+    const store = new PromotedStore(db);
+
+    store.insert({
+      content: "Decided to use PostgreSQL for the database layer",
+      tags: ["decision"],
+      projectId: "p1",
+      confidence: 0.6,
+    });
+
+    await deduplicateAndInsert({
+      store,
+      content: "Confirmed PostgreSQL as the database choice after extensive benchmarks",
+      tags: ["decision"],
+      projectId: "p1",
+      sessionId: "s1",
+      depth: 2,
+      confidence: 0.95,
+      thresholds: { dedupBm25Threshold: 0.000001, mergeMaxEntries: 3, confidenceDecayRate: 0.1 },
+    });
+
+    const results = store.search("PostgreSQL database", 10);
+    expect(results.length).toBe(1);
+    // Confidence should upgrade to incoming's higher value: max(0.6, 0.95) = 0.95
+    expect(results[0].confidence).toBe(0.95);
+  });
 });

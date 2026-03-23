@@ -37,6 +37,10 @@ export async function deduplicateAndInsert(params: DedupParams): Promise<string>
   const canonical = duplicates[0];
   const refreshedConfidence = Math.max(canonical.confidence, confidence);
 
+  // NOTE: The following sequence (update + archive + insert + archive) is not wrapped
+  // in a SQLite transaction. This is safe for the current single-threaded daemon, but
+  // should be made atomic if concurrent promote calls are introduced in future.
+
   // Refresh canonical's confidence — repeated sightings reinforce the entry
   store.update(canonical.id, { confidence: refreshedConfidence });
 
