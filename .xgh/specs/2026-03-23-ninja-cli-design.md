@@ -1,9 +1,9 @@
 # Ninja CLI Renderer — Design Spec
 
-**Date**: 2026-03-23
-**Issue**: #64 (reusable ninja CLI interface for session commands)
+**Date:** 2026-03-23
+**Issue:** #64 (reusable ninja CLI interface for session commands)
 **Project**: [Ingestion pipeline improvements](https://github.com/orgs/lossless-claude/projects/1)
-**Status**: Draft
+**Status:** Draft
 
 ---
 
@@ -17,7 +17,7 @@ Inspired by React's model: commands update state, rendering is a pure function o
 
 - **Approach C**: render loop with pure `renderFrame(state, opts) → string`
 - **Replay default flips to on in Phase 2** for `lcm import` — Phase 1 keeps replay opt-in; once flipped, `--no-replay` is the escape hatch
-- **Always pre-scan** for total count — every command must implement `count()`
+- **Always pre-scan** for session count — enables live compression ratio once compaction begins; every command must implement `count()`
 - **Summary shows DAG metrics** (nodes, depth, memories) instead of "tokens freed"
 - **Verbose mode**: sequential session log + full `lcm stats --verbose` at end
 - **Non-verbose mode**: live 3-line ninja display + compact summary
@@ -36,7 +36,7 @@ interface ProgressState {
   // Current work
   total: number;
   completed: number;
-  failed: number;
+  // failed: derived from errors.length — no separate counter to avoid drift
   errors: { sessionId: string; message: string }[];  // what failed and why
 
   // Running metrics
@@ -158,7 +158,7 @@ interface PipelineSession {
 
 interface PipelineStep {
   name: string;
-  count(opts: CommandOpts): Promise<number>;
+  count(opts: CommandOpts): Promise<number>;  // CommandOpts = CLI args (--all, --replay, --provider, etc.)
   run(
     session: PipelineSession,
     update: (patch: Partial<ProgressState>) => void,
