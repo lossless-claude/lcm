@@ -345,6 +345,7 @@ async function main() {
       const all = argv.includes("--all");
       const verbose = argv.includes("--verbose");
       const dryRun = argv.includes("--dry-run");
+      const replay = argv.includes("--replay");
 
       const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
       const { DaemonClient } = await import("../src/daemon/client.js");
@@ -362,12 +363,13 @@ async function main() {
       const client = new DaemonClient(`http://127.0.0.1:${port}`);
       console.log(`\n  Importing Claude Code sessions${all ? " (all projects)" : ""}...\n`);
 
-      const result = await importSessions(client, { all, verbose, dryRun });
+      const result = await importSessions(client, { all, verbose, dryRun, replay });
 
       if (dryRun) console.log("  [dry-run] No changes written.\n");
       console.log(`  ${result.imported} sessions imported (${result.totalMessages} messages)`);
       if (result.skippedEmpty > 0) console.log(`  ${result.skippedEmpty} skipped (empty transcript)`);
       if (result.failed > 0) console.log(`  ${result.failed} failed`);
+      if (replay) console.log("  [replay] Sessions compacted sequentially with threaded context.\n");
       console.log();
       break;
     }
