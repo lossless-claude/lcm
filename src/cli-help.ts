@@ -6,11 +6,14 @@
  *   printHelp(command)    — per-command detail   (lcm compact --help)
  */
 
+type FlagHelp = readonly [flag: string, description: string];
+type ExampleHelp = readonly [command: string, description: string];
+
 interface CommandHelp {
   summary: string;
   usage: string;
-  options?: string[][];  // [flag, description] pairs
-  examples?: string[][];  // [command, description] pairs
+  options?: FlagHelp[];
+  examples?: ExampleHelp[];
   notes?: string;
 }
 
@@ -194,6 +197,42 @@ const HELP: Record<string, CommandHelp> = {
     ],
     notes: "Built-in patterns cover common secrets (API keys, tokens, passwords). Custom patterns are stored per-project in config.",
   },
+
+  mcp: {
+    summary: "Start the lcm MCP server (used by Claude Code to expose memory tools).",
+    usage: "lcm mcp",
+    examples: [
+      ["lcm mcp", "Start the MCP server (stdio transport)"],
+    ],
+    notes: "Normally launched automatically by Claude Code via the mcpServers config. No need to run manually.",
+  },
+
+  restore: {
+    summary: "Dispatch the restore hook — restores prior context at session start.",
+    usage: "lcm restore",
+    examples: [
+      ["lcm restore", "Restore context for the current session (called by SessionStart hook)"],
+    ],
+    notes: "Invoked automatically by the Claude Code SessionStart hook. Not intended for direct use.",
+  },
+
+  "session-end": {
+    summary: "Dispatch the session-end hook — finalizes and stores session memory.",
+    usage: "lcm session-end",
+    examples: [
+      ["lcm session-end", "Finalize session memory (called by Stop hook)"],
+    ],
+    notes: "Invoked automatically by the Claude Code Stop hook. Not intended for direct use.",
+  },
+
+  "user-prompt": {
+    summary: "Dispatch the user-prompt hook — records context on each user message.",
+    usage: "lcm user-prompt",
+    examples: [
+      ["lcm user-prompt", "Record user prompt context (called by PostToolUse hook)"],
+    ],
+    notes: "Invoked automatically by the Claude Code PostToolUse hook. Not intended for direct use.",
+  },
 };
 
 const GROUPS = [
@@ -210,6 +249,7 @@ const GROUPS = [
       { name: "daemon start [--detach]", summary: "Start the context daemon" },
       { name: "status [--json]", summary: "Daemon status and project memory stats" },
       { name: "doctor", summary: "Diagnostics: daemon, hooks, MCP, summarizer" },
+      { name: "mcp", summary: "Start the MCP server (stdio transport)" },
     ],
   },
   {
@@ -241,6 +281,14 @@ const GROUPS = [
       { name: "sensitive purge [--all] [--yes]", summary: "Remove all custom patterns" },
     ],
   },
+  {
+    label: "Hooks (internal)",
+    commands: [
+      { name: "restore", summary: "SessionStart hook — restore prior context" },
+      { name: "session-end", summary: "Stop hook — finalize and store session memory" },
+      { name: "user-prompt", summary: "PostToolUse hook — record user prompt context" },
+    ],
+  },
 ];
 
 function pad(str: string, width: number): string {
@@ -248,7 +296,7 @@ function pad(str: string, width: number): string {
 }
 
 export function printHelp(command?: string): void {
-  if (command && HELP[command]) {
+  if (command) {
     printCommandHelp(command);
     return;
   }
