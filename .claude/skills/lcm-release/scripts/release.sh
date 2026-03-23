@@ -27,10 +27,20 @@ while [[ $# -gt 0 ]]; do
     --from-step)
       FROM_STEP="${2:-}"
       [[ -z "$FROM_STEP" ]] && { echo "--from-step requires a number (0-9)"; exit 1; }
+      if ! [[ "$FROM_STEP" =~ ^[0-9]$ ]]; then
+        echo "Invalid --from-step '$FROM_STEP'; must be an integer between 0 and 9."
+        echo "Usage: $0 <version> [--from-step N]"
+        exit 1
+      fi
       shift 2
       ;;
     --from-step=*)
       FROM_STEP="${1#*=}"
+      if ! [[ "$FROM_STEP" =~ ^[0-9]$ ]]; then
+        echo "Invalid --from-step '$FROM_STEP'; must be an integer between 0 and 9."
+        echo "Usage: $0 <version> [--from-step N]"
+        exit 1
+      fi
       shift
       ;;
     -*)
@@ -54,6 +64,7 @@ fi
 REPO="lossless-claude/lcm"
 RELEASE_BRANCH="release/v$VERSION"
 SYNC_BRANCH="chore/sync-develop-v$VERSION"
+PACKAGE_NAME=$(node -p "require('./package.json').name")
 
 err()    { echo ""; echo "✗ ERROR: $*" >&2; exit 1; }
 step()   { echo ""; echo "━━━ $* ━━━"; }
@@ -93,6 +104,7 @@ if run_step 0; then
     git checkout -b "$PRE_BRANCH"
     git push -u origin "$PRE_BRANCH"
     PRE_URL=$(gh pr create \
+      --repo "$REPO" \
       --base develop \
       --title "chore: sync develop with main before v$VERSION release" \
       --body "Pre-release sync: brings develop up to date with main.")
@@ -117,9 +129,9 @@ if run_step 1; then
     err "Tag v$VERSION already exists. Choose a higher version. Never delete tags on a public package."
   ok "Git tag v$VERSION is free."
 
-  npm view "lossless-claude@$VERSION" version >/dev/null 2>&1 && \
-    err "$VERSION is already published to npm. Choose a higher version."
-  ok "npm lossless-claude@$VERSION is free."
+  npm view "$PACKAGE_NAME@$VERSION" version >/dev/null 2>&1 && \
+    err "$VERSION is already published to npm for $PACKAGE_NAME. Choose a higher version."
+  ok "npm $PACKAGE_NAME@$VERSION is free."
 else
   step "Step 1 — Guard"; skip
 fi
@@ -175,7 +187,7 @@ fi
 # ─── STEP 4: Commit and push ─────────────────────────────────────────────────
 if run_step 4; then
   step "Step 4 — Commit and push"
-  git add package.json .claude-plugin/plugin.json .claude-plugin/marketplace.json
+  git add package.json package-lock.json .claude-plugin/plugin.json .claude-plugin/marketplace.json
   git commit -m "chore: bump version to $VERSION"
   git push -u origin "$RELEASE_BRANCH"
   ok "Pushed $RELEASE_BRANCH."
@@ -187,6 +199,7 @@ fi
 if run_step 5; then
   step "Step 5 — Open PR targeting main"
   PR_URL=$(gh pr create \
+    --repo "$REPO" \
     --base main \
     --title "chore: release v$VERSION" \
     --body "Version bump to $VERSION.")
@@ -237,7 +250,7 @@ if run_step 8; then
   fi
   [[ "$CONCLUSION" != "success" ]] && \
     err "publish.yml $CONCLUSION. See https://github.com/$REPO/actions/runs/$RUN_ID"
-  ok "lossless-claude@$VERSION published to npm."
+  ok "$PACKAGE_NAME@$VERSION published to npm."
 else
   step "Step 8 — Wait for publish.yml"; skip
 fi
@@ -253,5 +266,5 @@ fi
 # ─── Done ────────────────────────────────────────────────────────────────────
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  ✓  lossless-claude@$VERSION released successfully"
+echo "  ✓  $PACKAGE_NAME@$VERSION released successfully"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

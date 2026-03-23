@@ -33,18 +33,20 @@ if [[ "$BEHIND" -eq 0 ]]; then
   exit 0
 fi
 
-echo "  develop is $BEHIND commit(s) behind main — merging..."
-git merge origin/main --no-edit
+echo "  develop is $BEHIND commit(s) behind main — creating sync branch..."
 
-# develop is branch-protected — open a PR
 if git rev-parse --verify "origin/$SYNC_BRANCH" >/dev/null 2>&1; then
   err "Branch $SYNC_BRANCH already exists on remote. Has the sync PR already been opened?"
 fi
 
 git checkout -b "$SYNC_BRANCH"
+if ! git merge --ff-only origin/main; then
+  err "Unable to fast-forward $SYNC_BRANCH to origin/main. Has develop diverged from main?"
+fi
 git push -u origin "$SYNC_BRANCH"
 
 SYNC_URL=$(gh pr create \
+  --repo "$REPO" \
   --base develop \
   --title "chore: sync develop with main after v$VERSION release" \
   --body "Brings the v$VERSION release merge commit back into develop.")
