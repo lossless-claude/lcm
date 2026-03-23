@@ -17,6 +17,19 @@ bash .claude/skills/lcm-release/scripts/release.sh <version>
 bash .claude/skills/lcm-release/scripts/release.sh 0.4.2
 ```
 
+**Resuming after a failure** — pass `--from-step N` to skip already-completed steps:
+
+```bash
+bash .claude/skills/lcm-release/scripts/release.sh 0.4.2 --from-step 8  # re-watch publish.yml
+bash .claude/skills/lcm-release/scripts/release.sh 0.4.2 --from-step 9  # just run develop sync
+```
+
+**Sync develop standalone** — when Step 9 needs to run independently:
+
+```bash
+bash .claude/skills/lcm-release/scripts/sync-develop.sh 0.4.2
+```
+
 The script handles everything end-to-end:
 
 | Step | What it does |
@@ -56,8 +69,9 @@ The script handles everything end-to-end:
 | develop diverged from main | Step 9 skipped on a previous release | Script handles this automatically via pre-release sync PR |
 | publish.yml conclusion is not `success` | Build/test/publish failed | Check the run URL printed by the script |
 
-## Script location
+## Scripts
 
 ```
-.claude/skills/lcm-release/scripts/release.sh
+.claude/skills/lcm-release/scripts/release.sh       ← full end-to-end, supports --from-step N
+.claude/skills/lcm-release/scripts/sync-develop.sh  ← standalone Step 9 (develop sync)
 ```
