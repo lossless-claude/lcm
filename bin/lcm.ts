@@ -14,7 +14,7 @@ function readStdin(): Promise<string> {
 
 async function main() {
   // Handle flags before switch
-  if (command === "--version" || command === "-v") {
+  if (command === "--version" || command === "-V") {
     const { readFileSync } = await import("node:fs");
     const { join, dirname } = await import("node:path");
     const { fileURLToPath } = await import("node:url");
