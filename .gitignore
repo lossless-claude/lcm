@@ -5,6 +5,7 @@ node-compile-cache/
 .brv/
 .worktrees
 .claude/
+!.claude/skills/
 data/
 
 # Tools
