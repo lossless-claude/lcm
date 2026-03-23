@@ -112,7 +112,8 @@ describe("deduplicateAndInsert", () => {
     const results = store.search("PostgreSQL database", 10);
     // Only 1 result: the strongest canonical (weaker ones are archived)
     expect(results.length).toBe(1);
-    // Confidence should be max(0.9, 0.7, 0.6) = 0.9
+    // Confidence should be max(canonical.confidence=0.9, incoming.confidence=0.6) = 0.9
+    // (weaker entry with 0.7 is archived as secondary duplicate, not involved in max)
     expect(results[0].confidence).toBe(0.9);
   });
 

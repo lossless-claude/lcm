@@ -21,6 +21,8 @@ export async function deduplicateAndInsert(params: DedupParams): Promise<string>
   const { store, content, tags, projectId, sessionId, depth, confidence, thresholds } = params;
 
   // Search for duplicates using FTS5
+  // NOTE: store.search() is not project-scoped and may return results across all projects.
+  // Duplicates are filtered by BM25 relevance; cross-project matches are possible but unlikely.
   const candidates = store.search(content, thresholds.mergeMaxEntries);
 
   // Filter to entries above BM25 threshold (rank is negative; more negative = better match)
