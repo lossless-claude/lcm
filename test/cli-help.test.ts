@@ -28,7 +28,7 @@ describe("printHelp — full reference", () => {
     const out = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     printHelp();
     const text = out.mock.calls.map(c => c[0]).join("");
-    expect(text).toContain("--version");
+    expect(text).toContain("-V, --version");
     expect(text).toContain("--help");
   });
 });

@@ -320,7 +320,7 @@ export function printHelp(command?: string): void {
   }
 
   lines.push("  Flags");
-  lines.push("    -v, --version            Show version");
+  lines.push("    -V, --version            Show version");
   lines.push("    -h, --help               Show this help");
   lines.push("");
   lines.push("  Run 'lcm <command> --help' for options and examples.");
