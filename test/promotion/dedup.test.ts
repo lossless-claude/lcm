@@ -75,7 +75,7 @@ describe("deduplicateAndInsert", () => {
     // Confidence should be max(0.9, 0.8) = 0.9
     expect(results[0].confidence).toBe(0.9);
     // Returned ID should match canonical
-    expect(results[0].id).toBe(canonical.id);
+    expect(results[0].id).toBe(canonical);
   });
 
   it("archives weaker duplicates when multiple exist above threshold", async () => {

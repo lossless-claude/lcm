@@ -1,5 +1,4 @@
 import type { PromotedStore } from "../db/promoted.js";
-import { renderTemplate } from "../prompts/loader.js";
 
 type DedupThresholds = {
   dedupBm25Threshold: number;
@@ -15,12 +14,11 @@ type DedupParams = {
   sessionId?: string;
   depth: number;
   confidence: number;
-  summarize: (text: string) => Promise<string>;
   thresholds: DedupThresholds;
 };
 
 export async function deduplicateAndInsert(params: DedupParams): Promise<string> {
-  const { store, content, tags, projectId, sessionId, depth, confidence, summarize, thresholds } = params;
+  const { store, content, tags, projectId, sessionId, depth, confidence, thresholds } = params;
 
   // Search for duplicates using FTS5
   const candidates = store.search(content, thresholds.mergeMaxEntries);
@@ -32,39 +30,22 @@ export async function deduplicateAndInsert(params: DedupParams): Promise<string>
     return store.insert({ content, tags, projectId, sessionId, depth, confidence });
   }
 
-  // Merge: combine all duplicate entries + new content
-  const allEntries = [...duplicates.map((d) => d.content), content];
-  const entriesText = allEntries.map((e, i) => `Entry ${i + 1}:\n${e}`).join("\n\n");
-  const mergePrompt = renderTemplate("promoted-merge", { entries: entriesText });
+  // Structural convergence: pick best BM25 match as canonical
+  // (duplicates is sorted by rank — most negative rank = best match = duplicates[0])
+  const canonical = duplicates[0];
+  const refreshedConfidence = Math.max(canonical.confidence, confidence);
 
-  let mergedContent: string;
-  try {
-    mergedContent = await summarize(mergePrompt);
-  } catch {
-    // Merge failed — insert as new entry rather than losing data
-    return store.insert({ content, tags, projectId, sessionId, depth, confidence });
+  // Refresh canonical's confidence — repeated sightings reinforce the entry
+  store.update(canonical.id, { confidence: refreshedConfidence });
+
+  // Archive weaker duplicates (soft-delete: removed from FTS5, recoverable)
+  for (let i = 1; i < duplicates.length; i++) {
+    store.archive(duplicates[i].id);
   }
 
-  if (!mergedContent.trim()) {
-    return store.insert({ content, tags, projectId, sessionId, depth, confidence });
-  }
+  // Insert incoming as archived for recoverability of complementary info
+  const incomingId = store.insert({ content, tags, projectId, sessionId, depth, confidence });
+  store.archive(incomingId);
 
-  // Calculate merged confidence
-  const maxConfidence = Math.max(confidence, ...duplicates.map((d) => d.confidence));
-  const mergedConfidence = Math.max(0, maxConfidence - thresholds.confidenceDecayRate);
-
-  // Delete old duplicates
-  for (const dup of duplicates) {
-    store.deleteById(dup.id);
-  }
-
-  // Archive if confidence too low — soft-delete, don't surface
-  if (mergedConfidence < 0.2) {
-    const id = store.insert({ content: mergedContent, tags, projectId, sessionId, depth, confidence: mergedConfidence });
-    store.archive(id);
-    return id;
-  }
-
-  // Insert merged entry
-  return store.insert({ content: mergedContent, tags, projectId, sessionId, depth, confidence: mergedConfidence });
+  return canonical.id;
 }
