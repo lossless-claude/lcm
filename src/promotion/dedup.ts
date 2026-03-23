@@ -19,14 +19,12 @@ type DedupParams = {
 export async function deduplicateAndInsert(params: DedupParams): Promise<string> {
   const { store, content, tags, projectId, sessionId, depth, confidence, thresholds } = params;
 
-  // Search for duplicates using FTS5
-  // NOTE: store.search() is not project-scoped and may return results across all projects.
-  // Duplicates are filtered by BM25 relevance; cross-project matches are possible but unlikely.
-  const candidates = store.search(content, thresholds.mergeMaxEntries);
+  // Search for duplicates using FTS5, scoped to this project at the SQL level
+  const candidates = store.search(content, thresholds.mergeMaxEntries, undefined, projectId);
 
   // Filter to entries above BM25 threshold (rank is negative; more negative = better match)
   const duplicates = candidates.filter(
-    (c) => c.rank <= -thresholds.dedupBm25Threshold && c.projectId === projectId,
+    (c) => c.rank <= -thresholds.dedupBm25Threshold,
   );
 
   if (duplicates.length === 0) {

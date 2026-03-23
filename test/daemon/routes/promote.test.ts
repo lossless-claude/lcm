@@ -24,7 +24,6 @@ function makeConfig(): DaemonConfig {
         architecturePatterns: [],
         dedupBm25Threshold: 15,
         mergeMaxEntries: 3,
-        confidenceDecayRate: 0.1,
       },
     },
     restoration: { recentSummaries: 3, promptSearchMinScore: 10, promptSearchMaxResults: 3, promptSnippetLength: 200, recencyHalfLifeHours: 24, crossSessionAffinity: 0.5 },

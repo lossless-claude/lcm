@@ -71,7 +71,7 @@ export class PromotedStore {
     return (this.db.prepare("SELECT * FROM promoted WHERE id = ?").get(id) as PromotedRow) ?? null;
   }
 
-  search(query: string, limit: number, filterTags?: string[]): SearchResult[] {
+  search(query: string, limit: number, filterTags?: string[], projectId?: string): SearchResult[] {
     const sanitized = query
       .replace(/[^\w\s]/g, " ")
       .split(/\s+/)
@@ -81,15 +81,21 @@ export class PromotedStore {
 
     if (!sanitized) return [];
 
+    const projectFilter = projectId ? "AND p.project_id = ?" : "";
+    const queryParams: (string | number)[] = [sanitized];
+    if (projectId) queryParams.push(projectId);
+    queryParams.push(limit);
+
     const rows = this.db.prepare(
       `SELECT p.id, p.content, p.tags, p.project_id, p.session_id, p.confidence, p.created_at, rank
        FROM promoted_fts fts
        JOIN promoted p ON p.rowid = fts.rowid
        WHERE promoted_fts MATCH ?
          AND p.archived_at IS NULL
-       ORDER BY rank
+         ${projectFilter}
+       ORDER BY rank, p.confidence DESC, p.created_at ASC
        LIMIT ?`
-    ).all(sanitized, limit) as Array<PromotedRow & { rank: number }>;
+    ).all(...queryParams) as Array<PromotedRow & { rank: number }>;
 
     let results = rows.map((r) => ({
       id: r.id,
@@ -169,12 +175,12 @@ export class PromotedStore {
   }
 
   transaction(fn: () => void): void {
-    this.db.exec('BEGIN');
+    this.db.exec("BEGIN");
     try {
       fn();
-      this.db.exec('COMMIT');
+      this.db.exec("COMMIT");
     } catch (err) {
-      this.db.exec('ROLLBACK');
+      this.db.exec("ROLLBACK");
       throw err;
     }
   }
