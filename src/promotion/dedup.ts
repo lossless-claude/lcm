@@ -36,7 +36,6 @@ export async function deduplicateAndInsert(params: DedupParams): Promise<string>
   const canonical = duplicates[0];
   const refreshedConfidence = Math.max(canonical.confidence, confidence);
 
-  let incomingId: string;
   store.transaction(() => {
     // Refresh canonical's confidence — repeated sightings reinforce the entry
     store.update(canonical.id, { confidence: refreshedConfidence });
@@ -47,8 +46,7 @@ export async function deduplicateAndInsert(params: DedupParams): Promise<string>
     }
 
     // Insert incoming as archived for recoverability of complementary info
-    incomingId = store.insert({ content, tags, projectId, sessionId, depth, confidence });
-    store.archive(incomingId);
+    store.archive(store.insert({ content, tags, projectId, sessionId, depth, confidence }));
   });
 
   return canonical.id;
