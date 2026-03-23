@@ -102,17 +102,14 @@ else
   fi
 
   if [ "$PROVIDER" = "openai" ]; then
-    if [ -z "${OPENAI_API_KEY:-}" ]; then
-      echo "  ERROR: OPENAI_API_KEY is not set in your environment."
-      echo ""
-      echo "  Export it first, then re-run setup:"
-      echo "    export OPENAI_API_KEY=your_api_key_here"
-      echo ""
-      exit 1
+    if [ -n "${OPENAI_API_KEY:-}" ]; then
+      echo "  ▸ Using OPENAI_API_KEY from environment"
+      # Write env-var placeholder — config.ts expands \${VAR} at runtime
+      API_KEY='${OPENAI_API_KEY}'
+    else
+      echo "  ▸ OPENAI_API_KEY is not set; proceeding without an API key."
+      echo "    (This is acceptable for some OpenAI-compatible local servers.)"
     fi
-    echo "  ▸ Using OPENAI_API_KEY from environment"
-    # Write env-var placeholder — config.ts expands \${VAR} at runtime
-    API_KEY='${OPENAI_API_KEY}'
 
     read -r -p "  Base URL [https://api.openai.com/v1]: " BASE_URL_INPUT
     # Trim leading/trailing whitespace using pure bash parameter expansion
