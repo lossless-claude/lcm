@@ -176,7 +176,7 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
           const tokenCount = await summaryStore.getContextTokenCount(conversation.conversationId);
 
           if (tokenCount === 0) {
-            return { summary: "No messages to compact." };
+            return { summary: "No messages to compact.", providerId: effectiveProvider, providerLabel };
           }
 
           const engine = new CompactionEngine(conversationStore, summaryStore, {
