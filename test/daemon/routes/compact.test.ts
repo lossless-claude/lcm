@@ -49,7 +49,7 @@ function makeConfig(provider: DaemonConfig["llm"]["provider"]): DaemonConfig {
     daemon: { port: 3737, socketPath: "/tmp/test.sock", logLevel: "info", logMaxSizeMB: 10, logRetentionDays: 7, idleTimeoutMs: 1800000 },
     compaction: {
       leafTokens: 1000, maxDepth: 5, autoCompactMinTokens: 10000,
-      promotionThresholds: { minDepth: 2, compressionRatio: 0.3, keywords: {}, architecturePatterns: [], dedupBm25Threshold: 15, mergeMaxEntries: 3, confidenceDecayRate: 0.1 },
+      promotionThresholds: { minDepth: 2, compressionRatio: 0.3, keywords: {}, architecturePatterns: [], dedupBm25Threshold: 15, dedupCandidateLimit: 3 },
     },
     restoration: { recentSummaries: 3, promptSearchMinScore: 10, promptSearchMaxResults: 3, promptSnippetLength: 200, recencyHalfLifeHours: 24, crossSessionAffinity: 0.5 },
     llm: { provider, model: "test-model", apiKey: "sk-test", baseURL: "http://localhost:11435/v1" },
