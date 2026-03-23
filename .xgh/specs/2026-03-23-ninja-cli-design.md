@@ -122,7 +122,7 @@ No ANSI codes, no cursor movement. Safe for CI/pipe.
 
 ### Verbose Mode
 
-Completed sessions scroll above the live display (TTY) or print sequentially (non-TTY):
+Completed sessions scroll above the live display (TTY) or print sequentially (non-TTY). NOTE: TTY verbose mode uses an overwrite-only strategy with cursor movement; scrolling above a fixed live frame requires explicit ANSI scroll regions or alternate screen buffer. For simplicity in Phase 1, verbose mode on TTY prints sequentially without live updating (no frame overwrite):
 
 ```
   ✓ agent-f82bc91  89 msgs   ~28.1k → ~1.8k  [Haiku]  0.9s
@@ -187,7 +187,7 @@ interface PipelineStep {
 | Command | `count()` source | Notes |
 |---------|-----------------|-------|
 | `import` | `findSessionFiles().length` | Replay becomes default in **Phase 2**; Phase 1 keeps `--replay` opt-in |
-| `compact --all` | `listSessions().length` | Already knows total upfront |
+| `compact --all` | `findUncompacted(...).conversations.length` | Uses existing `batchCompact()` pre-scan for total; we can introduce `listSessions()` later if we change the implementation |
 | `promote` | pre-call `/promote` with `dry_run: true` | New daemon support needed — `/promote` must accept `dry_run` and return `{ total }` without writing |
 | `curate` | Chains all three steps | **New command** introduced by this work. Does not exist yet. Phases: `[Import, Compact, Promote]` |
 
@@ -244,6 +244,8 @@ Prints full `lcm stats --verbose` output (same as running it manually). No custo
   tokensAfter: number;
   latestSummaryContent?: string;
   provider: string;          // NEW — sourced from resolveEffectiveProvider() in compact.ts (~line 104)
+  providerId?: string;       // NEW — stable model/config identifier (e.g. "anthropic:claude-3-haiku-20240307")
+  providerLabel?: string;    // NEW — user-facing label for attribution (e.g. "[Haiku]"), pre-resolved by the daemon
 }
 ```
 
@@ -260,10 +262,10 @@ Prints full `lcm stats --verbose` output (same as running it manually). No custo
 }
 ```
 
-### `lcm stats` plugin command
+### `lcm stats` command integration
 
-Default (non-verbose) output should be concise — no per-session table.
-`--verbose` shows the full table. The plugin command should NOT pass `--verbose` by default.
+Default (non-verbose) `lcm stats` CLI output should be concise — no per-session table.
+`--verbose` shows the full table. The Ninja renderer SHOULD call `printStats(collectStats(), true)` directly for its final verbose summary instead of shelling out to `lcm stats --verbose`, to avoid extra process overhead and coupling to the CLI surface. The `lcm stats` subcommand itself MUST NOT enable verbose mode by default.
 
 ## Related Issues
 
