@@ -77,7 +77,13 @@ These three tools **chain** from broad to deep:
 
 ## Binary Resolution
 
-If any Bash command below uses `lcm` and it is not on PATH, use the plugin's bundled binary instead: `node ~/.claude/plugins/cache/*/lossless-claude/*/lcm.mjs`
+If `lcm` is not on PATH, first try to install it by running:
+
+```bash
+node ~/.claude/plugins/cache/*/lossless-claude/*/lcm.mjs install
+```
+
+If install succeeds, `lcm` should now be available on PATH. If it is still not available, use the bundled binary directly: `node ~/.claude/plugins/cache/*/lossless-claude/*/lcm.mjs`
 
 ## Error Self-Healing
 
