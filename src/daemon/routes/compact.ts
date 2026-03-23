@@ -91,7 +91,10 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
     const { session_id, cwd, transcript_path, skip_ingest, client, previous_summary } = input;
-    const validatedPreviousSummary = typeof previous_summary === "string" ? previous_summary : undefined;
+    const MAX_PREVIOUS_SUMMARY_LENGTH = 50_000;
+    const validatedPreviousSummary = typeof previous_summary === "string"
+      ? previous_summary.slice(0, MAX_PREVIOUS_SUMMARY_LENGTH)
+      : undefined;
 
     if (!session_id || !cwd) {
       sendJson(res, 400, { error: "session_id and cwd are required" });

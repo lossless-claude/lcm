@@ -175,7 +175,9 @@ export async function importSessions(
           } catch (err) {
             // Non-fatal: import succeeded; compact failure breaks the chain at this link.
             previousSummary = undefined;
-            console.log(`  \u26a0 [replay] compact failed for session ${sessionId}: ${err instanceof Error ? err.message : 'unknown error'}`);
+            if (options.verbose) {
+              console.error(`  ⚠ [replay] compact failed for session ${sessionId}: ${err instanceof Error ? err.message : 'unknown error'}`);
+            }
           }
         }
       } catch (err) {

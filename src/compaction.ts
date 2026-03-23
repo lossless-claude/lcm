@@ -410,9 +410,9 @@ export class CompactionEngine {
 
       // For first leaf pass: use caller's seed if provided, otherwise resolve from store
       if (isFirstLeafPass) {
-        previousSummaryContent =
-          input.previousSummaryContent ??
-          (await this.resolvePriorLeafSummaryContext(conversationId, leafChunk.items));
+        const MAX_PREVIOUS_SUMMARY_LENGTH = 50_000;
+        const seedSummary = input.previousSummaryContent ?? (await this.resolvePriorLeafSummaryContext(conversationId, leafChunk.items));
+        previousSummaryContent = seedSummary ? seedSummary.slice(0, MAX_PREVIOUS_SUMMARY_LENGTH) : undefined;
         isFirstLeafPass = false;
       }
 
