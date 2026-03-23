@@ -79,3 +79,9 @@ echo "  Opened sync PR #$SYNC_PR: $SYNC_URL — merging (rebase onto develop)...
 gh pr merge "$SYNC_PR" --repo "$REPO" --rebase
 
 ok "develop rebased onto main (linear history preserved)."
+
+echo "  Checking out updated develop and cleaning up local sync branch..."
+git checkout develop
+git pull origin develop
+git branch -d "$SYNC_BRANCH" || true
+ok "Local develop is up to date and sync branch cleaned up."

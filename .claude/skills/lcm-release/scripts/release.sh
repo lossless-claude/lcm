@@ -68,6 +68,11 @@ if ! [[ "$VERSION" =~ $SEMVER_REGEX ]]; then
   exit 1
 fi
 
+# ─── Repo root ───────────────────────────────────────────────────────────────
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || \
+  { echo "✗ ERROR: Not inside a git repository."; exit 1; }
+cd "$REPO_ROOT"
+
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 REPO="lossless-claude/lcm"
 RELEASE_BRANCH="release/v$VERSION"
@@ -226,6 +231,11 @@ if run_step 5; then
     --json number,url)
   PR_NUMBER=$(node -pe "JSON.parse(process.argv[1]).number" "$PR_JSON")
   PR_URL=$(node -pe "JSON.parse(process.argv[1]).url" "$PR_JSON")
+  if [[ -z "$PR_NUMBER" || ! "$PR_NUMBER" =~ ^[0-9]+$ || -z "$PR_URL" ]]; then
+    echo "Raw gh pr create output:" >&2
+    echo "$PR_JSON" >&2
+    err "Failed to parse PR number/url from gh output."
+  fi
   ok "PR #$PR_NUMBER created: $PR_URL"
 else
   step "Step 5 — Open PR targeting main"; skip
@@ -284,7 +294,7 @@ if run_step 8; then
   done
 
   echo "  Watching run $RUN_ID..."
-  gh run watch "$RUN_ID" --repo "$REPO"
+  gh run watch "$RUN_ID" --repo "$REPO" || true
 
   CONCLUSION=$(gh run view "$RUN_ID" --repo "$REPO" --json conclusion --jq '.conclusion')
   if [[ "$CONCLUSION" == "skipped" ]]; then
