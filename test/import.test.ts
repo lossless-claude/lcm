@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { cwdToProjectHash, findSessionFiles, importSessions } from "../src/import.js";
@@ -94,6 +94,19 @@ describe("findSessionFiles", () => {
 
     const result = findSessionFiles(dir);
     expect(result).toEqual([]);
+  });
+
+  it("returns files sorted by mtime ascending", () => {
+    const dir = makeTmpDir();
+    const older = join(dir, "session-old.jsonl");
+    const newer = join(dir, "session-new.jsonl");
+    writeFileSync(newer, "");  // write newer first so FS order ≠ mtime order
+    writeFileSync(older, "");
+    const oldTime = new Date(Date.now() - 10_000);
+    utimesSync(older, oldTime, oldTime);
+
+    const result = findSessionFiles(dir);
+    expect(result.map(f => f.sessionId)).toEqual(["session-old", "session-new"]);
   });
 });
 

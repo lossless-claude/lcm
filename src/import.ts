@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, existsSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import type { DaemonClient } from "./daemon/client.js";
@@ -46,8 +46,8 @@ function buildProjectMap(lcmDir?: string): Map<string, string> {
   return map;
 }
 
-export function findSessionFiles(projectDir: string): { path: string; sessionId: string }[] {
-  const files: { path: string; sessionId: string }[] = [];
+export function findSessionFiles(projectDir: string): { path: string; sessionId: string; mtime: number }[] {
+  const files: { path: string; sessionId: string; mtime: number }[] = [];
   if (!existsSync(projectDir)) return files;
 
   for (const entry of readdirSync(projectDir, { withFileTypes: true })) {
@@ -55,6 +55,7 @@ export function findSessionFiles(projectDir: string): { path: string; sessionId:
       files.push({
         path: join(projectDir, entry.name),
         sessionId: basename(entry.name, '.jsonl'),
+        mtime: statSync(join(projectDir, entry.name)).mtimeMs,
       });
     }
     if (entry.isDirectory()) {
@@ -65,13 +66,14 @@ export function findSessionFiles(projectDir: string): { path: string; sessionId:
             files.push({
               path: join(subagentsDir, sub.name),
               sessionId: basename(sub.name, '.jsonl'),
+              mtime: statSync(join(subagentsDir, sub.name)).mtimeMs,
             });
           }
         }
       }
     }
   }
-  return files;
+  return files.sort((a, b) => a.mtime - b.mtime);
 }
 
 export async function importSessions(
