@@ -83,7 +83,12 @@ Diagnostics
 Run 'lcm help <command>' for flags and examples.
 ```
 
-Hook commands (`restore`, `session-end`, `user-prompt`, `mcp`) are omitted from the grouped list — they are invoked automatically by Claude Code, not by users directly. They still respond to `--help` if called manually.
+Hook commands (`restore`, `session-end`, `user-prompt`, `mcp`) are omitted from the grouped list — they are invoked automatically by Claude Code, not by users directly. They still respond to `--help` if called manually, with these descriptions:
+
+- `restore` — Restore memory context at session start (reads JSON from stdin)
+- `session-end` — Compact and store conversation at session end (reads JSON from stdin)
+- `user-prompt` — Inject relevant memory context before each user message (reads JSON from stdin)
+- `mcp` — Start the MCP server for agent-callable memory tools (long-running)
 
 ### Per-command help (`lcm help <cmd>` / `lcm <cmd> --help`)
 
@@ -298,7 +303,7 @@ warn(msg)   yellow "  ! msg" stderr — non-fatal warnings
 info(msg)   plain "  msg"   stdout  — supporting detail lines
 ```
 
-Color is applied only when `process.stdout.isTTY` is true and `NO_COLOR` is not set.
+Color is applied only when the target stream is a TTY and `NO_COLOR` is not set. Stdout-bound helpers (`done`, `info`) check `process.stdout.isTTY`; stderr-bound helpers (`step`, `fail`, `warn`) check `process.stderr.isTTY`.
 
 ### Commands enhanced
 
