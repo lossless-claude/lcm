@@ -9,7 +9,7 @@ Cut a versioned release of lossless-claude/lcm. This is a **public npm package**
 
 ## Normal flow — use the script
 
-Run `scripts/release.sh` from the repo root:
+Run `.claude/skills/lcm-release/scripts/release.sh` from the repo root:
 
 ```bash
 bash .claude/skills/lcm-release/scripts/release.sh <version>

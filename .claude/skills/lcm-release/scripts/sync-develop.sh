@@ -58,6 +58,12 @@ SYNC_JSON=$(gh pr create \
 SYNC_PR=$(node -pe "JSON.parse(process.argv[1]).number" "$SYNC_JSON")
 SYNC_URL=$(node -pe "JSON.parse(process.argv[1]).url" "$SYNC_JSON")
 
+if [[ -z "$SYNC_PR" || ! "$SYNC_PR" =~ ^[0-9]+$ ]]; then
+  echo "Raw gh pr create output:" >&2
+  echo "$SYNC_JSON" >&2
+  err "Failed to parse PR number from gh pr create output."
+fi
+
 echo "  Opened sync PR #$SYNC_PR: $SYNC_URL — merging..."
 gh pr merge "$SYNC_PR" --repo "$REPO" --merge
 

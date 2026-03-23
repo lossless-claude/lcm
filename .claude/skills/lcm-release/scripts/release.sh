@@ -60,6 +60,14 @@ if [[ -z "$VERSION" ]]; then
   exit 1
 fi
 
+# Validate version is semver (fail fast, also guards node interpolation)
+SEMVER_REGEX='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+if ! [[ "$VERSION" =~ $SEMVER_REGEX ]]; then
+  echo "Invalid version '$VERSION'. Expected semver like '0.4.2' or '1.2.3-beta.1'."
+  echo "Usage: $0 <version> [--from-step N]"
+  exit 1
+fi
+
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 REPO="lossless-claude/lcm"
 RELEASE_BRANCH="release/v$VERSION"
@@ -85,12 +93,12 @@ fi
 if run_step 0; then
   step "Step 0 — Clean state"
 
-  [[ "$(git rev-parse --abbrev-ref HEAD)" != "develop" ]] && git checkout develop
-  git pull origin develop
-
   [[ -n "$(git status --porcelain)" ]] && \
     err "Working tree is dirty. Commit or stash changes first."
   ok "Working tree is clean."
+
+  [[ "$(git rev-parse --abbrev-ref HEAD)" != "develop" ]] && git checkout develop
+  git pull origin develop
 
   git fetch origin
   BEHIND=$(git rev-list --count develop..origin/main)
@@ -128,9 +136,15 @@ if run_step 1; then
     err "Tag v$VERSION already exists. Choose a higher version. Never delete tags on a public package."
   ok "Git tag v$VERSION is free."
 
-  npm view "$PACKAGE_NAME@$VERSION" version >/dev/null 2>&1 && \
+  NPM_STATUS=0
+  NPM_OUT=$(npm view "$PACKAGE_NAME@$VERSION" version 2>&1 >/dev/null) || NPM_STATUS=$?
+  if [[ "$NPM_STATUS" -eq 0 ]]; then
     err "$VERSION is already published to npm for $PACKAGE_NAME. Choose a higher version."
-  ok "npm $PACKAGE_NAME@$VERSION is free."
+  elif echo "$NPM_OUT" | grep -qiE 'E404|404 Not Found'; then
+    ok "npm $PACKAGE_NAME@$VERSION is free."
+  else
+    err "Failed to query npm for $PACKAGE_NAME@$VERSION: $NPM_OUT"
+  fi
 else
   step "Step 1 — Guard"; skip
 fi
@@ -216,14 +230,17 @@ fi
 # ─── STEP 6: Wait for CI ─────────────────────────────────────────────────────
 if run_step 6; then
   step "Step 6 — Wait for CI"
-  if gh pr checks "$PR_NUMBER" --watch; then
+  if gh pr checks "$PR_NUMBER" --repo "$REPO" --watch; then
     ok "CI green."
   else
-    CHECK_COUNT=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json statusCheckRollup --jq '.statusCheckRollup | length' 2>/dev/null || echo "0")
-    if [[ "$CHECK_COUNT" -eq 0 ]]; then
-      echo "  (No CI checks configured — skipping.)"
+    if CHECK_COUNT=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json statusCheckRollup --jq '.statusCheckRollup | length' 2>/dev/null); then
+      if [[ "$CHECK_COUNT" -eq 0 ]]; then
+        echo "  (No CI checks configured — skipping.)"
+      else
+        err "CI checks did not pass ($CHECK_COUNT configured). Inspect the PR and rerun with --from-step 6 when resolved."
+      fi
     else
-      err "CI checks did not pass ($CHECK_COUNT configured). Inspect the PR and rerun with --from-step 6 when resolved."
+      err "Failed to query CI checks for PR #$PR_NUMBER. Verify GitHub CLI auth/network and rerun with --from-step 6 when resolved."
     fi
   fi
 else
