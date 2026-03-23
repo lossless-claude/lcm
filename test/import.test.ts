@@ -281,4 +281,58 @@ describe("importSessions", () => {
     expect(client.post).not.toHaveBeenCalled();
     expect(result.imported).toBe(0);
   });
+
+  it("replay mode resets previousSummary when ingest fails, breaking the compact chain", async () => {
+    const claudeProjectsDir = makeTmpDir();
+    const cwd = "/test/project";
+    const hash = cwdToProjectHash(cwd);
+    const projDir = join(claudeProjectsDir, hash);
+    mkdirSync(projDir, { recursive: true });
+
+    const f1 = join(projDir, "session-1.jsonl");
+    const f2 = join(projDir, "session-2.jsonl");
+    const f3 = join(projDir, "session-3.jsonl");
+    writeFileSync(f3, "");
+    writeFileSync(f2, "");
+    writeFileSync(f1, "");
+    const time1 = new Date(Date.now() - 20_000);
+    const time2 = new Date(Date.now() - 10_000);
+    utimesSync(f1, time1, time1);  // f1 is oldest
+    utimesSync(f2, time2, time2);  // f2 is middle
+    // f3 is newest (current time)
+
+    const compactBodies: { session_id: string; previous_summary?: string }[] = [];
+    const client = makeMockClient(async (path: string, body: any) => {
+      if (path === "/ingest") {
+        // Fail on session-2 ingest
+        if (body.session_id === "session-2") {
+          throw new Error("ingest failed");
+        }
+        return { ingested: 1, totalTokens: 100 };
+      }
+      if (path === "/compact") {
+        compactBodies.push({ session_id: body.session_id, previous_summary: body.previous_summary });
+        return { summary: "stats", latestSummaryContent: `summary-of-${body.session_id}` };
+      }
+    });
+
+    const result = await importSessions(client, {
+      replay: true,
+      verbose: false,
+      cwd,
+      _claudeProjectsDir: claudeProjectsDir,
+    });
+
+    // session-1 succeeds and compacts with no prior context
+    // session-2 ingest fails, so previousSummary is reset to undefined
+    // session-3 compacts without prior context (previousSummary was reset)
+    expect(compactBodies).toHaveLength(2);
+    expect(compactBodies[0].session_id).toBe("session-1");
+    expect(compactBodies[0].previous_summary).toBeUndefined();
+    expect(compactBodies[1].session_id).toBe("session-3");
+    // session-3 should NOT have previous_summary because session-2 ingest failed
+    expect(compactBodies[1].previous_summary).toBeUndefined();
+    // session-2 should have failed
+    expect(result.failed).toBe(1);
+  });
 });

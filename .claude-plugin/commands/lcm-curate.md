@@ -25,7 +25,7 @@ Pass user-specified flags through to all three commands:
 
 For example:
 - `/lcm-curate --all` → `lcm import --all && lcm compact --all && lcm promote --all`
-- `/lcm-curate --all --verbose` → `lcm import --all --verbose && lcm compact --all --verbose && lcm promote --verbose`
+- `/lcm-curate --all --verbose` → `lcm import --all --verbose && lcm compact --all && lcm promote --all --verbose`
 - `/lcm-curate --dry-run` → `lcm import --dry-run && lcm compact --dry-run && lcm promote --dry-run`
 
 The pipeline stops on the first failure and reports the result.

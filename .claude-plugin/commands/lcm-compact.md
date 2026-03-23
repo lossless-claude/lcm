@@ -19,7 +19,7 @@ lcm compact
 ### Options
 
 Pass user-specified flags through to the command:
-- `--all` — Compact all projects (default: current project only)
+- `--all` — Compact all projects (default: current project only). Forces batch compaction mode regardless of TTY environment, ensuring reliable behavior in automated tools.
 - `--dry-run` — Preview without writing
 
 For example:

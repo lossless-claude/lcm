@@ -74,7 +74,13 @@ export function findSessionFiles(projectDir: string): { path: string; sessionId:
       }
     }
   }
-  return files.sort((a, b) => a.mtime - b.mtime);
+  return files.sort((a, b) => {
+    const mtimeDiff = a.mtime - b.mtime;
+    if (mtimeDiff !== 0) return mtimeDiff;
+    const sessionIdDiff = a.sessionId.localeCompare(b.sessionId);
+    if (sessionIdDiff !== 0) return sessionIdDiff;
+    return a.path.localeCompare(b.path);
+  });
 }
 
 export async function importSessions(
@@ -148,15 +154,17 @@ export async function importSessions(
               client: 'claude',
               ...(previousSummary !== undefined ? { previous_summary: previousSummary } : {}),
             });
-            if (compactRes.latestSummaryContent) {
+            const hadPrevious = previousSummary !== undefined;
+            if (compactRes.latestSummaryContent !== undefined) {
               previousSummary = compactRes.latestSummaryContent;
             }
             if (options.verbose) {
-              const ctx = previousSummary ? ' (with prior context)' : '';
+              const ctx = hadPrevious ? ' (with prior context)' : '';
               console.log(`  \ud83e\udde0 ${sessionId}: compacted${ctx}`);
             }
           } catch (err) {
             // Non-fatal: import succeeded; compact failure breaks the chain at this link.
+            previousSummary = undefined;
             if (options.verbose) {
               console.log(`  \u26a0 ${sessionId}: compact failed \u2014 ${err instanceof Error ? err.message : 'unknown'}`);
             }
