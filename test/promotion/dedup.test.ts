@@ -35,7 +35,7 @@ describe("deduplicateAndInsert", () => {
       sessionId: "s1",
       depth: 2,
       confidence: 0.8,
-      thresholds: { dedupBm25Threshold: 15, mergeMaxEntries: 3, confidenceDecayRate: 0.1 },
+      thresholds: { dedupBm25Threshold: 15, mergeMaxEntries: 3 },
     });
 
     const results = store.search("PostgreSQL database", 10);
@@ -64,7 +64,7 @@ describe("deduplicateAndInsert", () => {
       confidence: 0.8,
       // Use a near-zero threshold so our small test corpus triggers a match
       // (FTS5 BM25 ranks in a 1-doc corpus are around -0.000003, not -0.1)
-      thresholds: { dedupBm25Threshold: 0.000001, mergeMaxEntries: 3, confidenceDecayRate: 0.1 },
+      thresholds: { dedupBm25Threshold: 0.000001, mergeMaxEntries: 3 },
     });
 
     const results = store.search("PostgreSQL database", 10);
@@ -106,7 +106,7 @@ describe("deduplicateAndInsert", () => {
       depth: 2,
       confidence: 0.6,
       // Use a near-zero threshold to match both existing entries
-      thresholds: { dedupBm25Threshold: 0.000001, mergeMaxEntries: 3, confidenceDecayRate: 0.1 },
+      thresholds: { dedupBm25Threshold: 0.000001, mergeMaxEntries: 3 },
     });
 
     const results = store.search("PostgreSQL database", 10);
@@ -137,7 +137,7 @@ describe("deduplicateAndInsert", () => {
       sessionId: "s1",
       depth: 2,
       confidence: 0.7,
-      thresholds: { dedupBm25Threshold: 0.000001, mergeMaxEntries: 3, confidenceDecayRate: 0.1 },
+      thresholds: { dedupBm25Threshold: 0.000001, mergeMaxEntries: 3 },
     });
 
     const results = store.search("PostgreSQL", 10);
@@ -164,7 +164,7 @@ describe("deduplicateAndInsert", () => {
       sessionId: "s1",
       depth: 2,
       confidence: 0.95,
-      thresholds: { dedupBm25Threshold: 0.000001, mergeMaxEntries: 3, confidenceDecayRate: 0.1 },
+      thresholds: { dedupBm25Threshold: 0.000001, mergeMaxEntries: 3 },
     });
 
     const results = store.search("PostgreSQL database", 10);
