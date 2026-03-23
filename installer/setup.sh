@@ -39,7 +39,7 @@ API_KEY=""
 BASE_URL=""
 
 if [ ! -t 0 ]; then
-  # Non-interactive / CI mode: fall through silently with defaults.
+  # Non-interactive / CI mode: skip prompts and fall through using defaults.
   true
 else
   echo ""
@@ -51,7 +51,7 @@ else
   echo "    2) claude-process — Claude Code CLI subprocess (no API key needed)"
   echo "    3) codex-process  — Codex CLI subprocess (no API key needed)"
   echo "    4) anthropic      — Anthropic API (requires ANTHROPIC_API_KEY env var)"
-  echo "    5) openai         — OpenAI-compatible API (requires OPENAI_API_KEY env var)"
+  echo "    5) openai         — OpenAI-compatible API (uses OPENAI_API_KEY when required by the server)"
   echo "    6) disabled       — no LLM, import-only mode (no compaction)"
   echo ""
 
@@ -160,10 +160,11 @@ try {
 const llmJson = JSON.stringify(llm, null, 2);
 const llmBlock = `"llm": ${llmJson}`;
 
-// Try in-place replacement of the existing "llm" block to preserve formatting.
-// The regex matches a "llm" key with a nested object (up to two levels deep).
-// Falls back to insert-before-last-brace when no existing block is found.
-const llmRegex = /"llm"\s*:\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*)?\}/s;
+// Try in-place replacement of the existing "llm" key to preserve formatting.
+// The regex matches the "llm" key with any JSON value (object, null, string, etc.)
+// to prevent duplicate keys when the existing value is not a plain object.
+// Falls back to insert-before-last-brace when no existing key is found.
+const llmRegex = /"llm"\s*:\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)?\}|"(?:[^"\\]|\\.)*"|null|true|false|-?\d[\d.eE+\-]*)/s;
 let newRaw;
 if (llmRegex.test(raw)) {
   newRaw = raw.replace(llmRegex, llmBlock);
