@@ -11,11 +11,8 @@ import { SummaryStore } from "../../store/summary-store.js";
 import { PromotedStore } from "../../db/promoted.js";
 import { shouldPromote } from "../../promotion/detector.js";
 import { deduplicateAndInsert } from "../../promotion/dedup.js";
-import type { LcmSummarizeFn } from "../../llm/types.js";
-
 export function createPromoteHandler(
   config: DaemonConfig,
-  getSummarizer: () => Promise<LcmSummarizeFn | null>,
 ): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
@@ -31,8 +28,6 @@ export function createPromoteHandler(
       sendJson(res, 200, { processed: 0, promoted: 0 });
       return;
     }
-
-    const summarize = await getSummarizer();
 
     const db = new DatabaseSync(dbPath);
     let processed = 0;
@@ -78,8 +73,8 @@ export function createPromoteHandler(
           if (!promotionResult.promote) continue;
 
           if (dry_run) {
-            promoted++; // dry_run: count but don't insert
-          } else if (summarize) {
+            promoted++;
+          } else {
             try {
               await deduplicateAndInsert({
                 store: promotedStore,
@@ -89,7 +84,6 @@ export function createPromoteHandler(
                 sessionId: conversation.sessionId,
                 depth: summary.depth,
                 confidence: promotionResult.confidence,
-                summarize,
                 thresholds: {
                   dedupBm25Threshold: config.compaction.promotionThresholds.dedupBm25Threshold,
                   mergeMaxEntries: config.compaction.promotionThresholds.mergeMaxEntries,
@@ -99,7 +93,6 @@ export function createPromoteHandler(
               promoted++;
             } catch { /* non-fatal — don't count failed promotions */ }
           }
-          // If summarize is null (disabled provider), skip — can't promote without a summarizer
         }
       }
 

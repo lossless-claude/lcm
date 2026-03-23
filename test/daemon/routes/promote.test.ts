@@ -44,8 +44,6 @@ function mockRes() {
   return { res, getBody: () => JSON.parse(body || "{}") };
 }
 
-const mockSummarize = vi.fn(async (text: string) => `summarized: ${text.slice(0, 30)}`);
-
 function setupDb(tempDir: string) {
   const dbPath = projectDbPath(tempDir);
   mkdirSync(dirname(dbPath), { recursive: true });
@@ -72,8 +70,7 @@ describe("createPromoteHandler", () => {
     db.close();
 
     const config = makeConfig();
-    const getSummarizer = async () => mockSummarize;
-    const handler = createPromoteHandler(config, getSummarizer);
+    const handler = createPromoteHandler(config);
     const { res, getBody } = mockRes();
 
     await handler({} as any, res, JSON.stringify({ cwd: tempDir }));
@@ -108,8 +105,7 @@ describe("createPromoteHandler", () => {
     db.close();
 
     const config = makeConfig();
-    const getSummarizer = async () => mockSummarize;
-    const handler = createPromoteHandler(config, getSummarizer);
+    const handler = createPromoteHandler(config);
     const { res, getBody } = mockRes();
 
     await handler({} as any, res, JSON.stringify({ cwd: tempDir }));
@@ -151,8 +147,7 @@ describe("createPromoteHandler", () => {
     config.compaction.promotionThresholds.keywords = {};
     config.compaction.promotionThresholds.architecturePatterns = [];
 
-    const getSummarizer = async () => mockSummarize;
-    const handler = createPromoteHandler(config, getSummarizer);
+    const handler = createPromoteHandler(config);
     const { res, getBody } = mockRes();
 
     await handler({} as any, res, JSON.stringify({ cwd: tempDir }));
@@ -187,8 +182,7 @@ describe("createPromoteHandler", () => {
     db.close();
 
     const config = makeConfig();
-    const getSummarizer = async () => mockSummarize;
-    const handler = createPromoteHandler(config, getSummarizer);
+    const handler = createPromoteHandler(config);
     const { res, getBody } = mockRes();
 
     await handler({} as any, res, JSON.stringify({ cwd: tempDir, dry_run: true }));
@@ -207,8 +201,7 @@ describe("createPromoteHandler", () => {
 
   it("returns 400 when cwd is missing", async () => {
     const config = makeConfig();
-    const getSummarizer = async () => mockSummarize;
-    const handler = createPromoteHandler(config, getSummarizer);
+    const handler = createPromoteHandler(config);
     const { res, getBody } = mockRes();
 
     await handler({} as any, res, JSON.stringify({}));
