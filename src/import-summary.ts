@@ -25,7 +25,7 @@ export function printImportSummary(
       ["Tokens ingested", formatNumber(result.totalTokens)],
     ];
 
-    if (opts.replay && result.tokensAfter > 0) {
+    if (opts.replay && result.totalTokens > result.tokensAfter) {
       const ratio = formatRatio(result.totalTokens, result.tokensAfter);
       const freed = result.totalTokens - result.tokensAfter;
       rows.push(

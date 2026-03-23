@@ -149,7 +149,11 @@ export async function importSessions(
         } else {
           result.imported++;
           result.totalMessages += res.ingested;
-          result.totalTokens += res.totalTokens;
+          // In replay mode, totalTokens is sourced from compact's tokensBefore to avoid
+          // double-counting (compact covers already-ingested sessions too).
+          if (!options.replay) {
+            result.totalTokens += res.totalTokens;
+          }
           if (options.verbose) console.log(`  \u2705 ${sessionId}: ${res.ingested} messages (${formatNumber(res.totalTokens)} tokens)`);
         }
 
@@ -174,12 +178,17 @@ export async function importSessions(
             if (compactRes.latestSummaryContent !== undefined) {
               previousSummary = compactRes.latestSummaryContent;
             }
+            // Use compact's tokensBefore as the authoritative token count for this session.
+            // This avoids under-reporting when /ingest returns totalTokens=0 (already-ingested).
+            if (typeof compactRes.tokensBefore === 'number') {
+              result.totalTokens += compactRes.tokensBefore;
+            }
             if (typeof compactRes.tokensAfter === 'number') {
               result.tokensAfter += compactRes.tokensAfter;
             }
             if (options.verbose) {
               const ctx = hadPrevious ? ' (with prior context)' : '';
-              if (typeof compactRes.tokensBefore === 'number' && typeof compactRes.tokensAfter === 'number' && compactRes.tokensBefore > 0) {
+              if (typeof compactRes.tokensBefore === 'number' && typeof compactRes.tokensAfter === 'number' && compactRes.tokensAfter < compactRes.tokensBefore) {
                 const ratio = formatRatio(compactRes.tokensBefore, compactRes.tokensAfter);
                 console.log(`  \ud83e\udde0 ${sessionId}: ${formatNumber(compactRes.tokensBefore)} \u2192 ${formatNumber(compactRes.tokensAfter)}  (${ratio}\u00d7)${ctx}`);
               } else {

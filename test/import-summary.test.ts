@@ -54,10 +54,12 @@ describe("printImportSummary", () => {
     expect(logs.some(l => l.includes("Compression ratio"))).toBe(false);
   });
 
-  it("omits compression stats when tokensAfter is 0 in replay mode", () => {
+  it("omits compression stats when tokensAfter equals totalTokens (no savings) in replay mode", () => {
     capture();
-    printImportSummary(baseResult({ tokensAfter: 0 }), { replay: true });
+    // tokensAfter === totalTokens means compact ran but produced no savings — omit compression rows
+    printImportSummary(baseResult({ totalTokens: 50000, tokensAfter: 50000 }), { replay: true });
     expect(logs.some(l => l.includes("Tokens after"))).toBe(false);
+    expect(logs.some(l => l.includes("Compression ratio"))).toBe(false);
   });
 
   it("does not show failed count when 0", () => {

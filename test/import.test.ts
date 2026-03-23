@@ -307,6 +307,41 @@ describe("importSessions", () => {
     expect(result.totalMessages).toBe(6);     // 3 * 2 sessions
   });
 
+  it("replay mode: already-ingested session still reports tokens from compact response", async () => {
+    // Covers the case where /ingest returns { ingested: 0, totalTokens: 0 } (already ingested)
+    // but /compact returns real token counts. The final result should reflect the compact tokens.
+    const claudeProjectsDir = makeTmpDir();
+    const cwd = "/test/already-ingested";
+    const hash = cwdToProjectHash(cwd);
+    const projDir = join(claudeProjectsDir, hash);
+    mkdirSync(projDir, { recursive: true });
+    writeFileSync(join(projDir, "session-1.jsonl"), "");
+
+    const client = makeMockClient(async (path: string) => {
+      if (path === "/ingest") return { ingested: 0, totalTokens: 0 }; // already ingested
+      if (path === "/compact") return {
+        summary: "done",
+        latestSummaryContent: "summary",
+        tokensBefore: 3000,
+        tokensAfter: 150,
+      };
+    });
+
+    const result = await importSessions(client, {
+      replay: true,
+      verbose: false,
+      cwd,
+      _claudeProjectsDir: claudeProjectsDir,
+    });
+
+    // ingest returned 0 tokens (already ingested), but compact supplies the real counts
+    expect(result.totalTokens).toBe(3000);
+    expect(result.tokensAfter).toBe(150);
+    // session was skipped by ingest (not counted as imported)
+    expect(result.skippedEmpty).toBe(1);
+    expect(result.imported).toBe(0);
+  });
+
   it("returns empty result if project dir does not exist", async () => {
     const claudeProjectsDir = makeTmpDir();
     const cwd = "/home/user/nonexistent";
