@@ -53,22 +53,32 @@ export function findSessionFiles(projectDir: string): { path: string; sessionId:
 
   for (const entry of readdirSync(projectDir, { withFileTypes: true })) {
     if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-      files.push({
-        path: join(projectDir, entry.name),
-        sessionId: basename(entry.name, '.jsonl'),
-        mtime: statSync(join(projectDir, entry.name)).mtimeMs,
-      });
+      try {
+        files.push({
+          path: join(projectDir, entry.name),
+          sessionId: basename(entry.name, '.jsonl'),
+          mtime: statSync(join(projectDir, entry.name)).mtimeMs,
+        });
+      } catch {
+        // Skip entries that can't be stat'd (file deleted or permissions issue)
+        continue;
+      }
     }
     if (entry.isDirectory()) {
       const subagentsDir = join(projectDir, entry.name, 'subagents');
       if (existsSync(subagentsDir)) {
         for (const sub of readdirSync(subagentsDir, { withFileTypes: true })) {
           if (sub.isFile() && sub.name.endsWith('.jsonl')) {
-            files.push({
-              path: join(subagentsDir, sub.name),
-              sessionId: basename(sub.name, '.jsonl'),
-              mtime: statSync(join(subagentsDir, sub.name)).mtimeMs,
-            });
+            try {
+              files.push({
+                path: join(subagentsDir, sub.name),
+                sessionId: basename(sub.name, '.jsonl'),
+                mtime: statSync(join(subagentsDir, sub.name)).mtimeMs,
+              });
+            } catch {
+              // Skip entries that can't be stat'd
+              continue;
+            }
           }
         }
       }

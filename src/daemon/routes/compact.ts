@@ -225,6 +225,9 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
           if (compactResult.createdSummaryId) {
             const summaryRecord = await summaryStore.getSummary(compactResult.createdSummaryId);
             latestSummaryContent = summaryRecord?.content;
+          } else if (allSummaries.length > 0) {
+            // Fall back to the most recent existing summary when no new summary was created
+            latestSummaryContent = allSummaries[allSummaries.length - 1]?.content;
           }
 
           return { summary: summaryMsg, latestSummaryContent };

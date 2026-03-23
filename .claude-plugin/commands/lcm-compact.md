@@ -21,9 +21,11 @@ lcm compact
 Pass user-specified flags through to the command:
 - `--all` — Compact all projects (default: current project only). Forces batch compaction mode regardless of TTY environment, ensuring reliable behavior in automated tools.
 - `--dry-run` — Preview without writing
+- `--replay` — Re-compact sessions that already have summaries (by default, already-compacted sessions are skipped)
 
 For example:
 - `/lcm-compact --all` → `lcm compact --all`
 - `/lcm-compact --dry-run` → `lcm compact --dry-run`
+- `/lcm-compact --replay` → `lcm compact --replay`
 
 Display the output verbatim.
