@@ -78,6 +78,12 @@ REPO="lossless-claude/lcm"
 RELEASE_BRANCH="release/v$VERSION"
 PACKAGE_NAME=$(node -p "require('./package.json').name")
 
+# Validate origin points at the canonical repo (not a fork)
+ORIGIN_URL=$(git remote get-url origin 2>/dev/null || true)
+if [[ "$ORIGIN_URL" != *"$REPO"* ]]; then
+  err "origin does not point to $REPO (got: $ORIGIN_URL). Run from the canonical repo, not a fork."
+fi
+
 err()    { echo ""; echo "✗ ERROR: $*" >&2; exit 1; }
 step()   { echo ""; echo "━━━ $* ━━━"; }
 ok()     { echo "  ✓ $*"; }
@@ -183,9 +189,12 @@ if run_step 2; then
   ok "On branch $RELEASE_BRANCH."
 else
   step "Step 2 — Create release branch"; skip
-  git checkout "$RELEASE_BRANCH" 2>/dev/null || \
-    git checkout -b "$RELEASE_BRANCH" "origin/$RELEASE_BRANCH" 2>/dev/null || \
-    err "Cannot resume: branch $RELEASE_BRANCH not found locally or on origin. Run without --from-step to start fresh."
+  # Steps 8+ don't need the release branch (it's deleted after Step 7 merge)
+  if [[ "$FROM_STEP" -le 7 ]]; then
+    git checkout "$RELEASE_BRANCH" 2>/dev/null || \
+      git checkout -b "$RELEASE_BRANCH" "origin/$RELEASE_BRANCH" 2>/dev/null || \
+      err "Cannot resume: branch $RELEASE_BRANCH not found locally or on origin. Run without --from-step to start fresh."
+  fi
 fi
 
 # ─── STEP 3: Bump all three version files ────────────────────────────────────

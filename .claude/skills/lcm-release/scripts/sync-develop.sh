@@ -24,6 +24,12 @@ fi
 REPO="lossless-claude/lcm"
 SYNC_BRANCH="chore/sync-develop-v$VERSION"
 
+# Validate origin points at the canonical repo (not a fork)
+ORIGIN_URL=$(git remote get-url origin 2>/dev/null || true)
+if [[ "$ORIGIN_URL" != *"$REPO"* ]]; then
+  err "origin does not point to $REPO (got: $ORIGIN_URL). Run from the canonical repo, not a fork."
+fi
+
 err() { echo ""; echo "✗ ERROR: $*" >&2; exit 1; }
 ok()  { echo "  ✓ $*"; }
 

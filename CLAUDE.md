@@ -1,4 +1,4 @@
-@AGENTS.md
+<!-- Claude Code include: @AGENTS.md -->
 
 # Superpowers Preferences
 
