@@ -86,7 +86,7 @@ export function createPromoteHandler(
                 confidence: promotionResult.confidence,
                 thresholds: {
                   dedupBm25Threshold: config.compaction.promotionThresholds.dedupBm25Threshold,
-                  mergeMaxEntries: config.compaction.promotionThresholds.mergeMaxEntries,
+                  dedupCandidateLimit: config.compaction.promotionThresholds.dedupCandidateLimit,
                 },
               });
               promoted++;

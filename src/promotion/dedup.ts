@@ -2,7 +2,7 @@ import type { PromotedStore } from "../db/promoted.js";
 
 type DedupThresholds = {
   dedupBm25Threshold: number;
-  mergeMaxEntries: number;
+  dedupCandidateLimit: number;
 };
 
 type DedupParams = {
@@ -20,7 +20,7 @@ export async function deduplicateAndInsert(params: DedupParams): Promise<string>
   const { store, content, tags, projectId, sessionId, depth, confidence, thresholds } = params;
 
   // Search for duplicates using FTS5, scoped to this project at the SQL level
-  const candidates = store.search(content, thresholds.mergeMaxEntries, undefined, projectId);
+  const candidates = store.search(content, thresholds.dedupCandidateLimit, undefined, projectId);
 
   // Filter to entries above BM25 threshold (rank is negative; more negative = better match)
   const duplicates = candidates.filter(
@@ -34,7 +34,8 @@ export async function deduplicateAndInsert(params: DedupParams): Promise<string>
   // Structural convergence: pick best BM25 match as canonical
   // (duplicates is sorted by rank — most negative rank = best match = duplicates[0])
   const canonical = duplicates[0];
-  const refreshedConfidence = Math.max(canonical.confidence, confidence);
+  // Use max confidence across all matched duplicates + incoming to avoid losing strong signals
+  const refreshedConfidence = Math.max(confidence, ...duplicates.map((d) => d.confidence));
 
   store.transaction(() => {
     // Refresh canonical's confidence — repeated sightings reinforce the entry
