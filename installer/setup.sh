@@ -140,9 +140,9 @@ fi
 
 # ── Write config.json ──
 # Uses node for proper JSON encoding.
-# Merges into any existing config file: replaces only the "llm" block in-place
-# if it already exists (preserving key order/formatting), otherwise appends it
-# or creates a new file. Existing non-llm keys are always preserved.
+# Merges into any existing config file: parses the JSON, updates the "llm"
+# block, and rewrites the whole file (reformats + normalises key order).
+# Existing non-llm keys are always preserved.
 
 mkdir -p "$CONFIG_DIR"
 
