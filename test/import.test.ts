@@ -108,6 +108,16 @@ describe("findSessionFiles", () => {
     expect(result[0].path).toBe(join(sessionDir, "session-abc.jsonl"));
   });
 
+  it("ignores nested transcript paths that are not regular files", () => {
+    const dir = makeTmpDir();
+    const sessionDir = join(dir, "session-abc");
+    const nestedPath = join(sessionDir, "session-abc.jsonl");
+    mkdirSync(nestedPath, { recursive: true });
+
+    const result = findSessionFiles(dir);
+    expect(result).toEqual([]);
+  });
+
   it("discovers nested transcripts alongside subagent files", () => {
     const dir = makeTmpDir();
     // Layout A: nested main transcript + subagent

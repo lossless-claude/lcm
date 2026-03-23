@@ -74,16 +74,17 @@ export function findSessionFiles(projectDir: string): { path: string; sessionId:
     if (entry.isDirectory()) {
       // Layout A (nested): <projectDir>/<session-id>/<session-id>.jsonl
       const nestedTranscript = join(projectDir, entry.name, `${entry.name}.jsonl`);
-      if (existsSync(nestedTranscript)) {
-        try {
+      try {
+        const nestedStat = statSync(nestedTranscript);
+        if (nestedStat.isFile()) {
           files.push({
             path: nestedTranscript,
             sessionId: entry.name,
-            mtime: statSync(nestedTranscript).mtimeMs,
+            mtime: nestedStat.mtimeMs,
           });
-        } catch {
-          // Skip entries that can't be stat'd
         }
+      } catch {
+        // Skip entries that can't be stat'd
       }
 
       // Subagent transcripts: <projectDir>/<session-id>/subagents/<agent-id>.jsonl
