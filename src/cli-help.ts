@@ -182,20 +182,21 @@ const HELP: Record<string, CommandHelp> = {
     usage: "lcm sensitive <list|add|remove|test|purge> [options]",
     options: [
       ["list", "List active redaction patterns (built-in and custom)"],
-      [`add "<pattern>"`, "Add a regex pattern to redact from all stored memory"],
+      [`add "<pattern>" [--global]`, "Add a regex pattern (project-local by default; --global applies to all projects)"],
       [`remove "<pattern>"`, "Remove a custom redaction pattern"],
       [`test "<text>"`, "Test text against active patterns, showing what would be redacted"],
-      ["purge [--all] [--yes]", "Remove all custom patterns (--all: all projects; --yes: skip confirm)"],
+      ["purge [--all] [--yes]", "IRREVERSIBLY delete the project data directory, including stored memory and custom patterns (--all: all projects; --yes: skip confirm)"],
     ],
     examples: [
       ["lcm sensitive list", "Show all active patterns"],
-      ['lcm sensitive add "sk-[a-zA-Z0-9]+"', "Redact API keys starting with 'sk-'"],
+      ['lcm sensitive add "sk-[a-zA-Z0-9]+"', "Add a project-local pattern to redact API keys starting with 'sk-'"],
+      ['lcm sensitive add --global "sk-[a-zA-Z0-9]+"', "Add a global pattern that applies across all projects"],
       ['lcm sensitive remove "sk-[a-zA-Z0-9]+"', "Remove that pattern"],
       ['lcm sensitive test "my key is sk-abc123"', "See what gets redacted"],
-      ["lcm sensitive purge --yes", "Clear all custom patterns for current project"],
-      ["lcm sensitive purge --all --yes", "Clear all custom patterns for all projects"],
+      ["lcm sensitive purge --yes", "IRREVERSIBLY delete all stored memory and patterns for current project"],
+      ["lcm sensitive purge --all --yes", "IRREVERSIBLY delete all stored memory and patterns for ALL projects"],
     ],
-    notes: "Built-in patterns cover common secrets (API keys, tokens, passwords). Custom patterns are stored per-project in config.",
+    notes: "Built-in patterns cover common secrets (API keys, tokens, passwords). Project patterns are stored in ~/.lossless-claude/projects/<id>/sensitive-patterns.txt; global patterns are stored in config.json. The 'purge' subcommand deletes the entire project data directory (including stored memory) and cannot be undone.",
   },
 
   mcp: {
