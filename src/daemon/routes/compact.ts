@@ -91,7 +91,7 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
 
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
-    const { session_id, cwd, transcript_path, skip_ingest, client } = input;
+    const { session_id, cwd, transcript_path, skip_ingest, client, previous_summary } = input;
 
     if (!session_id || !cwd) {
       sendJson(res, 400, { error: "session_id and cwd are required" });
@@ -183,6 +183,7 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
             tokenBudget: 200_000,
             summarize,
             force: true,
+            previousSummaryContent: previous_summary,
           });
 
           // Gather stats for the compaction message (always, regardless of actionTaken)
@@ -219,7 +220,13 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
               })
             : "No compaction needed.";
 
-          return { summary: summaryMsg };
+          let latestSummaryContent: string | undefined;
+          if (compactResult.createdSummaryId) {
+            const summaryRecord = await summaryStore.getSummary(compactResult.createdSummaryId);
+            latestSummaryContent = summaryRecord?.content;
+          }
+
+          return { summary: summaryMsg, latestSummaryContent };
         } finally {
           db.close();
         }
