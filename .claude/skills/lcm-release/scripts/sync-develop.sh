@@ -70,23 +70,21 @@ if ! git merge --ff-only origin/main; then
 fi
 git push -u origin "$SYNC_BRANCH"
 
-SYNC_JSON=$(gh pr create \
+SYNC_URL=$(gh pr create \
   --repo "$REPO" \
   --base develop \
   --title "chore: sync develop with main after v$VERSION release" \
-  --body "Syncs develop with main after the v$VERSION release. Merges the release commit into develop." \
-  --json number,url)
-SYNC_PR=$(node -pe "JSON.parse(process.argv[1]).number" "$SYNC_JSON")
-SYNC_URL=$(node -pe "JSON.parse(process.argv[1]).url" "$SYNC_JSON")
+  --body "Syncs develop with main after the v$VERSION release. Merges the release commit into develop.")
+SYNC_PR="${SYNC_URL##*/}"
 
 if [[ -z "$SYNC_PR" || ! "$SYNC_PR" =~ ^[0-9]+$ ]]; then
   echo "Raw gh pr create output:" >&2
-  echo "$SYNC_JSON" >&2
+  echo "$SYNC_URL" >&2
   err "Failed to parse PR number from gh pr create output."
 fi
 
 echo "  Opened sync PR #$SYNC_PR: $SYNC_URL — merging..."
-gh pr merge "$SYNC_PR" --repo "$REPO" --merge --yes --delete-branch
+gh pr merge "$SYNC_PR" --repo "$REPO" --merge --delete-branch
 
 ok "develop is now in sync with main."
 

@@ -137,14 +137,15 @@ if run_step 0; then
       err "develop has conflicts with main. Resolve conflicts manually, then rerun."
 
     git push -u origin "$PRE_BRANCH"
-    PRE_PR=$(gh pr create \
+    PRE_PR_URL=$(gh pr create \
       --repo "$REPO" \
       --base develop \
       --title "chore: sync develop with main before v$VERSION release" \
-      --body "Pre-release sync: brings develop up to date with main." \
-      --json number --jq '.number')
+      --body "Pre-release sync: brings develop up to date with main.")
+    PRE_PR="${PRE_PR_URL##*/}"
+    [[ -z "$PRE_PR" || ! "$PRE_PR" =~ ^[0-9]+$ ]] && err "Failed to parse PR number from: $PRE_PR_URL"
     echo "  Opened pre-release sync PR #$PRE_PR — merging..."
-    gh pr merge "$PRE_PR" --repo "$REPO" --merge --yes --delete-branch
+    gh pr merge "$PRE_PR" --repo "$REPO" --merge --delete-branch
     git checkout develop
     git pull --ff-only origin develop || err "develop diverged after pre-release sync merge. Resolve manually."
     ok "develop synced with main."
@@ -248,17 +249,15 @@ fi
 # ─── STEP 5: Open PR to main ─────────────────────────────────────────────────
 if run_step 5; then
   step "Step 5 — Open PR targeting main"
-  PR_JSON=$(gh pr create \
+  PR_URL=$(gh pr create \
     --repo "$REPO" \
     --base main \
     --title "chore: release v$VERSION" \
-    --body "Version bump to $VERSION." \
-    --json number,url)
-  PR_NUMBER=$(node -pe "JSON.parse(process.argv[1]).number" "$PR_JSON")
-  PR_URL=$(node -pe "JSON.parse(process.argv[1]).url" "$PR_JSON")
+    --body "Version bump to $VERSION.")
+  PR_NUMBER="${PR_URL##*/}"
   if [[ -z "$PR_NUMBER" || ! "$PR_NUMBER" =~ ^[0-9]+$ || -z "$PR_URL" ]]; then
     echo "Raw gh pr create output:" >&2
-    echo "$PR_JSON" >&2
+    echo "$PR_URL" >&2
     err "Failed to parse PR number/url from gh output."
   fi
   ok "PR #$PR_NUMBER created: $PR_URL"
@@ -289,7 +288,7 @@ fi
 # ─── STEP 7: Merge release PR ────────────────────────────────────────────────
 if run_step 7; then
   step "Step 7 — Merge release PR #$PR_NUMBER"
-  gh pr merge "$PR_NUMBER" --repo "$REPO" --merge --yes --delete-branch
+  gh pr merge "$PR_NUMBER" --repo "$REPO" --merge --delete-branch
   MERGE_SHA=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json mergeCommit --jq '.mergeCommit.oid')
   [[ -z "$MERGE_SHA" || "$MERGE_SHA" == "null" ]] && \
     err "Could not determine merge commit SHA for PR #$PR_NUMBER. Check https://github.com/$REPO/pull/$PR_NUMBER."
