@@ -45,7 +45,7 @@ The script handles everything end-to-end:
 | 6 | Wait for CI (skips gracefully if no CI configured) |
 | 7 | Merge with `--merge` (preserves commit SHA on main) |
 | 8 | Wait for `publish.yml` to complete |
-| 9 | Open sync PR to bring the release commit back into develop; merge with `--rebase` (linear history) |
+| 9 | Open sync PR to bring the release commit back into develop; merge with `--merge` (preserves merge commit SHA) |
 
 ## Prerequisites
 

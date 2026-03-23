@@ -80,7 +80,7 @@ if [[ -z "$SYNC_PR" || ! "$SYNC_PR" =~ ^[0-9]+$ ]]; then
 fi
 
 echo "  Opened sync PR #$SYNC_PR: $SYNC_URL — merging (rebase onto develop)..."
-gh pr merge "$SYNC_PR" --repo "$REPO" --rebase --yes --delete-branch
+gh pr merge "$SYNC_PR" --repo "$REPO" --merge --yes --delete-branch
 
 ok "develop is now in sync with main (linear history preserved)."
 

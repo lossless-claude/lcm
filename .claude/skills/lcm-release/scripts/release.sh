@@ -138,7 +138,7 @@ if run_step 0; then
       --body "Pre-release sync: brings develop up to date with main." \
       --json number --jq '.number')
     echo "  Opened pre-release sync PR #$PRE_PR — merging..."
-    gh pr merge "$PRE_PR" --repo "$REPO" --rebase --yes --delete-branch
+    gh pr merge "$PRE_PR" --repo "$REPO" --merge --yes --delete-branch
     git checkout develop
     git pull --ff-only origin develop || err "develop diverged after pre-release sync merge. Resolve manually."
     ok "develop synced with main."
@@ -197,18 +197,16 @@ if run_step 3; then
   node -e "
   const fs = require('fs');
   const p = '.claude-plugin/plugin.json';
-  const j = JSON.parse(fs.readFileSync(p, 'utf8'));
-  j.version = '$VERSION';
-  fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
+  const s = fs.readFileSync(p, 'utf8');
+  fs.writeFileSync(p, s.replace(/\"version\":\s*\"[^\"]*\"/, '\"version\": \"$VERSION\"'));
   "
   ok "plugin.json → $VERSION"
 
   node -e "
   const fs = require('fs');
   const p = '.claude-plugin/marketplace.json';
-  const j = JSON.parse(fs.readFileSync(p, 'utf8'));
-  j.plugins[0].version = '$VERSION';
-  fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
+  const s = fs.readFileSync(p, 'utf8');
+  fs.writeFileSync(p, s.replace(/\"version\":\s*\"[^\"]*\"/, '\"version\": \"$VERSION\"'));
   "
   ok "marketplace.json → $VERSION"
 
@@ -301,7 +299,7 @@ if run_step 8; then
 
   RUN_ID=""
   WAIT_SECS=0
-  MAX_WAIT=300
+  MAX_WAIT=${PUBLISH_MAX_WAIT:-900}
   while [[ -z "$RUN_ID" || "$RUN_ID" == "null" ]]; do
     if [[ "$WAIT_SECS" -ge "$MAX_WAIT" ]]; then
       err "publish.yml run not found after ${MAX_WAIT}s. Check https://github.com/$REPO/actions manually."
