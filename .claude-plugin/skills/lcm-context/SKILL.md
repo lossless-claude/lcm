@@ -75,6 +75,16 @@ These three tools **chain** from broad to deep:
 - It's already documented in CLAUDE.md or memory files
 - It's general knowledge, not project-specific
 
+## Binary Resolution
+
+If `lcm` is not on PATH, first try to install it by running:
+
+```bash
+node ~/.claude/plugins/cache/*/lossless-claude/*/lcm.mjs install
+```
+
+If install succeeds, `lcm` should now be available on PATH. If it is still not available, use the bundled binary directly: `node ~/.claude/plugins/cache/*/lossless-claude/*/lcm.mjs`
+
 ## Error Self-Healing
 
 ### Agent-Fixable (handle automatically)

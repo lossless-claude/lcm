@@ -8,6 +8,16 @@ user_invocable: true
 
 Run the full memory curation pipeline: import, compact, and promote.
 
+## Binary Resolution
+
+If `lcm` is not on PATH, use the plugin's bundled binary instead:
+
+```bash
+node ~/.claude/plugins/cache/*/lossless-claude/*/lcm.mjs
+```
+
+Replace `lcm` with the command above in all instructions below.
+
 ## Instructions
 
 Run the following commands sequentially via Bash:

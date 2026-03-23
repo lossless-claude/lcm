@@ -8,6 +8,16 @@ user_invocable: true
 
 Inspect recent Claude Code transcripts for historical lcm issues.
 
+## Binary Resolution
+
+If `lcm` is not on PATH, use the plugin's bundled binary instead:
+
+```bash
+node ~/.claude/plugins/cache/*/lossless-claude/*/lcm.mjs
+```
+
+Replace `lcm` with the command above in all instructions below.
+
 ## Instructions
 
 Run `lcm diagnose` via Bash and display the output verbatim.
