@@ -403,6 +403,7 @@ async function main() {
       const { DaemonClient } = await import("../src/daemon/client.js");
       const { loadDaemonConfig } = await import("../src/daemon/config.js");
       const { importSessions } = await import("../src/import.js");
+      const { printImportSummary } = await import("../src/import-summary.js");
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
 
@@ -418,10 +419,7 @@ async function main() {
       const result = await importSessions(client, { all, verbose, dryRun, replay });
 
       if (dryRun) console.log("  [dry-run] No changes written.\n");
-      console.log(`  ${result.imported} sessions imported (${result.totalMessages} messages)`);
-      if (result.skippedEmpty > 0) console.log(`  ${result.skippedEmpty} skipped (empty transcript)`);
-      if (result.failed > 0) console.log(`  ${result.failed} failed`);
-      if (replay) console.log("  [replay] Sessions compacted sequentially with threaded context.\n");
+      printImportSummary(result, { replay });
       console.log();
       break;
     }

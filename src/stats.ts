@@ -127,6 +127,11 @@ export function formatNumber(n: number): string {
   return String(n);
 }
 
+export function formatRatio(before: number, after: number): string {
+  if (before > 0 && after > 0) return (before / after).toFixed(1);
+  return "\u2013";
+}
+
 function pad(s: string, width: number, align: "left" | "right" = "right"): string {
   return align === "left" ? s.padEnd(width) : s.padStart(width);
 }
