@@ -59,6 +59,31 @@ gh issue create \
 
 Then carry on with the original task. This ensures bugs are tracked and can be assigned to another agent without holding up the current work.
 
+## Copilot Code Review Workflow
+
+Copilot reviews PRs targeting `main` and `develop` automatically. The ruleset has `review_on_push: true` — every push triggers a fresh review. No manual re-request needed.
+
+### Custom instructions
+
+`.github/copilot-instructions.md` contains project-specific review rules that Copilot reads server-side. When you learn a new pattern from a review round (something Copilot flagged that was a real issue), add it to that file so it's caught automatically next time.
+
+### Reducing review rounds
+
+Most multi-round Copilot reviews happen because of preventable issues. Before pushing a PR:
+
+1. **Doc/code alignment** — if you changed a flag or behavior, check whether help text, SKILL.md tables, or README entries need updating
+2. **Shell scripts** — use `--json --jq` for `gh` output parsing, `--ff-only` for `git pull`, env var overrides for timeouts
+3. **JSON files** — use in-place string replacement, never `JSON.stringify` (it reformats the file)
+4. **Merge strategies** — sync PRs use `--merge` (never `--rebase` — fails on merge commits)
+5. **Consistency** — if the same flag/strategy appears in multiple places, verify they all match
+
+### Handling review comments
+
+- **Suggestion commits**: for trivial fixes, accept Copilot's suggestion directly on GitHub (zero tokens)
+- **Simple fixes** (renames, string updates): dispatch a haiku subagent
+- **Logic changes**: dispatch a sonnet subagent
+- Never implement fixes inline in the main session — always dispatch a subagent
+
 ## Release Notes Source Of Truth
 
 - Follow [RELEASING.md](./RELEASING.md) for the repo's full Changesets and publish workflow.
