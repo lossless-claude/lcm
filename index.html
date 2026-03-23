@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en" class="no-js">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>lcm — persistent memory for AI coding agents</title>
+  <meta name="description" content="Persistent project memory for AI coding agents. Store every message in SQLite, compact into a DAG, and hand context across sessions and platforms.">
+  <link rel="canonical" href="https://lossless-claude.com">
+
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="lcm — persistent memory for AI coding agents">
+  <meta property="og:description" content="Persistent project memory for AI coding agents. SQLite DAG, 22-platform connectors, 7 MCP tools.">
+  <meta property="og:url" content="https://lossless-claude.com">
+  <meta property="og:image" content="https://lossless-claude.com/og-image.svg">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="lcm — persistent memory for AI coding agents">
+  <meta name="twitter:description" content="Persistent project memory for AI coding agents. SQLite DAG, 22-platform connectors, 7 MCP tools.">
+  <meta name="twitter:image" content="https://lossless-claude.com/og-image.svg">
+
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,700;0,9..40,800;1,9..40,400&family=Sora:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <span class="site-logo"><span class="logo-mark">&loz;</span> lcm</span>
+      <nav class="header-nav">
+        <a href="#connectors">Connectors</a>
+        <a href="#architecture">Architecture</a>
+        <a href="#install">Install</a>
+        <a href="#tools">Tools</a>
+      </nav>
+      <a href="https://github.com/lossless-claude/lcm" class="header-github" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="hero-glow"></div>
+      <div class="container hero-grid">
+        <div class="hero-copy" style="--stagger: 0">
+          <div class="hero-badge">22 platform connectors &bull; Claude Code plugin &bull; SQLite memory</div>
+          <h1>Persistent memory for <span class="gradient-text">coding agents</span>.</h1>
+          <p class="hero-sub">
+            Every message stored in SQLite. Summaries compacted into a DAG.
+            Decisions promoted into cross-session memory. Context survives
+            session boundaries, agent handoffs, and platform switches.
+          </p>
+          <div class="hero-actions">
+            <div class="terminal-block">
+              <div class="terminal-dots"><span></span><span></span><span></span></div>
+              <div class="terminal-body">
+                <span class="terminal-prompt">$</span>
+                <code>npm install -g @lossless-claude/lcm</code>
+                <button class="copy-btn" data-copy="npm install -g @lossless-claude/lcm" aria-label="Copy command">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  <span>Copy</span>
+                </button>
+              </div>
+            </div>
+            <p class="hero-hint">Then run <code class="inline-code">lcm install</code> to connect your agent platform.</p>
+          </div>
+        </div>
+
+        <div class="hero-panel" style="--stagger: 1">
+          <div class="panel-header">Runtime topology</div>
+          <div class="panel-clients">
+            <div class="panel-card">
+              <span class="panel-label">Claude Code</span>
+              <strong>hooks + MCP</strong>
+              <small>primary path</small>
+            </div>
+            <div class="panel-card">
+              <span class="panel-label">22 connectors</span>
+              <strong>templated install</strong>
+              <small>Amp, Cursor, Gemini, Codex, Windsurf&hellip;</small>
+            </div>
+          </div>
+          <div class="panel-backend">
+            <div class="panel-core">lcm daemon</div>
+            <div class="panel-storage">
+              <div class="storage-card">project SQLite DAG</div>
+              <div class="storage-card">promoted memory FTS5</div>
+            </div>
+            <div class="panel-tools">MCP tools: search &bull; grep &bull; expand &bull; describe &bull; store &bull; stats &bull; doctor</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="stats-bar">
+      <div class="container stats-inner">
+        <div class="stat">
+          <span class="stat-value">22</span>
+          <span class="stat-label">platform connectors</span>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat">
+          <span class="stat-value">7</span>
+          <span class="stat-label">MCP tools</span>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat">
+          <span class="stat-value">SQLite</span>
+          <span class="stat-label">persistent memory</span>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat">
+          <span class="stat-value">409+</span>
+          <span class="stat-label">tests passing</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="problem-solution">
+      <div class="container">
+        <div class="section-heading">
+          <h2>Why agent handoffs usually fail</h2>
+          <p class="section-sub">The problem is not just context length. It is continuity across sessions, tools, and agents.</p>
+        </div>
+        <div class="ps-grid">
+          <div class="ps-card ps-before">
+            <div class="ps-label">Typical workflow</div>
+            <ul class="ps-list">
+              <li>Agent A discovers architecture and bug history</li>
+              <li>Session ends and high-signal context evaporates</li>
+              <li>Agent B repeats grep, diffs, and reconstruction work</li>
+              <li>Decisions survive only in chat scrollback</li>
+            </ul>
+          </div>
+          <div class="ps-arrow">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </div>
+          <div class="ps-card ps-after">
+            <div class="ps-label">With lcm</div>
+            <ul class="ps-list">
+              <li>Raw messages persist in SQLite</li>
+              <li>DAG summaries keep the active window lean</li>
+              <li>Durable decisions are promoted into shared memory</li>
+              <li>Next agent resumes from stored project context</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="handoff-section">
+      <div class="container">
+        <div class="section-heading">
+          <h2>Agent handoff flow</h2>
+          <p class="section-sub">Different agents, different platforms, one memory runtime.</p>
+        </div>
+        <div class="handoff-grid">
+          <div class="handoff-step">
+            <span class="handoff-num">01</span>
+            <h3>Agent A works</h3>
+            <p>Any connected agent explores the codebase, uses tools, and accumulates project-specific context.</p>
+          </div>
+          <div class="handoff-step">
+            <span class="handoff-num">02</span>
+            <h3>Memory is persisted</h3>
+            <p>Messages are stored, compacted into DAG summaries, and high-signal outcomes are promoted into durable memory.</p>
+          </div>
+          <div class="handoff-step">
+            <span class="handoff-num">03</span>
+            <h3>Agent B resumes</h3>
+            <p>A later session&mdash;on any platform&mdash;restores relevant summaries and continues without reconstructing the same history.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="connectors-section" id="connectors">
+      <div class="container">
+        <div class="section-heading">
+          <h2>22 platform connectors</h2>
+          <p class="section-sub">Claude Code gets first-class hook integration. Every other platform connects through templated install with MCP access to the same memory.</p>
+        </div>
+        <div class="connectors-grid">
+          <article class="connector-card connector-primary">
+            <div class="connector-topline">Primary</div>
+            <h3>Claude Code</h3>
+            <p>Full hook-driven integration: automatic restore, transcript ingestion, compaction interception, and MCP tools.</p>
+            <ul class="connector-list">
+              <li>Automatic restore + writeback</li>
+              <li>Automatic compaction</li>
+              <li>Plugin ecosystem</li>
+            </ul>
+          </article>
+          <article class="connector-card">
+            <div class="connector-topline">Connectors</div>
+            <h3>22 platforms</h3>
+            <p>Templated install generates per-platform config files. MCP tools provide read/write access to the same memory backend.</p>
+            <div class="connector-logos">
+              <span>Amp</span><span>Cursor</span><span>Windsurf</span>
+              <span>Codex</span><span>Gemini CLI</span><span>Cline</span>
+              <span>Continue</span><span>Roo Code</span><span>+14 more</span>
+            </div>
+          </article>
+          <article class="connector-card connector-muted">
+            <div class="connector-topline">Manual</div>
+            <h3>Any MCP client</h3>
+            <p>Point any MCP-capable agent at the lcm daemon. No connector needed&mdash;just configure the MCP server URL.</p>
+            <ul class="connector-list">
+              <li>Manual retrieval + storage</li>
+              <li>Full MCP tool surface</li>
+              <li>Works with any client</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="architecture-section" id="architecture">
+      <div class="container">
+        <div class="section-heading">
+          <h2>Architecture</h2>
+          <p class="section-sub">Raw history, summarised history, and promoted memory in one local runtime.</p>
+        </div>
+        <div class="architecture-board">
+          <div class="arch-row arch-clients">
+            <div class="arch-box">Claude Code<br><span>hooks + MCP</span></div>
+            <div class="arch-box">Connectors<br><span>22 platforms</span></div>
+            <div class="arch-box arch-box-dim">Any MCP client<br><span>manual fallback</span></div>
+          </div>
+          <div class="arch-arrow">&darr;</div>
+          <div class="arch-core">lcm daemon</div>
+          <div class="arch-arrow">&darr;</div>
+          <div class="arch-row">
+            <div class="arch-box">project SQLite DAG<br><span>raw messages + summaries</span></div>
+            <div class="arch-box">promoted memory FTS5<br><span>cross-session recall</span></div>
+          </div>
+          <div class="arch-footer">MCP tools expose search, grep, expand, describe, store, stats, and doctor across the same memory runtime.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="install-section" id="install">
+      <div class="container">
+        <div class="section-heading">
+          <h2>Get started</h2>
+          <p class="section-sub">Install globally, then connect your platform.</p>
+        </div>
+        <div class="install-grid">
+          <div class="install-card">
+            <h3>Claude Code plugin</h3>
+            <div class="code-block">
+              <pre><code>claude plugin install lossless-claude</code></pre>
+            </div>
+            <p>Full hook integration with automatic restore, writeback, and compaction. Recommended for Claude Code users.</p>
+          </div>
+          <div class="install-card">
+            <h3>npm + connector</h3>
+            <div class="code-block">
+              <pre><code>npm install -g @lossless-claude/lcm
+lcm install</code></pre>
+            </div>
+            <p>Interactive installer detects your platform and generates the right config files. Works with all 22 connectors.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="tools-section" id="tools">
+      <div class="container">
+        <div class="section-heading">
+          <h2>MCP tools</h2>
+          <p class="section-sub">Shared memory is queryable and writable from any connected agent.</p>
+        </div>
+        <div class="tools-grid">
+          <div class="tool-card">
+            <span class="tool-name">lcm_search</span>
+            <span class="tool-desc">Search episodic and promoted knowledge across the project memory runtime.</span>
+          </div>
+          <div class="tool-card">
+            <span class="tool-name">lcm_grep</span>
+            <span class="tool-desc">Find exact terms, identifiers, file paths, and message fragments in stored history.</span>
+          </div>
+          <div class="tool-card">
+            <span class="tool-name">lcm_expand</span>
+            <span class="tool-desc">Recover deeper detail from compacted history when summaries are too compressed.</span>
+          </div>
+          <div class="tool-card">
+            <span class="tool-name">lcm_describe</span>
+            <span class="tool-desc">Inspect a stored summary or promoted memory entry by id.</span>
+          </div>
+          <div class="tool-card">
+            <span class="tool-name">lcm_store</span>
+            <span class="tool-desc">Persist durable project memory such as decisions, fixes, and conventions.</span>
+          </div>
+          <div class="tool-card">
+            <span class="tool-name">lcm_stats</span>
+            <span class="tool-desc">Inspect memory coverage, DAG depth, and compression state.</span>
+          </div>
+          <div class="tool-card">
+            <span class="tool-name">lcm_doctor</span>
+            <span class="tool-desc">Diagnose daemon status, hooks, MCP setup, and summarizer health.</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="lineage">
+      <div class="container">
+        <div class="section-heading">
+          <h2>Lineage</h2>
+          <p class="section-sub">The architecture is inherited. The current runtime is not the original one.</p>
+        </div>
+        <div class="lineage-blocks">
+          <div class="lineage-block">
+            <h3>Inherited from lossless-claw</h3>
+            <p>The DAG-based compaction architecture, lossless message retention, and the LCM memory model come from <a href="https://github.com/Martian-Engineering/lossless-claude" target="_blank" rel="noopener">lossless-claw</a> by <a href="https://martian.engineering" target="_blank" rel="noopener">Martian Engineering</a>, grounded in the <a href="https://papers.voltropy.com/LCM" target="_blank" rel="noopener">LCM paper</a> by <a href="https://x.com/Voltropy" target="_blank" rel="noopener">Voltropy</a>.</p>
+          </div>
+          <div class="lineage-block">
+            <h3>This fork adds</h3>
+            <ul class="lineage-list">
+              <li>Claude Code hook integration (primary path)</li>
+              <li>22-platform connector registry with templated install</li>
+              <li>Promoted cross-session memory on SQLite FTS5</li>
+              <li>Local daemon runtime and 7-tool MCP surface</li>
+              <li>Auto-heal, import, diagnose, and sensitive-pattern redaction</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="cta-section">
+      <div class="cta-glow"></div>
+      <div class="container cta-content">
+        <h2>Build workflows that survive agent boundaries</h2>
+        <p class="cta-sub">Start with Claude Code. Connect any other platform. Keep one shared memory runtime underneath all of them.</p>
+        <div class="terminal-block">
+          <div class="terminal-dots"><span></span><span></span><span></span></div>
+          <div class="terminal-body">
+            <span class="terminal-prompt">$</span>
+            <code>npm install -g @lossless-claude/lcm</code>
+            <button class="copy-btn" data-copy="npm install -g @lossless-claude/lcm" aria-label="Copy command">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              <span>Copy</span>
+            </button>
+          </div>
+        </div>
+        <a href="https://github.com/lossless-claude/lcm" class="btn-github" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+          View on GitHub
+        </a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Built on <a href="https://github.com/Martian-Engineering/lossless-claude" target="_blank" rel="noopener">lossless-claw</a> by <a href="https://martian.engineering" target="_blank" rel="noopener">Martian Engineering</a> &middot; <a href="https://papers.voltropy.com/LCM" target="_blank" rel="noopener">LCM paper</a> by <a href="https://x.com/Voltropy" target="_blank" rel="noopener">Voltropy</a> &middot; MIT License</p>
+    </div>
+  </footer>
+
+  <script>
+  document.documentElement.classList.remove('no-js');
+  document.querySelectorAll('.copy-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var text = btn.getAttribute('data-copy');
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(text).then(function() {
+          btn.querySelector('span').textContent = 'Copied!';
+          setTimeout(function() { btn.querySelector('span').textContent = 'Copy'; }, 1500);
+        });
+      }
+    });
+  });
+
+  // Staggered reveal on scroll
+  var observer = new IntersectionObserver(function(entries) {
+    entries.forEach(function(entry) {
+      if (entry.isIntersecting) {
+        entry.target.classList.add('revealed');
+        observer.unobserve(entry.target);
+      }
+    });
+  }, { threshold: 0.12 });
+
+  document.querySelectorAll('.ps-card, .handoff-step, .connector-card, .arch-box, .arch-core, .install-card, .tool-card, .lineage-block, .stat').forEach(function(el) {
+    observer.observe(el);
+  });
+  </script>
+</body>
+</html>

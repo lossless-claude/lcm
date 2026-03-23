@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://lossless-claude.com/sitemap.xml

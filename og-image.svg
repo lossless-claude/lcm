@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="630" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#08080D"/>
+      <stop offset="1" stop-color="#060609"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="64" y1="64" x2="1136" y2="566" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#131520" stop-opacity="0.98"/>
+      <stop offset="1" stop-color="#0C0E16" stop-opacity="0.98"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="96" y1="180" x2="520" y2="320" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A99CFF"/>
+      <stop offset="0.5" stop-color="#7B6DF0"/>
+      <stop offset="1" stop-color="#5CE0D6"/>
+    </linearGradient>
+    <filter id="blur" x="0" y="0" width="1200" height="630" filterUnits="userSpaceOnUse">
+      <feGaussianBlur stdDeviation="52"/>
+    </filter>
+    <filter id="shadow" x="0" y="0" width="1200" height="630" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="18" stdDeviation="28" flood-color="#000000" flood-opacity="0.4"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <g filter="url(#blur)" opacity="0.7">
+    <circle cx="280" cy="140" r="160" fill="#7B6DF0" fill-opacity="0.16"/>
+    <circle cx="1020" cy="180" r="120" fill="#5CE0D6" fill-opacity="0.12"/>
+    <circle cx="860" cy="540" r="130" fill="#7B6DF0" fill-opacity="0.08"/>
+  </g>
+
+  <g opacity="0.06" stroke="#FFFFFF">
+    <path d="M0 126H1200"/><path d="M0 252H1200"/><path d="M0 378H1200"/><path d="M0 504H1200"/>
+    <path d="M200 0V630"/><path d="M400 0V630"/><path d="M600 0V630"/><path d="M800 0V630"/><path d="M1000 0V630"/>
+  </g>
+
+  <rect x="64" y="64" width="1072" height="502" rx="32" fill="url(#panel)" stroke="#222240" filter="url(#shadow)"/>
+
+  <rect x="96" y="100" width="320" height="32" rx="16" fill="#111324" stroke="#2C2F48"/>
+  <text x="116" y="122" fill="#A99CFF" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700" letter-spacing="1.6">22 CONNECTORS  &middot;  SQLITE DAG  &middot;  7 MCP TOOLS</text>
+
+  <text x="96" y="220" fill="#E8E8F4" font-family="Inter, Arial, sans-serif" font-size="62" font-weight="800" letter-spacing="-2.5">persistent memory for</text>
+  <text x="96" y="296" fill="url(#accent)" font-family="Inter, Arial, sans-serif" font-size="68" font-weight="800" letter-spacing="-3">coding agents</text>
+
+  <text x="96" y="358" fill="#9D9DB8" font-family="Inter, Arial, sans-serif" font-size="24">
+    <tspan x="96" dy="0">Every message in SQLite. Summaries compacted into a DAG.</tspan>
+    <tspan x="96" dy="34">Context survives session boundaries, agent handoffs,</tspan>
+    <tspan x="96" dy="34">and platform switches.</tspan>
+  </text>
+
+  <rect x="96" y="462" width="180" height="72" rx="18" fill="#111324" stroke="#2C3050"/>
+  <text x="118" y="492" fill="#5CE0D6" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700" letter-spacing="1.2">CLAUDE CODE</text>
+  <text x="118" y="520" fill="#E8E8F4" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="700">hooks + MCP</text>
+
+  <rect x="296" y="462" width="210" height="72" rx="18" fill="#111324" stroke="#2C3050"/>
+  <text x="318" y="492" fill="#5CE0D6" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700" letter-spacing="1.2">CONNECTORS</text>
+  <text x="318" y="520" fill="#E8E8F4" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="700">22 platforms</text>
+
+  <rect x="720" y="120" width="320" height="80" rx="20" fill="#111324" stroke="#2C3050"/>
+  <text x="746" y="152" fill="#A99CFF" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700" letter-spacing="1.2">RUNTIME CORE</text>
+  <text x="746" y="182" fill="#E8E8F4" font-family="Inter, Arial, sans-serif" font-size="30" font-weight="800">lcm daemon</text>
+
+  <path d="M880 210V240" stroke="#7B6DF0" stroke-width="2.5" stroke-linecap="round"/>
+
+  <rect x="682" y="250" width="396" height="100" rx="22" fill="#141728" stroke="#303460"/>
+  <text x="708" y="290" fill="#A99CFF" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700" letter-spacing="1.2">PERSISTENT MEMORY</text>
+  <text x="708" y="324" fill="#E8E8F4" font-family="Inter, Arial, sans-serif" font-size="32" font-weight="800">SQLite DAG + FTS5</text>
+
+  <path d="M880 360V390" stroke="#7B6DF0" stroke-width="2.5" stroke-linecap="round"/>
+
+  <rect x="682" y="400" width="186" height="100" rx="20" fill="#101320" stroke="#2C3050"/>
+  <text x="706" y="436" fill="#5CE0D6" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700" letter-spacing="1.2">MESSAGES</text>
+  <text x="706" y="470" fill="#E8E8F4" font-family="Inter, Arial, sans-serif" font-size="26" font-weight="700">raw + DAG</text>
+
+  <rect x="892" y="400" width="186" height="100" rx="20" fill="#101320" stroke="#2C3050"/>
+  <text x="916" y="436" fill="#5CE0D6" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700" letter-spacing="1.2">PROMOTED</text>
+  <text x="916" y="470" fill="#E8E8F4" font-family="Inter, Arial, sans-serif" font-size="26" font-weight="700">FTS5 recall</text>
+</svg>
