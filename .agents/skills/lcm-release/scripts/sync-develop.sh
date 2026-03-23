@@ -36,7 +36,7 @@ fi
 echo ""
 echo "━━━ Sync develop←main after v$VERSION release ━━━"
 
-if [[ -n "$(git status --porcelain)" ]]; then
+if [[ -n "$(git status --porcelain | grep -v '^??')" ]]; then
   err "Working tree is dirty. Commit or stash changes first."
 fi
 
