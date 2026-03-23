@@ -18,15 +18,15 @@ lcm import && lcm compact && lcm promote
 
 ### Options
 
-Pass user-specified flags through to all three commands:
-- `--all` — Process all projects (default: current project only)
-- `--verbose` — Show per-step details
-- `--dry-run` — Preview without writing
+Pass user-specified flags through to the commands that support them:
+- `--all` — Process all projects (default: current project only); applies to all three commands
+- `--verbose` — Show per-step details; applies to `import` and `promote` only (compact does not support `--verbose`)
+- `--dry-run` — Preview without writing; applies to `import` and `compact`
 
 For example:
 - `/lcm-curate --all` → `lcm import --all && lcm compact --all && lcm promote --all`
 - `/lcm-curate --all --verbose` → `lcm import --all --verbose && lcm compact --all && lcm promote --all --verbose`
-- `/lcm-curate --dry-run` → `lcm import --dry-run && lcm compact --dry-run && lcm promote --dry-run`
+- `/lcm-curate --dry-run` → `lcm import --dry-run && lcm compact --dry-run && lcm promote`
 
 The pipeline stops on the first failure and reports the result.
 
