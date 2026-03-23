@@ -26,7 +26,6 @@ describe("deduplicateAndInsert", () => {
   it("inserts new entry when no duplicates exist", async () => {
     const db = makeDb();
     const store = new PromotedStore(db);
-    const mockSummarize = vi.fn();
 
     await deduplicateAndInsert({
       store,
@@ -36,28 +35,24 @@ describe("deduplicateAndInsert", () => {
       sessionId: "s1",
       depth: 2,
       confidence: 0.8,
-      summarize: mockSummarize,
       thresholds: { dedupBm25Threshold: 15, mergeMaxEntries: 3, confidenceDecayRate: 0.1 },
     });
 
     const results = store.search("PostgreSQL database", 10);
     expect(results.length).toBe(1);
-    expect(mockSummarize).not.toHaveBeenCalled();
   });
 
-  it("merges when duplicate found above threshold", async () => {
+  it("refreshes canonical and archives incoming when duplicate found above threshold", async () => {
     const db = makeDb();
     const store = new PromotedStore(db);
 
-    // Insert an existing entry
-    store.insert({
+    // Insert an existing entry (canonical)
+    const canonical = store.insert({
       content: "Decided to use PostgreSQL for the database layer",
       tags: ["decision"],
       projectId: "p1",
       confidence: 0.9,
     });
-
-    const mockSummarize = vi.fn().mockResolvedValue("Merged: PostgreSQL is the database, confirmed twice");
 
     await deduplicateAndInsert({
       store,
@@ -67,33 +62,40 @@ describe("deduplicateAndInsert", () => {
       sessionId: "s1",
       depth: 2,
       confidence: 0.8,
-      summarize: mockSummarize,
       // Use a near-zero threshold so our small test corpus triggers a match
       // (FTS5 BM25 ranks in a 1-doc corpus are around -0.000003, not -0.1)
       thresholds: { dedupBm25Threshold: 0.000001, mergeMaxEntries: 3, confidenceDecayRate: 0.1 },
     });
 
     const results = store.search("PostgreSQL database", 10);
+    // Only 1 result: the canonical (incoming is archived)
     expect(results.length).toBe(1);
-    expect(results[0].content).toContain("Merged");
-    // max(0.9, 0.8) - 0.1 = 0.8
-    expect(results[0].confidence).toBe(0.8);
-    expect(mockSummarize).toHaveBeenCalledOnce();
+    // Content should be the original canonical content (not merged)
+    expect(results[0].content).toContain("database layer");
+    // Confidence should be max(0.9, 0.8) = 0.9
+    expect(results[0].confidence).toBe(0.9);
+    // Returned ID should match canonical
+    expect(results[0].id).toBe(canonical.id);
   });
 
-  it("archives merged entry when confidence drops below 0.2", async () => {
+  it("archives weaker duplicates when multiple exist above threshold", async () => {
     const db = makeDb();
     const store = new PromotedStore(db);
 
-    // Insert with very low confidence so decay pushes below 0.2
-    store.insert({
+    // Insert two existing entries with different confidences
+    const weakEntry = store.insert({
       content: "Decided to use PostgreSQL for the database layer",
       tags: ["decision"],
       projectId: "p1",
-      confidence: 0.2,
+      confidence: 0.7,
     });
 
-    const mockSummarize = vi.fn().mockResolvedValue("Merged: PostgreSQL confirmed");
+    const strongEntry = store.insert({
+      content: "PostgreSQL is the database choice for this project",
+      tags: ["decision"],
+      projectId: "p1",
+      confidence: 0.9,
+    });
 
     await deduplicateAndInsert({
       store,
@@ -102,44 +104,43 @@ describe("deduplicateAndInsert", () => {
       projectId: "p1",
       sessionId: "s1",
       depth: 2,
-      confidence: 0.15,
-      summarize: mockSummarize,
+      confidence: 0.6,
+      // Use a near-zero threshold to match both existing entries
       thresholds: { dedupBm25Threshold: 0.000001, mergeMaxEntries: 3, confidenceDecayRate: 0.1 },
     });
 
-    // Archived entry should not appear in search results
     const results = store.search("PostgreSQL database", 10);
-    expect(results.length).toBe(0);
-    expect(mockSummarize).toHaveBeenCalledOnce();
+    // Only 1 result: the strongest canonical (weaker ones are archived)
+    expect(results.length).toBe(1);
+    // Confidence should be max(0.9, 0.7, 0.6) = 0.9
+    expect(results[0].confidence).toBe(0.9);
   });
 
-  it("inserts as new when summarize fails during merge", async () => {
+  it("archives incoming entry alongside canonical for recoverability", async () => {
     const db = makeDb();
     const store = new PromotedStore(db);
 
+    // Insert an existing entry (canonical)
     store.insert({
-      content: "Decided to use PostgreSQL for everything",
+      content: "Decided to use PostgreSQL for the database",
       tags: ["decision"],
       projectId: "p1",
-      confidence: 0.9,
+      confidence: 0.8,
     });
-
-    const mockSummarize = vi.fn().mockRejectedValue(new Error("LLM unavailable"));
 
     await deduplicateAndInsert({
       store,
-      content: "PostgreSQL confirmed after review",
+      content: "PostgreSQL confirmed after review process",
       tags: ["decision"],
       projectId: "p1",
       sessionId: "s1",
       depth: 2,
-      confidence: 0.8,
-      summarize: mockSummarize,
+      confidence: 0.7,
       thresholds: { dedupBm25Threshold: 0.000001, mergeMaxEntries: 3, confidenceDecayRate: 0.1 },
     });
 
-    // Should have 2 entries (original + new fallback)
     const results = store.search("PostgreSQL", 10);
-    expect(results.length).toBe(2);
+    // Only 1 result: the canonical (incoming is archived and not searchable)
+    expect(results.length).toBe(1);
   });
 });
