@@ -79,7 +79,10 @@ else
   if [ "$PROVIDER" = "anthropic" ]; then
     MODEL="claude-haiku-4-5-20251001"
   elif [ "$PROVIDER" = "openai" ]; then
-    MODEL="gpt-4o-mini"
+    read -r -p "  Model ID [gpt-4o-mini]: " MODEL_INPUT
+    MODEL="${MODEL_INPUT:-gpt-4o-mini}"
+    echo "  \u25b8 Model: ${MODEL}"
+    echo ""
   fi
 
   # ── API key / baseURL prompts (provider-specific) ──
@@ -116,8 +119,18 @@ else
     BASE_URL_INPUT="${BASE_URL_INPUT:-https://api.openai.com/v1}"
     BASE_URL="${BASE_URL_INPUT#"${BASE_URL_INPUT%%[![:space:]]*}"}"
     BASE_URL="${BASE_URL%"${BASE_URL##*[![:space:]]}"}"
-    echo "  ▸ Base URL: ${BASE_URL}"
+    echo "  \u25b8 Base URL: ${BASE_URL}"
     echo ""
+
+    # Fail fast: public OpenAI API requires a key
+    if [ -z "${API_KEY:-}" ] && [ "$BASE_URL" = "https://api.openai.com/v1" ]; then
+      echo "  ERROR: OPENAI_API_KEY is required when using the public OpenAI API."
+      echo ""
+      echo "  Export it first, then re-run setup:"
+      echo "    export OPENAI_API_KEY=your_api_key_here"
+      echo ""
+      exit 1
+    fi
   fi
 fi
 
@@ -170,11 +183,17 @@ if (llmRegex.test(raw)) {
   newRaw = raw.replace(llmRegex, llmBlock);
 } else {
   // No existing llm block — insert before the last closing brace.
+  // Parse first to assert the top-level is a plain object (not an array etc.)
+  // to prevent corrupting files with unusual-but-valid JSON structure.
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch (_) { parsed = null; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    console.error('Error: ' + configFile + ' is not a JSON object. Cannot merge llm block.');
+    process.exit(1);
+  }
   const lastBrace = raw.lastIndexOf('}');
   if (lastBrace === -1) {
-    // Fallback: parse+merge for valid-but-unusual JSON structure
-    const existing = JSON.parse(raw);
-    newRaw = JSON.stringify({ ...existing, llm }, null, 2) + '\n';
+    newRaw = JSON.stringify({ ...parsed, llm }, null, 2) + '\n';
   } else {
     const before = raw.slice(0, lastBrace).replace(/\s*$/, '');
     const needsComma = before !== '{' && !/,\s*$/.test(before);
@@ -196,13 +215,21 @@ fi
 # ── Install hooks ──
 
 if [ -t 0 ]; then echo "  ──── Installing hooks"; echo ""; fi
-lcm install
+if [ -t 0 ]; then
+  lcm install
+else
+  lcm install >/dev/null 2>&1
+fi
 if [ -t 0 ]; then echo ""; fi
 
 # ── Verify ──
 
 if [ -t 0 ]; then echo "  ──── Running lcm doctor"; echo ""; fi
-lcm doctor
+if [ -t 0 ]; then
+  lcm doctor
+else
+  lcm doctor >/dev/null 2>&1
+fi
 if [ -t 0 ]; then echo ""; fi
 
 if [ -t 0 ]; then echo "  Setup complete."; echo ""; fi
