@@ -133,8 +133,8 @@ if run_step 0; then
     fi
 
     git checkout -b "$PRE_BRANCH"
-    git merge origin/main --no-edit --ff-only 2>/dev/null || \
-      err "develop has diverged from main and cannot be fast-forwarded. Resolve manually."
+    git merge origin/main --no-edit 2>/dev/null || \
+      err "develop has conflicts with main. Resolve conflicts manually, then rerun."
 
     git push -u origin "$PRE_BRANCH"
     PRE_PR=$(gh pr create \
