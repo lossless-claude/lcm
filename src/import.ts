@@ -109,10 +109,11 @@ export function findSessionFiles(projectDir: string): { path: string; sessionId:
 
   // Deduplicate: when a session has both a flat and nested transcript,
   // keep only the flat file (the canonical source in newer Claude Code versions).
+  // Subagent files (inside subagents/) are kept unconditionally because their
+  // paths never match the nested transcript pattern below.
+  const nestedSuffix = (sid: string) => join(sid, `${sid}.jsonl`);
   const deduped = files.filter(f => {
-    // Keep all flat files and subagent files unconditionally.
-    // Only filter out nested files whose session ID also has a flat file.
-    const isNested = f.path.includes(`${f.sessionId}/${f.sessionId}.jsonl`);
+    const isNested = f.path.endsWith(nestedSuffix(f.sessionId));
     return !isNested || !flatSessionIds.has(f.sessionId);
   });
 
