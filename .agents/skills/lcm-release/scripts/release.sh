@@ -112,7 +112,7 @@ fi
 if run_step 0; then
   step "Step 0 — Clean state"
 
-  [[ -n "$(git status --porcelain)" ]] && \
+  [[ -n "$(git status --porcelain | grep -v '^??')" ]] && \
     err "Working tree is dirty. Commit or stash changes first."
   ok "Working tree is clean."
 
