@@ -14,6 +14,13 @@ if [[ -z "$VERSION" ]]; then
   exit 1
 fi
 
+SEMVER_REGEX='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+if ! [[ "$VERSION" =~ $SEMVER_REGEX ]]; then
+  echo "Invalid version '$VERSION'. Expected semver like '0.4.2' or '1.2.3-beta.1'."
+  echo "Usage: $0 <version>  (e.g. 0.4.2)"
+  exit 1
+fi
+
 REPO="lossless-claude/lcm"
 SYNC_BRANCH="chore/sync-develop-v$VERSION"
 
@@ -38,6 +45,10 @@ if [[ "$BEHIND" -eq 0 ]]; then
 fi
 
 echo "  develop is $BEHIND commit(s) behind main — creating sync branch..."
+
+if git show-ref --verify --quiet "refs/heads/$SYNC_BRANCH"; then
+  err "Branch $SYNC_BRANCH already exists locally. Delete it (git branch -D \"$SYNC_BRANCH\") or reuse it."
+fi
 
 if git ls-remote --exit-code --heads origin "$SYNC_BRANCH" >/dev/null 2>&1; then
   err "Branch $SYNC_BRANCH already exists on remote. Has the sync PR already been opened?"

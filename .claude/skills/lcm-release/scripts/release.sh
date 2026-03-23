@@ -259,13 +259,23 @@ fi
 # ─── STEP 8: Wait for publish.yml ────────────────────────────────────────────
 if run_step 8; then
   step "Step 8 — Wait for publish.yml"
-  echo "  Waiting for workflow to appear..."
-  sleep 8
 
-  RUN_ID=$(gh run list --repo "$REPO" --workflow publish.yml --branch main --limit 1 \
-    --json databaseId --jq '.[0].databaseId')
-  [[ -z "$RUN_ID" || "$RUN_ID" == "null" ]] && \
-    err "Could not find a publish.yml run. Check https://github.com/$REPO/actions manually."
+  MAIN_HEAD_SHA=$(gh api "repos/$REPO/commits/main" --jq '.sha')
+  echo "  Waiting for publish.yml run for commit $MAIN_HEAD_SHA..."
+
+  RUN_ID=""
+  WAIT_SECS=0
+  MAX_WAIT=300
+  while [[ -z "$RUN_ID" || "$RUN_ID" == "null" ]]; do
+    if [[ "$WAIT_SECS" -ge "$MAX_WAIT" ]]; then
+      err "publish.yml run not found after ${MAX_WAIT}s. Check https://github.com/$REPO/actions manually."
+    fi
+    sleep 5
+    WAIT_SECS=$((WAIT_SECS + 5))
+    RUN_ID=$(gh run list --repo "$REPO" --workflow publish.yml --branch main --limit 20 \
+      --json databaseId,headSha \
+      --jq "map(select(.headSha == \"$MAIN_HEAD_SHA\")) | .[0].databaseId // empty")
+  done
 
   echo "  Watching run $RUN_ID..."
   gh run watch "$RUN_ID" --repo "$REPO"
