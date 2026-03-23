@@ -12,7 +12,7 @@ export type DaemonConfig = {
   daemon: { port: number; socketPath: string; logLevel: string; logMaxSizeMB: number; logRetentionDays: number; idleTimeoutMs: number };
   compaction: {
     leafTokens: number; maxDepth: number; autoCompactMinTokens: number;
-    promotionThresholds: { minDepth: number; compressionRatio: number; keywords: Record<string, string[]>; architecturePatterns: string[]; dedupBm25Threshold: number; mergeMaxEntries: number; confidenceDecayRate: number };
+    promotionThresholds: { minDepth: number; compressionRatio: number; keywords: Record<string, string[]>; architecturePatterns: string[]; dedupBm25Threshold: number; dedupCandidateLimit: number };
   };
   restoration: { recentSummaries: number; promptSearchMinScore: number; promptSearchMaxResults: number; promptSnippetLength: number; recencyHalfLifeHours: number; crossSessionAffinity: number };
   llm: { provider: "auto" | "claude-process" | "codex-process" | "anthropic" | "openai" | "disabled"; model: string; apiKey?: string; baseURL: string };
@@ -30,8 +30,7 @@ const DEFAULTS: DaemonConfig = {
       keywords: { decision: ["decided", "agreed", "will use", "going with", "chosen"], fix: ["fixed", "root cause", "workaround", "resolved"] },
       architecturePatterns: ["src/[\\w/]+\\.ts", "[A-Z][a-zA-Z]+(Engine|Store|Service|Manager|Handler|Client)", "interface [A-Z]", "class [A-Z]"],
       dedupBm25Threshold: 15,
-      mergeMaxEntries: 3,
-      confidenceDecayRate: 0.1,
+      dedupCandidateLimit: 100,
     },
   },
   restoration: { recentSummaries: 3, promptSearchMinScore: 2, promptSearchMaxResults: 3, promptSnippetLength: 200, recencyHalfLifeHours: 24, crossSessionAffinity: 0.85 },
@@ -61,6 +60,12 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
   const merged = deepMerge(structuredClone(DEFAULTS), deepMerge(fileConfig, overrides));
   // Migrate legacy provider names from v0.3.0
   if (merged.llm.provider === "claude-cli") merged.llm.provider = "claude-process";
+  // Migrate legacy mergeMaxEntries (renamed to dedupCandidateLimit)
+  if (merged.compaction.promotionThresholds.mergeMaxEntries !== undefined && merged.compaction.promotionThresholds.dedupCandidateLimit === undefined) {
+    merged.compaction.promotionThresholds.dedupCandidateLimit = merged.compaction.promotionThresholds.mergeMaxEntries;
+  }
+  delete merged.compaction.promotionThresholds.mergeMaxEntries;
+  delete merged.compaction.promotionThresholds.confidenceDecayRate;
   if (merged.llm.apiKey) merged.llm.apiKey = merged.llm.apiKey.replace(/\$\{(\w+)\}/g, (_: string, k: string) => e[k] ?? "");
 
   // Env var override: LCM_SUMMARY_PROVIDER takes precedence over config

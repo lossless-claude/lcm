@@ -1,10 +1,8 @@
 import type { PromotedStore } from "../db/promoted.js";
-import { renderTemplate } from "../prompts/loader.js";
 
 type DedupThresholds = {
   dedupBm25Threshold: number;
-  mergeMaxEntries: number;
-  confidenceDecayRate: number;
+  dedupCandidateLimit: number;
 };
 
 type DedupParams = {
@@ -15,56 +13,46 @@ type DedupParams = {
   sessionId?: string;
   depth: number;
   confidence: number;
-  summarize: (text: string) => Promise<string>;
   thresholds: DedupThresholds;
 };
 
 export async function deduplicateAndInsert(params: DedupParams): Promise<string> {
-  const { store, content, tags, projectId, sessionId, depth, confidence, summarize, thresholds } = params;
+  const { store, content, tags, projectId, sessionId, depth, confidence, thresholds } = params;
 
-  // Search for duplicates using FTS5
-  const candidates = store.search(content, thresholds.mergeMaxEntries);
+  // Search for duplicates using FTS5, scoped to this project at the SQL level
+  const candidates = store.search(content, thresholds.dedupCandidateLimit, undefined, projectId);
 
   // Filter to entries above BM25 threshold (rank is negative; more negative = better match)
-  const duplicates = candidates.filter((c) => c.rank <= -thresholds.dedupBm25Threshold);
+  const duplicates = candidates.filter(
+    (c) => c.rank <= -thresholds.dedupBm25Threshold,
+  );
 
   if (duplicates.length === 0) {
     return store.insert({ content, tags, projectId, sessionId, depth, confidence });
   }
 
-  // Merge: combine all duplicate entries + new content
-  const allEntries = [...duplicates.map((d) => d.content), content];
-  const entriesText = allEntries.map((e, i) => `Entry ${i + 1}:\n${e}`).join("\n\n");
-  const mergePrompt = renderTemplate("promoted-merge", { entries: entriesText });
+  // Structural convergence: pick best BM25 match as canonical
+  // (duplicates is sorted by rank — most negative rank = best match = duplicates[0])
+  const canonical = duplicates[0];
+  // Use max confidence across all matched duplicates + incoming to avoid losing strong signals
+  const refreshedConfidence = Math.max(confidence, ...duplicates.map((d) => d.confidence));
+  // Merge tags from canonical, all matched duplicates, and incoming to avoid losing tag signals
+  const mergedTags = Array.from(
+    new Set([...canonical.tags, ...duplicates.slice(1).flatMap((d) => d.tags), ...tags]),
+  );
 
-  let mergedContent: string;
-  try {
-    mergedContent = await summarize(mergePrompt);
-  } catch {
-    // Merge failed — insert as new entry rather than losing data
-    return store.insert({ content, tags, projectId, sessionId, depth, confidence });
-  }
+  store.transaction(() => {
+    // Refresh canonical's confidence and tags — repeated sightings reinforce and enrich the entry
+    store.update(canonical.id, { confidence: refreshedConfidence, tags: mergedTags });
 
-  if (!mergedContent.trim()) {
-    return store.insert({ content, tags, projectId, sessionId, depth, confidence });
-  }
+    // Archive weaker duplicates (soft-delete: removed from FTS5, recoverable)
+    for (let i = 1; i < duplicates.length; i++) {
+      store.archive(duplicates[i].id);
+    }
 
-  // Calculate merged confidence
-  const maxConfidence = Math.max(confidence, ...duplicates.map((d) => d.confidence));
-  const mergedConfidence = Math.max(0, maxConfidence - thresholds.confidenceDecayRate);
+    // Insert incoming as archived for recoverability of complementary info
+    store.archive(store.insert({ content, tags, projectId, sessionId, depth, confidence }));
+  });
 
-  // Delete old duplicates
-  for (const dup of duplicates) {
-    store.deleteById(dup.id);
-  }
-
-  // Archive if confidence too low — soft-delete, don't surface
-  if (mergedConfidence < 0.2) {
-    const id = store.insert({ content: mergedContent, tags, projectId, sessionId, depth, confidence: mergedConfidence });
-    store.archive(id);
-    return id;
-  }
-
-  // Insert merged entry
-  return store.insert({ content: mergedContent, tags, projectId, sessionId, depth, confidence: mergedConfidence });
+  return canonical.id;
 }
