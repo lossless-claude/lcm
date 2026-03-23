@@ -61,7 +61,7 @@ type CompactionSummarizeOptions = {
   isCondensed?: boolean;
   depth?: number;
 };
-type CompactionSummarizeFn = (
+export type CompactionSummarizeFn = (
   text: string,
   aggressive?: boolean,
   options?: CompactionSummarizeOptions,
@@ -234,6 +234,8 @@ export class CompactionEngine {
     summarize: CompactionSummarizeFn;
     force?: boolean;
     hardTrigger?: boolean;
+    /** Seed context from a prior session's final summary (used in replay import). */
+    previousSummaryContent?: string;
   }): Promise<CompactionResult> {
     return this.compactFullSweep(input);
   }
@@ -362,6 +364,8 @@ export class CompactionEngine {
     summarize: CompactionSummarizeFn;
     force?: boolean;
     hardTrigger?: boolean;
+    /** Seed context from a prior session's final summary (used in replay import). */
+    previousSummaryContent?: string;
   }): Promise<CompactionResult> {
     const { conversationId, tokenBudget, summarize, force, hardTrigger } = input;
 
@@ -392,7 +396,8 @@ export class CompactionEngine {
     let condensed = false;
     let createdSummaryId: string | undefined;
     let level: CompactionLevel | undefined;
-    let previousSummaryContent: string | undefined;
+    // Seed from caller (cross-session replay) or start fresh
+    let previousSummaryContent: string | undefined = input.previousSummaryContent;
     let previousTokens = tokensBefore;
 
     // Phase 1: leaf passes over oldest raw chunks outside the protected tail.
