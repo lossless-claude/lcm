@@ -1,6 +1,9 @@
 name: Publish Package
 
 on:
+  push:
+    branches: [main]
+    paths: [package.json]
   workflow_dispatch:
     inputs:
       ref:
@@ -30,70 +33,60 @@ jobs:
           registry-url: https://registry.npmjs.org/
           cache: npm
 
+      - name: Check if version already released
+        id: check
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          tag="v$version"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists — skipping publish"
+            printf 'skip=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'skip=false\n' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install dependencies
+        if: steps.check.outputs.skip == 'false'
         run: npm ci
 
       - name: Type-check
+        if: steps.check.outputs.skip == 'false'
         run: npm run typecheck
 
       - name: Run tests
+        if: steps.check.outputs.skip == 'false'
         run: npm test
 
       - name: Build
+        if: steps.check.outputs.skip == 'false'
         run: npm run build
 
-      - name: Read package version
-        id: package
-        run: |
-          printf 'version=%s\n' "$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
-
-      - name: Ensure release tag does not already exist
-        run: |
-          tag="v${{ steps.package.outputs.version }}"
-          if git rev-parse "$tag" >/dev/null 2>&1; then
-            echo "Tag $tag already exists"
-            exit 1
-          fi
-
       - name: Verify npm identity
+        if: steps.check.outputs.skip == 'false'
         run: npm whoami
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish to npm
+        if: steps.check.outputs.skip == 'false'
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create and push release tag
+        if: steps.check.outputs.skip == 'false'
         run: |
-          tag="v${{ steps.package.outputs.version }}"
+          tag="v${{ steps.check.outputs.version }}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$tag" -m "$tag"
           git push origin "$tag"
 
       - name: Create GitHub release
+        if: steps.check.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="v${{ steps.package.outputs.version }}"
+          tag="v${{ steps.check.outputs.version }}"
           gh release create "$tag" --generate-notes --verify-tag
-
-      - name: Update plugin manifest version
-        run: |
-          version="${{ steps.package.outputs.version }}"
-          node -e "
-            const fs = require('fs');
-            const path = '.claude-plugin/plugin.json';
-            const manifest = JSON.parse(fs.readFileSync(path, 'utf8'));
-            manifest.version = process.env.VERSION;
-            fs.writeFileSync(path, JSON.stringify(manifest, null, 2) + '\n');
-          " VERSION="$version"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .claude-plugin/plugin.json
-          git commit -m "chore: bump plugin manifest to $version [skip ci]"
-          git push origin HEAD:${{ github.ref_name }}
-        env:
-          GH_TOKEN: ${{ github.token }}
