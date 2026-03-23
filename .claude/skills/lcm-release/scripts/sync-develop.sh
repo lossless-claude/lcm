@@ -35,7 +35,7 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 git checkout develop
-git pull origin develop
+git pull --ff-only origin develop || err "develop has diverged from origin/develop. Resolve manually before syncing."
 git fetch origin main
 
 BEHIND=$(git rev-list --count develop..origin/main)
@@ -82,6 +82,6 @@ ok "develop is now in sync with main (linear history preserved)."
 
 echo "  Checking out updated develop and cleaning up local sync branch..."
 git checkout develop
-git pull origin develop
+git pull --ff-only origin develop || err "develop has diverged after sync merge. Resolve manually."
 git branch -d "$SYNC_BRANCH" || true
 ok "Local develop is up to date and sync branch cleaned up."

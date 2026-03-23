@@ -111,7 +111,7 @@ if run_step 0; then
   ok "Working tree is clean."
 
   [[ "$(git rev-parse --abbrev-ref HEAD)" != "develop" ]] && git checkout develop
-  git pull origin develop
+  git pull --ff-only origin develop || err "develop has diverged from origin/develop. Resolve manually before running the release."
 
   git fetch origin
   BEHIND=$(git rev-list --count develop..origin/main)
@@ -139,7 +139,8 @@ if run_step 0; then
       --json number --jq '.number')
     echo "  Opened pre-release sync PR #$PRE_PR — merging..."
     gh pr merge "$PRE_PR" --repo "$REPO" --rebase
-    git checkout develop && git pull origin develop
+    git checkout develop
+    git pull --ff-only origin develop || err "develop diverged after pre-release sync merge. Resolve manually."
     ok "develop synced with main."
   else
     ok "develop is up to date with main."
