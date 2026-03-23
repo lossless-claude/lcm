@@ -61,8 +61,10 @@ export function mergeClaudeSettings(existing: any): any {
   }
   if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
 
-  // MCP server also owned by plugin.json — remove from settings.json
-  delete settings.mcpServers["lcm"];
+  // MCP server is now owned by settings.json (written by lcm install / doctor)
+  // Do NOT delete mcpServers["lcm"] here — it's managed separately from hooks
+  // which are plugin-owned. This prevents the auto-heal loop where doctor adds
+  // the MCP entry and hooks cleanup removes it.
   if (Object.keys(settings.mcpServers).length === 0) delete settings.mcpServers;
 
   return settings;
@@ -93,7 +95,12 @@ async function readlinePrompt(question: string): Promise<string> {
 
 const defaultDeps: ServiceDeps = { spawnSync: spawnSync as any, readFileSync: (path, encoding) => readFileSync(path, encoding as BufferEncoding) as string, writeFileSync, mkdirSync, existsSync, promptUser: readlinePrompt };
 
-export function resolveBinaryPath(deps: Pick<ServiceDeps, "spawnSync" | "existsSync"> = defaultDeps): string {
+export interface ResolveBinaryDeps {
+  spawnSync: (cmd: string, args: string[], opts?: object) => { status: number | null; stdout: string | Buffer };
+  existsSync: (path: string) => boolean;
+}
+
+export function resolveBinaryPath(deps: ResolveBinaryDeps = defaultDeps): string {
   const result = deps.spawnSync("sh", ["-c", "command -v lcm"], { encoding: "utf-8" });
   if (result.status === 0 && typeof result.stdout === "string" && result.stdout.trim()) {
     return result.stdout.trim();
@@ -199,6 +206,16 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<void> {
     try { existing = JSON.parse(deps.readFileSync(settingsPath, "utf-8")); } catch {}
   }
   const merged = mergeClaudeSettings(existing);
+
+  // Register MCP server directly in settings.json.
+  // plugin.json mcpServers isn't reliably processed for locally-installed plugins
+  // (installPath in installed_plugins.json points to wrong versioned dir).
+  if (typeof merged.mcpServers !== "object" || merged.mcpServers === null) {
+    merged.mcpServers = {};
+  }
+  const lcmBin = resolveBinaryPath(deps);
+  merged.mcpServers["lcm"] = { command: lcmBin, args: ["mcp"] };
+
   deps.mkdirSync(join(homedir(), ".claude"), { recursive: true });
   deps.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
   console.log(`Updated ${settingsPath}`);

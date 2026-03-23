@@ -4,7 +4,7 @@ import { join, dirname } from "node:path";
 import { spawnSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { CheckResult, DoctorDeps } from "./types.js";
-import { mergeClaudeSettings, REQUIRED_HOOKS } from "../../installer/install.js";
+import { mergeClaudeSettings, REQUIRED_HOOKS, resolveBinaryPath } from "../../installer/install.js";
 import { BUILT_IN_PATTERNS, ScrubEngine } from "../scrub.js";
 import { projectDir } from "../daemon/project.js";
 
@@ -230,17 +230,22 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>): Promise<CheckR
   let currentSettings: Record<string, unknown> = {};
   try { currentSettings = JSON.parse(deps.readFileSync(settingsPath, "utf-8")); } catch {}
   const mcpServers = currentSettings.mcpServers as Record<string, unknown> | undefined;
-  // MCP server is owned by plugin.json — if leaked into settings.json, clean up
+  // For local installs, settings.json is the canonical source for MCP servers (written by lcm install / doctor);
+  // plugin.json may also declare mcpServers.lcm but is a secondary/optional registration path.
   if (mcpServers?.["lcm"]) {
+    results.push({ name: "mcp-lcm", category: "Settings", status: "pass", message: "mcpServers.lcm registered in settings.json" });
+  } else {
     try {
       const merged = mergeClaudeSettings(currentSettings);
+      if (typeof merged.mcpServers !== "object" || merged.mcpServers === null) merged.mcpServers = {};
+      // Use resolveBinaryPath for consistent binary resolution with installer
+      const lcmBinary = resolveBinaryPath(deps);
+      (merged.mcpServers as Record<string, unknown>)["lcm"] = { command: lcmBinary, args: ["mcp"] };
       deps.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
-      results.push({ name: "mcp-lcm", category: "Settings", status: "warn", message: "Removed duplicate lcm MCP from settings.json (plugin.json owns it)", fixApplied: true });
+      results.push({ name: "mcp-lcm", category: "Settings", status: "warn", message: "mcpServers.lcm missing from settings.json — re-added automatically", fixApplied: true });
     } catch {
-      results.push({ name: "mcp-lcm", category: "Settings", status: "warn", message: "Duplicate lcm MCP in settings.json — run: lcm install" });
+      results.push({ name: "mcp-lcm", category: "Settings", status: "fail", message: "mcpServers.lcm missing from settings.json — run: lcm install" });
     }
-  } else {
-    results.push({ name: "mcp-lcm", category: "Settings", status: "pass", message: "No duplicate MCP in settings.json (plugin.json owns it)" });
   }
 
   // ── Summarizer (conditional) ──

@@ -1,7 +1,7 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "../config.js";
-import { projectDbPath, projectDir, projectId, ensureProjectDir } from "../project.js";
+import { projectDbPath, projectDir, projectId, ensureProjectDir, projectMetaPath } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
@@ -96,6 +96,20 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
         await summaryStore.appendContextMessages(conversation.conversationId, created.map((r) => r.messageId));
         return created;
       });
+
+      // Update meta.json with lastIngest timestamp
+      try {
+        const metaPath = projectMetaPath(cwd);
+        let meta: Record<string, unknown> = {};
+        if (existsSync(metaPath)) {
+          meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+        }
+        meta.cwd = cwd;
+        meta.lastIngest = new Date().toISOString();
+        writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+      } catch {
+        // non-fatal: meta.json update failure shouldn't fail the ingest
+      }
 
       const totalTokens = await summaryStore.getContextTokenCount(conversation.conversationId);
       sendJson(res, 200, { ingested: records.length, totalTokens });
