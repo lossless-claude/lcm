@@ -1,6 +1,6 @@
 {
   "name": "lossless-claude",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Lossless context management — DAG-based summarization that preserves every message",
   "author": {
     "name": "Pedro Almeida",
