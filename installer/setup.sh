@@ -40,7 +40,13 @@ BASE_URL=""
 
 if [ ! -t 0 ]; then
   # Non-interactive / CI mode: skip prompts and fall through using defaults.
-  true
+  # If a config already exists and no explicit overwrite flag is set, skip the
+  # llm config write to avoid clobbering prior provider/model/key settings.
+  if [ -f "$CONFIG_FILE" ] && [ "${LOSSLESS_OVERWRITE_LLM_CONFIG:-}" != "1" ]; then
+    lcm install >/dev/null 2>&1
+    lcm doctor >/dev/null 2>&1
+    exit 0
+  fi
 else
   echo ""
   echo "  lossless-claude setup"
