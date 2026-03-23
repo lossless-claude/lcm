@@ -232,7 +232,12 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
             latestSummaryContent = allSummaries[allSummaries.length - 1]?.content;
           }
 
-          return { summary: summaryMsg, latestSummaryContent };
+          return {
+            summary: summaryMsg,
+            latestSummaryContent,
+            tokensBefore: compactResult.tokensBefore,
+            tokensAfter: compactResult.tokensAfter,
+          };
         } finally {
           db.close();
         }
