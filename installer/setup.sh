@@ -7,13 +7,10 @@ set -euo pipefail
 CONFIG_DIR="$HOME/.lossless-claude"
 CONFIG_FILE="$CONFIG_DIR/config.json"
 
-echo ""
-echo "  lossless-claude setup"
-echo ""
-
 # ── Preflight: require lcm ──
 
 if ! command -v lcm &>/dev/null; then
+  echo ""
   echo "  ERROR: lcm is not installed."
   echo ""
   echo "    Install it with:  npm install -g @lossless-claude/lcm"
@@ -29,11 +26,15 @@ API_KEY=""
 BASE_URL=""
 
 if [ ! -t 0 ]; then
-  echo "  [non-interactive mode — using defaults: provider=auto]"
+  # Non-interactive / CI mode: fall through silently with defaults.
+  true
 else
+  echo ""
+  echo "  lossless-claude setup"
+  echo ""
   echo "  Which LLM provider should lcm use for compaction/summarization?"
   echo ""
-  echo "    1) auto          — tries claude-process, codex-process, anthropic, openai in order [recommended]"
+  echo "    1) auto           — uses claude-process (or codex-process for Codex clients) [recommended]"
   echo "    2) claude-process — Claude Code CLI subprocess (no API key needed)"
   echo "    3) codex-process  — Codex CLI subprocess (no API key needed)"
   echo "    4) anthropic      — Anthropic API (needs ANTHROPIC_API_KEY)"
@@ -41,7 +42,7 @@ else
   echo "    6) disabled       — no LLM, import-only mode (no compaction)"
   echo ""
 
-  read -p "  Pick [1]: " PROVIDER_CHOICE
+  read -r -p "  Pick [1]: " PROVIDER_CHOICE
   PROVIDER_CHOICE="${PROVIDER_CHOICE:-1}"
 
   case "$PROVIDER_CHOICE" in
@@ -60,26 +61,41 @@ else
   echo "  ▸ Using provider: ${PROVIDER}"
   echo ""
 
+  # ── Model defaults (provider-specific) ──
+
+  if [ "$PROVIDER" = "anthropic" ]; then
+    MODEL="claude-haiku-4-5-20251001"
+  elif [ "$PROVIDER" = "openai" ]; then
+    MODEL="gpt-4o-mini"
+  fi
+
   # ── API key / baseURL prompts (provider-specific) ──
 
   if [ "$PROVIDER" = "anthropic" ]; then
     if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-      read -p "  ANTHROPIC_API_KEY: " API_KEY
+      echo "  ANTHROPIC_API_KEY is not set in your environment."
+      echo "  Please export ANTHROPIC_API_KEY before running lcm, for example:"
+      echo "    export ANTHROPIC_API_KEY=your_api_key_here"
     else
-      API_KEY="$ANTHROPIC_API_KEY"
       echo "  ▸ Using ANTHROPIC_API_KEY from environment"
     fi
+    # Write env-var placeholder — config.ts expands \${VAR} at runtime
+    API_KEY='${ANTHROPIC_API_KEY}'
+    echo ""
   fi
 
   if [ "$PROVIDER" = "openai" ]; then
     if [ -z "${OPENAI_API_KEY:-}" ]; then
-      read -p "  OPENAI_API_KEY: " API_KEY
+      echo "  OPENAI_API_KEY is not set in your environment."
+      echo "  Please export OPENAI_API_KEY before running lcm, for example:"
+      echo "    export OPENAI_API_KEY=your_api_key_here"
     else
-      API_KEY="$OPENAI_API_KEY"
       echo "  ▸ Using OPENAI_API_KEY from environment"
     fi
+    # Write env-var placeholder — config.ts expands \${VAR} at runtime
+    API_KEY='${OPENAI_API_KEY}'
 
-    read -p "  Base URL [https://api.openai.com/v1]: " BASE_URL_INPUT
+    read -r -p "  Base URL [https://api.openai.com/v1]: " BASE_URL_INPUT
     BASE_URL="${BASE_URL_INPUT:-https://api.openai.com/v1}"
     echo "  ▸ Base URL: ${BASE_URL}"
     echo ""
@@ -87,48 +103,47 @@ else
 fi
 
 # ── Write config.json ──
+# Uses node for proper JSON encoding and merges into any existing config file
+# so that non-llm keys (security, daemon settings, etc.) are preserved.
 
 mkdir -p "$CONFIG_DIR"
 
-# Build JSON — only include non-empty optional fields
-API_KEY_JSON=""
-if [ -n "$API_KEY" ]; then
-  # Escape the key for JSON (basic safety — API keys should not contain quotes)
-  API_KEY_JSON=", \"apiKey\": \"${API_KEY}\""
-fi
+node - "$PROVIDER" "$MODEL" "$API_KEY" "$BASE_URL" "$CONFIG_FILE" <<'NODE'
+const fs = require('fs');
+const [provider, model, apiKey, baseURL, configFile] = process.argv.slice(2);
 
-BASE_URL_JSON=""
-if [ -n "$BASE_URL" ]; then
-  BASE_URL_JSON=", \"baseURL\": \"${BASE_URL}\""
-fi
-
-cat > "$CONFIG_FILE" <<EOF
-{
-  "llm": {
-    "provider": "${PROVIDER}",
-    "model": "${MODEL}"${API_KEY_JSON}${BASE_URL_JSON}
-  }
+// Load existing config (preserve non-llm keys)
+let existing = {};
+if (fs.existsSync(configFile)) {
+  try { existing = JSON.parse(fs.readFileSync(configFile, 'utf8')); } catch (_) {}
 }
-EOF
 
-echo "  ▸ Config written to ${CONFIG_FILE}"
-echo ""
+const llm = { provider };
+if (model)   llm.model   = model;
+if (apiKey)  llm.apiKey  = apiKey;
+if (baseURL) llm.baseURL = baseURL;
+
+const config = { ...existing, llm };
+fs.writeFileSync(configFile, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
+NODE
+
+if [ -t 0 ]; then
+  echo "  ▸ Config written to ${CONFIG_FILE}"
+  echo ""
+fi
 
 # ── Install hooks ──
 
-echo "  ──── Installing hooks"
-echo ""
+if [ -t 0 ]; then echo "  ──── Installing hooks"; echo ""; fi
 lcm install
-echo ""
+if [ -t 0 ]; then echo ""; fi
 
 # ── Verify ──
 
-echo "  ──── Running lcm doctor"
-echo ""
+if [ -t 0 ]; then echo "  ──── Running lcm doctor"; echo ""; fi
 lcm doctor
-echo ""
+if [ -t 0 ]; then echo ""; fi
 
-echo "  Setup complete."
-echo ""
+if [ -t 0 ]; then echo "  Setup complete."; echo ""; fi
 
 exit 0
