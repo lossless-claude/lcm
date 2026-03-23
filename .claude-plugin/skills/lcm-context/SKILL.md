@@ -77,7 +77,7 @@ These three tools **chain** from broad to deep:
 
 ## Binary Resolution
 
-If any Bash command below uses `lcm` and it is not on PATH, use the plugin's bundled binary instead: `node ~/.claude/plugins/cache/lossless-claude/lcm/*/lcm.mjs`
+If any Bash command below uses `lcm` and it is not on PATH, use the plugin's bundled binary instead: `node ~/.claude/plugins/cache/*/lossless-claude/*/lcm.mjs`
 
 ## Error Self-Healing
 

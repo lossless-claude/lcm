@@ -20,4 +20,4 @@ End with one of:
 - *All checks passed — lossless-claude is healthy.*
 - *N check(s) need attention — see Fix section above.*
 
-If `lcm_doctor` is unavailable, run `lcm doctor` via Bash and display the output verbatim. If `lcm` is not on PATH, use `node ~/.claude/plugins/cache/lossless-claude/lcm/*/lcm.mjs doctor` instead.
+If `lcm_doctor` is unavailable, run `lcm doctor` via Bash and display the output verbatim. If `lcm` is not on PATH, use `node ~/.claude/plugins/cache/*/lossless-claude/*/lcm.mjs doctor` instead.
