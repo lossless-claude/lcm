@@ -149,7 +149,7 @@ lcm restore                # SessionStart hook handler
 lcm session-end            # SessionEnd hook handler
 lcm user-prompt            # UserPromptSubmit hook handler
 lcm mcp                    # MCP server
-lcm -v                     # version
+lcm -V                     # version
 ```
 
 ## Configuration

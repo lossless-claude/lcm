@@ -14,7 +14,7 @@ function readStdin(): Promise<string> {
 
 async function main() {
   // Handle flags before switch
-  if (command === "--version" || command === "-v") {
+  if (command === "--version" || command === "-V") {
     const { readFileSync } = await import("node:fs");
     const { join, dirname } = await import("node:path");
     const { fileURLToPath } = await import("node:url");
@@ -24,8 +24,20 @@ async function main() {
     exit(0);
   }
 
+  if (command === "--help" || command === "-h" || command === "help") {
+    const { printHelp } = await import("../src/cli-help.js");
+    // 'lcm help compact' or 'lcm compact --help' both show per-command help
+    const subcommand = argv[3] ?? undefined;
+    printHelp(subcommand);
+    exit(0);
+  }
+
   switch (command) {
     case "daemon": {
+      if (argv.includes("--help") || argv.includes("-h")) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("daemon"); exit(0);
+      }
       if (argv[3] === "start") {
         if (argv.includes("--detach")) {
           const { spawn } = await import("node:child_process");
@@ -59,6 +71,10 @@ async function main() {
       break;
     }
     case "compact": {
+      if (argv.includes("--help") || argv.includes("-h")) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("compact"); exit(0);
+      }
       const all = argv.includes("--all");
       // Interactive batch compact: --all (all projects) or TTY stdin (current project only).
       // If stdin is piped (hook invocation), fall through to hook dispatch.
@@ -101,6 +117,10 @@ async function main() {
       break;
     }
     case "install": {
+      if (argv.includes("--help") || argv.includes("-h")) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("install"); exit(0);
+      }
       const dryRun = argv.includes("--dry-run");
       const { install } = await import("../installer/install.js");
       if (dryRun) {
@@ -114,6 +134,10 @@ async function main() {
       break;
     }
     case "uninstall": {
+      if (argv.includes("--help") || argv.includes("-h")) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("uninstall"); exit(0);
+      }
       const dryRun = argv.includes("--dry-run");
       const { uninstall } = await import("../installer/uninstall.js");
       if (dryRun) {
@@ -127,6 +151,10 @@ async function main() {
       break;
     }
     case "status": {
+      if (argv.includes("--help") || argv.includes("-h")) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("status"); exit(0);
+      }
       const { loadDaemonConfig } = await import("../src/daemon/config.js");
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
@@ -187,12 +215,20 @@ async function main() {
       break;
     }
     case "stats": {
+      if (argv.includes("--help") || argv.includes("-h")) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("stats"); exit(0);
+      }
       const verbose = argv.includes("--verbose") || argv.includes("-v");
       const { collectStats, printStats } = await import("../src/stats.js");
       printStats(collectStats(), verbose);
       break;
     }
     case "doctor": {
+      if (argv.includes("--help") || argv.includes("-h")) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("doctor"); exit(0);
+      }
       const { runDoctor, printResults } = await import("../src/doctor/doctor.js");
       const results = await runDoctor();
       printResults(results);
@@ -201,6 +237,10 @@ async function main() {
       break;
     }
     case "diagnose": {
+      if (argv.includes("--help") || argv.includes("-h")) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("diagnose"); exit(0);
+      }
       const all = argv.includes("--all");
       const verbose = argv.includes("--verbose");
       const json = argv.includes("--json");
@@ -224,6 +264,10 @@ async function main() {
       break;
     }
     case "connectors": {
+      if (argv.includes("--help") || argv.includes("-h")) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("connectors"); exit(0);
+      }
       const sub = argv[3];
       switch (sub) {
         case "list": {
@@ -332,6 +376,10 @@ async function main() {
       break;
     }
     case "sensitive": {
+      if (argv.includes("--help") || argv.includes("-h")) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("sensitive"); exit(0);
+      }
       const { handleSensitive } = await import("../src/sensitive.js");
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
@@ -342,6 +390,10 @@ async function main() {
       break;
     }
     case "import": {
+      if (argv.includes("--help") || argv.includes("-h")) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("import"); exit(0);
+      }
       const all = argv.includes("--all");
       const verbose = argv.includes("--verbose");
       const dryRun = argv.includes("--dry-run");
@@ -374,6 +426,10 @@ async function main() {
       break;
     }
     case "promote": {
+      if (argv.includes("--help") || argv.includes("-h")) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("promote"); exit(0);
+      }
       const all = argv.includes("--all");
       const verbose = argv.includes("--verbose");
       const dryRun = argv.includes("--dry-run");
@@ -446,9 +502,14 @@ async function main() {
       console.log();
       break;
     }
-    default:
-      console.error("Usage: lcm <daemon|compact|import|promote|restore|session-end|user-prompt|mcp|install|uninstall|doctor|diagnose|status|stats|connectors|sensitive> [options]");
-      exit(1);
+    default: {
+      const { printHelp } = await import("../src/cli-help.js");
+      if (command) {
+        process.stderr.write(`lcm: unknown command '${command}'\n\n`);
+      }
+      printHelp();
+      exit(command ? 1 : 0);
+    }
   }
 }
 
