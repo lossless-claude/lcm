@@ -59,7 +59,10 @@ async function main() {
       break;
     }
     case "compact": {
-      if (argv.includes("--all")) {
+      const all = argv.includes("--all");
+      // Interactive batch compact: --all (all projects) or TTY stdin (current project only).
+      // If stdin is piped (hook invocation), fall through to hook dispatch.
+      if (all || process.stdin.isTTY) {
         const { batchCompact } = await import("../src/batch-compact.js");
         const { loadDaemonConfig } = await import("../src/daemon/config.js");
         const { join } = await import("node:path");
@@ -74,12 +77,14 @@ async function main() {
           exit(1);
         }
         const dryRun = argv.includes("--dry-run");
+        const replay = argv.includes("--replay");
         const minTokens = config.compaction.autoCompactMinTokens;
-        await batchCompact({ minTokens, dryRun, port });
+        const cwd = all ? undefined : process.cwd();
+        await batchCompact({ minTokens, dryRun, port, cwd, replay });
         break;
       }
     }
-    // falls through to hook dispatch
+    // falls through to hook dispatch (piped stdin = PreCompact hook invocation)
     case "restore":
     case "session-end":
     case "user-prompt": {

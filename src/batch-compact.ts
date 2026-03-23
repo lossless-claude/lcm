@@ -13,8 +13,8 @@ export interface UncompactedConversation {
   tokens: number;
 }
 
-/** Find all conversations with messages but no summaries, above the token threshold. */
-export function findUncompacted(minTokens: number, readOnly = false): UncompactedConversation[] {
+/** Find conversations eligible for compaction, above the token threshold. */
+export function findUncompacted(minTokens: number, readOnly = false, cwdFilter?: string, replay = false): UncompactedConversation[] {
   const baseDir = join(homedir(), ".lossless-claude", "projects");
   if (!existsSync(baseDir)) return [];
 
@@ -34,6 +34,7 @@ export function findUncompacted(minTokens: number, readOnly = false): Uncompacte
       } catch { /* skip corrupt meta */ }
     }
     if (!cwd) continue;
+    if (cwdFilter && cwd !== cwdFilter) continue;
 
     const db = new DatabaseSync(dbPath);
     try {
@@ -56,10 +57,10 @@ export function findUncompacted(minTokens: number, readOnly = false): Uncompacte
           FROM summaries GROUP BY conversation_id
         ) s ON s.conversation_id = c.conversation_id
         WHERE COALESCE(m.msg_count, 0) > 0
-          AND COALESCE(s.sum_count, 0) = 0
+          AND (? OR COALESCE(s.sum_count, 0) = 0)
           AND COALESCE(m.raw_tokens, 0) >= ?
         ORDER BY COALESCE(m.raw_tokens, 0) DESC
-      `).all(minTokens) as { conversation_id: number; session_id: string; messages: number; tokens: number }[];
+      `).all(replay ? 1 : 0, minTokens) as { conversation_id: number; session_id: string; messages: number; tokens: number }[];
 
       for (const row of rows) {
         results.push({
@@ -83,8 +84,10 @@ export async function batchCompact(opts: {
   minTokens: number;
   dryRun: boolean;
   port: number;
+  cwd?: string;
+  replay?: boolean;
 }): Promise<void> {
-  const conversations = findUncompacted(opts.minTokens, opts.dryRun);
+  const conversations = findUncompacted(opts.minTokens, opts.dryRun, opts.cwd, opts.replay);
 
   if (conversations.length === 0) {
     console.log("No uncompacted conversations above threshold.");

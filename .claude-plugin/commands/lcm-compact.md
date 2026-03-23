@@ -13,19 +13,17 @@ Compact unprocessed conversation messages into summarized DAG nodes.
 Run the following command via Bash:
 
 ```bash
-lcm compact --all
+lcm compact
 ```
 
 ### Options
 
-If the user specifies options, append them to the command:
-- `--verbose` — Show per-conversation details
+Pass user-specified flags through to the command:
+- `--all` — Compact all projects (default: current project only)
 - `--dry-run` — Preview without writing
 
 For example:
-- `/lcm-compact --verbose` → `lcm compact --all --verbose`
-- `/lcm-compact --dry-run` → `lcm compact --all --dry-run`
+- `/lcm-compact --all` → `lcm compact --all`
+- `/lcm-compact --dry-run` → `lcm compact --dry-run`
 
 Display the output verbatim.
-
-**Note:** `lcm compact` without `--all` falls through to hook dispatch (PreCompact). This command always uses the batch path with `--all`.
