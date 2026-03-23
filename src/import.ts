@@ -145,12 +145,12 @@ export async function importSessions(
         });
         if (res.ingested === 0 && res.totalTokens === 0) {
           result.skippedEmpty++;
-          if (options.verbose) console.log(`  \u2298  ${sessionId}: empty or already ingested`);
+          if (options.verbose) console.log(`  \u23ed\ufe0f ${sessionId}: empty or already ingested`);
         } else {
           result.imported++;
           result.totalMessages += res.ingested;
           result.totalTokens += res.totalTokens;
-          if (options.verbose) console.log(`  \u2713  ${sessionId}: ${res.ingested} messages (${formatNumber(res.totalTokens)} tokens)`);
+          if (options.verbose) console.log(`  \u2705 ${sessionId}: ${res.ingested} messages (${formatNumber(res.totalTokens)} tokens)`);
         }
 
         // Replay: compact immediately after every session (even already-ingested ones)
@@ -190,14 +190,14 @@ export async function importSessions(
             // Non-fatal: import succeeded; compact failure breaks the chain at this link.
             previousSummary = undefined;
             if (options.verbose) {
-              console.error(`  \u26a0  [replay] compact failed for session ${sessionId}: ${err instanceof Error ? err.message : 'unknown error'}`);
+              console.error(`  \u26a0\ufe0f [replay] compact failed for session ${sessionId}: ${err instanceof Error ? err.message : 'unknown error'}`);
             }
           }
         }
       } catch (err) {
         result.failed++;
         if (options.replay) previousSummary = undefined; // chain broken by ingest failure
-        if (options.verbose) console.log(`  \u2717  ${sessionId}: ${err instanceof Error ? err.message : "failed"}`);
+        if (options.verbose) console.log(`  \u274c ${sessionId}: ${err instanceof Error ? err.message : "failed"}`);
       }
     }
   }
