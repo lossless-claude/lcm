@@ -86,14 +86,67 @@ describe("findSessionFiles", () => {
     expect(sessionIds).toEqual(["child-session", "main-session"]);
   });
 
-  it("ignores directories without a subagents subfolder", () => {
+  it("ignores directories without a subagents subfolder or matching nested transcript", () => {
     const dir = makeTmpDir();
     const subDir = join(dir, "some-dir");
     mkdirSync(subDir, { recursive: true });
-    writeFileSync(join(subDir, "file.jsonl"), ""); // not in subagents/
+    writeFileSync(join(subDir, "file.jsonl"), ""); // not in subagents/ and name doesn't match dir
 
     const result = findSessionFiles(dir);
     expect(result).toEqual([]);
+  });
+
+  it("discovers nested session transcripts (Layout A: <session-id>/<session-id>.jsonl)", () => {
+    const dir = makeTmpDir();
+    const sessionDir = join(dir, "session-abc");
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(join(sessionDir, "session-abc.jsonl"), "");
+
+    const result = findSessionFiles(dir);
+    expect(result).toHaveLength(1);
+    expect(result[0].sessionId).toBe("session-abc");
+    expect(result[0].path).toBe(join(sessionDir, "session-abc.jsonl"));
+  });
+
+  it("ignores nested transcript paths that are not regular files", () => {
+    const dir = makeTmpDir();
+    const sessionDir = join(dir, "session-abc");
+    const nestedPath = join(sessionDir, "session-abc.jsonl");
+    mkdirSync(nestedPath, { recursive: true });
+
+    const result = findSessionFiles(dir);
+    expect(result).toEqual([]);
+  });
+
+  it("discovers nested transcripts alongside subagent files", () => {
+    const dir = makeTmpDir();
+    // Layout A: nested main transcript + subagent
+    const sessionDir = join(dir, "session-parent");
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(join(sessionDir, "session-parent.jsonl"), "");
+    const subagentsDir = join(sessionDir, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    writeFileSync(join(subagentsDir, "agent-1.jsonl"), "");
+
+    const result = findSessionFiles(dir);
+    const sessionIds = result.map((f) => f.sessionId).sort();
+    expect(sessionIds).toEqual(["agent-1", "session-parent"]);
+  });
+
+  it("deduplicates when both flat and nested transcripts exist for the same session", () => {
+    const dir = makeTmpDir();
+    // Flat transcript at project root
+    writeFileSync(join(dir, "session-abc.jsonl"), "flat");
+    // Nested transcript inside session directory
+    const sessionDir = join(dir, "session-abc");
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(join(sessionDir, "session-abc.jsonl"), "nested");
+
+    const result = findSessionFiles(dir);
+    // Should only return one entry, the flat file (preferred)
+    const matches = result.filter((f) => f.sessionId === "session-abc");
+    expect(matches).toHaveLength(1);
+    expect(matches[0].path).toBe(join(dir, "session-abc.jsonl"));
   });
 
   it("returns files sorted by mtime ascending", () => {
