@@ -64,7 +64,7 @@ SYNC_JSON=$(gh pr create \
   --repo "$REPO" \
   --base develop \
   --title "chore: sync develop with main after v$VERSION release" \
-  --body "Brings the v$VERSION release merge commit back into develop." \
+  --body "Rebases develop onto main to include the v$VERSION version bump (--rebase merge; version-bump commit gets a new SHA on develop)." \
   --json number,url)
 SYNC_PR=$(node -pe "JSON.parse(process.argv[1]).number" "$SYNC_JSON")
 SYNC_URL=$(node -pe "JSON.parse(process.argv[1]).url" "$SYNC_JSON")
