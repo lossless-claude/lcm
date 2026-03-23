@@ -57,6 +57,9 @@ jobs:
           # Always create/reset local branch to current main HEAD so the
           # sync branch is up to date even if a prior run left it on remote.
           git fetch origin main
+          # Fetch the sync branch if it exists so --force-with-lease has a
+          # local tracking ref and can verify nothing unexpected was pushed.
+          git fetch origin "$BRANCH" || true
           git checkout -B "$BRANCH" origin/main
           git push origin "$BRANCH" --force-with-lease
 
