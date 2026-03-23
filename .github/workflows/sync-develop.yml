@@ -1,0 +1,55 @@
+name: Sync develop after release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  sync:
+    name: Open sync PR to develop
+    runs-on: ubuntu-latest
+    # Only run when a version bump commit lands on main (i.e. a release merged)
+    if: contains(github.event.head_commit.message, 'chore: bump version to')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check if develop already contains this commit
+        id: check
+        run: |
+          git fetch origin develop main
+          if git merge-base --is-ancestor HEAD origin/develop; then
+            echo "already_synced=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already_synced=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open sync PR
+        if: steps.check.outputs.already_synced == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(node -pe "require('./package.json').version")
+          BRANCH="chore/sync-develop-v${VERSION}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git checkout -b "$BRANCH"
+          git push origin "$BRANCH"
+
+          PR_URL=$(gh pr create \
+            --repo "${{ github.repository }}" \
+            --base develop \
+            --head "$BRANCH" \
+            --title "chore: sync develop with main after v${VERSION} release" \
+            --body "Automated post-release sync: brings develop up to date with the v${VERSION} release commit on main.")
+          PR_NUMBER="${PR_URL##*/}"
+
+          gh pr merge "$PR_NUMBER" \
+            --repo "${{ github.repository }}" \
+            --merge \
+            --delete-branch
