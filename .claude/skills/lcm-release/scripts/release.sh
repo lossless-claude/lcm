@@ -292,7 +292,18 @@ if run_step 8; then
   fi
   [[ "$CONCLUSION" != "success" ]] && \
     err "publish.yml $CONCLUSION. See https://github.com/$REPO/actions/runs/$RUN_ID"
-  ok "$PACKAGE_NAME@$VERSION published to npm."
+
+  # Verify publish actually landed — workflow conclusion can be 'success' even
+  # when individual steps were skipped via if: guards.
+  PUBLISHED_VERSION=$(npm view "$PACKAGE_NAME@$VERSION" version 2>/dev/null || true)
+  if [[ "$PUBLISHED_VERSION" != "$VERSION" ]]; then
+    err "publish.yml succeeded but $PACKAGE_NAME@$VERSION was not found on npm. Check https://github.com/$REPO/actions/runs/$RUN_ID and npm manually."
+  fi
+  git fetch --tags
+  if ! git rev-parse --verify "refs/tags/v$VERSION" >/dev/null 2>&1; then
+    err "publish.yml succeeded but git tag v$VERSION was not found on origin. Check https://github.com/$REPO/actions/runs/$RUN_ID."
+  fi
+  ok "$PACKAGE_NAME@$VERSION published to npm and tagged."
 else
   step "Step 8 — Wait for publish.yml"; skip
 fi

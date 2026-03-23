@@ -75,7 +75,7 @@ if [[ -z "$SYNC_PR" || ! "$SYNC_PR" =~ ^[0-9]+$ ]]; then
   err "Failed to parse PR number from gh pr create output."
 fi
 
-echo "  Opened sync PR #$SYNC_PR: $SYNC_URL — merging..."
+echo "  Opened sync PR #$SYNC_PR: $SYNC_URL — merging (rebase onto develop)..."
 gh pr merge "$SYNC_PR" --repo "$REPO" --rebase
 
-ok "develop synced with main."
+ok "develop rebased onto main (linear history preserved)."
