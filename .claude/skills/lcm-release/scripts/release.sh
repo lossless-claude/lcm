@@ -261,6 +261,8 @@ if run_step 8; then
   step "Step 8 — Wait for publish.yml"
 
   MAIN_HEAD_SHA=$(gh api "repos/$REPO/commits/main" --jq '.sha')
+  [[ -z "$MAIN_HEAD_SHA" || "$MAIN_HEAD_SHA" == "null" ]] && \
+    err "Could not determine main HEAD SHA. Check https://github.com/$REPO manually."
   echo "  Waiting for publish.yml run for commit $MAIN_HEAD_SHA..."
 
   RUN_ID=""
