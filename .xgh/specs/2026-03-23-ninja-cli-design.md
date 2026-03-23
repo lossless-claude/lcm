@@ -16,7 +16,7 @@ Inspired by React's model: commands update state, rendering is a pure function o
 ## Key Decisions
 
 - **Approach C**: render loop with pure `renderFrame(state, opts) → string`
-- **Replay is the new default** for `lcm import`; `--no-replay` is the escape hatch
+- **Replay default flips to on in Phase 2** for `lcm import` — Phase 1 keeps replay opt-in; once flipped, `--no-replay` is the escape hatch
 - **Always pre-scan** for total count — every command must implement `count()`
 - **Summary shows DAG metrics** (nodes, depth, memories) instead of "tokens freed"
 - **Verbose mode**: sequential session log + full `lcm stats --verbose` at end
@@ -164,7 +164,9 @@ interface PipelineStep {
     update: (patch: Partial<ProgressState>) => void,
   ): Promise<{ success: boolean; error?: string }>;
   // run() must NOT throw — errors are returned in the result.
-  // The pipeline runner does NOT wrap calls in try/catch.
+  // The pipeline runner wraps each call in try/catch as a defensive measure:
+  // unexpected exceptions (IO, JSON parsing, fetch) are caught, converted into
+  // a failure result, and the renderer is finalized/cleaned up before exit.
 }
 ```
 
@@ -193,7 +195,7 @@ interface PipelineStep {
 
 **Phase 1** (non-breaking): Add `onProgress?: (patch: Partial<ProgressState>) => void` callback to `importSessions()` and `batchCompact()`. Existing `console.log` stays. New renderer consumes `onProgress` when present. `--replay` remains opt-in during this phase.
 
-**Phase 2** (breaking): Strip `console.log` / `process.stdout.write` from import and compact. Tests migrate from mocking `console.log` to asserting on state patches. Flip `--replay` to default-on (add `--no-replay` escape hatch). Update CLI help text.
+**Phase 2** (breaking): Strip `console.log` / `process.stdout.write` from import and compact. Tests migrate from mocking `console.log` to asserting on state patches. **Flip `--replay` to default-on** (add `--no-replay` escape hatch) — this is when the key-decision replay default takes effect. Update CLI help text.
 
 **Phase 3**: Introduce `curate` command that chains Import → Compact → Promote with the multi-phase display.
 

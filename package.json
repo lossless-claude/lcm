@@ -32,7 +32,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "postbuild": "mkdir -p dist/src/prompts && cp -r src/prompts/*.yaml dist/src/prompts/ && mkdir -p dist/src/connectors/templates && cp -r src/connectors/templates/. dist/src/connectors/templates/ && cp installer/setup.sh dist/installer/setup.sh",
+    "postbuild": "mkdir -p dist/src/prompts && cp -r src/prompts/*.yaml dist/src/prompts/ && mkdir -p dist/src/connectors/templates && cp -r src/connectors/templates/. dist/src/connectors/templates/ && mkdir -p dist/installer && cp installer/setup.sh dist/installer/setup.sh",
     "prepublishOnly": "npm run build",
     "changeset": "changeset",
     "release:verify": "npm test && npm pack --dry-run",
