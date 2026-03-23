@@ -119,6 +119,10 @@ else
     BASE_URL_INPUT="${BASE_URL_INPUT:-https://api.openai.com/v1}"
     BASE_URL="${BASE_URL_INPUT#"${BASE_URL_INPUT%%[![:space:]]*}"}"
     BASE_URL="${BASE_URL%"${BASE_URL##*[![:space:]]}"}"
+    # If trimmed value is empty (e.g., user entered only whitespace), fall back to default
+    if [ -z "$BASE_URL" ]; then
+      BASE_URL="https://api.openai.com/v1"
+    fi
     echo "  ▸ Base URL: ${BASE_URL}"
     echo ""
 
