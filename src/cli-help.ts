@@ -279,7 +279,7 @@ const GROUPS = [
       { name: "sensitive add <pattern>", summary: "Add a redaction pattern" },
       { name: "sensitive remove <pattern>", summary: "Remove a redaction pattern" },
       { name: "sensitive test <text>", summary: "Test text against active patterns" },
-      { name: "sensitive purge [--all] [--yes]", summary: "Remove all custom patterns" },
+      { name: "sensitive purge [--all] [--yes]", summary: "Purge all project data (stored memory and patterns)" },
     ],
   },
   {
