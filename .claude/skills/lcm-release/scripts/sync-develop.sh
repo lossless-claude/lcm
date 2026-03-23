@@ -68,7 +68,7 @@ SYNC_JSON=$(gh pr create \
   --repo "$REPO" \
   --base develop \
   --title "chore: sync develop with main after v$VERSION release" \
-  --body "Syncs develop with main after the v$VERSION release. The version-bump commit is applied to develop with a new SHA (rebase merge preserves linear history)." \
+  --body "Syncs develop with main after the v$VERSION release. Merges the release commit into develop." \
   --json number,url)
 SYNC_PR=$(node -pe "JSON.parse(process.argv[1]).number" "$SYNC_JSON")
 SYNC_URL=$(node -pe "JSON.parse(process.argv[1]).url" "$SYNC_JSON")
@@ -79,10 +79,10 @@ if [[ -z "$SYNC_PR" || ! "$SYNC_PR" =~ ^[0-9]+$ ]]; then
   err "Failed to parse PR number from gh pr create output."
 fi
 
-echo "  Opened sync PR #$SYNC_PR: $SYNC_URL — merging (rebase onto develop)..."
+echo "  Opened sync PR #$SYNC_PR: $SYNC_URL — merging..."
 gh pr merge "$SYNC_PR" --repo "$REPO" --merge --yes --delete-branch
 
-ok "develop is now in sync with main (linear history preserved)."
+ok "develop is now in sync with main."
 
 echo "  Checking out updated develop and cleaning up local sync branch..."
 git checkout develop
