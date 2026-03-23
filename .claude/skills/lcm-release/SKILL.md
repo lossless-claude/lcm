@@ -14,6 +14,25 @@ Before starting, confirm:
 - CI on `develop` is green
 - You have a version number (e.g. `0.4.1`)
 
+## Step 0 — Start clean on develop
+
+```bash
+git checkout develop
+git pull origin develop
+git status   # must be clean — stash or discard any changes first
+```
+
+Then sync develop with main in case the previous release was never synced back:
+
+```bash
+git fetch origin
+git merge origin/main --no-edit   # fast-forward in normal cases
+```
+
+If `develop` is behind main (previous Step 9 was skipped), this brings it current. If there are conflicts, resolve them before proceeding.
+
+> **Note:** `develop` is branch-protected — you cannot push directly. If the merge above produces new commits, open a PR (`chore/sync-develop-pre-vX.Y.Z` → `develop`) and merge it before continuing.
+
 ## Step 1 — Guard: check the version is clean
 
 ```bash
@@ -52,15 +71,24 @@ Three files must always stay in sync:
 |------|-------|
 | `package.json` | `"version"` |
 | `.claude-plugin/plugin.json` | `"version"` |
-| `.claude-plugin/marketplace.json` | `"version"` |
+| `.claude-plugin/marketplace.json` | `"plugins[0].version"` |
+
+Use `npm version` for `package.json` (no git tag), then edit the other two manually:
+
+```bash
+npm version $VERSION --no-git-tag-version
+# then edit .claude-plugin/plugin.json and .claude-plugin/marketplace.json
+```
 
 Verify all three match before committing:
 
 ```bash
 node -p "require('./package.json').version"
 node -p "require('./.claude-plugin/plugin.json').version"
-node -p "require('./.claude-plugin/marketplace.json').version"
+node -p "require('./.claude-plugin/marketplace.json').plugins[0].version"
 ```
+
+> **Note:** `marketplace.json` stores version at `.plugins[0].version`, not at the root.
 
 ## Step 4 — Commit and push
 
@@ -81,13 +109,15 @@ gh pr create \
 
 > **Note:** Release PRs target `main` directly — this is the one exception to the "PRs target develop" rule.
 
+If GitHub reports the PR as conflicting, it means develop was not synced after the last release. The conflicts will be in the version files only (old version vs new version). Resolve by keeping the new version (`--ours`) and pushing the resolution commit.
+
 ## Step 6 — Wait for CI
 
 ```bash
 gh pr checks <PR_NUMBER> --watch
 ```
 
-Do not merge until CI is green.
+Do not merge until CI is green. If no CI checks are configured, this command exits with "no checks reported" — that is expected; proceed to Step 7.
 
 ## Step 7 — Merge the release PR
 
@@ -115,16 +145,20 @@ The workflow runs typecheck + tests + build, then:
 
 ## Step 9 — Sync develop with main
 
-After the release PR merges, `main` has the version bump that `develop` is missing:
+After the release PR merges, `main` has the release merge commit that `develop` is missing. Because `develop` is branch-protected, the sync requires a PR:
 
 ```bash
 git checkout develop
 git pull origin develop
-git merge main
-git push origin develop
+git merge origin/main --no-edit
+git checkout -b chore/sync-develop-v$VERSION
+git push -u origin chore/sync-develop-v$VERSION
+gh pr create \
+  --base develop \
+  --title "chore: sync develop with main after v$VERSION release" \
+  --body "Brings the release merge commit back into develop."
+gh pr merge <SYNC_PR_NUMBER> --repo lossless-claude/lcm --merge
 ```
-
-This is a fast-forward merge — no conflicts expected.
 
 ## Failure modes
 
@@ -132,15 +166,17 @@ This is a fast-forward merge — no conflicts expected.
 |---------|-------|-----|
 | publish.yml says "skipping" | Tag or npm version already exists | Pick a higher version; start over from Step 1 |
 | 3 files show different versions | Missed a file in Step 3 | Push a fix commit before merging |
-| Develop conflicts after sync | Direct push to main outside this flow | Resolve conflicts; do not force-push |
+| PR to main is conflicting | Develop not synced after last release | Resolve version-file conflicts keeping the new version (`git checkout --ours`) |
+| `gh pr checks --watch` says "no checks reported" | No CI configured on this repo | Expected — skip to Step 7 |
+| `git push origin develop` rejected | Branch is protected | Use the sync PR flow in Step 9 |
 | PR accidentally targets develop | Wrong `--base` flag | Close and reopen targeting `main` |
 
 ## Version file locations (quick ref)
 
 ```
-package.json                      ← npm package version
-.claude-plugin/plugin.json        ← Claude Code plugin version
-.claude-plugin/marketplace.json   ← Marketplace listing version
+package.json                      ← npm package version  (.version)
+.claude-plugin/plugin.json        ← Claude Code plugin version  (.version)
+.claude-plugin/marketplace.json   ← Marketplace listing version  (.plugins[0].version)
 ```
 
 All three must match exactly.
