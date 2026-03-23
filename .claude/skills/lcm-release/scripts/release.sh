@@ -86,12 +86,20 @@ run_step() { [[ "$1" -ge "$FROM_STEP" ]]; }  # true if step N should run
 
 # When resuming mid-flow, look up state we would have captured earlier.
 PR_NUMBER=""
+MERGE_SHA=""
 if [[ "$FROM_STEP" -ge 6 && "$FROM_STEP" -le 7 ]]; then
   PR_NUMBER=$(gh pr list --repo "$REPO" --base main --head "$RELEASE_BRANCH" \
     --state open --json number --jq '.[0].number' 2>/dev/null || true)
   [[ -z "$PR_NUMBER" || "$PR_NUMBER" == "null" ]] && \
     err "Resuming from step $FROM_STEP but no open PR found from $RELEASE_BRANCH → main. Has it already been merged? Use --from-step 8 or --from-step 9."
   echo "  Resuming: found PR #$PR_NUMBER"
+fi
+if [[ "$FROM_STEP" -eq 8 ]]; then
+  MERGE_SHA=$(gh pr list --repo "$REPO" --base main --head "$RELEASE_BRANCH" \
+    --state merged --json mergeCommit --jq '.[0].mergeCommit.oid' 2>/dev/null || true)
+  [[ -z "$MERGE_SHA" || "$MERGE_SHA" == "null" ]] && \
+    err "Resuming from step 8 but could not find merge commit for $RELEASE_BRANCH → main. Has the PR been merged? Check https://github.com/$REPO manually."
+  echo "  Resuming: found merge commit $MERGE_SHA"
 fi
 
 # ─── STEP 0: Clean state and develop sync ────────────────────────────────────
@@ -273,7 +281,10 @@ fi
 if run_step 7; then
   step "Step 7 — Merge release PR #$PR_NUMBER"
   gh pr merge "$PR_NUMBER" --repo "$REPO" --merge
-  ok "PR #$PR_NUMBER merged to main."
+  MERGE_SHA=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json mergeCommit --jq '.mergeCommit.oid')
+  [[ -z "$MERGE_SHA" || "$MERGE_SHA" == "null" ]] && \
+    err "Could not determine merge commit SHA for PR #$PR_NUMBER. Check https://github.com/$REPO/pull/$PR_NUMBER."
+  ok "PR #$PR_NUMBER merged to main (commit $MERGE_SHA)."
 else
   step "Step 7 — Merge release PR"; skip
 fi
@@ -282,10 +293,10 @@ fi
 if run_step 8; then
   step "Step 8 — Wait for publish.yml"
 
-  MAIN_HEAD_SHA=$(gh api "repos/$REPO/commits/main" --jq '.sha')
-  [[ -z "$MAIN_HEAD_SHA" || "$MAIN_HEAD_SHA" == "null" ]] && \
-    err "Could not determine main HEAD SHA. Check https://github.com/$REPO manually."
-  echo "  Waiting for publish.yml run for commit $MAIN_HEAD_SHA..."
+  # Use the exact merge commit SHA (not main HEAD, which may advance before we query it).
+  [[ -z "$MERGE_SHA" || "$MERGE_SHA" == "null" ]] && \
+    err "MERGE_SHA not set — internal error. Re-run from step 7."
+  echo "  Waiting for publish.yml run for commit $MERGE_SHA..."
 
   RUN_ID=""
   WAIT_SECS=0
@@ -298,7 +309,7 @@ if run_step 8; then
     WAIT_SECS=$((WAIT_SECS + 5))
     RUN_ID=$(gh run list --repo "$REPO" --workflow publish.yml --branch main --limit 20 \
       --json databaseId,headSha \
-      --jq "map(select(.headSha == \"$MAIN_HEAD_SHA\")) | .[0].databaseId // empty")
+      --jq "map(select(.headSha == \"$MERGE_SHA\")) | .[0].databaseId // empty")
   done
 
   echo "  Watching run $RUN_ID..."
