@@ -76,6 +76,6 @@ if [[ -z "$SYNC_PR" || ! "$SYNC_PR" =~ ^[0-9]+$ ]]; then
 fi
 
 echo "  Opened sync PR #$SYNC_PR: $SYNC_URL — merging..."
-gh pr merge "$SYNC_PR" --repo "$REPO" --merge
+gh pr merge "$SYNC_PR" --repo "$REPO" --rebase
 
 ok "develop synced with main."

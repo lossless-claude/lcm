@@ -117,7 +117,7 @@ if run_step 0; then
       --body "Pre-release sync: brings develop up to date with main." \
       --json number --jq '.number')
     echo "  Opened pre-release sync PR #$PRE_PR — merging..."
-    gh pr merge "$PRE_PR" --repo "$REPO" --merge
+    gh pr merge "$PRE_PR" --repo "$REPO" --rebase
     git checkout develop && git pull origin develop
     ok "develop synced with main."
   else
@@ -137,7 +137,7 @@ if run_step 1; then
   ok "Git tag v$VERSION is free."
 
   NPM_STATUS=0
-  NPM_OUT=$(npm view "$PACKAGE_NAME@$VERSION" version 2>&1 >/dev/null) || NPM_STATUS=$?
+  NPM_OUT=$(npm view "$PACKAGE_NAME@$VERSION" version 2>&1) || NPM_STATUS=$?
   if [[ "$NPM_STATUS" -eq 0 ]]; then
     err "$VERSION is already published to npm for $PACKAGE_NAME. Choose a higher version."
   elif echo "$NPM_OUT" | grep -qiE 'E404|404 Not Found'; then
