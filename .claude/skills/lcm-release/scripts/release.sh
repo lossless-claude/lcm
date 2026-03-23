@@ -204,7 +204,11 @@ fi
 if run_step 4; then
   step "Step 4 — Commit and push"
   git add package.json package-lock.json .claude-plugin/plugin.json .claude-plugin/marketplace.json
-  git commit -m "chore: bump version to $VERSION"
+  if git diff --cached --quiet; then
+    ok "No staged changes to commit; skipping git commit."
+  else
+    git commit -m "chore: bump version to $VERSION"
+  fi
   git push -u origin "$RELEASE_BRANCH"
   ok "Pushed $RELEASE_BRANCH."
 else
