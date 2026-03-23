@@ -72,10 +72,24 @@ Copilot reviews PRs targeting `main` and `develop` automatically. The ruleset ha
 Most multi-round Copilot reviews happen because of preventable issues. Before pushing a PR:
 
 1. **Doc/code alignment** — if you changed a flag or behavior, check whether help text, SKILL.md tables, or README entries need updating
-2. **Shell scripts** — use `--json --jq` for `gh` output parsing, `--ff-only` for `git pull`, env var overrides for timeouts
+2. **Shell scripts** — use `--ff-only` for `git pull`, env var overrides for timeouts; see `gh` CLI notes below
 3. **JSON files** — use in-place string replacement, never `JSON.stringify` (it reformats the file)
 4. **Merge strategies** — sync PRs use `--merge` (never `--rebase` — fails on merge commits)
 5. **Consistency** — if the same flag/strategy appears in multiple places, verify they all match
+6. **GitHub Actions workflows** — always declare `permissions:` explicitly; add `actions/setup-node` before using `node`; make branch/PR creation idempotent (check if branch/PR exists before creating)
+
+### gh CLI conventions (v2.88.1)
+
+Some flags that look reasonable don't exist in the installed version:
+
+- **`gh pr create` does not support `--json`/`--jq`** — it outputs a URL. Extract the PR number with `${url##*/}`:
+  ```bash
+  PR_URL=$(gh pr create --repo "$REPO" --base develop --title "..." --body "...")
+  PR_NUMBER="${PR_URL##*/}"
+  [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || { echo "bad PR number: $PR_URL" >&2; exit 1; }
+  ```
+- **`gh pr merge --yes` does not exist** — omit it; the command is non-interactive by default
+- **`gh pr list --json number`** works fine for listing/querying
 
 ### Handling review comments
 
@@ -84,6 +98,13 @@ Most multi-round Copilot reviews happen because of preventable issues. Before pu
 - **Logic changes**: dispatch a sonnet subagent
 - Never implement fixes inline in the main session — always dispatch a subagent
 
-## Release Notes Source Of Truth
+## Release Process
 
-- Follow [RELEASING.md](./RELEASING.md) for the repo's full Changesets and publish workflow.
+The canonical release process is `.claude/skills/lcm-release/scripts/release.sh` — use it for all releases. `RELEASING.md` and `WORKFLOW.md` describe an older Changesets-based flow that is no longer in use.
+
+See `SKILL.md` in the `lcm-release` skill for the full step table and failure modes.
+
+## Git Gotchas
+
+- **`.claude/` is gitignored** — skill and script files under `.claude/` are tracked but require `git add -f` to stage them. If `git add .claude/...` silently does nothing, that's why.
+- **`develop` has branch protection** — direct push is rejected. Always push to a feature branch and open a PR, even for trivial fixes.
