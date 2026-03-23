@@ -60,6 +60,17 @@ These rules apply to **new and changed code** in the PR. Do not flag pre-existin
 - If a PR changes a flag or behavior in code, check whether any markdown files, help text, or table entries in the same PR need a corresponding update
 - Help text summaries in command tables must accurately describe what the command does — e.g., a "purge" command that deletes all project data should not be summarized as "remove patterns"
 
+### Review Completeness
+
+When reviewing a PR, report **all** issues found across the changed files — do not limit output to only the most critical. Triage by severity within the review:
+
+1. **Correctness / safety** — bugs, data loss, crashes, security issues
+2. **Reliability** — error handling, edge cases, resume flows
+3. **Documentation consistency** — code/docs mismatches, stale comments
+4. **Style / minor** — naming, formatting, whitespace
+
+Do not save issues for a follow-up review. If an issue exists in a changed file, include it now.
+
 ### Merge Strategy Consistency
 - All sync PRs (develop←main) must use `--merge`, never `--rebase` — rebase fails when the PR contains merge commits from main
 - Release PRs (branch→main) use `--merge` to preserve the commit SHA for publish.yml tracking
