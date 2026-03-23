@@ -64,7 +64,7 @@ SYNC_JSON=$(gh pr create \
   --repo "$REPO" \
   --base develop \
   --title "chore: sync develop with main after v$VERSION release" \
-  --body "Rebases develop onto main to include the v$VERSION version bump (--rebase merge; version-bump commit gets a new SHA on develop)." \
+  --body "Syncs develop with main after the v$VERSION release. The version-bump commit is applied to develop with a new SHA (rebase merge preserves linear history)." \
   --json number,url)
 SYNC_PR=$(node -pe "JSON.parse(process.argv[1]).number" "$SYNC_JSON")
 SYNC_URL=$(node -pe "JSON.parse(process.argv[1]).url" "$SYNC_JSON")
@@ -78,7 +78,7 @@ fi
 echo "  Opened sync PR #$SYNC_PR: $SYNC_URL — merging (rebase onto develop)..."
 gh pr merge "$SYNC_PR" --repo "$REPO" --rebase
 
-ok "develop rebased onto main (linear history preserved)."
+ok "develop is now in sync with main (linear history preserved)."
 
 echo "  Checking out updated develop and cleaning up local sync branch..."
 git checkout develop

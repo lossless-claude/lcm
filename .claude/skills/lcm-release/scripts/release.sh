@@ -109,11 +109,19 @@ if run_step 0; then
   BEHIND=$(git rev-list --count develop..origin/main)
   if [[ "$BEHIND" -gt 0 ]]; then
     echo "  develop is $BEHIND commit(s) behind main — syncing before release..."
+
+    PRE_BRANCH="chore/sync-develop-pre-v$VERSION"
+    if git show-ref --verify --quiet "refs/heads/$PRE_BRANCH"; then
+      err "Local branch '$PRE_BRANCH' already exists. Delete it (git branch -D \"$PRE_BRANCH\") or choose a different version, then rerun."
+    fi
+    if git ls-remote --exit-code --heads origin "$PRE_BRANCH" >/dev/null 2>&1; then
+      err "Remote branch 'origin/$PRE_BRANCH' already exists. Delete it (git push origin --delete \"$PRE_BRANCH\") or choose a different version, then rerun."
+    fi
+
+    git checkout -b "$PRE_BRANCH"
     git merge origin/main --no-edit --ff-only 2>/dev/null || \
       err "develop has diverged from main and cannot be fast-forwarded. Resolve manually."
 
-    PRE_BRANCH="chore/sync-develop-pre-v$VERSION"
-    git checkout -b "$PRE_BRANCH"
     git push -u origin "$PRE_BRANCH"
     PRE_PR=$(gh pr create \
       --repo "$REPO" \
