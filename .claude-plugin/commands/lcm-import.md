@@ -19,7 +19,7 @@ lcm import
 ### Options
 
 If the user specifies options, append them to the command:
-- `--all` — Import all projects (default when no path given)
+- `--all` — Import all projects instead of just the current project
 - `--verbose` — Show per-session details
 - `--dry-run` — Preview without writing
 - `--replay` — Re-import all sessions in chronological order and compact each one immediately, threading context between sessions to build a temporal summary DAG. Use to rebuild memory from scratch.

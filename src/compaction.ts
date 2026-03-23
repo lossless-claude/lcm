@@ -397,14 +397,23 @@ export class CompactionEngine {
     let createdSummaryId: string | undefined;
     let level: CompactionLevel | undefined;
     // Seed from caller (cross-session replay) or start fresh
-    let previousSummaryContent: string | undefined = input.previousSummaryContent;
+    let previousSummaryContent: string | undefined;
     let previousTokens = tokensBefore;
+    let isFirstLeafPass = true;
 
     // Phase 1: leaf passes over oldest raw chunks outside the protected tail.
     while (true) {
       const leafChunk = await this.selectOldestLeafChunk(conversationId);
       if (leafChunk.items.length === 0) {
         break;
+      }
+
+      // For first leaf pass: use caller's seed if provided, otherwise resolve from store
+      if (isFirstLeafPass) {
+        previousSummaryContent =
+          input.previousSummaryContent ??
+          (await this.resolvePriorLeafSummaryContext(conversationId, leafChunk.items));
+        isFirstLeafPass = false;
       }
 
       const passTokensBefore = await this.summaryStore.getContextTokenCount(conversationId);

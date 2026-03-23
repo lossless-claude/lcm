@@ -43,7 +43,7 @@ function mockRes() {
   return { res, getBody: () => JSON.parse(body || "{}") };
 }
 
-function makeConfig(provider: DaemonConfig["llm"]["provider"]): Partial<DaemonConfig> {
+function makeConfig(provider: DaemonConfig["llm"]["provider"]): DaemonConfig {
   return {
     version: 1,
     daemon: { port: 3737, socketPath: "/tmp/test.sock", logLevel: "info", logMaxSizeMB: 10, logRetentionDays: 7, idleTimeoutMs: 1800000 },
@@ -57,7 +57,7 @@ function makeConfig(provider: DaemonConfig["llm"]["provider"]): Partial<DaemonCo
     cipher: { configPath: "/tmp/cipher.yml", collection: "test" },
     security: { sensitivePatterns: [] },
     summarizer: { mock: false },
-  };
+  } as unknown as DaemonConfig;
 }
 
 async function readMessageCount(cwd: string, sessionId: string): Promise<number> {
