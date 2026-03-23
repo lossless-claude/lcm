@@ -3,7 +3,6 @@ import type { PromotedStore } from "../db/promoted.js";
 type DedupThresholds = {
   dedupBm25Threshold: number;
   mergeMaxEntries: number;
-  confidenceDecayRate: number;
 };
 
 type DedupParams = {
@@ -26,7 +25,9 @@ export async function deduplicateAndInsert(params: DedupParams): Promise<string>
   const candidates = store.search(content, thresholds.mergeMaxEntries);
 
   // Filter to entries above BM25 threshold (rank is negative; more negative = better match)
-  const duplicates = candidates.filter((c) => c.rank <= -thresholds.dedupBm25Threshold);
+  const duplicates = candidates.filter(
+    (c) => c.rank <= -thresholds.dedupBm25Threshold && c.projectId === projectId,
+  );
 
   if (duplicates.length === 0) {
     return store.insert({ content, tags, projectId, sessionId, depth, confidence });
@@ -37,21 +38,20 @@ export async function deduplicateAndInsert(params: DedupParams): Promise<string>
   const canonical = duplicates[0];
   const refreshedConfidence = Math.max(canonical.confidence, confidence);
 
-  // NOTE: The following sequence (update + archive + insert + archive) is not wrapped
-  // in a SQLite transaction. This is safe for the current single-threaded daemon, but
-  // should be made atomic if concurrent promote calls are introduced in future.
+  let incomingId: string;
+  store.transaction(() => {
+    // Refresh canonical's confidence — repeated sightings reinforce the entry
+    store.update(canonical.id, { confidence: refreshedConfidence });
 
-  // Refresh canonical's confidence — repeated sightings reinforce the entry
-  store.update(canonical.id, { confidence: refreshedConfidence });
+    // Archive weaker duplicates (soft-delete: removed from FTS5, recoverable)
+    for (let i = 1; i < duplicates.length; i++) {
+      store.archive(duplicates[i].id);
+    }
 
-  // Archive weaker duplicates (soft-delete: removed from FTS5, recoverable)
-  for (let i = 1; i < duplicates.length; i++) {
-    store.archive(duplicates[i].id);
-  }
-
-  // Insert incoming as archived for recoverability of complementary info
-  const incomingId = store.insert({ content, tags, projectId, sessionId, depth, confidence });
-  store.archive(incomingId);
+    // Insert incoming as archived for recoverability of complementary info
+    incomingId = store.insert({ content, tags, projectId, sessionId, depth, confidence });
+    store.archive(incomingId);
+  });
 
   return canonical.id;
 }
