@@ -61,7 +61,7 @@ type CompactionSummarizeOptions = {
   isCondensed?: boolean;
   depth?: number;
 };
-type CompactionSummarizeFn = (
+export type CompactionSummarizeFn = (
   text: string,
   aggressive?: boolean,
   options?: CompactionSummarizeOptions,
@@ -234,6 +234,8 @@ export class CompactionEngine {
     summarize: CompactionSummarizeFn;
     force?: boolean;
     hardTrigger?: boolean;
+    /** Seed context from a prior session's final summary (used in replay import). */
+    previousSummaryContent?: string;
   }): Promise<CompactionResult> {
     return this.compactFullSweep(input);
   }
@@ -362,6 +364,8 @@ export class CompactionEngine {
     summarize: CompactionSummarizeFn;
     force?: boolean;
     hardTrigger?: boolean;
+    /** Seed context from a prior session's final summary (used in replay import). */
+    previousSummaryContent?: string;
   }): Promise<CompactionResult> {
     const { conversationId, tokenBudget, summarize, force, hardTrigger } = input;
 
@@ -392,14 +396,24 @@ export class CompactionEngine {
     let condensed = false;
     let createdSummaryId: string | undefined;
     let level: CompactionLevel | undefined;
+    // Seed from caller (cross-session replay) or start fresh
     let previousSummaryContent: string | undefined;
     let previousTokens = tokensBefore;
+    let isFirstLeafPass = true;
 
     // Phase 1: leaf passes over oldest raw chunks outside the protected tail.
     while (true) {
       const leafChunk = await this.selectOldestLeafChunk(conversationId);
       if (leafChunk.items.length === 0) {
         break;
+      }
+
+      // For first leaf pass: use caller's seed if provided, otherwise resolve from store
+      if (isFirstLeafPass) {
+        const MAX_PREVIOUS_SUMMARY_LENGTH = 50_000;
+        const seedSummary = input.previousSummaryContent ?? (await this.resolvePriorLeafSummaryContext(conversationId, leafChunk.items));
+        previousSummaryContent = seedSummary ? seedSummary.slice(0, MAX_PREVIOUS_SUMMARY_LENGTH) : undefined;
+        isFirstLeafPass = false;
       }
 
       const passTokensBefore = await this.summaryStore.getContextTokenCount(conversationId);

@@ -56,7 +56,8 @@ function makeConfig(provider: DaemonConfig["llm"]["provider"]): DaemonConfig {
     claudeCliProxy: { enabled: true, port: 3456, startupTimeoutMs: 10000, model: "claude-haiku-4-5" },
     cipher: { configPath: "/tmp/cipher.yml", collection: "test" },
     security: { sensitivePatterns: [] },
-  } as DaemonConfig;
+    summarizer: { mock: false },
+  } as unknown as DaemonConfig;
 }
 
 async function readMessageCount(cwd: string, sessionId: string): Promise<number> {
@@ -341,6 +342,99 @@ describe("POST /compact", () => {
 
     expect(compactRes.status).toBe(200);
     expect(await readMessageCount(tempDir, sessionId)).toBe(4);
+  });
+
+  it("accepts previous_summary and returns latestSummaryContent", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-compact-prev-summary-"));
+    tempDirs.push(tempDir);
+
+    // Use mock summarizer so compact actually produces a summary
+    daemon = await createDaemon(loadDaemonConfig("/x", {
+      daemon: { port: 0 },
+      summarizer: { mock: true },
+    }));
+
+    const baseUrl = `http://127.0.0.1:${daemon.address().port}`;
+    const sessionId = "prev-summary-session";
+
+    // Ingest enough messages to trigger compaction
+    const messages: Array<{ role: string; content: string; tokenCount: number }> = [];
+    for (let i = 0; i < 50; i++) {
+      messages.push({ role: "user", content: `msg ${i}`, tokenCount: 100 });
+      messages.push({ role: "assistant", content: `resp ${i}`, tokenCount: 100 });
+    }
+    const ingestRes = await fetch(`${baseUrl}/ingest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, cwd: tempDir, messages }),
+    });
+    expect(ingestRes.status).toBe(200);
+
+    // Compact with previous_summary — verify it doesn't reject and returns latestSummaryContent
+    const compactRes = await fetch(`${baseUrl}/compact`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: sessionId,
+        cwd: tempDir,
+        previous_summary: "prior context from previous session",
+      }),
+    });
+
+    expect(compactRes.status).toBe(200);
+    const body = await compactRes.json();
+    // Verify latestSummaryContent is returned (proves previous_summary was accepted and compact ran)
+    expect(typeof body.latestSummaryContent).toBe("string");
+    expect(body.latestSummaryContent.length).toBeGreaterThan(0);
+  });
+
+  it("returns latestSummaryContent when summary is created", async () => {
+    // Setup: create a real daemon with mock summarizer so compact produces a real summary
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-compact-latest-content-"));
+    tempDirs.push(tempDir);
+
+    daemon = await createDaemon(loadDaemonConfig("/x", {
+      daemon: { port: 0 },
+      summarizer: { mock: true },
+    }));
+
+    const baseUrl = `http://127.0.0.1:${daemon.address().port}`;
+    const sessionId = "latest-content-session";
+
+    // Ingest a substantial amount of messages to trigger compaction
+    const messageData: Array<{ role: string; content: string; tokenCount: number }> = [];
+    for (let i = 1; i <= 100; i++) {
+      messageData.push({ role: "user" as const, content: `user message ${i}`, tokenCount: 100 });
+      messageData.push({ role: "assistant" as const, content: `assistant response ${i}`, tokenCount: 100 });
+    }
+
+    const ingestRes = await fetch(`${baseUrl}/ingest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: sessionId,
+        cwd: tempDir,
+        messages: messageData,
+      }),
+    });
+    expect(ingestRes.status).toBe(200);
+
+    // Compact with sufficient data to trigger actual summarization
+    const compactRes = await fetch(`${baseUrl}/compact`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: sessionId,
+        cwd: tempDir,
+      }),
+    });
+
+    expect(compactRes.status).toBe(200);
+    const body = await compactRes.json();
+
+    // Mock summarizer guarantees a summary is created — assert unconditionally
+    expect(typeof body.latestSummaryContent).toBe("string");
+    expect(body.latestSummaryContent.length).toBeGreaterThan(0);
   });
 
   it("updates redaction_stats when transcript ingestion contains secrets", async () => {

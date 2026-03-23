@@ -1,6 +1,6 @@
 {
   "name": "@lossless-claude/lcm",
-  "version": "0.3.2",
+  "version": "0.4.1",
   "description": "Never lose context again. lossless-claude compresses Claude Code sessions into searchable memory — every message preserved, every insight remembered.",
   "type": "module",
   "main": "dist/src/memory/index.js",

@@ -1,4 +1,4 @@
-import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline";
@@ -424,7 +424,7 @@ export async function diagnose(options: DiagnoseOptions = {}): Promise<DiagnoseR
   const cutoffMs = (options._nowMs ?? Date.now()) - days * 24 * 60 * 60 * 1000;
   const sessionFiles = getProjectDirs(options)
     .flatMap((projectDir) => findSessionFiles(projectDir))
-    .map(({ path }) => ({ path, mtimeMs: statSync(path).mtimeMs }))
+    .map(({ path, mtime }) => ({ path, mtimeMs: mtime }))
     .filter((session) => session.mtimeMs >= cutoffMs);
 
   const sessions: ScanSessionResult[] = [];

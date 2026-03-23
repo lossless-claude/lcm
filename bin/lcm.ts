@@ -59,7 +59,10 @@ async function main() {
       break;
     }
     case "compact": {
-      if (argv.includes("--all")) {
+      const all = argv.includes("--all");
+      // Interactive batch compact: --all (all projects) or TTY stdin (current project only).
+      // If stdin is piped (hook invocation), fall through to hook dispatch.
+      if (all || process.stdin.isTTY) {
         const { batchCompact } = await import("../src/batch-compact.js");
         const { loadDaemonConfig } = await import("../src/daemon/config.js");
         const { join } = await import("node:path");
@@ -74,12 +77,14 @@ async function main() {
           exit(1);
         }
         const dryRun = argv.includes("--dry-run");
+        const replay = argv.includes("--replay");
         const minTokens = config.compaction.autoCompactMinTokens;
-        await batchCompact({ minTokens, dryRun, port });
+        const cwd = all ? undefined : process.cwd();
+        await batchCompact({ minTokens, dryRun, port, cwd, replay });
         break;
       }
     }
-    // falls through to hook dispatch
+    // falls through to hook dispatch (piped stdin = PreCompact hook invocation)
     case "restore":
     case "session-end":
     case "user-prompt": {
@@ -340,6 +345,7 @@ async function main() {
       const all = argv.includes("--all");
       const verbose = argv.includes("--verbose");
       const dryRun = argv.includes("--dry-run");
+      const replay = argv.includes("--replay");
 
       const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
       const { DaemonClient } = await import("../src/daemon/client.js");
@@ -357,12 +363,13 @@ async function main() {
       const client = new DaemonClient(`http://127.0.0.1:${port}`);
       console.log(`\n  Importing Claude Code sessions${all ? " (all projects)" : ""}...\n`);
 
-      const result = await importSessions(client, { all, verbose, dryRun });
+      const result = await importSessions(client, { all, verbose, dryRun, replay });
 
       if (dryRun) console.log("  [dry-run] No changes written.\n");
       console.log(`  ${result.imported} sessions imported (${result.totalMessages} messages)`);
       if (result.skippedEmpty > 0) console.log(`  ${result.skippedEmpty} skipped (empty transcript)`);
       if (result.failed > 0) console.log(`  ${result.failed} failed`);
+      if (replay) console.log("  [replay] Sessions compacted sequentially with threaded context.\n");
       console.log();
       break;
     }

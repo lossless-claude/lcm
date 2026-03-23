@@ -75,7 +75,6 @@ export const JUST_COMPACTED_TTL_MS = 30_000;
 // Guard against concurrent compactions for the same session
 const compactingNow = new Set<string>();
 
-type CompactClient = "claude" | "codex";
 
 export function createCompactHandler(config: DaemonConfig): RouteHandler {
   const summarizerCache = new Map<EffectiveProvider, Promise<LcmSummarizeFn | null>>();
@@ -91,7 +90,11 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
 
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
-    const { session_id, cwd, transcript_path, skip_ingest, client } = input;
+    const { session_id, cwd, transcript_path, skip_ingest, client, previous_summary } = input;
+    const MAX_PREVIOUS_SUMMARY_LENGTH = 50_000;
+    const validatedPreviousSummary = typeof previous_summary === "string"
+      ? previous_summary.slice(0, MAX_PREVIOUS_SUMMARY_LENGTH)
+      : undefined;
 
     if (!session_id || !cwd) {
       sendJson(res, 400, { error: "session_id and cwd are required" });
@@ -183,6 +186,7 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
             tokenBudget: 200_000,
             summarize,
             force: true,
+            previousSummaryContent: validatedPreviousSummary,
           });
 
           // Gather stats for the compaction message (always, regardless of actionTaken)
@@ -219,7 +223,16 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
               })
             : "No compaction needed.";
 
-          return { summary: summaryMsg };
+          let latestSummaryContent: string | undefined;
+          if (compactResult.createdSummaryId) {
+            const summaryRecord = await summaryStore.getSummary(compactResult.createdSummaryId);
+            latestSummaryContent = summaryRecord?.content;
+          } else if (allSummaries.length > 0) {
+            // Fall back to the most recent existing summary when no new summary was created
+            latestSummaryContent = allSummaries[allSummaries.length - 1]?.content;
+          }
+
+          return { summary: summaryMsg, latestSummaryContent };
         } finally {
           db.close();
         }
