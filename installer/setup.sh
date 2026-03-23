@@ -81,7 +81,7 @@ else
   elif [ "$PROVIDER" = "openai" ]; then
     read -r -p "  Model ID [gpt-4o-mini]: " MODEL_INPUT
     MODEL="${MODEL_INPUT:-gpt-4o-mini}"
-    echo "  \u25b8 Model: ${MODEL}"
+    echo "  ▸ Model: ${MODEL}"
     echo ""
   fi
 
@@ -119,7 +119,7 @@ else
     BASE_URL_INPUT="${BASE_URL_INPUT:-https://api.openai.com/v1}"
     BASE_URL="${BASE_URL_INPUT#"${BASE_URL_INPUT%%[![:space:]]*}"}"
     BASE_URL="${BASE_URL%"${BASE_URL##*[![:space:]]}"}"
-    echo "  \u25b8 Base URL: ${BASE_URL}"
+    echo "  ▸ Base URL: ${BASE_URL}"
     echo ""
 
     # Fail fast: public OpenAI API requires a key
@@ -170,38 +170,18 @@ try {
   process.exit(1);
 }
 
-const llmJson = JSON.stringify(llm, null, 2);
-const llmBlock = `"llm": ${llmJson}`;
-
-// Try in-place replacement of the existing "llm" key to preserve formatting.
-// The regex matches the "llm" key with any JSON value (object, null, string, etc.)
-// to prevent duplicate keys when the existing value is not a plain object.
-// Falls back to insert-before-last-brace when no existing key is found.
-const llmRegex = /"llm"\s*:\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)?\}|"(?:[^"\\]|\\.)*"|null|true|false|-?\d[\d.eE+\-]*)/s;
-let newRaw;
-if (llmRegex.test(raw)) {
-  newRaw = raw.replace(llmRegex, llmBlock);
-} else {
-  // No existing llm block — insert before the last closing brace.
-  // Parse first to assert the top-level is a plain object (not an array etc.)
-  // to prevent corrupting files with unusual-but-valid JSON structure.
-  let parsed;
-  try { parsed = JSON.parse(raw); } catch (_) { parsed = null; }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    console.error('Error: ' + configFile + ' is not a JSON object. Cannot merge llm block.');
-    process.exit(1);
-  }
-  const lastBrace = raw.lastIndexOf('}');
-  if (lastBrace === -1) {
-    newRaw = JSON.stringify({ ...parsed, llm }, null, 2) + '\n';
-  } else {
-    const before = raw.slice(0, lastBrace).replace(/\s*$/, '');
-    const needsComma = before !== '{' && !/,\s*$/.test(before);
-    newRaw = before + (needsComma ? ',\n  ' : '\n  ') + llmBlock + '\n' + raw.slice(lastBrace);
-  }
+// Parse the existing config, set the llm block, and write back.
+// Using JSON.parse+stringify is the only safe way to update config.json
+// without risking corruption from partial regex matches on nested structures.
+// Key order in the output follows insertion order: existing keys first, llm last.
+let parsed;
+try { parsed = JSON.parse(raw); } catch (_) { parsed = null; }
+if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+  console.error('Error: ' + configFile + ' is not a JSON object. Cannot merge llm block.');
+  process.exit(1);
 }
-
-if (!newRaw.endsWith('\n')) newRaw += '\n';
+const config = { ...parsed, llm };
+const newRaw = JSON.stringify(config, null, 2) + '\n';
 fs.writeFileSync(configFile, newRaw, { mode: 0o600 });
 // Explicitly tighten permissions even if the file already existed.
 fs.chmodSync(configFile, 0o600);
@@ -215,21 +195,13 @@ fi
 # ── Install hooks ──
 
 if [ -t 0 ]; then echo "  ──── Installing hooks"; echo ""; fi
-if [ -t 0 ]; then
-  lcm install
-else
-  lcm install >/dev/null 2>&1
-fi
+lcm install
 if [ -t 0 ]; then echo ""; fi
 
 # ── Verify ──
 
 if [ -t 0 ]; then echo "  ──── Running lcm doctor"; echo ""; fi
-if [ -t 0 ]; then
-  lcm doctor
-else
-  lcm doctor >/dev/null 2>&1
-fi
+lcm doctor
 if [ -t 0 ]; then echo ""; fi
 
 if [ -t 0 ]; then echo "  Setup complete."; echo ""; fi
