@@ -60,7 +60,7 @@ export function findUncompacted(minTokens: number, readOnly = false, cwdFilter?:
           AND (? OR COALESCE(s.sum_count, 0) = 0)
           AND COALESCE(m.raw_tokens, 0) >= ?
         ORDER BY COALESCE(m.raw_tokens, 0) DESC
-      `).all(replay ? 1 : 0, minTokens) as { conversation_id: number; session_id: string; messages: number; tokens: number }[];
+      `).all(replay ? 1 : 0, minTokens) as { conversation_id: number; session_id: string; messages: number; tokens: number; summaries: number }[];
 
       for (const row of rows) {
         results.push({
