@@ -75,7 +75,6 @@ export const JUST_COMPACTED_TTL_MS = 30_000;
 // Guard against concurrent compactions for the same session
 const compactingNow = new Set<string>();
 
-type CompactClient = "claude" | "codex";
 
 export function createCompactHandler(config: DaemonConfig): RouteHandler {
   const summarizerCache = new Map<EffectiveProvider, Promise<LcmSummarizeFn | null>>();
