@@ -13,7 +13,7 @@ Run the full memory curation pipeline: import, compact, and promote.
 Run the following commands sequentially via Bash:
 
 ```bash
-lcm import --all && lcm compact --all && lcm promote --all
+lcm import --all && lcm compact --all && lcm promote
 ```
 
 ### Options
@@ -23,8 +23,8 @@ If the user specifies options, append them to all three commands:
 - `--dry-run` — Preview without writing
 
 For example:
-- `/lcm-curate --verbose` → `lcm import --all --verbose && lcm compact --all --verbose && lcm promote --all --verbose`
-- `/lcm-curate --dry-run` → `lcm import --all --dry-run && lcm compact --all --dry-run && lcm promote --all --dry-run`
+- `/lcm-curate --verbose` → `lcm import --all --verbose && lcm compact --all --verbose && lcm promote --verbose`
+- `/lcm-curate --dry-run` → `lcm import --all --dry-run && lcm compact --all --dry-run && lcm promote --dry-run`
 
 The pipeline stops on the first failure and reports the result.
 

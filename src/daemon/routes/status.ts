@@ -29,9 +29,8 @@ export function createStatusHandler(config: DaemonConfig, startTime: number, act
 
     const dbPath = projectDbPath(cwd);
     if (existsSync(dbPath)) {
-      let db;
+      const db = new DatabaseSync(dbPath);
       try {
-        db = new DatabaseSync(dbPath);
         db.exec("PRAGMA busy_timeout = 5000");
 
         // Count messages
@@ -51,7 +50,7 @@ export function createStatusHandler(config: DaemonConfig, startTime: number, act
         summaryCount = 0;
         promotedCount = 0;
       } finally {
-        db?.close();
+        db.close();
       }
     }
 
