@@ -24,7 +24,7 @@ Manage the sensitive patterns used by lossless-claude to redact secrets before s
 If `lcm` is not on PATH, use the plugin's bundled binary instead:
 
 ```bash
-node ~/.claude/plugins/cache/lossless-claude/lcm/*/lcm.mjs
+node ~/.claude/plugins/cache/*/lossless-claude/*/lcm.mjs
 ```
 
 Replace `lcm` with the command above in all instructions below.
