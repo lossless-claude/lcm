@@ -59,6 +59,8 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
   let fileConfig: any = {};
   try { fileConfig = JSON.parse(readFileSync(configPath, "utf-8")); } catch {}
   const merged = deepMerge(structuredClone(DEFAULTS), deepMerge(fileConfig, overrides));
+  // Migrate legacy provider names from v0.3.0
+  if (merged.llm.provider === "claude-cli") merged.llm.provider = "claude-process";
   if (merged.llm.apiKey) merged.llm.apiKey = merged.llm.apiKey.replace(/\$\{(\w+)\}/g, (_: string, k: string) => e[k] ?? "");
 
   // Env var override: LCM_SUMMARY_PROVIDER takes precedence over config

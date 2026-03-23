@@ -13,17 +13,19 @@ Promote durable insights from summaries into cross-session memory.
 Run the following command via Bash:
 
 ```bash
-lcm promote --all
+lcm promote
 ```
 
 ### Options
 
-If the user specifies options, append them to the command:
+Pass user-specified flags through to the command:
+- `--all` — Promote across all projects (default: current project only)
 - `--verbose` — Show per-conversation details
 - `--dry-run` — Preview without writing
 
 For example:
-- `/lcm-promote --verbose` → `lcm promote --all --verbose`
-- `/lcm-promote --dry-run` → `lcm promote --all --dry-run`
+- `/lcm-promote --all` → `lcm promote --all`
+- `/lcm-promote --verbose` → `lcm promote --verbose`
+- `/lcm-promote --dry-run` → `lcm promote --dry-run`
 
 Display the output verbatim.

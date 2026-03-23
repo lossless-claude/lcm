@@ -19,18 +19,20 @@ lcm import
 ### Options
 
 If the user specifies options, append them to the command:
-- `--all` — Import all projects (default when no path given)
+- `--all` — Import all projects instead of just the current project
 - `--verbose` — Show per-session details
 - `--dry-run` — Preview without writing
+- `--replay` — Re-import all sessions in chronological order and compact each one immediately, threading context between sessions to build a temporal summary DAG. Use to rebuild memory from scratch.
 
 For example:
 - `/lcm-import --all` → `lcm import --all`
 - `/lcm-import --all --verbose` → `lcm import --all --verbose`
 - `/lcm-import --dry-run` → `lcm import --dry-run`
+- `/lcm-import --replay` → `lcm import --replay`
 
 Display the output verbatim.
 
-After importing, suggest running `lcm compact --all` to summarize the imported sessions.
+After importing, suggest running `lcm compact` to summarize the imported sessions (or `lcm compact --all` if `--all` was used with import). Note: when `--replay` is used, compaction is performed inline — no separate compact step is needed.
 
 ## When to use
 
