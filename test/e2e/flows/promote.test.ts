@@ -33,9 +33,9 @@ describe("Flow 6: Promote", { timeout: 60_000 }, () => {
     const result = await handle.client.post<{ processed: number; promoted: number }>("/promote", {
       cwd: handle.tmpDir,
     });
-    // In mock mode (disabled provider), compact is skipped so no summaries exist.
-    // processed and promoted may both be 0 — assert structural invariants only.
-    expect(result.processed).toBeGreaterThanOrEqual(0);
+    // In mock mode the mock summarizer is active, so compact persists summaries and
+    // promote scans and processes them. Assert at least one summary was processed.
+    expect(result.processed).toBeGreaterThan(0);
     expect(result.promoted).toBeGreaterThanOrEqual(0);
   });
 });
