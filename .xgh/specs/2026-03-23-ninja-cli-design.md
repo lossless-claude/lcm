@@ -186,7 +186,7 @@ interface PipelineStep {
 
 | Command | `count()` source | Notes |
 |---------|-----------------|-------|
-| `import` | `findSessionFiles().length` | Replay is now the default |
+| `import` | `findSessionFiles().length` | Replay becomes default in **Phase 2**; Phase 1 keeps `--replay` opt-in |
 | `compact --all` | `listSessions().length` | Already knows total upfront |
 | `promote` | pre-call `/promote` with `dry_run: true` | New daemon support needed — `/promote` must accept `dry_run` and return `{ total }` without writing |
 | `curate` | Chains all three steps | **New command** introduced by this work. Does not exist yet. Phases: `[Import, Compact, Promote]` |
