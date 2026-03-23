@@ -13,7 +13,7 @@
         "repo": "lossless-claude/lcm"
       },
       "description": "Lossless context management — DAG-based summarization that preserves every message",
-      "version": "0.4.2",
+      "version": "0.5.0",
       "strict": true
     }
   ]
