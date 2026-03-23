@@ -65,8 +65,8 @@ if git ls-remote --exit-code --heads origin "$SYNC_BRANCH" >/dev/null 2>&1; then
 fi
 
 git checkout -b "$SYNC_BRANCH"
-if ! git merge --ff-only origin/main; then
-  err "Unable to fast-forward $SYNC_BRANCH to origin/main. Has develop diverged from main?"
+if ! git merge --no-edit origin/main; then
+  err "Unable to merge origin/main into $SYNC_BRANCH. Resolve conflicts manually."
 fi
 git push -u origin "$SYNC_BRANCH"
 
