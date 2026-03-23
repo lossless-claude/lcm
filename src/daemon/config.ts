@@ -65,6 +65,7 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
     merged.compaction.promotionThresholds.dedupCandidateLimit = merged.compaction.promotionThresholds.mergeMaxEntries;
   }
   delete merged.compaction.promotionThresholds.mergeMaxEntries;
+  delete merged.compaction.promotionThresholds.confidenceDecayRate;
   if (merged.llm.apiKey) merged.llm.apiKey = merged.llm.apiKey.replace(/\$\{(\w+)\}/g, (_: string, k: string) => e[k] ?? "");
 
   // Env var override: LCM_SUMMARY_PROVIDER takes precedence over config
