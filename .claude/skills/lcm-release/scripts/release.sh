@@ -138,7 +138,7 @@ if run_step 0; then
       --body "Pre-release sync: brings develop up to date with main." \
       --json number --jq '.number')
     echo "  Opened pre-release sync PR #$PRE_PR — merging..."
-    gh pr merge "$PRE_PR" --repo "$REPO" --rebase
+    gh pr merge "$PRE_PR" --repo "$REPO" --rebase --yes --delete-branch
     git checkout develop
     git pull --ff-only origin develop || err "develop diverged after pre-release sync merge. Resolve manually."
     ok "develop synced with main."
@@ -281,7 +281,7 @@ fi
 # ─── STEP 7: Merge release PR ────────────────────────────────────────────────
 if run_step 7; then
   step "Step 7 — Merge release PR #$PR_NUMBER"
-  gh pr merge "$PR_NUMBER" --repo "$REPO" --merge
+  gh pr merge "$PR_NUMBER" --repo "$REPO" --merge --yes --delete-branch
   MERGE_SHA=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json mergeCommit --jq '.mergeCommit.oid')
   [[ -z "$MERGE_SHA" || "$MERGE_SHA" == "null" ]] && \
     err "Could not determine merge commit SHA for PR #$PR_NUMBER. Check https://github.com/$REPO/pull/$PR_NUMBER."
