@@ -2,7 +2,7 @@ import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import type { DaemonClient } from "./daemon/client.js";
-import { formatNumber } from "./stats.js";
+import { formatNumber, formatRatio } from "./stats.js";
 
 interface ImportOptions {
   all?: boolean;
@@ -180,7 +180,7 @@ export async function importSessions(
             if (options.verbose) {
               const ctx = hadPrevious ? ' (with prior context)' : '';
               if (typeof compactRes.tokensBefore === 'number' && typeof compactRes.tokensAfter === 'number' && compactRes.tokensBefore > 0) {
-                const ratio = compactRes.tokensAfter > 0 ? (compactRes.tokensBefore / compactRes.tokensAfter).toFixed(1) : '\u2013';
+                const ratio = formatRatio(compactRes.tokensBefore, compactRes.tokensAfter);
                 console.log(`  \ud83e\udde0 ${sessionId}: ${formatNumber(compactRes.tokensBefore)} \u2192 ${formatNumber(compactRes.tokensAfter)}  (${ratio}\u00d7)${ctx}`);
               } else {
                 console.log(`  \ud83e\udde0 ${sessionId}: compacted${ctx}`);

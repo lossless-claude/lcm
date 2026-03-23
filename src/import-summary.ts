@@ -1,5 +1,5 @@
 import type { ImportResult } from "./import.js";
-import { formatNumber } from "./stats.js";
+import { formatNumber, formatRatio } from "./stats.js";
 
 export function printImportSummary(
   result: ImportResult,
@@ -26,9 +26,7 @@ export function printImportSummary(
     ];
 
     if (opts.replay && result.tokensAfter > 0) {
-      const ratio = result.totalTokens > 0 && result.tokensAfter > 0
-        ? (result.totalTokens / result.tokensAfter).toFixed(1)
-        : "\u2013";
+      const ratio = formatRatio(result.totalTokens, result.tokensAfter);
       const freed = result.totalTokens - result.tokensAfter;
       rows.push(
         ["Tokens after", formatNumber(result.tokensAfter)],
