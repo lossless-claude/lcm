@@ -75,6 +75,10 @@ These three tools **chain** from broad to deep:
 - It's already documented in CLAUDE.md or memory files
 - It's general knowledge, not project-specific
 
+## Binary Resolution
+
+If any Bash command below uses `lcm` and it is not on PATH, use the plugin's bundled binary instead: `node ~/.claude/plugins/cache/lossless-claude/lcm/*/lcm.mjs`
+
 ## Error Self-Healing
 
 ### Agent-Fixable (handle automatically)

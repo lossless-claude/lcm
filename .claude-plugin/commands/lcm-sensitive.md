@@ -19,6 +19,16 @@ Manage the sensitive patterns used by lossless-claude to redact secrets before s
 /lcm-sensitive purge [--all] --yes
 ```
 
+## Binary Resolution
+
+If `lcm` is not on PATH, use the plugin's bundled binary instead:
+
+```bash
+node ~/.claude/plugins/cache/lossless-claude/lcm/*/lcm.mjs
+```
+
+Replace `lcm` with the command above in all instructions below.
+
 ## Instructions
 
 Run the appropriate `lcm sensitive` subcommand via Bash based on the user's intent:

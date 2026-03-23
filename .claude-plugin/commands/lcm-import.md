@@ -8,6 +8,16 @@ user_invocable: true
 
 Import Claude Code session transcripts into lcm memory.
 
+## Binary Resolution
+
+If `lcm` is not on PATH, use the plugin's bundled binary instead:
+
+```bash
+node ~/.claude/plugins/cache/lossless-claude/lcm/*/lcm.mjs
+```
+
+Replace `lcm` with the command above in all instructions below.
+
 ## Instructions
 
 Run the following command via Bash:
