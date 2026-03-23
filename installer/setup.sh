@@ -169,28 +169,27 @@ if (!fs.existsSync(configFile)) {
   process.exit(0);
 }
 
-// Load existing config. Fail loudly on parse errors to prevent data loss.
-let raw;
+// Load and parse existing config. Fail loudly on errors to prevent data loss.
+// Parse once and reuse the result for the object-type check and merge.
+let existing;
 try {
-  raw = fs.readFileSync(configFile, 'utf8');
-  JSON.parse(raw); // validate
+  const raw = fs.readFileSync(configFile, 'utf8');
+  existing = JSON.parse(raw);
 } catch (err) {
   console.error(`Error: Failed to parse existing config at ${configFile}.`);
   console.error('The file contains invalid JSON. Fix or remove it, then re-run setup.');
   process.exit(1);
 }
 
-// Parse the existing config, set the llm block, and write back.
-// Using JSON.parse+stringify is the only safe way to update config.json
-// without risking corruption from partial regex matches on nested structures.
-// Key order in the output follows insertion order: existing keys first, llm last.
-let parsed;
-try { parsed = JSON.parse(raw); } catch (_) { parsed = null; }
-if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+if (typeof existing !== 'object' || existing === null || Array.isArray(existing)) {
   console.error('Error: ' + configFile + ' is not a JSON object. Cannot merge llm block.');
   process.exit(1);
 }
-const config = { ...parsed, llm };
+
+// Set the llm block and rewrite the whole file.
+// JSON.parse+stringify is the safe way — no regex partial-match risk.
+// Key order: existing keys first (insertion order), llm last.
+const config = { ...existing, llm };
 const newRaw = JSON.stringify(config, null, 2) + '\n';
 fs.writeFileSync(configFile, newRaw, { mode: 0o600 });
 // Explicitly tighten permissions even if the file already existed.
