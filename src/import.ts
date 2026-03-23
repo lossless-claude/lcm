@@ -8,6 +8,7 @@ interface ImportOptions {
   verbose?: boolean;
   dryRun?: boolean;
   cwd?: string;
+  replay?: boolean;
   /** Override ~/.claude/projects path — used in tests only */
   _claudeProjectsDir?: string;
   /** Override ~/.lossless-claude path — used in tests only */
@@ -105,10 +106,14 @@ export async function importSessions(
 
   for (const { dir, cwd } of projectDirs) {
     const sessionFiles = findSessionFiles(dir);
+    let previousSummary: string | undefined;  // resets per project
 
     for (const { path, sessionId } of sessionFiles) {
       if (options.dryRun) {
-        if (options.verbose) console.log(`  [dry-run] ${sessionId}`);
+        if (options.verbose) {
+          const replayNote = options.replay ? " (would compact)" : "";
+          console.log(`  [dry-run] ${sessionId}${replayNote}`);
+        }
         result.imported++;
         continue;
       }
@@ -127,8 +132,39 @@ export async function importSessions(
           result.totalMessages += res.ingested;
           if (options.verbose) console.log(`  \u2713 ${sessionId}: ${res.ingested} messages`);
         }
+
+        // Replay: compact immediately after every session (even already-ingested ones)
+        // so that re-runs are idempotent and the temporal chain stays intact.
+        if (options.replay) {
+          try {
+            const compactRes = await client.post<{
+              summary?: string;
+              latestSummaryContent?: string;
+              skipped?: boolean;
+            }>('/compact', {
+              session_id: sessionId,
+              cwd,
+              skip_ingest: true,
+              client: 'claude',
+              ...(previousSummary !== undefined ? { previous_summary: previousSummary } : {}),
+            });
+            if (compactRes.latestSummaryContent) {
+              previousSummary = compactRes.latestSummaryContent;
+            }
+            if (options.verbose) {
+              const ctx = previousSummary ? ' (with prior context)' : '';
+              console.log(`  \ud83e\udde0 ${sessionId}: compacted${ctx}`);
+            }
+          } catch (err) {
+            // Non-fatal: import succeeded; compact failure breaks the chain at this link.
+            if (options.verbose) {
+              console.log(`  \u26a0 ${sessionId}: compact failed \u2014 ${err instanceof Error ? err.message : 'unknown'}`);
+            }
+          }
+        }
       } catch (err) {
         result.failed++;
+        if (options.replay) previousSummary = undefined; // chain broken by ingest failure
         if (options.verbose) console.log(`  \u2717 ${sessionId}: ${err instanceof Error ? err.message : "failed"}`);
       }
     }

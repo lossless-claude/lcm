@@ -230,6 +230,44 @@ describe("importSessions", () => {
     expect(result.imported).toBe(0);
   });
 
+  it("replay mode calls compact after each session in mtime order, threading latestSummaryContent", async () => {
+    const claudeProjectsDir = makeTmpDir();
+    const cwd = "/test/project";
+    const hash = cwdToProjectHash(cwd);
+    const projDir = join(claudeProjectsDir, hash);
+    mkdirSync(projDir, { recursive: true });
+
+    const f1 = join(projDir, "session-1.jsonl");
+    const f2 = join(projDir, "session-2.jsonl");
+    writeFileSync(f2, "");  // write f2 first so FS order ≠ mtime order
+    writeFileSync(f1, "");
+    const oldTime = new Date(Date.now() - 10_000);
+    utimesSync(f1, oldTime, oldTime);  // f1 is older
+
+    const compactBodies: { session_id: string; previous_summary?: string }[] = [];
+    const client = makeMockClient(async (path: string, body: any) => {
+      if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
+      if (path === "/compact") {
+        compactBodies.push({ session_id: body.session_id, previous_summary: body.previous_summary });
+        return { summary: "stats", latestSummaryContent: `summary-of-${body.session_id}` };
+      }
+    });
+
+    await importSessions(client, {
+      replay: true,
+      verbose: false,
+      cwd,
+      _claudeProjectsDir: claudeProjectsDir,
+    });
+
+    // Both sessions were compacted, in mtime order
+    expect(compactBodies).toHaveLength(2);
+    expect(compactBodies[0].session_id).toBe("session-1");
+    expect(compactBodies[0].previous_summary).toBeUndefined();
+    expect(compactBodies[1].session_id).toBe("session-2");
+    expect(compactBodies[1].previous_summary).toBe("summary-of-session-1");
+  });
+
   it("returns empty result if project dir does not exist", async () => {
     const claudeProjectsDir = makeTmpDir();
     const cwd = "/home/user/nonexistent";
