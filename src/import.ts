@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import type { DaemonClient } from "./daemon/client.js";
+import { formatNumber } from "./stats.js";
 
 interface ImportOptions {
   all?: boolean;
@@ -15,11 +16,13 @@ interface ImportOptions {
   _lcmDir?: string;
 }
 
-interface ImportResult {
+export interface ImportResult {
   imported: number;
   skippedEmpty: number;
   failed: number;
   totalMessages: number;
+  totalTokens: number;
+  tokensAfter: number;
 }
 
 export function cwdToProjectHash(cwd: string): string {
@@ -98,7 +101,7 @@ export async function importSessions(
   options: ImportOptions = {}
 ): Promise<ImportResult> {
   const claudeProjectsDir = options._claudeProjectsDir ?? join(homedir(), '.claude', 'projects');
-  const result: ImportResult = { imported: 0, skippedEmpty: 0, failed: 0, totalMessages: 0 };
+  const result: ImportResult = { imported: 0, skippedEmpty: 0, failed: 0, totalMessages: 0, totalTokens: 0, tokensAfter: 0 };
 
   const projectDirs: { dir: string; cwd: string }[] = [];
 
@@ -142,11 +145,12 @@ export async function importSessions(
         });
         if (res.ingested === 0 && res.totalTokens === 0) {
           result.skippedEmpty++;
-          if (options.verbose) console.log(`  \u2298 ${sessionId}: empty or already ingested`);
+          if (options.verbose) console.log(`  \u2298  ${sessionId}: empty or already ingested`);
         } else {
           result.imported++;
           result.totalMessages += res.ingested;
-          if (options.verbose) console.log(`  \u2713 ${sessionId}: ${res.ingested} messages`);
+          result.totalTokens += res.totalTokens;
+          if (options.verbose) console.log(`  \u2713  ${sessionId}: ${res.ingested} messages (${formatNumber(res.totalTokens)} tokens)`);
         }
 
         // Replay: compact immediately after every session (even already-ingested ones)
@@ -157,6 +161,8 @@ export async function importSessions(
               summary?: string;
               latestSummaryContent?: string;
               skipped?: boolean;
+              tokensBefore?: number;
+              tokensAfter?: number;
             }>('/compact', {
               session_id: sessionId,
               cwd,
@@ -168,22 +174,30 @@ export async function importSessions(
             if (compactRes.latestSummaryContent !== undefined) {
               previousSummary = compactRes.latestSummaryContent;
             }
+            if (typeof compactRes.tokensAfter === 'number') {
+              result.tokensAfter += compactRes.tokensAfter;
+            }
             if (options.verbose) {
               const ctx = hadPrevious ? ' (with prior context)' : '';
-              console.log(`  \ud83e\udde0 ${sessionId}: compacted${ctx}`);
+              if (typeof compactRes.tokensBefore === 'number' && typeof compactRes.tokensAfter === 'number' && compactRes.tokensBefore > 0) {
+                const ratio = compactRes.tokensAfter > 0 ? (compactRes.tokensBefore / compactRes.tokensAfter).toFixed(1) : '\u2013';
+                console.log(`  \ud83e\udde0 ${sessionId}: ${formatNumber(compactRes.tokensBefore)} \u2192 ${formatNumber(compactRes.tokensAfter)}  (${ratio}\u00d7)${ctx}`);
+              } else {
+                console.log(`  \ud83e\udde0 ${sessionId}: compacted${ctx}`);
+              }
             }
           } catch (err) {
             // Non-fatal: import succeeded; compact failure breaks the chain at this link.
             previousSummary = undefined;
             if (options.verbose) {
-              console.error(`  ⚠ [replay] compact failed for session ${sessionId}: ${err instanceof Error ? err.message : 'unknown error'}`);
+              console.error(`  \u26a0  [replay] compact failed for session ${sessionId}: ${err instanceof Error ? err.message : 'unknown error'}`);
             }
           }
         }
       } catch (err) {
         result.failed++;
         if (options.replay) previousSummary = undefined; // chain broken by ingest failure
-        if (options.verbose) console.log(`  \u2717 ${sessionId}: ${err instanceof Error ? err.message : "failed"}`);
+        if (options.verbose) console.log(`  \u2717  ${sessionId}: ${err instanceof Error ? err.message : "failed"}`);
       }
     }
   }
