@@ -41,3 +41,26 @@ These rules apply to **new and changed code** in the PR. Do not flag pre-existin
 
 ### Type Completeness
 - When adding fields to shared types (e.g., `DaemonConfig`), verify all test mocks and fixtures include the new field
+
+### Shell Script Safety
+- All `gh` CLI commands that parse output must use `--json` + `--jq` (or pipe to `node -pe "JSON.parse(...)"`), never `grep`/`sed`/`awk` on human-readable output
+- All `gh pr merge` and `gh pr create` commands must include `--repo "$REPO"` — the script may run from a fork or different remote
+- `git pull` in automation must use `--ff-only` to prevent unintended merge commits
+- Hardcoded timeouts and limits (e.g., `MAX_WAIT=300`) should be overridable via environment variables (e.g., `${PUBLISH_MAX_WAIT:-900}`)
+- Semver version arguments interpolated into shell commands must be validated against a regex before use
+- `set -euo pipefail` is required at the top of all bash scripts
+
+### JSON File Manipulation
+- Never use `JSON.parse` + `JSON.stringify` to update a single field in a JSON file — this reformats the entire file (indentation, key order, trailing newlines)
+- Use targeted in-place string replacement (e.g., `s.replace(/"version": "[^"]*"/, ...)`) to preserve original formatting
+- After any version bump, verify all version files agree (package.json, plugin.json, marketplace.json)
+
+### Documentation Consistency
+- When code and documentation describe the same behavior (flags, merge strategies, command descriptions), verify they match
+- If a PR changes a flag or behavior in code, check whether any markdown files, help text, or table entries in the same PR need a corresponding update
+- Help text summaries in command tables must accurately describe what the command does — e.g., a "purge" command that deletes all project data should not be summarized as "remove patterns"
+
+### Merge Strategy Consistency
+- All sync PRs (develop←main) must use `--merge`, never `--rebase` — rebase fails when the PR contains merge commits from main
+- Release PRs (branch→main) use `--merge` to preserve the commit SHA for publish.yml tracking
+- If multiple `gh pr merge` calls exist in the same script or related scripts, verify they use consistent merge strategies
