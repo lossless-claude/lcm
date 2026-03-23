@@ -184,7 +184,8 @@ if run_step 2; then
 else
   step "Step 2 — Create release branch"; skip
   git checkout "$RELEASE_BRANCH" 2>/dev/null || \
-    err "Cannot resume: branch $RELEASE_BRANCH not found locally. Run without --from-step to start fresh."
+    git checkout -b "$RELEASE_BRANCH" "origin/$RELEASE_BRANCH" 2>/dev/null || \
+    err "Cannot resume: branch $RELEASE_BRANCH not found locally or on origin. Run without --from-step to start fresh."
 fi
 
 # ─── STEP 3: Bump all three version files ────────────────────────────────────
@@ -308,7 +309,7 @@ if run_step 8; then
     WAIT_SECS=$((WAIT_SECS + 5))
     RUN_ID=$(gh run list --repo "$REPO" --workflow publish.yml --branch main --limit 20 \
       --json databaseId,headSha \
-      --jq "map(select(.headSha == \"$MERGE_SHA\")) | .[0].databaseId // empty")
+      --jq "map(select(.headSha == \"$MERGE_SHA\")) | .[0].databaseId // empty" 2>/dev/null || true)
   done
 
   echo "  Watching run $RUN_ID..."
