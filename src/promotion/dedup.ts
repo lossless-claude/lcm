@@ -36,10 +36,14 @@ export async function deduplicateAndInsert(params: DedupParams): Promise<string>
   const canonical = duplicates[0];
   // Use max confidence across all matched duplicates + incoming to avoid losing strong signals
   const refreshedConfidence = Math.max(confidence, ...duplicates.map((d) => d.confidence));
+  // Merge tags from canonical, all matched duplicates, and incoming to avoid losing tag signals
+  const mergedTags = Array.from(
+    new Set([...canonical.tags, ...duplicates.slice(1).flatMap((d) => d.tags), ...tags]),
+  );
 
   store.transaction(() => {
-    // Refresh canonical's confidence — repeated sightings reinforce the entry
-    store.update(canonical.id, { confidence: refreshedConfidence });
+    // Refresh canonical's confidence and tags — repeated sightings reinforce and enrich the entry
+    store.update(canonical.id, { confidence: refreshedConfidence, tags: mergedTags });
 
     // Archive weaker duplicates (soft-delete: removed from FTS5, recoverable)
     for (let i = 1; i < duplicates.length; i++) {

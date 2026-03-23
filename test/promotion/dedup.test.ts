@@ -142,9 +142,16 @@ describe("deduplicateAndInsert", () => {
       thresholds: { dedupBm25Threshold: 0.000001, dedupCandidateLimit: 3 },
     });
 
+    // Only canonical is searchable
     const results = store.search("PostgreSQL", 10);
-    // Only 1 result: the canonical (incoming is archived and not searchable)
     expect(results.length).toBe(1);
+
+    // Both rows exist in DB: canonical (active) + incoming (archived)
+    const rows = db
+      .prepare("SELECT archived_at FROM promoted WHERE project_id = ? ORDER BY rowid ASC")
+      .all("p1") as Array<{ archived_at: string | null }>;
+    expect(rows.length).toBe(2);
+    expect(rows.filter((r) => r.archived_at !== null).length).toBe(1);
   });
 
   it("upgrades confidence when incoming is higher than canonical", async () => {
