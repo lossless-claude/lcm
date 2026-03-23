@@ -36,6 +36,10 @@ fi
 
 git checkout develop
 git pull --ff-only origin develop || err "develop has diverged from origin/develop. Resolve manually before syncing."
+AHEAD=$(git rev-list --count origin/develop..develop)
+if [[ "$AHEAD" -ne 0 ]]; then
+  err "Local develop has $AHEAD commit(s) not on origin/develop. Push or reset develop before running this script."
+fi
 git fetch origin main
 
 BEHIND=$(git rev-list --count develop..origin/main)
@@ -83,5 +87,9 @@ ok "develop is now in sync with main (linear history preserved)."
 echo "  Checking out updated develop and cleaning up local sync branch..."
 git checkout develop
 git pull --ff-only origin develop || err "develop has diverged after sync merge. Resolve manually."
-git branch -d "$SYNC_BRANCH" || true
-ok "Local develop is up to date and sync branch cleaned up."
+if git show-ref --verify --quiet "refs/heads/$SYNC_BRANCH"; then
+  git branch -D "$SYNC_BRANCH" || err "Failed to delete local sync branch $SYNC_BRANCH. Please delete it manually."
+  ok "Local develop is up to date and sync branch cleaned up."
+else
+  ok "Local develop is up to date (no local sync branch to clean up)."
+fi
