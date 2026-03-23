@@ -115,7 +115,7 @@ lcm expand <nodeId>      → full decompressed content
 
 | Error | Recovery |
 |---|---|
-| Daemon not running | Run `lcm start`, then retry |
+| Daemon not running | Run `lcm daemon start`, then retry |
 | "No results" from search | Try `lcm grep` with different keywords, or broaden query |
 | Node not found on expand | Use `lcm search` to find correct nodeId |
 

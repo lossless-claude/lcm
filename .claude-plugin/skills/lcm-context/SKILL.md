@@ -81,7 +81,7 @@ These three tools **chain** from broad to deep:
 
 | Error | Recovery |
 |---|---|
-| Daemon not running | Run `lcm start` via Bash, then retry |
+| Daemon not running | Run `lcm daemon start --detach` via Bash, then retry |
 | "No results" from search | Try `lcm_grep` with different keywords, or broaden the query |
 | Node not found on expand | Use `lcm_search` to find the correct nodeId |
 | Store succeeds but daemon restarted before SessionEnd | Call `lcm_doctor` to verify persistence; re-store if the node is missing |
