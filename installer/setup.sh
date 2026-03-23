@@ -73,12 +73,14 @@ else
 
   if [ "$PROVIDER" = "anthropic" ]; then
     if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-      echo "  ANTHROPIC_API_KEY is not set in your environment."
-      echo "  Please export ANTHROPIC_API_KEY before running lcm, for example:"
+      echo "  ERROR: ANTHROPIC_API_KEY is not set in your environment."
+      echo ""
+      echo "  Export it first, then re-run setup:"
       echo "    export ANTHROPIC_API_KEY=your_api_key_here"
-    else
-      echo "  ▸ Using ANTHROPIC_API_KEY from environment"
+      echo ""
+      exit 1
     fi
+    echo "  ▸ Using ANTHROPIC_API_KEY from environment"
     # Write env-var placeholder — config.ts expands \${VAR} at runtime
     API_KEY='${ANTHROPIC_API_KEY}'
     echo ""
@@ -86,17 +88,20 @@ else
 
   if [ "$PROVIDER" = "openai" ]; then
     if [ -z "${OPENAI_API_KEY:-}" ]; then
-      echo "  OPENAI_API_KEY is not set in your environment."
-      echo "  Please export OPENAI_API_KEY before running lcm, for example:"
+      echo "  ERROR: OPENAI_API_KEY is not set in your environment."
+      echo ""
+      echo "  Export it first, then re-run setup:"
       echo "    export OPENAI_API_KEY=your_api_key_here"
-    else
-      echo "  ▸ Using OPENAI_API_KEY from environment"
+      echo ""
+      exit 1
     fi
+    echo "  ▸ Using OPENAI_API_KEY from environment"
     # Write env-var placeholder — config.ts expands \${VAR} at runtime
     API_KEY='${OPENAI_API_KEY}'
 
     read -r -p "  Base URL [https://api.openai.com/v1]: " BASE_URL_INPUT
-    BASE_URL="${BASE_URL_INPUT:-https://api.openai.com/v1}"
+    # Trim leading/trailing whitespace from user input
+    BASE_URL="$(echo "${BASE_URL_INPUT:-https://api.openai.com/v1}" | xargs)"
     echo "  ▸ Base URL: ${BASE_URL}"
     echo ""
   fi
@@ -112,10 +117,19 @@ node - "$PROVIDER" "$MODEL" "$API_KEY" "$BASE_URL" "$CONFIG_FILE" <<'NODE'
 const fs = require('fs');
 const [provider, model, apiKey, baseURL, configFile] = process.argv.slice(2);
 
-// Load existing config (preserve non-llm keys)
+// Load existing config (preserve non-llm keys).
+// Fail loudly if the file exists but contains invalid JSON to avoid data loss.
 let existing = {};
 if (fs.existsSync(configFile)) {
-  try { existing = JSON.parse(fs.readFileSync(configFile, 'utf8')); } catch (_) {}
+  let raw;
+  try {
+    raw = fs.readFileSync(configFile, 'utf8');
+    existing = JSON.parse(raw);
+  } catch (err) {
+    console.error(`Error: Failed to parse existing config at ${configFile}.`);
+    console.error('The file contains invalid JSON. Fix or remove it, then re-run setup.');
+    process.exit(1);
+  }
 }
 
 const llm = { provider };
@@ -123,8 +137,12 @@ if (model)   llm.model   = model;
 if (apiKey)  llm.apiKey  = apiKey;
 if (baseURL) llm.baseURL = baseURL;
 
+// Merge: preserve all existing top-level keys, overwrite only the llm block.
 const config = { ...existing, llm };
-fs.writeFileSync(configFile, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
+const out = JSON.stringify(config, null, 2) + '\n';
+fs.writeFileSync(configFile, out, { mode: 0o600 });
+// Explicitly tighten permissions even if the file already existed.
+fs.chmodSync(configFile, 0o600);
 NODE
 
 if [ -t 0 ]; then
