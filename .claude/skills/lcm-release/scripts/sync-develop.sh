@@ -49,14 +49,16 @@ if ! git merge --ff-only origin/main; then
 fi
 git push -u origin "$SYNC_BRANCH"
 
-SYNC_URL=$(gh pr create \
+SYNC_JSON=$(gh pr create \
   --repo "$REPO" \
   --base develop \
   --title "chore: sync develop with main after v$VERSION release" \
-  --body "Brings the v$VERSION release merge commit back into develop.")
-SYNC_PR=$(echo "$SYNC_URL" | grep -o '[0-9]*$')
+  --body "Brings the v$VERSION release merge commit back into develop." \
+  --json number,url)
+SYNC_PR=$(node -pe "JSON.parse(process.argv[1]).number" "$SYNC_JSON")
+SYNC_URL=$(node -pe "JSON.parse(process.argv[1]).url" "$SYNC_JSON")
 
-echo "  Opened sync PR #$SYNC_PR — merging..."
+echo "  Opened sync PR #$SYNC_PR: $SYNC_URL — merging..."
 gh pr merge "$SYNC_PR" --repo "$REPO" --merge
 
 ok "develop synced with main."
