@@ -705,7 +705,7 @@ describe("importSessions — provider: codex", () => {
     writeFileSync(join(archivedDir, "codex-session.jsonl"), makeCodexSessionMetaLine("codex-session", "/workspace"));
 
     const sessionIds: string[] = [];
-    const client = makeMockClient(async (path, body) => {
+    const client = makeMockClient(async (_path, body) => {
       sessionIds.push((body as { session_id: string }).session_id);
       return { ingested: 1, totalTokens: 100 };
     });
