@@ -29,9 +29,13 @@ vi.mock("../../src/daemon/client.js", () => ({
 vi.mock("../../src/daemon/config.js", () => ({
   loadDaemonConfig: vi.fn().mockReturnValue({ daemon: { port: 3737 } }),
 }));
+vi.mock("../../src/bootstrap.js", () => ({
+  ensureBootstrapped: vi.fn().mockResolvedValue(undefined),
+}));
 
 import { validateAndFixHooks } from "../../src/hooks/auto-heal.js";
 import { dispatchHook } from "../../src/hooks/dispatch.js";
+import { ensureBootstrapped } from "../../src/bootstrap.js";
 
 describe("HOOK_COMMANDS", () => {
   it("has an entry for every REQUIRED_HOOKS event", () => {
@@ -98,5 +102,19 @@ describe("dispatchHook", () => {
     expect(handlePreCompact).toHaveBeenCalledWith("{}", expect.anything(), 9999);
     // Reset to default
     vi.mocked(loadDaemonConfig).mockReturnValue({ daemon: { port: 3737 } } as any);
+  });
+
+  it("calls ensureBootstrapped with session_id before dispatching", async () => {
+    vi.mocked(handlePreCompact).mockResolvedValue({ exitCode: 0, stdout: "" });
+    vi.mocked(ensureBootstrapped).mockClear();
+    await dispatchHook("compact", JSON.stringify({ session_id: "test-sess-123" }));
+    expect(ensureBootstrapped).toHaveBeenCalledWith("test-sess-123");
+  });
+
+  it("does not block hooks if ensureBootstrapped throws", async () => {
+    vi.mocked(ensureBootstrapped).mockRejectedValueOnce(new Error("bootstrap failed"));
+    vi.mocked(handlePreCompact).mockResolvedValue({ exitCode: 0, stdout: "" });
+    const result = await dispatchHook("compact", JSON.stringify({ session_id: "s1" }));
+    expect(result.exitCode).toBe(0);
   });
 });

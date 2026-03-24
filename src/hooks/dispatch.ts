@@ -11,6 +11,15 @@ export async function dispatchHook(
   command: HookCommand,
   stdinText: string,
 ): Promise<{ exitCode: number; stdout: string }> {
+  // Lazy bootstrap: create config + start daemon on first hook fire per session
+  try {
+    const { session_id } = JSON.parse(stdinText || "{}");
+    if (session_id) {
+      const { ensureBootstrapped } = await import("../bootstrap.js");
+      await ensureBootstrapped(session_id);
+    }
+  } catch {} // bootstrap failure must not block hooks
+
   validateAndFixHooks();
 
   const { DaemonClient } = await import("../daemon/client.js");
