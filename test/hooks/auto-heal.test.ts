@@ -125,4 +125,44 @@ describe("validateAndFixHooks", () => {
     expect(deps.writeFileSync).not.toHaveBeenCalled();
     expect(deps.appendFileSync).not.toHaveBeenCalled();
   });
+
+  it("rewrites 'lcm compact' without --hook: entry is removed (matches plugin.json duplicate)", () => {
+    // After rewrite: "lcm compact --hook" matches REQUIRED_HOOKS → mergeClaudeSettings removes it.
+    // Result: no PreCompact entry in settings.json.
+    const deps = makeDeps({
+      readFileSync: vi.fn().mockReturnValue(JSON.stringify({
+        hooks: {
+          PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact" }] }],
+        },
+      })),
+    });
+    validateAndFixHooks(deps);
+    expect(deps.writeFileSync).toHaveBeenCalledTimes(1);
+    const written = JSON.parse((deps.writeFileSync as ReturnType<typeof vi.fn>).mock.calls[0][1]);
+    // "lcm compact" (without --hook) must be gone
+    const precompact = written.hooks?.PreCompact ?? [];
+    const hasOldCommand = precompact.some((e: any) =>
+      Array.isArray(e.hooks) && e.hooks.some((h: any) => h.command === "lcm compact")
+    );
+    expect(hasOldCommand).toBe(false);
+  });
+
+  it("rewrites 'lcm compact --all' to 'lcm compact --all --hook' and preserves it", () => {
+    // "lcm compact --all --hook" does not exactly match REQUIRED_HOOKS → preserved.
+    const deps = makeDeps({
+      readFileSync: vi.fn().mockReturnValue(JSON.stringify({
+        hooks: {
+          PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact --all" }] }],
+        },
+      })),
+    });
+    validateAndFixHooks(deps);
+    expect(deps.writeFileSync).toHaveBeenCalledTimes(1);
+    const written = JSON.parse((deps.writeFileSync as ReturnType<typeof vi.fn>).mock.calls[0][1]);
+    const precompact = written.hooks?.PreCompact ?? [];
+    const hasRewritten = precompact.some((e: any) =>
+      Array.isArray(e.hooks) && e.hooks.some((h: any) => h.command === "lcm compact --all --hook")
+    );
+    expect(hasRewritten).toBe(true);
+  });
 });

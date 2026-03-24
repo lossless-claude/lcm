@@ -40,11 +40,32 @@ export function validateAndFixHooks(deps: AutoHealDeps = defaultDeps()): void {
     // Hooks are owned by plugin.json — if they leaked into settings.json
     // (from old installer or manual edits), remove them to prevent double-firing.
     const hooks = settings.hooks ?? {};
+
+    // Migration: rewrite "lcm compact" (without --hook) → append "--hook".
+    // Uses startsWith to handle user flags like --all that may precede --hook.
+    let rewritten = false;
+    for (const event of Object.keys(hooks)) {
+      if (!Array.isArray(hooks[event])) continue;
+      for (const entry of hooks[event]) {
+        if (!Array.isArray(entry.hooks)) continue;
+        for (const h of entry.hooks) {
+          if (
+            typeof h.command === "string" &&
+            h.command.startsWith("lcm compact") &&
+            !h.command.includes("--hook")
+          ) {
+            h.command = h.command + " --hook";
+            rewritten = true;
+          }
+        }
+      }
+    }
+
     const hasDuplicates = REQUIRED_HOOKS.some(({ event, command }) => {
       const entries = hooks[event];
       return Array.isArray(entries) && hasHookCommand(entries, command);
     });
-    if (!hasDuplicates) return;
+    if (!hasDuplicates && !rewritten) return;
 
     // Clean up: remove lcm hooks from settings.json (MCP config is preserved)
     const merged = mergeClaudeSettings(settings);
