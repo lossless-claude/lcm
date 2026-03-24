@@ -1,3 +1,5 @@
+import { readAuthToken } from "./auth.js";
+
 export class DaemonClient {
   constructor(private baseUrl: string) {}
 
@@ -9,9 +11,12 @@ export class DaemonClient {
   }
 
   async post<T = unknown>(path: string, body: unknown): Promise<T> {
+    const token = readAuthToken();
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
     const res = await fetch(`${this.baseUrl}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(body),
     });
     if (!res.ok) {

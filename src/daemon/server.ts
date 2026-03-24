@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DaemonConfig } from "./config.js";
+import { ensureAuthToken } from "./auth.js";
 import type { ProxyManager } from "./proxy-manager.js";
 import { createCompactHandler } from "./routes/compact.js";
 import { createPromoteHandler } from "./routes/promote.js";
@@ -44,6 +45,7 @@ export function sendJson(res: ServerResponse, status: number, data: unknown): vo
 
 export async function createDaemon(config: DaemonConfig, options?: DaemonOptions): Promise<DaemonInstance> {
   const startTime = Date.now();
+  const serverToken = ensureAuthToken();
   const proxyManager = options?.proxyManager;
   const routes = new Map<string, RouteHandler>();
 
@@ -136,6 +138,17 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   const server: Server = createServer(async (req, res) => {
     resetIdleTimer();
     const key = `${req.method} ${req.url?.split("?")[0]}`;
+
+    // All routes except /health require a valid bearer token.
+    // /health is exempt so lifecycle.ts can probe before the token file is read by callers.
+    if (key !== "GET /health") {
+      const authHeader = req.headers["authorization"] ?? "";
+      if (authHeader !== `Bearer ${serverToken}`) {
+        sendJson(res, 401, { error: "unauthorized" });
+        return;
+      }
+    }
+
     const handler = routes.get(key);
     if (!handler) { sendJson(res, 404, { error: "not found" }); return; }
     try {
