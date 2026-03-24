@@ -15,12 +15,14 @@ export function mergeClaudeSettings(existing: any): any {
   settings.hooks = (settings.hooks && typeof settings.hooks === "object" && !Array.isArray(settings.hooks)) ? settings.hooks : {};
   settings.mcpServers = (settings.mcpServers && typeof settings.mcpServers === "object" && !Array.isArray(settings.mcpServers)) ? settings.mcpServers : {};
 
-  // Migrate old lossless-claude hook commands to lcm
+  // Migrate old hook commands to current form
   const OLD_TO_NEW: Record<string, string> = {
-    "lossless-claude compact": "lcm compact",
+    "lossless-claude compact": "lcm compact --hook",
     "lossless-claude restore": "lcm restore",
     "lossless-claude session-end": "lcm session-end",
     "lossless-claude user-prompt": "lcm user-prompt",
+    // Migrate pre-#90 direct installs that registered without --hook
+    "lcm compact": "lcm compact --hook",
   };
   for (const event of Object.keys(settings.hooks)) {
     if (!Array.isArray(settings.hooks[event])) continue;
