@@ -17,7 +17,8 @@ export function createSessionCompleteHandler(): RouteHandler {
       db.exec("PRAGMA busy_timeout = 5000");
       runLcmMigrations(db);
       db.prepare(
-        "INSERT OR REPLACE INTO session_ingest_log (session_id, message_count) VALUES (?, ?)",
+        "INSERT INTO session_ingest_log (session_id, message_count) VALUES (?, ?) " +
+          "ON CONFLICT(session_id) DO UPDATE SET message_count = excluded.message_count",
       ).run(session_id, message_count ?? 0);
       sendJson(res, 200, { recorded: true });
     } finally {

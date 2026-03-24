@@ -4,7 +4,6 @@
 
 import { describe, it, beforeAll, afterAll } from "vitest";
 import { expect } from "vitest";
-import { DatabaseSync } from "node:sqlite";
 import { createHarness, type HarnessHandle, openProjectDb } from "../harness.js";
 
 describe("Flows 2-4: Import", { timeout: 60_000 }, () => {

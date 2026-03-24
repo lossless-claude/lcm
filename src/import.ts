@@ -6,7 +6,7 @@ import type { DaemonClient } from "./daemon/client.js";
 import { formatNumber, formatRatio } from "./stats.js";
 import { findAllCodexTranscripts, extractCodexSessionCwd } from "./codex-transcript.js";
 import type { ProgressState } from "./cli/progress-state.js";
-import { projectDbPath } from "./daemon/project.js";
+import { projectDbPath, projectId } from "./daemon/project.js";
 
 export type ImportProvider = "claude" | "codex" | "all";
 
@@ -161,7 +161,7 @@ interface SessionEntry {
 function isSessionAlreadyIngested(cwd: string, sessionId: string, lcmDir?: string): boolean {
   try {
     const dbPath = lcmDir
-      ? join(lcmDir, "projects", cwdToProjectHash(cwd), "project.db")
+      ? join(lcmDir, "projects", projectId(cwd), "db.sqlite")
       : projectDbPath(cwd);
     if (!existsSync(dbPath)) {
       return false;
@@ -198,8 +198,9 @@ async function ingestSessionList(
       continue;
     }
 
-    // Skip sessions already recorded in session_ingest_log
-    if (isSessionAlreadyIngested(cwd, sessionId, options._lcmDir)) {
+    // Skip sessions already recorded in session_ingest_log (unless in replay mode,
+    // where compaction must still run to keep the temporal chain intact).
+    if (!options.replay && isSessionAlreadyIngested(cwd, sessionId, options._lcmDir)) {
       result.skippedEmpty++;
       if (options.verbose) console.log(`  ↩️ ${sessionId}: already fully ingested`);
       continue;

@@ -2,11 +2,8 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { DatabaseSync } from "node:sqlite";
 import { cwdToProjectHash, findSessionFiles, importSessions } from "../src/import.js";
 import type { DaemonClient } from "../src/daemon/client.js";
-import { projectDbPath } from "../src/daemon/project.js";
-import { runLcmMigrations } from "../src/db/migration.js";
 
 // --- cwdToProjectHash ---
 
