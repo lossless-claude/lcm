@@ -36,13 +36,8 @@ async function main() {
       writeErr: (str) => process.stderr.write(str),
     });
 
-  // Override default --help to use custom help
+  // Disable Commander's built-in help entirely — we handle it manually below
   program.helpOption(false);
-  program.option("-h, --help", "Show help").hook("preAction", async () => {
-    const { printHelp } = await import("../src/cli-help.js");
-    printHelp();
-    exit(0);
-  });
 
   // ─── help command ──────────────────────────────────────────────────────────
   program
@@ -114,9 +109,13 @@ async function main() {
         printHelp("compact"); exit(0);
       }
       const all: boolean = opts.all ?? false;
-      // Interactive batch compact: --all (all projects) or TTY stdin (current project only).
-      // If stdin is piped (hook invocation), fall through to hook dispatch.
-      if (all || process.stdin.isTTY) {
+      const dryRun: boolean = opts.dryRun ?? false;
+      const verbose: boolean = opts.verbose ?? false;
+      const replay: boolean = opts.replay ?? false;
+      // Batch mode: --all, TTY stdin, or any explicit flag (--dry-run/--verbose/--replay
+      // don't apply to hook dispatch, so their presence means the caller wants batch mode).
+      const batchMode = all || process.stdin.isTTY || dryRun || verbose || replay;
+      if (batchMode) {
         const { batchCompact } = await import("../src/batch-compact.js");
         const { loadDaemonConfig } = await import("../src/daemon/config.js");
         const { join } = await import("node:path");
@@ -130,10 +129,7 @@ async function main() {
           console.error("Could not connect to daemon. Start it with: lcm daemon start --detach");
           exit(1);
         }
-        const dryRun: boolean = opts.dryRun ?? false;
-        const replay: boolean = opts.replay ?? false;
         const noPromote: boolean = !opts.promote;
-        const verbose: boolean = opts.verbose ?? false;
         const minTokens = config.compaction.autoCompactMinTokens;
         const cwd = all ? undefined : process.cwd();
 
@@ -850,22 +846,16 @@ async function main() {
     exit(1);
   });
 
-  // Override program-level --help to show custom help
-  program.on("option:help", async () => {
-    const { printHelp } = await import("../src/cli-help.js");
-    printHelp();
-    exit(0);
-  });
-
-  // Parse with allowUnknownOption to avoid Commander erroring before our handler
-  await program.parseAsync(argv);
-
-  // If no command was given, show help
-  if (argv.length <= 2) {
+  // Handle root-level help and no-args before Commander parses — this prevents
+  // Commander from seeing --help at the root level and intercepting it before
+  // dispatching to subcommands (lcm import --help would otherwise show root help).
+  if (argv.length <= 2 || (argv.length === 3 && (argv[2] === "-h" || argv[2] === "--help"))) {
     const { printHelp } = await import("../src/cli-help.js");
     printHelp();
     exit(0);
   }
+
+  await program.parseAsync(argv);
 }
 
 main().catch((err) => { console.error(err); exit(1); });
