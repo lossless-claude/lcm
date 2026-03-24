@@ -54,20 +54,45 @@ export function findSessionFiles(projectDir: string): { path: string; sessionId:
   const files: { path: string; sessionId: string; mtime: number }[] = [];
   if (!existsSync(projectDir)) return files;
 
+  // Track which session IDs have a flat (project-root) transcript so we can
+  // deduplicate when the same session also has a nested copy.
+  const flatSessionIds = new Set<string>();
+
   for (const entry of readdirSync(projectDir, { withFileTypes: true })) {
+    // Layout B (flat): <projectDir>/<session-id>.jsonl
     if (entry.isFile() && entry.name.endsWith('.jsonl')) {
       try {
+        const sessionId = basename(entry.name, '.jsonl');
         files.push({
           path: join(projectDir, entry.name),
-          sessionId: basename(entry.name, '.jsonl'),
+          sessionId,
           mtime: statSync(join(projectDir, entry.name)).mtimeMs,
         });
+        flatSessionIds.add(sessionId);
       } catch {
         // Skip entries that can't be stat'd (file deleted or permissions issue)
         continue;
       }
     }
     if (entry.isDirectory()) {
+      // Layout A (nested): <projectDir>/<session-id>/<session-id>.jsonl
+      const nestedTranscript = join(projectDir, entry.name, `${entry.name}.jsonl`);
+      if (existsSync(nestedTranscript)) {
+        try {
+          const nestedStat = statSync(nestedTranscript);
+          if (nestedStat.isFile()) {
+            files.push({
+              path: nestedTranscript,
+              sessionId: entry.name,
+              mtime: nestedStat.mtimeMs,
+            });
+          }
+        } catch {
+          // Skip entries that can't be stat'd
+        }
+      }
+
+      // Subagent transcripts: <projectDir>/<session-id>/subagents/<agent-id>.jsonl
       const subagentsDir = join(projectDir, entry.name, 'subagents');
       if (existsSync(subagentsDir)) {
         for (const sub of readdirSync(subagentsDir, { withFileTypes: true })) {
@@ -87,7 +112,18 @@ export function findSessionFiles(projectDir: string): { path: string; sessionId:
       }
     }
   }
-  return files.sort((a, b) => {
+
+  // Deduplicate: when a session has both a flat and nested transcript,
+  // keep only the flat file (the canonical source in newer Claude Code versions).
+  // Subagent files (inside subagents/) are kept unconditionally because their
+  // paths never match the nested transcript pattern below.
+  const nestedSuffix = (sid: string) => join(sid, `${sid}.jsonl`);
+  const deduped = files.filter(f => {
+    const isNested = f.path.endsWith(nestedSuffix(f.sessionId));
+    return !isNested || !flatSessionIds.has(f.sessionId);
+  });
+
+  return deduped.sort((a, b) => {
     const mtimeDiff = a.mtime - b.mtime;
     if (mtimeDiff !== 0) return mtimeDiff;
     const sessionIdDiff = a.sessionId.localeCompare(b.sessionId);
