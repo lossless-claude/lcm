@@ -95,9 +95,10 @@ async function main() {
         const dryRun = argv.includes("--dry-run");
         const replay = argv.includes("--replay");
         const noPromote = argv.includes("--no-promote");
+        const verbose = argv.includes("--verbose") || argv.includes("-v");
         const minTokens = config.compaction.autoCompactMinTokens;
         const cwd = all ? undefined : process.cwd();
-        const { compacted } = await batchCompact({ minTokens, dryRun, port, cwd, replay });
+        const { compacted } = await batchCompact({ minTokens, dryRun, port, cwd, replay, verbose });
 
         // Auto-promote after a successful compact: new summaries are prime promotion candidates.
         if (compacted > 0 && !noPromote) {
