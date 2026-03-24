@@ -94,9 +94,52 @@ async function main() {
         }
         const dryRun = argv.includes("--dry-run");
         const replay = argv.includes("--replay");
+        const noPromote = argv.includes("--no-promote");
         const minTokens = config.compaction.autoCompactMinTokens;
         const cwd = all ? undefined : process.cwd();
-        await batchCompact({ minTokens, dryRun, port, cwd, replay });
+        const { compacted } = await batchCompact({ minTokens, dryRun, port, cwd, replay });
+
+        // Auto-promote after a successful compact: new summaries are prime promotion candidates.
+        if (compacted > 0 && !noPromote) {
+          const { readdirSync, existsSync, readFileSync } = await import("node:fs");
+          const promoteCwds: string[] = [];
+          if (cwd) {
+            promoteCwds.push(cwd);
+          } else {
+            const projectsDir = join(homedir(), ".lossless-claude", "projects");
+            if (existsSync(projectsDir)) {
+              for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
+                if (!entry.isDirectory()) continue;
+                const metaPath = join(projectsDir, entry.name, "meta.json");
+                if (!existsSync(metaPath)) continue;
+                try {
+                  const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+                  if (meta.cwd) promoteCwds.push(meta.cwd);
+                } catch { /* skip unreadable */ }
+              }
+            }
+          }
+
+          let totalPromoted = 0;
+          for (const promoteCwd of promoteCwds) {
+            try {
+              const res = await fetch(`http://127.0.0.1:${port}/promote`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ cwd: promoteCwd, dry_run: dryRun }),
+              });
+              if (res.ok) {
+                const result = await res.json() as { processed: number; promoted: number };
+                totalPromoted += result.promoted;
+              }
+            } catch { /* non-fatal: promote is best-effort */ }
+          }
+
+          if (totalPromoted > 0) {
+            console.log(`  → ${totalPromoted} insight${totalPromoted !== 1 ? "s" : ""} promoted`);
+          }
+        }
+
         break;
       }
     }
@@ -494,7 +537,11 @@ async function main() {
         }
       }
 
-      console.log(`  ${totalPromoted} insight${totalPromoted !== 1 ? "s" : ""} promoted to long-term memory`);
+      if (totalPromoted === 0) {
+        console.log("  Nothing to promote — no new insights found.");
+      } else {
+        console.log(`  ${totalPromoted} insight${totalPromoted !== 1 ? "s" : ""} promoted to long-term memory`);
+      }
       if (verbose) console.log(`  (${totalProcessed} summaries scanned across ${cwds.length} project${cwds.length !== 1 ? "s" : ""})`);
       if (dryRun) console.log("  [dry-run] No changes written.");
       console.log();

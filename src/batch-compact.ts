@@ -86,16 +86,18 @@ export async function batchCompact(opts: {
   port: number;
   cwd?: string;
   replay?: boolean;
-}): Promise<void> {
+}): Promise<{ compacted: number }> {
   const conversations = findUncompacted(opts.minTokens, opts.dryRun, opts.cwd, opts.replay);
 
   if (conversations.length === 0) {
-    console.log("No uncompacted conversations above threshold.");
-    return;
+    console.log("Nothing to compact — all sessions are up to date.");
+    return { compacted: 0 };
   }
 
   const totalTokens = conversations.reduce((s, c) => s + c.tokens, 0);
   console.log(`Found ${conversations.length} uncompacted conversation${conversations.length > 1 ? "s" : ""} (${(totalTokens / 1000).toFixed(1)}k tokens)\n`);
+
+  let compacted = 0;
 
   for (const conv of conversations) {
     const label = `${conv.cwd} conv #${conv.conversationId} (${conv.messages} msgs, ${(conv.tokens / 1000).toFixed(1)}k tokens)`;
@@ -127,6 +129,7 @@ export async function batchCompact(opts: {
           console.log(" skipped (already in progress)");
         } else {
           console.log(" done");
+          compacted++;
         }
       }
     } catch (err) {
@@ -137,4 +140,6 @@ export async function batchCompact(opts: {
   if (!opts.dryRun) {
     console.log("\nBatch compact complete.");
   }
+
+  return { compacted };
 }
