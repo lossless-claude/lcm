@@ -86,6 +86,7 @@ export async function batchCompact(opts: {
   port: number;
   cwd?: string;
   replay?: boolean;
+  verbose?: boolean;
 }): Promise<{ compacted: number }> {
   const conversations = findUncompacted(opts.minTokens, opts.dryRun, opts.cwd, opts.replay);
 
@@ -98,6 +99,8 @@ export async function batchCompact(opts: {
   console.log(`Found ${conversations.length} uncompacted conversation${conversations.length > 1 ? "s" : ""} (${(totalTokens / 1000).toFixed(1)}k tokens)\n`);
 
   let compacted = 0;
+  let totalTokensBefore = 0;
+  let totalTokensAfter = 0;
 
   for (const conv of conversations) {
     const label = `${conv.cwd} conv #${conv.conversationId} (${conv.messages} msgs, ${(conv.tokens / 1000).toFixed(1)}k tokens)`;
@@ -124,11 +127,20 @@ export async function batchCompact(opts: {
         const body = await res.text().catch(() => "");
         console.log(` FAILED (HTTP ${res.status}${body ? `: ${body}` : ""})`);
       } else {
-        const data = await res.json() as { summary?: string; skipped?: boolean };
+        const data = await res.json() as { summary?: string; skipped?: boolean; tokensBefore?: number; tokensAfter?: number };
         if (data.skipped) {
           console.log(" skipped (already in progress)");
         } else {
-          console.log(" done");
+          const before = typeof data.tokensBefore === "number" ? data.tokensBefore : 0;
+          const after = typeof data.tokensAfter === "number" ? data.tokensAfter : 0;
+          totalTokensBefore += before;
+          totalTokensAfter += after;
+          if (opts.verbose && before > 0) {
+            const pct = before > 0 ? Math.round((1 - after / before) * 100) : 0;
+            console.log(` done  (${(before / 1000).toFixed(1)}k → ${(after / 1000).toFixed(1)}k tokens, ${pct}% reduction)`);
+          } else {
+            console.log(" done");
+          }
           compacted++;
         }
       }
@@ -138,7 +150,13 @@ export async function batchCompact(opts: {
   }
 
   if (!opts.dryRun) {
-    console.log("\nBatch compact complete.");
+    if (totalTokensBefore > 0) {
+      const freed = totalTokensBefore - totalTokensAfter;
+      const pct = Math.round((freed / totalTokensBefore) * 100);
+      console.log(`\nBatch compact complete. ${compacted} session${compacted !== 1 ? "s" : ""} compacted, ${(totalTokensBefore / 1000).toFixed(1)}k → ${(totalTokensAfter / 1000).toFixed(1)}k tokens (${pct}% reduction, ${(freed / 1000).toFixed(1)}k freed)`);
+    } else {
+      console.log("\nBatch compact complete.");
+    }
   }
 
   return { compacted };
