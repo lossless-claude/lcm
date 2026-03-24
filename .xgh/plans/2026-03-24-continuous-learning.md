@@ -131,7 +131,7 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/db/migration.ts test/db/migration.test.ts
+git add src/db/migration.ts test/migration.test.ts
 git commit -m "feat(db): add session_ingest_log table for ingestion tracking"
 ```
 
