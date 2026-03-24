@@ -227,7 +227,7 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<void> {
   // Register MCP server directly in settings.json.
   // plugin.json mcpServers isn't reliably processed for locally-installed plugins
   // (installPath in installed_plugins.json points to wrong versioned dir).
-  let merged = {};
+  let merged: any = {};
   if (deps.existsSync(settingsPath)) {
     try { merged = JSON.parse(deps.readFileSync(settingsPath, "utf-8")); } catch {}
   }
