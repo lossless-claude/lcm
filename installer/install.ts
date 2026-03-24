@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, copyFi
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { ensureCore } from "../src/bootstrap.js";
 
 export const REQUIRED_HOOKS: { event: string; command: string }[] = [
   { event: "PreCompact", command: "lcm compact --hook" },
@@ -190,39 +191,59 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<void> {
   const lcDir = join(homedir(), ".lossless-claude");
   deps.mkdirSync(lcDir, { recursive: true });
 
-  // 1. Create or update config.json
   const configPath = join(lcDir, "config.json");
+  const settingsPath = join(homedir(), ".claude", "settings.json");
+
+  // 1-3. Core setup (config + settings cleanup + daemon)
+  // ensureCore handles: creating config.json, merging settings.json hooks, and starting daemon
+  // For install, we inject summarizer config into the default config if creating fresh
   if (!deps.existsSync(configPath)) {
     const summarizerConfig = await pickSummarizer(deps);
     const { loadDaemonConfig } = await import("../src/daemon/config.js");
     const defaults = loadDaemonConfig("/nonexistent");
     defaults.llm = { ...defaults.llm, ...summarizerConfig };
+    deps.mkdirSync(dirname(configPath), { recursive: true });
     deps.writeFileSync(configPath, JSON.stringify(defaults, null, 2));
     console.log(`Created ${configPath}`);
   }
 
-  // 2. Merge ~/.claude/settings.json (hooks + MCP)
-  const settingsPath = join(homedir(), ".claude", "settings.json");
-  let existing: any = {};
-  if (deps.existsSync(settingsPath)) {
-    try { existing = JSON.parse(deps.readFileSync(settingsPath, "utf-8")); } catch {}
-  }
-  const merged = mergeClaudeSettings(existing);
+  // ensureCore will:
+  // - Skip config creation (already exists or just created above)
+  // - Merge settings.json hooks (remove duplicates, clean old commands)
+  // - Start the daemon
+  await ensureCore({
+    configPath,
+    settingsPath,
+    existsSync: deps.existsSync,
+    readFileSync: deps.readFileSync,
+    writeFileSync: deps.writeFileSync,
+    mkdirSync: deps.mkdirSync,
+    ensureDaemon: deps.ensureDaemon ?? (async (opts) => {
+      const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
+      return ensureDaemon(opts);
+    }),
+  });
 
   // Register MCP server directly in settings.json.
   // plugin.json mcpServers isn't reliably processed for locally-installed plugins
   // (installPath in installed_plugins.json points to wrong versioned dir).
-  if (typeof merged.mcpServers !== "object" || merged.mcpServers === null) {
-    merged.mcpServers = {};
+  let merged = {};
+  if (deps.existsSync(settingsPath)) {
+    try { merged = JSON.parse(deps.readFileSync(settingsPath, "utf-8")); } catch {}
   }
+  if (typeof merged !== "object" || merged === null) {
+    merged = {};
+  }
+  const mcpServers = (typeof merged.mcpServers === "object" && merged.mcpServers !== null) ? merged.mcpServers : {};
   const lcmBin = resolveBinaryPath(deps);
-  merged.mcpServers["lcm"] = { command: lcmBin, args: ["mcp"] };
+  mcpServers["lcm"] = { command: lcmBin, args: ["mcp"] };
+  (merged as any).mcpServers = mcpServers;
 
-  deps.mkdirSync(join(homedir(), ".claude"), { recursive: true });
+  deps.mkdirSync(dirname(settingsPath), { recursive: true });
   deps.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
   console.log(`Updated ${settingsPath}`);
 
-  // 3. Install slash commands to ~/.claude/commands/
+  // 4. Install slash commands to ~/.claude/commands/
   const commandsSrc = join(dirname(new URL(import.meta.url).pathname), "../..", ".claude-plugin", "commands");
   const commandsDst = join(homedir(), ".claude", "commands");
   if (deps.existsSync(commandsSrc)) {
@@ -233,27 +254,6 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<void> {
       }
     }
     console.log(`Installed slash commands to ${commandsDst}`);
-  }
-
-  // 4. Start daemon (lazy daemon — no persistent service)
-  const configData = deps.existsSync(configPath)
-    ? JSON.parse(deps.readFileSync(configPath, "utf-8"))
-    : {};
-  console.log("Verifying daemon...");
-  const _ensureDaemon = deps.ensureDaemon ?? (async (opts) => {
-    const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
-    return ensureDaemon(opts);
-  });
-  const daemonPort = configData?.daemon?.port ?? configData?.port ?? 3737;
-  const { connected } = await _ensureDaemon({
-    port: daemonPort,
-    pidFilePath: join(lcDir, "daemon.pid"),
-    spawnTimeoutMs: 30000,
-  });
-  if (!connected) {
-    console.warn("Warning: daemon not responding — run: lcm doctor");
-  } else {
-    console.log("Daemon started successfully.");
   }
 
   // 5. Final verification
