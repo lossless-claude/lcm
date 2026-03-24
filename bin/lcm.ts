@@ -259,6 +259,19 @@ async function main() {
       exit(r.exitCode);
     });
 
+  // ─── session-snapshot (hook) ─────────────────────────────────────────────
+  program
+    .command("session-snapshot")
+    .description("Rolling ingest snapshot (called by Stop hook)")
+    .helpOption(false)
+    .action(async () => {
+      const { dispatchHook } = await import("../src/hooks/dispatch.js");
+      const input = await readStdin();
+      const r = await dispatchHook("session-snapshot", input);
+      if (r.stdout) stdout.write(r.stdout);
+      exit(r.exitCode);
+    });
+
   // ─── mcp ───────────────────────────────────────────────────────────────────
   program
     .command("mcp")

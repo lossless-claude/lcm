@@ -1,6 +1,6 @@
 import { validateAndFixHooks } from "./auto-heal.js";
 
-export const HOOK_COMMANDS = ["compact", "restore", "session-end", "user-prompt"] as const;
+export const HOOK_COMMANDS = ["compact", "restore", "session-end", "session-snapshot", "user-prompt"] as const;
 export type HookCommand = typeof HOOK_COMMANDS[number];
 
 export function isHookCommand(cmd: string): cmd is HookCommand {
@@ -33,6 +33,10 @@ export async function dispatchHook(
     case "session-end": {
       const { handleSessionEnd } = await import("./session-end.js");
       return handleSessionEnd(stdinText, client, port);
+    }
+    case "session-snapshot": {
+      const { handleSessionSnapshot } = await import("./session-snapshot.js");
+      return handleSessionSnapshot(stdinText);
     }
     case "user-prompt": {
       const { handleUserPromptSubmit } = await import("./user-prompt.js");

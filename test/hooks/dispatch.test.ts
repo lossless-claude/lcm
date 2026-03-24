@@ -20,6 +20,9 @@ vi.mock("../../src/hooks/session-end.js", () => ({
 vi.mock("../../src/hooks/user-prompt.js", () => ({
   handleUserPromptSubmit: vi.fn().mockResolvedValue({ exitCode: 0, stdout: "" }),
 }));
+vi.mock("../../src/hooks/session-snapshot.js", () => ({
+  handleSessionSnapshot: vi.fn().mockResolvedValue({ exitCode: 0, stdout: "" }),
+}));
 vi.mock("../../src/daemon/client.js", () => ({
   DaemonClient: vi.fn().mockImplementation(() => ({})),
 }));
@@ -36,6 +39,7 @@ describe("HOOK_COMMANDS", () => {
       "compact": "PreCompact",
       "restore": "SessionStart",
       "session-end": "SessionEnd",
+      "session-snapshot": "Stop",
       "user-prompt": "UserPromptSubmit",
     };
     for (const cmd of HOOK_COMMANDS) {
@@ -52,6 +56,7 @@ import { handlePreCompact } from "../../src/hooks/compact.js";
 import { handleSessionStart } from "../../src/hooks/restore.js";
 import { handleSessionEnd } from "../../src/hooks/session-end.js";
 import { handleUserPromptSubmit } from "../../src/hooks/user-prompt.js";
+import { handleSessionSnapshot } from "../../src/hooks/session-snapshot.js";
 import { loadDaemonConfig } from "../../src/daemon/config.js";
 
 describe("dispatchHook", () => {
@@ -78,6 +83,12 @@ describe("dispatchHook", () => {
       expect(handler).toHaveBeenCalledTimes(1);
       expect(handler).toHaveBeenCalledWith('{"test":true}', expect.anything(), expect.any(Number));
     }
+
+    // session-snapshot takes only (stdinText, deps?) — no client/port
+    vi.mocked(handleSessionSnapshot).mockClear();
+    await dispatchHook("session-snapshot", '{"test":true}');
+    expect(handleSessionSnapshot).toHaveBeenCalledTimes(1);
+    expect(handleSessionSnapshot).toHaveBeenCalledWith('{"test":true}');
   });
 
   it("passes configured port to handlers", async () => {
