@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
+import safeRegex from "safe-regex";
 import { sanitizeFts5Query } from "./fts5-sanitize.js";
 import { buildLikeSearchPlan, createFallbackSnippet } from "./full-text-fallback.js";
 
@@ -710,8 +711,17 @@ export class ConversationStore {
     since?: Date,
     before?: Date,
   ): MessageSearchResult[] {
-    // SQLite has no native POSIX regex; fetch candidates and filter in JS
-    const re = new RegExp(pattern);
+    // SQLite has no native POSIX regex; fetch candidates and filter in JS.
+    // Reject patterns with catastrophic backtracking potential before touching the DB.
+    if (!safeRegex(pattern)) {
+      throw new Error(`Unsafe regex pattern rejected (possible ReDoS): ${pattern}`);
+    }
+    let re: RegExp;
+    try {
+      re = new RegExp(pattern);
+    } catch {
+      throw new Error(`Invalid regex pattern: ${pattern}`);
+    }
 
     const where: string[] = [];
     const args: Array<string | number> = [];
