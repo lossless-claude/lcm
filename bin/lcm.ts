@@ -515,8 +515,16 @@ async function main() {
 
       let totalProcessed = 0;
       let totalPromoted = 0;
+      const total = cwds.length;
 
-      for (const cwd of cwds) {
+      for (let i = 0; i < cwds.length; i++) {
+        const cwd = cwds[i];
+        if (total > 1) {
+          process.stdout.write(`\r  scanning project ${i + 1}/${total}...`);
+        } else {
+          process.stdout.write(`\r  scanning...`);
+        }
+
         const res = await fetch(`${baseUrl}/promote`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -528,14 +536,18 @@ async function main() {
           continue;
         }
 
-        const result = await res.json() as { processed: number; promoted: number };
+        const result = await res.json() as { processed: number; promoted: number; conversations?: number };
         totalProcessed += result.processed;
         totalPromoted += result.promoted;
 
         if (verbose) {
-          console.log(`  ${cwd}: ${result.processed} scanned, ${result.promoted} promoted`);
+          process.stdout.write("\r");
+          const convLabel = result.conversations !== undefined ? `, ${result.conversations} conversation${result.conversations !== 1 ? "s" : ""}` : "";
+          console.log(`  ${cwd}: ${result.processed} scanned${convLabel}, ${result.promoted} promoted`);
         }
       }
+      // Clear the progress line
+      process.stdout.write("\r  \r");
 
       if (totalPromoted === 0) {
         console.log("  Nothing to promote — no new insights found.");
