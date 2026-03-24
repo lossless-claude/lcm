@@ -119,7 +119,8 @@ export async function batchCompact(opts: {
       });
 
       if (!res.ok) {
-        console.log(` FAILED (HTTP ${res.status})`);
+        const body = await res.text().catch(() => "");
+        console.log(` FAILED (HTTP ${res.status}${body ? `: ${body}` : ""})`);
       } else {
         const data = await res.json() as { summary?: string; skipped?: boolean };
         if (data.skipped) {
