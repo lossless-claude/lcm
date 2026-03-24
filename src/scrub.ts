@@ -2,13 +2,32 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export const BUILT_IN_PATTERNS: string[] = [
+  // Anthropic / OpenAI API keys
   "sk-[A-Za-z0-9]{20,}",
   "sk-ant-[A-Za-z0-9\\-]{40,}",
+  // GitHub personal access tokens
   "ghp_[A-Za-z0-9]{36}",
+  // AWS access key IDs
   "AKIA[0-9A-Z]{16}",
+  // PEM private keys
   "-----BEGIN .* KEY-----",
+  // HTTP Bearer tokens (covers many API keys and JWTs with Authorization header)
   "Bearer [A-Za-z0-9\\-._~+/]+=*",
+  // Generic password= / password: assignments
   "[Pp]assword\\s*[:=]\\s*\\S+",
+  // npm automation tokens
+  "npm_[A-Za-z0-9]{36}",
+  // Slack tokens (bot, user, app, oauth, socket)
+  "xox[bpoas]-[0-9A-Za-z\\-]{10,}",
+  // Stripe secret / publishable / restricted keys
+  "sk_live_[0-9a-zA-Z]{24,}",
+  "pk_live_[0-9a-zA-Z]{24,}",
+  "rk_live_[0-9a-zA-Z]{24,}",
+  // Database connection strings with embedded credentials (postgres, mysql, mongo, redis)
+  // Spanning pattern: requires \s so the engine applies it across the full text, not per-token
+  "(?:postgres|mysql|mongodb(?:\\+srv)?|redis|rediss)://[^@\\s]+:[^@\\s]+@\\S+",
+  // JSON Web Tokens — header always base64-encodes to eyJ, followed by two more dot-separated segments
+  "eyJ[A-Za-z0-9_\\-]+\\.[A-Za-z0-9_\\-]+\\.[A-Za-z0-9_\\-]*",
 ];
 
 /**
