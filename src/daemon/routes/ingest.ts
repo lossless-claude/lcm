@@ -45,13 +45,32 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
       return;
     }
 
+    const dbPath = projectDbPath(cwd);
+
+    // Check if session is already fully ingested in session_ingest_log
+    try {
+      const checkDb = new DatabaseSync(dbPath);
+      try {
+        checkDb.exec("PRAGMA busy_timeout = 5000");
+        const row = checkDb.prepare("SELECT 1 FROM session_ingest_log WHERE session_id = ?").get(session_id);
+        if (row) {
+          // Session already fully ingested — skip
+          sendJson(res, 200, { ingested: 0, totalTokens: 0 });
+          return;
+        }
+      } finally {
+        checkDb.close();
+      }
+    } catch {
+      // Table may not exist yet — proceed with normal flow
+    }
+
     const parsed = resolveMessages(input);
     if (parsed.length === 0) {
       sendJson(res, 200, { ingested: 0, totalTokens: 0 });
       return;
     }
 
-    const dbPath = projectDbPath(cwd);
     ensureProjectDir(cwd);
 
     const scrubber = await ScrubEngine.forProject(

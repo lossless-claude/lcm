@@ -1,10 +1,12 @@
 import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import type { DaemonClient } from "./daemon/client.js";
 import { formatNumber, formatRatio } from "./stats.js";
 import { findAllCodexTranscripts, extractCodexSessionCwd } from "./codex-transcript.js";
 import type { ProgressState } from "./cli/progress-state.js";
+import { projectDbPath } from "./daemon/project.js";
 
 export type ImportProvider = "claude" | "codex" | "all";
 
@@ -152,6 +154,30 @@ interface SessionEntry {
   cwd: string;
 }
 
+/**
+ * Checks if a session has already been recorded in session_ingest_log,
+ * indicating it was fully ingested in a previous run.
+ */
+function isSessionAlreadyIngested(cwd: string, sessionId: string): boolean {
+  try {
+    const dbPath = projectDbPath(cwd);
+    if (!existsSync(dbPath)) {
+      return false;
+    }
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.exec("PRAGMA busy_timeout = 5000");
+      const row = db.prepare("SELECT 1 FROM session_ingest_log WHERE session_id = ?").get(sessionId);
+      return !!row;
+    } finally {
+      db.close();
+    }
+  } catch {
+    // Table may not exist yet or db is inaccessible — proceed with import
+    return false;
+  }
+}
+
 async function ingestSessionList(
   client: DaemonClient,
   sessions: SessionEntry[],
@@ -167,6 +193,13 @@ async function ingestSessionList(
         console.log(`  [dry-run] ${sessionId}${replayNote}`);
       }
       result.imported++;
+      continue;
+    }
+
+    // Skip sessions already recorded in session_ingest_log
+    if (isSessionAlreadyIngested(cwd, sessionId)) {
+      result.skippedEmpty++;
+      if (options.verbose) console.log(`  ↩️ ${sessionId}: already fully ingested`);
       continue;
     }
 
