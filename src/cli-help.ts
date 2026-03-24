@@ -96,21 +96,25 @@ const HELP: Record<string, CommandHelp> = {
   },
 
   import: {
-    summary: "Import Claude Code session transcripts into lossless memory.",
-    usage: "lcm import [--all] [--verbose] [--dry-run] [--replay]",
+    summary: "Import session transcripts (Claude Code or Codex CLI) into lossless memory.",
+    usage: "lcm import [--provider claude|codex|all] [--all] [--verbose] [--dry-run] [--replay]",
     options: [
+      ["--provider <name>", "Source: claude (default), codex, or all"],
+      ["--codex", "Shorthand for --provider codex"],
       ["--all", "Import all projects (default: current project only)"],
       ["--verbose", "Show per-session import detail"],
       ["--dry-run", "Preview without importing"],
       ["--replay", "Replay compaction for each imported session"],
     ],
     examples: [
-      ["lcm import", "Import current project sessions"],
-      ["lcm import --all", "Import all tracked projects"],
+      ["lcm import", "Import current Claude Code project sessions"],
+      ["lcm import --codex", "Import Codex CLI sessions from ~/.codex/"],
+      ["lcm import --provider all", "Import both Claude Code and Codex sessions"],
+      ["lcm import --all", "Import all tracked Claude Code projects"],
       ["lcm import --all --replay", "Import and compact with threaded context"],
       ["lcm import --dry-run", "Preview what would be imported"],
     ],
-    notes: "Reads transcripts from ~/.claude/projects/. Already-imported sessions are skipped.",
+    notes: "Claude sessions are read from ~/.claude/projects/. Codex sessions from ~/.codex/. Already-imported sessions are skipped.",
   },
 
   promote: {
@@ -259,7 +263,7 @@ const GROUPS = [
     label: "Memory",
     commands: [
       { name: "compact [--all] [--dry-run] [--replay] [--no-promote]", summary: "Compact conversations into DAG summaries (auto-promotes after)" },
-      { name: "import [--all] [--verbose] [--dry-run] [--replay]", summary: "Import Claude Code session transcripts" },
+      { name: "import [--provider claude|codex|all] [--all] [--verbose] [--dry-run] [--replay]", summary: "Import session transcripts (Claude Code or Codex CLI)" },
       { name: "promote [--all] [--verbose] [--dry-run]", summary: "Promote insights to long-term memory" },
       { name: "stats [-v]", summary: "Memory inventory and compression ratios" },
       { name: "diagnose [--all] [--days N] [--verbose] [--json]", summary: "Scan sessions for hook failures and issues" },

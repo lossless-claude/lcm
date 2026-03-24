@@ -450,6 +450,24 @@ async function main() {
       const { printImportSummary } = await import("../src/import-summary.js");
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
+      const importModule = await import("../src/import.js");
+
+      // --codex is a shorthand for --provider codex
+      let provider: import("../src/import.js").ImportProvider = "claude";
+      if (argv.includes("--codex")) {
+        provider = "codex";
+      } else {
+        const provIdx = argv.indexOf("--provider");
+        if (provIdx !== -1) {
+          const provVal = argv[provIdx + 1];
+          if (provVal === "claude" || provVal === "codex" || provVal === "all") {
+            provider = provVal;
+          } else {
+            console.error(`  Unknown provider "${provVal ?? ""}". Use: claude, codex, all`);
+            exit(1);
+          }
+        }
+      }
 
       const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
       const port = config.daemon?.port ?? 3737;
@@ -458,9 +476,13 @@ async function main() {
       if (!connected) { console.error("  Daemon not available"); exit(1); }
 
       const client = new DaemonClient(`http://127.0.0.1:${port}`);
-      console.log(`\n  Importing Claude Code sessions${all ? " (all projects)" : ""}...\n`);
+      const providerLabel =
+        provider === "codex" ? "Codex CLI" :
+        provider === "all"   ? "Claude Code + Codex CLI" :
+                               "Claude Code";
+      console.log(`\n  Importing ${providerLabel} sessions${all ? " (all projects)" : ""}...\n`);
 
-      const result = await importSessions(client, { all, verbose, dryRun, replay });
+      const result = await importModule.importSessions(client, { all, verbose, dryRun, replay, provider });
 
       if (dryRun) console.log("  [dry-run] No changes written.\n");
       printImportSummary(result, { replay });
