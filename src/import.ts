@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import type { DaemonClient } from "./daemon/client.js";
 import { formatNumber, formatRatio } from "./stats.js";
 import { findAllCodexTranscripts, extractCodexSessionCwd } from "./codex-transcript.js";
+import type { ProgressState } from "./cli/progress-state.js";
 
 export type ImportProvider = "claude" | "codex" | "all";
 
@@ -15,6 +16,8 @@ interface ImportOptions {
   replay?: boolean;
   /** Which transcript provider to import from (default: "claude") */
   provider?: ImportProvider;
+  /** Called with state patches as each session is processed — used by the ninja renderer */
+  onProgress?: (patch: Partial<ProgressState>) => void;
   /** Override ~/.claude/projects path — used in tests only */
   _claudeProjectsDir?: string;
   /** Override ~/.lossless-claude path — used in tests only */
@@ -253,6 +256,8 @@ export async function importSessions(
 ): Promise<ImportResult> {
   const provider: ImportProvider = options.provider ?? "claude";
   const result: ImportResult = { imported: 0, skippedEmpty: 0, failed: 0, totalMessages: 0, totalTokens: 0, tokensAfter: 0 };
+  const onProgress = options.onProgress;
+  const progressErrors: { sessionId: string; message: string }[] = [];
 
   // --- Claude Code sessions ---
   if (provider === "claude" || provider === "all") {

@@ -136,7 +136,28 @@ async function main() {
         const verbose: boolean = opts.verbose ?? false;
         const minTokens = config.compaction.autoCompactMinTokens;
         const cwd = all ? undefined : process.cwd();
-        const { compacted } = await batchCompact({ minTokens, dryRun, port, cwd, replay, verbose });
+
+        const { NinjaRenderer } = await import("../src/cli/pipeline-runner.js");
+        const { makeProgressState } = await import("../src/cli/progress-state.js");
+        const isTTY = process.stdout.isTTY ?? false;
+        const renderOpts = { isTTY, width: process.stdout.columns ?? 80, color: isTTY, verbose };
+        const compactState = makeProgressState({ phases: [{ name: "Compact", status: "active" }], dryRun });
+        const compactRenderer = new NinjaRenderer({ state: compactState, renderOpts });
+        compactRenderer.start();
+
+        const { compacted } = await batchCompact({
+          minTokens, dryRun, port, cwd, replay, verbose,
+          onProgress: (patch) => {
+            Object.assign(compactState, patch);
+            if (patch.lastResult) compactRenderer.sessionDone();
+          },
+        });
+
+        compactRenderer.stop();
+        if (isTTY) {
+          compactState.phases[0].status = "done";
+          compactRenderer.printSummary();
+        }
 
         // Auto-promote after a successful compact: new summaries are prime promotion candidates.
         if (compacted > 0 && !noPromote) {
@@ -636,26 +657,25 @@ async function main() {
       const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
       const { DaemonClient } = await import("../src/daemon/client.js");
       const { loadDaemonConfig } = await import("../src/daemon/config.js");
-      const { importSessions } = await import("../src/import.js");
-      const { printImportSummary } = await import("../src/import-summary.js");
+      const { NinjaRenderer } = await import("../src/cli/pipeline-runner.js");
+      const { makeProgressState } = await import("../src/cli/progress-state.js");
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
-      const importModule = await import("../src/import.js");
+      const { existsSync, readdirSync } = await import("node:fs");
+      const { importSessions, cwdToProjectHash, findSessionFiles } = await import("../src/import.js");
+      type ImportProvider = import("../src/import.js").ImportProvider;
 
       // --codex is a shorthand for --provider codex
-      let provider: import("../src/import.js").ImportProvider = "claude";
-      if (argv.includes("--codex")) {
+      let provider: ImportProvider = "claude";
+      if (opts.codex) {
         provider = "codex";
-      } else {
-        const provIdx = argv.indexOf("--provider");
-        if (provIdx !== -1) {
-          const provVal = argv[provIdx + 1];
-          if (provVal === "claude" || provVal === "codex" || provVal === "all") {
-            provider = provVal;
-          } else {
-            console.error(`  Unknown provider "${provVal ?? ""}". Use: claude, codex, all`);
-            exit(1);
-          }
+      } else if (opts.provider) {
+        const provVal = opts.provider as string;
+        if (provVal === "claude" || provVal === "codex" || provVal === "all") {
+          provider = provVal as ImportProvider;
+        } else {
+          console.error(`  Unknown provider "${provVal}". Use: claude, codex, all`);
+          exit(1);
         }
       }
 
@@ -665,18 +685,59 @@ async function main() {
       const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 5000 });
       if (!connected) { console.error("  Daemon not available"); exit(1); }
 
-      const client = new DaemonClient(`http://127.0.0.1:${port}`);
+      // Pre-scan for session count (enables accurate live progress bar)
+      const claudeProjectsDir = join(homedir(), ".claude", "projects");
+      let sessionCount = 0;
+      if (all) {
+        if (existsSync(claudeProjectsDir)) {
+          for (const entry of readdirSync(claudeProjectsDir, { withFileTypes: true })) {
+            if (!entry.isDirectory()) continue;
+            sessionCount += findSessionFiles(join(claudeProjectsDir, entry.name)).length;
+          }
+        }
+      } else {
+        const cwd = process.cwd();
+        const hash = cwdToProjectHash(cwd);
+        const dir = join(claudeProjectsDir, hash);
+        if (existsSync(dir)) sessionCount = findSessionFiles(dir).length;
+      }
+
+      const isTTY = process.stdout.isTTY ?? false;
+      const renderOpts = { isTTY, width: process.stdout.columns ?? 80, color: isTTY, verbose };
+      const state = makeProgressState({
+        phases: [{ name: "Import", status: "active" }],
+        total: sessionCount,
+        dryRun,
+      });
+      const renderer = new NinjaRenderer({ state, renderOpts });
+
       const providerLabel =
         provider === "codex" ? "Codex CLI" :
         provider === "all"   ? "Claude Code + Codex CLI" :
                                "Claude Code";
       console.log(`\n  Importing ${providerLabel} sessions${all ? " (all projects)" : ""}...\n`);
+      renderer.start();
 
-      const result = await importModule.importSessions(client, { all, verbose, dryRun, replay, provider });
+      const client = new DaemonClient(`http://127.0.0.1:${port}`);
+      const result = await importSessions(client, {
+        all, verbose, dryRun, replay, provider,
+        onProgress: (patch) => {
+          Object.assign(state, patch);
+          if (patch.lastResult) renderer.sessionDone();
+        },
+      });
 
-      if (dryRun) console.log("  [dry-run] No changes written.\n");
-      printImportSummary(result, { replay });
-      console.log();
+      renderer.stop();
+
+      if (isTTY && !verbose) {
+        state.phases[0].status = "done";
+        renderer.printSummary();
+      } else {
+        const { printImportSummary } = await import("../src/import-summary.js");
+        if (dryRun) console.log("  [dry-run] No changes written.\n");
+        printImportSummary(result, { replay });
+        console.log();
+      }
     });
 
   // ─── promote ───────────────────────────────────────────────────────────────
