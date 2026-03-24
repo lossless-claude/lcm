@@ -137,4 +137,20 @@ describe("loadDaemonConfig", () => {
     });
     expect(c.security.sensitivePatterns).toEqual(["MY_TOKEN_.*"]);
   });
+
+  it("loads hooks config with defaults", () => {
+    const config = loadDaemonConfig("/nonexistent");
+    expect(config.hooks).toEqual({
+      snapshotIntervalSec: 60,
+      disableAutoCompact: false,
+    });
+  });
+
+  it("merges user-provided hooks config", () => {
+    const config = loadDaemonConfig("/nonexistent", {
+      hooks: { snapshotIntervalSec: 30 },
+    });
+    expect(config.hooks.snapshotIntervalSec).toBe(30);
+    expect(config.hooks.disableAutoCompact).toBe(false);
+  });
 });

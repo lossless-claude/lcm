@@ -18,6 +18,7 @@ export type DaemonConfig = {
   llm: { provider: "auto" | "claude-process" | "codex-process" | "anthropic" | "openai" | "disabled"; model: string; apiKey?: string; baseURL: string };
   summarizer: { mock: boolean };
   security: SecurityConfig;
+  hooks: { snapshotIntervalSec: number; disableAutoCompact: boolean };
 };
 
 const DEFAULTS: DaemonConfig = {
@@ -39,6 +40,7 @@ const DEFAULTS: DaemonConfig = {
   security: {
     sensitivePatterns: [],
   },
+  hooks: { snapshotIntervalSec: 60, disableAutoCompact: false },
 };
 
 function deepMerge(target: any, source: any): any {
