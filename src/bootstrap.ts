@@ -72,17 +72,16 @@ function defaultBootstrapDeps(): BootstrapDeps {
   };
 }
 
-export function ensureBootstrapped(
+export async function ensureBootstrapped(
   sessionId: string,
   deps: BootstrapDeps = defaultBootstrapDeps(),
 ): Promise<void> {
   const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
   const flagPath = join(tmpdir(), `lcm-bootstrapped-${safeId}.flag`);
   try {
-    if (deps.flagExists(flagPath)) return Promise.resolve();
+    if (deps.flagExists(flagPath)) return;
   } catch {}
 
-  return ensureCore(deps).then(() => {
-    try { deps.writeFlag(flagPath); } catch {}
-  });
+  await ensureCore(deps);
+  try { deps.writeFlag(flagPath); } catch {}
 }

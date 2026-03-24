@@ -291,8 +291,6 @@ export async function importSessions(
 ): Promise<ImportResult> {
   const provider: ImportProvider = options.provider ?? "claude";
   const result: ImportResult = { imported: 0, skippedEmpty: 0, failed: 0, totalMessages: 0, totalTokens: 0, tokensAfter: 0 };
-  const onProgress = options.onProgress;
-  const progressErrors: { sessionId: string; message: string }[] = [];
 
   // --- Claude Code sessions ---
   if (provider === "claude" || provider === "all") {
