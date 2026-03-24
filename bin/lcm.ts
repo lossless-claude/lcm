@@ -113,6 +113,7 @@ async function main() {
       const dryRun: boolean = opts.dryRun ?? false;
       const verbose: boolean = opts.verbose ?? false;
       const replay: boolean = opts.replay ?? false;
+      // Hook dispatch only when --hook is explicit; all other invocations go to batch.
       const hook: boolean = opts.hook ?? false;
       if (!hook) {
         const { batchCompact } = await import("../src/batch-compact.js");
