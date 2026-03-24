@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 
 export const REQUIRED_HOOKS: { event: string; command: string }[] = [
-  { event: "PreCompact", command: "lcm compact" },
+  { event: "PreCompact", command: "lcm compact --hook" },
   { event: "SessionStart", command: "lcm restore" },
   { event: "SessionEnd", command: "lcm session-end" },
   { event: "UserPromptSubmit", command: "lcm user-prompt" },

@@ -40,7 +40,7 @@ describe("mergeClaudeSettings", () => {
   it("removes all 4 required hooks when already present", () => {
     const existing = {
       hooks: {
-        PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact" }] }],
+        PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact --hook" }] }],
         SessionStart: [{ matcher: "", hooks: [{ type: "command", command: "lcm restore" }] }],
         SessionEnd: [{ matcher: "", hooks: [{ type: "command", command: "lcm session-end" }] }],
         UserPromptSubmit: [{ matcher: "", hooks: [{ type: "command", command: "lcm user-prompt" }] }],
@@ -64,7 +64,7 @@ describe("mergeClaudeSettings", () => {
   it("removes any of the 4 hooks if already present", () => {
     const existing = {
       hooks: {
-        PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact" }] }],
+        PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact --hook" }] }],
         SessionStart: [{ matcher: "", hooks: [{ type: "command", command: "lcm restore" }] }],
         SessionEnd: [{ matcher: "", hooks: [{ type: "command", command: "lcm session-end" }] }],
         UserPromptSubmit: [{ matcher: "", hooks: [{ type: "command", command: "lcm user-prompt" }] }],
@@ -81,7 +81,7 @@ describe("mergeClaudeSettings", () => {
   });
 
   it("removes managed hooks without leaving duplicates behind", () => {
-    const r = mergeClaudeSettings({ hooks: { PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact" }] }] } });
+    const r = mergeClaudeSettings({ hooks: { PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact --hook" }] }] } });
     expect(r.hooks).toBeUndefined();
   });
 
@@ -92,7 +92,7 @@ describe("mergeClaudeSettings", () => {
           matcher: "",
           hooks: [
             { type: "command", command: "other" },
-            { type: "command", command: "lcm compact" },
+            { type: "command", command: "lcm compact --hook" },
           ],
         }],
       },
