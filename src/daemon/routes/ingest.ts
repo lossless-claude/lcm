@@ -113,6 +113,8 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
 
       const totalTokens = await summaryStore.getContextTokenCount(conversation.conversationId);
       sendJson(res, 200, { ingested: records.length, totalTokens });
+    } catch (err) {
+      sendJson(res, 500, { error: err instanceof Error ? err.message : "ingest failed" });
     } finally {
       db.close();
     }

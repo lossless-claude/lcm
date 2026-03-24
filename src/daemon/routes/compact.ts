@@ -257,6 +257,8 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
       }); // end enqueue
 
       sendJson(res, 200, result);
+    } catch (err) {
+      sendJson(res, 500, { error: err instanceof Error ? err.message : "compact failed" });
     } finally {
       compactingNow.delete(session_id);
     }
