@@ -75,12 +75,6 @@ export const JUST_COMPACTED_TTL_MS = 30_000;
 // Guard against concurrent compactions for the same session
 const compactingNow = new Set<string>();
 
-// Global cap on total concurrent compactions across all sessions.
-// Prevents cost amplification attacks (e.g. looping /compact with many fake session_ids).
-// Override with LCM_MAX_CONCURRENT_COMPACTIONS env var.
-const MAX_CONCURRENT_COMPACTIONS = Math.max(1, parseInt(process.env.LCM_MAX_CONCURRENT_COMPACTIONS ?? "3", 10));
-let activeCompactionCount = 0;
-
 
 export function createCompactHandler(config: DaemonConfig): RouteHandler {
   const summarizerCache = new Map<EffectiveProvider, Promise<LcmSummarizeFn | null>>();
@@ -113,14 +107,7 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
       sendJson(res, 200, { skipped: true, summary: "Compaction already in progress for this session." });
       return;
     }
-
-    if (activeCompactionCount >= MAX_CONCURRENT_COMPACTIONS) {
-      sendJson(res, 429, { error: `Too many concurrent compactions (max ${MAX_CONCURRENT_COMPACTIONS}). Try again later.` });
-      return;
-    }
-
     compactingNow.add(session_id);
-    activeCompactionCount++;
 
     const effectiveProvider = resolveEffectiveProvider(config, client);
     const providerLabels: Record<EffectiveProvider, string> = {
@@ -274,7 +261,6 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
       sendJson(res, 500, { error: err instanceof Error ? err.message : "compact failed" });
     } finally {
       compactingNow.delete(session_id);
-      activeCompactionCount--;
     }
   };
 }
