@@ -19,7 +19,7 @@ describe("validateAndFixHooks", () => {
     const deps = makeDeps({
       readFileSync: vi.fn().mockReturnValue(JSON.stringify({
         hooks: {
-          PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact" }] }],
+          PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact --hook" }] }],
           SessionStart: [{ matcher: "", hooks: [{ type: "command", command: "lcm restore" }] }],
           PostToolUse: [{ matcher: "", hooks: [{ type: "command", command: "other" }] }],
         },
@@ -49,7 +49,7 @@ describe("validateAndFixHooks", () => {
     const deps = makeDeps({
       readFileSync: vi.fn().mockReturnValue(JSON.stringify({
         hooks: {
-          PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact" }] }],
+          PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact --hook" }] }],
           PostToolUse: [{ matcher: "", hooks: [{ type: "command", command: "other" }] }],
         },
         mcpServers: {
@@ -124,5 +124,40 @@ describe("validateAndFixHooks", () => {
     validateAndFixHooks(deps);
     expect(deps.writeFileSync).not.toHaveBeenCalled();
     expect(deps.appendFileSync).not.toHaveBeenCalled();
+  });
+
+  it("rewrites 'lcm compact' without --hook: entry is removed (matches plugin.json duplicate)", () => {
+    // After rewrite: "lcm compact --hook" matches REQUIRED_HOOKS → mergeClaudeSettings removes it.
+    // Result: no PreCompact entry in settings.json.
+    const deps = makeDeps({
+      readFileSync: vi.fn().mockReturnValue(JSON.stringify({
+        hooks: {
+          PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact" }] }],
+        },
+      })),
+    });
+    validateAndFixHooks(deps);
+    expect(deps.writeFileSync).toHaveBeenCalledTimes(1);
+    const written = JSON.parse((deps.writeFileSync as ReturnType<typeof vi.fn>).mock.calls[0][1]);
+    // "lcm compact" (without --hook) must be gone
+    const precompact = written.hooks?.PreCompact ?? [];
+    const hasOldCommand = precompact.some((e: any) =>
+      Array.isArray(e.hooks) && e.hooks.some((h: any) => h.command === "lcm compact")
+    );
+    expect(hasOldCommand).toBe(false);
+  });
+
+  it("does NOT rewrite 'lcm compact --all' (user-custom variant, semantics would change)", () => {
+    // After fix: only exact "lcm compact" is rewritten. Flagged variants are left unchanged.
+    const deps = makeDeps({
+      readFileSync: vi.fn().mockReturnValue(JSON.stringify({
+        hooks: {
+          PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact --all" }] }],
+        },
+      })),
+    });
+    validateAndFixHooks(deps);
+    // No rewrite, no duplicate → no write
+    expect(deps.writeFileSync).not.toHaveBeenCalled();
   });
 });

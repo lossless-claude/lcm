@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { argv, exit, stdin, stdout } from "node:process";
-import { Command } from "commander";
+import { Command, Option } from "commander";
 
 function readStdin(): Promise<string> {
   return new Promise((resolve) => {
@@ -101,6 +101,7 @@ async function main() {
     .option("--replay", "Compact sequentially with threaded context")
     .option("--no-promote", "Skip the automatic promote step")
     .option("-v, --verbose", "Show per-session token details")
+    .addOption(new Option("--hook", "Hook dispatch mode (internal)").hideHelp())
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
@@ -112,10 +113,9 @@ async function main() {
       const dryRun: boolean = opts.dryRun ?? false;
       const verbose: boolean = opts.verbose ?? false;
       const replay: boolean = opts.replay ?? false;
-      // Batch mode: --all, TTY stdin, or any explicit flag (--dry-run/--verbose/--replay
-      // don't apply to hook dispatch, so their presence means the caller wants batch mode).
-      const batchMode = all || process.stdin.isTTY || dryRun || verbose || replay;
-      if (batchMode) {
+      // Hook dispatch only when --hook is explicit; all other invocations go to batch.
+      const hook: boolean = opts.hook ?? false;
+      if (!hook) {
         const { batchCompact } = await import("../src/batch-compact.js");
         const { loadDaemonConfig } = await import("../src/daemon/config.js");
         const { join } = await import("node:path");
