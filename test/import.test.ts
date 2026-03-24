@@ -525,3 +525,165 @@ describe("importSessions", () => {
     expect(result.failed).toBe(1);
   });
 });
+
+// --- importSessions with provider: "codex" ---
+
+function makeCodexResponseItemLine(role: "user" | "assistant", text: string): string {
+  const contentType = role === "user" ? "input_text" : "output_text";
+  return JSON.stringify({
+    timestamp: "2026-01-01T00:00:00.000Z",
+    type: "response_item",
+    payload: { type: "message", role, content: [{ type: contentType, text }] },
+  });
+}
+
+function makeCodexSessionMetaLine(id: string, cwd: string): string {
+  return JSON.stringify({
+    timestamp: "2026-01-01T00:00:00.000Z",
+    type: "session_meta",
+    payload: { id, cwd, cli_version: "0.100.0", model_provider: "openai" },
+  });
+}
+
+describe("importSessions — provider: codex", () => {
+  const dirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of dirs) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    dirs.length = 0;
+    vi.restoreAllMocks();
+  });
+
+  function makeTmpDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), "lcm-import-codex-"));
+    dirs.push(dir);
+    return dir;
+  }
+
+  it("imports Codex sessions from _codexDir/archived_sessions/", async () => {
+    const codexDir = makeTmpDir();
+    const archivedDir = join(codexDir, "archived_sessions");
+    mkdirSync(archivedDir, { recursive: true });
+
+    const cwd = "/workspace/myproject";
+    const sessionId = "rollout-2026-01-01-session-abc";
+    const content = [
+      makeCodexSessionMetaLine(sessionId, cwd),
+      makeCodexResponseItemLine("user", "Hello Codex"),
+      makeCodexResponseItemLine("assistant", "Hello! How can I help?"),
+    ].join("\n");
+    writeFileSync(join(archivedDir, `${sessionId}.jsonl`), content);
+
+    const calls: { path: string; body: unknown }[] = [];
+    const client = makeMockClient(async (path, body) => {
+      calls.push({ path, body });
+      return { ingested: 2, totalTokens: 200 };
+    });
+
+    const result = await importSessions(client, {
+      provider: "codex",
+      _codexDir: codexDir,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].path).toBe("/ingest");
+    expect((calls[0].body as { session_id: string }).session_id).toBe(sessionId);
+    expect((calls[0].body as { cwd: string }).cwd).toBe(cwd);
+    expect((calls[0].body as { transcript_path: string }).transcript_path).toContain(`${sessionId}.jsonl`);
+    expect(result.imported).toBe(1);
+    expect(result.totalMessages).toBe(2);
+    expect(result.totalTokens).toBe(200);
+    expect(result.failed).toBe(0);
+  });
+
+  it("falls back to process.cwd() when session_meta has no cwd", async () => {
+    const codexDir = makeTmpDir();
+    const archivedDir = join(codexDir, "archived_sessions");
+    mkdirSync(archivedDir, { recursive: true });
+
+    // A transcript without a session_meta line
+    writeFileSync(
+      join(archivedDir, "no-meta-session.jsonl"),
+      makeCodexResponseItemLine("user", "Hi") + "\n",
+    );
+
+    const calls: { path: string; body: unknown }[] = [];
+    const client = makeMockClient(async (path, body) => {
+      calls.push({ path, body });
+      return { ingested: 1, totalTokens: 50 };
+    });
+
+    await importSessions(client, {
+      provider: "codex",
+      _codexDir: codexDir,
+    });
+
+    expect(calls).toHaveLength(1);
+    // Falls back to process.cwd()
+    expect((calls[0].body as { cwd: string }).cwd).toBe(process.cwd());
+  });
+
+  it("imports nothing when _codexDir does not exist", async () => {
+    const client = makeMockClient(async () => ({ ingested: 1, totalTokens: 100 }));
+
+    const result = await importSessions(client, {
+      provider: "codex",
+      _codexDir: "/nonexistent/codex/dir",
+    });
+
+    expect(client.post).not.toHaveBeenCalled();
+    expect(result.imported).toBe(0);
+  });
+
+  it("dry-run does not call /ingest for codex sessions", async () => {
+    const codexDir = makeTmpDir();
+    const archivedDir = join(codexDir, "archived_sessions");
+    mkdirSync(archivedDir, { recursive: true });
+    writeFileSync(join(archivedDir, "session-x.jsonl"), makeCodexSessionMetaLine("session-x", "/ws"));
+
+    const client = makeMockClient(async () => ({ ingested: 1, totalTokens: 100 }));
+
+    const result = await importSessions(client, {
+      provider: "codex",
+      dryRun: true,
+      _codexDir: codexDir,
+    });
+
+    expect(client.post).not.toHaveBeenCalled();
+    expect(result.imported).toBe(1);
+  });
+
+  it("provider all imports from both Claude and Codex", async () => {
+    // Claude project dir
+    const claudeProjectsDir = makeTmpDir();
+    const cwd = "/home/user/claudeproject";
+    const hash = cwdToProjectHash(cwd);
+    const claudeProjDir = join(claudeProjectsDir, hash);
+    mkdirSync(claudeProjDir, { recursive: true });
+    writeFileSync(join(claudeProjDir, "claude-session.jsonl"), "");
+
+    // Codex dir
+    const codexDir = makeTmpDir();
+    const archivedDir = join(codexDir, "archived_sessions");
+    mkdirSync(archivedDir, { recursive: true });
+    writeFileSync(join(archivedDir, "codex-session.jsonl"), makeCodexSessionMetaLine("codex-session", "/workspace"));
+
+    const sessionIds: string[] = [];
+    const client = makeMockClient(async (path, body) => {
+      sessionIds.push((body as { session_id: string }).session_id);
+      return { ingested: 1, totalTokens: 100 };
+    });
+
+    const result = await importSessions(client, {
+      provider: "all",
+      cwd,
+      _claudeProjectsDir: claudeProjectsDir,
+      _codexDir: codexDir,
+    });
+
+    expect(sessionIds.sort()).toEqual(["claude-session", "codex-session"]);
+    expect(result.imported).toBe(2);
+  });
+});
