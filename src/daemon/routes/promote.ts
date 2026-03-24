@@ -108,6 +108,9 @@ export function createPromoteHandler(
           writeFileSync(metaPath, JSON.stringify(meta, null, 2));
         } catch { /* non-fatal */ }
       }
+    } catch (err) {
+      sendJson(res, 500, { error: err instanceof Error ? err.message : "promote failed" });
+      return;
     } finally {
       db.close();
     }
