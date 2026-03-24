@@ -7,6 +7,19 @@ type PromptSearchResponse = {
   hints: string[];
 };
 
+const LEARNING_INSTRUCTION = `<learning-instruction>
+When you recognize a durable insight, call lcm_store immediately:
+- decision: architectural/design choice with trade-offs
+- preference: user working style or tool preference
+- root-cause: bug cause that took effort to uncover
+- pattern: codebase convention not documented elsewhere
+- gotcha: non-obvious pitfall or footgun
+- solution: non-trivial fix worth remembering
+- workflow: multi-step process that works
+
+Usage: lcm_store(text: "concise insight with why", tags: ["category:decision"])
+</learning-instruction>`;
+
 export async function handleUserPromptSubmit(
   stdin: string,
   client: DaemonClient,
@@ -30,12 +43,12 @@ export async function handleUserPromptSubmit(
     });
 
     if (!result.hints || result.hints.length === 0) {
-      return { exitCode: 0, stdout: "" };
+      return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
     }
 
     const snippets = result.hints.map((h) => `- ${h}`).join("\n");
     const hint = `<memory-context>\nRelevant context from previous sessions (use lcm_expand for details):\n${snippets}\n</memory-context>`;
-    return { exitCode: 0, stdout: hint };
+    return { exitCode: 0, stdout: `${hint}\n${LEARNING_INSTRUCTION}` };
   } catch {
     return { exitCode: 0, stdout: "" };
   }
