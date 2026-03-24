@@ -32,6 +32,7 @@ export function createPromoteHandler(
     const db = new DatabaseSync(dbPath);
     let processed = 0;
     let promoted = 0;
+    let totalConversations = 0;
 
     try {
       db.exec("PRAGMA busy_timeout = 5000");
@@ -49,7 +50,7 @@ export function createPromoteHandler(
       );
 
       const conversations = await convStore.listConversations();
-      const totalConversations = conversations.length;
+      totalConversations = conversations.length;
 
       for (const conversation of conversations) {
         const summaries = await summStore.getSummariesByConversation(conversation.conversationId);
