@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "../config.js";
-import { projectId, projectDbPath, projectDir, projectMetaPath, ensureProjectDir } from "../project.js";
+import { projectId, projectDbPath, projectDir, projectMetaPath, ensureProjectDir, isSafeTranscriptPath } from "../project.js";
 import { enqueue } from "../project-queue.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
@@ -158,7 +158,7 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
           const conversation = await conversationStore.getOrCreateConversation(session_id);
 
           // Ingest new messages from the transcript into the DB.
-          if (!skip_ingest && transcript_path && existsSync(transcript_path)) {
+          if (!skip_ingest && isSafeTranscriptPath(transcript_path, cwd) && existsSync(transcript_path)) {
             const parsed = parseTranscript(transcript_path);
             const storedCount = await conversationStore.getMessageCount(conversation.conversationId);
             const newMessages = parsed.slice(storedCount);
