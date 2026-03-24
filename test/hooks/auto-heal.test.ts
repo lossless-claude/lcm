@@ -147,8 +147,8 @@ describe("validateAndFixHooks", () => {
     expect(hasOldCommand).toBe(false);
   });
 
-  it("rewrites 'lcm compact --all' to 'lcm compact --all --hook' and preserves it", () => {
-    // "lcm compact --all --hook" does not exactly match REQUIRED_HOOKS → preserved.
+  it("does NOT rewrite 'lcm compact --all' (user-custom variant, semantics would change)", () => {
+    // After fix: only exact "lcm compact" is rewritten. Flagged variants are left unchanged.
     const deps = makeDeps({
       readFileSync: vi.fn().mockReturnValue(JSON.stringify({
         hooks: {
@@ -157,12 +157,7 @@ describe("validateAndFixHooks", () => {
       })),
     });
     validateAndFixHooks(deps);
-    expect(deps.writeFileSync).toHaveBeenCalledTimes(1);
-    const written = JSON.parse((deps.writeFileSync as ReturnType<typeof vi.fn>).mock.calls[0][1]);
-    const precompact = written.hooks?.PreCompact ?? [];
-    const hasRewritten = precompact.some((e: any) =>
-      Array.isArray(e.hooks) && e.hooks.some((h: any) => h.command === "lcm compact --all --hook")
-    );
-    expect(hasRewritten).toBe(true);
+    // No rewrite, no duplicate → no write
+    expect(deps.writeFileSync).not.toHaveBeenCalled();
   });
 });

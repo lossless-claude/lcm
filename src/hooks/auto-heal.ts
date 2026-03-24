@@ -42,20 +42,22 @@ export function validateAndFixHooks(deps: AutoHealDeps = defaultDeps()): void {
     const hooks = settings.hooks ?? {};
 
     // Migration: rewrite "lcm compact" (without --hook) → append "--hook".
-    // Uses startsWith to handle user flags like --all that may precede --hook.
+    // Only exact match "lcm compact" on PreCompact event to avoid changing semantics
+    // for user-custom variants like "lcm compact --all" where --hook would make --all a no-op.
     let rewritten = false;
     for (const event of Object.keys(hooks)) {
       if (!Array.isArray(hooks[event])) continue;
       for (const entry of hooks[event]) {
         if (!Array.isArray(entry.hooks)) continue;
         for (const h of entry.hooks) {
-          if (
-            typeof h.command === "string" &&
-            h.command.startsWith("lcm compact") &&
-            !h.command.includes("--hook")
-          ) {
-            h.command = h.command + " --hook";
-            rewritten = true;
+          if (typeof h.command === "string") {
+            const trimmed = h.command.trim();
+            // Only rewrite the exact legacy duplicate "lcm compact" command on PreCompact,
+            // to avoid changing semantics for user-custom variants like "lcm compact --all".
+            if (event === "PreCompact" && trimmed === "lcm compact") {
+              h.command = "lcm compact --hook";
+              rewritten = true;
+            }
           }
         }
       }
