@@ -1,0 +1,156 @@
+{
+  "paused": false,
+  "cron": "*/2 * * * *",
+  "prs": {
+    "73": {
+      "held": false,
+      "active_agent": null,
+      "baseline_comment_count": 0,
+      "baseline_review_at": "2026-03-23T22:28:51Z",
+      "last_action": "merged: squash merge to develop",
+      "last_action_at": "2026-03-23T23:02:00Z",
+      "last_review_request_at": "2026-03-23T22:42:30Z",
+      "done": true
+    },
+    "74": {
+      "held": false,
+      "active_agent": null,
+      "baseline_comment_count": 24,
+      "baseline_review_at": "2026-03-23T22:40:20Z",
+      "last_action": "merged: squash merge to develop",
+      "last_action_at": "2026-03-24T00:00:00Z",
+      "last_review_request_at": "2026-03-23T22:35:46Z",
+      "done": true
+    },
+    "75": {
+      "held": false,
+      "active_agent": null,
+      "baseline_comment_count": 0,
+      "baseline_review_at": "2026-03-23T22:47:26Z",
+      "last_action": "re-requested review",
+      "last_action_at": "2026-03-24T09:02:52.612Z",
+      "last_review_request_at": "2026-03-24T09:02:52.615Z",
+      "done": false
+    },
+    "76": {
+      "held": false,
+      "active_agent": "haiku-implementer",
+      "baseline_comment_count": 2,
+      "baseline_review_at": "2026-03-23T22:49:46Z",
+      "last_action": "dispatch: fix test assertion and update PR description",
+      "last_action_at": "2026-03-24T13:40:00Z",
+      "last_review_request_at": null,
+      "done": false
+    },
+    "77": {
+      "held": false,
+      "active_agent": null,
+      "baseline_comment_count": 0,
+      "baseline_review_at": "2026-03-24T08:59:25Z",
+      "last_action": "re-requested review",
+      "last_action_at": "2026-03-24T16:00:00Z",
+      "last_review_request_at": "2026-03-24T16:00:00Z",
+      "done": false
+    },
+    "78": {
+      "held": false,
+      "active_agent": null,
+      "baseline_comment_count": 0,
+      "baseline_review_at": "2026-03-24T09:23:43Z",
+      "last_action": "merged: squash merge to develop",
+      "last_action_at": "2026-03-24T17:30:00Z",
+      "last_review_request_at": null,
+      "done": true
+    },
+    "79": {
+      "held": false,
+      "active_agent": null,
+      "baseline_comment_count": 0,
+      "baseline_review_at": "2026-03-24T09:22:04Z",
+      "last_action": "merged: squash merge to develop",
+      "last_action_at": "2026-03-24T17:30:00Z",
+      "last_review_request_at": null,
+      "done": true
+    },
+    "80": {
+      "held": false,
+      "active_agent": null,
+      "baseline_comment_count": 0,
+      "baseline_review_at": "2026-03-24T09:28:03Z",
+      "last_action": "merged: squash merge to develop",
+      "last_action_at": "2026-03-24T17:30:00Z",
+      "last_review_request_at": null,
+      "done": true
+    },
+    "81": {
+      "held": false,
+      "active_agent": null,
+      "baseline_comment_count": 0,
+      "baseline_review_at": "2026-03-24T09:27:59Z",
+      "last_action": "merge conflict detected",
+      "last_action_at": "2026-03-24T17:30:00Z",
+      "last_review_request_at": null,
+      "done": false
+    },
+    "82": {
+      "held": false,
+      "active_agent": null,
+      "baseline_comment_count": 0,
+      "baseline_review_at": "2026-03-24T09:48:20Z",
+      "last_action": "merged: squash merge",
+      "last_action_at": "2026-03-24T18:00:00Z",
+      "last_review_request_at": null,
+      "done": true
+    },
+    "83": {
+      "held": false,
+      "active_agent": null,
+      "baseline_comment_count": 0,
+      "baseline_review_at": "2026-03-24T09:41:04Z",
+      "last_action": "merged: squash merge",
+      "last_action_at": "2026-03-24T18:00:00Z",
+      "last_review_request_at": null,
+      "done": true
+    },
+    "84": {
+      "held": false,
+      "active_agent": null,
+      "baseline_comment_count": 0,
+      "baseline_review_at": "2026-03-24T09:41:14Z",
+      "last_action": "merged: squash merge",
+      "last_action_at": "2026-03-24T18:00:00Z",
+      "last_review_request_at": null,
+      "done": true
+    },
+    "85": {
+      "held": false,
+      "active_agent": null,
+      "baseline_comment_count": 0,
+      "baseline_review_at": "2026-03-24T09:45:23Z",
+      "last_action": "merged: squash merge",
+      "last_action_at": "2026-03-24T18:00:00Z",
+      "last_review_request_at": null,
+      "done": true
+    },
+    "92": {
+      "held": false,
+      "active_agent": null,
+      "baseline_comment_count": 0,
+      "baseline_review_at": "2026-03-24T16:10:01Z",
+      "last_action": "initial tracking",
+      "last_action_at": "2026-03-24T16:10:01Z",
+      "last_review_request_at": null,
+      "done": false
+    },
+    "95": {
+      "held": false,
+      "active_agent": null,
+      "baseline_comment_count": 6,
+      "baseline_review_at": "2026-03-24T22:29:29Z",
+      "last_action": "re-requested review (fixes applied in 49bd652)",
+      "last_action_at": "2026-03-24T23:35:00Z",
+      "last_review_request_at": "2026-03-24T23:35:00Z",
+      "done": false
+    }
+  }
+}
