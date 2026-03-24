@@ -214,7 +214,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>): Promise<CheckR
         name: "hooks",
         category: "Settings",
         status: "warn",
-        message: `Duplicate hooks in settings.json: ${duplicateHooks.join(", ")} — run: lcm install`,
+        message: `Duplicate ${duplicateHooks.join(", ")} hook ${duplicateHooks.length === 1 ? "entry" : "entries"} in ${settingsPath} — remove the \`hooks.${duplicateHooks[0]}\` block(s) from that file, then run: lcm install`,
       });
     }
   } else {
