@@ -41,15 +41,15 @@ describe("handleUserPromptSubmit", () => {
     expect(result.stdout).not.toContain("<memory-context>");
   });
 
-  it("returns empty when daemon unreachable", async () => {
+  it("returns learning-instruction when daemon unreachable", async () => {
     mockEnsureDaemon.mockResolvedValue({ connected: false, port: 3737, spawned: false });
     const client = { health: vi.fn(), post: vi.fn() };
     const result = await handleUserPromptSubmit("{}", client as any);
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toBe("");
+    expect(result.stdout).toContain("<learning-instruction>");
   });
 
-  it("returns empty when prompt is missing", async () => {
+  it("returns learning-instruction when prompt is missing", async () => {
     mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
     const client = {
       health: vi.fn(),
@@ -60,7 +60,7 @@ describe("handleUserPromptSubmit", () => {
       client as any,
     );
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toBe("");
+    expect(result.stdout).toContain("<learning-instruction>");
   });
 
   it("includes learning-instruction block in output", async () => {

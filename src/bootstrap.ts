@@ -38,12 +38,15 @@ export async function ensureCore(deps: EnsureCoreDeps = defaultDeps()): Promise<
   }
 
   // 2. Clean stale/duplicate hooks from settings.json (fixes #94)
+  // Only rewrite settings.json if mergeClaudeSettings actually changed the data
   if (deps.existsSync(deps.settingsPath)) {
     try {
       const existing = JSON.parse(deps.readFileSync(deps.settingsPath, "utf-8"));
       const merged = mergeClaudeSettings(existing);
-      deps.mkdirSync(dirname(deps.settingsPath), { recursive: true });
-      deps.writeFileSync(deps.settingsPath, JSON.stringify(merged, null, 2));
+      if (JSON.stringify(existing) !== JSON.stringify(merged)) {
+        deps.mkdirSync(dirname(deps.settingsPath), { recursive: true });
+        deps.writeFileSync(deps.settingsPath, JSON.stringify(merged, null, 2));
+      }
     } catch {}
   }
 
@@ -73,7 +76,8 @@ export function ensureBootstrapped(
   sessionId: string,
   deps: BootstrapDeps = defaultBootstrapDeps(),
 ): Promise<void> {
-  const flagPath = join(tmpdir(), `lcm-bootstrapped-${sessionId}.flag`);
+  const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const flagPath = join(tmpdir(), `lcm-bootstrapped-${safeId}.flag`);
   try {
     if (deps.flagExists(flagPath)) return Promise.resolve();
   } catch {}

@@ -28,12 +28,12 @@ export async function handleUserPromptSubmit(
   const daemonPort = port ?? 3737;
   const pidFilePath = join(homedir(), ".lossless-claude", "daemon.pid");
   const { connected } = await ensureDaemon({ port: daemonPort, pidFilePath, spawnTimeoutMs: 5000 });
-  if (!connected) return { exitCode: 0, stdout: "" };
+  if (!connected) return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
 
   try {
     const input = JSON.parse(stdin || "{}");
     if (!input.prompt || typeof input.prompt !== "string" || !input.prompt.trim()) {
-      return { exitCode: 0, stdout: "" };
+      return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
     }
 
     const result = await client.post<PromptSearchResponse>("/prompt-search", {
@@ -50,6 +50,6 @@ export async function handleUserPromptSubmit(
     const hint = `<memory-context>\nRelevant context from previous sessions (use lcm_expand for details):\n${snippets}\n</memory-context>`;
     return { exitCode: 0, stdout: `${hint}\n${LEARNING_INSTRUCTION}` };
   } catch {
-    return { exitCode: 0, stdout: "" };
+    return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
   }
 }

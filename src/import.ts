@@ -158,9 +158,11 @@ interface SessionEntry {
  * Checks if a session has already been recorded in session_ingest_log,
  * indicating it was fully ingested in a previous run.
  */
-function isSessionAlreadyIngested(cwd: string, sessionId: string): boolean {
+function isSessionAlreadyIngested(cwd: string, sessionId: string, lcmDir?: string): boolean {
   try {
-    const dbPath = projectDbPath(cwd);
+    const dbPath = lcmDir
+      ? join(lcmDir, "projects", cwdToProjectHash(cwd), "project.db")
+      : projectDbPath(cwd);
     if (!existsSync(dbPath)) {
       return false;
     }
@@ -197,7 +199,7 @@ async function ingestSessionList(
     }
 
     // Skip sessions already recorded in session_ingest_log
-    if (isSessionAlreadyIngested(cwd, sessionId)) {
+    if (isSessionAlreadyIngested(cwd, sessionId, options._lcmDir)) {
       result.skippedEmpty++;
       if (options.verbose) console.log(`  ↩️ ${sessionId}: already fully ingested`);
       continue;

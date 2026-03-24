@@ -28,9 +28,16 @@ export async function handleSessionSnapshot(
       return { exitCode: 0, stdout: "" };
     }
 
-    const cursorPath = join(tmpdir(), `lcm-snap-${session_id}.json`);
+    const safeSessionId = session_id.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const cursorPath = join(tmpdir(), `lcm-snap-${safeSessionId}.json`);
     const _statSync = deps?.statSync ?? defaultStatSync;
-    const intervalSec = deps?.snapshotIntervalSec ?? 60;
+    let intervalSec = deps?.snapshotIntervalSec;
+    if (intervalSec === undefined) {
+      const { loadDaemonConfig } = await import("../daemon/config.js");
+      const { homedir } = await import("node:os");
+      const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
+      intervalSec = config.hooks?.snapshotIntervalSec ?? 60;
+    }
 
     // Throttle: stat cursor mtime, skip if within interval
     let stat: { mtimeMs: number } | null = null;

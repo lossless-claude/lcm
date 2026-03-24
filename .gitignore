@@ -27,6 +27,7 @@ sensitive-patterns-test.txt
 # xgh local state (inbox, cache) — specs and plans are tracked
 .xgh/inbox/
 .xgh/cache/
+.xgh/ship-prs-state.json
 
 # Environment secrets
 .env
