@@ -5,6 +5,8 @@
 **Date:** 2026-03-24
 **Verdict:** All Issues Resolved
 
+> **Note:** All critical and important issues listed below were addressed in the plan before merging. The issue descriptions are preserved as a historical record of the review process.
+
 ---
 
 ## What Was Done Well
