@@ -19,7 +19,7 @@ describe("validateAndFixHooks", () => {
     const deps = makeDeps({
       readFileSync: vi.fn().mockReturnValue(JSON.stringify({
         hooks: {
-          PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact" }] }],
+          PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact --hook" }] }],
           SessionStart: [{ matcher: "", hooks: [{ type: "command", command: "lcm restore" }] }],
           PostToolUse: [{ matcher: "", hooks: [{ type: "command", command: "other" }] }],
         },
@@ -49,7 +49,7 @@ describe("validateAndFixHooks", () => {
     const deps = makeDeps({
       readFileSync: vi.fn().mockReturnValue(JSON.stringify({
         hooks: {
-          PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact" }] }],
+          PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact --hook" }] }],
           PostToolUse: [{ matcher: "", hooks: [{ type: "command", command: "other" }] }],
         },
         mcpServers: {
