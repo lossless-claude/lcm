@@ -23,43 +23,61 @@ Make hook dispatch opt-in via an explicit `--hook` flag. Zero-flag invocations a
 Add `--hook` option (hidden from help). Routing becomes:
 
 ```
-batchMode = all || stdin.isTTY || dryRun || verbose || replay || noPromote || !hook
-hookMode  = hook (explicit --hook flag only)
+if (hook)  → hook dispatch (reads stdin)
+else       → batch mode  ← zero-flag non-TTY lands here now
 ```
 
-In practice: if `--hook` is not passed, batch mode runs. The `stdin.isTTY` check is now redundant but kept as a safety net for clarity.
+The existing `batchMode` expression (`all || stdin.isTTY || dryRun || verbose || replay`) is replaced by simply: "if `--hook` is not set, run batch mode." The `stdin.isTTY` check becomes unnecessary but can be removed — the `--hook` flag is now the only gating condition for the hook path.
 
-The `--hook` flag is **not shown in `lcm compact --help`** — it is an internal flag for the Claude Code hook integration.
+The `--hook` flag is **not shown in `lcm compact --help`** — it is an internal flag for Claude Code hook integration.
 
-### 2. `installer/install.ts` — hook registration
+### 2. Hook registration — two authoritative sources
 
+**`installer/install.ts`** (direct/npm installs — writes to `settings.json`):
 ```diff
 - { event: "PreCompact", command: "lcm compact" }
 + { event: "PreCompact", command: "lcm compact --hook" }
 ```
 
-### 3. `src/hooks/auto-heal.ts` — rewrite rule for existing installs
+**`.claude-plugin/plugin.json`** (plugin installs — Claude Code reads this directly):
+```diff
+- "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" compact"
++ "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" compact --hook"
+```
+
+Both files must be updated. `plugin.json` is authoritative for plugin-based installs; `install.ts` for direct installs.
+
+### 3. `src/hooks/auto-heal.ts` — rewrite rule for existing direct installs
 
 `validateAndFixHooks` gains a rewrite rule:
 
-- Detect: hook entry with `command` matching `lcm compact` (exact, no `--hook`)
-- Rewrite: `lcm compact` → `lcm compact --hook`
+- Detect: hook entry where `command` starts with `"lcm compact"` but does not include `"--hook"`
+- Rewrite: append `" --hook"` to the command
 
-This fires on the first hook invocation after the user updates lcm, requiring no manual intervention.
+Using `startsWith` rather than exact match handles users who may have added flags like `--all` or `--dry-run` to their hook entry.
+
+**Known limitation:** auto-heal fires on hook invocation (when Claude triggers PreCompact), not on `lcm install` or daemon startup. A user who runs `lcm compact` in a script before any Claude session fires PreCompact will still hit the hang until auto-heal has run. Mitigation: the `lcm install` command can call `validateAndFixHooks` explicitly, which is already the expected flow for updates.
+
+Plugin-based installs do not need auto-heal — `plugin.json` is updated as part of the package and takes effect immediately.
 
 ## Tests
 
-| Area | What to test |
-|------|-------------|
-| `bin/lcm.ts` routing | Zero-flag non-TTY → batch mode (not hook dispatch) |
-| `bin/lcm.ts` routing | `--hook` flag → hook dispatch path |
-| `auto-heal.ts` | `lcm compact` entry in settings.json is rewritten to `lcm compact --hook` |
-| `installer/install.ts` | Registered PreCompact command is `lcm compact --hook` |
+| Area | Case | Expected |
+|------|------|----------|
+| `bin/lcm.ts` routing | Zero flags, non-TTY stdin | Batch mode (not hook dispatch) |
+| `bin/lcm.ts` routing | `--hook` flag, non-TTY stdin | Hook dispatch (reads stdin) |
+| `bin/lcm.ts` routing | `--hook` flag, TTY stdin | Hook dispatch (TTY does not override `--hook`) |
+| `auto-heal.ts` | `settings.json` has `lcm compact` | Rewritten to `lcm compact --hook` |
+| `auto-heal.ts` | `settings.json` has `lcm compact --all` | Rewritten to `lcm compact --all --hook` |
+| `installer/install.ts` | PreCompact REQUIRED_HOOKS entry | Command is `lcm compact --hook` |
 
 ## Migration
 
-Existing users: auto-healed on first hook invocation (no action required).
-New installs: correct from the start.
+| Install type | How migrated |
+|---|---|
+| Plugin install | `plugin.json` updated in package — takes effect on next Claude Code session |
+| Direct install (new) | `installer/install.ts` change — correct from the start |
+| Direct install (existing) | `auto-heal.ts` rewrite rule — fires on first PreCompact hook invocation |
 
 ## Non-Goals
 
