@@ -78,19 +78,21 @@ const HELP: Record<string, CommandHelp> = {
 
   compact: {
     summary: "Compact conversation context into DAG summary nodes.",
-    usage: "lcm compact [--all] [--dry-run] [--replay]",
+    usage: "lcm compact [--all] [--dry-run] [--replay] [--no-promote]",
     options: [
       ["--all", "Compact all tracked projects (default: current project only)"],
       ["--dry-run", "Show what would be compacted without writing anything"],
       ["--replay", "Compact sequentially, threading each summary through the prior context"],
+      ["--no-promote", "Skip the automatic promote step that runs after compaction"],
     ],
     examples: [
       ["lcm compact", "Compact current project"],
       ["lcm compact --all", "Compact all tracked projects"],
       ["lcm compact --dry-run", "Preview compaction for current project"],
       ["lcm compact --all --replay", "Rebuild all projects with threaded context (slow)"],
+      ["lcm compact --no-promote", "Compact without auto-promoting new insights"],
     ],
-    notes: "When invoked via the PreCompact hook (piped stdin), runs automatically during Claude Code context compaction.",
+    notes: "When invoked via the PreCompact hook (piped stdin), runs automatically during Claude Code context compaction. After a successful compact, promote runs automatically to surface new insights to long-term memory.",
   },
 
   import: {
@@ -256,7 +258,7 @@ const GROUPS = [
   {
     label: "Memory",
     commands: [
-      { name: "compact [--all] [--dry-run] [--replay]", summary: "Compact conversations into DAG summaries" },
+      { name: "compact [--all] [--dry-run] [--replay] [--no-promote]", summary: "Compact conversations into DAG summaries (auto-promotes after)" },
       { name: "import [--all] [--verbose] [--dry-run] [--replay]", summary: "Import Claude Code session transcripts" },
       { name: "promote [--all] [--verbose] [--dry-run]", summary: "Promote insights to long-term memory" },
       { name: "stats [-v]", summary: "Memory inventory and compression ratios" },
