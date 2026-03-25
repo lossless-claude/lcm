@@ -5,6 +5,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DaemonConfig } from "./config.js";
 import { sanitizeError } from "./safe-error.js";
+import { readAuthToken } from "./auth.js";
 import type { ProxyManager } from "./proxy-manager.js";
 import { createCompactHandler } from "./routes/compact.js";
 import { createPromoteHandler } from "./routes/promote.js";
@@ -30,7 +31,7 @@ export const PKG_VERSION = (() => {
 
 export type RouteHandler = (req: IncomingMessage, res: ServerResponse, body: string) => Promise<void>;
 export type DaemonInstance = { address: () => AddressInfo; stop: () => Promise<void>; registerRoute: (method: string, path: string, handler: RouteHandler) => void; idleTriggered: boolean };
-export type DaemonOptions = { proxyManager?: ProxyManager; onIdle?: () => void };
+export type DaemonOptions = { proxyManager?: ProxyManager; onIdle?: () => void; tokenPath?: string };
 
 const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
 
@@ -59,6 +60,7 @@ export function sendJson(res: ServerResponse, status: number, data: unknown): vo
 export async function createDaemon(config: DaemonConfig, options?: DaemonOptions): Promise<DaemonInstance> {
   const startTime = Date.now();
   const proxyManager = options?.proxyManager;
+  const serverToken = options?.tokenPath ? readAuthToken(options.tokenPath) : null;
   const routes = new Map<string, RouteHandler>();
 
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -153,6 +155,15 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
     const key = `${req.method} ${req.url?.split("?")[0]}`;
     const handler = routes.get(key);
     if (!handler) { sendJson(res, 404, { error: "not found" }); return; }
+    // Auth: skip for GET /health, require Bearer token for everything else
+    if (serverToken && key !== "GET /health") {
+      const rawAuth = req.headers["authorization"];
+      const authHeader = (Array.isArray(rawAuth) ? rawAuth[0] : rawAuth) ?? "";
+      if (authHeader.trim() !== `Bearer ${serverToken}`) {
+        sendJson(res, 401, { error: "unauthorized" });
+        return;
+      }
+    }
     try {
       await handler(req, res, req.method !== "GET" ? await readBody(req) : "");
     } catch (err: unknown) {
