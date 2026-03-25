@@ -8,6 +8,7 @@ import { projectId, projectDbPath } from "../project.js";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import type { DaemonConfig } from "../config.js";
+import { safeLogError } from "../../hooks/hook-errors.js";
 
 const AUTO_TAGS: Record<string, string> = {
   decision: "category:preference",
@@ -175,8 +176,9 @@ export function createPromoteEventsHandler(config: DaemonConfig): RouteHandler {
 
               processedIds.push(event.event_id);
               result.promoted++;
-            } catch {
+            } catch (error) {
               result.errors++;
+              safeLogError("promote-events", error, { cwd, sessionId: event.session_id });
               // Do not add to processedIds — transient errors (DB busy, dedup failure) should
               // allow the event to be retried on next promotion pass rather than being silently dropped.
             }
