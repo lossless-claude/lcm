@@ -1,6 +1,5 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { readFileSync } from "node:fs";
 import type { DaemonConfig } from "./config.js";
 import { sanitizeError } from "./safe-error.js";
 import { readAuthToken } from "./auth.js";

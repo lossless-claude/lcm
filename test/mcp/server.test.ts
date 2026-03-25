@@ -115,7 +115,7 @@ describe("startMcpServer", () => {
 
     await startMcpServer();
 
-    // PKG_VERSION is mocked to "9.9.9-test" via vi.mock("../../src/daemon/server.js")
+    // PKG_VERSION is mocked to "9.9.9-test" via vi.mock("../../src/daemon/version.js")
     expect(ensureDaemonMcpMock).toHaveBeenCalledWith(
       expect.objectContaining({ expectedVersion: "9.9.9-test" }),
     );
