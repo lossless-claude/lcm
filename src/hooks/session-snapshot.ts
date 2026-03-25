@@ -1,4 +1,4 @@
-import { statSync, writeFileSync, mkdirSync } from "node:fs";
+import { statSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -30,7 +30,7 @@ export async function handleSessionSnapshot(
 
     const safeSessionId = session_id.replace(/[^a-zA-Z0-9_-]/g, "_");
     const cursorDir = join(homedir(), ".lossless-claude", "tmp");
-    mkdirSync(cursorDir, { recursive: true });
+    mkdirSync(cursorDir, { recursive: true, mode: 0o700 });
     const cursorPath = join(cursorDir, `snap-${safeSessionId}.json`);
     const _statSync = deps?.statSync ?? defaultStatSync;
     let intervalSec = deps?.snapshotIntervalSec;
@@ -83,12 +83,14 @@ export async function handleSessionSnapshot(
         method: "POST",
         headers,
         body: JSON.stringify({ session_id, cwd, transcript_path }),
+        signal: AbortSignal.timeout(5000),
       });
     }
 
     // Touch cursor file
     const _writeFileSync = deps?.writeFileSync ?? writeFileSync;
     _writeFileSync(cursorPath, JSON.stringify({ ts: Date.now() }));
+    try { chmodSync(cursorPath, 0o600); } catch { /* non-fatal */ }
 
     return { exitCode: 0, stdout: "" };
   } catch {

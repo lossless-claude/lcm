@@ -61,6 +61,9 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   const startTime = Date.now();
   const proxyManager = options?.proxyManager;
   const serverToken = options?.tokenPath ? readAuthToken(options.tokenPath) : null;
+  if (options?.tokenPath && serverToken === null) {
+    throw new Error(`Auth token file specified but could not be read: ${options.tokenPath}`);
+  }
   const routes = new Map<string, RouteHandler>();
 
   let idleTimer: ReturnType<typeof setTimeout> | null = null;

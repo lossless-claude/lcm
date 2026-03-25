@@ -1,5 +1,5 @@
 import { resolve, isAbsolute } from "node:path";
-import { statSync } from "node:fs";
+import { statSync, realpathSync } from "node:fs";
 import { sanitizeError } from "./safe-error.js";
 
 /**
@@ -27,5 +27,10 @@ export function validateCwd(cwd: string): string {
     const msg = err instanceof Error ? err.message : "filesystem error";
     throw new Error(sanitizeError(msg));
   }
-  return resolved;
+  // Resolve symlinks so /tmp and /private/tmp map to the same project ID on macOS.
+  try {
+    return realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
 }

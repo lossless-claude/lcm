@@ -18,6 +18,7 @@ interface ScrubCacheEntry {
   mtime: number;
 }
 
+const SCRUB_CACHE_MAX = 100;
 const scrubCache = new Map<string, ScrubCacheEntry>();
 
 async function getScrubEngine(config: DaemonConfig, projDir: string): Promise<ScrubEngine> {
@@ -29,6 +30,10 @@ async function getScrubEngine(config: DaemonConfig, projDir: string): Promise<Sc
   if (cached && cached.mtime === mtime) return cached.engine;
 
   const engine = await ScrubEngine.forProject(config.security?.sensitivePatterns ?? [], projDir);
+  // Evict oldest entry when at capacity (simple LRU via insertion-order Map)
+  if (scrubCache.size >= SCRUB_CACHE_MAX) {
+    scrubCache.delete(scrubCache.keys().next().value as string);
+  }
   scrubCache.set(projDir, { engine, mtime });
   return engine;
 }
