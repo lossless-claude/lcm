@@ -1,10 +1,11 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { projectDbPath } from "../project.js";
+import { projectDbPath, projectDir } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import type { DaemonConfig } from "../config.js";
+import { sanitizeError } from "../safe-error.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { PromotedStore } from "../../db/promoted.js";
 import { ScrubEngine } from "../../scrub.js";
@@ -34,9 +35,9 @@ export function createStoreHandler(config: DaemonConfig): RouteHandler {
       return;
     }
 
-    const scrubber = new ScrubEngine(
+    const scrubber = await ScrubEngine.forProject(
       config.security?.sensitivePatterns ?? [],
-      [],
+      projectDir(projectPath),
     );
     const scrubbedText = scrubber.scrub(text);
 
@@ -45,6 +46,7 @@ export function createStoreHandler(config: DaemonConfig): RouteHandler {
     const db = new DatabaseSync(dbPath);
     try {
       // Core: write to SQLite promoted table
+      db.exec("PRAGMA busy_timeout = 5000");
       runLcmMigrations(db);
       const store = new PromotedStore(db);
 
@@ -59,7 +61,7 @@ export function createStoreHandler(config: DaemonConfig): RouteHandler {
 
       sendJson(res, 200, { stored: true, id });
     } catch (err) {
-      sendJson(res, 500, { error: err instanceof Error ? err.message : "store failed" });
+      sendJson(res, 500, { error: sanitizeError(err instanceof Error ? err.message : "store failed") });
     } finally {
       db.close();
     }

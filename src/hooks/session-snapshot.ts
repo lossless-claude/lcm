@@ -58,20 +58,13 @@ export async function handleSessionSnapshot(
       await _post("/ingest", { session_id, cwd, transcript_path });
     } else {
       const { loadDaemonConfig } = await import("../daemon/config.js");
+      const { DaemonClient } = await import("../daemon/client.js");
       const { homedir } = await import("node:os");
       const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
       const port = config.daemon?.port ?? 3737;
       const baseUrl = `http://127.0.0.1:${port}`;
-      const res = await fetch(`${baseUrl}/ingest`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id, cwd, transcript_path }),
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-        throw new Error(err.error ?? `HTTP ${res.status}`);
-      }
+      const client = new DaemonClient(baseUrl);
+      await client.post("/ingest", { session_id, cwd, transcript_path });
     }
 
     // Touch cursor file

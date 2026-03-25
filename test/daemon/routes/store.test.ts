@@ -103,6 +103,7 @@ describe("POST /store", () => {
       // Read back directly from the SQLite promoted table
       const dbPath = projectDbPath(tempDir);
       const db = new DatabaseSync(dbPath);
+      db.exec("PRAGMA busy_timeout = 5000");
       try {
         const rows = db.prepare("SELECT content FROM promoted ORDER BY created_at DESC LIMIT 1").all() as Array<{ content: string }>;
         expect(rows).toHaveLength(1);

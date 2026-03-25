@@ -1,5 +1,6 @@
 import { resolve, isAbsolute } from "node:path";
 import { statSync } from "node:fs";
+import { sanitizeError } from "./safe-error.js";
 
 /**
  * Canonicalize and validate a cwd parameter from a daemon route.
@@ -20,7 +21,7 @@ export function validateCwd(cwd: string): string {
     }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      throw new Error(`cwd does not exist: ${resolved}`);
+      throw new Error(sanitizeError(`cwd does not exist: ${resolved}`));
     }
     throw err;
   }

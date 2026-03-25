@@ -7,7 +7,13 @@ export function validateRegex(pattern: string): RegExp {
   } catch (err) {
     throw new Error(`Invalid regex pattern: ${err instanceof Error ? err.message : "syntax error"}`);
   }
-  if (!safeRegex(pattern)) {
+  let safe: boolean;
+  try {
+    safe = safeRegex(pattern);
+  } catch {
+    safe = false;
+  }
+  if (!safe) {
     throw new Error(`Unsafe regex pattern rejected (potential catastrophic backtracking): ${pattern}`);
   }
   return re;

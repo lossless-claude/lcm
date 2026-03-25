@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, realpathSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, normalize, join as pathJoin } from "node:path";
 
@@ -17,8 +17,35 @@ export const projectDbPath = (cwd: string): string =>
 export const projectMetaPath = (cwd: string): string =>
   join(projectDir(cwd), "meta.json");
 
+function tryRealpath(p: string): string {
+  try { return realpathSync(p); } catch { return p; }
+}
+
 export function isSafeTranscriptPath(transcriptPath: string, cwd: string): string | false {
   const resolved = resolve(transcriptPath);
+
+  // Check for symlinks: if the resolved path is a symlink, follow it and re-validate.
+  let lstat: ReturnType<typeof lstatSync> | null = null;
+  try { lstat = lstatSync(resolved); } catch { /* file doesn't exist */ }
+
+  if (lstat?.isSymbolicLink()) {
+    // Follow symlink to real path and re-validate against allowed bases
+    let real: string;
+    try { real = realpathSync(resolved); } catch { return false; }
+    const allowedBases = [
+      tryRealpath(pathJoin(homedir(), ".claude", "projects")),
+      tryRealpath(resolve(cwd)),
+    ];
+    for (const base of allowedBases) {
+      const normalBase = normalize(base + "/");
+      if (real.startsWith(normalBase) || real === normalize(base)) {
+        return real;
+      }
+    }
+    return false;
+  }
+
+  // Not a symlink (or doesn't exist yet): validate using resolve() — consistent with cwd.
   const allowedBases = [
     pathJoin(homedir(), ".claude", "projects"),
     resolve(cwd),

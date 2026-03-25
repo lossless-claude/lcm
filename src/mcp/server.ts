@@ -148,7 +148,12 @@ export async function startMcpServer(): Promise<void> {
         if (key in rawArgs) filteredArgs[key] = (rawArgs as Record<string, unknown>)[key];
       }
     } else {
-      Object.assign(filteredArgs, rawArgs);
+      const DENIED = new Set(["__proto__", "constructor", "prototype"]);
+      for (const key of Object.keys(rawArgs as Record<string, unknown>)) {
+        if (!DENIED.has(key)) {
+          filteredArgs[key] = (rawArgs as Record<string, unknown>)[key];
+        }
+      }
     }
 
     const localHandler = LOCAL_TOOLS[req.params.name];
