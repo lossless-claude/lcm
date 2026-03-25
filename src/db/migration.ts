@@ -540,6 +540,15 @@ export function runLcmMigrations(
     db.exec(`ALTER TABLE promoted ADD COLUMN archived_at TEXT DEFAULT NULL`);
   }
 
+  // Session ingest log — tracks which sessions are fully ingested
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_ingest_log (
+      session_id TEXT PRIMARY KEY,
+      completed_at TEXT NOT NULL DEFAULT (datetime('now')),
+      message_count INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+
   const fts5Available = options?.fts5Available ?? getLcmDbFeatures(db).fts5Available;
   if (!fts5Available) {
     return;

@@ -8,13 +8,22 @@ import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { ConversationStore } from "../../store/conversation-store.js";
 import { SummaryStore } from "../../store/summary-store.js";
+import { validateCwd } from "../validate-cwd.js";
 
 export function createRecentHandler(_config: DaemonConfig): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
-    const { cwd, limit = 5 } = input;
+    const { limit = 5 } = input;
 
-    if (!cwd) {
+    if (!input.cwd) {
+      sendJson(res, 200, { summaries: [] });
+      return;
+    }
+
+    let cwd: string;
+    try {
+      cwd = validateCwd(input.cwd);
+    } catch {
       sendJson(res, 200, { summaries: [] });
       return;
     }

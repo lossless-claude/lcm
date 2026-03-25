@@ -6,7 +6,8 @@ export function printImportSummary(
   opts: { replay?: boolean } = {},
 ): void {
   const sessionsProcessed = result.imported + result.skippedEmpty + result.failed;
-  console.log(`  ${result.imported} sessions imported (${result.totalMessages} messages)`);
+  const tokenSuffix = result.totalTokens > 0 ? `, ${formatNumber(result.totalTokens)} tokens` : "";
+  console.log(`  ${result.imported} sessions imported (${result.totalMessages} messages${tokenSuffix})`);
   if (result.skippedEmpty > 0) console.log(`  ${result.skippedEmpty} skipped (empty transcript)`);
   if (result.failed > 0) console.log(`  ${result.failed} failed`);
 

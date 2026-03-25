@@ -9,18 +9,27 @@ import { runLcmMigrations } from "../../db/migration.js";
 import { ConversationStore } from "../../store/conversation-store.js";
 import { SummaryStore } from "../../store/summary-store.js";
 import { RetrievalEngine } from "../../retrieval.js";
+import { validateCwd } from "../validate-cwd.js";
 
 export function createGrepHandler(_config: DaemonConfig): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
-    const { query, scope, mode, since, cwd } = input;
+    const { query, scope, mode, since } = input;
 
     if (!query) {
       sendJson(res, 400, { error: "query is required" });
       return;
     }
 
-    if (!cwd) {
+    if (!input.cwd) {
+      sendJson(res, 200, { matches: [] });
+      return;
+    }
+
+    let cwd: string;
+    try {
+      cwd = validateCwd(input.cwd);
+    } catch {
       sendJson(res, 200, { matches: [] });
       return;
     }

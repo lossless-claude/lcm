@@ -32,6 +32,77 @@ describe("ScrubEngine — built-in patterns", () => {
     const text = "Hello world, this is safe content.";
     expect(engine.scrub(text)).toBe(text);
   });
+
+  it("redacts npm tokens (npm_...)", () => {
+    expect(engine.scrub("token=npm_aBcDeFgHiJkLmNoPqRsTuVwXyZ012345")).toContain("[REDACTED]");
+  });
+
+  it("redacts Slack bot tokens (xoxb-...)", () => {
+    expect(engine.scrub("SLACK_TOKEN=xoxb-123456789-abcdefghij")).toContain("[REDACTED]");
+  });
+
+  it("redacts Slack user tokens (xoxp-...)", () => {
+    expect(engine.scrub("token=xoxp-999888777-abcdef")).toContain("[REDACTED]");
+  });
+
+  it("redacts Slack rotating tokens (xoxe-...)", () => {
+    expect(engine.scrub("token=xoxe-1-abc123def456")).toContain("[REDACTED]");
+  });
+
+  it("redacts Slack app-level tokens (xapp-...)", () => {
+    expect(engine.scrub("token=xapp-1-A0B1C2D3E4F-abc123")).toContain("[REDACTED]");
+  });
+
+  it("redacts Slack workflow tokens (xwfp-...)", () => {
+    expect(engine.scrub("token=xwfp-abc123-def456")).toContain("[REDACTED]");
+  });
+
+  it("redacts Stripe live secret keys (sk_live_...)", () => {
+    expect(engine.scrub("key=sk_live_51J3kxABCDEFghijKLMNop")).toContain("[REDACTED]");
+  });
+
+  it("redacts Stripe live publishable keys (pk_live_...)", () => {
+    expect(engine.scrub("key=pk_live_51J3kxABCDEFghijKLMNop")).toContain("[REDACTED]");
+  });
+
+  it("redacts Google/GCP API keys (AIza...)", () => {
+    expect(engine.scrub("key=AIzaSyA1234567890abcdefghijklmnopqrstuv")).toContain("[REDACTED]");
+  });
+
+  it("redacts SendGrid API tokens (SG.…)", () => {
+    expect(engine.scrub("SENDGRID_KEY=SG." + "a".repeat(66))).toContain("[REDACTED]");
+  });
+
+  it("redacts Twilio API keys (SK...)", () => {
+    expect(engine.scrub("TWILIO_KEY=SK00000000000000000000000000000000")).toContain("[REDACTED]");
+  });
+
+  it("redacts Shopify access tokens (shpat_...)", () => {
+    expect(engine.scrub("token=shpat_" + "a".repeat(32))).toContain("[REDACTED]");
+  });
+
+  it("redacts Vault service tokens (hvs.…)", () => {
+    expect(engine.scrub("VAULT_TOKEN=hvs." + "a".repeat(95))).toContain("[REDACTED]");
+  });
+
+  it("redacts Doppler API tokens (dp.pt.…)", () => {
+    expect(engine.scrub("DOPPLER=dp.pt." + "a".repeat(43))).toContain("[REDACTED]");
+  });
+
+  it("redacts database connection strings with credentials", () => {
+    expect(engine.scrub("DATABASE_URL=postgres://admin:s3cret@db.example.com:5432/mydb")).toContain("[REDACTED]");
+    expect(engine.scrub("MONGO=mongodb://root:pass@mongo:27017/app")).toContain("[REDACTED]");
+    expect(engine.scrub("REDIS=redis://default:hunter2@redis.example.com:6379")).toContain("[REDACTED]");
+  });
+
+  it("redacts JWTs (eyJ... three-segment tokens)", () => {
+    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.aBcDeFgHiJkLmNoPqRsTuVwXyZ";
+    expect(engine.scrub(`token=${jwt}`)).toContain("[REDACTED]");
+  });
+
+  it("does not redact partial JWT-like strings without dots", () => {
+    expect(engine.scrub("eyJhbGciOiJIUzI1NiJ9")).not.toContain("[REDACTED]");
+  });
 });
 
 describe("ScrubEngine — custom patterns", () => {

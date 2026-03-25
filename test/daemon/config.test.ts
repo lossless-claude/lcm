@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { loadDaemonConfig } from "../../src/daemon/config.js";
+import { loadDaemonConfig, deepMerge } from "../../src/daemon/config.js";
 
 describe("loadDaemonConfig", () => {
   it("returns defaults when no config file exists", () => {
@@ -136,5 +136,37 @@ describe("loadDaemonConfig", () => {
       security: { sensitivePatterns: ["MY_TOKEN_.*"] },
     });
     expect(c.security.sensitivePatterns).toEqual(["MY_TOKEN_.*"]);
+  });
+
+  it("loads hooks config with defaults", () => {
+    const config = loadDaemonConfig("/nonexistent");
+    expect(config.hooks).toEqual({
+      snapshotIntervalSec: 60,
+      disableAutoCompact: false,
+    });
+  });
+
+  it("merges user-provided hooks config", () => {
+    const config = loadDaemonConfig("/nonexistent", {
+      hooks: { snapshotIntervalSec: 30 },
+    });
+    expect(config.hooks.snapshotIntervalSec).toBe(30);
+    expect(config.hooks.disableAutoCompact).toBe(false);
+  });
+});
+
+describe("deepMerge", () => {
+  it("rejects prototype pollution keys", () => {
+    const source = JSON.parse('{"__proto__": {"polluted": true}, "constructor": {"name": "pwned"}}');
+    const result = deepMerge({ a: 1 } as Record<string, unknown>, source);
+    expect((({}) as any).polluted).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(result, "__proto__")).toBe(false);
+  });
+
+  it("merges normal keys correctly", () => {
+    const result = deepMerge({ a: 1, b: { c: 2 } } as Record<string, unknown>, { b: { d: 3 } } as Record<string, unknown>);
+    expect(result.a).toBe(1);
+    expect((result.b as any).c).toBe(2);
+    expect((result.b as any).d).toBe(3);
   });
 });

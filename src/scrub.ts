@@ -9,6 +9,32 @@ export const BUILT_IN_PATTERNS: string[] = [
   "-----BEGIN .* KEY-----",
   "Bearer [A-Za-z0-9\\-._~+/]+=*",
   "[Pp]assword\\s*[:=]\\s*\\S+",
+  // npm tokens (classic npm_ prefix — revoked Dec 2025 but may exist in old configs)
+  "npm_[A-Za-z0-9]{30,}",
+  // Slack tokens: bot (xoxb), user (xoxp), workspace (xoxa), owner (xoxo),
+  // session (xoxs), rotating (xoxe), refresh (xoxr)
+  "xox[bpoasre]-[A-Za-z0-9\\-]+",
+  // Slack app-level tokens (xapp-) and workflow tokens (xwfp-)
+  "xapp-[A-Za-z0-9\\-]+",
+  "xwfp-[A-Za-z0-9\\-]+",
+  // Stripe live keys (secret, publishable, restricted)
+  "[spr]k_live_[A-Za-z0-9]{16,}",
+  // Google/GCP API keys (deterministic AIza prefix)
+  "AIza[\\w-]{35}",
+  // SendGrid API tokens (SG. prefix, 66-char body)
+  "SG\\.[a-zA-Z0-9=_\\-.]{66}",
+  // Twilio API keys (SK prefix + 32 hex chars)
+  "SK[0-9a-fA-F]{32}",
+  // Shopify access tokens (shpat_, shpca_, shppa_, shpss_ prefixes)
+  "shp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}",
+  // HashiCorp Vault service tokens (hvs. prefix)
+  "hvs\\.[\\w-]{90,120}",
+  // Doppler API tokens (dp.pt. prefix)
+  "dp\\.pt\\.[a-z0-9]{43}",
+  // Database connection strings with embedded credentials
+  "(postgres|mysql|mongodb|redis|rediss)://\\S+:\\S+@\\S+",
+  // JSON Web Tokens (three base64url segments separated by dots)
+  "eyJ[A-Za-z0-9_-]+\\.eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+",
 ];
 
 /**

@@ -49,7 +49,7 @@ All CLI checks use `node dist/bin/lcm.js <subcommand>`. If `lcm` is on PATH, use
 Hooks are registered in `.claude-plugin/plugin.json`, NOT `~/.claude/settings.json`. Verify all 4:
 - `SessionStart` → `lcm restore`
 - `UserPromptSubmit` → `lcm user-prompt`
-- `PreCompact` → `lcm compact`
+- `PreCompact` → `lcm compact --hook`
 - `SessionEnd` → `lcm session-end`
 
 For live hook testing, pipe JSON to stdin:

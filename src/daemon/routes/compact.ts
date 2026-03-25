@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "../config.js";
-import { projectId, projectDbPath, projectDir, projectMetaPath, ensureProjectDir } from "../project.js";
+import { projectId, projectDbPath, projectDir, projectMetaPath, ensureProjectDir, isSafeTranscriptPath } from "../project.js";
 import { enqueue } from "../project-queue.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
@@ -14,6 +14,7 @@ import { parseTranscript } from "../../transcript.js";
 import type { LcmSummarizeFn } from "../../llm/types.js";
 import { ScrubEngine } from "../../scrub.js";
 import { resolveEffectiveProvider, createSummarizer, type EffectiveProvider } from "../summarizer.js";
+import { validateCwd } from "../validate-cwd.js";
 
 function fmtN(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
@@ -90,30 +91,49 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
 
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
-    const { session_id, cwd, transcript_path, skip_ingest, client, previous_summary } = input;
+    const { session_id, transcript_path, skip_ingest, client, previous_summary } = input;
     const MAX_PREVIOUS_SUMMARY_LENGTH = 50_000;
     const validatedPreviousSummary = typeof previous_summary === "string"
       ? previous_summary.slice(0, MAX_PREVIOUS_SUMMARY_LENGTH)
       : undefined;
 
-    if (!session_id || !cwd) {
+    if (!session_id || !input.cwd) {
       sendJson(res, 400, { error: "session_id and cwd are required" });
       return;
     }
 
-    const summarize = await getSummarizer(resolveEffectiveProvider(config, client));
-    if (!summarize) {
-      sendJson(res, 200, { summary: "Summarization disabled — no summarizer configured." });
+    let cwd: string;
+    try {
+      cwd = validateCwd(input.cwd);
+    } catch (err) {
+      sendJson(res, 400, { error: err instanceof Error ? err.message : "invalid cwd" });
       return;
     }
 
+    // Guard must be checked and set synchronously (before any await) to prevent
+    // concurrent requests from racing through the has() check before add() runs.
     if (compactingNow.has(session_id)) {
       sendJson(res, 200, { skipped: true, summary: "Compaction already in progress for this session." });
       return;
     }
     compactingNow.add(session_id);
 
+    const effectiveProvider = resolveEffectiveProvider(config, client);
+    const providerLabels: Record<EffectiveProvider, string> = {
+      "claude-process": "Claude (process)",
+      "codex-process": "Codex (process)",
+      "anthropic": "Anthropic API",
+      "openai": "OpenAI API",
+      "disabled": "Disabled",
+    };
+    const providerLabel = providerLabels[effectiveProvider] ?? effectiveProvider;
+
     try {
+      const summarize = await getSummarizer(effectiveProvider);
+      if (!summarize) {
+        sendJson(res, 200, { summary: "Summarization disabled — no summarizer configured.", providerId: effectiveProvider, providerLabel });
+        return;
+      }
       const pid = projectId(cwd);
       const result = await enqueue(pid, async () => {
         const dbPath = projectDbPath(cwd);
@@ -134,8 +154,9 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
           const conversation = await conversationStore.getOrCreateConversation(session_id);
 
           // Ingest new messages from the transcript into the DB.
-          if (!skip_ingest && transcript_path && existsSync(transcript_path)) {
-            const parsed = parseTranscript(transcript_path);
+          const safeTranscriptPath = transcript_path ? isSafeTranscriptPath(transcript_path, cwd) : false;
+          if (!skip_ingest && safeTranscriptPath && existsSync(safeTranscriptPath)) {
+            const parsed = parseTranscript(safeTranscriptPath);
             const storedCount = await conversationStore.getMessageCount(conversation.conversationId);
             const newMessages = parsed.slice(storedCount);
             if (newMessages.length > 0) {
@@ -165,7 +186,7 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
           const tokenCount = await summaryStore.getContextTokenCount(conversation.conversationId);
 
           if (tokenCount === 0) {
-            return { summary: "No messages to compact." };
+            return { summary: "No messages to compact.", providerId: effectiveProvider, providerLabel };
           }
 
           const engine = new CompactionEngine(conversationStore, summaryStore, {
@@ -237,6 +258,8 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
             latestSummaryContent,
             tokensBefore: compactResult.tokensBefore,
             tokensAfter: compactResult.tokensAfter,
+            providerId: effectiveProvider,
+            providerLabel,
           };
         } finally {
           db.close();
@@ -244,6 +267,8 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
       }); // end enqueue
 
       sendJson(res, 200, result);
+    } catch (err) {
+      sendJson(res, 500, { error: err instanceof Error ? err.message : "compact failed" });
     } finally {
       compactingNow.delete(session_id);
     }
