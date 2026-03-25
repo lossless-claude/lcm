@@ -848,6 +848,9 @@ export function collectEventStats(timeoutMs = 2000): EventStats {
     if (scanned >= MAX_DBS || Date.now() >= deadline) break;
     try {
       const db = new EventsDb(join(dir, file));
+      // Override busy_timeout for scan connections (500ms instead of default 5000ms)
+      // so a single locked DB cannot blow the aggregate time budget.
+      db.raw().exec("PRAGMA busy_timeout = 500");
       try {
         const stats = db.getHealthStats();
         result.captured += stats.totalEvents;
@@ -893,6 +896,9 @@ export function collectDetailedEventStats(timeoutMs = 2000): DetailedEventStats 
     if (scanned >= MAX_DBS || Date.now() >= deadline) break;
     try {
       const db = new EventsDb(join(dir, file));
+      // Override busy_timeout for scan connections (500ms instead of default 5000ms)
+      // so a single locked DB cannot blow the aggregate time budget.
+      db.raw().exec("PRAGMA busy_timeout = 500");
       try {
         const stats = db.getHealthStats();
         result.captured += stats.totalEvents;
@@ -1065,7 +1071,7 @@ function checkPassiveLearning(results: CheckResult[], hooksInstalled: boolean, v
       name: "events-errors",
       category: "Passive Learning",
       status: "warn",
-      message: `${stats.errors} hook errors (30d)`,
+      message: `${stats.errors} hook errors (30d) — Run: lcm doctor --verbose`,
     });
   } else {
     results.push({

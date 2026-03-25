@@ -44,7 +44,7 @@ pruneUnprocessed(maxRows = 10_000, maxAgeDays = 30): { pruned: number }
 
 getHealthStats(): HealthStats
 // Returns: { totalEvents, unprocessed, errors, lastCapture, lastError }
-// Single pass: 3 COUNT/MAX queries against indexed columns
+// Single pass: COUNT/MAX queries against indexed columns (counts + last timestamps)
 
 pruneErrorLog(olderThanDays = 30): number
 // DELETE FROM error_log WHERE created_at < datetime('now', '-' || ? || ' days')
@@ -159,7 +159,8 @@ Add `checkPassiveLearning(results: CheckResult[])` to `src/doctor/doctor.ts`.
 ### 3.3 Scanning Constraints
 
 - **Serial scan** of `~/.lossless-claude/events/*.db`
-- **Per-DB timeout:** 5000ms (matching EventsDb constructor's `busy_timeout = 5000`). The `collectEventStats` function relies on its aggregate time budget (2s) rather than a custom per-DB busy_timeout.
+- **Separate scan connection:** Doctor/stats open a separate, read-only SQLite connection per DB (via `EventsDb` with a scan-mode constructor option or a post-construction `PRAGMA busy_timeout = 500` override), distinct from the connections used for normal hook writes and migrations.
+- **Per-DB scan timeout:** 500ms `busy_timeout` on these scan connections only (set via `PRAGMA busy_timeout = 500`), leaving the default `busy_timeout = 5000` in place for migrations and normal hook writes. This ensures the 2s aggregate time budget in `collectEventStats` is actually enforceable — a single locked DB cannot block for 5s.
 - **DB cap:** 50 DBs max, with "...and N more not checked" notice if exceeded
 - **Per-DB error isolation:** One corrupt DB does not abort the entire check
 - **Read-only:** `getHealthStats()` queries only, no test writes
