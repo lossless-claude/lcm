@@ -15,7 +15,7 @@
 ## File Map
 
 | Action | Path | Responsibility |
-|--------|------|----------------|
+| --- | --- | --- |
 | Create | `src/ansi.ts` | Shared ANSI color/reset constants |
 | Create | `src/daemon/activity.ts` | Global activity state (`idle`/`compacting`/`promoting`/`ingesting`) |
 | Create | `src/statusline-render.ts` | Pure function: health + status data → ANSI string |
@@ -192,17 +192,27 @@ The pattern is the same for all three: import `setActivity`, call it before the 
 
 Add to `test/daemon/routes/compact.test.ts` (after existing imports):
 ```ts
+import { describe, it, expect, afterEach, vi } from "vitest";
+import * as activity from "../../../src/daemon/activity.js";
 import { getActivity, setActivity } from "../../../src/daemon/activity.js";
 ```
 
 Add a new test inside the existing describe block:
 ```ts
-it("sets activity to compacting during compaction", async () => {
-  // After a compact call completes, activity should be back to idle
-  setActivity("idle");
-  // ... (use the existing daemon/db setup pattern in this file)
-  // Just verify it resets to idle after the route returns
-  expect(getActivity()).toBe("idle");
+import * as activityModule from "../../../src/daemon/activity.js";
+
+it("sets activity to compacting then resets to idle after compact route", async () => {
+  const calls: string[] = [];
+  const spy = vi.spyOn(activityModule, "setActivity").mockImplementation((s) => calls.push(s));
+  try {
+    // trigger a compact request (use existing daemon/db setup in the file)
+    // after the route returns, verify the call sequence
+    // This test will be fleshed out with the actual daemon call once the route is modified
+    expect(calls[0]).toBe("compacting");
+    expect(calls[calls.length - 1]).toBe("idle");
+  } finally {
+    spy.mockRestore();
+  }
 });
 ```
 
@@ -215,7 +225,7 @@ npm test -- test/daemon/routes/compact.test.ts 2>&1 | grep "activity"
 
 Add at the top of the file with the other imports:
 ```ts
-import { setActivity } from "../../daemon/activity.js";
+import { setActivity } from "../activity.js";
 ```
 
 > **Important:** Do NOT create a new try/finally wrapper. The existing try/finally structure is at lines 116–249. Insert two lines only:
@@ -234,7 +244,7 @@ The finally block should look like:
 
 Add import at the top of the file:
 ```ts
-import { setActivity } from "../../daemon/activity.js";
+import { setActivity } from "../activity.js";
 ```
 
 Find the main try/finally block in the handler. Add `setActivity("promoting")` before the try and `setActivity("idle")` in the finally.
@@ -243,7 +253,7 @@ Find the main try/finally block in the handler. Add `setActivity("promoting")` b
 
 Add import at the top of the file:
 ```ts
-import { setActivity } from "../../daemon/activity.js";
+import { setActivity } from "../activity.js";
 ```
 
 Find the main try/finally block (after request validation). Add `setActivity("ingesting")` before the try and `setActivity("idle")` in the finally.
@@ -516,7 +526,7 @@ async function main(): Promise<void> {
     if (stdin.cwd) cwd = stdin.cwd;
   } catch { /* ignore parse errors */ }
 
-  const config = loadDaemonConfig(cwd);
+  const config = loadDaemonConfig("/x");
   const client = new DaemonClient(`http://127.0.0.1:${config.daemon.port}`);
 
   let health: HealthData = null;
@@ -583,7 +593,12 @@ if (!existsSync(join(__dirname, "dist"))) {
 }
 
 const entry = pathToFileURL(join(__dirname, "dist", "src", "statusline.js")).href;
-await import(entry);
+try {
+  await import(entry);
+} catch {
+  // Never crash the terminal status bar — output nothing on failure
+  process.exit(0);
+}
 ```
 
 - [ ] **Step 2: Add `statusline.mjs` to `package.json` files array**
@@ -726,7 +741,7 @@ Expected: `statusline.mjs` appears in the file list
 
 ```bash
 git push -u origin <branch-name>
-gh pr create --base develop --title "feat: lcm statusline for Claude Code status bar" --body "..."
+gh pr create --repo lossless-claude/lcm --base develop --title "feat: lcm statusline for Claude Code status bar" --body "..."
 ```
 
 ---
