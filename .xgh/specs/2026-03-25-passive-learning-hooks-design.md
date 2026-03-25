@@ -39,7 +39,11 @@ UserPromptSubmit ──→ events.db + daemon /prompt-search (existing)
 
 **Location:** `~/.lossless-claude/events/<project-hash>.db`
 
-Uses SHA256(projectDir) hashing, same as the main DB. Worktrees get a suffix (same pattern as context-mode).
+Uses SHA256(projectDir) hashing, same as the main DB. Worktrees get a suffix (same pattern as context-mode). Each worktree gets its own DB file — `project_id` is derivable from the file path.
+
+### Shared path resolution
+
+A new `eventsDbPath(cwd)` function (in `src/db/events-path.ts`) computes the sidecar path. Importable from both `src/hooks/` and `src/daemon/routes/` to ensure hooks and daemon always agree on the file location.
 
 ### Schema
 
@@ -68,8 +72,8 @@ CREATE INDEX idx_events_session ON events(session_id, created_at);
 ### Design choices
 
 - **WAL mode** enabled for concurrent write safety (multiple sessions, same project).
-- **`PRAGMA busy_timeout = 3000`** on every open.
-- **`seq`** monotonic counter per session — resolves ordering ambiguity for parallel tool calls (context_mode uses `julianday('now')` but second-granularity `datetime` is insufficient).
+- **`PRAGMA busy_timeout = 5000`** on every open (matches main DB convention).
+- **`seq`** monotonic counter per session — resolves ordering ambiguity for parallel tool calls. Implemented as: `INSERT INTO events (..., seq) VALUES (..., (SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE session_id = ?))`. The subquery adds negligible cost since `idx_events_session` covers it.
 - **`prev_event_id`** set during promotion (daemon-side correlation), not during capture (hooks are separate processes with no shared state).
 - **`processed_at`** idempotency — if two triggers fire close together, second sees events already processed.
 - **No fixed truncation** on `data` — allowlist extraction naturally bounds content. Soft cap at 2000 chars as safety valve.
@@ -95,7 +99,7 @@ CREATE INDEX idx_events_session ON events(session_id, created_at);
 |----------|-------------|-----------------|----------|
 | `decision` | AskUserQuestion | Q + A pair (user's answer = decision) | 1 |
 | `error` | Bash (exit != 0), any tool with isError | Error type + message, never raw output | 1 |
-| `plan` | EnterPlanMode, ExitPlanMode | Enter/exit + approved/rejected | 1 |
+| `plan` | EnterPlanMode, ExitPlanMode | Enter/exit + approved/rejected (verify these fire PostToolUse in Claude Code — if not, capture via Write/Edit to `.claude/plans/` path detection) | 1 |
 | `git` | Bash (git commands) | Operation type + commit message when present | 2 |
 | `task` | TaskCreate, TaskUpdate | Subject + status | 2 |
 | `env` | Bash (npm install, pip install, nvm use, etc.) | Command with values scrubbed | 2 |
@@ -132,7 +136,7 @@ post-tool.ts:
 
 ### Performance
 
-- **post-tool command skips `ensureBootstrapped()`** — sidecar is daemon-independent. Bootstrap only runs if Tier 1 event needs daemon HTTP.
+- **post-tool command bypasses `dispatchHook()` fast path** — `dispatchHook()` currently runs `ensureBootstrapped()` + `validateAndFixHooks()` unconditionally before the command switch. For `post-tool`, add an early return before bootstrap: check command, and if `post-tool`, directly import and call the handler without bootstrap or auto-heal. Bootstrap only runs lazily if a Tier 1 event needs daemon HTTP.
 - Node.js cold start is ~100-200ms (same as context-mode's PostToolUse). Our code adds <10ms. Claude Code runs hooks asynchronously.
 - Most tool calls produce 0 events → fast exit path.
 
@@ -260,7 +264,9 @@ When a new promoted entry semantically contradicts an existing one, archive the 
 
 ### LLM-based (when provider available)
 
-Uses Haiku — ~100 tokens total, <500ms per check. Only fires when BM25 finds a match above threshold during promotion.
+Uses Haiku — ~100 tokens total, <500ms per check. Only fires when BM25 finds a match above the contradiction threshold during promotion.
+
+**Config:** `contradictionBm25Threshold` (default: 20, intentionally higher than dedup's 15 to reduce false positives).
 
 ```
 Entry A: "prefer SQLite over Postgres for this project"
@@ -311,7 +317,7 @@ Recent learnings from your previous sessions in this project:
 - Only entries with `confidence >= 0.3`
 - Only entries from the same project
 - Exclude archived entries
-- Exclude entries older than 90 days
+- Exclude entries older than 90 days (query-time filter, not deletion — consistent with lossless philosophy)
 - Dedup against `/restore` output (don't repeat what's already in DAG context)
 
 ### Implementation
@@ -330,6 +336,8 @@ Extend existing `/restore` response with an `insights` array — avoids a second
 
 Events are never truly lost — SQLite persistence is immediate. Only promotion timing is variable. The `processed_at` idempotency ensures no double-processing if multiple triggers overlap.
 
+**Cleanup:** During SessionStart scavenge, events with `processed_at` older than 7 days are pruned from the sidecar. Unprocessed events are never pruned regardless of age.
+
 ## 9. Security
 
 - **Allowlist extraction model** — only extract structured metadata, never raw tool_response content
@@ -347,7 +355,8 @@ Events are never truly lost — SQLite persistence is immediate. Only promotion 
 | `src/hooks/post-tool.ts` | PostToolUse handler |
 | `src/hooks/events-db.ts` | Sidecar SQLite wrapper (open, migrate, insert, query, close) |
 | `src/hooks/extractors.ts` | Event extraction functions (shared by PostToolUse + UserPromptSubmit) |
-| `src/hooks/scrub.ts` | Redaction patterns for hook-side use |
+| `src/shared/scrub.ts` | Shared redaction patterns (importable by both hooks and daemon, single source of truth) |
+| `src/db/events-path.ts` | Shared `eventsDbPath(cwd)` function for sidecar path resolution |
 | `src/daemon/routes/promote-events.ts` | New daemon route for event promotion |
 
 ### Modified files
@@ -390,6 +399,7 @@ User asks to edit tsconfig.json
 - Integration tests for `/promote-events` route (3-tier promotion, dedup, contradiction detection)
 - Integration tests for enhanced `user-prompt.ts` (extraction + prompt-search combined flow)
 - Integration tests for `restore.ts` (learned-insights injection)
+- Dedicated tests for contradiction detection: Haiku LLM path vs. BM25 fallback path, supersede-only-passive guard rail
 - E2E test: full cycle from PostToolUse capture → session-end promotion → next session restore with insights
 
 ## Non-Goals
