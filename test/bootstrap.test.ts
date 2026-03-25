@@ -62,6 +62,17 @@ describe("ensureCore", () => {
     await ensureCore(deps);
     expect(deps.ensureDaemon).toHaveBeenCalled();
   });
+
+  it("calls chmodSync(0o600) on config.json after creation", async () => {
+    const chmodSync = vi.fn();
+    const deps = makeDeps({
+      existsSync: vi.fn().mockReturnValue(false),
+      chmodSync,
+    });
+    const { ensureCore } = await import("../src/bootstrap.js");
+    await ensureCore(deps);
+    expect(chmodSync).toHaveBeenCalledWith(deps.configPath, 0o600);
+  });
 });
 
 describe("ensureBootstrapped", () => {

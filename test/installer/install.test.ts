@@ -193,6 +193,21 @@ describe("install", () => {
     expect(written.llm.apiKey).toBe("");
     process.env.ANTHROPIC_API_KEY = originalApiKey;
   });
+
+  it("calls chmodSync(0o600) on config.json after creation", async () => {
+    const chmodSync = vi.fn();
+    const deps = makeDeps({
+      existsSync: vi.fn().mockReturnValue(false),
+      chmodSync,
+    });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await install(deps);
+    warnSpy.mockRestore();
+    expect(chmodSync).toHaveBeenCalledWith(
+      expect.stringContaining("config.json"),
+      0o600,
+    );
+  });
 });
 
 // ─── install dry-run ─────────────────────────────────────────────────────────

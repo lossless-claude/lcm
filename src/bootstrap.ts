@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { mergeClaudeSettings } from "./installer/settings.js";
@@ -11,6 +11,7 @@ export interface EnsureCoreDeps {
   readFileSync: (path: string, encoding: BufferEncoding) => string;
   writeFileSync: (path: string, data: string) => void;
   mkdirSync: (path: string, opts?: { recursive: boolean }) => void;
+  chmodSync?: (path: string, mode: number) => void;
   ensureDaemon: (opts: { port: number; pidFilePath: string; spawnTimeoutMs: number }) => Promise<{ connected: boolean }>;
 }
 
@@ -22,6 +23,7 @@ function defaultDeps(): EnsureCoreDeps {
     readFileSync: (p, enc) => readFileSync(p, enc as BufferEncoding),
     writeFileSync,
     mkdirSync,
+    chmodSync,
     ensureDaemon: async (opts) => {
       const { ensureDaemon } = await import("./daemon/lifecycle.js");
       return ensureDaemon(opts);
@@ -35,6 +37,9 @@ export async function ensureCore(deps: EnsureCoreDeps = defaultDeps()): Promise<
     deps.mkdirSync(dirname(deps.configPath), { recursive: true });
     const defaults = loadDaemonConfig("/nonexistent");
     deps.writeFileSync(deps.configPath, JSON.stringify(defaults, null, 2));
+    try {
+      deps.chmodSync?.(deps.configPath, 0o600);
+    } catch {}
   }
 
   // 2. Clean stale/duplicate hooks from settings.json (fixes #94)

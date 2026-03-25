@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, copyFileSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, copyFileSync, rmSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
@@ -11,6 +11,7 @@ export interface ServiceDeps {
   writeFileSync: (path: string, data: string) => void;
   mkdirSync: (path: string, opts?: any) => void;
   existsSync: (path: string) => boolean;
+  chmodSync?: (path: string, mode: number) => void;
   promptUser: (question: string) => Promise<string>;
   ensureDaemon?: (opts: { port: number; pidFilePath: string; spawnTimeoutMs: number }) => Promise<{ connected: boolean }>;
   runDoctor?: () => Promise<Array<{ name: string; status: string; category?: string; message?: string }>>;
@@ -28,7 +29,7 @@ async function readlinePrompt(question: string): Promise<string> {
   }
 }
 
-const defaultDeps: ServiceDeps = { spawnSync: spawnSync as any, readFileSync: (path, encoding) => readFileSync(path, encoding as BufferEncoding) as string, writeFileSync, mkdirSync, existsSync, promptUser: readlinePrompt };
+const defaultDeps: ServiceDeps = { spawnSync: spawnSync as any, readFileSync: (path, encoding) => readFileSync(path, encoding as BufferEncoding) as string, writeFileSync, mkdirSync, existsSync, chmodSync, promptUser: readlinePrompt };
 
 export interface ResolveBinaryDeps {
   spawnSync: (cmd: string, args: string[], opts?: object) => { status: number | null; stdout: string | Buffer };
@@ -136,6 +137,7 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<void> {
     defaults.llm = { ...defaults.llm, ...summarizerConfig };
     deps.mkdirSync(dirname(configPath), { recursive: true });
     deps.writeFileSync(configPath, JSON.stringify(defaults, null, 2));
+    deps.chmodSync?.(configPath, 0o600);
     console.log(`Created ${configPath}`);
   }
 
