@@ -23,7 +23,7 @@ function defaultDeps(): EnsureCoreDeps {
     readFileSync: (p, enc) => readFileSync(p, enc as BufferEncoding),
     writeFileSync,
     mkdirSync,
-    chmodSync,
+    chmodSync: chmodSync,
     ensureDaemon: async (opts) => {
       const { ensureDaemon } = await import("./daemon/lifecycle.js");
       return ensureDaemon(opts);

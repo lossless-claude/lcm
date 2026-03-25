@@ -29,7 +29,7 @@ async function readlinePrompt(question: string): Promise<string> {
   }
 }
 
-const defaultDeps: ServiceDeps = { spawnSync: spawnSync as any, readFileSync: (path, encoding) => readFileSync(path, encoding as BufferEncoding) as string, writeFileSync, mkdirSync, existsSync, chmodSync, promptUser: readlinePrompt };
+const defaultDeps: ServiceDeps = { spawnSync: spawnSync as any, readFileSync: (path, encoding) => readFileSync(path, encoding as BufferEncoding) as string, writeFileSync, mkdirSync, existsSync, chmodSync: chmodSync, promptUser: readlinePrompt };
 
 export interface ResolveBinaryDeps {
   spawnSync: (cmd: string, args: string[], opts?: object) => { status: number | null; stdout: string | Buffer };
