@@ -16,7 +16,7 @@ describe("POST /restore", () => {
     daemon = await createDaemon(loadDaemonConfig("/x", { daemon: { port: 0 } }));
     const res = await fetch(`http://127.0.0.1:${daemon.address().port}/restore`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: "new-sess", cwd: "/tmp/brand-new-restore-project", hook_event_name: "SessionStart" }),
+      body: JSON.stringify({ session_id: "new-sess", cwd: tmpdir(), hook_event_name: "SessionStart" }),
     });
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -28,7 +28,7 @@ describe("POST /restore", () => {
     daemon = await createDaemon(loadDaemonConfig("/x", { daemon: { port: 0 } }));
     const res = await fetch(`http://127.0.0.1:${daemon.address().port}/restore`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: "s1", cwd: "/tmp/compact-test-no-instructions", source: "compact", hook_event_name: "SessionStart" }),
+      body: JSON.stringify({ session_id: "s1", cwd: tmpdir(), source: "compact", hook_event_name: "SessionStart" }),
     });
     const body = await res.json();
     expect(body.context).toContain("<memory-orientation>");
