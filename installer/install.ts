@@ -133,7 +133,14 @@ export function ensureLcmMd(
   // Always overwrite lcm.md to keep content up-to-date with the installed version
   const lcmMdPath = join(claudeDir, "lcm.md");
   let lcmMdWritten = false;
-  const existingLcmMd = deps.existsSync(lcmMdPath) ? deps.readFileSync(lcmMdPath, "utf-8") : "";
+  let existingLcmMd = "";
+  if (deps.existsSync(lcmMdPath)) {
+    try {
+      existingLcmMd = deps.readFileSync(lcmMdPath, "utf-8");
+    } catch {
+      // treat unreadable as stale — overwrite
+    }
+  }
   if (existingLcmMd !== lcmMdContent) {
     deps.writeFileSync(lcmMdPath, lcmMdContent);
     lcmMdWritten = true;

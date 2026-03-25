@@ -7,7 +7,7 @@ vi.mock("../../src/daemon/lifecycle.js", () => ({
   ensureDaemon: vi.fn().mockResolvedValue({ connected: false }),
 }));
 
-const LCM_BLOCK = "<!-- lcm:start -->\n@lcm.md\n<!-- lcm:end -->\n";
+const LCM_BLOCK = "<!-- lcm:start -->\n<!-- Claude Code include: @lcm.md -->\n<!-- lcm:end -->\n";
 
 function baseReadFileSync(p: string, settings: string) {
   if (p.endsWith("config.json")) return JSON.stringify({ llm: { provider: "claude-process" } });
