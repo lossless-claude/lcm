@@ -70,7 +70,7 @@ Expected: Multiple FAIL for the new test cases
 
 - [ ] **Step 3: Add new patterns to BUILT_IN_PATTERNS**
 
-In `src/scrub.ts`, expand the `BUILT_IN_PATTERNS` array. DB connection string pattern uses `\\s` to trigger spanning mode (see `isSpanningPattern()`):
+In `src/scrub.ts`, expand the `BUILT_IN_PATTERNS` array. DB connection string pattern is token-based and uses `\\S` to avoid matching whitespace (see `isSpanningPattern()`):
 
 ```typescript
 export const BUILT_IN_PATTERNS: string[] = [
@@ -149,14 +149,15 @@ Expected: FAIL (chmodSync not in ServiceDeps)
 In `installer/install.ts`:
 
 1. Add `import { chmodSync } from "node:fs"` to the existing import.
-2. Add to `ServiceDeps` interface: `chmodSync?: (path: string, mode: number) => void;`
+2. Add to `ServiceDeps` interface: `chmodSync: (path: string, mode: number) => void;`
 3. Add to `defaultDeps`: `chmodSync`
-4. After `deps.writeFileSync(configPath, ...)` on line 138, add: `deps.chmodSync?.(configPath, 0o600);`
+4. After `deps.writeFileSync(configPath, ...)` on line 138, add: `deps.chmodSync(configPath, 0o600);`
 
 In `src/bootstrap.ts`:
 
-1. Add `import { chmodSync } from "node:fs"` to existing import.
-2. After `deps.writeFileSync(deps.configPath, ...)` on line 37, add: `try { chmodSync(deps.configPath, 0o600); } catch {}`
+1. Extend the `EnsureCoreDeps` interface to include: `chmodSync?: (path: string, mode: number) => void;`
+2. In the `defaultDeps` object for `ensureCore()`, wire `chmodSync` from `node:fs`: `chmodSync,`
+3. After `deps.writeFileSync(deps.configPath, ...)` on line 37, add: `try { deps.chmodSync?.(deps.configPath, 0o600); } catch {}`
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -179,7 +180,7 @@ abstraction so unit tests remain mocked."
 ### Task 3: Validate regex patterns to prevent ReDoS (Finding #4)
 
 **Files:**
-- Modify: `package.json` (add `safe-regex` + `@types/safe-regex` as devDep)
+- Modify: `package.json` (add `safe-regex` to `dependencies` + `@types/safe-regex` to `devDependencies`)
 - Create: `src/store/regex-safety.ts` (shared validation helper)
 - Modify: `src/store/conversation-store.ts:706-714` (use validated regex)
 - Modify: `src/store/summary-store.ts:814-821` (use validated regex)
@@ -190,6 +191,8 @@ abstraction so unit tests remain mocked."
 ```bash
 npm install safe-regex && npm install -D @types/safe-regex
 ```
+
+Note: `safe-regex` goes in `dependencies` (not `devDependencies`) because `validateRegex()` is used in production code (`src/store/regex-safety.ts`).
 
 - [ ] **Step 2: Write failing test for regex validation**
 
@@ -345,6 +348,9 @@ export function createStoreHandler(config: DaemonConfig): RouteHandler {
   return async (_req, res, body) => {
     // ... existing parsing ...
 
+    // Set busy_timeout to match other write paths
+    db.exec("PRAGMA busy_timeout = 5000");
+
     const scrubber = await ScrubEngine.forProject(
       config.security?.sensitivePatterns ?? [],
       projectDir(projectPath),
@@ -449,18 +455,28 @@ import { resolve, normalize } from "node:path";  // add to existing import
  *   2. The project's own cwd
  *
  * Returns the resolved canonical path if safe, or false if rejected.
- * Uses resolve() to collapse ../ traversals.
+ * Uses resolve() to collapse ../ traversals and realpathSync() to
+ * resolve symlinks, preventing symlink escapes from allowed bases.
  */
 export function isSafeTranscriptPath(transcriptPath: string, cwd: string): string | false {
   const resolved = resolve(transcriptPath);
+  // Resolve symlinks to prevent escapes via symlinked paths
+  let real: string;
+  try {
+    real = realpathSync(resolved);
+  } catch {
+    return false; // path doesn't exist or can't be resolved
+  }
   const allowedBases = [
     join(homedir(), ".claude", "projects"),
     resolve(cwd),
   ];
   for (const base of allowedBases) {
-    const normalBase = normalize(base + "/");
-    if (resolved.startsWith(normalBase) || resolved === normalize(base)) {
-      return resolved;
+    let realBase: string;
+    try { realBase = realpathSync(base); } catch { realBase = normalize(base); }
+    const normalBase = normalize(realBase + "/");
+    if (real.startsWith(normalBase) || real === normalize(realBase)) {
+      return real;
     }
   }
   return false;
@@ -642,9 +658,12 @@ describe("daemon auth", () => {
   it("returns 401 for POST without auth token", async () => {
     const dir = mkdtempSync(join(tmpdir(), "lcm-authsrv-"));
     const tokenPath = join(dir, "daemon.token");
+    // Auth is mandatory — createDaemon reads token from ~/.lossless-claude/daemon.token
+    // For tests, set HOME or mock the token path via env/config
     ensureAuthToken(tokenPath);
     const config = loadDaemonConfig("/nonexistent", { daemon: { port: 0 } });
-    const daemon = await createDaemon(config, { tokenPath });
+    // Tests should either mock homedir() or set the token at the expected path
+    const daemon = await createDaemon(config);
     const port = daemon.address().port;
 
     try {
@@ -665,7 +684,7 @@ describe("daemon auth", () => {
     const tokenPath = join(dir, "daemon.token");
     ensureAuthToken(tokenPath);
     const config = loadDaemonConfig("/nonexistent", { daemon: { port: 0 } });
-    const daemon = await createDaemon(config, { tokenPath });
+    const daemon = await createDaemon(config);
     const port = daemon.address().port;
 
     try {
@@ -683,7 +702,7 @@ describe("daemon auth", () => {
     ensureAuthToken(tokenPath);
     const token = readAuthToken(tokenPath)!;
     const config = loadDaemonConfig("/nonexistent", { daemon: { port: 0 } });
-    const daemon = await createDaemon(config, { tokenPath });
+    const daemon = await createDaemon(config);
     const port = daemon.address().port;
 
     try {
@@ -708,21 +727,18 @@ describe("daemon auth", () => {
 
 In `src/daemon/server.ts`:
 
-1. Accept `tokenPath` in `DaemonOptions`:
-   ```typescript
-   export type DaemonOptions = {
-     proxyManager?: ProxyManager;
-     onIdle?: () => void;
-     tokenPath?: string;
-   };
-   ```
-
-2. In `createDaemon`, read the token and add auth check:
+1. Derive `tokenPath` inside `createDaemon` from the config/home dir (do NOT add it to `DaemonOptions` — auth is mandatory, not opt-in):
    ```typescript
    import { readAuthToken } from "./auth.js";
+   import { join } from "node:path";
+   import { homedir } from "node:os";
 
    // Inside createDaemon, before creating routes:
-   const serverToken = options?.tokenPath ? readAuthToken(options.tokenPath) : null;
+   const tokenPath = join(homedir(), ".lossless-claude", "daemon.token");
+   const serverToken = readAuthToken(tokenPath);
+   if (!serverToken) {
+     throw new Error("Auth token not found — run ensureAuthToken() before starting daemon");
+   }
    ```
 
 3. In the request handler, add auth check before dispatching to route handler:
@@ -734,7 +750,7 @@ In `src/daemon/server.ts`:
      if (!handler) { sendJson(res, 404, { error: "not found" }); return; }
 
      // Auth: skip for /health, require Bearer token for everything else
-     if (serverToken && key !== "GET /health") {
+     if (key !== "GET /health") {
        const rawAuth = req.headers["authorization"];
        const authHeader = (Array.isArray(rawAuth) ? rawAuth[0] : rawAuth) ?? "";
        if (authHeader.trim() !== `Bearer ${serverToken}`) {
@@ -819,7 +835,7 @@ ensureAuthToken(tokenPath);
 
 Update `test/daemon/routes/store.test.ts` and any other route tests that make direct HTTP calls to include the Bearer token. The simplest approach: in each test, create a temp dir, `ensureAuthToken(tokenPath)`, read it, pass `tokenPath` in options, and add `Authorization` header.
 
-Alternatively, for tests that don't test auth, pass no `tokenPath` to `createDaemon` — when `serverToken` is null, auth is skipped.
+For tests that don't need real auth, mock the token resolution (e.g., set `HOME` to a temp dir with a `daemon.token` file, or use vi.mock to override the token path).
 
 - [ ] **Step 10: Run full test suite**
 
@@ -856,7 +872,7 @@ import { describe, it, expect } from "vitest";
 import { fenceContent } from "../../src/daemon/content-fence.js";
 
 describe("fenceContent", () => {
-  it("wraps content in XML-style tags with HMAC nonce", () => {
+  it("wraps content in XML-style tags", () => {
     const result = fenceContent("summary text", "episodic-memory");
     expect(result).toContain("<episodic-memory");
     expect(result).toContain("</episodic-memory>");
