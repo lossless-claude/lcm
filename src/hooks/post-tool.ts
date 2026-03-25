@@ -20,7 +20,7 @@ export async function handlePostToolUse(
     if (events.length === 0) return { exitCode: 0, stdout: "" };
 
     cwd = input.cwd ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
-    const dbPath = eventsDbPath(cwd);
+    const dbPath = eventsDbPath(cwd as string);
     const db = new EventsDb(dbPath);
 
     try {
