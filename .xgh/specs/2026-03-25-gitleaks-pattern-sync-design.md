@@ -92,7 +92,9 @@ Skipped. gitleaks uses Shannon entropy thresholds (130/222 rules) to reduce fals
 5. **Smoke test**: verify no pattern matches common English words ("the", "function", "import", "class", "return") — catches overly broad regexes
 6. **Coverage test**: run against `test/fixtures/token-samples.ts` — known positive/negative pairs per provider. Fail if any expected positive is missed or expected negative is matched.
 7. **Write** `src/generated-patterns.ts` only if all tests pass
-8. **Exit** with nonzero if fetch failed, conversion produced fewer rules than expected (regression guard), or tests failed
+8. **Exit** with nonzero if fetch failed, conversion produced fewer rules than expected, or tests failed
+
+**Regression guard:** The script reads the current `src/generated-patterns.ts` before writing. If the new rule count is more than 10% lower than the existing count (e.g., gitleaks restructured their config), it aborts with an error. This prevents accidental mass-deletion of patterns. A manual `--force` flag overrides the check.
 
 ### Test fixtures
 
@@ -144,17 +146,45 @@ export const NATIVE_PATTERNS: string[] = [
 
 All other patterns currently in `BUILT_IN_PATTERNS` (OpenAI, Anthropic, GitHub, AWS, Slack, Stripe, GCP, SendGrid, Twilio, Shopify, Vault, Doppler, JWT, npm) are now covered by gitleaks rules and are removed.
 
+### Spanning pattern handling
+
+The current `isSpanningPattern` heuristic classifies regexes with unescaped `.` as "spanning" (applied to full text). Many gitleaks regexes contain `.` for key-value matching. Since gitleaks patterns are pre-vetted and designed for full-text scanning, all gitleaks patterns bypass the spanning/token split and always run against the full text. Only native and user patterns go through `isSpanningPattern` classification.
+
 ### Constructor changes
 
-The constructor must handle flagged patterns (gitleaks patterns with `flags: "i"`):
+The constructor signature stays the same — `(globalPatterns: string[], projectPatterns: string[])`. Gitleaks patterns are imported at module level (like `BUILT_IN_PATTERNS` today) and merged inside the constructor body:
 
 ```typescript
 constructor(globalPatterns: string[], projectPatterns: string[]) {
-  // Merge gitleaks (with flags) + custom + user patterns
-  // For gitleaks patterns: new RegExp(pattern.regex, "g" + pattern.flags)
-  // For string patterns: new RegExp(source, "g") — same as today
+  // Phase 1: gitleaks patterns — always full-text (bypass isSpanningPattern)
+  for (const gp of GITLEAKS_PATTERNS) {
+    try {
+      const regex = new RegExp(gp.regex, "g" + gp.flags);
+      this.spanningPatterns.push({ source: gp.regex, regex });
+      this._spanningOrigIdx.push(currentIdx);
+    } catch { this.invalidPatterns.push(gp.regex); }
+    currentIdx++;
+  }
+
+  // Phase 2: native + user patterns — go through isSpanningPattern
+  const stringPatterns = [...NATIVE_PATTERNS, ...globalPatterns, ...projectPatterns];
+  for (const source of stringPatterns) {
+    try {
+      const regex = new RegExp(source, "g");
+      if (isSpanningPattern(source)) {
+        this.spanningPatterns.push({ source, regex });
+        this._spanningOrigIdx.push(currentIdx);
+      } else {
+        this.tokenPatterns.push({ source, regex });
+        this._tokenOrigIdx.push(currentIdx);
+      }
+    } catch { this.invalidPatterns.push(source); }
+    currentIdx++;
+  }
 }
 ```
+
+The `builtIn` boundary for category accounting is `GITLEAKS_PATTERNS.length + NATIVE_PATTERNS.length`.
 
 ### Counting
 
@@ -203,6 +233,20 @@ Project patterns (/path/to/sensitive-patterns.txt):
 ```
 
 Gitleaks patterns are summarized as a count + date rather than listing 220 regexes.
+
+## `lcm sensitive test` changes
+
+Current behavior: iterates `BUILT_IN_PATTERNS` to show which patterns matched. With 220+ gitleaks patterns, the output changes:
+
+```
+Matched patterns:
+  [gitleaks:aws-access-token]  \b((?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16})\b
+  [native]                     [Pp]assword\s*[:=]\s*\S+
+Input:    AKIAIOSFODNN7EXAMPLE password=s3cret
+Redacted: [REDACTED] [REDACTED]
+```
+
+When a gitleaks pattern matches, show `[gitleaks:<rule-id>]` instead of the raw regex — more informative and readable.
 
 ## GitHub Actions workflow
 
@@ -288,7 +332,8 @@ The `develop` branch ruleset must add the bot token's identity (GitHub App or PA
 3. Rename `BUILT_IN_PATTERNS` → `NATIVE_PATTERNS`, remove gitleaks-covered entries
 4. Update `ScrubEngine` to merge gitleaks + custom + user patterns, handle `flags`
 5. Update `lcm sensitive list` output formatting
-6. Update doctor: remove warning, add informational display + health check
-7. Update existing tests
-8. Add GitHub Actions workflow
-9. Update branch protection rules (manual step)
+6. Update `lcm sensitive test` to show `[gitleaks:<rule-id>]` tags
+7. Update doctor: remove warning, add informational display + health check
+8. Update existing tests
+9. Add GitHub Actions workflow
+10. Update branch protection rules (manual step)
