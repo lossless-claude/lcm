@@ -1,3 +1,4 @@
+import safeRegex from "safe-regex";
 import type { DaemonConfig } from "../daemon/config.js";
 
 type Thresholds = DaemonConfig["compaction"]["promotionThresholds"];
@@ -25,9 +26,14 @@ export function shouldPromote(input: PromotionInput, thresholds: Thresholds): Pr
     if (keywords.some((kw) => lower.includes(kw.toLowerCase()))) tags.push(category);
   }
 
-  // Architecture pattern signals
-  for (const pattern of thresholds.architecturePatterns) {
-    if (new RegExp(pattern).test(content)) { tags.push("architecture"); break; }
+  // Architecture pattern signals (filter unsafe patterns first to prevent ReDoS)
+  const safeArchPatterns = (thresholds.architecturePatterns ?? []).filter(p => {
+    try { return safeRegex(p); } catch { return false; }
+  });
+  for (const pattern of safeArchPatterns) {
+    try {
+      if (new RegExp(pattern).test(content)) { tags.push("architecture"); break; }
+    } catch { continue; }
   }
 
   // Depth signal
