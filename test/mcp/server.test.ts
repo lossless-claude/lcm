@@ -1,6 +1,27 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { getMcpToolDefinitions, handleDaemonRequest } from "../../src/mcp/server.js";
 
+const ensureDaemonMcpMock = vi.fn().mockResolvedValue({ connected: true, port: 9999, spawned: false });
+
+vi.mock("../../src/daemon/lifecycle.js", () => ({
+  ensureDaemon: (...args: unknown[]) => ensureDaemonMcpMock(...args),
+}));
+vi.mock("../../src/daemon/config.js", () => ({
+  loadDaemonConfig: vi.fn().mockReturnValue({ daemon: { port: 9999 } }),
+}));
+vi.mock("@modelcontextprotocol/sdk/server/index.js", () => ({
+  Server: vi.fn().mockReturnValue({ setRequestHandler: vi.fn(), connect: vi.fn().mockResolvedValue(undefined) }),
+}));
+vi.mock("@modelcontextprotocol/sdk/server/stdio.js", () => ({
+  StdioServerTransport: vi.fn().mockReturnValue({}),
+}));
+vi.mock("../../src/daemon/client.js", () => ({
+  DaemonClient: vi.fn().mockReturnValue({ post: vi.fn() }),
+}));
+vi.mock("../../src/daemon/server.js", () => ({
+  PKG_VERSION: "9.9.9-test",
+}));
+
 describe("MCP tool definitions", () => {
   it("exposes exactly 7 tools", () => {
     const tools = getMcpToolDefinitions();
@@ -85,5 +106,18 @@ describe("handleDaemonRequest", () => {
     const res = await handleDaemonRequest(client, "/search", { q: "foo" }, opts);
     expect(res.isError).toBeUndefined(); // retry succeeded despite ensureDaemon throwing
     expect(res.content[0].text).toContain('"ok"');
+  });
+});
+
+describe("startMcpServer", () => {
+  it("passes PKG_VERSION as expectedVersion to ensureDaemon", async () => {
+    const { startMcpServer } = await import("../../src/mcp/server.js");
+
+    await startMcpServer();
+
+    // PKG_VERSION is mocked to "9.9.9-test" via vi.mock("../../src/daemon/server.js")
+    expect(ensureDaemonMcpMock).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedVersion: "9.9.9-test" }),
+    );
   });
 });

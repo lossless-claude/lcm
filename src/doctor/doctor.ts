@@ -168,15 +168,43 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>): Promise<CheckR
       try {
         const { ensureDaemon } = await import("../daemon/lifecycle.js");
         const { connected } = await ensureDaemon({ port: config.port, pidFilePath, spawnTimeoutMs: 10000, expectedVersion: pkgVersion });
-        results.push({
-          name: "daemon", category: "Daemon",
-          status: connected ? "warn" : "warn",
-          message: connected
-            ? `localhost:${config.port} — restarted (v${daemonVersion} → v${pkgVersion})`
-            : `localhost:${config.port} — version mismatch (v${daemonVersion} running, v${pkgVersion} installed); restart failed\n     Fix: lcm daemon restart`,
-          fixApplied: connected,
-        });
-        daemonHealthy = connected;
+
+        // Re-fetch health to verify restart actually fixed the version
+        let postRestartVersion: string | undefined;
+        if (connected) {
+          try {
+            const res = await deps.fetch(`http://localhost:${config.port}/health`);
+            if (res.ok) {
+              const h = (await res.json()) as { status?: string; version?: string };
+              postRestartVersion = h.version;
+            }
+          } catch { /* non-fatal */ }
+        }
+
+        const fixApplied = connected && postRestartVersion === pkgVersion;
+        if (fixApplied) {
+          results.push({
+            name: "daemon", category: "Daemon", status: "warn",
+            message: `localhost:${config.port} — restarted (v${daemonVersion} → v${pkgVersion})`,
+            fixApplied: true,
+          });
+          daemonHealthy = true;
+        } else if (connected) {
+          const runningVersion = postRestartVersion ?? daemonVersion;
+          results.push({
+            name: "daemon", category: "Daemon", status: "warn",
+            message: `localhost:${config.port} — version mismatch (v${runningVersion} running, v${pkgVersion} installed); restart did not fix mismatch\n     Fix: lcm daemon restart`,
+            fixApplied: false,
+          });
+          daemonHealthy = false;
+        } else {
+          results.push({
+            name: "daemon", category: "Daemon", status: "fail",
+            message: `localhost:${config.port} — version mismatch (v${daemonVersion} running, v${pkgVersion} installed); restart failed\n     Fix: lcm daemon restart`,
+            fixApplied: false,
+          });
+          daemonHealthy = false;
+        }
       } catch {
         results.push({ name: "daemon", category: "Daemon", status: "warn",
           message: `localhost:${config.port} — version mismatch (v${daemonVersion} running, v${pkgVersion} installed)\n     Fix: lcm daemon restart` });

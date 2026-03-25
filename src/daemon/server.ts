@@ -24,7 +24,7 @@ import { createSessionCompleteHandler } from "./routes/session-complete.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const PKG_VERSION = (() => {
   try {
-    const pkg = JSON.parse(readFileSync(join(__dirname, "..", "..", "package.json"), "utf-8"));
+    const pkg = JSON.parse(readFileSync(join(__dirname, "..", "..", "..", "package.json"), "utf-8"));
     return pkg.version;
   } catch { return "0.0.0"; }
 })();

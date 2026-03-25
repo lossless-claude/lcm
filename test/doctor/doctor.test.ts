@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { runDoctor } from "../../src/doctor/doctor.js";
 import { REQUIRED_HOOKS } from "../../installer/install.js";
 import { LCM_MD_CONTENT } from "../../src/daemon/orientation.js";
+import { ensureDaemon } from "../../src/daemon/lifecycle.js";
 
 vi.mock("../../src/daemon/lifecycle.js", () => ({
   ensureDaemon: vi.fn().mockResolvedValue({ connected: false }),
@@ -73,6 +74,73 @@ describe("runDoctor lcm-md check", () => {
     expect(check?.status).toBe("warn");
     expect(check?.fixApplied).toBe(true);
     expect(written["/tmp/test-home/.claude/lcm.md"]).toBeDefined();
+  });
+});
+
+describe("runDoctor daemon version mismatch", () => {
+  it("auto-restarts daemon on version mismatch and reports fixApplied when post-restart version matches", async () => {
+    const pkgVersion = "0.6.0";
+    const daemonVersion = "0.5.0";
+
+    // ensureDaemon returns connected on restart attempt
+    vi.mocked(ensureDaemon).mockResolvedValueOnce({ connected: true, port: 7865, spawned: true });
+
+    const deps = minimalDeps({
+      cwd: "/tmp/nonexistent-project-xyz",
+      readFileSync: (path: string) => {
+        if (path.endsWith("config.json")) return "{}";
+        if (path.endsWith("settings.json")) return buildSettingsJson();
+        if (path.endsWith("package.json")) return JSON.stringify({ version: pkgVersion });
+        if (path.endsWith("CLAUDE.md")) return "<!-- lcm:start -->\n<!-- Claude Code include: @lcm.md -->\n<!-- lcm:end -->\n";
+        if (path.endsWith("lcm.md")) return LCM_MD_CONTENT;
+        return "{}";
+      },
+      // First fetch: daemon up with old version; second fetch: post-restart with new version
+      fetch: vi.fn()
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ status: "ok", version: daemonVersion }) })
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ status: "ok", version: pkgVersion }) }),
+    });
+
+    const results = await runDoctor(deps);
+    const daemonResult = results.find((r) => r.name === "daemon");
+
+    expect(vi.mocked(ensureDaemon)).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedVersion: pkgVersion }),
+    );
+    expect(daemonResult?.fixApplied).toBe(true);
+    expect(daemonResult?.message).toContain("restarted");
+    expect(daemonResult?.message).toContain(daemonVersion);
+    expect(daemonResult?.message).toContain(pkgVersion);
+  });
+
+  it("reports fail when restart does not fix version mismatch", async () => {
+    const pkgVersion = "0.6.0";
+    const daemonVersion = "0.5.0";
+
+    vi.mocked(ensureDaemon).mockResolvedValueOnce({ connected: true, port: 7865, spawned: true });
+
+    const deps = minimalDeps({
+      cwd: "/tmp/nonexistent-project-xyz",
+      readFileSync: (path: string) => {
+        if (path.endsWith("config.json")) return "{}";
+        if (path.endsWith("settings.json")) return buildSettingsJson();
+        if (path.endsWith("package.json")) return JSON.stringify({ version: pkgVersion });
+        if (path.endsWith("CLAUDE.md")) return "<!-- lcm:start -->\n<!-- Claude Code include: @lcm.md -->\n<!-- lcm:end -->\n";
+        if (path.endsWith("lcm.md")) return LCM_MD_CONTENT;
+        return "{}";
+      },
+      // Post-restart health still returns old version
+      fetch: vi.fn()
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ status: "ok", version: daemonVersion }) })
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ status: "ok", version: daemonVersion }) }),
+    });
+
+    const results = await runDoctor(deps);
+    const daemonResult = results.find((r) => r.name === "daemon");
+
+    expect(daemonResult?.fixApplied).toBe(false);
+    expect(daemonResult?.status).toBe("warn");
+    expect(daemonResult?.message).toContain("did not fix mismatch");
   });
 });
 
