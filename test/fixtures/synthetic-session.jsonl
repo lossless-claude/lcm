@@ -1,0 +1,19 @@
+{"message":{"role":"user","content":"Hey, good morning! Ready to keep working on the project?"}}
+{"message":{"role":"assistant","content":"Good morning! Yes, let's continue."}}
+{"message":{"role":"user","content":"We decided to use SQLite over Postgres because it's embedded and needs no setup. Can you make sure the schema migration handles the new columns?"}}
+{"message":{"role":"assistant","content":"Understood. SQLite is the right call here — zero infrastructure, no separate process, and it bundles perfectly with the app. I'll update the migration to add the new columns."}}
+{"message":{"role":"user","content":"I prefer small, focused PRs — easier to review and less risky. Let's keep each feature on its own branch and merge separately."}}
+{"message":{"role":"assistant","content":"Agreed. Small PRs also make it easier to bisect regressions later. I'll open a dedicated branch for each logical change."}}
+{"message":{"role":"user","content":"We tracked down the bug. The bug was a race condition: two processes writing to the same cursor file without locking. Adding a file lock fixed it."}}
+{"message":{"role":"assistant","content":"That's a classic race. File locks (flock/lockfile) serialize writes reliably. Good find."}}
+{"message":{"role":"user","content":"Yes."}}
+{"message":{"role":"user","content":"All hook handlers in this codebase use dependency injection via interfaces for testability. Should we follow the same pattern for the new handler?"}}
+{"message":{"role":"assistant","content":"Absolutely — follow the existing pattern. Pass dependencies through the constructor as interface types; that way tests can swap in mocks without touching the implementation."}}
+{"message":{"role":"user","content":"Watch out: import paths break when running from a symlinked directory — always use import.meta.url to resolve paths relative to the current file."}}
+{"message":{"role":"assistant","content":"Good gotcha to document. Using `new URL('./foo', import.meta.url)` is safe under symlinks because it resolves against the file's real location, not the process cwd."}}
+{"message":{"role":"user","content":"We fixed fire-and-forget HTTP by using socket.unref() after the request finishes. That way the Node process can exit cleanly without waiting for the response."}}
+{"message":{"role":"assistant","content":"Correct fix. socket.unref() tells Node the socket shouldn't keep the event loop alive, so fire-and-forget requests don't block clean shutdown."}}
+{"message":{"role":"user","content":"Can you summarize our PR workflow? To ship a PR: push branch, request Copilot review, fix comments, squash merge to develop."}}
+{"message":{"role":"assistant","content":"Confirmed workflow: push branch → request Copilot review via the reviewer API → address feedback → squash merge into develop. Never merge directly to main."}}
+{"message":{"role":"user","content":"Looks good, thanks!"}}
+{"message":{"role":"assistant","content":"You're welcome."}}

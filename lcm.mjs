@@ -19,8 +19,23 @@ if (!existsSync(join(__dirname, "node_modules"))) {
 if (!existsSync(join(__dirname, "dist"))) {
   try {
     execSync("npm run build --silent", { cwd: __dirname, stdio: "pipe", timeout: 120000 });
-    // Register as a global binary so `lcm` is available in PATH
-    execSync("npm install -g . --silent", { cwd: __dirname, stdio: "pipe", timeout: 60000 });
+    // Register as a global binary so `lcm` is available in PATH (behind opt-in env var)
+    if (process.env.LCM_BOOTSTRAP_INSTALL === "1") {
+      try {
+        execSync("npm install -g . --silent", { cwd: __dirname, stdio: "pipe", timeout: 60000 });
+      } catch (error) {
+        const message =
+          error instanceof Error && typeof error.message === "string"
+            ? error.message
+            : String(error);
+        console.error(
+          "[lcm] Warning: Failed to globally install the lcm CLI. " +
+            "The `lcm` binary may not be available in your PATH. " +
+            "You can manually run `npm install -g .` in the plugin directory if desired.\n" +
+            `Underlying error: ${message}`,
+        );
+      }
+    }
   } catch {}
 }
 

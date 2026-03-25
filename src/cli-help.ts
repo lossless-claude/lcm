@@ -78,37 +78,43 @@ const HELP: Record<string, CommandHelp> = {
 
   compact: {
     summary: "Compact conversation context into DAG summary nodes.",
-    usage: "lcm compact [--all] [--dry-run] [--replay]",
+    usage: "lcm compact [--all] [--dry-run] [--replay] [--no-promote]",
     options: [
       ["--all", "Compact all tracked projects (default: current project only)"],
       ["--dry-run", "Show what would be compacted without writing anything"],
       ["--replay", "Compact sequentially, threading each summary through the prior context"],
+      ["--no-promote", "Skip the automatic promote step that runs after compaction"],
     ],
     examples: [
       ["lcm compact", "Compact current project"],
       ["lcm compact --all", "Compact all tracked projects"],
       ["lcm compact --dry-run", "Preview compaction for current project"],
       ["lcm compact --all --replay", "Rebuild all projects with threaded context (slow)"],
+      ["lcm compact --no-promote", "Compact without auto-promoting new insights"],
     ],
-    notes: "When invoked via the PreCompact hook (piped stdin), runs automatically during Claude Code context compaction.",
+    notes: "When invoked via the PreCompact hook (piped stdin), runs automatically during Claude Code context compaction. After a successful compact, promote runs automatically to surface new insights to long-term memory.",
   },
 
   import: {
-    summary: "Import Claude Code session transcripts into lossless memory.",
-    usage: "lcm import [--all] [--verbose] [--dry-run] [--replay]",
+    summary: "Import session transcripts (Claude Code or Codex CLI) into lossless memory.",
+    usage: "lcm import [--provider claude|codex|all] [--all] [--verbose] [--dry-run] [--replay]",
     options: [
+      ["--provider <name>", "Source: claude (default), codex, or all"],
+      ["--codex", "Shorthand for --provider codex"],
       ["--all", "Import all projects (default: current project only)"],
       ["--verbose", "Show per-session import detail"],
       ["--dry-run", "Preview without importing"],
       ["--replay", "Replay compaction for each imported session"],
     ],
     examples: [
-      ["lcm import", "Import current project sessions"],
-      ["lcm import --all", "Import all tracked projects"],
+      ["lcm import", "Import current Claude Code project sessions"],
+      ["lcm import --codex", "Import Codex CLI sessions from ~/.codex/"],
+      ["lcm import --provider all", "Import both Claude Code and Codex sessions"],
+      ["lcm import --all", "Import all tracked Claude Code projects"],
       ["lcm import --all --replay", "Import and compact with threaded context"],
       ["lcm import --dry-run", "Preview what would be imported"],
     ],
-    notes: "Reads transcripts from ~/.claude/projects/. Already-imported sessions are skipped.",
+    notes: "Claude sessions are read from ~/.claude/projects/. Codex sessions from ~/.codex/. Already-imported sessions are skipped.",
   },
 
   promote: {
@@ -256,8 +262,8 @@ const GROUPS = [
   {
     label: "Memory",
     commands: [
-      { name: "compact [--all] [--dry-run] [--replay]", summary: "Compact conversations into DAG summaries" },
-      { name: "import [--all] [--verbose] [--dry-run] [--replay]", summary: "Import Claude Code session transcripts" },
+      { name: "compact [--all] [--dry-run] [--replay] [--no-promote]", summary: "Compact conversations into DAG summaries (auto-promotes after)" },
+      { name: "import [--provider claude|codex|all] [--all] [--verbose] [--dry-run] [--replay]", summary: "Import session transcripts (Claude Code or Codex CLI)" },
       { name: "promote [--all] [--verbose] [--dry-run]", summary: "Promote insights to long-term memory" },
       { name: "stats [-v]", summary: "Memory inventory and compression ratios" },
       { name: "diagnose [--all] [--days N] [--verbose] [--json]", summary: "Scan sessions for hook failures and issues" },

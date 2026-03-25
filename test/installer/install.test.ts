@@ -41,7 +41,7 @@ describe("mergeClaudeSettings", () => {
   it("removes all 4 required hooks when already present", () => {
     const existing = {
       hooks: {
-        PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact" }] }],
+        PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact --hook" }] }],
         SessionStart: [{ matcher: "", hooks: [{ type: "command", command: "lcm restore" }] }],
         SessionEnd: [{ matcher: "", hooks: [{ type: "command", command: "lcm session-end" }] }],
         UserPromptSubmit: [{ matcher: "", hooks: [{ type: "command", command: "lcm user-prompt" }] }],
@@ -56,19 +56,20 @@ describe("mergeClaudeSettings", () => {
     expect(r.mcpServers).toEqual({ lcm: { command: "lcm", args: ["mcp"] } });
   });
 
-  it("REQUIRED_HOOKS contains exactly 4 expected events", () => {
+  it("REQUIRED_HOOKS contains exactly 5 expected events", () => {
     expect(REQUIRED_HOOKS.map(h => h.event).sort()).toEqual([
-      "PreCompact", "SessionEnd", "SessionStart", "UserPromptSubmit",
+      "PreCompact", "SessionEnd", "SessionStart", "Stop", "UserPromptSubmit",
     ]);
   });
 
-  it("removes any of the 4 hooks if already present", () => {
+  it("removes any of the 5 hooks if already present", () => {
     const existing = {
       hooks: {
-        PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact" }] }],
+        PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact --hook" }] }],
         SessionStart: [{ matcher: "", hooks: [{ type: "command", command: "lcm restore" }] }],
         SessionEnd: [{ matcher: "", hooks: [{ type: "command", command: "lcm session-end" }] }],
         UserPromptSubmit: [{ matcher: "", hooks: [{ type: "command", command: "lcm user-prompt" }] }],
+        Stop: [{ matcher: "", hooks: [{ type: "command", command: "lcm session-snapshot" }] }],
       },
     };
     const r = mergeClaudeSettings(existing);
@@ -82,7 +83,7 @@ describe("mergeClaudeSettings", () => {
   });
 
   it("removes managed hooks without leaving duplicates behind", () => {
-    const r = mergeClaudeSettings({ hooks: { PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact" }] }] } });
+    const r = mergeClaudeSettings({ hooks: { PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact --hook" }] }] } });
     expect(r.hooks).toBeUndefined();
   });
 
@@ -93,7 +94,7 @@ describe("mergeClaudeSettings", () => {
           matcher: "",
           hooks: [
             { type: "command", command: "other" },
-            { type: "command", command: "lcm compact" },
+            { type: "command", command: "lcm compact --hook" },
           ],
         }],
       },

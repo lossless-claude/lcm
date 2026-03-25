@@ -101,19 +101,30 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
       return;
     }
 
-    const summarize = await getSummarizer(resolveEffectiveProvider(config, client));
-    if (!summarize) {
-      sendJson(res, 200, { summary: "Summarization disabled — no summarizer configured." });
-      return;
-    }
-
+    // Guard must be checked and set synchronously (before any await) to prevent
+    // concurrent requests from racing through the has() check before add() runs.
     if (compactingNow.has(session_id)) {
       sendJson(res, 200, { skipped: true, summary: "Compaction already in progress for this session." });
       return;
     }
     compactingNow.add(session_id);
 
+    const effectiveProvider = resolveEffectiveProvider(config, client);
+    const providerLabels: Record<EffectiveProvider, string> = {
+      "claude-process": "Claude (process)",
+      "codex-process": "Codex (process)",
+      "anthropic": "Anthropic API",
+      "openai": "OpenAI API",
+      "disabled": "Disabled",
+    };
+    const providerLabel = providerLabels[effectiveProvider] ?? effectiveProvider;
+
     try {
+      const summarize = await getSummarizer(effectiveProvider);
+      if (!summarize) {
+        sendJson(res, 200, { summary: "Summarization disabled — no summarizer configured.", providerId: effectiveProvider, providerLabel });
+        return;
+      }
       const pid = projectId(cwd);
       const result = await enqueue(pid, async () => {
         const dbPath = projectDbPath(cwd);
@@ -165,7 +176,7 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
           const tokenCount = await summaryStore.getContextTokenCount(conversation.conversationId);
 
           if (tokenCount === 0) {
-            return { summary: "No messages to compact." };
+            return { summary: "No messages to compact.", providerId: effectiveProvider, providerLabel };
           }
 
           const engine = new CompactionEngine(conversationStore, summaryStore, {
@@ -237,6 +248,8 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
             latestSummaryContent,
             tokensBefore: compactResult.tokensBefore,
             tokensAfter: compactResult.tokensAfter,
+            providerId: effectiveProvider,
+            providerLabel,
           };
         } finally {
           db.close();
@@ -244,6 +257,8 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
       }); // end enqueue
 
       sendJson(res, 200, result);
+    } catch (err) {
+      sendJson(res, 500, { error: err instanceof Error ? err.message : "compact failed" });
     } finally {
       compactingNow.delete(session_id);
     }

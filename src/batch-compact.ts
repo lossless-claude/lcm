@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { runLcmMigrations } from "./db/migration.js";
+import type { ProgressState } from "./cli/progress-state.js";
 
 export interface UncompactedConversation {
   projectDir: string;
@@ -86,25 +87,43 @@ export async function batchCompact(opts: {
   port: number;
   cwd?: string;
   replay?: boolean;
-}): Promise<void> {
+  verbose?: boolean;
+  /** Called with state patches as each session is processed — used by the ninja renderer */
+  onProgress?: (patch: Partial<ProgressState>) => void;
+}): Promise<{ compacted: number }> {
   const conversations = findUncompacted(opts.minTokens, opts.dryRun, opts.cwd, opts.replay);
+  const onProgress = opts.onProgress;
 
   if (conversations.length === 0) {
-    console.log("No uncompacted conversations above threshold.");
-    return;
+    console.log("Nothing to compact — all sessions are up to date.");
+    return { compacted: 0 };
   }
 
   const totalTokens = conversations.reduce((s, c) => s + c.tokens, 0);
   console.log(`Found ${conversations.length} uncompacted conversation${conversations.length > 1 ? "s" : ""} (${(totalTokens / 1000).toFixed(1)}k tokens)\n`);
+
+  // Notify renderer of total so it can show accurate progress
+  onProgress?.({ total: conversations.length });
+
+  let compacted = 0;
+  let doneCount = 0;
+  let messagesIn = 0;
+  let tokensIn = 0;
+  let tokensOut = 0;
+  const progressErrors: { sessionId: string; message: string }[] = [];
 
   for (const conv of conversations) {
     const label = `${conv.cwd} conv #${conv.conversationId} (${conv.messages} msgs, ${(conv.tokens / 1000).toFixed(1)}k tokens)`;
 
     if (opts.dryRun) {
       console.log(`  [dry-run] would compact: ${label}`);
+      doneCount++;
+      onProgress?.({ completed: doneCount });
       continue;
     }
 
+    const sessionStart = Date.now();
+    onProgress?.({ current: { sessionId: conv.sessionId, messages: conv.messages, tokens: conv.tokens, startedAt: sessionStart } });
     process.stdout.write(`  compacting: ${label}...`);
     try {
       const res = await fetch(`http://127.0.0.1:${opts.port}/compact`, {
@@ -118,22 +137,82 @@ export async function batchCompact(opts: {
         }),
       });
 
+      doneCount++;
       if (!res.ok) {
-        console.log(` FAILED (HTTP ${res.status})`);
+        const body = await res.text().catch(() => "");
+        const errMsg = `HTTP ${res.status}${body ? `: ${body}` : ""}`;
+        console.log(` FAILED (${errMsg})`);
+        progressErrors.push({ sessionId: conv.sessionId, message: errMsg });
+        onProgress?.({
+          completed: doneCount,
+          current: undefined,
+          errors: progressErrors,
+          lastResult: { sessionId: conv.sessionId, messages: conv.messages, tokensBefore: conv.tokens, elapsed: Date.now() - sessionStart },
+        });
       } else {
-        const data = await res.json() as { summary?: string; skipped?: boolean };
+        const data = await res.json() as { summary?: string; skipped?: boolean; tokensBefore?: number; tokensAfter?: number; providerLabel?: string };
         if (data.skipped) {
           console.log(" skipped (already in progress)");
+          onProgress?.({
+            completed: doneCount,
+            current: undefined,
+            lastResult: { sessionId: conv.sessionId, messages: conv.messages, tokensBefore: conv.tokens, elapsed: Date.now() - sessionStart },
+          });
         } else {
-          console.log(" done");
+          const before = typeof data.tokensBefore === "number" ? data.tokensBefore : 0;
+          const after = typeof data.tokensAfter === "number" ? data.tokensAfter : 0;
+          tokensIn += before;
+          tokensOut += after;
+          if (opts.verbose && before > 0) {
+            const pct = before > 0 ? Math.round((1 - after / before) * 100) : 0;
+            console.log(` done  (${(before / 1000).toFixed(1)}k → ${(after / 1000).toFixed(1)}k tokens, ${pct}% reduction)`);
+          } else {
+            console.log(" done");
+          }
+          compacted++;
+          messagesIn += conv.messages;
+          tokensIn += data.tokensBefore ?? conv.tokens;
+          tokensOut += data.tokensAfter ?? 0;
+          onProgress?.({
+            completed: doneCount,
+            messagesIn,
+            tokensIn,
+            tokensOut,
+            current: undefined,
+            lastResult: {
+              sessionId: conv.sessionId,
+              messages: conv.messages,
+              tokensBefore: data.tokensBefore ?? conv.tokens,
+              tokensAfter: data.tokensAfter,
+              provider: data.providerLabel,
+              elapsed: Date.now() - sessionStart,
+            },
+          });
         }
       }
     } catch (err) {
-      console.log(` FAILED (${err instanceof Error ? err.message : "unknown error"})`);
+      doneCount++;
+      const errMsg = err instanceof Error ? err.message : "unknown error";
+      console.log(` FAILED (${errMsg})`);
+      progressErrors.push({ sessionId: conv.sessionId, message: errMsg });
+      onProgress?.({
+        completed: doneCount,
+        current: undefined,
+        errors: progressErrors,
+        lastResult: { sessionId: conv.sessionId, messages: conv.messages, tokensBefore: conv.tokens, elapsed: Date.now() - sessionStart },
+      });
     }
   }
 
   if (!opts.dryRun) {
-    console.log("\nBatch compact complete.");
+    if (tokensIn > 0) {
+      const freed = tokensIn - tokensOut;
+      const pct = Math.round((freed / tokensIn) * 100);
+      console.log(`\nBatch compact complete. ${compacted} session${compacted !== 1 ? "s" : ""} compacted, ${(tokensIn / 1000).toFixed(1)}k → ${(tokensOut / 1000).toFixed(1)}k tokens (${pct}% reduction, ${(freed / 1000).toFixed(1)}k freed)`);
+    } else {
+      console.log("\nBatch compact complete.");
+    }
   }
+
+  return { compacted };
 }

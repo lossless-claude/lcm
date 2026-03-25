@@ -214,7 +214,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>): Promise<CheckR
         name: "hooks",
         category: "Settings",
         status: "warn",
-        message: `Duplicate hooks in settings.json: ${duplicateHooks.join(", ")} — run: lcm install`,
+        message: `Duplicate ${duplicateHooks.join(", ")} hook ${duplicateHooks.length === 1 ? "entry" : "entries"} in ${settingsPath} — remove the \`hooks.${duplicateHooks[0]}\` block(s) from that file, then run: lcm install`,
       });
     }
   } else {
@@ -252,8 +252,17 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>): Promise<CheckR
   const lcmMdPath = join(deps.homedir, ".claude", "lcm.md");
   const claudeMdPath = join(deps.homedir, ".claude", "CLAUDE.md");
   const lcmMdExists = deps.existsSync(lcmMdPath);
-  const claudeMdHasRef = deps.existsSync(claudeMdPath) &&
-    (() => { try { return deps.readFileSync(claudeMdPath, "utf-8").includes("<!-- lcm:start -->"); } catch { return false; } })();
+  const claudeMdHasRef = (() => {
+    if (!deps.existsSync(claudeMdPath)) return false;
+    try {
+      const claudeContent = deps.readFileSync(claudeMdPath, "utf-8");
+      const lcmBlockMatch = claudeContent.match(/<!--\s*lcm:start\s*-->[\s\S]*?<!--\s*lcm:end\s*-->/);
+      if (!lcmBlockMatch) return false;
+      return /@lcm\.md/.test(lcmBlockMatch[0]);
+    } catch {
+      return false;
+    }
+  })();
 
   if (lcmMdExists && claudeMdHasRef) {
     results.push({ name: "lcm-md", category: "Settings", status: "pass", message: "~/.claude/lcm.md installed and referenced in CLAUDE.md" });
