@@ -23,13 +23,13 @@ Single line, three segments:
 | Segment | Source | Format |
 |---------|--------|--------|
 | Health/activity | `GET /health` | `●` green idle, `◐` yellow active, `○` dim dead |
-| Messages ingested | `POST /status` → `messageCount` | `{n} msgs` via `formatNumber()` |
-| Promoted memories | `POST /status` → `promotedCount` | `{n} promoted` via `formatNumber()` |
+| Messages ingested | `POST /status` → `project.messageCount` | `{n} msgs` via `formatNumber()` |
+| Promoted memories | `POST /status` → `project.promotedCount` | `{n} promoted` via `formatNumber()` |
 
 Colors:
 - `●` / activity verb: green when idle, yellow when working, dim gray when dead
 - Stats: dim/default — secondary to the health indicator
-- Reuse ANSI constants from `src/stats.ts`
+- ANSI sequences are currently function-local in `src/stats.ts` (inside `printStats()`/`sectionHeader()`); they must be extracted into a shared module (e.g., `src/ansi.ts`) as part of implementation.
 
 Dead state: when daemon is unreachable, show `○ dead` only — no stale numbers.
 
@@ -51,7 +51,7 @@ Dead state: when daemon is unreachable, show `○ dead` only — no stale number
 | `src/daemon/routes/compact.ts` | Call `setActivity("compacting")` / `setActivity("idle")` around work |
 | `src/daemon/routes/promote.ts` | Call `setActivity("promoting")` / `setActivity("idle")` around work |
 | `src/daemon/routes/ingest.ts` | Call `setActivity("ingesting")` / `setActivity("idle")` around work |
-| `src/daemon/client.ts` | Extend `health()` return type to include `activity?: string` |
+| `src/daemon/client.ts` | Extend `health()` return type to include `activity?: string` and `version?: string` to match full response shape |
 | `package.json` | Add `statusline.mjs` to `files` array |
 | `.claude-plugin/plugin.json` | No change — `statusLine` goes in user's `settings.json` |
 
@@ -68,8 +68,8 @@ interface StdinData {
   cwd?: string;                    // project working directory — used for POST /status
   transcript_path?: string;
   model?: { id?: string; display_name?: string };
-  context_window?: { context_window_size?: number; current_usage?: { ... } };
-  rate_limits?: { ... };
+  context_window?: { context_window_size?: number; current_usage?: Record<string, unknown> };
+  rate_limits?: Record<string, unknown>;
 }
 ```
 
@@ -82,7 +82,7 @@ Per tick (~300ms), Claude Code invokes the statusline command:
 ```
 Claude Code → stdin JSON → statusline.ts (parse cwd from stdin)
                               ├─ GET /health → { status, version, uptime, activity }
-                              ├─ POST /status { cwd } → { messageCount, promotedCount }
+                              ├─ POST /status { cwd } → { project: { messageCount, promotedCount, ... } }
                               └─ statusline-render → stdout → Claude Code displays
 ```
 
@@ -136,7 +136,7 @@ Integration: each route handler calls `setActivity("X")` before work and `setAct
 
 ## Setup
 
-A `/lcm:statusline-setup` command writes the `statusLine` config into `~/.claude/settings.json`:
+A `/lcm-statusline-setup` command writes the `statusLine` config into `~/.claude/settings.json`:
 
 ```json
 {
@@ -153,7 +153,7 @@ Similar to claude-hud's `/claude-hud:setup` pattern.
 
 From `src/stats.ts`:
 - `formatNumber()` — compact number display (`1.2k`, `3.4M`)
-- ANSI color constants
+- ANSI color constants — not currently exported; the statusline will either define its own or a new `src/ansi.ts` shared module will be created
 
 From `src/daemon/client.ts`:
 - `DaemonClient` class — `health()` and `post()` methods
