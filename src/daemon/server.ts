@@ -31,9 +31,21 @@ export type RouteHandler = (req: IncomingMessage, res: ServerResponse, body: str
 export type DaemonInstance = { address: () => AddressInfo; stop: () => Promise<void>; registerRoute: (method: string, path: string, handler: RouteHandler) => void; idleTriggered: boolean };
 export type DaemonOptions = { proxyManager?: ProxyManager; onIdle?: () => void };
 
+const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
+
 export async function readBody(req: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+  let total = 0;
+  for await (const chunk of req) {
+    const buf = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+    total += buf.length;
+    if (total > MAX_BODY_BYTES) {
+      // Drain and discard remaining data so we can write a response
+      req.resume();
+      throw Object.assign(new Error("Payload too large"), { statusCode: 413 });
+    }
+    chunks.push(buf);
+  }
   return Buffer.concat(chunks).toString("utf-8");
 }
 
@@ -142,8 +154,10 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
     if (!handler) { sendJson(res, 404, { error: "not found" }); return; }
     try {
       await handler(req, res, req.method !== "GET" ? await readBody(req) : "");
-    } catch (err) {
-      sendJson(res, 500, { error: err instanceof Error ? err.message : "internal error" });
+    } catch (err: unknown) {
+      const status = (err as { statusCode?: number })?.statusCode ?? 500;
+      const message = status === 413 ? "payload too large" : (err instanceof Error ? err.message : "internal error");
+      sendJson(res, status, { error: message });
     }
   });
 

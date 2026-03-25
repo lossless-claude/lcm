@@ -36,6 +36,18 @@ describe("daemon server", () => {
     const res = await fetch(`http://127.0.0.1:${daemon.address().port}/nope`);
     expect(res.status).toBe(404);
   });
+
+  it("returns 413 when request body exceeds 10 MB", async () => {
+    daemon = await createDaemon(loadDaemonConfig("/x", { daemon: { port: 0 } }));
+    const port = daemon.address().port;
+    const bigBody = "x".repeat(11 * 1024 * 1024); // 11 MB
+    const res = await fetch(`http://127.0.0.1:${port}/store`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: bigBody,
+    });
+    expect(res.status).toBe(413);
+  });
 });
 
 describe("daemon idle timeout", () => {
