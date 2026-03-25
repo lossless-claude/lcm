@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { sanitizeFts5Query } from "./fts5-sanitize.js";
 import { buildLikeSearchPlan, createFallbackSnippet } from "./full-text-fallback.js";
+import { validateRegex } from "./regex-safety.js";
 
 export type SummaryKind = "leaf" | "condensed";
 export type ContextItemType = "message" | "summary";
@@ -818,7 +819,7 @@ export class SummaryStore {
     since?: Date,
     before?: Date,
   ): SummarySearchResult[] {
-    const re = new RegExp(pattern);
+    const re = validateRegex(pattern);
 
     const where: string[] = [];
     const args: Array<string | number> = [];

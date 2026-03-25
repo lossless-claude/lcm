@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { sanitizeFts5Query } from "./fts5-sanitize.js";
 import { buildLikeSearchPlan, createFallbackSnippet } from "./full-text-fallback.js";
+import { validateRegex } from "./regex-safety.js";
 
 export type ConversationId = number;
 export type MessageId = number;
@@ -711,7 +712,7 @@ export class ConversationStore {
     before?: Date,
   ): MessageSearchResult[] {
     // SQLite has no native POSIX regex; fetch candidates and filter in JS
-    const re = new RegExp(pattern);
+    const re = validateRegex(pattern);
 
     const where: string[] = [];
     const args: Array<string | number> = [];

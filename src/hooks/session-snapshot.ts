@@ -1,6 +1,6 @@
-import { statSync, writeFileSync } from "node:fs";
+import { statSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 
 export interface SnapshotDeps {
   statSync: (path: string) => { mtimeMs: number } | null;
@@ -29,7 +29,9 @@ export async function handleSessionSnapshot(
     }
 
     const safeSessionId = session_id.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const cursorPath = join(tmpdir(), `lcm-snap-${safeSessionId}.json`);
+    const cursorDir = join(homedir(), ".lossless-claude", "tmp");
+    mkdirSync(cursorDir, { recursive: true, mode: 0o700 });
+    const cursorPath = join(cursorDir, `snap-${safeSessionId}.json`);
     const _statSync = deps?.statSync ?? defaultStatSync;
     let intervalSec = deps?.snapshotIntervalSec;
     if (intervalSec === undefined) {
@@ -56,25 +58,39 @@ export async function handleSessionSnapshot(
       await _post("/ingest", { session_id, cwd, transcript_path });
     } else {
       const { loadDaemonConfig } = await import("../daemon/config.js");
-      const { homedir } = await import("node:os");
-      const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
+      const { readFileSync: _readFileSync } = await import("node:fs");
+      const { homedir: _homedir } = await import("node:os");
+      const config = loadDaemonConfig(join(_homedir(), ".lossless-claude", "config.json"));
       const port = config.daemon?.port ?? 3737;
       const baseUrl = `http://127.0.0.1:${port}`;
-      const res = await fetch(`${baseUrl}/ingest`, {
+
+      // Read token from token file if available (silent fallback if not found)
+      let token: string | null = null;
+      try {
+        const tokenPath = join(_homedir(), ".lossless-claude", "daemon.token");
+        const raw = _readFileSync(tokenPath, "utf-8").trim();
+        token = raw || null;
+      } catch {
+        // Token file not found — auth not yet set up, proceed without it
+      }
+
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+
+      await fetch(`${baseUrl}/ingest`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ session_id, cwd, transcript_path }),
         signal: AbortSignal.timeout(5000),
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-        throw new Error(err.error ?? `HTTP ${res.status}`);
-      }
     }
 
     // Touch cursor file
     const _writeFileSync = deps?.writeFileSync ?? writeFileSync;
     _writeFileSync(cursorPath, JSON.stringify({ ts: Date.now() }));
+    try { chmodSync(cursorPath, 0o600); } catch { /* non-fatal */ }
 
     return { exitCode: 0, stdout: "" };
   } catch {

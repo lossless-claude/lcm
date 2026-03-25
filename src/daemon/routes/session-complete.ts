@@ -3,12 +3,21 @@ import { projectDbPath, ensureProjectDir } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
+import { validateCwd } from "../validate-cwd.js";
 
 export function createSessionCompleteHandler(): RouteHandler {
   return async (_req, res, body) => {
-    const { session_id, cwd, message_count } = JSON.parse(body || "{}");
-    if (!session_id || !cwd) {
+    const input = JSON.parse(body || "{}");
+    const { session_id, message_count } = input;
+    if (!session_id || !input.cwd) {
       sendJson(res, 400, { error: "session_id and cwd required" });
+      return;
+    }
+    let cwd: string;
+    try {
+      cwd = validateCwd(input.cwd);
+    } catch (err) {
+      sendJson(res, 400, { error: err instanceof Error ? err.message : "invalid cwd" });
       return;
     }
     ensureProjectDir(cwd);

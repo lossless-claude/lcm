@@ -112,6 +112,15 @@ const LOCAL_TOOLS: Record<string, (args: Record<string, unknown>) => Promise<str
   },
 };
 
+// Build per-tool allowlist from tool definitions (keyed by tool name)
+const TOOL_ALLOWED_KEYS: Record<string, Set<string>> = {};
+for (const tool of TOOLS) {
+  const props = (tool.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties;
+  if (props) {
+    TOOL_ALLOWED_KEYS[tool.name] = new Set(Object.keys(props));
+  }
+}
+
 export function getMcpToolDefinitions() { return TOOLS; }
 
 export async function startMcpServer(): Promise<void> {
@@ -127,14 +136,31 @@ export async function startMcpServer(): Promise<void> {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    const rawArgs = req.params.arguments ?? {};
+    // Guard: ensure rawArgs is a plain object
+    if (typeof rawArgs !== "object" || rawArgs === null || Array.isArray(rawArgs)) {
+      throw new Error(`Invalid arguments for tool ${req.params.name}: must be an object`);
+    }
+    const allowedKeys = TOOL_ALLOWED_KEYS[req.params.name];
+    const filteredArgs: Record<string, unknown> = {};
+    if (allowedKeys) {
+      for (const key of allowedKeys) {
+        if (key in rawArgs) filteredArgs[key] = (rawArgs as Record<string, unknown>)[key];
+      }
+    } else {
+      // No schema properties defined — default-deny: pass nothing through.
+      // This is safer than a denylist-based approach which could miss unknown keys.
+      void rawArgs;
+    }
+
     const localHandler = LOCAL_TOOLS[req.params.name];
     if (localHandler) {
-      const text = await localHandler((req.params.arguments ?? {}) as Record<string, unknown>);
+      const text = await localHandler(filteredArgs);
       return { content: [{ type: "text", text }] };
     }
     const route = TOOL_ROUTES[req.params.name];
     if (!route) throw new Error(`Unknown tool: ${req.params.name}`);
-    const result = await client.post(route, { ...req.params.arguments, cwd: process.env.PWD ?? process.cwd() });
+    const result = await client.post(route, { ...filteredArgs, cwd: process.env.PWD ?? process.cwd() });
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   });
 

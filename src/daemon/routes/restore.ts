@@ -11,6 +11,8 @@ import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { PromotedStore } from "../../db/promoted.js";
 import { justCompactedMap, JUST_COMPACTED_TTL_MS } from "./compact.js";
+import { fenceContent } from "../content-fence.js";
+import { validateCwd } from "../validate-cwd.js";
 
 type SessionInstructionsRow = {
   content: string;
@@ -42,7 +44,16 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
   return async (_req, res, body) => {
     try {
       const input = JSON.parse(body || "{}");
-      const { session_id, cwd, source } = input;
+      const { session_id, source } = input;
+      let cwd: string | undefined;
+      if (input.cwd) {
+        try {
+          cwd = validateCwd(input.cwd);
+        } catch (err) {
+          sendJson(res, 400, { error: err instanceof Error ? err.message : "invalid cwd" });
+          return;
+        }
+      }
       const orientation = buildOrientationPrompt();
 
       // Post-compaction detection
@@ -99,7 +110,10 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
           ).all(session_id, config.restoration.recentSummaries) as Array<{ content: string }>;
 
           if (rows.length > 0) {
-            episodicContext = `<recent-session-context>\n${rows.map((r) => r.content).join("\n\n")}\n</recent-session-context>`;
+            episodicContext = fenceContent(
+              rows.map((r) => r.content).join("\n\n"),
+              "recent-session-context",
+            );
           }
 
           // Promoted: cross-session knowledge from SQLite
@@ -107,7 +121,10 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
             const promotedStore = new PromotedStore(db);
             const results = promotedStore.search(`project context ${cwd}`, 5);
             if (results.length > 0) {
-              promotedContext = `<project-knowledge>\n${results.map((r) => r.content).join("\n\n")}\n</project-knowledge>`;
+              promotedContext = fenceContent(
+                results.map((r) => r.content).join("\n\n"),
+                "project-knowledge",
+              );
             }
           } catch { /* non-fatal */ }
 

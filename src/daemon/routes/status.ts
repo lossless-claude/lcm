@@ -5,15 +5,23 @@ import { projectDbPath, projectMetaPath } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { PKG_VERSION } from "../server.js";
+import { validateCwd } from "../validate-cwd.js";
 
 export function createStatusHandler(config: DaemonConfig, startTime: number, actualPort?: number): RouteHandler {
   return async (_req, res, body) => {
     try {
       const input = JSON.parse(body || "{}");
-      const { cwd } = input;
 
-      if (!cwd) {
+      if (!input.cwd) {
         sendJson(res, 400, { error: "cwd is required" });
+        return;
+      }
+
+      let cwd: string;
+      try {
+        cwd = validateCwd(input.cwd);
+      } catch (err) {
+        sendJson(res, 400, { error: err instanceof Error ? err.message : "invalid cwd" });
         return;
       }
 

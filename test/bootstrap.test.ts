@@ -33,7 +33,7 @@ describe("ensureCore", () => {
     const { ensureCore } = await import("../src/bootstrap.js");
     await ensureCore(deps);
     const configWrites = (deps.writeFileSync as ReturnType<typeof vi.fn>).mock.calls
-      .filter(([path]: [string]) => path === deps.configPath);
+      .filter((args) => args[0] === deps.configPath);
     expect(configWrites.length).toBe(0);
   });
 
@@ -50,7 +50,7 @@ describe("ensureCore", () => {
     const { ensureCore } = await import("../src/bootstrap.js");
     await ensureCore(deps);
     const settingsWrites = (deps.writeFileSync as ReturnType<typeof vi.fn>).mock.calls
-      .filter(([path]: [string]) => path === deps.settingsPath);
+      .filter((args) => args[0] === deps.settingsPath);
     expect(settingsWrites.length).toBe(1);
     const written = JSON.parse(settingsWrites[0][1]);
     expect(written.hooks?.PreCompact).toBeUndefined();
@@ -61,6 +61,17 @@ describe("ensureCore", () => {
     const { ensureCore } = await import("../src/bootstrap.js");
     await ensureCore(deps);
     expect(deps.ensureDaemon).toHaveBeenCalled();
+  });
+
+  it("calls chmodSync(0o600) on config.json after creation", async () => {
+    const chmodSync = vi.fn();
+    const deps = makeDeps({
+      existsSync: vi.fn().mockReturnValue(false),
+      chmodSync,
+    });
+    const { ensureCore } = await import("../src/bootstrap.js");
+    await ensureCore(deps);
+    expect(chmodSync).toHaveBeenCalledWith(deps.configPath, 0o600);
   });
 });
 

@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DaemonConfig } from "./config.js";
+import { sanitizeError } from "./safe-error.js";
+import { readAuthToken } from "./auth.js";
 import type { ProxyManager } from "./proxy-manager.js";
 import { createCompactHandler } from "./routes/compact.js";
 import { createPromoteHandler } from "./routes/promote.js";
@@ -29,11 +31,23 @@ export const PKG_VERSION = (() => {
 
 export type RouteHandler = (req: IncomingMessage, res: ServerResponse, body: string) => Promise<void>;
 export type DaemonInstance = { address: () => AddressInfo; stop: () => Promise<void>; registerRoute: (method: string, path: string, handler: RouteHandler) => void; idleTriggered: boolean };
-export type DaemonOptions = { proxyManager?: ProxyManager; onIdle?: () => void };
+export type DaemonOptions = { proxyManager?: ProxyManager; onIdle?: () => void; tokenPath?: string };
+
+const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
 
 export async function readBody(req: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+  let total = 0;
+  for await (const chunk of req) {
+    const buf = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+    total += buf.length;
+    if (total > MAX_BODY_BYTES) {
+      // Drain and discard remaining data so we can write a response
+      req.resume();
+      throw Object.assign(new Error("Payload too large"), { statusCode: 413 });
+    }
+    chunks.push(buf);
+  }
   return Buffer.concat(chunks).toString("utf-8");
 }
 
@@ -46,6 +60,10 @@ export function sendJson(res: ServerResponse, status: number, data: unknown): vo
 export async function createDaemon(config: DaemonConfig, options?: DaemonOptions): Promise<DaemonInstance> {
   const startTime = Date.now();
   const proxyManager = options?.proxyManager;
+  const serverToken = options?.tokenPath ? readAuthToken(options.tokenPath) : null;
+  if (options?.tokenPath && serverToken === null) {
+    throw new Error(`Auth token file specified but could not be read: ${options.tokenPath}`);
+  }
   const routes = new Map<string, RouteHandler>();
 
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -73,7 +91,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   routes.set("POST /search", createSearchHandler());
   routes.set("POST /expand", createExpandHandler(config));
   routes.set("POST /describe", createDescribeHandler(config));
-  routes.set("POST /store", createStoreHandler());
+  routes.set("POST /store", createStoreHandler(config));
   routes.set("POST /recent", createRecentHandler(config));
   routes.set("POST /ingest", createIngestHandler(config));
   routes.set("POST /prompt-search", createPromptSearchHandler(config));
@@ -140,10 +158,21 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
     const key = `${req.method} ${req.url?.split("?")[0]}`;
     const handler = routes.get(key);
     if (!handler) { sendJson(res, 404, { error: "not found" }); return; }
+    // Auth: skip for GET /health, require Bearer token for everything else
+    if (serverToken && key !== "GET /health") {
+      const rawAuth = req.headers["authorization"];
+      const authHeader = (Array.isArray(rawAuth) ? rawAuth[0] : rawAuth) ?? "";
+      if (authHeader.trim() !== `Bearer ${serverToken}`) {
+        sendJson(res, 401, { error: "unauthorized" });
+        return;
+      }
+    }
     try {
       await handler(req, res, req.method !== "GET" ? await readBody(req) : "");
-    } catch (err) {
-      sendJson(res, 500, { error: err instanceof Error ? err.message : "internal error" });
+    } catch (err: unknown) {
+      const status = (err as { statusCode?: number })?.statusCode ?? 500;
+      const message = status === 413 ? "payload too large" : sanitizeError(err instanceof Error ? err.message : "internal error");
+      sendJson(res, status, { error: message });
     }
   });
 

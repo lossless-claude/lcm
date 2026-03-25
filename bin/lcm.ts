@@ -79,10 +79,14 @@ async function main() {
       }
       const { createDaemon } = await import("../src/daemon/server.js");
       const { loadDaemonConfig } = await import("../src/daemon/config.js");
+      const { ensureAuthToken } = await import("../src/daemon/auth.js");
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
-      const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
-      const daemon = await createDaemon(config);
+      const lcDir = join(homedir(), ".lossless-claude");
+      const tokenPath = join(lcDir, "daemon.token");
+      ensureAuthToken(tokenPath);
+      const config = loadDaemonConfig(join(lcDir, "config.json"));
+      const daemon = await createDaemon(config, { tokenPath });
       console.log(`lcm daemon started on port ${daemon.address().port}`);
       process.on("SIGTERM", () => exit(0));
       process.on("SIGINT", () => exit(0));

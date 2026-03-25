@@ -9,17 +9,28 @@ import { ConversationStore } from "../../store/conversation-store.js";
 import { SummaryStore } from "../../store/summary-store.js";
 import { RetrievalEngine } from "../../retrieval.js";
 import { PromotedStore } from "../../db/promoted.js";
+import { validateCwd } from "../validate-cwd.js";
 
 export function createSearchHandler(): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
-    const { query, limit = 5, layers, tags, cwd } = input;
+    const { query, limit = 5, layers, tags } = input;
     const activeLayers: string[] = layers ?? ["episodic", "promoted"];
     const filterTags: string[] | undefined = Array.isArray(tags) && tags.length > 0 ? tags : undefined;
 
     if (!query) {
       sendJson(res, 400, { error: "query is required" });
       return;
+    }
+
+    let cwd: string | undefined;
+    if (input.cwd) {
+      try {
+        cwd = validateCwd(input.cwd);
+      } catch (err) {
+        sendJson(res, 400, { error: err instanceof Error ? err.message : "invalid cwd" });
+        return;
+      }
     }
 
     let episodic: unknown[] = [];
