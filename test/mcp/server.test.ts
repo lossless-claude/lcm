@@ -74,7 +74,7 @@ describe("handleDaemonRequest", () => {
     expect(res.content[0].text).toContain("daemon unavailable");
   });
 
-  it("returns isError:true and skips retry when ensureDaemon throws", async () => {
+  it("retry proceeds despite ensureDaemon throwing (non-fatal spawn failure)", async () => {
     ensureDaemonMock.mockRejectedValueOnce(new Error("spawn failed"));
     const client = {
       post: vi.fn()

@@ -186,7 +186,7 @@ export async function startMcpServer(): Promise<void> {
     }
 
     const route = TOOL_ROUTES[name];
-    if (!route) throw new Error(`Unknown tool: ${name}`);
+    if (!route) return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
     const body = { ...args, cwd: process.env.PWD ?? process.cwd() };
     return handleDaemonRequest(client, route, body, { port, pidFilePath });
   });
