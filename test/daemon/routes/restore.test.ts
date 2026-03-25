@@ -7,6 +7,7 @@ import { createDaemon, type DaemonInstance } from "../../../src/daemon/server.js
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { runLcmMigrations } from "../../../src/db/migration.js";
 import { projectDbPath } from "../../../src/daemon/project.js";
+import { PromotedStore } from "../../../src/db/promoted.js";
 
 describe("POST /restore", () => {
   let daemon: DaemonInstance | undefined;
@@ -134,6 +135,92 @@ describe("POST /restore", () => {
 
       expect(row2).toBeDefined();
       expect(row2!.updated_at).toBe(row1!.updated_at);
+    });
+  });
+
+  describe("passive-capture insights", () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = mkdtempSync(join(tmpdir(), "restore-insights-test-"));
+    });
+
+    afterEach(() => {
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    });
+
+    it("includes insights array when passive-capture entries exist in promoted store", async () => {
+      // Pre-populate DB with promoted entries tagged source:passive-capture
+      const dbPath = projectDbPath(tmpDir);
+      mkdirSync(dirname(dbPath), { recursive: true });
+      const db = new DatabaseSync(dbPath);
+      runLcmMigrations(db);
+      const store = new PromotedStore(db);
+      store.insert({
+        content: "Always prefer async/await over callbacks",
+        tags: ["source:passive-capture", "category:pattern"],
+        projectId: tmpDir,
+        confidence: 0.75,
+      });
+      store.insert({
+        content: "Use PromotedStore.search for cross-session queries",
+        tags: ["source:passive-capture"],
+        projectId: tmpDir,
+        confidence: 0.5,
+      });
+      db.close();
+
+      daemon = await createDaemon(loadDaemonConfig(tmpDir, { daemon: { port: 0 } }));
+      const res = await fetch(`http://127.0.0.1:${daemon.address().port}/restore`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: "ins-sess", cwd: tmpDir, hook_event_name: "SessionStart" }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json() as { context: string; insights?: Array<{ content: string; confidence: number; tags: string[] }> };
+      expect(body.insights).toBeDefined();
+      expect(body.insights!.length).toBeGreaterThan(0);
+      expect(body.insights![0]).toHaveProperty("content");
+      expect(body.insights![0]).toHaveProperty("confidence");
+      expect(body.insights![0]).toHaveProperty("tags");
+      // All returned insights should have source:passive-capture tag
+      for (const insight of body.insights!) {
+        expect(insight.tags).toContain("source:passive-capture");
+      }
+    });
+
+    it("omits insights array when no passive-capture entries exist", async () => {
+      daemon = await createDaemon(loadDaemonConfig(tmpDir, { daemon: { port: 0 } }));
+      const res = await fetch(`http://127.0.0.1:${daemon.address().port}/restore`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: "no-ins-sess", cwd: tmpDir, hook_event_name: "SessionStart" }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json() as { context: string; insights?: unknown };
+      expect(body.insights).toBeUndefined();
+    });
+
+    it("filters out insights below confidence 0.3", async () => {
+      const dbPath = projectDbPath(tmpDir);
+      mkdirSync(dirname(dbPath), { recursive: true });
+      const db = new DatabaseSync(dbPath);
+      runLcmMigrations(db);
+      const store = new PromotedStore(db);
+      store.insert({
+        content: "Low confidence passive insight",
+        tags: ["source:passive-capture"],
+        projectId: tmpDir,
+        confidence: 0.1,
+      });
+      db.close();
+
+      daemon = await createDaemon(loadDaemonConfig(tmpDir, { daemon: { port: 0 } }));
+      const res = await fetch(`http://127.0.0.1:${daemon.address().port}/restore`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: "low-conf-sess", cwd: tmpDir }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json() as { context: string; insights?: unknown };
+      expect(body.insights).toBeUndefined();
     });
   });
 });

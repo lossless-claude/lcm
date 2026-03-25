@@ -154,8 +154,34 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
         } catch { /* non-fatal */ }
       }
 
+      // Query passive-capture insights from promoted store
+      let insights: Array<{ content: string; confidence: number; tags: string[] }> = [];
+      if (cwd) {
+        try {
+          const dbPath = projectDbPath(cwd);
+          if (existsSync(dbPath)) {
+            const insightsDb = new DatabaseSync(dbPath);
+            try {
+              runLcmMigrations(insightsDb);
+              const insightsStore = new PromotedStore(insightsDb);
+              insights = insightsStore
+                .search("source passive capture", 10, ["source:passive-capture"])
+                .filter((r) => r.confidence >= 0.3)
+                .slice(0, 5)
+                .map((r) => ({ content: r.content, confidence: r.confidence, tags: r.tags }));
+            } finally {
+              insightsDb.close();
+            }
+          }
+        } catch { /* non-fatal */ }
+      }
+
       const context = [orientation, episodicContext, promotedContext, instructionsContext].filter(Boolean).join("\n\n");
-      sendJson(res, 200, { context });
+      const responseBody: { context: string; insights?: Array<{ content: string; confidence: number; tags: string[] }> } = { context };
+      if (insights.length > 0) {
+        responseBody.insights = insights;
+      }
+      sendJson(res, 200, responseBody);
     } catch (err) {
       sendJson(res, 500, { error: err instanceof Error ? err.message : "restore failed" });
     }
