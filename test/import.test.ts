@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, utimesSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, utimesSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { cwdToProjectHash, findSessionFiles, importSessions } from "../src/import.js";
@@ -147,6 +147,31 @@ describe("findSessionFiles", () => {
     const matches = result.filter((f) => f.sessionId === "session-abc");
     expect(matches).toHaveLength(1);
     expect(matches[0].path).toBe(join(dir, "session-abc.jsonl"));
+  });
+
+  it("ignores symlinked transcript files at the top level", () => {
+    const dir = makeTmpDir();
+    const targetFile = join(dir, "real-target.jsonl");
+    writeFileSync(targetFile, '{"type":"human"}\n');
+    const projectDir = join(dir, "project");
+    mkdirSync(projectDir);
+    symlinkSync(targetFile, join(projectDir, "fake-session.jsonl"));
+
+    const result = findSessionFiles(projectDir);
+    expect(result).toHaveLength(0); // symlink should be ignored
+  });
+
+  it("ignores symlinked nested transcript files", () => {
+    const dir = makeTmpDir();
+    const targetFile = join(dir, "real-target.jsonl");
+    writeFileSync(targetFile, '{"type":"human"}\n');
+    const projectDir = join(dir, "project");
+    const sessionDir = join(projectDir, "session-xyz");
+    mkdirSync(sessionDir, { recursive: true });
+    symlinkSync(targetFile, join(sessionDir, "session-xyz.jsonl"));
+
+    const result = findSessionFiles(projectDir);
+    expect(result).toHaveLength(0); // symlinked nested transcript should be ignored
   });
 
   it("returns files sorted by mtime ascending", () => {
