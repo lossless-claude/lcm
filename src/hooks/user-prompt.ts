@@ -36,6 +36,30 @@ export async function handleUserPromptSubmit(
       return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
     }
 
+    // Sidecar event extraction — must happen before prompt-search, must never throw
+    try {
+      const { extractUserPromptEvents } = await import("./extractors.js");
+      const { EventsDb } = await import("./events-db.js");
+      const { eventsDbPath } = await import("../db/events-path.js");
+
+      const prompt = String(input.prompt ?? "");
+      const events = extractUserPromptEvents(prompt);
+
+      if (events.length > 0) {
+        const cwd = input.cwd ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+        const db = new EventsDb(eventsDbPath(cwd));
+        try {
+          for (const event of events) {
+            db.insertEvent(input.session_id, event, "UserPromptSubmit");
+          }
+        } finally {
+          db.close();
+        }
+      }
+    } catch {
+      // Silent fail — never block the user's prompt
+    }
+
     const result = await client.post<PromptSearchResponse>("/prompt-search", {
       query: input.prompt,
       cwd: input.cwd,
