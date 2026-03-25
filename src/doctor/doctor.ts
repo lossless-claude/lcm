@@ -134,9 +134,9 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>): Promise<CheckR
   const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "package.json");
   let pkgVersion: string | undefined;
   try {
-    const pkg = JSON.parse(deps.readFileSync(pkgPath, "utf-8"));
-    pkgVersion = pkg.version;
-    results.push({ name: "version", category: "Stack", status: "pass", message: `v${pkgVersion}` });
+    const pkg = JSON.parse(deps.readFileSync(pkgPath, "utf-8")) as { version?: unknown };
+    pkgVersion = typeof pkg.version === "string" ? pkg.version : undefined;
+    results.push({ name: "version", category: "Stack", status: pkgVersion ? "pass" : "warn", message: pkgVersion ? `v${pkgVersion}` : "Could not read version" });
   } catch {
     results.push({ name: "version", category: "Stack", status: "warn", message: "Could not read version" });
   }
@@ -153,7 +153,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>): Promise<CheckR
   let daemonHealthy = false;
   let daemonVersion: string | undefined;
   try {
-    const res = await deps.fetch(`http://localhost:${config.port}/health`);
+    const res = await deps.fetch(`http://127.0.0.1:${config.port}/health`);
     if (res.ok) {
       const h = (await res.json()) as { status?: string; version?: string };
       daemonHealthy = h.status === "ok";
@@ -174,7 +174,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>): Promise<CheckR
         let postRestartOk = false;
         if (connected) {
           try {
-            const res = await deps.fetch(`http://localhost:${config.port}/health`);
+            const res = await deps.fetch(`http://127.0.0.1:${config.port}/health`);
             if (res.ok) {
               const h = (await res.json()) as { status?: string; version?: string };
               postRestartOk = h.status === "ok";
