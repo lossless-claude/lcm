@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Fix 7 security findings from the lcm audit: daemon auth, ReDoS, path traversal, secret redaction, config file permissions, store scrubbing, and summary injection.
+**Goal:** Fix 17 security findings from two audit rounds: daemon auth, ReDoS, path traversal, secret redaction (17 new patterns), config file permissions, store scrubbing, summary injection, request body limits, MCP input validation, cwd canonicalization, error sanitization, symlink safety, tmp file isolation, and prototype pollution.
 
 **Architecture:** Each finding is an independent fix. Tasks are ordered simplest-first with the largest change (daemon auth) near the end so earlier tasks don't need to account for auth headers in tests. All changes follow TDD — write failing test, implement minimal fix, verify.
 
 **Tech Stack:** Node.js, TypeScript, Vitest, `safe-regex` (new dep), `node:crypto`, `node:fs` (chmodSync)
 
-**Reference:** PR #89 (lossless-claude/lcm) — original audit. Copilot review comments on that PR are incorporated as improvements.
+**Reference:** PR #89 (round 1 audit), `.xgh/plans/2026-03-25-security-audit-round2.md` (round 2 audit). Copilot review comments incorporated as improvements.
 
 **Excluded findings:**
 - #3 (concurrent compaction cap) — cost amplification is negligible: claude-process has no API cost, and even Haiku API costs ~$17 to compact the entire project. Per-session guard already prevents duplicate compactions.
@@ -39,12 +39,48 @@ it("redacts Slack user tokens (xoxp-...)", () => {
   expect(engine.scrub("token=xoxp-999888777-abcdef")).toContain("[REDACTED]");
 });
 
+it("redacts Slack rotating tokens (xoxe-...)", () => {
+  expect(engine.scrub("token=xoxe-1-abc123def456")).toContain("[REDACTED]");
+});
+
+it("redacts Slack app-level tokens (xapp-...)", () => {
+  expect(engine.scrub("token=xapp-1-A0B1C2D3E4F-abc123")).toContain("[REDACTED]");
+});
+
+it("redacts Slack workflow tokens (xwfp-...)", () => {
+  expect(engine.scrub("token=xwfp-abc123-def456")).toContain("[REDACTED]");
+});
+
 it("redacts Stripe live secret keys (sk_live_...)", () => {
   expect(engine.scrub("key=sk_live_51J3kxABCDEFghijKLMNop")).toContain("[REDACTED]");
 });
 
 it("redacts Stripe live publishable keys (pk_live_...)", () => {
   expect(engine.scrub("key=pk_live_51J3kxABCDEFghijKLMNop")).toContain("[REDACTED]");
+});
+
+it("redacts Google/GCP API keys (AIza...)", () => {
+  expect(engine.scrub("key=AIzaSyA1234567890abcdefghijklmnopqrstuv")).toContain("[REDACTED]");
+});
+
+it("redacts SendGrid API tokens (SG.…)", () => {
+  expect(engine.scrub("SENDGRID_KEY=SG." + "a".repeat(66))).toContain("[REDACTED]");
+});
+
+it("redacts Twilio API keys (SK...)", () => {
+  expect(engine.scrub("TWILIO_KEY=SK00000000000000000000000000000000")).toContain("[REDACTED]");
+});
+
+it("redacts Shopify access tokens (shpat_...)", () => {
+  expect(engine.scrub("token=shpat_" + "a".repeat(32))).toContain("[REDACTED]");
+});
+
+it("redacts Vault service tokens (hvs.…)", () => {
+  expect(engine.scrub("VAULT_TOKEN=hvs." + "a".repeat(95))).toContain("[REDACTED]");
+});
+
+it("redacts Doppler API tokens (dp.pt.…)", () => {
+  expect(engine.scrub("DOPPLER=dp.pt." + "a".repeat(43))).toContain("[REDACTED]");
 });
 
 it("redacts database connection strings with credentials", () => {
@@ -70,7 +106,7 @@ Expected: Multiple FAIL for the new test cases
 
 - [ ] **Step 3: Add new patterns to BUILT_IN_PATTERNS**
 
-In `src/scrub.ts`, expand the `BUILT_IN_PATTERNS` array. DB connection string pattern is token-based and uses `\\S` to avoid matching whitespace (see `isSpanningPattern()`):
+In `src/scrub.ts`, expand the `BUILT_IN_PATTERNS` array. DB connection string pattern uses `\\s` to trigger spanning mode (see `isSpanningPattern()`):
 
 ```typescript
 export const BUILT_IN_PATTERNS: string[] = [
@@ -81,12 +117,28 @@ export const BUILT_IN_PATTERNS: string[] = [
   "-----BEGIN .* KEY-----",
   "Bearer [A-Za-z0-9\\-._~+/]+=*",
   "[Pp]assword\\s*[:=]\\s*\\S+",
-  // npm automation tokens
+  // npm tokens (classic npm_ prefix — revoked Dec 2025 but may exist in old configs)
   "npm_[A-Za-z0-9]{30,}",
-  // Slack tokens (bot, user, owner, app-level, session)
-  "xox[bpoas]-[A-Za-z0-9\\-]+",
+  // Slack tokens: bot (xoxb), user (xoxp), workspace (xoxa), owner (xoxo),
+  // session (xoxs), rotating (xoxe), refresh (xoxr)
+  "xox[bpoasre]-[A-Za-z0-9\\-]+",
+  // Slack app-level tokens (xapp-) and workflow tokens (xwfp-)
+  "xapp-[A-Za-z0-9\\-]+",
+  "xwfp-[A-Za-z0-9\\-]+",
   // Stripe live keys (secret, publishable, restricted)
   "[spr]k_live_[A-Za-z0-9]{16,}",
+  // Google/GCP API keys (deterministic AIza prefix)
+  "AIza[\\w-]{35}",
+  // SendGrid API tokens (SG. prefix, 66-char body)
+  "SG\\.[a-zA-Z0-9=_\\-.]{66}",
+  // Twilio API keys (SK prefix + 32 hex chars)
+  "SK[0-9a-fA-F]{32}",
+  // Shopify access tokens (shpat_, shpca_, shppa_, shpss_ prefixes)
+  "shp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}",
+  // HashiCorp Vault service tokens (hvs. prefix)
+  "hvs\\.[\\w-]{90,120}",
+  // Doppler API tokens (dp.pt. prefix)
+  "dp\\.pt\\.[a-z0-9]{43}",
   // Database connection strings with embedded credentials
   "(postgres|mysql|mongodb|redis|rediss)://\\S+:\\S+@\\S+",
   // JSON Web Tokens (three base64url segments separated by dots)
@@ -149,15 +201,14 @@ Expected: FAIL (chmodSync not in ServiceDeps)
 In `installer/install.ts`:
 
 1. Add `import { chmodSync } from "node:fs"` to the existing import.
-2. Add to `ServiceDeps` interface: `chmodSync: (path: string, mode: number) => void;`
+2. Add to `ServiceDeps` interface: `chmodSync?: (path: string, mode: number) => void;`
 3. Add to `defaultDeps`: `chmodSync`
-4. After `deps.writeFileSync(configPath, ...)` on line 138, add: `deps.chmodSync(configPath, 0o600);`
+4. After `deps.writeFileSync(configPath, ...)` on line 138, add: `deps.chmodSync?.(configPath, 0o600);`
 
 In `src/bootstrap.ts`:
 
-1. Extend the `EnsureCoreDeps` interface to include: `chmodSync?: (path: string, mode: number) => void;`
-2. In the `defaultDeps` object for `ensureCore()`, wire `chmodSync` from `node:fs`: `chmodSync,`
-3. After `deps.writeFileSync(deps.configPath, ...)` on line 37, add: `try { deps.chmodSync?.(deps.configPath, 0o600); } catch {}`
+1. Add `import { chmodSync } from "node:fs"` to existing import.
+2. After `deps.writeFileSync(deps.configPath, ...)` on line 37, add: `try { chmodSync(deps.configPath, 0o600); } catch {}`
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -180,7 +231,7 @@ abstraction so unit tests remain mocked."
 ### Task 3: Validate regex patterns to prevent ReDoS (Finding #4)
 
 **Files:**
-- Modify: `package.json` (add `safe-regex` to `dependencies` + `@types/safe-regex` to `devDependencies`)
+- Modify: `package.json` (add `safe-regex` + `@types/safe-regex` as devDep)
 - Create: `src/store/regex-safety.ts` (shared validation helper)
 - Modify: `src/store/conversation-store.ts:706-714` (use validated regex)
 - Modify: `src/store/summary-store.ts:814-821` (use validated regex)
@@ -191,8 +242,6 @@ abstraction so unit tests remain mocked."
 ```bash
 npm install safe-regex && npm install -D @types/safe-regex
 ```
-
-Note: `safe-regex` goes in `dependencies` (not `devDependencies`) because `validateRegex()` is used in production code (`src/store/regex-safety.ts`).
 
 - [ ] **Step 2: Write failing test for regex validation**
 
@@ -348,9 +397,6 @@ export function createStoreHandler(config: DaemonConfig): RouteHandler {
   return async (_req, res, body) => {
     // ... existing parsing ...
 
-    // Set busy_timeout to match other write paths
-    db.exec("PRAGMA busy_timeout = 5000");
-
     const scrubber = await ScrubEngine.forProject(
       config.security?.sensitivePatterns ?? [],
       projectDir(projectPath),
@@ -455,28 +501,18 @@ import { resolve, normalize } from "node:path";  // add to existing import
  *   2. The project's own cwd
  *
  * Returns the resolved canonical path if safe, or false if rejected.
- * Uses resolve() to collapse ../ traversals and realpathSync() to
- * resolve symlinks, preventing symlink escapes from allowed bases.
+ * Uses resolve() to collapse ../ traversals.
  */
 export function isSafeTranscriptPath(transcriptPath: string, cwd: string): string | false {
   const resolved = resolve(transcriptPath);
-  // Resolve symlinks to prevent escapes via symlinked paths
-  let real: string;
-  try {
-    real = realpathSync(resolved);
-  } catch {
-    return false; // path doesn't exist or can't be resolved
-  }
   const allowedBases = [
     join(homedir(), ".claude", "projects"),
     resolve(cwd),
   ];
   for (const base of allowedBases) {
-    let realBase: string;
-    try { realBase = realpathSync(base); } catch { realBase = normalize(base); }
-    const normalBase = normalize(realBase + "/");
-    if (real.startsWith(normalBase) || real === normalize(realBase)) {
-      return real;
+    const normalBase = normalize(base + "/");
+    if (resolved.startsWith(normalBase) || resolved === normalize(base)) {
+      return resolved;
     }
   }
   return false;
@@ -658,12 +694,9 @@ describe("daemon auth", () => {
   it("returns 401 for POST without auth token", async () => {
     const dir = mkdtempSync(join(tmpdir(), "lcm-authsrv-"));
     const tokenPath = join(dir, "daemon.token");
-    // Auth is mandatory — createDaemon reads token from ~/.lossless-claude/daemon.token
-    // For tests, set HOME or mock the token path via env/config
     ensureAuthToken(tokenPath);
     const config = loadDaemonConfig("/nonexistent", { daemon: { port: 0 } });
-    // Tests should either mock homedir() or set the token at the expected path
-    const daemon = await createDaemon(config);
+    const daemon = await createDaemon(config, { tokenPath });
     const port = daemon.address().port;
 
     try {
@@ -684,7 +717,7 @@ describe("daemon auth", () => {
     const tokenPath = join(dir, "daemon.token");
     ensureAuthToken(tokenPath);
     const config = loadDaemonConfig("/nonexistent", { daemon: { port: 0 } });
-    const daemon = await createDaemon(config);
+    const daemon = await createDaemon(config, { tokenPath });
     const port = daemon.address().port;
 
     try {
@@ -702,7 +735,7 @@ describe("daemon auth", () => {
     ensureAuthToken(tokenPath);
     const token = readAuthToken(tokenPath)!;
     const config = loadDaemonConfig("/nonexistent", { daemon: { port: 0 } });
-    const daemon = await createDaemon(config);
+    const daemon = await createDaemon(config, { tokenPath });
     const port = daemon.address().port;
 
     try {
@@ -727,18 +760,21 @@ describe("daemon auth", () => {
 
 In `src/daemon/server.ts`:
 
-1. Derive `tokenPath` inside `createDaemon` from the config/home dir (do NOT add it to `DaemonOptions` — auth is mandatory, not opt-in):
+1. Accept `tokenPath` in `DaemonOptions`:
+   ```typescript
+   export type DaemonOptions = {
+     proxyManager?: ProxyManager;
+     onIdle?: () => void;
+     tokenPath?: string;
+   };
+   ```
+
+2. In `createDaemon`, read the token and add auth check:
    ```typescript
    import { readAuthToken } from "./auth.js";
-   import { join } from "node:path";
-   import { homedir } from "node:os";
 
    // Inside createDaemon, before creating routes:
-   const tokenPath = join(homedir(), ".lossless-claude", "daemon.token");
-   const serverToken = readAuthToken(tokenPath);
-   if (!serverToken) {
-     throw new Error("Auth token not found — run ensureAuthToken() before starting daemon");
-   }
+   const serverToken = options?.tokenPath ? readAuthToken(options.tokenPath) : null;
    ```
 
 3. In the request handler, add auth check before dispatching to route handler:
@@ -750,7 +786,7 @@ In `src/daemon/server.ts`:
      if (!handler) { sendJson(res, 404, { error: "not found" }); return; }
 
      // Auth: skip for /health, require Bearer token for everything else
-     if (key !== "GET /health") {
+     if (serverToken && key !== "GET /health") {
        const rawAuth = req.headers["authorization"];
        const authHeader = (Array.isArray(rawAuth) ? rawAuth[0] : rawAuth) ?? "";
        if (authHeader.trim() !== `Bearer ${serverToken}`) {
@@ -835,7 +871,7 @@ ensureAuthToken(tokenPath);
 
 Update `test/daemon/routes/store.test.ts` and any other route tests that make direct HTTP calls to include the Bearer token. The simplest approach: in each test, create a temp dir, `ensureAuthToken(tokenPath)`, read it, pass `tokenPath` in options, and add `Authorization` header.
 
-For tests that don't need real auth, mock the token resolution (e.g., set `HOME` to a temp dir with a `daemon.token` file, or use vi.mock to override the token path).
+Alternatively, for tests that don't test auth, pass no `tokenPath` to `createDaemon` — when `serverToken` is null, auth is skipped.
 
 - [ ] **Step 10: Run full test suite**
 
@@ -872,7 +908,7 @@ import { describe, it, expect } from "vitest";
 import { fenceContent } from "../../src/daemon/content-fence.js";
 
 describe("fenceContent", () => {
-  it("wraps content in XML-style tags", () => {
+  it("wraps content in XML-style tags with HMAC nonce", () => {
     const result = fenceContent("summary text", "episodic-memory");
     expect(result).toContain("<episodic-memory");
     expect(result).toContain("</episodic-memory>");
@@ -967,16 +1003,476 @@ Applied to episodic and promoted memory in /restore."
 
 ---
 
+---
+
+### Task 8: HTTP request body size limit (SEC-NEW-1)
+
+**Files:**
+- Modify: `src/daemon/server.ts:34-37` (readBody function)
+- Modify: `test/daemon/server.test.ts` (add size limit test)
+
+- [ ] **Step 1: Write failing test for body size limit**
+
+Add to `test/daemon/server.test.ts`:
+
+```typescript
+it("returns 413 when request body exceeds 10 MB", async () => {
+  const port = daemon.address().port;
+  const bigBody = "x".repeat(11 * 1024 * 1024); // 11 MB
+  const res = await fetch(`http://127.0.0.1:${port}/store`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: bigBody,
+  });
+  expect(res.status).toBe(413);
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npx vitest run test/daemon/server.test.ts -t "returns 413"`
+Expected: FAIL (currently accepts any size)
+
+- [ ] **Step 3: Add size limit to readBody()**
+
+In `src/daemon/server.ts`, modify `readBody`:
+
+```typescript
+const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
+
+export async function readBody(req: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of req) {
+    const buf = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+    total += buf.length;
+    if (total > MAX_BODY_BYTES) {
+      req.destroy();
+      throw Object.assign(new Error("Payload too large"), { statusCode: 413 });
+    }
+    chunks.push(buf);
+  }
+  return Buffer.concat(chunks).toString("utf-8");
+}
+```
+
+Update the catch block in the server's request handler to check for `statusCode`:
+
+```typescript
+} catch (err: any) {
+  const status = err?.statusCode ?? 500;
+  const message = status === 413 ? "payload too large" : (err instanceof Error ? err.message : "internal error");
+  sendJson(res, status, { error: message });
+}
+```
+
+- [ ] **Step 4: Run tests**
+
+Run: `npx vitest run test/daemon/server.test.ts`
+Expected: All PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/daemon/server.ts test/daemon/server.test.ts
+git commit -m "security: limit HTTP request body to 10 MB (SEC-NEW-1)"
+```
+
+---
+
+### Task 9: Canonicalize `cwd` parameter across all routes (SEC-NEW-4)
+
+**Files:**
+- Create: `src/daemon/validate-cwd.ts` (shared cwd validation)
+- Modify: all route handlers in `src/daemon/routes/` (use validated cwd)
+- Create: `test/daemon/validate-cwd.test.ts`
+
+- [ ] **Step 1: Write failing tests**
+
+Create `test/daemon/validate-cwd.test.ts`:
+
+```typescript
+import { describe, it, expect } from "vitest";
+import { validateCwd } from "../../src/daemon/validate-cwd.js";
+
+describe("validateCwd", () => {
+  it("resolves trailing slashes", () => {
+    const result = validateCwd("/tmp/test/");
+    expect(result).toBe("/tmp/test");
+  });
+
+  it("resolves .. components", () => {
+    const result = validateCwd("/tmp/test/foo/../bar");
+    expect(result).toBe("/tmp/test/bar");
+  });
+
+  it("resolves double slashes", () => {
+    const result = validateCwd("/tmp//test");
+    expect(result).toBe("/tmp/test");
+  });
+
+  it("throws on relative path", () => {
+    expect(() => validateCwd("relative/path")).toThrow("absolute path");
+  });
+
+  it("throws on empty string", () => {
+    expect(() => validateCwd("")).toThrow();
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npx vitest run test/daemon/validate-cwd.test.ts`
+Expected: FAIL (module not found)
+
+- [ ] **Step 3: Implement validateCwd**
+
+Create `src/daemon/validate-cwd.ts`:
+
+```typescript
+import { resolve, isAbsolute } from "node:path";
+
+/**
+ * Canonicalize and validate a cwd parameter from a daemon route.
+ * Ensures consistent project ID hashing regardless of path formatting.
+ */
+export function validateCwd(cwd: string): string {
+  if (!cwd || typeof cwd !== "string") {
+    throw new Error("cwd is required");
+  }
+  const resolved = resolve(cwd);
+  if (!isAbsolute(resolved)) {
+    throw new Error("cwd must be an absolute path");
+  }
+  return resolved;
+}
+```
+
+- [ ] **Step 4: Apply validateCwd in each route handler**
+
+At the top of each route's handler function (ingest, compact, restore, search, recent, status, describe, expand, grep, promote, session-complete, store), add:
+
+```typescript
+import { validateCwd } from "../validate-cwd.js";
+
+// Inside handler, after JSON.parse:
+const cwd = validateCwd(input.cwd);
+```
+
+Use the validated `cwd` for all downstream operations instead of `input.cwd`.
+
+- [ ] **Step 5: Run full test suite**
+
+Run: `npx vitest run`
+Expected: All PASS
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/daemon/validate-cwd.ts src/daemon/routes/ test/daemon/validate-cwd.test.ts
+git commit -m "security: canonicalize cwd parameter across all daemon routes (SEC-NEW-4)"
+```
+
+---
+
+### Task 10: Validate MCP tool arguments before forwarding (SEC-NEW-2)
+
+**Files:**
+- Modify: `src/mcp/server.ts:129-137` (add input validation)
+- Modify: `test/mcp/server.test.ts` (add validation tests if exists, or create)
+
+- [ ] **Step 1: Write failing test — MCP rejects unexpected keys**
+
+In the MCP server test file, add a test that verifies extra/unexpected keys in tool arguments are stripped before forwarding to the daemon.
+
+- [ ] **Step 2: Implement allowlist-based argument filtering**
+
+In `src/mcp/server.ts`, for each tool, extract only the documented parameters from `req.params.arguments` before forwarding:
+
+```typescript
+// Build a per-tool allowlist from the tool definitions
+const TOOL_ALLOWED_KEYS: Record<string, Set<string>> = {};
+for (const tool of tools) {
+  if (tool.inputSchema?.properties) {
+    TOOL_ALLOWED_KEYS[tool.name] = new Set(Object.keys(tool.inputSchema.properties));
+  }
+}
+
+// In CallToolRequestSchema handler:
+const rawArgs = req.params.arguments ?? {};
+const allowedKeys = TOOL_ALLOWED_KEYS[req.params.name];
+const filteredArgs: Record<string, unknown> = {};
+if (allowedKeys) {
+  for (const key of allowedKeys) {
+    if (key in rawArgs) filteredArgs[key] = rawArgs[key];
+  }
+} else {
+  Object.assign(filteredArgs, rawArgs); // fallback for unknown tools
+}
+const result = await client.post(route, { ...filteredArgs, cwd: process.env.PWD ?? process.cwd() });
+```
+
+- [ ] **Step 3: Run tests**
+
+Run: `npx vitest run`
+Expected: All PASS
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/mcp/server.ts
+git commit -m "security: validate MCP tool arguments against schema before forwarding (SEC-NEW-2)"
+```
+
+---
+
+### Task 11: Extend ReDoS protection to promotion detector (SEC-NEW-3)
+
+**Files:**
+- Modify: `src/promotion/detector.ts:30` (validate config patterns)
+- Modify: `src/daemon/config.ts` (validate patterns at load time)
+- Add test in promotion detector tests
+
+- [ ] **Step 1: Write failing test**
+
+```typescript
+it("rejects unsafe regex patterns from config", () => {
+  const unsafeConfig = { ...defaultConfig };
+  unsafeConfig.promotion.thresholds.architecturePatterns = ["(a+)+$"];
+  // shouldPromote should skip unsafe patterns or throw
+  expect(() => shouldPromote("aaa", unsafeConfig)).not.toThrow();
+  // Pattern should be filtered out, not executed
+});
+```
+
+- [ ] **Step 2: Implement pattern validation**
+
+Reuse the `safe-regex` validation from Task 3. In `src/promotion/detector.ts`, validate each pattern before constructing RegExp:
+
+```typescript
+import safeRegex from "safe-regex";
+
+// Filter patterns at call time
+const safePatterns = thresholds.architecturePatterns.filter(p => {
+  try { return safeRegex(p); } catch { return false; }
+});
+for (const pattern of safePatterns) {
+  if (new RegExp(pattern).test(content)) { tags.push("architecture"); break; }
+}
+```
+
+- [ ] **Step 3: Run tests and commit**
+
+```bash
+git commit -m "security: validate promotion detector regex patterns against ReDoS (SEC-NEW-3)"
+```
+
+---
+
+### Task 12: Sanitize error responses (SEC-NEW-7)
+
+**Files:**
+- Create: `src/daemon/safe-error.ts` (error sanitization utility)
+- Modify: `src/daemon/server.ts` (use sanitized errors in catch block)
+- Create: `test/daemon/safe-error.test.ts`
+
+- [ ] **Step 1: Write failing tests**
+
+```typescript
+import { describe, it, expect } from "vitest";
+import { sanitizeError } from "../../src/daemon/safe-error.js";
+
+describe("sanitizeError", () => {
+  it("strips file paths from error messages", () => {
+    const result = sanitizeError("ENOENT: no such file /Users/pedro/.lossless-claude/x");
+    expect(result).not.toContain("/Users/pedro");
+  });
+
+  it("strips SQLite internals", () => {
+    const result = sanitizeError("SQLITE_CONSTRAINT: UNIQUE constraint failed: messages.conversation_id");
+    expect(result).not.toContain("messages.conversation_id");
+    expect(result).toContain("database constraint");
+  });
+
+  it("preserves generic error messages", () => {
+    expect(sanitizeError("invalid input")).toBe("invalid input");
+  });
+});
+```
+
+- [ ] **Step 2: Implement sanitizeError**
+
+```typescript
+export function sanitizeError(message: string): string {
+  // Strip absolute file paths
+  let sanitized = message.replace(/\/[\w/.@-]+/g, "<path>");
+  // Replace SQLite constraint details with generic message
+  if (/SQLITE_/.test(sanitized)) return "database constraint error";
+  return sanitized;
+}
+```
+
+- [ ] **Step 3: Apply in server.ts catch block**
+
+```typescript
+import { sanitizeError } from "./safe-error.js";
+
+// In catch:
+const message = status === 413 ? "payload too large" : sanitizeError(err instanceof Error ? err.message : "internal error");
+```
+
+- [ ] **Step 4: Run tests and commit**
+
+```bash
+git commit -m "security: sanitize error responses to prevent info leakage (SEC-NEW-7)"
+```
+
+---
+
+### Task 13: Use lstatSync to prevent symlink following in import (SEC-NEW-8)
+
+**Files:**
+- Modify: `src/import.ts:75-115` (use lstatSync)
+- Modify: `src/codex-transcript.ts` (use lstatSync)
+- Add test for symlink rejection
+
+- [ ] **Step 1: Write failing test**
+
+```typescript
+import { mkdtempSync, symlinkSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { findSessionFiles } from "../src/import.js";
+
+it("ignores symlinked transcript files", () => {
+  const dir = mkdtempSync(join(tmpdir(), "lcm-symlink-"));
+  const targetFile = join(dir, "target.jsonl");
+  writeFileSync(targetFile, '{"type":"human"}\n');
+  const projectDir = join(dir, "project");
+  mkdirSync(projectDir);
+  symlinkSync(targetFile, join(projectDir, "fake-session.jsonl"));
+
+  const files = findSessionFiles(projectDir);
+  expect(files).toHaveLength(0); // symlink should be ignored
+
+  rmSync(dir, { recursive: true, force: true });
+});
+```
+
+- [ ] **Step 2: Replace statSync with lstatSync, skip symlinks**
+
+In `src/import.ts`, change `statSync` to `lstatSync` and check `!stat.isSymbolicLink()`:
+
+```typescript
+import { lstatSync } from "node:fs";
+
+// In findSessionFiles, replace statSync calls:
+const stat = lstatSync(join(projectDir, entry.name));
+if (stat.isSymbolicLink()) continue;
+```
+
+Apply same pattern in `src/codex-transcript.ts`.
+
+- [ ] **Step 3: Run tests and commit**
+
+```bash
+git commit -m "security: use lstatSync to prevent symlink following in import (SEC-NEW-8)"
+```
+
+---
+
+### Task 14: Move flag files from shared /tmp to user-specific dir (SEC-NEW-9)
+
+**Files:**
+- Modify: `src/bootstrap.ts` (change flag file location)
+- Modify: `src/hooks/session-snapshot.ts` (change cursor file location)
+- Update related tests
+
+- [ ] **Step 1: Change flag file location**
+
+In `src/bootstrap.ts`, replace:
+```typescript
+const flagPath = join(tmpdir(), `lcm-bootstrapped-${safeId}.flag`);
+```
+with:
+```typescript
+const flagDir = join(homedir(), ".lossless-claude", "tmp");
+mkdirSync(flagDir, { recursive: true });
+const flagPath = join(flagDir, `bootstrapped-${safeId}.flag`);
+```
+
+- [ ] **Step 2: Apply same change in session-snapshot.ts**
+
+Replace `tmpdir()` with `join(homedir(), ".lossless-claude", "tmp")` for cursor files.
+
+- [ ] **Step 3: Run tests and commit**
+
+```bash
+git commit -m "security: move flag files from shared /tmp to ~/.lossless-claude/tmp (SEC-NEW-9)"
+```
+
+---
+
+### Task 15: Guard deepMerge against prototype pollution (SEC-NEW-12)
+
+**Files:**
+- Modify: `src/daemon/config.ts` (add key denylist in deepMerge)
+- Add test
+
+- [ ] **Step 1: Write failing test**
+
+```typescript
+it("rejects prototype pollution keys", () => {
+  const target = { a: 1 };
+  const source = JSON.parse('{"__proto__": {"polluted": true}, "constructor": {"prototype": {"evil": true}}}');
+  const result = deepMerge(target, source);
+  expect(({} as any).polluted).toBeUndefined();
+  expect(({} as any).evil).toBeUndefined();
+});
+```
+
+- [ ] **Step 2: Add key denylist**
+
+```typescript
+const DENIED_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+function deepMerge(target: any, source: any): any {
+  const result = { ...target };
+  for (const key of Object.keys(source)) {
+    if (DENIED_KEYS.has(key)) continue;
+    // ... rest unchanged
+  }
+  return result;
+}
+```
+
+- [ ] **Step 3: Run tests and commit**
+
+```bash
+git commit -m "security: guard deepMerge against prototype pollution (SEC-NEW-12)"
+```
+
+---
+
 ## Task Dependency Graph
 
 ```
-Task 1 (scrub patterns) ─────────────┐
-Task 2 (config permissions) ──────────┤
-Task 3 (regex safety) ────────────────┤── All independent
-Task 4 (store scrubbing) ─────────────┤   (can parallelize)
-Task 5 (path traversal) ─────────────┤
-Task 6 (daemon auth) ─────────────────┘── Do last (changes test patterns)
-Task 7 (summary sanitization) ────────── Independent of auth
+Task 1  (scrub patterns) ─────────────┐
+Task 2  (config permissions) ──────────┤
+Task 3  (regex safety) ────────────────┤
+Task 4  (store scrubbing) ─────────────┤── All independent
+Task 5  (path traversal) ──────────────┤   (can parallelize)
+Task 7  (summary sanitization) ────────┤
+Task 8  (body size limit) ─────────────┤
+Task 9  (cwd canonicalization) ────────┤
+Task 10 (MCP input validation) ────────┤
+Task 11 (promotion ReDoS) ─── depends on Task 3 (safe-regex dep)
+Task 12 (error sanitization) ──────────┤
+Task 13 (symlink safety) ──────────────┤
+Task 14 (tmp file isolation) ──────────┤
+Task 15 (prototype pollution) ─────────┘
+Task 6  (daemon auth) ─────────────────── Do last (changes test patterns)
 ```
 
-Tasks 1-5 and 7 are fully independent. Task 6 (daemon auth) should be done last because it changes how all existing route tests make HTTP calls.
+Tasks 1-5, 7-10, 12-15 are independent. Task 11 depends on Task 3 (needs `safe-regex`). Task 6 (daemon auth) should still be done last because it changes how all existing route tests make HTTP calls.
