@@ -3,6 +3,7 @@ import {
   mergeClaudeSettings,
   resolveBinaryPath,
   install,
+  ensureLcmMd,
   REQUIRED_HOOKS,
   type ServiceDeps,
 } from "../../installer/install.js";
@@ -363,5 +364,82 @@ describe("install — MCP registration", () => {
     expect(settings.mcpServers.lcm.args).toContain("mcp");
     expect(typeof settings.mcpServers.lcm.command).toBe("string");
     expect(settings.mcpServers.lcm.command.length).toBeGreaterThan(0);
+  });
+});
+
+// ─── ensureLcmMd ────────────────────────────────────────────────────────────
+
+describe("ensureLcmMd", () => {
+  const CONTENT = "# lcm test content\n";
+  const BLOCK = `<!-- lcm:start -->\n<!-- Claude Code include: @lcm.md -->\n<!-- lcm:end -->`;
+
+  function makeDepsForLcm(claudeMdContent?: string) {
+    const files = new Map<string, string>();
+    if (claudeMdContent !== undefined) {
+      files.set("/home/.claude/CLAUDE.md", claudeMdContent);
+    }
+    const written = new Map<string, string>();
+    return {
+      deps: {
+        existsSync: (p: string) => files.has(p),
+        readFileSync: (p: string) => files.get(p) ?? "",
+        writeFileSync: (p: string, content: string) => { written.set(p, content); files.set(p, content); },
+        mkdirSync: vi.fn(),
+      },
+      written,
+    };
+  }
+
+  it("writes lcm.md and creates CLAUDE.md with managed block when neither exists", () => {
+    const { deps, written } = makeDepsForLcm();
+    const result = ensureLcmMd(deps, CONTENT, "/home");
+    expect(result.lcmMdWritten).toBe(true);
+    expect(result.claudeMdPatched).toBe(true);
+    expect(written.get("/home/.claude/lcm.md")).toBe(CONTENT);
+    expect(written.get("/home/.claude/CLAUDE.md")).toContain(BLOCK);
+  });
+
+  it("appends managed block when CLAUDE.md exists without it", () => {
+    const { deps, written } = makeDepsForLcm("@RTK.md\n");
+    const result = ensureLcmMd(deps, CONTENT, "/home");
+    expect(result.claudeMdPatched).toBe(true);
+    const claudeMd = written.get("/home/.claude/CLAUDE.md")!;
+    expect(claudeMd).toContain("@RTK.md");
+    expect(claudeMd).toContain(BLOCK);
+  });
+
+  it("does not rewrite CLAUDE.md when managed block is already correct", () => {
+    const existing = `@RTK.md\n<!-- lcm:start -->\n<!-- Claude Code include: @lcm.md -->\n<!-- lcm:end -->\n@other.md\n`;
+    const { deps, written } = makeDepsForLcm(existing);
+    const result = ensureLcmMd(deps, CONTENT, "/home");
+    expect(result.claudeMdPatched).toBe(false);
+    expect(written.has("/home/.claude/CLAUDE.md")).toBe(false); // no write needed
+  });
+
+  it("updates managed block when its content changes", () => {
+    const existing = `@RTK.md\n<!-- lcm:start -->\n@old.md\n<!-- lcm:end -->\n@other.md\n`;
+    const { deps, written } = makeDepsForLcm(existing);
+    const result = ensureLcmMd(deps, CONTENT, "/home");
+    const claudeMd = written.get("/home/.claude/CLAUDE.md")!;
+    expect(result.claudeMdPatched).toBe(true);
+    expect(claudeMd).toContain("@RTK.md");
+    expect(claudeMd).toContain("@other.md");
+    expect(claudeMd).toContain(BLOCK);
+    expect(claudeMd.indexOf("<!-- lcm:start -->")).toBe(claudeMd.lastIndexOf("<!-- lcm:start -->")); // only one block
+  });
+
+  it("overwrites lcm.md when content is stale", () => {
+    const files = new Map<string, string>();
+    files.set("/home/.claude/lcm.md", "# old content\n");
+    const written = new Map<string, string>();
+    const deps = {
+      existsSync: (p: string) => files.has(p),
+      readFileSync: (p: string) => files.get(p) ?? "",
+      writeFileSync: (p: string, content: string) => { written.set(p, content); files.set(p, content); },
+      mkdirSync: vi.fn(),
+    };
+    const result = ensureLcmMd(deps, CONTENT, "/home");
+    expect(result.lcmMdWritten).toBe(true);
+    expect(written.get("/home/.claude/lcm.md")).toBe(CONTENT);
   });
 });
