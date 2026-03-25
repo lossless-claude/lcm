@@ -123,6 +123,59 @@ for (const tool of TOOLS) {
 
 export function getMcpToolDefinitions() { return TOOLS; }
 
+export type DaemonRequestOpts = {
+  port: number;
+  pidFilePath: string;
+  _ensureDaemon?: typeof ensureDaemon;
+};
+
+/** Returns true if the error is a network/connection failure (not a daemon HTTP error). */
+function isNetworkError(err: unknown): boolean {
+  return err instanceof TypeError;
+}
+
+/**
+ * One restart attempt per port at a time — concurrent network failures share the same
+ * restart promise instead of each spawning a separate daemon process.
+ */
+const restartInFlight = new Map<number, Promise<unknown>>();
+
+/** Exported for testing. Calls a daemon route with auto-restart + retry on network failure. */
+export async function handleDaemonRequest(
+  client: Pick<DaemonClient, "post">,
+  route: string,
+  body: Record<string, unknown>,
+  opts: DaemonRequestOpts,
+): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
+  let result: unknown;
+  try {
+    result = await client.post(route, body);
+  } catch (err) {
+    // Only retry on network/connection errors, not daemon HTTP errors (4xx/5xx)
+    if (!isNetworkError(err)) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { content: [{ type: "text", text: `lcm error: ${msg}` }], isError: true };
+    }
+    // Daemon crashed — attempt auto-restart then retry once.
+    // Coalesce concurrent restart attempts so only one ensureDaemon() runs per port.
+    const ensure = opts._ensureDaemon ?? ensureDaemon;
+    if (!restartInFlight.has(opts.port)) {
+      const p = ensure({ port: opts.port, pidFilePath: opts.pidFilePath, spawnTimeoutMs: 10000 })
+        .catch(() => { /* non-fatal */ })
+        .finally(() => { restartInFlight.delete(opts.port); });
+      restartInFlight.set(opts.port, p);
+    }
+    await restartInFlight.get(opts.port)!.catch(() => { /* non-fatal */ });
+    try {
+      result = await client.post(route, body);
+    } catch (retryErr) {
+      const msg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+      return { content: [{ type: "text", text: `lcm daemon unavailable: ${msg}` }], isError: true };
+    }
+  }
+  return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+}
+
 export async function startMcpServer(): Promise<void> {
   const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
   const port = config.daemon.port;
@@ -139,7 +192,7 @@ export async function startMcpServer(): Promise<void> {
     const rawArgs = req.params.arguments ?? {};
     // Guard: ensure rawArgs is a plain object
     if (typeof rawArgs !== "object" || rawArgs === null || Array.isArray(rawArgs)) {
-      throw new Error(`Invalid arguments for tool ${req.params.name}: must be an object`);
+      return { content: [{ type: "text", text: `Invalid arguments for tool ${req.params.name}: must be an object` }], isError: true };
     }
     const allowedKeys = TOOL_ALLOWED_KEYS[req.params.name];
     const filteredArgs: Record<string, unknown> = {};
@@ -155,13 +208,19 @@ export async function startMcpServer(): Promise<void> {
 
     const localHandler = LOCAL_TOOLS[req.params.name];
     if (localHandler) {
-      const text = await localHandler(filteredArgs);
-      return { content: [{ type: "text", text }] };
+      try {
+        const text = await localHandler(filteredArgs);
+        return { content: [{ type: "text", text }] };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: "text", text: `lcm error: ${msg}` }], isError: true };
+      }
     }
+
     const route = TOOL_ROUTES[req.params.name];
-    if (!route) throw new Error(`Unknown tool: ${req.params.name}`);
-    const result = await client.post(route, { ...filteredArgs, cwd: process.env.PWD ?? process.cwd() });
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    if (!route) return { content: [{ type: "text", text: `Unknown tool: ${req.params.name}` }], isError: true };
+    const body = { ...filteredArgs, cwd: process.env.PWD ?? process.cwd() };
+    return handleDaemonRequest(client, route, body, { port, pidFilePath });
   });
 
   const transport = new StdioServerTransport();
