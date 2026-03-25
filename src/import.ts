@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync, lstatSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
@@ -72,13 +72,16 @@ export function findSessionFiles(projectDir: string): { path: string; sessionId:
 
   for (const entry of readdirSync(projectDir, { withFileTypes: true })) {
     // Layout B (flat): <projectDir>/<session-id>.jsonl
-    if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+    if (entry.isFile() && !entry.isSymbolicLink() && entry.name.endsWith('.jsonl')) {
       try {
+        const filePath = join(projectDir, entry.name);
+        const st = lstatSync(filePath);
+        if (st.isSymbolicLink()) continue; // skip symlinks
         const sessionId = basename(entry.name, '.jsonl');
         files.push({
-          path: join(projectDir, entry.name),
+          path: filePath,
           sessionId,
-          mtime: statSync(join(projectDir, entry.name)).mtimeMs,
+          mtime: st.mtimeMs,
         });
         flatSessionIds.add(sessionId);
       } catch {
@@ -86,13 +89,15 @@ export function findSessionFiles(projectDir: string): { path: string; sessionId:
         continue;
       }
     }
-    if (entry.isDirectory()) {
+    if (entry.isDirectory() && !entry.isSymbolicLink()) {
       // Layout A (nested): <projectDir>/<session-id>/<session-id>.jsonl
       const nestedTranscript = join(projectDir, entry.name, `${entry.name}.jsonl`);
       if (existsSync(nestedTranscript)) {
         try {
-          const nestedStat = statSync(nestedTranscript);
-          if (nestedStat.isFile()) {
+          const nestedStat = lstatSync(nestedTranscript);
+          if (nestedStat.isSymbolicLink()) {
+            // skip symlinks
+          } else if (nestedStat.isFile()) {
             files.push({
               path: nestedTranscript,
               sessionId: entry.name,
@@ -108,12 +113,15 @@ export function findSessionFiles(projectDir: string): { path: string; sessionId:
       const subagentsDir = join(projectDir, entry.name, 'subagents');
       if (existsSync(subagentsDir)) {
         for (const sub of readdirSync(subagentsDir, { withFileTypes: true })) {
-          if (sub.isFile() && sub.name.endsWith('.jsonl')) {
+          if (sub.isFile() && !sub.isSymbolicLink() && sub.name.endsWith('.jsonl')) {
             try {
+              const subPath = join(subagentsDir, sub.name);
+              const subSt = lstatSync(subPath);
+              if (subSt.isSymbolicLink()) continue; // skip symlinks
               files.push({
-                path: join(subagentsDir, sub.name),
+                path: subPath,
                 sessionId: basename(sub.name, '.jsonl'),
-                mtime: statSync(join(subagentsDir, sub.name)).mtimeMs,
+                mtime: subSt.mtimeMs,
               });
             } catch {
               // Skip entries that can't be stat'd

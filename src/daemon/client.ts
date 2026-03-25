@@ -1,5 +1,22 @@
+import { readAuthToken } from "./auth.js";
+import { join } from "node:path";
+import { homedir } from "node:os";
+
 export class DaemonClient {
-  constructor(private baseUrl: string) {}
+  private token: string | null = null;
+  private tokenLoaded = false;
+
+  constructor(private baseUrl: string, private tokenPath?: string) {}
+
+  private getToken(): string | null {
+    if (!this.tokenLoaded) {
+      this.token = readAuthToken(
+        this.tokenPath ?? join(homedir(), ".lossless-claude", "daemon.token"),
+      );
+      this.tokenLoaded = true;
+    }
+    return this.token;
+  }
 
   async health(): Promise<{ status: string; uptime: number } | null> {
     try {
@@ -9,9 +26,14 @@ export class DaemonClient {
   }
 
   async post<T = unknown>(path: string, body: unknown): Promise<T> {
+    const token = this.getToken();
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
     const res = await fetch(`${this.baseUrl}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(body),
     });
     if (!res.ok) {

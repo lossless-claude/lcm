@@ -112,6 +112,15 @@ const LOCAL_TOOLS: Record<string, (args: Record<string, unknown>) => Promise<str
   },
 };
 
+// Build per-tool allowlist from tool definitions (keyed by tool name)
+const TOOL_ALLOWED_KEYS: Record<string, Set<string>> = {};
+for (const tool of TOOLS) {
+  const props = (tool.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties;
+  if (props) {
+    TOOL_ALLOWED_KEYS[tool.name] = new Set(Object.keys(props));
+  }
+}
+
 export function getMcpToolDefinitions() { return TOOLS; }
 
 export type DaemonRequestOpts = {
@@ -171,13 +180,27 @@ export async function startMcpServer(): Promise<void> {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
-    const name = req.params.name;
-    const args = (req.params.arguments ?? {}) as Record<string, unknown>;
+    const rawArgs = req.params.arguments ?? {};
+    // Guard: ensure rawArgs is a plain object
+    if (typeof rawArgs !== "object" || rawArgs === null || Array.isArray(rawArgs)) {
+      return { content: [{ type: "text", text: `Invalid arguments for tool ${req.params.name}: must be an object` }], isError: true };
+    }
+    const allowedKeys = TOOL_ALLOWED_KEYS[req.params.name];
+    const filteredArgs: Record<string, unknown> = {};
+    if (allowedKeys) {
+      for (const key of allowedKeys) {
+        if (key in rawArgs) filteredArgs[key] = (rawArgs as Record<string, unknown>)[key];
+      }
+    } else {
+      // No schema properties defined — default-deny: pass nothing through.
+      // This is safer than a denylist-based approach which could miss unknown keys.
+      void rawArgs;
+    }
 
-    const localHandler = LOCAL_TOOLS[name];
+    const localHandler = LOCAL_TOOLS[req.params.name];
     if (localHandler) {
       try {
-        const text = await localHandler(args);
+        const text = await localHandler(filteredArgs);
         return { content: [{ type: "text", text }] };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -185,9 +208,9 @@ export async function startMcpServer(): Promise<void> {
       }
     }
 
-    const route = TOOL_ROUTES[name];
-    if (!route) return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
-    const body = { ...args, cwd: process.env.PWD ?? process.cwd() };
+    const route = TOOL_ROUTES[req.params.name];
+    if (!route) return { content: [{ type: "text", text: `Unknown tool: ${req.params.name}` }], isError: true };
+    const body = { ...filteredArgs, cwd: process.env.PWD ?? process.cwd() };
     return handleDaemonRequest(client, route, body, { port, pidFilePath });
   });
 

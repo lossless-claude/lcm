@@ -6,14 +6,23 @@ import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { PromotedStore } from "../../db/promoted.js";
+import { validateCwd } from "../validate-cwd.js";
 
 export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
-    const { query, cwd, session_id } = input;
+    const { query, session_id } = input;
 
     // Missing fields: return empty hints (not 400) — callers treat this as "no suggestions"
-    if (!query || !cwd) {
+    if (!query || !input.cwd) {
+      sendJson(res, 200, { hints: [] });
+      return;
+    }
+
+    let cwd: string;
+    try {
+      cwd = validateCwd(input.cwd);
+    } catch {
       sendJson(res, 200, { hints: [] });
       return;
     }

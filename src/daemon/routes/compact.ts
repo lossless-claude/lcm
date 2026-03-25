@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "../config.js";
-import { projectId, projectDbPath, projectDir, projectMetaPath, ensureProjectDir } from "../project.js";
+import { projectId, projectDbPath, projectDir, projectMetaPath, ensureProjectDir, isSafeTranscriptPath } from "../project.js";
 import { enqueue } from "../project-queue.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
@@ -14,6 +14,7 @@ import { parseTranscript } from "../../transcript.js";
 import type { LcmSummarizeFn } from "../../llm/types.js";
 import { ScrubEngine } from "../../scrub.js";
 import { resolveEffectiveProvider, createSummarizer, type EffectiveProvider } from "../summarizer.js";
+import { validateCwd } from "../validate-cwd.js";
 
 function fmtN(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
@@ -90,14 +91,22 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
 
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
-    const { session_id, cwd, transcript_path, skip_ingest, client, previous_summary } = input;
+    const { session_id, transcript_path, skip_ingest, client, previous_summary } = input;
     const MAX_PREVIOUS_SUMMARY_LENGTH = 50_000;
     const validatedPreviousSummary = typeof previous_summary === "string"
       ? previous_summary.slice(0, MAX_PREVIOUS_SUMMARY_LENGTH)
       : undefined;
 
-    if (!session_id || !cwd) {
+    if (!session_id || !input.cwd) {
       sendJson(res, 400, { error: "session_id and cwd are required" });
+      return;
+    }
+
+    let cwd: string;
+    try {
+      cwd = validateCwd(input.cwd);
+    } catch (err) {
+      sendJson(res, 400, { error: err instanceof Error ? err.message : "invalid cwd" });
       return;
     }
 
@@ -145,8 +154,9 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
           const conversation = await conversationStore.getOrCreateConversation(session_id);
 
           // Ingest new messages from the transcript into the DB.
-          if (!skip_ingest && transcript_path && existsSync(transcript_path)) {
-            const parsed = parseTranscript(transcript_path);
+          const safeTranscriptPath = transcript_path ? isSafeTranscriptPath(transcript_path, cwd) : false;
+          if (!skip_ingest && safeTranscriptPath && existsSync(safeTranscriptPath)) {
+            const parsed = parseTranscript(safeTranscriptPath);
             const storedCount = await conversationStore.getMessageCount(conversation.conversationId);
             const newMessages = parsed.slice(storedCount);
             if (newMessages.length > 0) {

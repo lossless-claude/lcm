@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { loadDaemonConfig } from "../../src/daemon/config.js";
+import { loadDaemonConfig, deepMerge } from "../../src/daemon/config.js";
 
 describe("loadDaemonConfig", () => {
   it("returns defaults when no config file exists", () => {
@@ -152,5 +152,21 @@ describe("loadDaemonConfig", () => {
     });
     expect(config.hooks.snapshotIntervalSec).toBe(30);
     expect(config.hooks.disableAutoCompact).toBe(false);
+  });
+});
+
+describe("deepMerge", () => {
+  it("rejects prototype pollution keys", () => {
+    const source = JSON.parse('{"__proto__": {"polluted": true}, "constructor": {"name": "pwned"}}');
+    const result = deepMerge({ a: 1 } as Record<string, unknown>, source);
+    expect((({}) as any).polluted).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(result, "__proto__")).toBe(false);
+  });
+
+  it("merges normal keys correctly", () => {
+    const result = deepMerge({ a: 1, b: { c: 2 } } as Record<string, unknown>, { b: { d: 3 } } as Record<string, unknown>);
+    expect(result.a).toBe(1);
+    expect((result.b as any).c).toBe(2);
+    expect((result.b as any).d).toBe(3);
   });
 });

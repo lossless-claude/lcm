@@ -15,7 +15,7 @@
  * messages use `type: "output_text"` (both carry a `text` string field).
  */
 
-import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync, lstatSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { estimateTokens } from "./transcript.js";
@@ -170,13 +170,15 @@ export function findCodexSessionFiles(rootDir: string): CodexSessionFile[] {
 
   for (const entry of readdirSync(rootDir, { withFileTypes: true })) {
     // Flat layout: rootDir/<name>.jsonl
-    if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+    if (entry.isFile() && !entry.isSymbolicLink() && entry.name.endsWith(".jsonl")) {
       try {
         const full = join(rootDir, entry.name);
+        const st = lstatSync(full);
+        if (st.isSymbolicLink()) continue; // skip symlinks
         files.push({
           path: full,
           sessionId: basename(entry.name, ".jsonl"),
-          mtime: statSync(full).mtimeMs,
+          mtime: st.mtimeMs,
         });
       } catch {
         // skip unreadable entries
@@ -185,12 +187,14 @@ export function findCodexSessionFiles(rootDir: string): CodexSessionFile[] {
     }
 
     // Nested layout: rootDir/<id>/<id>.jsonl
-    if (entry.isDirectory()) {
+    if (entry.isDirectory() && !entry.isSymbolicLink()) {
       const nested = join(rootDir, entry.name, `${entry.name}.jsonl`);
       if (existsSync(nested)) {
         try {
-          const st = statSync(nested);
-          if (st.isFile()) {
+          const st = lstatSync(nested);
+          if (st.isSymbolicLink()) {
+            // skip symlinks
+          } else if (st.isFile()) {
             files.push({
               path: nested,
               sessionId: entry.name,

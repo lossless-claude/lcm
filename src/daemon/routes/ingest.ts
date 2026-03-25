@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "../config.js";
-import { projectDbPath, projectDir, projectId, ensureProjectDir, projectMetaPath } from "../project.js";
+import { projectDbPath, projectDir, projectId, ensureProjectDir, projectMetaPath, isSafeTranscriptPath } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
@@ -10,6 +10,7 @@ import { ConversationStore } from "../../store/conversation-store.js";
 import { SummaryStore } from "../../store/summary-store.js";
 import { parseTranscript, type ParsedMessage } from "../../transcript.js";
 import { ScrubEngine } from "../../scrub.js";
+import { validateCwd } from "../validate-cwd.js";
 
 function isParsedMessage(value: unknown): value is ParsedMessage {
   if (!value || typeof value !== "object") return false;
@@ -23,13 +24,16 @@ function isParsedMessage(value: unknown): value is ParsedMessage {
   );
 }
 
-function resolveMessages(input: { messages?: unknown; transcript_path?: string }): ParsedMessage[] {
+function resolveMessages(input: { messages?: unknown; transcript_path?: string }, cwd: string): ParsedMessage[] {
   if (Array.isArray(input.messages)) {
     return input.messages.filter(isParsedMessage);
   }
 
-  if (input.transcript_path && existsSync(input.transcript_path)) {
-    return parseTranscript(input.transcript_path);
+  if (input.transcript_path) {
+    const safePath = isSafeTranscriptPath(input.transcript_path, cwd);
+    if (safePath && existsSync(safePath)) {
+      return parseTranscript(safePath);
+    }
   }
 
   return [];
@@ -38,16 +42,24 @@ function resolveMessages(input: { messages?: unknown; transcript_path?: string }
 export function createIngestHandler(config: DaemonConfig): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
-    const { session_id, cwd } = input;
+    const { session_id } = input;
 
-    if (!session_id || !cwd) {
+    if (!session_id || !input.cwd) {
       sendJson(res, 400, { error: "session_id and cwd are required" });
+      return;
+    }
+
+    let cwd: string;
+    try {
+      cwd = validateCwd(input.cwd);
+    } catch (err) {
+      sendJson(res, 400, { error: err instanceof Error ? err.message : "invalid cwd" });
       return;
     }
 
     const dbPath = projectDbPath(cwd);
 
-    const parsed = resolveMessages(input);
+    const parsed = resolveMessages(input, cwd);
     if (parsed.length === 0) {
       sendJson(res, 200, { ingested: 0, totalTokens: 0 });
       return;

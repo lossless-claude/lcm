@@ -11,8 +11,7 @@ data/
 # Tools
 .serena/
 
-# Codex / LCM temp worktrees
-lcm-cli-*/
+# Codex temp worktrees (lcm-cli-* intentionally NOT ignored — presence in repo root = bug)
 lossless-codex-*/
 
 # Scratch files
@@ -32,3 +31,4 @@ sensitive-patterns-test.txt
 # Environment secrets
 .env
 dist/
+

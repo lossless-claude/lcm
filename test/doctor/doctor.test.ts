@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { runDoctor } from "../../src/doctor/doctor.js";
 import { REQUIRED_HOOKS } from "../../installer/install.js";
+import { LCM_MD_CONTENT } from "../../src/daemon/orientation.js";
 
 vi.mock("../../src/daemon/lifecycle.js", () => ({
   ensureDaemon: vi.fn().mockResolvedValue({ connected: false }),
@@ -21,6 +22,8 @@ function minimalDeps(overrides: Partial<Parameters<typeof runDoctor>[0]> = {}) {
       if (path.endsWith("config.json")) return "{}";
       if (path.endsWith("settings.json")) return buildSettingsJson();
       if (path.endsWith("package.json")) return JSON.stringify({ version: "0.5.0" });
+      if (path.endsWith("CLAUDE.md")) return "<!-- lcm:start -->\n<!-- Claude Code include: @lcm.md -->\n<!-- lcm:end -->\n";
+      if (path.endsWith("lcm.md")) return LCM_MD_CONTENT;
       return "{}";
     },
     writeFileSync: vi.fn(),
@@ -47,6 +50,29 @@ describe("runDoctor security section", () => {
     const proj = results.find((r) => r.name === "project-patterns");
     expect(proj?.status).toBe("warn");
     expect(proj?.message).toContain("none configured");
+  });
+});
+
+describe("runDoctor lcm-md check", () => {
+  it("passes when lcm.md exists and CLAUDE.md has managed block", async () => {
+    const results = await runDoctor(minimalDeps({ cwd: "/tmp/nonexistent-project-xyz" }));
+    const check = results.find((r) => r.name === "lcm-md");
+    expect(check?.status).toBe("pass");
+    expect(check?.message).toContain("lcm.md");
+  });
+
+  it("auto-restores and reports fixApplied when lcm.md is missing", async () => {
+    const written: Record<string, string> = {};
+    const deps = minimalDeps({
+      cwd: "/tmp/nonexistent-project-xyz",
+      existsSync: (p: string) => !p.endsWith("lcm.md"),
+      writeFileSync: vi.fn((p: string, c: string) => { written[p] = c; }),
+    });
+    const results = await runDoctor(deps);
+    const check = results.find((r) => r.name === "lcm-md");
+    expect(check?.status).toBe("warn");
+    expect(check?.fixApplied).toBe(true);
+    expect(written["/tmp/test-home/.claude/lcm.md"]).toBeDefined();
   });
 });
 
