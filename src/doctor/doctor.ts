@@ -279,8 +279,8 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>): Promise<CheckR
         claudeMdPatched ? "added @lcm.md to CLAUDE.md" : null,
       ].filter(Boolean).join(", ");
       results.push({ name: "lcm-md", category: "Settings", status: "warn", message: `lcm.md restored (${detail})`, fixApplied: true });
-    } catch {
-      results.push({ name: "lcm-md", category: "Settings", status: "fail", message: "~/.claude/lcm.md missing — run: lcm install" });
+    } catch (err) {
+      results.push({ name: "lcm-md", category: "Settings", status: "fail", message: `lcm.md repair failed: ${err instanceof Error ? err.message : String(err)} — run: lcm install` });
     }
   }
 

@@ -235,7 +235,7 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<void> {
     console.log(`Installed slash commands to ${commandsDst}`);
   }
 
-  // 4. Install lcm.md and @lcm.md reference in CLAUDE.md
+  // 5. Install lcm.md and @lcm.md reference in CLAUDE.md
   const { LCM_MD_CONTENT } = await import("../src/daemon/orientation.js");
   const { lcmMdWritten, claudeMdPatched } = ensureLcmMd(deps, LCM_MD_CONTENT);
   if (lcmMdWritten) console.log(`Installed ~/.claude/lcm.md`);
