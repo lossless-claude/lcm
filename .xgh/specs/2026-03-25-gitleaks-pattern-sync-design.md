@@ -9,7 +9,7 @@ Replace hand-curated `BUILT_IN_PATTERNS` with 220+ auto-synced regexes from gitl
 `src/scrub.ts` maintains a hand-curated regex array for secret detection. After the security hardening PR this grows to ~20 patterns. This approach:
 
 - Always lags behind new token formats
-- No coverage for lesser-known providers (222 providers in gitleaks vs our 20)
+- No coverage for lesser-known providers (222 rules in gitleaks vs our 20)
 - Manual maintenance burden — every new provider needs a regex PR
 
 ### Alternatives evaluated
@@ -221,11 +221,13 @@ Secret detection
 Current output shows `[built-in]` and `[user]` tags. New output:
 
 ```
-Global patterns (config.json):
+Built-in patterns:
   [gitleaks]  220 patterns (synced 2026-03-25)
   [native]    Bearer [A-Za-z0-9\-._~+/]+=*
   [native]    [Pp]assword\s*[:=]\s*\S+
   [native]    (postgres|mysql|mongodb|redis|rediss)://\S+:\S+@\S+
+
+Global patterns (config.json):
   [user]      MY_CUSTOM_PATTERN
 
 Project patterns (/path/to/sensitive-patterns.txt):
@@ -246,7 +248,7 @@ Input:    AKIAIOSFODNN7EXAMPLE password=s3cret
 Redacted: [REDACTED] [REDACTED]
 ```
 
-When a gitleaks pattern matches, show `[gitleaks:<rule-id>]` instead of the raw regex — more informative and readable.
+When a gitleaks pattern matches, show `[gitleaks:<rule-id>]` tag alongside the matching regex for transparency — more informative and readable, and allows users to see what matched.
 
 ## GitHub Actions workflow
 
@@ -261,6 +263,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   sync:
@@ -303,14 +306,18 @@ jobs:
       - name: Ship hotfix release
         if: steps.diff.outputs.changed == 'true'
         run: |
+          # Compute next patch version
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          NEXT_PATCH=$(node -p "const v = '$CURRENT_VERSION'.split('.'); v[2]++; v.join('.')")
           # Merge develop → main, bump patch, publish
-          bash .claude/skills/lcm-release/scripts/release.sh patch \
-            --message "fix: update secret detection patterns (${{ steps.diff.outputs.after }} rules)"
+          bash .claude/skills/lcm-release/scripts/release.sh "$NEXT_PATCH"
 ```
 
 ### Branch protection exception
 
 The `develop` branch ruleset must add the bot token's identity (GitHub App or PAT user) to the "bypass actors" list. This allows the weekly sync to push directly to `develop` without a PR.
+
+**Note:** This is an intentional exception to the normal PR workflow, scoped only to the automated pattern sync bot. The weekly sync commits and releases hotfixes directly to maintain a fast, noise-free update cadence for security-critical pattern changes. The bot's actions are auditable via commit history and release logs.
 
 ## Testing strategy
 
