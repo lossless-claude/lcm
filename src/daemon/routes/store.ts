@@ -8,20 +8,29 @@ import type { DaemonConfig } from "../config.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { PromotedStore } from "../../db/promoted.js";
 import { ScrubEngine } from "../../scrub.js";
+import { validateCwd } from "../validate-cwd.js";
 
 export function createStoreHandler(config: DaemonConfig): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
-    const { text, tags = [], metadata = {}, cwd } = input;
+    const { text, tags = [], metadata = {} } = input;
 
     if (!text) {
       sendJson(res, 400, { error: "text is required" });
       return;
     }
 
-    const projectPath = cwd || metadata.projectPath || "";
-    if (!projectPath) {
+    const rawProjectPath = input.cwd || metadata.projectPath || "";
+    if (!rawProjectPath) {
       sendJson(res, 400, { error: "cwd or metadata.projectPath is required" });
+      return;
+    }
+
+    let projectPath: string;
+    try {
+      projectPath = validateCwd(rawProjectPath);
+    } catch (err) {
+      sendJson(res, 400, { error: err instanceof Error ? err.message : "invalid cwd" });
       return;
     }
 

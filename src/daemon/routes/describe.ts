@@ -9,15 +9,26 @@ import { runLcmMigrations } from "../../db/migration.js";
 import { ConversationStore } from "../../store/conversation-store.js";
 import { SummaryStore } from "../../store/summary-store.js";
 import { RetrievalEngine } from "../../retrieval.js";
+import { validateCwd } from "../validate-cwd.js";
 
 export function createDescribeHandler(_config: DaemonConfig): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
-    const { nodeId, cwd } = input;
+    const { nodeId } = input;
 
     if (!nodeId) {
       sendJson(res, 400, { error: "nodeId is required" });
       return;
+    }
+
+    let cwd: string | undefined;
+    if (input.cwd) {
+      try {
+        cwd = validateCwd(input.cwd);
+      } catch {
+        sendJson(res, 200, { node: null });
+        return;
+      }
     }
 
     if (!cwd || !existsSync(projectDbPath(cwd))) {

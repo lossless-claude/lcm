@@ -14,6 +14,7 @@ import { parseTranscript } from "../../transcript.js";
 import type { LcmSummarizeFn } from "../../llm/types.js";
 import { ScrubEngine } from "../../scrub.js";
 import { resolveEffectiveProvider, createSummarizer, type EffectiveProvider } from "../summarizer.js";
+import { validateCwd } from "../validate-cwd.js";
 
 function fmtN(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
@@ -90,14 +91,22 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
 
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
-    const { session_id, cwd, transcript_path, skip_ingest, client, previous_summary } = input;
+    const { session_id, transcript_path, skip_ingest, client, previous_summary } = input;
     const MAX_PREVIOUS_SUMMARY_LENGTH = 50_000;
     const validatedPreviousSummary = typeof previous_summary === "string"
       ? previous_summary.slice(0, MAX_PREVIOUS_SUMMARY_LENGTH)
       : undefined;
 
-    if (!session_id || !cwd) {
+    if (!session_id || !input.cwd) {
       sendJson(res, 400, { error: "session_id and cwd are required" });
+      return;
+    }
+
+    let cwd: string;
+    try {
+      cwd = validateCwd(input.cwd);
+    } catch (err) {
+      sendJson(res, 400, { error: err instanceof Error ? err.message : "invalid cwd" });
       return;
     }
 

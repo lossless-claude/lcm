@@ -11,15 +11,25 @@ import { SummaryStore } from "../../store/summary-store.js";
 import { PromotedStore } from "../../db/promoted.js";
 import { shouldPromote } from "../../promotion/detector.js";
 import { deduplicateAndInsert } from "../../promotion/dedup.js";
+import { validateCwd } from "../validate-cwd.js";
+
 export function createPromoteHandler(
   config: DaemonConfig,
 ): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
-    const { cwd, dry_run = false } = input;
+    const { dry_run = false } = input;
 
-    if (!cwd) {
+    if (!input.cwd) {
       sendJson(res, 400, { error: "cwd is required" });
+      return;
+    }
+
+    let cwd: string;
+    try {
+      cwd = validateCwd(input.cwd);
+    } catch (err) {
+      sendJson(res, 400, { error: err instanceof Error ? err.message : "invalid cwd" });
       return;
     }
 

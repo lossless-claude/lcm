@@ -1,0 +1,28 @@
+import { resolve, isAbsolute } from "node:path";
+import { statSync } from "node:fs";
+
+/**
+ * Canonicalize and validate a cwd parameter from a daemon route.
+ * Ensures consistent project ID hashing regardless of path formatting.
+ */
+export function validateCwd(cwd: string): string {
+  if (!cwd || typeof cwd !== "string") {
+    throw new Error("cwd is required");
+  }
+  if (!isAbsolute(cwd)) {
+    throw new Error("cwd must be an absolute path");
+  }
+  const resolved = resolve(cwd);
+  try {
+    const stat = statSync(resolved);
+    if (!stat.isDirectory()) {
+      throw new Error("cwd must be a directory");
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(`cwd does not exist: ${resolved}`);
+    }
+    throw err;
+  }
+  return resolved;
+}

@@ -10,6 +10,7 @@ import { ConversationStore } from "../../store/conversation-store.js";
 import { SummaryStore } from "../../store/summary-store.js";
 import { parseTranscript, type ParsedMessage } from "../../transcript.js";
 import { ScrubEngine } from "../../scrub.js";
+import { validateCwd } from "../validate-cwd.js";
 
 function isParsedMessage(value: unknown): value is ParsedMessage {
   if (!value || typeof value !== "object") return false;
@@ -41,10 +42,18 @@ function resolveMessages(input: { messages?: unknown; transcript_path?: string }
 export function createIngestHandler(config: DaemonConfig): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
-    const { session_id, cwd } = input;
+    const { session_id } = input;
 
-    if (!session_id || !cwd) {
+    if (!session_id || !input.cwd) {
       sendJson(res, 400, { error: "session_id and cwd are required" });
+      return;
+    }
+
+    let cwd: string;
+    try {
+      cwd = validateCwd(input.cwd);
+    } catch (err) {
+      sendJson(res, 400, { error: err instanceof Error ? err.message : "invalid cwd" });
       return;
     }
 
