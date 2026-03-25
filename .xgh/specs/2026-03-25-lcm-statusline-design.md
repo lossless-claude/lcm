@@ -51,18 +51,36 @@ Dead state: when daemon is unreachable, show `○ dead` only — no stale number
 | `src/daemon/routes/compact.ts` | Call `setActivity("compacting")` / `setActivity("idle")` around work |
 | `src/daemon/routes/promote.ts` | Call `setActivity("promoting")` / `setActivity("idle")` around work |
 | `src/daemon/routes/ingest.ts` | Call `setActivity("ingesting")` / `setActivity("idle")` around work |
+| `src/daemon/client.ts` | Extend `health()` return type to include `activity?: string` |
+| `package.json` | Add `statusline.mjs` to `files` array |
 | `.claude-plugin/plugin.json` | No change — `statusLine` goes in user's `settings.json` |
 
 ### Build output
 
-`statusline.mjs` — alongside existing `lcm.mjs` and `mcp.mjs`.
+`statusline.mjs` — alongside existing `lcm.mjs` and `mcp.mjs`. Must be added to `package.json` `files` array so it ships with `npm publish`.
+
+## Stdin Contract
+
+Claude Code pipes JSON on stdin every tick. The shape (confirmed from claude-hud's `StdinData`):
+
+```ts
+interface StdinData {
+  cwd?: string;                    // project working directory — used for POST /status
+  transcript_path?: string;
+  model?: { id?: string; display_name?: string };
+  context_window?: { context_window_size?: number; current_usage?: { ... } };
+  rate_limits?: { ... };
+}
+```
+
+The statusline parses stdin to extract `cwd` (needed for the `/status` call). All other fields are ignored. Stdin must be fully drained before the process exits (Claude Code API requirement).
 
 ## Data Flow
 
 Per tick (~300ms), Claude Code invokes the statusline command:
 
 ```
-Claude Code → stdin JSON → statusline.ts
+Claude Code → stdin JSON → statusline.ts (parse cwd from stdin)
                               ├─ GET /health → { status, version, uptime, activity }
                               ├─ POST /status { cwd } → { messageCount, promotedCount }
                               └─ statusline-render → stdout → Claude Code displays
@@ -70,7 +88,7 @@ Claude Code → stdin JSON → statusline.ts
 
 - Both HTTP calls fire in parallel (`Promise.all`) to stay under 300ms
 - If daemon is dead, both fail → render `○ dead` immediately, no retries
-- `statusline.ts` drains stdin fully before exiting (Claude Code API requirement)
+- If `cwd` is missing from stdin, fall back to `process.cwd()`
 
 ## Data Contract
 
