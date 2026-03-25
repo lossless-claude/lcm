@@ -12,7 +12,7 @@ export type DaemonConfig = {
   daemon: { port: number; socketPath: string; logLevel: string; logMaxSizeMB: number; logRetentionDays: number; idleTimeoutMs: number };
   compaction: {
     leafTokens: number; maxDepth: number; autoCompactMinTokens: number;
-    promotionThresholds: { minDepth: number; compressionRatio: number; keywords: Record<string, string[]>; architecturePatterns: string[]; dedupBm25Threshold: number; dedupCandidateLimit: number };
+    promotionThresholds: { minDepth: number; compressionRatio: number; keywords: Record<string, string[]>; architecturePatterns: string[]; dedupBm25Threshold: number; dedupCandidateLimit: number; eventConfidence?: { decision?: number; plan?: number; errorFix?: number; batch?: number; pattern?: number }; reinforcementBoost?: number; maxConfidence?: number; insightsMaxAgeDays?: number };
   };
   restoration: { recentSummaries: number; promptSearchMinScore: number; promptSearchMaxResults: number; promptSnippetLength: number; recencyHalfLifeHours: number; crossSessionAffinity: number };
   llm: { provider: "auto" | "claude-process" | "codex-process" | "anthropic" | "openai" | "disabled"; model: string; apiKey?: string; baseURL: string };
@@ -32,6 +32,16 @@ const DEFAULTS: DaemonConfig = {
       architecturePatterns: ["src/[\\w/]+\\.ts", "[A-Z][a-zA-Z]+(Engine|Store|Service|Manager|Handler|Client)", "interface [A-Z]", "class [A-Z]"],
       dedupBm25Threshold: 15,
       dedupCandidateLimit: 100,
+      eventConfidence: {
+        decision: 0.5,
+        plan: 0.7,
+        errorFix: 0.4,
+        batch: 0.3,
+        pattern: 0.2,
+      },
+      reinforcementBoost: 0.3,
+      maxConfidence: 1.0,
+      insightsMaxAgeDays: 90,
     },
   },
   restoration: { recentSummaries: 3, promptSearchMinScore: 2, promptSearchMaxResults: 3, promptSnippetLength: 200, recencyHalfLifeHours: 24, crossSessionAffinity: 0.85 },
