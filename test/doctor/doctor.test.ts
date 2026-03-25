@@ -113,7 +113,7 @@ describe("runDoctor daemon version mismatch", () => {
     expect(daemonResult?.message).toContain(pkgVersion);
   });
 
-  it("reports fail when restart does not fix version mismatch", async () => {
+  it("reports warn with fixApplied:false when restart does not fix version mismatch", async () => {
     const pkgVersion = "0.6.0";
     const daemonVersion = "0.5.0";
 

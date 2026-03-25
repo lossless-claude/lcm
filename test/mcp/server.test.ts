@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { getMcpToolDefinitions, handleDaemonRequest } from "../../src/mcp/server.js";
 
-const ensureDaemonMcpMock = vi.fn().mockResolvedValue({ connected: true, port: 9999, spawned: false });
+const ensureDaemonMcpMock = vi.hoisted(() => vi.fn().mockResolvedValue({ connected: true, port: 9999, spawned: false }));
 
 vi.mock("../../src/daemon/lifecycle.js", () => ({
-  ensureDaemon: (...args: unknown[]) => ensureDaemonMcpMock(...args),
+  ensureDaemon: ensureDaemonMcpMock,
 }));
 vi.mock("../../src/daemon/config.js", () => ({
   loadDaemonConfig: vi.fn().mockReturnValue({ daemon: { port: 9999 } }),
