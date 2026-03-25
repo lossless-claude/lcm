@@ -21,7 +21,7 @@ Single line, three segments:
 ```
 
 | Segment | Source | Format |
-|---------|--------|--------|
+| --- | --- | --- |
 | Health/activity | `GET /health` | `●` green idle, `◐` yellow active, `○` dim dead |
 | Messages ingested | `POST /status` → `project.messageCount` | `{n} msgs` via `formatNumber()` |
 | Promoted memories | `POST /status` → `project.promotedCount` | `{n} promoted` via `formatNumber()` |
@@ -38,7 +38,7 @@ Dead state: when daemon is unreachable, show `○ dead` only — no stale number
 ### New files
 
 | File | Purpose |
-|------|---------|
+| --- | --- |
 | `src/statusline.ts` | Entry point. Reads stdin (required by API), calls daemon, renders line, writes stdout |
 | `src/statusline-render.ts` | Pure function: takes health + status data, returns ANSI string |
 | `src/daemon/activity.ts` | Global activity state tracker (`idle` / `compacting` / `promoting` / `ingesting`) |
@@ -46,7 +46,7 @@ Dead state: when daemon is unreachable, show `○ dead` only — no stale number
 ### Modified files
 
 | File | Change |
-|------|--------|
+| --- | --- |
 | `src/daemon/server.ts` | Include `activity: getActivity()` in `GET /health` response |
 | `src/daemon/routes/compact.ts` | Call `setActivity("compacting")` / `setActivity("idle")` around work |
 | `src/daemon/routes/promote.ts` | Call `setActivity("promoting")` / `setActivity("idle")` around work |
@@ -136,7 +136,10 @@ Integration: each route handler calls `setActivity("X")` before work and `setAct
 
 ## Setup
 
-A `/lcm-statusline-setup` command writes the `statusLine` config into `~/.claude/settings.json`:
+A `/lcm-statusline` command with `on`/`off` parameters toggles the `statusLine` config in `~/.claude/settings.json`:
+
+- `/lcm-statusline on` — merges `statusLine` into settings (preserves other keys)
+- `/lcm-statusline off` — removes `statusLine` from settings
 
 ```json
 {
