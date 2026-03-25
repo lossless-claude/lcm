@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { DaemonClient } from "../daemon/client.js";
 import { loadDaemonConfig } from "../daemon/config.js";
 import { ensureDaemon } from "../daemon/lifecycle.js";
+import { PKG_VERSION } from "../daemon/version.js";
 import { lcmGrepTool } from "./tools/lcm-grep.js";
 import { lcmExpandTool } from "./tools/lcm-expand.js";
 import { lcmDescribeTool } from "./tools/lcm-describe.js";
@@ -181,7 +182,7 @@ export async function startMcpServer(): Promise<void> {
   const port = config.daemon.port;
   const pidFilePath = join(homedir(), ".lossless-claude", "daemon.pid");
 
-  await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 10000 });
+  await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 10000, expectedVersion: PKG_VERSION });
 
   const client = new DaemonClient(`http://127.0.0.1:${port}`);
   const server = new Server({ name: "lcm", version: "1.0.0" }, { capabilities: { tools: {} } });
