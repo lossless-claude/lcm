@@ -13,9 +13,10 @@ Context-mode demonstrates that passive event capture via hooks (PostToolUse, Use
 ## Design Principles
 
 - **Self-sufficient** — LCM must work standalone without context-mode. When both are installed, they operate independently (no coordination, no detection).
-- **Lossless philosophy** — Per the Voltropy LCM paper: nothing is ever deleted. Confidence reflects truth/quality, not temporal relevance. Recency is applied at query time only. Staleness is handled by contradiction detection, not time-based decay.
+- **Lossless philosophy** — Per lossless-claude's design principle, inspired by Voltropy's lossless retrievability model: nothing is ever deleted. Confidence reflects truth/quality, not temporal relevance. Recency is applied at query time only. Staleness is handled by contradiction detection, not time-based decay. (Note: the Voltropy LCM paper covers lossless retrievability and compaction, not confidence scoring — the promoted store with confidence is lossless-claude's own innovation.)
 - **Allowlist extraction** — Only extract structured metadata from tool calls. Never store raw tool_response content. Security by construction, not by scrubbing.
 - **Sidecar for speed, daemon for smarts** — Hooks write to a fast local SQLite (no daemon dependency). The daemon processes events asynchronously at natural boundaries.
+- **Silent fail, never block** — All hook code wraps in try/catch with silent fallback. A failure in passive learning must NEVER block the user's session. This matches context-mode's established pattern (`// PostToolUse must never block the session — silent fallback`). Log errors to `~/.lossless-claude/logs/events.log` for diagnostics, but never surface them to the user.
 
 ## Architecture
 
@@ -155,6 +156,8 @@ Calls daemon `/prompt-search`, returns hints + static learning instruction.
 | Role | "act as", "senior engineer", "I'm a data scientist" | `role` | 2 |
 | Intent | "why/explain/debug" → investigate, "create/fix/build" → implement | `intent` | 3 |
 
+**Negative-match guards:** Decision extractors must exclude false positives from conversational phrases. Examples: "don't worry about tests" should NOT match as a decision about tests. "never mind" should NOT match as a "never" directive. Implementation: maintain a `NEGATIVE_PATTERNS` list (e.g., `don't worry`, `never mind`, `not sure`, `doesn't matter`) checked before positive matching. Test with real-world conversational inputs.
+
 Shared extractors module with PostToolUse (`src/hooks/extractors.ts`).
 
 **3b. Role-aware learning instruction**
@@ -195,6 +198,8 @@ Reads sidecar events.db, promotes to promoted table, marks events as processed.
 
 Promoted during the PostToolUse hook itself (low frequency — AskUserQuestion/plan events happen 2-5 times per session).
 
+**Daemon-down fallback:** If the daemon HTTP call fails (connection refused, timeout), the event is still in the sidecar (already written before the HTTP call). It will be promoted at the next successful trigger (session-end, pre-compact, or next session-start scavenge). No data is lost — only promotion timing is delayed.
+
 **Tier 2 — Batch (priority 2 events):**
 - Git operations → aggregate into session summary
 - Environment changes → "installed lodash, switched to node 20"
@@ -211,23 +216,27 @@ Check promoted table for existing entries. If found, reinforce via Math.max. If 
 
 ### Configurable confidence
 
-Defaults in code, overridable in `~/.lossless-claude/config.json`:
+Defaults in code, overridable in `~/.lossless-claude/config.json` under the existing `compaction.promotionThresholds` namespace (avoids creating a parallel config tree):
 
 ```json
 {
-  "promotion": {
-    "confidence": {
-      "decision": 0.5,
-      "plan": 0.7,
-      "errorFix": 0.4,
-      "batch": 0.3,
-      "pattern": 0.2
-    },
-    "reinforcementBoost": 0.3,
-    "maxConfidence": 1.0
+  "compaction": {
+    "promotionThresholds": {
+      "eventConfidence": {
+        "decision": 0.5,
+        "plan": 0.7,
+        "errorFix": 0.4,
+        "batch": 0.3,
+        "pattern": 0.2
+      },
+      "reinforcementBoost": 0.3,
+      "maxConfidence": 1.0
+    }
   }
 }
 ```
+
+> **Note:** These confidence defaults are uncalibrated starting points. They should be tuned based on real-world data after v1 ships. Consider adding a `/lcm-calibrate-events` skill in a future version to help users adjust thresholds based on their promotion quality.
 
 ### Confidence reinforcement
 
@@ -254,11 +263,15 @@ Uses existing `deduplicateAndInsert()` — `listContentPrefixes()` prevents dupl
 
 During `/promote-events` batch processing:
 1. Sort events by session_id + seq
-2. Detect error→success sequences (same tool_name, error at T1, success at T2)
+2. Detect error→success sequences using **command pattern matching** (not just tool_name — Bash errors need the command pattern, e.g., `npm install` → `npm install --legacy-peer-deps`). Match on: tool_name + command prefix (first 2 tokens of Bash commands) + file path (for Edit/Write).
 3. Set `prev_event_id` on the success event → creates error→fix chain
 4. Promote the pair as a `category:solution` insight
 
-## 5. Contradiction Detection
+> **Correlation window:** Only consider events within 20 seq positions of each other in the same session. Beyond that, the error and fix are unlikely to be related.
+
+## 5. Contradiction Detection (v1.1 — Deferred)
+
+> **Deferred to v1.1.** Consensus across 3 independent reviewers: ship capture and promotion first (v1), add contradiction detection once data proves the pipeline works. The sidecar schema and promotion pipeline are designed to support this without schema changes.
 
 When a new promoted entry semantically contradicts an existing one, archive the old entry.
 
@@ -283,9 +296,13 @@ Same-topic replacement: if two entries match above a high BM25 threshold AND sha
 
 Only passively captured events can supersede each other. Explicit `lcm_store()` calls always reinforce (Math.max), never supersede. The user explicitly storing something is a stronger signal than regex extraction.
 
+### v1 behavior (until contradiction detection ships)
+
+Dedup handles near-duplicates via existing `deduplicateAndInsert()`. True contradictions (same topic, opposite decisions) will coexist in the promoted store — both visible in search results. This is acceptable for v1: the lossless philosophy means keeping both is safer than incorrectly archiving one without LLM verification.
+
 ## 6. No Confidence Decay
 
-Per the Voltropy LCM paper and lossless-claw's intentional removal of `confidenceDecayRate`:
+Per lossless-claude's design principle (inspired by Voltropy's lossless philosophy) and the intentional removal of `confidenceDecayRate` from lossless-claw:
 
 | Signal | What it measures | When applied | Mutates storage? |
 |--------|-----------------|-------------|-----------------|
@@ -341,7 +358,7 @@ Events are never truly lost — SQLite persistence is immediate. Only promotion 
 ## 9. Security
 
 - **Allowlist extraction model** — only extract structured metadata, never raw tool_response content
-- **Scrubbing at capture time** — shared redaction patterns from daemon (`src/hooks/scrub.ts`)
+- **Scrubbing at capture time** — reuse existing `src/scrub.ts` module (comprehensive redaction for API keys, tokens, passwords, etc.) rather than creating a new shared module
 - **Sensitive file detection** — skip events for `.env`, `.ssh/`, `credentials`, `secrets/` paths
 - **File permissions** — `0o700` for events directory, DB created with appropriate umask
 - **No fixed truncation** — allowlist naturally bounds content; soft cap at 2000 chars as safety valve
@@ -355,7 +372,7 @@ Events are never truly lost — SQLite persistence is immediate. Only promotion 
 | `src/hooks/post-tool.ts` | PostToolUse handler |
 | `src/hooks/events-db.ts` | Sidecar SQLite wrapper (open, migrate, insert, query, close) |
 | `src/hooks/extractors.ts` | Event extraction functions (shared by PostToolUse + UserPromptSubmit) |
-| `src/shared/scrub.ts` | Shared redaction patterns (importable by both hooks and daemon, single source of truth) |
+| ~~`src/shared/scrub.ts`~~ | **Not needed** — reuse existing `src/scrub.ts` which already has comprehensive redaction patterns (API keys, tokens, passwords, Slack tokens, etc.) |
 | `src/db/events-path.ts` | Shared `eventsDbPath(cwd)` function for sidecar path resolution |
 | `src/daemon/routes/promote-events.ts` | New daemon route for event promotion |
 
@@ -374,7 +391,13 @@ Events are never truly lost — SQLite persistence is immediate. Only promotion 
 | `src/daemon/server.ts` | Register `/promote-events` route |
 | `src/daemon/config.ts` | Add `promotion` config section |
 
-## 11. v1.1 — PreToolUse Proactive Warnings (Deferred)
+## 11. v1.1 — Deferred Features
+
+### Contradiction Detection
+
+Full implementation of Section 5 — Haiku LLM-based contradiction detection with BM25 fallback. Requires v1 data to validate that the pipeline produces meaningful promoted entries worth running contradiction checks against.
+
+### PreToolUse Proactive Warnings
 
 **Schema-ready in v1.** The events sidecar and promoted store support PreToolUse queries. Auto-tagging makes entries searchable by category.
 
@@ -391,15 +414,24 @@ User asks to edit tsconfig.json
 → returns: <tool-warning>Previous sessions suggest: run tsc after editing tsconfig.</tool-warning>
 ```
 
+## 12. Observability
+
+Basic logging for diagnosing issues without adding infrastructure:
+
+- **Hook-side:** On error, append one-line JSON to `~/.lossless-claude/logs/events.log` (same pattern as `auto-heal.ts`). Include: timestamp, hook name, error message, session_id.
+- **Daemon-side:** `/promote-events` logs: events read, events promoted, events skipped (with reason), dedup hits. Uses existing daemon log infrastructure (`config.daemon.logLevel`).
+- **`/lcm-doctor` integration:** Extend the existing doctor skill to check: sidecar DB exists, unprocessed event count, last promotion timestamp, events.log error count in last 24h.
+- **No metrics/telemetry** — just structured logs. `/lcm-stats` can be extended to show event capture rates.
+
 ## Testing
 
-- Unit tests for `extractors.ts` (each extractor function, edge cases, sensitive file detection)
+- Unit tests for `extractors.ts` (each extractor function, edge cases, sensitive file detection, **negative-match guards** — verify "don't worry", "never mind", etc. do NOT produce decision events)
 - Unit tests for `events-db.ts` (open, migrate, insert, query, concurrent writes, WAL mode)
 - Integration tests for `post-tool.ts` (stdin parsing, sidecar writes, Tier 1 daemon HTTP)
 - Integration tests for `/promote-events` route (3-tier promotion, dedup, contradiction detection)
 - Integration tests for enhanced `user-prompt.ts` (extraction + prompt-search combined flow)
 - Integration tests for `restore.ts` (learned-insights injection)
-- Dedicated tests for contradiction detection: Haiku LLM path vs. BM25 fallback path, supersede-only-passive guard rail
+- ~~Dedicated tests for contradiction detection~~ (v1.1 — deferred with contradiction detection)
 - E2E test: full cycle from PostToolUse capture → session-end promotion → next session restore with insights
 
 ## Non-Goals
