@@ -413,9 +413,18 @@ describe("ensureLcmMd", () => {
     expect(claudeMd.indexOf("<!-- lcm:start -->")).toBe(claudeMd.lastIndexOf("<!-- lcm:start -->")); // only one block
   });
 
-  it("always overwrites lcm.md to keep content current", () => {
-    const { deps, written } = makeDepsForLcm();
-    ensureLcmMd(deps, CONTENT, "/home");
+  it("overwrites lcm.md when content is stale", () => {
+    const files = new Map<string, string>();
+    files.set("/home/.claude/lcm.md", "# old content\n");
+    const written = new Map<string, string>();
+    const deps = {
+      existsSync: (p: string) => files.has(p),
+      readFileSync: (p: string) => files.get(p) ?? "",
+      writeFileSync: (p: string, content: string) => { written.set(p, content); files.set(p, content); },
+      mkdirSync: vi.fn(),
+    };
+    const result = ensureLcmMd(deps, CONTENT, "/home");
+    expect(result.lcmMdWritten).toBe(true);
     expect(written.get("/home/.claude/lcm.md")).toBe(CONTENT);
   });
 });

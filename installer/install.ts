@@ -148,12 +148,11 @@ export function ensureLcmMd(
   }
 
   const block = `${LCM_BLOCK_START}\n<!-- Claude Code include: @lcm.md -->\n${LCM_BLOCK_END}`;
-  const startIdx = existing.indexOf(LCM_BLOCK_START);
-  const endIdx = existing.indexOf(LCM_BLOCK_END, startIdx);
+  const blockRegex = /[ \t]*<!--\s*lcm:start\s*-->[\s\S]*?<!--\s*lcm:end\s*-->\s*/;
 
-  if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+  if (blockRegex.test(existing)) {
     // Block exists — replace it in case content changed
-    const updated = existing.slice(0, startIdx) + block + existing.slice(endIdx + LCM_BLOCK_END.length);
+    const updated = existing.replace(blockRegex, block + "\n");
     if (updated !== existing) {
       deps.writeFileSync(claudeMdPath, updated);
       claudeMdPatched = true;
