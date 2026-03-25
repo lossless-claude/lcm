@@ -32,5 +32,17 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Check for workspace artifacts
+        run: |
+          UNTRACKED=$(git status --porcelain | grep "^??" | grep -vE "^\?\? (node_modules|dist)/" || true)
+          if [ -n "$UNTRACKED" ]; then
+            echo "❌ Tests or build left unexpected untracked files in the workspace:"
+            echo "$UNTRACKED"
+            echo ""
+            echo "Ensure all temp files go to os.tmpdir(), not process.cwd(). Tests must clean up after themselves."
+            exit 1
+          fi
+          echo "✅ Workspace is clean"
+
       - name: Build
         run: npm run build

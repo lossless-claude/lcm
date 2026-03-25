@@ -1,9 +1,16 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { AGENTS } from "../../src/connectors/registry.js";
 import { installConnector, removeConnector, listConnectors } from "../../src/connectors/installer.js";
-import { mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+
+const tmps: string[] = [];
+afterEach(() => {
+  for (const tmp of tmps.splice(0)) {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
 
 describe("connectors CLI integration", () => {
   it("list returns a non-empty registry with known agents", () => {
@@ -13,7 +20,7 @@ describe("connectors CLI integration", () => {
   });
 
   it("install + list + remove roundtrip for rules connector", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "lcm-cli-"));
+    const tmp = tmps[tmps.push(mkdtempSync(join(tmpdir(), "lcm-cli-"))) - 1];
     // Install
     const result = installConnector("Cursor", "rules", tmp);
     expect(result.success).toBe(true);
@@ -33,7 +40,7 @@ describe("connectors CLI integration", () => {
   });
 
   it("install + list + remove roundtrip for MCP connector", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "lcm-cli-"));
+    const tmp = tmps[tmps.push(mkdtempSync(join(tmpdir(), "lcm-cli-"))) - 1];
 
     const result = installConnector("Cursor", "mcp", tmp);
     expect(result.success).toBe(true);
@@ -46,7 +53,7 @@ describe("connectors CLI integration", () => {
   });
 
   it("doctor reports no connectors for fresh workspace", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "lcm-cli-"));
+    const tmp = tmps[tmps.push(mkdtempSync(join(tmpdir(), "lcm-cli-"))) - 1];
     const installed = listConnectors(tmp);
     expect(installed).toHaveLength(0);
   });
