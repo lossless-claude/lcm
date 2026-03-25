@@ -10,12 +10,7 @@
 
 import { describe, it, beforeAll, afterAll } from "vitest";
 import { expect } from "vitest";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import { createHarness, type HarnessHandle, openProjectDb } from "../e2e/harness.js";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const SYNTHETIC_FIXTURE = join(__dirname, "..", "fixtures", "synthetic-session.jsonl");
 
 describe("Continuous Learning", { timeout: 60_000 }, () => {
   let handle: HarnessHandle;
@@ -69,7 +64,7 @@ describe("Continuous Learning", { timeout: 60_000 }, () => {
     const result = await handle.client.post<{ ingested: number; totalTokens: number }>("/ingest", {
       session_id: "cl-synthetic-session",
       cwd: handle.tmpDir,
-      transcript_path: SYNTHETIC_FIXTURE,
+      transcript_path: handle.syntheticFixturePath,
     });
     expect(result.ingested).toBeGreaterThan(0);
   });
@@ -78,7 +73,7 @@ describe("Continuous Learning", { timeout: 60_000 }, () => {
     const result = await handle.client.post<{ ingested: number; totalTokens: number }>("/ingest", {
       session_id: "cl-synthetic-session",
       cwd: handle.tmpDir,
-      transcript_path: SYNTHETIC_FIXTURE,
+      transcript_path: handle.syntheticFixturePath,
     });
     expect(result.ingested).toBe(0);
   });

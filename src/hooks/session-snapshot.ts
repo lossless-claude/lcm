@@ -58,13 +58,32 @@ export async function handleSessionSnapshot(
       await _post("/ingest", { session_id, cwd, transcript_path });
     } else {
       const { loadDaemonConfig } = await import("../daemon/config.js");
-      const { DaemonClient } = await import("../daemon/client.js");
-      const { homedir } = await import("node:os");
-      const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
+      const { readFileSync: _readFileSync } = await import("node:fs");
+      const { homedir: _homedir } = await import("node:os");
+      const config = loadDaemonConfig(join(_homedir(), ".lossless-claude", "config.json"));
       const port = config.daemon?.port ?? 3737;
       const baseUrl = `http://127.0.0.1:${port}`;
-      const client = new DaemonClient(baseUrl);
-      await client.post("/ingest", { session_id, cwd, transcript_path });
+
+      // Read token from token file if available (silent fallback if not found)
+      let token: string | null = null;
+      try {
+        const tokenPath = join(_homedir(), ".lossless-claude", "daemon.token");
+        const raw = _readFileSync(tokenPath, "utf-8").trim();
+        token = raw || null;
+      } catch {
+        // Token file not found — auth not yet set up, proceed without it
+      }
+
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+
+      await fetch(`${baseUrl}/ingest`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ session_id, cwd, transcript_path }),
+      });
     }
 
     // Touch cursor file
