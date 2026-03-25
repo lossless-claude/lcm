@@ -3,6 +3,7 @@ import { readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { runLcmMigrations } from "./db/migration.js";
+import { collectEventStats } from "./db/events-stats.js";
 
 interface ConversationStats {
   conversationId: number;
@@ -35,6 +36,9 @@ interface OverallStats {
   promotedCount: number;
   conversationDetails: ConversationStats[];
   redactionCounts: RedactionCounts;
+  eventsCaptured: number;
+  eventsUnprocessed: number;
+  eventsErrors: number;
 }
 
 function queryProjectStats(dbPath: string, projectId: string): Omit<OverallStats, "projects"> {
@@ -115,6 +119,7 @@ function queryProjectStats(dbPath: string, projectId: string): Omit<OverallStats
       promotedCount: promoted.count,
       conversationDetails,
       redactionCounts,
+      eventsCaptured: 0, eventsUnprocessed: 0, eventsErrors: 0,
     };
   } finally {
     db.close();
@@ -169,6 +174,10 @@ export function printStats(stats: OverallStats, verbose: boolean): void {
     ["DAG depth", String(stats.maxDepth)],
     ["Promoted memories", String(stats.promotedCount)],
   ];
+
+  if (stats.eventsCaptured > 0) {
+    memRows.push(["Events", `${formatNumber(stats.eventsCaptured)} captured (${stats.eventsUnprocessed} unprocessed, ${stats.eventsErrors} errors (30d))`]);
+  }
 
   const labelWidth = Math.max(...memRows.map(([l]) => l.length));
   for (const [label, value] of memRows) {
@@ -275,6 +284,7 @@ export function collectStats(): OverallStats {
       maxDepth: 0, rawTokens: 0, summaryTokens: 0, ratio: 0,
       promotedCount: 0, conversationDetails: [],
       redactionCounts: { builtIn: 0, global: 0, project: 0, total: 0 },
+      eventsCaptured: 0, eventsUnprocessed: 0, eventsErrors: 0,
     };
   }
 
@@ -318,6 +328,17 @@ export function collectStats(): OverallStats {
     }
   }
 
+  // Passive learning event stats
+  let eventsCaptured = 0;
+  let eventsUnprocessed = 0;
+  let eventsErrors = 0;
+  try {
+    const eventStats = collectEventStats(2000);
+    eventsCaptured = eventStats.captured;
+    eventsUnprocessed = eventStats.unprocessed;
+    eventsErrors = eventStats.errors;
+  } catch { /* non-fatal */ }
+
   return {
     projects: totalProjects,
     conversations: totalConversations,
@@ -331,5 +352,6 @@ export function collectStats(): OverallStats {
     promotedCount: totalPromoted,
     conversationDetails: allDetails,
     redactionCounts: totalRedactions,
+    eventsCaptured, eventsUnprocessed, eventsErrors,
   };
 }
