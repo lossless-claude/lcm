@@ -136,7 +136,10 @@ Integration: each route handler calls `setActivity("X")` before work and `setAct
 
 ## Setup
 
-A `/lcm-statusline-setup` command writes the `statusLine` config into `~/.claude/settings.json`:
+A `/lcm-statusline` command with `on`/`off` parameters toggles the `statusLine` config in `~/.claude/settings.json`:
+
+- `/lcm-statusline on` — merges `statusLine` into settings (preserves other keys)
+- `/lcm-statusline off` — removes `statusLine` from settings
 
 ```json
 {

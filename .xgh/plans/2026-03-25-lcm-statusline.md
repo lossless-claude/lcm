@@ -21,7 +21,7 @@
 | Create | `src/statusline-render.ts` | Pure function: health + status data → ANSI string |
 | Create | `src/statusline.ts` | Entry point: drain stdin, call daemon, write stdout |
 | Create | `statusline.mjs` | Bootstrap wrapper (same pattern as `lcm.mjs`) |
-| Create | `.claude-plugin/commands/lcm-statusline-setup.md` | Setup slash command |
+| Create | `.claude-plugin/commands/lcm-statusline.md` | `/lcm-statusline on|off` toggle command |
 | Create | `test/statusline-render.test.ts` | Unit tests for renderer |
 | Create | `test/daemon/activity.test.ts` | Unit tests for activity state |
 | Create | `test/daemon/routes/health.test.ts` | Integration test for `/health` activity field |
@@ -653,9 +653,9 @@ git commit -m "feat: add statusline.mjs bootstrap and include in npm files"
 ## Task 8: Setup slash command
 
 **Files:**
-- Create: `.claude-plugin/commands/lcm-statusline-setup.md`
+- Create: `.claude-plugin/commands/lcm-statusline.md`
 
-This command writes the `statusLine` entry into the user's `~/.claude/settings.json`. Follow the pattern of existing setup commands in the repo.
+This command toggles the `statusLine` entry in `~/.claude/settings.json`. `/lcm-statusline on` installs it, `/lcm-statusline off` removes it.
 
 - [ ] **Step 1: Check an existing command for frontmatter format**
 
@@ -663,22 +663,28 @@ This command writes the `statusLine` entry into the user's `~/.claude/settings.j
 head -10 .claude-plugin/commands/lcm-status.md
 ```
 
-- [ ] **Step 2: Create `.claude-plugin/commands/lcm-statusline-setup.md`**
+- [ ] **Step 2: Create `.claude-plugin/commands/lcm-statusline.md`**
 
 ```markdown
 ---
-name: lcm-statusline-setup
-description: Configure the lcm statusline in Claude Code settings
+name: lcm-statusline
+description: Enable or disable the lcm statusline in Claude Code (usage: /lcm-statusline on|off)
 user_invocable: true
 ---
 
-# /lcm-statusline-setup
+# /lcm-statusline
 
 ## Instructions
 
-Configure the Claude Code statusline to display lcm daemon health and memory stats in the terminal status bar.
+Enable or disable the lcm statusline in Claude Code's terminal status bar.
 
-Run this command to find the plugin root and merge the `statusLine` config into `~/.claude/settings.json` without overwriting other settings:
+**Usage:** `/lcm-statusline on` or `/lcm-statusline off`
+
+Check the first argument passed to this command:
+
+### If argument is `on`
+
+Run this command to merge the `statusLine` config into `~/.claude/settings.json` without overwriting other settings:
 
 ```bash
 PLUGIN_ROOT=$(node -e "console.log(require.resolve('lossless-claude/package.json').replace('/package.json',''))" 2>/dev/null || echo "") && \
@@ -686,10 +692,21 @@ PLUGIN_ROOT=$(node -e "console.log(require.resolve('lossless-claude/package.json
 SETTINGS="$HOME/.claude/settings.json" && \
 [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS" && \
 TMP=$(jq --arg p "$PLUGIN_ROOT/statusline.mjs" '.statusLine = {"command":"node","args":[$p]}' "$SETTINGS") && \
-echo "$TMP" > "$SETTINGS" && echo "Done. Restart Claude Code to activate the statusline."
+echo "$TMP" > "$SETTINGS" && echo "Statusline enabled. Restart Claude Code to activate."
 ```
 
-Tell the user: **Restart Claude Code** to activate the statusline.
+### If argument is `off`
+
+Run this command to remove the `statusLine` key from `~/.claude/settings.json`:
+
+```bash
+SETTINGS="$HOME/.claude/settings.json" && \
+[ -f "$SETTINGS" ] && \
+TMP=$(jq 'del(.statusLine)' "$SETTINGS") && \
+echo "$TMP" > "$SETTINGS" && echo "Statusline disabled. Restart Claude Code to deactivate."
+```
+
+Tell the user: **Restart Claude Code** to apply the change.
 ```
 
 - [ ] **Step 3: Verify command is discoverable**
@@ -697,13 +714,13 @@ Tell the user: **Restart Claude Code** to activate the statusline.
 ```bash
 ls .claude-plugin/commands/ | grep statusline
 ```
-Expected: `lcm-statusline-setup.md`
+Expected: `lcm-statusline.md`
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add .claude-plugin/commands/lcm-statusline-setup.md
-git commit -m "feat: add /lcm-statusline-setup command"
+git add .claude-plugin/commands/lcm-statusline.md
+git commit -m "feat: add /lcm-statusline on|off command"
 ```
 
 ---
