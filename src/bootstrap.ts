@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { mergeClaudeSettings } from "./installer/settings.js";
 import { loadDaemonConfig } from "./daemon/config.js";
@@ -82,7 +82,9 @@ export async function ensureBootstrapped(
   deps: BootstrapDeps = defaultBootstrapDeps(),
 ): Promise<void> {
   const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-  const flagPath = join(tmpdir(), `lcm-bootstrapped-${safeId}.flag`);
+  const flagDir = join(homedir(), ".lossless-claude", "tmp");
+  mkdirSync(flagDir, { recursive: true });
+  const flagPath = join(flagDir, `bootstrapped-${safeId}.flag`);
   try {
     if (deps.flagExists(flagPath)) return;
   } catch {}

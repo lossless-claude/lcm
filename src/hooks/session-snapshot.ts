@@ -1,6 +1,6 @@
-import { statSync, writeFileSync } from "node:fs";
+import { statSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 
 export interface SnapshotDeps {
   statSync: (path: string) => { mtimeMs: number } | null;
@@ -29,7 +29,9 @@ export async function handleSessionSnapshot(
     }
 
     const safeSessionId = session_id.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const cursorPath = join(tmpdir(), `lcm-snap-${safeSessionId}.json`);
+    const cursorDir = join(homedir(), ".lossless-claude", "tmp");
+    mkdirSync(cursorDir, { recursive: true });
+    const cursorPath = join(cursorDir, `snap-${safeSessionId}.json`);
     const _statSync = deps?.statSync ?? defaultStatSync;
     let intervalSec = deps?.snapshotIntervalSec;
     if (intervalSec === undefined) {
