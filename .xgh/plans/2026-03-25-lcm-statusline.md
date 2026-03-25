@@ -222,9 +222,9 @@ Add at the top of the file with the other imports:
 import { setActivity } from "../activity.js";
 ```
 
-> **Important:** Do NOT create a new try/finally wrapper. The existing try/finally structure is at lines 116–249. Insert two lines only:
-> - After `compactingNow.add(session_id)` (line 114): add `setActivity("compacting");`
-> - Inside the existing `finally` block at lines 247–249 alongside `compactingNow.delete(session_id)`: add `setActivity("idle");`
+> **Important:** Do NOT create a new try/finally wrapper. Find the existing try/finally structure in the handler. Insert two lines only:
+> - After `compactingNow.add(session_id)`: add `setActivity("compacting");`
+> - Inside the existing `finally` block alongside `compactingNow.delete(session_id)`: add `setActivity("idle");`
 
 The finally block should look like:
 ```ts
@@ -524,7 +524,8 @@ async function main(): Promise<void> {
     if (stdin.cwd) cwd = stdin.cwd;
   } catch { /* ignore parse errors */ }
 
-  const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
+  const configPath = join(homedir(), ".lossless-claude", "config.json");
+  const config = loadDaemonConfig(configPath);
   const client = new DaemonClient(`http://127.0.0.1:${config.daemon.port}`);
 
   let health: HealthData = null;
