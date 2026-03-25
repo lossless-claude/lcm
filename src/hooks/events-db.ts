@@ -18,7 +18,15 @@ export interface EventRow {
   created_at: string;
 }
 
-const SCHEMA_VERSION = 1;
+export interface HealthStats {
+  totalEvents: number;
+  unprocessed: number;
+  errors: number;
+  lastCapture: string | null;
+  lastError: string | null;
+}
+
+const SCHEMA_VERSION = 2;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -37,6 +45,14 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_unprocessed ON events(processed_at) WHERE processed_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, created_at);
+CREATE TABLE IF NOT EXISTS error_log (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  hook       TEXT NOT NULL,
+  error      TEXT NOT NULL,
+  session_id TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_error_log_created ON error_log(created_at);
 `;
 
 export class EventsDb {
@@ -72,10 +88,25 @@ export class EventsDb {
 
     const currentVersion = versionRow.version;
 
-    // Future migrations go here:
-    // if (currentVersion < 2) { ... UPDATE schema_version SET version = 2; }
-    if (currentVersion < SCHEMA_VERSION) {
-      this.db.prepare("UPDATE schema_version SET version = ?").run(SCHEMA_VERSION);
+    if (currentVersion < 2) {
+      this.db.exec("BEGIN EXCLUSIVE");
+      try {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS error_log (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            hook       TEXT NOT NULL,
+            error      TEXT NOT NULL,
+            session_id TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+          );
+          CREATE INDEX IF NOT EXISTS idx_error_log_created ON error_log(created_at);
+        `);
+        this.db.prepare("UPDATE schema_version SET version = 2").run();
+        this.db.exec("COMMIT");
+      } catch (e) {
+        try { this.db.exec("ROLLBACK"); } catch { /* ignore */ }
+        throw e;
+      }
     }
   }
 
@@ -117,6 +148,97 @@ export class EventsDb {
   setPrevEventId(eventId: number, prevEventId: number): void {
     this.db.prepare("UPDATE events SET prev_event_id = ? WHERE event_id = ?")
       .run(prevEventId, eventId);
+  }
+
+  logHookError(hook: string, error: unknown, sessionId?: string): void {
+    const msg = error instanceof Error ? error.message : String(error);
+    this.db.prepare(
+      "INSERT INTO error_log (hook, error, session_id) VALUES (?, ?, ?)"
+    ).run(hook, msg, sessionId ?? null);
+  }
+
+  getHealthStats(): HealthStats {
+    const eventTotals = this.db.prepare(
+      "SELECT COUNT(*) as totalEvents, MAX(created_at) as lastCapture FROM events"
+    ).get() as { totalEvents: number; lastCapture: string | null };
+    const unprocessedRow = this.db.prepare(
+      "SELECT COUNT(*) as unprocessed FROM events WHERE processed_at IS NULL"
+    ).get() as { unprocessed: number };
+    const errorTotals = this.db.prepare(
+      "SELECT COUNT(*) as errors, MAX(created_at) as lastError FROM error_log WHERE created_at >= datetime('now', '-30 days')"
+    ).get() as { errors: number; lastError: string | null };
+
+    return {
+      totalEvents: eventTotals.totalEvents,
+      unprocessed: unprocessedRow.unprocessed,
+      errors: errorTotals.errors,
+      lastCapture: eventTotals.lastCapture,
+      lastError: errorTotals.lastError,
+    };
+  }
+
+  pruneUnprocessed(maxRows = 10_000, maxAgeDays = 30): { pruned: number } {
+    let pruned = 0;
+    this.db.exec("BEGIN");
+    try {
+      const ageCountRow = this.db.prepare(
+        `SELECT COUNT(*) as c FROM events
+         WHERE processed_at IS NULL
+         AND created_at < datetime('now', '-' || ? || ' days')`
+      ).get(maxAgeDays) as { c: number };
+      const ageCount = ageCountRow.c;
+
+      const totalUnprocessedRow = this.db.prepare(
+        "SELECT COUNT(*) as c FROM events WHERE processed_at IS NULL"
+      ).get() as { c: number };
+      const totalUnprocessed = totalUnprocessedRow.c;
+
+      const remainingAfterAge = totalUnprocessed - ageCount;
+      let excess = 0;
+      if (remainingAfterAge > maxRows) {
+        excess = remainingAfterAge - maxRows;
+      }
+
+      pruned = ageCount + excess;
+
+      if (pruned > 0) {
+        this.db.prepare(
+          "INSERT INTO error_log (hook, error, session_id) VALUES (?, ?, NULL)"
+        ).run("pruneUnprocessed", `pruned ${pruned} unprocessed events (age/cap limit)`);
+      }
+
+      if (ageCount > 0) {
+        this.db.prepare(
+          `DELETE FROM events WHERE processed_at IS NULL
+           AND event_id IN (
+             SELECT event_id FROM events WHERE processed_at IS NULL
+             AND created_at < datetime('now', '-' || ? || ' days')
+           )`
+        ).run(maxAgeDays);
+      }
+
+      if (excess > 0) {
+        this.db.prepare(
+          `DELETE FROM events WHERE event_id IN (
+             SELECT event_id FROM events WHERE processed_at IS NULL
+             ORDER BY event_id ASC LIMIT ?
+           )`
+        ).run(excess);
+      }
+
+      this.db.exec("COMMIT");
+    } catch (e) {
+      try { this.db.exec("ROLLBACK"); } catch { /* ignore */ }
+      throw e;
+    }
+    return { pruned };
+  }
+
+  pruneErrorLog(olderThanDays = 30): number {
+    const result = this.db.prepare(
+      "DELETE FROM error_log WHERE created_at < datetime('now', '-' || ? || ' days')"
+    ).run(olderThanDays);
+    return Number(result.changes);
   }
 
   /** Expose raw DB for testing only. */
