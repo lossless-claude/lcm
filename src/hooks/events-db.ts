@@ -88,7 +88,7 @@ export class EventsDb {
   getUnprocessed(limit = 500): EventRow[] {
     return this.db.prepare(
       "SELECT * FROM events WHERE processed_at IS NULL ORDER BY session_id, seq LIMIT ?"
-    ).all(limit) as EventRow[];
+    ).all(limit) as unknown as EventRow[];
   }
 
   markProcessed(eventIds: number[]): void {
