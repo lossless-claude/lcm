@@ -36,8 +36,11 @@ logHookError(hook: string, error: unknown, sessionId?: string): void
 pruneUnprocessed(maxRows = 10_000, maxAgeDays = 30): { pruned: number }
 // DELETE oldest by event_id when count > maxRows
 // DELETE by event_id where created_at < now - maxAgeDays
-// Log prune count to error_log BEFORE deleting: "pruned N unprocessed events (cap exceeded)"
-// Uses event_id for ordering (monotonic ROWID), matching getUnprocessed() implicit order
+// Log prune count to error_log BEFORE deleting: "pruned N unprocessed events (age/cap limit)"
+// Uses event_id for ordering (monotonic ROWID) for deterministic pruning.
+// Note: getUnprocessed() uses ORDER BY session_id, seq for grouped batch processing.
+// The orderings serve different purposes: pruning needs monotonic age ordering,
+// while batch retrieval needs session-grouped ordering. They do not need to match.
 
 getHealthStats(): HealthStats
 // Returns: { totalEvents, unprocessed, errors, lastCapture, lastError }
@@ -47,7 +50,7 @@ pruneErrorLog(olderThanDays = 30): number
 // DELETE FROM error_log WHERE created_at < datetime('now', '-' || ? || ' days')
 ```
 
-**Prune ordering:** Both `pruneUnprocessed` and `getUnprocessed` use `event_id` (monotonic ROWID) to avoid clock-skew divergence between the batch cursor and the prune cursor.
+**Prune ordering:** `pruneUnprocessed` uses `event_id` (monotonic ROWID) for deterministic age-based pruning, avoiding clock-skew issues. `getUnprocessed` uses `ORDER BY session_id, seq` for grouped batch processing. These orderings serve different purposes — pruning needs monotonic age ordering to remove the oldest events, while batch retrieval needs session-grouped ordering for coherent processing. They do not need to match.
 
 **Prune triggers:** `pruneUnprocessed()` and `pruneErrorLog()` are called on SessionStart alongside existing `pruneProcessed(7)`.
 
@@ -58,8 +61,8 @@ interface HealthStats {
   totalEvents: number;
   unprocessed: number;
   errors: number;        // error_log count (last 30 days)
-  lastCapture: string | null;  // ISO timestamp of most recent event
-  lastError: string | null;    // ISO timestamp of most recent error_log entry
+  lastCapture: string | null;  // SQLite datetime string (YYYY-MM-DD HH:MM:SS via datetime('now')); consumers should handle this format
+  lastError: string | null;    // SQLite datetime string (YYYY-MM-DD HH:MM:SS via datetime('now')); consumers should handle this format
 }
 ```
 
@@ -138,7 +141,7 @@ export function safeLogError(
 
 Add `checkPassiveLearning(results: CheckResult[])` to `src/doctor/doctor.ts`.
 
-**Gate:** If the PostToolUse hook is not installed (already checked in Settings category), skip the entire Passive Learning section. No false positives for users without passive learning.
+**Gate:** If hooks are not installed, skip the entire Passive Learning section. The Settings category produces a single combined `{ name: "hooks" }` check result (not per-hook results). The gate should check `results.some(r => r.name === "hooks" && r.status === "pass")` or inspect the hook config directly for the PostToolUse entry. No false positives for users without passive learning.
 
 ### 3.2 Checks
 
@@ -156,14 +159,14 @@ Add `checkPassiveLearning(results: CheckResult[])` to `src/doctor/doctor.ts`.
 ### 3.3 Scanning Constraints
 
 - **Serial scan** of `~/.lossless-claude/events/*.db`
-- **Per-DB timeout:** 500ms (SQLite `busy_timeout`)
+- **Per-DB timeout:** 5000ms (matching EventsDb constructor's `busy_timeout = 5000`). The `collectEventStats` function relies on its aggregate time budget (2s) rather than a custom per-DB busy_timeout.
 - **DB cap:** 50 DBs max, with "...and N more not checked" notice if exceeded
 - **Per-DB error isolation:** One corrupt DB does not abort the entire check
 - **Read-only:** `getHealthStats()` queries only, no test writes
 
 ### 3.4 Verbose Mode
 
-`checkPassiveLearning` accepts a `verbose: boolean` parameter. When `false`, it pushes only the summary `CheckResult` entries. When `true`, it additionally pushes per-project `CheckResult` entries and appends the last 5 error_log entries to the `events-errors` message. The existing `runDoctor` function already threads a `verbose` flag through to `printStats()`; this parameter follows the same pattern.
+`checkPassiveLearning` accepts a `verbose: boolean` parameter. When `false`, it pushes only the summary `CheckResult` entries. When `true`, it additionally pushes per-project `CheckResult` entries and appends the last 5 error_log entries to the `events-errors` message. The existing `runDoctor` function does NOT currently have a `verbose` parameter — it needs one added as part of this work. The `verbose` flag is currently only used in `printStats()`. `runDoctor` should accept a new `verbose` parameter (defaulting to `false`) and pass it through to `checkPassiveLearning`.
 
 When `--verbose` is passed, show per-project breakdown:
 
@@ -200,6 +203,7 @@ export interface EventStats {
   captured: number;
   unprocessed: number;
   errors: number;
+  lastCapture: string | null;  // needed by doctor for events-staleness check
 }
 
 export function collectEventStats(timeoutMs = 2000): EventStats

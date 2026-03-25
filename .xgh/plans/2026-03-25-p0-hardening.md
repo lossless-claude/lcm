@@ -255,7 +255,7 @@ export interface HealthStats {
 
   getHealthStats(): HealthStats {
     const totals = this.db.prepare(
-      "SELECT COUNT(*) as total, SUM(CASE WHEN processed_at IS NULL THEN 1 ELSE 0 END) as unprocessed FROM events"
+      "SELECT COUNT(*) as total, COALESCE(SUM(CASE WHEN processed_at IS NULL THEN 1 ELSE 0 END), 0) as unprocessed FROM events"
     ).get() as { total: number; unprocessed: number };
     const errors = this.db.prepare(
       "SELECT COUNT(*) as count FROM error_log WHERE created_at >= datetime('now', '-30 days')"
@@ -309,7 +309,7 @@ export interface HealthStats {
       if (pruned > 0) {
         this.db.prepare(
           "INSERT INTO error_log (hook, error, session_id) VALUES (?, ?, NULL)"
-        ).run("pruneUnprocessed", `pruned ${pruned} unprocessed events (cap exceeded)`);
+        ).run("pruneUnprocessed", `pruned ${pruned} unprocessed events (age/cap limit)`);
       }
 
       this.db.exec("COMMIT");
@@ -370,6 +370,16 @@ vi.mock("../../src/db/events-path.js", () => ({
   },
 }));
 
+// Mock LOG_PATH to avoid writing to real ~/.lossless-claude/logs/events.log
+let mockLogPath: string;
+vi.mock("../../src/hooks/hook-errors.js", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../../src/hooks/hook-errors.js")>();
+  return {
+    ...mod,
+    get LOG_PATH() { return mockLogPath; },
+  };
+});
+
 // Import after mock
 import { safeLogError, _resetCircuitBreaker, LOG_PATH } from "../../src/hooks/hook-errors.js";
 import { EventsDb } from "../../src/hooks/events-db.js";
@@ -381,6 +391,7 @@ describe("safeLogError", () => {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), "hook-errors-test-"));
     mockEventsDir = join(tempDir, "events");
+    mockLogPath = join(tempDir, "events.log"); // Override LOG_PATH to temp dir
     _resetCircuitBreaker();
   });
 
@@ -412,8 +423,13 @@ describe("safeLogError", () => {
     const cwd = "/dev/null/impossible";
     safeLogError("PostToolUse", new Error("db fail"), { cwd, sessionId: "s1" });
 
-    if (existsSync(LOG_PATH)) {
-      const content = readFileSync(LOG_PATH, "utf-8");
+    // NOTE: LOG_PATH should be overridden in test setup to point to a temp dir
+    // to avoid writing to the real ~/.lossless-claude/logs/events.log.
+    // Either mock LOG_PATH via vi.mock or set a LOG_PATH_OVERRIDE env var.
+    const testLogPath = join(tempDir, "events.log");
+    // Assume LOG_PATH is mocked to testLogPath in beforeEach
+    if (existsSync(testLogPath)) {
+      const content = readFileSync(testLogPath, "utf-8");
       expect(content).toContain("db fail");
       expect(content).toContain("PostToolUse");
       expect(content).toContain("/dev/null/impossible"); // cwd included
@@ -1122,24 +1138,31 @@ function formatTimeAgo(date: Date): string {
 }
 ```
 
-3. Call from `runDoctor`, after the Security section. Use the existing hook-installation results (not REQUIRED_HOOKS constant) to determine if PostToolUse is installed:
+3. Update `runDoctor` signature to accept a `verbose` parameter (it does not currently have one):
 ```typescript
-  // ── Passive Learning ──
-  // Gate: only check if PostToolUse hook is actually installed (from Settings checks above)
-  const postToolHookInstalled = results.some(
-    r => r.category === "Settings" && r.name === "hook-PostToolUse" && r.status === "pass"
-  );
-  checkPassiveLearning(results, postToolHookInstalled, verbose);
+export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false): Promise<CheckResult[]> {
 ```
 
-Note: The existing doctor checks hook installation in the Settings category and creates results like `{ name: "hook-PostToolUse", category: "Settings", status: "pass" }`. Reference those actual results rather than the `REQUIRED_HOOKS` constant which only tells you what hooks *should* be installed, not what *is* installed.
+4. Call from `runDoctor`, after the Security section. Use the existing hook-installation results to determine if hooks are installed:
+```typescript
+  // ── Passive Learning ──
+  // Gate: only check if hooks are installed (from Settings checks above).
+  // The existing doctor produces a single combined check: { name: "hooks", category: "Settings" }
+  // (NOT individual per-hook results like "hook-PostToolUse").
+  const hooksInstalled = results.some(
+    r => r.category === "Settings" && r.name === "hooks" && r.status === "pass"
+  );
+  checkPassiveLearning(results, hooksInstalled, verbose);
+```
 
-- [ ] **Step 4: Run tests to verify they pass**
+Note: The existing doctor checks hook installation in the Settings category and creates a single combined result `{ name: "hooks", category: "Settings", status: "pass" }` (not per-hook results). The gate checks this combined result to determine if passive learning hooks are active.
+
+- [ ] **Step 5: Run tests to verify they pass**
 
 Run: `npx vitest run test/doctor/doctor.test.ts`
 Expected: ALL PASS
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/doctor/doctor.ts test/doctor/doctor.test.ts
