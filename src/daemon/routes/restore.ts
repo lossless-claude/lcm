@@ -167,10 +167,10 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
               const thresholds = config.compaction.promotionThresholds;
               const minConfidence = thresholds.eventConfidence?.pattern ?? 0.3;
               const maxAgeDays = thresholds.insightsMaxAgeDays ?? 90;
-              const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000).toISOString();
+              const cutoffMs = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
               insights = insightsStore
                 .search("source passive capture", 10, ["source:passive-capture"])
-                .filter((r) => r.confidence >= minConfidence && (!r.createdAt || r.createdAt >= cutoff))
+                .filter((r) => r.confidence >= minConfidence && (!r.createdAt || Date.parse(r.createdAt) >= cutoffMs))
                 .slice(0, 5)
                 .map((r) => ({ content: r.content, confidence: r.confidence, tags: r.tags }));
             } finally {

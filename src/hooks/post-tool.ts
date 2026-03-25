@@ -2,10 +2,10 @@
 import { extractPostToolEvents } from "./extractors.js";
 import { EventsDb } from "./events-db.js";
 import { eventsDbPath } from "../db/events-path.js";
+import { firePromoteEventsRequest } from "./session-end.js";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
-import { request } from "node:http";
 
 const LOG_PATH = join(homedir(), ".lossless-claude", "logs", "events.log");
 
@@ -24,27 +24,6 @@ function logError(hook: string, error: unknown, sessionId?: string): void {
   }
 }
 
-function firePromoteEvents(port: number, cwd: string): void {
-  try {
-    const json = JSON.stringify({ cwd });
-    const req = request({
-      hostname: "127.0.0.1",
-      port,
-      path: "/promote-events",
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(json) },
-    });
-    // Deferred unref — same pattern as session-end.ts fire-and-forget functions
-    req.on("socket", (socket) => {
-      req.on("finish", () => (socket as import("node:net").Socket).unref());
-    });
-    req.on("error", () => {}); // swallow
-    req.write(json);
-    req.end();
-  } catch {
-    // daemon down — events stay in sidecar for later promotion
-  }
-}
 
 export async function handlePostToolUse(
   stdin: string,
@@ -74,7 +53,7 @@ export async function handlePostToolUse(
       const hasPriority1 = events.some(e => e.priority === 1);
       if (hasPriority1) {
         const port = input.daemon_port ?? 3737;
-        firePromoteEvents(port, cwd);
+        firePromoteEventsRequest(port, { cwd });
       }
     } finally {
       db.close();

@@ -176,8 +176,9 @@ export function createPromoteEventsHandler(config: DaemonConfig): RouteHandler {
               processedIds.push(event.event_id);
               result.promoted++;
             } catch {
-              processedIds.push(event.event_id); // mark processed even on error to avoid stuck events
               result.errors++;
+              // Do not add to processedIds — transient errors (DB busy, dedup failure) should
+              // allow the event to be retried on next promotion pass rather than being silently dropped.
             }
           }
 
