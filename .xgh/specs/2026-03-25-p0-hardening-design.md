@@ -36,7 +36,8 @@ logHookError(hook: string, error: unknown, sessionId?: string): void
 pruneUnprocessed(maxRows = 10_000, maxAgeDays = 30): { pruned: number }
 // DELETE oldest by event_id when count > maxRows
 // DELETE by event_id where created_at < now - maxAgeDays
-// Log prune count to error_log BEFORE deleting: "pruned N unprocessed events (age/cap limit)"
+// Compute prune count, log to error_log, THEN delete — all in one transaction for atomicity.
+// "pruned N unprocessed events (age/cap limit)"
 // Uses event_id for ordering (monotonic ROWID) for deterministic pruning.
 // Note: getUnprocessed() uses ORDER BY session_id, seq for grouped batch processing.
 // The orderings serve different purposes: pruning needs monotonic age ordering,
@@ -44,7 +45,10 @@ pruneUnprocessed(maxRows = 10_000, maxAgeDays = 30): { pruned: number }
 
 getHealthStats(): HealthStats
 // Returns: { totalEvents, unprocessed, errors, lastCapture, lastError }
-// Single pass: COUNT/MAX queries against indexed columns (counts + last timestamps)
+// 3-query plan against indexed columns:
+//   1) events:      SELECT COUNT(*) AS totalEvents, MAX(created_at) AS lastCapture FROM events
+//   2) events:      SELECT COUNT(*) AS unprocessed FROM events WHERE processed_at IS NULL
+//   3) error_log:   SELECT COUNT(*) AS errors, MAX(created_at) AS lastError FROM error_log
 
 pruneErrorLog(olderThanDays = 30): number
 // DELETE FROM error_log WHERE created_at < datetime('now', '-' || ? || ' days')
@@ -61,8 +65,8 @@ interface HealthStats {
   totalEvents: number;
   unprocessed: number;
   errors: number;        // error_log count (last 30 days)
-  lastCapture: string | null;  // SQLite datetime string (YYYY-MM-DD HH:MM:SS via datetime('now')); consumers should handle this format
-  lastError: string | null;    // SQLite datetime string (YYYY-MM-DD HH:MM:SS via datetime('now')); consumers should handle this format
+  lastCapture: string | null;  // SQLite datetime string (YYYY-MM-DD HH:MM:SS via datetime('now')); consumers (doctor/stats) MUST normalize to ISO-8601 (e.g., replace space with 'T' and append 'Z') before parsing with Date
+  lastError: string | null;    // SQLite datetime string (YYYY-MM-DD HH:MM:SS via datetime('now')); consumers (doctor/stats) MUST normalize to ISO-8601 (e.g., replace space with 'T' and append 'Z') before parsing with Date
 }
 ```
 
@@ -87,6 +91,11 @@ New utility function in `src/hooks/hook-errors.ts`:
 ```typescript
 let dbCircuitOpen = false; // process-level circuit breaker
 
+/** Returns the log path — overridable via LCM_LOG_PATH env var for test isolation. */
+export function getLogPath(): string {
+  return process.env.LCM_LOG_PATH ?? join(homedir(), ".lossless-claude", "logs", "events.log");
+}
+
 export function safeLogError(
   hook: string,
   error: unknown,
@@ -106,8 +115,9 @@ export function safeLogError(
 
   // Layer 2: Flat file (include cwd for diagnosing DB-skip cases)
   try {
-    mkdirSync(dirname(LOG_PATH), { recursive: true });
-    appendFileSync(LOG_PATH, JSON.stringify({
+    const logPath = getLogPath();
+    mkdirSync(dirname(logPath), { recursive: true });
+    appendFileSync(logPath, JSON.stringify({
       ts: new Date().toISOString(),
       hook,
       error: error instanceof Error ? error.message : String(error),
@@ -163,7 +173,7 @@ Add `checkPassiveLearning(results: CheckResult[])` to `src/doctor/doctor.ts`.
 - **Per-DB scan timeout:** 500ms `busy_timeout` on these scan connections only (set via `PRAGMA busy_timeout = 500`), leaving the default `busy_timeout = 5000` in place for migrations and normal hook writes. This ensures the 2s aggregate time budget in `collectEventStats` is actually enforceable — a single locked DB cannot block for 5s.
 - **DB cap:** 50 DBs max, with "...and N more not checked" notice if exceeded
 - **Per-DB error isolation:** One corrupt DB does not abort the entire check
-- **Read-only:** `getHealthStats()` queries only, no test writes
+- **Logically read-only:** `getHealthStats()` performs queries only and does not insert synthetic/test events; only automatic migrations/PRAGMAs executed by the standard `EventsDb` open path are allowed.
 
 ### 3.4 Verbose Mode
 
@@ -253,7 +263,7 @@ Update `docs/passive-learning.md`:
 
 ### Unit Tests
 
-- `events-db.test.ts`: Test `logHookError`, `pruneUnprocessed` (row cap, age cap, **explicit test that prune count is logged to error_log before deletion**), `getHealthStats`, `pruneErrorLog`, schema migration v1→v2
+- `events-db.test.ts`: Test `logHookError`, `pruneUnprocessed` (row cap, age cap, **explicit test that prune count is logged to error_log before deletes within same transaction**), `getHealthStats`, `pruneErrorLog`, schema migration v1→v2
 - `hook-errors.test.ts`: Test `safeLogError` three-layer fence (DB success, DB fail → file, both fail → swallow), circuit breaker behavior, cwd guard
 - `events-stats.test.ts`: Test `collectEventStats` aggregation, timeout budget, empty directory
 
@@ -306,7 +316,7 @@ Design was evaluated by persistent FOR and AGAINST agents across all 4 sections:
 
 | Section | FOR Score | AGAINST Score | Key Refinements |
 |---------|-----------|---------------|-----------------|
-| 1. Schema | 8.5/10 | 7/10 | Index on error_log, exclusive migration transaction, prune logging before deletion, event_id ordering |
+| 1. Schema | 8.5/10 | 7/10 | Index on error_log, exclusive migration transaction, compute-then-log-then-delete prune ordering, event_id ordering |
 | 2. Error flow | 8/10 | 6/10 | cwd guard, circuit breaker, keep result.errors++, include cwd in flat-file |
 | 3. Doctor | 8.5/10 | 6/10 | Hook-installed gate, 7-day staleness (not 24h), per-DB timeout, 50-DB cap |
 | 4. Stats | 9/10 | 6/10 | events-stats.ts neutral layer, 2s total timeout, "(30d)" error label |

@@ -239,8 +239,8 @@ export interface HealthStats {
   totalEvents: number;
   unprocessed: number;
   errors: number;
-  lastCapture: string | null;
-  lastError: string | null;
+  lastCapture: string | null;  // SQLite datetime (YYYY-MM-DD HH:MM:SS); normalize to ISO-8601 before Date parsing
+  lastError: string | null;    // SQLite datetime (YYYY-MM-DD HH:MM:SS); normalize to ISO-8601 before Date parsing
 }
 ```
 
@@ -254,25 +254,26 @@ export interface HealthStats {
   }
 
   getHealthStats(): HealthStats {
-    const totals = this.db.prepare(
-      "SELECT COUNT(*) as total, COALESCE(SUM(CASE WHEN processed_at IS NULL THEN 1 ELSE 0 END), 0) as unprocessed FROM events"
-    ).get() as { total: number; unprocessed: number };
-    const errors = this.db.prepare(
-      "SELECT COUNT(*) as count FROM error_log WHERE created_at >= datetime('now', '-30 days')"
-    ).get() as { count: number };
-    const lastCapture = this.db.prepare(
-      "SELECT MAX(created_at) as ts FROM events"
-    ).get() as { ts: string | null };
-    const lastError = this.db.prepare(
-      "SELECT MAX(created_at) as ts FROM error_log"
-    ).get() as { ts: string | null };
+    // 3-query plan against indexed columns:
+    //   1) events:    COUNT(*) + MAX(created_at) in one scan
+    //   2) events:    COUNT(*) WHERE processed_at IS NULL
+    //   3) error_log: COUNT(*) + MAX(created_at) in one scan
+    const eventTotals = this.db.prepare(
+      "SELECT COUNT(*) as totalEvents, MAX(created_at) as lastCapture FROM events"
+    ).get() as { totalEvents: number; lastCapture: string | null };
+    const unprocessedRow = this.db.prepare(
+      "SELECT COUNT(*) as unprocessed FROM events WHERE processed_at IS NULL"
+    ).get() as { unprocessed: number };
+    const errorTotals = this.db.prepare(
+      "SELECT COUNT(*) as errors, MAX(created_at) as lastError FROM error_log WHERE created_at >= datetime('now', '-30 days')"
+    ).get() as { errors: number; lastError: string | null };
 
     return {
-      totalEvents: totals.total,
-      unprocessed: totals.unprocessed,
-      errors: errors.count,
-      lastCapture: lastCapture.ts,
-      lastError: lastError.ts,
+      totalEvents: eventTotals.totalEvents,
+      unprocessed: unprocessedRow.unprocessed,
+      errors: errorTotals.errors,
+      lastCapture: eventTotals.lastCapture,
+      lastError: errorTotals.lastError,
     };
   }
 
@@ -280,36 +281,53 @@ export interface HealthStats {
     let pruned = 0;
     this.db.exec("BEGIN");
     try {
-      // Age-based pruning
-      const ageResult = this.db.prepare(
-        `DELETE FROM events WHERE processed_at IS NULL
-         AND event_id IN (
-           SELECT event_id FROM events WHERE processed_at IS NULL
-           AND created_at < datetime('now', '-' || ? || ' days')
-         )`
-      ).run(maxAgeDays);
-      pruned += Number(ageResult.changes);
+      // Compute how many rows will be pruned, then log, then delete (all in one txn)
+      const ageCountRow = this.db.prepare(
+        `SELECT COUNT(*) as c FROM events
+         WHERE processed_at IS NULL
+         AND created_at < datetime('now', '-' || ? || ' days')`
+      ).get(maxAgeDays) as { c: number };
+      const ageCount = ageCountRow.c;
 
-      // Row-cap pruning: keep only the newest maxRows
-      const countRow = this.db.prepare(
+      const totalUnprocessedRow = this.db.prepare(
         "SELECT COUNT(*) as c FROM events WHERE processed_at IS NULL"
       ).get() as { c: number };
-      if (countRow.c > maxRows) {
-        const excess = countRow.c - maxRows;
-        const capResult = this.db.prepare(
+      const totalUnprocessed = totalUnprocessedRow.c;
+
+      const remainingAfterAge = totalUnprocessed - ageCount;
+      let excess = 0;
+      if (remainingAfterAge > maxRows) {
+        excess = remainingAfterAge - maxRows;
+      }
+
+      pruned = ageCount + excess;
+
+      // Log prune count before deleting (but in same transaction for atomicity)
+      if (pruned > 0) {
+        this.db.prepare(
+          "INSERT INTO error_log (hook, error, session_id) VALUES (?, ?, NULL)"
+        ).run("pruneUnprocessed", `pruned ${pruned} unprocessed events (age/cap limit)`);
+      }
+
+      // Age-based pruning
+      if (ageCount > 0) {
+        this.db.prepare(
+          `DELETE FROM events WHERE processed_at IS NULL
+           AND event_id IN (
+             SELECT event_id FROM events WHERE processed_at IS NULL
+             AND created_at < datetime('now', '-' || ? || ' days')
+           )`
+        ).run(maxAgeDays);
+      }
+
+      // Row-cap pruning: keep only the newest maxRows
+      if (excess > 0) {
+        this.db.prepare(
           `DELETE FROM events WHERE event_id IN (
              SELECT event_id FROM events WHERE processed_at IS NULL
              ORDER BY event_id ASC LIMIT ?
            )`
         ).run(excess);
-        pruned += Number(capResult.changes);
-      }
-
-      // Log prune count before committing (same transaction = atomic)
-      if (pruned > 0) {
-        this.db.prepare(
-          "INSERT INTO error_log (hook, error, session_id) VALUES (?, ?, NULL)"
-        ).run("pruneUnprocessed", `pruned ${pruned} unprocessed events (age/cap limit)`);
       }
 
       this.db.exec("COMMIT");
@@ -370,18 +388,9 @@ vi.mock("../../src/db/events-path.js", () => ({
   },
 }));
 
-// Mock LOG_PATH to avoid writing to real ~/.lossless-claude/logs/events.log
-let mockLogPath: string;
-vi.mock("../../src/hooks/hook-errors.js", async (importOriginal) => {
-  const mod = await importOriginal<typeof import("../../src/hooks/hook-errors.js")>();
-  return {
-    ...mod,
-    get LOG_PATH() { return mockLogPath; },
-  };
-});
-
-// Import after mock
-import { safeLogError, _resetCircuitBreaker, LOG_PATH } from "../../src/hooks/hook-errors.js";
+// Import after mocks — LOG_PATH is overridable via LCM_LOG_PATH env var
+// (safeLogError reads process.env.LCM_LOG_PATH ?? default path)
+import { safeLogError, _resetCircuitBreaker } from "../../src/hooks/hook-errors.js";
 import { EventsDb } from "../../src/hooks/events-db.js";
 import { eventsDbPath } from "../../src/db/events-path.js";
 
@@ -391,11 +400,12 @@ describe("safeLogError", () => {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), "hook-errors-test-"));
     mockEventsDir = join(tempDir, "events");
-    mockLogPath = join(tempDir, "events.log"); // Override LOG_PATH to temp dir
+    process.env.LCM_LOG_PATH = join(tempDir, "events.log"); // Override via env var
     _resetCircuitBreaker();
   });
 
   afterEach(() => {
+    delete process.env.LCM_LOG_PATH;
     rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -475,7 +485,10 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 
-export const LOG_PATH = join(homedir(), ".lossless-claude", "logs", "events.log");
+/** Returns the log path — overridable via LCM_LOG_PATH env var for test isolation. */
+export function getLogPath(): string {
+  return process.env.LCM_LOG_PATH ?? join(homedir(), ".lossless-claude", "logs", "events.log");
+}
 
 let dbCircuitOpen = false;
 
@@ -512,8 +525,9 @@ export function safeLogError(
 
   // Layer 2: Flat file (include cwd for diagnosing DB-skip cases)
   try {
-    mkdirSync(dirname(LOG_PATH), { recursive: true });
-    appendFileSync(LOG_PATH, JSON.stringify({
+    const logPath = getLogPath();
+    mkdirSync(dirname(logPath), { recursive: true });
+    appendFileSync(logPath, JSON.stringify({
       ts: new Date().toISOString(),
       hook,
       error: error instanceof Error ? error.message : String(error),
@@ -1084,8 +1098,15 @@ function checkPassiveLearning(results: CheckResult[], hooksInstalled: boolean, v
 
   // Staleness check
   if (stats.lastCapture) {
-    const lastCaptureDate = new Date(stats.lastCapture);
-    const daysSince = (Date.now() - lastCaptureDate.getTime()) / (1000 * 60 * 60 * 24);
+    // Normalize SQLite datetime (`YYYY-MM-DD HH:MM:SS`) to ISO 8601 UTC for reliable parsing
+    const isoLastCapture = `${stats.lastCapture.replace(" ", "T")}Z`;
+    const lastCaptureDate = new Date(isoLastCapture);
+    const lastCaptureTime = lastCaptureDate.getTime();
+    if (Number.isNaN(lastCaptureTime)) {
+      // If parsing fails, skip staleness check rather than report bogus values
+      return;
+    }
+    const daysSince = (Date.now() - lastCaptureTime) / (1000 * 60 * 60 * 24);
     if (daysSince >= 7) {
       results.push({
         name: "events-staleness",
@@ -1111,7 +1132,7 @@ function checkPassiveLearning(results: CheckResult[], hooksInstalled: boolean, v
     const detailed = stats as import("../db/events-stats.js").DetailedEventStats;
     for (const p of detailed.projects) {
       const ago = p.lastCapture
-        ? formatTimeAgo(new Date(p.lastCapture))
+        ? formatTimeAgo(new Date(`${p.lastCapture.replace(" ", "T")}Z`))
         : "never";
       results.push({
         name: `events-project-${p.file}`,
