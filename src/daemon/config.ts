@@ -43,13 +43,24 @@ const DEFAULTS: DaemonConfig = {
   hooks: { snapshotIntervalSec: 60, disableAutoCompact: false },
 };
 
-function deepMerge(target: any, source: any): any {
+const DENIED_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+export function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
   if (!source || typeof source !== "object") return target;
-  const result = { ...target };
+  const result: Record<string, unknown> = { ...target };
   for (const key of Object.keys(source)) {
+    if (DENIED_KEYS.has(key)) continue;
     if (source[key] !== undefined) {
-      result[key] = (typeof source[key] === "object" && !Array.isArray(source[key]) && typeof target[key] === "object")
-        ? deepMerge(target[key], source[key]) : source[key];
+      result[key] = (
+        typeof source[key] === "object" &&
+        source[key] !== null &&
+        !Array.isArray(source[key]) &&
+        typeof result[key] === "object" &&
+        result[key] !== null &&
+        !Array.isArray(result[key])
+      )
+        ? deepMerge(result[key] as Record<string, unknown>, source[key] as Record<string, unknown>)
+        : source[key];
     }
   }
   return result;
