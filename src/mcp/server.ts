@@ -120,7 +120,12 @@ export type DaemonRequestOpts = {
   _ensureDaemon?: typeof ensureDaemon;
 };
 
-/** Exported for testing. Calls a daemon route with auto-restart + retry on failure. */
+/** Returns true if the error is a network/connection failure (not a daemon HTTP error). */
+function isNetworkError(err: unknown): boolean {
+  return err instanceof TypeError;
+}
+
+/** Exported for testing. Calls a daemon route with auto-restart + retry on network failure. */
 export async function handleDaemonRequest(
   client: Pick<DaemonClient, "post">,
   route: string,
@@ -130,10 +135,19 @@ export async function handleDaemonRequest(
   try {
     const result = await client.post(route, body);
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  } catch {
-    // Daemon may have crashed — attempt auto-restart then retry once
+  } catch (err) {
+    // Only retry on network/connection errors, not daemon HTTP errors (4xx/5xx)
+    if (!isNetworkError(err)) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { content: [{ type: "text", text: `lcm error: ${msg}` }], isError: true };
+    }
+    // Daemon crashed — attempt auto-restart then retry once
     const ensure = opts._ensureDaemon ?? ensureDaemon;
-    await ensure({ port: opts.port, pidFilePath: opts.pidFilePath, spawnTimeoutMs: 5000 });
+    try {
+      await ensure({ port: opts.port, pidFilePath: opts.pidFilePath, spawnTimeoutMs: 10000 });
+    } catch {
+      // ensureDaemon failure is non-fatal — proceed to retry anyway
+    }
     try {
       const result = await client.post(route, body);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };

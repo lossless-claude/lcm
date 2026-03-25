@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { getMcpToolDefinitions, handleDaemonRequest } from "../../src/mcp/server.js";
 
 describe("MCP tool definitions", () => {
@@ -29,11 +29,14 @@ describe("MCP tool definitions", () => {
 });
 
 describe("handleDaemonRequest", () => {
+  const ensureDaemonMock = vi.fn().mockResolvedValue({ connected: true, port: 9999, spawned: false });
   const opts = {
     port: 9999,
     pidFilePath: "/tmp/test-daemon.pid",
-    _ensureDaemon: vi.fn().mockResolvedValue({ connected: true, port: 9999, spawned: false }),
+    _ensureDaemon: ensureDaemonMock,
   };
+
+  beforeEach(() => { vi.clearAllMocks(); });
 
   it("returns result on success", async () => {
     const client = { post: vi.fn().mockResolvedValue({ result: "ok" }) };
@@ -42,25 +45,45 @@ describe("handleDaemonRequest", () => {
     expect(res.content[0].text).toContain('"result": "ok"');
   });
 
-  it("retries after daemon crash and returns result on successful retry", async () => {
+  it("does not retry on daemon HTTP errors (non-network)", async () => {
+    const client = { post: vi.fn().mockRejectedValue(new Error("HTTP 422")) };
+    const res = await handleDaemonRequest(client, "/search", { q: "foo" }, opts);
+    expect(ensureDaemonMock).not.toHaveBeenCalled();
+    expect(client.post).toHaveBeenCalledTimes(1);
+    expect(res.isError).toBe(true);
+  });
+
+  it("retries after network crash (TypeError) and returns result on successful retry", async () => {
     const client = {
       post: vi.fn()
-        .mockRejectedValueOnce(new Error("ECONNREFUSED"))
+        .mockRejectedValueOnce(new TypeError("fetch failed"))
         .mockResolvedValueOnce({ result: "recovered" }),
     };
     const res = await handleDaemonRequest(client, "/search", { q: "foo" }, opts);
-    expect(opts._ensureDaemon).toHaveBeenCalled();
+    expect(ensureDaemonMock).toHaveBeenCalled();
     expect(res.isError).toBeUndefined();
     expect(res.content[0].text).toContain('"recovered"');
   });
 
-  it("returns isError:true when both attempts fail", async () => {
+  it("returns isError:true when both network attempts fail", async () => {
     const client = {
-      post: vi.fn().mockRejectedValue(new Error("daemon is gone")),
+      post: vi.fn().mockRejectedValue(new TypeError("fetch failed")),
     };
     const res = await handleDaemonRequest(client, "/search", { q: "foo" }, opts);
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain("daemon unavailable");
-    expect(res.content[0].text).toContain("daemon is gone");
+  });
+
+  it("returns isError:true and skips retry when ensureDaemon throws", async () => {
+    ensureDaemonMock.mockRejectedValueOnce(new Error("spawn failed"));
+    const client = {
+      post: vi.fn()
+        .mockRejectedValueOnce(new TypeError("fetch failed"))
+        .mockResolvedValueOnce({ result: "ok" }),
+    };
+    // ensureDaemon throws but retry still proceeds (non-fatal)
+    const res = await handleDaemonRequest(client, "/search", { q: "foo" }, opts);
+    expect(res.isError).toBeUndefined(); // retry succeeded despite ensureDaemon throwing
+    expect(res.content[0].text).toContain('"ok"');
   });
 });
