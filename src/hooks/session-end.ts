@@ -120,11 +120,13 @@ export async function handleSessionEnd(
     // Always promote
     firePromoteRequest(daemonPort, { cwd: input.cwd });
 
-    // Record session completion in manifest
+    // Record session completion in manifest.
+    // Note: ingestResult.ingested is the delta (new messages this call), not the total.
+    // We pass it as-is since we don't have the total without an extra DB query.
     fireSessionCompleteRequest(daemonPort, {
       session_id: input.session_id,
       cwd: input.cwd,
-      message_count: ingestResult.ingested,
+      message_count: ingestResult.ingested ?? 0,
     });
 
     return { exitCode: 0, stdout: "" };

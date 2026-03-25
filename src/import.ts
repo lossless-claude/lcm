@@ -187,6 +187,7 @@ async function ingestSessionList(
   result: ImportResult,
 ): Promise<void> {
   let previousSummary: string | undefined;
+  const total = sessions.length;
 
   for (const { path, sessionId, cwd } of sessions) {
     if (options.dryRun) {
@@ -195,6 +196,7 @@ async function ingestSessionList(
         console.log(`  [dry-run] ${sessionId}${replayNote}`);
       }
       result.imported++;
+      options.onProgress?.({ completed: result.imported + result.skippedEmpty + result.failed, total, current: sessionId });
       continue;
     }
 
@@ -203,6 +205,7 @@ async function ingestSessionList(
     if (!options.replay && isSessionAlreadyIngested(cwd, sessionId, options._lcmDir)) {
       result.skippedEmpty++;
       if (options.verbose) console.log(`  ↩️ ${sessionId}: already fully ingested`);
+      options.onProgress?.({ completed: result.imported + result.skippedEmpty + result.failed, total, current: sessionId });
       continue;
     }
 
@@ -274,10 +277,12 @@ async function ingestSessionList(
           result.totalTokens += res.totalTokens;
         }
       }
+      options.onProgress?.({ completed: result.imported + result.skippedEmpty + result.failed, total, current: sessionId });
     } catch (err) {
       result.failed++;
       if (options.replay) previousSummary = undefined; // chain broken by ingest failure
       if (options.verbose) console.log(`  \u274c ${sessionId}: ${err instanceof Error ? err.message : "failed"}`);
+      options.onProgress?.({ completed: result.imported + result.skippedEmpty + result.failed, total, current: sessionId });
     }
   }
 }

@@ -156,6 +156,16 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<void> {
     }),
   });
 
+  // Verify the daemon is actually reachable after startup.
+  {
+    const { loadDaemonConfig } = await import("../src/daemon/config.js");
+    const cfg = loadDaemonConfig(configPath);
+    const healthy = await waitForHealth(`http://localhost:${cfg.daemon.port}/health`, 5000);
+    if (!healthy) {
+      console.warn("Warning: daemon did not respond to health check. Run 'lcm doctor' if issues persist.");
+    }
+  }
+
   // Register MCP server directly in settings.json.
   // plugin.json mcpServers isn't reliably processed for locally-installed plugins
   // (installPath in installed_plugins.json points to wrong versioned dir).
