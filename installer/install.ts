@@ -248,27 +248,6 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<void> {
   if (lcmMdWritten) console.log(`Installed ~/.claude/lcm.md`);
   if (claudeMdPatched) console.log(`Added @lcm.md to ~/.claude/CLAUDE.md`);
 
-  // 6. Start daemon (lazy daemon — no persistent service)
-  const configData = deps.existsSync(configPath)
-    ? JSON.parse(deps.readFileSync(configPath, "utf-8"))
-    : {};
-  console.log("Verifying daemon...");
-  const _ensureDaemon = deps.ensureDaemon ?? (async (opts) => {
-    const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
-    return ensureDaemon(opts);
-  });
-  const daemonPort = configData?.daemon?.port ?? configData?.port ?? 3737;
-  const { connected } = await _ensureDaemon({
-    port: daemonPort,
-    pidFilePath: join(lcDir, "daemon.pid"),
-    spawnTimeoutMs: 30000,
-  });
-  if (!connected) {
-    console.warn("Warning: daemon not responding — run: lcm doctor");
-  } else {
-    console.log("Daemon started successfully.");
-  }
-
   // 7. Final verification
   console.log("\nRunning doctor...");
   const _runDoctor = deps.runDoctor ?? (async () => {
