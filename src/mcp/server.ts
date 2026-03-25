@@ -134,6 +134,12 @@ function isNetworkError(err: unknown): boolean {
   return err instanceof TypeError;
 }
 
+/**
+ * One restart attempt per port at a time — concurrent network failures share the same
+ * restart promise instead of each spawning a separate daemon process.
+ */
+const restartInFlight = new Map<number, Promise<unknown>>();
+
 /** Exported for testing. Calls a daemon route with auto-restart + retry on network failure. */
 export async function handleDaemonRequest(
   client: Pick<DaemonClient, "post">,
@@ -150,13 +156,16 @@ export async function handleDaemonRequest(
       const msg = err instanceof Error ? err.message : String(err);
       return { content: [{ type: "text", text: `lcm error: ${msg}` }], isError: true };
     }
-    // Daemon crashed — attempt auto-restart then retry once
+    // Daemon crashed — attempt auto-restart then retry once.
+    // Coalesce concurrent restart attempts so only one ensureDaemon() runs per port.
     const ensure = opts._ensureDaemon ?? ensureDaemon;
-    try {
-      await ensure({ port: opts.port, pidFilePath: opts.pidFilePath, spawnTimeoutMs: 10000 });
-    } catch {
-      // ensureDaemon failure is non-fatal — proceed to retry anyway
+    if (!restartInFlight.has(opts.port)) {
+      const p = ensure({ port: opts.port, pidFilePath: opts.pidFilePath, spawnTimeoutMs: 10000 })
+        .catch(() => { /* non-fatal */ })
+        .finally(() => { restartInFlight.delete(opts.port); });
+      restartInFlight.set(opts.port, p);
     }
+    await restartInFlight.get(opts.port)!.catch(() => { /* non-fatal */ });
     try {
       result = await client.post(route, body);
     } catch (retryErr) {
