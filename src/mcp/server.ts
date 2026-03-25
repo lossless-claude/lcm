@@ -132,9 +132,9 @@ export async function handleDaemonRequest(
   body: Record<string, unknown>,
   opts: DaemonRequestOpts,
 ): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
+  let result: unknown;
   try {
-    const result = await client.post(route, body);
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    result = await client.post(route, body);
   } catch (err) {
     // Only retry on network/connection errors, not daemon HTTP errors (4xx/5xx)
     if (!isNetworkError(err)) {
@@ -149,13 +149,13 @@ export async function handleDaemonRequest(
       // ensureDaemon failure is non-fatal — proceed to retry anyway
     }
     try {
-      const result = await client.post(route, body);
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      result = await client.post(route, body);
     } catch (retryErr) {
       const msg = retryErr instanceof Error ? retryErr.message : String(retryErr);
       return { content: [{ type: "text", text: `lcm daemon unavailable: ${msg}` }], isError: true };
     }
   }
+  return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
 }
 
 export async function startMcpServer(): Promise<void> {
