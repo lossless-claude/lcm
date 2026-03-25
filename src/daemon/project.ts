@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, normalize, join as pathJoin } from "node:path";
 
 export const BASE_DIR = join(homedir(), ".lossless-claude");
 
@@ -16,6 +16,21 @@ export const projectDbPath = (cwd: string): string =>
 
 export const projectMetaPath = (cwd: string): string =>
   join(projectDir(cwd), "meta.json");
+
+export function isSafeTranscriptPath(transcriptPath: string, cwd: string): string | false {
+  const resolved = resolve(transcriptPath);
+  const allowedBases = [
+    pathJoin(homedir(), ".claude", "projects"),
+    resolve(cwd),
+  ];
+  for (const base of allowedBases) {
+    const normalBase = normalize(base + "/");
+    if (resolved.startsWith(normalBase) || resolved === normalize(base)) {
+      return resolved;
+    }
+  }
+  return false;
+}
 
 /** Ensures the project dir exists and writes cwd to meta.json. */
 export const ensureProjectDir = (cwd: string): string => {

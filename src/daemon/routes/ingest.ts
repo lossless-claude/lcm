@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "../config.js";
-import { projectDbPath, projectDir, projectId, ensureProjectDir, projectMetaPath } from "../project.js";
+import { projectDbPath, projectDir, projectId, ensureProjectDir, projectMetaPath, isSafeTranscriptPath } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
@@ -23,13 +23,16 @@ function isParsedMessage(value: unknown): value is ParsedMessage {
   );
 }
 
-function resolveMessages(input: { messages?: unknown; transcript_path?: string }): ParsedMessage[] {
+function resolveMessages(input: { messages?: unknown; transcript_path?: string }, cwd: string): ParsedMessage[] {
   if (Array.isArray(input.messages)) {
     return input.messages.filter(isParsedMessage);
   }
 
-  if (input.transcript_path && existsSync(input.transcript_path)) {
-    return parseTranscript(input.transcript_path);
+  if (input.transcript_path) {
+    const safePath = isSafeTranscriptPath(input.transcript_path, cwd);
+    if (safePath && existsSync(safePath)) {
+      return parseTranscript(safePath);
+    }
   }
 
   return [];
@@ -47,7 +50,7 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
 
     const dbPath = projectDbPath(cwd);
 
-    const parsed = resolveMessages(input);
+    const parsed = resolveMessages(input, cwd);
     if (parsed.length === 0) {
       sendJson(res, 200, { ingested: 0, totalTokens: 0 });
       return;
