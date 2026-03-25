@@ -45,7 +45,7 @@ export async function handleUserPromptSubmit(
       const prompt = String(input.prompt ?? "");
       const events = extractUserPromptEvents(prompt);
 
-      if (events.length > 0) {
+      if (events.length > 0 && input.session_id && typeof input.session_id === "string") {
         const cwd = input.cwd ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
         const db = new EventsDb(eventsDbPath(cwd));
         try {

@@ -164,9 +164,13 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
             try {
               runLcmMigrations(insightsDb);
               const insightsStore = new PromotedStore(insightsDb);
+              const thresholds = config.compaction.promotionThresholds;
+              const minConfidence = thresholds.eventConfidence?.pattern ?? 0.3;
+              const maxAgeDays = thresholds.insightsMaxAgeDays ?? 90;
+              const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000).toISOString();
               insights = insightsStore
                 .search("source passive capture", 10, ["source:passive-capture"])
-                .filter((r) => r.confidence >= 0.3)
+                .filter((r) => r.confidence >= minConfidence && (!r.createdAt || r.createdAt >= cutoff))
                 .slice(0, 5)
                 .map((r) => ({ content: r.content, confidence: r.confidence, tags: r.tags }));
             } finally {

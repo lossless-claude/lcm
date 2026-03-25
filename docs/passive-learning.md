@@ -28,7 +28,7 @@ Events are written to a **sidecar SQLite database** (`~/.lossless-claude/events/
 
 ### What Is NOT Captured
 
-- Raw tool output (responses, file contents, command output)
+- Raw tool payload contents such as file contents and command stdout/stderr (only tool metadata and brief user answers are stored)
 - Sensitive file paths (`.env`, `.ssh/`, `credentials`, `.npmrc`)
 - LCM's own `lcm_store` calls (prevents feedback loops)
 
@@ -52,20 +52,25 @@ On SessionStart, recently promoted passive insights are surfaced in a `<learned-
 
 ## Configuration
 
-All thresholds are configurable in `~/.lossless-claude/config.yaml` under `compaction.promotionThresholds`:
+All thresholds are configurable in `~/.lossless-claude/config.json` under `compaction.promotionThresholds`:
 
-```yaml
-compaction:
-  promotionThresholds:
-    eventConfidence:
-      decision: 0.5    # Confidence for user decisions
-      plan: 0.7        # Confidence for plan approvals
-      errorFix: 0.4    # Confidence for error→fix pairs
-      batch: 0.3       # Confidence for git/env events
-      pattern: 0.2     # Confidence for pattern reinforcement
-    reinforcementBoost: 0.3    # Boost when duplicate detected
-    maxConfidence: 1.0         # Confidence ceiling
-    insightsMaxAgeDays: 90     # Max age for surfaced insights
+```json
+{
+  "compaction": {
+    "promotionThresholds": {
+      "eventConfidence": {
+        "decision": 0.5,
+        "plan": 0.7,
+        "errorFix": 0.4,
+        "batch": 0.3,
+        "pattern": 0.2
+      },
+      "reinforcementBoost": 0.3,
+      "maxConfidence": 1.0,
+      "insightsMaxAgeDays": 90
+    }
+  }
+}
 ```
 
 ## Data Storage
@@ -96,4 +101,4 @@ The UserPromptSubmit extractor includes guards against false-positive decisions.
 
 ## Observability
 
-Event counters (`eventsCaptured`, `eventsPromoted`, `eventsErrored`) are tracked internally. Use `lcm stats` to view promotion statistics.
+Passive learning activity is integrated into overall LCM statistics. Use `lcm stats` to inspect high-level promotion and compaction behavior.

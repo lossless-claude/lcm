@@ -63,7 +63,14 @@ export class EventsDb {
     }
 
     const versionRow = this.db.prepare("SELECT version FROM schema_version").get() as { version: number } | undefined;
-    const currentVersion = versionRow?.version ?? 0;
+
+    // Handle empty schema_version table (table exists but has no rows)
+    if (!versionRow) {
+      this.db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(SCHEMA_VERSION);
+      return;
+    }
+
+    const currentVersion = versionRow.version;
 
     // Future migrations go here:
     // if (currentVersion < 2) { ... UPDATE schema_version SET version = 2; }
