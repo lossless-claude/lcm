@@ -23,6 +23,9 @@ vi.mock("../../src/hooks/user-prompt.js", () => ({
 vi.mock("../../src/hooks/session-snapshot.js", () => ({
   handleSessionSnapshot: vi.fn().mockResolvedValue({ exitCode: 0, stdout: "" }),
 }));
+vi.mock("../../src/hooks/post-tool.js", () => ({
+  handlePostToolUse: vi.fn().mockResolvedValue({ exitCode: 0, stdout: "" }),
+}));
 vi.mock("../../src/daemon/client.js", () => ({
   DaemonClient: vi.fn().mockImplementation(() => ({})),
 }));
@@ -34,13 +37,14 @@ vi.mock("../../src/bootstrap.js", () => ({
 }));
 
 import { validateAndFixHooks } from "../../src/hooks/auto-heal.js";
-import { dispatchHook } from "../../src/hooks/dispatch.js";
+import { dispatchHook, isHookCommand } from "../../src/hooks/dispatch.js";
 import { ensureBootstrapped } from "../../src/bootstrap.js";
 
 describe("HOOK_COMMANDS", () => {
   it("has an entry for every REQUIRED_HOOKS event", () => {
     const commandToEvent: Record<string, string> = {
       "compact": "PreCompact",
+      "post-tool": "PostToolUse",
       "restore": "SessionStart",
       "session-end": "SessionEnd",
       "session-snapshot": "Stop",
@@ -61,6 +65,7 @@ import { handleSessionStart } from "../../src/hooks/restore.js";
 import { handleSessionEnd } from "../../src/hooks/session-end.js";
 import { handleUserPromptSubmit } from "../../src/hooks/user-prompt.js";
 import { handleSessionSnapshot } from "../../src/hooks/session-snapshot.js";
+import { handlePostToolUse } from "../../src/hooks/post-tool.js";
 import { loadDaemonConfig } from "../../src/daemon/config.js";
 
 describe("dispatchHook", () => {
@@ -116,5 +121,22 @@ describe("dispatchHook", () => {
     vi.mocked(handlePreCompact).mockResolvedValue({ exitCode: 0, stdout: "" });
     const result = await dispatchHook("compact", JSON.stringify({ session_id: "s1" }));
     expect(result.exitCode).toBe(0);
+  });
+
+  it("routes post-tool without calling ensureBootstrapped", async () => {
+    vi.mocked(handlePostToolUse).mockClear();
+    vi.mocked(ensureBootstrapped).mockClear();
+    const result = await dispatchHook("post-tool", JSON.stringify({
+      session_id: "test",
+      tool_name: "Read",
+      tool_input: { file_path: "/test.ts" },
+    }));
+    expect(result.exitCode).toBe(0);
+    expect(handlePostToolUse).toHaveBeenCalledTimes(1);
+    expect(ensureBootstrapped).not.toHaveBeenCalled();
+  });
+
+  it("recognizes post-tool as a valid hook command", () => {
+    expect(isHookCommand("post-tool")).toBe(true);
   });
 });
