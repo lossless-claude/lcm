@@ -341,4 +341,71 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
       db.close();
     }
   });
+
+  // ── Test H: Error capture via safeLogError ─────────────────────────────
+
+  it("safeLogError writes to error_log table in sidecar DB", async () => {
+    const { safeLogError, _resetCircuitBreaker } = await import("../../src/hooks/hook-errors.js");
+    _resetCircuitBreaker();
+
+    safeLogError("PostToolUse", new Error("test e2e error"), {
+      cwd: projectDir,
+      sessionId: "e2e-error-test",
+    });
+
+    const dbPath = eventsDbPath(projectDir);
+    const db = new EventsDb(dbPath);
+    try {
+      const stats = db.getHealthStats();
+      expect(stats.errors).toBe(1);
+      expect(stats.lastError).toBeTruthy();
+    } finally {
+      db.close();
+    }
+  });
+
+  // ── Test I: Pruning caps unprocessed events ──────────────────────────
+
+  it("pruneUnprocessed caps events at maxRows", async () => {
+    const dbPath = eventsDbPath(projectDir);
+    const db = new EventsDb(dbPath);
+    try {
+      for (let i = 0; i < 20; i++) {
+        db.insertEvent("e2e-prune-test", {
+          type: "file", category: "pattern", data: `event-${i}`, priority: 3,
+        }, "PostToolUse");
+      }
+      expect(db.getHealthStats().unprocessed).toBe(20);
+
+      const result = db.pruneUnprocessed(10, 30);
+      expect(result.pruned).toBe(10);
+      expect(db.getHealthStats().unprocessed).toBe(10);
+
+      // Verify prune was logged to error_log
+      expect(db.getHealthStats().errors).toBeGreaterThanOrEqual(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  // ── Test J: collectEventStats aggregation ────────────────────────────
+
+  it("collectEventStats aggregates across sidecar DBs", async () => {
+    // Create events in the project sidecar
+    const dbPath = eventsDbPath(projectDir);
+    const db = new EventsDb(dbPath);
+    try {
+      db.insertEvent("e2e-stats-test", {
+        type: "decision", category: "decision", data: "test", priority: 1,
+      }, "PostToolUse");
+      db.logHookError("PostToolUse", new Error("test error"));
+    } finally {
+      db.close();
+    }
+
+    const { collectEventStats } = await import("../../src/db/events-stats.js");
+    const stats = collectEventStats();
+    expect(stats.captured).toBeGreaterThanOrEqual(1);
+    expect(stats.errors).toBeGreaterThanOrEqual(1);
+  });
 });
