@@ -264,14 +264,18 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>): Promise<CheckR
     }
   })();
 
-  if (lcmMdExists && claudeMdHasRef) {
+  const { LCM_MD_CONTENT } = await import("../daemon/orientation.js");
+  const lcmMdStale = lcmMdExists
+    ? (() => { try { return deps.readFileSync(lcmMdPath, "utf-8") !== LCM_MD_CONTENT; } catch { return true; } })()
+    : false;
+
+  if (lcmMdExists && claudeMdHasRef && !lcmMdStale) {
     results.push({ name: "lcm-md", category: "Settings", status: "pass", message: "~/.claude/lcm.md installed and referenced in CLAUDE.md" });
   } else {
     try {
-      const { LCM_MD_CONTENT } = await import("../daemon/orientation.js");
-      const { claudeMdPatched } = ensureLcmMd(deps, LCM_MD_CONTENT, deps.homedir);
+      const { lcmMdWritten, claudeMdPatched } = ensureLcmMd(deps, LCM_MD_CONTENT, deps.homedir);
       const detail = [
-        !lcmMdExists ? "wrote ~/.claude/lcm.md" : null,
+        !lcmMdExists ? "wrote ~/.claude/lcm.md" : lcmMdWritten ? "updated stale ~/.claude/lcm.md" : null,
         claudeMdPatched ? "added @lcm.md to CLAUDE.md" : null,
       ].filter(Boolean).join(", ");
       results.push({ name: "lcm-md", category: "Settings", status: "warn", message: `lcm.md restored (${detail})`, fixApplied: true });

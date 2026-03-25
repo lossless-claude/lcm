@@ -12,10 +12,10 @@ Search memory BEFORE asking the user about past decisions, architectural context
 
 | Tool | Use for |
 |------|---------|
-| \`mcp__plugin_lcm_lcm__lcm_search\` | Broad conceptual recall — "how was X implemented", "decision about Y" |
-| \`mcp__plugin_lcm_lcm__lcm_grep\` | Exact keyword, error message, function name |
-| \`mcp__plugin_lcm_lcm__lcm_describe\` | Check metadata of a summary node before expanding |
-| \`mcp__plugin_lcm_lcm__lcm_expand\` | Decompress a summary node for full content |
+| \`lcm_search\` | Broad conceptual recall — "how was X implemented", "decision about Y" |
+| \`lcm_grep\` | Exact keyword, error message, function name |
+| \`lcm_describe\` | Check metadata of a summary node before expanding |
+| \`lcm_expand\` | Decompress a summary node for full content |
 
 ## Retrieval chain
 
@@ -28,7 +28,7 @@ lcm_expand <nodeId>       → full decompressed content
 
 ## Storage
 
-Storage is automatic — hooks capture sessions and compact them into memory. Never call \`lcm store\` or write to any memory system directly.
+Memory is captured automatically by hooks. Do NOT store manually via \`lcm store\` CLI — use the MCP tools (\`lcm_store\`) only when explicitly needed.
 `;
 
 // Guidance is now delivered via ~/.claude/lcm.md (installed by `lcm install` / `lcm doctor`),

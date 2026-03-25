@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { runDoctor } from "../../src/doctor/doctor.js";
 import { REQUIRED_HOOKS } from "../../installer/install.js";
+import { LCM_MD_CONTENT } from "../../src/daemon/orientation.js";
 
 vi.mock("../../src/daemon/lifecycle.js", () => ({
   ensureDaemon: vi.fn().mockResolvedValue({ connected: false }),
@@ -21,7 +22,8 @@ function minimalDeps(overrides: Partial<Parameters<typeof runDoctor>[0]> = {}) {
       if (path.endsWith("config.json")) return "{}";
       if (path.endsWith("settings.json")) return buildSettingsJson();
       if (path.endsWith("package.json")) return JSON.stringify({ version: "0.5.0" });
-      if (path.endsWith("CLAUDE.md")) return "<!-- lcm:start -->\n@lcm.md\n<!-- lcm:end -->\n";
+      if (path.endsWith("CLAUDE.md")) return "<!-- lcm:start -->\n<!-- Claude Code include: @lcm.md -->\n<!-- lcm:end -->\n";
+      if (path.endsWith("lcm.md")) return LCM_MD_CONTENT;
       return "{}";
     },
     writeFileSync: vi.fn(),

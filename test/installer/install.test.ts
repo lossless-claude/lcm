@@ -356,7 +356,7 @@ describe("install — MCP registration", () => {
 
 describe("ensureLcmMd", () => {
   const CONTENT = "# lcm test content\n";
-  const BLOCK = `<!-- lcm:start -->\n@lcm.md\n<!-- lcm:end -->`;
+  const BLOCK = `<!-- lcm:start -->\n<!-- Claude Code include: @lcm.md -->\n<!-- lcm:end -->`;
 
   function makeDepsForLcm(claudeMdContent?: string) {
     const files = new Map<string, string>();
@@ -394,7 +394,7 @@ describe("ensureLcmMd", () => {
   });
 
   it("does not rewrite CLAUDE.md when managed block is already correct", () => {
-    const existing = `@RTK.md\n<!-- lcm:start -->\n@lcm.md\n<!-- lcm:end -->\n@other.md\n`;
+    const existing = `@RTK.md\n<!-- lcm:start -->\n<!-- Claude Code include: @lcm.md -->\n<!-- lcm:end -->\n@other.md\n`;
     const { deps, written } = makeDepsForLcm(existing);
     const result = ensureLcmMd(deps, CONTENT, "/home");
     expect(result.claudeMdPatched).toBe(false);

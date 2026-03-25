@@ -147,7 +147,7 @@ export function ensureLcmMd(
     try { existing = deps.readFileSync(claudeMdPath, "utf-8"); } catch {}
   }
 
-  const block = `${LCM_BLOCK_START}\n@lcm.md\n${LCM_BLOCK_END}`;
+  const block = `${LCM_BLOCK_START}\n<!-- Claude Code include: @lcm.md -->\n${LCM_BLOCK_END}`;
   const startIdx = existing.indexOf(LCM_BLOCK_START);
   const endIdx = existing.indexOf(LCM_BLOCK_END, startIdx);
 
