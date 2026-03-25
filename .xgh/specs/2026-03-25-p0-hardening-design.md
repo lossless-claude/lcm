@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS error_log (
 CREATE INDEX IF NOT EXISTS idx_error_log_created ON error_log(created_at);
 ```
 
-**Migration safety:** Wrap the version check and CREATE TABLE in `BEGIN EXCLUSIVE` / `COMMIT` to prevent concurrent hooks from racing on the schema upgrade. WAL mode + `busy_timeout = 5000` handles contention gracefully.
+**Migration safety:** Wrap only the v1→v2 upgrade branch in `BEGIN EXCLUSIVE` / `COMMIT` — not the entire `migrate()` body. On fresh install (no `schema_version` table), the existing code path runs `CREATE TABLE IF NOT EXISTS` which is safe without exclusive locking. The exclusive transaction is only needed for the upgrade path where two concurrent hooks might both read VERSION=1 and race to create the new table. WAL mode + `busy_timeout = 5000` handles contention gracefully.
 
 ### 1.2 New `EventsDb` Methods
 
@@ -163,6 +163,8 @@ Add `checkPassiveLearning(results: CheckResult[])` to `src/doctor/doctor.ts`.
 
 ### 3.4 Verbose Mode
 
+`checkPassiveLearning` accepts a `verbose: boolean` parameter. When `false`, it pushes only the summary `CheckResult` entries. When `true`, it additionally pushes per-project `CheckResult` entries and appends the last 5 error_log entries to the `events-errors` message. The existing `runDoctor` function already threads a `verbose` flag through to `printStats()`; this parameter follows the same pattern.
+
 When `--verbose` is passed, show per-project breakdown:
 
 ```
@@ -246,7 +248,7 @@ Update `docs/passive-learning.md`:
 
 ### Unit Tests
 
-- `events-db.test.ts`: Test `logHookError`, `pruneUnprocessed` (row cap, age cap, prune logging), `getHealthStats`, `pruneErrorLog`, schema migration v1→v2
+- `events-db.test.ts`: Test `logHookError`, `pruneUnprocessed` (row cap, age cap, **explicit test that prune count is logged to error_log before deletion**), `getHealthStats`, `pruneErrorLog`, schema migration v1→v2
 - `hook-errors.test.ts`: Test `safeLogError` three-layer fence (DB success, DB fail → file, both fail → swallow), circuit breaker behavior, cwd guard
 - `events-stats.test.ts`: Test `collectEventStats` aggregation, timeout budget, empty directory
 
