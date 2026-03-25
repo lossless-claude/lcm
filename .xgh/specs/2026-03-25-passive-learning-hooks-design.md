@@ -40,11 +40,11 @@ UserPromptSubmit ──→ events.db + daemon /prompt-search (existing)
 
 **Location:** `~/.lossless-claude/events/<project-hash>.db`
 
-Uses SHA256(projectDir) hashing, same as the main DB. Worktrees get a suffix derived from the worktree directory name. Each worktree gets its own DB file — `project_id` is derivable from the file path.
+Uses `projectId(cwd)` hashing (SHA256 of project directory path), same as the main DB. Each project—including worktrees—gets a distinct ID because the cwd differs. Worktrees automatically produce unique hashes without needing a suffix.
 
 ```
-~/.lossless-claude/events/a1b2c3d4.db                          # main repo
-~/.lossless-claude/events/a1b2c3d4-wt-vast-purring-kay.db      # worktree
+~/.lossless-claude/events/a1b2c3d4.db                          # main repo at /path/to/repo
+~/.lossless-claude/events/5c7e9f1b.db                          # worktree at /path/to/repo/.git/worktrees/feature-x
 ```
 
 ### Shared path resolution
@@ -72,7 +72,7 @@ CREATE TABLE events (
 );
 
 CREATE INDEX idx_events_unprocessed ON events(processed_at) WHERE processed_at IS NULL;
-CREATE INDEX idx_events_session ON events(session_id, created_at);
+CREATE INDEX idx_events_session ON events(session_id, seq);
 ```
 
 ### Design choices
@@ -395,7 +395,7 @@ Events are never truly lost — SQLite persistence is immediate. Only promotion 
 | `src/hooks/session-snapshot.ts` | Add best-effort event flush on Stop |
 | `src/hooks/auto-heal.ts` | Add PostToolUse to hook allowlist |
 | `src/daemon/server.ts` | Register `/promote-events` route |
-| `src/daemon/config.ts` | Add `promotion` config section |
+| `src/daemon/config.ts` | Add `eventConfidence` config to `compaction.promotionThresholds` (no parallel config tree) |
 
 ## 11. v1.1 — Deferred Features
 

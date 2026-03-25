@@ -1206,7 +1206,7 @@ try {
   const { EventsDb } = await import("./events-db.js");
   const { eventsDbPath } = await import("../db/events-path.js");
 
-  const prompt = String(input.query ?? "");
+  const prompt = String(input.prompt ?? "");
   const events = extractUserPromptEvents(prompt);
 
   if (events.length > 0) {
@@ -1214,7 +1214,7 @@ try {
     const db = new EventsDb(eventsDbPath(cwd));
     try {
       for (const event of events) {
-        db.insertEvent(sessionId, event, "UserPromptSubmit");
+        db.insertEvent(input.session_id, event, "UserPromptSubmit");
       }
     } finally {
       db.close();
@@ -1419,7 +1419,7 @@ import type { DaemonConfig } from "../config.js";
 
 const AUTO_TAGS: Record<string, string> = {
   decision: "category:preference",
-  error: "category:gotcha",
+  error: "category:gotcha",      // overridden to "category:solution" for error→fix pairs
   plan: "category:decision",
   role: "category:user-context",
   git: "category:workflow",
@@ -1465,7 +1465,8 @@ function correlateErrors(events: EventRow[]): void {
         // Match on command prefix overlap
         if (candidatePrefix.includes(errorPrefix.split(":")[1]?.trim().split(" ")[0] ?? "")) {
           // Correlation found — this is an error→fix pair
-          // prev_event_id will be set in the EventsDb
+          // Set the tag to 'category:solution' (overriding 'category:gotcha' from AUTO_TAGS)
+          candidate.auto_tag = "category:solution";
           (candidate as EventRow & { _correlatedErrorId?: number })._correlatedErrorId = event.event_id;
           break; // only correlate with closest match
         }
