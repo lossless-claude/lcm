@@ -40,7 +40,12 @@ UserPromptSubmit ──→ events.db + daemon /prompt-search (existing)
 
 **Location:** `~/.lossless-claude/events/<project-hash>.db`
 
-Uses SHA256(projectDir) hashing, same as the main DB. Worktrees get a suffix (same pattern as context-mode). Each worktree gets its own DB file — `project_id` is derivable from the file path.
+Uses SHA256(projectDir) hashing, same as the main DB. Worktrees get a suffix derived from the worktree directory name. Each worktree gets its own DB file — `project_id` is derivable from the file path.
+
+```
+~/.lossless-claude/events/a1b2c3d4.db                          # main repo
+~/.lossless-claude/events/a1b2c3d4-wt-vast-purring-kay.db      # worktree
+```
 
 ### Shared path resolution
 
@@ -74,14 +79,14 @@ CREATE INDEX idx_events_session ON events(session_id, created_at);
 
 - **WAL mode** enabled for concurrent write safety (multiple sessions, same project).
 - **`PRAGMA busy_timeout = 5000`** on every open (matches main DB convention).
-- **`seq`** monotonic counter per session — resolves ordering ambiguity for parallel tool calls. Implemented as: `INSERT INTO events (..., seq) VALUES (..., (SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE session_id = ?))`. The subquery adds negligible cost since `idx_events_session` covers it.
+- **`seq`** monotonic counter per session — resolves ordering ambiguity for parallel tool calls. Implemented as: `INSERT INTO events (..., seq) VALUES (..., (SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE session_id = ?))`. The subquery adds negligible cost since `idx_events_session` covers it. **Race safety:** Within a session, Claude Code processes one tool at a time, so PostToolUse hooks fire sequentially — no concurrent writes for the same session_id. Cross-session writes target different session_ids so the MAX(seq) subquery can't collide. Occasional seq ties are acceptable if they occur — event ordering is best-effort, not a correctness requirement.
 - **`prev_event_id`** set during promotion (daemon-side correlation), not during capture (hooks are separate processes with no shared state).
 - **`processed_at`** idempotency — if two triggers fire close together, second sees events already processed.
 - **No fixed truncation** on `data` — allowlist extraction naturally bounds content. Soft cap at 2000 chars as safety valve.
 - **No FTS** on sidecar — it's a capture buffer, not a search target.
 - **File permissions** — `0o700` for events directory, `0o600` for DB files.
 - **Cleanup** — events with `processed_at` older than 7 days are pruned during SessionStart scavenge.
-- **`schema_version`** table for future migrations.
+- **`schema_version`** table for future migrations. `events-db.ts` must include a version-based migration runner: read current version, apply pending migrations in order, update version. Same pattern as `src/db/migration.ts` but simpler (sidecar has one table).
 
 ## 2. PostToolUse Hook — Event Extraction
 
@@ -99,7 +104,7 @@ CREATE INDEX idx_events_session ON events(session_id, created_at);
 | Category | Tool Sources | What's Extracted | Priority |
 |----------|-------------|-----------------|----------|
 | `decision` | AskUserQuestion | Q + A pair (user's answer = decision) | 1 |
-| `error` | Bash (exit != 0), any tool with isError | Error type + message, never raw output | 1 |
+| `error` | Bash (exit != 0), any tool with isError | Error type + message, never raw output. We rely on Claude Code's `isError` flag as the authoritative signal — parsing stderr for error patterns would require reading raw output, violating the allowlist principle. | 1 |
 | `plan` | EnterPlanMode, ExitPlanMode | Enter/exit + approved/rejected (verify these fire PostToolUse in Claude Code — if not, capture via Write/Edit to `.claude/plans/` path detection) | 1 |
 | `git` | Bash (git commands) | Operation type + commit message when present | 2 |
 | `task` | TaskCreate, TaskUpdate | Subject + status | 2 |
@@ -264,8 +269,9 @@ Uses existing `deduplicateAndInsert()` — `listContentPrefixes()` prevents dupl
 During `/promote-events` batch processing:
 1. Sort events by session_id + seq
 2. Detect error→success sequences using **command pattern matching** (not just tool_name — Bash errors need the command pattern, e.g., `npm install` → `npm install --legacy-peer-deps`). Match on: tool_name + command prefix (first 2 tokens of Bash commands) + file path (for Edit/Write).
-3. Set `prev_event_id` on the success event → creates error→fix chain
-4. Promote the pair as a `category:solution` insight
+3. Correlate with the **closest preceding error** that matches — not any error in the window. If multiple errors match, pick the one with the highest seq (most recent). This prevents stale errors from incorrectly pairing with unrelated successes.
+4. Set `prev_event_id` on the success event → creates error→fix chain
+5. Promote the pair as a `category:solution` insight
 
 > **Correlation window:** Only consider events within 20 seq positions of each other in the same session. Beyond that, the error and fix are unlikely to be related.
 
@@ -334,7 +340,7 @@ Recent learnings from your previous sessions in this project:
 - Only entries with `confidence >= 0.3`
 - Only entries from the same project
 - Exclude archived entries
-- Exclude entries older than 90 days (query-time filter, not deletion — consistent with lossless philosophy)
+- Exclude entries older than 90 days (configurable via `insightsMaxAgeDays`, query-time filter, not deletion — consistent with lossless philosophy)
 - Dedup against `/restore` output (don't repeat what's already in DAG context)
 
 ### Implementation
