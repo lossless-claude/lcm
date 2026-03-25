@@ -114,6 +114,36 @@ const LOCAL_TOOLS: Record<string, (args: Record<string, unknown>) => Promise<str
 
 export function getMcpToolDefinitions() { return TOOLS; }
 
+export type DaemonRequestOpts = {
+  port: number;
+  pidFilePath: string;
+  _ensureDaemon?: typeof ensureDaemon;
+};
+
+/** Exported for testing. Calls a daemon route with auto-restart + retry on failure. */
+export async function handleDaemonRequest(
+  client: Pick<DaemonClient, "post">,
+  route: string,
+  body: Record<string, unknown>,
+  opts: DaemonRequestOpts,
+): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
+  try {
+    const result = await client.post(route, body);
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  } catch {
+    // Daemon may have crashed — attempt auto-restart then retry once
+    const ensure = opts._ensureDaemon ?? ensureDaemon;
+    await ensure({ port: opts.port, pidFilePath: opts.pidFilePath, spawnTimeoutMs: 5000 });
+    try {
+      const result = await client.post(route, body);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    } catch (retryErr) {
+      const msg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+      return { content: [{ type: "text", text: `lcm daemon unavailable: ${msg}` }], isError: true };
+    }
+  }
+}
+
 export async function startMcpServer(): Promise<void> {
   const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
   const port = config.daemon.port;
@@ -127,15 +157,24 @@ export async function startMcpServer(): Promise<void> {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
-    const localHandler = LOCAL_TOOLS[req.params.name];
+    const name = req.params.name;
+    const args = (req.params.arguments ?? {}) as Record<string, unknown>;
+
+    const localHandler = LOCAL_TOOLS[name];
     if (localHandler) {
-      const text = await localHandler((req.params.arguments ?? {}) as Record<string, unknown>);
-      return { content: [{ type: "text", text }] };
+      try {
+        const text = await localHandler(args);
+        return { content: [{ type: "text", text }] };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: "text", text: `lcm error: ${msg}` }], isError: true };
+      }
     }
-    const route = TOOL_ROUTES[req.params.name];
-    if (!route) throw new Error(`Unknown tool: ${req.params.name}`);
-    const result = await client.post(route, { ...req.params.arguments, cwd: process.env.PWD ?? process.cwd() });
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+
+    const route = TOOL_ROUTES[name];
+    if (!route) throw new Error(`Unknown tool: ${name}`);
+    const body = { ...args, cwd: process.env.PWD ?? process.cwd() };
+    return handleDaemonRequest(client, route, body, { port, pidFilePath });
   });
 
   const transport = new StdioServerTransport();
