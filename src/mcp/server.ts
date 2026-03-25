@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { DaemonClient } from "../daemon/client.js";
 import { loadDaemonConfig } from "../daemon/config.js";
 import { ensureDaemon } from "../daemon/lifecycle.js";
-import { PKG_VERSION } from "../daemon/server.js";
+import { PKG_VERSION } from "../daemon/version.js";
 import { lcmGrepTool } from "./tools/lcm-grep.js";
 import { lcmExpandTool } from "./tools/lcm-expand.js";
 import { lcmDescribeTool } from "./tools/lcm-describe.js";

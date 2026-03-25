@@ -182,7 +182,7 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<void> {
   // Clear plugin cache entries for previous versions so stale/corrupted installs don't persist.
   try {
     const pkgJsonPath = join(dirname(fileURLToPath(import.meta.url)), "../..", "package.json");
-    const pkgVersion = (JSON.parse(readFileSync(pkgJsonPath, "utf-8")) as { version: string }).version;
+    const pkgVersion = (JSON.parse(deps.readFileSync(pkgJsonPath, "utf-8")) as { version: string }).version;
     const cacheDir = join(homedir(), ".claude", "plugins", "cache", "lossless-claude", "lcm");
     if (deps.existsSync(cacheDir)) {
       for (const entry of readdirSync(cacheDir, { withFileTypes: true })) {

@@ -18,7 +18,7 @@ vi.mock("@modelcontextprotocol/sdk/server/stdio.js", () => ({
 vi.mock("../../src/daemon/client.js", () => ({
   DaemonClient: vi.fn().mockReturnValue({ post: vi.fn() }),
 }));
-vi.mock("../../src/daemon/server.js", () => ({
+vi.mock("../../src/daemon/version.js", () => ({
   PKG_VERSION: "9.9.9-test",
 }));
 

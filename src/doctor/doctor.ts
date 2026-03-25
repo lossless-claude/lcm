@@ -171,17 +171,19 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>): Promise<CheckR
 
         // Re-fetch health to verify restart actually fixed the version
         let postRestartVersion: string | undefined;
+        let postRestartOk = false;
         if (connected) {
           try {
             const res = await deps.fetch(`http://localhost:${config.port}/health`);
             if (res.ok) {
               const h = (await res.json()) as { status?: string; version?: string };
+              postRestartOk = h.status === "ok";
               postRestartVersion = h.version;
             }
           } catch { /* non-fatal */ }
         }
 
-        const fixApplied = connected && postRestartVersion === pkgVersion;
+        const fixApplied = connected && postRestartOk && postRestartVersion === pkgVersion;
         if (fixApplied) {
           results.push({
             name: "daemon", category: "Daemon", status: "warn",

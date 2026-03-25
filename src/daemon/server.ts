@@ -1,8 +1,6 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { DaemonConfig } from "./config.js";
 import { sanitizeError } from "./safe-error.js";
 import { readAuthToken } from "./auth.js";
@@ -20,14 +18,8 @@ import { createIngestHandler } from "./routes/ingest.js";
 import { createPromptSearchHandler } from "./routes/prompt-search.js";
 import { createStatusHandler } from "./routes/status.js";
 import { createSessionCompleteHandler } from "./routes/session-complete.js";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-export const PKG_VERSION = (() => {
-  try {
-    const pkg = JSON.parse(readFileSync(join(__dirname, "..", "..", "..", "package.json"), "utf-8"));
-    return pkg.version;
-  } catch { return "0.0.0"; }
-})();
+import { PKG_VERSION } from "./version.js";
+export { PKG_VERSION };
 
 export type RouteHandler = (req: IncomingMessage, res: ServerResponse, body: string) => Promise<void>;
 export type DaemonInstance = { address: () => AddressInfo; stop: () => Promise<void>; registerRoute: (method: string, path: string, handler: RouteHandler) => void; idleTriggered: boolean };
