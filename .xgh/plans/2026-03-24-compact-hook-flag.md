@@ -97,7 +97,7 @@ The else branch remains unchanged: it reads stdin and dispatches to the hook han
 - [ ] **Step 4: Verify TypeScript compiles clean**
 
 ```bash
-cd /Users/pedro/Developer/lossless-claude && npx tsc --noEmit 2>&1 | head -30
+npx tsc --noEmit 2>&1 | head -30
 ```
 
 Expected: no errors.
@@ -422,7 +422,7 @@ Expected: succeeds.
 
 ```bash
 # Should complete immediately in batch mode (not hang)
-echo "" | timeout 5 node dist/lcm.mjs compact 2>&1 | head -5
+echo "" | timeout 5 node dist/bin/lcm.js compact 2>&1 | head -5
 ```
 
 Expected: `Nothing to compact — all sessions are up to date.` (or similar). NOT a hang.
@@ -431,7 +431,7 @@ Expected: `Nothing to compact — all sessions are up to date.` (or similar). NO
 
 ```bash
 # With --hook: reads stdin JSON, dispatches to daemon (may fail if daemon is down, but must NOT hang)
-echo '{}' | timeout 5 node dist/lcm.mjs compact --hook 2>&1 | head -5
+echo '{}' | timeout 5 node dist/bin/lcm.js compact --hook 2>&1 | head -5
 ```
 
 Expected: completes within 5 seconds.

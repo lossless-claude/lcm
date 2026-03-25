@@ -688,15 +688,18 @@ Check the first argument passed to this command:
 Run this command to merge the `statusLine` config into `~/.claude/settings.json` without overwriting other settings:
 
 ```bash
-(
-  PLUGIN_ROOT=$(node -e "console.log(require.resolve('lossless-claude/package.json').replace('/package.json',''))" 2>/dev/null || echo "")
-  [ -z "$PLUGIN_ROOT" ] && echo "Error: lossless-claude not found in node path" && return 1
-  SETTINGS="$HOME/.claude/settings.json"
-  [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
-  TMP=$(jq --arg p "$PLUGIN_ROOT/statusline.mjs" '.statusLine = {"command":"node","args":[$p]}' "$SETTINGS")
-  echo "$TMP" > "$SETTINGS.tmp" && mv "$SETTINGS.tmp" "$SETTINGS"
-  echo "Statusline enabled. Restart Claude Code to activate."
-)
+PLUGIN_ROOT=$(node -e "console.log(require.resolve('@lossless-claude/lcm/package.json').replace('/package.json',''))" 2>/dev/null || echo "")
+[ -z "$PLUGIN_ROOT" ] && echo "Error: @lossless-claude/lcm not found in node path" && exit 1
+SETTINGS="$HOME/.claude/settings.json"
+[ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
+node -e "
+  const fs = require('fs');
+  const p = process.argv[1];
+  const s = JSON.parse(fs.readFileSync(p, 'utf8'));
+  s.statusLine = { command: 'node', args: [process.argv[2]] };
+  fs.writeFileSync(p, JSON.stringify(s, null, 2));
+" "$SETTINGS" "$PLUGIN_ROOT/statusline.mjs"
+echo "Statusline enabled. Restart Claude Code to activate."
 ```
 
 ### If argument is `off`
@@ -705,11 +708,13 @@ Run this command to remove the `statusLine` key from `~/.claude/settings.json`:
 
 ```bash
 SETTINGS="$HOME/.claude/settings.json"
-[ -f "$SETTINGS" ] && {
-  TMP=$(jq 'del(.statusLine)' "$SETTINGS")
-  echo "$TMP" > "$SETTINGS.tmp" && mv "$SETTINGS.tmp" "$SETTINGS"
-  echo "Statusline disabled. Restart Claude Code to deactivate."
-}
+[ -f "$SETTINGS" ] && node -e "
+  const fs = require('fs');
+  const p = process.argv[1];
+  const s = JSON.parse(fs.readFileSync(p, 'utf8'));
+  delete s.statusLine;
+  fs.writeFileSync(p, JSON.stringify(s, null, 2));
+" "$SETTINGS" && echo "Statusline disabled. Restart Claude Code to deactivate."
 ```
 
 Tell the user: **Restart Claude Code** to apply the change.
