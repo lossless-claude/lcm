@@ -1,0 +1,12 @@
+__vite_ssr_exportName__("buildOrientationPrompt", () => { try { return buildOrientationPrompt } catch {} });
+function buildOrientationPrompt() {
+  return `<memory-orientation>
+Memory system active. Guidelines:
+- lcm_grep / lcm_expand / lcm_describe / lcm_search → conversation history and project memory
+- Do not store directly to any memory system — lossless-claude manages persistence automatically
+- When uncertain what was discussed or decided, use lcm_search before asking the user
+</memory-orientation>`;
+}
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IjtBQUFPLFNBQVMseUJBQWlDO0FBQy9DLFNBQU87QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBO0FBTVQiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbIm9yaWVudGF0aW9uLnRzIl0sInNvdXJjZXNDb250ZW50IjpbImV4cG9ydCBmdW5jdGlvbiBidWlsZE9yaWVudGF0aW9uUHJvbXB0KCk6IHN0cmluZyB7XG4gIHJldHVybiBgPG1lbW9yeS1vcmllbnRhdGlvbj5cbk1lbW9yeSBzeXN0ZW0gYWN0aXZlLiBHdWlkZWxpbmVzOlxuLSBsY21fZ3JlcCAvIGxjbV9leHBhbmQgLyBsY21fZGVzY3JpYmUgLyBsY21fc2VhcmNoIOKGkiBjb252ZXJzYXRpb24gaGlzdG9yeSBhbmQgcHJvamVjdCBtZW1vcnlcbi0gRG8gbm90IHN0b3JlIGRpcmVjdGx5IHRvIGFueSBtZW1vcnkgc3lzdGVtIOKAlCBsb3NzbGVzcy1jbGF1ZGUgbWFuYWdlcyBwZXJzaXN0ZW5jZSBhdXRvbWF0aWNhbGx5XG4tIFdoZW4gdW5jZXJ0YWluIHdoYXQgd2FzIGRpc2N1c3NlZCBvciBkZWNpZGVkLCB1c2UgbGNtX3NlYXJjaCBiZWZvcmUgYXNraW5nIHRoZSB1c2VyXG48L21lbW9yeS1vcmllbnRhdGlvbj5gO1xufVxuIl0sImZpbGUiOiIvc3JjL2RhZW1vbi9vcmllbnRhdGlvbi50cyJ9

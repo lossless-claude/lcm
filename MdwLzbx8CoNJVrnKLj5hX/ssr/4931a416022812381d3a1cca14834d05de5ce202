@@ -1,0 +1,24 @@
+const __vite_ssr_import_0__ = await __vite_ssr_import__("vitest", {"importedNames":["describe","it","expect"]});
+const __vite_ssr_import_1__ = await __vite_ssr_import__("/package.json", {"importedNames":["default"]});
+
+
+(0,__vite_ssr_import_0__.describe)("package.json", () => {
+  (0,__vite_ssr_import_0__.it)("has correct name", () => (0,__vite_ssr_import_0__.expect)(__vite_ssr_import_1__.default.name).toBe("@lossless-claude/lcm"));
+  (0,__vite_ssr_import_0__.it)("has bin entry", () => (0,__vite_ssr_import_0__.expect)(__vite_ssr_import_1__.default.bin).toHaveProperty("lcm"));
+  (0,__vite_ssr_import_0__.it)("has anthropic sdk as optional peer dep", () => (0,__vite_ssr_import_0__.expect)(__vite_ssr_import_1__.default.peerDependencies).toHaveProperty("@anthropic-ai/sdk"));
+  (0,__vite_ssr_import_0__.it)("has mcp sdk", () => (0,__vite_ssr_import_0__.expect)(__vite_ssr_import_1__.default.dependencies).toHaveProperty("@modelcontextprotocol/sdk"));
+  (0,__vite_ssr_import_0__.it)("does not have pi-ai", () => (0,__vite_ssr_import_0__.expect)(__vite_ssr_import_1__.default.dependencies).not.toHaveProperty("@mariozechner/pi-ai"));
+  (0,__vite_ssr_import_0__.it)("does not have pi-agent-core", () => (0,__vite_ssr_import_0__.expect)(__vite_ssr_import_1__.default.dependencies).not.toHaveProperty("@mariozechner/pi-agent-core"));
+  (0,__vite_ssr_import_0__.it)("does not use prepack (breaks npm install from git without node_modules)", () => {
+    (0,__vite_ssr_import_0__.expect)(__vite_ssr_import_1__.default.scripts).not.toHaveProperty("prepack");
+  });
+  (0,__vite_ssr_import_0__.it)("uses prepublishOnly for build (only runs during npm publish)", () => {
+    (0,__vite_ssr_import_0__.expect)(__vite_ssr_import_1__.default.scripts).toHaveProperty("prepublishOnly", "npm run build");
+  });
+  (0,__vite_ssr_import_0__.it)("ships mcp.mjs as a fallback MCP entrypoint", () => {
+    (0,__vite_ssr_import_0__.expect)(__vite_ssr_import_1__.default.files).toContain("mcp.mjs");
+  });
+});
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IkFBQUE7QUFDQTs7O0dBRUEsZ0NBQVMsZ0JBQWdCLE1BQU07QUFDN0IsK0JBQUcsb0JBQW9CLFNBQU0sOEJBQU8sOEJBQUksSUFBSSxFQUFFLEtBQUssc0JBQXNCLENBQUM7QUFDMUUsK0JBQUcsaUJBQWlCLFNBQU0sOEJBQU8sOEJBQUksR0FBRyxFQUFFLGVBQWUsS0FBSyxDQUFDO0FBQy9ELCtCQUFHLDBDQUEwQyxTQUFNLDhCQUFPLDhCQUFJLGdCQUFnQixFQUFFLGVBQWUsbUJBQW1CLENBQUM7QUFDbkgsK0JBQUcsZUFBZSxTQUFNLDhCQUFPLDhCQUFJLFlBQVksRUFBRSxlQUFlLDJCQUEyQixDQUFDO0FBQzVGLCtCQUFHLHVCQUF1QixTQUFNLDhCQUFPLDhCQUFJLFlBQVksRUFBRSxJQUFJLGVBQWUscUJBQXFCLENBQUM7QUFDbEcsK0JBQUcsK0JBQStCLFNBQU0sOEJBQU8sOEJBQUksWUFBWSxFQUFFLElBQUksZUFBZSw2QkFBNkIsQ0FBQztBQUVsSCwrQkFBRywyRUFBMkUsTUFBTTtBQUNsRixxQ0FBTyw4QkFBSSxPQUFPLEVBQUUsSUFBSSxlQUFlLFNBQVM7QUFBQSxFQUNsRCxDQUFDO0FBRUQsK0JBQUcsZ0VBQWdFLE1BQU07QUFDdkUscUNBQU8sOEJBQUksT0FBTyxFQUFFLGVBQWUsa0JBQWtCLGVBQWU7QUFBQSxFQUN0RSxDQUFDO0FBRUQsK0JBQUcsOENBQThDLE1BQU07QUFDckQscUNBQU8sOEJBQUksS0FBSyxFQUFFLFVBQVUsU0FBUztBQUFBLEVBQ3ZDLENBQUM7QUFDSCxDQUFDIiwibmFtZXMiOltdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJwYWNrYWdlLWNvbmZpZy50ZXN0LnRzIl0sInNvdXJjZXNDb250ZW50IjpbImltcG9ydCB7IGRlc2NyaWJlLCBpdCwgZXhwZWN0IH0gZnJvbSBcInZpdGVzdFwiO1xuaW1wb3J0IHBrZyBmcm9tIFwiLi4vcGFja2FnZS5qc29uXCI7XG5cbmRlc2NyaWJlKFwicGFja2FnZS5qc29uXCIsICgpID0+IHtcbiAgaXQoXCJoYXMgY29ycmVjdCBuYW1lXCIsICgpID0+IGV4cGVjdChwa2cubmFtZSkudG9CZShcIkBsb3NzbGVzcy1jbGF1ZGUvbGNtXCIpKTtcbiAgaXQoXCJoYXMgYmluIGVudHJ5XCIsICgpID0+IGV4cGVjdChwa2cuYmluKS50b0hhdmVQcm9wZXJ0eShcImxjbVwiKSk7XG4gIGl0KFwiaGFzIGFudGhyb3BpYyBzZGsgYXMgb3B0aW9uYWwgcGVlciBkZXBcIiwgKCkgPT4gZXhwZWN0KHBrZy5wZWVyRGVwZW5kZW5jaWVzKS50b0hhdmVQcm9wZXJ0eShcIkBhbnRocm9waWMtYWkvc2RrXCIpKTtcbiAgaXQoXCJoYXMgbWNwIHNka1wiLCAoKSA9PiBleHBlY3QocGtnLmRlcGVuZGVuY2llcykudG9IYXZlUHJvcGVydHkoXCJAbW9kZWxjb250ZXh0cHJvdG9jb2wvc2RrXCIpKTtcbiAgaXQoXCJkb2VzIG5vdCBoYXZlIHBpLWFpXCIsICgpID0+IGV4cGVjdChwa2cuZGVwZW5kZW5jaWVzKS5ub3QudG9IYXZlUHJvcGVydHkoXCJAbWFyaW96ZWNobmVyL3BpLWFpXCIpKTtcbiAgaXQoXCJkb2VzIG5vdCBoYXZlIHBpLWFnZW50LWNvcmVcIiwgKCkgPT4gZXhwZWN0KHBrZy5kZXBlbmRlbmNpZXMpLm5vdC50b0hhdmVQcm9wZXJ0eShcIkBtYXJpb3plY2huZXIvcGktYWdlbnQtY29yZVwiKSk7XG5cbiAgaXQoXCJkb2VzIG5vdCB1c2UgcHJlcGFjayAoYnJlYWtzIG5wbSBpbnN0YWxsIGZyb20gZ2l0IHdpdGhvdXQgbm9kZV9tb2R1bGVzKVwiLCAoKSA9PiB7XG4gICAgZXhwZWN0KHBrZy5zY3JpcHRzKS5ub3QudG9IYXZlUHJvcGVydHkoXCJwcmVwYWNrXCIpO1xuICB9KTtcblxuICBpdChcInVzZXMgcHJlcHVibGlzaE9ubHkgZm9yIGJ1aWxkIChvbmx5IHJ1bnMgZHVyaW5nIG5wbSBwdWJsaXNoKVwiLCAoKSA9PiB7XG4gICAgZXhwZWN0KHBrZy5zY3JpcHRzKS50b0hhdmVQcm9wZXJ0eShcInByZXB1Ymxpc2hPbmx5XCIsIFwibnBtIHJ1biBidWlsZFwiKTtcbiAgfSk7XG5cbiAgaXQoXCJzaGlwcyBtY3AubWpzIGFzIGEgZmFsbGJhY2sgTUNQIGVudHJ5cG9pbnRcIiwgKCkgPT4ge1xuICAgIGV4cGVjdChwa2cuZmlsZXMpLnRvQ29udGFpbihcIm1jcC5tanNcIik7XG4gIH0pO1xufSk7XG4iXSwiZmlsZSI6Ii9Vc2Vycy9wZWRyby9EZXZlbG9wZXIvbG9zc2xlc3MtY2xhdWRlLy53b3JrdHJlZXMvc2VjdXJpdHktaGFyZGVuaW5nL3Rlc3QvcGFja2FnZS1jb25maWcudGVzdC50cyJ9

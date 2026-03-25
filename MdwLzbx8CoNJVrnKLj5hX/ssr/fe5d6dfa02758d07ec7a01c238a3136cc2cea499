@@ -1,0 +1,18 @@
+__vite_ssr_exportName__("lcmSearchTool", () => { try { return lcmSearchTool } catch {} });
+const lcmSearchTool = {
+  name: "lcm_search",
+  description: "Hybrid search across both episodic memory (SQLite FTS5) and semantic memory (Qdrant). Returns two separate ranked lists — episodic and semantic. Use when looking for project knowledge spanning multiple sessions.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      query: { type: "string", description: "Natural language search query" },
+      limit: { type: "number", description: "Max results per layer (default: 5)" },
+      layers: { type: "array", items: { type: "string", enum: ["episodic", "semantic"] }, description: "Which memory layers to search (default: both)" },
+      tags: { type: "array", items: { type: "string" }, description: "Filter results to entries that include all specified tags (e.g. ['reasoning'], ['decision', 'architecture'])" }
+    },
+    required: ["query"]
+  }
+};
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IjtBQUFPLE1BQU0sZ0JBQWdCO0FBQUEsRUFDM0IsTUFBTTtBQUFBLEVBQ04sYUFBYTtBQUFBLEVBQ2IsYUFBYTtBQUFBLElBQ1gsTUFBTTtBQUFBLElBQ04sWUFBWTtBQUFBLE1BQ1YsT0FBTyxFQUFFLE1BQU0sVUFBVSxhQUFhLGdDQUFnQztBQUFBLE1BQ3RFLE9BQU8sRUFBRSxNQUFNLFVBQVUsYUFBYSxxQ0FBcUM7QUFBQSxNQUMzRSxRQUFRLEVBQUUsTUFBTSxTQUFTLE9BQU8sRUFBRSxNQUFNLFVBQVUsTUFBTSxDQUFDLFlBQVksVUFBVSxFQUFFLEdBQUcsYUFBYSxnREFBZ0Q7QUFBQSxNQUNqSixNQUFNLEVBQUUsTUFBTSxTQUFTLE9BQU8sRUFBRSxNQUFNLFNBQVMsR0FBRyxhQUFhLCtHQUErRztBQUFBLElBQ2hMO0FBQUEsSUFDQSxVQUFVLENBQUMsT0FBTztBQUFBLEVBQ3BCO0FBQ0YiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbImxjbS1zZWFyY2gudHMiXSwic291cmNlc0NvbnRlbnQiOlsiZXhwb3J0IGNvbnN0IGxjbVNlYXJjaFRvb2wgPSB7XG4gIG5hbWU6IFwibGNtX3NlYXJjaFwiLFxuICBkZXNjcmlwdGlvbjogXCJIeWJyaWQgc2VhcmNoIGFjcm9zcyBib3RoIGVwaXNvZGljIG1lbW9yeSAoU1FMaXRlIEZUUzUpIGFuZCBzZW1hbnRpYyBtZW1vcnkgKFFkcmFudCkuIFJldHVybnMgdHdvIHNlcGFyYXRlIHJhbmtlZCBsaXN0cyDigJQgZXBpc29kaWMgYW5kIHNlbWFudGljLiBVc2Ugd2hlbiBsb29raW5nIGZvciBwcm9qZWN0IGtub3dsZWRnZSBzcGFubmluZyBtdWx0aXBsZSBzZXNzaW9ucy5cIixcbiAgaW5wdXRTY2hlbWE6IHtcbiAgICB0eXBlOiBcIm9iamVjdFwiIGFzIGNvbnN0LFxuICAgIHByb3BlcnRpZXM6IHtcbiAgICAgIHF1ZXJ5OiB7IHR5cGU6IFwic3RyaW5nXCIsIGRlc2NyaXB0aW9uOiBcIk5hdHVyYWwgbGFuZ3VhZ2Ugc2VhcmNoIHF1ZXJ5XCIgfSxcbiAgICAgIGxpbWl0OiB7IHR5cGU6IFwibnVtYmVyXCIsIGRlc2NyaXB0aW9uOiBcIk1heCByZXN1bHRzIHBlciBsYXllciAoZGVmYXVsdDogNSlcIiB9LFxuICAgICAgbGF5ZXJzOiB7IHR5cGU6IFwiYXJyYXlcIiwgaXRlbXM6IHsgdHlwZTogXCJzdHJpbmdcIiwgZW51bTogW1wiZXBpc29kaWNcIiwgXCJzZW1hbnRpY1wiXSB9LCBkZXNjcmlwdGlvbjogXCJXaGljaCBtZW1vcnkgbGF5ZXJzIHRvIHNlYXJjaCAoZGVmYXVsdDogYm90aClcIiB9LFxuICAgICAgdGFnczogeyB0eXBlOiBcImFycmF5XCIsIGl0ZW1zOiB7IHR5cGU6IFwic3RyaW5nXCIgfSwgZGVzY3JpcHRpb246IFwiRmlsdGVyIHJlc3VsdHMgdG8gZW50cmllcyB0aGF0IGluY2x1ZGUgYWxsIHNwZWNpZmllZCB0YWdzIChlLmcuIFsncmVhc29uaW5nJ10sIFsnZGVjaXNpb24nLCAnYXJjaGl0ZWN0dXJlJ10pXCIgfSxcbiAgICB9LFxuICAgIHJlcXVpcmVkOiBbXCJxdWVyeVwiXSxcbiAgfSxcbn07XG4iXSwiZmlsZSI6Ii9zcmMvbWNwL3Rvb2xzL2xjbS1zZWFyY2gudHMifQ==

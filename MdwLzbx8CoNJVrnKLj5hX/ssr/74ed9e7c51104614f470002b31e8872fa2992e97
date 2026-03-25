@@ -1,0 +1,12 @@
+__vite_ssr_exportName__("lcmDoctorTool", () => { try { return lcmDoctorTool } catch {} });
+const lcmDoctorTool = {
+  name: "lcm_doctor",
+  description: "Run diagnostics on the lossless-claude installation. Checks daemon, hooks, MCP config, and summarizer health.",
+  inputSchema: {
+    type: "object",
+    properties: {}
+  }
+};
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IjtBQUFPLE1BQU0sZ0JBQWdCO0FBQUEsRUFDM0IsTUFBTTtBQUFBLEVBQ04sYUFBYTtBQUFBLEVBQ2IsYUFBYTtBQUFBLElBQ1gsTUFBTTtBQUFBLElBQ04sWUFBWSxDQUFDO0FBQUEsRUFDZjtBQUNGIiwibmFtZXMiOltdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJsY20tZG9jdG9yLnRzIl0sInNvdXJjZXNDb250ZW50IjpbImV4cG9ydCBjb25zdCBsY21Eb2N0b3JUb29sID0ge1xuICBuYW1lOiBcImxjbV9kb2N0b3JcIixcbiAgZGVzY3JpcHRpb246IFwiUnVuIGRpYWdub3N0aWNzIG9uIHRoZSBsb3NzbGVzcy1jbGF1ZGUgaW5zdGFsbGF0aW9uLiBDaGVja3MgZGFlbW9uLCBob29rcywgTUNQIGNvbmZpZywgYW5kIHN1bW1hcml6ZXIgaGVhbHRoLlwiLFxuICBpbnB1dFNjaGVtYToge1xuICAgIHR5cGU6IFwib2JqZWN0XCIgYXMgY29uc3QsXG4gICAgcHJvcGVydGllczoge30sXG4gIH0sXG59O1xuIl0sImZpbGUiOiIvc3JjL21jcC90b29scy9sY20tZG9jdG9yLnRzIn0=

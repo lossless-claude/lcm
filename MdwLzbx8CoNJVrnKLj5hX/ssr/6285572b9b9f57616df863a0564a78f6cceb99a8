@@ -1,0 +1,25 @@
+__vite_ssr_exportName__("lcmStoreTool", () => { try { return lcmStoreTool } catch {} });
+const lcmStoreTool = {
+  name: "lcm_store",
+  description: "Store a memory into lossless-claude's semantic layer. Use to persist decisions, findings, reasoning outcomes, or any knowledge worth retrieving in future sessions. Stored memories are searchable via lcm_search.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      text: { type: "string", description: "The content to store" },
+      tags: {
+        type: "array",
+        items: { type: "string" },
+        description: "Categorical tags (e.g. ['decision', 'architecture', 'bug-fix'])"
+      },
+      metadata: {
+        type: "object",
+        description: "Optional key/value metadata (e.g. projectId, sessionId, source)",
+        additionalProperties: true
+      }
+    },
+    required: ["text"]
+  }
+};
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IjtBQUFPLE1BQU0sZUFBZTtBQUFBLEVBQzFCLE1BQU07QUFBQSxFQUNOLGFBQWE7QUFBQSxFQUNiLGFBQWE7QUFBQSxJQUNYLE1BQU07QUFBQSxJQUNOLFlBQVk7QUFBQSxNQUNWLE1BQU0sRUFBRSxNQUFNLFVBQVUsYUFBYSx1QkFBdUI7QUFBQSxNQUM1RCxNQUFNO0FBQUEsUUFDSixNQUFNO0FBQUEsUUFDTixPQUFPLEVBQUUsTUFBTSxTQUFTO0FBQUEsUUFDeEIsYUFBYTtBQUFBLE1BQ2Y7QUFBQSxNQUNBLFVBQVU7QUFBQSxRQUNSLE1BQU07QUFBQSxRQUNOLGFBQWE7QUFBQSxRQUNiLHNCQUFzQjtBQUFBLE1BQ3hCO0FBQUEsSUFDRjtBQUFBLElBQ0EsVUFBVSxDQUFDLE1BQU07QUFBQSxFQUNuQjtBQUNGIiwibmFtZXMiOltdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJsY20tc3RvcmUudHMiXSwic291cmNlc0NvbnRlbnQiOlsiZXhwb3J0IGNvbnN0IGxjbVN0b3JlVG9vbCA9IHtcbiAgbmFtZTogXCJsY21fc3RvcmVcIixcbiAgZGVzY3JpcHRpb246IFwiU3RvcmUgYSBtZW1vcnkgaW50byBsb3NzbGVzcy1jbGF1ZGUncyBzZW1hbnRpYyBsYXllci4gVXNlIHRvIHBlcnNpc3QgZGVjaXNpb25zLCBmaW5kaW5ncywgcmVhc29uaW5nIG91dGNvbWVzLCBvciBhbnkga25vd2xlZGdlIHdvcnRoIHJldHJpZXZpbmcgaW4gZnV0dXJlIHNlc3Npb25zLiBTdG9yZWQgbWVtb3JpZXMgYXJlIHNlYXJjaGFibGUgdmlhIGxjbV9zZWFyY2guXCIsXG4gIGlucHV0U2NoZW1hOiB7XG4gICAgdHlwZTogXCJvYmplY3RcIiBhcyBjb25zdCxcbiAgICBwcm9wZXJ0aWVzOiB7XG4gICAgICB0ZXh0OiB7IHR5cGU6IFwic3RyaW5nXCIsIGRlc2NyaXB0aW9uOiBcIlRoZSBjb250ZW50IHRvIHN0b3JlXCIgfSxcbiAgICAgIHRhZ3M6IHtcbiAgICAgICAgdHlwZTogXCJhcnJheVwiLFxuICAgICAgICBpdGVtczogeyB0eXBlOiBcInN0cmluZ1wiIH0sXG4gICAgICAgIGRlc2NyaXB0aW9uOiBcIkNhdGVnb3JpY2FsIHRhZ3MgKGUuZy4gWydkZWNpc2lvbicsICdhcmNoaXRlY3R1cmUnLCAnYnVnLWZpeCddKVwiLFxuICAgICAgfSxcbiAgICAgIG1ldGFkYXRhOiB7XG4gICAgICAgIHR5cGU6IFwib2JqZWN0XCIsXG4gICAgICAgIGRlc2NyaXB0aW9uOiBcIk9wdGlvbmFsIGtleS92YWx1ZSBtZXRhZGF0YSAoZS5nLiBwcm9qZWN0SWQsIHNlc3Npb25JZCwgc291cmNlKVwiLFxuICAgICAgICBhZGRpdGlvbmFsUHJvcGVydGllczogdHJ1ZSxcbiAgICAgIH0sXG4gICAgfSxcbiAgICByZXF1aXJlZDogW1widGV4dFwiXSxcbiAgfSxcbn07XG4iXSwiZmlsZSI6Ii9zcmMvbWNwL3Rvb2xzL2xjbS1zdG9yZS50cyJ9

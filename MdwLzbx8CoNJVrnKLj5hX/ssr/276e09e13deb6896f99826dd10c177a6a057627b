@@ -1,0 +1,16 @@
+__vite_ssr_exportName__("lcmExpandTool", () => { try { return lcmExpandTool } catch {} });
+const lcmExpandTool = {
+  name: "lcm_expand",
+  description: "Decompress a summary node into its full source content by traversing the DAG. Use when a summary references something that needs more detail.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      nodeId: { type: "string", description: "Summary node ID to expand" },
+      depth: { type: "number", description: "How many levels of the DAG to traverse (default: 1)" }
+    },
+    required: ["nodeId"]
+  }
+};
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IjtBQUFPLE1BQU0sZ0JBQWdCO0FBQUEsRUFDM0IsTUFBTTtBQUFBLEVBQ04sYUFBYTtBQUFBLEVBQ2IsYUFBYTtBQUFBLElBQ1gsTUFBTTtBQUFBLElBQ04sWUFBWTtBQUFBLE1BQ1YsUUFBUSxFQUFFLE1BQU0sVUFBVSxhQUFhLDRCQUE0QjtBQUFBLE1BQ25FLE9BQU8sRUFBRSxNQUFNLFVBQVUsYUFBYSxzREFBc0Q7QUFBQSxJQUM5RjtBQUFBLElBQ0EsVUFBVSxDQUFDLFFBQVE7QUFBQSxFQUNyQjtBQUNGIiwibmFtZXMiOltdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJsY20tZXhwYW5kLnRzIl0sInNvdXJjZXNDb250ZW50IjpbImV4cG9ydCBjb25zdCBsY21FeHBhbmRUb29sID0ge1xuICBuYW1lOiBcImxjbV9leHBhbmRcIixcbiAgZGVzY3JpcHRpb246IFwiRGVjb21wcmVzcyBhIHN1bW1hcnkgbm9kZSBpbnRvIGl0cyBmdWxsIHNvdXJjZSBjb250ZW50IGJ5IHRyYXZlcnNpbmcgdGhlIERBRy4gVXNlIHdoZW4gYSBzdW1tYXJ5IHJlZmVyZW5jZXMgc29tZXRoaW5nIHRoYXQgbmVlZHMgbW9yZSBkZXRhaWwuXCIsXG4gIGlucHV0U2NoZW1hOiB7XG4gICAgdHlwZTogXCJvYmplY3RcIiBhcyBjb25zdCxcbiAgICBwcm9wZXJ0aWVzOiB7XG4gICAgICBub2RlSWQ6IHsgdHlwZTogXCJzdHJpbmdcIiwgZGVzY3JpcHRpb246IFwiU3VtbWFyeSBub2RlIElEIHRvIGV4cGFuZFwiIH0sXG4gICAgICBkZXB0aDogeyB0eXBlOiBcIm51bWJlclwiLCBkZXNjcmlwdGlvbjogXCJIb3cgbWFueSBsZXZlbHMgb2YgdGhlIERBRyB0byB0cmF2ZXJzZSAoZGVmYXVsdDogMSlcIiB9LFxuICAgIH0sXG4gICAgcmVxdWlyZWQ6IFtcIm5vZGVJZFwiXSxcbiAgfSxcbn07XG4iXSwiZmlsZSI6Ii9zcmMvbWNwL3Rvb2xzL2xjbS1leHBhbmQudHMifQ==

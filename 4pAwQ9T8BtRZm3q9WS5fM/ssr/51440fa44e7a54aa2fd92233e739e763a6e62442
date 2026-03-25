@@ -1,0 +1,15 @@
+__vite_ssr_exportName__("lcmDescribeTool", () => { try { return lcmDescribeTool } catch {} });
+const lcmDescribeTool = {
+  name: "lcm_describe",
+  description: "Inspect metadata and lineage of a memory node without expanding content. Returns depth, token count, parent/child links, and whether it was promoted to long-term memory.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      nodeId: { type: "string", description: "Node ID to describe" }
+    },
+    required: ["nodeId"]
+  }
+};
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJtYXBwaW5ncyI6IjtBQUFPLE1BQU0sa0JBQWtCO0FBQUEsRUFDN0IsTUFBTTtBQUFBLEVBQ04sYUFBYTtBQUFBLEVBQ2IsYUFBYTtBQUFBLElBQ1gsTUFBTTtBQUFBLElBQ04sWUFBWTtBQUFBLE1BQ1YsUUFBUSxFQUFFLE1BQU0sVUFBVSxhQUFhLHNCQUFzQjtBQUFBLElBQy9EO0FBQUEsSUFDQSxVQUFVLENBQUMsUUFBUTtBQUFBLEVBQ3JCO0FBQ0YiLCJuYW1lcyI6W10sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbImxjbS1kZXNjcmliZS50cyJdLCJzb3VyY2VzQ29udGVudCI6WyJleHBvcnQgY29uc3QgbGNtRGVzY3JpYmVUb29sID0ge1xuICBuYW1lOiBcImxjbV9kZXNjcmliZVwiLFxuICBkZXNjcmlwdGlvbjogXCJJbnNwZWN0IG1ldGFkYXRhIGFuZCBsaW5lYWdlIG9mIGEgbWVtb3J5IG5vZGUgd2l0aG91dCBleHBhbmRpbmcgY29udGVudC4gUmV0dXJucyBkZXB0aCwgdG9rZW4gY291bnQsIHBhcmVudC9jaGlsZCBsaW5rcywgYW5kIHdoZXRoZXIgaXQgd2FzIHByb21vdGVkIHRvIGxvbmctdGVybSBtZW1vcnkuXCIsXG4gIGlucHV0U2NoZW1hOiB7XG4gICAgdHlwZTogXCJvYmplY3RcIiBhcyBjb25zdCxcbiAgICBwcm9wZXJ0aWVzOiB7XG4gICAgICBub2RlSWQ6IHsgdHlwZTogXCJzdHJpbmdcIiwgZGVzY3JpcHRpb246IFwiTm9kZSBJRCB0byBkZXNjcmliZVwiIH0sXG4gICAgfSxcbiAgICByZXF1aXJlZDogW1wibm9kZUlkXCJdLFxuICB9LFxufTtcbiJdLCJmaWxlIjoiL3NyYy9tY3AvdG9vbHMvbGNtLWRlc2NyaWJlLnRzIn0=

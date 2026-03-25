@@ -198,14 +198,12 @@ import * as activity from "../../../src/daemon/activity.js";
 Add a new test inside the existing describe block:
 ```ts
 it("sets activity to compacting then resets to idle after compact route", async () => {
-  const calls: string[] = [];
-  const spy = vi.spyOn(activity, "setActivity").mockImplementation((s) => calls.push(s));
+  const spy = vi.spyOn(activity, "setActivity");
   try {
     // trigger a compact request (use existing daemon/db setup in the file)
     // after the route returns, verify the call sequence
-    // This test will be fleshed out with the actual daemon call once the route is modified
-    expect(calls[0]).toBe("compacting");
-    expect(calls[calls.length - 1]).toBe("idle");
+    expect(spy).toHaveBeenCalledWith("compacting");
+    expect(spy).toHaveBeenLastCalledWith("idle");
   } finally {
     spy.mockRestore();
   }
@@ -281,6 +279,8 @@ git commit -m "feat: track activity state in compact/promote/ingest routes"
 
 ```ts
 // test/daemon/routes/health.test.ts
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, afterEach } from "vitest";
 import { createDaemon, type DaemonInstance } from "../../../src/daemon/server.js";
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
@@ -295,7 +295,7 @@ describe("GET /health activity field", () => {
   });
 
   it("returns activity: idle by default", async () => {
-    daemon = await createDaemon(loadDaemonConfig("/x", { daemon: { port: 0 } }));
+    daemon = await createDaemon(loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"), { daemon: { port: 0 } }));
     const res = await fetch(`http://127.0.0.1:${daemon.address().port}/health`);
     const data = await res.json() as any;
     expect(data.activity).toBe("idle");
@@ -303,7 +303,7 @@ describe("GET /health activity field", () => {
 
   it("reflects current activity state", async () => {
     setActivity("compacting");
-    daemon = await createDaemon(loadDaemonConfig("/x", { daemon: { port: 0 } }));
+    daemon = await createDaemon(loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"), { daemon: { port: 0 } }));
     const res = await fetch(`http://127.0.0.1:${daemon.address().port}/health`);
     const data = await res.json() as any;
     expect(data.activity).toBe("compacting");
@@ -594,8 +594,8 @@ const entry = pathToFileURL(join(__dirname, "dist", "src", "statusline.js")).hre
 try {
   await import(entry);
 } catch {
-  // Never crash the terminal status bar — output nothing on failure
-  process.exit(0);
+  // Never crash the terminal status bar — output empty string on error
+  process.stdout.write("");
 }
 ```
 
@@ -687,12 +687,15 @@ Check the first argument passed to this command:
 Run this command to merge the `statusLine` config into `~/.claude/settings.json` without overwriting other settings:
 
 ```bash
-PLUGIN_ROOT=$(node -e "console.log(require.resolve('lossless-claude/package.json').replace('/package.json',''))" 2>/dev/null || echo "") && \
-[ -z "$PLUGIN_ROOT" ] && echo "Error: lossless-claude not found in node path" && exit 1; \
-SETTINGS="$HOME/.claude/settings.json" && \
-[ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS" && \
-TMP=$(jq --arg p "$PLUGIN_ROOT/statusline.mjs" '.statusLine = {"command":"node","args":[$p]}' "$SETTINGS") && \
-echo "$TMP" > "$SETTINGS" && echo "Statusline enabled. Restart Claude Code to activate."
+(
+  PLUGIN_ROOT=$(node -e "console.log(require.resolve('lossless-claude/package.json').replace('/package.json',''))" 2>/dev/null || echo "")
+  [ -z "$PLUGIN_ROOT" ] && echo "Error: lossless-claude not found in node path" && return 1
+  SETTINGS="$HOME/.claude/settings.json"
+  [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
+  TMP=$(jq --arg p "$PLUGIN_ROOT/statusline.mjs" '.statusLine = {"command":"node","args":[$p]}' "$SETTINGS")
+  echo "$TMP" > "$SETTINGS.tmp" && mv "$SETTINGS.tmp" "$SETTINGS"
+  echo "Statusline enabled. Restart Claude Code to activate."
+)
 ```
 
 ### If argument is `off`
@@ -700,10 +703,12 @@ echo "$TMP" > "$SETTINGS" && echo "Statusline enabled. Restart Claude Code to ac
 Run this command to remove the `statusLine` key from `~/.claude/settings.json`:
 
 ```bash
-SETTINGS="$HOME/.claude/settings.json" && \
-[ -f "$SETTINGS" ] && \
-TMP=$(jq 'del(.statusLine)' "$SETTINGS") && \
-echo "$TMP" > "$SETTINGS" && echo "Statusline disabled. Restart Claude Code to deactivate."
+SETTINGS="$HOME/.claude/settings.json"
+[ -f "$SETTINGS" ] && {
+  TMP=$(jq 'del(.statusLine)' "$SETTINGS")
+  echo "$TMP" > "$SETTINGS.tmp" && mv "$SETTINGS.tmp" "$SETTINGS"
+  echo "Statusline disabled. Restart Claude Code to deactivate."
+}
 ```
 
 Tell the user: **Restart Claude Code** to apply the change.

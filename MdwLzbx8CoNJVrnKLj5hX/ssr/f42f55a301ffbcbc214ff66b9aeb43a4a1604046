@@ -1,0 +1,66 @@
+__vite_ssr_exportName__("name", () => { try { return name } catch {} });
+__vite_ssr_exportName__("version", () => { try { return version } catch {} });
+__vite_ssr_exportName__("description", () => { try { return description } catch {} });
+__vite_ssr_exportName__("type", () => { try { return type } catch {} });
+__vite_ssr_exportName__("main", () => { try { return main } catch {} });
+__vite_ssr_exportName__("exports", () => { try { return exports } catch {} });
+__vite_ssr_exportName__("bin", () => { try { return bin } catch {} });
+__vite_ssr_exportName__("license", () => { try { return license } catch {} });
+__vite_ssr_exportName__("author", () => { try { return author } catch {} });
+__vite_ssr_exportName__("keywords", () => { try { return keywords } catch {} });
+__vite_ssr_exportName__("files", () => { try { return files } catch {} });
+__vite_ssr_exportName__("scripts", () => { try { return scripts } catch {} });
+__vite_ssr_exportName__("dependencies", () => { try { return dependencies } catch {} });
+__vite_ssr_exportName__("devDependencies", () => { try { return devDependencies } catch {} });
+__vite_ssr_exportName__("peerDependencies", () => { try { return peerDependencies } catch {} });
+__vite_ssr_exportName__("peerDependenciesMeta", () => { try { return peerDependenciesMeta } catch {} });
+__vite_ssr_exportName__("publishConfig", () => { try { return publishConfig } catch {} });
+__vite_ssr_exportName__("repository", () => { try { return repository } catch {} });
+__vite_ssr_exportName__("homepage", () => { try { return homepage } catch {} });
+__vite_ssr_exportName__("bugs", () => { try { return bugs } catch {} });
+__vite_ssr_exportName__("default", () => { try { return __vite_ssr_export_default__ } catch {} });
+const name = "@lossless-claude/lcm";
+const version = "0.5.0";
+const description = "Never lose context again. lossless-claude compresses Claude Code sessions into searchable memory — every message preserved, every insight remembered.";
+const type = "module";
+const main = "dist/src/memory/index.js";
+const exports = {".":"./dist/src/memory/index.js"};
+const bin = {"lcm":"dist/bin/lcm.js"};
+const license = "MIT";
+const author = "Pedro Almeida (https://github.com/ipedro)";
+const keywords = ["claude-code","claude-code-plugin","context-management","llm","summarization","conversation-memory","dag"];
+const files = ["dist/","mcp.mjs","lcm.mjs",".claude-plugin/","docs/","README.md","LICENSE"];
+const scripts = {"build":"tsc","postbuild":"mkdir -p dist/src/prompts && cp -r src/prompts/*.yaml dist/src/prompts/ && mkdir -p dist/src/connectors/templates && cp -r src/connectors/templates/. dist/src/connectors/templates/","prepublishOnly":"npm run build","changeset":"changeset","release:verify":"npm test && npm pack --dry-run","test":"vitest run --dir test","typecheck":"tsc --noEmit","version-packages":"changeset version"};
+const dependencies = {"@modelcontextprotocol/sdk":"^1.12.0","@sinclair/typebox":"0.34.48","commander":"^14.0.3","js-yaml":"^4.1.1","safe-regex":"^2.1.1"};
+const devDependencies = {"@anthropic-ai/sdk":"^0.39.0","@changesets/cli":"^2.30.0","@types/js-yaml":"^4.0.9","@types/node":">=22","@types/safe-regex":"^1.1.6","openai":"^6.32.0","typescript":"^5.7.0","vitest":"^3.0.0"};
+const peerDependencies = {"@anthropic-ai/sdk":"^0.39.0","openai":"^6.32.0"};
+const peerDependenciesMeta = {"@anthropic-ai/sdk":{"optional":true},"openai":{"optional":true}};
+const publishConfig = {"access":"public"};
+const repository = {"type":"git","url":"git+https://github.com/lossless-claude/lcm.git"};
+const homepage = "https://github.com/lossless-claude/lcm#readme";
+const bugs = {"url":"https://github.com/lossless-claude/lcm/issues"};
+const __vite_ssr_export_default__ = {
+  name,
+  version,
+  description,
+  type,
+  main,
+  exports,
+  bin,
+  license,
+  author,
+  keywords,
+  files,
+  scripts,
+  dependencies,
+  devDependencies,
+  peerDependencies,
+  peerDependenciesMeta,
+  publishConfig,
+  repository,
+  homepage,
+  bugs,
+};
+
+//# sourceMappingSource=vite-node
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJtYXBwaW5ncyI6IiJ9
