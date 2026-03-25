@@ -119,7 +119,7 @@ When passive learning hooks are installed, `lcm doctor` includes a "Passive Lear
 | `events-errors` | Hook error count (last 30 days) |
 | `events-staleness` | Time since last event capture |
 
-Use `lcm doctor --verbose` for per-project breakdown and recent error details.
+Run `lcm doctor` to see the per-project breakdown and recent error details.
 
 ### `lcm stats`
 

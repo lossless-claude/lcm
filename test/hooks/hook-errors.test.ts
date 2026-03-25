@@ -65,12 +65,11 @@ describe("safeLogError", () => {
     safeLogError("PostToolUse", new Error("db fail"), { cwd, sessionId: "s1" });
 
     const testLogPath = join(tempDir, "events.log");
-    if (existsSync(testLogPath)) {
-      const content = readFileSync(testLogPath, "utf-8");
-      expect(content).toContain("db fail");
-      expect(content).toContain("PostToolUse");
-      expect(content).toContain("/dev/null/impossible");
-    }
+    expect(existsSync(testLogPath)).toBe(true);
+    const content = readFileSync(testLogPath, "utf-8");
+    expect(content).toContain("db fail");
+    expect(content).toContain("PostToolUse");
+    expect(content).toContain("/dev/null/impossible");
   });
 
   it("circuit breaker: skips DB after first failure", () => {
@@ -86,8 +85,17 @@ describe("safeLogError", () => {
   });
 
   it("Layer 3: swallows silently when both DB and file fail", () => {
-    expect(() => {
-      safeLogError("PostToolUse", new Error("total fail"), {});
-    }).not.toThrow();
+    // Make file writes fail by setting LCM_LOG_PATH to an unwritable location
+    const oldLogPath = process.env.LCM_LOG_PATH;
+    process.env.LCM_LOG_PATH = "/dev/null/impossible/events.log";
+    
+    try {
+      expect(() => {
+        safeLogError("PostToolUse", new Error("total fail"), {});
+      }).not.toThrow();
+    } finally {
+      process.env.LCM_LOG_PATH = oldLogPath;
+    }
   });
+
 });

@@ -165,7 +165,7 @@ export class EventsDb {
       "SELECT COUNT(*) as unprocessed FROM events WHERE processed_at IS NULL"
     ).get() as { unprocessed: number };
     const errorTotals = this.db.prepare(
-      "SELECT COUNT(*) as errors, MAX(created_at) as lastError FROM error_log WHERE created_at >= datetime('now', '-30 days')"
+      "SELECT COUNT(*) as errors, MAX(created_at) as lastError FROM error_log WHERE hook NOT IN ('pruneUnprocessed', 'pruneErrorLog') AND created_at >= datetime('now', '-30 days')"
     ).get() as { errors: number; lastError: string | null };
 
     return {

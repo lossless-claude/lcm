@@ -142,7 +142,7 @@ function checkPassiveLearning(results: CheckResult[], hooksInstalled: boolean, v
   if (stats.errors >= 50) {
     results.push({ name: "events-errors", category: "Passive Learning", status: "fail", message: `${stats.errors} hook errors (30d) — check ~/.lossless-claude/logs/events.log` });
   } else if (stats.errors > 0) {
-    results.push({ name: "events-errors", category: "Passive Learning", status: "warn", message: `${stats.errors} hook errors (30d) — Run: lcm doctor --verbose` });
+    results.push({ name: "events-errors", category: "Passive Learning", status: "warn", message: `${stats.errors} hook errors (30d) — check ~/.lossless-claude/logs/events.log` });
   } else {
     results.push({ name: "events-errors", category: "Passive Learning", status: "pass", message: "0 hook errors" });
   }
