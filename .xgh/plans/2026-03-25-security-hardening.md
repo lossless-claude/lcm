@@ -106,7 +106,7 @@ Expected: Multiple FAIL for the new test cases
 
 - [ ] **Step 3: Add new patterns to BUILT_IN_PATTERNS**
 
-In `src/scrub.ts`, expand the `BUILT_IN_PATTERNS` array. DB connection string pattern uses `\\s` to trigger spanning mode (see `isSpanningPattern()`):
+In `src/scrub.ts`, expand the `BUILT_IN_PATTERNS` array. Note: DB connection string patterns (postgres://, mysql://, etc.) are token patterns using the `://` literal marker, not spanning patterns.
 
 ```typescript
 export const BUILT_IN_PATTERNS: string[] = [
@@ -231,7 +231,7 @@ abstraction so unit tests remain mocked."
 ### Task 3: Validate regex patterns to prevent ReDoS (Finding #4)
 
 **Files:**
-- Modify: `package.json` (add `safe-regex` + `@types/safe-regex` as devDep)
+- Modify: `package.json` (add `safe-regex` + `@types/safe-regex` as production dependency)
 - Create: `src/store/regex-safety.ts` (shared validation helper)
 - Modify: `src/store/conversation-store.ts:706-714` (use validated regex)
 - Modify: `src/store/summary-store.ts:814-821` (use validated regex)
@@ -240,7 +240,7 @@ abstraction so unit tests remain mocked."
 - [ ] **Step 1: Install safe-regex**
 
 ```bash
-npm install safe-regex && npm install -D @types/safe-regex
+npm install safe-regex @types/safe-regex
 ```
 
 - [ ] **Step 2: Write failing test for regex validation**
@@ -1118,6 +1118,10 @@ describe("validateCwd", () => {
   it("throws on empty string", () => {
     expect(() => validateCwd("")).toThrow();
   });
+
+  it("throws if path does not exist or is not a directory", () => {
+    expect(() => validateCwd("/nonexistent/path")).toThrow();
+  });
 });
 ```
 
@@ -1132,10 +1136,12 @@ Create `src/daemon/validate-cwd.ts`:
 
 ```typescript
 import { resolve, isAbsolute } from "node:path";
+import { statSync } from "node:fs";
 
 /**
  * Canonicalize and validate a cwd parameter from a daemon route.
  * Ensures consistent project ID hashing regardless of path formatting.
+ * Also verifies the path exists and is a directory.
  */
 export function validateCwd(cwd: string): string {
   if (!cwd || typeof cwd !== "string") {
@@ -1144,6 +1150,11 @@ export function validateCwd(cwd: string): string {
   const resolved = resolve(cwd);
   if (!isAbsolute(resolved)) {
     throw new Error("cwd must be an absolute path");
+  }
+  // Verify the directory exists
+  const stat = statSync(resolved);
+  if (!stat.isDirectory()) {
+    throw new Error("cwd must be a directory");
   }
   return resolved;
 }
@@ -1201,6 +1212,10 @@ for (const tool of tools) {
 
 // In CallToolRequestSchema handler:
 const rawArgs = req.params.arguments ?? {};
+// Guard: ensure rawArgs is an object before checking keys
+if (!rawArgs || typeof rawArgs !== 'object' || Array.isArray(rawArgs)) {
+  throw new Error(`Invalid arguments for tool ${req.params.name}: must be an object`);
+}
 const allowedKeys = TOOL_ALLOWED_KEYS[req.params.name];
 const filteredArgs: Record<string, unknown> = {};
 if (allowedKeys) {
@@ -1405,6 +1420,8 @@ const flagPath = join(flagDir, `bootstrapped-${safeId}.flag`);
 - [ ] **Step 2: Apply same change in session-snapshot.ts**
 
 Replace `tmpdir()` with `join(homedir(), ".lossless-claude", "tmp")` for cursor files.
+
+**Migration note:** The new code will automatically create `~/.lossless-claude/tmp` on first use. To clean up old flag/cursor files from the shared tmpdir after deployment, add a one-time cleanup: iterate over `glob.sync(join(tmpdir(), "lcm-*"))` and remove any files older than the current session start time. Alternatively, rely on the OS's tmpdir cleanup policy (typically /tmp is cleared on reboot).
 
 - [ ] **Step 3: Run tests and commit**
 

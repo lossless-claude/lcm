@@ -92,9 +92,8 @@
   Note: The existing plan covers `transcript_path` validation but NOT `cwd` canonicalization.
 - **Proof:** `projectId()` in `src/daemon/project.ts` hashes the raw string:
   ```typescript
-  export function projectId(cwd: string): string {
-    return createHash("sha256").update(cwd).digest("hex").slice(0, 16);
-  }
+  export const projectId = (cwd: string): string =>
+    createHash("sha256").update(cwd).digest("hex");
   ```
 - **Recommendation:** Canonicalize `cwd` with `path.resolve()` and `fs.realpathSync()` at the top of every route handler (or in a shared middleware). Reject empty or non-absolute paths.
 
