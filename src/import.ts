@@ -1,10 +1,12 @@
 import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import type { DaemonClient } from "./daemon/client.js";
 import { formatNumber, formatRatio } from "./stats.js";
 import { findAllCodexTranscripts, extractCodexSessionCwd } from "./codex-transcript.js";
 import type { ProgressState } from "./cli/progress-state.js";
+import { projectDbPath, projectId } from "./daemon/project.js";
 
 export type ImportProvider = "claude" | "codex" | "all";
 
@@ -152,6 +154,32 @@ interface SessionEntry {
   cwd: string;
 }
 
+/**
+ * Checks if a session has already been recorded in session_ingest_log,
+ * indicating it was fully ingested in a previous run.
+ */
+function isSessionAlreadyIngested(cwd: string, sessionId: string, lcmDir?: string): boolean {
+  try {
+    const dbPath = lcmDir
+      ? join(lcmDir, "projects", projectId(cwd), "db.sqlite")
+      : projectDbPath(cwd);
+    if (!existsSync(dbPath)) {
+      return false;
+    }
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.exec("PRAGMA busy_timeout = 5000");
+      const row = db.prepare("SELECT 1 FROM session_ingest_log WHERE session_id = ?").get(sessionId);
+      return !!row;
+    } finally {
+      db.close();
+    }
+  } catch {
+    // Table may not exist yet or db is inaccessible — proceed with import
+    return false;
+  }
+}
+
 async function ingestSessionList(
   client: DaemonClient,
   sessions: SessionEntry[],
@@ -159,6 +187,7 @@ async function ingestSessionList(
   result: ImportResult,
 ): Promise<void> {
   let previousSummary: string | undefined;
+  const total = sessions.length;
 
   for (const { path, sessionId, cwd } of sessions) {
     if (options.dryRun) {
@@ -167,6 +196,16 @@ async function ingestSessionList(
         console.log(`  [dry-run] ${sessionId}${replayNote}`);
       }
       result.imported++;
+      options.onProgress?.({ completed: result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
+      continue;
+    }
+
+    // Skip sessions already recorded in session_ingest_log (unless in replay mode,
+    // where compaction must still run to keep the temporal chain intact).
+    if (!options.replay && isSessionAlreadyIngested(cwd, sessionId, options._lcmDir)) {
+      result.skippedEmpty++;
+      if (options.verbose) console.log(`  ↩️ ${sessionId}: already fully ingested`);
+      options.onProgress?.({ completed: result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
       continue;
     }
 
@@ -238,10 +277,12 @@ async function ingestSessionList(
           result.totalTokens += res.totalTokens;
         }
       }
+      options.onProgress?.({ completed: result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
     } catch (err) {
       result.failed++;
       if (options.replay) previousSummary = undefined; // chain broken by ingest failure
       if (options.verbose) console.log(`  \u274c ${sessionId}: ${err instanceof Error ? err.message : "failed"}`);
+      options.onProgress?.({ completed: result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
     }
   }
 }
@@ -256,8 +297,6 @@ export async function importSessions(
 ): Promise<ImportResult> {
   const provider: ImportProvider = options.provider ?? "claude";
   const result: ImportResult = { imported: 0, skippedEmpty: 0, failed: 0, totalMessages: 0, totalTokens: 0, tokensAfter: 0 };
-  const onProgress = options.onProgress;
-  const progressErrors: { sessionId: string; message: string }[] = [];
 
   // --- Claude Code sessions ---
   if (provider === "claude" || provider === "all") {

@@ -17,6 +17,7 @@ import { createRecentHandler } from "./routes/recent.js";
 import { createIngestHandler } from "./routes/ingest.js";
 import { createPromptSearchHandler } from "./routes/prompt-search.js";
 import { createStatusHandler } from "./routes/status.js";
+import { createSessionCompleteHandler } from "./routes/session-complete.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const PKG_VERSION = (() => {
@@ -76,6 +77,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   routes.set("POST /recent", createRecentHandler(config));
   routes.set("POST /ingest", createIngestHandler(config));
   routes.set("POST /prompt-search", createPromptSearchHandler(config));
+  routes.set("POST /session-complete", createSessionCompleteHandler());
   // Status handler is registered after listen() when we know the actual port
 
   // Periodic transcript ingestion scan

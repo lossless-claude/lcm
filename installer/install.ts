@@ -2,75 +2,8 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, copyFi
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-
-export const REQUIRED_HOOKS: { event: string; command: string }[] = [
-  { event: "PreCompact", command: "lcm compact --hook" },
-  { event: "SessionStart", command: "lcm restore" },
-  { event: "SessionEnd", command: "lcm session-end" },
-  { event: "UserPromptSubmit", command: "lcm user-prompt" },
-];
-
-export function mergeClaudeSettings(existing: any): any {
-  const settings = JSON.parse(JSON.stringify(existing));
-  settings.hooks = (settings.hooks && typeof settings.hooks === "object" && !Array.isArray(settings.hooks)) ? settings.hooks : {};
-  settings.mcpServers = (settings.mcpServers && typeof settings.mcpServers === "object" && !Array.isArray(settings.mcpServers)) ? settings.mcpServers : {};
-
-  // Migrate old hook commands to current form
-  const OLD_TO_NEW: Record<string, string> = {
-    "lossless-claude compact": "lcm compact --hook",
-    "lossless-claude restore": "lcm restore",
-    "lossless-claude session-end": "lcm session-end",
-    "lossless-claude user-prompt": "lcm user-prompt",
-    // Migrate pre-#90 direct installs that registered without --hook
-    "lcm compact": "lcm compact --hook",
-  };
-  for (const event of Object.keys(settings.hooks)) {
-    if (!Array.isArray(settings.hooks[event])) continue;
-    for (const entry of settings.hooks[event]) {
-      if (!Array.isArray(entry.hooks)) continue;
-      for (const h of entry.hooks) {
-        if (h.command && OLD_TO_NEW[h.command]) {
-          h.command = OLD_TO_NEW[h.command];
-        }
-      }
-      // Deduplicate commands within each hook entry after migration
-      const seen = new Set<string>();
-      entry.hooks = entry.hooks.filter((h: any) => {
-        const key = h.command ?? '';
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-    }
-  }
-  // Remove legacy MCP server entries
-  delete settings.mcpServers["lossless-claude"];
-
-  // Remove lcm hooks from settings.json — plugin.json owns them.
-  // Having hooks in both causes double-firing.
-  for (const { event, command } of REQUIRED_HOOKS) {
-    if (!Array.isArray(settings.hooks[event])) continue;
-    settings.hooks[event] = settings.hooks[event]
-      .map((entry: any) => {
-        if (!Array.isArray(entry.hooks)) return entry;
-        return {
-          ...entry,
-          hooks: entry.hooks.filter((h: any) => h.command !== command),
-        };
-      })
-      .filter((entry: any) => !Array.isArray(entry.hooks) || entry.hooks.length > 0);
-    if (settings.hooks[event].length === 0) delete settings.hooks[event];
-  }
-  if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
-
-  // MCP server is now owned by settings.json (written by lcm install / doctor)
-  // Do NOT delete mcpServers["lcm"] here — it's managed separately from hooks
-  // which are plugin-owned. This prevents the auto-heal loop where doctor adds
-  // the MCP entry and hooks cleanup removes it.
-  if (Object.keys(settings.mcpServers).length === 0) delete settings.mcpServers;
-
-  return settings;
-}
+import { ensureCore } from "../src/bootstrap.js";
+export { REQUIRED_HOOKS, mergeClaudeSettings } from "../src/installer/settings.js";
 
 export interface ServiceDeps {
   spawnSync: (cmd: string, args: string[], opts?: any) => SpawnSyncReturns<string>;
@@ -190,39 +123,59 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<void> {
   const lcDir = join(homedir(), ".lossless-claude");
   deps.mkdirSync(lcDir, { recursive: true });
 
-  // 1. Create or update config.json
   const configPath = join(lcDir, "config.json");
+  const settingsPath = join(homedir(), ".claude", "settings.json");
+
+  // 1-3. Core setup (config + settings cleanup + daemon)
+  // ensureCore handles: creating config.json, merging settings.json hooks, and starting daemon
+  // For install, we inject summarizer config into the default config if creating fresh
   if (!deps.existsSync(configPath)) {
     const summarizerConfig = await pickSummarizer(deps);
     const { loadDaemonConfig } = await import("../src/daemon/config.js");
     const defaults = loadDaemonConfig("/nonexistent");
     defaults.llm = { ...defaults.llm, ...summarizerConfig };
+    deps.mkdirSync(dirname(configPath), { recursive: true });
     deps.writeFileSync(configPath, JSON.stringify(defaults, null, 2));
     console.log(`Created ${configPath}`);
   }
 
-  // 2. Merge ~/.claude/settings.json (hooks + MCP)
-  const settingsPath = join(homedir(), ".claude", "settings.json");
-  let existing: any = {};
-  if (deps.existsSync(settingsPath)) {
-    try { existing = JSON.parse(deps.readFileSync(settingsPath, "utf-8")); } catch {}
-  }
-  const merged = mergeClaudeSettings(existing);
+  // ensureCore will:
+  // - Skip config creation (already exists or just created above)
+  // - Merge settings.json hooks (remove duplicates, clean old commands)
+  // - Start the daemon
+  await ensureCore({
+    configPath,
+    settingsPath,
+    existsSync: deps.existsSync,
+    readFileSync: deps.readFileSync,
+    writeFileSync: deps.writeFileSync,
+    mkdirSync: deps.mkdirSync,
+    ensureDaemon: deps.ensureDaemon ?? (async (opts) => {
+      const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
+      return ensureDaemon(opts);
+    }),
+  });
 
   // Register MCP server directly in settings.json.
   // plugin.json mcpServers isn't reliably processed for locally-installed plugins
   // (installPath in installed_plugins.json points to wrong versioned dir).
-  if (typeof merged.mcpServers !== "object" || merged.mcpServers === null) {
-    merged.mcpServers = {};
+  let merged: any = {};
+  if (deps.existsSync(settingsPath)) {
+    try { merged = JSON.parse(deps.readFileSync(settingsPath, "utf-8")); } catch {}
   }
+  if (typeof merged !== "object" || merged === null) {
+    merged = {};
+  }
+  const mcpServers = (typeof merged.mcpServers === "object" && merged.mcpServers !== null) ? merged.mcpServers : {};
   const lcmBin = resolveBinaryPath(deps);
-  merged.mcpServers["lcm"] = { command: lcmBin, args: ["mcp"] };
+  mcpServers["lcm"] = { command: lcmBin, args: ["mcp"] };
+  (merged as any).mcpServers = mcpServers;
 
-  deps.mkdirSync(join(homedir(), ".claude"), { recursive: true });
+  deps.mkdirSync(dirname(settingsPath), { recursive: true });
   deps.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
   console.log(`Updated ${settingsPath}`);
 
-  // 3. Install slash commands to ~/.claude/commands/
+  // 4. Install slash commands to ~/.claude/commands/
   const commandsSrc = join(dirname(new URL(import.meta.url).pathname), "../..", ".claude-plugin", "commands");
   const commandsDst = join(homedir(), ".claude", "commands");
   if (deps.existsSync(commandsSrc)) {
@@ -233,27 +186,6 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<void> {
       }
     }
     console.log(`Installed slash commands to ${commandsDst}`);
-  }
-
-  // 4. Start daemon (lazy daemon — no persistent service)
-  const configData = deps.existsSync(configPath)
-    ? JSON.parse(deps.readFileSync(configPath, "utf-8"))
-    : {};
-  console.log("Verifying daemon...");
-  const _ensureDaemon = deps.ensureDaemon ?? (async (opts) => {
-    const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
-    return ensureDaemon(opts);
-  });
-  const daemonPort = configData?.daemon?.port ?? configData?.port ?? 3737;
-  const { connected } = await _ensureDaemon({
-    port: daemonPort,
-    pidFilePath: join(lcDir, "daemon.pid"),
-    spawnTimeoutMs: 30000,
-  });
-  if (!connected) {
-    console.warn("Warning: daemon not responding — run: lcm doctor");
-  } else {
-    console.log("Daemon started successfully.");
   }
 
   // 5. Final verification

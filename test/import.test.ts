@@ -524,6 +524,40 @@ describe("importSessions", () => {
     // session-2 should have failed
     expect(result.failed).toBe(1);
   });
+
+  it("skips sessions already recorded in session_ingest_log (unit test via daemon response)", async () => {
+    // This test verifies that when the daemon returns ingested:0, totalTokens:0
+    // (which happens when the session_ingest_log check passes at the daemon level),
+    // importSessions counts it as skippedEmpty and doesn't call /ingest multiple times.
+    // The full idempotency check is tested in the e2e test.
+    const claudeProjectsDir = makeTmpDir();
+    const cwd = "/home/user/myproject";
+    const projectHash = cwdToProjectHash(cwd);
+    const projectDir = join(claudeProjectsDir, projectHash);
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(join(projectDir, "session-already-ingested.jsonl"), "");
+
+    const ingestCalls: string[] = [];
+    const client = makeMockClient(async (path, body) => {
+      if (path === "/ingest") {
+        ingestCalls.push((body as { session_id: string }).session_id);
+        // Simulate daemon returning 0 ingested (already in session_ingest_log)
+        return { ingested: 0, totalTokens: 0 };
+      }
+      return { ingested: 0, totalTokens: 0 };
+    });
+
+    const result = await importSessions(client, {
+      cwd,
+      _claudeProjectsDir: claudeProjectsDir,
+    });
+
+    // Verify the daemon was called
+    expect(ingestCalls).toEqual(["session-already-ingested"]);
+    // Verify the result reflects the skip
+    expect(result.skippedEmpty).toBe(1);
+    expect(result.imported).toBe(0);
+  });
 });
 
 // --- importSessions with provider: "codex" ---
@@ -671,7 +705,7 @@ describe("importSessions — provider: codex", () => {
     writeFileSync(join(archivedDir, "codex-session.jsonl"), makeCodexSessionMetaLine("codex-session", "/workspace"));
 
     const sessionIds: string[] = [];
-    const client = makeMockClient(async (path, body) => {
+    const client = makeMockClient(async (_path, body) => {
       sessionIds.push((body as { session_id: string }).session_id);
       return { ingested: 1, totalTokens: 100 };
     });

@@ -37,18 +37,19 @@ describe("handleUserPromptSubmit", () => {
       client as any,
     );
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toBe("");
+    expect(result.stdout).toContain("<learning-instruction>");
+    expect(result.stdout).not.toContain("<memory-context>");
   });
 
-  it("returns empty when daemon unreachable", async () => {
+  it("returns learning-instruction when daemon unreachable", async () => {
     mockEnsureDaemon.mockResolvedValue({ connected: false, port: 3737, spawned: false });
     const client = { health: vi.fn(), post: vi.fn() };
     const result = await handleUserPromptSubmit("{}", client as any);
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toBe("");
+    expect(result.stdout).toContain("<learning-instruction>");
   });
 
-  it("returns empty when prompt is missing", async () => {
+  it("returns learning-instruction when prompt is missing", async () => {
     mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
     const client = {
       health: vi.fn(),
@@ -59,6 +60,36 @@ describe("handleUserPromptSubmit", () => {
       client as any,
     );
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toBe("");
+    expect(result.stdout).toContain("<learning-instruction>");
+  });
+
+  it("includes learning-instruction block in output", async () => {
+    mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
+    const mockClient = {
+      health: vi.fn(),
+      post: vi.fn().mockResolvedValue({ hints: ["some context hint"] }),
+    };
+    const result = await handleUserPromptSubmit(
+      JSON.stringify({ prompt: "test query", cwd: "/tmp/test", session_id: "s1" }),
+      mockClient as any,
+    );
+    expect(result.stdout).toContain("<learning-instruction>");
+    expect(result.stdout).toContain("lcm_store");
+    expect(result.stdout).toContain("category:decision");
+    expect(result.stdout).toContain("</learning-instruction>");
+  });
+
+  it("includes learning-instruction even when no memory-context hints", async () => {
+    mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
+    const mockClient = {
+      health: vi.fn(),
+      post: vi.fn().mockResolvedValue({ hints: [] }),
+    };
+    const result = await handleUserPromptSubmit(
+      JSON.stringify({ prompt: "test query", cwd: "/tmp/test", session_id: "s1" }),
+      mockClient as any,
+    );
+    expect(result.stdout).toContain("<learning-instruction>");
+    expect(result.stdout).not.toContain("<memory-context>");
   });
 });
