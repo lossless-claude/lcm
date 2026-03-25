@@ -73,14 +73,6 @@ function addCodexProcessChecks(results: CheckResult[], deps: DoctorDeps): void {
   }
 }
 
-async function checkUrl(url: string, deps: DoctorDeps): Promise<boolean> {
-  try {
-    const res = await deps.fetch(url);
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
 
 function testMcpHandshake(): Promise<CheckResult> {
   return new Promise((resolve) => {
@@ -140,9 +132,11 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>): Promise<CheckR
   // ── 1. Binary version ──
   // dist/src/doctor/doctor.js → ../../.. → project root
   const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "package.json");
+  let pkgVersion: string | undefined;
   try {
     const pkg = JSON.parse(deps.readFileSync(pkgPath, "utf-8"));
-    results.push({ name: "version", category: "Stack", status: "pass", message: `v${pkg.version}` });
+    pkgVersion = pkg.version;
+    results.push({ name: "version", category: "Stack", status: "pass", message: `v${pkgVersion}` });
   } catch {
     results.push({ name: "version", category: "Stack", status: "warn", message: "Could not read version" });
   }
@@ -156,9 +150,40 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>): Promise<CheckR
   }
 
   // ── Daemon ──
-  const daemonHealthy = await checkUrl(`http://localhost:${config.port}/health`, deps);
+  let daemonHealthy = false;
+  let daemonVersion: string | undefined;
+  try {
+    const res = await deps.fetch(`http://localhost:${config.port}/health`);
+    if (res.ok) {
+      const h = (await res.json()) as { status?: string; version?: string };
+      daemonHealthy = h.status === "ok";
+      daemonVersion = h.version;
+    }
+  } catch {}
+
   if (daemonHealthy) {
-    results.push({ name: "daemon", category: "Daemon", status: "pass", message: `localhost:${config.port} (up)` });
+    const pidFilePath = join(deps.homedir, ".lossless-claude", "daemon.pid");
+    if (pkgVersion && daemonVersion && daemonVersion !== pkgVersion) {
+      // Version mismatch — auto-restart with expectedVersion to kill stale daemon and spawn fresh
+      try {
+        const { ensureDaemon } = await import("../daemon/lifecycle.js");
+        const { connected } = await ensureDaemon({ port: config.port, pidFilePath, spawnTimeoutMs: 10000, expectedVersion: pkgVersion });
+        results.push({
+          name: "daemon", category: "Daemon",
+          status: connected ? "warn" : "warn",
+          message: connected
+            ? `localhost:${config.port} — restarted (v${daemonVersion} → v${pkgVersion})`
+            : `localhost:${config.port} — version mismatch (v${daemonVersion} running, v${pkgVersion} installed); restart failed\n     Fix: lcm daemon restart`,
+          fixApplied: connected,
+        });
+        daemonHealthy = connected;
+      } catch {
+        results.push({ name: "daemon", category: "Daemon", status: "warn",
+          message: `localhost:${config.port} — version mismatch (v${daemonVersion} running, v${pkgVersion} installed)\n     Fix: lcm daemon restart` });
+      }
+    } else {
+      results.push({ name: "daemon", category: "Daemon", status: "pass", message: `localhost:${config.port} (up)` });
+    }
   } else {
     // Auto-fix: try ensureDaemon
     try {
