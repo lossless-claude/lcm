@@ -1,9 +1,11 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { createDaemon } from "../../../src/daemon/server.js";
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
+import { projectDbPath } from "../../../src/daemon/project.js";
 
 const tempDirs: string[] = [];
 
@@ -74,6 +76,41 @@ describe("POST /store", () => {
         body: JSON.stringify({ text: "hello" }),
       });
       expect(res.status).toBe(400);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it("scrubs secrets before inserting into the promoted table", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-store-scrub-"));
+    tempDirs.push(tempDir);
+    const config = loadDaemonConfig("/nonexistent");
+    config.daemon.port = 0;
+    const daemon = await createDaemon(config);
+    const port = daemon.address().port;
+
+    const secretKey = "sk-ant-api03-" + "a".repeat(40);
+    const text = `My API key is ${secretKey} and should be scrubbed`;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/store`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, cwd: tempDir }),
+      });
+      expect(res.status).toBe(200);
+
+      // Read back directly from the SQLite promoted table
+      const dbPath = projectDbPath(tempDir);
+      const db = new DatabaseSync(dbPath);
+      try {
+        const rows = db.prepare("SELECT content FROM promoted ORDER BY created_at DESC LIMIT 1").all() as Array<{ content: string }>;
+        expect(rows).toHaveLength(1);
+        expect(rows[0].content).toContain("[REDACTED]");
+        expect(rows[0].content).not.toContain("sk-ant-api03");
+      } finally {
+        db.close();
+      }
     } finally {
       await daemon.stop();
     }
