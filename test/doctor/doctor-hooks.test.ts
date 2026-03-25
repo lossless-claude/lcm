@@ -7,17 +7,22 @@ vi.mock("../../src/daemon/lifecycle.js", () => ({
   ensureDaemon: vi.fn().mockResolvedValue({ connected: false }),
 }));
 
+const LCM_BLOCK = "<!-- lcm:start -->\n@lcm.md\n<!-- lcm:end -->\n";
+
+function baseReadFileSync(p: string, settings: string) {
+  if (p.endsWith("config.json")) return JSON.stringify({ llm: { provider: "claude-process" } });
+  if (p.endsWith("settings.json")) return settings;
+  if (p.endsWith("package.json")) return JSON.stringify({ version: "0.5.0" });
+  if (p.endsWith("CLAUDE.md")) return LCM_BLOCK;
+  return "{}";
+}
+
 describe("doctor hook validation", () => {
   it("reports hooks as passing when they are absent from settings.json", async () => {
     const settings = JSON.stringify({ mcpServers: { "lcm": {} } });
     const results = await runDoctor({
       existsSync: () => true,
-      readFileSync: (p: string) => {
-        if (p.endsWith("config.json")) return JSON.stringify({ llm: { provider: "claude-process" } });
-        if (p.endsWith("settings.json")) return settings;
-        if (p.endsWith("package.json")) return JSON.stringify({ version: "0.5.0" });
-        return "{}";
-      },
+      readFileSync: (p: string) => baseReadFileSync(p, settings),
       writeFileSync: vi.fn(),
       mkdirSync: vi.fn(),
       spawnSync: () => ({ status: 0, stdout: "", stderr: "" }),
@@ -36,12 +41,7 @@ describe("doctor hook validation", () => {
     const settings = JSON.stringify({ mcpServers: { lcm: { command: "lcm", args: ["mcp"] } } });
     const results = await runDoctor({
       existsSync: () => true,
-      readFileSync: (p: string) => {
-        if (p.endsWith("config.json")) return JSON.stringify({ llm: { provider: "claude-process" } });
-        if (p.endsWith("settings.json")) return settings;
-        if (p.endsWith("package.json")) return JSON.stringify({ version: "0.5.0" });
-        return "{}";
-      },
+      readFileSync: (p: string) => baseReadFileSync(p, settings),
       writeFileSync: vi.fn(),
       mkdirSync: vi.fn(),
       spawnSync: () => ({ status: 0, stdout: "", stderr: "" }),
@@ -56,16 +56,11 @@ describe("doctor hook validation", () => {
 
   it("re-adds mcpServers.lcm when missing from settings.json", async () => {
     const settings = JSON.stringify({ mcpServers: {} });
-    const writtenSettings: string[] = [];
+    const writtenFiles = new Map<string, string>();
     const results = await runDoctor({
       existsSync: () => true,
-      readFileSync: (p: string) => {
-        if (p.endsWith("config.json")) return JSON.stringify({ llm: { provider: "claude-process" } });
-        if (p.endsWith("settings.json")) return settings;
-        if (p.endsWith("package.json")) return JSON.stringify({ version: "0.5.0" });
-        return "{}";
-      },
-      writeFileSync: (_p: string, data: string) => { writtenSettings.push(data); },
+      readFileSync: (p: string) => baseReadFileSync(p, settings),
+      writeFileSync: (p: string, data: string) => { writtenFiles.set(p, data); },
       mkdirSync: vi.fn(),
       spawnSync: () => ({ status: 0, stdout: "", stderr: "" }),
       fetch: vi.fn().mockResolvedValue({ ok: false }),
@@ -75,8 +70,10 @@ describe("doctor hook validation", () => {
     const mcpResult = results.find(r => r.name === "mcp-lcm");
     expect(mcpResult?.status).toBe("warn");
     expect(mcpResult?.message).toContain("missing");
-    // doctor should have written the entry back
-    const written = JSON.parse(writtenSettings[writtenSettings.length - 1]);
+    // doctor should have written the entry back to settings.json
+    const settingsWritten = writtenFiles.get("/tmp/test-home/.claude/settings.json");
+    expect(settingsWritten).toBeDefined();
+    const written = JSON.parse(settingsWritten!);
     expect(written.mcpServers?.lcm).toBeDefined();
   });
 });

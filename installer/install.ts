@@ -184,6 +184,49 @@ export async function waitForHealth(
   return false;
 }
 
+const LCM_BLOCK_START = "<!-- lcm:start -->";
+const LCM_BLOCK_END = "<!-- lcm:end -->";
+
+export function ensureLcmMd(
+  deps: Pick<ServiceDeps, "readFileSync" | "writeFileSync" | "existsSync" | "mkdirSync">,
+  lcmMdContent: string,
+  homeDirPath: string = homedir(),
+): { lcmMdWritten: boolean; claudeMdPatched: boolean } {
+  const claudeDir = join(homeDirPath, ".claude");
+  deps.mkdirSync(claudeDir, { recursive: true });
+
+  // Always overwrite lcm.md to keep content up-to-date with the installed version
+  const lcmMdPath = join(claudeDir, "lcm.md");
+  deps.writeFileSync(lcmMdPath, lcmMdContent);
+
+  // Ensure @lcm.md appears in CLAUDE.md inside a managed block
+  const claudeMdPath = join(claudeDir, "CLAUDE.md");
+  let claudeMdPatched = false;
+  let existing = "";
+  if (deps.existsSync(claudeMdPath)) {
+    try { existing = deps.readFileSync(claudeMdPath, "utf-8"); } catch {}
+  }
+
+  const block = `${LCM_BLOCK_START}\n@lcm.md\n${LCM_BLOCK_END}`;
+  const startIdx = existing.indexOf(LCM_BLOCK_START);
+  const endIdx = existing.indexOf(LCM_BLOCK_END);
+
+  if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+    // Block exists — replace it in case content changed
+    const updated = existing.slice(0, startIdx) + block + existing.slice(endIdx + LCM_BLOCK_END.length);
+    if (updated !== existing) {
+      deps.writeFileSync(claudeMdPath, updated);
+      claudeMdPatched = true;
+    }
+  } else {
+    // No block yet — append
+    deps.writeFileSync(claudeMdPath, existing ? existing.trimEnd() + "\n" + block + "\n" : block + "\n");
+    claudeMdPatched = true;
+  }
+
+  return { lcmMdWritten: true, claudeMdPatched };
+}
+
 export async function install(deps: ServiceDeps = defaultDeps): Promise<void> {
   const lcDir = join(homedir(), ".lossless-claude");
   deps.mkdirSync(lcDir, { recursive: true });
@@ -233,7 +276,13 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<void> {
     console.log(`Installed slash commands to ${commandsDst}`);
   }
 
-  // 4. Start daemon (lazy daemon — no persistent service)
+  // 4. Install lcm.md and @lcm.md reference in CLAUDE.md
+  const { LCM_MD_CONTENT } = await import("../src/daemon/orientation.js");
+  const { lcmMdWritten, claudeMdPatched } = ensureLcmMd(deps, LCM_MD_CONTENT);
+  if (lcmMdWritten) console.log(`Installed ~/.claude/lcm.md`);
+  if (claudeMdPatched) console.log(`Added @lcm.md to ~/.claude/CLAUDE.md`);
+
+  // 6. Start daemon (lazy daemon — no persistent service)
   const configData = deps.existsSync(configPath)
     ? JSON.parse(deps.readFileSync(configPath, "utf-8"))
     : {};
@@ -254,7 +303,7 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<void> {
     console.log("Daemon started successfully.");
   }
 
-  // 5. Final verification
+  // 7. Final verification
   console.log("\nRunning doctor...");
   const _runDoctor = deps.runDoctor ?? (async () => {
     const { runDoctor, printResults: _print } = await import("../src/doctor/doctor.js");

@@ -12,7 +12,7 @@ describe("POST /restore", () => {
   let daemon: DaemonInstance | undefined;
   afterEach(async () => { if (daemon) { await daemon.stop(); daemon = undefined; } });
 
-  it("returns orientation-only for first-ever session", async () => {
+  it("returns empty context for first-ever session (orientation now lives in ~/.claude/lcm.md)", async () => {
     daemon = await createDaemon(loadDaemonConfig("/x", { daemon: { port: 0 } }));
     const res = await fetch(`http://127.0.0.1:${daemon.address().port}/restore`, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -20,18 +20,18 @@ describe("POST /restore", () => {
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.context).toContain("<memory-orientation>");
+    expect(body.context).not.toContain("<memory-orientation>");
     expect(body.context).not.toContain("<recent-session-context>");
   });
 
-  it("returns orientation-only for source=compact with no session_instructions", async () => {
+  it("returns empty context for source=compact with no session_instructions", async () => {
     daemon = await createDaemon(loadDaemonConfig("/x", { daemon: { port: 0 } }));
     const res = await fetch(`http://127.0.0.1:${daemon.address().port}/restore`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session_id: "s1", cwd: "/tmp/compact-test-no-instructions", source: "compact", hook_event_name: "SessionStart" }),
     });
     const body = await res.json();
-    expect(body.context).toContain("<memory-orientation>");
+    expect(body.context).not.toContain("<memory-orientation>");
     expect(body.context).not.toContain("<recent-session-context>");
     expect(body.context).not.toContain("<project-instructions>");
   });
@@ -66,7 +66,7 @@ describe("POST /restore", () => {
       });
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.context).toContain("<memory-orientation>");
+      expect(body.context).not.toContain("<memory-orientation>");
       expect(body.context).toContain("<project-instructions>");
       expect(body.context).toContain("Do not use emojis.");
       expect(body.context).not.toContain("<recent-session-context>");
@@ -83,7 +83,7 @@ describe("POST /restore", () => {
       });
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.context).toContain("<memory-orientation>");
+      expect(body.context).not.toContain("<memory-orientation>");
 
       // Verify session_instructions was written to DB
       const dbPath = projectDbPath(tmpDir);

@@ -15,10 +15,12 @@ if (!existsSync(join(__dirname, "node_modules"))) {
   } catch {}
 }
 
-// Auto-build: compile TypeScript if dist/ is missing (fresh GitHub install)
+// Auto-build: compile TypeScript if dist/ is missing (fresh GitHub/marketplace install)
 if (!existsSync(join(__dirname, "dist"))) {
   try {
     execSync("npm run build --silent", { cwd: __dirname, stdio: "pipe", timeout: 120000 });
+    // Register as a global binary so `lcm` is available in PATH
+    execSync("npm install -g . --silent", { cwd: __dirname, stdio: "pipe", timeout: 60000 });
   } catch {}
 }
 

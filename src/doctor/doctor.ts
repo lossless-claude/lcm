@@ -4,7 +4,7 @@ import { join, dirname } from "node:path";
 import { spawnSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { CheckResult, DoctorDeps } from "./types.js";
-import { mergeClaudeSettings, REQUIRED_HOOKS, resolveBinaryPath } from "../../installer/install.js";
+import { mergeClaudeSettings, REQUIRED_HOOKS, resolveBinaryPath, ensureLcmMd } from "../../installer/install.js";
 import { BUILT_IN_PATTERNS, ScrubEngine } from "../scrub.js";
 import { projectDir } from "../daemon/project.js";
 
@@ -245,6 +245,29 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>): Promise<CheckR
       results.push({ name: "mcp-lcm", category: "Settings", status: "warn", message: "mcpServers.lcm missing from settings.json — re-added automatically", fixApplied: true });
     } catch {
       results.push({ name: "mcp-lcm", category: "Settings", status: "fail", message: "mcpServers.lcm missing from settings.json — run: lcm install" });
+    }
+  }
+
+  // ── lcm.md (Claude Code memory guidance file) ──
+  const lcmMdPath = join(deps.homedir, ".claude", "lcm.md");
+  const claudeMdPath = join(deps.homedir, ".claude", "CLAUDE.md");
+  const lcmMdExists = deps.existsSync(lcmMdPath);
+  const claudeMdHasRef = deps.existsSync(claudeMdPath) &&
+    (() => { try { return deps.readFileSync(claudeMdPath, "utf-8").includes("<!-- lcm:start -->"); } catch { return false; } })();
+
+  if (lcmMdExists && claudeMdHasRef) {
+    results.push({ name: "lcm-md", category: "Settings", status: "pass", message: "~/.claude/lcm.md installed and referenced in CLAUDE.md" });
+  } else {
+    try {
+      const { LCM_MD_CONTENT } = await import("../daemon/orientation.js");
+      const { claudeMdPatched } = ensureLcmMd(deps, LCM_MD_CONTENT, deps.homedir);
+      const detail = [
+        !lcmMdExists ? "wrote ~/.claude/lcm.md" : null,
+        claudeMdPatched ? "added @lcm.md to CLAUDE.md" : null,
+      ].filter(Boolean).join(", ");
+      results.push({ name: "lcm-md", category: "Settings", status: "warn", message: `lcm.md restored (${detail})`, fixApplied: true });
+    } catch {
+      results.push({ name: "lcm-md", category: "Settings", status: "fail", message: "~/.claude/lcm.md missing — run: lcm install" });
     }
   }
 
