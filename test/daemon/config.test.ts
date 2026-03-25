@@ -160,7 +160,7 @@ describe("deepMerge", () => {
     const source = JSON.parse('{"__proto__": {"polluted": true}, "constructor": {"name": "pwned"}}');
     const result = deepMerge({ a: 1 } as Record<string, unknown>, source);
     expect((({}) as any).polluted).toBeUndefined();
-    expect(Object.hasOwn(result, "__proto__")).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(result, "__proto__")).toBe(false);
   });
 
   it("merges normal keys correctly", () => {
