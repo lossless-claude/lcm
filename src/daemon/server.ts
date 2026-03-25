@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DaemonConfig } from "./config.js";
+import { sanitizeError } from "./safe-error.js";
 import type { ProxyManager } from "./proxy-manager.js";
 import { createCompactHandler } from "./routes/compact.js";
 import { createPromoteHandler } from "./routes/promote.js";
@@ -156,7 +157,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
       await handler(req, res, req.method !== "GET" ? await readBody(req) : "");
     } catch (err: unknown) {
       const status = (err as { statusCode?: number })?.statusCode ?? 500;
-      const message = status === 413 ? "payload too large" : (err instanceof Error ? err.message : "internal error");
+      const message = status === 413 ? "payload too large" : sanitizeError(err instanceof Error ? err.message : "internal error");
       sendJson(res, status, { error: message });
     }
   });
