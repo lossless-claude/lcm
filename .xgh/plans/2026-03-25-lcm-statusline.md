@@ -190,20 +190,16 @@ The pattern is the same for all three: import `setActivity`, call it before the 
 
 - [ ] **Step 1: Write a failing test for compact activity tracking**
 
-Add to `test/daemon/routes/compact.test.ts` (after existing imports):
+Add to `test/daemon/routes/compact.test.ts` (after existing imports — do NOT re-import `vitest` bindings already present):
 ```ts
-import { describe, it, expect, afterEach, vi } from "vitest";
 import * as activity from "../../../src/daemon/activity.js";
-import { getActivity, setActivity } from "../../../src/daemon/activity.js";
 ```
 
 Add a new test inside the existing describe block:
 ```ts
-import * as activityModule from "../../../src/daemon/activity.js";
-
 it("sets activity to compacting then resets to idle after compact route", async () => {
   const calls: string[] = [];
-  const spy = vi.spyOn(activityModule, "setActivity").mockImplementation((s) => calls.push(s));
+  const spy = vi.spyOn(activity, "setActivity").mockImplementation((s) => calls.push(s));
   try {
     // trigger a compact request (use existing daemon/db setup in the file)
     // after the route returns, verify the call sequence
@@ -506,6 +502,8 @@ No unit tests for this file — it's I/O-only glue. The integration is verified 
 
 ```ts
 // src/statusline.ts
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { loadDaemonConfig } from "./daemon/config.js";
 import { DaemonClient } from "./daemon/client.js";
 import { renderStatusline, type HealthData, type StatusData } from "./statusline-render.js";
@@ -526,7 +524,7 @@ async function main(): Promise<void> {
     if (stdin.cwd) cwd = stdin.cwd;
   } catch { /* ignore parse errors */ }
 
-  const config = loadDaemonConfig("/x");
+  const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
   const client = new DaemonClient(`http://127.0.0.1:${config.daemon.port}`);
 
   let health: HealthData = null;
@@ -674,28 +672,24 @@ description: Configure the lcm statusline in Claude Code settings
 user_invocable: true
 ---
 
-Configure the lcm statusline so Claude Code displays daemon health and memory stats in your terminal status bar.
+# /lcm-statusline-setup
 
-This command adds a `statusLine` entry to `~/.claude/settings.json` pointing to `statusline.mjs` in the plugin root.
+## Instructions
 
-Steps:
-1. Find `${CLAUDE_PLUGIN_ROOT}` (the directory where lcm is installed)
-2. Read `~/.claude/settings.json` (create it if it doesn't exist)
-3. Add or replace the `statusLine` key:
+Configure the Claude Code statusline to display lcm daemon health and memory stats in the terminal status bar.
 
-```json
-{
-  "statusLine": {
-    "command": "node",
-    "args": ["${CLAUDE_PLUGIN_ROOT}/statusline.mjs"]
-  }
-}
+Run this command to find the plugin root and merge the `statusLine` config into `~/.claude/settings.json` without overwriting other settings:
+
+```bash
+PLUGIN_ROOT=$(node -e "console.log(require.resolve('lossless-claude/package.json').replace('/package.json',''))" 2>/dev/null || echo "") && \
+[ -z "$PLUGIN_ROOT" ] && echo "Error: lossless-claude not found in node path" && exit 1; \
+SETTINGS="$HOME/.claude/settings.json" && \
+[ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS" && \
+TMP=$(jq --arg p "$PLUGIN_ROOT/statusline.mjs" '.statusLine = {"command":"node","args":[$p]}' "$SETTINGS") && \
+echo "$TMP" > "$SETTINGS" && echo "Done. Restart Claude Code to activate the statusline."
 ```
 
-4. Write the file back
-5. Tell the user to restart Claude Code to activate the statusline
-
-Use `node` as the command — no global binary required. The `statusline.mjs` bootstrap handles auto-build if needed.
+Tell the user: **Restart Claude Code** to activate the statusline.
 ```
 
 - [ ] **Step 3: Verify command is discoverable**
