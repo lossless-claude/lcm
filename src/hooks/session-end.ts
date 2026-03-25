@@ -61,6 +61,23 @@ export function firePromoteRequest(port: number, body: Record<string, unknown>):
   req.end();
 }
 
+export function firePromoteEventsRequest(port: number, body: Record<string, unknown>): void {
+  const json = JSON.stringify(body);
+  const req = request({
+    hostname: "127.0.0.1",
+    port,
+    path: "/promote-events",
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(json) },
+  });
+  req.on("socket", (socket) => {
+    req.on("finish", () => (socket as import("node:net").Socket).unref());
+  });
+  req.on("error", () => {}); // non-fatal
+  req.write(json);
+  req.end();
+}
+
 export function fireSessionCompleteRequest(port: number, body: Record<string, unknown>): void {
   const json = JSON.stringify(body);
   const req = request({
@@ -119,6 +136,9 @@ export async function handleSessionEnd(
 
     // Always promote
     firePromoteRequest(daemonPort, { cwd: input.cwd });
+
+    // Promote events for passive learning
+    firePromoteEventsRequest(daemonPort, { cwd: input.cwd });
 
     // Record session completion in manifest.
     // Note: ingestResult.ingested is the delta (new messages this call), not the total.
