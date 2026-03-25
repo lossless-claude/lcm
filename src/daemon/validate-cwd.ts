@@ -23,7 +23,9 @@ export function validateCwd(cwd: string): string {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       throw new Error(sanitizeError(`cwd does not exist: ${resolved}`));
     }
-    throw err;
+    // Sanitize all other filesystem errors (e.g. EACCES) to avoid leaking absolute paths.
+    const msg = err instanceof Error ? err.message : "filesystem error";
+    throw new Error(sanitizeError(msg));
   }
   return resolved;
 }

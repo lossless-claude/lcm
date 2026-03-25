@@ -1,7 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, openSync, writeSync, closeSync, readFileSync, chmodSync, mkdirSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { tmpdir } from "node:os";
 
 export function ensureAuthToken(tokenPath: string): void {
   if (existsSync(tokenPath)) {
@@ -10,8 +9,10 @@ export function ensureAuthToken(tokenPath: string): void {
   }
   mkdirSync(dirname(tokenPath), { recursive: true });
   const token = randomBytes(32).toString("hex");
-  // Write to a temp file then atomically rename — immune to symlink races
-  const tmpPath = join(tmpdir(), `lcm-token-${randomBytes(8).toString("hex")}`);
+  // Write to a temp file in the same directory as tokenPath, then atomically rename.
+  // Using dirname(tokenPath) ensures both paths are on the same filesystem,
+  // preventing EXDEV errors from cross-device renameSync when tmpdir() differs.
+  const tmpPath = join(dirname(tokenPath), `.lcm-token-${randomBytes(8).toString("hex")}.tmp`);
   const fd = openSync(tmpPath, "wx", 0o600);
   try {
     writeSync(fd, token);

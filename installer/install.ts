@@ -137,7 +137,7 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<void> {
     defaults.llm = { ...defaults.llm, ...summarizerConfig };
     deps.mkdirSync(dirname(configPath), { recursive: true });
     deps.writeFileSync(configPath, JSON.stringify(defaults, null, 2));
-    deps.chmodSync?.(configPath, 0o600);
+    try { deps.chmodSync?.(configPath, 0o600); } catch { /* best-effort */ }
     console.log(`Created ${configPath}`);
   }
 

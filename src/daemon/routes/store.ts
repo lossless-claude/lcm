@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { projectDbPath, projectDir } from "../project.js";
@@ -10,6 +10,28 @@ import { runLcmMigrations } from "../../db/migration.js";
 import { PromotedStore } from "../../db/promoted.js";
 import { ScrubEngine } from "../../scrub.js";
 import { validateCwd } from "../validate-cwd.js";
+
+/** Cache entry for a per-project ScrubEngine. */
+interface ScrubCacheEntry {
+  engine: ScrubEngine;
+  /** mtime of sensitive-patterns.txt at the time the engine was created (ms). */
+  mtime: number;
+}
+
+const scrubCache = new Map<string, ScrubCacheEntry>();
+
+async function getScrubEngine(config: DaemonConfig, projDir: string): Promise<ScrubEngine> {
+  const patternsFile = `${projDir}/sensitive-patterns.txt`;
+  let mtime = 0;
+  try { mtime = statSync(patternsFile).mtimeMs; } catch { /* file absent — mtime stays 0 */ }
+
+  const cached = scrubCache.get(projDir);
+  if (cached && cached.mtime === mtime) return cached.engine;
+
+  const engine = await ScrubEngine.forProject(config.security?.sensitivePatterns ?? [], projDir);
+  scrubCache.set(projDir, { engine, mtime });
+  return engine;
+}
 
 export function createStoreHandler(config: DaemonConfig): RouteHandler {
   return async (_req, res, body) => {
@@ -35,10 +57,7 @@ export function createStoreHandler(config: DaemonConfig): RouteHandler {
       return;
     }
 
-    const scrubber = await ScrubEngine.forProject(
-      config.security?.sensitivePatterns ?? [],
-      projectDir(projectPath),
-    );
+    const scrubber = await getScrubEngine(config, projectDir(projectPath));
     const scrubbedText = scrubber.scrub(text);
 
     const dbPath = projectDbPath(projectPath);

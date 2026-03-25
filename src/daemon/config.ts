@@ -70,7 +70,11 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
   const e = env ?? process.env;
   let fileConfig: any = {};
   try { fileConfig = JSON.parse(readFileSync(configPath, "utf-8")); } catch {}
-  const merged = deepMerge(structuredClone(DEFAULTS) as Record<string, unknown>, deepMerge(fileConfig, overrides)) as DaemonConfig;
+  // Always merge untrusted sources (fileConfig, overrides) into a trusted target so that
+  // DENIED_KEYS filtering applies before any untrusted key reaches the result object.
+  // Precedence: DEFAULTS < fileConfig < overrides.
+  const withFile = deepMerge(structuredClone(DEFAULTS) as Record<string, unknown>, fileConfig);
+  const merged = deepMerge(withFile, overrides ?? {}) as DaemonConfig;
   // Migrate legacy provider names from v0.3.0
   if ((merged.llm.provider as string) === "claude-cli") merged.llm.provider = "claude-process";
   // Migrate legacy mergeMaxEntries (renamed to dedupCandidateLimit)

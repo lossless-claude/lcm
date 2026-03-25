@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, realpathSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve, normalize, join as pathJoin } from "node:path";
+import { join, resolve, normalize, join as pathJoin, dirname, basename } from "node:path";
 
 export const BASE_DIR = join(homedir(), ".lossless-claude");
 
@@ -19,6 +19,30 @@ export const projectMetaPath = (cwd: string): string =>
 
 function tryRealpath(p: string): string {
   try { return realpathSync(p); } catch { return p; }
+}
+
+/**
+ * Like realpathSync but handles non-existent paths by resolving the nearest
+ * existing ancestor and appending the remaining components.
+ * This ensures symlinked parent directories are resolved even when the leaf
+ * path doesn't exist yet (e.g. a transcript file not yet created).
+ */
+function realpathDeep(p: string): string {
+  try { return realpathSync(p); } catch { /* fall through */ }
+  // Walk up to find the nearest existing ancestor, then reconstruct
+  const parts: string[] = [];
+  let cur = p;
+  while (true) {
+    const parent = dirname(cur);
+    if (parent === cur) break; // reached root
+    parts.unshift(basename(cur));
+    cur = parent;
+    try {
+      const real = realpathSync(cur);
+      return join(real, ...parts);
+    } catch { /* keep walking up */ }
+  }
+  return p; // fallback: return original
 }
 
 export function isSafeTranscriptPath(transcriptPath: string, cwd: string): string | false {
@@ -46,14 +70,20 @@ export function isSafeTranscriptPath(transcriptPath: string, cwd: string): strin
   }
 
   // Not a symlink (or doesn't exist yet): validate using resolve() — consistent with cwd.
+  // Canonicalize both the candidate path and the allowed bases via realpathSync so that
+  // a symlinked parent directory (e.g. /tmp -> /private/tmp on macOS) doesn't create
+  // a bypass in either direction.
+  // Use realpathDeep so non-existent leaf paths still get their parent directories
+  // resolved (e.g. /tmp/transcript.jsonl -> /private/tmp/transcript.jsonl on macOS).
+  const candidate = realpathDeep(resolved);
   const allowedBases = [
-    pathJoin(homedir(), ".claude", "projects"),
-    resolve(cwd),
+    tryRealpath(pathJoin(homedir(), ".claude", "projects")),
+    tryRealpath(resolve(cwd)),
   ];
   for (const base of allowedBases) {
     const normalBase = normalize(base + "/");
-    if (resolved.startsWith(normalBase) || resolved === normalize(base)) {
-      return resolved;
+    if (candidate.startsWith(normalBase) || candidate === normalize(base)) {
+      return candidate;
     }
   }
   return false;
