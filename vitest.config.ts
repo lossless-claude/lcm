@@ -1,6 +1,6 @@
 import { defineConfig } from "vitest/config";
-import { tmpdir } from "os";
-import { join } from "path";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 export default defineConfig({
   cacheDir: join(tmpdir(), "vitest-lcm-cache"),

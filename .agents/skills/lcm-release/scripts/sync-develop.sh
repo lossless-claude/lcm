@@ -66,6 +66,8 @@ if git ls-remote --exit-code --heads origin "$SYNC_BRANCH" >/dev/null 2>&1; then
   if [[ -n "$EXISTING_PR" && "$EXISTING_PR" =~ ^[0-9]+$ ]]; then
     echo "  Found open PR #$EXISTING_PR — merging..."
     gh pr merge "$EXISTING_PR" --repo "$REPO" --merge --delete-branch
+    git checkout develop
+    git pull --ff-only origin develop || err "Failed to update local develop after sync merge."
     ok "develop is now in sync with main."
     exit 0
   fi
@@ -83,6 +85,8 @@ if git ls-remote --exit-code --heads origin "$SYNC_BRANCH" >/dev/null 2>&1; then
   fi
   echo "  Opened sync PR #$SYNC_PR — merging..."
   gh pr merge "$SYNC_PR" --repo "$REPO" --merge --delete-branch
+  git checkout develop
+  git pull --ff-only origin develop || err "Failed to update local develop after sync merge."
   ok "develop is now in sync with main."
   exit 0
 fi
