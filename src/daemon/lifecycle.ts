@@ -126,11 +126,15 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
     return { connected: false, port: opts.port, spawned: true };
   }
 
-  // Step 4: Wait for health
+  // Step 4: Wait for health — only connect if version matches (if expected)
   const deadline = Date.now() + opts.spawnTimeoutMs;
   while (Date.now() < deadline) {
     const h = await checkDaemonHealth(opts.port, fetchFn);
     if (h?.status === "ok") {
+      if (opts.expectedVersion && h.version && h.version !== opts.expectedVersion) {
+        await sleep(300);
+        continue;
+      }
       return { connected: true, port: opts.port, spawned: true };
     }
     await sleep(300);
