@@ -83,6 +83,17 @@ export class EventsDb {
     // Handle empty schema_version table (table exists but has no rows)
     if (!versionRow) {
       this.db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(SCHEMA_VERSION);
+      // Ensure v2 tables exist even in this edge case
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS error_log (
+          id         INTEGER PRIMARY KEY AUTOINCREMENT,
+          hook       TEXT NOT NULL,
+          error      TEXT NOT NULL,
+          session_id TEXT,
+          created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_error_log_created ON error_log(created_at);
+      `);
       return;
     }
 
@@ -165,7 +176,7 @@ export class EventsDb {
       "SELECT COUNT(*) as unprocessed FROM events WHERE processed_at IS NULL"
     ).get() as { unprocessed: number };
     const errorTotals = this.db.prepare(
-      "SELECT COUNT(*) as errors, MAX(created_at) as lastError FROM error_log WHERE hook NOT IN ('pruneUnprocessed', 'pruneErrorLog') AND created_at >= datetime('now', '-30 days')"
+      "SELECT COUNT(*) as errors, MAX(created_at) as lastError FROM error_log WHERE hook NOT LIKE 'maintenance:%' AND created_at >= datetime('now', '-30 days')"
     ).get() as { errors: number; lastError: string | null };
 
     return {
@@ -204,7 +215,7 @@ export class EventsDb {
       if (pruned > 0) {
         this.db.prepare(
           "INSERT INTO error_log (hook, error, session_id) VALUES (?, ?, NULL)"
-        ).run("pruneUnprocessed", `pruned ${pruned} unprocessed events (age/cap limit)`);
+        ).run("maintenance:pruneUnprocessed", `pruned ${pruned} unprocessed events (age/cap limit)`);
       }
 
       if (ageCount > 0) {

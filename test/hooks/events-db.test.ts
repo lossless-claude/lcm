@@ -218,7 +218,7 @@ describe("EventsDb", () => {
       }
       db.pruneUnprocessed(3, 9999);
 
-      const logRow = db.raw().prepare("SELECT error FROM error_log WHERE hook = 'pruneUnprocessed'").get() as { error: string } | undefined;
+      const logRow = db.raw().prepare("SELECT error FROM error_log WHERE hook = 'maintenance:pruneUnprocessed'").get() as { error: string } | undefined;
       expect(logRow).toBeDefined();
       expect(logRow!.error).toContain("pruned");
       db.close();

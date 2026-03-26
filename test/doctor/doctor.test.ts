@@ -191,8 +191,9 @@ describe("runDoctor summarizer modes", () => {
 });
 
 describe("Passive Learning checks", () => {
-  it("skips passive learning when hooks status is not pass", async () => {
-    // Use deps where hooks check produces "warn" (duplicate hooks in settings.json)
+  it("runs passive learning checks when hooks status is warn (auto-fixed duplicates)", async () => {
+    // Use deps where hooks check produces "warn" (duplicate hooks in settings.json auto-fixed)
+    mockCollectEventStats.mockReturnValue({ captured: 10, unprocessed: 0, errors: 0, lastCapture: null });
     const depsWithBadHooks = minimalDeps({
       readFileSync: (path: string) => {
         if (path.endsWith("settings.json")) return buildSettingsJson(); // duplicate hooks → produces warn
@@ -205,7 +206,8 @@ describe("Passive Learning checks", () => {
     });
     const results = await runDoctor(depsWithBadHooks);
     const plResults = results.filter(r => r.category === "Passive Learning");
-    expect(plResults).toHaveLength(0);
+    // "warn" status should allow passive learning checks to run
+    expect(plResults.length).toBeGreaterThan(0);
   });
 
   it("warns when hooks installed but no events captured", async () => {

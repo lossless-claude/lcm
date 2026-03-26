@@ -116,7 +116,8 @@ function testMcpHandshake(): Promise<CheckResult> {
 }
 
 function formatTimeAgo(date: Date): string {
-  const ms = Date.now() - date.getTime();
+  const ms = Math.max(0, Date.now() - date.getTime());
+  if (ms === 0) return "just now";
   const mins = Math.floor(ms / 60_000);
   if (mins < 60) return `${mins}m ago`;
   const hours = Math.floor(mins / 60);
@@ -133,7 +134,7 @@ function checkPassiveLearning(results: CheckResult[], hooksInstalled: boolean, v
   if (stats.captured === 0) {
     results.push({ name: "events-capture", category: "Passive Learning", status: "warn", message: "No events captured — passive learning may not be active" });
   } else if (stats.unprocessed > 1000) {
-    results.push({ name: "events-capture", category: "Passive Learning", status: "warn", message: `${stats.captured} events (${stats.unprocessed} unprocessed) — daemon may be offline. Fix: lcm daemon start` });
+    results.push({ name: "events-capture", category: "Passive Learning", status: "warn", message: `${stats.captured} events (${stats.unprocessed} unprocessed) — daemon may be offline — run: lcm daemon start` });
   } else {
     results.push({ name: "events-capture", category: "Passive Learning", status: "pass", message: `${stats.captured} events captured (${stats.unprocessed} unprocessed)` });
   }
@@ -471,7 +472,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
 
   // ── Passive Learning ──
   const hooksInstalled = results.some(
-    r => r.category === "Settings" && r.name === "hooks" && r.status === "pass"
+    r => r.category === "Settings" && r.name === "hooks" && r.status !== "fail"
   );
   checkPassiveLearning(results, hooksInstalled, verbose);
 
