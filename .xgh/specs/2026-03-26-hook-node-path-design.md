@@ -133,6 +133,9 @@ export function requiredHooks(nodePath: string, lcmMjsPath: string) {
   }));
 }
 
+/** Returns true if all required hooks exist in settings with the correct absolute paths. */
+export function hooksUpToDate(existing: any, nodePath: string, lcmMjsPath: string): boolean { ... }
+
 export function mergeClaudeSettings(existing: any, opts: HookOpts): any { ... }
 ```
 
@@ -176,22 +179,28 @@ const merged = mergeClaudeSettings(existing, {
 
 ### `lcm.mjs`
 
-After successful bootstrap (dist built, deps installed), write hooks to `settings.json`:
+After successful bootstrap (dist built, deps installed), write hooks to `settings.json` **only
+if they are missing or stale**. The guard prevents a write on every subsequent dist rebuild
+(e.g. CI, `npm run build`, or hook invocations that trigger a hot-reload):
 
 ```javascript
 // Best-effort — never throws, never blocks hook execution
+// Guard: only writes if hooks are absent or point to wrong paths
 try {
   const settingsPath = join(homedir(), ".claude", "settings.json");
-  const { mergeClaudeSettings } = await import("./dist/src/installer/settings.js");
+  const { mergeClaudeSettings, hooksUpToDate } = await import("./dist/src/installer/settings.js");
+  const lcmMjsPath = fileURLToPath(import.meta.url);
   const existing = existsSync(settingsPath)
     ? JSON.parse(readFileSync(settingsPath, "utf-8"))
     : {};
-  const merged = mergeClaudeSettings(existing, {
-    intent: "upsert",
-    nodePath: process.execPath,
-    lcmMjsPath: fileURLToPath(import.meta.url),
-  });
-  atomicWriteJSON(settingsPath, merged);
+  if (!hooksUpToDate(existing, process.execPath, lcmMjsPath)) {
+    const merged = mergeClaudeSettings(existing, {
+      intent: "upsert",
+      nodePath: process.execPath,
+      lcmMjsPath,
+    });
+    atomicWriteJSON(settingsPath, merged);
+  }
 } catch { /* never block */ }
 ```
 
@@ -199,6 +208,12 @@ try {
 
 Remove the entire `hooks` section. The file becomes metadata-only (name, version, description,
 author, mcpServers, commands). Claude Code no longer registers any lcm hooks from this file.
+
+Claude Code re-reads `plugin.json` on each plugin reload, so removing the `hooks` array takes
+effect on the next Claude Code restart. Users upgrading from an old version will briefly have
+the old bare-node hooks in Claude Code's registry until restart; `mergeClaudeSettings` with
+`intent: "upsert"` removes those stale entries (via the `OLD_TO_NEW` migration map) on the
+first `ensureCore` run, preventing double-fire.
 
 ### `src/doctor/doctor.ts`
 
@@ -208,14 +223,36 @@ Flip the hook invariant check:
 - **After**: hooks in `settings.json` = expected. Check that they exist and that the node
   path matches `process.execPath`. If stale: report `warn` + re-run upsert.
 
+Two parsing helpers (not exported — internal to doctor):
+
+```typescript
+/** Returns the first double-quoted token (the node binary path). */
+function extractNodeFromHookCommand(cmd: string): string | null {
+  return cmd.match(/^"([^"]+)"/)?.[1] ?? null;
+}
+
+/** Returns the second double-quoted token (the lcm.mjs path). */
+function extractLcmMjsFromHookCommand(cmd: string): string | null {
+  return cmd.match(/^"[^"]*"\s+"([^"]+)"/)?.[1] ?? null;
+}
+```
+
+These handle paths with spaces correctly because they match on the outer quotes, not on
+whitespace.
+
 ```typescript
 // New doctor check: hook-node-path
 const hookNode = extractNodeFromHookCommand(lcmHooks[0].command);
-if (!hookNode) return { name: "hook-node-path", status: "fail", message: "lcm hooks missing — run `lcm install`" };
-if (hookNode !== process.execPath) {
-  // Repair inline
+const hookMjs  = extractLcmMjsFromHookCommand(lcmHooks[0].command);
+if (!hookNode || !hookMjs) return { name: "hook-node-path", status: "fail", message: "lcm hooks missing — run `lcm install`" };
+const staleNode = hookNode !== process.execPath;
+const staleMjs  = !existsSync(hookMjs);   // deleted after plugin version bump
+if (staleNode || staleMjs) {
   mergeClaudeSettings(settings, { intent: "upsert", nodePath: process.execPath, lcmMjsPath });
-  return { name: "hook-node-path", status: "warn", message: `Repaired hook node path (was ${hookNode})` };
+  const reason = staleNode
+    ? `node path was ${hookNode}`
+    : `lcm.mjs missing at ${hookMjs} (plugin updated to ${PKG_VERSION})`;
+  return { name: "hook-node-path", status: "warn", message: `Repaired hooks (${reason})` };
 }
 return { name: "hook-node-path", status: "ok" };
 ```
@@ -237,7 +274,7 @@ All callers of `mergeClaudeSettings` must be updated to the discriminated union:
 | `installer/install.ts` | implicit remove | upsert |
 | `src/installer/auto-heal.ts` | remove | upsert |
 | `src/doctor/doctor.ts` | remove (anti-pattern) | upsert (repair) |
-| `installer/uninstall.ts` | remove | remove (unchanged) |
+| `installer/uninstall.ts` | remove | remove (unchanged — but update the hook-matching predicate to identify lcm hooks by presence of the `lcm.mjs` path token rather than full command string equality, since the command format has changed from bare-node to quoted-absolute-path) |
 
 ---
 
@@ -263,7 +300,9 @@ All callers of `mergeClaudeSettings` must be updated to the discriminated union:
 4. `requiredHooks(nodePath, lcmMjsPath)` — spot-check command string format
 5. `ensureCore` with mismatched node path — verifies atomic rewrite fires
 6. `ensureCore` with matching node path — verifies no write (read-only hot path)
-7. Doctor hook-node-path check — verifies warn + repair on stale, ok on match, fail on missing
+7. Doctor hook-node-path check — verifies warn + repair on stale node path, ok on match, fail on missing
+8. Doctor hook-node-path check — verifies warn + repair when `lcmMjsPath` does not exist on disk (plugin version bump scenario)
+9. `hooksUpToDate` — returns true when all hooks match, false when any hook command differs or is absent
 
 ### Smoke tests (manual dogfood)
 
