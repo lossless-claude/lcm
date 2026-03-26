@@ -6,7 +6,7 @@ import { join, resolve, normalize, join as pathJoin, dirname, basename } from "n
 const resolveBaseDir = (): string =>
   process.env.LCM_DATA_DIR ?? join(homedir(), ".lossless-claude");
 
-/** Snapshot for callers that need a fixed path (e.g. daemon startup). Tests override via LCM_DATA_DIR. */
+/** Snapshot of the base dir at module import time. Not affected by LCM_DATA_DIR changes after import — use projectDir() for dynamic resolution. */
 export const BASE_DIR = resolveBaseDir();
 
 function canonicalizeCwd(cwd: string): string {
