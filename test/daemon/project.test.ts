@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { projectId, projectDbPath, projectMetaPath } from "../../src/daemon/project.js";
+import { describe, it, expect, afterEach } from "vitest";
+import { projectId, projectDbPath, projectMetaPath, projectDir } from "../../src/daemon/project.js";
 
 describe("projectId", () => {
   it("returns sha256 hex of absolute path", () => expect(projectId("/foo")).toMatch(/^[a-f0-9]{64}$/));
@@ -18,5 +18,25 @@ describe("projectDbPath", () => {
 describe("projectMetaPath", () => {
   it("returns path ending in meta.json", () => {
     expect(projectMetaPath("/foo")).toContain("meta.json");
+  });
+});
+
+describe("LCM_DATA_DIR override", () => {
+  afterEach(() => { delete process.env.LCM_DATA_DIR; });
+
+  it("projectDir uses LCM_DATA_DIR when set", () => {
+    process.env.LCM_DATA_DIR = "/custom/data";
+    expect(projectDir("/foo")).toContain("/custom/data");
+  });
+
+  it("projectDir falls back to ~/.lossless-claude when unset", () => {
+    delete process.env.LCM_DATA_DIR;
+    expect(projectDir("/foo")).toContain(".lossless-claude");
+  });
+
+  it("projectDbPath reflects LCM_DATA_DIR", () => {
+    process.env.LCM_DATA_DIR = "/custom/data";
+    expect(projectDbPath("/foo")).toContain("/custom/data");
+    expect(projectDbPath("/foo")).toContain("db.sqlite");
   });
 });

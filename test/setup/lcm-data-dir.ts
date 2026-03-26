@@ -13,7 +13,9 @@ export function teardown(): void {
   if (testDataDir) {
     try {
       rmSync(testDataDir, { recursive: true, force: true });
-    } catch {}
+    } catch (err) {
+      console.warn(`[lcm-data-dir] failed to clean up test data dir ${testDataDir}:`, err);
+    }
     delete process.env.LCM_DATA_DIR;
   }
 }
