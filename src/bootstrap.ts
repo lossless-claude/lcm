@@ -63,19 +63,21 @@ export async function ensureCore(deps: EnsureCoreDeps = defaultDeps()): Promise<
 
   // 2. Upsert hooks into settings.json (self-healing)
   // Hot path: read-only string compare. Write only if hooks are missing/stale.
-  if (deps.existsSync(deps.settingsPath)) {
-    try {
-      const existing = JSON.parse(deps.readFileSync(deps.settingsPath, "utf-8"));
-      if (!hooksUpToDate(existing, deps.nodePath, deps.lcmMjsPath)) {
-        const merged = mergeClaudeSettings(existing, {
-          intent: "upsert",
-          nodePath: deps.nodePath,
-          lcmMjsPath: deps.lcmMjsPath,
-        });
-        atomicWriteJSON(deps.settingsPath, merged, deps);
-      }
-    } catch {}
-  }
+  // On a fresh machine where settings.json does not exist yet, we still create it
+  // so hooks are registered. The existsSync guard only skips the READ, not the write.
+  try {
+    const existing = deps.existsSync(deps.settingsPath)
+      ? JSON.parse(deps.readFileSync(deps.settingsPath, "utf-8"))
+      : {};
+    if (!hooksUpToDate(existing, deps.nodePath, deps.lcmMjsPath)) {
+      const merged = mergeClaudeSettings(existing, {
+        intent: "upsert",
+        nodePath: deps.nodePath,
+        lcmMjsPath: deps.lcmMjsPath,
+      });
+      atomicWriteJSON(deps.settingsPath, merged, deps);
+    }
+  } catch {}
 
   // 3. Start daemon if not running
   const config = loadDaemonConfig(deps.configPath);

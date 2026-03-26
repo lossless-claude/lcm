@@ -321,7 +321,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
   const sampleEntries = lcmHooks?.["PreCompact"];
   const sampleCmd = sampleEntries?.flatMap((e: any) =>
     Array.isArray(e?.hooks) ? e.hooks.map((h: any) => h.command ?? "") : []
-  ).find((c: string) => c.includes("lcm.mjs") || /^"/.test(c));
+  ).find((c: string) => /^"/.test(c) && c.includes("lcm.mjs"));
 
   const hookNode = sampleCmd ? extractNodeFromHookCommand(sampleCmd) : null;
   const hookMjs = sampleCmd ? extractLcmMjsFromHookCommand(sampleCmd) : null;
@@ -345,6 +345,9 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
           nodePath: process.execPath,
           lcmMjsPath,
         });
+        // Direct write: doctor is user-initiated and non-concurrent, so a non-atomic
+        // writeFileSync is acceptable here. Using deps.writeFileSync keeps the write
+        // injectable for tests.
         deps.writeFileSync(settingsPath, JSON.stringify(repairedSettings, null, 2));
         const reason = staleNode
           ? `node path was ${hookNode}`
@@ -384,11 +387,19 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
     results.push({ name: "mcp-lcm", category: "Settings", status: "pass", message: "mcpServers.lcm registered in settings.json" });
   } else {
     try {
-      const merged = mergeClaudeSettings(currentSettings);
+      // Use intent "upsert" so existing hooks are preserved (not stripped).
+      const lcmMjsPathForMcp = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "lcm.mjs");
+      const merged = mergeClaudeSettings(currentSettings, {
+        intent: "upsert",
+        nodePath: process.execPath,
+        lcmMjsPath: lcmMjsPathForMcp,
+      });
       if (typeof merged.mcpServers !== "object" || merged.mcpServers === null) merged.mcpServers = {};
       // Use resolveBinaryPath for consistent binary resolution with installer
       const lcmBinary = resolveBinaryPath(deps);
       (merged.mcpServers as Record<string, unknown>)["lcm"] = { command: lcmBinary, args: ["mcp"] };
+      // Direct write: doctor is user-initiated and non-concurrent, so a non-atomic
+      // writeFileSync is acceptable here.
       deps.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
       results.push({ name: "mcp-lcm", category: "Settings", status: "warn", message: "mcpServers.lcm missing from settings.json — re-added automatically", fixApplied: true });
     } catch {

@@ -45,11 +45,19 @@ export function hooksUpToDate(
 
 /** Returns true if `cmd` is an lcm-managed hook command in any known format. */
 export function isLcmHookCommand(cmd: string): boolean {
-  return (
-    cmd.includes("lcm.mjs") ||
-    /^"?lcm\s/.test(cmd) ||
-    /^"?lossless-claude\s/.test(cmd)
-  );
+  // Must contain the lcm.mjs path token, OR be one of the known bare subcommand patterns
+  // (legacy format before absolute-path hooks). We deliberately do NOT match arbitrary
+  // commands that merely start with "lcm" or "lossless-claude" to avoid clobbering
+  // user-custom hook variants.
+  if (cmd.includes("lcm.mjs")) return true;
+  // Legacy bare-command patterns (pre-absolute-path era)
+  const KNOWN_SUBCOMMANDS = ["session-start", "session-end", "stop", "pre-compact", "restore", "compact --hook", "user-prompt", "post-tool", "session-snapshot"];
+  for (const sub of KNOWN_SUBCOMMANDS) {
+    if (cmd === `lcm ${sub}` || cmd === `"lcm" "${sub}"` || cmd === `lossless-claude ${sub}`) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function mergeClaudeSettings(existing: any, opts: HookOpts = { intent: "remove" }): any {

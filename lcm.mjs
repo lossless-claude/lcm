@@ -37,7 +37,7 @@ if (!existsSync(join(__dirname, "dist"))) {
           nodePath: process.execPath,
           lcmMjsPath,
         });
-        const tmp = `${settingsPath}.${Date.now()}.tmp`;
+        const tmp = `${settingsPath}.${Date.now()}.${process.pid}.tmp`;
         writeFileSync(tmp, JSON.stringify(merged, null, 2));
         renameSync(tmp, settingsPath);
       }
