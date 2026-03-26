@@ -1,4 +1,5 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { join } from "node:path";
 import { projectId, projectDbPath, projectMetaPath, projectDir } from "../../src/daemon/project.js";
 
 describe("projectId", () => {
@@ -22,11 +23,18 @@ describe("projectMetaPath", () => {
 });
 
 describe("LCM_DATA_DIR override", () => {
-  afterEach(() => { delete process.env.LCM_DATA_DIR; });
+  let savedDataDir: string | undefined;
+
+  beforeEach(() => { savedDataDir = process.env.LCM_DATA_DIR; });
+  afterEach(() => {
+    if (savedDataDir === undefined) delete process.env.LCM_DATA_DIR;
+    else process.env.LCM_DATA_DIR = savedDataDir;
+  });
 
   it("projectDir uses LCM_DATA_DIR when set", () => {
-    process.env.LCM_DATA_DIR = "/custom/data";
-    expect(projectDir("/foo")).toContain("/custom/data");
+    const customBase = join("/", "custom", "data");
+    process.env.LCM_DATA_DIR = customBase;
+    expect(projectDir("/foo")).toContain(customBase);
   });
 
   it("projectDir falls back to ~/.lossless-claude when unset", () => {
@@ -35,8 +43,9 @@ describe("LCM_DATA_DIR override", () => {
   });
 
   it("projectDbPath reflects LCM_DATA_DIR", () => {
-    process.env.LCM_DATA_DIR = "/custom/data";
-    expect(projectDbPath("/foo")).toContain("/custom/data");
+    const customBase = join("/", "custom", "data");
+    process.env.LCM_DATA_DIR = customBase;
+    expect(projectDbPath("/foo")).toContain(customBase);
     expect(projectDbPath("/foo")).toContain("db.sqlite");
   });
 });
