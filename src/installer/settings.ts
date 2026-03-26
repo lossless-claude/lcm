@@ -45,11 +45,17 @@ export function hooksUpToDate(
 
 /** Returns true if `cmd` is an lcm-managed hook command in any known format. */
 export function isLcmHookCommand(cmd: string): boolean {
-  // Must contain the lcm.mjs path token, OR be one of the known bare subcommand patterns
-  // (legacy format before absolute-path hooks). We deliberately do NOT match arbitrary
-  // commands that merely start with "lcm" or "lossless-claude" to avoid clobbering
-  // user-custom hook variants.
-  if (cmd.includes("lcm.mjs")) return true;
+  // Token-based check: split on whitespace respecting quotes, then check if any
+  // token (after stripping surrounding quotes) ends with `lcm.mjs`. This ensures
+  // commands like `"lcm-myapp" start` are NOT matched — only commands that invoke
+  // lcm.mjs as a script argument are recognised.
+  const tokens = cmd.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
+  if (tokens.some(t => t.replace(/^["']|["']$/g, "").endsWith("lcm.mjs"))) return true;
+
+  // Legacy format 1: bare `node lcm.mjs <subcommand>` (pre-absolute-path era)
+  // Legacy format 2: `node "${CLAUDE_PLUGIN_ROOT}/lcm.mjs" <subcommand>`
+  if (/\$\{CLAUDE_PLUGIN_ROOT\}\/lcm\.mjs/.test(cmd)) return true;
+
   // Legacy bare-command patterns (pre-absolute-path era)
   const KNOWN_SUBCOMMANDS = ["session-start", "session-end", "stop", "pre-compact", "restore", "compact --hook", "user-prompt", "post-tool", "session-snapshot"];
   for (const sub of KNOWN_SUBCOMMANDS) {

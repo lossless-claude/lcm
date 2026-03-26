@@ -319,9 +319,15 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
 
   // Find the PreCompact hook command as a sample (it's always present if hooks are registered)
   const sampleEntries = lcmHooks?.["PreCompact"];
+  // Token-based predicate: a valid sample command must have a token that ends with
+  // `lcm.mjs` (after stripping surrounding quotes). This avoids matching commands
+  // that merely mention "lcm.mjs" in an argument or user-defined hook names.
   const sampleCmd = sampleEntries?.flatMap((e: any) =>
     Array.isArray(e?.hooks) ? e.hooks.map((h: any) => h.command ?? "") : []
-  ).find((c: string) => /^"/.test(c) && c.includes("lcm.mjs"));
+  ).find((c: string) => {
+    const tokens = c.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
+    return tokens.some(t => t.replace(/^["']|["']$/g, "").endsWith("lcm.mjs"));
+  });
 
   const hookNode = sampleCmd ? extractNodeFromHookCommand(sampleCmd) : null;
   const hookMjs = sampleCmd ? extractLcmMjsFromHookCommand(sampleCmd) : null;
@@ -348,6 +354,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
         // Direct write: doctor is user-initiated and non-concurrent, so a non-atomic
         // writeFileSync is acceptable here. Using deps.writeFileSync keeps the write
         // injectable for tests.
+        deps.mkdirSync(dirname(settingsPath), { recursive: true });
         deps.writeFileSync(settingsPath, JSON.stringify(repairedSettings, null, 2));
         const reason = staleNode
           ? `node path was ${hookNode}`
@@ -400,6 +407,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
       (merged.mcpServers as Record<string, unknown>)["lcm"] = { command: lcmBinary, args: ["mcp"] };
       // Direct write: doctor is user-initiated and non-concurrent, so a non-atomic
       // writeFileSync is acceptable here.
+      deps.mkdirSync(dirname(settingsPath), { recursive: true });
       deps.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
       results.push({ name: "mcp-lcm", category: "Settings", status: "warn", message: "mcpServers.lcm missing from settings.json — re-added automatically", fixApplied: true });
     } catch {
