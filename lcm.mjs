@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// CLI entrypoint for plugin hooks — auto-bootstraps on fresh install, then delegates to the built lcm CLI.
-// Used by plugin.json hooks via ${CLAUDE_PLUGIN_ROOT}/lcm.mjs so no global binary is required.
+// CLI entrypoint — auto-bootstraps on fresh install, then delegates to the built lcm CLI.
+// Hooks are registered in ~/.claude/settings.json with absolute paths at install time.
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
