@@ -2,7 +2,7 @@ import type { DaemonClient } from "../daemon/client.js";
 import { ensureDaemon } from "../daemon/lifecycle.js";
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
-import { writeFileSync, readFileSync } from "node:fs";
+import { writeFileSync, readFileSync, unlinkSync } from "node:fs";
 
 /** Returns true if lock was acquired, false if another live process holds it. */
 function tryAcquireSessionLock(sessionId: string): boolean {
@@ -16,12 +16,19 @@ function tryAcquireSessionLock(sessionId: string): boolean {
       const ownerPid = parseInt(readFileSync(lockPath, "utf-8").trim(), 10);
       if (!isNaN(ownerPid)) {
         try {
-          process.kill(ownerPid, 0); // throws if process is dead
+          process.kill(ownerPid, 0); // throws ESRCH if dead, EPERM if alive but no permission
           return false; // owner alive, genuine dedup
-        } catch {
-          // Owner dead — take over the lock
-          writeFileSync(lockPath, process.pid.toString());
-          return true;
+        } catch (err: unknown) {
+          const code = typeof err === "object" && err && "code" in err ? (err as { code?: unknown }).code : undefined;
+          if (code !== "ESRCH") return false; // EPERM or unknown — assume alive
+          // ESRCH: owner dead — atomically take over by unlinking then re-locking
+          try { unlinkSync(lockPath); } catch { /* another process beat us to the unlink */ }
+          try {
+            writeFileSync(lockPath, process.pid.toString(), { flag: "wx" });
+            return true;
+          } catch {
+            return false; // lost the race to another process
+          }
         }
       }
     } catch { /* can't read lock — fall through to safe default */ }
@@ -30,8 +37,14 @@ function tryAcquireSessionLock(sessionId: string): boolean {
 }
 
 export async function handleSessionStart(stdin: string, client: DaemonClient, port?: number): Promise<{ exitCode: number; stdout: string }> {
-  const input = JSON.parse(stdin || "{}");
-  const sessionId = input.session_id ?? "";
+  let input: Record<string, unknown>;
+  try {
+    input = JSON.parse(stdin || "{}") as Record<string, unknown>;
+  } catch {
+    return { exitCode: 0, stdout: "" };
+  }
+
+  const sessionId = (input.session_id as string | undefined) ?? "";
   if (sessionId && !tryAcquireSessionLock(sessionId)) {
     return { exitCode: 0, stdout: "" };
   }
@@ -47,7 +60,7 @@ export async function handleSessionStart(stdin: string, client: DaemonClient, po
     try {
       const { EventsDb } = await import("./events-db.js");
       const { eventsDbPath } = await import("../db/events-path.js");
-      const cwd = input.cwd ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+      const cwd = (input.cwd as string | undefined) ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
       const eventsDb = new EventsDb(eventsDbPath(cwd));
       try {
         eventsDb.pruneProcessed(7);

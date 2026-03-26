@@ -131,7 +131,7 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
   while (Date.now() < deadline) {
     const h = await checkDaemonHealth(opts.port, fetchFn);
     if (h?.status === "ok") {
-      if (opts.expectedVersion && h.version && h.version !== opts.expectedVersion) {
+      if (opts.expectedVersion && h.version !== opts.expectedVersion) {
         await sleep(300);
         continue;
       }
