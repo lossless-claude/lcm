@@ -383,9 +383,10 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
 
       // Verify prune was logged to error_log
       // Note: getHealthStats() filters out pruneUnprocessed/pruneErrorLog maintenance errors
-      // to avoid noise in health stats, so we query the raw DB directly
+      // to avoid noise in health stats, so we query the raw DB directly.
+      // The logging is synchronous within the same transaction, so no race condition.
       const pruneLog = db.raw().prepare(
-        "SELECT COUNT(*) as c FROM error_log WHERE hook = 'pruneUnprocessed'"
+        "SELECT COUNT(*) as c FROM error_log WHERE hook = 'maintenance:pruneUnprocessed'"
       ).get() as { c: number };
       expect(pruneLog.c).toBeGreaterThanOrEqual(1);
     } finally {
