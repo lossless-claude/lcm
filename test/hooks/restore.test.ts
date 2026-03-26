@@ -146,6 +146,28 @@ describe("handleSessionStart", () => {
     expect(mockEnsureDaemon).toHaveBeenCalledTimes(1);
   });
 
+  it("sanitizes path-traversal characters in session_id for lock filename", async () => {
+    const maliciousId = "../../etc/passwd";
+    const safeId = maliciousId.replace(/[^A-Za-z0-9_-]/g, "_");
+    const safeLockPath = join(tmpdir(), `lcm-restore-${safeId}.lock`);
+    rmSync(safeLockPath, { force: true });
+
+    mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
+    const client = {
+      health: vi.fn(),
+      post: vi.fn().mockResolvedValue({ context: "" }),
+    };
+
+    await handleSessionStart(
+      JSON.stringify({ session_id: maliciousId, cwd: "/proj" }),
+      client as any,
+    );
+
+    // The sanitized lock file must be inside tmpdir — proves sanitization ran
+    expect(existsSync(safeLockPath)).toBe(true);
+    rmSync(safeLockPath, { force: true });
+  });
+
   it("triggers promote-events when unprocessed events exist", async () => {
     const { EventsDb } = await import("../../src/hooks/events-db.js");
     const { firePromoteEventsRequest } = await import("../../src/hooks/session-end.js");

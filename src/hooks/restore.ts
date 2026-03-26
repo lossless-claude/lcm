@@ -6,7 +6,8 @@ import { writeFileSync, readFileSync, unlinkSync } from "node:fs";
 
 /** Returns true if lock was acquired, false if another live process holds it. */
 function tryAcquireSessionLock(sessionId: string): boolean {
-  const lockPath = join(tmpdir(), `lcm-restore-${sessionId}.lock`);
+  const safeId = sessionId.replace(/[^A-Za-z0-9_-]/g, "_");
+  const lockPath = join(tmpdir(), `lcm-restore-${safeId}.lock`);
   try {
     writeFileSync(lockPath, process.pid.toString(), { flag: "wx" });
     return true;
