@@ -41,6 +41,41 @@ if (!existsSync(join(__dirname, "dist"))) {
   } catch {}
 }
 
+// Version-stamp check: warn if plugin cache version ≠ running daemon version.
+// Best-effort only — never blocks or throws. Uses 300ms timeout to stay non-disruptive.
+try {
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const pluginVersion = require("./package.json").version;
+
+  const daemonHealth = await new Promise((resolve) => {
+    import("node:http").then(({ default: http }) => {
+      const req = http.get(
+        "http://127.0.0.1:3737/health",
+        { timeout: 300 },
+        (res) => {
+          let data = "";
+          res.on("data", (c) => (data += c));
+          res.on("end", () => {
+            try { resolve(JSON.parse(data)); } catch { resolve(null); }
+          });
+        },
+      );
+      req.on("error", () => resolve(null));
+      req.on("timeout", () => { req.destroy(); resolve(null); });
+    }).catch(() => resolve(null));
+  });
+
+  if (daemonHealth?.version && daemonHealth.version !== pluginVersion) {
+    process.stderr.write(
+      `[lcm] version mismatch: plugin=${pluginVersion} daemon=${daemonHealth.version}` +
+      ` — run \`lcm install\` to update\n`,
+    );
+  }
+} catch {
+  // Never block hook execution on version check failure
+}
+
 // Delegate to the compiled CLI — process.argv passes through unchanged
 const cliModule = join(__dirname, "dist", "bin", "lcm.js");
 await import(pathToFileURL(cliModule).href);
