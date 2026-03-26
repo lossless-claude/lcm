@@ -17,8 +17,17 @@ function baseReadFileSync(p: string, settings: string) {
   return "{}";
 }
 
+/** Build a settings object with hooks installed using the given node/mjs paths */
+function makeHookSettings(nodePath: string, lcmMjsPath: string): string {
+  const hooks: Record<string, any[]> = {};
+  for (const { event, subcommand } of REQUIRED_HOOKS) {
+    hooks[event] = [{ hooks: [{ command: `"${nodePath}" "${lcmMjsPath}" ${subcommand}` }] }];
+  }
+  return JSON.stringify({ mcpServers: { lcm: {} }, hooks });
+}
+
 describe("doctor hook validation", () => {
-  it("reports hooks as passing when they are absent from settings.json", async () => {
+  it("reports hook-node-path as fail when hooks are absent from settings.json", async () => {
     const settings = JSON.stringify({ mcpServers: { "lcm": {} } });
     const results = await runDoctor({
       existsSync: () => true,
@@ -30,11 +39,9 @@ describe("doctor hook validation", () => {
       homedir: "/tmp/test-home",
       platform: "darwin",
     });
-    const hookResult = results.find(r => r.name === "hooks");
-    expect(hookResult?.status).toBe("pass");
-    for (const { event } of REQUIRED_HOOKS) {
-      expect(hookResult?.message).toContain(event);
-    }
+    const hookResult = results.find(r => r.name === "hook-node-path");
+    expect(hookResult?.status).toBe("fail");
+    expect(hookResult?.message).toContain("lcm install");
   });
 
   it("reports pass when mcpServers.lcm is present in settings.json", async () => {
@@ -75,5 +82,82 @@ describe("doctor hook validation", () => {
     expect(settingsWritten).toBeDefined();
     const written = JSON.parse(settingsWritten!);
     expect(written.mcpServers?.lcm).toBeDefined();
+  });
+});
+
+describe("hook-node-path check", () => {
+  it("returns ok when hooks match process.execPath and lcmMjsPath exists", async () => {
+    const lcmMjsPath = "/real/lcm.mjs";
+    const settings = makeHookSettings(process.execPath, lcmMjsPath);
+    const results = await runDoctor({
+      existsSync: (p: string) => true,
+      readFileSync: (p: string) => baseReadFileSync(p, settings),
+      writeFileSync: vi.fn(),
+      mkdirSync: vi.fn(),
+      spawnSync: () => ({ status: 0, stdout: "", stderr: "" }),
+      fetch: vi.fn().mockResolvedValue({ ok: false }),
+      homedir: "/tmp/test-home",
+      platform: "darwin",
+    });
+    const hookResult = results.find(r => r.name === "hook-node-path");
+    expect(hookResult?.status).toBe("ok");
+    expect(hookResult?.message).toContain("hooks registered");
+  });
+
+  it("returns warn and repairs when node path is stale", async () => {
+    const lcmMjsPath = "/real/lcm.mjs";
+    const settings = makeHookSettings("/old/node", lcmMjsPath);
+    const writtenFiles = new Map<string, string>();
+    const results = await runDoctor({
+      existsSync: (p: string) => true,
+      readFileSync: (p: string) => baseReadFileSync(p, settings),
+      writeFileSync: (p: string, data: string) => { writtenFiles.set(p, data); },
+      mkdirSync: vi.fn(),
+      spawnSync: () => ({ status: 0, stdout: "", stderr: "" }),
+      fetch: vi.fn().mockResolvedValue({ ok: false }),
+      homedir: "/tmp/test-home",
+      platform: "darwin",
+    });
+    const hookResult = results.find(r => r.name === "hook-node-path");
+    expect(hookResult?.status).toBe("warn");
+    expect(hookResult?.fixApplied).toBe(true);
+    expect(hookResult?.message).toContain("/old/node");
+  });
+
+  it("returns warn and repairs when lcmMjsPath does not exist on disk", async () => {
+    const lcmMjsPath = "/deleted/lcm.mjs";
+    const settings = makeHookSettings(process.execPath, lcmMjsPath);
+    const writtenFiles = new Map<string, string>();
+    const results = await runDoctor({
+      existsSync: (p: string) => p !== lcmMjsPath,
+      readFileSync: (p: string) => baseReadFileSync(p, settings),
+      writeFileSync: (p: string, data: string) => { writtenFiles.set(p, data); },
+      mkdirSync: vi.fn(),
+      spawnSync: () => ({ status: 0, stdout: "", stderr: "" }),
+      fetch: vi.fn().mockResolvedValue({ ok: false }),
+      homedir: "/tmp/test-home",
+      platform: "darwin",
+    });
+    const hookResult = results.find(r => r.name === "hook-node-path");
+    expect(hookResult?.status).toBe("warn");
+    expect(hookResult?.fixApplied).toBe(true);
+    expect(hookResult?.message).toContain("/deleted/lcm.mjs");
+  });
+
+  it("returns fail when no lcm hooks in settings.json", async () => {
+    const settings = JSON.stringify({ mcpServers: { lcm: {} } });
+    const results = await runDoctor({
+      existsSync: () => true,
+      readFileSync: (p: string) => baseReadFileSync(p, settings),
+      writeFileSync: vi.fn(),
+      mkdirSync: vi.fn(),
+      spawnSync: () => ({ status: 0, stdout: "", stderr: "" }),
+      fetch: vi.fn().mockResolvedValue({ ok: false }),
+      homedir: "/tmp/test-home",
+      platform: "darwin",
+    });
+    const hookResult = results.find(r => r.name === "hook-node-path");
+    expect(hookResult?.status).toBe("fail");
+    expect(hookResult?.message).toContain("lcm install");
   });
 });
