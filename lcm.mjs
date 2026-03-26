@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// CLI entrypoint for plugin hooks — auto-bootstraps on fresh install, then delegates to the built lcm CLI.
-// Used by plugin.json hooks via ${CLAUDE_PLUGIN_ROOT}/lcm.mjs so no global binary is required.
+// CLI entrypoint — auto-bootstraps on fresh install, then delegates to the built lcm CLI.
+// Hooks are registered in ~/.claude/settings.json with absolute paths at install time.
 import { execSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { join, dirname } from "node:path";
 
@@ -19,6 +20,30 @@ if (!existsSync(join(__dirname, "node_modules"))) {
 if (!existsSync(join(__dirname, "dist"))) {
   try {
     execSync("npm run build --silent", { cwd: __dirname, stdio: "pipe", timeout: 120000 });
+    // Write hooks to settings.json if missing or stale (marketplace-install coverage).
+    // Guard: only writes if hooksUpToDate returns false — safe to call on every boot.
+    try {
+      const settingsPath = join(homedir(), ".claude", "settings.json");
+      const { mergeClaudeSettings, hooksUpToDate } = await import(
+        join(__dirname, "dist/src/installer/settings.js")
+      );
+      const lcmMjsPath = fileURLToPath(import.meta.url);
+      const existing = existsSync(settingsPath)
+        ? JSON.parse(readFileSync(settingsPath, "utf-8"))
+        : {};
+      if (!hooksUpToDate(existing, process.execPath, lcmMjsPath)) {
+        const merged = mergeClaudeSettings(existing, {
+          intent: "upsert",
+          nodePath: process.execPath,
+          lcmMjsPath,
+        });
+        const tmp = `${settingsPath}.${Date.now()}.${process.pid}.tmp`;
+        writeFileSync(tmp, JSON.stringify(merged, null, 2));
+        renameSync(tmp, settingsPath);
+      }
+    } catch {
+      // Best-effort — never block hook execution
+    }
     // Register as a global binary so `lcm` is available in PATH.
     // Gated behind LCM_BOOTSTRAP_INSTALL=1 (opt-in) to avoid unexpected npm install -g
     // side effects in environments where the user manages their own global packages.

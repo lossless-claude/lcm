@@ -2,26 +2,37 @@ import { readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { REQUIRED_HOOKS } from "./install.js";
+import { isLcmHookCommand } from "./install.js";
 
 export function removeClaudeSettings(existing: any): any {
   const settings = JSON.parse(JSON.stringify(existing));
-  settings.hooks = (settings.hooks && typeof settings.hooks === "object" && !Array.isArray(settings.hooks)) ? settings.hooks : {};
-  settings.mcpServers = (settings.mcpServers && typeof settings.mcpServers === "object" && !Array.isArray(settings.mcpServers)) ? settings.mcpServers : {};
+  settings.hooks =
+    settings.hooks && typeof settings.hooks === "object" && !Array.isArray(settings.hooks)
+      ? settings.hooks
+      : {};
+  settings.mcpServers =
+    settings.mcpServers && typeof settings.mcpServers === "object" && !Array.isArray(settings.mcpServers)
+      ? settings.mcpServers
+      : {};
 
-  const LC_COMMANDS = new Set(REQUIRED_HOOKS.map(h => h.command));
-  // Also remove legacy lossless-claude commands
-  for (const { command } of REQUIRED_HOOKS) {
-    LC_COMMANDS.add(command.replace(/^lcm /, 'lossless-claude '));
-  }
+  // Remove all lcm-managed hooks in any format (bare, absolute-path, legacy)
   for (const event of Object.keys(settings.hooks)) {
     if (!Array.isArray(settings.hooks[event])) continue;
     settings.hooks[event] = settings.hooks[event].filter(
-      (entry: any) => !(Array.isArray(entry.hooks) && entry.hooks.some((h: any) => LC_COMMANDS.has(h.command)))
+      (entry: any) =>
+        !(
+          Array.isArray(entry.hooks) &&
+          entry.hooks.some((h: any) => isLcmHookCommand(h.command ?? ""))
+        ),
     );
+    if (settings.hooks[event].length === 0) delete settings.hooks[event];
   }
+  if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
+
   delete settings.mcpServers["lcm"];
-  delete settings.mcpServers["lossless-claude"]; // legacy cleanup
+  delete settings.mcpServers["lossless-claude"];
+  if (Object.keys(settings.mcpServers).length === 0) delete settings.mcpServers;
+
   return settings;
 }
 

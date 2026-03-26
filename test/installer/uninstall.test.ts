@@ -1,7 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { removeClaudeSettings, teardownDaemonService, uninstall, type TeardownDeps } from "../../installer/uninstall.js";
-import { homedir } from "node:os";
-import { join } from "node:path";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -9,13 +7,7 @@ function makeSpawn(status = 0) {
   return vi.fn().mockReturnValue({ status, stdout: "", stderr: "", pid: 1, output: [], signal: null });
 }
 
-function makeDeps(existsResult = true, overrides: Partial<TeardownDeps> = {}): TeardownDeps & {
-  spawnSync: ReturnType<typeof vi.fn>;
-  existsSync: ReturnType<typeof vi.fn>;
-  rmSync: ReturnType<typeof vi.fn>;
-  readFileSync: ReturnType<typeof vi.fn>;
-  writeFileSync: ReturnType<typeof vi.fn>;
-} {
+function makeDeps(existsResult = true, overrides: Partial<TeardownDeps> = {}) {
   return {
     spawnSync: makeSpawn(),
     existsSync: vi.fn().mockReturnValue(existsResult),
@@ -23,6 +15,12 @@ function makeDeps(existsResult = true, overrides: Partial<TeardownDeps> = {}): T
     readFileSync: vi.fn().mockReturnValue("{}"),
     writeFileSync: vi.fn(),
     ...overrides,
+  } as unknown as TeardownDeps & {
+    spawnSync: ReturnType<typeof makeSpawn>;
+    existsSync: ReturnType<typeof vi.fn>;
+    rmSync: ReturnType<typeof vi.fn>;
+    readFileSync: ReturnType<typeof vi.fn>;
+    writeFileSync: ReturnType<typeof vi.fn>;
   };
 }
 
@@ -44,7 +42,7 @@ describe("removeClaudeSettings", () => {
     });
     expect(r.hooks.PreCompact).toHaveLength(1);
     expect(r.hooks.PreCompact[0].hooks[0].command).toBe("other");
-    expect(r.hooks.SessionStart).toHaveLength(0);
+    expect(r.hooks.SessionStart).toBeUndefined();
     expect(r.mcpServers["lcm"]).toBeUndefined();
     expect(r.mcpServers["other"]).toBeDefined();
   });
@@ -67,11 +65,8 @@ describe("removeClaudeSettings", () => {
       },
       mcpServers: { "lcm": {} },
     });
-    expect(r.hooks.PreCompact).toHaveLength(0);
-    expect(r.hooks.SessionStart).toHaveLength(0);
-    expect(r.hooks.SessionEnd).toHaveLength(0);
-    expect(r.hooks.UserPromptSubmit).toHaveLength(0);
-    expect(r.mcpServers["lcm"]).toBeUndefined();
+    expect(r.hooks).toBeUndefined();
+    expect(r.mcpServers).toBeUndefined();
   });
 
   it("removes entry when any sub-hook matches a lcm command", () => {
@@ -89,7 +84,20 @@ describe("removeClaudeSettings", () => {
       },
       mcpServers: {},
     });
-    expect(r.hooks.PreCompact).toHaveLength(0);
+    expect(r.hooks).toBeUndefined();
+  });
+
+  it("removes absolute-path-format lcm hooks", () => {
+    const existing = {
+      hooks: {
+        PreCompact: [{
+          matcher: "",
+          hooks: [{ type: "command", command: '"/path/to/node" "/path/to/lcm.mjs" compact --hook' }],
+        }],
+      },
+    };
+    const r = removeClaudeSettings(existing);
+    expect(r.hooks).toBeUndefined();
   });
 });
 

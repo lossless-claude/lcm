@@ -8,44 +8,58 @@ function makeDeps(overrides: Partial<AutoHealDeps> = {}): AutoHealDeps {
     existsSync: vi.fn().mockReturnValue(true),
     mkdirSync: vi.fn(),
     appendFileSync: vi.fn(),
+    renameSync: vi.fn(),
     settingsPath: "/tmp/test-settings.json",
     logPath: "/tmp/test-auto-heal.log",
+    nodePath: "/test/node",
+    lcmMjsPath: "/test/lcm.mjs",
     ...overrides,
   };
 }
 
 describe("validateAndFixHooks", () => {
-  it("removes duplicate lcm hooks from settings.json", () => {
+  it("upserts absolute-path hooks when bare-format hooks are found", () => {
     const deps = makeDeps({
       readFileSync: vi.fn().mockReturnValue(JSON.stringify({
         hooks: {
           PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact --hook" }] }],
-          SessionStart: [{ matcher: "", hooks: [{ type: "command", command: "lcm restore" }] }],
           PostToolUse: [{ matcher: "", hooks: [{ type: "command", command: "other" }] }],
         },
       })),
     });
     validateAndFixHooks(deps);
-    expect(deps.writeFileSync).toHaveBeenCalledTimes(1);
-    const written = JSON.parse((deps.writeFileSync as ReturnType<typeof vi.fn>).mock.calls[0][1]);
-    expect(written.hooks.PreCompact).toBeUndefined();
-    expect(written.hooks.SessionStart).toBeUndefined();
-    expect(written.hooks.PostToolUse).toEqual([{ matcher: "", hooks: [{ type: "command", command: "other" }] }]);
+    expect(deps.renameSync).toHaveBeenCalledTimes(1);
+    const tmpPath = (deps.renameSync as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const tmpWrite = (deps.writeFileSync as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c: any[]) => c[0] === tmpPath,
+    );
+    const written = JSON.parse(tmpWrite![1]);
+    const precompactCmd = written.hooks.PreCompact?.[0]?.hooks?.[0]?.command;
+    expect(precompactCmd).toBe('"/test/node" "/test/lcm.mjs" compact --hook');
+    // Unrelated hook preserved
+    const postToolCmd = written.hooks.PostToolUse?.[0]?.hooks?.[0]?.command;
+    expect(postToolCmd).toBe("other");
   });
 
-  it("no-ops when no managed hooks are present", () => {
+  it("no-ops when all hooks already have correct absolute paths", () => {
+    const correctSettings = {
+      hooks: {
+        PostToolUse: [{ matcher: "", hooks: [{ type: "command", command: '"/test/node" "/test/lcm.mjs" post-tool' }] }],
+        PreCompact: [{ matcher: "", hooks: [{ type: "command", command: '"/test/node" "/test/lcm.mjs" compact --hook' }] }],
+        SessionStart: [{ matcher: "", hooks: [{ type: "command", command: '"/test/node" "/test/lcm.mjs" restore' }] }],
+        SessionEnd: [{ matcher: "", hooks: [{ type: "command", command: '"/test/node" "/test/lcm.mjs" session-end' }] }],
+        UserPromptSubmit: [{ matcher: "", hooks: [{ type: "command", command: '"/test/node" "/test/lcm.mjs" user-prompt' }] }],
+        Stop: [{ matcher: "", hooks: [{ type: "command", command: '"/test/node" "/test/lcm.mjs" session-snapshot' }] }],
+      },
+    };
     const deps = makeDeps({
-      readFileSync: vi.fn().mockReturnValue(JSON.stringify({
-        hooks: {
-          PostToolUse: [{ matcher: "", hooks: [{ type: "command", command: "other" }] }],
-        },
-      })),
+      readFileSync: vi.fn().mockReturnValue(JSON.stringify(correctSettings)),
     });
     validateAndFixHooks(deps);
-    expect(deps.writeFileSync).not.toHaveBeenCalled();
+    expect(deps.renameSync).not.toHaveBeenCalled();
   });
 
-  it("preserves mcpServers.lcm when cleaning duplicate hooks", () => {
+  it("preserves mcpServers.lcm when upserting hooks", () => {
     const deps = makeDeps({
       readFileSync: vi.fn().mockReturnValue(JSON.stringify({
         hooks: {
@@ -61,31 +75,19 @@ describe("validateAndFixHooks", () => {
 
     validateAndFixHooks(deps);
 
-    expect(deps.writeFileSync).toHaveBeenCalledTimes(1);
-    const written = JSON.parse((deps.writeFileSync as ReturnType<typeof vi.fn>).mock.calls[0][1]);
-    expect(written.hooks.PreCompact).toBeUndefined();
-    expect(written.hooks.PostToolUse).toEqual([{ matcher: "", hooks: [{ type: "command", command: "other" }] }]);
-    // mcpServers.lcm is preserved (owned by settings.json, not removed during hook cleanup)
+    expect(deps.renameSync).toHaveBeenCalledTimes(1);
+    const tmpPath = (deps.renameSync as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const tmpWrite = (deps.writeFileSync as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c: any[]) => c[0] === tmpPath,
+    );
+    const written = JSON.parse(tmpWrite![1]);
+    // PreCompact hook was upserted to absolute path
+    const precompactCmd = written.hooks.PreCompact?.[0]?.hooks?.[0]?.command;
+    expect(precompactCmd).toBe('"/test/node" "/test/lcm.mjs" compact --hook');
+    expect(written.hooks.PostToolUse?.[0]?.hooks?.[0]?.command).toBe("other");
+    // mcpServers.lcm is preserved
     expect(written.mcpServers.lcm).toEqual({ command: "lcm", args: ["mcp"] });
     expect(written.mcpServers.other).toEqual({ command: "other", args: ["mcp"] });
-  });
-
-  it("no-ops when only mcpServers.lcm is present without duplicate hooks", () => {
-    const deps = makeDeps({
-      readFileSync: vi.fn().mockReturnValue(JSON.stringify({
-        hooks: {
-          PostToolUse: [{ matcher: "", hooks: [{ type: "command", command: "other" }] }],
-        },
-        mcpServers: {
-          lcm: { command: "lcm", args: ["mcp"] },
-        },
-      })),
-    });
-
-    validateAndFixHooks(deps);
-
-    // No duplicate hooks → no write needed (mcpServers.lcm alone doesn't trigger cleanup)
-    expect(deps.writeFileSync).not.toHaveBeenCalled();
   });
 
   it("does not throw on fs errors", () => {
@@ -122,42 +124,37 @@ describe("validateAndFixHooks", () => {
       existsSync: vi.fn().mockReturnValue(false),
     });
     validateAndFixHooks(deps);
-    expect(deps.writeFileSync).not.toHaveBeenCalled();
+    expect(deps.renameSync).not.toHaveBeenCalled();
     expect(deps.appendFileSync).not.toHaveBeenCalled();
   });
 
-  it("rewrites 'lcm compact' without --hook: entry is removed (matches plugin.json duplicate)", () => {
-    // After rewrite: "lcm compact --hook" matches REQUIRED_HOOKS → mergeClaudeSettings removes it.
-    // Result: no PreCompact entry in settings.json.
+  it("upserts hooks into empty settings (no hooks key)", () => {
     const deps = makeDeps({
-      readFileSync: vi.fn().mockReturnValue(JSON.stringify({
-        hooks: {
-          PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact" }] }],
-        },
-      })),
+      readFileSync: vi.fn().mockReturnValue(JSON.stringify({})),
     });
     validateAndFixHooks(deps);
-    expect(deps.writeFileSync).toHaveBeenCalledTimes(1);
-    const written = JSON.parse((deps.writeFileSync as ReturnType<typeof vi.fn>).mock.calls[0][1]);
-    // "lcm compact" (without --hook) must be gone
-    const precompact = written.hooks?.PreCompact ?? [];
-    const hasOldCommand = precompact.some((e: any) =>
-      Array.isArray(e.hooks) && e.hooks.some((h: any) => h.command === "lcm compact")
+    expect(deps.renameSync).toHaveBeenCalledTimes(1);
+    const tmpPath = (deps.renameSync as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const tmpWrite = (deps.writeFileSync as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c: any[]) => c[0] === tmpPath,
     );
-    expect(hasOldCommand).toBe(false);
+    const written = JSON.parse(tmpWrite![1]);
+    // All 6 hooks must be present
+    expect(written.hooks.PostToolUse).toBeDefined();
+    expect(written.hooks.PreCompact).toBeDefined();
+    expect(written.hooks.SessionStart).toBeDefined();
+    expect(written.hooks.SessionEnd).toBeDefined();
+    expect(written.hooks.UserPromptSubmit).toBeDefined();
+    expect(written.hooks.Stop).toBeDefined();
   });
 
-  it("does NOT rewrite 'lcm compact --all' (user-custom variant, semantics would change)", () => {
-    // After fix: only exact "lcm compact" is rewritten. Flagged variants are left unchanged.
+  it("uses atomic write: writes to tmp then renames to settingsPath", () => {
     const deps = makeDeps({
-      readFileSync: vi.fn().mockReturnValue(JSON.stringify({
-        hooks: {
-          PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact --all" }] }],
-        },
-      })),
+      readFileSync: vi.fn().mockReturnValue(JSON.stringify({})),
     });
     validateAndFixHooks(deps);
-    // No rewrite, no duplicate → no write
-    expect(deps.writeFileSync).not.toHaveBeenCalled();
+    const renameCall = (deps.renameSync as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(renameCall[0]).toMatch(/^\/tmp\/test-settings\.json\.[a-f0-9]+\.tmp$/);
+    expect(renameCall[1]).toBe("/tmp/test-settings.json");
   });
 });

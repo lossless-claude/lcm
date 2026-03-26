@@ -1,24 +1,92 @@
-export const REQUIRED_HOOKS: { event: string; command: string }[] = [
-  { event: "PostToolUse", command: "lcm post-tool" },
-  { event: "PreCompact", command: "lcm compact --hook" },
-  { event: "SessionStart", command: "lcm restore" },
-  { event: "SessionEnd", command: "lcm session-end" },
-  { event: "UserPromptSubmit", command: "lcm user-prompt" },
-  { event: "Stop", command: "lcm session-snapshot" },
+export const REQUIRED_HOOKS: { event: string; subcommand: string }[] = [
+  { event: "PostToolUse", subcommand: "post-tool" },
+  { event: "PreCompact", subcommand: "compact --hook" },
+  { event: "SessionStart", subcommand: "restore" },
+  { event: "SessionEnd", subcommand: "session-end" },
+  { event: "UserPromptSubmit", subcommand: "user-prompt" },
+  { event: "Stop", subcommand: "session-snapshot" },
 ];
 
-export function mergeClaudeSettings(existing: any): any {
-  const settings = JSON.parse(JSON.stringify(existing));
-  settings.hooks = (settings.hooks && typeof settings.hooks === "object" && !Array.isArray(settings.hooks)) ? settings.hooks : {};
-  settings.mcpServers = (settings.mcpServers && typeof settings.mcpServers === "object" && !Array.isArray(settings.mcpServers)) ? settings.mcpServers : {};
+export type HookOpts =
+  | { intent: "remove" }
+  | { intent: "upsert"; nodePath: string; lcmMjsPath: string };
 
-  // Migrate old hook commands to current form
+export function requiredHooks(
+  nodePath: string,
+  lcmMjsPath: string,
+): Array<{ event: string; command: string }> {
+  return REQUIRED_HOOKS.map(({ event, subcommand }) => ({
+    event,
+    command: `"${nodePath}" "${lcmMjsPath}" ${subcommand}`,
+  }));
+}
+
+/** Returns true if all 6 required hooks are present in `existing` with matching absolute paths. */
+export function hooksUpToDate(
+  existing: any,
+  nodePath: string,
+  lcmMjsPath: string,
+): boolean {
+  const needed = requiredHooks(nodePath, lcmMjsPath);
+  const hooks = existing?.hooks;
+  if (!hooks || typeof hooks !== "object" || Array.isArray(hooks)) return false;
+  return needed.every(({ event, command }) => {
+    const entries = hooks[event];
+    return (
+      Array.isArray(entries) &&
+      entries.some(
+        (entry: any) =>
+          Array.isArray(entry?.hooks) &&
+          entry.hooks.some((h: any) => h.command === command),
+      )
+    );
+  });
+}
+
+/** Returns true if `cmd` is an lcm-managed hook command in any known format. */
+export function isLcmHookCommand(cmd: string): boolean {
+  // Token-based check: split on whitespace respecting quotes, then check if any
+  // token (after stripping surrounding quotes) ends with `lcm.mjs`. This ensures
+  // commands like `"lcm-myapp" start` are NOT matched — only commands that invoke
+  // lcm.mjs as a script argument are recognised.
+  const tokens = cmd.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
+  if (tokens.some(t => t.replace(/^["']|["']$/g, "").endsWith("lcm.mjs"))) return true;
+
+  // Legacy format 1: bare `node lcm.mjs <subcommand>` (pre-absolute-path era)
+  // Legacy format 2: `node "${CLAUDE_PLUGIN_ROOT}/lcm.mjs" <subcommand>`
+  if (/\$\{CLAUDE_PLUGIN_ROOT\}\/lcm\.mjs/.test(cmd)) return true;
+
+  // Legacy bare-command patterns (pre-absolute-path era)
+  const KNOWN_SUBCOMMANDS = ["session-start", "session-end", "stop", "pre-compact", "restore", "compact --hook", "user-prompt", "post-tool", "session-snapshot"];
+  for (const sub of KNOWN_SUBCOMMANDS) {
+    if (cmd === `lcm ${sub}` || cmd === `"lcm" "${sub}"` || cmd === `lossless-claude ${sub}`) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function mergeClaudeSettings(existing: any, opts: HookOpts = { intent: "remove" }): any {
+  const settings = JSON.parse(JSON.stringify(existing));
+  settings.hooks =
+    settings.hooks &&
+    typeof settings.hooks === "object" &&
+    !Array.isArray(settings.hooks)
+      ? settings.hooks
+      : {};
+  settings.mcpServers =
+    settings.mcpServers &&
+    typeof settings.mcpServers === "object" &&
+    !Array.isArray(settings.mcpServers)
+      ? settings.mcpServers
+      : {};
+
+  // Migrate old command strings to current bare form before processing
   const OLD_TO_NEW: Record<string, string> = {
     "lossless-claude compact": "lcm compact --hook",
     "lossless-claude restore": "lcm restore",
     "lossless-claude session-end": "lcm session-end",
     "lossless-claude user-prompt": "lcm user-prompt",
-    // Migrate pre-#90 direct installs that registered without --hook
     "lcm compact": "lcm compact --hook",
   };
   for (const event of Object.keys(settings.hooks)) {
@@ -30,40 +98,77 @@ export function mergeClaudeSettings(existing: any): any {
           h.command = OLD_TO_NEW[h.command];
         }
       }
-      // Deduplicate commands within each hook entry after migration
+      // Deduplicate within each hook entry after migration
       const seen = new Set<string>();
       entry.hooks = entry.hooks.filter((h: any) => {
-        const key = h.command ?? '';
+        const key = h.command ?? "";
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
       });
     }
   }
-  // Remove legacy MCP server entries
+
+  // Remove legacy MCP server entry
   delete settings.mcpServers["lossless-claude"];
 
-  // Remove lcm hooks from settings.json — plugin.json owns them.
-  // Having hooks in both causes double-firing.
-  for (const { event, command } of REQUIRED_HOOKS) {
-    if (!Array.isArray(settings.hooks[event])) continue;
-    settings.hooks[event] = settings.hooks[event]
-      .map((entry: any) => {
-        if (!Array.isArray(entry.hooks)) return entry;
-        return {
-          ...entry,
-          hooks: entry.hooks.filter((h: any) => h.command !== command),
-        };
-      })
-      .filter((entry: any) => !Array.isArray(entry.hooks) || entry.hooks.length > 0);
-    if (settings.hooks[event].length === 0) delete settings.hooks[event];
+  if (opts.intent === "remove") {
+    // Remove all lcm-managed hooks from settings.json
+    for (const event of Object.keys(settings.hooks)) {
+      if (!Array.isArray(settings.hooks[event])) continue;
+      settings.hooks[event] = settings.hooks[event]
+        .map((entry: any) => {
+          if (!Array.isArray(entry.hooks)) return entry;
+          return {
+            ...entry,
+            hooks: entry.hooks.filter(
+              (h: any) => !isLcmHookCommand(h.command ?? ""),
+            ),
+          };
+        })
+        .filter(
+          (entry: any) =>
+            !Array.isArray(entry.hooks) || entry.hooks.length > 0,
+        );
+      if (settings.hooks[event].length === 0) delete settings.hooks[event];
+    }
+  } else {
+    // Upsert: ensure all 6 hooks exist with correct absolute paths
+    const needed = requiredHooks(opts.nodePath, opts.lcmMjsPath);
+    for (const { event, command } of needed) {
+      if (!Array.isArray(settings.hooks[event])) settings.hooks[event] = [];
+      // Remove stale lcm entries (old format or wrong absolute paths)
+      settings.hooks[event] = settings.hooks[event]
+        .map((entry: any) => {
+          if (!Array.isArray(entry.hooks)) return entry;
+          return {
+            ...entry,
+            hooks: entry.hooks.filter(
+              (h: any) =>
+                !isLcmHookCommand(h.command ?? "") || h.command === command,
+            ),
+          };
+        })
+        .filter(
+          (entry: any) =>
+            !Array.isArray(entry.hooks) || entry.hooks.length > 0,
+        );
+      // Add if not already present
+      const alreadyPresent = settings.hooks[event].some(
+        (entry: any) =>
+          Array.isArray(entry.hooks) &&
+          entry.hooks.some((h: any) => h.command === command),
+      );
+      if (!alreadyPresent) {
+        settings.hooks[event].push({
+          matcher: "",
+          hooks: [{ type: "command", command }],
+        });
+      }
+    }
   }
-  if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
 
-  // MCP server is now owned by settings.json (written by lcm install / doctor)
-  // Do NOT delete mcpServers["lcm"] here — it's managed separately from hooks
-  // which are plugin-owned. This prevents the auto-heal loop where doctor adds
-  // the MCP entry and hooks cleanup removes it.
+  if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
   if (Object.keys(settings.mcpServers).length === 0) delete settings.mcpServers;
 
   return settings;

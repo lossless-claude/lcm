@@ -1,15 +1,20 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, renameSync as fsRenameSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
-import { mergeClaudeSettings } from "./installer/settings.js";
+import { fileURLToPath } from "node:url";
+import { mergeClaudeSettings, hooksUpToDate } from "./installer/settings.js";
 import { loadDaemonConfig } from "./daemon/config.js";
 
 export interface EnsureCoreDeps {
   configPath: string;
   settingsPath: string;
+  nodePath: string;
+  lcmMjsPath: string;
   existsSync: (path: string) => boolean;
   readFileSync: (path: string, encoding: BufferEncoding) => string;
   writeFileSync: (path: string, data: string) => void;
+  renameSync: (oldPath: string, newPath: string) => void;
   mkdirSync: (path: string, opts?: { recursive: boolean }) => void;
   chmodSync?: (path: string, mode: number) => void;
   ensureDaemon: (opts: { port: number; pidFilePath: string; spawnTimeoutMs: number }) => Promise<{ connected: boolean }>;
@@ -19,16 +24,30 @@ function defaultDeps(): EnsureCoreDeps {
   return {
     configPath: join(homedir(), ".lossless-claude", "config.json"),
     settingsPath: join(homedir(), ".claude", "settings.json"),
+    nodePath: process.execPath,
+    lcmMjsPath: join(dirname(fileURLToPath(import.meta.url)), "..", "..", "lcm.mjs"),
     existsSync,
     readFileSync: (p, enc) => readFileSync(p, enc as BufferEncoding),
     writeFileSync,
+    renameSync: fsRenameSync,
     mkdirSync,
-    chmodSync: chmodSync,
+    chmodSync,
     ensureDaemon: async (opts) => {
       const { ensureDaemon } = await import("./daemon/lifecycle.js");
       return ensureDaemon(opts);
     },
   };
+}
+
+function atomicWriteJSON(
+  settingsPath: string,
+  data: unknown,
+  deps: Pick<EnsureCoreDeps, "writeFileSync" | "renameSync" | "mkdirSync">,
+): void {
+  const tmp = `${settingsPath}.${randomBytes(6).toString("hex")}.tmp`;
+  deps.mkdirSync(dirname(settingsPath), { recursive: true });
+  deps.writeFileSync(tmp, JSON.stringify(data, null, 2));
+  deps.renameSync(tmp, settingsPath);
 }
 
 export async function ensureCore(deps: EnsureCoreDeps = defaultDeps()): Promise<void> {
@@ -42,18 +61,23 @@ export async function ensureCore(deps: EnsureCoreDeps = defaultDeps()): Promise<
     } catch {}
   }
 
-  // 2. Clean stale/duplicate hooks from settings.json (fixes #94)
-  // Only rewrite settings.json if mergeClaudeSettings actually changed the data
-  if (deps.existsSync(deps.settingsPath)) {
-    try {
-      const existing = JSON.parse(deps.readFileSync(deps.settingsPath, "utf-8"));
-      const merged = mergeClaudeSettings(existing);
-      if (JSON.stringify(existing) !== JSON.stringify(merged)) {
-        deps.mkdirSync(dirname(deps.settingsPath), { recursive: true });
-        deps.writeFileSync(deps.settingsPath, JSON.stringify(merged, null, 2));
-      }
-    } catch {}
-  }
+  // 2. Upsert hooks into settings.json (self-healing)
+  // Hot path: read-only string compare. Write only if hooks are missing/stale.
+  // On a fresh machine where settings.json does not exist yet, we still create it
+  // so hooks are registered. The existsSync guard only skips the READ, not the write.
+  try {
+    const existing = deps.existsSync(deps.settingsPath)
+      ? JSON.parse(deps.readFileSync(deps.settingsPath, "utf-8"))
+      : {};
+    if (!hooksUpToDate(existing, deps.nodePath, deps.lcmMjsPath)) {
+      const merged = mergeClaudeSettings(existing, {
+        intent: "upsert",
+        nodePath: deps.nodePath,
+        lcmMjsPath: deps.lcmMjsPath,
+      });
+      atomicWriteJSON(deps.settingsPath, merged, deps);
+    }
+  } catch {}
 
   // 3. Start daemon if not running
   const config = loadDaemonConfig(deps.configPath);

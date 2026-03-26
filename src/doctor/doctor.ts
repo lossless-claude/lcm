@@ -4,7 +4,7 @@ import { join, dirname } from "node:path";
 import { spawnSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { CheckResult, DoctorDeps } from "./types.js";
-import { mergeClaudeSettings, REQUIRED_HOOKS, resolveBinaryPath, ensureLcmMd } from "../../installer/install.js";
+import { mergeClaudeSettings, resolveBinaryPath, ensureLcmMd } from "../../installer/install.js";
 import { BUILT_IN_PATTERNS, ScrubEngine } from "../scrub.js";
 import { projectDir } from "../daemon/project.js";
 import { collectEventStats, collectDetailedEventStats } from "../db/events-stats.js";
@@ -177,6 +177,16 @@ function checkPassiveLearning(results: CheckResult[], hooksInstalled: boolean, v
   }
 }
 
+/** Extracts the node binary path from an absolute-path hook command like `"/usr/bin/node" "/path/to/lcm.mjs" restore` */
+function extractNodeFromHookCommand(cmd: string): string | null {
+  return cmd.match(/^"([^"]+)"/)?.[1] ?? null;
+}
+
+/** Extracts the lcm.mjs path from an absolute-path hook command */
+function extractLcmMjsFromHookCommand(cmd: string): string | null {
+  return cmd.match(/^"[^"]*"\s+"([^"]+)"/)?.[1] ?? null;
+}
+
 export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false): Promise<CheckResult[]> {
   const deps = { ...defaultDeps(), ...overrides };
   const results: CheckResult[] = [];
@@ -303,45 +313,75 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
     settingsData = JSON.parse(deps.readFileSync(settingsPath, "utf-8"));
   } catch {}
 
-  // Hooks are owned by plugin.json, not settings.json.
-  // If hooks leaked into settings.json (old installer), clean them up.
-  const hooks = settingsData.hooks as Record<string, unknown[]> | undefined;
-  const duplicateHooks: string[] = [];
+  // ── Hook node path ──
+  // Hooks are now owned by settings.json. Check they exist with correct absolute paths.
+  const lcmHooks = settingsData?.hooks as Record<string, any[]> | undefined;
 
-  for (const { event, command } of REQUIRED_HOOKS) {
-    const entries = hooks?.[event];
-    const found = Array.isArray(entries) && entries.some((e: any) =>
-      Array.isArray(e?.hooks) && e.hooks.some((h: any) => h.command === command)
-    );
-    if (found) duplicateHooks.push(event);
-  }
+  // Find the PreCompact hook command as a sample (it's always present if hooks are registered)
+  const sampleEntries = lcmHooks?.["PreCompact"];
+  // Token-based predicate: a valid sample command must have a token that ends with
+  // `lcm.mjs` (after stripping surrounding quotes). This avoids matching commands
+  // that merely mention "lcm.mjs" in an argument or user-defined hook names.
+  const sampleCmd = sampleEntries?.flatMap((e: any) =>
+    Array.isArray(e?.hooks) ? e.hooks.map((h: any) => h.command ?? "") : []
+  ).find((c: string) => {
+    const tokens = c.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
+    return tokens.some(t => t.replace(/^["']|["']$/g, "").endsWith("lcm.mjs"));
+  });
 
-  if (duplicateHooks.length > 0) {
-    try {
-      settingsData = mergeClaudeSettings(settingsData);
-      deps.writeFileSync(settingsPath, JSON.stringify(settingsData, null, 2));
+  const hookNode = sampleCmd ? extractNodeFromHookCommand(sampleCmd) : null;
+  const hookMjs = sampleCmd ? extractLcmMjsFromHookCommand(sampleCmd) : null;
+
+  if (!hookNode || !hookMjs) {
+    results.push({
+      name: "hook-node-path",
+      category: "Settings",
+      status: "fail",
+      message: "lcm hooks missing from settings.json — run: lcm install",
+    });
+  } else {
+    const staleNode = hookNode !== process.execPath;
+    const staleMjs = !deps.existsSync(hookMjs);
+
+    if (staleNode || staleMjs) {
+      try {
+        const lcmMjsPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "lcm.mjs");
+        const repairedSettings = mergeClaudeSettings(settingsData, {
+          intent: "upsert",
+          nodePath: process.execPath,
+          lcmMjsPath,
+        });
+        // Direct write: doctor is user-initiated and non-concurrent, so a non-atomic
+        // writeFileSync is acceptable here. Using deps.writeFileSync keeps the write
+        // injectable for tests.
+        deps.mkdirSync(dirname(settingsPath), { recursive: true });
+        deps.writeFileSync(settingsPath, JSON.stringify(repairedSettings, null, 2));
+        const reason = staleNode
+          ? `node path was ${hookNode}`
+          : `lcm.mjs missing at ${hookMjs}`;
+        results.push({
+          name: "hook-node-path",
+          category: "Settings",
+          status: "warn",
+          message: `Repaired hooks (${reason})`,
+          fixApplied: true,
+        });
+      } catch {
+        results.push({
+          name: "hook-node-path",
+          category: "Settings",
+          status: "fail",
+          message: "Hook paths stale — run: lcm install",
+        });
+      }
+    } else {
       results.push({
-        name: "hooks",
+        name: "hook-node-path",
         category: "Settings",
-        status: "warn",
-        message: `Removed duplicate ${duplicateHooks.join(", ")} from settings.json (plugin.json owns hooks)`,
-        fixApplied: true,
-      });
-    } catch {
-      results.push({
-        name: "hooks",
-        category: "Settings",
-        status: "warn",
-        message: `Duplicate ${duplicateHooks.join(", ")} hook ${duplicateHooks.length === 1 ? "entry" : "entries"} in ${settingsPath} — remove the \`hooks.${duplicateHooks[0]}\` block(s) from that file, then run: lcm install`,
+        status: "pass",
+        message: `hooks registered (${hookNode.split("/").pop()})`,
       });
     }
-  } else {
-    results.push({
-      name: "hooks",
-      category: "Settings",
-      status: "pass",
-      message: REQUIRED_HOOKS.map(h => `${h.event} \u2713`).join("  "),
-    });
   }
 
   // Re-read settings in case the hooks cleanup branch already modified the file
@@ -354,11 +394,20 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
     results.push({ name: "mcp-lcm", category: "Settings", status: "pass", message: "mcpServers.lcm registered in settings.json" });
   } else {
     try {
-      const merged = mergeClaudeSettings(currentSettings);
+      // Use intent "upsert" so existing hooks are preserved (not stripped).
+      const lcmMjsPathForMcp = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "lcm.mjs");
+      const merged = mergeClaudeSettings(currentSettings, {
+        intent: "upsert",
+        nodePath: process.execPath,
+        lcmMjsPath: lcmMjsPathForMcp,
+      });
       if (typeof merged.mcpServers !== "object" || merged.mcpServers === null) merged.mcpServers = {};
       // Use resolveBinaryPath for consistent binary resolution with installer
       const lcmBinary = resolveBinaryPath(deps);
       (merged.mcpServers as Record<string, unknown>)["lcm"] = { command: lcmBinary, args: ["mcp"] };
+      // Direct write: doctor is user-initiated and non-concurrent, so a non-atomic
+      // writeFileSync is acceptable here.
+      deps.mkdirSync(dirname(settingsPath), { recursive: true });
       deps.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
       results.push({ name: "mcp-lcm", category: "Settings", status: "warn", message: "mcpServers.lcm missing from settings.json — re-added automatically", fixApplied: true });
     } catch {
@@ -472,7 +521,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
 
   // ── Passive Learning ──
   const hooksInstalled = results.some(
-    r => r.category === "Settings" && r.name === "hooks" && r.status !== "fail"
+    r => r.category === "Settings" && r.name === "hook-node-path" && r.status !== "fail"
   );
   checkPassiveLearning(results, hooksInstalled, verbose);
 

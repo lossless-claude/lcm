@@ -16,18 +16,24 @@ vi.mock("../../src/db/events-stats.js", () => ({
 import { collectEventStats } from "../../src/db/events-stats.js";
 const mockCollectEventStats = vi.mocked(collectEventStats);
 
-function buildSettingsJson(): string {
+const FAKE_LCM_MJS = "/fake/lcm.mjs";
+
+/** Builds settings.json with hooks using the given node path (stale = produces warn). */
+function buildSettingsJson(nodePath = "/old/stale/node"): string {
   const hooks: Record<string, unknown[]> = {};
-  for (const { event, command } of REQUIRED_HOOKS) {
-    hooks[event] = [{ matcher: "", hooks: [{ type: "command", command }] }];
+  for (const { event, subcommand } of REQUIRED_HOOKS) {
+    hooks[event] = [{ matcher: "", hooks: [{ type: "command", command: `"${nodePath}" "${FAKE_LCM_MJS}" ${subcommand}` }] }];
   }
   return JSON.stringify({ hooks, mcpServers: { "lcm": {} } });
 }
 
 function buildCleanSettingsJson(): string {
-  // No hooks in settings.json — hooks are owned by plugin.json, not settings.json.
-  // This produces hooks status: "pass" from the doctor.
-  return JSON.stringify({ mcpServers: { "lcm": {} } });
+  // Hooks are present with correct absolute node path — produces hook-node-path status: "ok".
+  const hooks: Record<string, unknown[]> = {};
+  for (const { event, subcommand } of REQUIRED_HOOKS) {
+    hooks[event] = [{ matcher: "", hooks: [{ type: "command", command: `"${process.execPath}" "${FAKE_LCM_MJS}" ${subcommand}` }] }];
+  }
+  return JSON.stringify({ hooks, mcpServers: { "lcm": {} } });
 }
 
 function minimalDeps(overrides: Partial<Parameters<typeof runDoctor>[0]> = {}) {

@@ -281,8 +281,9 @@ All callers of `mergeClaudeSettings` must be updated to the discriminated union:
 ## Error Handling
 
 - `lcm.mjs` bootstrap write: wrapped in try/catch, never throws, never delays hook execution
-- `ensureCore` atomic write: if `renameSync` fails (cross-filesystem temp dir), falls back to
-  direct `writeFileSync` with a warning log
+- `ensureCore` atomic write: if `renameSync` fails (e.g. cross-filesystem temp dir), the
+  error propagates and the write is not performed — no fallback. The hook remains stale
+  until the next `ensureCore` run succeeds.
 - Node path missing at hook fire time: hook exits non-zero, Claude Code skips it — same as
   current behavior; `lcm doctor` detects and repairs on next explicit run
 
