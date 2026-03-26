@@ -1,4 +1,8 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { rmSync, existsSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { handleSessionStart } from "../../src/hooks/restore.js";
 
 vi.mock("../../src/daemon/lifecycle.js", () => ({
@@ -27,6 +31,13 @@ import { ensureDaemon } from "../../src/daemon/lifecycle.js";
 const mockEnsureDaemon = vi.mocked(ensureDaemon);
 
 describe("handleSessionStart", () => {
+  beforeEach(() => {
+    // Clear session locks between tests to prevent cross-test bleed
+    for (const id of ["s1", "s2", "s3", "s4", "dedup-guard-test-abc123", "dead-pid-test-session"]) {
+      rmSync(join(tmpdir(), `lcm-restore-${id}.lock`), { force: true });
+    }
+  });
+
   it("outputs context and exits 0 on success", async () => {
     mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
     const client = {
@@ -87,6 +98,77 @@ describe("handleSessionStart", () => {
     const result = await handleSessionStart(JSON.stringify({ session_id: "s3", cwd: "/proj" }), client as any);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).not.toContain("<learned-insights");
+  });
+
+  it("returns empty output without contacting daemon on duplicate session_id", async () => {
+    const sessionId = "dedup-guard-test-abc123";
+    const lockPath = join(tmpdir(), `lcm-restore-${sessionId}.lock`);
+    if (existsSync(lockPath)) rmSync(lockPath);
+
+    mockEnsureDaemon.mockClear();
+    mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
+    const client = {
+      health: vi.fn(),
+      post: vi.fn().mockResolvedValue({ context: "ctx" }),
+    };
+    const stdin = JSON.stringify({ session_id: sessionId, cwd: "/proj" });
+
+    // First call proceeds normally
+    await handleSessionStart(stdin, client as any);
+    expect(mockEnsureDaemon).toHaveBeenCalledTimes(1);
+
+    // Second call with same session_id returns empty, daemon not called again
+    const second = await handleSessionStart(stdin, client as any);
+    expect(second).toEqual({ exitCode: 0, stdout: "" });
+    expect(mockEnsureDaemon).toHaveBeenCalledTimes(1); // still 1, not 2
+
+    rmSync(lockPath, { force: true });
+  });
+
+  it("proceeds normally when lock file exists but owner process is dead", async () => {
+    const sessionId = "dead-pid-test-session";
+    const lockPath = join(tmpdir(), `lcm-restore-${sessionId}.lock`);
+    // Write a lock file with a PID that is guaranteed dead:
+    // spawn a short-lived child process, wait for it to exit, then use its PID
+    const child = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+    const deadPid = child.pid?.toString() ?? "0";
+    writeFileSync(lockPath, deadPid);
+
+    mockEnsureDaemon.mockClear();
+    mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
+    const client = {
+      health: vi.fn(),
+      post: vi.fn().mockResolvedValue({ context: "ctx from dead pid test" }),
+    };
+    const stdin = JSON.stringify({ session_id: sessionId, cwd: "/proj" });
+
+    // Should NOT be blocked by the stale lock — should proceed and call daemon
+    const result = await handleSessionStart(stdin, client as any);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("ctx from dead pid test");
+    expect(mockEnsureDaemon).toHaveBeenCalledTimes(1);
+  });
+
+  it("sanitizes path-traversal characters in session_id for lock filename", async () => {
+    const maliciousId = "../../etc/passwd";
+    const safeId = maliciousId.replace(/[^A-Za-z0-9_-]/g, "_");
+    const safeLockPath = join(tmpdir(), `lcm-restore-${safeId}.lock`);
+    rmSync(safeLockPath, { force: true });
+
+    mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
+    const client = {
+      health: vi.fn(),
+      post: vi.fn().mockResolvedValue({ context: "" }),
+    };
+
+    await handleSessionStart(
+      JSON.stringify({ session_id: maliciousId, cwd: "/proj" }),
+      client as any,
+    );
+
+    // The sanitized lock file must be inside tmpdir — proves sanitization ran
+    expect(existsSync(safeLockPath)).toBe(true);
+    rmSync(safeLockPath, { force: true });
   });
 
   it("triggers promote-events when unprocessed events exist", async () => {

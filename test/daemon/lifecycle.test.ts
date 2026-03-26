@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ensureDaemon } from "../../src/daemon/lifecycle.js";
 
@@ -59,7 +60,10 @@ describe("ensureDaemon", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-stale-"));
     tempDirs.push(tempDir);
     const pidFile = join(tempDir, "daemon.pid");
-    writeFileSync(pidFile, "99999999");
+    // Write a guaranteed-dead PID: spawn short-lived child, wait for exit, use its PID
+    const child = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+    const deadPid = child.pid?.toString() ?? "0";
+    writeFileSync(pidFile, deadPid);
 
     const result = await ensureDaemon({
       port: 19999,
@@ -99,6 +103,37 @@ describe("ensureDaemon", () => {
       // daemon may have been killed by version mismatch logic
       try { await daemon.stop(); } catch { /* may already be stopped */ }
     }
+  });
+
+  it("does not connect when health wait returns a daemon with mismatched version", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-healthver-"));
+    tempDirs.push(tempDir);
+    const pidFile = join(tempDir, "daemon.pid");
+    // Stale PID: spawn short-lived child, wait for exit, use its PID
+    const child = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+    const deadPid = child.pid?.toString() ?? "0";
+    writeFileSync(pidFile, deadPid);
+
+    // Simulate an old wrong-version daemon that is permanently running (always answers health)
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: "ok", version: "0.0.0", uptime: 100 }),
+    } as Response);
+
+    // Spawn override does nothing (simulates new process failing to bind occupied port)
+    const spawnMock = vi.fn().mockReturnValue({ pid: undefined, unref: vi.fn() });
+
+    const result = await ensureDaemon({
+      port: 19999,
+      pidFilePath: pidFile,
+      spawnTimeoutMs: 600,
+      expectedVersion: "99.99.99",
+      _fetchOverride: mockFetch as any,
+      _spawnOverride: spawnMock as any,
+    });
+
+    // Must NOT connect to the daemon that answered with wrong version
+    expect(result.connected).toBe(false);
   });
 
   it("spawns a caller-specified command instead of process.argv[1] when provided", async () => {
