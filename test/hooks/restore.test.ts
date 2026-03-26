@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { rmSync, existsSync } from "node:fs";
+import { rmSync, existsSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { handleSessionStart } from "../../src/hooks/restore.js";
 
 vi.mock("../../src/daemon/lifecycle.js", () => ({
@@ -127,9 +128,11 @@ describe("handleSessionStart", () => {
   it("proceeds normally when lock file exists but owner process is dead", async () => {
     const sessionId = "dead-pid-test-session";
     const lockPath = join(tmpdir(), `lcm-restore-${sessionId}.lock`);
-    // Write a lock file with a PID that is guaranteed dead (PID 0 is invalid, large PID unlikely to exist)
-    const { writeFileSync } = await import("node:fs");
-    writeFileSync(lockPath, "9999999");
+    // Write a lock file with a PID that is guaranteed dead:
+    // spawn a short-lived child process, wait for it to exit, then use its PID
+    const child = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+    const deadPid = child.pid?.toString() ?? "0";
+    writeFileSync(lockPath, deadPid);
 
     mockEnsureDaemon.mockClear();
     mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });

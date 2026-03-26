@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ensureDaemon } from "../../src/daemon/lifecycle.js";
 
@@ -59,7 +60,10 @@ describe("ensureDaemon", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-stale-"));
     tempDirs.push(tempDir);
     const pidFile = join(tempDir, "daemon.pid");
-    writeFileSync(pidFile, "99999999");
+    // Write a guaranteed-dead PID: spawn short-lived child, wait for exit, use its PID
+    const child = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+    const deadPid = child.pid?.toString() ?? "0";
+    writeFileSync(pidFile, deadPid);
 
     const result = await ensureDaemon({
       port: 19999,
@@ -105,8 +109,10 @@ describe("ensureDaemon", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-healthver-"));
     tempDirs.push(tempDir);
     const pidFile = join(tempDir, "daemon.pid");
-    // Stale PID — process.kill will fail silently
-    writeFileSync(pidFile, "9999999");
+    // Stale PID: spawn short-lived child, wait for exit, use its PID
+    const child = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+    const deadPid = child.pid?.toString() ?? "0";
+    writeFileSync(pidFile, deadPid);
 
     // Simulate an old wrong-version daemon that is permanently running (always answers health)
     const mockFetch = vi.fn().mockResolvedValue({

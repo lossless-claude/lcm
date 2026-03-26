@@ -11,25 +11,46 @@ function tryAcquireSessionLock(sessionId: string): boolean {
   try {
     writeFileSync(lockPath, process.pid.toString(), { flag: "wx" });
     return true;
-  } catch {
+  } catch (err: unknown) {
+    const code =
+      typeof err === "object" && err && "code" in err
+        ? (err as { code?: unknown }).code
+        : undefined;
+    if (code !== "EEXIST") {
+      // Unexpected failure to create lock file — fail open (skip dedup) but log warning
+      console.warn(
+        "[restore] Failed to create session lock; proceeding without deduplication:",
+        err,
+      );
+      return true;
+    }
     // Lock exists — check if the owner process is still alive
     try {
-      const ownerPid = parseInt(readFileSync(lockPath, "utf-8").trim(), 10);
-      if (!isNaN(ownerPid)) {
+      const raw = readFileSync(lockPath, "utf-8").trim();
+      const ownerPid = parseInt(raw, 10);
+      // Treat unparsable/empty/legacy PID values as stale locks
+      if (isNaN(ownerPid) || ownerPid <= 1) {
+        try { unlinkSync(lockPath); } catch { /* another process beat us to the unlink */ }
         try {
-          process.kill(ownerPid, 0); // throws ESRCH if dead, EPERM if alive but no permission
-          return false; // owner alive, genuine dedup
-        } catch (err: unknown) {
-          const code = typeof err === "object" && err && "code" in err ? (err as { code?: unknown }).code : undefined;
-          if (code !== "ESRCH") return false; // EPERM or unknown — assume alive
-          // ESRCH: owner dead — atomically take over by unlinking then re-locking
-          try { unlinkSync(lockPath); } catch { /* another process beat us to the unlink */ }
-          try {
-            writeFileSync(lockPath, process.pid.toString(), { flag: "wx" });
-            return true;
-          } catch {
-            return false; // lost the race to another process
-          }
+          writeFileSync(lockPath, process.pid.toString(), { flag: "wx" });
+          return true;
+        } catch {
+          return false; // lost the race to another process
+        }
+      }
+      try {
+        process.kill(ownerPid, 0); // throws ESRCH if dead, EPERM if alive but no permission
+        return false; // owner alive, genuine dedup
+      } catch (error: unknown) {
+        const errorCode = typeof error === "object" && error && "code" in error ? (error as { code?: unknown }).code : undefined;
+        if (errorCode !== "ESRCH") return false; // EPERM or unknown — assume alive
+        // ESRCH: owner dead — atomically take over by unlinking then re-locking
+        try { unlinkSync(lockPath); } catch { /* another process beat us to the unlink */ }
+        try {
+          writeFileSync(lockPath, process.pid.toString(), { flag: "wx" });
+          return true;
+        } catch {
+          return false; // lost the race to another process
         }
       }
     } catch { /* can't read lock — fall through to safe default */ }
@@ -56,12 +77,14 @@ export async function handleSessionStart(stdin: string, client: DaemonClient, po
   if (!connected) return { exitCode: 0, stdout: "" };
 
   try {
+    // Normalize cwd early and merge into input for consistent use
+    const cwd = (input.cwd as string | undefined) ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+    const normalizedInput = { ...input, cwd };
 
     // SessionStart scavenge: prune old processed events and trigger promotion for unprocessed ones
     try {
       const { EventsDb } = await import("./events-db.js");
       const { eventsDbPath } = await import("../db/events-path.js");
-      const cwd = (input.cwd as string | undefined) ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
       const eventsDb = new EventsDb(eventsDbPath(cwd));
       try {
         eventsDb.pruneProcessed(7);
@@ -79,7 +102,7 @@ export async function handleSessionStart(stdin: string, client: DaemonClient, po
       // Silent fail — scavenge is best-effort
     }
 
-    const result = await client.post<{ context: string; insights?: Array<{ content: string; confidence: number; tags: string[] }> }>("/restore", input);
+    const result = await client.post<{ context: string; insights?: Array<{ content: string; confidence: number; tags: string[] }> }>("/restore", normalizedInput);
     let stdout = result.context || "";
 
     if (result.insights && result.insights.length > 0) {

@@ -60,6 +60,14 @@ async function checkDaemonHealth(
   }
 }
 
+function versionMatches(health: HealthResponse | null, expectedVersion: string | undefined): boolean {
+  if (!expectedVersion) return true; // no expectation, accept any version
+  if (!health?.status) return false; // no health response, mismatch
+  // When expectedVersion is set, treat missing version as mismatch
+  if (!health.version) return false;
+  return health.version === expectedVersion;
+}
+
 export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDaemonResult> {
   const fetchFn = opts._fetchOverride ?? globalThis.fetch;
 
@@ -67,7 +75,7 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
   const health = await checkDaemonHealth(opts.port, fetchFn);
   if (health?.status === "ok") {
     // Version check — if mismatch, kill and respawn
-    if (opts.expectedVersion && health.version && health.version !== opts.expectedVersion) {
+    if (!versionMatches(health, opts.expectedVersion)) {
       if (existsSync(opts.pidFilePath)) {
         try {
           const pid = parseInt(readFileSync(opts.pidFilePath, "utf-8").trim(), 10);
@@ -91,7 +99,7 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
       if (!isNaN(pid) && isProcessAlive(pid)) {
         await sleep(1000);
         const retry = await checkDaemonHealth(opts.port, fetchFn);
-        if (retry?.status === "ok") {
+        if (versionMatches(retry, opts.expectedVersion)) {
           return { connected: true, port: opts.port, spawned: false };
         }
       }
@@ -130,11 +138,7 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
   const deadline = Date.now() + opts.spawnTimeoutMs;
   while (Date.now() < deadline) {
     const h = await checkDaemonHealth(opts.port, fetchFn);
-    if (h?.status === "ok") {
-      if (opts.expectedVersion && h.version !== opts.expectedVersion) {
-        await sleep(300);
-        continue;
-      }
+    if (versionMatches(h, opts.expectedVersion)) {
       return { connected: true, port: opts.port, spawned: true };
     }
     await sleep(300);
