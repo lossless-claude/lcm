@@ -91,6 +91,20 @@ async function main() {
       process.on("SIGTERM", () => exit(0));
       process.on("SIGINT", () => exit(0));
     });
+  daemonCmd.command("stop")
+    .description("Stop the context daemon")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (opts) => {
+      if (opts.help) { await withCustomHelp(daemonCmd, "daemon"); return; }
+      const { join } = await import("node:path");
+      const { homedir } = await import("node:os");
+      const { handleDaemonStop } = await import("../src/commands/daemon-stop.js");
+      const lcDir = join(homedir(), ".lossless-claude");
+      const { exitCode, message } = await handleDaemonStop(lcDir);
+      console.log(message);
+      exit(exitCode);
+    });
   daemonCmd.action(async (opts) => {
     if (opts.help) { await withCustomHelp(daemonCmd, "daemon"); return; }
   });
