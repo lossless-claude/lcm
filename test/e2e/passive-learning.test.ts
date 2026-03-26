@@ -388,7 +388,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
       let pruneLog: { c: number } | undefined;
       for (let attempts = 0; attempts < 3; attempts++) {
         pruneLog = db.raw().prepare(
-          "SELECT COUNT(*) as c FROM error_log WHERE hook = 'pruneUnprocessed'"
+          "SELECT COUNT(*) as c FROM error_log WHERE hook = 'maintenance:pruneUnprocessed'"
         ).get() as { c: number };
         if (pruneLog.c > 0) break;
         if (attempts < 2) {
