@@ -1,6 +1,6 @@
 import { validateAndFixHooks } from "./auto-heal.js";
 
-export const HOOK_COMMANDS = ["compact", "restore", "session-end", "session-snapshot", "user-prompt"] as const;
+export const HOOK_COMMANDS = ["compact", "post-tool", "restore", "session-end", "session-snapshot", "user-prompt"] as const;
 export type HookCommand = typeof HOOK_COMMANDS[number];
 
 export function isHookCommand(cmd: string): cmd is HookCommand {
@@ -11,6 +11,12 @@ export async function dispatchHook(
   command: HookCommand,
   stdinText: string,
 ): Promise<{ exitCode: number; stdout: string }> {
+  // Early return for post-tool — runs on EVERY tool call, must skip bootstrap for performance
+  if (command === "post-tool") {
+    const { handlePostToolUse } = await import("./post-tool.js");
+    return handlePostToolUse(stdinText);
+  }
+
   // Lazy bootstrap: create config + start daemon on first hook fire per session
   try {
     const { session_id } = JSON.parse(stdinText || "{}");

@@ -2,6 +2,7 @@ import type { DaemonClient } from "../daemon/client.js";
 import { ensureDaemon } from "../daemon/lifecycle.js";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { safeLogError } from "./hook-errors.js";
 
 type PromptSearchResponse = {
   hints: string[];
@@ -34,6 +35,33 @@ export async function handleUserPromptSubmit(
     const input = JSON.parse(stdin || "{}");
     if (!input.prompt || typeof input.prompt !== "string" || !input.prompt.trim()) {
       return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
+    }
+
+    // Sidecar event extraction — must happen before prompt-search, must never throw
+    try {
+      const { extractUserPromptEvents } = await import("./extractors.js");
+      const { EventsDb } = await import("./events-db.js");
+      const { eventsDbPath } = await import("../db/events-path.js");
+
+      const prompt = String(input.prompt ?? "");
+      const events = extractUserPromptEvents(prompt);
+
+      if (events.length > 0 && input.session_id && typeof input.session_id === "string") {
+        const cwd = input.cwd ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+        const db = new EventsDb(eventsDbPath(cwd));
+        try {
+          for (const event of events) {
+            db.insertEvent(input.session_id, event, "UserPromptSubmit");
+          }
+        } finally {
+          db.close();
+        }
+      }
+    } catch (e) {
+      safeLogError("UserPromptSubmit", e, {
+        cwd: input.cwd ?? process.env.CLAUDE_PROJECT_DIR,
+        sessionId: input.session_id,
+      });
     }
 
     const result = await client.post<PromptSearchResponse>("/prompt-search", {

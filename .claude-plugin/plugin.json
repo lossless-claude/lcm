@@ -1,6 +1,6 @@
 {
   "name": "lcm",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Lossless context management — DAG-based summarization that preserves every message",
   "author": {
     "name": "Pedro Almeida",
@@ -46,6 +46,12 @@
       {
         "matcher": "",
         "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" session-snapshot" }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" post-tool" }]
       }
     ]
   }

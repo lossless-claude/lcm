@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, copyFi
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { ensureCore } from "../src/bootstrap.js";
 export { REQUIRED_HOOKS, mergeClaudeSettings } from "../src/installer/settings.js";
 
@@ -178,6 +179,23 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<void> {
   const lcDir = join(homedir(), ".lossless-claude");
   deps.mkdirSync(lcDir, { recursive: true });
 
+  // Clear plugin cache entries for previous versions so stale/corrupted installs don't persist.
+  try {
+    const pkgJsonPath = join(dirname(fileURLToPath(import.meta.url)), "../..", "package.json");
+    const pkgVersion = (JSON.parse(deps.readFileSync(pkgJsonPath, "utf-8")) as { version: string }).version;
+    const cacheDir = join(homedir(), ".claude", "plugins", "cache", "lossless-claude", "lcm");
+    if (deps.existsSync(cacheDir)) {
+      for (const entry of readdirSync(cacheDir, { withFileTypes: true })) {
+        if (entry.isDirectory() && entry.name !== pkgVersion) {
+          rmSync(join(cacheDir, entry.name), { recursive: true, force: true });
+          console.log(`Cleared plugin cache for v${entry.name}`);
+        }
+      }
+    }
+  } catch {
+    // non-fatal: cache clearing failure shouldn't abort install
+  }
+
   const configPath = join(lcDir, "config.json");
   const settingsPath = join(homedir(), ".claude", "settings.json");
 
@@ -232,7 +250,7 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<void> {
   console.log(`Updated ${settingsPath}`);
 
   // 4. Install slash commands to ~/.claude/commands/
-  const commandsSrc = join(dirname(new URL(import.meta.url).pathname), "../..", ".claude-plugin", "commands");
+  const commandsSrc = join(dirname(fileURLToPath(import.meta.url)), "../..", ".claude-plugin", "commands");
   const commandsDst = join(homedir(), ".claude", "commands");
   if (deps.existsSync(commandsSrc)) {
     deps.mkdirSync(commandsDst, { recursive: true });

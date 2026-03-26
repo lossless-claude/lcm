@@ -92,6 +92,18 @@ export async function handleSessionSnapshot(
     _writeFileSync(cursorPath, JSON.stringify({ ts: Date.now() }));
     try { chmodSync(cursorPath, 0o600); } catch { /* non-fatal */ }
 
+    // Best-effort promote-events flush
+    try {
+      const { loadDaemonConfig: _loadConfig } = await import("../daemon/config.js");
+      const { homedir: _homedir2 } = await import("node:os");
+      const _config = _loadConfig(join(_homedir2(), ".lossless-claude", "config.json"));
+      const port = _config.daemon?.port ?? 3737;
+      const { firePromoteEventsRequest } = await import("./session-end.js");
+      firePromoteEventsRequest(port, { cwd: input.cwd });
+    } catch {
+      // Best-effort only
+    }
+
     return { exitCode: 0, stdout: "" };
   } catch {
     return { exitCode: 0, stdout: "" };
