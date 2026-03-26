@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { ensureCore } from "../src/bootstrap.js";
-export { REQUIRED_HOOKS, mergeClaudeSettings } from "../src/installer/settings.js";
+export { REQUIRED_HOOKS, mergeClaudeSettings, requiredHooks, hooksUpToDate, isLcmHookCommand } from "../src/installer/settings.js";
 
 export interface ServiceDeps {
   spawnSync: (cmd: string, args: string[], opts?: any) => SpawnSyncReturns<string>;

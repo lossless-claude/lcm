@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   mergeClaudeSettings,
+  requiredHooks,
+  hooksUpToDate,
   resolveBinaryPath,
   install,
   ensureLcmMd,
@@ -30,83 +32,185 @@ function makeDeps(overrides: Partial<ServiceDeps> = {}): ServiceDeps {
   };
 }
 
-// ─── mergeClaudeSettings ────────────────────────────────────────────────────
+// ─── REQUIRED_HOOKS ─────────────────────────────────────────────────────────
 
-describe("mergeClaudeSettings", () => {
-  it("removes managed hooks and mcpServers from empty settings", () => {
-    const r = mergeClaudeSettings({});
-    expect(r).toEqual({});
-  });
-
-  it("removes all 4 required hooks when already present", () => {
-    const existing = {
-      hooks: {
-        PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact --hook" }] }],
-        SessionStart: [{ matcher: "", hooks: [{ type: "command", command: "lcm restore" }] }],
-        SessionEnd: [{ matcher: "", hooks: [{ type: "command", command: "lcm session-end" }] }],
-        UserPromptSubmit: [{ matcher: "", hooks: [{ type: "command", command: "lcm user-prompt" }] }],
-      },
-      mcpServers: {
-        lcm: { command: "lcm", args: ["mcp"] },
-      },
-    };
-    const r = mergeClaudeSettings(existing);
-    expect(r.hooks).toBeUndefined();
-    // mcpServers.lcm is now owned by settings.json and preserved
-    expect(r.mcpServers).toEqual({ lcm: { command: "lcm", args: ["mcp"] } });
-  });
-
-  it("REQUIRED_HOOKS contains exactly 6 expected events", () => {
-    expect(REQUIRED_HOOKS.map(h => h.event).sort()).toEqual([
+describe("REQUIRED_HOOKS", () => {
+  it("contains exactly 6 hooks with event and subcommand fields", () => {
+    expect(REQUIRED_HOOKS).toHaveLength(6);
+    expect(REQUIRED_HOOKS.map((h: any) => h.event).sort()).toEqual([
       "PostToolUse", "PreCompact", "SessionEnd", "SessionStart", "Stop", "UserPromptSubmit",
     ]);
+    for (const h of REQUIRED_HOOKS) {
+      expect(h).toHaveProperty("subcommand");
+      expect(h).not.toHaveProperty("command");
+    }
+  });
+});
+
+// ─── requiredHooks ───────────────────────────────────────────────────────────
+
+describe("requiredHooks", () => {
+  it("generates absolute-path commands for all 6 events", () => {
+    const hooks = requiredHooks("/usr/bin/node", "/path/to/lcm.mjs");
+    expect(hooks).toHaveLength(6);
+    expect(hooks.every((h: any) => h.command.startsWith('"/usr/bin/node" "/path/to/lcm.mjs" '))).toBe(true);
   });
 
-  it("removes any of the 5 hooks if already present", () => {
+  it("generates the correct subcommand for PreCompact", () => {
+    const hooks = requiredHooks("/n", "/m");
+    const precompact = hooks.find((h: any) => h.event === "PreCompact");
+    expect(precompact?.command).toBe('"/n" "/m" compact --hook');
+  });
+});
+
+// ─── hooksUpToDate ───────────────────────────────────────────────────────────
+
+describe("hooksUpToDate", () => {
+  it("returns false when settings has no hooks", () => {
+    expect(hooksUpToDate({}, "/n", "/m")).toBe(false);
+  });
+
+  it("returns true when all 6 hooks match exactly", () => {
+    const settings = mergeClaudeSettings({}, { intent: "upsert", nodePath: "/n", lcmMjsPath: "/m" });
+    expect(hooksUpToDate(settings, "/n", "/m")).toBe(true);
+  });
+
+  it("returns false when node path differs", () => {
+    const settings = mergeClaudeSettings({}, { intent: "upsert", nodePath: "/old", lcmMjsPath: "/m" });
+    expect(hooksUpToDate(settings, "/new", "/m")).toBe(false);
+  });
+
+  it("returns false when lcmMjsPath differs", () => {
+    const settings = mergeClaudeSettings({}, { intent: "upsert", nodePath: "/n", lcmMjsPath: "/old.mjs" });
+    expect(hooksUpToDate(settings, "/n", "/new.mjs")).toBe(false);
+  });
+
+  it("returns false when only 5 of 6 hooks are present", () => {
+    const settings = mergeClaudeSettings({}, { intent: "upsert", nodePath: "/n", lcmMjsPath: "/m" });
+    delete settings.hooks.Stop;
+    expect(hooksUpToDate(settings, "/n", "/m")).toBe(false);
+  });
+});
+
+// ─── mergeClaudeSettings — intent:upsert ─────────────────────────────────────
+
+describe("mergeClaudeSettings — intent:upsert", () => {
+  it("writes all 6 hooks with quoted absolute paths into empty settings", () => {
+    const r = mergeClaudeSettings({}, { intent: "upsert", nodePath: "/node", lcmMjsPath: "/lcm.mjs" });
+    expect(Object.keys(r.hooks ?? {})).toHaveLength(6);
+    const postTool = r.hooks.PostToolUse[0].hooks[0].command;
+    expect(postTool).toBe('"/node" "/lcm.mjs" post-tool');
+    const precompact = r.hooks.PreCompact[0].hooks[0].command;
+    expect(precompact).toBe('"/node" "/lcm.mjs" compact --hook');
+  });
+
+  it("replaces old bare-node commands with absolute-path commands (no duplication)", () => {
     const existing = {
       hooks: {
         PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact --hook" }] }],
-        SessionStart: [{ matcher: "", hooks: [{ type: "command", command: "lcm restore" }] }],
-        SessionEnd: [{ matcher: "", hooks: [{ type: "command", command: "lcm session-end" }] }],
-        UserPromptSubmit: [{ matcher: "", hooks: [{ type: "command", command: "lcm user-prompt" }] }],
-        Stop: [{ matcher: "", hooks: [{ type: "command", command: "lcm session-snapshot" }] }],
       },
     };
-    const r = mergeClaudeSettings(existing);
+    const r = mergeClaudeSettings(existing, { intent: "upsert", nodePath: "/node", lcmMjsPath: "/lcm.mjs" });
+    const cmds = r.hooks.PreCompact.flatMap((e: any) => e.hooks.map((h: any) => h.command));
+    expect(cmds).toEqual(['"/node" "/lcm.mjs" compact --hook']);
+  });
+
+  it("replaces stale absolute-path commands when node path changes", () => {
+    const existing = {
+      hooks: {
+        PreCompact: [{ matcher: "", hooks: [{ type: "command", command: '"/old/node" "/lcm.mjs" compact --hook' }] }],
+      },
+    };
+    const r = mergeClaudeSettings(existing, { intent: "upsert", nodePath: "/new/node", lcmMjsPath: "/lcm.mjs" });
+    const cmds = r.hooks.PreCompact.flatMap((e: any) => e.hooks.map((h: any) => h.command));
+    expect(cmds).not.toContain('"/old/node" "/lcm.mjs" compact --hook');
+    expect(cmds).toContain('"/new/node" "/lcm.mjs" compact --hook');
+  });
+
+  it("preserves unrelated hooks in the same event", () => {
+    const existing = {
+      hooks: {
+        PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "other-tool" }] }],
+      },
+    };
+    const r = mergeClaudeSettings(existing, { intent: "upsert", nodePath: "/n", lcmMjsPath: "/m" });
+    const cmds = r.hooks.PreCompact.flatMap((e: any) => e.hooks.map((h: any) => h.command));
+    expect(cmds).toContain("other-tool");
+    expect(cmds).toContain('"/n" "/m" compact --hook');
+  });
+
+  it("does not touch mcpServers.lcm", () => {
+    const existing = { mcpServers: { lcm: { command: "lcm", args: ["mcp"] } } };
+    const r = mergeClaudeSettings(existing, { intent: "upsert", nodePath: "/n", lcmMjsPath: "/m" });
+    expect(r.mcpServers?.lcm).toEqual({ command: "lcm", args: ["mcp"] });
+  });
+});
+
+// ─── mergeClaudeSettings — intent:remove ─────────────────────────────────────
+
+describe("mergeClaudeSettings — intent:remove", () => {
+  it("removes bare-format lcm hooks", () => {
+    const existing = {
+      hooks: {
+        PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact --hook" }] }],
+      },
+    };
+    const r = mergeClaudeSettings(existing, { intent: "remove" });
+    expect(r.hooks).toBeUndefined();
+  });
+
+  it("removes absolute-path-format lcm hooks", () => {
+    const existing = {
+      hooks: {
+        PreCompact: [{ matcher: "", hooks: [{ type: "command", command: '"/node" "/path/to/lcm.mjs" compact --hook' }] }],
+      },
+    };
+    const r = mergeClaudeSettings(existing, { intent: "remove" });
+    expect(r.hooks).toBeUndefined();
+  });
+
+  it("removes lossless-claude legacy hooks", () => {
+    const existing = {
+      hooks: {
+        PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lossless-claude compact" }] }],
+      },
+    };
+    const r = mergeClaudeSettings(existing, { intent: "remove" });
     expect(r.hooks).toBeUndefined();
   });
 
   it("preserves unrelated hooks", () => {
-    const r = mergeClaudeSettings({ hooks: { PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "other" }] }] } });
-    expect(r.hooks.PreCompact).toHaveLength(1);
-    expect(r.hooks.PreCompact[0].hooks[0].command).toBe("other");
-  });
-
-  it("removes managed hooks without leaving duplicates behind", () => {
-    const r = mergeClaudeSettings({ hooks: { PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact --hook" }] }] } });
-    expect(r.hooks).toBeUndefined();
+    const existing = {
+      hooks: {
+        PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "other" }] }],
+      },
+    };
+    const r = mergeClaudeSettings(existing, { intent: "remove" });
+    expect(r.hooks?.PreCompact[0].hooks[0].command).toBe("other");
   });
 
   it("removes only matching managed sub-hooks from a mixed entry", () => {
-    const r = mergeClaudeSettings({
-      hooks: {
-        PreCompact: [{
-          matcher: "",
-          hooks: [
-            { type: "command", command: "other" },
-            { type: "command", command: "lcm compact --hook" },
-          ],
-        }],
+    const r = mergeClaudeSettings(
+      {
+        hooks: {
+          PreCompact: [{
+            matcher: "",
+            hooks: [
+              { type: "command", command: "other" },
+              { type: "command", command: "lcm compact --hook" },
+            ],
+          }],
+        },
       },
-    });
-
+      { intent: "remove" },
+    );
     expect(r.hooks.PreCompact).toEqual([{
       matcher: "",
       hooks: [{ type: "command", command: "other" }],
     }]);
   });
 
-  it("migrates legacy lossless-claude hooks to lcm before removing them", () => {
+  it("migrates legacy lossless-claude hooks then removes them", () => {
     const existing = {
       hooks: {
         PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lossless-claude compact" }] }],
@@ -116,19 +220,14 @@ describe("mergeClaudeSettings", () => {
       mcpServers: {
         "lossless-claude": { command: "lossless-claude", args: ["mcp"] },
         other: { command: "other", args: ["mcp"] },
-      }
+      },
     };
-    const result = mergeClaudeSettings(existing);
-    for (const { event, command } of REQUIRED_HOOKS) {
-      const entries = result.hooks?.[event] ?? [];
-      const commands = entries.flatMap((e: any) => e.hooks.map((h: any) => h.command));
-      expect(commands).not.toContain(command);
-      expect(commands).not.toContain(command.replace(/^lcm /, "lossless-claude "));
-    }
-    expect(result.hooks?.PostToolUse).toEqual([{ matcher: "", hooks: [{ type: "command", command: "other" }] }]);
-    expect(result.mcpServers["lossless-claude"]).toBeUndefined();
-    expect(result.mcpServers["lcm"]).toBeUndefined();
-    expect(result.mcpServers.other).toEqual({ command: "other", args: ["mcp"] });
+    const r = mergeClaudeSettings(existing, { intent: "remove" });
+    expect(r.hooks?.PreCompact).toBeUndefined();
+    expect(r.hooks?.SessionStart).toBeUndefined();
+    expect(r.hooks?.PostToolUse).toBeDefined();
+    expect(r.mcpServers?.["lossless-claude"]).toBeUndefined();
+    expect(r.mcpServers?.other).toEqual({ command: "other", args: ["mcp"] });
   });
 });
 
