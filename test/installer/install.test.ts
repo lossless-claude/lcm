@@ -308,6 +308,27 @@ describe("install", () => {
       0o600,
     );
   });
+
+  it("passes process.execPath and lcmMjsPath to ensureCore (hooks use absolute paths)", async () => {
+    const settingsPath = join(homedir(), ".claude", "settings.json");
+    const written = new Map<string, string>();
+    const deps = makeDeps({
+      existsSync: vi.fn().mockImplementation((p: string) => p === settingsPath),
+      readFileSync: vi.fn().mockReturnValue("{}"),
+      writeFileSync: vi.fn().mockImplementation((path: string, data: string) => {
+        written.set(path, data);
+      }),
+    });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await install(deps);
+    warnSpy.mockRestore();
+    // Find a write to settings.json (atomicWriteJSON writes to tmp then renames, but mock bypasses rename)
+    const settingsWrite = [...written.entries()].find(([p]) => p.includes("settings.json"));
+    expect(settingsWrite).toBeDefined();
+    const data = JSON.parse(settingsWrite![1]);
+    const precompact = data.hooks?.PreCompact?.[0]?.hooks?.[0]?.command;
+    expect(precompact).toMatch(/^".*" ".*lcm\.mjs" compact --hook$/);
+  });
 });
 
 // ─── install dry-run ─────────────────────────────────────────────────────────

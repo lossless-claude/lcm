@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, copyFileSync, rmSync, chmodSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, copyFileSync, rmSync, chmodSync, renameSync as fsRenameSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
@@ -220,10 +220,13 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<void> {
   await ensureCore({
     configPath,
     settingsPath,
+    nodePath: process.execPath,
+    lcmMjsPath: join(dirname(fileURLToPath(import.meta.url)), "..", "..", "lcm.mjs"),
     existsSync: deps.existsSync,
     readFileSync: deps.readFileSync,
     writeFileSync: deps.writeFileSync,
     mkdirSync: deps.mkdirSync,
+    renameSync: fsRenameSync,
     ensureDaemon: deps.ensureDaemon ?? (async (opts) => {
       const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
       return ensureDaemon(opts);
