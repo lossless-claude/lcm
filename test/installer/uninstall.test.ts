@@ -44,7 +44,7 @@ describe("removeClaudeSettings", () => {
     });
     expect(r.hooks.PreCompact).toHaveLength(1);
     expect(r.hooks.PreCompact[0].hooks[0].command).toBe("other");
-    expect(r.hooks.SessionStart).toHaveLength(0);
+    expect(r.hooks.SessionStart).toBeUndefined();
     expect(r.mcpServers["lcm"]).toBeUndefined();
     expect(r.mcpServers["other"]).toBeDefined();
   });
@@ -67,11 +67,8 @@ describe("removeClaudeSettings", () => {
       },
       mcpServers: { "lcm": {} },
     });
-    expect(r.hooks.PreCompact).toHaveLength(0);
-    expect(r.hooks.SessionStart).toHaveLength(0);
-    expect(r.hooks.SessionEnd).toHaveLength(0);
-    expect(r.hooks.UserPromptSubmit).toHaveLength(0);
-    expect(r.mcpServers["lcm"]).toBeUndefined();
+    expect(r.hooks).toBeUndefined();
+    expect(r.mcpServers).toBeUndefined();
   });
 
   it("removes entry when any sub-hook matches a lcm command", () => {
@@ -89,7 +86,20 @@ describe("removeClaudeSettings", () => {
       },
       mcpServers: {},
     });
-    expect(r.hooks.PreCompact).toHaveLength(0);
+    expect(r.hooks).toBeUndefined();
+  });
+
+  it("removes absolute-path-format lcm hooks", () => {
+    const existing = {
+      hooks: {
+        PreCompact: [{
+          matcher: "",
+          hooks: [{ type: "command", command: '"/path/to/node" "/path/to/lcm.mjs" compact --hook' }],
+        }],
+      },
+    };
+    const r = removeClaudeSettings(existing);
+    expect(r.hooks).toBeUndefined();
   });
 });
 
