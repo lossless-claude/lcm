@@ -111,6 +111,31 @@ describe("handleSessionEnd", () => {
     expect(manifestCalls.length).toBe(1);
   });
 
+  it("uses CLAUDE_PROJECT_DIR as cwd fallback when stdin has no cwd", async () => {
+    const { request } = await import("node:http");
+    const client = createMockClient({ ingested: 5, totalTokens: 100 });
+    const original = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = "/env/project/dir";
+    try {
+      await handleSessionEnd(JSON.stringify({ session_id: "s1" }), client, 3737);
+    } finally {
+      if (original === undefined) delete process.env.CLAUDE_PROJECT_DIR;
+      else process.env.CLAUDE_PROJECT_DIR = original;
+    }
+    const httpReqMock = vi.mocked(request);
+    const promoteCalls = httpReqMock.mock.calls.filter(
+      (args: any[]) => args[0]?.path === "/promote",
+    );
+    expect(promoteCalls.length).toBe(1);
+    // Body is sent via req.write(), not as a second arg to request().
+    // Correlate by finding the promote call's index in the full call list.
+    const promoteCallIndex = httpReqMock.mock.calls.findIndex(
+      (args: any[]) => args[0]?.path === "/promote",
+    );
+    const promoteBody = JSON.parse(mockHttpReq.write.mock.calls[promoteCallIndex][0] as string);
+    expect(promoteBody.cwd).toBe("/env/project/dir");
+  });
+
   it("calls socket.unref() so the process does not wait for a compact response", async () => {
     // fireCompactRequest registers a "socket" handler that calls unref() — this is
     // what prevents the Node.js event loop from staying alive until the daemon responds.
@@ -144,6 +169,3 @@ describe("handleSessionEnd", () => {
   });
 });
 
-function stdin(obj: Record<string, unknown>): string {
-  return JSON.stringify(obj);
-}

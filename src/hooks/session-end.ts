@@ -114,6 +114,7 @@ export async function handleSessionEnd(
 
   try {
     const input = JSON.parse(stdin || "{}");
+    const cwd = (input.cwd as string | undefined) ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
     const ingestResult = await client.post<{
       ingested: number;
       totalTokens?: number;
@@ -128,24 +129,24 @@ export async function handleSessionEnd(
       // The daemon receives and compacts independently after the hook process exits.
       fireCompactRequest(daemonPort, {
         session_id: input.session_id,
-        cwd: input.cwd,
+        cwd,
         skip_ingest: true,
         client: "claude",
       });
     }
 
     // Always promote
-    firePromoteRequest(daemonPort, { cwd: input.cwd });
+    firePromoteRequest(daemonPort, { cwd });
 
     // Promote events for passive learning
-    firePromoteEventsRequest(daemonPort, { cwd: input.cwd });
+    firePromoteEventsRequest(daemonPort, { cwd });
 
     // Record session completion in manifest.
     // Note: ingestResult.ingested is the delta (new messages this call), not the total.
     // We pass it as-is since we don't have the total without an extra DB query.
     fireSessionCompleteRequest(daemonPort, {
       session_id: input.session_id,
-      cwd: input.cwd,
+      cwd,
       message_count: ingestResult.ingested ?? 0,
     });
 
