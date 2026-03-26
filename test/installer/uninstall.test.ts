@@ -1,7 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { removeClaudeSettings, teardownDaemonService, uninstall, type TeardownDeps } from "../../installer/uninstall.js";
-import { homedir } from "node:os";
-import { join } from "node:path";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -9,13 +7,7 @@ function makeSpawn(status = 0) {
   return vi.fn().mockReturnValue({ status, stdout: "", stderr: "", pid: 1, output: [], signal: null });
 }
 
-function makeDeps(existsResult = true, overrides: Partial<TeardownDeps> = {}): TeardownDeps & {
-  spawnSync: ReturnType<typeof vi.fn>;
-  existsSync: ReturnType<typeof vi.fn>;
-  rmSync: ReturnType<typeof vi.fn>;
-  readFileSync: ReturnType<typeof vi.fn>;
-  writeFileSync: ReturnType<typeof vi.fn>;
-} {
+function makeDeps(existsResult = true, overrides: Partial<TeardownDeps> = {}) {
   return {
     spawnSync: makeSpawn(),
     existsSync: vi.fn().mockReturnValue(existsResult),
@@ -23,6 +15,12 @@ function makeDeps(existsResult = true, overrides: Partial<TeardownDeps> = {}): T
     readFileSync: vi.fn().mockReturnValue("{}"),
     writeFileSync: vi.fn(),
     ...overrides,
+  } as unknown as TeardownDeps & {
+    spawnSync: ReturnType<typeof makeSpawn>;
+    existsSync: ReturnType<typeof vi.fn>;
+    rmSync: ReturnType<typeof vi.fn>;
+    readFileSync: ReturnType<typeof vi.fn>;
+    writeFileSync: ReturnType<typeof vi.fn>;
   };
 }
 
