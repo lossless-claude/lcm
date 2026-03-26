@@ -1,7 +1,9 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, renameSync as fsRenameSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
-import { REQUIRED_HOOKS, mergeClaudeSettings } from "../../installer/install.js";
+import { fileURLToPath } from "node:url";
+import { mergeClaudeSettings, hooksUpToDate } from "../../installer/install.js";
 
 export interface AutoHealDeps {
   readFileSync: (path: string, encoding: string) => string;
@@ -9,8 +11,11 @@ export interface AutoHealDeps {
   existsSync: (path: string) => boolean;
   mkdirSync: (path: string, opts?: { recursive: boolean }) => void;
   appendFileSync: (path: string, data: string) => void;
+  renameSync: (oldPath: string, newPath: string) => void;
   settingsPath: string;
   logPath: string;
+  nodePath: string;
+  lcmMjsPath: string;
 }
 
 function defaultDeps(): AutoHealDeps {
@@ -20,15 +25,12 @@ function defaultDeps(): AutoHealDeps {
     existsSync,
     mkdirSync,
     appendFileSync,
+    renameSync: fsRenameSync,
     settingsPath: join(homedir(), ".claude", "settings.json"),
     logPath: join(homedir(), ".lossless-claude", "auto-heal.log"),
+    nodePath: process.execPath,
+    lcmMjsPath: join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "lcm.mjs"),
   };
-}
-
-function hasHookCommand(entries: any[], command: string): boolean {
-  return entries.some((entry: any) =>
-    Array.isArray(entry.hooks) && entry.hooks.some((h: any) => h.command === command)
-  );
 }
 
 export function validateAndFixHooks(deps: AutoHealDeps = defaultDeps()): void {
@@ -37,42 +39,18 @@ export function validateAndFixHooks(deps: AutoHealDeps = defaultDeps()): void {
 
     const settings: any = JSON.parse(deps.readFileSync(deps.settingsPath, "utf-8"));
 
-    // Hooks are owned by plugin.json — if they leaked into settings.json
-    // (from old installer or manual edits), remove them to prevent double-firing.
-    const hooks = settings.hooks ?? {};
+    if (hooksUpToDate(settings, deps.nodePath, deps.lcmMjsPath)) return;
 
-    // Migration: rewrite "lcm compact" (without --hook) → append "--hook".
-    // Only exact match "lcm compact" on PreCompact event to avoid changing semantics
-    // for user-custom variants like "lcm compact --all" where --hook would make --all a no-op.
-    let rewritten = false;
-    for (const event of Object.keys(hooks)) {
-      if (!Array.isArray(hooks[event])) continue;
-      for (const entry of hooks[event]) {
-        if (!Array.isArray(entry.hooks)) continue;
-        for (const h of entry.hooks) {
-          if (typeof h.command === "string") {
-            const trimmed = h.command.trim();
-            // Only rewrite the exact legacy duplicate "lcm compact" command on PreCompact,
-            // to avoid changing semantics for user-custom variants like "lcm compact --all".
-            if (event === "PreCompact" && trimmed === "lcm compact") {
-              h.command = "lcm compact --hook";
-              rewritten = true;
-            }
-          }
-        }
-      }
-    }
-
-    const hasDuplicates = REQUIRED_HOOKS.some(({ event, command }) => {
-      const entries = hooks[event];
-      return Array.isArray(entries) && hasHookCommand(entries, command);
+    const merged = mergeClaudeSettings(settings, {
+      intent: "upsert",
+      nodePath: deps.nodePath,
+      lcmMjsPath: deps.lcmMjsPath,
     });
-    if (!hasDuplicates && !rewritten) return;
 
-    // Clean up: remove lcm hooks from settings.json (MCP config is preserved)
-    const merged = mergeClaudeSettings(settings);
+    const tmp = `${deps.settingsPath}.${randomBytes(6).toString("hex")}.tmp`;
     deps.mkdirSync(dirname(deps.settingsPath), { recursive: true });
-    deps.writeFileSync(deps.settingsPath, JSON.stringify(merged, null, 2));
+    deps.writeFileSync(tmp, JSON.stringify(merged, null, 2));
+    deps.renameSync(tmp, deps.settingsPath);
   } catch (err) {
     try {
       deps.mkdirSync(dirname(deps.logPath), { recursive: true });
