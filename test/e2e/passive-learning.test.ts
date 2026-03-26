@@ -384,10 +384,18 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
       // Verify prune was logged to error_log
       // Note: getHealthStats() filters out pruneUnprocessed/pruneErrorLog maintenance errors
       // to avoid noise in health stats, so we query the raw DB directly
-      const pruneLog = db.raw().prepare(
-        "SELECT COUNT(*) as c FROM error_log WHERE hook = 'pruneUnprocessed'"
-      ).get() as { c: number };
-      expect(pruneLog.c).toBeGreaterThanOrEqual(1);
+      // Also: there's a potential race where the error log entry may not be written immediately
+      let pruneLog: { c: number } | undefined;
+      for (let attempts = 0; attempts < 3; attempts++) {
+        pruneLog = db.raw().prepare(
+          "SELECT COUNT(*) as c FROM error_log WHERE hook = 'pruneUnprocessed'"
+        ).get() as { c: number };
+        if (pruneLog.c > 0) break;
+        if (attempts < 2) {
+          await new Promise(r => setTimeout(r, 10));
+        }
+      }
+      expect(pruneLog!.c).toBeGreaterThanOrEqual(1);
     } finally {
       db.close();
     }
