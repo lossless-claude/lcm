@@ -90,8 +90,8 @@ describe("hook-node-path check", () => {
     const lcmMjsPath = "/real/lcm.mjs";
     const settings = makeHookSettings(process.execPath, lcmMjsPath);
     const results = await runDoctor({
-      existsSync: (p: string) => true,
-      readFileSync: (p: string) => baseReadFileSync(p, settings),
+      existsSync: (_p: string) => true,
+      readFileSync: (_p: string) => baseReadFileSync(_p, settings),
       writeFileSync: vi.fn(),
       mkdirSync: vi.fn(),
       spawnSync: () => ({ status: 0, stdout: "", stderr: "" }),
@@ -100,7 +100,7 @@ describe("hook-node-path check", () => {
       platform: "darwin",
     });
     const hookResult = results.find(r => r.name === "hook-node-path");
-    expect(hookResult?.status).toBe("ok");
+    expect(hookResult?.status).toBe("pass");
     expect(hookResult?.message).toContain("hooks registered");
   });
 
@@ -109,8 +109,8 @@ describe("hook-node-path check", () => {
     const settings = makeHookSettings("/old/node", lcmMjsPath);
     const writtenFiles = new Map<string, string>();
     const results = await runDoctor({
-      existsSync: (p: string) => true,
-      readFileSync: (p: string) => baseReadFileSync(p, settings),
+      existsSync: (_p: string) => true,
+      readFileSync: (_p: string) => baseReadFileSync(_p, settings),
       writeFileSync: (p: string, data: string) => { writtenFiles.set(p, data); },
       mkdirSync: vi.fn(),
       spawnSync: () => ({ status: 0, stdout: "", stderr: "" }),

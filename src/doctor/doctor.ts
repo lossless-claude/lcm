@@ -368,7 +368,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
       results.push({
         name: "hook-node-path",
         category: "Settings",
-        status: "ok",
+        status: "pass",
         message: `hooks registered (${hookNode.split("/").pop()})`,
       });
     }
