@@ -3,7 +3,11 @@ import { existsSync, lstatSync, mkdirSync, realpathSync, readFileSync, writeFile
 import { homedir } from "node:os";
 import { join, resolve, normalize, join as pathJoin, dirname, basename } from "node:path";
 
-export const BASE_DIR = join(homedir(), ".lossless-claude");
+const resolveBaseDir = (): string =>
+  process.env.LCM_DATA_DIR ?? join(homedir(), ".lossless-claude");
+
+/** Snapshot for callers that need a fixed path (e.g. daemon startup). Tests override via LCM_DATA_DIR. */
+export const BASE_DIR = resolveBaseDir();
 
 function canonicalizeCwd(cwd: string): string {
   try { return realpathSync(cwd); } catch { return cwd; }
@@ -13,7 +17,7 @@ export const projectId = (cwd: string): string =>
   createHash("sha256").update(canonicalizeCwd(cwd)).digest("hex");
 
 export const projectDir = (cwd: string): string =>
-  join(BASE_DIR, "projects", projectId(cwd));
+  join(resolveBaseDir(), "projects", projectId(cwd));
 
 export const projectDbPath = (cwd: string): string =>
   join(projectDir(cwd), "db.sqlite");

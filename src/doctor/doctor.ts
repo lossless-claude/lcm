@@ -285,7 +285,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
           message: `localhost:${config.port} — version mismatch (v${daemonVersion} running, v${pkgVersion} installed)\n     Fix: lcm daemon restart` });
       }
     } else {
-      results.push({ name: "daemon", category: "Daemon", status: "pass", message: `localhost:${config.port} (up)` });
+      results.push({ name: "daemon", category: "Daemon", status: "pass", message: `localhost:${config.port} (up)${daemonVersion ? ` v${daemonVersion}` : ""}` });
     }
   } else {
     // Auto-fix: try ensureDaemon

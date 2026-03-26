@@ -7,6 +7,7 @@ export default defineConfig({
   test: {
     include: ["**/*.test.ts"],
     exclude: ["node_modules/**", ".claude/**"],
+    globalSetup: ["test/setup/lcm-data-dir.ts"],
     projects: [
       {
         test: {
