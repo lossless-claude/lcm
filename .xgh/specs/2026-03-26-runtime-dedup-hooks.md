@@ -6,45 +6,39 @@ Upgraded users have duplicate SessionStart hooks firing (old binary + plugin.jso
 ## Solution: Runtime Early Exit
 When `handleSessionStart()` (restore hook) runs, check if it has already executed in this session using a lockfile keyed to `session_id` from stdin JSON. Exit early if true.
 
-### How It Works
+### How It Works (as implemented)
+
+> **Note:** The original spec used `~/.lossless-claude/locks/` with explicit SessionEnd cleanup.
+> The shipped implementation uses `tmpdir()` lockfiles with sanitized names and no cleanup
+> (they expire with the OS temp dir). This note documents the divergence.
+
 1. **Receive session ID**: stdin contains `{ session_id, cwd, ... }` from Claude Code SessionStart event
-2. **Check lockfile**: `~/.lossless-claude/locks/{session_id}.lock` tracks if restore already ran
-3. **Lock file path**: `join(homedir(), ".lossless-claude", "locks", `${session_id}.lock`)`
-4. **Early exit**: If lock exists, return `{ exitCode: 0, stdout: "" }` immediately
-5. **Create lock**: Write session_id to lock file on successful first run
-6. **Cleanup**: Session-end hook deletes the lock file
+2. **Check lockfile**: `{tmpdir}/lcm-restore-{safe_id}.lock` tracks if restore already ran
+3. **Lock file path**: `join(tmpdir(), `lcm-restore-${safeId}.lock`)` — `safeId` strips non-alphanumeric chars
+4. **Early exit**: If lock exists and contains our PID, return early immediately
+5. **Create lock**: Write PID to lock file before restore logic runs
+6. **Cleanup**: No explicit cleanup — temp files are ephemeral; OS reclaims on reboot
 
-### Implementation Sketch
+### Implementation (as shipped in `src/hooks/restore.ts`)
 ```typescript
-// In restore.ts: handleSessionStart()
-export async function handleSessionStart(stdin: string, ...): Promise<{ exitCode: number; stdout: string }> {
-  const input = JSON.parse(stdin || "{}");
-  const sessionId = input.session_id;
-  const lockPath = join(homedir(), ".lossless-claude", "locks", `${sessionId}.lock`);
+const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+const lockPath = join(tmpdir(), `lcm-restore-${safeId}.lock`);
 
-  // Early exit if already ran this session
-  if (sessionId && existsSync(lockPath)) {
-    return { exitCode: 0, stdout: "" };
+export function tryAcquireSessionLock(lockPath: string, pid: number): boolean {
+  try {
+    if (existsSync(lockPath)) {
+      const existing = readFileSync(lockPath, "utf-8").trim();
+      return existing === String(pid); // same process already holds it
+    }
+    writeFileSync(lockPath, String(pid), "utf-8");
+    return true;
+  } catch {
+    return false; // fail-closed: treat unreadable lock as held
   }
-
-  // ... existing logic (daemon startup, scavenge, restore) ...
-
-  // Create lock after successful run
-  if (sessionId) {
-    mkdirSync(dirname(lockPath), { recursive: true });
-    writeFileSync(lockPath, sessionId, "utf-8");
-  }
-
-  return { exitCode: 0, stdout };
 }
 ```
 
-**Cleanup in session-end.ts**:
-```typescript
-if (sessionId) {
-  rmSync(lockPath, { force: true });
-}
-```
+**No SessionEnd cleanup** — lock files live in `tmpdir()` and are not removed on SessionEnd.
 
 ## Pros
 - **Immediate effect**: No double work, no daemon load spikes

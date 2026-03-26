@@ -32,3 +32,4 @@ sensitive-patterns-test.txt
 .env
 dist/
 
+vitest-lcm-cache/
