@@ -8,6 +8,8 @@ vi.mock("../../src/daemon/lifecycle.js", () => ({
 vi.mock("../../src/hooks/events-db.js", () => ({
   EventsDb: vi.fn().mockImplementation(() => ({
     pruneProcessed: vi.fn(),
+    pruneUnprocessed: vi.fn().mockReturnValue({ pruned: 0 }),
+    pruneErrorLog: vi.fn().mockReturnValue(0),
     getUnprocessed: vi.fn().mockReturnValue([]),
     close: vi.fn(),
   })),
@@ -95,6 +97,8 @@ describe("handleSessionStart", () => {
 
     vi.mocked(EventsDb).mockImplementationOnce(() => ({
       pruneProcessed: vi.fn(),
+      pruneUnprocessed: vi.fn().mockReturnValue({ pruned: 0 }),
+      pruneErrorLog: vi.fn().mockReturnValue(0),
       getUnprocessed: vi.fn().mockReturnValue([{ event_id: 1 }]),
       close: vi.fn(),
     }) as any);

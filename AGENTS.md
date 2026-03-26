@@ -102,6 +102,16 @@ Some flags that look reasonable don't exist in the installed version:
 - **Logic changes**: dispatch a sonnet subagent
 - Never implement fixes inline in the main session — always dispatch a subagent
 
+## Subagent-Driven Development
+
+When executing implementation plans via subagent-driven development, calibrate each implementer's model based on task complexity:
+
+- **Haiku**: Mechanical tasks — isolated functions, clear specs, 1-2 files, no design judgment (e.g., wiring a function call, adding a display line, doc updates)
+- **Sonnet**: Integration tasks — multi-file coordination, pattern matching, moderate logic (e.g., schema migrations, shared utility modules, test suites)
+- **Opus**: Architecture/judgment tasks — broad codebase understanding, complex error handling, design decisions (e.g., three-layer error fences, doctor check orchestration, E2E tests spanning the full pipeline)
+
+Reviewers (spec compliance + code quality) always use the most capable model available.
+
 ## Release Process
 
 The canonical release process is `.claude/skills/lcm-release/scripts/release.sh` — use it for all releases. `RELEASING.md` and `WORKFLOW.md` describe an older Changesets-based flow that is no longer in use.

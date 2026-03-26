@@ -43,6 +43,9 @@ const LOCAL_TOOLS: Record<string, (args: Record<string, unknown>) => Promise<str
     lines.push(`| Summaries | ${formatNumber(stats.summaries)} |`);
     lines.push(`| DAG depth | ${stats.maxDepth} |`);
     lines.push(`| Promoted memories | ${stats.promotedCount} |`);
+    if (stats.eventsCaptured > 0) {
+      lines.push(`| Events | ${formatNumber(stats.eventsCaptured)} captured (${stats.eventsUnprocessed} unprocessed, ${stats.eventsErrors} errors (30d)) |`);
+    }
 
     // Compression section (only when summarization has happened)
     if (stats.summaries > 0) {

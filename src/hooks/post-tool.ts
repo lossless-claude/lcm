@@ -3,31 +3,13 @@ import { extractPostToolEvents } from "./extractors.js";
 import { EventsDb } from "./events-db.js";
 import { eventsDbPath } from "../db/events-path.js";
 import { firePromoteEventsRequest } from "./session-end.js";
-import { appendFileSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { homedir } from "node:os";
-
-const LOG_PATH = join(homedir(), ".lossless-claude", "logs", "events.log");
-
-function logError(hook: string, error: unknown, sessionId?: string): void {
-  try {
-    mkdirSync(dirname(LOG_PATH), { recursive: true });
-    const msg = JSON.stringify({
-      ts: new Date().toISOString(),
-      hook,
-      error: error instanceof Error ? error.message : String(error),
-      session_id: sessionId,
-    });
-    appendFileSync(LOG_PATH, msg + "\n");
-  } catch {
-    // Last resort: silently fail
-  }
-}
+import { safeLogError } from "./hook-errors.js";
 
 
 export async function handlePostToolUse(
   stdin: string,
 ): Promise<{ exitCode: number; stdout: string }> {
+  let cwd: string | undefined;
   try {
     const input = JSON.parse(stdin);
     const { session_id, tool_name, tool_input, tool_response, tool_output } = input;
@@ -37,8 +19,8 @@ export async function handlePostToolUse(
     const events = extractPostToolEvents({ tool_name, tool_input: tool_input ?? {}, tool_response, tool_output });
     if (events.length === 0) return { exitCode: 0, stdout: "" };
 
-    const cwd = input.cwd ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
-    const dbPath = eventsDbPath(cwd);
+    cwd = input.cwd ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+    const dbPath = eventsDbPath(cwd as string);
     const db = new EventsDb(dbPath);
 
     try {
@@ -59,7 +41,7 @@ export async function handlePostToolUse(
       db.close();
     }
   } catch (error) {
-    logError("PostToolUse", error);
+    safeLogError("PostToolUse", error, { cwd });
   }
 
   return { exitCode: 0, stdout: "" };

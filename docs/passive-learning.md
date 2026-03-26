@@ -78,7 +78,13 @@ All thresholds are configurable in `~/.lossless-claude/config.json` under `compa
 - **Sidecar DB**: `~/.lossless-claude/events/<sha256-of-project-path>.db`
   - Per-project SQLite database in WAL mode
   - Processed events pruned after 7 days
-  - Schema versioned for future migrations
+  - Unprocessed events capped at 10,000 rows (oldest pruned first)
+  - Schema versioned for future migrations (currently v2)
+
+- **Error log**: `error_log` table in each sidecar DB
+  - Records hook errors with timestamp and session ID
+  - Pruned after 30 days on SessionStart
+  - Queryable by `lcm doctor` for health diagnostics
 
 - **Promoted store**: Events promoted via `deduplicateAndInsert()` into the main LCM database
   - Tagged with `source:passive-capture` and `hook:<PostToolUse|UserPromptSubmit>`
@@ -98,7 +104,35 @@ The UserPromptSubmit extractor includes guards against false-positive decisions.
 | Pre-compact | Events promoted before context is compacted |
 | Daemon unavailable | Events queued in sidecar, promoted next session |
 | Hard kill (SIGKILL) | Events survive in sidecar, scavenged on next SessionStart |
+| Unprocessed cap exceeded | Oldest events pruned when > 10,000 rows or > 30 days |
+| Error log pruning | Entries older than 30 days removed on SessionStart |
 
 ## Observability
 
-Passive learning activity is integrated into overall LCM statistics. Use `lcm stats` to inspect high-level promotion and compaction behavior.
+### `lcm doctor`
+
+When passive learning hooks are installed, `lcm doctor` includes a "Passive Learning" category with three checks:
+
+| Check | What it monitors |
+|-------|-----------------|
+| `events-capture` | Total events captured, unprocessed count |
+| `events-errors` | Hook error count (last 30 days) |
+| `events-staleness` | Time since last event capture |
+
+Run `lcm doctor` to see the per-project breakdown and recent error details.
+
+### `lcm stats`
+
+A single line is added to the Memory section when events have been captured:
+
+```
+Events          1,234 captured (42 unprocessed, 3 errors (30d))
+```
+
+### Error Handling
+
+All hooks use a three-layer error fence (`safeLogError`):
+
+1. **Layer 1**: Write to sidecar DB `error_log` table (queryable by doctor/stats)
+2. **Layer 2**: Append to `~/.lossless-claude/logs/events.log` (flat file fallback)
+3. **Layer 3**: Swallow silently — hooks must never crash or interfere with Claude Code

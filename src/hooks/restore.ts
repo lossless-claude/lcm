@@ -20,6 +20,8 @@ export async function handleSessionStart(stdin: string, client: DaemonClient, po
       const eventsDb = new EventsDb(eventsDbPath(cwd));
       try {
         eventsDb.pruneProcessed(7);
+        eventsDb.pruneUnprocessed(10_000, 30);
+        eventsDb.pruneErrorLog(30);
         const unprocessed = eventsDb.getUnprocessed(1);
         if (unprocessed.length > 0) {
           const { firePromoteEventsRequest } = await import("./session-end.js");

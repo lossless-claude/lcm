@@ -2,6 +2,7 @@ import type { DaemonClient } from "../daemon/client.js";
 import { ensureDaemon } from "../daemon/lifecycle.js";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { safeLogError } from "./hook-errors.js";
 
 type PromptSearchResponse = {
   hints: string[];
@@ -56,8 +57,11 @@ export async function handleUserPromptSubmit(
           db.close();
         }
       }
-    } catch {
-      // Silent fail — never block the user's prompt
+    } catch (e) {
+      safeLogError("UserPromptSubmit", e, {
+        cwd: input.cwd ?? process.env.CLAUDE_PROJECT_DIR,
+        sessionId: input.session_id,
+      });
     }
 
     const result = await client.post<PromptSearchResponse>("/prompt-search", {
