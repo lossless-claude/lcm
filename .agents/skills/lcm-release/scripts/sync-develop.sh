@@ -61,7 +61,30 @@ if git show-ref --verify --quiet "refs/heads/$SYNC_BRANCH"; then
 fi
 
 if git ls-remote --exit-code --heads origin "$SYNC_BRANCH" >/dev/null 2>&1; then
-  err "Branch $SYNC_BRANCH already exists on remote. Has the sync PR already been opened?"
+  echo "  Branch $SYNC_BRANCH already exists on remote — checking for open PR..."
+  EXISTING_PR=$(gh pr list --repo "$REPO" --head "$SYNC_BRANCH" --base develop --json number --jq '.[0].number' 2>/dev/null)
+  if [[ -n "$EXISTING_PR" && "$EXISTING_PR" =~ ^[0-9]+$ ]]; then
+    echo "  Found open PR #$EXISTING_PR — merging..."
+    gh pr merge "$EXISTING_PR" --repo "$REPO" --merge --delete-branch
+    ok "develop is now in sync with main."
+    exit 0
+  fi
+  # Branch exists but no open PR — create the PR from the existing branch
+  echo "  No open PR found — creating PR from existing branch..."
+  SYNC_URL=$(gh pr create \
+    --repo "$REPO" \
+    --head "$SYNC_BRANCH" \
+    --base develop \
+    --title "chore: sync develop with main after v$VERSION release" \
+    --body "Syncs develop with main after the v$VERSION release. Merges the release commit into develop.")
+  SYNC_PR="${SYNC_URL##*/}"
+  if [[ -z "$SYNC_PR" || ! "$SYNC_PR" =~ ^[0-9]+$ ]]; then
+    err "Failed to parse PR number from gh pr create output: $SYNC_URL"
+  fi
+  echo "  Opened sync PR #$SYNC_PR — merging..."
+  gh pr merge "$SYNC_PR" --repo "$REPO" --merge --delete-branch
+  ok "develop is now in sync with main."
+  exit 0
 fi
 
 git checkout -b "$SYNC_BRANCH"

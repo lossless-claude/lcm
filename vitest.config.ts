@@ -1,6 +1,9 @@
 import { defineConfig } from "vitest/config";
+import { tmpdir } from "os";
+import { join } from "path";
 
 export default defineConfig({
+  cacheDir: join(tmpdir(), "vitest-lcm-cache"),
   test: {
     include: ["**/*.test.ts"],
     exclude: ["node_modules/**", ".claude/**"],
