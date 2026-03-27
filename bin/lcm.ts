@@ -277,6 +277,19 @@ async function main() {
       exit(r.exitCode);
     });
 
+  // ─── post-tool (hook) ──────────────────────────────────────────────────────
+  program
+    .command("post-tool")
+    .description("Dispatch the post-tool hook (called by PostToolUse)")
+    .helpOption(false)
+    .action(async () => {
+      const { dispatchHook } = await import("../src/hooks/dispatch.js");
+      const input = await readStdin();
+      const r = await dispatchHook("post-tool", input);
+      if (r.stdout) stdout.write(r.stdout);
+      exit(r.exitCode);
+    });
+
   // ─── session-snapshot (hook) ─────────────────────────────────────────────
   program
     .command("session-snapshot")
