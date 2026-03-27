@@ -227,9 +227,9 @@ const HELP: Record<string, CommandHelp> = {
     summary: "Dispatch the session-end hook — finalizes and stores session memory.",
     usage: "lcm session-end",
     examples: [
-      ["lcm session-end", "Finalize session memory (called by Stop hook)"],
+      ["lcm session-end", "Finalize session memory (called by SessionEnd hook)"],
     ],
-    notes: "Invoked automatically by the Claude Code Stop hook. Not intended for direct use.",
+    notes: "Invoked automatically by the Claude Code SessionEnd hook. Not intended for direct use.",
   },
 
   "user-prompt": {
@@ -239,6 +239,15 @@ const HELP: Record<string, CommandHelp> = {
       ["lcm user-prompt", "Record user prompt context (called by UserPromptSubmit hook)"],
     ],
     notes: "Invoked automatically by the Claude Code UserPromptSubmit hook. Not intended for direct use.",
+  },
+
+  "post-tool": {
+    summary: "Dispatch the post-tool hook — captures tool events for passive learning.",
+    usage: "lcm post-tool",
+    examples: [
+      ["lcm post-tool", "Capture tool event (called by PostToolUse hook)"],
+    ],
+    notes: "Invoked automatically by the Claude Code PostToolUse hook on every tool call. Not intended for direct use.",
   },
 };
 
@@ -292,7 +301,7 @@ const GROUPS = [
     label: "Hooks (internal)",
     commands: [
       { name: "restore", summary: "SessionStart hook — restore prior context" },
-      { name: "session-end", summary: "Stop hook — finalize and store session memory" },
+      { name: "session-end", summary: "SessionEnd hook — finalize and store session memory" },
       { name: "user-prompt", summary: "UserPromptSubmit hook — record user prompt context" },
       { name: "post-tool", summary: "PostToolUse hook — capture tool events" },
     ],
