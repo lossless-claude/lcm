@@ -1,6 +1,26 @@
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readFileSync, existsSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { GITLEAKS_PATTERNS } from "./generated-patterns.js";
+
+const _thisDir = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Reads the sync date from the generated-patterns.ts header comment.
+ * Returns a formatted date string like "2026-03-27" or null if unavailable.
+ */
+export function readGitleaksSyncDate(): string | null {
+  try {
+    const genFile = join(_thisDir, "generated-patterns.js");
+    if (!existsSync(genFile)) return null;
+    const header = readFileSync(genFile, "utf-8").slice(0, 500);
+    const match = header.match(/\/\/ Updated: (\d{4}-\d{2}-\d{2})/);
+    return match ? match[1] : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Native (hand-curated) patterns that gap-fill what gitleaks doesn't cover.
