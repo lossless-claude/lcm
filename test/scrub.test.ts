@@ -132,48 +132,66 @@ describe("ScrubEngine.scrubWithCounts", () => {
   it("returns zero counts when nothing is redacted", () => {
     const engine = new ScrubEngine([], []);
     const result = engine.scrubWithCounts("Hello world, this is safe content.");
+    expect(result.gitleaks).toBe(0);
     expect(result.builtIn).toBe(0);
     expect(result.global).toBe(0);
     expect(result.project).toBe(0);
     expect(result.text).toBe("Hello world, this is safe content.");
   });
 
-  it("counts built-in pattern matches", () => {
+  it("counts gitleaks pattern matches (GitHub PAT)", () => {
     const engine = new ScrubEngine([], []);
+    // ghp_ GitHub PAT — covered by both gitleaks and native; gitleaks wins (lower index)
     const result = engine.scrubWithCounts("token=ghp_" + "A".repeat(36));
+    expect(result.gitleaks).toBeGreaterThan(0);
+    expect(result.global).toBe(0);
+    expect(result.project).toBe(0);
+    expect(result.text).toContain("[REDACTED]");
+  });
+
+  it("counts built-in (native) pattern matches for strings not covered by gitleaks", () => {
+    const engine = new ScrubEngine([], []);
+    // Database connection URL — only in NATIVE_PATTERNS, not gitleaks
+    const result = engine.scrubWithCounts("postgres://admin:s3cret@db.example.com:5432/mydb");
     expect(result.builtIn).toBeGreaterThan(0);
+    expect(result.gitleaks).toBe(0);
     expect(result.global).toBe(0);
     expect(result.project).toBe(0);
     expect(result.text).toContain("[REDACTED]");
   });
 
   it("counts global pattern matches", () => {
-    const engine = new ScrubEngine(["MY_TOKEN_[A-Z0-9]+"], []);
-    const result = engine.scrubWithCounts("token=MY_TOKEN_ABC123");
+    const engine = new ScrubEngine(["XUNIT_[A-Z0-9]+"], []);
+    // XUNIT_ prefix doesn't appear in gitleaks or native patterns
+    const result = engine.scrubWithCounts("XUNIT_ABC123");
+    expect(result.gitleaks).toBe(0);
     expect(result.builtIn).toBe(0);
     expect(result.global).toBe(1);
     expect(result.project).toBe(0);
   });
 
   it("counts project pattern matches", () => {
-    const engine = new ScrubEngine([], ["PROJ_SECRET_[A-Z]+"]);
-    const result = engine.scrubWithCounts("secret=PROJ_SECRET_XYZ");
+    const engine = new ScrubEngine([], ["ZEBRA_[A-Z]+"]);
+    // ZEBRA_ prefix doesn't appear in gitleaks or native patterns
+    const result = engine.scrubWithCounts("ZEBRA_XYZ");
+    expect(result.gitleaks).toBe(0);
     expect(result.builtIn).toBe(0);
     expect(result.global).toBe(0);
     expect(result.project).toBe(1);
   });
 
   it("counts multiple matches across categories independently", () => {
-    const engine = new ScrubEngine(["GLOBAL_[A-Z0-9]+"], ["LOCAL_[A-Z0-9]+"]);
-    const result = engine.scrubWithCounts("GLOBAL_123 and LOCAL_456 and token=ghp_" + "A".repeat(36));
+    const engine = new ScrubEngine(["XUNIT_[A-Z0-9]+"], ["ZEBRA_[A-Z]+"]);
+    // XUNIT_ (global) + ZEBRA_ (project) + DB URL (native/builtIn)
+    const result = engine.scrubWithCounts("XUNIT_123 and ZEBRA_XYZ and postgres://admin:s3cret@db.example.com/mydb");
     expect(result.builtIn).toBeGreaterThan(0);
     expect(result.global).toBe(1);
     expect(result.project).toBe(1);
   });
 
   it("scrub() returns same text as scrubWithCounts().text", () => {
-    const engine = new ScrubEngine(["GLOBAL_[A-Z]+"], ["LOCAL_[A-Z]+"]);
-    const text = "GLOBAL_ABC LOCAL_XYZ safe text";
+    const engine = new ScrubEngine(["XUNIT_[A-Z]+"], ["ZEBRA_[A-Z]+"]);
+    const text = "XUNIT_ABC ZEBRA_XYZ safe text";
     expect(engine.scrub(text)).toBe(engine.scrubWithCounts(text).text);
   });
 });
