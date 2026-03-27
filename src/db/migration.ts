@@ -500,7 +500,7 @@ export function runLcmMigrations(
   db.exec(`
     CREATE TABLE IF NOT EXISTS redaction_stats (
       project_id TEXT NOT NULL,
-      category TEXT NOT NULL CHECK(category IN ('built_in', 'global', 'project')),
+      category TEXT NOT NULL CHECK(category IN ('gitleaks', 'built_in', 'global', 'project')),
       count INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (project_id, category)
     );
