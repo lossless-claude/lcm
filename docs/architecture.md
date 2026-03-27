@@ -1,224 +1,170 @@
 # Architecture
 
-This document describes how lossless-claude works internally — the data model, compaction lifecycle, context assembly, and expansion system.
+This document explains how lossless-claude works — the two-layer memory model, DAG compaction, context assembly, and expansion system.
 
-## Data model
+## Two-layer memory model
 
-### Conversations and messages
+lossless-claude maintains two complementary memory layers:
 
-Every Claude Code session maps to a **conversation**. The first time a session ingests a message, LCM creates a conversation record keyed by the runtime session ID.
+### Episodic layer (session history)
 
-Messages are stored with:
-- **seq** — Monotonically increasing sequence number within the conversation
+Every message from every Claude Code session is stored in a per-project SQLite database. Messages are organized into conversations (one per session) and carry:
+
+- **seq** — Sequence number within the conversation
 - **role** — `user`, `assistant`, `system`, or `tool`
-- **content** — Plain text extraction of the message
-- **tokenCount** — Estimated token count (~4 chars/token)
-- **createdAt** — Insertion timestamp
+- **content** — Plain text extraction
+- **tokenCount** — Estimated tokens (~4 chars/token)
+- **message_parts** — Structured content blocks preserving original shape (text, tool calls, results, reasoning, file content)
 
-Each message also has **message_parts** — structured content blocks that preserve the original shape (text blocks, tool calls, tool results, reasoning, file content, etc.). This allows the assembler to reconstruct rich content when building model context, not just flat text.
+When conversations grow too large, older messages are **compacted into a DAG of summaries**. The original messages are preserved — summaries point back to their sources.
 
-### The summary DAG
+### Semantic layer (promoted memory)
 
-Summaries form a directed acyclic graph with two node types:
+Durable insights — architectural decisions, bug root causes, user preferences, integration patterns — are **promoted** from episodic summaries into a cross-session knowledge store.
+
+Promoted entries are:
+- Tagged with categories (e.g., `decision`, `architecture`, `preference`)
+- Searchable via `lcm_search` across all sessions
+- Automatically surfaced on session start and each user prompt
+- Deduplicated via BM25 similarity matching
+
+## The summary DAG
+
+Summaries form a directed acyclic graph with increasing levels of abstraction:
+
+```
+Messages (raw)
+    |
+    v
+Leaf summaries (depth 0)     <- 800-1200 tokens, from message chunks
+    |
+    v
+Condensed d1 summaries       <- 1500-2000 tokens, from leaf groups
+    |
+    v
+Condensed d2+ summaries      <- progressively more abstract
+```
 
 **Leaf summaries** (depth 0, kind `"leaf"`):
 - Created from a chunk of raw messages
 - Linked to source messages via `summary_messages`
-- Contain a narrative summary with timestamps
-- Typically 800–1200 tokens
+- Narrative form with timestamps
 
 **Condensed summaries** (depth 1+, kind `"condensed"`):
-- Created from a chunk of summaries at the same depth
+- Created from same-depth summaries
 - Linked to parent summaries via `summary_parents`
 - Each depth tier uses a progressively more abstract prompt
-- Typically 1500–2000 tokens
 
-Every summary carries:
-- **summaryId** — `sum_` + 16 hex chars (SHA-256 of content + timestamp)
-- **conversationId** — Which conversation it belongs to
-- **depth** — Position in the hierarchy (0 = leaf)
-- **earliestAt / latestAt** — Time range of source material
-- **descendantCount** — Total number of ancestor summaries (transitive)
-- **fileIds** — References to large files mentioned in the source
-- **tokenCount** — Estimated tokens
-
-### Context items
-
-The **context_items** table maintains the ordered list of what the model sees for each conversation. Each entry is either a message reference or a summary reference, identified by ordinal.
-
-When compaction creates a summary from a range of messages (or summaries), the source items are replaced by a single summary item. This keeps the context list compact while preserving ordering.
+Every summary carries a `summaryId` (`sum_` + 16 hex chars), depth, time range, descendant count, and token estimate.
 
 ## Compaction lifecycle
 
 ### Ingestion
 
-When Claude Code processes a turn, it calls the context engine's lifecycle hooks:
-
-1. **bootstrap** — On session start, reconciles the JSONL session file with the LCM database. Imports any messages that exist in the file but not in LCM (crash recovery).
-2. **ingest** / **ingestBatch** — Persists new messages to the database and appends them to context_items.
-3. **afterTurn** — After the model responds, ingests new messages, then evaluates whether compaction should run.
+1. **Bootstrap** — On session start, reconciles the JSONL session file with the LCM database (crash recovery)
+2. **Ingest** — Persists new messages and appends them to the context item list
+3. **After turn** — Evaluates whether compaction should run
 
 ### Leaf compaction
 
-The **leaf pass** converts raw messages into leaf summaries:
-
-1. Identify the oldest contiguous chunk of raw messages outside the **fresh tail** (protected recent messages).
-2. Cap the chunk at `leafChunkTokens` (default 20k tokens).
-3. Concatenate message content with timestamps.
-4. Resolve the most recent prior summary for continuity (passed as `previous_context` so the LLM avoids repeating known information).
-5. Send to the LLM with the leaf prompt.
-6. Normalize provider response blocks (Anthropic/OpenAI text, output_text, and nested content/summary shapes) into plain text.
-7. If normalization is empty, log provider/model/block-type diagnostics and fall back to deterministic truncation.
-8. If the summary is larger than the input (LLM failure), retry with the aggressive prompt. If still too large, fall back to deterministic truncation.
-9. Persist the summary, link to source messages, and replace the message range in context_items.
+1. Find the oldest chunk of raw messages outside the **fresh tail** (protected recent messages)
+2. Cap at `leafChunkTokens` (default 20k tokens)
+3. Send to LLM with the leaf prompt, passing the most recent prior summary for continuity
+4. Persist the summary, link to source messages, replace the message range in the context item list
 
 ### Condensation
 
-The **condensed pass** merges summaries at the same depth into a higher-level summary:
-
-1. Find the shallowest depth with enough contiguous same-depth summaries (≥ `leafMinFanout` for d0, ≥ `condensedMinFanout` for d1+).
-2. Concatenate their content with time range headers.
-3. Send to the LLM with the depth-appropriate prompt (d1, d2, or d3+).
-4. Apply the same escalation strategy (normal → aggressive → truncation fallback).
-5. Persist with depth = targetDepth + 1, link to parent summaries, replace the range in context_items.
-
-### Compaction modes
-
-**Incremental (after each turn):**
-- Checks if raw tokens outside the fresh tail exceed `leafChunkTokens`
-- If so, runs one leaf pass
-- If `incrementalMaxDepth != 0`, follows with condensation passes up to that depth (`-1` for unlimited)
-- Best-effort: failures don't break the conversation
-
-**Full sweep (manual `/compact` or overflow):**
-- Phase 1: Repeatedly runs leaf passes until no more eligible chunks
-- Phase 2: Repeatedly runs condensation passes starting from the shallowest eligible depth
-- Each pass checks for progress; stops if no tokens were saved
-
-**Budget-targeted (`compactUntilUnder`):**
-- Runs up to `maxRounds` (default 10) of full sweeps
-- Stops when context is under the target token count
-- Used by the overflow recovery path
+1. Find the shallowest depth with enough same-depth summaries (>= fanout threshold)
+2. Concatenate their content with time range headers
+3. Send to LLM with the depth-appropriate prompt
+4. Persist at depth + 1, link to parent summaries
 
 ### Three-level escalation
 
-Every summarization attempt follows this escalation:
+Every summarization attempt follows this escalation to guarantee progress:
 
 1. **Normal** — Standard prompt, temperature 0.2
-2. **Aggressive** — Tighter prompt requesting only durable facts, temperature 0.1, lower target tokens
-3. **Fallback** — Deterministic truncation to ~512 tokens with `[Truncated for context management]` marker
+2. **Aggressive** — Tighter prompt requesting only durable facts, temperature 0.1
+3. **Fallback** — Deterministic truncation to ~512 tokens
 
-This ensures compaction always makes progress, even if the LLM produces poor output.
+### Compaction modes
+
+| Mode | Trigger | Behavior |
+|------|---------|----------|
+| Incremental | After each turn | One leaf pass if raw tokens exceed threshold |
+| Full sweep | `/lcm-compact` or overflow | Repeated leaf + condensation passes until no progress |
+| Budget-targeted | Overflow recovery | Up to 10 rounds until context is under target |
 
 ## Context assembly
 
 The assembler runs before each model turn and builds the message array:
 
 ```
-[summary₁, summary₂, ..., summaryₙ, message₁, message₂, ..., messageₘ]
- ├── budget-constrained ──┤  ├──── fresh tail (always included) ────┤
+[summary_1, summary_2, ..., summary_n, message_1, message_2, ..., message_m]
+ |---- budget-constrained ----|  |---- fresh tail (always included) ----|
 ```
 
-### Steps
+Steps:
+1. Fetch all context items ordered by position
+2. Resolve each item — summaries become user messages with XML wrappers; messages are reconstructed from parts
+3. Split into evictable prefix and protected fresh tail
+4. Fill remaining budget from evictable set, keeping newest, dropping oldest
+5. Sanitize tool-use/result pairing (every `tool_result` must have a matching `tool_use`)
 
-1. Fetch all context_items ordered by ordinal.
-2. Resolve each item — summaries become user messages with XML wrappers; messages are reconstructed from parts.
-3. Split into evictable prefix and protected fresh tail (last `freshTailCount` raw messages).
-4. Compute fresh tail token cost (always included, even if over budget).
-5. Fill remaining budget from the evictable set, keeping newest items and dropping oldest.
-6. Normalize assistant content to array blocks (Anthropic API compatibility).
-7. Sanitize tool-use/result pairing (ensures every tool_result has a matching tool_use).
+### Summary XML format
 
-### XML summary format
-
-Summaries are presented to the model as user messages wrapped in XML:
+Summaries are presented to the model wrapped in XML:
 
 ```xml
 <summary id="sum_abc123" kind="leaf" depth="0" descendant_count="0"
          earliest_at="2026-02-17T07:37:00" latest_at="2026-02-17T08:23:00">
   <content>
-    ...summary text with timestamps...
-
-    Expand for details about: exact error messages, full config diff, intermediate debugging steps
+    ...summary text...
+    Expand for details about: exact error messages, config values
   </content>
 </summary>
 ```
 
-Condensed summaries also include parent references:
-
-```xml
-<summary id="sum_def456" kind="condensed" depth="1" descendant_count="8" ...>
-  <parents>
-    <summary_ref id="sum_aaa111" />
-    <summary_ref id="sum_bbb222" />
-  </parents>
-  <content>...</content>
-</summary>
-```
-
-The XML attributes give the model enough metadata to reason about summary age, scope, and how to drill deeper. The `<parents>` section enables targeted expansion of specific source summaries.
+The XML attributes give the model metadata to reason about summary age, scope, and how to drill deeper.
 
 ## Expansion system
 
-When summaries are too compressed for a task, agents use `lcm_expand_query` to recover detail.
+When summaries are too compressed, agents use `lcm_expand` (or the higher-level `lcm_expand_query`) to recover detail by walking the DAG back to source material.
 
-### How it works
-
-1. Agent calls `lcm_expand_query` with a `prompt` and either `summaryIds` or a `query`.
-2. If `query` is provided, `lcm_grep` finds matching summaries first.
-3. A **delegation grant** is created, scoping the sub-agent to the relevant conversation(s) with a token cap.
-4. A sub-agent session is spawned with the expansion task.
-5. The sub-agent walks the DAG: it can read summary content, follow parent links, access source messages, and inspect stored files.
-6. The sub-agent returns a focused answer (default ≤ 2000 tokens) with cited summary IDs.
-7. The grant is revoked and the sub-agent session is cleaned up.
-
-### Security model
-
-Expansion uses a delegation grant system:
-
-- **Grants** are created at spawn time, scoped to specific conversation IDs
-- **Token caps** limit how much content the sub-agent can access
-- **TTL** ensures grants expire even if cleanup fails
-- **Revocation** happens on completion, cancellation, or sweep
-
-The sub-agent only gets `lcm_expand` (the low-level tool), not `lcm_expand_query` — preventing recursive sub-agent spawning.
+The expansion sub-agent:
+1. Receives a delegation grant scoped to specific conversations with a token cap
+2. Walks parent links down to source messages
+3. Returns a focused answer with cited summary IDs
+4. Grant is revoked on completion
 
 ## Large file handling
 
-Files embedded in user messages (typically via `<file>` blocks from tool output) are checked at ingestion:
+Files exceeding `largeFileTokenThreshold` (default 25k tokens) are:
+1. Stored to `~/.claude/lcm-files/<conversation_id>/<file_id>.<ext>`
+2. Replaced in the message with a compact reference and ~200 token exploration summary
+3. Retrievable via `lcm_describe` by file ID
 
-1. Parse file blocks from message content.
-2. For each block exceeding `largeFileTokenThreshold` (default 25k tokens):
-   - Generate a unique file ID (`file_` prefix)
-   - Store the content to `~/.claude/lcm-files/<conversation_id>/<file_id>.<ext>`
-   - Generate a ~200 token exploration summary (structural analysis, key sections, etc.)
-   - Insert a `large_files` record with metadata
-   - Replace the file block in the message with a compact reference
-3. The `lcm_describe` tool can retrieve full file content by ID.
+## Passive learning
 
-This prevents a single large file paste from consuming the entire context window while keeping the content accessible.
+Two hooks capture events during sessions:
+
+- **PostToolUse** — Extracts tool metadata (never raw output)
+- **UserPromptSubmit** — Detects decisions, role statements, intent patterns
+
+Events are stored in a per-project sidecar SQLite database and promoted to cross-session memory at session boundaries through a three-tier system (immediate, batch, pattern reinforcement).
 
 ## Session reconciliation
 
-LCM handles crash recovery through **bootstrap reconciliation**:
+On session start, LCM reads the JSONL session file and compares against its database. Any messages present in the file but not in LCM are imported — handling crashes where Claude Code wrote messages but LCM didn't persist them.
 
-1. On session start, read the JSONL session file (Claude Code's ground truth).
-2. Compare against the LCM database.
-3. Find the most recent message that exists in both (the "anchor").
-4. Import any messages after the anchor that are in JSONL but not in LCM.
+## Data storage
 
-This handles the case where Claude Code wrote messages to the session file but crashed before LCM could persist them.
+| Location | Contents |
+|----------|----------|
+| `~/.lossless-claude/config.json` | Global configuration |
+| `~/.lossless-claude/projects/{hash}/db.sqlite` | Per-project conversation database |
+| `~/.lossless-claude/events/{hash}.db` | Per-project passive learning events |
+| `~/.lossless-claude/daemon.pid` | Daemon process ID |
+| `~/.claude/lcm-files/` | Stored large files |
 
-## Operation serialization
-
-All mutating operations (ingest, compact) are serialized per-session using a promise queue. This prevents races between concurrent afterTurn/compact calls for the same conversation without blocking operations on different conversations.
-
-## Authentication
-
-LCM needs to call an LLM for summarization. It resolves credentials through a three-tier cascade:
-
-1. **Auth profiles** — Claude Code's OAuth/token/API-key profile system (`auth-profiles.json`), checked in priority order
-2. **Environment variables** — Standard provider env vars (`ANTHROPIC_API_KEY`, etc.)
-3. **Custom provider key** — From models config (e.g., `models.json`)
-
-For OAuth providers (e.g., Anthropic via Claude Max), LCM handles token refresh and credential persistence automatically.
+All data stays on your machine. The only external communication is to the configured summarizer provider. See [Configuration > Sensitive Patterns](configuration.md#sensitive-patterns) for secret redaction.
