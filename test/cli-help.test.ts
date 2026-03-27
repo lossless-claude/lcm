@@ -22,6 +22,7 @@ describe("printHelp — full reference", () => {
     expect(text).toContain("Connectors");
     expect(text).toContain("Sensitive");
     expect(text).toContain("Hooks (internal)");
+    expect(text).toContain("post-tool");
   });
 
   it("includes version and help flags", () => {
@@ -71,6 +72,14 @@ describe("printHelp — per-command detail", () => {
     const text = out.mock.calls.map(c => c[0]).join("");
     expect(text).toContain("lcm restore");
     expect(text).toContain("SessionStart");
+  });
+
+  it("prints hook command help (post-tool)", () => {
+    const out = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    printHelp("post-tool");
+    const text = out.mock.calls.map(c => c[0]).join("");
+    expect(text).toContain("lcm post-tool");
+    expect(text).toContain("PostToolUse");
   });
 
   it("prints mcp command help", () => {
