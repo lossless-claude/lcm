@@ -102,9 +102,10 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
       }
 
       const pid = projectId(cwd);
-      const totalCounts = { builtIn: 0, global: 0, project: 0 };
+      const totalCounts = { gitleaks: 0, builtIn: 0, global: 0, project: 0 };
       const inputs = newMessages.map((m, i) => {
-        const { text: scrubbedContent, builtIn, global: globalCount, project } = scrubber.scrubWithCounts(m.content);
+        const { text: scrubbedContent, gitleaks, builtIn, global: globalCount, project } = scrubber.scrubWithCounts(m.content);
+        totalCounts.gitleaks += gitleaks;
         totalCounts.builtIn += builtIn;
         totalCounts.global += globalCount;
         totalCounts.project += project;
