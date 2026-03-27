@@ -1,0 +1,95 @@
+name: Update Gitleaks Patterns
+
+on:
+  schedule:
+    # Every Monday at 06:00 UTC
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-patterns:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout develop
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+          # Use bot token so commits can bypass branch protection rules
+          token: ${{ secrets.PATTERNS_BOT_TOKEN || github.token }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run update-gitleaks-patterns
+        run: npx tsx scripts/update-gitleaks-patterns.ts
+
+      - name: Check for changes
+        id: diff
+        run: |
+          if git diff --quiet src/generated-patterns.ts; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No changes to generated-patterns.ts — skipping commit"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            # Extract new rule count from updated file
+            count=$(grep -oP '(?<=// Rules: )\d+' src/generated-patterns.ts || echo "?")
+            echo "rule_count=$count" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump patch version
+        if: steps.diff.outputs.changed == 'true'
+        id: bump
+        run: |
+          # Read current version and bump patch
+          current=$(node -p "require('./package.json').version")
+          # Increment patch: 0.7.0 -> 0.7.1
+          IFS='.' read -r major minor patch <<< "$current"
+          new_patch=$((patch + 1))
+          new_version="$major.$minor.$new_patch"
+          # Update package.json
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
+            pkg.version = '$new_version';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+          echo "new_version=$new_version" >> "$GITHUB_OUTPUT"
+          echo "Bumped version: $current -> $new_version"
+
+      - name: Commit and push to develop
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config user.name "gitleaks-patterns-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/generated-patterns.ts package.json
+          git commit -m "chore(security): sync gitleaks patterns → ${{ steps.diff.outputs.rule_count }} rules (v${{ steps.bump.outputs.new_version }})"
+          git push origin develop
+
+      - name: Summary
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          echo "### Gitleaks Patterns Updated" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Rules:** ${{ steps.diff.outputs.rule_count }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** v${{ steps.bump.outputs.new_version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Branch:** develop" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "> **Manual step required:** Merge develop → release to publish. Update branch ruleset to add bot bypass actor if not done." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: No-op summary
+        if: steps.diff.outputs.changed == 'false'
+        run: |
+          echo "### No Gitleaks Pattern Changes" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Gitleaks patterns are up to date — no commit needed." >> "$GITHUB_STEP_SUMMARY"
