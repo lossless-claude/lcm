@@ -5,6 +5,7 @@ export interface ExtractedEvent {
   category: string;
   data: string;
   priority: number;
+  tags?: string[];
 }
 
 interface PostToolInput {
@@ -177,9 +178,21 @@ export function extractPostToolEvents(input: PostToolInput): ExtractedEvent[] {
   return [];
 }
 
+// Extract text content from <channel> XML tags, or return prompt as-is
+export function normalizePromptWithChannels(prompt: string): { text: string; fromChannel: boolean } {
+  const normalized = prompt.replace(/<channel[^>]*>([\s\S]*?)<\/channel>/g, (_, content) => content.trim());
+  return { text: normalized, fromChannel: normalized !== prompt };
+}
+
 export function extractUserPromptEvents(prompt: string): ExtractedEvent[] {
   const events: ExtractedEvent[] = [];
-  const lower = prompt.toLowerCase();
+
+  // Strip <channel> XML tags before running extractors
+  const { text: normalizedPrompt, fromChannel } = normalizePromptWithChannels(prompt);
+
+  const lower = normalizedPrompt.toLowerCase();
+
+  const channelTags = fromChannel ? ["source:telegram"] : undefined;
 
   // Decision extraction with negative-match guards
   const hasNegative = NEGATIVE_PATTERNS.some(np => lower.includes(np));
@@ -188,13 +201,15 @@ export function extractUserPromptEvents(prompt: string): ExtractedEvent[] {
       /\b(don'?t|never|always|prefer|use .+ instead)\b/i,
     ];
     for (const pattern of decisionPatterns) {
-      if (pattern.test(prompt)) {
-        events.push({
+      if (pattern.test(normalizedPrompt)) {
+        const event: ExtractedEvent = {
           type: "user_decision",
           category: "decision",
-          data: truncate(prompt),
+          data: truncate(normalizedPrompt),
           priority: 1,
-        });
+        };
+        if (channelTags) event.tags = channelTags;
+        events.push(event);
         break;
       }
     }
@@ -206,13 +221,15 @@ export function extractUserPromptEvents(prompt: string): ExtractedEvent[] {
     /\b(senior|junior|staff|lead|principal)\s+(engineer|developer|scientist|designer)\b/i,
   ];
   for (const pattern of rolePatterns) {
-    if (pattern.test(prompt)) {
-      events.push({
+    if (pattern.test(normalizedPrompt)) {
+      const event: ExtractedEvent = {
         type: "user_role",
         category: "role",
-        data: truncate(prompt),
+        data: truncate(normalizedPrompt),
         priority: 2,
-      });
+      };
+      if (channelTags) event.tags = channelTags;
+      events.push(event);
       break;
     }
   }
@@ -225,13 +242,15 @@ export function extractUserPromptEvents(prompt: string): ExtractedEvent[] {
     [/\b(refactor|clean|simplify|optimize)\b/i, "refactor"],
   ];
   for (const [pattern, intent] of intentMap) {
-    if (pattern.test(prompt)) {
-      events.push({
+    if (pattern.test(normalizedPrompt)) {
+      const event: ExtractedEvent = {
         type: `intent_${intent}`,
         category: "intent",
         data: intent,
         priority: 3,
-      });
+      };
+      if (channelTags) event.tags = channelTags;
+      events.push(event);
       break;
     }
   }
