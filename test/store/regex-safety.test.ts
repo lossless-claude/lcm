@@ -8,8 +8,8 @@ describe("validateRegex", () => {
   });
 
   it("throws for catastrophic backtracking patterns", () => {
-    expect(() => validateRegex("(a+)+$")).toThrow(/unsafe/i);
-    expect(() => validateRegex("(.*a){20}")).toThrow(/unsafe/i);
+    expect(() => validateRegex("(a+)+$")).toThrow(/unsafe/i); // codeql[js/redos] - intentional test input, never compiled
+    expect(() => validateRegex("(.*a){20}")).toThrow(/unsafe/i); // codeql[js/redos] - intentional test input, never compiled
   });
 
   it("throws for invalid regex syntax", () => {
