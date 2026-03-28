@@ -21,7 +21,8 @@ vi.mock("../src/daemon/project.js", async () => {
 });
 
 import { handleSensitive } from "../src/sensitive.js";
-import { BUILT_IN_PATTERNS } from "../src/scrub.js";
+import { NATIVE_PATTERNS } from "../src/scrub.js";
+import { GITLEAKS_PATTERNS } from "../src/generated-patterns.js";
 
 describe("lcm sensitive", () => {
   let tempBase: string;
@@ -47,11 +48,14 @@ describe("lcm sensitive", () => {
 
   // --- list ---
 
-  it("list: shows built-in patterns with [built-in] label", async () => {
+  it("list: shows gitleaks pattern count and native patterns with correct labels", async () => {
     const r = await handleSensitive(["list"], cwd, configPath);
     expect(r.exitCode).toBe(0);
-    for (const p of BUILT_IN_PATTERNS) {
-      expect(r.stdout).toContain(`[built-in]  ${p}`);
+    // Gitleaks section: shows count summary
+    expect(r.stdout).toContain(`[gitleaks]  ${GITLEAKS_PATTERNS.length} patterns`);
+    // Native section: each native pattern shown with [native] label
+    for (const p of NATIVE_PATTERNS) {
+      expect(r.stdout).toContain(`[native]    ${p}`);
     }
   });
 
