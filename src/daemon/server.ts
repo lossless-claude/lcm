@@ -46,7 +46,12 @@ export async function readBody(req: IncomingMessage): Promise<string> {
 }
 
 export function sendJson(res: ServerResponse, status: number, data: unknown): void {
-  const body = JSON.stringify(data);
+  // Sanitize error strings before serializing to prevent stack-trace / path leakage
+  const safe =
+    data !== null && typeof data === "object" && "error" in data && typeof (data as Record<string, unknown>).error === "string"
+      ? { ...(data as Record<string, unknown>), error: sanitizeError((data as Record<string, unknown>).error as string) }
+      : data;
+  const body = JSON.stringify(safe);
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(body);
 }
