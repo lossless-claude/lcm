@@ -1,8 +1,17 @@
 // src/hooks/events-db.ts
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { ExtractedEvent } from "./extractors.js";
+import { getLcmConnection, closeLcmConnection, isLcmConnectionOpen } from "../db/connection.js";
+
+/**
+ * Tracks which db paths have already had migrations applied in this process.
+ * When a pooled connection is reused (refs > 1), we skip the migration check
+ * entirely — it already ran during the first open. Cleared on process exit or
+ * when a path is explicitly evicted from the pool.
+ */
+const _migratedPaths = new Set<string>();
 
 export interface EventRow {
   event_id: number;
@@ -57,13 +66,20 @@ CREATE INDEX IF NOT EXISTS idx_error_log_created ON error_log(created_at);
 
 export class EventsDb {
   private db: DatabaseSync;
+  private dbPath: string;
 
   constructor(dbPath: string) {
     mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
-    this.db = new DatabaseSync(dbPath);
-    this.db.exec("PRAGMA journal_mode = WAL");
-    this.db.exec("PRAGMA busy_timeout = 5000");
-    this.migrate();
+    this.dbPath = dbPath;
+    // getLcmConnection returns the pooled (or newly-opened) DatabaseSync handle
+    // and increments its ref-count. Connections are kept alive across EventsDb
+    // instances so that high-frequency hooks (PostToolUse fires 50-200x/session)
+    // reuse the same underlying connection instead of opening/closing each time.
+    this.db = getLcmConnection(dbPath);
+    if (!_migratedPaths.has(dbPath)) {
+      this.migrate();
+      _migratedPaths.add(dbPath);
+    }
   }
 
   private migrate(): void {
@@ -258,6 +274,23 @@ export class EventsDb {
   }
 
   close(): void {
-    this.db.close();
+    // Decrement pool ref-count. The underlying connection stays open as long as
+    // other callers hold a reference — it is only closed when refs reach 0.
+    closeLcmConnection(this.dbPath);
+    // If the connection was fully evicted from the pool, invalidate the
+    // migration-done cache so the next open re-runs migrations on a fresh handle.
+    if (!isLcmConnectionOpen(this.dbPath)) {
+      _migratedPaths.delete(this.dbPath);
+    }
   }
+}
+
+/**
+ * Clear the migration-done cache. Intended for tests that create/destroy temp
+ * databases and need migration to re-run on the same path.
+ *
+ * @internal
+ */
+export function _resetMigratedPathsForTesting(): void {
+  _migratedPaths.clear();
 }

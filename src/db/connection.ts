@@ -53,6 +53,15 @@ export function getLcmConnection(dbPath: string): DatabaseSync {
   return db;
 }
 
+/**
+ * Returns true if a pooled connection for dbPath is currently open (refs > 0).
+ * Used by callers that track per-connection state (e.g., migration-done cache)
+ * so they can invalidate their state when the underlying connection is evicted.
+ */
+export function isLcmConnectionOpen(dbPath: string): boolean {
+  return _connections.has(dbPath);
+}
+
 export function closeLcmConnection(dbPath?: string): void {
   if (typeof dbPath === "string" && dbPath.trim()) {
     const entry = _connections.get(dbPath);
