@@ -115,6 +115,32 @@ export class PromotedStore {
     return results;
   }
 
+  getAll(opts?: { projectId?: string; since?: string; tags?: string[] }): PromotedRow[] {
+    let sql = "SELECT * FROM promoted WHERE archived_at IS NULL";
+    const params: (string | number)[] = [];
+
+    if (opts?.projectId) {
+      sql += " AND project_id = ?";
+      params.push(opts.projectId);
+    }
+    if (opts?.since) {
+      sql += " AND created_at >= ?";
+      params.push(opts.since);
+    }
+    sql += " ORDER BY created_at ASC";
+
+    let rows = this.db.prepare(sql).all(...params) as PromotedRow[];
+
+    if (opts?.tags && opts.tags.length > 0) {
+      rows = rows.filter((r) => {
+        const rowTags = JSON.parse(r.tags) as string[];
+        return opts.tags!.every((t) => rowTags.includes(t));
+      });
+    }
+
+    return rows;
+  }
+
   listContentPrefixes(limit: number): string[] {
     const rows = this.db.prepare(
       "SELECT content FROM promoted WHERE archived_at IS NULL LIMIT ?"
