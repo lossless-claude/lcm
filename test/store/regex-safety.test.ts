@@ -8,11 +8,12 @@ describe("validateRegex", () => {
   });
 
   it("throws for catastrophic backtracking patterns", () => {
-    // Patterns split to avoid CodeQL ReDoS static-analysis false-positives on test strings.
-    // These strings are passed to validateRegex() which rejects them — they are never used
-    // as regex literals in this file.
-    const nestedQuantifier = "(a+" + ")+$"; // equivalent to (a+)+$
-    const repeatedGroup = "(.*a)" + "{20}"; // equivalent to (.*a){20}
+    // These strings are test INPUTS to validateRegex() which rejects them.
+    // They are never compiled as RegExp literals — CodeQL suppression is correct here.
+    // codeql[js/redos]
+    const nestedQuantifier = "(a+)+$";
+    // codeql[js/redos]
+    const repeatedGroup = "(.*a){20}";
     expect(() => validateRegex(nestedQuantifier)).toThrow(/unsafe/i);
     expect(() => validateRegex(repeatedGroup)).toThrow(/unsafe/i);
   });
