@@ -127,7 +127,10 @@ export async function exportKnowledge(
       tags: JSON.parse(r.tags) as string[],
       confidence: r.confidence,
       createdAt: r.created_at,
-      sessionId: r.session_id,
+      // sessionId is per-project and per-machine. Nullify on export so that
+      // importing into a different project/machine does not create dead
+      // references pointing at a session that does not exist in the new context.
+      sessionId: null,
     };
   });
 
@@ -169,6 +172,8 @@ export interface ImportResult {
   imported: number;
   skipped: number;
   dryRun: boolean;
+  /** Error messages from entries that failed deduplication/insert. */
+  errors?: string[];
 }
 
 const DEFAULT_DEDUP_THRESHOLDS = {
@@ -210,6 +215,7 @@ export async function importKnowledge(
 
   let imported = 0;
   let skipped = 0;
+  const errors: string[] = [];
 
   for (const entry of doc.entries) {
     const confidence = opts.confidence !== undefined ? opts.confidence : entry.confidence;
@@ -225,8 +231,9 @@ export async function importKnowledge(
         thresholds: DEFAULT_DEDUP_THRESHOLDS,
       });
       imported++;
-    } catch {
+    } catch (e) {
       skipped++;
+      errors.push(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -237,5 +244,6 @@ export async function importKnowledge(
     imported,
     skipped,
     dryRun: false,
+    ...(errors.length > 0 ? { errors } : {}),
   };
 }
