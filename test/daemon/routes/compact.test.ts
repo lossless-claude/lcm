@@ -479,7 +479,8 @@ describe("POST /compact", () => {
         "SELECT category, count FROM redaction_stats ORDER BY category"
       ).all() as Array<{ category: string; count: number }>;
       const byCategory = Object.fromEntries(rows.map((r) => [r.category, r.count]));
-      expect(byCategory["built_in"]).toBeGreaterThan(0);
+      // ghp_ token is matched by gitleaks github-pat pattern (gitleaks takes priority over native)
+      expect(byCategory["gitleaks"]).toBeGreaterThan(0);
     } finally {
       db.close();
     }
