@@ -13,7 +13,7 @@
  * Deduplication is performed on import via deduplicateAndInsert().
  */
 
-import { existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -245,9 +245,12 @@ export async function importKnowledge(
 
   // Write meta.json if it doesn't already exist so this project is visible
   // to `lcm export --all` (which enumerates projects by scanning for meta.json).
+  // Use a tmp-file + rename for atomicity — a crash mid-write would corrupt the file.
   const metaPath = join(projDir, "meta.json");
   if (!existsSync(metaPath)) {
-    writeFileSync(metaPath, JSON.stringify({ cwd }, null, 2), "utf-8");
+    const tmpPath = metaPath + ".tmp";
+    writeFileSync(tmpPath, JSON.stringify({ cwd }, null, 2), "utf-8");
+    renameSync(tmpPath, metaPath);
   }
 
   return {
