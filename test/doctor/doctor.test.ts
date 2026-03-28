@@ -52,19 +52,21 @@ function minimalDeps(overrides: Partial<Parameters<typeof runDoctor>[0]> = {}) {
 }
 
 describe("runDoctor security section", () => {
-  it("shows built-in pattern count as pass", async () => {
+  it("shows gitleaks + native pattern counts as pass when generated-patterns.ts exists", async () => {
     const results = await runDoctor(minimalDeps({ cwd: "/tmp/nonexistent-project-xyz" }));
-    const builtIn = results.find((r) => r.name === "built-in-patterns");
-    expect(builtIn?.status).toBe("pass");
-    expect(builtIn?.message).toContain("active");
-    expect(builtIn?.category).toBe("Security");
+    const detection = results.find((r) => r.name === "secret-detection");
+    expect(detection?.status).toBe("pass");
+    expect(detection?.message).toContain("gitleaks");
+    expect(detection?.message).toContain("native");
+    expect(detection?.category).toBe("Security");
   });
 
-  it("warns when no project patterns are configured", async () => {
+  it("shows user pattern counts (no warning when zero project patterns)", async () => {
     const results = await runDoctor(minimalDeps({ cwd: "/tmp/nonexistent-project-xyz" }));
-    const proj = results.find((r) => r.name === "project-patterns");
-    expect(proj?.status).toBe("warn");
-    expect(proj?.message).toContain("none configured");
+    const userPatterns = results.find((r) => r.name === "user-patterns");
+    // No warning for zero patterns — just informational
+    expect(userPatterns?.status).toBe("pass");
+    expect(userPatterns?.category).toBe("Security");
   });
 });
 

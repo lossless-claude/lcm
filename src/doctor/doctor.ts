@@ -5,7 +5,8 @@ import { spawnSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { CheckResult, DoctorDeps } from "./types.js";
 import { mergeClaudeSettings, REQUIRED_HOOKS, resolveBinaryPath, ensureLcmMd } from "../../installer/install.js";
-import { BUILT_IN_PATTERNS, ScrubEngine } from "../scrub.js";
+import { NATIVE_PATTERNS, ScrubEngine, readGitleaksSyncDate } from "../scrub.js";
+import { GITLEAKS_PATTERNS } from "../generated-patterns.js";
 import { projectDir } from "../daemon/project.js";
 import { collectEventStats, collectDetailedEventStats } from "../db/events-stats.js";
 
@@ -429,45 +430,71 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
   }
 
   // ── Security ──
-  results.push({
-    name: "built-in-patterns",
-    category: "Security",
-    status: "pass",
-    message: `built-in patterns   ${BUILT_IN_PATTERNS.length} active`,
-  });
+
+  // Gitleaks health check: verify generated-patterns.js exists and exports non-empty array
+  const syncDate = readGitleaksSyncDate();
+  const gitleaksCount = GITLEAKS_PATTERNS.length;
+  if (gitleaksCount === 0) {
+    results.push({
+      name: "secret-detection",
+      category: "Security",
+      status: "fail",
+      message: "generated-patterns.ts is missing or empty — run: npx tsx scripts/update-gitleaks-patterns.ts",
+    });
+  } else {
+    const syncNote = syncDate ? ` (synced ${syncDate})` : "";
+    results.push({
+      name: "secret-detection",
+      category: "Security",
+      status: "pass",
+      message: `Secret detection\n     Built-in patterns:  ${gitleaksCount} (gitleaks${syncNote}) + ${NATIVE_PATTERNS.length} (native)\n     Manage patterns:    lcm sensitive add/remove`,
+    });
+  }
 
   const cwd = deps.cwd ?? process.cwd();
   const patternsFile = join(projectDir(cwd), "sensitive-patterns.txt");
   const projectPatterns = await ScrubEngine.loadProjectPatterns(patternsFile);
 
-  if (projectPatterns.length === 0) {
-    results.push({
-      name: "project-patterns",
-      category: "Security",
-      status: "warn",
-      message: 'project patterns   none configured\n     Run: lcm sensitive add "<pattern>" to protect project-specific secrets',
-    });
-  } else {
-    // Check for invalid patterns
+  // Load global user patterns count for informational display
+  let globalUserPatternCount = 0;
+  try {
+    const { loadDaemonConfig } = await import("../daemon/config.js");
+    const { homedir: hd } = await import("node:os");
+    const globalConfigPath = join(hd(), ".lossless-claude", "config.json");
+    const config = loadDaemonConfig(globalConfigPath);
+    globalUserPatternCount = config.security?.sensitivePatterns?.length ?? 0;
+  } catch {
+    // config may not exist
+  }
+
+  // User patterns: informational only (no warning for zero patterns)
+  if (projectPatterns.length > 0) {
     const invalidPatterns: string[] = [];
     for (const pat of projectPatterns) {
       try { new RegExp(pat); } catch { invalidPatterns.push(pat); }
     }
     if (invalidPatterns.length > 0) {
       results.push({
-        name: "project-patterns",
+        name: "user-patterns",
         category: "Security",
         status: "warn",
-        message: `project patterns   ${projectPatterns.length} configured (${invalidPatterns.length} invalid regex — will be skipped)`,
+        message: `User patterns:  ${globalUserPatternCount} global, ${projectPatterns.length} project (${invalidPatterns.length} invalid regex — will be skipped)`,
       });
     } else {
       results.push({
-        name: "project-patterns",
+        name: "user-patterns",
         category: "Security",
         status: "pass",
-        message: `project patterns   ${projectPatterns.length} configured`,
+        message: `User patterns:  ${globalUserPatternCount} global, ${projectPatterns.length} project`,
       });
     }
+  } else {
+    results.push({
+      name: "user-patterns",
+      category: "Security",
+      status: "pass",
+      message: `User patterns:  ${globalUserPatternCount} global, 0 project`,
+    });
   }
 
   // ── Passive Learning ──
