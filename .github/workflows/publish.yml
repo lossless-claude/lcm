@@ -94,3 +94,26 @@ jobs:
         run: |
           tag="v${{ steps.check.outputs.version }}"
           gh release create "$tag" --generate-notes --verify-tag
+
+      - name: Enrich release notes
+        if: steps.check.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          # Get the top version block from CHANGELOG.md
+          CHANGELOG_BLOCK=$(awk "/^## \[${VERSION}\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md)
+          # Build enriched notes
+          NPM_BADGE="📦 **npm:** \`npm install @lossless-claude/lcm@${VERSION}\`"
+          FULL_NOTES="${NPM_BADGE}
+
+---
+
+## Changelog
+
+${CHANGELOG_BLOCK}
+
+---
+
+🔖 [Full Changelog](https://github.com/lossless-claude/lcm/blob/stable/CHANGELOG.md)"
+          gh release edit "v${VERSION}" --notes "$FULL_NOTES"
