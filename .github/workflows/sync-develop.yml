@@ -3,7 +3,7 @@ name: Sync develop after release
 on:
   push:
     branches:
-      - main
+      - stable
     paths:
       - package.json
 
@@ -32,8 +32,8 @@ jobs:
       - name: Check if develop already contains this commit
         id: check
         run: |
-          git fetch origin develop main
-          if git merge-base --is-ancestor HEAD origin/develop; then
+          git fetch origin main stable
+          if git merge-base --is-ancestor HEAD origin/main; then
             echo "already_synced=true" >> "$GITHUB_OUTPUT"
           else
             echo "already_synced=false" >> "$GITHUB_OUTPUT"
@@ -56,17 +56,17 @@ jobs:
 
           # Always create/reset local branch to current main HEAD so the
           # sync branch is up to date even if a prior run left it on remote.
-          git fetch origin main
+          git fetch origin stable
           # Fetch the sync branch if it exists so --force-with-lease has a
           # local tracking ref and can verify nothing unexpected was pushed.
           git fetch origin "$BRANCH" || true
-          git checkout -B "$BRANCH" origin/main
+          git checkout -B "$BRANCH" origin/stable
           git push origin "$BRANCH" --force-with-lease
 
           # Reuse existing open PR for this branch/base if present, otherwise create one
           PR_NUMBER=$(gh pr list \
             --repo "${{ github.repository }}" \
-            --base develop \
+            --base main \
             --head "$BRANCH" \
             --state open \
             --json number \
@@ -75,7 +75,7 @@ jobs:
           if [[ -z "$PR_NUMBER" ]]; then
             PR_URL=$(gh pr create \
               --repo "${{ github.repository }}" \
-              --base develop \
+              --base main \
               --head "$BRANCH" \
               --title "chore: sync develop with main after v${VERSION} release" \
               --body "Automated post-release sync: brings develop up to date with the v${VERSION} release commit on main.")

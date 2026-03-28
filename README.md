@@ -108,7 +108,7 @@ Claude Code uses four hooks. All hooks auto-heal: each validates that all requir
 
 | Hook | Command | Purpose |
 |---|---|---|
-| `PreCompact` | `lcm compact` | Intercepts compaction and writes DAG summaries |
+| `PreCompact` | `lcm compact --hook` | Intercepts compaction and writes DAG summaries |
 | `SessionStart` | `lcm restore` | Restores project context, recent summaries, and promoted memory |
 | `SessionEnd` | `lcm session-end` | Ingests the completed Claude transcript |
 | `UserPromptSubmit` | `lcm user-prompt` | Searches memory and injects prompt-time hints |
@@ -144,7 +144,7 @@ lcm stats                  # memory and compression overview
 lcm stats -v               # per-conversation breakdown
 lcm status                 # daemon + summarizer mode
 lcm daemon start --detach  # start daemon in background
-lcm compact                # PreCompact hook handler
+lcm compact --hook         # PreCompact hook handler (internal)
 lcm restore                # SessionStart hook handler
 lcm session-end            # SessionEnd hook handler
 lcm user-prompt            # UserPromptSubmit hook handler

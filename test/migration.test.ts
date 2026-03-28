@@ -339,3 +339,37 @@ describe("redaction_stats table migration", () => {
     db.close();
   });
 });
+
+describe("session_ingest_log table migration", () => {
+  it("creates session_ingest_log table", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-claude-session-ingest-"));
+    tempDirs.push(tempDir);
+    const dbPath = join(tempDir, "test.db");
+    const db = getLcmConnection(dbPath);
+
+    runLcmMigrations(db, { fts5Available: false });
+
+    const info = db.prepare("PRAGMA table_info(session_ingest_log)").all() as Array<{ name: string }>;
+    const columns = info.map((r) => r.name);
+    expect(columns).toContain("session_id");
+    expect(columns).toContain("completed_at");
+    expect(columns).toContain("message_count");
+
+    db.close();
+  });
+
+  it("session_ingest_log is idempotent", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-claude-session-ingest-idem-"));
+    tempDirs.push(tempDir);
+    const dbPath = join(tempDir, "test.db");
+    const db = getLcmConnection(dbPath);
+
+    runLcmMigrations(db, { fts5Available: false });
+    runLcmMigrations(db, { fts5Available: false }); // second run
+
+    const info = db.prepare("PRAGMA table_info(session_ingest_log)").all() as Array<{ name: string }>;
+    expect(info.length).toBeGreaterThan(0);
+
+    db.close();
+  });
+});

@@ -157,11 +157,14 @@ describe("buildCompactionMessage", () => {
 });
 
 describe("createCompactHandler — summarizer branching", () => {
+  // Use tmpdir() which always exists; these tests mock all summarizers and don't need unique project dirs
+  const testCwd = tmpdir();
+
   it("uses createClaudeProcessSummarizer when provider is claude-process", async () => {
     vi.clearAllMocks();
     const handler = createCompactHandler(makeConfig("claude-process"));
     const { res } = mockRes();
-    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: "/tmp/test-claude-process" }));
+    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd }));
     expect(createClaudeProcessSummarizer).toHaveBeenCalled();
     expect(createCodexProcessSummarizer).not.toHaveBeenCalled();
   });
@@ -170,7 +173,7 @@ describe("createCompactHandler — summarizer branching", () => {
     vi.clearAllMocks();
     const handler = createCompactHandler(makeConfig("codex-process"));
     const { res } = mockRes();
-    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: "/tmp/test-codex-process" }));
+    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd }));
     expect(createCodexProcessSummarizer).toHaveBeenCalledWith(expect.objectContaining({ model: "test-model" }));
     expect(createClaudeProcessSummarizer).not.toHaveBeenCalled();
   });
@@ -180,7 +183,7 @@ describe("createCompactHandler — summarizer branching", () => {
     const handler = createCompactHandler(makeConfig("anthropic"));
     // Trigger the handler to resolve the lazy import
     const { res } = mockRes();
-    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: "/tmp/test-anthropic" }));
+    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd }));
     expect(createAnthropicSummarizer).toHaveBeenCalledWith(expect.objectContaining({ model: "test-model" }));
     expect(createOpenAISummarizer).not.toHaveBeenCalled();
   });
@@ -189,7 +192,7 @@ describe("createCompactHandler — summarizer branching", () => {
     vi.clearAllMocks();
     const handler = createCompactHandler(makeConfig("openai"));
     const { res } = mockRes();
-    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: "/tmp/test-openai" }));
+    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd }));
     expect(createOpenAISummarizer).toHaveBeenCalledWith(
       expect.objectContaining({ model: "test-model", baseURL: "http://localhost:11435/v1" })
     );
@@ -200,7 +203,7 @@ describe("createCompactHandler — summarizer branching", () => {
     vi.clearAllMocks();
     const handler = createCompactHandler(makeConfig("disabled"));
     const { res, getBody } = mockRes();
-    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: "/tmp/test-disabled" }));
+    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd }));
     expect(createClaudeProcessSummarizer).not.toHaveBeenCalled();
     expect(createCodexProcessSummarizer).not.toHaveBeenCalled();
     expect(createAnthropicSummarizer).not.toHaveBeenCalled();
@@ -212,7 +215,7 @@ describe("createCompactHandler — summarizer branching", () => {
     vi.clearAllMocks();
     const handler = createCompactHandler(makeConfig("auto"));
     const { res } = mockRes();
-    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: "/tmp/test-auto-claude", client: "claude" }));
+    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd, client: "claude" }));
     expect(createClaudeProcessSummarizer).toHaveBeenCalled();
     expect(createCodexProcessSummarizer).not.toHaveBeenCalled();
   });
@@ -221,7 +224,7 @@ describe("createCompactHandler — summarizer branching", () => {
     vi.clearAllMocks();
     const handler = createCompactHandler(makeConfig("auto"));
     const { res } = mockRes();
-    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: "/tmp/test-auto-codex", client: "codex" }));
+    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd, client: "codex" }));
     expect(createCodexProcessSummarizer).toHaveBeenCalled();
     expect(createClaudeProcessSummarizer).not.toHaveBeenCalled();
   });
@@ -230,7 +233,7 @@ describe("createCompactHandler — summarizer branching", () => {
     vi.clearAllMocks();
     const handler = createCompactHandler(makeConfig("auto"));
     const { res } = mockRes();
-    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: "/tmp/test-auto-default" }));
+    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd }));
     expect(createClaudeProcessSummarizer).toHaveBeenCalled();
     expect(createCodexProcessSummarizer).not.toHaveBeenCalled();
   });
@@ -239,7 +242,7 @@ describe("createCompactHandler — summarizer branching", () => {
     vi.clearAllMocks();
     const handler = createCompactHandler(makeConfig("openai"));
     const { res } = mockRes();
-    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: "/tmp/test-explicit-provider", client: "codex" }));
+    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd, client: "codex" }));
     expect(createOpenAISummarizer).toHaveBeenCalled();
     expect(createClaudeProcessSummarizer).not.toHaveBeenCalled();
     expect(createCodexProcessSummarizer).not.toHaveBeenCalled();
@@ -251,8 +254,8 @@ describe("createCompactHandler — summarizer branching", () => {
     const { res: res1 } = mockRes();
     const { res: res2 } = mockRes();
 
-    await handler({} as any, res1, JSON.stringify({ session_id: "s1", cwd: "/tmp/test-memoized", client: "codex" }));
-    await handler({} as any, res2, JSON.stringify({ session_id: "s2", cwd: "/tmp/test-memoized", client: "codex" }));
+    await handler({} as any, res1, JSON.stringify({ session_id: "s1", cwd: testCwd, client: "codex" }));
+    await handler({} as any, res2, JSON.stringify({ session_id: "s2", cwd: testCwd, client: "codex" }));
 
     expect(createCodexProcessSummarizer).toHaveBeenCalledTimes(1);
   });
@@ -277,7 +280,7 @@ describe("POST /compact", () => {
     const res = await fetch(`http://127.0.0.1:${daemon.address().port}/compact`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: "test-sess", cwd: "/tmp/test-compact-proj", hook_event_name: "PreCompact" }),
+      body: JSON.stringify({ session_id: "test-sess", cwd: mkdtempSync(join(tmpdir(), "lossless-compact-proj-")), hook_event_name: "PreCompact" }),
     });
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -476,7 +479,8 @@ describe("POST /compact", () => {
         "SELECT category, count FROM redaction_stats ORDER BY category"
       ).all() as Array<{ category: string; count: number }>;
       const byCategory = Object.fromEntries(rows.map((r) => [r.category, r.count]));
-      expect(byCategory["built_in"]).toBeGreaterThan(0);
+      // ghp_ token is matched by gitleaks github-pat pattern (gitleaks takes priority over native)
+      expect(byCategory["gitleaks"]).toBeGreaterThan(0);
     } finally {
       db.close();
     }
@@ -496,7 +500,7 @@ describe("POST /compact with disabled provider", () => {
     const res = await fetch(`http://127.0.0.1:${daemon.address().port}/compact`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: "test-sess", cwd: "/tmp/test-disabled-proj" }),
+      body: JSON.stringify({ session_id: "test-sess", cwd: mkdtempSync(join(tmpdir(), "lossless-disabled-proj-")) }),
     });
     expect(res.status).toBe(200);
     const body = await res.json();

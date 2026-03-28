@@ -534,6 +534,26 @@ export function formatDiagnoseResult(
     lines.push("");
     lines.push(`  Most common: ${result.mostCommon.type} (${result.mostCommon.count}x)`);
   }
-  lines.push("  Suggestion: Run `lcm doctor` to check current health");
+
+  // Collect unique duplicate-hook events across all sessions for a specific hint
+  const duplicateHookEvents = Array.from(
+    new Set(
+      result.sessions.flatMap((s) =>
+        s.errors
+          .filter((e) => e.type === "duplicate-hook" && e.hookEvent)
+          .map((e) => e.hookEvent as string)
+      )
+    )
+  );
+
+  lines.push("");
+  if (duplicateHookEvents.length > 0) {
+    const settingsPath = `~/.claude/settings.json`;
+    const eventList = duplicateHookEvents.map((e) => `\`${e}\``).join(", ");
+    lines.push(`  Fix: Remove the duplicate ${eventList} hook ${duplicateHookEvents.length === 1 ? "entry" : "entries"} from \`${settingsPath}\``);
+    lines.push(`       (hooks are owned by the plugin — run \`lcm install\` to clean up automatically)`);
+  } else {
+    lines.push("  Suggestion: Run `lcm doctor` to check current health");
+  }
   return lines.join("\n") + "\n";
 }

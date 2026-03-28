@@ -2,166 +2,212 @@
 set -euo pipefail
 
 # lossless-claude setup script
-# Handles backend selection, infrastructure setup, and final verification
+# Configures the LLM provider for compaction/summarization and installs hooks.
 
-echo ""
-echo "  lossless-claude memory stack setup"
-echo ""
+CONFIG_DIR="$HOME/.lossless-claude"
+CONFIG_FILE="$CONFIG_DIR/config.json"
 
-# Non-TTY (CI, piped input): skip interactive, use defaults
-if [ ! -t 0 ]; then
-  echo "  [non-interactive mode — using defaults]"
+# ── Dry-run support (used by installer/dry-run-deps.ts) ──
+
+if [ "${XGH_DRY_RUN:-}" = "1" ]; then
+  echo ""
+  echo "  [dry-run] lossless-claude setup would:"
+  echo "    1. Prompt for LLM provider selection (auto / claude-process / codex-process / anthropic / openai / disabled)"
+  echo "    2. Write ~/.lossless-claude/config.json with the chosen llm block"
+  echo "    3. Run: lcm install"
+  echo "    4. Run: lcm doctor"
+  echo ""
   exit 0
 fi
 
-# ── Backend Selection ──
+# ── Preflight: require lcm ──
 
-echo ""
-echo "  Which inference backend?"
-echo ""
-echo "    1) Local — vllm-mlx (macOS Apple Silicon)     [auto-detected]"
-echo "    2) Local — Ollama (Linux / Intel Mac)"
-echo "    3) Remote — connect to another machine's server"
-echo ""
-
-read -p "  Pick [1]: " BACKEND_CHOICE
-BACKEND_CHOICE="${BACKEND_CHOICE:-1}"
-
-case "$BACKEND_CHOICE" in
-  1)
-    BACKEND="vllm-mlx"
-    EMBEDDING_PORT=11435
-    echo "  ▸ Using vllm-mlx backend"
-    ;;
-  2)
-    BACKEND="ollama"
-    EMBEDDING_PORT=11434
-    echo "  ▸ Using Ollama backend"
-    ;;
-  3)
-    BACKEND="remote"
-    read -p "  Remote server URL (e.g. http://192.168.1.x:8000): " REMOTE_URL
-    echo "  ▸ Using remote backend at ${REMOTE_URL}"
-    ;;
-  *)
-    BACKEND="vllm-mlx"
-    EMBEDDING_PORT=11435
-    echo "  ▸ Invalid choice — defaulting to vllm-mlx"
-    ;;
-esac
-
-# ── Infrastructure Dependencies (Optional) ──
-
-echo ""
-echo "  ──── Installing backend dependencies"
-echo ""
-
-# Check if Qdrant is running (optional, for Phase 3 semantic search)
-if command -v qdrant &>/dev/null || pgrep -f qdrant &>/dev/null; then
-  echo "  ▸ Qdrant is already running"
-else
-  echo "  [ℹ️  Qdrant optional for Phase 3 semantic search — skipping for now]"
+if ! command -v lcm &>/dev/null; then
+  echo ""
+  echo "  ERROR: lcm is not installed."
+  echo ""
+  echo "    Install it with:  npm install -g @lossless-claude/lcm"
+  echo ""
+  exit 1
 fi
 
-# ── Summarizer Selection ──
+# ── Provider Selection ──
 
-echo ""
-echo "  Picking brains 🧠"
-echo ""
-echo "  Pick a Cipher LLM provider (reasoning brain)"
-echo ""
-echo "    1) claude-server — Claude Haiku via your Claude subscription [recommended]"
-echo "    2) Local model via vllm-mlx"
-echo "    3) Remote OpenAI-compatible endpoint"
-echo ""
+PROVIDER="auto"
+MODEL=""
+API_KEY=""
+BASE_URL=""
 
-read -p "  Pick [1]: " SUMMARIZER_CHOICE
-SUMMARIZER_CHOICE="${SUMMARIZER_CHOICE:-1}"
+if [ ! -t 0 ]; then
+  # Non-interactive / CI mode: skip prompts and fall through using defaults.
+  true
+else
+  echo ""
+  echo "  lossless-claude setup"
+  echo ""
+  echo "  Which LLM provider should lcm use for compaction/summarization?"
+  echo ""
+  echo "    1) auto           — uses claude-process (or codex-process for Codex clients) [recommended]"
+  echo "    2) claude-process — Claude Code CLI subprocess (no API key needed)"
+  echo "    3) codex-process  — Codex CLI subprocess (no API key needed)"
+  echo "    4) anthropic      — Anthropic API (requires ANTHROPIC_API_KEY env var)"
+  echo "    5) openai         — OpenAI-compatible API (uses OPENAI_API_KEY when required by the server)"
+  echo "    6) disabled       — no LLM, import-only mode (no compaction)"
+  echo ""
 
-case "$SUMMARIZER_CHOICE" in
-  1)
-    echo "  ▸ Installing claude-server..."
-    if ! command -v claude-server &>/dev/null && ! command -v claude-max-api &>/dev/null; then
-      npm install -g claude-max-api-proxy 2>/dev/null || echo "  [⚠️  claude-server install skipped]"
+  read -r -p "  Pick [1]: " PROVIDER_CHOICE
+  PROVIDER_CHOICE="${PROVIDER_CHOICE:-1}"
+
+  case "$PROVIDER_CHOICE" in
+    1) PROVIDER="auto" ;;
+    2) PROVIDER="claude-process" ;;
+    3) PROVIDER="codex-process" ;;
+    4) PROVIDER="anthropic" ;;
+    5) PROVIDER="openai" ;;
+    6) PROVIDER="disabled" ;;
+    *)
+      echo "  Invalid choice — defaulting to auto"
+      PROVIDER="auto"
+      ;;
+  esac
+
+  echo "  ▸ Using provider: ${PROVIDER}"
+  echo ""
+
+  # ── Model defaults (provider-specific) ──
+
+  if [ "$PROVIDER" = "anthropic" ]; then
+    MODEL="claude-haiku-4-5-20251001"
+  elif [ "$PROVIDER" = "openai" ]; then
+    read -r -p "  Model ID [gpt-4o-mini]: " MODEL_INPUT
+    MODEL="${MODEL_INPUT:-gpt-4o-mini}"
+    echo "  ▸ Model: ${MODEL}"
+    echo ""
+  fi
+
+  # ── API key / baseURL prompts (provider-specific) ──
+  # API keys are read from the environment only (never stored as plaintext).
+  # config.ts expands ${VAR} placeholders in llm.apiKey at runtime.
+
+  if [ "$PROVIDER" = "anthropic" ]; then
+    if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+      echo "  ERROR: ANTHROPIC_API_KEY is not set in your environment."
+      echo ""
+      echo "  Export it first, then re-run setup:"
+      echo "    export ANTHROPIC_API_KEY=your_api_key_here"
+      echo ""
+      exit 1
     fi
-    ;;
-  2)
-    echo "  ▸ Using local model via vllm-mlx"
-    ;;
-  3)
-    read -p "  Server URL: " CUSTOM_SERVER_URL
-    echo "  ▸ Using remote endpoint at ${CUSTOM_SERVER_URL}"
-    ;;
-esac
+    echo "  ▸ Using ANTHROPIC_API_KEY from environment"
+    # Write env-var placeholder — config.ts expands \${VAR} at runtime
+    API_KEY='${ANTHROPIC_API_KEY}'
+    echo ""
+  fi
 
-# ── Embedding Model Selection (Optional for Phase 3) ──
+  if [ "$PROVIDER" = "openai" ]; then
+    if [ -n "${OPENAI_API_KEY:-}" ]; then
+      echo "  ▸ Using OPENAI_API_KEY from environment"
+      # Write env-var placeholder — config.ts expands \${VAR} at runtime
+      API_KEY='${OPENAI_API_KEY}'
+    else
+      echo "  ▸ OPENAI_API_KEY is not set; proceeding without an API key."
+      echo "    (This is acceptable for some OpenAI-compatible local servers.)"
+    fi
 
-echo ""
-echo "  Pick an embedding model (semantic search engine)"
-echo ""
-echo "    1) ModernBERT Embed 8-bit (default, 768 dims, best quality) [current] [installed]"
-echo "    2) ModernBERT Embed 4-bit (smaller, 768 dims)"
-echo "    3) MiniLM L6 (fast, 384 dims)"
-echo "    c) Custom HuggingFace model ID"
-echo ""
+    read -r -p "  Base URL [https://api.openai.com/v1]: " BASE_URL_INPUT
+    # Trim leading/trailing whitespace using pure bash parameter expansion
+    BASE_URL_INPUT="${BASE_URL_INPUT:-https://api.openai.com/v1}"
+    BASE_URL="${BASE_URL_INPUT#"${BASE_URL_INPUT%%[![:space:]]*}"}"
+    BASE_URL="${BASE_URL%"${BASE_URL##*[![:space:]]}"}"
+    # If trimmed value is empty (e.g., user entered only whitespace), fall back to default
+    if [ -z "$BASE_URL" ]; then
+      BASE_URL="https://api.openai.com/v1"
+    fi
+    echo "  ▸ Base URL: ${BASE_URL}"
+    echo ""
 
-read -p "  Pick [1]: " EMBEDDING_CHOICE
-EMBEDDING_CHOICE="${EMBEDDING_CHOICE:-1}"
-
-case "$EMBEDDING_CHOICE" in
-  1)
-    EMBEDDING_MODEL="mlx-community/nomicai-modernbert-embed-base-8bit"
-    echo "  ▸ Using ModernBERT Embed 8-bit"
-    ;;
-  2)
-    EMBEDDING_MODEL="mlx-community/nomicai-modernbert-embed-base-4bit"
-    echo "  ▸ Using ModernBERT Embed 4-bit"
-    ;;
-  3)
-    EMBEDDING_MODEL="sentence-transformers/all-MiniLM-L6-v2"
-    echo "  ▸ Using MiniLM L6"
-    ;;
-  c|C)
-    read -p "  HuggingFace model ID: " EMBEDDING_MODEL
-    ;;
-  *)
-    EMBEDDING_MODEL="mlx-community/nomicai-modernbert-embed-base-8bit"
-    echo "  ▸ Using ModernBERT Embed 8-bit (default)"
-    ;;
-esac
-
-# ── Final Messages ──
-
-echo ""
-echo "  ──── Wiring up the memory layer 🧬"
-echo ""
-echo "  ▸ SQLite cross-session memory: ready"
-echo "  ▸ Lazy daemon (auto-spawn on demand): enabled"
-if [ -f ~/.cipher/cipher.yml ]; then
-  echo "  ▸ cipher.yml exists — will sync backend config"
+    # Fail fast: public OpenAI API requires a key
+    if [ -z "${API_KEY:-}" ] && [ "$BASE_URL" = "https://api.openai.com/v1" ]; then
+      echo "  ERROR: OPENAI_API_KEY is required when using the public OpenAI API."
+      echo ""
+      echo "  Export it first, then re-run setup:"
+      echo "    export OPENAI_API_KEY=your_api_key_here"
+      echo ""
+      exit 1
+    fi
+  fi
 fi
 
-echo ""
-echo "  ──---- Verifying the stack"
-echo ""
+# ── Write config.json ──
+# Uses node for proper JSON encoding.
+# Merges into any existing config file: parses the JSON, updates the "llm"
+# block, and rewrites the whole file (reformats + normalises key order).
+# Existing non-llm keys are always preserved.
 
-# Qdrant check (optional)
-if pgrep -f qdrant &>/dev/null; then
-  echo "  ▸ Qdrant: healthy ✓"
-else
-  echo "  [ℹ️  Qdrant: not running (optional for Phase 3)]"
+mkdir -p "$CONFIG_DIR"
+
+node - "$PROVIDER" "$MODEL" "$API_KEY" "$BASE_URL" "$CONFIG_FILE" <<'NODE'
+const fs = require('fs');
+const [provider, model, apiKey, baseURL, configFile] = process.argv.slice(2);
+
+const llm = { provider };
+if (model)   llm.model   = model;
+if (apiKey)  llm.apiKey  = apiKey;
+if (baseURL) llm.baseURL = baseURL;
+
+// If config doesn't exist, write a fresh file.
+if (!fs.existsSync(configFile)) {
+  const out = JSON.stringify({ llm }, null, 2) + '\n';
+  fs.writeFileSync(configFile, out, { mode: 0o600 });
+  fs.chmodSync(configFile, 0o600);
+  process.exit(0);
+}
+
+// Load existing config. Fail loudly on parse errors to prevent data loss.
+let raw;
+try {
+  raw = fs.readFileSync(configFile, 'utf8');
+  JSON.parse(raw); // validate
+} catch (err) {
+  console.error(`Error: Failed to parse existing config at ${configFile}.`);
+  console.error('The file contains invalid JSON. Fix or remove it, then re-run setup.');
+  process.exit(1);
+}
+
+// Parse the existing config, set the llm block, and write back.
+// Using JSON.parse+stringify is the only safe way to update config.json
+// without risking corruption from partial regex matches on nested structures.
+// Key order in the output follows insertion order: existing keys first, llm last.
+let parsed;
+try { parsed = JSON.parse(raw); } catch (_) { parsed = null; }
+if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+  console.error('Error: ' + configFile + ' is not a JSON object. Cannot merge llm block.');
+  process.exit(1);
+}
+const config = { ...parsed, llm };
+const newRaw = JSON.stringify(config, null, 2) + '\n';
+fs.writeFileSync(configFile, newRaw, { mode: 0o600 });
+// Explicitly tighten permissions even if the file already existed.
+fs.chmodSync(configFile, 0o600);
+NODE
+
+if [ -t 0 ]; then
+  echo "  ▸ Config written to ${CONFIG_FILE}"
+  echo ""
 fi
 
-# Summary
-echo ""
-echo "  Configuration:"
-echo "    Backend: ${BACKEND}"
-if [ "$BACKEND" = "remote" ]; then
-  echo "    Remote URL: ${REMOTE_URL:-not set}"
-fi
-echo "    Embedding model: ${EMBEDDING_MODEL}"
-echo ""
-echo "  Setup complete. Run: lossless-claude install"
-echo ""
+# ── Install hooks ──
+
+if [ -t 0 ]; then echo "  ──── Installing hooks"; echo ""; fi
+lcm install
+if [ -t 0 ]; then echo ""; fi
+
+# ── Verify ──
+
+if [ -t 0 ]; then echo "  ──── Running lcm doctor"; echo ""; fi
+lcm doctor
+if [ -t 0 ]; then echo ""; fi
+
+if [ -t 0 ]; then echo "  Setup complete."; echo ""; fi
 
 exit 0

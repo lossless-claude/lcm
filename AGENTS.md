@@ -42,6 +42,10 @@ Then run `/reload-plugins` inside Claude Code to apply the changes.
 
 If anything fails, fix it before starting the next feature. A broken local env wastes time on every subsequent session (stale dist, wrong binary, hook errors, mismatched plugin cache).
 
+## Documentation Requirements
+
+All changes that affect user-facing behavior must include complete documentation in the `docs/` folder. This includes new features, configuration changes, CLI commands, hook additions, and API changes. Documentation should be written for end users, not developers — explain what it does, how to use it, and any configuration options.
+
 ## Coding Style
 
 - **Prefer pure functions.** Functions should return their results rather than accumulating state on an object. Avoid mutable side-effect patterns (e.g., shared counters on a class instance) when a return value works just as well.
@@ -98,6 +102,16 @@ Some flags that look reasonable don't exist in the installed version:
 - **Logic changes**: dispatch a sonnet subagent
 - Never implement fixes inline in the main session — always dispatch a subagent
 
+## Subagent-Driven Development
+
+When executing implementation plans via subagent-driven development, calibrate each implementer's model based on task complexity:
+
+- **Haiku**: Mechanical tasks — isolated functions, clear specs, 1-2 files, no design judgment (e.g., wiring a function call, adding a display line, doc updates)
+- **Sonnet**: Integration tasks — multi-file coordination, pattern matching, moderate logic (e.g., schema migrations, shared utility modules, test suites)
+- **Opus**: Architecture/judgment tasks — broad codebase understanding, complex error handling, design decisions (e.g., three-layer error fences, doctor check orchestration, E2E tests spanning the full pipeline)
+
+Reviewers (spec compliance + code quality) always use the most capable model available.
+
 ## Release Process
 
 The canonical release process is `.claude/skills/lcm-release/scripts/release.sh` — use it for all releases. `RELEASING.md` and `WORKFLOW.md` describe an older Changesets-based flow that is no longer in use.
@@ -108,3 +122,62 @@ See `SKILL.md` in the `lcm-release` skill for the full step table and failure mo
 
 - **`.claude/` is gitignored** — skill and script files under `.claude/` are tracked but require `git add -f` to stage them. If `git add .claude/...` silently does nothing, that's why.
 - **`develop` has branch protection** — direct push is rejected. Always push to a feature branch and open a PR, even for trivial fixes.
+
+# context-mode — MANDATORY routing rules
+
+You have context-mode MCP tools available. These rules are NOT optional — they protect your context window from flooding. A single unrouted command can dump 56 KB into context and waste the entire session.
+
+## BLOCKED commands — do NOT attempt these
+
+### curl / wget — BLOCKED
+Any shell command containing `curl` or `wget` will be intercepted and blocked by the context-mode plugin. Do NOT retry.
+Instead use:
+- `context-mode_ctx_fetch_and_index(url, source)` to fetch and index web pages
+- `context-mode_ctx_execute(language: "javascript", code: "const r = await fetch(...)")` to run HTTP calls in sandbox
+
+### Inline HTTP — BLOCKED
+Any shell command containing `fetch('http`, `requests.get(`, `requests.post(`, `http.get(`, or `http.request(` will be intercepted and blocked. Do NOT retry with shell.
+Instead use:
+- `context-mode_ctx_execute(language, code)` to run HTTP calls in sandbox — only stdout enters context
+
+### Direct web fetching — BLOCKED
+Do NOT use any direct URL fetching tool. Use the sandbox equivalent.
+Instead use:
+- `context-mode_ctx_fetch_and_index(url, source)` then `context-mode_ctx_search(queries)` to query the indexed content
+
+## REDIRECTED tools — use sandbox equivalents
+
+### Shell (>20 lines output)
+Shell is ONLY for: `git`, `mkdir`, `rm`, `mv`, `cd`, `ls`, `npm install`, `pip install`, and other short-output commands.
+For everything else, use:
+- `context-mode_ctx_batch_execute(commands, queries)` — run multiple commands + search in ONE call
+- `context-mode_ctx_execute(language: "shell", code: "...")` — run in sandbox, only stdout enters context
+
+### File reading (for analysis)
+If you are reading a file to **edit** it → reading is correct (edit needs content in context).
+If you are reading to **analyze, explore, or summarize** → use `context-mode_ctx_execute_file(path, language, code)` instead. Only your printed summary enters context.
+
+### grep / search (large results)
+Search results can flood context. Use `context-mode_ctx_execute(language: "shell", code: "grep ...")` to run searches in sandbox. Only your printed summary enters context.
+
+## Tool selection hierarchy
+
+1. **GATHER**: `context-mode_ctx_batch_execute(commands, queries)` — Primary tool. Runs all commands, auto-indexes output, returns search results. ONE call replaces 30+ individual calls.
+2. **FOLLOW-UP**: `context-mode_ctx_search(queries: ["q1", "q2", ...])` — Query indexed content. Pass ALL questions as array in ONE call.
+3. **PROCESSING**: `context-mode_ctx_execute(language, code)` | `context-mode_ctx_execute_file(path, language, code)` — Sandbox execution. Only stdout enters context.
+4. **WEB**: `context-mode_ctx_fetch_and_index(url, source)` then `context-mode_ctx_search(queries)` — Fetch, chunk, index, query. Raw HTML never enters context.
+5. **INDEX**: `context-mode_ctx_index(content, source)` — Store content in FTS5 knowledge base for later search.
+
+## Output constraints
+
+- Keep responses under 500 words.
+- Write artifacts (code, configs, PRDs) to FILES — never return them as inline text. Return only: file path + 1-line description.
+- When indexing content, use descriptive source labels so others can `search(source: "label")` later.
+
+## ctx commands
+
+| Command | Action |
+|---------|--------|
+| `ctx stats` | Call the `stats` MCP tool and display the full output verbatim |
+| `ctx doctor` | Call the `doctor` MCP tool, run the returned shell command, display as checklist |
+| `ctx upgrade` | Call the `upgrade` MCP tool, run the returned shell command, display as checklist |

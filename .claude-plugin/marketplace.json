@@ -8,8 +8,8 @@
     {
       "name": "lossless-claude",
       "description": "Lossless context management — DAG-based summarization that preserves every message",
-      "version": "0.3.0",
-      "source": "./.claude-plugin/plugin.json"
+      "version": "0.8.0",
+      "strict": true
     }
   ]
 }

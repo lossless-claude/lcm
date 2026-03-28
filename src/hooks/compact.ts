@@ -15,6 +15,14 @@ export async function handlePreCompact(stdin: string, client: DaemonClient, port
       ...input,
       client: "claude",
     });
+
+    try {
+      const { firePromoteEventsRequest } = await import("./session-end.js");
+      firePromoteEventsRequest(daemonPort, { cwd: input.cwd });
+    } catch {
+      // Silent fail — PreCompact must not delay session
+    }
+
     return { exitCode: 2, stdout: result.summary || "" };
   } catch {
     return { exitCode: 0, stdout: "" };

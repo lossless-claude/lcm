@@ -28,6 +28,7 @@ import { projectId, projectDir, projectDbPath } from "../../src/daemon/project.j
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = join(__dirname, "..", "fixtures", "e2e");
+const FIXTURES_ROOT = join(__dirname, "..", "fixtures");
 const PROJECTS_DIR = join(homedir(), ".lossless-claude", "projects");
 
 // ─── Public types ────────────────────────────────────────────────────────────
@@ -45,6 +46,8 @@ export interface HarnessHandle {
   fixturePath: string;
   /** Path to subagent fixture */
   fixtureSubagentPath: string;
+  /** Path to synthetic-session.jsonl fixture (inside tmpDir — safe for isSafeTranscriptPath) */
+  syntheticFixturePath: string;
   mode: "mock" | "live";
   cleanup(): Promise<void>;
 }
@@ -103,6 +106,11 @@ function copyFixtures(destDir: string): void {
     join(FIXTURES_DIR, "subagents", "subagent-task-1.jsonl"),
     join(subagentsDir, "subagent-task-1.jsonl"),
   );
+  // Copy synthetic-session.jsonl into tmpDir so isSafeTranscriptPath allows it
+  copyFileSync(
+    join(FIXTURES_ROOT, "synthetic-session.jsonl"),
+    join(destDir, "synthetic-session.jsonl"),
+  );
 }
 
 // ─── createHarness ───────────────────────────────────────────────────────────
@@ -155,6 +163,7 @@ export async function createHarness(mode: "mock" | "live"): Promise<HarnessHandl
   const dbPath = projectDbPath(tmpDir);
   const fixturePath = join(tmpDir, "session-main.jsonl");
   const fixtureSubagentPath = join(tmpDir, "subagents", "subagent-task-1.jsonl");
+  const syntheticFixturePath = join(tmpDir, "synthetic-session.jsonl");
 
   // 7. Build and return the handle
   const handle: HarnessHandle = {
@@ -164,6 +173,7 @@ export async function createHarness(mode: "mock" | "live"): Promise<HarnessHandl
     client,
     fixturePath,
     fixtureSubagentPath,
+    syntheticFixturePath,
     mode,
     async cleanup() {
       // Stop the daemon

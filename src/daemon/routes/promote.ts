@@ -11,15 +11,25 @@ import { SummaryStore } from "../../store/summary-store.js";
 import { PromotedStore } from "../../db/promoted.js";
 import { shouldPromote } from "../../promotion/detector.js";
 import { deduplicateAndInsert } from "../../promotion/dedup.js";
+import { validateCwd } from "../validate-cwd.js";
+
 export function createPromoteHandler(
   config: DaemonConfig,
 ): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
-    const { cwd, dry_run = false } = input;
+    const { dry_run = false } = input;
 
-    if (!cwd) {
+    if (!input.cwd) {
       sendJson(res, 400, { error: "cwd is required" });
+      return;
+    }
+
+    let cwd: string;
+    try {
+      cwd = validateCwd(input.cwd);
+    } catch (err) {
+      sendJson(res, 400, { error: err instanceof Error ? err.message : "invalid cwd" });
       return;
     }
 
@@ -32,6 +42,7 @@ export function createPromoteHandler(
     const db = new DatabaseSync(dbPath);
     let processed = 0;
     let promoted = 0;
+    let totalConversations = 0;
 
     try {
       db.exec("PRAGMA busy_timeout = 5000");
@@ -49,6 +60,7 @@ export function createPromoteHandler(
       );
 
       const conversations = await convStore.listConversations();
+      totalConversations = conversations.length;
 
       for (const conversation of conversations) {
         const summaries = await summStore.getSummariesByConversation(conversation.conversationId);
@@ -108,10 +120,13 @@ export function createPromoteHandler(
           writeFileSync(metaPath, JSON.stringify(meta, null, 2));
         } catch { /* non-fatal */ }
       }
+    } catch (err) {
+      sendJson(res, 500, { error: err instanceof Error ? err.message : "promote failed" });
+      return;
     } finally {
       db.close();
     }
 
-    sendJson(res, 200, { processed, promoted });
+    sendJson(res, 200, { processed, promoted, conversations: totalConversations });
   };
 }
