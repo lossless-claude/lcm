@@ -195,7 +195,7 @@ export async function importKnowledge(
   if (opts.dryRun) {
     return {
       total: doc.entries.length,
-      imported: doc.entries.length,
+      imported: 0,
       skipped: 0,
       dryRun: true,
     };
@@ -241,6 +241,13 @@ export async function importKnowledge(
     }
   } finally {
     closeLcmConnection(dbPath);
+  }
+
+  // Write meta.json if it doesn't already exist so this project is visible
+  // to `lcm export --all` (which enumerates projects by scanning for meta.json).
+  const metaPath = join(projDir, "meta.json");
+  if (!existsSync(metaPath)) {
+    writeFileSync(metaPath, JSON.stringify({ cwd }, null, 2), "utf-8");
   }
 
   return {

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -253,6 +253,8 @@ describe("portable-knowledge — import", () => {
     const result = await importKnowledge(cwd, doc, { dryRun: true, _lcmBaseDir: baseDir });
     expect(result.dryRun).toBe(true);
     expect(result.total).toBe(1);
+    // dry-run must return imported: 0 — nothing was actually written
+    expect(result.imported).toBe(0);
 
     // Nothing should be written
     const projId = toProjectId(cwd);
@@ -317,5 +319,56 @@ describe("portable-knowledge — import", () => {
     const rows = store.getAll({ projectId: projId });
     expect(rows.length).toBe(3);
     db.close();
+  });
+
+  it("writes meta.json on import so the project is visible to export --all", async () => {
+    const baseDir = makeTempDir();
+    const cwd = makeTempDir();
+
+    // Import into a brand-new project (no prior meta.json)
+    const doc = makeDoc([
+      {
+        content: "Round-trip test entry",
+        tags: ["decision"],
+        confidence: 0.9,
+        createdAt: new Date().toISOString(),
+        sessionId: null,
+      },
+    ]);
+
+    await importKnowledge(cwd, doc, { _lcmBaseDir: baseDir });
+
+    // meta.json must exist so export --all can discover this project
+    const projId = toProjectId(cwd);
+    const metaPath = join(baseDir, "projects", projId, "meta.json");
+    expect(existsSync(metaPath)).toBe(true);
+
+    const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+    expect(meta.cwd).toBe(cwd);
+
+    // Verify the round-trip: export using the same project directory enumeration
+    // that `lcm export --all` uses (scan projects/ for meta.json files).
+    const projectsDir = join(baseDir, "projects");
+    const discoveredCwds: string[] = [];
+    for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const mp = join(projectsDir, entry.name, "meta.json");
+      if (!existsSync(mp)) continue;
+      try {
+        const m = JSON.parse(readFileSync(mp, "utf-8"));
+        if (m.cwd) discoveredCwds.push(m.cwd);
+      } catch { /* skip */ }
+    }
+
+    expect(discoveredCwds).toContain(cwd);
+
+    // Full round-trip: export the imported project and verify the entry is there
+    const outFile = join(makeTempDir(), "roundtrip.json");
+    const { exportKnowledge } = await import("../src/portable-knowledge.js");
+    const exportResult = await exportKnowledge(cwd, { output: outFile, skipScrub: true, _lcmBaseDir: baseDir });
+    expect(exportResult.exported).toBe(1);
+
+    const exported: ExportDocument = JSON.parse(readFileSync(outFile, "utf-8"));
+    expect(exported.entries[0].content).toBe("Round-trip test entry");
   });
 });
