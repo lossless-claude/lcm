@@ -22,6 +22,7 @@ export function readGitleaksSyncDate(): string | null {
   }
 }
 
+
 /**
  * Native (hand-curated) patterns that gap-fill what gitleaks doesn't cover.
  * These are applied in addition to GITLEAKS_PATTERNS.

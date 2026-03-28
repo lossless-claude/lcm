@@ -3,7 +3,7 @@ name: Sync develop after release
 on:
   push:
     branches:
-      - release
+      - stable
     paths:
       - package.json
 
@@ -32,7 +32,7 @@ jobs:
       - name: Check if develop already contains this commit
         id: check
         run: |
-          git fetch origin main release
+          git fetch origin main stable
           if git merge-base --is-ancestor HEAD origin/main; then
             echo "already_synced=true" >> "$GITHUB_OUTPUT"
           else
@@ -56,11 +56,11 @@ jobs:
 
           # Always create/reset local branch to current main HEAD so the
           # sync branch is up to date even if a prior run left it on remote.
-          git fetch origin release
+          git fetch origin stable
           # Fetch the sync branch if it exists so --force-with-lease has a
           # local tracking ref and can verify nothing unexpected was pushed.
           git fetch origin "$BRANCH" || true
-          git checkout -B "$BRANCH" origin/release
+          git checkout -B "$BRANCH" origin/stable
           git push origin "$BRANCH" --force-with-lease
 
           # Reuse existing open PR for this branch/base if present, otherwise create one

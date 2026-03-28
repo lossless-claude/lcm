@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
+import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
 import { projectId, projectDbPath, projectDir, projectMetaPath, ensureProjectDir, isSafeTranscriptPath } from "../project.js";
 import { enqueue } from "../project-queue.js";
@@ -144,9 +144,8 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
           projectDir(cwd),
         );
 
-        const db = new DatabaseSync(dbPath);
+        const db = getLcmConnection(dbPath);
         try {
-          db.exec("PRAGMA busy_timeout = 5000");
           runLcmMigrations(db);
 
           const conversationStore = new ConversationStore(db);
@@ -263,7 +262,7 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
             providerLabel,
           };
         } finally {
-          db.close();
+          closeLcmConnection(dbPath);
         }
       }); // end enqueue
 
