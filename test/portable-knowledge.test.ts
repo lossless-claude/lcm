@@ -187,7 +187,9 @@ describe("portable-knowledge — export", () => {
     expect(e.content).toBe("Shape test");
     expect(e.tags).toEqual(["test"]);
     expect(e.confidence).toBe(0.75);
-    expect(e.sessionId).toBe("sess-abc");
+    // sessionId is nullified on export so cross-project imports don't create
+    // dead references pointing at sessions that don't exist in the new context.
+    expect(e.sessionId).toBeNull();
   });
 });
 
