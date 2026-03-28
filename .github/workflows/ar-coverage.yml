@@ -3,6 +3,10 @@ on:
   pull_request:
     types: [opened, labeled, unlabeled, synchronize]
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   ar-coverage:
     runs-on: ubuntu-latest
