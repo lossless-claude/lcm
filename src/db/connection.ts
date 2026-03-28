@@ -53,6 +53,32 @@ export function getLcmConnection(dbPath: string): DatabaseSync {
   return db;
 }
 
+export interface PoolStats {
+  totalConnections: number;
+  activeConnections: number;
+  idleConnections: number;
+  connections: Array<{
+    path: string;
+    refs: number;
+    status: "active" | "idle";
+  }>;
+}
+
+export function getPoolStats(): PoolStats {
+  const connections = Array.from(_connections.entries()).map(([path, entry]) => ({
+    path,
+    refs: entry.refs,
+    status: (entry.refs > 0 ? "active" : "idle") as "active" | "idle",
+  }));
+  const activeConnections = connections.filter((c) => c.status === "active").length;
+  return {
+    totalConnections: connections.length,
+    activeConnections,
+    idleConnections: connections.length - activeConnections,
+    connections,
+  };
+}
+
 export function closeLcmConnection(dbPath?: string): void {
   if (typeof dbPath === "string" && dbPath.trim()) {
     const entry = _connections.get(dbPath);
