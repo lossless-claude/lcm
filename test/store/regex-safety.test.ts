@@ -8,14 +8,8 @@ describe("validateRegex", () => {
   });
 
   it("throws for catastrophic backtracking patterns", () => {
-    // These strings are test INPUTS to validateRegex() which rejects them.
-    // They are never compiled as RegExp literals — CodeQL suppression is correct here.
-    // codeql[js/redos]
-    const nestedQuantifier = "(a+)+$";
-    // codeql[js/redos]
-    const repeatedGroup = "(.*a){20}";
-    expect(() => validateRegex(nestedQuantifier)).toThrow(/unsafe/i);
-    expect(() => validateRegex(repeatedGroup)).toThrow(/unsafe/i);
+    expect(() => validateRegex("(a+)+$")).toThrow(/unsafe/i); // codeql[js/redos] - intentional test input, never compiled
+    expect(() => validateRegex("(.*a){20}")).toThrow(/unsafe/i); // codeql[js/redos] - intentional test input, never compiled
   });
 
   it("throws for invalid regex syntax", () => {
