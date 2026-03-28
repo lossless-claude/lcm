@@ -855,6 +855,147 @@ async function main() {
       console.log();
     });
 
+  // ─── export ────────────────────────────────────────────────────────────────
+  program
+    .command("export")
+    .description("Export promoted knowledge to a portable JSON file")
+    .option("--all", "Export all projects (one JSON per project, written to files)")
+    .option("--tags <tags>", "Only export entries matching these comma-separated tags")
+    .option("--since <date>", "Only export entries created on or after this ISO date (e.g. 2026-01-01)")
+    .option("--output <file>", "Write output to file instead of stdout")
+    .option("--format <format>", "Output format: json (default)", "json")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (opts) => {
+      if (opts.help) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("export"); exit(0);
+      }
+
+      const { exportKnowledge } = await import("../src/portable-knowledge.js");
+      const { homedir } = await import("node:os");
+      const { join } = await import("node:path");
+      const { existsSync, readdirSync, readFileSync } = await import("node:fs");
+
+      const tags: string[] | undefined = opts.tags
+        ? (opts.tags as string).split(",").map((t: string) => t.trim()).filter(Boolean)
+        : undefined;
+      const since: string | undefined = opts.since;
+      const output: string | undefined = opts.output;
+      const all: boolean = opts.all ?? false;
+
+      const cwds: string[] = [];
+      if (all) {
+        const projectsDir = join(homedir(), ".lossless-claude", "projects");
+        if (existsSync(projectsDir)) {
+          for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
+            if (!entry.isDirectory()) continue;
+            const metaPath = join(projectsDir, entry.name, "meta.json");
+            if (!existsSync(metaPath)) continue;
+            try {
+              const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+              if (meta.cwd) cwds.push(meta.cwd);
+            } catch { /* skip */ }
+          }
+        }
+      } else {
+        cwds.push(process.cwd());
+      }
+
+      let total = 0;
+      for (const cwd of cwds) {
+        let outFile: string | undefined = output;
+        if (all && output === undefined) {
+          // When --all and no --output, generate filenames automatically
+          const slug = cwd.replace(/[^a-zA-Z0-9]/g, "-").replace(/-+/g, "-").slice(-40);
+          outFile = join(process.cwd(), `lcm-export-${slug}.json`);
+        }
+        try {
+          const result = await exportKnowledge(cwd, { tags, since, output: outFile });
+          total += result.exported;
+          if (all) {
+            console.log(`  ${cwd}: ${result.exported} entries → ${outFile}`);
+          } else if (outFile) {
+            console.log(`  Exported ${result.exported} entries to ${outFile}`);
+          }
+        } catch (err: any) {
+          process.stderr.write(`  Warning: ${err.message}\n`);
+        }
+      }
+
+      if (all) console.log(`\n  Total: ${total} entries exported`);
+    });
+
+  // ─── import-knowledge ──────────────────────────────────────────────────────
+  program
+    .command("import-knowledge <file>")
+    .description("Import exported knowledge JSON into lossless memory")
+    .option("--merge", "Merge with existing entries, deduplicating (default)")
+    .option("--dry-run", "Preview import without writing anything")
+    .option("--confidence <n>", "Override confidence for all imported entries (0.0–1.0)")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (file: string, opts) => {
+      if (opts.help) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("import-knowledge"); exit(0);
+      }
+
+      const { importKnowledge } = await import("../src/portable-knowledge.js");
+      const { readFileSync } = await import("node:fs");
+
+      const dryRun: boolean = opts.dryRun ?? false;
+      const confidence: number | undefined = opts.confidence !== undefined
+        ? parseFloat(opts.confidence as string)
+        : undefined;
+
+      if (confidence !== undefined && (isNaN(confidence) || confidence < 0 || confidence > 1)) {
+        console.error("  --confidence must be a number between 0.0 and 1.0");
+        exit(1);
+      }
+
+      let raw: string;
+      try {
+        raw = readFileSync(file, "utf-8");
+      } catch (err: any) {
+        console.error(`  Cannot read file: ${err.message}`);
+        exit(1);
+      }
+
+      let doc: any;
+      try {
+        doc = JSON.parse(raw);
+      } catch {
+        console.error("  Invalid JSON in export file");
+        exit(1);
+      }
+
+      if (!doc || typeof doc.version !== "number" || !Array.isArray(doc.entries)) {
+        console.error("  File does not look like an lcm export (missing version or entries)");
+        exit(1);
+      }
+
+      const cwd = process.cwd();
+
+      if (dryRun) {
+        console.log(`\n  [dry-run] Would import ${doc.entries.length} entries into ${cwd}`);
+        console.log("  No changes written.\n");
+        exit(0);
+      }
+
+      try {
+        const result = await importKnowledge(cwd, doc, { merge: true, dryRun, confidence });
+        if (result.dryRun) {
+          console.log(`\n  [dry-run] Would import ${result.total} entries. No changes written.\n`);
+        } else {
+          console.log(`\n  Imported ${result.imported} entries (${result.skipped} skipped) into ${cwd}\n`);
+        }
+      } catch (err: any) {
+        console.error(`  Import failed: ${err.message}`);
+        exit(1);
+      }
+    });
+
   // ─── Unknown command fallback ──────────────────────────────────────────────
   program.on("command:*", async (operands: string[]) => {
     process.stderr.write(`lcm: unknown command '${operands[0]}'\n\n`);

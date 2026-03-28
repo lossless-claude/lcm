@@ -205,6 +205,43 @@ const HELP: Record<string, CommandHelp> = {
     notes: "Built-in patterns cover common secrets (API keys, tokens, passwords). Project patterns are stored in ~/.lossless-claude/projects/<id>/sensitive-patterns.txt; global patterns are stored in config.json. The 'purge' subcommand deletes the entire project data directory (including stored memory) and cannot be undone.",
   },
 
+  export: {
+    summary: "Export promoted knowledge to a portable JSON file (secrets scrubbed).",
+    usage: "lcm export [--all] [--tags <tags>] [--since <date>] [--output <file>]",
+    options: [
+      ["--all", "Export all projects (one file per project, auto-named)"],
+      ["--tags <tags>", "Only export entries that have all these comma-separated tags"],
+      ["--since <date>", "Only export entries created on or after this ISO date (e.g. 2026-01-01)"],
+      ["--output <file>", "Write output to file instead of stdout"],
+      ["--format <format>", "Output format: json (default)"],
+    ],
+    examples: [
+      ["lcm export", "Print current project knowledge to stdout"],
+      ["lcm export --output knowledge.json", "Write to a file"],
+      ["lcm export --since 2026-01-01", "Only export entries from 2026 onward"],
+      ["lcm export --tags decision,architecture", "Only export entries tagged with both tags"],
+      ["lcm export --all", "Export all projects to auto-named JSON files"],
+    ],
+    notes: "Secrets are automatically scrubbed using the project's sensitive patterns before export. The JSON format is: { version, exportedAt, projectCwd, entries: [{content, tags, confidence, createdAt, sessionId}] }.",
+  },
+
+  "import-knowledge": {
+    summary: "Import a portable JSON export back into lossless memory.",
+    usage: "lcm import-knowledge <file> [--dry-run] [--confidence <n>]",
+    options: [
+      ["<file>", "Path to the JSON export file produced by lcm export"],
+      ["--merge", "Merge with existing entries, deduplicating (default)"],
+      ["--dry-run", "Preview what would be imported without writing anything"],
+      ["--confidence <n>", "Override the confidence score for all imported entries (0.0–1.0)"],
+    ],
+    examples: [
+      ["lcm import-knowledge knowledge.json", "Import entries into current project"],
+      ["lcm import-knowledge knowledge.json --dry-run", "Preview without writing"],
+      ["lcm import-knowledge knowledge.json --confidence 0.7", "Import with reduced confidence"],
+    ],
+    notes: "Deduplication is performed automatically: near-duplicate entries are merged rather than inserted twice. Run from the target project directory.",
+  },
+
   mcp: {
     summary: "Start the lcm MCP server (used by Claude Code to expose memory tools).",
     usage: "lcm mcp",
@@ -276,6 +313,13 @@ const GROUPS = [
       { name: "connectors install <agent> [--type ...]", summary: "Install connector for a coding agent" },
       { name: "connectors remove <agent> [--type ...]", summary: "Remove connector for a coding agent" },
       { name: "connectors doctor [agent]", summary: "Check connector health" },
+    ],
+  },
+  {
+    label: "Portable Knowledge",
+    commands: [
+      { name: "export [--all] [--output <file>]", summary: "Export promoted knowledge to JSON (secrets scrubbed)" },
+      { name: "import-knowledge <file>", summary: "Import exported knowledge JSON, deduplicating on merge" },
     ],
   },
   {
