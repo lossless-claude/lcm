@@ -1,21 +1,24 @@
 import { describe, it, expect } from "vitest";
-import { buildOrientationPrompt } from "../../src/daemon/orientation.js";
+import { buildOrientationPrompt, LCM_MD_CONTENT } from "../../src/daemon/orientation.js";
 
 describe("buildOrientationPrompt", () => {
-  it("contains memory-orientation tag", () => {
-    const p = buildOrientationPrompt();
-    expect(p).toContain("<memory-orientation>");
-    expect(p).toContain("</memory-orientation>");
+  it("returns empty string — guidance now lives in ~/.claude/lcm.md", () => {
+    expect(buildOrientationPrompt()).toBe("");
   });
-  it("mentions all four tools", () => {
-    const p = buildOrientationPrompt();
-    expect(p).toContain("lcm_grep");
-    expect(p).toContain("lcm_expand");
-    expect(p).toContain("lcm_describe");
-    expect(p).toContain("lcm_search");
+});
+
+describe("LCM_MD_CONTENT", () => {
+  it("mentions all four MCP tools", () => {
+    expect(LCM_MD_CONTENT).toContain("lcm_grep");
+    expect(LCM_MD_CONTENT).toContain("lcm_expand");
+    expect(LCM_MD_CONTENT).toContain("lcm_describe");
+    expect(LCM_MD_CONTENT).toContain("lcm_search");
   });
-  it("instructs not to store directly", () => {
-    const p = buildOrientationPrompt();
-    expect(p).toContain("Do not store directly");
+  it("instructs not to store manually", () => {
+    expect(LCM_MD_CONTENT).toContain("Do NOT store manually");
+  });
+  it("includes retrieval chain example", () => {
+    expect(LCM_MD_CONTENT).toContain("lcm_search");
+    expect(LCM_MD_CONTENT).toContain("lcm_expand");
   });
 });

@@ -8,7 +8,7 @@ export const lcmStoreTool = {
       tags: {
         type: "array",
         items: { type: "string" },
-        description: "Categorical tags (e.g. ['decision', 'architecture', 'bug-fix'])",
+        description: "Canonical tags following the <prefix>:<value> schema (see docs/tag-schema.md). Use at least type: and one of project: or scope:. Examples: ['type:solution', 'scope:lcm', 'project:lcm', 'sprint:sp3', 'source:session']. Valid prefixes: type, scope, priority, owner, project, sprint, source.",
       },
       metadata: {
         type: "object",

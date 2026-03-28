@@ -32,6 +32,77 @@ describe("ScrubEngine — built-in patterns", () => {
     const text = "Hello world, this is safe content.";
     expect(engine.scrub(text)).toBe(text);
   });
+
+  it("redacts npm tokens (npm_...)", () => {
+    expect(engine.scrub("token=npm_aBcDeFgHiJkLmNoPqRsTuVwXyZ012345")).toContain("[REDACTED]");
+  });
+
+  it("redacts Slack bot tokens (xoxb-...)", () => {
+    expect(engine.scrub("SLACK_TOKEN=xoxb-123456789-abcdefghij")).toContain("[REDACTED]");
+  });
+
+  it("redacts Slack user tokens (xoxp-...)", () => {
+    expect(engine.scrub("token=xoxp-999888777-abcdef")).toContain("[REDACTED]");
+  });
+
+  it("redacts Slack rotating tokens (xoxe-...)", () => {
+    expect(engine.scrub("token=xoxe-1-abc123def456")).toContain("[REDACTED]");
+  });
+
+  it("redacts Slack app-level tokens (xapp-...)", () => {
+    expect(engine.scrub("token=xapp-1-A0B1C2D3E4F-abc123")).toContain("[REDACTED]");
+  });
+
+  it("redacts Slack workflow tokens (xwfp-...)", () => {
+    expect(engine.scrub("token=xwfp-abc123-def456")).toContain("[REDACTED]");
+  });
+
+  it("redacts Stripe live secret keys (sk_live_...)", () => {
+    expect(engine.scrub("key=sk_live_51J3kxABCDEFghijKLMNop")).toContain("[REDACTED]");
+  });
+
+  it("redacts Stripe live publishable keys (pk_live_...)", () => {
+    expect(engine.scrub("key=pk_live_51J3kxABCDEFghijKLMNop")).toContain("[REDACTED]");
+  });
+
+  it("redacts Google/GCP API keys (AIza...)", () => {
+    expect(engine.scrub("key=AIzaSyA1234567890abcdefghijklmnopqrstuv")).toContain("[REDACTED]");
+  });
+
+  it("redacts SendGrid API tokens (SG.…)", () => {
+    expect(engine.scrub("SENDGRID_KEY=SG." + "a".repeat(66))).toContain("[REDACTED]");
+  });
+
+  it("redacts Twilio API keys (SK...)", () => {
+    expect(engine.scrub("TWILIO_KEY=SK00000000000000000000000000000000")).toContain("[REDACTED]");
+  });
+
+  it("redacts Shopify access tokens (shpat_...)", () => {
+    expect(engine.scrub("token=shpat_" + "a".repeat(32))).toContain("[REDACTED]");
+  });
+
+  it("redacts Vault service tokens (hvs.…)", () => {
+    expect(engine.scrub("VAULT_TOKEN=hvs." + "a".repeat(95))).toContain("[REDACTED]");
+  });
+
+  it("redacts Doppler API tokens (dp.pt.…)", () => {
+    expect(engine.scrub("DOPPLER=dp.pt." + "a".repeat(43))).toContain("[REDACTED]");
+  });
+
+  it("redacts database connection strings with credentials", () => {
+    expect(engine.scrub("DATABASE_URL=postgres://admin:s3cret@db.example.com:5432/mydb")).toContain("[REDACTED]");
+    expect(engine.scrub("MONGO=mongodb://root:pass@mongo:27017/app")).toContain("[REDACTED]");
+    expect(engine.scrub("REDIS=redis://default:hunter2@redis.example.com:6379")).toContain("[REDACTED]");
+  });
+
+  it("redacts JWTs (eyJ... three-segment tokens)", () => {
+    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.aBcDeFgHiJkLmNoPqRsTuVwXyZ";
+    expect(engine.scrub(`token=${jwt}`)).toContain("[REDACTED]");
+  });
+
+  it("does not redact partial JWT-like strings without dots", () => {
+    expect(engine.scrub("eyJhbGciOiJIUzI1NiJ9")).not.toContain("[REDACTED]");
+  });
 });
 
 describe("ScrubEngine — custom patterns", () => {
@@ -61,48 +132,66 @@ describe("ScrubEngine.scrubWithCounts", () => {
   it("returns zero counts when nothing is redacted", () => {
     const engine = new ScrubEngine([], []);
     const result = engine.scrubWithCounts("Hello world, this is safe content.");
+    expect(result.gitleaks).toBe(0);
     expect(result.builtIn).toBe(0);
     expect(result.global).toBe(0);
     expect(result.project).toBe(0);
     expect(result.text).toBe("Hello world, this is safe content.");
   });
 
-  it("counts built-in pattern matches", () => {
+  it("counts gitleaks pattern matches (GitHub PAT)", () => {
     const engine = new ScrubEngine([], []);
+    // ghp_ GitHub PAT — covered by both gitleaks and native; gitleaks wins (lower index)
     const result = engine.scrubWithCounts("token=ghp_" + "A".repeat(36));
+    expect(result.gitleaks).toBeGreaterThan(0);
+    expect(result.global).toBe(0);
+    expect(result.project).toBe(0);
+    expect(result.text).toContain("[REDACTED]");
+  });
+
+  it("counts built-in (native) pattern matches for strings not covered by gitleaks", () => {
+    const engine = new ScrubEngine([], []);
+    // Database connection URL — only in NATIVE_PATTERNS, not gitleaks
+    const result = engine.scrubWithCounts("postgres://admin:s3cret@db.example.com:5432/mydb");
     expect(result.builtIn).toBeGreaterThan(0);
+    expect(result.gitleaks).toBe(0);
     expect(result.global).toBe(0);
     expect(result.project).toBe(0);
     expect(result.text).toContain("[REDACTED]");
   });
 
   it("counts global pattern matches", () => {
-    const engine = new ScrubEngine(["MY_TOKEN_[A-Z0-9]+"], []);
-    const result = engine.scrubWithCounts("token=MY_TOKEN_ABC123");
+    const engine = new ScrubEngine(["XUNIT_[A-Z0-9]+"], []);
+    // XUNIT_ prefix doesn't appear in gitleaks or native patterns
+    const result = engine.scrubWithCounts("XUNIT_ABC123");
+    expect(result.gitleaks).toBe(0);
     expect(result.builtIn).toBe(0);
     expect(result.global).toBe(1);
     expect(result.project).toBe(0);
   });
 
   it("counts project pattern matches", () => {
-    const engine = new ScrubEngine([], ["PROJ_SECRET_[A-Z]+"]);
-    const result = engine.scrubWithCounts("secret=PROJ_SECRET_XYZ");
+    const engine = new ScrubEngine([], ["ZEBRA_[A-Z]+"]);
+    // ZEBRA_ prefix doesn't appear in gitleaks or native patterns
+    const result = engine.scrubWithCounts("ZEBRA_XYZ");
+    expect(result.gitleaks).toBe(0);
     expect(result.builtIn).toBe(0);
     expect(result.global).toBe(0);
     expect(result.project).toBe(1);
   });
 
   it("counts multiple matches across categories independently", () => {
-    const engine = new ScrubEngine(["GLOBAL_[A-Z0-9]+"], ["LOCAL_[A-Z0-9]+"]);
-    const result = engine.scrubWithCounts("GLOBAL_123 and LOCAL_456 and token=ghp_" + "A".repeat(36));
+    const engine = new ScrubEngine(["XUNIT_[A-Z0-9]+"], ["ZEBRA_[A-Z]+"]);
+    // XUNIT_ (global) + ZEBRA_ (project) + DB URL (native/builtIn)
+    const result = engine.scrubWithCounts("XUNIT_123 and ZEBRA_XYZ and postgres://admin:s3cret@db.example.com/mydb");
     expect(result.builtIn).toBeGreaterThan(0);
     expect(result.global).toBe(1);
     expect(result.project).toBe(1);
   });
 
   it("scrub() returns same text as scrubWithCounts().text", () => {
-    const engine = new ScrubEngine(["GLOBAL_[A-Z]+"], ["LOCAL_[A-Z]+"]);
-    const text = "GLOBAL_ABC LOCAL_XYZ safe text";
+    const engine = new ScrubEngine(["XUNIT_[A-Z]+"], ["ZEBRA_[A-Z]+"]);
+    const text = "XUNIT_ABC ZEBRA_XYZ safe text";
     expect(engine.scrub(text)).toBe(engine.scrubWithCounts(text).text);
   });
 });

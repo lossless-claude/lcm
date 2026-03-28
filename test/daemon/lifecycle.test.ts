@@ -101,6 +101,35 @@ describe("ensureDaemon", () => {
     }
   });
 
+  it("does not connect when health wait returns a daemon with mismatched version", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-healthver-"));
+    tempDirs.push(tempDir);
+    const pidFile = join(tempDir, "daemon.pid");
+    // Stale PID — process.kill will fail silently
+    writeFileSync(pidFile, "9999999");
+
+    // Simulate an old wrong-version daemon that is permanently running (always answers health)
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: "ok", version: "0.0.0", uptime: 100 }),
+    } as Response);
+
+    // Spawn override does nothing (simulates new process failing to bind occupied port)
+    const spawnMock = vi.fn().mockReturnValue({ pid: undefined, unref: vi.fn() });
+
+    const result = await ensureDaemon({
+      port: 19999,
+      pidFilePath: pidFile,
+      spawnTimeoutMs: 600,
+      expectedVersion: "99.99.99",
+      _fetchOverride: mockFetch as any,
+      _spawnOverride: spawnMock as any,
+    });
+
+    // Must NOT connect to the daemon that answered with wrong version
+    expect(result.connected).toBe(false);
+  });
+
   it("spawns a caller-specified command instead of process.argv[1] when provided", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-spawn-"));
     tempDirs.push(tempDir);

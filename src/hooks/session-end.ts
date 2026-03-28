@@ -41,6 +41,63 @@ export function fireCompactRequest(
   req.end();
 }
 
+export function firePromoteRequest(port: number, body: Record<string, unknown>): void {
+  const json = JSON.stringify(body);
+  const req = request({
+    hostname: "127.0.0.1",
+    port,
+    path: "/promote",
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(json),
+    },
+  });
+  req.on("socket", (socket) => {
+    req.on("finish", () => (socket as import("node:net").Socket).unref());
+  });
+  req.on("error", () => {});
+  req.write(json);
+  req.end();
+}
+
+export function firePromoteEventsRequest(port: number, body: Record<string, unknown>): void {
+  const json = JSON.stringify(body);
+  const req = request({
+    hostname: "127.0.0.1",
+    port,
+    path: "/promote-events",
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(json) },
+  });
+  req.on("socket", (socket) => {
+    req.on("finish", () => (socket as import("node:net").Socket).unref());
+  });
+  req.on("error", () => {}); // non-fatal
+  req.write(json);
+  req.end();
+}
+
+export function fireSessionCompleteRequest(port: number, body: Record<string, unknown>): void {
+  const json = JSON.stringify(body);
+  const req = request({
+    hostname: "127.0.0.1",
+    port,
+    path: "/session-complete",
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(json),
+    },
+  });
+  req.on("socket", (socket) => {
+    req.on("finish", () => (socket as import("node:net").Socket).unref());
+  });
+  req.on("error", () => {});
+  req.write(json);
+  req.end();
+}
+
 export async function handleSessionEnd(
   stdin: string,
   client: DaemonClient,
@@ -62,16 +119,11 @@ export async function handleSessionEnd(
       totalTokens?: number;
     }>("/ingest", input);
 
-    // Auto-compact if conversation exceeds threshold
     const configPath = join(homedir(), ".lossless-claude", "config.json");
     const config = loadDaemonConfig(configPath);
-    const threshold = config.compaction.autoCompactMinTokens;
+    const disableCompact = config.hooks?.disableAutoCompact ?? false;
 
-    if (
-      threshold > 0 &&
-      typeof ingestResult.totalTokens === "number" &&
-      ingestResult.totalTokens >= threshold
-    ) {
+    if (!disableCompact) {
       // Fire-and-forget via unreffed http.request — does not block the event loop.
       // The daemon receives and compacts independently after the hook process exits.
       fireCompactRequest(daemonPort, {
@@ -81,6 +133,21 @@ export async function handleSessionEnd(
         client: "claude",
       });
     }
+
+    // Always promote
+    firePromoteRequest(daemonPort, { cwd: input.cwd });
+
+    // Promote events for passive learning
+    firePromoteEventsRequest(daemonPort, { cwd: input.cwd });
+
+    // Record session completion in manifest.
+    // Note: ingestResult.ingested is the delta (new messages this call), not the total.
+    // We pass it as-is since we don't have the total without an extra DB query.
+    fireSessionCompleteRequest(daemonPort, {
+      session_id: input.session_id,
+      cwd: input.cwd,
+      message_count: ingestResult.ingested ?? 0,
+    });
 
     return { exitCode: 0, stdout: "" };
   } catch {

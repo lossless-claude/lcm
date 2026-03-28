@@ -1,5 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
+import { join, dirname } from "node:path";
+import { ensureAuthToken } from "./auth.js";
 
 export type EnsureDaemonOptions = {
   port: number;
@@ -102,6 +104,10 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
     return { connected: false, port: opts.port, spawned: false };
   }
 
+  // Ensure auth token exists before spawning
+  const tokenPath = join(dirname(opts.pidFilePath), "daemon.token");
+  ensureAuthToken(tokenPath);
+
   const spawnCommand = opts.spawnCommand ?? process.execPath;
   const spawnArgs = opts.spawnArgs ?? [process.argv[1], "daemon", "start"];
   const spawnImpl = opts._spawnOverride ?? spawn;
@@ -120,11 +126,15 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
     return { connected: false, port: opts.port, spawned: true };
   }
 
-  // Step 4: Wait for health
+  // Step 4: Wait for health — only connect if version matches (if expected)
   const deadline = Date.now() + opts.spawnTimeoutMs;
   while (Date.now() < deadline) {
     const h = await checkDaemonHealth(opts.port, fetchFn);
     if (h?.status === "ok") {
+      if (opts.expectedVersion && h.version && h.version !== opts.expectedVersion) {
+        await sleep(300);
+        continue;
+      }
       return { connected: true, port: opts.port, spawned: true };
     }
     await sleep(300);

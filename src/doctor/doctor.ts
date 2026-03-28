@@ -4,9 +4,11 @@ import { join, dirname } from "node:path";
 import { spawnSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { CheckResult, DoctorDeps } from "./types.js";
-import { mergeClaudeSettings, REQUIRED_HOOKS, resolveBinaryPath } from "../../installer/install.js";
-import { BUILT_IN_PATTERNS, ScrubEngine } from "../scrub.js";
+import { mergeClaudeSettings, REQUIRED_HOOKS, resolveBinaryPath, ensureLcmMd } from "../../installer/install.js";
+import { NATIVE_PATTERNS, ScrubEngine, readGitleaksSyncDate } from "../scrub.js";
+import { GITLEAKS_PATTERNS } from "../generated-patterns.js";
 import { projectDir } from "../daemon/project.js";
+import { collectEventStats, collectDetailedEventStats } from "../db/events-stats.js";
 
 const COLORS = {
   green: "\x1b[0;32m",
@@ -73,14 +75,6 @@ function addCodexProcessChecks(results: CheckResult[], deps: DoctorDeps): void {
   }
 }
 
-async function checkUrl(url: string, deps: DoctorDeps): Promise<boolean> {
-  try {
-    const res = await deps.fetch(url);
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
 
 function testMcpHandshake(): Promise<CheckResult> {
   return new Promise((resolve) => {
@@ -122,7 +116,69 @@ function testMcpHandshake(): Promise<CheckResult> {
   });
 }
 
-export async function runDoctor(overrides?: Partial<DoctorDeps>): Promise<CheckResult[]> {
+function formatTimeAgo(date: Date): string {
+  const ms = Math.max(0, Date.now() - date.getTime());
+  if (ms === 0) return "just now";
+  const mins = Math.floor(ms / 60_000);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function checkPassiveLearning(results: CheckResult[], hooksInstalled: boolean, verbose: boolean): void {
+  if (!hooksInstalled) return;
+
+  const stats = verbose ? collectDetailedEventStats(2000) : collectEventStats(2000);
+
+  // Capture check
+  if (stats.captured === 0) {
+    results.push({ name: "events-capture", category: "Passive Learning", status: "warn", message: "No events captured — passive learning may not be active" });
+  } else if (stats.unprocessed > 1000) {
+    results.push({ name: "events-capture", category: "Passive Learning", status: "warn", message: `${stats.captured} events (${stats.unprocessed} unprocessed) — daemon may be offline — run: lcm daemon start` });
+  } else {
+    results.push({ name: "events-capture", category: "Passive Learning", status: "pass", message: `${stats.captured} events captured (${stats.unprocessed} unprocessed)` });
+  }
+
+  // Error check
+  if (stats.errors >= 50) {
+    results.push({ name: "events-errors", category: "Passive Learning", status: "fail", message: `${stats.errors} hook errors (30d) — check ~/.lossless-claude/logs/events.log` });
+  } else if (stats.errors > 0) {
+    results.push({ name: "events-errors", category: "Passive Learning", status: "warn", message: `${stats.errors} hook errors (30d) — check ~/.lossless-claude/logs/events.log` });
+  } else {
+    results.push({ name: "events-errors", category: "Passive Learning", status: "pass", message: "0 hook errors" });
+  }
+
+  // Staleness check
+  if (stats.lastCapture) {
+    const isoLastCapture = `${stats.lastCapture.replace(" ", "T")}Z`;
+    const lastCaptureDate = new Date(isoLastCapture);
+    const lastCaptureTime = lastCaptureDate.getTime();
+    if (Number.isNaN(lastCaptureTime)) return;
+    const daysSince = (Date.now() - lastCaptureTime) / (1000 * 60 * 60 * 24);
+    if (daysSince >= 7) {
+      results.push({ name: "events-staleness", category: "Passive Learning", status: "warn", message: `last capture ${Math.floor(daysSince)}d ago — hooks may not be firing if project is active` });
+    } else {
+      const ago = daysSince < 1 ? `${Math.floor(daysSince * 24)}h ago` : `${Math.floor(daysSince)}d ago`;
+      results.push({ name: "events-staleness", category: "Passive Learning", status: "pass", message: `last capture ${ago}` });
+    }
+  }
+
+  // Verbose: per-project breakdown
+  if (verbose && "projects" in stats) {
+    const detailed = stats as import("../db/events-stats.js").DetailedEventStats;
+    for (const p of detailed.projects) {
+      const ago = p.lastCapture ? formatTimeAgo(new Date(`${p.lastCapture.replace(" ", "T")}Z`)) : "never";
+      results.push({ name: `events-project-${p.file}`, category: "Passive Learning", status: "pass", message: `${p.file.slice(0, 8)}… ${p.captured} events (${p.unprocessed} unprocessed) last: ${ago}` });
+    }
+    if (detailed.recentErrors.length > 0) {
+      const errorLines = detailed.recentErrors.map(e => `  ${e.created_at} ${e.hook}: ${e.error}`).join("\n");
+      results.push({ name: "events-recent-errors", category: "Passive Learning", status: "warn", message: `Recent errors:\n${errorLines}` });
+    }
+  }
+}
+
+export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false): Promise<CheckResult[]> {
   const deps = { ...defaultDeps(), ...overrides };
   const results: CheckResult[] = [];
   const config = loadConfig(deps);
@@ -140,9 +196,11 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>): Promise<CheckR
   // ── 1. Binary version ──
   // dist/src/doctor/doctor.js → ../../.. → project root
   const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "package.json");
+  let pkgVersion: string | undefined;
   try {
-    const pkg = JSON.parse(deps.readFileSync(pkgPath, "utf-8"));
-    results.push({ name: "version", category: "Stack", status: "pass", message: `v${pkg.version}` });
+    const pkg = JSON.parse(deps.readFileSync(pkgPath, "utf-8")) as { version?: unknown };
+    pkgVersion = typeof pkg.version === "string" ? pkg.version : undefined;
+    results.push({ name: "version", category: "Stack", status: pkgVersion ? "pass" : "warn", message: pkgVersion ? `v${pkgVersion}` : "Could not read version" });
   } catch {
     results.push({ name: "version", category: "Stack", status: "warn", message: "Could not read version" });
   }
@@ -156,9 +214,70 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>): Promise<CheckR
   }
 
   // ── Daemon ──
-  const daemonHealthy = await checkUrl(`http://localhost:${config.port}/health`, deps);
+  let daemonHealthy = false;
+  let daemonVersion: string | undefined;
+  try {
+    const res = await deps.fetch(`http://127.0.0.1:${config.port}/health`);
+    if (res.ok) {
+      const h = (await res.json()) as { status?: string; version?: string };
+      daemonHealthy = h.status === "ok";
+      daemonVersion = h.version;
+    }
+  } catch {}
+
   if (daemonHealthy) {
-    results.push({ name: "daemon", category: "Daemon", status: "pass", message: `localhost:${config.port} (up)` });
+    const pidFilePath = join(deps.homedir, ".lossless-claude", "daemon.pid");
+    if (pkgVersion && daemonVersion && daemonVersion !== pkgVersion) {
+      // Version mismatch — auto-restart with expectedVersion to kill stale daemon and spawn fresh
+      try {
+        const { ensureDaemon } = await import("../daemon/lifecycle.js");
+        const { connected } = await ensureDaemon({ port: config.port, pidFilePath, spawnTimeoutMs: 10000, expectedVersion: pkgVersion });
+
+        // Re-fetch health to verify restart actually fixed the version
+        let postRestartVersion: string | undefined;
+        let postRestartOk = false;
+        if (connected) {
+          try {
+            const res = await deps.fetch(`http://127.0.0.1:${config.port}/health`);
+            if (res.ok) {
+              const h = (await res.json()) as { status?: string; version?: string };
+              postRestartOk = h.status === "ok";
+              postRestartVersion = h.version;
+            }
+          } catch { /* non-fatal */ }
+        }
+
+        const fixApplied = connected && postRestartOk && postRestartVersion === pkgVersion;
+        if (fixApplied) {
+          results.push({
+            name: "daemon", category: "Daemon", status: "warn",
+            message: `localhost:${config.port} — restarted (v${daemonVersion} → v${pkgVersion})`,
+            fixApplied: true,
+          });
+          daemonHealthy = true;
+        } else if (connected) {
+          const runningVersion = postRestartVersion ?? daemonVersion;
+          results.push({
+            name: "daemon", category: "Daemon", status: "warn",
+            message: `localhost:${config.port} — version mismatch (v${runningVersion} running, v${pkgVersion} installed); restart did not fix mismatch\n     Fix: lcm daemon restart`,
+            fixApplied: false,
+          });
+          daemonHealthy = false;
+        } else {
+          results.push({
+            name: "daemon", category: "Daemon", status: "fail",
+            message: `localhost:${config.port} — version mismatch (v${daemonVersion} running, v${pkgVersion} installed); restart failed\n     Fix: lcm daemon restart`,
+            fixApplied: false,
+          });
+          daemonHealthy = false;
+        }
+      } catch {
+        results.push({ name: "daemon", category: "Daemon", status: "warn",
+          message: `localhost:${config.port} — version mismatch (v${daemonVersion} running, v${pkgVersion} installed)\n     Fix: lcm daemon restart` });
+      }
+    } else {
+      results.push({ name: "daemon", category: "Daemon", status: "pass", message: `localhost:${config.port} (up)` });
+    }
   } else {
     // Auto-fix: try ensureDaemon
     try {
@@ -214,7 +333,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>): Promise<CheckR
         name: "hooks",
         category: "Settings",
         status: "warn",
-        message: `Duplicate hooks in settings.json: ${duplicateHooks.join(", ")} — run: lcm install`,
+        message: `Duplicate ${duplicateHooks.join(", ")} hook ${duplicateHooks.length === 1 ? "entry" : "entries"} in ${settingsPath} — remove the \`hooks.${duplicateHooks[0]}\` block(s) from that file, then run: lcm install`,
       });
     }
   } else {
@@ -248,6 +367,42 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>): Promise<CheckR
     }
   }
 
+  // ── lcm.md (Claude Code memory guidance file) ──
+  const lcmMdPath = join(deps.homedir, ".claude", "lcm.md");
+  const claudeMdPath = join(deps.homedir, ".claude", "CLAUDE.md");
+  const lcmMdExists = deps.existsSync(lcmMdPath);
+  const claudeMdHasRef = (() => {
+    if (!deps.existsSync(claudeMdPath)) return false;
+    try {
+      const claudeContent = deps.readFileSync(claudeMdPath, "utf-8");
+      const lcmBlockMatch = claudeContent.match(/<!--\s*lcm:start\s*-->[\s\S]*?<!--\s*lcm:end\s*-->/);
+      if (!lcmBlockMatch) return false;
+      return /@lcm\.md/.test(lcmBlockMatch[0]);
+    } catch {
+      return false;
+    }
+  })();
+
+  const { LCM_MD_CONTENT } = await import("../daemon/orientation.js");
+  const lcmMdStale = lcmMdExists
+    ? (() => { try { return deps.readFileSync(lcmMdPath, "utf-8") !== LCM_MD_CONTENT; } catch { return true; } })()
+    : false;
+
+  if (lcmMdExists && claudeMdHasRef && !lcmMdStale) {
+    results.push({ name: "lcm-md", category: "Settings", status: "pass", message: "~/.claude/lcm.md installed and referenced in CLAUDE.md" });
+  } else {
+    try {
+      const { lcmMdWritten, claudeMdPatched } = ensureLcmMd(deps, LCM_MD_CONTENT, deps.homedir);
+      const detail = [
+        !lcmMdExists ? "wrote ~/.claude/lcm.md" : lcmMdWritten ? "updated stale ~/.claude/lcm.md" : null,
+        claudeMdPatched ? "added @lcm.md to CLAUDE.md" : null,
+      ].filter(Boolean).join(", ");
+      results.push({ name: "lcm-md", category: "Settings", status: "warn", message: `lcm.md restored (${detail})`, fixApplied: true });
+    } catch (err) {
+      results.push({ name: "lcm-md", category: "Settings", status: "fail", message: `lcm.md repair failed: ${err instanceof Error ? err.message : String(err)} — run: lcm install` });
+    }
+  }
+
   // ── Summarizer (conditional) ──
   if (config.summarizer === "auto") {
     addClaudeProcessChecks(results, deps);
@@ -275,46 +430,77 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>): Promise<CheckR
   }
 
   // ── Security ──
-  results.push({
-    name: "built-in-patterns",
-    category: "Security",
-    status: "pass",
-    message: `built-in patterns   ${BUILT_IN_PATTERNS.length} active`,
-  });
+
+  // Gitleaks health check: verify generated-patterns.js exists and exports non-empty array
+  const syncDate = readGitleaksSyncDate();
+  const gitleaksCount = GITLEAKS_PATTERNS.length;
+  if (gitleaksCount === 0) {
+    results.push({
+      name: "secret-detection",
+      category: "Security",
+      status: "fail",
+      message: "No gitleaks patterns were loaded (GITLEAKS_PATTERNS is empty) — run: npx tsx scripts/update-gitleaks-patterns.ts",
+    });
+  } else {
+    const syncNote = syncDate ? ` (synced ${syncDate})` : "";
+    results.push({
+      name: "secret-detection",
+      category: "Security",
+      status: "pass",
+      message: `Secret detection\n     Built-in patterns:  ${gitleaksCount} (gitleaks${syncNote}) + ${NATIVE_PATTERNS.length} (native)\n     Manage patterns:    lcm sensitive add/remove`,
+    });
+  }
 
   const cwd = deps.cwd ?? process.cwd();
   const patternsFile = join(projectDir(cwd), "sensitive-patterns.txt");
   const projectPatterns = await ScrubEngine.loadProjectPatterns(patternsFile);
 
-  if (projectPatterns.length === 0) {
-    results.push({
-      name: "project-patterns",
-      category: "Security",
-      status: "warn",
-      message: 'project patterns   none configured\n     Run: lcm sensitive add "<pattern>" to protect project-specific secrets',
-    });
-  } else {
-    // Check for invalid patterns
+  // Load global user patterns count for informational display
+  let globalUserPatternCount = 0;
+  try {
+    const { loadDaemonConfig } = await import("../daemon/config.js");
+    const globalConfigPath = join(deps.homedir, ".lossless-claude", "config.json");
+    const config = loadDaemonConfig(globalConfigPath);
+    globalUserPatternCount = config.security?.sensitivePatterns?.length ?? 0;
+  } catch {
+    // config may not exist
+  }
+
+  // User patterns: informational only (no warning for zero patterns)
+  if (projectPatterns.length > 0) {
     const invalidPatterns: string[] = [];
     for (const pat of projectPatterns) {
       try { new RegExp(pat); } catch { invalidPatterns.push(pat); }
     }
     if (invalidPatterns.length > 0) {
       results.push({
-        name: "project-patterns",
+        name: "user-patterns",
         category: "Security",
         status: "warn",
-        message: `project patterns   ${projectPatterns.length} configured (${invalidPatterns.length} invalid regex — will be skipped)`,
+        message: `User patterns:  ${globalUserPatternCount} global, ${projectPatterns.length} project (${invalidPatterns.length} invalid regex — will be skipped)`,
       });
     } else {
       results.push({
-        name: "project-patterns",
+        name: "user-patterns",
         category: "Security",
         status: "pass",
-        message: `project patterns   ${projectPatterns.length} configured`,
+        message: `User patterns:  ${globalUserPatternCount} global, ${projectPatterns.length} project`,
       });
     }
+  } else {
+    results.push({
+      name: "user-patterns",
+      category: "Security",
+      status: "pass",
+      message: `User patterns:  ${globalUserPatternCount} global, 0 project`,
+    });
   }
+
+  // ── Passive Learning ──
+  const hooksInstalled = results.some(
+    r => r.category === "Settings" && r.name === "hooks" && r.status !== "fail"
+  );
+  checkPassiveLearning(results, hooksInstalled, verbose);
 
   return results;
 }

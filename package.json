@@ -1,6 +1,6 @@
 {
   "name": "@lossless-claude/lcm",
-  "version": "0.5.0",
+  "version": "0.8.0",
   "description": "Never lose context again. lossless-claude compresses Claude Code sessions into searchable memory — every message preserved, every insight remembered.",
   "type": "module",
   "main": "dist/src/memory/index.js",
@@ -43,13 +43,16 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@sinclair/typebox": "0.34.48",
-    "js-yaml": "^4.1.1"
+    "commander": "^14.0.3",
+    "js-yaml": "^4.1.1",
+    "safe-regex": "^2.1.1"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
     "@changesets/cli": "^2.30.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": ">=22",
+    "@types/safe-regex": "^1.1.6",
     "openai": "^6.32.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"

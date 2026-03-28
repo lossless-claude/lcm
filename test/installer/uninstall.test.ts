@@ -34,7 +34,7 @@ describe("removeClaudeSettings", () => {
       hooks: {
         PreCompact: [
           { matcher: "", hooks: [{ type: "command", command: "other" }] },
-          { matcher: "", hooks: [{ type: "command", command: "lcm compact" }] },
+          { matcher: "", hooks: [{ type: "command", command: "lcm compact --hook" }] },
         ],
         SessionStart: [
           { matcher: "", hooks: [{ type: "command", command: "lcm restore" }] },
@@ -53,7 +53,7 @@ describe("removeClaudeSettings", () => {
     const r = removeClaudeSettings({
       hooks: {
         PreCompact: [
-          { matcher: "", hooks: [{ type: "command", command: "lcm compact" }] },
+          { matcher: "", hooks: [{ type: "command", command: "lcm compact --hook" }] },
         ],
         SessionStart: [
           { matcher: "", hooks: [{ type: "command", command: "lcm restore" }] },
@@ -82,7 +82,7 @@ describe("removeClaudeSettings", () => {
             matcher: "",
             hooks: [
               { type: "command", command: "something-else" },
-              { type: "command", command: "lcm compact" },
+              { type: "command", command: "lcm compact --hook" },
             ],
           },
         ],
@@ -173,7 +173,7 @@ describe("uninstall", () => {
       existsSync: vi.fn().mockReturnValue(true),
       rmSync: vi.fn(),
       readFileSync: vi.fn().mockReturnValue(JSON.stringify({
-        hooks: { PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact" }] }] },
+        hooks: { PreCompact: [{ matcher: "", hooks: [{ type: "command", command: "lcm compact --hook" }] }] },
         mcpServers: { "lcm": {} },
       })),
       writeFileSync: writeFileMock,

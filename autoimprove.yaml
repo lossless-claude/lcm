@@ -1,0 +1,59 @@
+project:
+  name: lossless-claude
+  path: .
+  repo: lossless-claude/lcm
+
+budget:
+  max_experiments_per_session: 8
+
+gates:
+  - name: tests
+    command: npm test
+  - name: typecheck
+    command: npm run typecheck
+
+benchmarks:
+  - name: test-metrics
+    command: |
+      RESULT=$(npm test -- --reporter=json 2>/dev/null | tail -1 || echo '{}')
+      PASSED=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('numPassedTests', 0))" 2>/dev/null || echo 0)
+      FAILED=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('numFailedTests', 0))" 2>/dev/null || echo 0)
+      echo "{\"tests_passed\": $PASSED, \"tests_failed\": $FAILED}"
+    metrics:
+      - name: tests_passed
+        extract: "json:.tests_passed"
+        direction: higher_is_better
+        tolerance: 0.0
+        significance: 0.05
+      - name: tests_failed
+        extract: "json:.tests_failed"
+        direction: lower_is_better
+        tolerance: 0.0
+        significance: 0.0
+
+themes:
+  auto:
+    strategy: weighted_random
+    cooldown_per_theme: 3
+    priorities:
+      test_coverage: 2
+      documentation: 1
+      refactoring: 1
+
+constraints:
+  forbidden_paths:
+    - autoimprove.yaml
+    - test/
+    - src/connectors/templates/
+    - .changeset/
+  test_modification: additive_only
+  trust_ratchet:
+    tier_0: { max_files: 3, max_lines: 150, mode: auto_merge }
+    tier_1: { max_files: 6, max_lines: 300, mode: auto_merge, after_keeps: 5 }
+    tier_2: { max_files: 10, max_lines: 500, mode: auto_merge, after_keeps: 15 }
+
+safety:
+  epoch_drift_threshold: 0.05
+  regression_tolerance: 0.0
+  significance_threshold: 0.01
+  stagnation_window: 5

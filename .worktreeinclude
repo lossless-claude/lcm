@@ -1,0 +1,7 @@
+# Patterns for files that should be excluded from worktree operations
+# Sensitive files that should NOT be copied to worktrees
+.env
+.env.*
+*.env
+.env.local
+.env.*.local

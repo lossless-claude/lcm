@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
+import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
-import { projectDbPath, projectDir, projectId, ensureProjectDir, projectMetaPath } from "../project.js";
+import { projectDbPath, projectDir, projectId, ensureProjectDir, projectMetaPath, isSafeTranscriptPath } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
@@ -10,6 +10,7 @@ import { ConversationStore } from "../../store/conversation-store.js";
 import { SummaryStore } from "../../store/summary-store.js";
 import { parseTranscript, type ParsedMessage } from "../../transcript.js";
 import { ScrubEngine } from "../../scrub.js";
+import { validateCwd } from "../validate-cwd.js";
 
 function isParsedMessage(value: unknown): value is ParsedMessage {
   if (!value || typeof value !== "object") return false;
@@ -23,13 +24,16 @@ function isParsedMessage(value: unknown): value is ParsedMessage {
   );
 }
 
-function resolveMessages(input: { messages?: unknown; transcript_path?: string }): ParsedMessage[] {
+function resolveMessages(input: { messages?: unknown; transcript_path?: string }, cwd: string): ParsedMessage[] {
   if (Array.isArray(input.messages)) {
     return input.messages.filter(isParsedMessage);
   }
 
-  if (input.transcript_path && existsSync(input.transcript_path)) {
-    return parseTranscript(input.transcript_path);
+  if (input.transcript_path) {
+    const safePath = isSafeTranscriptPath(input.transcript_path, cwd);
+    if (safePath && existsSync(safePath)) {
+      return parseTranscript(safePath);
+    }
   }
 
   return [];
@@ -38,20 +42,29 @@ function resolveMessages(input: { messages?: unknown; transcript_path?: string }
 export function createIngestHandler(config: DaemonConfig): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
-    const { session_id, cwd } = input;
+    const { session_id } = input;
 
-    if (!session_id || !cwd) {
+    if (!session_id || !input.cwd) {
       sendJson(res, 400, { error: "session_id and cwd are required" });
       return;
     }
 
-    const parsed = resolveMessages(input);
+    let cwd: string;
+    try {
+      cwd = validateCwd(input.cwd);
+    } catch (err) {
+      sendJson(res, 400, { error: err instanceof Error ? err.message : "invalid cwd" });
+      return;
+    }
+
+    const dbPath = projectDbPath(cwd);
+
+    const parsed = resolveMessages(input, cwd);
     if (parsed.length === 0) {
       sendJson(res, 200, { ingested: 0, totalTokens: 0 });
       return;
     }
 
-    const dbPath = projectDbPath(cwd);
     ensureProjectDir(cwd);
 
     const scrubber = await ScrubEngine.forProject(
@@ -59,10 +72,22 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
       projectDir(cwd),
     );
 
-    const db = new DatabaseSync(dbPath);
+    const db = getLcmConnection(dbPath);
     try {
-      db.exec("PRAGMA busy_timeout = 5000");
       runLcmMigrations(db);
+
+      // Check if session is already fully ingested in session_ingest_log — using the same
+      // db connection to avoid double-open overhead and lock contention.
+      try {
+        const row = db.prepare("SELECT 1 FROM session_ingest_log WHERE session_id = ?").get(session_id);
+        if (row) {
+          // Session already fully ingested — skip
+          sendJson(res, 200, { ingested: 0, totalTokens: 0 });
+          return;
+        }
+      } catch {
+        // Table may not exist yet — proceed with normal flow
+      }
       const conversationStore = new ConversationStore(db);
       const summaryStore = new SummaryStore(db);
       const conversation = await conversationStore.getOrCreateConversation(session_id);
@@ -76,9 +101,10 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
       }
 
       const pid = projectId(cwd);
-      const totalCounts = { builtIn: 0, global: 0, project: 0 };
+      const totalCounts = { gitleaks: 0, builtIn: 0, global: 0, project: 0 };
       const inputs = newMessages.map((m, i) => {
-        const { text: scrubbedContent, builtIn, global: globalCount, project } = scrubber.scrubWithCounts(m.content);
+        const { text: scrubbedContent, gitleaks, builtIn, global: globalCount, project } = scrubber.scrubWithCounts(m.content);
+        totalCounts.gitleaks += gitleaks;
         totalCounts.builtIn += builtIn;
         totalCounts.global += globalCount;
         totalCounts.project += project;
@@ -113,8 +139,10 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
 
       const totalTokens = await summaryStore.getContextTokenCount(conversation.conversationId);
       sendJson(res, 200, { ingested: records.length, totalTokens });
+    } catch (err) {
+      sendJson(res, 500, { error: err instanceof Error ? err.message : "ingest failed" });
     } finally {
-      db.close();
+      closeLcmConnection(dbPath);
     }
   };
 }

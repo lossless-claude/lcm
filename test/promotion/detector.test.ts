@@ -37,4 +37,17 @@ describe("shouldPromote", () => {
     expect(r.promote).toBe(true);
     expect(r.tags).toContain("fix");
   });
+
+  it("skips unsafe regex patterns from architecturePatterns", () => {
+    const unsafeContent = "some architecture content";
+    // Unsafe pattern should be filtered out — result should have no "architecture" tag
+    expect(() => {
+      const r = shouldPromote({ content: unsafeContent, depth: 0, tokenCount: 200, sourceMessageTokenCount: 500 }, {
+        ...thresholds,
+        architecturePatterns: ["(a+)+$"],
+      });
+      // The unsafe pattern is filtered; "architecture" tag should not be added
+      expect(r.tags).not.toContain("architecture");
+    }).not.toThrow();
+  });
 });

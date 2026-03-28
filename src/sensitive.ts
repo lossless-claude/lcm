@@ -3,7 +3,8 @@ import { rmSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 
-import { BUILT_IN_PATTERNS, ScrubEngine } from "./scrub.js";
+import { NATIVE_PATTERNS, ScrubEngine, readGitleaksSyncDate } from "./scrub.js";
+import { GITLEAKS_PATTERNS } from "./generated-patterns.js";
 import { projectDir } from "./daemon/project.js";
 import { loadDaemonConfig } from "./daemon/config.js";
 
@@ -61,13 +62,23 @@ async function sensitiveList(
   const projectPatterns = await ScrubEngine.loadProjectPatterns(patternsFile);
 
   const lines: string[] = [];
+  const syncDate = readGitleaksSyncDate();
+  const syncNote = syncDate ? ` (synced ${syncDate})` : "";
 
-  lines.push("Global patterns (config.json):");
-  for (const p of BUILT_IN_PATTERNS) {
-    lines.push(`  [built-in]  ${p}`);
+  lines.push("Built-in patterns:");
+  lines.push(`  [gitleaks]  ${GITLEAKS_PATTERNS.length} patterns${syncNote}`);
+  for (const p of NATIVE_PATTERNS) {
+    lines.push(`  [native]    ${p}`);
   }
-  for (const p of globalUserPatterns) {
-    lines.push(`  [user]      ${p}`);
+
+  lines.push("");
+  lines.push("Global patterns (config.json):");
+  if (globalUserPatterns.length === 0) {
+    lines.push("  (none)");
+  } else {
+    for (const p of globalUserPatterns) {
+      lines.push(`  [user]      ${p}`);
+    }
   }
 
   lines.push("");
@@ -233,17 +244,40 @@ async function sensitiveTest(
 
   // Find which patterns matched
   const projectPatterns = await ScrubEngine.loadProjectPatterns(patternsFile);
-  const allPatterns = [
-    ...BUILT_IN_PATTERNS.map((p) => ({ source: p, kind: "built-in" as const })),
+
+  const matched: string[] = [];
+
+  // Check gitleaks patterns first
+  for (const p of GITLEAKS_PATTERNS) {
+    try {
+      if (new RegExp(p.regex, p.flags).test(input)) {
+        matched.push(`  [gitleaks:${p.id}]  ${p.regex}`);
+      }
+    } catch {
+      // invalid pattern — skip
+    }
+  }
+
+  // Check native patterns
+  for (const source of NATIVE_PATTERNS) {
+    try {
+      if (new RegExp(source).test(input)) {
+        matched.push(`  [native]  ${source}`);
+      }
+    } catch {
+      // invalid pattern — skip
+    }
+  }
+
+  // Check global/project patterns
+  const userPatterns = [
     ...globalUserPatterns.map((p) => ({ source: p, kind: "global" as const })),
     ...projectPatterns.map((p) => ({ source: p, kind: "project" as const })),
   ];
-
-  const matched: string[] = [];
-  for (const { source, kind } of allPatterns) {
+  for (const { source, kind } of userPatterns) {
     try {
       if (new RegExp(source).test(input)) {
-        matched.push(`  [${kind}] ${source}`);
+        matched.push(`  [${kind}]  ${source}`);
       }
     } catch {
       // invalid pattern — skip

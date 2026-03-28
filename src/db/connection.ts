@@ -27,6 +27,11 @@ function forceCloseConnection(entry: ConnectionEntry): void {
 }
 
 export function getLcmConnection(dbPath: string): DatabaseSync {
+  // No TOCTOU race here: Node.js is single-threaded and this function is
+  // synchronous. There is no await/yield between the health check and the
+  // refs increment, so no other caller can interleave and close the connection
+  // in between. The sequence (check => increment => return) is atomic w.r.t.
+  // the JavaScript event loop.
   const existing = _connections.get(dbPath);
   if (existing) {
     if (isConnectionHealthy(existing.db)) {
@@ -51,6 +56,41 @@ export function getLcmConnection(dbPath: string): DatabaseSync {
 
   _connections.set(dbPath, { db, refs: 1 });
   return db;
+}
+
+export interface PoolStats {
+  totalConnections: number;
+  activeConnections: number;
+  idleConnections: number;
+  connections: Array<{
+    path: string;
+    refs: number;
+    status: "active" | "idle";
+  }>;
+}
+
+export function getPoolStats(): PoolStats {
+  const connections = Array.from(_connections.entries()).map(([path, entry]) => ({
+    path,
+    refs: entry.refs,
+    status: (entry.refs > 0 ? "active" : "idle") as "active" | "idle",
+  }));
+  const activeConnections = connections.filter((c) => c.status === "active").length;
+  return {
+    totalConnections: connections.length,
+    activeConnections,
+    idleConnections: connections.length - activeConnections,
+    connections,
+  };
+}
+
+/**
+ * Returns true if a pooled connection for dbPath is currently open (refs > 0).
+ * Used by callers that track per-connection state (e.g., migration-done cache)
+ * so they can invalidate their state when the underlying connection is evicted.
+ */
+export function isLcmConnectionOpen(dbPath: string): boolean {
+  return _connections.has(dbPath);
 }
 
 export function closeLcmConnection(dbPath?: string): void {

@@ -55,23 +55,60 @@ describe("handleSessionEnd", () => {
     expect(mockHttpReq.end).toHaveBeenCalled();
   });
 
-  it("does NOT fire compact when totalTokens is below threshold", async () => {
+  it("fires compact even when totalTokens is below old threshold", async () => {
     const { request } = await import("node:http");
     const client = createMockClient({ ingested: 5, totalTokens: 500 });
     const stdin = JSON.stringify({ session_id: "s1", cwd: "/tmp" });
     await handleSessionEnd(stdin, client, 3737);
-    expect(request).not.toHaveBeenCalled();
+    const httpReqMock = vi.mocked(request);
+    const compactCalls = httpReqMock.mock.calls.filter(
+      (args: any[]) => args[0]?.path === "/compact",
+    );
+    expect(compactCalls.length).toBeGreaterThan(0);
   });
 
-  it("does NOT fire compact when autoCompactMinTokens is 0 (disabled)", async () => {
+  it("skips compact when hooks.disableAutoCompact is true", async () => {
     const { loadDaemonConfig } = await import("../../src/daemon/config.js");
     vi.mocked(loadDaemonConfig).mockReturnValueOnce({
       compaction: { autoCompactMinTokens: 0 },
+      hooks: { disableAutoCompact: true, snapshotIntervalSec: 60 },
     } as any);
     const { request } = await import("node:http");
     const client = createMockClient({ ingested: 100, totalTokens: 99999 });
     await handleSessionEnd(JSON.stringify({ session_id: "s1", cwd: "/tmp" }), client, 3737);
-    expect(request).not.toHaveBeenCalled();
+    const httpReqMock = vi.mocked(request);
+    const compactCalls = httpReqMock.mock.calls.filter(
+      (args: any[]) => args[0]?.path === "/compact",
+    );
+    expect(compactCalls.length).toBe(0);
+  });
+
+  it("fires promote after ingest (always)", async () => {
+    const { request } = await import("node:http");
+    const client = createMockClient({ ingested: 5, totalTokens: 100 });
+    await handleSessionEnd(
+      JSON.stringify({ session_id: "s1", cwd: "/tmp" }),
+      client, 3737,
+    );
+    const httpReqMock = vi.mocked(request);
+    const promoteCalls = httpReqMock.mock.calls.filter(
+      (args: any[]) => args[0]?.path === "/promote",
+    );
+    expect(promoteCalls.length).toBe(1);
+  });
+
+  it("records session completion in ingest manifest", async () => {
+    const { request } = await import("node:http");
+    const client = createMockClient({ ingested: 5, totalTokens: 100 });
+    await handleSessionEnd(
+      JSON.stringify({ session_id: "s1", cwd: "/tmp" }),
+      client, 3737,
+    );
+    const httpReqMock = vi.mocked(request);
+    const manifestCalls = httpReqMock.mock.calls.filter(
+      (args: any[]) => args[0]?.path === "/session-complete",
+    );
+    expect(manifestCalls.length).toBe(1);
   });
 
   it("calls socket.unref() so the process does not wait for a compact response", async () => {

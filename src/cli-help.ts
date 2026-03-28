@@ -78,37 +78,43 @@ const HELP: Record<string, CommandHelp> = {
 
   compact: {
     summary: "Compact conversation context into DAG summary nodes.",
-    usage: "lcm compact [--all] [--dry-run] [--replay]",
+    usage: "lcm compact [--all] [--dry-run] [--replay] [--no-promote]",
     options: [
       ["--all", "Compact all tracked projects (default: current project only)"],
       ["--dry-run", "Show what would be compacted without writing anything"],
       ["--replay", "Compact sequentially, threading each summary through the prior context"],
+      ["--no-promote", "Skip the automatic promote step that runs after compaction"],
     ],
     examples: [
       ["lcm compact", "Compact current project"],
       ["lcm compact --all", "Compact all tracked projects"],
       ["lcm compact --dry-run", "Preview compaction for current project"],
       ["lcm compact --all --replay", "Rebuild all projects with threaded context (slow)"],
+      ["lcm compact --no-promote", "Compact without auto-promoting new insights"],
     ],
-    notes: "When invoked via the PreCompact hook (piped stdin), runs automatically during Claude Code context compaction.",
+    notes: "When invoked via the PreCompact hook (piped stdin), runs automatically during Claude Code context compaction. After a successful compact, promote runs automatically to surface new insights to long-term memory.",
   },
 
   import: {
-    summary: "Import Claude Code session transcripts into lossless memory.",
-    usage: "lcm import [--all] [--verbose] [--dry-run] [--replay]",
+    summary: "Import session transcripts (Claude Code or Codex CLI) into lossless memory.",
+    usage: "lcm import [--provider claude|codex|all] [--all] [--verbose] [--dry-run] [--replay]",
     options: [
+      ["--provider <name>", "Source: claude (default), codex, or all"],
+      ["--codex", "Shorthand for --provider codex"],
       ["--all", "Import all projects (default: current project only)"],
       ["--verbose", "Show per-session import detail"],
       ["--dry-run", "Preview without importing"],
       ["--replay", "Replay compaction for each imported session"],
     ],
     examples: [
-      ["lcm import", "Import current project sessions"],
-      ["lcm import --all", "Import all tracked projects"],
+      ["lcm import", "Import current Claude Code project sessions"],
+      ["lcm import --codex", "Import Codex CLI sessions from ~/.codex/"],
+      ["lcm import --provider all", "Import both Claude Code and Codex sessions"],
+      ["lcm import --all", "Import all tracked Claude Code projects"],
       ["lcm import --all --replay", "Import and compact with threaded context"],
       ["lcm import --dry-run", "Preview what would be imported"],
     ],
-    notes: "Reads transcripts from ~/.claude/projects/. Already-imported sessions are skipped.",
+    notes: "Claude sessions are read from ~/.claude/projects/. Codex sessions from ~/.codex/. Already-imported sessions are skipped.",
   },
 
   promote: {
@@ -199,6 +205,43 @@ const HELP: Record<string, CommandHelp> = {
     notes: "Built-in patterns cover common secrets (API keys, tokens, passwords). Project patterns are stored in ~/.lossless-claude/projects/<id>/sensitive-patterns.txt; global patterns are stored in config.json. The 'purge' subcommand deletes the entire project data directory (including stored memory) and cannot be undone.",
   },
 
+  export: {
+    summary: "Export promoted knowledge to a portable JSON file (secrets scrubbed).",
+    usage: "lcm export [--all] [--tags <tags>] [--since <date>] [--output <file>]",
+    options: [
+      ["--all", "Export all projects (one file per project, auto-named)"],
+      ["--tags <tags>", "Only export entries that have all these comma-separated tags"],
+      ["--since <date>", "Only export entries created on or after this ISO date (e.g. 2026-01-01)"],
+      ["--output <file>", "Write output to file instead of stdout"],
+      ["--format <format>", "Output format: json (default)"],
+    ],
+    examples: [
+      ["lcm export", "Print current project knowledge to stdout"],
+      ["lcm export --output knowledge.json", "Write to a file"],
+      ["lcm export --since 2026-01-01", "Only export entries from 2026 onward"],
+      ["lcm export --tags decision,architecture", "Only export entries tagged with both tags"],
+      ["lcm export --all", "Export all projects to auto-named JSON files"],
+    ],
+    notes: "Secrets are automatically scrubbed using the project's sensitive patterns before export. The JSON format is: { version, exportedAt, projectCwd, entries: [{content, tags, confidence, createdAt, sessionId}] }.",
+  },
+
+  "import-knowledge": {
+    summary: "Import a portable JSON export back into lossless memory.",
+    usage: "lcm import-knowledge <file> [--dry-run] [--confidence <n>]",
+    options: [
+      ["<file>", "Path to the JSON export file produced by lcm export"],
+      ["--merge", "Merge with existing entries, deduplicating (default)"],
+      ["--dry-run", "Preview what would be imported without writing anything"],
+      ["--confidence <n>", "Override the confidence score for all imported entries (0.0–1.0)"],
+    ],
+    examples: [
+      ["lcm import-knowledge knowledge.json", "Import entries into current project"],
+      ["lcm import-knowledge knowledge.json --dry-run", "Preview without writing"],
+      ["lcm import-knowledge knowledge.json --confidence 0.7", "Import with reduced confidence"],
+    ],
+    notes: "Deduplication is performed automatically: near-duplicate entries are merged rather than inserted twice. Run from the target project directory.",
+  },
+
   mcp: {
     summary: "Start the lcm MCP server (used by Claude Code to expose memory tools).",
     usage: "lcm mcp",
@@ -230,7 +273,16 @@ const HELP: Record<string, CommandHelp> = {
     summary: "Dispatch the user-prompt hook — records context on each user message.",
     usage: "lcm user-prompt",
     examples: [
-      ["lcm user-prompt", "Record user prompt context (called by PostToolUse hook)"],
+      ["lcm user-prompt", "Record user prompt context (called by UserPromptSubmit hook)"],
+    ],
+    notes: "Invoked automatically by the Claude Code UserPromptSubmit hook. Not intended for direct use.",
+  },
+
+  "post-tool": {
+    summary: "Dispatch the post-tool hook — records tool invocation events.",
+    usage: "lcm post-tool",
+    examples: [
+      ["lcm post-tool", "Record post-tool events (called by PostToolUse hook)"],
     ],
     notes: "Invoked automatically by the Claude Code PostToolUse hook. Not intended for direct use.",
   },
@@ -256,8 +308,8 @@ const GROUPS = [
   {
     label: "Memory",
     commands: [
-      { name: "compact [--all] [--dry-run] [--replay]", summary: "Compact conversations into DAG summaries" },
-      { name: "import [--all] [--verbose] [--dry-run] [--replay]", summary: "Import Claude Code session transcripts" },
+      { name: "compact [--all] [--dry-run] [--replay] [--no-promote]", summary: "Compact conversations into DAG summaries (auto-promotes after)" },
+      { name: "import [--provider claude|codex|all] [--all] [--verbose] [--dry-run] [--replay]", summary: "Import session transcripts (Claude Code or Codex CLI)" },
       { name: "promote [--all] [--verbose] [--dry-run]", summary: "Promote insights to long-term memory" },
       { name: "stats [-v]", summary: "Memory inventory and compression ratios" },
       { name: "diagnose [--all] [--days N] [--verbose] [--json]", summary: "Scan sessions for hook failures and issues" },
@@ -270,6 +322,13 @@ const GROUPS = [
       { name: "connectors install <agent> [--type ...]", summary: "Install connector for a coding agent" },
       { name: "connectors remove <agent> [--type ...]", summary: "Remove connector for a coding agent" },
       { name: "connectors doctor [agent]", summary: "Check connector health" },
+    ],
+  },
+  {
+    label: "Portable Knowledge",
+    commands: [
+      { name: "export [--all] [--output <file>]", summary: "Export promoted knowledge to JSON (secrets scrubbed)" },
+      { name: "import-knowledge <file>", summary: "Import exported knowledge JSON, deduplicating on merge" },
     ],
   },
   {
@@ -287,7 +346,8 @@ const GROUPS = [
     commands: [
       { name: "restore", summary: "SessionStart hook — restore prior context" },
       { name: "session-end", summary: "Stop hook — finalize and store session memory" },
-      { name: "user-prompt", summary: "PostToolUse hook — record user prompt context" },
+      { name: "user-prompt", summary: "UserPromptSubmit hook — record user prompt context" },
+      { name: "post-tool", summary: "PostToolUse hook — record tool invocation events" },
     ],
   },
 ];

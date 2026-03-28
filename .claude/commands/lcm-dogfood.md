@@ -162,7 +162,7 @@ node dist/bin/lcm.js diagnose --verbose
 Read `.claude-plugin/plugin.json` and verify all 4 hooks exist:
 - `SessionStart` → `lcm restore`
 - `UserPromptSubmit` → `lcm user-prompt`
-- `PreCompact` → `lcm compact`
+- `PreCompact` → `lcm compact --hook`
 - `SessionEnd` → `lcm session-end`
 
 **Pass if:** all 4 present with correct commands.

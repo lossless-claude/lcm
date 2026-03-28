@@ -496,15 +496,28 @@ export function runLcmMigrations(
   backfillSummaryDepths(db);
   backfillSummaryMetadata(db);
 
-  // Redaction stats (counts of secrets scrubbed per project per category)
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS redaction_stats (
-      project_id TEXT NOT NULL,
-      category TEXT NOT NULL CHECK(category IN ('built_in', 'global', 'project')),
-      count INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (project_id, category)
-    );
-  `);
+  // Redaction stats (counts of secrets scrubbed per project per category).
+  // v0.7.0 created this table with CHECK(category IN ('built_in', 'global', 'project')).
+  // v0.8.0 adds 'gitleaks' to the enum. CREATE TABLE IF NOT EXISTS silently skips creation
+  // on existing DBs, so we must detect the stale constraint and recreate.
+  // redaction_stats is a pure counter table (no user data) — DROP/RECREATE is safe.
+  const redactionStatsRow = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='redaction_stats'")
+    .get() as { sql?: string } | undefined;
+  const needsRedactionStatsMigration =
+    !redactionStatsRow ||
+    (redactionStatsRow.sql !== undefined && !redactionStatsRow.sql.includes("'gitleaks'"));
+  if (needsRedactionStatsMigration) {
+    db.exec(`
+      DROP TABLE IF EXISTS redaction_stats;
+      CREATE TABLE redaction_stats (
+        project_id TEXT NOT NULL,
+        category TEXT NOT NULL CHECK(category IN ('built_in', 'global', 'project', 'gitleaks')),
+        count INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (project_id, category)
+      );
+    `);
+  }
 
   // Session instructions (CLAUDE.md captured on startup)
   db.exec(`
@@ -539,6 +552,15 @@ export function runLcmMigrations(
   if (!hasArchivedAt) {
     db.exec(`ALTER TABLE promoted ADD COLUMN archived_at TEXT DEFAULT NULL`);
   }
+
+  // Session ingest log — tracks which sessions are fully ingested
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_ingest_log (
+      session_id TEXT PRIMARY KEY,
+      completed_at TEXT NOT NULL DEFAULT (datetime('now')),
+      message_count INTEGER NOT NULL DEFAULT 0
+    );
+  `);
 
   const fts5Available = options?.fts5Available ?? getLcmDbFeatures(db).fts5Available;
   if (!fts5Available) {

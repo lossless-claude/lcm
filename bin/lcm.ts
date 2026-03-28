@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { argv, exit, stdin, stdout } from "node:process";
-
-const command = argv[2];
+import { Command, Option } from "commander";
 
 function readStdin(): Promise<string> {
   return new Promise((resolve) => {
@@ -12,73 +11,115 @@ function readStdin(): Promise<string> {
   });
 }
 
+async function withCustomHelp(cmd: Command, commandName: string): Promise<void> {
+  const { printHelp } = await import("../src/cli-help.js");
+  printHelp(commandName);
+  exit(0);
+}
+
 async function main() {
-  // Handle flags before switch
-  if (command === "--version" || command === "-V") {
-    const { readFileSync } = await import("node:fs");
-    const { join, dirname } = await import("node:path");
-    const { fileURLToPath } = await import("node:url");
-    const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json");
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-    stdout.write(pkg.version + "\n");
-    exit(0);
-  }
+  const { readFileSync } = await import("node:fs");
+  const { join, dirname } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json");
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
 
-  if (command === "--help" || command === "-h" || command === "help") {
-    const { printHelp } = await import("../src/cli-help.js");
-    // 'lcm help compact' or 'lcm compact --help' both show per-command help
-    const subcommand = argv[3] ?? undefined;
-    printHelp(subcommand);
-    exit(0);
-  }
+  const program = new Command();
+  program
+    .name("lcm")
+    .description("lossless context management for Claude Code")
+    .version(pkg.version, "-V, --version")
+    .helpCommand(false)
+    .addHelpCommand(false)
+    .configureOutput({
+      writeOut: (str) => stdout.write(str),
+      writeErr: (str) => process.stderr.write(str),
+    });
 
-  switch (command) {
-    case "daemon": {
-      if (argv.includes("--help") || argv.includes("-h")) {
-        const { printHelp } = await import("../src/cli-help.js");
-        printHelp("daemon"); exit(0);
-      }
-      if (argv[3] === "start") {
-        if (argv.includes("--detach")) {
-          const { spawn } = await import("node:child_process");
-          const child = spawn(process.execPath, [process.argv[1], "daemon", "start"], {
-            detached: true,
-            stdio: "ignore",
-            env: process.env,
-          });
-          child.unref();
-          if (child.pid) {
-            const { writeFileSync, mkdirSync } = await import("node:fs");
-            const { join } = await import("node:path");
-            const { homedir } = await import("node:os");
-            const lcDir = join(homedir(), ".lossless-claude");
-            mkdirSync(lcDir, { recursive: true });
-            writeFileSync(join(lcDir, "daemon.pid"), String(child.pid));
-            console.log(`lcm daemon started in background (PID ${child.pid})`);
-          }
-          exit(0);
+  // Disable Commander's built-in help entirely — we handle it manually below
+  program.helpOption(false);
+
+  // ─── help command ──────────────────────────────────────────────────────────
+  program
+    .command("help [command]")
+    .description("Show help for a command")
+    .action(async (subcommand?: string) => {
+      const { printHelp } = await import("../src/cli-help.js");
+      printHelp(subcommand);
+      exit(0);
+    });
+
+  // ─── daemon ────────────────────────────────────────────────────────────────
+  const daemonCmd = new Command("daemon").description("Start the context daemon");
+  daemonCmd.helpOption(false).option("-h, --help", "Show help");
+  daemonCmd.command("start")
+    .description("Start the context daemon")
+    .option("--detach", "Run in the background")
+    .option("-h, --help", "Show help")
+    .action(async (opts) => {
+      if (opts.help) { await withCustomHelp(daemonCmd, "daemon"); return; }
+      if (opts.detach) {
+        const { spawn } = await import("node:child_process");
+        const child = spawn(process.execPath, [process.argv[1], "daemon", "start"], {
+          detached: true,
+          stdio: "ignore",
+          env: process.env,
+        });
+        child.unref();
+        if (child.pid) {
+          const { writeFileSync, mkdirSync } = await import("node:fs");
+          const { join } = await import("node:path");
+          const { homedir } = await import("node:os");
+          const lcDir = join(homedir(), ".lossless-claude");
+          mkdirSync(lcDir, { recursive: true });
+          writeFileSync(join(lcDir, "daemon.pid"), String(child.pid));
+          console.log(`lcm daemon started in background (PID ${child.pid})`);
         }
-        const { createDaemon } = await import("../src/daemon/server.js");
-        const { loadDaemonConfig } = await import("../src/daemon/config.js");
-        const { join } = await import("node:path");
-        const { homedir } = await import("node:os");
-        const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
-        const daemon = await createDaemon(config);
-        console.log(`lcm daemon started on port ${daemon.address().port}`);
-        process.on("SIGTERM", () => exit(0));
-        process.on("SIGINT", () => exit(0));
+        exit(0);
       }
-      break;
-    }
-    case "compact": {
-      if (argv.includes("--help") || argv.includes("-h")) {
+      const { createDaemon } = await import("../src/daemon/server.js");
+      const { loadDaemonConfig } = await import("../src/daemon/config.js");
+      const { ensureAuthToken } = await import("../src/daemon/auth.js");
+      const { join } = await import("node:path");
+      const { homedir } = await import("node:os");
+      const lcDir = join(homedir(), ".lossless-claude");
+      const tokenPath = join(lcDir, "daemon.token");
+      ensureAuthToken(tokenPath);
+      const config = loadDaemonConfig(join(lcDir, "config.json"));
+      const daemon = await createDaemon(config, { tokenPath });
+      console.log(`lcm daemon started on port ${daemon.address().port}`);
+      process.on("SIGTERM", () => exit(0));
+      process.on("SIGINT", () => exit(0));
+    });
+  daemonCmd.action(async (opts) => {
+    if (opts.help) { await withCustomHelp(daemonCmd, "daemon"); return; }
+  });
+  program.addCommand(daemonCmd);
+
+  // ─── compact ───────────────────────────────────────────────────────────────
+  program
+    .command("compact")
+    .description("Compact conversation context into DAG summary nodes")
+    .option("--all", "Compact all tracked projects")
+    .option("--dry-run", "Show what would be compacted without writing")
+    .option("--replay", "Compact sequentially with threaded context")
+    .option("--no-promote", "Skip the automatic promote step")
+    .option("-v, --verbose", "Show per-session token details")
+    .addOption(new Option("--hook", "Hook dispatch mode (internal)").hideHelp())
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (opts) => {
+      if (opts.help) {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("compact"); exit(0);
       }
-      const all = argv.includes("--all");
-      // Interactive batch compact: --all (all projects) or TTY stdin (current project only).
-      // If stdin is piped (hook invocation), fall through to hook dispatch.
-      if (all || process.stdin.isTTY) {
+      const all: boolean = opts.all ?? false;
+      const dryRun: boolean = opts.dryRun ?? false;
+      const verbose: boolean = opts.verbose ?? false;
+      const replay: boolean = opts.replay ?? false;
+      // Hook dispatch only when --hook is explicit; all other invocations go to batch.
+      const hook: boolean = opts.hook ?? false;
+      if (!hook) {
         const { batchCompact } = await import("../src/batch-compact.js");
         const { loadDaemonConfig } = await import("../src/daemon/config.js");
         const { join } = await import("node:path");
@@ -92,36 +133,195 @@ async function main() {
           console.error("Could not connect to daemon. Start it with: lcm daemon start --detach");
           exit(1);
         }
-        const dryRun = argv.includes("--dry-run");
-        const replay = argv.includes("--replay");
+        const noPromote: boolean = !opts.promote;
         const minTokens = config.compaction.autoCompactMinTokens;
         const cwd = all ? undefined : process.cwd();
-        await batchCompact({ minTokens, dryRun, port, cwd, replay });
-        break;
+
+        const { NinjaRenderer } = await import("../src/cli/pipeline-runner.js");
+        const { makeProgressState } = await import("../src/cli/progress-state.js");
+        const isTTY = process.stdout.isTTY ?? false;
+        const renderOpts = { isTTY, width: process.stdout.columns ?? 80, color: isTTY, verbose };
+        const compactState = makeProgressState({ phases: [{ name: "Compact", status: "active" }], dryRun });
+        const compactRenderer = new NinjaRenderer({ state: compactState, renderOpts });
+        compactRenderer.start();
+
+        const { compacted } = await batchCompact({
+          minTokens, dryRun, port, cwd, replay, verbose,
+          onProgress: (patch) => {
+            Object.assign(compactState, patch);
+            if (patch.lastResult) compactRenderer.sessionDone();
+          },
+        });
+
+        compactRenderer.stop();
+        if (isTTY) {
+          compactState.phases[0].status = "done";
+          compactRenderer.printSummary();
+        }
+
+        // Auto-promote after a successful compact: new summaries are prime promotion candidates.
+        if (compacted > 0 && !noPromote) {
+          const { readdirSync, existsSync, readFileSync } = await import("node:fs");
+          const promoteCwds: string[] = [];
+          if (cwd) {
+            promoteCwds.push(cwd);
+          } else {
+            const projectsDir = join(homedir(), ".lossless-claude", "projects");
+            if (existsSync(projectsDir)) {
+              for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
+                if (!entry.isDirectory()) continue;
+                const metaPath = join(projectsDir, entry.name, "meta.json");
+                if (!existsSync(metaPath)) continue;
+                try {
+                  const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+                  if (meta.cwd) promoteCwds.push(meta.cwd);
+                } catch { /* skip unreadable */ }
+              }
+            }
+          }
+
+          let totalPromoted = 0;
+          for (const promoteCwd of promoteCwds) {
+            try {
+              const res = await fetch(`http://127.0.0.1:${port}/promote`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ cwd: promoteCwd, dry_run: dryRun }),
+              });
+              if (res.ok) {
+                const result = await res.json() as { processed: number; promoted: number };
+                totalPromoted += result.promoted;
+              }
+            } catch { /* non-fatal: promote is best-effort */ }
+          }
+
+          if (totalPromoted > 0) {
+            console.log(`  → ${totalPromoted} insight${totalPromoted !== 1 ? "s" : ""} promoted`);
+          }
+        }
+        return;
       }
-    }
-    // falls through to hook dispatch (piped stdin = PreCompact hook invocation)
-    case "restore":
-    case "session-end":
-    case "user-prompt": {
+      // Piped stdin — hook dispatch (PreCompact hook invocation)
       const { dispatchHook } = await import("../src/hooks/dispatch.js");
       const input = await readStdin();
-      const r = await dispatchHook(command, input);
+      const r = await dispatchHook("compact", input);
       if (r.stdout) stdout.write(r.stdout);
       exit(r.exitCode);
-      break;
-    }
-    case "mcp": {
+    });
+
+  // ─── restore (hook) ────────────────────────────────────────────────────────
+  program
+    .command("restore")
+    .description("Dispatch the restore hook")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (opts) => {
+      if (opts.help) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("restore"); exit(0);
+      }
+      const { dispatchHook } = await import("../src/hooks/dispatch.js");
+      const input = await readStdin();
+      const r = await dispatchHook("restore", input);
+      if (r.stdout) stdout.write(r.stdout);
+      exit(r.exitCode);
+    });
+
+  // ─── session-end (hook) ────────────────────────────────────────────────────
+  program
+    .command("session-end")
+    .description("Dispatch the session-end hook")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (opts) => {
+      if (opts.help) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("session-end"); exit(0);
+      }
+      const { dispatchHook } = await import("../src/hooks/dispatch.js");
+      const input = await readStdin();
+      const r = await dispatchHook("session-end", input);
+      if (r.stdout) stdout.write(r.stdout);
+      exit(r.exitCode);
+    });
+
+  // ─── user-prompt (hook) ────────────────────────────────────────────────────
+  program
+    .command("user-prompt")
+    .description("Dispatch the user-prompt hook")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (opts) => {
+      if (opts.help) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("user-prompt"); exit(0);
+      }
+      const { dispatchHook } = await import("../src/hooks/dispatch.js");
+      const input = await readStdin();
+      const r = await dispatchHook("user-prompt", input);
+      if (r.stdout) stdout.write(r.stdout);
+      exit(r.exitCode);
+    });
+
+  // ─── post-tool (hook) ──────────────────────────────────────────────────────
+  program
+    .command("post-tool")
+    .description("Dispatch the post-tool hook (PostToolUse event)")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (opts) => {
+      if (opts.help) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("post-tool"); exit(0);
+      }
+      const { dispatchHook } = await import("../src/hooks/dispatch.js");
+      const input = await readStdin();
+      const r = await dispatchHook("post-tool", input);
+      if (r.stdout) stdout.write(r.stdout);
+      exit(r.exitCode);
+    });
+
+  // ─── session-snapshot (hook) ─────────────────────────────────────────────
+  program
+    .command("session-snapshot")
+    .description("Rolling ingest snapshot (called by Stop hook)")
+    .helpOption(false)
+    .action(async () => {
+      const { dispatchHook } = await import("../src/hooks/dispatch.js");
+      const input = await readStdin();
+      const r = await dispatchHook("session-snapshot", input);
+      if (r.stdout) stdout.write(r.stdout);
+      exit(r.exitCode);
+    });
+
+  // ─── mcp ───────────────────────────────────────────────────────────────────
+  program
+    .command("mcp")
+    .description("Start the lcm MCP server")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (opts) => {
+      if (opts.help) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("mcp"); exit(0);
+      }
       const { startMcpServer } = await import("../src/mcp/server.js");
       await startMcpServer();
-      break;
-    }
-    case "install": {
-      if (argv.includes("--help") || argv.includes("-h")) {
+    });
+
+  // ─── install ───────────────────────────────────────────────────────────────
+  program
+    .command("install")
+    .description("Set up lcm: register hooks, configure daemon, connect MCP")
+    .option("--dry-run", "Preview all changes without writing anything")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (opts) => {
+      if (opts.help) {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("install"); exit(0);
       }
-      const dryRun = argv.includes("--dry-run");
+      const dryRun: boolean = opts.dryRun ?? false;
       const { install } = await import("../installer/install.js");
       if (dryRun) {
         const { DryRunServiceDeps } = await import("../installer/dry-run-deps.js");
@@ -131,14 +331,21 @@ async function main() {
       } else {
         await install();
       }
-      break;
-    }
-    case "uninstall": {
-      if (argv.includes("--help") || argv.includes("-h")) {
+    });
+
+  // ─── uninstall ─────────────────────────────────────────────────────────────
+  program
+    .command("uninstall")
+    .description("Remove lcm hooks and MCP registration")
+    .option("--dry-run", "Preview removals without writing anything")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (opts) => {
+      if (opts.help) {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("uninstall"); exit(0);
       }
-      const dryRun = argv.includes("--dry-run");
+      const dryRun: boolean = opts.dryRun ?? false;
       const { uninstall } = await import("../installer/uninstall.js");
       if (dryRun) {
         const { DryRunServiceDeps } = await import("../installer/dry-run-deps.js");
@@ -148,10 +355,17 @@ async function main() {
       } else {
         await uninstall();
       }
-      break;
-    }
-    case "status": {
-      if (argv.includes("--help") || argv.includes("-h")) {
+    });
+
+  // ─── status ────────────────────────────────────────────────────────────────
+  program
+    .command("status")
+    .description("Show daemon status and project memory statistics")
+    .option("--json", "Output structured JSON")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (opts) => {
+      if (opts.help) {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("status"); exit(0);
       }
@@ -160,7 +374,7 @@ async function main() {
       const { homedir } = await import("node:os");
       const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
       const port = config.daemon?.port ?? 3737;
-      const jsonFlag = argv.includes("--json");
+      const jsonFlag: boolean = opts.json ?? false;
 
       let daemonStatus = "down";
       let statusData: any = null;
@@ -212,20 +426,90 @@ async function main() {
           console.log(`daemon: ${daemonStatus} · provider: ${providerDisplay}`);
         }
       }
-      break;
-    }
-    case "stats": {
-      if (argv.includes("--help") || argv.includes("-h")) {
+    });
+
+  // ─── stats ─────────────────────────────────────────────────────────────────
+  program
+    .command("stats")
+    .description("Show memory inventory and compression ratios")
+    .option("-v, --verbose", "Show per-conversation breakdown")
+    .option("--pool", "Show connection pool statistics from the daemon")
+    .option("--json", "Output structured JSON (use with --pool)")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (opts) => {
+      if (opts.help) {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("stats"); exit(0);
       }
-      const verbose = argv.includes("--verbose") || argv.includes("-v");
+
+      if (opts.pool) {
+        const { loadDaemonConfig } = await import("../src/daemon/config.js");
+        const { join } = await import("node:path");
+        const { homedir } = await import("node:os");
+        const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
+        const port = config.daemon?.port ?? 3737;
+        const jsonFlag: boolean = opts.json ?? false;
+
+        let poolData: any = null;
+        try {
+          const res = await fetch(`http://127.0.0.1:${port}/stats/pool`);
+          if (res.ok) {
+            poolData = await res.json();
+          } else {
+            console.error(`Error: daemon returned ${res.status}`);
+            exit(1);
+          }
+        } catch {
+          console.error("Error: could not connect to daemon. Start it with: lcm daemon start --detach");
+          exit(1);
+        }
+
+        if (jsonFlag) {
+          stdout.write(JSON.stringify(poolData, null, 2) + "\n");
+        } else {
+          const dim = "\x1b[2m";
+          const cyan = "\x1b[36m";
+          const bold = "\x1b[1m";
+          const reset = "\x1b[0m";
+          console.log();
+          console.log(`    ${bold}${cyan}🔌 Connection Pool${reset}`);
+          console.log();
+          const rows: [string, string][] = [
+            ["Total", String(poolData.totalConnections)],
+            ["Active", String(poolData.activeConnections)],
+            ["Idle", String(poolData.idleConnections)],
+          ];
+          const labelWidth = Math.max(...rows.map(([l]) => l.length));
+          for (const [label, value] of rows) {
+            console.log(`    ${dim}${label.padEnd(labelWidth)}${reset}  ${value}`);
+          }
+          if (poolData.connections && poolData.connections.length > 0) {
+            console.log();
+            console.log(`    ${dim}Connections:${reset}`);
+            for (const conn of poolData.connections) {
+              const status = conn.status === "active" ? `${cyan}active${reset}` : `${dim}idle${reset}`;
+              console.log(`    ${dim}refs=${conn.refs}${reset}  ${status}  ${conn.path}`);
+            }
+          }
+          console.log();
+        }
+        return;
+      }
+
+      const verbose: boolean = opts.verbose ?? false;
       const { collectStats, printStats } = await import("../src/stats.js");
       printStats(collectStats(), verbose);
-      break;
-    }
-    case "doctor": {
-      if (argv.includes("--help") || argv.includes("-h")) {
+    });
+
+  // ─── doctor ────────────────────────────────────────────────────────────────
+  program
+    .command("doctor")
+    .description("Run diagnostics: daemon, hooks, MCP, summarizer")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (opts) => {
+      if (opts.help) {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("doctor"); exit(0);
       }
@@ -234,19 +518,27 @@ async function main() {
       printResults(results);
       const failures = results.filter((r: { status: string }) => r.status === "fail");
       exit(failures.length > 0 ? 1 : 0);
-      break;
-    }
-    case "diagnose": {
-      if (argv.includes("--help") || argv.includes("-h")) {
+    });
+
+  // ─── diagnose ──────────────────────────────────────────────────────────────
+  program
+    .command("diagnose")
+    .description("Scan recent sessions for hook failures and issues")
+    .option("--all", "Scan all tracked projects")
+    .option("--days <n>", "Scan the last N days (default: 7)", "7")
+    .option("--verbose", "Include full event details")
+    .option("--json", "Output structured JSON")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (opts) => {
+      if (opts.help) {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("diagnose"); exit(0);
       }
-      const all = argv.includes("--all");
-      const verbose = argv.includes("--verbose");
-      const json = argv.includes("--json");
-      const daysIndex = argv.indexOf("--days");
-      const daysValue = daysIndex !== -1 ? argv[daysIndex + 1] : undefined;
-      const days = daysValue ? Number(daysValue) : 7;
+      const all: boolean = opts.all ?? false;
+      const verbose: boolean = opts.verbose ?? false;
+      const json: boolean = opts.json ?? false;
+      const days = Number(opts.days);
 
       if (!Number.isFinite(days) || days <= 0 || !Number.isInteger(days)) {
         console.error("Usage: lcm diagnose [--all] [--days N] [--verbose] [--json]");
@@ -261,122 +553,163 @@ async function main() {
       } else {
         stdout.write(formatDiagnoseResult(result, { days, verbose }));
       }
-      break;
+    });
+
+  // ─── connectors ────────────────────────────────────────────────────────────
+  const connectorsCmd = new Command("connectors").description("Manage connectors for coding agents");
+  connectorsCmd.helpOption(false).option("-h, --help", "Show help");
+  connectorsCmd.action(async (opts) => {
+    if (opts.help) {
+      const { printHelp } = await import("../src/cli-help.js");
+      printHelp("connectors"); exit(0);
     }
-    case "connectors": {
-      if (argv.includes("--help") || argv.includes("-h")) {
+    console.error("Usage: lcm connectors <list|install|remove|doctor> [options]");
+    exit(1);
+  });
+
+  connectorsCmd
+    .command("list")
+    .description("List available agents and installed connectors")
+    .option("--format <format>", "Output format: text or json", "text")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (opts) => {
+      if (opts.help) {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("connectors"); exit(0);
       }
-      const sub = argv[3];
-      switch (sub) {
-        case "list": {
-          const format = argv.includes("--format") ? argv[argv.indexOf("--format") + 1] : "text";
-          const { listConnectors } = await import("../src/connectors/installer.js");
-          const { AGENTS } = await import("../src/connectors/registry.js");
-          const installed = listConnectors();
+      const format: string = opts.format ?? "text";
+      const { listConnectors } = await import("../src/connectors/installer.js");
+      const { AGENTS } = await import("../src/connectors/registry.js");
+      const installed = listConnectors();
 
-
-          if (format === "json") {
-            const result = AGENTS.map(a => ({
-              id: a.id,
-              name: a.name,
-              category: a.category,
-              defaultType: a.defaultType,
-              supportedTypes: a.supportedTypes,
-              installed: installed.filter(c => c.agentId === a.id).map(c => c.type),
-            }));
-            stdout.write(JSON.stringify({ agents: result }, null, 2) + "\n");
-          } else {
-            console.log("\n  Available agents:\n");
-            console.log("  %-20s %-15s %-15s %s", "Agent", "Installed", "Default", "Supported");
-            console.log("  " + "─".repeat(70));
-            for (const agent of AGENTS) {
-              const agentInstalled = installed.filter(c => c.agentId === agent.id);
-              const installedStr = agentInstalled.length > 0
-                ? agentInstalled.map(c => c.type).join(", ")
-                : "-";
-              console.log("  %-20s %-15s %-15s %s",
-                agent.name, installedStr, agent.defaultType, agent.supportedTypes.join(", "));
-            }
-            console.log();
-          }
-          break;
+      if (format === "json") {
+        const result = AGENTS.map((a: any) => ({
+          id: a.id,
+          name: a.name,
+          category: a.category,
+          defaultType: a.defaultType,
+          supportedTypes: a.supportedTypes,
+          installed: installed.filter((c: any) => c.agentId === a.id).map((c: any) => c.type),
+        }));
+        stdout.write(JSON.stringify({ agents: result }, null, 2) + "\n");
+      } else {
+        console.log("\n  Available agents:\n");
+        console.log("  %-20s %-15s %-15s %s", "Agent", "Installed", "Default", "Supported");
+        console.log("  " + "─".repeat(70));
+        for (const agent of AGENTS) {
+          const agentInstalled = installed.filter((c: any) => c.agentId === (agent as any).id);
+          const installedStr = (agentInstalled as any[]).length > 0
+            ? (agentInstalled as any[]).map((c: any) => c.type).join(", ")
+            : "-";
+          console.log("  %-20s %-15s %-15s %s",
+            (agent as any).name, installedStr, (agent as any).defaultType, (agent as any).supportedTypes.join(", "));
         }
-        case "install": {
-          const agentName = argv.slice(4).filter(a => !a.startsWith("--")).join(" ");
-          if (!agentName) { console.error("Usage: lcm connectors install <agent> [--type rules|mcp|skill]"); exit(1); }
-          const typeIdx = argv.indexOf("--type");
-          const type = typeIdx !== -1 ? argv[typeIdx + 1] as any : undefined;
-          const { installConnector } = await import("../src/connectors/installer.js");
-          try {
-            const result = installConnector(agentName, type);
-            if (result.manual) {
-              console.log(`\n  ${result.manual}\n`);
-            } else {
-              console.log(`\n  ✓ Installed ${type ?? "default"} connector for ${agentName}`);
-              console.log(`    Path: ${result.path}`);
-              if (result.requiresRestart) console.log("    Restart the agent to activate.");
-              console.log();
-            }
-          } catch (err: any) {
-            console.error(`  Error: ${err.message}`);
-            exit(1);
-          }
-          break;
-        }
-        case "remove": {
-          const agentName = argv.slice(4).filter(a => !a.startsWith("--")).join(" ");
-          if (!agentName) { console.error("Usage: lcm connectors remove <agent> [--type rules|mcp|skill]"); exit(1); }
-          const typeIdx = argv.indexOf("--type");
-          const type = typeIdx !== -1 ? argv[typeIdx + 1] as any : undefined;
-          const { removeConnector } = await import("../src/connectors/installer.js");
-          try {
-            const removed = removeConnector(agentName, type);
-            if (removed) {
-              console.log(`\n  ✓ Removed connector for ${agentName}\n`);
-            } else {
-              console.log(`\n  No connector found for ${agentName}\n`);
-            }
-          } catch (err: any) {
-            console.error(`  Error: ${err.message}`);
-            exit(1);
-          }
-          break;
-        }
-        case "doctor": {
-          const agentName = argv.slice(4).filter(a => !a.startsWith("--")).join(" ");
-          const { AGENTS } = await import("../src/connectors/registry.js");
-          const { listConnectors } = await import("../src/connectors/installer.js");
-          const { findAgent } = await import("../src/connectors/registry.js");
-          const found = agentName ? findAgent(agentName) : undefined;
-          const agents = found ? [found] : agentName ? [] : AGENTS;
-
-          if (agents.length === 0) { console.error(`  Unknown agent: ${agentName}`); exit(1); }
-
-          const installed = listConnectors();
-          console.log("\n  Connector health:\n");
-          for (const agent of agents) {
-            const agentConnectors = installed.filter((c: any) => c.agentId === agent.id);
-            if (agentConnectors.length === 0) {
-              console.log(`  ⚠ ${agent.name}: no connectors installed`);
-            } else {
-              for (const c of agentConnectors) {
-                console.log(`  ✓ ${agent.name}: ${c.type} at ${c.path}`);
-              }
-            }
-          }
-          console.log();
-          break;
-        }
-        default:
-          console.error("Usage: lcm connectors <list|install|remove|doctor> [options]");
-          exit(1);
+        console.log();
       }
-      break;
-    }
-    case "sensitive": {
-      if (argv.includes("--help") || argv.includes("-h")) {
+    });
+
+  connectorsCmd
+    .command("install <agent>")
+    .description("Install a connector for an agent")
+    .option("--type <type>", "Connector type: rules, mcp, or skill")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (agentName: string, opts) => {
+      if (opts.help) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("connectors"); exit(0);
+      }
+      if (!agentName) { console.error("Usage: lcm connectors install <agent> [--type rules|mcp|skill]"); exit(1); }
+      const type: any = opts.type;
+      const { installConnector } = await import("../src/connectors/installer.js");
+      try {
+        const result = installConnector(agentName, type);
+        if ((result as any).manual) {
+          console.log(`\n  ${(result as any).manual}\n`);
+        } else {
+          console.log(`\n  ✓ Installed ${type ?? "default"} connector for ${agentName}`);
+          console.log(`    Path: ${(result as any).path}`);
+          if ((result as any).requiresRestart) console.log("    Restart the agent to activate.");
+          console.log();
+        }
+      } catch (err: any) {
+        console.error(`  Error: ${err.message}`);
+        exit(1);
+      }
+    });
+
+  connectorsCmd
+    .command("remove <agent>")
+    .description("Remove a connector for an agent")
+    .option("--type <type>", "Connector type: rules, mcp, or skill")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (agentName: string, opts) => {
+      if (opts.help) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("connectors"); exit(0);
+      }
+      if (!agentName) { console.error("Usage: lcm connectors remove <agent> [--type rules|mcp|skill]"); exit(1); }
+      const type: any = opts.type;
+      const { removeConnector } = await import("../src/connectors/installer.js");
+      try {
+        const removed = removeConnector(agentName, type);
+        if (removed) {
+          console.log(`\n  ✓ Removed connector for ${agentName}\n`);
+        } else {
+          console.log(`\n  No connector found for ${agentName}\n`);
+        }
+      } catch (err: any) {
+        console.error(`  Error: ${err.message}`);
+        exit(1);
+      }
+    });
+
+  connectorsCmd
+    .command("doctor [agent]")
+    .description("Check connector health")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (agentName: string | undefined, opts) => {
+      if (opts.help) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("connectors"); exit(0);
+      }
+      const { AGENTS } = await import("../src/connectors/registry.js");
+      const { listConnectors } = await import("../src/connectors/installer.js");
+      const { findAgent } = await import("../src/connectors/registry.js");
+      const found = agentName ? findAgent(agentName) : undefined;
+      const agents = found ? [found] : agentName ? [] : AGENTS;
+
+      if (agents.length === 0) { console.error(`  Unknown agent: ${agentName}`); exit(1); }
+
+      const installed = listConnectors();
+      console.log("\n  Connector health:\n");
+      for (const agent of agents) {
+        const agentConnectors = installed.filter((c: any) => c.agentId === (agent as any).id);
+        if ((agentConnectors as any[]).length === 0) {
+          console.log(`  ⚠ ${(agent as any).name}: no connectors installed`);
+        } else {
+          for (const c of agentConnectors as any[]) {
+            console.log(`  ✓ ${(agent as any).name}: ${c.type} at ${c.path}`);
+          }
+        }
+      }
+      console.log();
+    });
+
+  program.addCommand(connectorsCmd);
+
+  // ─── sensitive ─────────────────────────────────────────────────────────────
+  program
+    .command("sensitive [args...]")
+    .description("Manage sensitive patterns for automatic redaction")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .allowUnknownOption(true)
+    .action(async (args: string[], opts) => {
+      if (opts.help) {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("sensitive"); exit(0);
       }
@@ -384,28 +717,55 @@ async function main() {
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
       const configPath = join(homedir(), ".lossless-claude", "config.json");
-      const r = await handleSensitive(argv.slice(3), process.cwd(), configPath);
+      const r = await handleSensitive(args, process.cwd(), configPath);
       if (r.stdout) stdout.write(r.stdout);
       exit(r.exitCode);
-      break;
-    }
-    case "import": {
-      if (argv.includes("--help") || argv.includes("-h")) {
+    });
+
+  // ─── import ────────────────────────────────────────────────────────────────
+  program
+    .command("import")
+    .description("Import Claude Code session transcripts into lossless memory")
+    .option("--all", "Import all projects")
+    .option("--verbose", "Show per-session import detail")
+    .option("--dry-run", "Preview without importing")
+    .option("--replay", "Replay compaction for each imported session")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (opts) => {
+      if (opts.help) {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("import"); exit(0);
       }
-      const all = argv.includes("--all");
-      const verbose = argv.includes("--verbose");
-      const dryRun = argv.includes("--dry-run");
-      const replay = argv.includes("--replay");
+      const all: boolean = opts.all ?? false;
+      const verbose: boolean = opts.verbose ?? false;
+      const dryRun: boolean = opts.dryRun ?? false;
+      const replay: boolean = opts.replay ?? false;
 
       const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
       const { DaemonClient } = await import("../src/daemon/client.js");
       const { loadDaemonConfig } = await import("../src/daemon/config.js");
-      const { importSessions } = await import("../src/import.js");
-      const { printImportSummary } = await import("../src/import-summary.js");
+      const { NinjaRenderer } = await import("../src/cli/pipeline-runner.js");
+      const { makeProgressState } = await import("../src/cli/progress-state.js");
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
+      const { existsSync, readdirSync } = await import("node:fs");
+      const { importSessions, cwdToProjectHash, findSessionFiles } = await import("../src/import.js");
+      type ImportProvider = import("../src/import.js").ImportProvider;
+
+      // --codex is a shorthand for --provider codex
+      let provider: ImportProvider = "claude";
+      if (opts.codex) {
+        provider = "codex";
+      } else if (opts.provider) {
+        const provVal = opts.provider as string;
+        if (provVal === "claude" || provVal === "codex" || provVal === "all") {
+          provider = provVal as ImportProvider;
+        } else {
+          console.error(`  Unknown provider "${provVal}". Use: claude, codex, all`);
+          exit(1);
+        }
+      }
 
       const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
       const port = config.daemon?.port ?? 3737;
@@ -413,24 +773,78 @@ async function main() {
       const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 5000 });
       if (!connected) { console.error("  Daemon not available"); exit(1); }
 
+      // Pre-scan for session count (enables accurate live progress bar)
+      const claudeProjectsDir = join(homedir(), ".claude", "projects");
+      let sessionCount = 0;
+      if (all) {
+        if (existsSync(claudeProjectsDir)) {
+          for (const entry of readdirSync(claudeProjectsDir, { withFileTypes: true })) {
+            if (!entry.isDirectory()) continue;
+            sessionCount += findSessionFiles(join(claudeProjectsDir, entry.name)).length;
+          }
+        }
+      } else {
+        const cwd = process.cwd();
+        const hash = cwdToProjectHash(cwd);
+        const dir = join(claudeProjectsDir, hash);
+        if (existsSync(dir)) sessionCount = findSessionFiles(dir).length;
+      }
+
+      const isTTY = process.stdout.isTTY ?? false;
+      const renderOpts = { isTTY, width: process.stdout.columns ?? 80, color: isTTY, verbose };
+      const state = makeProgressState({
+        phases: [{ name: "Import", status: "active" }],
+        total: sessionCount,
+        dryRun,
+      });
+      const renderer = new NinjaRenderer({ state, renderOpts });
+
+      const providerLabel =
+        provider === "codex" ? "Codex CLI" :
+        provider === "all"   ? "Claude Code + Codex CLI" :
+                               "Claude Code";
+      console.log(`\n  Importing ${providerLabel} sessions${all ? " (all projects)" : ""}...\n`);
+      renderer.start();
+
       const client = new DaemonClient(`http://127.0.0.1:${port}`);
-      console.log(`\n  Importing Claude Code sessions${all ? " (all projects)" : ""}...\n`);
+      const result = await importSessions(client, {
+        all, verbose, dryRun, replay, provider,
+        onProgress: (patch) => {
+          Object.assign(state, patch);
+          if (patch.lastResult) renderer.sessionDone();
+        },
+      });
 
-      const result = await importSessions(client, { all, verbose, dryRun, replay });
+      renderer.stop();
 
-      if (dryRun) console.log("  [dry-run] No changes written.\n");
-      printImportSummary(result, { replay });
-      console.log();
-      break;
-    }
-    case "promote": {
-      if (argv.includes("--help") || argv.includes("-h")) {
+      if (isTTY && !verbose) {
+        state.phases[0].status = "done";
+        renderer.printSummary();
+      } else {
+        const { printImportSummary } = await import("../src/import-summary.js");
+        if (dryRun) console.log("  [dry-run] No changes written.\n");
+        printImportSummary(result, { replay });
+        console.log();
+      }
+    });
+
+  // ─── promote ───────────────────────────────────────────────────────────────
+  program
+    .command("promote")
+    .description("Scan summaries and promote durable insights to long-term memory")
+    .option("--all", "Promote across all tracked projects")
+    .option("--verbose", "Show per-project counts")
+    .option("--dry-run", "Preview promotions without writing")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (opts) => {
+      if (opts.help) {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("promote"); exit(0);
       }
-      const all = argv.includes("--all");
-      const verbose = argv.includes("--verbose");
-      const dryRun = argv.includes("--dry-run");
+      const all: boolean = opts.all ?? false;
+      const verbose: boolean = opts.verbose ?? false;
+      const dryRun: boolean = opts.dryRun ?? false;
 
       const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
       const { loadDaemonConfig } = await import("../src/daemon/config.js");
@@ -472,8 +886,16 @@ async function main() {
 
       let totalProcessed = 0;
       let totalPromoted = 0;
+      const total = cwds.length;
 
-      for (const cwd of cwds) {
+      for (let i = 0; i < cwds.length; i++) {
+        const cwd = cwds[i];
+        if (total > 1) {
+          process.stdout.write(`\r  scanning project ${i + 1}/${total}...`);
+        } else {
+          process.stdout.write(`\r  scanning...`);
+        }
+
         const res = await fetch(`${baseUrl}/promote`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -485,30 +907,188 @@ async function main() {
           continue;
         }
 
-        const result = await res.json() as { processed: number; promoted: number };
+        const result = await res.json() as { processed: number; promoted: number; conversations?: number };
         totalProcessed += result.processed;
         totalPromoted += result.promoted;
 
         if (verbose) {
-          console.log(`  ${cwd}: ${result.processed} scanned, ${result.promoted} promoted`);
+          process.stdout.write("\r");
+          const convLabel = result.conversations !== undefined ? `, ${result.conversations} conversation${result.conversations !== 1 ? "s" : ""}` : "";
+          console.log(`  ${cwd}: ${result.processed} scanned${convLabel}, ${result.promoted} promoted`);
         }
       }
+      // Clear the progress line
+      process.stdout.write("\r  \r");
 
-      console.log(`  ${totalPromoted} insight${totalPromoted !== 1 ? "s" : ""} promoted to long-term memory`);
+      if (totalPromoted === 0) {
+        console.log("  Nothing to promote — no new insights found.");
+      } else {
+        console.log(`  ${totalPromoted} insight${totalPromoted !== 1 ? "s" : ""} promoted to long-term memory`);
+      }
       if (verbose) console.log(`  (${totalProcessed} summaries scanned across ${cwds.length} project${cwds.length !== 1 ? "s" : ""})`);
       if (dryRun) console.log("  [dry-run] No changes written.");
       console.log();
-      break;
-    }
-    default: {
-      const { printHelp } = await import("../src/cli-help.js");
-      if (command) {
-        process.stderr.write(`lcm: unknown command '${command}'\n\n`);
+    });
+
+  // ─── export ────────────────────────────────────────────────────────────────
+  program
+    .command("export")
+    .description("Export promoted knowledge to a portable JSON file")
+    .option("--all", "Export all projects (one JSON per project, written to files)")
+    .option("--tags <tags>", "Only export entries matching these comma-separated tags")
+    .option("--since <date>", "Only export entries created on or after this ISO date (e.g. 2026-01-01)")
+    .option("--output <file>", "Write output to file instead of stdout")
+    .option("--format <format>", "Output format: json (default)", "json")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (opts) => {
+      if (opts.help) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("export"); exit(0);
       }
-      printHelp();
-      exit(command ? 1 : 0);
-    }
+
+      const { exportKnowledge } = await import("../src/portable-knowledge.js");
+      const { homedir } = await import("node:os");
+      const { join } = await import("node:path");
+      const { existsSync, readdirSync, readFileSync } = await import("node:fs");
+
+      const tags: string[] | undefined = opts.tags
+        ? (opts.tags as string).split(",").map((t: string) => t.trim()).filter(Boolean)
+        : undefined;
+      const since: string | undefined = opts.since;
+      const output: string | undefined = opts.output;
+      const all: boolean = opts.all ?? false;
+
+      const cwds: string[] = [];
+      if (all) {
+        const projectsDir = join(homedir(), ".lossless-claude", "projects");
+        if (existsSync(projectsDir)) {
+          for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
+            if (!entry.isDirectory()) continue;
+            const metaPath = join(projectsDir, entry.name, "meta.json");
+            if (!existsSync(metaPath)) continue;
+            try {
+              const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+              if (meta.cwd) cwds.push(meta.cwd);
+            } catch { /* skip */ }
+          }
+        }
+      } else {
+        cwds.push(process.cwd());
+      }
+
+      let total = 0;
+      for (const cwd of cwds) {
+        let outFile: string | undefined = output;
+        if (all && output === undefined) {
+          // When --all and no --output, generate filenames automatically
+          const slug = cwd.replace(/[^a-zA-Z0-9]/g, "-").replace(/-+/g, "-").slice(-40);
+          outFile = join(process.cwd(), `lcm-export-${slug}.json`);
+        }
+        try {
+          const result = await exportKnowledge(cwd, { tags, since, output: outFile });
+          total += result.exported;
+          if (all) {
+            console.log(`  ${cwd}: ${result.exported} entries → ${outFile}`);
+          } else if (outFile) {
+            console.log(`  Exported ${result.exported} entries to ${outFile}`);
+          }
+        } catch (err: any) {
+          process.stderr.write(`  Warning: ${err.message}\n`);
+        }
+      }
+
+      if (all) console.log(`\n  Total: ${total} entries exported`);
+    });
+
+  // ─── import-knowledge ──────────────────────────────────────────────────────
+  program
+    .command("import-knowledge <file>")
+    .description("Import exported knowledge JSON into lossless memory")
+    .option("--merge", "Merge with existing entries, deduplicating (default)")
+    .option("--dry-run", "Preview import without writing anything")
+    .option("--confidence <n>", "Override confidence for all imported entries (0.0–1.0)")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (file: string, opts) => {
+      if (opts.help) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("import-knowledge"); exit(0);
+      }
+
+      const { importKnowledge } = await import("../src/portable-knowledge.js");
+      const { readFileSync } = await import("node:fs");
+
+      const dryRun: boolean = opts.dryRun ?? false;
+      const confidence: number | undefined = opts.confidence !== undefined
+        ? parseFloat(opts.confidence as string)
+        : undefined;
+
+      if (confidence !== undefined && (isNaN(confidence) || confidence < 0 || confidence > 1)) {
+        console.error("  --confidence must be a number between 0.0 and 1.0");
+        exit(1);
+      }
+
+      let raw: string;
+      try {
+        raw = readFileSync(file, "utf-8");
+      } catch (err: any) {
+        console.error(`  Cannot read file: ${err.message}`);
+        exit(1);
+      }
+
+      let doc: any;
+      try {
+        doc = JSON.parse(raw);
+      } catch {
+        console.error("  Invalid JSON in export file");
+        exit(1);
+      }
+
+      if (!doc || typeof doc.version !== "number" || !Array.isArray(doc.entries)) {
+        console.error("  File does not look like an lcm export (missing version or entries)");
+        exit(1);
+      }
+
+      const cwd = process.cwd();
+
+      if (dryRun) {
+        console.log(`\n  [dry-run] Would import ${doc.entries.length} entries into ${cwd}`);
+        console.log("  No changes written.\n");
+        exit(0);
+      }
+
+      try {
+        const result = await importKnowledge(cwd, doc, { merge: true, dryRun, confidence });
+        if (result.dryRun) {
+          console.log(`\n  [dry-run] Would import ${result.total} entries. No changes written.\n`);
+        } else {
+          console.log(`\n  Imported ${result.imported} entries (${result.skipped} skipped) into ${cwd}\n`);
+        }
+      } catch (err: any) {
+        console.error(`  Import failed: ${err.message}`);
+        exit(1);
+      }
+    });
+
+  // ─── Unknown command fallback ──────────────────────────────────────────────
+  program.on("command:*", async (operands: string[]) => {
+    process.stderr.write(`lcm: unknown command '${operands[0]}'\n\n`);
+    const { printHelp } = await import("../src/cli-help.js");
+    printHelp();
+    exit(1);
+  });
+
+  // Handle root-level help and no-args before Commander parses — this prevents
+  // Commander from seeing --help at the root level and intercepting it before
+  // dispatching to subcommands (lcm import --help would otherwise show root help).
+  if (argv.length <= 2 || (argv.length === 3 && (argv[2] === "-h" || argv[2] === "--help"))) {
+    const { printHelp } = await import("../src/cli-help.js");
+    printHelp();
+    exit(0);
   }
+
+  await program.parseAsync(argv);
 }
 
 main().catch((err) => { console.error(err); exit(1); });
