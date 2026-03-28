@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
+import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
 import { projectDbPath, projectDir, projectId, ensureProjectDir, projectMetaPath, isSafeTranscriptPath } from "../project.js";
 import { sendJson } from "../server.js";
@@ -72,9 +72,8 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
       projectDir(cwd),
     );
 
-    const db = new DatabaseSync(dbPath);
+    const db = getLcmConnection(dbPath);
     try {
-      db.exec("PRAGMA busy_timeout = 5000");
       runLcmMigrations(db);
 
       // Check if session is already fully ingested in session_ingest_log — using the same
@@ -143,7 +142,7 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
     } catch (err) {
       sendJson(res, 500, { error: err instanceof Error ? err.message : "ingest failed" });
     } finally {
-      db.close();
+      closeLcmConnection(dbPath);
     }
   };
 }

@@ -3,6 +3,7 @@ import { describe, it, expect } from "vitest";
 import {
   extractPostToolEvents,
   extractUserPromptEvents,
+  normalizePromptWithChannels,
   type ExtractedEvent,
 } from "../../src/hooks/extractors.js";
 
@@ -213,5 +214,68 @@ describe("extractUserPromptEvents", () => {
     const events = extractUserPromptEvents("fix the bug in main.ts");
     // "fix" matches intent, so we expect 1 intent event
     expect(events.filter(e => e.category === "decision")).toHaveLength(0);
+  });
+});
+
+describe("normalizePromptWithChannels", () => {
+  it("strips channel XML and returns clean text", () => {
+    const raw = '<channel source="telegram" chat_id="123" message_id="456" user="pedro" ts="1234">always use TypeScript</channel>';
+    const { text, fromChannel } = normalizePromptWithChannels(raw);
+    expect(text).toBe("always use TypeScript");
+    expect(fromChannel).toBe(true);
+  });
+
+  it("returns original text unchanged when no channel tag present", () => {
+    const raw = "always use TypeScript";
+    const { text, fromChannel } = normalizePromptWithChannels(raw);
+    expect(text).toBe("always use TypeScript");
+    expect(fromChannel).toBe(false);
+  });
+
+  it("handles multi-line channel content", () => {
+    const raw = '<channel source="telegram" chat_id="1">\nalways use TypeScript\nfor new files\n</channel>';
+    const { text, fromChannel } = normalizePromptWithChannels(raw);
+    expect(text).toBe("always use TypeScript\nfor new files");
+    expect(fromChannel).toBe(true);
+  });
+});
+
+describe("extractUserPromptEvents — Telegram channel wrapping", () => {
+  it("extracts decision from channel-wrapped prompt", () => {
+    const raw = '<channel source="telegram" chat_id="123" message_id="456" user="pedro" ts="1234">always use TypeScript for new files</channel>';
+    const events = extractUserPromptEvents(raw);
+    const decisions = events.filter(e => e.category === "decision");
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({
+      type: "user_decision",
+      category: "decision",
+      priority: 1,
+    });
+  });
+
+  it("strips XML from stored data in decision events from Telegram", () => {
+    const raw = '<channel source="telegram" chat_id="123" message_id="1" user="pedro" ts="1234">always use TypeScript for new files</channel>';
+    const events = extractUserPromptEvents(raw);
+    const decision = events.find(e => e.category === "decision");
+    expect(decision).toBeDefined();
+    expect(decision!.data).not.toContain("<channel");
+    expect(decision!.data).toContain("always use TypeScript");
+  });
+
+  it("adds source:telegram tag to events extracted from channel messages", () => {
+    const raw = '<channel source="telegram" chat_id="123" message_id="1" user="pedro" ts="1234">always use TypeScript</channel>';
+    const events = extractUserPromptEvents(raw);
+    expect(events.length).toBeGreaterThan(0);
+    for (const event of events) {
+      expect(event.tags).toContain("source:telegram");
+    }
+  });
+
+  it("does NOT add source:telegram tag for non-channel prompts", () => {
+    const events = extractUserPromptEvents("always use TypeScript");
+    expect(events.length).toBeGreaterThan(0);
+    for (const event of events) {
+      expect(event.tags).toBeUndefined();
+    }
   });
 });
