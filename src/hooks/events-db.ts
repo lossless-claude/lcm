@@ -3,19 +3,15 @@ import type { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { ExtractedEvent } from "./extractors.js";
-import { getLcmConnection, closeLcmConnection } from "../db/connection.js";
+import { getLcmConnection, closeLcmConnection, isLcmConnectionOpen } from "../db/connection.js";
 
 /**
- * Tracks which DatabaseSync connection handles have already had migrations
- * applied. Keyed by the connection object itself (not the path) so that if
- * getLcmConnection replaces an unhealthy connection with a new handle, the new
- * handle is not found here and migration re-runs on it automatically.
- *
- * WeakSet: entries are garbage-collected when the connection handle is GC'd
- * (i.e., after it is evicted from the pool and no other references remain).
- * Use `let` so tests can replace it via _resetMigratedPathsForTesting().
+ * Tracks which db paths have already had migrations applied in this process.
+ * When a pooled connection is reused (refs > 1), we skip the migration check
+ * entirely — it already ran during the first open. Cleared on process exit or
+ * when a path is explicitly evicted from the pool.
  */
-let _migratedConnections = new WeakSet<object>();
+const _migratedPaths = new Set<string>();
 
 export interface EventRow {
   event_id: number;
@@ -80,9 +76,16 @@ export class EventsDb {
     // instances so that high-frequency hooks (PostToolUse fires 50-200x/session)
     // reuse the same underlying connection instead of opening/closing each time.
     this.db = getLcmConnection(dbPath);
-    if (!_migratedConnections.has(this.db)) {
-      this.migrate();
-      _migratedConnections.add(this.db);
+    if (!_migratedPaths.has(dbPath)) {
+      try {
+        this.migrate();
+      } catch (e) {
+        // Migration failed — release the pooled connection so the ref-count
+        // doesn't leak. The constructor will re-throw, so callers see the error.
+        closeLcmConnection(dbPath);
+        throw e;
+      }
+      _migratedPaths.add(dbPath);
     }
   }
 
@@ -280,21 +283,21 @@ export class EventsDb {
   close(): void {
     // Decrement pool ref-count. The underlying connection stays open as long as
     // other callers hold a reference — it is only closed when refs reach 0.
-    // _migratedConnections is a WeakSet keyed by the DatabaseSync handle, so
-    // no manual invalidation is needed: if the pool evicts and replaces the
-    // handle, the new object reference will simply not be found in the WeakSet
-    // and migration will re-run on the next open.
     closeLcmConnection(this.dbPath);
+    // If the connection was fully evicted from the pool, invalidate the
+    // migration-done cache so the next open re-runs migrations on a fresh handle.
+    if (!isLcmConnectionOpen(this.dbPath)) {
+      _migratedPaths.delete(this.dbPath);
+    }
   }
 }
 
 /**
- * Reset the migration-done cache. Intended for tests that create/destroy temp
- * databases and need migration to re-run on a fresh connection handle.
- * Replaces the WeakSet with a new empty one (WeakSet has no .clear()).
+ * Clear the migration-done cache. Intended for tests that create/destroy temp
+ * databases and need migration to re-run on the same path.
  *
  * @internal
  */
 export function _resetMigratedPathsForTesting(): void {
-  _migratedConnections = new WeakSet<object>();
+  _migratedPaths.clear();
 }

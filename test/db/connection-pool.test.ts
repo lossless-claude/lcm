@@ -70,8 +70,8 @@ describe("EventsDb connection pooling (issue #131)", () => {
   });
 
   it("migration runs only once per connection lifetime even with multiple EventsDb instances", () => {
-    // Spy on db.prepare to count schema_version lookups.
-    // We open first EventsDb which triggers migration (schema_version lookup happens).
+    // Open the first EventsDb which triggers migration (schema creation / schema_version checks).
+    // Subsequent opens for the same path should not re-run the migration on the same connection.
     const a = new EventsDb(dbPath);
     const rawDb = a.raw();
 
@@ -83,7 +83,7 @@ describe("EventsDb connection pooling (issue #131)", () => {
       return origExec(sql);
     };
 
-    // Second open: migration should NOT run again (connection handle is in _migratedConnections).
+    // Second open: migration should NOT run again (path is in _migratedPaths).
     const b = new EventsDb(dbPath);
 
     // No CREATE TABLE calls should have happened from the second constructor.
