@@ -263,6 +263,24 @@ async function main() {
       exit(r.exitCode);
     });
 
+  // ─── post-tool (hook) ──────────────────────────────────────────────────────
+  program
+    .command("post-tool")
+    .description("Dispatch the post-tool hook (PostToolUse event)")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (opts) => {
+      if (opts.help) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("post-tool"); exit(0);
+      }
+      const { dispatchHook } = await import("../src/hooks/dispatch.js");
+      const input = await readStdin();
+      const r = await dispatchHook("post-tool", input);
+      if (r.stdout) stdout.write(r.stdout);
+      exit(r.exitCode);
+    });
+
   // ─── session-snapshot (hook) ─────────────────────────────────────────────
   program
     .command("session-snapshot")
