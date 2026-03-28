@@ -439,7 +439,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
       name: "secret-detection",
       category: "Security",
       status: "fail",
-      message: "generated-patterns.ts is missing or empty — run: npx tsx scripts/update-gitleaks-patterns.ts",
+      message: "No gitleaks patterns were loaded (GITLEAKS_PATTERNS is empty) — run: npx tsx scripts/update-gitleaks-patterns.ts",
     });
   } else {
     const syncNote = syncDate ? ` (synced ${syncDate})` : "";
@@ -459,8 +459,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
   let globalUserPatternCount = 0;
   try {
     const { loadDaemonConfig } = await import("../daemon/config.js");
-    const { homedir: hd } = await import("node:os");
-    const globalConfigPath = join(hd(), ".lossless-claude", "config.json");
+    const globalConfigPath = join(deps.homedir, ".lossless-claude", "config.json");
     const config = loadDaemonConfig(globalConfigPath);
     globalUserPatternCount = config.security?.sensitivePatterns?.length ?? 0;
   } catch {

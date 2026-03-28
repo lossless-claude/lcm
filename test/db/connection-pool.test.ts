@@ -83,7 +83,7 @@ describe("EventsDb connection pooling (issue #131)", () => {
       return origExec(sql);
     };
 
-    // Second open: migration should NOT run again (path is in _migratedPaths).
+    // Second open: migration should NOT run again (connection handle is in _migratedConnections).
     const b = new EventsDb(dbPath);
 
     // No CREATE TABLE calls should have happened from the second constructor.
