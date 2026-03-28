@@ -1,77 +1,51 @@
-# Copilot Instructions
+# Copilot Review Instructions — lossless-claude (lcm)
 
-## Reference Documents
+This repo is a TypeScript SQLite daemon that persists Claude session memories across context resets. It uses Node.js `DatabaseSync` (synchronous SQLite API) and exposes an HTTP daemon with REST routes.
 
-When reviewing changes, consult the relevant sources of truth:
+## Primary concerns
 
-| Area | Document |
-|------|----------|
-| PR review & merge conventions | [AGENTS.md](/AGENTS.md) |
-| Development workflow & phases | [WORKFLOW.md](/WORKFLOW.md) |
-| Release & publish process | [RELEASING.md](/RELEASING.md) |
-| Hook lifecycle & auto-heal | [.claude-plugin/hooks/README.md](/.claude-plugin/hooks/README.md) |
-| Design specs & decisions | `.xgh/specs/YYYY-MM-DD-<topic>-design.md` |
-| Implementation plans | `.xgh/specs/YYYY-MM-DD-<topic>-plan.md` |
-| CLI entry points | `bin/lossless-claude.ts` |
-| Daemon routes | `src/daemon/routes/*.ts` |
-| Config type & defaults | `src/daemon/config.ts` (`DaemonConfig`) |
+### Database connection pattern (highest priority)
+- All SQLite access MUST use `getLcmConnection()` and `closeLcmConnection()` from the shared connection module. Flag any `new DatabaseSync(...)` instantiated directly in route handlers or utility files.
+- The shared connection ensures WAL mode and foreign key enforcement are set once at open time.
+- Flag double-open patterns: calling `getLcmConnection()` without a corresponding `closeLcmConnection()` on all exit paths.
 
-## Review Scope
+### PRAGMA enforcement
+- If a new connection is ever opened directly (e.g., in migration scripts), it must immediately set:
+  - `PRAGMA journal_mode=WAL`
+  - `PRAGMA foreign_keys=ON`
+- Flag connections missing these PRAGMAs.
 
-Always review every file in the PR diff, including documentation, specs, plans, configs, and markdown files — not just code. If a PR contains design specs (`.xgh/specs/`), implementation plans, workflow docs, or instruction files, review them for clarity, correctness, internal consistency, and alignment with existing project conventions.
+### Type safety
+- No implicit `any`. All function parameters, return types, and object shapes must be explicitly typed.
+- Flag `as any` casts unless accompanied by a comment explaining why it's necessary.
+- Route handler request/response objects must use typed interfaces, not `any`.
 
-## Code Review Checklist
+### `collectStats()` performance
+- `collectStats()` takes ~13 seconds due to full-table scans. It must NEVER be called in:
+  - HTTP request handlers
+  - Any path that runs more than once per user action
+  - Startup initialization (lazy evaluation only)
+- Flag any `collectStats()` call that isn't in a dedicated stats endpoint or background job.
 
-These rules apply to **new and changed code** in the PR. Do not flag pre-existing code that the PR did not touch.
+### Test coverage
+- New HTTP routes must have corresponding tests in `test/daemon/routes/`.
+- Tests should cover: happy path, missing required fields (400), and resource-not-found (404).
+- Flag PRs adding routes without tests.
 
-### Hook Safety
-- Hook handlers (`handle*` functions in `src/hooks/*.ts`) must return `{ exitCode: 0 }` on error — never throw or return non-zero
-- The hook dispatcher (`dispatchHook` in `src/hooks/dispatch.ts`) may throw on invalid input — that is intentional
-- Hooks must never crash Claude Code, even if the daemon is unreachable
+### SQLite transaction safety
+- Any operation that modifies more than one table must be wrapped in `BEGIN`/`COMMIT`.
+- Flag multi-table writes without transactions — they risk partial writes on crash.
 
-### Database Safety
-- New `DatabaseSync()` calls should have a matching `db.close()` in a `finally` block
-- New database connections should set `PRAGMA busy_timeout = 5000` before queries
-- `--dry-run` commands must not call `runLcmMigrations()` or otherwise write to disk
+### Migration safety
+- Schema migrations must be additive only: `ADD COLUMN`, `CREATE TABLE`, `CREATE INDEX`.
+- Flag `DROP COLUMN`, `DROP TABLE`, `ALTER COLUMN type`, or any destructive DDL.
+- Migrations must be idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`).
 
-### Import Discipline
-- Required dependencies are listed in `package.json` `dependencies` (not `devDependencies`)
-- Optional SDK packages (e.g., `openai`, `@anthropic-ai/sdk`) have dedicated wrapper modules in `src/llm/` — new call sites should import from those wrappers, not directly from the SDK
-- Prefer `node:` prefix for Node.js built-ins in new code
+### Error handling
+- Route handlers must catch errors and return structured JSON: `{ error: string, code?: string }`.
+- Flag `res.send(e.message)` or unstructured error responses that leak stack traces.
+- Unhandled promise rejections in route handlers are bugs — flag missing `try/catch` in `async` handlers.
 
-### Type Completeness
-- When adding fields to shared types (e.g., `DaemonConfig`), verify all test mocks and fixtures include the new field
-
-### Shell Script Safety
-- All `gh` CLI commands that parse output must use `--json` + `--jq` (or pipe to `node -pe "JSON.parse(...)"`), never `grep`/`sed`/`awk` on human-readable output
-- All `gh pr merge` and `gh pr create` commands must include `--repo "$REPO"` — the script may run from a fork or different remote
-- `git pull` in automation must use `--ff-only` to prevent unintended merge commits
-- Hardcoded timeouts and limits (e.g., `MAX_WAIT=300`) should be overridable via environment variables (e.g., `${PUBLISH_MAX_WAIT:-900}`)
-- Semver version arguments interpolated into shell commands must be validated against a regex before use
-- `set -euo pipefail` is required at the top of all bash scripts
-
-### JSON File Manipulation
-- Never use `JSON.parse` + `JSON.stringify` to update a single field in a JSON file — this reformats the entire file (indentation, key order, trailing newlines)
-- Use targeted in-place string replacement (e.g., `s.replace(/"version": "[^"]*"/, ...)`) to preserve original formatting
-- After any version bump, verify all version files agree (package.json, plugin.json, marketplace.json)
-
-### Documentation Consistency
-- When code and documentation describe the same behavior (flags, merge strategies, command descriptions), verify they match
-- If a PR changes a flag or behavior in code, check whether any markdown files, help text, or table entries in the same PR need a corresponding update
-- Help text summaries in command tables must accurately describe what the command does — e.g., a "purge" command that deletes all project data should not be summarized as "remove patterns"
-
-### Review Completeness
-
-When reviewing a PR, report **all** issues found across the changed files — do not limit output to only the most critical. Triage by severity within the review:
-
-1. **Correctness / safety** — bugs, data loss, crashes, security issues
-2. **Reliability** — error handling, edge cases, resume flows
-3. **Documentation consistency** — code/docs mismatches, stale comments
-4. **Style / minor** — naming, formatting, whitespace
-
-Do not save issues for a follow-up review. If an issue exists in a changed file, include it now.
-
-### Merge Strategy Consistency
-- All sync PRs (develop←main) must use `--merge`, never `--rebase` — rebase fails when the PR contains merge commits from main
-- Release PRs (branch→main) use `--merge` to preserve the commit SHA for publish.yml tracking
-- If multiple `gh pr merge` calls exist in the same script or related scripts, verify they use consistent merge strategies
+## What to skip
+- Don't flag `DatabaseSync` usage in test fixtures that mock the connection — context matters.
+- Don't flag TypeScript-specific patterns that are idiomatic (e.g., discriminated unions, assertion functions).
