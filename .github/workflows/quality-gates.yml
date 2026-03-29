@@ -1,0 +1,39 @@
+name: Quality Gates
+on:
+  pull_request:
+    types: [opened, labeled, unlabeled, synchronize]
+
+jobs:
+  quality-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check quality gate labels
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = context.payload.pull_request.labels.map(l => l.name);
+
+            if (labels.includes('gates-exempt')) {
+              console.log('Quality gates skipped: gates-exempt label present');
+              return;
+            }
+
+            const required = [
+              'ar-approved',
+              'plan-approved',
+              'idea-matrix',
+              'tests-verified',
+              'lcm-stored',
+            ];
+
+            const missing = required.filter(l => !labels.includes(l));
+
+            if (missing.length > 0) {
+              core.setFailed(
+                `Missing quality gate labels: ${missing.join(', ')}\n` +
+                `Run /quality-gate skill before creating PR. ` +
+                `To exempt: add 'gates-exempt' label with justification in PR body.`
+              );
+            } else {
+              console.log(`All quality gates passed: ${required.join(', ')}`);
+            }
