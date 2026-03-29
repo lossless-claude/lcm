@@ -26,15 +26,23 @@ describe("POST /restore", () => {
   });
 
   it("returns empty context for source=compact with no session_instructions", async () => {
-    daemon = await createDaemon(loadDaemonConfig("/x", { daemon: { port: 0 } }));
-    const res = await fetch(`http://127.0.0.1:${daemon.address().port}/restore`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: "s1", cwd: tmpdir(), source: "compact", hook_event_name: "SessionStart" }),
-    });
-    const body = await res.json();
-    expect(body.context).not.toContain("<memory-orientation>");
-    expect(body.context).not.toContain("<recent-session-context>");
-    expect(body.context).not.toContain("<project-instructions>");
+    // Use an isolated dir — shared tmpdir() gets session_instructions written by the
+    // "first-ever session" test (non-compact path captures ~/.claude/CLAUDE.md), causing
+    // this compact-restore assertion to fail due to test-order contamination.
+    const isolatedDir = mkdtempSync(join(tmpdir(), "restore-compact-test-"));
+    try {
+      daemon = await createDaemon(loadDaemonConfig("/x", { daemon: { port: 0 } }));
+      const res = await fetch(`http://127.0.0.1:${daemon.address().port}/restore`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: "s1", cwd: isolatedDir, source: "compact", hook_event_name: "SessionStart" }),
+      });
+      const body = await res.json();
+      expect(body.context).not.toContain("<memory-orientation>");
+      expect(body.context).not.toContain("<recent-session-context>");
+      expect(body.context).not.toContain("<project-instructions>");
+    } finally {
+      rmSync(isolatedDir, { recursive: true, force: true });
+    }
   });
 
   describe("session_instructions persistence", () => {
