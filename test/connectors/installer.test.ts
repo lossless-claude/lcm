@@ -40,7 +40,7 @@ describe('installConnector — rules (markdown append)', () => {
     installConnector('claude-code', 'rules', tmpDir);
     const rulesPath = join(tmpDir, 'CLAUDE.md');
     const content = readFileSync(rulesPath, 'utf-8');
-    const startCount = (content.match(new RegExp(LCM_MARKERS.START.replace(/[[\]]/g, '\\$&'), 'g')) ?? []).length;
+    const startCount = (content.match(new RegExp(LCM_MARKERS.START.replace(/\\/g, '\\\\').replace(/[[\]]/g, '\\$&'), 'g')) ?? []).length;
     expect(startCount).toBe(1);
   });
 

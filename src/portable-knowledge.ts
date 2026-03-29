@@ -13,17 +13,17 @@
  * Deduplication is performed on import via deduplicateAndInsert().
  */
 
-import { existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 
 import { PromotedStore } from "./db/promoted.js";
 import { runLcmMigrations } from "./db/migration.js";
 import { deduplicateAndInsert } from "./promotion/dedup.js";
 import { ScrubEngine } from "./scrub.js";
+import { getLcmConnection, closeLcmConnection } from "./db/connection.js";
 
 export const EXPORT_VERSION = 1;
 
@@ -97,42 +97,46 @@ export async function exportKnowledge(
     throw new Error(`No lossless-claude database found for project: ${cwd}`);
   }
 
-  const db = new DatabaseSync(dbPath);
-  db.exec("PRAGMA busy_timeout = 5000");
-  runLcmMigrations(db);
+  const db = getLcmConnection(dbPath);
+  let entries: ExportEntry[];
+  try {
+    runLcmMigrations(db);
 
-  const store = new PromotedStore(db);
-  const projId = resolveProjectId(cwd);
+    const store = new PromotedStore(db);
+    const projId = resolveProjectId(cwd);
 
-  const rows = store.getAll({
-    projectId: projId,
-    since: opts.since,
-    tags: opts.tags,
-  });
+    const rows = store.getAll({
+      projectId: projId,
+      since: opts.since,
+      tags: opts.tags,
+    });
 
-  // Build scrubber for secret redaction
-  let scrubber: ScrubEngine | null = null;
-  if (!opts.skipScrub) {
-    const projDir = resolveProjectDir(cwd, baseDir);
-    scrubber = await ScrubEngine.forProject([], projDir);
-  }
-
-  const entries: ExportEntry[] = rows.map((r) => {
-    let content = r.content;
-    if (scrubber) {
-      content = scrubber.scrub(content);
+    // Build scrubber for secret redaction
+    let scrubber: ScrubEngine | null = null;
+    if (!opts.skipScrub) {
+      const projDir = resolveProjectDir(cwd, baseDir);
+      scrubber = await ScrubEngine.forProject([], projDir);
     }
-    return {
-      content,
-      tags: JSON.parse(r.tags) as string[],
-      confidence: r.confidence,
-      createdAt: r.created_at,
-      // sessionId is per-project and per-machine. Nullify on export so that
-      // importing into a different project/machine does not create dead
-      // references pointing at a session that does not exist in the new context.
-      sessionId: null,
-    };
-  });
+
+    entries = rows.map((r) => {
+      let content = r.content;
+      if (scrubber) {
+        content = scrubber.scrub(content);
+      }
+      return {
+        content,
+        tags: JSON.parse(r.tags) as string[],
+        confidence: r.confidence,
+        createdAt: r.created_at,
+        // sessionId is per-project and per-machine. Nullify on export so that
+        // importing into a different project/machine does not create dead
+        // references pointing at a session that does not exist in the new context.
+        sessionId: null,
+      };
+    });
+  } finally {
+    closeLcmConnection(dbPath);
+  }
 
   const doc: ExportDocument = {
     version: EXPORT_VERSION,
@@ -148,8 +152,6 @@ export async function exportKnowledge(
   } else {
     process.stdout.write(json + "\n");
   }
-
-  db.close();
 
   return { exported: entries.length, projectCwd: cwd };
 }
@@ -193,7 +195,7 @@ export async function importKnowledge(
   if (opts.dryRun) {
     return {
       total: doc.entries.length,
-      imported: doc.entries.length,
+      imported: 0,
       skipped: 0,
       dryRun: true,
     };
@@ -206,38 +208,50 @@ export async function importKnowledge(
   // Ensure project dir + DB exist
   mkdirSync(projDir, { recursive: true });
 
-  const db = new DatabaseSync(dbPath);
-  db.exec("PRAGMA busy_timeout = 5000");
-  runLcmMigrations(db);
-
-  const store = new PromotedStore(db);
-  const projId = resolveProjectId(cwd);
+  const db = getLcmConnection(dbPath);
 
   let imported = 0;
   let skipped = 0;
   const errors: string[] = [];
 
-  for (const entry of doc.entries) {
-    const confidence = opts.confidence !== undefined ? opts.confidence : entry.confidence;
-    try {
-      await deduplicateAndInsert({
-        store,
-        content: entry.content,
-        tags: entry.tags,
-        projectId: projId,
-        sessionId: entry.sessionId ?? undefined,
-        depth: 0,
-        confidence,
-        thresholds: DEFAULT_DEDUP_THRESHOLDS,
-      });
-      imported++;
-    } catch (e) {
-      skipped++;
-      errors.push(e instanceof Error ? e.message : String(e));
+  try {
+    runLcmMigrations(db);
+
+    const store = new PromotedStore(db);
+    const projId = resolveProjectId(cwd);
+
+    for (const entry of doc.entries) {
+      const confidence = opts.confidence !== undefined ? opts.confidence : entry.confidence;
+      try {
+        await deduplicateAndInsert({
+          store,
+          content: entry.content,
+          tags: entry.tags,
+          projectId: projId,
+          sessionId: entry.sessionId ?? undefined,
+          depth: 0,
+          confidence,
+          thresholds: DEFAULT_DEDUP_THRESHOLDS,
+        });
+        imported++;
+      } catch (e) {
+        skipped++;
+        errors.push(e instanceof Error ? e.message : String(e));
+      }
     }
+  } finally {
+    closeLcmConnection(dbPath);
   }
 
-  db.close();
+  // Write meta.json if it doesn't already exist so this project is visible
+  // to `lcm export --all` (which enumerates projects by scanning for meta.json).
+  // Use a tmp-file + rename for atomicity — a crash mid-write would corrupt the file.
+  const metaPath = join(projDir, "meta.json");
+  if (!existsSync(metaPath)) {
+    const tmpPath = metaPath + ".tmp";
+    writeFileSync(tmpPath, JSON.stringify({ cwd }, null, 2), "utf-8");
+    renameSync(tmpPath, metaPath);
+  }
 
   return {
     total: doc.entries.length,

@@ -7,7 +7,7 @@ import { GITLEAKS_PATTERNS } from "./generated-patterns.js";
 const _thisDir = dirname(fileURLToPath(import.meta.url));
 
 /**
- * Reads the sync date from the generated-patterns.ts header comment.
+ * Reads the sync date from the generated-patterns.js header comment.
  * Returns a formatted date string like "2026-03-27" or null if unavailable.
  */
 export function readGitleaksSyncDate(): string | null {
@@ -21,7 +21,6 @@ export function readGitleaksSyncDate(): string | null {
     return null;
   }
 }
-
 
 /**
  * Native (hand-curated) patterns that gap-fill what gitleaks doesn't cover.

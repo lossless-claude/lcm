@@ -77,7 +77,14 @@ export class EventsDb {
     // reuse the same underlying connection instead of opening/closing each time.
     this.db = getLcmConnection(dbPath);
     if (!_migratedPaths.has(dbPath)) {
-      this.migrate();
+      try {
+        this.migrate();
+      } catch (e) {
+        // Migration failed — release the pooled connection so the ref-count
+        // doesn't leak. The constructor will re-throw, so callers see the error.
+        closeLcmConnection(dbPath);
+        throw e;
+      }
       _migratedPaths.add(dbPath);
     }
   }

@@ -264,6 +264,24 @@ async function main() {
       exit(r.exitCode);
     });
 
+  // ─── post-tool (hook) ──────────────────────────────────────────────────────
+  program
+    .command("post-tool")
+    .description("Dispatch the post-tool hook (PostToolUse event)")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (opts) => {
+      if (opts.help) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("post-tool"); exit(0);
+      }
+      const { dispatchHook } = await import("../src/hooks/dispatch.js");
+      const input = await readStdin();
+      const r = await dispatchHook("post-tool", input);
+      if (r.stdout) stdout.write(r.stdout);
+      exit(r.exitCode);
+    });
+
   // ─── session-snapshot (hook) ─────────────────────────────────────────────
   program
     .command("session-snapshot")
@@ -416,6 +434,8 @@ async function main() {
     .command("stats")
     .description("Show memory inventory and compression ratios")
     .option("-v, --verbose", "Show per-conversation breakdown")
+    .option("--pool", "Show connection pool statistics from the daemon")
+    .option("--json", "Output structured JSON (use with --pool)")
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
@@ -423,6 +443,61 @@ async function main() {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("stats"); exit(0);
       }
+
+      if (opts.pool) {
+        const { loadDaemonConfig } = await import("../src/daemon/config.js");
+        const { join } = await import("node:path");
+        const { homedir } = await import("node:os");
+        const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
+        const port = config.daemon?.port ?? 3737;
+        const jsonFlag: boolean = opts.json ?? false;
+
+        let poolData: any = null;
+        try {
+          const res = await fetch(`http://127.0.0.1:${port}/stats/pool`);
+          if (res.ok) {
+            poolData = await res.json();
+          } else {
+            console.error(`Error: daemon returned ${res.status}`);
+            exit(1);
+          }
+        } catch {
+          console.error("Error: could not connect to daemon. Start it with: lcm daemon start --detach");
+          exit(1);
+        }
+
+        if (jsonFlag) {
+          stdout.write(JSON.stringify(poolData, null, 2) + "\n");
+        } else {
+          const dim = "\x1b[2m";
+          const cyan = "\x1b[36m";
+          const bold = "\x1b[1m";
+          const reset = "\x1b[0m";
+          console.log();
+          console.log(`    ${bold}${cyan}🔌 Connection Pool${reset}`);
+          console.log();
+          const rows: [string, string][] = [
+            ["Total", String(poolData.totalConnections)],
+            ["Active", String(poolData.activeConnections)],
+            ["Idle", String(poolData.idleConnections)],
+          ];
+          const labelWidth = Math.max(...rows.map(([l]) => l.length));
+          for (const [label, value] of rows) {
+            console.log(`    ${dim}${label.padEnd(labelWidth)}${reset}  ${value}`);
+          }
+          if (poolData.connections && poolData.connections.length > 0) {
+            console.log();
+            console.log(`    ${dim}Connections:${reset}`);
+            for (const conn of poolData.connections) {
+              const status = conn.status === "active" ? `${cyan}active${reset}` : `${dim}idle${reset}`;
+              console.log(`    ${dim}refs=${conn.refs}${reset}  ${status}  ${conn.path}`);
+            }
+          }
+          console.log();
+        }
+        return;
+      }
+
       const verbose: boolean = opts.verbose ?? false;
       const { collectStats, printStats } = await import("../src/stats.js");
       printStats(collectStats(), verbose);

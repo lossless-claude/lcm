@@ -6,6 +6,7 @@ import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { PKG_VERSION } from "../server.js";
 import { validateCwd } from "../validate-cwd.js";
+import { sanitizeError } from "../safe-error.js";
 
 export function createStatusHandler(config: DaemonConfig, startTime: number, actualPort?: number): RouteHandler {
   return async (_req, res, body) => {
@@ -21,7 +22,7 @@ export function createStatusHandler(config: DaemonConfig, startTime: number, act
       try {
         cwd = validateCwd(input.cwd);
       } catch (err) {
-        sendJson(res, 400, { error: err instanceof Error ? err.message : "invalid cwd" });
+        sendJson(res, 400, { error: sanitizeError(err instanceof Error ? err.message : "invalid cwd") });
         return;
       }
 
@@ -96,7 +97,7 @@ export function createStatusHandler(config: DaemonConfig, startTime: number, act
         },
       });
     } catch (err) {
-      sendJson(res, 500, { error: err instanceof Error ? err.message : "status failed" });
+      sendJson(res, 500, { error: sanitizeError(err instanceof Error ? err.message : "status failed") });
     }
   };
 }

@@ -277,7 +277,16 @@ const HELP: Record<string, CommandHelp> = {
     summary: "Dispatch the user-prompt hook — records context on each user message.",
     usage: "lcm user-prompt",
     examples: [
-      ["lcm user-prompt", "Record user prompt context (called by PostToolUse hook)"],
+      ["lcm user-prompt", "Record user prompt context (called by UserPromptSubmit hook)"],
+    ],
+    notes: "Invoked automatically by the Claude Code UserPromptSubmit hook. Not intended for direct use.",
+  },
+
+  "post-tool": {
+    summary: "Dispatch the post-tool hook — records tool invocation events.",
+    usage: "lcm post-tool",
+    examples: [
+      ["lcm post-tool", "Record post-tool events (called by PostToolUse hook)"],
     ],
     notes: "Invoked automatically by the Claude Code PostToolUse hook. Not intended for direct use.",
   },
@@ -327,6 +336,13 @@ const GROUPS = [
     ],
   },
   {
+    label: "Portable Knowledge",
+    commands: [
+      { name: "export [--all] [--output <file>]", summary: "Export promoted knowledge to JSON (secrets scrubbed)" },
+      { name: "import-knowledge <file>", summary: "Import exported knowledge JSON, deduplicating on merge" },
+    ],
+  },
+  {
     label: "Sensitive",
     commands: [
       { name: "sensitive list", summary: "List active redaction patterns" },
@@ -341,7 +357,8 @@ const GROUPS = [
     commands: [
       { name: "restore", summary: "SessionStart hook — restore prior context" },
       { name: "session-end", summary: "Stop hook — finalize and store session memory" },
-      { name: "user-prompt", summary: "PostToolUse hook — record user prompt context" },
+      { name: "user-prompt", summary: "UserPromptSubmit hook — record user prompt context" },
+      { name: "post-tool", summary: "PostToolUse hook — record tool invocation events" },
     ],
   },
 ];
