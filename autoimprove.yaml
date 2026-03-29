@@ -45,6 +45,13 @@ constraints:
     - autoimprove.yaml
     - test/
     - src/connectors/templates/
+    - src/scrub.ts                        # scrubbing engine — hands off
+    - src/daemon/routes/ingest.ts         # ingest pipeline + scrubbing entry point — hands off
+    - src/daemon/config.ts                # daemon config schema — hands off
+    - scripts/**
+    - package.json
+    - package-lock.json
+    - tsconfig.json
     - .changeset/
   test_modification: additive_only
   trust_ratchet:
