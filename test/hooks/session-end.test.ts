@@ -142,6 +142,66 @@ describe("handleSessionEnd", () => {
     const result = await handleSessionEnd("", client, 3737);
     expect(result.exitCode).toBe(0);
   });
+
+  it("writes stderr warning when ingest reports redacted content", async () => {
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const { loadDaemonConfig } = await import("../../src/daemon/config.js");
+    vi.mocked(loadDaemonConfig).mockReturnValueOnce({
+      compaction: {},
+      hooks: {},
+      security: { sensitivePatterns: [], notify_on_filter: true },
+    } as any);
+    const client = createMockClient({
+      ingested: 2,
+      totalTokens: 500,
+      redacted: 1,
+      redactedCategories: ["built_in"],
+    });
+    await handleSessionEnd(JSON.stringify({ session_id: "s1", cwd: "/tmp" }), client, 3737);
+    expect(stderrSpy).toHaveBeenCalledWith(
+      expect.stringContaining("lcm: filtered sensitive data from history (pattern: built_in)"),
+    );
+    stderrSpy.mockRestore();
+  });
+
+  it("does not write stderr when notify_on_filter is false", async () => {
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const { loadDaemonConfig } = await import("../../src/daemon/config.js");
+    vi.mocked(loadDaemonConfig).mockReturnValueOnce({
+      compaction: {},
+      hooks: {},
+      security: { sensitivePatterns: [], notify_on_filter: false },
+    } as any);
+    const client = createMockClient({
+      ingested: 2,
+      totalTokens: 500,
+      redacted: 1,
+      redactedCategories: ["gitleaks"],
+    });
+    await handleSessionEnd(JSON.stringify({ session_id: "s1", cwd: "/tmp" }), client, 3737);
+    const filteredCalls = stderrSpy.mock.calls.filter((args) =>
+      typeof args[0] === "string" && args[0].includes("lcm: filtered"),
+    );
+    expect(filteredCalls.length).toBe(0);
+    stderrSpy.mockRestore();
+  });
+
+  it("does not write stderr when no redactions occurred", async () => {
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const { loadDaemonConfig } = await import("../../src/daemon/config.js");
+    vi.mocked(loadDaemonConfig).mockReturnValueOnce({
+      compaction: {},
+      hooks: {},
+      security: { sensitivePatterns: [] },
+    } as any);
+    const client = createMockClient({ ingested: 3, totalTokens: 300 });
+    await handleSessionEnd(JSON.stringify({ session_id: "s1", cwd: "/tmp" }), client, 3737);
+    const filteredCalls = stderrSpy.mock.calls.filter((args) =>
+      typeof args[0] === "string" && args[0].includes("lcm: filtered"),
+    );
+    expect(filteredCalls.length).toBe(0);
+    stderrSpy.mockRestore();
+  });
 });
 
 function stdin(obj: Record<string, unknown>): string {

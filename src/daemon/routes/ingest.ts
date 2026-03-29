@@ -138,7 +138,17 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
       }
 
       const totalTokens = await summaryStore.getContextTokenCount(conversation.conversationId);
-      sendJson(res, 200, { ingested: records.length, totalTokens });
+      const totalRedacted = totalCounts.gitleaks + totalCounts.builtIn + totalCounts.global + totalCounts.project;
+      const redactionCategories: string[] = [];
+      if (totalCounts.gitleaks > 0) redactionCategories.push("gitleaks");
+      if (totalCounts.builtIn > 0) redactionCategories.push("built_in");
+      if (totalCounts.global > 0) redactionCategories.push("global");
+      if (totalCounts.project > 0) redactionCategories.push("project");
+      sendJson(res, 200, {
+        ingested: records.length,
+        totalTokens,
+        ...(totalRedacted > 0 ? { redacted: totalRedacted, redactedCategories: redactionCategories } : {}),
+      });
     } catch (err) {
       sendJson(res, 500, { error: err instanceof Error ? err.message : "ingest failed" });
     } finally {

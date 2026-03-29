@@ -5,6 +5,12 @@ import { join } from "node:path";
 export interface SecurityConfig {
   /** User-defined global regex patterns (plain strings, no /.../ delimiters). */
   sensitivePatterns: string[];
+  /**
+   * Emit a stderr warning when sensitive data is filtered from session history.
+   * Shows the pattern category (e.g. "gitleaks", "built_in"), not the actual value.
+   * Defaults to true.
+   */
+  notify_on_filter?: boolean;
 }
 
 export type DaemonConfig = {
