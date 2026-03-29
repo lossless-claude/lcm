@@ -23,6 +23,23 @@ export LCM_INCREMENTAL_MAX_DEPTH=-1
 
 Restart Claude Code.
 
+## Connector scope
+
+The connector manager can install into either the current project or your global
+agent config. For Codex, the global target is `~/.codex/`.
+
+```bash
+# Install the Codex skill globally instead of into the current repo
+lcm connectors install codex --global
+
+# Inspect or remove the global connector later
+lcm connectors doctor --global
+lcm connectors remove codex --global
+```
+
+Use the global flag when you want Codex to pick up the connector from your
+user-level config rather than a single repository checkout.
+
 ## Tuning guide
 
 ### Context threshold

@@ -117,11 +117,22 @@ export async function handleSessionEnd(
     const ingestResult = await client.post<{
       ingested: number;
       totalTokens?: number;
+      redacted?: number;
+      redactedCategories?: string[];
     }>("/ingest", input);
 
     const configPath = join(homedir(), ".lossless-claude", "config.json");
     const config = loadDaemonConfig(configPath);
     const disableCompact = config.hooks?.disableAutoCompact ?? false;
+
+    // Notify user when sensitive data was filtered (default: on)
+    const notifyOnFilter = config.security?.notify_on_filter !== false;
+    if (notifyOnFilter && ingestResult.redacted && ingestResult.redacted > 0) {
+      const categories = (ingestResult.redactedCategories ?? []).join(", ");
+      process.stderr.write(
+        `⚠️  lcm: filtered sensitive data from history (pattern: ${categories})\n`,
+      );
+    }
 
     if (!disableCompact) {
       // Fire-and-forget via unreffed http.request — does not block the event loop.

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { argv, exit, stdin, stdout } from "node:process";
+import { homedir } from "node:os";
 import { Command, Option } from "commander";
 
 function readStdin(): Promise<string> {
@@ -571,6 +572,7 @@ async function main() {
     .command("list")
     .description("List available agents and installed connectors")
     .option("--format <format>", "Output format: text or json", "text")
+    .option("--global", "Inspect the global agent config in your home directory")
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
@@ -581,7 +583,7 @@ async function main() {
       const format: string = opts.format ?? "text";
       const { listConnectors } = await import("../src/connectors/installer.js");
       const { AGENTS } = await import("../src/connectors/registry.js");
-      const installed = listConnectors();
+      const installed = listConnectors(opts.global ? homedir() : process.cwd());
 
       if (format === "json") {
         const result = AGENTS.map((a: any) => ({
@@ -613,6 +615,7 @@ async function main() {
     .command("install <agent>")
     .description("Install a connector for an agent")
     .option("--type <type>", "Connector type: rules, mcp, or skill")
+    .option("--global", "Install into the global agent config in your home directory")
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (agentName: string, opts) => {
@@ -620,11 +623,11 @@ async function main() {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("connectors"); exit(0);
       }
-      if (!agentName) { console.error("Usage: lcm connectors install <agent> [--type rules|mcp|skill]"); exit(1); }
+      if (!agentName) { console.error("Usage: lcm connectors install <agent> [--type rules|mcp|skill] [--global]"); exit(1); }
       const type: any = opts.type;
       const { installConnector } = await import("../src/connectors/installer.js");
       try {
-        const result = installConnector(agentName, type);
+        const result = installConnector(agentName, type, opts.global ? homedir() : process.cwd());
         if ((result as any).manual) {
           console.log(`\n  ${(result as any).manual}\n`);
         } else {
@@ -643,6 +646,7 @@ async function main() {
     .command("remove <agent>")
     .description("Remove a connector for an agent")
     .option("--type <type>", "Connector type: rules, mcp, or skill")
+    .option("--global", "Remove from the global agent config in your home directory")
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (agentName: string, opts) => {
@@ -650,11 +654,11 @@ async function main() {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("connectors"); exit(0);
       }
-      if (!agentName) { console.error("Usage: lcm connectors remove <agent> [--type rules|mcp|skill]"); exit(1); }
+      if (!agentName) { console.error("Usage: lcm connectors remove <agent> [--type rules|mcp|skill] [--global]"); exit(1); }
       const type: any = opts.type;
       const { removeConnector } = await import("../src/connectors/installer.js");
       try {
-        const removed = removeConnector(agentName, type);
+        const removed = removeConnector(agentName, type, opts.global ? homedir() : process.cwd());
         if (removed) {
           console.log(`\n  ✓ Removed connector for ${agentName}\n`);
         } else {
@@ -669,6 +673,7 @@ async function main() {
   connectorsCmd
     .command("doctor [agent]")
     .description("Check connector health")
+    .option("--global", "Inspect the global agent config in your home directory")
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (agentName: string | undefined, opts) => {
@@ -684,7 +689,7 @@ async function main() {
 
       if (agents.length === 0) { console.error(`  Unknown agent: ${agentName}`); exit(1); }
 
-      const installed = listConnectors();
+      const installed = listConnectors(opts.global ? homedir() : process.cwd());
       console.log("\n  Connector health:\n");
       for (const agent of agents) {
         const agentConnectors = installed.filter((c: any) => c.agentId === (agent as any).id);

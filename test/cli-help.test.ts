@@ -80,4 +80,12 @@ describe("printHelp — per-command detail", () => {
     expect(text).toContain("lcm mcp");
     expect(text).toContain("MCP server");
   });
+
+  it("prints connector help with global scope option", () => {
+    const out = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    printHelp("connectors");
+    const text = out.mock.calls.map(c => c[0]).join("");
+    expect(text).toContain("--global");
+    expect(text).toContain("Install Codex into ~/.codex");
+  });
 });
