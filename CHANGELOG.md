@@ -1,5 +1,17 @@
 # @lossless-claude/lcm
 
+## [0.8.1] - 2026-03-30
+
+### Added
+- User notification when sensitive data is filtered from LCM history (closes #178)
+
+### Fixed
+- Compact-restore test isolation — eliminate tmpdir() contamination (#184)
+
+### Changed
+- Quality-gates CI: label-based merge requirements (#185)
+- autoimprove.yaml: add missing forbidden paths (closes #182) (#183)
+
 ## [0.8.0] - 2026-03-28
 
 ### Added
