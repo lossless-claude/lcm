@@ -8,22 +8,18 @@ user_invocable: true
 
 Run the full memory curation pipeline: import, compact, and promote.
 
-## Binary Resolution
-
-If `lcm` is not on PATH, use the plugin's bundled binary instead:
-
-```bash
-node ~/.claude/plugins/cache/*/lossless-claude/*/lcm.mjs
-```
-
-Replace `lcm` with the command above in all instructions below.
-
 ## Instructions
 
 Run the following commands sequentially via Bash. Always use `--verbose` on `import` and `promote` by default:
 
 ```bash
 lcm import --verbose && lcm compact && lcm promote --verbose
+```
+
+If `lcm` is not on PATH (marketplace install), use the plugin-relative binary instead:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/lcm.mjs" import --verbose && node "${CLAUDE_PLUGIN_ROOT}/lcm.mjs" compact && node "${CLAUDE_PLUGIN_ROOT}/lcm.mjs" promote --verbose
 ```
 
 ### Options
