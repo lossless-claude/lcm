@@ -6,6 +6,7 @@ import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { PromotedStore } from "../../db/promoted.js";
+import { RecallStore } from "../../db/recall.js";
 import { validateCwd } from "../validate-cwd.js";
 
 export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
@@ -73,8 +74,15 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
           ? r.content.slice(0, snippetLength) + "..."
           : r.content
       );
+      const ids = filtered.map((r) => r.id);
 
-      sendJson(res, 200, { hints });
+      // Log surfacing events (best-effort, never throws)
+      try {
+        const recallStore = new RecallStore(db);
+        recallStore.logSurfacing(ids, session_id ?? null);
+      } catch { /* non-fatal */ }
+
+      sendJson(res, 200, { hints, ids });
     } catch {
       sendJson(res, 200, { hints: [] });
     } finally {

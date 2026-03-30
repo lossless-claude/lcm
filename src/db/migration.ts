@@ -562,6 +562,17 @@ export function runLcmMigrations(
     );
   `);
 
+  // Recall surfacing log — tracks when promoted memories are shown in user-prompt context
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS recall_surfacing (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      memory_id TEXT NOT NULL,
+      session_id TEXT,
+      surfaced_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS recall_surfacing_memory_idx ON recall_surfacing (memory_id);
+  `);
+
   const fts5Available = options?.fts5Available ?? getLcmDbFeatures(db).fts5Available;
   if (!fts5Available) {
     return;

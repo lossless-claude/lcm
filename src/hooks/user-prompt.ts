@@ -6,6 +6,7 @@ import { safeLogError } from "./hook-errors.js";
 
 type PromptSearchResponse = {
   hints: string[];
+  ids?: string[];
 };
 
 const LEARNING_INSTRUCTION = `<learning-instruction>
@@ -75,7 +76,10 @@ export async function handleUserPromptSubmit(
     }
 
     const snippets = result.hints.map((h) => `- ${h}`).join("\n");
-    const hint = `<memory-context>\nRelevant context from previous sessions (use lcm_expand for details):\n${snippets}\n</memory-context>`;
+    const idComment = result.ids && result.ids.length > 0
+      ? `\n<!-- surfaced-memory-ids: ${result.ids.join(",")} -->`
+      : "";
+    const hint = `<memory-context>\nRelevant context from previous sessions (use lcm_expand for details):\n${snippets}${idComment}\n</memory-context>`;
     return { exitCode: 0, stdout: `${hint}\n${LEARNING_INSTRUCTION}` };
   } catch {
     return { exitCode: 0, stdout: LEARNING_INSTRUCTION };

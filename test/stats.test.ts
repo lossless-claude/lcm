@@ -73,6 +73,7 @@ describe("printStats", () => {
     promotedCount: 0,
     conversationDetails: [],
     redactionCounts: { builtIn: 0, global: 0, project: 0, total: 0 },
+    recallStats: { memoriesSurfaced: 0, memoriesActedUpon: 0, recallPrecision: null, topRecalled: [] },
   };
 
   it("prints the lossless-claude header", () => {
@@ -182,5 +183,56 @@ describe("printStats", () => {
       eventsErrors: 0,
     }, false));
     expect(out).not.toContain("Events");
+  });
+
+  it("omits Recall section when no surfacing data exists", () => {
+    const out = captureLog(() => printStats(baseStats, false));
+    expect(out).not.toContain("Recall");
+  });
+
+  it("prints Recall section when memories have been surfaced", () => {
+    const out = captureLog(() => printStats({
+      ...baseStats,
+      recallStats: {
+        memoriesSurfaced: 42,
+        memoriesActedUpon: 10,
+        recallPrecision: 23.8,
+        topRecalled: [],
+      },
+    }, false));
+    expect(out).toContain("Recall");
+    expect(out).toContain("42");
+    expect(out).toContain("10");
+    expect(out).toContain("23.8%");
+  });
+
+  it("shows top recalled memories in Recall section", () => {
+    const out = captureLog(() => printStats({
+      ...baseStats,
+      recallStats: {
+        memoriesSurfaced: 5,
+        memoriesActedUpon: 2,
+        recallPrecision: 40,
+        topRecalled: [
+          { id: "abc", content: "Use PostgreSQL for the database layer", actCount: 3 },
+        ],
+      },
+    }, false));
+    expect(out).toContain("Top recalled");
+    expect(out).toContain("PostgreSQL");
+    expect(out).toContain("×3");
+  });
+
+  it("shows Recall section when memoriesActedUpon > 0 even if surfaced is 0", () => {
+    const out = captureLog(() => printStats({
+      ...baseStats,
+      recallStats: {
+        memoriesSurfaced: 0,
+        memoriesActedUpon: 1,
+        recallPrecision: null,
+        topRecalled: [],
+      },
+    }, false));
+    expect(out).toContain("Recall");
   });
 });
