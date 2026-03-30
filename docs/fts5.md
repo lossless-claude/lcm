@@ -151,7 +151,7 @@ Then force one turn through the gateway and verify the DB fills:
   /path/to/claude/dist/index.js \
   agent --session-id fts5-smoke --message 'Reply with exactly: ok' --timeout 60
 
-sqlite3 ~/.claude/lcm.db '
+sqlite3 ~/.lossless-claude/projects/<hash>/db.sqlite '
   select count(*) as conversations from conversations;
   select count(*) as messages from messages;
   select count(*) as summaries from summaries;

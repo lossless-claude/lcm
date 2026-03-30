@@ -2,17 +2,15 @@
 
 ## Quick start
 
-Clone the repo and link it with Claude Code's plugin installer:
+Install the `lcm` binary and add the plugin:
 
 ```bash
-git clone https://github.com/lossless-claude/lcm.git
-cd lcm
-npm install
-npm run build
-claude plugins install --link /path/to/lossless-claude
+npm install -g @lossless-claude/lcm  # provides the `lcm` command
+claude plugin add github:lossless-claude/lcm
+lcm install
 ```
 
-`claude plugins install --link` handles plugin registration/enabling and slot selection automatically.
+`lcm install` writes config, registers hooks, installs slash commands, registers MCP, and verifies the daemon.
 
 Set recommended environment variables:
 
@@ -130,12 +128,16 @@ Using a cheaper or faster model for summarization can reduce costs, but quality 
 
 ## Database management
 
-The SQLite database lives at `LCM_DATABASE_PATH` (default `~/.claude/lcm.db`). 
+Each project's SQLite database lives at `~/.lossless-claude/projects/<sha256-of-project-path>/db.sqlite`. The per-project path is derived automatically from the working directory.
 
 ### Inspecting the database
 
 ```bash
-sqlite3 ~/.claude/lcm.db
+# Find your project hash
+lcm stats
+
+# Open the database (replace <hash> with your project hash)
+sqlite3 ~/.lossless-claude/projects/<hash>/db.sqlite
 
 # Count conversations
 SELECT COUNT(*) FROM conversations;
@@ -152,16 +154,16 @@ SELECT summary_id, depth, token_count FROM summaries ORDER BY token_count DESC L
 
 ### Backup
 
-The database is a single file. Back it up with:
+The database is a single file per project. Back it up with:
 
 ```bash
-cp ~/.claude/lcm.db ~/.claude/lcm.db.backup
+cp ~/.lossless-claude/projects/<hash>/db.sqlite ~/.lossless-claude/projects/<hash>/db.sqlite.backup
 ```
 
 Or use SQLite's online backup:
 
 ```bash
-sqlite3 ~/.claude/lcm.db ".backup ~/.claude/lcm.db.backup"
+sqlite3 ~/.lossless-claude/projects/<hash>/db.sqlite ".backup /tmp/lcm-backup.sqlite"
 ```
 
 ## Per-agent configuration

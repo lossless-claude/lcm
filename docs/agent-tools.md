@@ -1,22 +1,27 @@
 # Agent tools
 
-LCM provides four tools for agents to search, inspect, and recall information from compacted conversation history.
+LCM provides seven MCP tools for agents to search, inspect, store, and recall information from conversation history.
 
 ## Usage patterns
 
-### Escalation pattern: grep → describe → expand_query
+### Escalation pattern: grep → describe → expand
 
 Most recall tasks follow this escalation:
 
 1. **`lcm_grep`** — Find relevant summaries or messages by keyword/regex
-2. **`lcm_describe`** — Inspect a specific summary's full content (cheap, no sub-agent)
-3. **`lcm_expand_query`** — Deep recall: spawn a sub-agent to expand the DAG and answer a focused question
+2. **`lcm_describe`** — Inspect a specific summary's metadata and lineage (cheap, no DAG traversal)
+3. **`lcm_expand`** — Deep recall: decompress a summary node into its full source content
 
-Start with grep. If the snippet is enough, stop. If you need full summary content, use describe. If you need details that were compressed away, use expand_query.
+Start with grep. If the snippet is enough, stop. If you need metadata, use describe. If you need details that were compressed away, use expand.
+
+### When to search vs. grep
+
+- **`lcm_search`** — Use when looking for knowledge across sessions in natural language. Returns ranked results from both episodic (SQLite) and semantic memory layers.
+- **`lcm_grep`** — Use when you know an exact keyword, error message, or function name from a specific session.
 
 ### When to expand
 
-Summaries are lossy by design. The "Expand for details about:" footer at the end of each summary lists what was dropped. Use `lcm_expand_query` when you need:
+Summaries are lossy by design. The "Expand for details about:" footer at the end of each summary lists what was dropped. Use `lcm_expand` when you need:
 
 - Exact commands, error messages, or config values
 - File paths and specific code changes
@@ -24,138 +29,137 @@ Summaries are lossy by design. The "Expand for details about:" footer at the end
 - Tool call sequences and their outputs
 - Verbatim quotes or specific data points
 
-`lcm_expand_query` is bounded (~120s, scoped sub-agent) and relatively cheap. Don't ration it.
-
 ## Tool reference
 
-### lcm_grep
+### lcm_search
 
-Search across messages and/or summaries using regex or full-text search.
+Hybrid search across episodic memory (SQLite FTS5) and semantic memory. Returns two separate ranked lists. Use when looking for project knowledge spanning multiple sessions.
 
 **Parameters:**
 
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `pattern` | string | ✅ | — | Search pattern |
-| `mode` | string | | `"regex"` | `"regex"` or `"full_text"` |
-| `scope` | string | | `"both"` | `"messages"`, `"summaries"`, or `"both"` |
-| `conversationId` | number | | current | Specific conversation to search |
-| `allConversations` | boolean | | `false` | Search all conversations |
-| `since` | string | | — | ISO timestamp lower bound |
-| `before` | string | | — | ISO timestamp upper bound |
-| `limit` | number | | 50 | Max results (1–200) |
-
-**Returns:** Array of matches with:
-- `id` — Message or summary ID
-- `type` — `"message"` or `"summary"`
-- `snippet` — Truncated content around the match
-- `conversationId` — Which conversation
-- `createdAt` — Timestamp
-- For summaries: `depth`, `kind`, `summaryId`
+| `query` | string | ✅ | — | Natural language search query |
+| `limit` | number | | `5` | Max results per layer |
+| `layers` | string[] | | both | `"episodic"`, `"semantic"`, or both |
+| `tags` | string[] | | — | Filter to entries that include all specified tags |
 
 **Examples:**
 
 ```
-# Full-text search across all conversations
-lcm_grep(pattern: "database migration", mode: "full_text", allConversations: true)
+# Find past decisions about authentication
+lcm_search(query: "authentication decision")
 
-# Regex search in summaries only
-lcm_grep(pattern: "config\\.threshold.*0\\.[0-9]+", scope: "summaries")
-
-# Recent messages containing a specific term
-lcm_grep(pattern: "deployment", since: "2026-02-19T00:00:00Z", scope: "messages")
+# Search only semantic layer, filtered by tag
+lcm_search(query: "database migration", layers: ["semantic"], tags: ["type:decision"])
 ```
 
-### lcm_describe
+### lcm_grep
 
-Look up metadata and content for a specific summary or stored file.
+Search conversation history by keyword or regex across raw messages and summaries.
 
 **Parameters:**
 
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `id` | string | ✅ | — | `sum_xxx` for summaries, `file_xxx` for files |
-| `conversationId` | number | | current | Scope to a specific conversation |
-| `allConversations` | boolean | | `false` | Allow cross-conversation lookups |
+| `query` | string | ✅ | — | Keyword, phrase, or regex to search |
+| `scope` | string | | `"all"` | `"messages"`, `"summaries"`, or `"all"` |
+| `sessionId` | string | | — | Filter to a specific session |
+| `since` | string | | — | ISO datetime lower bound |
 
-**Returns for summaries:**
-- Full summary content
-- Metadata: depth, kind, token count, created timestamp
-- Time range (earliestAt, latestAt)
-- Descendant count
-- Parent summary IDs (for condensed summaries)
-- Child summary IDs
-- Source message IDs (for leaf summaries)
-- File IDs referenced in the summary
+**Returns:** Array of matches with content snippet, type (message or summary), and session ID.
 
-**Returns for files:**
-- File content (full text)
-- Metadata: fileName, mimeType, byteSize
-- Exploration summary
-- Storage path
+**Examples:**
+
+```
+# Search for an error message across all history
+lcm_grep(query: "ECONNREFUSED")
+
+# Search only summaries for a specific term
+lcm_grep(query: "config\\.threshold", scope: "summaries")
+```
+
+### lcm_describe
+
+Inspect metadata and lineage of a memory node without expanding content. Returns depth, token count, parent/child links, and whether the node was promoted to long-term memory.
+
+**Parameters:**
+
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `nodeId` | string | ✅ | — | Node ID to describe (e.g. `sum_abc123`) |
 
 **Examples:**
 
 ```
 # Inspect a summary from context
-lcm_describe(id: "sum_abc123def456")
-
-# Retrieve a stored large file
-lcm_describe(id: "file_789abc012345")
+lcm_describe(nodeId: "sum_abc123def456")
 ```
 
-### lcm_expand_query
+### lcm_expand
 
-Answer a focused question by expanding summaries through the DAG. Spawns a bounded sub-agent that walks parent links down to source material and returns a compact answer.
+Decompress a summary node into its full source content by traversing the DAG. Use when a summary references details you need but doesn't include them verbatim.
 
 **Parameters:**
 
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `prompt` | string | ✅ | — | The question to answer |
-| `query` | string | ✅* | — | Text query to find summaries (if no `summaryIds`) |
-| `summaryIds` | string[] | ✅* | — | Specific summary IDs to expand (if no `query`) |
-| `maxTokens` | number | | 2000 | Answer length cap |
-| `conversationId` | number | | current | Scope to a specific conversation |
-| `allConversations` | boolean | | `false` | Search across all conversations |
-
-*One of `query` or `summaryIds` is required.
-
-**Returns:**
-- `answer` — The focused answer text
-- `citedIds` — Summary IDs that contributed to the answer
-- `expandedSummaryCount` — How many summaries were expanded
-- `totalSourceTokens` — Total tokens read from the DAG
-- `truncated` — Whether the answer was truncated to fit maxTokens
+| `nodeId` | string | ✅ | — | Summary node ID to expand |
+| `depth` | number | | `1` | How many levels of the DAG to traverse |
 
 **Examples:**
 
 ```
-# Find and expand summaries about a topic
-lcm_expand_query(
-  query: "OAuth authentication fix",
-  prompt: "What was the root cause and what commits fixed it?"
+# Expand a leaf summary one level deep
+lcm_expand(nodeId: "sum_abc123")
+
+# Expand a condensed summary, traversing two levels
+lcm_expand(nodeId: "sum_def456", depth: 2)
+```
+
+### lcm_store
+
+Store a memory into lossless-claude's semantic layer. Use to persist decisions, findings, reasoning outcomes, or any knowledge worth retrieving in future sessions.
+
+**Parameters:**
+
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `text` | string | ✅ | — | The content to store |
+| `tags` | string[] | | — | Canonical tags (see [tag-schema.md](tag-schema.md)) |
+| `metadata` | object | | — | Optional key/value metadata |
+
+**Examples:**
+
+```
+# Store an architectural decision
+lcm_store(
+  text: "Auth uses JWT with 24h expiry. Tokens stored in httpOnly cookies.",
+  tags: ["type:decision", "scope:security", "project:lcm"]
 )
 
-# Expand specific summaries you already have
-lcm_expand_query(
-  summaryIds: ["sum_abc123", "sum_def456"],
-  prompt: "What were the exact file changes?"
-)
-
-# Cross-conversation search
-lcm_expand_query(
-  query: "deployment procedure",
-  prompt: "What's the current deployment process?",
-  allConversations: true
+# Store a solution with sprint tag
+lcm_store(
+  text: "Fixed ECONNREFUSED by calling ensureDaemon before the request.",
+  tags: ["type:solution", "scope:lcm", "sprint:sp4"]
 )
 ```
 
-### lcm_expand
+### lcm_stats
 
-Low-level DAG expansion tool. **Only available to sub-agents** spawned by `lcm_expand_query`. Main agents should always use `lcm_expand_query` instead.
+Show token savings, compression ratios, and usage statistics across all lossless-claude projects.
 
-This tool is what the expansion sub-agent uses internally to walk the summary DAG, read source messages, and build its answer.
+**Parameters:**
+
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `verbose` | boolean | | `false` | Include per-conversation breakdown |
+
+### lcm_doctor
+
+Run diagnostics on the lossless-claude installation. Checks daemon, hooks, MCP config, and summarizer health.
+
+**Parameters:** none.
 
 ## Tips for agent developers
 
@@ -167,21 +171,19 @@ Add instructions to your agent's system prompt so it knows when to use LCM tools
 ## Memory & Context
 
 Use LCM tools for recall:
-1. `lcm_grep` — Search all conversations by keyword/regex
-2. `lcm_describe` — Inspect a specific summary (cheap, no sub-agent)
-3. `lcm_expand_query` — Deep recall with sub-agent expansion
+1. `lcm_search` — Hybrid search across all memory layers (broad recall)
+2. `lcm_grep` — Search by keyword/regex (exact match)
+3. `lcm_describe` — Inspect a specific summary's metadata (cheap, no expansion)
+4. `lcm_expand` — Expand a summary node into source content (when you need lost detail)
+5. `lcm_store` — Persist a decision or finding for future sessions
 
 When summaries in context have an "Expand for details about:" footer
-listing something you need, use `lcm_expand_query` to get the full detail.
+listing something you need, use `lcm_expand` with that summary's node ID.
 ```
-
-### Conversation scoping
-
-By default, tools operate on the current conversation. Use `allConversations: true` to search across all of them (all agents, all sessions). Use `conversationId` to target a specific conversation you already know about (from previous grep results).
 
 ### Performance considerations
 
-- `lcm_grep` and `lcm_describe` are fast (direct database queries)
-- `lcm_expand_query` spawns a sub-agent and takes ~30–120 seconds
-- The sub-agent has a 120-second timeout with cleanup guarantees
+- `lcm_search`, `lcm_grep`, and `lcm_describe` are fast (direct database queries)
+- `lcm_expand` traverses the DAG and reads source messages — cost scales with depth
+- `lcm_stats` performs full-table scans — use sparingly, not in request handlers
 - Token caps (`LCM_MAX_EXPAND_TOKENS`) prevent runaway expansion
