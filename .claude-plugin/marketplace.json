@@ -6,9 +6,13 @@
   },
   "plugins": [
     {
-      "name": "lossless-claude",
+      "name": "lcm",
+      "source": {
+        "source": "github",
+        "repo": "lossless-claude/lcm"
+      },
       "description": "Lossless context management — DAG-based summarization that preserves every message",
-      "version": "0.8.0",
+      "version": "0.8.1",
       "strict": true
     }
   ]
