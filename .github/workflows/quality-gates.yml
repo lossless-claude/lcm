@@ -5,6 +5,8 @@ on:
 
 jobs:
   quality-gates:
+    permissions:
+      pull-requests: read
     runs-on: ubuntu-latest
     steps:
       - name: Check quality gate labels
