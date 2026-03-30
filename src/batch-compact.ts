@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { runLcmMigrations } from "./db/migration.js";
 import type { ProgressState } from "./cli/progress-state.js";
+import { DaemonClient } from "./daemon/client.js";
 
 export interface UncompactedConversation {
   projectDir: string;
@@ -88,6 +89,7 @@ export async function batchCompact(opts: {
   cwd?: string;
   replay?: boolean;
   verbose?: boolean;
+  tokenPath?: string;
   /** Called with state patches as each session is processed — used by the ninja renderer */
   onProgress?: (patch: Partial<ProgressState>) => void;
 }): Promise<{ compacted: number }> {
@@ -111,6 +113,7 @@ export async function batchCompact(opts: {
   let tokensIn = 0;
   let tokensOut = 0;
   const progressErrors: { sessionId: string; message: string }[] = [];
+  const client = new DaemonClient(`http://127.0.0.1:${opts.port}`, opts.tokenPath);
 
   for (const conv of conversations) {
     const label = `${conv.cwd} conv #${conv.conversationId} (${conv.messages} msgs, ${(conv.tokens / 1000).toFixed(1)}k tokens)`;
@@ -126,69 +129,51 @@ export async function batchCompact(opts: {
     onProgress?.({ current: { sessionId: conv.sessionId, messages: conv.messages, tokens: conv.tokens, startedAt: sessionStart } });
     process.stdout.write(`  compacting: ${label}...`);
     try {
-      const res = await fetch(`http://127.0.0.1:${opts.port}/compact`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session_id: conv.sessionId,
-          cwd: conv.cwd,
-          skip_ingest: true,
-          client: "claude",
-        }),
+      const data = await client.post<{ summary?: string; skipped?: boolean; tokensBefore?: number; tokensAfter?: number; providerLabel?: string }>("/compact", {
+        session_id: conv.sessionId,
+        cwd: conv.cwd,
+        skip_ingest: true,
+        client: "claude",
       });
 
       doneCount++;
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        const errMsg = `HTTP ${res.status}${body ? `: ${body}` : ""}`;
-        console.log(` FAILED (${errMsg})`);
-        progressErrors.push({ sessionId: conv.sessionId, message: errMsg });
+      if (data.skipped) {
+        console.log(" skipped (already in progress)");
         onProgress?.({
           completed: doneCount,
           current: undefined,
-          errors: progressErrors,
           lastResult: { sessionId: conv.sessionId, messages: conv.messages, tokensBefore: conv.tokens, elapsed: Date.now() - sessionStart },
         });
       } else {
-        const data = await res.json() as { summary?: string; skipped?: boolean; tokensBefore?: number; tokensAfter?: number; providerLabel?: string };
-        if (data.skipped) {
-          console.log(" skipped (already in progress)");
-          onProgress?.({
-            completed: doneCount,
-            current: undefined,
-            lastResult: { sessionId: conv.sessionId, messages: conv.messages, tokensBefore: conv.tokens, elapsed: Date.now() - sessionStart },
-          });
+        const before = typeof data.tokensBefore === "number" ? data.tokensBefore : 0;
+        const after = typeof data.tokensAfter === "number" ? data.tokensAfter : 0;
+        tokensIn += before;
+        tokensOut += after;
+        if (opts.verbose && before > 0) {
+          const pct = before > 0 ? Math.round((1 - after / before) * 100) : 0;
+          console.log(` done  (${(before / 1000).toFixed(1)}k → ${(after / 1000).toFixed(1)}k tokens, ${pct}% reduction)`);
         } else {
-          const before = typeof data.tokensBefore === "number" ? data.tokensBefore : 0;
-          const after = typeof data.tokensAfter === "number" ? data.tokensAfter : 0;
-          tokensIn += before;
-          tokensOut += after;
-          if (opts.verbose && before > 0) {
-            const pct = before > 0 ? Math.round((1 - after / before) * 100) : 0;
-            console.log(` done  (${(before / 1000).toFixed(1)}k → ${(after / 1000).toFixed(1)}k tokens, ${pct}% reduction)`);
-          } else {
-            console.log(" done");
-          }
-          compacted++;
-          messagesIn += conv.messages;
-          tokensIn += data.tokensBefore ?? conv.tokens;
-          tokensOut += data.tokensAfter ?? 0;
-          onProgress?.({
-            completed: doneCount,
-            messagesIn,
-            tokensIn,
-            tokensOut,
-            current: undefined,
-            lastResult: {
-              sessionId: conv.sessionId,
-              messages: conv.messages,
-              tokensBefore: data.tokensBefore ?? conv.tokens,
-              tokensAfter: data.tokensAfter,
-              provider: data.providerLabel,
-              elapsed: Date.now() - sessionStart,
-            },
-          });
+          console.log(" done");
         }
+        compacted++;
+        messagesIn += conv.messages;
+        tokensIn += data.tokensBefore ?? conv.tokens;
+        tokensOut += data.tokensAfter ?? 0;
+        onProgress?.({
+          completed: doneCount,
+          messagesIn,
+          tokensIn,
+          tokensOut,
+          current: undefined,
+          lastResult: {
+            sessionId: conv.sessionId,
+            messages: conv.messages,
+            tokensBefore: data.tokensBefore ?? conv.tokens,
+            tokensAfter: data.tokensAfter,
+            provider: data.providerLabel,
+            elapsed: Date.now() - sessionStart,
+          },
+        });
       }
     } catch (err) {
       doneCount++;
