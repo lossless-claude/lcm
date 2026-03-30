@@ -8,22 +8,18 @@ user_invocable: true
 
 Compact unprocessed conversation messages into summarized DAG nodes.
 
-## Binary Resolution
-
-If `lcm` is not on PATH, use the plugin's bundled binary instead:
-
-```bash
-node ~/.claude/plugins/cache/*/lossless-claude/*/lcm.mjs
-```
-
-Replace `lcm` with the command above in all instructions below.
-
 ## Instructions
 
 Run the following command via Bash:
 
 ```bash
 lcm compact
+```
+
+If `lcm` is not on PATH (marketplace install), use the plugin-relative binary instead:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/lcm.mjs" compact
 ```
 
 ### Options
