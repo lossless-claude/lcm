@@ -160,28 +160,16 @@ The XML attributes give the model enough metadata to reason about summary age, s
 
 ## Expansion system
 
-When summaries are too compressed for a task, agents use `lcm_expand_query` to recover detail.
+When summaries are too compressed for a task, agents use `lcm_expand` to recover detail.
 
 ### How it works
 
-1. Agent calls `lcm_expand_query` with a `prompt` and either `summaryIds` or a `query`.
-2. If `query` is provided, `lcm_grep` finds matching summaries first.
-3. A **delegation grant** is created, scoping the sub-agent to the relevant conversation(s) with a token cap.
-4. A sub-agent session is spawned with the expansion task.
-5. The sub-agent walks the DAG: it can read summary content, follow parent links, access source messages, and inspect stored files.
-6. The sub-agent returns a focused answer (default ≤ 2000 tokens) with cited summary IDs.
-7. The grant is revoked and the sub-agent session is cleaned up.
+1. Agent calls `lcm_expand` with a `nodeId` (summary ID) and optional `depth`.
+2. lcm traverses the DAG from the given node, following parent links down to source messages.
+3. Source message content is assembled and returned to the agent (capped by `LCM_MAX_EXPAND_TOKENS`).
+4. The agent receives the full decompressed content for the requested depth.
 
-### Security model
-
-Expansion uses a delegation grant system:
-
-- **Grants** are created at spawn time, scoped to specific conversation IDs
-- **Token caps** limit how much content the sub-agent can access
-- **TTL** ensures grants expire even if cleanup fails
-- **Revocation** happens on completion, cancellation, or sweep
-
-The sub-agent only gets `lcm_expand` (the low-level tool), not `lcm_expand_query` — preventing recursive sub-agent spawning.
+For broader recall, agents can first use `lcm_grep` or `lcm_search` to find relevant summary IDs, then call `lcm_expand` on the results that need more detail.
 
 ## Large file handling
 
@@ -190,7 +178,7 @@ Files embedded in user messages (typically via `<file>` blocks from tool output)
 1. Parse file blocks from message content.
 2. For each block exceeding `largeFileTokenThreshold` (default 25k tokens):
    - Generate a unique file ID (`file_` prefix)
-   - Store the content to `~/.claude/lcm-files/<conversation_id>/<file_id>.<ext>`
+   - Store the content to `~/.lossless-claude/projects/<project-hash>/files/<file_id>.<ext>`
    - Generate a ~200 token exploration summary (structural analysis, key sections, etc.)
    - Insert a `large_files` record with metadata
    - Replace the file block in the message with a compact reference

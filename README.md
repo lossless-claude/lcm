@@ -127,29 +127,67 @@ flowchart LR
 
 | Tool | Purpose |
 |---|---|
-| `lcm_search` | Search episodic and promoted knowledge |
-| `lcm_grep` | Regex or full-text search across stored history |
-| `lcm_expand` | Recover deeper detail from compacted history |
-| `lcm_describe` | Inspect a stored summary or file by id |
-| `lcm_store` | Persist durable memory manually |
-| `lcm_stats` | Inspect memory coverage, DAG depth, and compression |
+| `lcm_search` | Hybrid search across episodic memory (SQLite) and semantic memory |
+| `lcm_grep` | Regex or full-text search across raw messages and summaries |
+| `lcm_expand` | Decompress a summary node into its source content by traversing the DAG |
+| `lcm_describe` | Inspect metadata and lineage of a memory node (depth, token count, parent/child links) |
+| `lcm_store` | Persist durable memory manually with optional tags |
+| `lcm_stats` | Show token savings, compression ratios, and usage statistics |
 | `lcm_doctor` | Diagnose daemon, hooks, MCP registration, and summarizer setup |
 
 ## CLI
 
 ```bash
+# Setup & diagnostics
 lcm install                # setup wizard
-lcm doctor                 # diagnostics
+lcm uninstall              # remove hooks, MCP, and config
+lcm doctor                 # diagnostics: daemon, hooks, MCP, summarizer
+lcm diagnose               # scan recent sessions for hook failures
+lcm status                 # daemon + summarizer mode
+lcm -V                     # version
+
+# Memory inspection
 lcm stats                  # memory and compression overview
 lcm stats -v               # per-conversation breakdown
-lcm status                 # daemon + summarizer mode
+lcm stats --pool           # connection pool statistics
+
+# Compaction & promotion
+lcm compact                # compact the current project
+lcm compact --all          # compact all tracked projects
+lcm promote                # promote durable insights to long-term memory
+lcm promote --all          # promote across all tracked projects
+
+# Import / export
+lcm import                 # import Claude Code sessions for the current project
+lcm import --all           # import all projects
+lcm export                 # export promoted knowledge to JSON
+lcm import-knowledge <f>   # import a knowledge JSON file
+
+# Connectors (wire lcm into other AI agents)
+lcm connectors list        # list available agents and installed connectors
+lcm connectors install <a> # install a connector for an agent
+lcm connectors remove <a>  # remove a connector for an agent
+lcm connectors doctor      # check connector health
+
+# Sensitive data
+lcm sensitive add <pat>    # add a redaction pattern (project-scoped)
+lcm sensitive add --global # add a global redaction pattern
+lcm sensitive list         # list all active patterns
+lcm sensitive test <str>   # test what gets redacted
+lcm sensitive purge --yes  # remove all stored data for the current project
+
+# Daemon
 lcm daemon start --detach  # start daemon in background
-lcm compact --hook         # PreCompact hook handler (internal)
-lcm restore                # SessionStart hook handler
-lcm session-end            # SessionEnd hook handler
-lcm user-prompt            # UserPromptSubmit hook handler
-lcm mcp                    # MCP server
-lcm -V                     # version
+
+# Hook handlers (internal — called by Claude Code hooks)
+lcm compact --hook         # PreCompact hook
+lcm restore                # SessionStart hook
+lcm session-end            # SessionEnd hook
+lcm user-prompt            # UserPromptSubmit hook
+lcm post-tool              # PostToolUse hook (passive learning)
+
+# MCP server
+lcm mcp                    # start MCP server
 ```
 
 ## Configuration
@@ -168,6 +206,10 @@ All environment variables are optional. The default summarizer mode is `auto`.
 | `LCM_LEAF_CHUNK_TOKENS` | `20000` | Maximum source tokens per leaf compaction pass |
 | `LCM_LEAF_TARGET_TOKENS` | `1200` | Target size for leaf summaries |
 | `LCM_CONDENSED_TARGET_TOKENS` | `2000` | Target size for condensed summaries |
+| `LCM_MAX_EXPAND_TOKENS` | `4000` | Token cap for DAG expansion via `lcm_expand` |
+| `LCM_LARGE_FILE_TOKEN_THRESHOLD` | `25000` | File size (tokens) above which content is extracted to disk |
+| `LCM_AUTOCOMPACT_DISABLED` | `false` | Set to `true` to disable automatic compaction after each turn |
+| `LCM_ENABLED` | `true` | Set to `false` to disable the plugin while keeping it registered |
 
 `auto` resolves per caller:
 
