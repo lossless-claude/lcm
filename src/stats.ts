@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { runLcmMigrations } from "./db/migration.js";
 import { collectEventStats } from "./db/events-stats.js";
+import { RecallStore, type RecallStats } from "./db/recall.js";
+
+export type { RecallStats };
 
 interface ConversationStats {
   conversationId: number;
@@ -39,9 +42,10 @@ interface OverallStats {
   eventsCaptured: number;
   eventsUnprocessed: number;
   eventsErrors: number;
+  recallStats: RecallStats;
 }
 
-function queryProjectStats(dbPath: string, projectId: string): Omit<OverallStats, "projects"> {
+function queryProjectStats(dbPath: string, projectId: string): Omit<OverallStats, "projects" | "recallStats"> & { recallStats: RecallStats } {
   const db = new DatabaseSync(dbPath);
   db.exec("PRAGMA busy_timeout = 5000");
 
@@ -107,6 +111,8 @@ function queryProjectStats(dbPath: string, projectId: string): Omit<OverallStats
     const compactedRaw = compacted.reduce((s, c) => s + c.rawTokens, 0);
     const compactedSum = compacted.reduce((s, c) => s + c.summaryTokens, 0);
 
+    const recallStats = new RecallStore(db).getStats();
+
     return {
       conversations: convRows.length,
       compactedConversations: compacted.length,
@@ -120,6 +126,7 @@ function queryProjectStats(dbPath: string, projectId: string): Omit<OverallStats
       conversationDetails,
       redactionCounts,
       eventsCaptured: 0, eventsUnprocessed: 0, eventsErrors: 0,
+      recallStats,
     };
   } finally {
     db.close();
@@ -240,6 +247,37 @@ export function printStats(stats: OverallStats, verbose: boolean): void {
     }
   }
 
+  // Recall section (only when any surfacing data exists)
+  if (stats.recallStats.memoriesSurfaced > 0 || stats.recallStats.memoriesActedUpon > 0) {
+    const rc = stats.recallStats;
+    console.log();
+    console.log(sectionHeader("Recall"));
+    console.log();
+
+    const precisionStr = rc.recallPrecision !== null
+      ? `${rc.recallPrecision.toFixed(1)}%`
+      : "–";
+
+    const recallRows: [string, string][] = [
+      ["Surfaced", String(rc.memoriesSurfaced)],
+      ["Acted upon", String(rc.memoriesActedUpon)],
+      ["Precision", precisionStr],
+    ];
+    const rLabelWidth = Math.max(...recallRows.map(([l]) => l.length));
+    for (const [label, value] of recallRows) {
+      console.log(`    ${dim}${pad(label, rLabelWidth, "left")}${reset}  ${value}`);
+    }
+
+    if (rc.topRecalled.length > 0) {
+      console.log();
+      console.log(`    ${dim}Top recalled memories:${reset}`);
+      for (const m of rc.topRecalled) {
+        const preview = m.content.length > 60 ? m.content.slice(0, 60) + "…" : m.content;
+        console.log(`    ${dim}×${m.actCount}${reset}  ${preview}`);
+      }
+    }
+  }
+
   // Per Conversation (verbose only, compacted only)
   if (verbose) {
     const compactedDetails = stats.conversationDetails.filter((c) => c.summaries > 0);
@@ -278,6 +316,10 @@ export function printStats(stats: OverallStats, verbose: boolean): void {
 export function collectStats(): OverallStats {
   const baseDir = join(homedir(), ".lossless-claude", "projects");
 
+  const emptyRecallStats: RecallStats = {
+    memoriesSurfaced: 0, memoriesActedUpon: 0, recallPrecision: null, topRecalled: [],
+  };
+
   if (!existsSync(baseDir)) {
     return {
       projects: 0, conversations: 0, compactedConversations: 0, messages: 0, summaries: 0,
@@ -285,6 +327,7 @@ export function collectStats(): OverallStats {
       promotedCount: 0, conversationDetails: [],
       redactionCounts: { builtIn: 0, global: 0, project: 0, total: 0 },
       eventsCaptured: 0, eventsUnprocessed: 0, eventsErrors: 0,
+      recallStats: emptyRecallStats,
     };
   }
 
@@ -299,6 +342,9 @@ export function collectStats(): OverallStats {
   let totalPromoted = 0;
   let allDetails: ConversationStats[] = [];
   const totalRedactions: RedactionCounts = { builtIn: 0, global: 0, project: 0, total: 0 };
+  let totalMemoriesSurfaced = 0;
+  let totalMemoriesActedUpon = 0;
+  const allTopRecalled: Array<{ id: string; content: string; actCount: number }> = [];
 
   for (const entry of readdirSync(baseDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
@@ -323,6 +369,9 @@ export function collectStats(): OverallStats {
       totalRedactions.global += projStats.redactionCounts.global;
       totalRedactions.project += projStats.redactionCounts.project;
       totalRedactions.total += projStats.redactionCounts.total;
+      totalMemoriesSurfaced += projStats.recallStats.memoriesSurfaced;
+      totalMemoriesActedUpon += projStats.recallStats.memoriesActedUpon;
+      allTopRecalled.push(...projStats.recallStats.topRecalled);
     } catch {
       // skip corrupt databases
     }
@@ -339,6 +388,14 @@ export function collectStats(): OverallStats {
     eventsErrors = eventStats.errors;
   } catch { /* non-fatal */ }
 
+  // Deduplicate and sort allTopRecalled, take top 5 globally
+  const topRecalledByCount = allTopRecalled
+    .sort((a, b) => b.actCount - a.actCount)
+    .slice(0, 5);
+  const recallPrecision = totalMemoriesSurfaced > 0
+    ? Math.min(100, (totalMemoriesActedUpon / totalMemoriesSurfaced) * 100)
+    : null;
+
   return {
     projects: totalProjects,
     conversations: totalConversations,
@@ -353,5 +410,11 @@ export function collectStats(): OverallStats {
     conversationDetails: allDetails,
     redactionCounts: totalRedactions,
     eventsCaptured, eventsUnprocessed, eventsErrors,
+    recallStats: {
+      memoriesSurfaced: totalMemoriesSurfaced,
+      memoriesActedUpon: totalMemoriesActedUpon,
+      recallPrecision,
+      topRecalled: topRecalledByCount,
+    },
   };
 }

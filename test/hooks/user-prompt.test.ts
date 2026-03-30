@@ -36,6 +36,7 @@ describe("handleUserPromptSubmit", () => {
       health: vi.fn(),
       post: vi.fn().mockResolvedValue({
         hints: ["Decided to use PostgreSQL for storage", "Fixed race condition in compaction"],
+        ids: ["uuid-1", "uuid-2"],
       }),
     };
     const result = await handleUserPromptSubmit(
@@ -45,6 +46,37 @@ describe("handleUserPromptSubmit", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("<memory-context>");
     expect(result.stdout).toContain("PostgreSQL");
+  });
+
+  it("includes surfaced-memory-ids comment when ids are returned", async () => {
+    mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
+    const client = {
+      health: vi.fn(),
+      post: vi.fn().mockResolvedValue({
+        hints: ["Use React for frontend"],
+        ids: ["abc-123"],
+      }),
+    };
+    const result = await handleUserPromptSubmit(
+      JSON.stringify({ session_id: "s1", cwd: "/proj", prompt: "what framework?" }),
+      client as any,
+    );
+    expect(result.stdout).toContain("<!-- surfaced-memory-ids: abc-123 -->");
+  });
+
+  it("omits surfaced-memory-ids comment when ids are absent", async () => {
+    mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
+    const client = {
+      health: vi.fn(),
+      post: vi.fn().mockResolvedValue({
+        hints: ["Use React for frontend"],
+      }),
+    };
+    const result = await handleUserPromptSubmit(
+      JSON.stringify({ session_id: "s1", cwd: "/proj", prompt: "what framework?" }),
+      client as any,
+    );
+    expect(result.stdout).not.toContain("surfaced-memory-ids");
   });
 
   it("returns empty when daemon returns no matches", async () => {

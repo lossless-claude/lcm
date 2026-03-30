@@ -184,11 +184,55 @@ describe("POST /prompt-search", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query: "React frontend", cwd: tempDir }),
       });
-      const data = await res.json() as { hints: string[] };
+      const data = await res.json() as { hints: string[]; ids: string[] };
       expect(res.status).toBe(200);
       expect(Array.isArray(data.hints)).toBe(true);
       expect(data.hints.length).toBeGreaterThanOrEqual(1);
       expect(data.hints[0]).toContain("React");
+      // ids should be present and parallel to hints
+      expect(Array.isArray(data.ids)).toBe(true);
+      expect(data.ids.length).toBe(data.hints.length);
+      expect(typeof data.ids[0]).toBe("string");
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it("logs surfacing events to recall_surfacing table", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-recall-"));
+    tempDirs.push(tempDir);
+
+    const dbPath = projectDbPath(tempDir);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    runLcmMigrations(db);
+    const store = new PromotedStore(db);
+    const insertedId = store.insert({ content: "Use TypeScript everywhere", tags: [], projectId: "p1" });
+    db.close();
+
+    const config = loadDaemonConfig("/nonexistent");
+    config.daemon.port = 0;
+    config.restoration.promptSearchMinScore = 0;
+    const daemon = await createDaemon(config);
+    const port = daemon.address().port;
+
+    try {
+      await fetch(`http://127.0.0.1:${port}/prompt-search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: "TypeScript", cwd: tempDir, session_id: "sess-recall" }),
+      });
+
+      // Verify surfacing was logged
+      const verifyDb = new DatabaseSync(dbPath);
+      const row = verifyDb.prepare(
+        "SELECT memory_id, session_id FROM recall_surfacing WHERE memory_id = ?"
+      ).get(insertedId) as { memory_id: string; session_id: string } | undefined;
+      verifyDb.close();
+
+      expect(row).toBeDefined();
+      expect(row?.memory_id).toBe(insertedId);
+      expect(row?.session_id).toBe("sess-recall");
     } finally {
       await daemon.stop();
     }
