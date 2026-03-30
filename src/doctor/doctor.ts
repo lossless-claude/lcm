@@ -133,7 +133,7 @@ function checkPassiveLearning(results: CheckResult[], hooksInstalled: boolean, v
 
   // Capture check
   if (stats.captured === 0) {
-    results.push({ name: "events-capture", category: "Passive Learning", status: "warn", message: "No events captured — passive learning may not be active" });
+    results.push({ name: "events-capture", category: "Passive Learning", status: "warn", message: "No events captured — passive learning may not be active\n     Fix: run 'lcm install' to re-register hooks, then use a Bash or Edit tool to trigger the first event capture; re-run /lcm-doctor to verify" });
   } else if (stats.unprocessed > 1000) {
     results.push({ name: "events-capture", category: "Passive Learning", status: "warn", message: `${stats.captured} events (${stats.unprocessed} unprocessed) — daemon may be offline — run: lcm daemon start` });
   } else {

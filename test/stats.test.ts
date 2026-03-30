@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { formatNumber, printStats } from "../src/stats.js";
+import { formatNumber, formatRatio, printStats } from "../src/stats.js";
 
 describe("formatNumber", () => {
   it("returns plain digits for numbers below 1000", () => {
@@ -22,6 +22,31 @@ describe("formatNumber", () => {
   it("M threshold takes priority over k", () => {
     // 1,000,000 should be "1.0M" not "1000.0k"
     expect(formatNumber(1_000_000)).toMatch(/M$/);
+  });
+});
+
+describe("formatRatio", () => {
+  it("returns the ratio formatted to one decimal place", () => {
+    expect(formatRatio(10_000, 1_000)).toBe("10.0");
+    expect(formatRatio(3_000, 1_000)).toBe("3.0");
+    expect(formatRatio(7_500, 2_500)).toBe("3.0");
+  });
+
+  it("returns en-dash when before is zero", () => {
+    expect(formatRatio(0, 1_000)).toBe("\u2013");
+  });
+
+  it("returns en-dash when after is zero", () => {
+    expect(formatRatio(1_000, 0)).toBe("\u2013");
+  });
+
+  it("returns en-dash when both before and after are zero", () => {
+    expect(formatRatio(0, 0)).toBe("\u2013");
+  });
+
+  it("handles fractional ratios correctly", () => {
+    // 1500 / 1000 = 1.5
+    expect(formatRatio(1_500, 1_000)).toBe("1.5");
   });
 });
 
@@ -134,5 +159,28 @@ describe("printStats", () => {
     expect(out).toContain("built-in: 10");
     expect(out).toContain("global: 2");
     expect(out).toContain("project: 1");
+  });
+
+  it("shows Events row in Memory section when eventsCaptured > 0", () => {
+    const out = captureLog(() => printStats({
+      ...baseStats,
+      eventsCaptured: 42,
+      eventsUnprocessed: 3,
+      eventsErrors: 1,
+    }, false));
+    expect(out).toContain("Events");
+    expect(out).toContain("42");
+    expect(out).toContain("3 unprocessed");
+    expect(out).toContain("1 errors");
+  });
+
+  it("omits Events row when eventsCaptured is 0", () => {
+    const out = captureLog(() => printStats({
+      ...baseStats,
+      eventsCaptured: 0,
+      eventsUnprocessed: 0,
+      eventsErrors: 0,
+    }, false));
+    expect(out).not.toContain("Events");
   });
 });

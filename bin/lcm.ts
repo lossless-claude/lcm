@@ -137,6 +137,7 @@ async function main() {
         const noPromote: boolean = !opts.promote;
         const minTokens = config.compaction.autoCompactMinTokens;
         const cwd = all ? undefined : process.cwd();
+        const tokenPath = join(homedir(), ".lossless-claude", "daemon.token");
 
         const { NinjaRenderer } = await import("../src/cli/pipeline-runner.js");
         const { makeProgressState } = await import("../src/cli/progress-state.js");
@@ -147,7 +148,7 @@ async function main() {
         compactRenderer.start();
 
         const { compacted } = await batchCompact({
-          minTokens, dryRun, port, cwd, replay, verbose,
+          minTokens, dryRun, port, cwd, replay, verbose, tokenPath,
           onProgress: (patch) => {
             Object.assign(compactState, patch);
             if (patch.lastResult) compactRenderer.sessionDone();
