@@ -4,6 +4,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { ExtractedEvent } from "./extractors.js";
 import { getLcmConnection, closeLcmConnection, isLcmConnectionOpen } from "../db/connection.js";
+import { sanitizeError } from "../daemon/safe-error.js";
 
 /**
  * Tracks which db paths have already had migrations applied in this process.
@@ -83,7 +84,8 @@ export class EventsDb {
         // Migration failed — release the pooled connection so the ref-count
         // doesn't leak. The constructor will re-throw, so callers see the error.
         closeLcmConnection(dbPath);
-        throw e;
+        const message = sanitizeError(e instanceof Error ? e.message : String(e));
+        throw new Error(message);
       }
       _migratedPaths.add(dbPath);
     }
@@ -139,7 +141,8 @@ export class EventsDb {
         this.db.exec("COMMIT");
       } catch (e) {
         try { this.db.exec("ROLLBACK"); } catch { /* ignore */ }
-        throw e;
+        const message = sanitizeError(e instanceof Error ? e.message : String(e));
+        throw new Error(message);
       }
     }
   }

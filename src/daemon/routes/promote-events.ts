@@ -82,7 +82,9 @@ export function createPromoteEventsHandler(config: DaemonConfig): RouteHandler {
     try {
       cwd = validateCwd(input.cwd);
     } catch (err) {
-      sendJson(res, 400, { error: String(err) });
+      // Log the detailed error server-side and return a generic message to the client
+      safeLogError(err, "validateCwd failed in promote-events");
+      sendJson(res, 400, { error: "cwd is invalid" });
       return;
     }
 
@@ -192,7 +194,9 @@ export function createPromoteEventsHandler(config: DaemonConfig): RouteHandler {
         edb.close();
       }
     } catch (error) {
-      sendJson(res, 500, { error: String(error) });
+      // Log detailed failure but avoid exposing internal error/stack info to the client
+      safeLogError(error, "PromoteEventsHandler failed");
+      sendJson(res, 500, { error: "failed to promote events" });
       return;
     }
 
