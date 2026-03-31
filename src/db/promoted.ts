@@ -200,6 +200,77 @@ export class PromotedStore {
     }
   }
 
+  /**
+   * Find promoted memories that are candidates for staleness review.
+   * A memory is stale when it is old enough AND has not been acted upon recently.
+   */
+  findStale(opts: {
+    staleAfterDays: number;
+    staleSurfacingWithoutUseLimit: number;
+    projectId?: string;
+  }): Array<PromotedRow & { surfacingCount: number; usageCount: number; daysSinceCreated: number }> {
+    const cutoffMs = Date.now() - opts.staleAfterDays * 24 * 60 * 60 * 1000;
+    const cutoffIso = new Date(cutoffMs).toISOString();
+
+    let sql = `SELECT * FROM promoted WHERE archived_at IS NULL AND created_at < ?`;
+    const params: (string | number)[] = [cutoffIso];
+
+    if (opts.projectId) {
+      sql += " AND project_id = ?";
+      params.push(opts.projectId);
+    }
+    sql += " ORDER BY created_at ASC";
+
+    const rows = this.db.prepare(sql).all(...params) as PromotedRow[];
+
+    // Enrich with recall stats
+    const result: Array<PromotedRow & { surfacingCount: number; usageCount: number; daysSinceCreated: number }> = [];
+
+    for (const row of rows) {
+      const surfacing = this.db.prepare(
+        `SELECT COUNT(*) as count FROM recall_surfacing WHERE memory_id = ?`
+      ).get(row.id) as { count: number } | undefined;
+      const surfacingCount = surfacing?.count ?? 0;
+
+      // Count usage via signal:memory_used tags
+      const usageRow = this.db.prepare(
+        `SELECT COUNT(*) as count FROM promoted
+         WHERE archived_at IS NULL
+         AND tags LIKE '%"signal:memory_used"%'
+         AND tags LIKE ?`
+      ).get(`%"memory_id:${row.id}"%`) as { count: number } | undefined;
+      const usageCount = usageRow?.count ?? 0;
+
+      const daysSinceCreated = Math.floor((Date.now() - Date.parse(row.created_at)) / (24 * 60 * 60 * 1000));
+
+      // Stale if: surfaced multiple times without being acted upon
+      const surfacedWithoutUse = surfacingCount >= opts.staleSurfacingWithoutUseLimit && usageCount === 0;
+      const purelyOld = surfacingCount === 0 && usageCount === 0;
+
+      if (surfacedWithoutUse || purelyOld) {
+        result.push({ ...row, surfacingCount, usageCount, daysSinceCreated });
+      }
+    }
+
+    return result;
+  }
+
+  /** Revive a previously archived memory back to active status. */
+  revive(id: string): void {
+    const row = this.db.prepare("SELECT rowid, content, tags FROM promoted WHERE id = ?").get(id) as
+      | { rowid: number; content: string; tags: string }
+      | undefined;
+    if (!row) return;
+
+    this.db.prepare("UPDATE promoted SET archived_at = NULL WHERE id = ?").run(id);
+    // Re-add to FTS
+    try {
+      this.db.prepare("INSERT INTO promoted_fts (rowid, content, tags) VALUES (?, ?, ?)").run(
+        row.rowid, row.content, row.tags
+      );
+    } catch { /* already in FTS — non-fatal */ }
+  }
+
   transaction(fn: () => void): void {
     this.db.exec("BEGIN");
     try {

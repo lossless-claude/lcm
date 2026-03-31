@@ -19,6 +19,7 @@ type RankedPromptSearchResult = SearchResult & {
   finalScore: number;
   usageBoost: number;
   unusedPenalty: number;
+  stalePenalty: number;
   cooledDown: boolean;
   feedback: RecallFeedback;
 };
@@ -82,6 +83,10 @@ function rankResults(
     recallUsageSmoothing: number;
     surfacingCooldownWindow: number;
     unusedSurfacingPenalty: number;
+    staleAfterDays: number;
+    staleSurfacingWithoutUseLimit: number;
+    stalePenalty: number;
+    allowStaleOnStrongMatch: boolean;
   },
 ): RankedPromptSearchResult[] {
   return results
@@ -107,12 +112,27 @@ function rankResults(
         ? feedback.surfacingCount * Math.max(0, options.unusedSurfacingPenalty)
         : 0;
 
+      // Staleness: old memory surfaced without use
+      const createdAtMs = new Date(result.createdAt).getTime();
+      const ageDays = Number.isFinite(createdAtMs) ? (options.now - createdAtMs) / 86_400_000 : 0;
+      const isStale = ageDays >= options.staleAfterDays
+        && feedback.usageCount === 0
+        && feedback.surfacingCount >= options.staleSurfacingWithoutUseLimit;
+      const stalePenalty = isStale ? Math.max(0, options.stalePenalty) : 0;
+
+      const rawScore = baseScore * usageBoost - unusedPenalty - stalePenalty;
+      // If allowStaleOnStrongMatch, stale memories can still surface if score is high enough
+      const finalScore = isStale && !options.allowStaleOnStrongMatch
+        ? Math.min(rawScore, 0)
+        : rawScore;
+
       return {
         ...result,
         baseScore,
-        finalScore: baseScore * usageBoost - unusedPenalty,
+        finalScore,
         usageBoost,
         unusedPenalty,
+        stalePenalty,
         cooledDown: isWithinCooldown(
           feedback.lastSurfacedAt,
           options.now,
@@ -233,6 +253,10 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
       const surfacingCooldownWindow = config.restoration.surfacingCooldownWindow;
       const resurfaceMargin = config.restoration.resurfaceMargin;
       const unusedSurfacingPenalty = config.restoration.unusedSurfacingPenalty;
+      const staleAfterDays = config.restoration.staleAfterDays;
+      const staleSurfacingWithoutUseLimit = config.restoration.staleSurfacingWithoutUseLimit;
+      const stalePenalty = config.restoration.stalePenalty;
+      const allowStaleOnStrongMatch = config.restoration.allowStaleOnStrongMatch;
 
       const targetHintCount = Math.max(maxResults, maxInjectedMemoryItems);
       const candidateLimit = Math.max(targetHintCount * CANDIDATE_LIMIT_MULTIPLIER, MIN_CANDIDATE_LIMIT);
@@ -250,6 +274,10 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
           recallUsageSmoothing,
           surfacingCooldownWindow,
           unusedSurfacingPenalty,
+          staleAfterDays,
+          staleSurfacingWithoutUseLimit,
+          stalePenalty,
+          allowStaleOnStrongMatch,
         });
       const filtered = applyCooldown(
         ranked,
@@ -289,6 +317,7 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
               cooledDown: result.cooledDown,
               usageBoost: result.usageBoost,
               unusedPenalty: result.unusedPenalty,
+              stalePenalty: result.stalePenalty,
               surfaced: ids.includes(result.id),
             })),
             budget: {

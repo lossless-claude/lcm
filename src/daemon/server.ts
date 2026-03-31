@@ -20,6 +20,7 @@ import { createSessionCompleteHandler } from "./routes/session-complete.js";
 import { createPromoteEventsHandler } from "./routes/promote-events.js";
 import { createStatsHandler } from "./routes/stats.js";
 import { createPoolStatsHandler } from "./routes/pool-stats.js";
+import { createReviewStaleHandler } from "./routes/review-stale.js";
 import { PKG_VERSION } from "./version.js";
 export { PKG_VERSION };
 
@@ -98,6 +99,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   routes.set("POST /promote-events", createPromoteEventsHandler(config));
   routes.set("GET /stats", createStatsHandler());
   routes.set("GET /stats/pool", createPoolStatsHandler());
+  routes.set("POST /review-stale", createReviewStaleHandler(config));
   // Status handler is registered after listen() when we know the actual port
 
   // Periodic transcript ingestion scan

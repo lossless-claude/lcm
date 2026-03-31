@@ -138,6 +138,32 @@ Valid provider values are:
 
 Using a cheaper or faster model for summarization can reduce costs, but quality matters because poor summaries compound as they are condensed into higher-level nodes.
 
+## Stale memory review
+
+Promoted memories stay active indefinitely unless manually archived. Over time, some become stale: old project knowledge that is no longer correct or useful, but keeps surfacing.
+
+LCM identifies stale candidates by combining age with recall feedback signals:
+
+- **Age threshold** (`restoration.staleAfterDays`, default 90): memories older than this are evaluated for staleness.
+- **Surfacing without use** (`restoration.staleSurfacingWithoutUseLimit`, default 5): if a memory has been surfaced this many times without ever being acted upon, it is a stale candidate.
+- **Restore age limit** (`restoration.restoreMaxPromotedAgeDays`, default 180): the restore route suppresses promoted memories older than this.
+- **Stale penalty** (`restoration.stalePenalty`, default 0.5): score penalty applied to stale candidates during prompt-time ranking.
+- **Strong match override** (`restoration.allowStaleOnStrongMatch`, default true): when enabled, stale memories can still surface if their relevance score is high enough despite the penalty.
+
+### Inspecting stale candidates
+
+Use `lcm review-stale` or call the `/review-stale` daemon endpoint to list stale candidates with their surfacing and usage counts.
+
+### Archiving and reviving
+
+Stale candidates can be archived non-destructively. Archived memories are excluded from search and recall but remain in the database and can be revived later.
+
+The `/review-stale` endpoint accepts `action: "archive"` or `action: "revive"` with a `target_id` to manage individual memories.
+
+### Stats integration
+
+Run `lcm stats --verbose` to see a summary of stale memory candidates across all projects.
+
 
 ## Database management
 

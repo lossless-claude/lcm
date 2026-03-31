@@ -119,7 +119,11 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
           // Promoted: cross-session knowledge from SQLite
           try {
             const promotedStore = new PromotedStore(db);
-            const results = promotedStore.search(`project context ${cwd}`, 5);
+            const maxAgeDays = config.restoration.restoreMaxPromotedAgeDays;
+            const cutoffMs = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+            const results = promotedStore
+              .search(`project context ${cwd}`, 5)
+              .filter((r) => !r.createdAt || Date.parse(r.createdAt) >= cutoffMs);
             if (results.length > 0) {
               promotedContext = fenceContent(
                 results.map((r) => r.content).join("\n\n"),
