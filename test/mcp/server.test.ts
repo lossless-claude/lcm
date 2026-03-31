@@ -120,4 +120,73 @@ describe("startMcpServer", () => {
       expect.objectContaining({ expectedVersion: "9.9.9-test" }),
     );
   });
+
+  it("passes explicit spawnCommand and spawnArgs pointing to lcm.mjs", async () => {
+    ensureDaemonMcpMock.mockClear();
+    const { startMcpServer } = await import("../../src/mcp/server.js");
+
+    await startMcpServer();
+
+    expect(ensureDaemonMcpMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        spawnCommand: process.execPath,
+        spawnArgs: expect.arrayContaining([
+          expect.stringContaining("lcm.mjs"),
+          "daemon",
+          "start",
+        ]),
+      }),
+    );
+  });
+});
+
+describe("handleDaemonRequest spawn opts propagation", () => {
+  it("threads spawnCommand/spawnArgs/expectedVersion into ensureDaemon on auto-restart", async () => {
+    const ensureDaemonSpy = vi.fn().mockResolvedValue({ connected: true, port: 9999, spawned: true });
+    const optsWithSpawn = {
+      port: 9999,
+      pidFilePath: "/tmp/test-daemon.pid",
+      spawnCommand: "/usr/local/bin/node",
+      spawnArgs: ["/path/to/lcm.mjs", "daemon", "start"],
+      expectedVersion: "1.2.3",
+      _ensureDaemon: ensureDaemonSpy,
+    };
+
+    const client = {
+      post: vi.fn()
+        .mockRejectedValueOnce(new TypeError("fetch failed"))
+        .mockResolvedValueOnce({ result: "ok" }),
+    };
+
+    await handleDaemonRequest(client, "/search", { q: "foo" }, optsWithSpawn);
+
+    expect(ensureDaemonSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        spawnCommand: "/usr/local/bin/node",
+        spawnArgs: ["/path/to/lcm.mjs", "daemon", "start"],
+        expectedVersion: "1.2.3",
+      }),
+    );
+  });
+
+  it("passes undefined spawn opts when not provided (backwards compat)", async () => {
+    const ensureDaemonSpy = vi.fn().mockResolvedValue({ connected: true, port: 9999, spawned: true });
+    const optsMinimal = {
+      port: 9999,
+      pidFilePath: "/tmp/test-daemon.pid",
+      _ensureDaemon: ensureDaemonSpy,
+    };
+
+    const client = {
+      post: vi.fn()
+        .mockRejectedValueOnce(new TypeError("fetch failed"))
+        .mockResolvedValueOnce({ result: "ok" }),
+    };
+
+    await handleDaemonRequest(client, "/search", { q: "foo" }, optsMinimal);
+
+    const callArgs = ensureDaemonSpy.mock.calls[0][0];
+    expect(callArgs.spawnCommand).toBeUndefined();
+    expect(callArgs.spawnArgs).toBeUndefined();
+  });
 });
