@@ -34,12 +34,42 @@ describe("deduplicateAndInsert", () => {
       projectId: "p1",
       sessionId: "s1",
       depth: 2,
-      confidence: 0.8,
+      confidence: 0.2,
+      newEntryConfidence: 0.8,
       thresholds: { dedupBm25Threshold: 15, dedupCandidateLimit: 3 },
     });
 
     const results = store.search("PostgreSQL database", 10);
     expect(results.length).toBe(1);
+    expect(results[0].confidence).toBe(0.8);
+  });
+
+  it("does not apply new-entry boost when deduping against an existing canonical", async () => {
+    const db = makeDb();
+    const store = new PromotedStore(db);
+
+    store.insert({
+      content: "Decided to use PostgreSQL for the database layer",
+      tags: ["decision"],
+      projectId: "p1",
+      confidence: 0.25,
+    });
+
+    await deduplicateAndInsert({
+      store,
+      content: "Confirmed PostgreSQL as the database choice after benchmarks",
+      tags: ["decision"],
+      projectId: "p1",
+      sessionId: "s1",
+      depth: 2,
+      confidence: 0.2,
+      newEntryConfidence: 0.6,
+      thresholds: { dedupBm25Threshold: 0.000001, dedupCandidateLimit: 3 },
+    });
+
+    const results = store.search("PostgreSQL database", 10);
+    expect(results.length).toBe(1);
+    expect(results[0].confidence).toBe(0.25);
   });
 
   it("refreshes canonical and archives incoming when duplicate found above threshold", async () => {

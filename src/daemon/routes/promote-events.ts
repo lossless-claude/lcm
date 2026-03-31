@@ -24,6 +24,7 @@ const CORRELATION_WINDOW = 20;
 const MIN_REINFORCED_PATTERN_OCCURRENCES = 3;
 const MIN_REINFORCED_PATTERN_SESSIONS = 2;
 const AUTO_PROMOTABLE_PATTERN_CATEGORIES = new Set(["file", "mcp", "skill", "subagent"]);
+const EMPTY_REINFORCEMENT: PatternReinforcementStats = { totalCount: 0, distinctSessions: 0 };
 
 interface PromoteResult {
   promoted: number;
@@ -33,7 +34,7 @@ interface PromoteResult {
 }
 
 function isReinforcedPattern(stats: PatternReinforcementStats): boolean {
-  return stats.totalCount >= MIN_REINFORCED_PATTERN_OCCURRENCES ||
+  return stats.totalCount >= MIN_REINFORCED_PATTERN_OCCURRENCES &&
     stats.distinctSessions >= MIN_REINFORCED_PATTERN_SESSIONS;
 }
 
@@ -124,6 +125,25 @@ export function createPromoteEventsHandler(config: DaemonConfig): RouteHandler {
           const eventConf = thresholds.eventConfidence ?? {
             decision: 0.5, plan: 0.7, errorFix: 0.4, batch: 0.3, pattern: 0.2,
           };
+          const reinforcementCache = new Map<string, PatternReinforcementStats>();
+          const getPatternReinforcement = (event: EventRow): PatternReinforcementStats => {
+            if (event.priority !== 3 || !AUTO_PROMOTABLE_PATTERN_CATEGORIES.has(event.category)) {
+              return EMPTY_REINFORCEMENT;
+            }
+
+            const key = `${event.type}\u0000${event.category}\u0000${event.data}`;
+            const cached = reinforcementCache.get(key);
+            if (cached) return cached;
+
+            const stats = edb.getPatternReinforcement(
+              event.type,
+              event.category,
+              event.data,
+              thresholds.insightsMaxAgeDays ?? 90,
+            );
+            reinforcementCache.set(key, stats);
+            return stats;
+          };
 
           const processedIds: number[] = [];
 
@@ -131,16 +151,10 @@ export function createPromoteEventsHandler(config: DaemonConfig): RouteHandler {
             try {
               const autoTag = (event as EventRow & { auto_tag?: string }).auto_tag;
               const tag = autoTag ?? AUTO_TAGS[event.category] ?? `category:${event.category}`;
-              const reinforcement = event.priority === 3 && AUTO_PROMOTABLE_PATTERN_CATEGORIES.has(event.category)
-                ? edb.getPatternReinforcement(
-                  event.type,
-                  event.category,
-                  event.data,
-                  thresholds.insightsMaxAgeDays ?? 90,
-                )
-                : { totalCount: 0, distinctSessions: 0 };
+              const reinforcement = getPatternReinforcement(event);
               const reinforced = isReinforcedPattern(reinforcement);
               let confidence: number;
+              let newEntryConfidence: number | undefined;
 
               // Determine confidence by tier
               if (event.priority === 1) {
@@ -164,16 +178,16 @@ export function createPromoteEventsHandler(config: DaemonConfig): RouteHandler {
               } else {
                 // Tier 3: pattern-only — require either an existing promoted match or
                 // enough repeated passive evidence to bootstrap a new memory.
-                const existing = store.search(event.data, 1, undefined, pid);
-
-                if (existing.length === 0 && !reinforced) {
-                  processedIds.push(event.event_id);
-                  result.skipped++;
-                  continue;
-                }
                 confidence = eventConf.pattern ?? 0.2;
-                if (reinforced) {
-                  confidence = Math.min(
+                if (!reinforced) {
+                  const existing = store.search(event.data, 1, undefined, pid);
+                  if (existing.length === 0) {
+                    processedIds.push(event.event_id);
+                    result.skipped++;
+                    continue;
+                  }
+                } else {
+                  newEntryConfidence = Math.min(
                     thresholds.maxConfidence ?? 1.0,
                     confidence + (thresholds.reinforcementBoost ?? 0.3),
                   );
@@ -200,6 +214,7 @@ export function createPromoteEventsHandler(config: DaemonConfig): RouteHandler {
                 sessionId: event.session_id,
                 depth: 0,
                 confidence,
+                newEntryConfidence,
                 thresholds: {
                   dedupBm25Threshold: thresholds.dedupBm25Threshold ?? 15,
                   dedupCandidateLimit: thresholds.dedupCandidateLimit ?? 100,

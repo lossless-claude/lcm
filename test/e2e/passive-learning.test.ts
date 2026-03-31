@@ -204,17 +204,19 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
 
     // Step 7: Verify promoted store has the entries
     const mainDb2 = getLcmConnection(mainDbPath);
-    const store = new PromotedStore(mainDb2);
-    const pid = projectId(projectDir);
-    const searchResults = store.search("database SQLite embedded", 10, undefined, pid);
-    expect(searchResults.length).toBeGreaterThanOrEqual(1);
+    try {
+      const store = new PromotedStore(mainDb2);
+      const pid = projectId(projectDir);
+      const searchResults = store.search("database SQLite embedded", 10, undefined, pid);
+      expect(searchResults.length).toBeGreaterThanOrEqual(1);
 
-    // Check tags include passive-capture source
-    const decisionResult = searchResults.find(r => r.content.includes("database"));
-    expect(decisionResult).toBeDefined();
-    expect(decisionResult!.tags).toContain("source:passive-capture");
-
-    closeLcmConnection(mainDbPath);
+      // Check tags include passive-capture source
+      const decisionResult = searchResults.find(r => r.content.includes("database"));
+      expect(decisionResult).toBeDefined();
+      expect(decisionResult!.tags).toContain("source:passive-capture");
+    } finally {
+      closeLcmConnection(mainDbPath);
+    }
   });
 
   it("promotes repeated file patterns across sessions without a seeded memory", async () => {
@@ -222,6 +224,12 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
     const sidecarDb = new EventsDb(sidecarPath);
     try {
       sidecarDb.insertEvent("pattern-session-a", {
+        type: "file_read",
+        category: "file",
+        data: "src/daemon/routes/promote-events.ts (source)",
+        priority: 3,
+      }, "PostToolUse");
+      sidecarDb.insertEvent("pattern-session-b", {
         type: "file_read",
         category: "file",
         data: "src/daemon/routes/promote-events.ts (source)",
@@ -261,13 +269,16 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
     expect(promoteResult.errors).toBe(0);
 
     const mainDb2 = getLcmConnection(mainDbPath);
-    const store = new PromotedStore(mainDb2);
-    const pid = projectId(projectDir);
-    const rows = store.getAll({ projectId: pid });
-    const reinforced = rows.find((row) => row.content.includes("src/daemon/routes/promote-events.ts"));
-    expect(reinforced).toBeDefined();
-    expect(JSON.parse(reinforced!.tags)).toContain("signal:reinforced");
-    closeLcmConnection(mainDbPath);
+    try {
+      const store = new PromotedStore(mainDb2);
+      const pid = projectId(projectDir);
+      const rows = store.getAll({ projectId: pid });
+      const reinforced = rows.find((row) => row.content.includes("src/daemon/routes/promote-events.ts"));
+      expect(reinforced).toBeDefined();
+      expect(JSON.parse(reinforced!.tags)).toContain("signal:reinforced");
+    } finally {
+      closeLcmConnection(mainDbPath);
+    }
   });
 
   // ── Test C: Negative path — unrecognized tool produces no events ─────────

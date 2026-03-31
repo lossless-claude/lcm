@@ -101,9 +101,9 @@ describe("EventsDb", () => {
     db2.close();
   });
 
-  describe("Schema v2 — error_log + pruning", () => {
-    it("migrates v1 DB to v2 on open", () => {
-      // Create a v1 DB manually (no error_log table)
+  describe("Schema migrations — error_log + pattern lookup index", () => {
+    it("migrates v1 DB to the latest schema on open", () => {
+      // Create a v1 DB manually (no error_log table or pattern lookup index)
       const { DatabaseSync } = require("node:sqlite");
       const { mkdirSync } = require("node:fs");
       const { dirname } = require("node:path");
@@ -128,14 +128,18 @@ describe("EventsDb", () => {
       rawDb.prepare("INSERT INTO schema_version (version) VALUES (1)").run();
       rawDb.close();
 
-      // Now open with EventsDb — should migrate to v2
+      // Now open with EventsDb — should migrate to the latest schema.
       const db = new EventsDb(dbPath);
       const tableRow = db.raw().prepare(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='error_log'"
       ).get();
+      const indexRow = db.raw().prepare(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_events_pattern_lookup'"
+      ).get();
       expect(tableRow).toBeDefined();
+      expect(indexRow).toBeDefined();
       const versionRow = db.raw().prepare("SELECT version FROM schema_version").get() as { version: number };
-      expect(versionRow.version).toBe(2);
+      expect(versionRow.version).toBe(3);
       db.close();
     });
 
