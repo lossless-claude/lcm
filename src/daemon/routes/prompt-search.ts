@@ -8,6 +8,7 @@ import { closeLcmConnection, getLcmConnection } from "../../db/connection.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { PromotedStore, type SearchResult } from "../../db/promoted.js";
 import { RecallStore, type RecallFeedback } from "../../db/recall.js";
+import { selectMemoryHintsWithinBudget } from "../../hooks/memory-context.js";
 import { validateCwd } from "../validate-cwd.js";
 
 const CANDIDATE_LIMIT_MULTIPLIER = 5;
@@ -176,6 +177,10 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
       const maxResults = config.restoration.promptSearchMaxResults;
       const minScore = config.restoration.promptSearchMinScore;
       const snippetLength = config.restoration.promptSnippetLength;
+      const promptHintsByteBudget = config.restoration.promptHintsByteBudget;
+      const promptHintsReservedForLearningInstruction = config.restoration.promptHintsReservedForLearningInstruction;
+      const promptHintsMaxEmitted = config.restoration.promptHintsMaxEmitted;
+      const promptHintsDedupMinPrefix = config.restoration.promptHintsDedupMinPrefix;
       const halfLife = config.restoration.recencyHalfLifeHours;
       const crossSessionAffinity = config.restoration.crossSessionAffinity;
       const recallUsageBoost = config.restoration.recallUsageBoost;
@@ -183,8 +188,13 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
       const surfacingCooldownWindow = config.restoration.surfacingCooldownWindow;
       const resurfaceMargin = config.restoration.resurfaceMargin;
       const unusedSurfacingPenalty = config.restoration.unusedSurfacingPenalty;
+      const learningInstructionBytes = Number.isFinite(input.learningInstructionBytes)
+        ? Math.max(0, Math.floor(input.learningInstructionBytes))
+        : 0;
+      const shouldLogSurfacing = input.logSurfacing !== false;
 
-      const candidateLimit = Math.max(maxResults * CANDIDATE_LIMIT_MULTIPLIER, MIN_CANDIDATE_LIMIT);
+      const targetHintCount = Math.max(maxResults, promptHintsMaxEmitted);
+      const candidateLimit = Math.max(targetHintCount * CANDIDATE_LIMIT_MULTIPLIER, MIN_CANDIDATE_LIMIT);
       const results = store.search(query, candidateLimit);
       const recallStore = new RecallStore(db);
 
@@ -204,14 +214,27 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
         ranked,
         minScore,
         resurfaceMargin,
-      ).slice(0, maxResults);
-
-      const hints = filtered.map((r) =>
-        r.content.length > snippetLength
-          ? r.content.slice(0, snippetLength) + "..."
-          : r.content
       );
-      const ids = filtered.map((r) => r.id);
+
+      // Pass the full filtered list (not sliced to maxResults) so the budget
+      // selector can choose the best-fitting subset after dedup and truncation.
+      const selection = selectMemoryHintsWithinBudget(
+        filtered.map((result) => ({
+          id: result.id,
+          hint: result.content.length > snippetLength
+            ? result.content.slice(0, snippetLength) + "..."
+            : result.content,
+        })),
+        {
+          totalByteBudget: promptHintsByteBudget,
+          reservedForLearningInstruction: promptHintsReservedForLearningInstruction,
+          learningInstructionBytes,
+          maxEmitted: promptHintsMaxEmitted,
+          dedupMinPrefix: promptHintsDedupMinPrefix,
+        },
+      );
+
+      const { hints, ids } = selection;
       const debug = input.debug === true
         ? {
             candidates: ranked.map((result) => ({
@@ -227,12 +250,21 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
               unusedPenalty: result.unusedPenalty,
               surfaced: ids.includes(result.id),
             })),
+            budget: {
+              availableHintBytes: selection.availableHintBytes,
+              usedHintBytes: selection.usedHintBytes,
+              emittedCount: hints.length,
+              dedupedCount: selection.dedupedCount,
+              droppedForBudget: selection.droppedForBudget,
+            },
           }
         : undefined;
 
       // Log surfacing events (best-effort, never throws)
       try {
-        recallStore.logSurfacing(ids, session_id ?? null);
+        if (shouldLogSurfacing) {
+          recallStore.logSurfacing(ids, session_id ?? null);
+        }
       } catch { /* non-fatal */ }
 
       sendJson(res, 200, debug ? { hints, ids, debug } : { hints, ids });

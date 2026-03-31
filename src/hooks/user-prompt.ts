@@ -3,6 +3,7 @@ import { ensureDaemon } from "../daemon/lifecycle.js";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { safeLogError } from "./hook-errors.js";
+import { buildMemoryContext } from "./memory-context.js";
 
 type PromptSearchResponse = {
   hints: string[];
@@ -73,17 +74,17 @@ export async function handleUserPromptSubmit(
       query: input.prompt,
       cwd: input.cwd,
       session_id: input.session_id,
+      learningInstructionBytes: Buffer.byteLength(LEARNING_INSTRUCTION, "utf8"),
     });
 
     if (!result.hints || result.hints.length === 0) {
       return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
     }
 
-    const snippets = result.hints.map((h) => `- ${h}`).join("\n");
-    const idComment = result.ids && result.ids.length > 0
-      ? `\n<!-- surfaced-memory-ids: ${result.ids.join(",")} -->`
-      : "";
-    const hint = `<memory-context>\nRelevant context from previous sessions (use lcm_expand for details):\n${snippets}${idComment}\n</memory-context>`;
+    const hint = buildMemoryContext(result.hints, result.ids ?? []);
+    if (!hint) {
+      return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
+    }
     return { exitCode: 0, stdout: `${hint}\n${LEARNING_INSTRUCTION}` };
   } catch {
     return { exitCode: 0, stdout: LEARNING_INSTRUCTION };

@@ -405,8 +405,8 @@ describe("POST /prompt-search", () => {
     const db = new DatabaseSync(dbPath);
     runLcmMigrations(db);
     const store = new PromotedStore(db);
-    const unusedId = store.insert({ content: "Use SQLite for project storage", tags: ["decision"], projectId: "p1" });
-    const usedId = store.insert({ content: "Use SQLite for project storage", tags: ["decision"], projectId: "p1" });
+    const unusedId = store.insert({ content: "Use SQLite for project storage in background jobs", tags: ["decision"], projectId: "p1" });
+    const usedId = store.insert({ content: "Use SQLite for project storage in the main service", tags: ["decision"], projectId: "p1" });
     store.insert({ content: "Acted on stored memory", tags: ["signal:memory_used", `memory_id:${usedId}`], projectId: "p1" });
     store.insert({ content: "Acted on stored memory again", tags: ["signal:memory_used", `memory_id:${usedId}`], projectId: "p1" });
     db.close();
@@ -602,8 +602,8 @@ describe("POST /prompt-search", () => {
     const db = new DatabaseSync(dbPath);
     runLcmMigrations(db);
     const store = new PromotedStore(db);
-    const firstId = store.insert({ content: "Node worker pool", tags: ["workflow"], projectId: "p1" });
-    const secondId = store.insert({ content: "Node worker pool", tags: ["workflow"], projectId: "p1" });
+    const firstId = store.insert({ content: "Node worker pool for queue jobs", tags: ["workflow"], projectId: "p1" });
+    const secondId = store.insert({ content: "Node worker pool for background tasks", tags: ["workflow"], projectId: "p1" });
     db.close();
 
     const config = loadDaemonConfig("/nonexistent");
@@ -673,6 +673,150 @@ describe("POST /prompt-search", () => {
       expect(data.debug.candidates[0]).toMatchObject({ id: memoryId });
       expect(Number.isFinite(data.debug.candidates[0].baseScore)).toBe(true);
       expect(Number.isFinite(data.debug.candidates[0].finalScore)).toBe(true);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it("dedupes near-identical emitted hints before surfacing", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-dedupe-"));
+    tempDirs.push(tempDir);
+
+    const dbPath = projectDbPath(tempDir);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    runLcmMigrations(db);
+    const store = new PromotedStore(db);
+    const firstId = store.insert({ content: "Use Bun scripts for local automation and CI wrappers", tags: ["workflow"], projectId: "p1" });
+    const secondId = store.insert({ content: "Use Bun scripts for local automation and CI wrappers with small wrappers", tags: ["workflow"], projectId: "p1" });
+    const thirdId = store.insert({ content: "Bun scripts wrap local automation and CI tasks", tags: ["workflow"], projectId: "p1" });
+    db.close();
+
+    const config = loadDaemonConfig("/nonexistent");
+    config.daemon.port = 0;
+    config.restoration.promptSearchMinScore = 0;
+    config.restoration.promptHintsMaxEmitted = 3;
+    config.restoration.promptHintsDedupMinPrefix = 24;
+    const daemon = await createDaemon(config);
+    const port = daemon.address().port;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/prompt-search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: "Use Bun scripts",
+          cwd: tempDir,
+          learningInstructionBytes: 900,
+          debug: true,
+        }),
+      });
+      const data = await res.json() as {
+        hints: string[];
+        ids: string[];
+        debug: { budget: { dedupedCount: number; emittedCount: number } };
+      };
+
+      expect(res.status).toBe(200);
+      expect(data.ids).toContain(firstId);
+      expect(data.ids).not.toContain(secondId);
+      expect(data.ids).toContain(thirdId);
+      expect(data.debug.budget).toMatchObject({ dedupedCount: 1, emittedCount: 2 });
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it("drops lower-ranked hints when the final memory-context budget is exhausted", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-budget-"));
+    tempDirs.push(tempDir);
+
+    const dbPath = projectDbPath(tempDir);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    runLcmMigrations(db);
+    const store = new PromotedStore(db);
+    const firstId = store.insert({ content: `Primary memory ${"alpha ".repeat(30)}`, tags: ["workflow"], projectId: "p1" });
+    const secondId = store.insert({ content: `Secondary memory ${"beta ".repeat(30)}`, tags: ["workflow"], projectId: "p1" });
+    const thirdId = store.insert({ content: `Tertiary memory ${"gamma ".repeat(30)}`, tags: ["workflow"], projectId: "p1" });
+    db.close();
+
+    const config = loadDaemonConfig("/nonexistent");
+    config.daemon.port = 0;
+    config.restoration.promptSearchMinScore = 0;
+    config.restoration.promptSnippetLength = 120;
+    config.restoration.promptHintsByteBudget = 1200;
+    config.restoration.promptHintsReservedForLearningInstruction = 900;
+    config.restoration.promptHintsMaxEmitted = 3;
+    const daemon = await createDaemon(config);
+    const port = daemon.address().port;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/prompt-search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: "memory",
+          cwd: tempDir,
+          learningInstructionBytes: 900,
+          debug: true,
+        }),
+      });
+      const data = await res.json() as {
+        hints: string[];
+        ids: string[];
+        debug: { budget: { emittedCount: number; droppedForBudget: number; availableHintBytes: number; usedHintBytes: number } };
+      };
+
+      expect(res.status).toBe(200);
+      expect(data.ids[0]).toBe(firstId);
+      expect(data.ids).not.toContain(thirdId);
+      expect(data.debug.budget.emittedCount).toBeLessThan(3);
+      expect(data.debug.budget.droppedForBudget).toBeGreaterThan(0);
+      expect(data.debug.budget.usedHintBytes).toBeLessThanOrEqual(data.debug.budget.availableHintBytes);
+      expect(data.ids.every((id) => [firstId, secondId, thirdId].includes(id))).toBe(true);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it("skips surfacing logs when the caller defers tracking to final emission", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-deferred-"));
+    tempDirs.push(tempDir);
+
+    const dbPath = projectDbPath(tempDir);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    runLcmMigrations(db);
+    const store = new PromotedStore(db);
+    const memoryId = store.insert({ content: "Use pnpm in CI", tags: ["workflow"], projectId: "p1" });
+    db.close();
+
+    const config = loadDaemonConfig("/nonexistent");
+    config.daemon.port = 0;
+    config.restoration.promptSearchMinScore = 0;
+    const daemon = await createDaemon(config);
+    const port = daemon.address().port;
+
+    try {
+      await fetch(`http://127.0.0.1:${port}/prompt-search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: "pnpm CI",
+          cwd: tempDir,
+          learningInstructionBytes: 900,
+          logSurfacing: false,
+        }),
+      });
+
+      const verifyDb = new DatabaseSync(dbPath);
+      const row = verifyDb.prepare(
+        "SELECT COUNT(*) as count FROM recall_surfacing WHERE memory_id = ?"
+      ).get(memoryId) as { count: number };
+      verifyDb.close();
+
+      expect(row.count).toBe(0);
     } finally {
       await daemon.stop();
     }

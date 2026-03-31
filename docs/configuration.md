@@ -90,6 +90,19 @@ For coding conversations with tool calls (which generate many messages per logic
 
 The actual summary size depends on the LLM's output; these values are guidelines passed in the prompt's token target instruction.
 
+### Prompt recall budgeting
+
+Prompt-time recall now has a second budget layer after `/prompt-search` ranking.
+
+- `restoration.promptSearchMaxResults` still controls how many top-ranked results the route aims to consider first.
+- `restoration.promptSnippetLength` still controls the per-result snippet size before final emission.
+- `restoration.promptHintsMaxEmitted` caps how many deduped hints can survive into the final `<memory-context>` block.
+- `restoration.promptHintsDedupMinPrefix` dedupes identical or near-identical hints by normalized prefix before emission.
+- `restoration.promptHintsByteBudget` caps the final prompt-time memory injection budget.
+- `restoration.promptHintsReservedForLearningInstruction` reserves room for `<learning-instruction>` before any hints are emitted.
+
+In practice, the hook asks the daemon for ranked candidates, the daemon dedupes and trims them against the final byte budget, and only the emitted hints get surfaced back to the hook. That means increasing `promptSearchMaxResults` without adjusting `promptHintsByteBudget` just gives the reranker more candidates to choose from; it does not guarantee more emitted context.
+
 ### Leaf chunk tokens
 
 `LCM_LEAF_CHUNK_TOKENS` (default `20000`) caps the amount of source material per leaf compaction pass.
