@@ -1,20 +1,31 @@
 # @lossless-claude/lcm
 
+## 0.9.1
+
+### Patch Changes
+
+- f09dd71: Improve prompt-time memory recall by reranking surfaced memories using usage feedback, resurfacing cooldowns, and penalties for repeatedly ignored memories.
+- a373502: Improve passive-learning promotion so repeated low-priority patterns can be auto-promoted without requiring a pre-seeded promoted memory.
+
 ## [0.8.1] - 2026-03-30
 
 ### Added
+
 - User notification when sensitive data is filtered from LCM history (closes #178)
 
 ### Fixed
+
 - Compact-restore test isolation — eliminate tmpdir() contamination (#184)
 
 ### Changed
+
 - Quality-gates CI: label-based merge requirements (#185)
 - autoimprove.yaml: add missing forbidden paths (closes #182) (#183)
 
 ## [0.8.0] - 2026-03-28
 
 ### Added
+
 - Connection pooling for sidecar EventsDb (issue #131)
 - Portable knowledge export/import commands — `lcm export`, `lcm import-knowledge` (issue #132)
 - Pool stats observable — `lcm stats --pool` + `GET /stats/pool` daemon endpoint
@@ -22,6 +33,7 @@
 - Copilot auto-review on all PRs
 
 ### Fixed
+
 - `post-tool` command not registered in CLI dispatcher (#162)
 - Security: upgraded hono, rollup, picomatch (3 high CVEs)
 - Security: CodeQL hostname regex escaping + sanitizeError in daemon
