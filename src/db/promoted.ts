@@ -238,10 +238,7 @@ export class PromotedStore {
     const surfacingMap = new Map(surfacingRows.map((r) => [r.memory_id, r.count]));
 
     // Batch: count usage via signal:memory_used tags in one query
-    const usageClauses = ids.map(() =>
-      `tags LIKE '%"signal:memory_used"%' AND tags LIKE ?`
-    );
-    // Simpler approach: single query counting rows that match any target id
+
     const usageRows = this.db.prepare(
       `SELECT tags FROM promoted
        WHERE archived_at IS NULL

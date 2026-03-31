@@ -48,7 +48,7 @@ interface OverallStats {
   staleCount: number;
 }
 
-function queryProjectStats(dbPath: string, projectId: string): Omit<OverallStats, "projects" | "recallStats" | "staleCount"> & { recallStats: RecallStats; staleCount: number } {
+function queryProjectStats(dbPath: string, projectId: string, staleCfg: { staleAfterDays: number; staleSurfacingWithoutUseLimit: number }): Omit<OverallStats, "projects" | "recallStats" | "staleCount"> & { recallStats: RecallStats; staleCount: number } {
   const db = new DatabaseSync(dbPath);
   db.exec("PRAGMA busy_timeout = 5000");
 
@@ -116,13 +116,12 @@ function queryProjectStats(dbPath: string, projectId: string): Omit<OverallStats
 
     const recallStats = new RecallStore(db).getStats();
 
-    // Count stale promoted memories
+    // Count stale promoted memories (config is passed in to avoid re-reading per project)
     let staleCount = 0;
     try {
-      const cfg = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
       staleCount = new PromotedStore(db).findStale({
-        staleAfterDays: cfg.restoration.staleAfterDays,
-        staleSurfacingWithoutUseLimit: cfg.restoration.staleSurfacingWithoutUseLimit,
+        staleAfterDays: staleCfg.staleAfterDays,
+        staleSurfacingWithoutUseLimit: staleCfg.staleSurfacingWithoutUseLimit,
         projectId,
       }).length;
     } catch { /* non-fatal */ }
@@ -373,13 +372,23 @@ export function collectStats(): OverallStats {
   let totalMemoriesActedUpon = 0;
   const allTopRecalled: Array<{ id: string; content: string; actCount: number }> = [];
 
+  // Load stale config once for all projects
+  let staleCfg = { staleAfterDays: 90, staleSurfacingWithoutUseLimit: 5 };
+  try {
+    const cfg = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
+    staleCfg = {
+      staleAfterDays: cfg.restoration.staleAfterDays,
+      staleSurfacingWithoutUseLimit: cfg.restoration.staleSurfacingWithoutUseLimit,
+    };
+  } catch { /* use defaults */ }
+
   for (const entry of readdirSync(baseDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const dbPath = join(baseDir, entry.name, "db.sqlite");
     if (!existsSync(dbPath)) continue;
 
     try {
-      const projStats = queryProjectStats(dbPath, entry.name);
+      const projStats = queryProjectStats(dbPath, entry.name, staleCfg);
       // Only count projects with stored messages
       if (projStats.messages === 0) continue;
       totalProjects++;
