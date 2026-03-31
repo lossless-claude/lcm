@@ -132,6 +132,20 @@ describe("handleUserPromptSubmit", () => {
     expect(result.stdout).toContain("</learning-instruction>");
   });
 
+  it("includes signal:memory_used recall instruction", async () => {
+    mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
+    const mockClient = {
+      health: vi.fn(),
+      post: vi.fn().mockResolvedValue({ hints: ["some hint"], ids: ["uuid-1"] }),
+    };
+    const result = await handleUserPromptSubmit(
+      JSON.stringify({ prompt: "test", cwd: "/tmp/test", session_id: "s1" }),
+      mockClient as any,
+    );
+    expect(result.stdout).toContain("signal:memory_used");
+    expect(result.stdout).toContain("memory_id:<id>");
+  });
+
   it("includes learning-instruction even when no memory-context hints", async () => {
     mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
     const mockClient = {

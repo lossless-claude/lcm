@@ -20,6 +20,9 @@ When you recognize a durable insight, call lcm_store immediately:
 - workflow: multi-step process that works
 
 Usage: lcm_store(text: "concise insight with why", tags: ["category:decision"])
+
+When you act on a surfaced memory (use it to inform a decision, avoid a known pitfall, or reference it in your work), emit:
+lcm_store(text: "Acted on memory <id> — <one-line how>", tags: ["signal:memory_used", "memory_id:<id>"])
 </learning-instruction>`;
 
 export async function handleUserPromptSubmit(
