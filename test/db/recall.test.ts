@@ -214,4 +214,44 @@ describe("RecallStore.getFeedback", () => {
       lastSurfacedAt: null,
     });
   });
+
+  it("treats underscores in memory_id tags as literal characters", () => {
+    const db = makeDb();
+    const recall = new RecallStore(db);
+
+    db.prepare(
+      `INSERT INTO promoted (id, content, tags, source_summary_id, project_id, session_id, depth, confidence)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      "signal-a",
+      "Used memory with underscore",
+      JSON.stringify(["signal:memory_used", "memory_id:memory_1"]),
+      null,
+      "p1",
+      null,
+      0,
+      1,
+    );
+    db.prepare(
+      `INSERT INTO promoted (id, content, tags, source_summary_id, project_id, session_id, depth, confidence)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      "signal-b",
+      "Used similar memory",
+      JSON.stringify(["signal:memory_used", "memory_id:memoryA1"]),
+      null,
+      "p1",
+      null,
+      0,
+      1,
+    );
+
+    const feedback = recall.getFeedback(["memory_1"]);
+
+    expect(feedback.get("memory_1")).toEqual({
+      usageCount: 1,
+      surfacingCount: 0,
+      lastSurfacedAt: null,
+    });
+  });
 });

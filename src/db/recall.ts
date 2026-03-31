@@ -1,5 +1,9 @@
 import type { DatabaseSync } from "node:sqlite";
 
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, "\\$&");
+}
+
 export interface RecallStats {
   memoriesSurfaced: number;
   memoriesActedUpon: number;
@@ -110,10 +114,13 @@ export class RecallStore {
   private collectUsageCounts(memoryIds?: string[]): Map<string, number> {
     if (memoryIds && memoryIds.length === 0) return new Map();
 
-    const filterClause = memoryIds && memoryIds.length > 0
-      ? ` AND (${memoryIds.map(() => "tags LIKE ?").join(" OR ")})`
+    const memoryIdSet = memoryIds ? new Set(memoryIds) : null;
+    const filterClause = memoryIdSet && memoryIdSet.size > 0
+      ? ` AND (${[...memoryIdSet].map(() => "tags LIKE ? ESCAPE '\\'").join(" OR ")})`
       : "";
-    const filterParams = memoryIds?.map((memoryId) => `%\"memory_id:${memoryId}\"%`) ?? [];
+    const filterParams = memoryIdSet
+      ? [...memoryIdSet].map((memoryId) => `%"memory_id:${escapeLikePattern(memoryId)}"%`)
+      : [];
 
     const actedRows = this.db.prepare(
       `SELECT tags FROM promoted
@@ -129,7 +136,7 @@ export class RecallStore {
       if (!memIdTag) continue;
 
       const memId = memIdTag.slice("memory_id:".length);
-      if (memoryIds && !memoryIds.includes(memId)) continue;
+      if (memoryIdSet && !memoryIdSet.has(memId)) continue;
       memoryIdCounts.set(memId, (memoryIdCounts.get(memId) ?? 0) + 1);
     }
 

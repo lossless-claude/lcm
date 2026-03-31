@@ -461,6 +461,7 @@ describe("POST /prompt-search", () => {
     config.restoration.promptSearchMinScore = 0;
     config.restoration.surfacingCooldownWindow = 24;
     config.restoration.resurfaceMargin = 10;
+    config.restoration.unusedSurfacingPenalty = 0;
     const daemon = await createDaemon(config);
     const port = daemon.address().port;
 
@@ -487,6 +488,56 @@ describe("POST /prompt-search", () => {
         id: freshId,
         cooledDown: false,
       });
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it("falls back to the best cooled candidate when every eligible result is in cooldown", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-all-cooled-"));
+    tempDirs.push(tempDir);
+
+    const dbPath = projectDbPath(tempDir);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    runLcmMigrations(db);
+    const store = new PromotedStore(db);
+    const firstId = store.insert({ content: "TypeScript build convention", tags: ["workflow"], projectId: "p1" });
+    const secondId = store.insert({ content: "TypeScript build convention", tags: ["workflow"], projectId: "p1" });
+    db.prepare("INSERT INTO recall_surfacing (memory_id, session_id) VALUES (?, ?)").run(firstId, "sess-a");
+    db.prepare("INSERT INTO recall_surfacing (memory_id, session_id) VALUES (?, ?)").run(secondId, "sess-b");
+    store.insert({ content: "Acted on first cooled memory", tags: ["signal:memory_used", `memory_id:${firstId}`], projectId: "p1" });
+    store.insert({ content: "Acted on second cooled memory", tags: ["signal:memory_used", `memory_id:${secondId}`], projectId: "p1" });
+    db.close();
+
+    const config = loadDaemonConfig("/nonexistent");
+    config.daemon.port = 0;
+    config.restoration.promptSearchMinScore = 0;
+    config.restoration.surfacingCooldownWindow = 24;
+    config.restoration.resurfaceMargin = 10;
+    const daemon = await createDaemon(config);
+    const port = daemon.address().port;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/prompt-search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: "TypeScript build", cwd: tempDir, debug: true }),
+      });
+      const data = await res.json() as {
+        hints: string[];
+        ids: string[];
+        debug: { candidates: Array<{ id: string; cooledDown: boolean; surfaced: boolean }> };
+      };
+
+      expect(res.status).toBe(200);
+      expect(data.ids).toEqual([firstId]);
+      expect(data.hints).toHaveLength(1);
+      expect(data.debug.candidates).toHaveLength(2);
+      expect(data.debug.candidates.every((candidate) => candidate.cooledDown)).toBe(true);
+      expect(data.debug.candidates.filter((candidate) => candidate.surfaced)).toEqual([
+        expect.objectContaining({ id: firstId, surfaced: true }),
+      ]);
     } finally {
       await daemon.stop();
     }
@@ -581,6 +632,47 @@ describe("POST /prompt-search", () => {
         usageCount: 0,
         surfacingCount: 0,
       });
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it("treats invalid created_at values as neutral recency instead of dropping results", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-invalid-created-at-"));
+    tempDirs.push(tempDir);
+
+    const dbPath = projectDbPath(tempDir);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    runLcmMigrations(db);
+    const store = new PromotedStore(db);
+    const memoryId = store.insert({ content: "Use deno fmt before commit", tags: ["workflow"], projectId: "p1" });
+    db.prepare("UPDATE promoted SET created_at = ? WHERE id = ?").run("not-a-date", memoryId);
+    db.close();
+
+    const config = loadDaemonConfig("/nonexistent");
+    config.daemon.port = 0;
+    config.restoration.promptSearchMinScore = 0;
+    const daemon = await createDaemon(config);
+    const port = daemon.address().port;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/prompt-search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: "deno fmt", cwd: tempDir, debug: true }),
+      });
+      const data = await res.json() as {
+        hints: string[];
+        ids: string[];
+        debug: { candidates: Array<{ id: string; baseScore: number; finalScore: number }> };
+      };
+
+      expect(res.status).toBe(200);
+      expect(data.ids).toEqual([memoryId]);
+      expect(data.debug.candidates[0]).toMatchObject({ id: memoryId });
+      expect(Number.isFinite(data.debug.candidates[0].baseScore)).toBe(true);
+      expect(Number.isFinite(data.debug.candidates[0].finalScore)).toBe(true);
     } finally {
       await daemon.stop();
     }

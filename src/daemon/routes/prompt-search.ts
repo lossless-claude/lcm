@@ -1,9 +1,10 @@
 import { existsSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "../config.js";
 import { projectDbPath } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
+import { closeLcmConnection, getLcmConnection } from "../../db/connection.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { PromotedStore, type SearchResult } from "../../db/promoted.js";
 import { RecallStore, type RecallFeedback } from "../../db/recall.js";
@@ -35,7 +36,10 @@ function computeBaseScore(
   halfLife: number,
   crossSessionAffinity: number,
 ): number {
-  const ageHours = (now - new Date(result.createdAt).getTime()) / 3_600_000;
+  const createdAtMs = new Date(result.createdAt).getTime();
+  const ageHours = Number.isFinite(createdAtMs)
+    ? Math.max(0, (now - createdAtMs) / 3_600_000)
+    : 0;
   const recencyFactor = Math.pow(0.5, ageHours / halfLife);
 
   let sessionAffinity: number;
@@ -128,9 +132,10 @@ function applyCooldown(
   if (eligible.length === 0) return [];
 
   const bestNonCooled = eligible.find((result) => !result.cooledDown);
+  if (!bestNonCooled) return [eligible[0]];
+
   return eligible.filter((result) => {
     if (!result.cooledDown) return true;
-    if (!bestNonCooled) return false;
     return result.finalScore >= bestNonCooled.finalScore + Math.max(0, resurfaceMargin);
   });
 }
@@ -160,10 +165,11 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
       return;
     }
 
-    let db: InstanceType<typeof DatabaseSync> | undefined;
+    let db: DatabaseSync | undefined;
+    let openedDbPath: string | null = null;
     try {
-      db = new DatabaseSync(dbPath);
-      db.exec("PRAGMA busy_timeout = 5000");
+      db = getLcmConnection(dbPath);
+      openedDbPath = dbPath;
       runLcmMigrations(db);
 
       const store = new PromotedStore(db);
@@ -233,7 +239,7 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
     } catch {
       sendJson(res, 200, { hints: [] });
     } finally {
-      db?.close();
+      if (openedDbPath) closeLcmConnection(openedDbPath);
     }
   };
 }
