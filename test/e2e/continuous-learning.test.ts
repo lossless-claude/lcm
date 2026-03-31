@@ -31,7 +31,7 @@ describe("Continuous Learning", { timeout: 60_000 }, () => {
     // POST /store — should write to the promoted table
     const stored = await handle.client.post<{ stored: boolean; id: number | string }>("/store", {
       text,
-      tags: ["category:decision"],
+      tags: ["type:decision"],
       cwd: handle.tmpDir,
     });
     expect(stored.stored).toBe(true);
@@ -45,7 +45,7 @@ describe("Continuous Learning", { timeout: 60_000 }, () => {
       ).all("%SQLite%") as Array<{ content: string; tags: string }>;
       expect(rows.length).toBe(1);
       expect(rows[0].content).toContain("SQLite");
-      expect(JSON.parse(rows[0].tags)).toContain("category:decision");
+      expect(JSON.parse(rows[0].tags)).toContain("type:decision");
     } finally {
       close();
     }

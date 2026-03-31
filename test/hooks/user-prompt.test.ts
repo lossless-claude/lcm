@@ -128,7 +128,7 @@ describe("handleUserPromptSubmit", () => {
     );
     expect(result.stdout).toContain("<learning-instruction>");
     expect(result.stdout).toContain("lcm_store");
-    expect(result.stdout).toContain("category:decision");
+    expect(result.stdout).toContain("type:decision");
     expect(result.stdout).toContain("</learning-instruction>");
   });
 

@@ -166,7 +166,7 @@ describe("POST /restore", () => {
       const store = new PromotedStore(db);
       store.insert({
         content: "Always prefer async/await over callbacks",
-        tags: ["source:passive-capture", "category:pattern"],
+        tags: ["source:passive-capture", "type:pattern"],
         projectId: tmpDir,
         confidence: 0.75,
       });

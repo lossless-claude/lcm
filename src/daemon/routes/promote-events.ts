@@ -11,13 +11,13 @@ import type { DaemonConfig } from "../config.js";
 import { safeLogError } from "../../hooks/hook-errors.js";
 
 const AUTO_TAGS: Record<string, string> = {
-  decision: "category:preference",
-  error: "category:gotcha",      // overridden to "category:solution" for error→fix pairs
-  plan: "category:decision",
-  role: "category:user-context",
-  git: "category:workflow",
-  env: "category:environment",
-  file: "category:pattern",
+  decision: "type:preference",
+  error: "type:gotcha",      // overridden to "type:solution" for error→fix pairs
+  plan: "type:decision",
+  role: "type:user-context",
+  git: "type:workflow",
+  env: "type:environment",
+  file: "type:pattern",
 };
 
 const CORRELATION_WINDOW = 20;
@@ -60,7 +60,7 @@ function correlateErrors(events: EventRow[]): void {
         if (matchToken && candidatePrefix.includes(matchToken)) {
           // Correlation found — this is an error→fix pair
           // Set the tag to 'category:solution' (overriding 'category:gotcha' from AUTO_TAGS)
-          (candidate as EventRow & { auto_tag?: string }).auto_tag = "category:solution";
+          (candidate as EventRow & { auto_tag?: string }).auto_tag = "type:solution";
           (candidate as EventRow & { _correlatedErrorId?: number })._correlatedErrorId = event.event_id;
           break; // only correlate with closest match
         }

@@ -19,7 +19,8 @@ When you recognize a durable insight, call lcm_store immediately:
 - solution: non-trivial fix worth remembering
 - workflow: multi-step process that works
 
-Usage: lcm_store(text: "concise insight with why", tags: ["category:decision"])
+Tag prefixes: type: | scope: | project: | sprint: | source: | priority: | owner: | signal:
+Usage: lcm_store(text: "concise insight with why", tags: ["type:decision", "project:<repo>"])
 
 When you act on a surfaced memory (use it to inform a decision, avoid a known pitfall, or reference it in your work), emit:
 lcm_store(text: "Acted on memory <id> — <one-line how>", tags: ["signal:memory_used", "memory_id:<id>"])

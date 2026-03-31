@@ -107,7 +107,7 @@ describe("promote-events route", () => {
     // Verify it was called with decision confidence
     const call = vi.mocked(deduplicateAndInsert).mock.calls[0][0];
     expect(call.confidence).toBe(0.5);
-    expect(call.tags).toContain("category:preference");
+    expect(call.tags).toContain("type:preference");
     expect(call.tags).toContain("source:passive-capture");
   });
 
