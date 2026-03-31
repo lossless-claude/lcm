@@ -93,6 +93,7 @@ If install succeeds, `lcm` should now be available on PATH. If it is still not a
 | Error | Recovery |
 |---|---|
 | Daemon not running | Run `lcm start` via Bash, then retry |
+| "unauthorized" or version mismatch | Run `lcm daemon restart` via Bash, then retry — the daemon is likely running an older version than the MCP server expects |
 | "No results" from search | Try `lcm_grep` with different keywords, or broaden the query |
 | Node not found on expand | Use `lcm_search` to find the correct nodeId |
 | Store succeeds but daemon restarted before SessionEnd | Call `lcm_doctor` to verify persistence; re-store if the node is missing |
