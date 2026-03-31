@@ -68,7 +68,7 @@ function correlateErrors(events: EventRow[]): void {
         const matchToken = errorPrefix.split(":")[1]?.trim().split(" ")[0] ?? "";
         if (matchToken && candidatePrefix.includes(matchToken)) {
           // Correlation found — this is an error→fix pair
-          // Set the tag to 'category:solution' (overriding 'category:gotcha' from AUTO_TAGS)
+          // Set the tag to 'type:solution' (overriding 'type:gotcha' from AUTO_TAGS)
           (candidate as EventRow & { auto_tag?: string }).auto_tag = "type:solution";
           (candidate as EventRow & { _correlatedErrorId?: number })._correlatedErrorId = event.event_id;
           break; // only correlate with closest match
