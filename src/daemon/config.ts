@@ -25,6 +25,10 @@ export type DaemonConfig = {
     promptSearchMinScore: number;
     promptSearchMaxResults: number;
     promptSnippetLength: number;
+    maxInjectedMemoryBytes: number;
+    reservedForLearningInstruction: number;
+    maxInjectedMemoryItems: number;
+    dedupMinPrefix: number;
     recencyHalfLifeHours: number;
     crossSessionAffinity: number;
     recallUsageBoost: number;
@@ -67,6 +71,10 @@ const DEFAULTS: DaemonConfig = {
     promptSearchMinScore: 2,
     promptSearchMaxResults: 3,
     promptSnippetLength: 200,
+    maxInjectedMemoryBytes: 2048,
+    reservedForLearningInstruction: 1024,
+    maxInjectedMemoryItems: 3,
+    dedupMinPrefix: 64,
     recencyHalfLifeHours: 24,
     crossSessionAffinity: 0.85,
     recallUsageBoost: 0.75,
@@ -136,6 +144,24 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
       );
     }
     merged.llm.provider = e.LCM_SUMMARY_PROVIDER as DaemonConfig["llm"]["provider"];
+  }
+
+  // Migrate old config names to new names for backward compatibility
+  const oldNameMap: Record<string, string> = {
+    promptHintsByteBudget: "maxInjectedMemoryBytes",
+    promptHintsReservedForLearningInstruction: "reservedForLearningInstruction",
+    promptHintsMaxEmitted: "maxInjectedMemoryItems",
+    promptHintsDedupMinPrefix: "dedupMinPrefix",
+  };
+  for (const [oldName, newName] of Object.entries(oldNameMap)) {
+    const restoration = merged.restoration as Record<string, unknown>;
+    if (restoration[oldName] !== undefined) {
+      // Only migrate if the new name was not explicitly set by the user
+      if (restoration[newName] === (DEFAULTS.restoration as Record<string, unknown>)[newName]) {
+        restoration[newName] = restoration[oldName];
+      }
+      delete restoration[oldName];
+    }
   }
 
   // Anthropic API key fallback from env

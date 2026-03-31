@@ -46,6 +46,9 @@ describe("handleUserPromptSubmit", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("<memory-context>");
     expect(result.stdout).toContain("PostgreSQL");
+    expect(client.post).toHaveBeenCalledWith("/prompt-search", expect.objectContaining({
+      learningInstructionBytes: expect.any(Number),
+    }));
   });
 
   it("includes surfaced-memory-ids comment when ids are returned", async () => {
@@ -213,5 +216,24 @@ describe("handleUserPromptSubmit", () => {
     expect(mockClient.post).toHaveBeenCalledWith("/prompt-search", expect.any(Object));
     expect(result.stdout).toContain("<memory-context>");
     expect(result.stdout).toContain("recovered hint");
+  });
+
+  it("preserves surfaced-memory-ids only for hints returned by prompt-search", async () => {
+    mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
+    const mockClient = {
+      health: vi.fn(),
+      post: vi.fn().mockResolvedValue({
+        hints: ["Use Bun for scripts"],
+        ids: ["memory-1"],
+      }),
+    };
+
+    const result = await handleUserPromptSubmit(
+      JSON.stringify({ prompt: "scripts", cwd: "/tmp/test", session_id: "s1" }),
+      mockClient as any,
+    );
+
+    expect(result.stdout).toContain("<!-- surfaced-memory-ids: memory-1 -->");
+    expect(result.stdout).not.toContain("memory-2");
   });
 });

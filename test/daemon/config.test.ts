@@ -12,6 +12,10 @@ describe("loadDaemonConfig", () => {
     expect(c.restoration.recentSummaries).toBe(3);
     expect(c.restoration.recallUsageBoost).toBe(0.75);
     expect(c.restoration.surfacingCooldownWindow).toBe(2);
+    expect(c.restoration.maxInjectedMemoryBytes).toBe(2048);
+    expect(c.restoration.reservedForLearningInstruction).toBe(1024);
+    expect(c.restoration.maxInjectedMemoryItems).toBe(3);
+    expect(c.restoration.dedupMinPrefix).toBe(64);
     expect(c.version).toBe(1);
   });
 
@@ -154,6 +158,31 @@ describe("loadDaemonConfig", () => {
     });
     expect(config.hooks.snapshotIntervalSec).toBe(30);
     expect(config.hooks.disableAutoCompact).toBe(false);
+  });
+
+  it("allows overriding prompt hint budget settings", () => {
+    const config = loadDaemonConfig("/nonexistent", {
+      restoration: {
+        promptHintsByteBudget: 3072,
+        promptHintsReservedForLearningInstruction: 1400,
+        promptHintsMaxEmitted: 5,
+        promptHintsDedupMinPrefix: 80,
+      },
+    });
+    expect(config.restoration.maxInjectedMemoryBytes).toBe(3072);
+    expect(config.restoration.reservedForLearningInstruction).toBe(1400);
+    expect(config.restoration.maxInjectedMemoryItems).toBe(5);
+    expect(config.restoration.dedupMinPrefix).toBe(80);
+  });
+
+  it("prefers new config name over old name when both are present", () => {
+    const config = loadDaemonConfig("/nonexistent", {
+      restoration: {
+        maxInjectedMemoryBytes: 4096,
+        promptHintsByteBudget: 2048,
+      },
+    });
+    expect(config.restoration.maxInjectedMemoryBytes).toBe(4096);
   });
 });
 
