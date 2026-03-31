@@ -13,11 +13,13 @@ type DedupParams = {
   sessionId?: string;
   depth: number;
   confidence: number;
+  newEntryConfidence?: number;
   thresholds: DedupThresholds;
 };
 
 export async function deduplicateAndInsert(params: DedupParams): Promise<string> {
-  const { store, content, tags, projectId, sessionId, depth, confidence, thresholds } = params;
+  const { store, content, tags, projectId, sessionId, depth, confidence, newEntryConfidence, thresholds } = params;
+  const insertConfidence = newEntryConfidence ?? confidence;
 
   // Search for duplicates using FTS5, scoped to this project at the SQL level
   const candidates = store.search(content, thresholds.dedupCandidateLimit, undefined, projectId);
@@ -28,7 +30,7 @@ export async function deduplicateAndInsert(params: DedupParams): Promise<string>
   );
 
   if (duplicates.length === 0) {
-    return store.insert({ content, tags, projectId, sessionId, depth, confidence });
+    return store.insert({ content, tags, projectId, sessionId, depth, confidence: insertConfidence });
   }
 
   // Structural convergence: pick best BM25 match as canonical

@@ -43,6 +43,9 @@ function makeConfig(): DaemonConfig {
           batch: 0.3,
           pattern: 0.2,
         },
+        reinforcementBoost: 0.3,
+        maxConfidence: 1,
+        insightsMaxAgeDays: 90,
       },
     },
     restoration: { recentSummaries: 3, promptSearchMinScore: 10, promptSearchMaxResults: 3, promptSnippetLength: 200, recencyHalfLifeHours: 24, crossSessionAffinity: 0.5 },
@@ -147,6 +150,53 @@ describe("promote-events route", () => {
     const remaining = edb2.getUnprocessed();
     edb2.close();
     expect(remaining).toHaveLength(0);
+  });
+
+  it("bootstraps repeated priority 3 file patterns without a seeded memory", async () => {
+    const edb = new EventsDb(sidecarPath);
+    edb.insertEvent("s1", { type: "file_read", category: "file", data: "/src/main.ts (source)", priority: 3 }, "PostToolUse");
+    edb.insertEvent("s2", { type: "file_read", category: "file", data: "/src/main.ts (source)", priority: 3 }, "PostToolUse");
+    edb.insertEvent("s2", { type: "file_read", category: "file", data: "/src/main.ts (source)", priority: 3 }, "PostToolUse");
+    edb.close();
+
+    const db = setupProjectDb(dir);
+    db.close();
+
+    const reinforcementSpy = vi.spyOn(EventsDb.prototype, "getPatternReinforcement");
+    const handler = createPromoteEventsHandler(makeConfig());
+    const { res, getBody } = mockRes();
+    await handler({} as any, res, JSON.stringify({ cwd: dir }));
+
+    const result = getBody();
+    expect(result.promoted).toBe(3);
+    expect(deduplicateAndInsert).toHaveBeenCalledTimes(3);
+    expect(reinforcementSpy).toHaveBeenCalledTimes(1);
+
+    const call = vi.mocked(deduplicateAndInsert).mock.calls[0][0];
+    expect(call.confidence).toBe(0.2);
+    expect(call.newEntryConfidence).toBe(0.5);
+    expect(call.tags).toContain("signal:reinforced");
+    expect(call.tags).toContain("type:pattern");
+  });
+
+  it("does not bootstrap repeated priority 3 patterns from a single session burst", async () => {
+    const edb = new EventsDb(sidecarPath);
+    edb.insertEvent("s1", { type: "file_read", category: "file", data: "/src/main.ts (source)", priority: 3 }, "PostToolUse");
+    edb.insertEvent("s1", { type: "file_read", category: "file", data: "/src/main.ts (source)", priority: 3 }, "PostToolUse");
+    edb.insertEvent("s1", { type: "file_read", category: "file", data: "/src/main.ts (source)", priority: 3 }, "PostToolUse");
+    edb.close();
+
+    const db = setupProjectDb(dir);
+    db.close();
+
+    const handler = createPromoteEventsHandler(makeConfig());
+    const { res, getBody } = mockRes();
+    await handler({} as any, res, JSON.stringify({ cwd: dir }));
+
+    const result = getBody();
+    expect(result.promoted).toBe(0);
+    expect(result.skipped).toBe(3);
+    expect(deduplicateAndInsert).not.toHaveBeenCalled();
   });
 
   it("is idempotent — skips already-processed events", async () => {

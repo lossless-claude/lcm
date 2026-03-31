@@ -36,7 +36,12 @@ export interface HealthStats {
   lastError: string | null;
 }
 
-const SCHEMA_VERSION = 2;
+export interface PatternReinforcementStats {
+  totalCount: number;
+  distinctSessions: number;
+}
+
+const SCHEMA_VERSION = 3;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -55,6 +60,7 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_unprocessed ON events(processed_at) WHERE processed_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_events_pattern_lookup ON events(type, category, data, created_at);
 CREATE TABLE IF NOT EXISTS error_log (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   hook       TEXT NOT NULL,
@@ -108,7 +114,7 @@ export class EventsDb {
     // Handle empty schema_version table (table exists but has no rows)
     if (!versionRow) {
       this.db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(SCHEMA_VERSION);
-      // Ensure v2 tables exist even in this edge case
+      // Ensure latest tables and indexes exist even in this edge case.
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS error_log (
           id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,26 +124,34 @@ export class EventsDb {
           created_at TEXT DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_error_log_created ON error_log(created_at);
+        CREATE INDEX IF NOT EXISTS idx_events_pattern_lookup ON events(type, category, data, created_at);
       `);
       return;
     }
 
     const currentVersion = versionRow.version;
 
-    if (currentVersion < 2) {
+    if (currentVersion < SCHEMA_VERSION) {
       this.db.exec("BEGIN EXCLUSIVE");
       try {
-        this.db.exec(`
-          CREATE TABLE IF NOT EXISTS error_log (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            hook       TEXT NOT NULL,
-            error      TEXT NOT NULL,
-            session_id TEXT,
-            created_at TEXT DEFAULT (datetime('now'))
+        if (currentVersion < 2) {
+          this.db.exec(`
+            CREATE TABLE IF NOT EXISTS error_log (
+              id         INTEGER PRIMARY KEY AUTOINCREMENT,
+              hook       TEXT NOT NULL,
+              error      TEXT NOT NULL,
+              session_id TEXT,
+              created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_error_log_created ON error_log(created_at);
+          `);
+        }
+        if (currentVersion < 3) {
+          this.db.exec(
+            "CREATE INDEX IF NOT EXISTS idx_events_pattern_lookup ON events(type, category, data, created_at)"
           );
-          CREATE INDEX IF NOT EXISTS idx_error_log_created ON error_log(created_at);
-        `);
-        this.db.prepare("UPDATE schema_version SET version = 2").run();
+        }
+        this.db.prepare("UPDATE schema_version SET version = ?").run(SCHEMA_VERSION);
         this.db.exec("COMMIT");
       } catch (e) {
         try { this.db.exec("ROLLBACK"); } catch { /* ignore */ }
@@ -185,6 +199,20 @@ export class EventsDb {
   setPrevEventId(eventId: number, prevEventId: number): void {
     this.db.prepare("UPDATE events SET prev_event_id = ? WHERE event_id = ?")
       .run(prevEventId, eventId);
+  }
+
+  getPatternReinforcement(type: string, category: string, data: string, maxAgeDays = 90): PatternReinforcementStats {
+    const row = this.db.prepare(
+      `SELECT COUNT(*) as totalCount,
+              COUNT(DISTINCT session_id) as distinctSessions
+       FROM events
+       WHERE type = ?
+         AND category = ?
+         AND data = ?
+         AND created_at >= datetime('now', '-' || ? || ' days')`
+    ).get(type, category, data, maxAgeDays) as unknown as PatternReinforcementStats | undefined;
+
+    return row ?? { totalCount: 0, distinctSessions: 0 };
   }
 
   logHookError(hook: string, error: unknown, sessionId?: string): void {

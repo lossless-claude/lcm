@@ -40,7 +40,7 @@ Events are promoted to cross-session memory at session boundaries (session-end, 
 
 **Tier 2 — Batch promotion** (priority 2): Git and environment events are promoted with moderate confidence (0.3).
 
-**Tier 3 — Pattern reinforcement** (priority 3): File access and tool usage events are only promoted if they match an existing entry in the promoted store. This prevents low-signal noise from flooding memory.
+**Tier 3 — Pattern reinforcement** (priority 3): File access and tool usage events start as low-confidence signals. A one-off event is skipped unless it matches an existing entry in the promoted store. To bootstrap a new promotion without a seed, the same pattern must appear at least three times across at least two distinct sessions in recent sidecar history. That reinforcement boost only applies on the insert path for a new memory, not when re-confirming an already-promoted entry.
 
 ### Error→Fix Correlation
 
@@ -73,13 +73,15 @@ All thresholds are configurable in `~/.lossless-claude/config.json` under `compa
 }
 ```
 
+When a pattern crosses the reinforcement threshold, `reinforcementBoost` is added to the base pattern confidence, capped by `maxConfidence`, only when bootstrapping a new promoted entry.
+
 ## Data Storage
 
 - **Sidecar DB**: `~/.lossless-claude/events/<sha256-of-project-path>.db`
   - Per-project SQLite database in WAL mode
   - Processed events pruned after 7 days
   - Unprocessed events capped at 10,000 rows (oldest pruned first)
-  - Schema versioned for future migrations (currently v2)
+  - Schema versioned for future migrations (currently v3)
 
 - **Error log**: `error_log` table in each sidecar DB
   - Records hook errors with timestamp and session ID
