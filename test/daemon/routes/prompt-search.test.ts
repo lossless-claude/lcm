@@ -10,7 +10,7 @@ import { PromotedStore } from "../../../src/db/promoted.js";
 import { projectDbPath } from "../../../src/daemon/project.js";
 
 // ---------------------------------------------------------------------------
-// Pure scoring math — mirrors the formula in src/daemon/routes/prompt-search.ts
+// Base scoring math — mirrors the pre-feedback score in prompt-search.
 // ---------------------------------------------------------------------------
 
 function scoreResult(opts: {
@@ -391,6 +391,288 @@ describe("POST /prompt-search", () => {
       expect(data.hints.length).toBeGreaterThanOrEqual(1);
       expect(data.hints[0].length).toBeLessThanOrEqual(53); // 50 + "..."
       expect(data.hints[0].endsWith("...")).toBe(true);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it("reranks acted-upon memories above otherwise similar unused memories", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-usage-"));
+    tempDirs.push(tempDir);
+
+    const dbPath = projectDbPath(tempDir);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    runLcmMigrations(db);
+    const store = new PromotedStore(db);
+    const unusedId = store.insert({ content: "Use SQLite for project storage", tags: ["decision"], projectId: "p1" });
+    const usedId = store.insert({ content: "Use SQLite for project storage", tags: ["decision"], projectId: "p1" });
+    store.insert({ content: "Acted on stored memory", tags: ["signal:memory_used", `memory_id:${usedId}`], projectId: "p1" });
+    store.insert({ content: "Acted on stored memory again", tags: ["signal:memory_used", `memory_id:${usedId}`], projectId: "p1" });
+    db.close();
+
+    const config = loadDaemonConfig("/nonexistent");
+    config.daemon.port = 0;
+    config.restoration.promptSearchMinScore = 0;
+    config.restoration.recallUsageBoost = 1.5;
+    config.restoration.recallUsageSmoothing = 1;
+    const daemon = await createDaemon(config);
+    const port = daemon.address().port;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/prompt-search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: "SQLite storage", cwd: tempDir, debug: true }),
+      });
+      const data = await res.json() as {
+        hints: string[];
+        ids: string[];
+        debug: { candidates: Array<{ id: string; usageCount: number; finalScore: number }> };
+      };
+
+      expect(res.status).toBe(200);
+      expect(data.ids[0]).toBe(usedId);
+      expect(data.ids).toContain(unusedId);
+      expect(data.debug.candidates[0].id).toBe(usedId);
+      expect(data.debug.candidates[0].usageCount).toBe(2);
+      expect(data.debug.candidates[0].finalScore).toBeGreaterThan(data.debug.candidates[1].finalScore);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it("suppresses recently surfaced memories unless they clear the resurface margin", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-cooldown-"));
+    tempDirs.push(tempDir);
+
+    const dbPath = projectDbPath(tempDir);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    runLcmMigrations(db);
+    const store = new PromotedStore(db);
+    const cooledId = store.insert({ content: "TypeScript build convention", tags: ["decision"], projectId: "p1" });
+    const freshId = store.insert({ content: "TypeScript build convention", tags: ["decision"], projectId: "p1" });
+    db.prepare("INSERT INTO recall_surfacing (memory_id, session_id) VALUES (?, ?)").run(cooledId, "sess-a");
+    db.close();
+
+    const config = loadDaemonConfig("/nonexistent");
+    config.daemon.port = 0;
+    config.restoration.promptSearchMinScore = 0;
+    config.restoration.surfacingCooldownWindow = 24;
+    config.restoration.resurfaceMargin = 10;
+    config.restoration.unusedSurfacingPenalty = 0;
+    const daemon = await createDaemon(config);
+    const port = daemon.address().port;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/prompt-search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: "TypeScript build", cwd: tempDir, debug: true }),
+      });
+      const data = await res.json() as {
+        hints: string[];
+        ids: string[];
+        debug: { candidates: Array<{ id: string; cooledDown: boolean }> };
+      };
+
+      expect(res.status).toBe(200);
+      expect(data.ids).toEqual([freshId]);
+      expect(data.ids).not.toContain(cooledId);
+      expect(data.debug.candidates.find((candidate) => candidate.id === cooledId)).toMatchObject({
+        id: cooledId,
+        cooledDown: true,
+      });
+      expect(data.debug.candidates.find((candidate) => candidate.id === freshId)).toMatchObject({
+        id: freshId,
+        cooledDown: false,
+      });
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it("falls back to the best cooled candidate when every eligible result is in cooldown", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-all-cooled-"));
+    tempDirs.push(tempDir);
+
+    const dbPath = projectDbPath(tempDir);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    runLcmMigrations(db);
+    const store = new PromotedStore(db);
+    const firstId = store.insert({ content: "TypeScript build convention", tags: ["workflow"], projectId: "p1" });
+    const secondId = store.insert({ content: "TypeScript build convention", tags: ["workflow"], projectId: "p1" });
+    db.prepare("INSERT INTO recall_surfacing (memory_id, session_id) VALUES (?, ?)").run(firstId, "sess-a");
+    db.prepare("INSERT INTO recall_surfacing (memory_id, session_id) VALUES (?, ?)").run(secondId, "sess-b");
+    store.insert({ content: "Acted on first cooled memory", tags: ["signal:memory_used", `memory_id:${firstId}`], projectId: "p1" });
+    store.insert({ content: "Acted on second cooled memory", tags: ["signal:memory_used", `memory_id:${secondId}`], projectId: "p1" });
+    db.close();
+
+    const config = loadDaemonConfig("/nonexistent");
+    config.daemon.port = 0;
+    config.restoration.promptSearchMinScore = 0;
+    config.restoration.surfacingCooldownWindow = 24;
+    config.restoration.resurfaceMargin = 10;
+    const daemon = await createDaemon(config);
+    const port = daemon.address().port;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/prompt-search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: "TypeScript build", cwd: tempDir, debug: true }),
+      });
+      const data = await res.json() as {
+        hints: string[];
+        ids: string[];
+        debug: { candidates: Array<{ id: string; cooledDown: boolean; surfaced: boolean }> };
+      };
+
+      expect(res.status).toBe(200);
+      expect(data.ids).toEqual([firstId]);
+      expect(data.hints).toHaveLength(1);
+      expect(data.debug.candidates).toHaveLength(2);
+      expect(data.debug.candidates.every((candidate) => candidate.cooledDown)).toBe(true);
+      expect(data.debug.candidates.filter((candidate) => candidate.surfaced)).toEqual([
+        expect.objectContaining({ id: firstId, surfaced: true }),
+      ]);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it("penalizes repeatedly surfaced memories that were never acted upon", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-unused-"));
+    tempDirs.push(tempDir);
+
+    const dbPath = projectDbPath(tempDir);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    runLcmMigrations(db);
+    const store = new PromotedStore(db);
+    const staleId = store.insert({ content: "Bun test runner", tags: ["workflow"], projectId: "p1" });
+    const freshId = store.insert({ content: "Bun test runner", tags: ["workflow"], projectId: "p1" });
+    for (let i = 0; i < 3; i++) {
+      db.prepare("INSERT INTO recall_surfacing (memory_id, session_id) VALUES (?, ?)").run(staleId, `sess-${i}`);
+    }
+    db.close();
+
+    const config = loadDaemonConfig("/nonexistent");
+    config.daemon.port = 0;
+    config.restoration.promptSearchMinScore = 0;
+    config.restoration.surfacingCooldownWindow = 0;
+    config.restoration.unusedSurfacingPenalty = 1;
+    const daemon = await createDaemon(config);
+    const port = daemon.address().port;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/prompt-search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: "Bun test", cwd: tempDir, debug: true }),
+      });
+      const data = await res.json() as {
+        hints: string[];
+        ids: string[];
+        debug: { candidates: Array<{ id: string; surfacingCount: number; usageCount: number }> };
+      };
+
+      expect(res.status).toBe(200);
+      expect(data.ids[0]).toBe(freshId);
+      expect(data.debug.candidates[0].id).toBe(freshId);
+      expect(data.debug.candidates[0].usageCount).toBe(0);
+      expect(data.debug.candidates[1]).toMatchObject({
+        id: staleId,
+        surfacingCount: 3,
+        usageCount: 0,
+      });
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it("falls back to baseline ordering when no recall feedback exists", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-fallback-"));
+    tempDirs.push(tempDir);
+
+    const dbPath = projectDbPath(tempDir);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    runLcmMigrations(db);
+    const store = new PromotedStore(db);
+    const firstId = store.insert({ content: "Node worker pool", tags: ["workflow"], projectId: "p1" });
+    const secondId = store.insert({ content: "Node worker pool", tags: ["workflow"], projectId: "p1" });
+    db.close();
+
+    const config = loadDaemonConfig("/nonexistent");
+    config.daemon.port = 0;
+    config.restoration.promptSearchMinScore = 0;
+    const daemon = await createDaemon(config);
+    const port = daemon.address().port;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/prompt-search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: "Node worker", cwd: tempDir, debug: true }),
+      });
+      const data = await res.json() as {
+        hints: string[];
+        ids: string[];
+        debug: { candidates: Array<{ id: string; usageCount: number; surfacingCount: number }> };
+      };
+
+      expect(res.status).toBe(200);
+      expect(data.ids[0]).toBe(firstId);
+      expect(data.ids[1]).toBe(secondId);
+      expect(data.debug.candidates[0]).toMatchObject({
+        id: firstId,
+        usageCount: 0,
+        surfacingCount: 0,
+      });
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it("treats invalid created_at values as neutral recency instead of dropping results", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-invalid-created-at-"));
+    tempDirs.push(tempDir);
+
+    const dbPath = projectDbPath(tempDir);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    runLcmMigrations(db);
+    const store = new PromotedStore(db);
+    const memoryId = store.insert({ content: "Use deno fmt before commit", tags: ["workflow"], projectId: "p1" });
+    db.prepare("UPDATE promoted SET created_at = ? WHERE id = ?").run("not-a-date", memoryId);
+    db.close();
+
+    const config = loadDaemonConfig("/nonexistent");
+    config.daemon.port = 0;
+    config.restoration.promptSearchMinScore = 0;
+    const daemon = await createDaemon(config);
+    const port = daemon.address().port;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/prompt-search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: "deno fmt", cwd: tempDir, debug: true }),
+      });
+      const data = await res.json() as {
+        hints: string[];
+        ids: string[];
+        debug: { candidates: Array<{ id: string; baseScore: number; finalScore: number }> };
+      };
+
+      expect(res.status).toBe(200);
+      expect(data.ids).toEqual([memoryId]);
+      expect(data.debug.candidates[0]).toMatchObject({ id: memoryId });
+      expect(Number.isFinite(data.debug.candidates[0].baseScore)).toBe(true);
+      expect(Number.isFinite(data.debug.candidates[0].finalScore)).toBe(true);
     } finally {
       await daemon.stop();
     }

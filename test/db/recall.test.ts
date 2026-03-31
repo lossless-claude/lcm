@@ -167,3 +167,91 @@ describe("RecallStore.getStats", () => {
     expect(stats.recallPrecision).toBeNull();
   });
 });
+
+describe("RecallStore.getFeedback", () => {
+  it("aggregates usage counts and surfacing metadata for requested memories", () => {
+    const db = makeDb();
+    const promoted = new PromotedStore(db);
+    const recall = new RecallStore(db);
+
+    const usedId = promoted.insert({ content: "Use SQLite", tags: ["decision"], projectId: "p1" });
+    const unusedId = promoted.insert({ content: "Use Bun", tags: ["decision"], projectId: "p1" });
+
+    recall.logSurfacing([usedId, usedId, unusedId], "sess-a");
+    promoted.insert({
+      content: "Acted on SQLite choice",
+      tags: ["signal:memory_used", `memory_id:${usedId}`],
+      projectId: "p1",
+    });
+    promoted.insert({
+      content: "Acted on SQLite choice again",
+      tags: ["signal:memory_used", `memory_id:${usedId}`],
+      projectId: "p1",
+    });
+
+    const feedback = recall.getFeedback([usedId, unusedId]);
+
+    expect(feedback.get(usedId)).toMatchObject({
+      usageCount: 2,
+      surfacingCount: 2,
+    });
+    expect(feedback.get(usedId)?.lastSurfacedAt).toEqual(expect.any(String));
+    expect(feedback.get(unusedId)).toMatchObject({
+      usageCount: 0,
+      surfacingCount: 1,
+    });
+  });
+
+  it("returns zeroed feedback for unknown memory ids", () => {
+    const db = makeDb();
+    const recall = new RecallStore(db);
+
+    const feedback = recall.getFeedback(["missing-id"]);
+
+    expect(feedback.get("missing-id")).toEqual({
+      usageCount: 0,
+      surfacingCount: 0,
+      lastSurfacedAt: null,
+    });
+  });
+
+  it("treats underscores in memory_id tags as literal characters", () => {
+    const db = makeDb();
+    const recall = new RecallStore(db);
+
+    db.prepare(
+      `INSERT INTO promoted (id, content, tags, source_summary_id, project_id, session_id, depth, confidence)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      "signal-a",
+      "Used memory with underscore",
+      JSON.stringify(["signal:memory_used", "memory_id:memory_1"]),
+      null,
+      "p1",
+      null,
+      0,
+      1,
+    );
+    db.prepare(
+      `INSERT INTO promoted (id, content, tags, source_summary_id, project_id, session_id, depth, confidence)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      "signal-b",
+      "Used similar memory",
+      JSON.stringify(["signal:memory_used", "memory_id:memoryA1"]),
+      null,
+      "p1",
+      null,
+      0,
+      1,
+    );
+
+    const feedback = recall.getFeedback(["memory_1"]);
+
+    expect(feedback.get("memory_1")).toEqual({
+      usageCount: 1,
+      surfacingCount: 0,
+      lastSurfacedAt: null,
+    });
+  });
+});

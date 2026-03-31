@@ -10,6 +10,8 @@ describe("loadDaemonConfig", () => {
     expect(c.llm.model).toBe("");
     expect(c.compaction.leafTokens).toBe(1000);
     expect(c.restoration.recentSummaries).toBe(3);
+    expect(c.restoration.recallUsageBoost).toBe(0.75);
+    expect(c.restoration.surfacingCooldownWindow).toBe(2);
     expect(c.version).toBe(1);
   });
 

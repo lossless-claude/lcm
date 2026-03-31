@@ -20,7 +20,19 @@ export type DaemonConfig = {
     leafTokens: number; maxDepth: number; autoCompactMinTokens: number;
     promotionThresholds: { minDepth: number; compressionRatio: number; keywords: Record<string, string[]>; architecturePatterns: string[]; dedupBm25Threshold: number; dedupCandidateLimit: number; eventConfidence?: { decision?: number; plan?: number; errorFix?: number; batch?: number; pattern?: number }; reinforcementBoost?: number; maxConfidence?: number; insightsMaxAgeDays?: number };
   };
-  restoration: { recentSummaries: number; promptSearchMinScore: number; promptSearchMaxResults: number; promptSnippetLength: number; recencyHalfLifeHours: number; crossSessionAffinity: number };
+  restoration: {
+    recentSummaries: number;
+    promptSearchMinScore: number;
+    promptSearchMaxResults: number;
+    promptSnippetLength: number;
+    recencyHalfLifeHours: number;
+    crossSessionAffinity: number;
+    recallUsageBoost: number;
+    recallUsageSmoothing: number;
+    surfacingCooldownWindow: number;
+    resurfaceMargin: number;
+    unusedSurfacingPenalty: number;
+  };
   llm: { provider: "auto" | "claude-process" | "codex-process" | "anthropic" | "openai" | "disabled"; model: string; apiKey?: string; baseURL: string };
   summarizer: { mock: boolean };
   security: SecurityConfig;
@@ -50,7 +62,19 @@ const DEFAULTS: DaemonConfig = {
       insightsMaxAgeDays: 90,
     },
   },
-  restoration: { recentSummaries: 3, promptSearchMinScore: 2, promptSearchMaxResults: 3, promptSnippetLength: 200, recencyHalfLifeHours: 24, crossSessionAffinity: 0.85 },
+  restoration: {
+    recentSummaries: 3,
+    promptSearchMinScore: 2,
+    promptSearchMaxResults: 3,
+    promptSnippetLength: 200,
+    recencyHalfLifeHours: 24,
+    crossSessionAffinity: 0.85,
+    recallUsageBoost: 0.75,
+    recallUsageSmoothing: 1,
+    surfacingCooldownWindow: 2,
+    resurfaceMargin: 0.75,
+    unusedSurfacingPenalty: 0.15,
+  },
   llm: { provider: "auto", model: "", apiKey: "", baseURL: "" },
   summarizer: { mock: false },
   security: {
