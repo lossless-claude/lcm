@@ -302,7 +302,7 @@ export function printStats(stats: OverallStats, verbose: boolean): void {
       console.log(sectionHeader("Stale Memories"));
       console.log();
       console.log(`    ${dim}candidates${reset}  ${yellow}${stats.staleCount}${reset} promoted memories may be stale`);
-      console.log(`    ${dim}${reset}           Run ${cyan}lcm review-stale${reset} to inspect and archive.`);
+      console.log(`    ${dim}${reset}           Call ${cyan}POST /review-stale${reset} to inspect and archive.`);
     }
 
     const compactedDetails = stats.conversationDetails.filter((c) => c.summaries > 0);

@@ -210,10 +210,12 @@ export class PromotedStore {
     projectId?: string;
   }): Array<PromotedRow & { surfacingCount: number; usageCount: number; daysSinceCreated: number }> {
     const cutoffMs = Date.now() - opts.staleAfterDays * 24 * 60 * 60 * 1000;
-    const cutoffIso = new Date(cutoffMs).toISOString();
+    // Use SQLite datetime format (YYYY-MM-DD HH:MM:SS) to match created_at,
+    // which is stored via datetime('now'). ISO-8601 with T/Z sorts incorrectly.
+    const cutoff = new Date(cutoffMs).toISOString().replace("T", " ").replace(/\.\d{3}Z$/, "");
 
     let sql = `SELECT * FROM promoted WHERE archived_at IS NULL AND created_at < ?`;
-    const params: (string | number)[] = [cutoffIso];
+    const params: (string | number)[] = [cutoff];
 
     if (opts.projectId) {
       sql += " AND project_id = ?";
@@ -222,28 +224,45 @@ export class PromotedStore {
     sql += " ORDER BY created_at ASC";
 
     const rows = this.db.prepare(sql).all(...params) as PromotedRow[];
+    if (rows.length === 0) return [];
 
-    // Enrich with recall stats
+    // Batch: get surfacing counts for all candidate IDs in one query
+    const ids = rows.map((r) => r.id);
+    const placeholders = ids.map(() => "?").join(",");
+
+    const surfacingRows = this.db.prepare(
+      `SELECT memory_id, COUNT(*) as count FROM recall_surfacing
+       WHERE memory_id IN (${placeholders})
+       GROUP BY memory_id`
+    ).all(...ids) as Array<{ memory_id: string; count: number }>;
+    const surfacingMap = new Map(surfacingRows.map((r) => [r.memory_id, r.count]));
+
+    // Batch: count usage via signal:memory_used tags in one query
+    const usageClauses = ids.map(() =>
+      `tags LIKE '%"signal:memory_used"%' AND tags LIKE ?`
+    );
+    // Simpler approach: single query counting rows that match any target id
+    const usageRows = this.db.prepare(
+      `SELECT tags FROM promoted
+       WHERE archived_at IS NULL
+       AND tags LIKE '%"signal:memory_used"%'`
+    ).all() as Array<{ tags: string }>;
+    const usageMap = new Map<string, number>();
+    for (const row of usageRows) {
+      for (const id of ids) {
+        if (row.tags.includes(`"memory_id:${id}"`)) {
+          usageMap.set(id, (usageMap.get(id) ?? 0) + 1);
+        }
+      }
+    }
+
     const result: Array<PromotedRow & { surfacingCount: number; usageCount: number; daysSinceCreated: number }> = [];
 
     for (const row of rows) {
-      const surfacing = this.db.prepare(
-        `SELECT COUNT(*) as count FROM recall_surfacing WHERE memory_id = ?`
-      ).get(row.id) as { count: number } | undefined;
-      const surfacingCount = surfacing?.count ?? 0;
-
-      // Count usage via signal:memory_used tags
-      const usageRow = this.db.prepare(
-        `SELECT COUNT(*) as count FROM promoted
-         WHERE archived_at IS NULL
-         AND tags LIKE '%"signal:memory_used"%'
-         AND tags LIKE ?`
-      ).get(`%"memory_id:${row.id}"%`) as { count: number } | undefined;
-      const usageCount = usageRow?.count ?? 0;
-
+      const surfacingCount = surfacingMap.get(row.id) ?? 0;
+      const usageCount = usageMap.get(row.id) ?? 0;
       const daysSinceCreated = Math.floor((Date.now() - Date.parse(row.created_at)) / (24 * 60 * 60 * 1000));
 
-      // Stale if: surfaced multiple times without being acted upon
       const surfacedWithoutUse = surfacingCount >= opts.staleSurfacingWithoutUseLimit && usageCount === 0;
       const purelyOld = surfacingCount === 0 && usageCount === 0;
 
@@ -262,13 +281,21 @@ export class PromotedStore {
       | undefined;
     if (!row) return;
 
-    this.db.prepare("UPDATE promoted SET archived_at = NULL WHERE id = ?").run(id);
-    // Re-add to FTS
+    // Wrap in transaction so the row and FTS stay in sync
+    this.db.exec("BEGIN");
     try {
-      this.db.prepare("INSERT INTO promoted_fts (rowid, content, tags) VALUES (?, ?, ?)").run(
-        row.rowid, row.content, row.tags
-      );
-    } catch { /* already in FTS — non-fatal */ }
+      this.db.prepare("UPDATE promoted SET archived_at = NULL WHERE id = ?").run(id);
+      // Re-add to FTS — ignore if already present
+      try {
+        this.db.prepare("INSERT INTO promoted_fts (rowid, content, tags) VALUES (?, ?, ?)").run(
+          row.rowid, row.content, row.tags
+        );
+      } catch { /* already in FTS — non-fatal */ }
+      this.db.exec("COMMIT");
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
   }
 
   transaction(fn: () => void): void {

@@ -152,7 +152,7 @@ LCM identifies stale candidates by combining age with recall feedback signals:
 
 ### Inspecting stale candidates
 
-Use `lcm review-stale` or call the `/review-stale` daemon endpoint to list stale candidates with their surfacing and usage counts.
+Call the `/review-stale` daemon endpoint with `{ "cwd": "/path/to/project" }` to list stale candidates with their surfacing and usage counts.
 
 ### Archiving and reviving
 
