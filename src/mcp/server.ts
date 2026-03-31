@@ -1,7 +1,8 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { DaemonClient } from "../daemon/client.js";
 import { loadDaemonConfig } from "../daemon/config.js";
@@ -130,6 +131,9 @@ export function getMcpToolDefinitions() { return TOOLS; }
 export type DaemonRequestOpts = {
   port: number;
   pidFilePath: string;
+  spawnCommand?: string;
+  spawnArgs?: string[];
+  expectedVersion?: string;
   _ensureDaemon?: typeof ensureDaemon;
 };
 
@@ -164,7 +168,12 @@ export async function handleDaemonRequest(
     // Coalesce concurrent restart attempts so only one ensureDaemon() runs per port.
     const ensure = opts._ensureDaemon ?? ensureDaemon;
     if (!restartInFlight.has(opts.port)) {
-      const p = ensure({ port: opts.port, pidFilePath: opts.pidFilePath, spawnTimeoutMs: 10000 })
+      const p = ensure({
+          port: opts.port, pidFilePath: opts.pidFilePath, spawnTimeoutMs: 10000,
+          expectedVersion: opts.expectedVersion,
+          spawnCommand: opts.spawnCommand,
+          spawnArgs: opts.spawnArgs,
+        })
         .catch(() => { /* non-fatal */ })
         .finally(() => { restartInFlight.delete(opts.port); });
       restartInFlight.set(opts.port, p);
@@ -185,7 +194,13 @@ export async function startMcpServer(): Promise<void> {
   const port = config.daemon.port;
   const pidFilePath = join(homedir(), ".lossless-claude", "daemon.pid");
 
-  await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 10000, expectedVersion: PKG_VERSION });
+  const lcmBin = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "lcm.mjs");
+  await ensureDaemon({
+    port, pidFilePath, spawnTimeoutMs: 10000,
+    expectedVersion: PKG_VERSION,
+    spawnCommand: process.execPath,
+    spawnArgs: [lcmBin, "daemon", "start"],
+  });
 
   const client = new DaemonClient(`http://127.0.0.1:${port}`);
   const server = new Server({ name: "lcm", version: "1.0.0" }, { capabilities: { tools: {} } });
@@ -224,7 +239,12 @@ export async function startMcpServer(): Promise<void> {
     const route = TOOL_ROUTES[req.params.name];
     if (!route) return { content: [{ type: "text", text: `Unknown tool: ${req.params.name}` }], isError: true };
     const body = { ...filteredArgs, cwd: process.env.PWD ?? process.cwd() };
-    return handleDaemonRequest(client, route, body, { port, pidFilePath });
+    return handleDaemonRequest(client, route, body, {
+      port, pidFilePath,
+      spawnCommand: process.execPath,
+      spawnArgs: [lcmBin, "daemon", "start"],
+      expectedVersion: PKG_VERSION,
+    });
   });
 
   const transport = new StdioServerTransport();

@@ -83,7 +83,7 @@ export function createPromoteEventsHandler(config: DaemonConfig): RouteHandler {
       cwd = validateCwd(input.cwd);
     } catch (err) {
       // Log the detailed error server-side and return a generic message to the client
-      safeLogError(err, "validateCwd failed in promote-events");
+      safeLogError("promote-events", err, {});
       sendJson(res, 400, { error: "cwd is invalid" });
       return;
     }
@@ -195,7 +195,7 @@ export function createPromoteEventsHandler(config: DaemonConfig): RouteHandler {
       }
     } catch (error) {
       // Log detailed failure but avoid exposing internal error/stack info to the client
-      safeLogError(error, "PromoteEventsHandler failed");
+      safeLogError("promote-events", error, { cwd });
       sendJson(res, 500, { error: "failed to promote events" });
       return;
     }
