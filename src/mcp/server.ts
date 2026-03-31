@@ -131,6 +131,9 @@ export function getMcpToolDefinitions() { return TOOLS; }
 export type DaemonRequestOpts = {
   port: number;
   pidFilePath: string;
+  spawnCommand?: string;
+  spawnArgs?: string[];
+  expectedVersion?: string;
   _ensureDaemon?: typeof ensureDaemon;
 };
 
@@ -165,7 +168,12 @@ export async function handleDaemonRequest(
     // Coalesce concurrent restart attempts so only one ensureDaemon() runs per port.
     const ensure = opts._ensureDaemon ?? ensureDaemon;
     if (!restartInFlight.has(opts.port)) {
-      const p = ensure({ port: opts.port, pidFilePath: opts.pidFilePath, spawnTimeoutMs: 10000 })
+      const p = ensure({
+          port: opts.port, pidFilePath: opts.pidFilePath, spawnTimeoutMs: 10000,
+          expectedVersion: opts.expectedVersion,
+          spawnCommand: opts.spawnCommand,
+          spawnArgs: opts.spawnArgs,
+        })
         .catch(() => { /* non-fatal */ })
         .finally(() => { restartInFlight.delete(opts.port); });
       restartInFlight.set(opts.port, p);
@@ -231,7 +239,12 @@ export async function startMcpServer(): Promise<void> {
     const route = TOOL_ROUTES[req.params.name];
     if (!route) return { content: [{ type: "text", text: `Unknown tool: ${req.params.name}` }], isError: true };
     const body = { ...filteredArgs, cwd: process.env.PWD ?? process.cwd() };
-    return handleDaemonRequest(client, route, body, { port, pidFilePath });
+    return handleDaemonRequest(client, route, body, {
+      port, pidFilePath,
+      spawnCommand: process.execPath,
+      spawnArgs: [lcmBin, "daemon", "start"],
+      expectedVersion: PKG_VERSION,
+    });
   });
 
   const transport = new StdioServerTransport();
