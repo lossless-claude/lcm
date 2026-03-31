@@ -42,17 +42,19 @@ function fitHintWithinBudget(
   }
 
   const baseHint = trimTrailingEllipsis(candidate.hint);
+  const baseHintCodePoints = Array.from(baseHint);
 
-  // Binary search for the longest prefix that fits within the budget.
-  // Buffer.byteLength is monotonically non-decreasing as prefix length grows
-  // (each additional UTF-8 character adds ≥ 1 byte), so binary search is valid.
+  // Binary search for the longest prefix (in Unicode code points) that fits within the budget.
+  // Using code points ensures Buffer.byteLength is monotonically non-decreasing as prefix length grows,
+  // avoiding issues with UTF-16 surrogate pairs that could break string.slice()-based truncation.
   let lo = 0;
-  let hi = baseHint.length - 1;
+  let hi = baseHintCodePoints.length - 1;
   let bestFit: string | null = null;
 
   while (lo <= hi) {
     const mid = (lo + hi) >>> 1;
-    const truncated = `${baseHint.slice(0, mid + 1).trimEnd()}...`;
+    const truncatedBase = baseHintCodePoints.slice(0, mid + 1).join("");
+    const truncated = `${truncatedBase.trimEnd()}...`;
     const block = buildMemoryContext(
       [...selected.map((entry) => entry.hint), truncated],
       [...selected.map((entry) => entry.id), candidate.id],

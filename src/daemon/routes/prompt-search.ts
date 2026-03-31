@@ -141,26 +141,71 @@ function applyCooldown(
   });
 }
 
+/** Typed request for /prompt-search daemon route. */
+export interface PromptSearchRequest {
+  query: string;
+  cwd: string;
+  session_id?: string;
+  learningInstructionBytes?: number;
+  logSurfacing?: boolean;
+  debug?: boolean;
+}
+
+function validatePromptSearchInput(input: unknown): PromptSearchRequest {
+  if (typeof input !== "object" || input == null) {
+    throw new Error("Request body must be a JSON object");
+  }
+
+  const obj = input as Record<string, unknown>;
+  if (typeof obj.query !== "string") {
+    throw new Error("Missing or invalid 'query' field");
+  }
+  if (typeof obj.cwd !== "string") {
+    throw new Error("Missing or invalid 'cwd' field");
+  }
+
+  return {
+    query: obj.query,
+    cwd: obj.cwd,
+    session_id: obj.session_id ? String(obj.session_id) : undefined,
+    learningInstructionBytes:
+      obj.learningInstructionBytes !== undefined
+        ? Math.max(0, Math.floor(Number(obj.learningInstructionBytes) || 0))
+        : undefined,
+    logSurfacing: obj.logSurfacing !== false,
+    debug: obj.debug === true,
+  };
+}
+
 export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
   return async (_req, res, body) => {
-    const input = JSON.parse(body || "{}");
-    const { query, session_id } = input;
-
-    // Missing fields: return empty hints (not 400) — callers treat this as "no suggestions"
-    if (!query || !input.cwd) {
+    let input: PromptSearchRequest;
+    try {
+      input = validatePromptSearchInput(JSON.parse(body || "{}"));
+    } catch {
+      // Invalid request — return empty hints (not 400) so callers treat this as "no suggestions"
       sendJson(res, 200, { hints: [] });
       return;
     }
 
-    let cwd: string;
+    const { query, session_id, cwd, learningInstructionBytes, logSurfacing, debug: isDebug } = input;
+
+    // Redundant check (validatePromptSearchInput should have already caught these),
+    // but kept for defensive programming.
+    if (!query || !cwd) {
+      sendJson(res, 200, { hints: [] });
+      return;
+    }
+
+    let validatedCwd: string;
     try {
-      cwd = validateCwd(input.cwd);
+      validatedCwd = validateCwd(cwd);
     } catch {
       sendJson(res, 200, { hints: [] });
       return;
     }
 
-    const dbPath = projectDbPath(cwd);
+    const dbPath = projectDbPath(validatedCwd);
     if (!existsSync(dbPath)) {
       sendJson(res, 200, { hints: [] });
       return;
@@ -177,10 +222,10 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
       const maxResults = config.restoration.promptSearchMaxResults;
       const minScore = config.restoration.promptSearchMinScore;
       const snippetLength = config.restoration.promptSnippetLength;
-      const promptHintsByteBudget = config.restoration.promptHintsByteBudget;
-      const promptHintsReservedForLearningInstruction = config.restoration.promptHintsReservedForLearningInstruction;
-      const promptHintsMaxEmitted = config.restoration.promptHintsMaxEmitted;
-      const promptHintsDedupMinPrefix = config.restoration.promptHintsDedupMinPrefix;
+      const maxInjectedMemoryBytes = config.restoration.maxInjectedMemoryBytes;
+      const reservedForLearningInstruction = config.restoration.reservedForLearningInstruction;
+      const maxInjectedMemoryItems = config.restoration.maxInjectedMemoryItems;
+      const dedupMinPrefix = config.restoration.dedupMinPrefix;
       const halfLife = config.restoration.recencyHalfLifeHours;
       const crossSessionAffinity = config.restoration.crossSessionAffinity;
       const recallUsageBoost = config.restoration.recallUsageBoost;
@@ -188,12 +233,8 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
       const surfacingCooldownWindow = config.restoration.surfacingCooldownWindow;
       const resurfaceMargin = config.restoration.resurfaceMargin;
       const unusedSurfacingPenalty = config.restoration.unusedSurfacingPenalty;
-      const learningInstructionBytes = Number.isFinite(input.learningInstructionBytes)
-        ? Math.max(0, Math.floor(input.learningInstructionBytes))
-        : 0;
-      const shouldLogSurfacing = input.logSurfacing !== false;
 
-      const targetHintCount = Math.max(maxResults, promptHintsMaxEmitted);
+      const targetHintCount = Math.max(maxResults, maxInjectedMemoryItems);
       const candidateLimit = Math.max(targetHintCount * CANDIDATE_LIMIT_MULTIPLIER, MIN_CANDIDATE_LIMIT);
       const results = store.search(query, candidateLimit);
       const recallStore = new RecallStore(db);
@@ -226,16 +267,16 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
             : result.content,
         })),
         {
-          totalByteBudget: promptHintsByteBudget,
-          reservedForLearningInstruction: promptHintsReservedForLearningInstruction,
-          learningInstructionBytes,
-          maxEmitted: promptHintsMaxEmitted,
-          dedupMinPrefix: promptHintsDedupMinPrefix,
+          totalByteBudget: maxInjectedMemoryBytes,
+          reservedForLearningInstruction,
+          learningInstructionBytes: learningInstructionBytes ?? 0,
+          maxEmitted: maxInjectedMemoryItems,
+          dedupMinPrefix,
         },
       );
 
       const { hints, ids } = selection;
-      const debug = input.debug === true
+      const debugResponse = isDebug
         ? {
             candidates: ranked.map((result) => ({
               id: result.id,
@@ -262,12 +303,12 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
 
       // Log surfacing events (best-effort, never throws)
       try {
-        if (shouldLogSurfacing) {
+        if (logSurfacing) {
           recallStore.logSurfacing(ids, session_id ?? null);
         }
       } catch { /* non-fatal */ }
 
-      sendJson(res, 200, debug ? { hints, ids, debug } : { hints, ids });
+      sendJson(res, 200, debugResponse ? { hints, ids, debug: debugResponse } : { hints, ids });
     } catch {
       sendJson(res, 200, { hints: [] });
     } finally {

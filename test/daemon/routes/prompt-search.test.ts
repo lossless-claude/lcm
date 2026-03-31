@@ -695,8 +695,8 @@ describe("POST /prompt-search", () => {
     const config = loadDaemonConfig("/nonexistent");
     config.daemon.port = 0;
     config.restoration.promptSearchMinScore = 0;
-    config.restoration.promptHintsMaxEmitted = 3;
-    config.restoration.promptHintsDedupMinPrefix = 24;
+    config.restoration.maxInjectedMemoryItems = 3;
+    config.restoration.dedupMinPrefix = 24;
     const daemon = await createDaemon(config);
     const port = daemon.address().port;
 
@@ -745,9 +745,9 @@ describe("POST /prompt-search", () => {
     config.daemon.port = 0;
     config.restoration.promptSearchMinScore = 0;
     config.restoration.promptSnippetLength = 120;
-    config.restoration.promptHintsByteBudget = 1200;
-    config.restoration.promptHintsReservedForLearningInstruction = 900;
-    config.restoration.promptHintsMaxEmitted = 3;
+    config.restoration.maxInjectedMemoryBytes = 1200;
+    config.restoration.reservedForLearningInstruction = 900;
+    config.restoration.maxInjectedMemoryItems = 3;
     const daemon = await createDaemon(config);
     const port = daemon.address().port;
 

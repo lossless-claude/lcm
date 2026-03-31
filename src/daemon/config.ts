@@ -25,10 +25,10 @@ export type DaemonConfig = {
     promptSearchMinScore: number;
     promptSearchMaxResults: number;
     promptSnippetLength: number;
-    promptHintsByteBudget: number;
-    promptHintsReservedForLearningInstruction: number;
-    promptHintsMaxEmitted: number;
-    promptHintsDedupMinPrefix: number;
+    maxInjectedMemoryBytes: number;
+    reservedForLearningInstruction: number;
+    maxInjectedMemoryItems: number;
+    dedupMinPrefix: number;
     recencyHalfLifeHours: number;
     crossSessionAffinity: number;
     recallUsageBoost: number;
@@ -71,10 +71,10 @@ const DEFAULTS: DaemonConfig = {
     promptSearchMinScore: 2,
     promptSearchMaxResults: 3,
     promptSnippetLength: 200,
-    promptHintsByteBudget: 2048,
-    promptHintsReservedForLearningInstruction: 1024,
-    promptHintsMaxEmitted: 3,
-    promptHintsDedupMinPrefix: 64,
+    maxInjectedMemoryBytes: 2048,
+    reservedForLearningInstruction: 1024,
+    maxInjectedMemoryItems: 3,
+    dedupMinPrefix: 64,
     recencyHalfLifeHours: 24,
     crossSessionAffinity: 0.85,
     recallUsageBoost: 0.75,

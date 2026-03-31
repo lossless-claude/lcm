@@ -12,10 +12,10 @@ describe("loadDaemonConfig", () => {
     expect(c.restoration.recentSummaries).toBe(3);
     expect(c.restoration.recallUsageBoost).toBe(0.75);
     expect(c.restoration.surfacingCooldownWindow).toBe(2);
-    expect(c.restoration.promptHintsByteBudget).toBe(2048);
-    expect(c.restoration.promptHintsReservedForLearningInstruction).toBe(1024);
-    expect(c.restoration.promptHintsMaxEmitted).toBe(3);
-    expect(c.restoration.promptHintsDedupMinPrefix).toBe(64);
+    expect(c.restoration.maxInjectedMemoryBytes).toBe(2048);
+    expect(c.restoration.reservedForLearningInstruction).toBe(1024);
+    expect(c.restoration.maxInjectedMemoryItems).toBe(3);
+    expect(c.restoration.dedupMinPrefix).toBe(64);
     expect(c.version).toBe(1);
   });
 
