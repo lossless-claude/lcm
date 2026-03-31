@@ -89,6 +89,8 @@ export function selectMemoryHintsWithinBudget(
     dedupMinPrefix: number;
   },
 ): MemoryHintSelection {
+  // Reserve the larger of the two: either the configured default or the actual learning instruction size.
+  // This ensures hints always have room within the budget, never encroaching on learning instruction space.
   const reserve = Math.max(
     0,
     Math.floor(options.reservedForLearningInstruction),

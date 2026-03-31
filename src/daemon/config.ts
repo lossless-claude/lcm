@@ -146,6 +146,21 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
     merged.llm.provider = e.LCM_SUMMARY_PROVIDER as DaemonConfig["llm"]["provider"];
   }
 
+  // Migrate old config names to new names for backward compatibility
+  const oldNameMap: Record<string, string> = {
+    promptHintsByteBudget: "maxInjectedMemoryBytes",
+    promptHintsReservedForLearningInstruction: "reservedForLearningInstruction",
+    promptHintsMaxEmitted: "maxInjectedMemoryItems",
+    promptHintsDedupMinPrefix: "dedupMinPrefix",
+  };
+  for (const [oldName, newName] of Object.entries(oldNameMap)) {
+    if (merged.restoration[oldName as keyof typeof merged.restoration] !== undefined) {
+      merged.restoration[newName as keyof typeof merged.restoration] = 
+        merged.restoration[oldName as keyof typeof merged.restoration];
+      delete merged.restoration[oldName as keyof typeof merged.restoration];
+    }
+  }
+
   // Anthropic API key fallback from env
   if (!merged.llm.apiKey && merged.llm.provider === "anthropic" && e.ANTHROPIC_API_KEY) {
     merged.llm.apiKey = e.ANTHROPIC_API_KEY;

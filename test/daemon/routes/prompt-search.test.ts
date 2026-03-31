@@ -821,4 +821,46 @@ describe("POST /prompt-search", () => {
       await daemon.stop();
     }
   });
+
+  it("logs surfacing events when logSurfacing is enabled (default)", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-log-enabled-"));
+    tempDirs.push(tempDir);
+
+    const dbPath = projectDbPath(tempDir);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    runLcmMigrations(db);
+    const store = new PromotedStore(db);
+    const memoryId = store.insert({ content: "Use pnpm in CI", tags: ["workflow"], projectId: "p1" });
+    db.close();
+
+    const config = loadDaemonConfig("/nonexistent");
+    config.daemon.port = 0;
+    config.restoration.promptSearchMinScore = 0;
+    const daemon = await createDaemon(config);
+    const port = daemon.address().port;
+
+    try {
+      await fetch(`http://127.0.0.1:${port}/prompt-search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: "pnpm CI",
+          cwd: tempDir,
+          learningInstructionBytes: 900,
+          // logSurfacing omitted, defaults to true
+        }),
+      });
+
+      const verifyDb = new DatabaseSync(dbPath);
+      const row = verifyDb.prepare(
+        "SELECT COUNT(*) as count FROM recall_surfacing WHERE memory_id = ?"
+      ).get(memoryId) as { count: number };
+      verifyDb.close();
+
+      expect(row.count).toBeGreaterThan(0);
+    } finally {
+      await daemon.stop();
+    }
+  });
 });

@@ -169,10 +169,10 @@ describe("loadDaemonConfig", () => {
         promptHintsDedupMinPrefix: 80,
       },
     });
-    expect(config.restoration.promptHintsByteBudget).toBe(3072);
-    expect(config.restoration.promptHintsReservedForLearningInstruction).toBe(1400);
-    expect(config.restoration.promptHintsMaxEmitted).toBe(5);
-    expect(config.restoration.promptHintsDedupMinPrefix).toBe(80);
+    expect(config.restoration.maxInjectedMemoryBytes).toBe(3072);
+    expect(config.restoration.reservedForLearningInstruction).toBe(1400);
+    expect(config.restoration.maxInjectedMemoryItems).toBe(5);
+    expect(config.restoration.dedupMinPrefix).toBe(80);
   });
 });
 
