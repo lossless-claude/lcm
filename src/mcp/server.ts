@@ -186,7 +186,7 @@ export async function startMcpServer(): Promise<void> {
   const port = config.daemon.port;
   const pidFilePath = join(homedir(), ".lossless-claude", "daemon.pid");
 
-  const lcmBin = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "lcm.mjs");
+  const lcmBin = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "lcm.mjs");
   await ensureDaemon({
     port, pidFilePath, spawnTimeoutMs: 10000,
     expectedVersion: PKG_VERSION,
