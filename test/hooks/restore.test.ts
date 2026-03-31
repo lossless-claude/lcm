@@ -63,7 +63,7 @@ describe("handleSessionStart", () => {
       post: vi.fn().mockResolvedValue({
         context: "<memory-orientation>\nMemory active\n</memory-orientation>",
         insights: [
-          { content: "Always use async/await for DB calls", confidence: 0.8, tags: ["source:passive-capture", "category:pattern"] },
+          { content: "Always use async/await for DB calls", confidence: 0.8, tags: ["source:passive-capture", "type:pattern"] },
           { content: "Prefer PromotedStore over raw SQL", confidence: 0.6, tags: ["source:passive-capture"] },
         ],
       }),
