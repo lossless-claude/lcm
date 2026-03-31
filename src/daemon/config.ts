@@ -154,10 +154,13 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
     promptHintsDedupMinPrefix: "dedupMinPrefix",
   };
   for (const [oldName, newName] of Object.entries(oldNameMap)) {
-    if (merged.restoration[oldName as keyof typeof merged.restoration] !== undefined) {
-      merged.restoration[newName as keyof typeof merged.restoration] = 
-        merged.restoration[oldName as keyof typeof merged.restoration];
-      delete merged.restoration[oldName as keyof typeof merged.restoration];
+    const restoration = merged.restoration as Record<string, unknown>;
+    if (restoration[oldName] !== undefined) {
+      // Only migrate if the new name was not explicitly set by the user
+      if (restoration[newName] === (DEFAULTS.restoration as Record<string, unknown>)[newName]) {
+        restoration[newName] = restoration[oldName];
+      }
+      delete restoration[oldName];
     }
   }
 

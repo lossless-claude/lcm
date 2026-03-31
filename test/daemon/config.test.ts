@@ -174,6 +174,16 @@ describe("loadDaemonConfig", () => {
     expect(config.restoration.maxInjectedMemoryItems).toBe(5);
     expect(config.restoration.dedupMinPrefix).toBe(80);
   });
+
+  it("prefers new config name over old name when both are present", () => {
+    const config = loadDaemonConfig("/nonexistent", {
+      restoration: {
+        maxInjectedMemoryBytes: 4096,
+        promptHintsByteBudget: 2048,
+      },
+    });
+    expect(config.restoration.maxInjectedMemoryBytes).toBe(4096);
+  });
 });
 
 describe("deepMerge", () => {
