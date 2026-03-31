@@ -40,7 +40,7 @@ Events are promoted to cross-session memory at session boundaries (session-end, 
 
 **Tier 2 — Batch promotion** (priority 2): Git and environment events are promoted with moderate confidence (0.3).
 
-**Tier 3 — Pattern reinforcement** (priority 3): File access and tool usage events are only promoted if they match an existing entry in the promoted store. This prevents low-signal noise from flooding memory.
+**Tier 3 — Pattern reinforcement** (priority 3): File access and tool usage events start as low-confidence signals. A one-off event is skipped unless it matches an existing entry in the promoted store. Repeated occurrences across sessions, or enough repeated occurrences in the sidecar history, can bootstrap a new promotion with a reinforcement confidence boost. This keeps noise low while still allowing durable workflows to become memory without a manual seed.
 
 ### Error→Fix Correlation
 
@@ -72,6 +72,8 @@ All thresholds are configurable in `~/.lossless-claude/config.json` under `compa
   }
 }
 ```
+
+When a pattern crosses the reinforcement threshold, `reinforcementBoost` is added to the base pattern confidence, capped by `maxConfidence`.
 
 ## Data Storage
 

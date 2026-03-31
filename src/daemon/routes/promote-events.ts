@@ -1,4 +1,4 @@
-import { EventsDb, type EventRow } from "../../hooks/events-db.js";
+import { EventsDb, type EventRow, type PatternReinforcementStats } from "../../hooks/events-db.js";
 import { eventsDbPath } from "../../db/events-path.js";
 import { PromotedStore } from "../../db/promoted.js";
 import { deduplicateAndInsert } from "../../promotion/dedup.js";
@@ -21,12 +21,20 @@ const AUTO_TAGS: Record<string, string> = {
 };
 
 const CORRELATION_WINDOW = 20;
+const MIN_REINFORCED_PATTERN_OCCURRENCES = 3;
+const MIN_REINFORCED_PATTERN_SESSIONS = 2;
+const AUTO_PROMOTABLE_PATTERN_CATEGORIES = new Set(["file", "mcp", "skill", "subagent"]);
 
 interface PromoteResult {
   promoted: number;
   skipped: number;
   correlated: number;
   errors: number;
+}
+
+function isReinforcedPattern(stats: PatternReinforcementStats): boolean {
+  return stats.totalCount >= MIN_REINFORCED_PATTERN_OCCURRENCES ||
+    stats.distinctSessions >= MIN_REINFORCED_PATTERN_SESSIONS;
 }
 
 function correlateErrors(events: EventRow[]): void {
@@ -123,6 +131,15 @@ export function createPromoteEventsHandler(config: DaemonConfig): RouteHandler {
             try {
               const autoTag = (event as EventRow & { auto_tag?: string }).auto_tag;
               const tag = autoTag ?? AUTO_TAGS[event.category] ?? `category:${event.category}`;
+              const reinforcement = event.priority === 3 && AUTO_PROMOTABLE_PATTERN_CATEGORIES.has(event.category)
+                ? edb.getPatternReinforcement(
+                  event.type,
+                  event.category,
+                  event.data,
+                  thresholds.insightsMaxAgeDays ?? 90,
+                )
+                : { totalCount: 0, distinctSessions: 0 };
+              const reinforced = isReinforcedPattern(reinforcement);
               let confidence: number;
 
               // Determine confidence by tier
@@ -145,14 +162,22 @@ export function createPromoteEventsHandler(config: DaemonConfig): RouteHandler {
                   result.correlated++;
                 }
               } else {
-                // Tier 3: pattern-only — only promote if already in promoted table
+                // Tier 3: pattern-only — require either an existing promoted match or
+                // enough repeated passive evidence to bootstrap a new memory.
                 const existing = store.search(event.data, 1, undefined, pid);
-                if (existing.length === 0) {
+
+                if (existing.length === 0 && !reinforced) {
                   processedIds.push(event.event_id);
                   result.skipped++;
                   continue;
                 }
                 confidence = eventConf.pattern ?? 0.2;
+                if (reinforced) {
+                  confidence = Math.min(
+                    thresholds.maxConfidence ?? 1.0,
+                    confidence + (thresholds.reinforcementBoost ?? 0.3),
+                  );
+                }
               }
 
               // Set correlation chain
@@ -165,7 +190,12 @@ export function createPromoteEventsHandler(config: DaemonConfig): RouteHandler {
               await deduplicateAndInsert({
                 store,
                 content: event.data,
-                tags: [tag, "source:passive-capture", `hook:${event.source_hook}`],
+                tags: [
+                  tag,
+                  "source:passive-capture",
+                  `hook:${event.source_hook}`,
+                  ...(reinforced ? ["signal:reinforced"] : []),
+                ],
                 projectId: pid,
                 sessionId: event.session_id,
                 depth: 0,

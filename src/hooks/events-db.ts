@@ -36,6 +36,11 @@ export interface HealthStats {
   lastError: string | null;
 }
 
+export interface PatternReinforcementStats {
+  totalCount: number;
+  distinctSessions: number;
+}
+
 const SCHEMA_VERSION = 2;
 
 const SCHEMA_SQL = `
@@ -185,6 +190,20 @@ export class EventsDb {
   setPrevEventId(eventId: number, prevEventId: number): void {
     this.db.prepare("UPDATE events SET prev_event_id = ? WHERE event_id = ?")
       .run(prevEventId, eventId);
+  }
+
+  getPatternReinforcement(type: string, category: string, data: string, maxAgeDays = 90): PatternReinforcementStats {
+    const row = this.db.prepare(
+      `SELECT COUNT(*) as totalCount,
+              COUNT(DISTINCT session_id) as distinctSessions
+       FROM events
+       WHERE type = ?
+         AND category = ?
+         AND data = ?
+         AND created_at >= datetime('now', '-' || ? || ' days')`
+    ).get(type, category, data, maxAgeDays) as unknown as PatternReinforcementStats | undefined;
+
+    return row ?? { totalCount: 0, distinctSessions: 0 };
   }
 
   logHookError(hook: string, error: unknown, sessionId?: string): void {
