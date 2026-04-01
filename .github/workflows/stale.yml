@@ -1,0 +1,23 @@
+name: Stale issues
+on:
+  schedule:
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v9
+        with:
+          stale-issue-message: >
+            This issue has been automatically marked as stale because it has not had
+            activity in the last 30 days. It will be closed in 14 days if no further
+            activity occurs. Remove the stale label or comment to keep it open.
+          days-before-stale: 30
+          days-before-close: 14
+          exempt-issue-labels: 'p0-critical,p1-high,blocked'
+          stale-issue-label: 'stale'
