@@ -10,7 +10,7 @@
   "repository": "https://github.com/lossless-claude/lcm",
   "license": "MIT",
   "keywords": ["context", "memory", "compaction", "summarization", "lcm"],
-  "commands": "./.claude-plugin/commands/",
+  "commands": "../commands/",
   "mcpServers": {
     "lcm": {
       "command": "node",
