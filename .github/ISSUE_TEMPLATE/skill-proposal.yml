@@ -1,0 +1,28 @@
+name: Skill Proposal
+description: Propose a new reusable skill for the org
+labels: [skill-proposal]
+body:
+  - type: input
+    id: skill-name
+    attributes:
+      label: Skill name
+    validations:
+      required: true
+  - type: textarea
+    id: trigger
+    attributes:
+      label: Trigger conditions
+      description: When should this skill activate?
+    validations:
+      required: true
+  - type: textarea
+    id: automation
+    attributes:
+      label: What it automates
+    validations:
+      required: true
+  - type: textarea
+    id: token-savings
+    attributes:
+      label: Estimated token savings
+      description: Rough estimate of tokens saved per invocation

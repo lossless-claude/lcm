@@ -1,0 +1,30 @@
+name: Introspection Finding
+description: Actionable finding from agent self-evaluation
+labels: [introspection]
+body:
+  - type: input
+    id: agent
+    attributes:
+      label: Agent/model that produced this
+    validations:
+      required: true
+  - type: textarea
+    id: finding
+    attributes:
+      label: Finding
+    validations:
+      required: true
+  - type: textarea
+    id: action
+    attributes:
+      label: Proposed action
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Impact
+      options:
+        - "High — affects core workflows"
+        - "Medium — affects efficiency"
+        - "Low — nice to have"

@@ -1,0 +1,26 @@
+name: Enhancement
+description: New feature or improvement to existing functionality
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or opportunity
+      description: What pain point does this address?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: dropdown
+    id: effort
+    attributes:
+      label: Estimated effort
+      options: [XS, S, M, L, XL]
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
