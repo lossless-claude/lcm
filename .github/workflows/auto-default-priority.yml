@@ -1,0 +1,29 @@
+name: Auto-default priority
+on:
+  issues:
+    types: [opened]
+jobs:
+  add-default-priority:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Check for priority label
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const priorityLabels = ['p0-critical', 'p1-high', 'p2-medium', 'p3-low'];
+            const hasP = issue.labels.some(l => priorityLabels.includes(l.name));
+            if (!hasP) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                labels: ['p3-low']
+              });
+              console.log('Added p3-low default priority');
+            } else {
+              console.log('Issue already has priority: ' + issue.labels.map(l=>l.name).join(', '));
+            }
