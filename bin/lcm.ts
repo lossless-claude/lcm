@@ -11,8 +11,14 @@ function readStdin(): Promise<string> {
   return new Promise((resolve) => {
     if (stdin.isTTY) { resolve(""); return; }
     const chunks: Buffer[] = [];
+    let resolved = false;
+    const timer = setTimeout(() => {
+      if (!resolved) { resolved = true; resolve(Buffer.concat(chunks).toString("utf-8")); }
+    }, 5000);
     stdin.on("data", (chunk: Buffer) => chunks.push(chunk));
-    stdin.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
+    stdin.on("end", () => {
+      if (!resolved) { resolved = true; clearTimeout(timer); resolve(Buffer.concat(chunks).toString("utf-8")); }
+    });
   });
 }
 
