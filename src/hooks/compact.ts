@@ -11,7 +11,7 @@ export async function handlePreCompact(stdin: string, client: DaemonClient, port
 
   try {
     const input = JSON.parse(stdin || "{}");
-    const result = await client.post<{ summary: string }>("/compact", {
+    const result = await client.post<{ summary: string; latestSummaryContent?: string }>("/compact", {
       ...input,
       client: "claude",
     });
@@ -23,7 +23,16 @@ export async function handlePreCompact(stdin: string, client: DaemonClient, port
       // Silent fail — PreCompact must not delay session
     }
 
-    return { exitCode: 2, stdout: result.summary || "" };
+    const parts: string[] = [];
+    if (result.summary) parts.push(result.summary);
+    if (result.latestSummaryContent) {
+      const truncated = result.latestSummaryContent.length > 2000
+        ? result.latestSummaryContent.slice(0, 2000) + "\n[truncated]"
+        : result.latestSummaryContent;
+      parts.push(truncated);
+    }
+
+    return { exitCode: 0, stdout: parts.join("\n\n") };
   } catch {
     return { exitCode: 0, stdout: "" };
   }
