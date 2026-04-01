@@ -13,7 +13,7 @@ function readStdin(): Promise<string> {
     const chunks: Buffer[] = [];
     let resolved = false;
     const timer = setTimeout(() => {
-      if (!resolved) { resolved = true; resolve(Buffer.concat(chunks).toString("utf-8")); }
+      if (!resolved) { resolved = true; stdin.destroy(); resolve(Buffer.concat(chunks).toString("utf-8")); }
     }, 5000);
     stdin.on("data", (chunk: Buffer) => chunks.push(chunk));
     stdin.on("end", () => {
@@ -203,7 +203,9 @@ async function createDaemonClientOrExit(): Promise<DaemonClient> {
 
   const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
   const port = config.daemon?.port ?? 3737;
-  const pidFilePath = join(homedir(), ".lossless-claude", "daemon.pid");
+  const lcDir = join(homedir(), ".lossless-claude");
+  const pidFilePath = join(lcDir, "daemon.pid");
+  const tokenPath = join(lcDir, "daemon.token");
   const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 5000 });
 
   if (!connected) {
@@ -211,7 +213,7 @@ async function createDaemonClientOrExit(): Promise<DaemonClient> {
     exit(1);
   }
 
-  return new DaemonClient(`http://127.0.0.1:${port}`);
+  return new DaemonClient(`http://127.0.0.1:${port}`, tokenPath);
 }
 
 async function main() {
