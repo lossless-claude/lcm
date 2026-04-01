@@ -36,7 +36,11 @@ lcm connectors install codex
 lcm connectors doctor codex
 ```
 
-Codex transcript import is not exposed as a first-class public CLI flow yet. Track that follow-up in issue #232.
+Import historical Codex sessions with:
+
+```bash
+lcm import --codex
+```
 
 For current limitations and the manual MCP step for Codex TOML config, see [`docs/vscode-codex.md`](vscode-codex.md).
 

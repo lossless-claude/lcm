@@ -38,6 +38,7 @@ export function shouldRunMain(invokedPath: string | undefined, currentFilePath: 
   }
 }
 
+
 export function registerMemoryCommands(program: Command): void {
   program
     .command("search <query>")
