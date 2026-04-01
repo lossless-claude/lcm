@@ -1,0 +1,22 @@
+name: Research / Scout
+description: Investigation, spike, or external research
+labels: [research]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Research question
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and constraints
+  - type: dropdown
+    id: timebox
+    attributes:
+      label: Timeboxed to
+      options:
+        - 15 min (quick lookup)
+        - 1 hour (spike)
+        - Half sprint (deep dive)
