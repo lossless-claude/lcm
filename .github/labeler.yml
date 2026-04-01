@@ -1,0 +1,3 @@
+chore:
+  - changed-files:
+    - any-glob-to-any-file: ['.github/**', '*.md', '*.yml', '*.yaml']
