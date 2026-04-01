@@ -1,10 +1,11 @@
 #!/usr/bin/env node
+import { realpathSync } from "node:fs";
 import { argv, exit, stdin, stdout } from "node:process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command, Option } from "commander";
-import type { DaemonClient } from "../src/daemon/client.js";
+import { DaemonClient } from "../src/daemon/client.js";
 
 function readStdin(): Promise<string> {
   return new Promise((resolve) => {
@@ -19,6 +20,16 @@ async function withCustomHelp(cmd: Command, commandName: string): Promise<void> 
   const { printHelp } = await import("../src/cli-help.js");
   printHelp(commandName);
   exit(0);
+}
+
+export function shouldRunMain(invokedPath: string | undefined, currentFilePath: string): boolean {
+  if (!invokedPath) return false;
+
+  try {
+    return realpathSync(invokedPath) === realpathSync(currentFilePath);
+  } catch {
+    return invokedPath === currentFilePath;
+  }
 }
 
 export function registerMemoryCommands(program: Command): void {
@@ -182,7 +193,6 @@ function printJson(value: unknown): void {
 
 async function createDaemonClientOrExit(): Promise<DaemonClient> {
   const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
-  const { DaemonClient } = await import("../src/daemon/client.js");
   const { loadDaemonConfig } = await import("../src/daemon/config.js");
 
   const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
@@ -318,6 +328,7 @@ async function main() {
         const minTokens = config.compaction.autoCompactMinTokens;
         const cwd = all ? undefined : process.cwd();
         const tokenPath = join(homedir(), ".lossless-claude", "daemon.token");
+        const client = new DaemonClient(`http://127.0.0.1:${port}`, tokenPath);
 
         const { NinjaRenderer } = await import("../src/cli/pipeline-runner.js");
         const { makeProgressState } = await import("../src/cli/progress-state.js");
@@ -365,15 +376,11 @@ async function main() {
           let totalPromoted = 0;
           for (const promoteCwd of promoteCwds) {
             try {
-              const res = await fetch(`http://127.0.0.1:${port}/promote`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ cwd: promoteCwd, dry_run: dryRun }),
+              const result = await client.post<{ processed: number; promoted: number }>("/promote", {
+                cwd: promoteCwd,
+                dry_run: dryRun,
               });
-              if (res.ok) {
-                const result = await res.json() as { processed: number; promoted: number };
-                totalPromoted += result.promoted;
-              }
+              totalPromoted += result.promoted;
             } catch { /* non-fatal: promote is best-effort */ }
           }
 
@@ -555,26 +562,19 @@ async function main() {
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
       const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
-      const port = config.daemon?.port ?? 3737;
       const jsonFlag: boolean = opts.json ?? false;
+      const client = await createDaemonClientOrExit();
 
       let daemonStatus = "down";
       let statusData: any = null;
 
       try {
-        const res = await fetch(`http://127.0.0.1:${port}/health`);
-        if (res.ok) daemonStatus = "up";
+        const health = await client.health();
+        if (health) daemonStatus = "up";
 
         // Also fetch /status endpoint if daemon is up
         if (daemonStatus === "up") {
-          const statusRes = await fetch(`http://127.0.0.1:${port}/status`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ cwd: process.cwd() }),
-          });
-          if (statusRes.ok) {
-            statusData = await statusRes.json();
-          }
+          statusData = await client.post("/status", { cwd: process.cwd() });
         }
       } catch {}
 
@@ -626,24 +626,14 @@ async function main() {
       }
 
       if (opts.pool) {
-        const { loadDaemonConfig } = await import("../src/daemon/config.js");
-        const { join } = await import("node:path");
-        const { homedir } = await import("node:os");
-        const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
-        const port = config.daemon?.port ?? 3737;
         const jsonFlag: boolean = opts.json ?? false;
+        const client = await createDaemonClientOrExit();
 
         let poolData: any = null;
         try {
-          const res = await fetch(`http://127.0.0.1:${port}/stats/pool`);
-          if (res.ok) {
-            poolData = await res.json();
-          } else {
-            console.error(`Error: daemon returned ${res.status}`);
-            exit(1);
-          }
-        } catch {
-          console.error("Error: could not connect to daemon. Start it with: lcm daemon start --detach");
+          poolData = await client.get("/stats/pool");
+        } catch (err) {
+          console.error(`Error: ${err instanceof Error ? err.message : "could not load pool stats"}`);
           exit(1);
         }
 
@@ -1048,7 +1038,7 @@ async function main() {
         exit(1);
       }
 
-      const baseUrl = `http://127.0.0.1:${port}`;
+      const client = new DaemonClient(`http://127.0.0.1:${port}`);
       const { readdirSync, existsSync, readFileSync } = await import("node:fs");
 
       if (dryRun) console.log("  [dry-run] No changes will be written.\n");
@@ -1084,25 +1074,23 @@ async function main() {
           process.stdout.write(`\r  scanning...`);
         }
 
-        const res = await fetch(`${baseUrl}/promote`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cwd, dry_run: dryRun }),
-        });
+        try {
+          const result = await client.post<{ processed: number; promoted: number; conversations?: number }>("/promote", {
+            cwd,
+            dry_run: dryRun,
+          });
 
-        if (!res.ok) {
-          if (verbose) console.error(`  promote failed for ${cwd}: ${res.status}`);
+          totalProcessed += result.processed;
+          totalPromoted += result.promoted;
+
+          if (verbose) {
+            process.stdout.write("\r");
+            const convLabel = result.conversations !== undefined ? `, ${result.conversations} conversation${result.conversations !== 1 ? "s" : ""}` : "";
+            console.log(`  ${cwd}: ${result.processed} scanned${convLabel}, ${result.promoted} promoted`);
+          }
+        } catch (err) {
+          if (verbose) console.error(`  promote failed for ${cwd}: ${err instanceof Error ? err.message : "request failed"}`);
           continue;
-        }
-
-        const result = await res.json() as { processed: number; promoted: number; conversations?: number };
-        totalProcessed += result.processed;
-        totalPromoted += result.promoted;
-
-        if (verbose) {
-          process.stdout.write("\r");
-          const convLabel = result.conversations !== undefined ? `, ${result.conversations} conversation${result.conversations !== 1 ? "s" : ""}` : "";
-          console.log(`  ${cwd}: ${result.processed} scanned${convLabel}, ${result.promoted} promoted`);
         }
       }
       // Clear the progress line
@@ -1279,6 +1267,6 @@ async function main() {
   await program.parseAsync(argv);
 }
 
-if (argv[1] && fileURLToPath(import.meta.url) === argv[1]) {
+if (shouldRunMain(argv[1], fileURLToPath(import.meta.url))) {
   main().catch((err) => { console.error(err); exit(1); });
 }
