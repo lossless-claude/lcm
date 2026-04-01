@@ -5,6 +5,8 @@ import { homedir } from "node:os";
 import { runLcmMigrations } from "./db/migration.js";
 import { collectEventStats } from "./db/events-stats.js";
 import { RecallStore, type RecallStats } from "./db/recall.js";
+import { PromotedStore } from "./db/promoted.js";
+import { loadDaemonConfig } from "./daemon/config.js";
 
 export type { RecallStats };
 
@@ -43,9 +45,10 @@ interface OverallStats {
   eventsUnprocessed: number;
   eventsErrors: number;
   recallStats: RecallStats;
+  staleCount: number;
 }
 
-function queryProjectStats(dbPath: string, projectId: string): Omit<OverallStats, "projects" | "recallStats"> & { recallStats: RecallStats } {
+function queryProjectStats(dbPath: string, projectId: string, staleCfg: { staleAfterDays: number; staleSurfacingWithoutUseLimit: number }): Omit<OverallStats, "projects" | "recallStats" | "staleCount"> & { recallStats: RecallStats; staleCount: number } {
   const db = new DatabaseSync(dbPath);
   db.exec("PRAGMA busy_timeout = 5000");
 
@@ -113,6 +116,16 @@ function queryProjectStats(dbPath: string, projectId: string): Omit<OverallStats
 
     const recallStats = new RecallStore(db).getStats();
 
+    // Count stale promoted memories (config is passed in to avoid re-reading per project)
+    let staleCount = 0;
+    try {
+      staleCount = new PromotedStore(db).findStale({
+        staleAfterDays: staleCfg.staleAfterDays,
+        staleSurfacingWithoutUseLimit: staleCfg.staleSurfacingWithoutUseLimit,
+        projectId,
+      }).length;
+    } catch { /* non-fatal */ }
+
     return {
       conversations: convRows.length,
       compactedConversations: compacted.length,
@@ -127,6 +140,7 @@ function queryProjectStats(dbPath: string, projectId: string): Omit<OverallStats
       redactionCounts,
       eventsCaptured: 0, eventsUnprocessed: 0, eventsErrors: 0,
       recallStats,
+      staleCount,
     };
   } finally {
     db.close();
@@ -280,6 +294,16 @@ export function printStats(stats: OverallStats, verbose: boolean): void {
 
   // Per Conversation (verbose only, compacted only)
   if (verbose) {
+    // Stale memories section (verbose only)
+    if (stats.staleCount > 0) {
+      const yellow = "\x1b[33m";
+      console.log();
+      console.log(sectionHeader("Stale Memories"));
+      console.log();
+      console.log(`    ${dim}candidates${reset}  ${yellow}${stats.staleCount}${reset} promoted memories may be stale`);
+      console.log(`    ${dim}${reset}           Call ${cyan}POST /review-stale${reset} to inspect and archive.`);
+    }
+
     const compactedDetails = stats.conversationDetails.filter((c) => c.summaries > 0);
     if (compactedDetails.length > 0) {
       console.log();
@@ -328,6 +352,7 @@ export function collectStats(): OverallStats {
       redactionCounts: { builtIn: 0, global: 0, project: 0, total: 0 },
       eventsCaptured: 0, eventsUnprocessed: 0, eventsErrors: 0,
       recallStats: emptyRecallStats,
+      staleCount: 0,
     };
   }
 
@@ -340,11 +365,22 @@ export function collectStats(): OverallStats {
   let totalRawTokens = 0;
   let totalSummaryTokens = 0;
   let totalPromoted = 0;
+  let totalStale = 0;
   let allDetails: ConversationStats[] = [];
   const totalRedactions: RedactionCounts = { builtIn: 0, global: 0, project: 0, total: 0 };
   let totalMemoriesSurfaced = 0;
   let totalMemoriesActedUpon = 0;
   const allTopRecalled: Array<{ id: string; content: string; actCount: number }> = [];
+
+  // Load stale config once for all projects
+  let staleCfg = { staleAfterDays: 90, staleSurfacingWithoutUseLimit: 5 };
+  try {
+    const cfg = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
+    staleCfg = {
+      staleAfterDays: cfg.restoration.staleAfterDays,
+      staleSurfacingWithoutUseLimit: cfg.restoration.staleSurfacingWithoutUseLimit,
+    };
+  } catch { /* use defaults */ }
 
   for (const entry of readdirSync(baseDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
@@ -352,7 +388,7 @@ export function collectStats(): OverallStats {
     if (!existsSync(dbPath)) continue;
 
     try {
-      const projStats = queryProjectStats(dbPath, entry.name);
+      const projStats = queryProjectStats(dbPath, entry.name, staleCfg);
       // Only count projects with stored messages
       if (projStats.messages === 0) continue;
       totalProjects++;
@@ -364,6 +400,7 @@ export function collectStats(): OverallStats {
       totalRawTokens += projStats.rawTokens;
       totalSummaryTokens += projStats.summaryTokens;
       totalPromoted += projStats.promotedCount;
+      totalStale += projStats.staleCount;
       allDetails = allDetails.concat(projStats.conversationDetails);
       totalRedactions.builtIn += projStats.redactionCounts.builtIn;
       totalRedactions.global += projStats.redactionCounts.global;
@@ -416,5 +453,6 @@ export function collectStats(): OverallStats {
       recallPrecision,
       topRecalled: topRecalledByCount,
     },
+    staleCount: totalStale,
   };
 }

@@ -36,6 +36,11 @@ export type DaemonConfig = {
     surfacingCooldownWindow: number;
     resurfaceMargin: number;
     unusedSurfacingPenalty: number;
+    staleAfterDays: number;
+    staleSurfacingWithoutUseLimit: number;
+    restoreMaxPromotedAgeDays: number;
+    stalePenalty: number;
+    allowStaleOnStrongMatch: boolean;
   };
   llm: { provider: "auto" | "claude-process" | "codex-process" | "anthropic" | "openai" | "disabled"; model: string; apiKey?: string; baseURL: string };
   summarizer: { mock: boolean };
@@ -82,6 +87,11 @@ const DEFAULTS: DaemonConfig = {
     surfacingCooldownWindow: 2,
     resurfaceMargin: 0.75,
     unusedSurfacingPenalty: 0.15,
+    staleAfterDays: 90,
+    staleSurfacingWithoutUseLimit: 5,
+    restoreMaxPromotedAgeDays: 180,
+    stalePenalty: 0.5,
+    allowStaleOnStrongMatch: true,
   },
   llm: { provider: "auto", model: "", apiKey: "", baseURL: "" },
   summarizer: { mock: false },

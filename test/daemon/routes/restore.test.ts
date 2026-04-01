@@ -231,4 +231,60 @@ describe("POST /restore", () => {
       expect(body.insights).toBeUndefined();
     });
   });
+
+  describe("promoted age filtering", () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = mkdtempSync(join(tmpdir(), "restore-age-test-"));
+    });
+
+    afterEach(() => {
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    });
+
+    it("excludes promoted memories older than restoreMaxPromotedAgeDays", async () => {
+      const dbPath = projectDbPath(tmpDir);
+      mkdirSync(dirname(dbPath), { recursive: true });
+      const db = new DatabaseSync(dbPath);
+      runLcmMigrations(db);
+      const store = new PromotedStore(db);
+
+      // Insert a recent memory
+      store.insert({
+        content: "Recent project knowledge that should surface",
+        tags: ["type:knowledge"],
+        projectId: tmpDir,
+        confidence: 0.9,
+      });
+
+      // Insert an old memory by backdating created_at
+      store.insert({
+        content: "Ancient project knowledge that should be filtered",
+        tags: ["type:knowledge"],
+        projectId: tmpDir,
+        confidence: 0.9,
+      });
+      // Backdate the second entry to 200 days ago
+      const oldDate = new Date(Date.now() - 200 * 24 * 60 * 60 * 1000)
+        .toISOString().replace("T", " ").replace(/\.\d{3}Z$/, "");
+      db.prepare(
+        `UPDATE promoted SET created_at = ? WHERE content LIKE '%Ancient%'`
+      ).run(oldDate);
+      db.close();
+
+      // Use restoreMaxPromotedAgeDays = 180 (default)
+      daemon = await createDaemon(loadDaemonConfig(tmpDir, { daemon: { port: 0 } }));
+      const res = await fetch(`http://127.0.0.1:${daemon.address().port}/restore`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: "age-test", cwd: tmpDir, hook_event_name: "SessionStart" }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json() as { context: string };
+
+      // Recent memory should be present, old one filtered out
+      expect(body.context).toContain("Recent project knowledge");
+      expect(body.context).not.toContain("Ancient project knowledge");
+    });
+  });
 });

@@ -864,3 +864,80 @@ describe("POST /prompt-search", () => {
     }
   });
 });
+
+describe("stale memory demotion", () => {
+  it("applies stalePenalty to old memories surfaced without use", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lcm-stale-prompt-"));
+    tempDirs.push(tempDir);
+    const dbPath = projectDbPath(tempDir);
+    mkdirSync(dirname(dbPath), { recursive: true });
+
+    const db = new DatabaseSync(dbPath);
+    runLcmMigrations(db);
+    const store = new PromotedStore(db);
+
+    // Insert an old memory and backdate it
+    const oldId = store.insert({
+      content: "stale database indexing strategy old",
+      tags: ["test"],
+      projectId: "test-stale",
+      confidence: 0.8,
+    });
+    const pastDate = new Date(Date.now() - 120 * 24 * 60 * 60 * 1000).toISOString();
+    db.prepare("UPDATE promoted SET created_at = ? WHERE id = ?").run(pastDate, oldId);
+
+    // Simulate surfacing without use (5 times)
+    for (let i = 0; i < 5; i++) {
+      db.prepare("INSERT INTO recall_surfacing (memory_id, session_id) VALUES (?, ?)").run(oldId, `s-${i}`);
+    }
+
+    // Insert a fresh memory
+    const freshId = store.insert({
+      content: "fresh database indexing strategy new",
+      tags: ["test"],
+      projectId: "test-stale",
+      confidence: 0.8,
+    });
+    db.close();
+
+    const config = loadDaemonConfig("/nonexistent");
+    config.daemon.port = 0;
+    config.restoration.promptSearchMinScore = 0;
+    config.restoration.staleAfterDays = 90;
+    config.restoration.staleSurfacingWithoutUseLimit = 5;
+    config.restoration.stalePenalty = 0.5;
+    config.restoration.allowStaleOnStrongMatch = true;
+
+    const daemon = await createDaemon(config);
+    const port = daemon.address().port;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/prompt-search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: "database indexing strategy", cwd: tempDir, debug: true }),
+      });
+      const data = await res.json() as {
+        hints: string[];
+        ids: string[];
+        debug: { candidates: Array<{ id: string; stalePenalty: number; finalScore: number }> };
+      };
+
+      expect(res.status).toBe(200);
+
+      const oldCandidate = data.debug.candidates.find((c) => c.id === oldId);
+      const freshCandidate = data.debug.candidates.find((c) => c.id === freshId);
+
+      expect(oldCandidate).toBeDefined();
+      expect(freshCandidate).toBeDefined();
+      // Stale candidate should have a penalty applied
+      expect(oldCandidate!.stalePenalty).toBeGreaterThan(0);
+      // Fresh candidate should have no stale penalty
+      expect(freshCandidate!.stalePenalty).toBe(0);
+      // Fresh should rank higher than stale
+      expect(freshCandidate!.finalScore).toBeGreaterThan(oldCandidate!.finalScore);
+    } finally {
+      await daemon.stop();
+    }
+  });
+});
