@@ -38,6 +38,8 @@ export function shouldRunMain(invokedPath: string | undefined, currentFilePath: 
   }
 }
 
+
+
 export function registerMemoryCommands(program: Command): void {
   program
     .command("search <query>")
@@ -54,7 +56,7 @@ export function registerMemoryCommands(program: Command): void {
       }
 
       const layers = normalizeStringList(opts.layer);
-      const tags = normalizeStringList(opts.tag);
+      const tags = normalizeStringList(opts.tag) ?? [];
       ensureAllowedValues(layers, ["episodic", "promoted"], "--layer");
 
       const client = await createDaemonClientOrExit();

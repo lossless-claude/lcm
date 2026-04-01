@@ -56,7 +56,7 @@ flowchart LR
 |---|---|---|---|---|---|
 | Claude Code | Yes | Yes | Yes, via transcript/hooks | Yes | Primary hook-based integration |
 | GitHub Copilot (VS Code) | No | Yes, via skill/rules | No | No | Repo-local skill can teach Copilot to call `lcm`, but there is no automatic restore or turn capture yet |
-| Codex | No | Yes, via skill/rules | No | No | Repo-local or global skill today; MCP config in `.codex/config.toml` is still manual, and first-class import/runtime support is tracked in issue #232 |
+| Codex | No | Yes, via skill/rules | No | No | Repo-local or global skill plus `lcm import --codex`; MCP config in `.codex/config.toml` is still manual, and first-class runtime support is tracked in issue #232 |
 
 ## LCM Model
 
@@ -89,7 +89,7 @@ flowchart TD
 - Node.js 22+
 - Claude Code if you want hook-based automation
 - GitHub Copilot in VS Code if you want VS Code integration
-- Codex CLI if you want Codex connector installation or summarization
+- Codex CLI if you want Codex connector installation, summarization, or transcript import
 
 ### Claude Code
 
@@ -138,7 +138,11 @@ lcm connectors install codex
 lcm connectors doctor codex
 ```
 
-Codex transcript import is not exposed as a first-class public CLI flow yet. Track that gap in issue #232.
+Import older Codex sessions when needed:
+
+```bash
+lcm import --codex
+```
 
 If you also want MCP inside Codex, run `lcm connectors install codex --type mcp`. Today that prints the TOML block you must add manually to `.codex/config.toml`.
 

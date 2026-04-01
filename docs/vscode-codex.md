@@ -37,7 +37,11 @@ lcm connectors doctor codex
 
 This writes a repo-local skill file at `.codex/skills/lcm-memory/SKILL.md`.
 
-Codex transcript import is not exposed as a first-class public CLI flow yet. Track that gap in issue #232.
+To import existing Codex sessions into LCM:
+
+```bash
+lcm import --codex
+```
 
 ## Current shortcomings
 
@@ -45,13 +49,12 @@ Codex transcript import is not exposed as a first-class public CLI flow yet. Tra
 2. GitHub Copilot in VS Code is skill-based today. There is no automatic session restore, turn ingestion, prompt-time search injection, or compaction hook.
 3. The GitHub Copilot connector does not register MCP automatically. The current supported path is instructions/skill guidance plus the `lcm` CLI.
 4. Codex MCP config lives in `.codex/config.toml`, but the connector installer does not edit TOML yet. `lcm connectors install codex --type mcp` only prints manual instructions.
-5. Codex does not yet have first-class transcript import or Claude-style live turn capture and hook orchestration. The broader support gap is tracked in issue #232.
+5. Codex has transcript import (`lcm import --codex`) and can be used as a summarizer provider, but it does not have Claude-style live turn capture and hook orchestration. The broader runtime support gap is tracked in issue #232.
 6. The top-level branding and install flow were originally Claude-first, so documentation drift is still a risk whenever new clients are added.
 
 ## Improvement candidates
 
 1. Add first-class `lcm setup vscode` and `lcm setup codex` commands instead of overloading `lcm install`.
 2. Add TOML read/write support so Codex MCP setup can be automated.
-3. Add first-class Codex import support to the public CLI instead of relying on internal-only plumbing.
-4. Add a real VS Code/Codex runtime adapter for restore, writeback, and prompt-time recall instead of skill-only guidance.
-5. Add connector tests that exercise GitHub Copilot and Codex default install flows explicitly.
+3. Add a real VS Code/Codex runtime adapter for restore, writeback, and prompt-time recall instead of skill-only guidance.
+4. Add connector tests that exercise GitHub Copilot and Codex default install flows explicitly.
