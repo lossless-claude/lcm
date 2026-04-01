@@ -76,6 +76,69 @@ const HELP: Record<string, CommandHelp> = {
     notes: "Exits with code 1 if any check fails. Integrate into CI or shell startup for early detection.",
   },
 
+  search: {
+    summary: "Search memory across episodic and promoted layers for the current project.",
+    usage: "lcm search <query> [--limit N] [--layer episodic|promoted] [--tag <tag>]",
+    options: [
+      ["--limit N", "Max results per layer (default: 5)"],
+      ["--layer <name>", "Layer to search: episodic or promoted (repeatable)"],
+      ["--tag <tag>", "Filter to entries that include all specified tags (repeatable)"],
+    ],
+    examples: [
+      ["lcm search \"authentication decision\"", "Search both memory layers for auth-related context"],
+      ["lcm search \"sqlite migration\" --layer episodic", "Search only episodic memory"],
+      ["lcm search \"hook failure\" --tag type:solution", "Filter by tag"],
+    ],
+  },
+
+  grep: {
+    summary: "Search raw messages and summaries by keyword or regex.",
+    usage: "lcm grep <query> [--mode full_text|regex] [--scope messages|summaries|both] [--since <iso>]",
+    options: [
+      ["--mode <mode>", "Search mode: full_text (default) or regex"],
+      ["--scope <scope>", "Scope: messages, summaries, or both (default: both)"],
+      ["--since <iso>", "Only include matches on or after this ISO timestamp"],
+    ],
+    examples: [
+      ["lcm grep \"ECONNREFUSED\"", "Search for an exact error string"],
+      ["lcm grep \"createDaemon|startMcpServer\" --mode regex", "Regex search across history"],
+      ["lcm grep \"migration\" --scope summaries", "Search only summaries"],
+    ],
+  },
+
+  describe: {
+    summary: "Inspect metadata and lineage for a stored summary node.",
+    usage: "lcm describe <nodeId>",
+    examples: [
+      ["lcm describe sum_abc123def456", "Show metadata for a summary node"],
+    ],
+    notes: "Use lcm search or lcm grep first to find a node ID worth inspecting.",
+  },
+
+  expand: {
+    summary: "Expand a summary node back into lower-level source detail.",
+    usage: "lcm expand <nodeId> [--depth N]",
+    options: [
+      ["--depth N", "Traversal depth (default: 1)"],
+    ],
+    examples: [
+      ["lcm expand sum_abc123def456", "Expand a summary one level deep"],
+      ["lcm expand sum_abc123def456 --depth 2", "Traverse deeper into the DAG"],
+    ],
+  },
+
+  store: {
+    summary: "Store a durable memory entry for the current project.",
+    usage: "lcm store <text> [--tag <tag>]",
+    options: [
+      ["--tag <tag>", "Attach a tag to the stored memory (repeatable)"],
+    ],
+    examples: [
+      ["lcm store \"Auth uses JWT with 24h expiry\"", "Store a plain-text memory"],
+      ["lcm store \"Use ensureDaemon before background promote\" --tag type:solution --tag scope:lcm", "Store a tagged memory"],
+    ],
+  },
+
   compact: {
     summary: "Compact conversation context into DAG summary nodes.",
     usage: "lcm compact [--all] [--dry-run] [--replay] [--no-promote]",
@@ -96,11 +159,9 @@ const HELP: Record<string, CommandHelp> = {
   },
 
   import: {
-    summary: "Import session transcripts (Claude Code or Codex CLI) into lossless memory.",
-    usage: "lcm import [--provider claude|codex|all] [--all] [--verbose] [--dry-run] [--replay]",
+    summary: "Import Claude Code session transcripts into lossless memory.",
+    usage: "lcm import [--all] [--verbose] [--dry-run] [--replay]",
     options: [
-      ["--provider <name>", "Source: claude (default), codex, or all"],
-      ["--codex", "Shorthand for --provider codex"],
       ["--all", "Import all projects (default: current project only)"],
       ["--verbose", "Show per-session import detail"],
       ["--dry-run", "Preview without importing"],
@@ -108,13 +169,11 @@ const HELP: Record<string, CommandHelp> = {
     ],
     examples: [
       ["lcm import", "Import current Claude Code project sessions"],
-      ["lcm import --codex", "Import Codex CLI sessions from ~/.codex/"],
-      ["lcm import --provider all", "Import both Claude Code and Codex sessions"],
       ["lcm import --all", "Import all tracked Claude Code projects"],
       ["lcm import --all --replay", "Import and compact with threaded context"],
       ["lcm import --dry-run", "Preview what would be imported"],
     ],
-    notes: "Claude sessions are read from ~/.claude/projects/. Codex sessions from ~/.codex/. Already-imported sessions are skipped.",
+    notes: "Claude sessions are read from ~/.claude/projects/. Already-imported sessions are skipped. First-class Codex import support is tracked separately in issue #232.",
   },
 
   promote: {
@@ -175,6 +234,7 @@ const HELP: Record<string, CommandHelp> = {
       ["lcm connectors list", "Show all agents and their connector status"],
       ["lcm connectors list --global", "Show connectors from your global agent config"],
       ["lcm connectors list --format json", "Machine-readable connector list"],
+      ["lcm connectors install github-copilot", "Install the GitHub Copilot workspace skill for VS Code"],
       ["lcm connectors install codex", "Install default connector for Codex"],
       ["lcm connectors install codex --global", "Install Codex into ~/.codex instead of the current project"],
       ["lcm connectors install codex --type rules", "Install rules-based connector for Codex"],
@@ -182,9 +242,10 @@ const HELP: Record<string, CommandHelp> = {
       ["lcm connectors remove codex --global", "Remove Codex from your global config"],
       ["lcm connectors doctor", "Check health of all connectors"],
       ["lcm connectors doctor --global", "Check the global agent config"],
+      ["lcm connectors doctor github-copilot", "Check GitHub Copilot connector health"],
       ["lcm connectors doctor codex", "Check Codex connector health"],
     ],
-    notes: "Connector types: 'rules' (AGENTS.md injection), 'mcp' (MCP server), 'skill' (skill file).",
+    notes: "Connector types: 'rules' (agent instruction file), 'mcp' (MCP server), 'skill' (skill file). GitHub Copilot uses a repo-local skill under .github/skills/. Codex can use repo-local or global skills. Codex MCP setup is manual today because .codex/config.toml is not edited automatically.",
   },
 
   sensitive: {
@@ -312,8 +373,13 @@ const GROUPS = [
   {
     label: "Memory",
     commands: [
+      { name: "search <query> [--limit N]", summary: "Search episodic and promoted memory" },
+      { name: "grep <query> [--mode ...]", summary: "Search raw messages and summaries" },
+      { name: "describe <nodeId>", summary: "Inspect metadata for a memory node" },
+      { name: "expand <nodeId> [--depth N]", summary: "Expand a summary node into source detail" },
+      { name: "store <text> [--tag ...]", summary: "Store a durable memory entry" },
       { name: "compact [--all] [--dry-run] [--replay] [--no-promote]", summary: "Compact conversations into DAG summaries (auto-promotes after)" },
-      { name: "import [--provider claude|codex|all] [--all] [--verbose] [--dry-run] [--replay]", summary: "Import session transcripts (Claude Code or Codex CLI)" },
+      { name: "import [--all] [--verbose] [--dry-run] [--replay]", summary: "Import Claude Code session transcripts" },
       { name: "promote [--all] [--verbose] [--dry-run]", summary: "Promote insights to long-term memory" },
       { name: "stats [-v]", summary: "Memory inventory and compression ratios" },
       { name: "diagnose [--all] [--days N] [--verbose] [--json]", summary: "Scan sessions for hook failures and issues" },
@@ -375,7 +441,7 @@ export function printHelp(command?: string): void {
 
   const lines: string[] = [
     "",
-    "  lcm — lossless context management for Claude Code",
+    "  lcm — lossless context management for coding agents",
     "",
     "  Usage: lcm <command> [options]",
     "",

@@ -25,6 +25,23 @@ export class DaemonClient {
     } catch { return null; }
   }
 
+  async get<T = unknown>(path: string): Promise<T> {
+    const token = this.getToken();
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+    const res = await fetch(`${this.baseUrl}${path}`, {
+      method: "GET",
+      headers,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
+      throw new Error(err.error ?? `HTTP ${res.status}`);
+    }
+    return await res.json() as T;
+  }
+
   async post<T = unknown>(path: string, body: unknown): Promise<T> {
     const token = this.getToken();
     const headers: Record<string, string> = { "Content-Type": "application/json" };

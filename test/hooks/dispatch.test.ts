@@ -109,17 +109,24 @@ describe("dispatchHook", () => {
     vi.mocked(loadDaemonConfig).mockReturnValue({ daemon: { port: 3737 } } as any);
   });
 
-  it("calls ensureBootstrapped with session_id before dispatching", async () => {
+  it("calls ensureBootstrapped with session_id before dispatching non-compact hooks", async () => {
+    vi.mocked(handleSessionStart).mockResolvedValue({ exitCode: 0, stdout: "" });
+    vi.mocked(ensureBootstrapped).mockClear();
+    await dispatchHook("restore", JSON.stringify({ session_id: "test-sess-123" }));
+    expect(ensureBootstrapped).toHaveBeenCalledWith("test-sess-123");
+  });
+
+  it("skips ensureBootstrapped for compact (daemon already running at PreCompact time)", async () => {
     vi.mocked(handlePreCompact).mockResolvedValue({ exitCode: 0, stdout: "" });
     vi.mocked(ensureBootstrapped).mockClear();
     await dispatchHook("compact", JSON.stringify({ session_id: "test-sess-123" }));
-    expect(ensureBootstrapped).toHaveBeenCalledWith("test-sess-123");
+    expect(ensureBootstrapped).not.toHaveBeenCalled();
   });
 
   it("does not block hooks if ensureBootstrapped throws", async () => {
     vi.mocked(ensureBootstrapped).mockRejectedValueOnce(new Error("bootstrap failed"));
-    vi.mocked(handlePreCompact).mockResolvedValue({ exitCode: 0, stdout: "" });
-    const result = await dispatchHook("compact", JSON.stringify({ session_id: "s1" }));
+    vi.mocked(handleSessionStart).mockResolvedValue({ exitCode: 0, stdout: "" });
+    const result = await dispatchHook("restore", JSON.stringify({ session_id: "s1" }));
     expect(result.exitCode).toBe(0);
   });
 

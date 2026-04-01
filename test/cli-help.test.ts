@@ -8,8 +8,10 @@ describe("printHelp — full reference", () => {
     const out = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     printHelp();
     const text = out.mock.calls.map(c => c[0]).join("");
-    expect(text).toContain("lcm — lossless context management for Claude Code");
+    expect(text).toContain("lcm — lossless context management for coding agents");
     expect(text).toContain("Usage: lcm <command> [options]");
+    expect(text).toContain("search <query>");
+    expect(text).toContain("store <text>");
   });
 
   it("lists all groups", () => {
@@ -22,6 +24,7 @@ describe("printHelp — full reference", () => {
     expect(text).toContain("Connectors");
     expect(text).toContain("Sensitive");
     expect(text).toContain("Hooks (internal)");
+    expect(text).toContain("post-tool");
   });
 
   it("includes version and help flags", () => {
@@ -62,7 +65,7 @@ describe("printHelp — per-command detail", () => {
     const errText = err.mock.calls.map(c => c[0]).join("");
     const outText = out.mock.calls.map(c => c[0]).join("");
     expect(errText).toContain("Unknown command: not-a-real-command");
-    expect(outText).toContain("lcm — lossless context management for Claude Code");
+    expect(outText).toContain("lcm — lossless context management for coding agents");
   });
 
   it("prints hook command help (restore)", () => {
@@ -73,6 +76,14 @@ describe("printHelp — per-command detail", () => {
     expect(text).toContain("SessionStart");
   });
 
+  it("prints hook command help (post-tool)", () => {
+    const out = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    printHelp("post-tool");
+    const text = out.mock.calls.map(c => c[0]).join("");
+    expect(text).toContain("lcm post-tool");
+    expect(text).toContain("PostToolUse");
+  });
+
   it("prints mcp command help", () => {
     const out = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     printHelp("mcp");
@@ -81,11 +92,21 @@ describe("printHelp — per-command detail", () => {
     expect(text).toContain("MCP server");
   });
 
+  it("prints search command help", () => {
+    const out = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    printHelp("search");
+    const text = out.mock.calls.map(c => c[0]).join("");
+    expect(text).toContain("lcm search");
+    expect(text).toContain("--limit N");
+    expect(text).toContain("--layer <name>");
+  });
+
   it("prints connector help with global scope option", () => {
     const out = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     printHelp("connectors");
     const text = out.mock.calls.map(c => c[0]).join("");
     expect(text).toContain("--global");
+    expect(text).toContain("Install the GitHub Copilot workspace skill for VS Code");
     expect(text).toContain("Install Codex into ~/.codex");
   });
 });

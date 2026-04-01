@@ -102,6 +102,16 @@ describe('generateSkillContent', () => {
     expect(content).toContain('lcm store');
   });
 
+  it('contains a describe example with a node id', () => {
+    const content = generateSkillContent(mockAgent);
+    expect(content).toContain('lcm describe sum_abc123def456');
+  });
+
+  it('contains an expand example with explicit depth', () => {
+    const content = generateSkillContent(mockAgent);
+    expect(content).toContain('lcm expand sum_abc123def456 --depth 2');
+  });
+
   it('does not contain LCM start marker (standalone file)', () => {
     const content = generateSkillContent(mockAgent);
     expect(content).not.toContain(LCM_MARKERS.START);

@@ -17,14 +17,19 @@ export async function dispatchHook(
     return handlePostToolUse(stdinText);
   }
 
-  // Lazy bootstrap: create config + start daemon on first hook fire per session
-  try {
-    const { session_id } = JSON.parse(stdinText || "{}");
-    if (session_id) {
-      const { ensureBootstrapped } = await import("../bootstrap.js");
-      await ensureBootstrapped(session_id);
-    }
-  } catch {} // bootstrap failure must not block hooks
+  // Skip bootstrap for compact — the daemon is already running by the time
+  // PreCompact fires (SessionStart ensures it). Skipping saves ~5s of
+  // ensureDaemon timeout budget under the hook runner's tight deadline.
+  if (command !== "compact") {
+    // Lazy bootstrap: create config + start daemon on first hook fire per session
+    try {
+      const { session_id } = JSON.parse(stdinText || "{}");
+      if (session_id) {
+        const { ensureBootstrapped } = await import("../bootstrap.js");
+        await ensureBootstrapped(session_id);
+      }
+    } catch {} // bootstrap failure must not block hooks
+  }
 
   validateAndFixHooks();
 

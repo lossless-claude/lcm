@@ -72,3 +72,4 @@ lcm stats
 - If daemon is down: run `lcm daemon start --detach`
 - If search returns nothing: memory may be empty — proceed normally
 - Check status: `lcm doctor`
+

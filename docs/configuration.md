@@ -2,6 +2,8 @@
 
 ## Quick start
 
+### Claude Code
+
 Install the `lcm` binary and add the plugin:
 
 ```bash
@@ -10,7 +12,33 @@ claude plugin add github:lossless-claude/lcm
 lcm install
 ```
 
-`lcm install` writes config, registers hooks, installs slash commands, registers MCP, and verifies the daemon.
+`lcm install` is the Claude Code setup path. It writes config, registers hooks, installs slash commands, registers MCP, and verifies the daemon.
+
+### VS Code (GitHub Copilot)
+
+Install the repo-local connector:
+
+```bash
+npm install -g @lossless-claude/lcm
+lcm connectors install github-copilot
+lcm connectors doctor github-copilot
+```
+
+This writes `.github/skills/lcm-memory/SKILL.md` in the current repository.
+
+### Codex
+
+Install the Codex connector:
+
+```bash
+npm install -g @lossless-claude/lcm
+lcm connectors install codex
+lcm connectors doctor codex
+```
+
+Codex transcript import is not exposed as a first-class public CLI flow yet. Track that follow-up in issue #232.
+
+For current limitations and the manual MCP step for Codex TOML config, see [`docs/vscode-codex.md`](vscode-codex.md).
 
 Set recommended environment variables:
 
@@ -24,7 +52,7 @@ Restart Claude Code.
 ## Connector scope
 
 The connector manager can install into either the current project or your global
-agent config. For Codex, the global target is `~/.codex/`.
+agent config. For Codex, the global target is `~/.codex/`. GitHub Copilot is repo-scoped in this project today.
 
 ```bash
 # Install the Codex skill globally instead of into the current repo
@@ -37,6 +65,8 @@ lcm connectors remove codex --global
 
 Use the global flag when you want Codex to pick up the connector from your
 user-level config rather than a single repository checkout.
+
+`lcm install` does not configure VS Code or Codex connectors today. Use `lcm connectors install ...` for those clients.
 
 ## Tuning guide
 

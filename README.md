@@ -1,6 +1,6 @@
 <p align="center">
   <strong>lossless-claude</strong><br>
-  Shared memory infrastructure for Claude Code
+  Shared memory infrastructure for coding agents
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@
 - Every message is stored in a project SQLite database.
 - Older context is compacted into a DAG of summaries instead of being dropped.
 - Durable decisions and findings are promoted into cross-session memory.
-- Claude Code reads and writes project memory across sessions.
+- Claude Code already has end-to-end hook integration, while VS Code and Codex use connector-based workflows on the same backend today.
 
 Humans and agents use the same backend. The integration surface differs by client, but the memory model is shared.
 
@@ -55,6 +55,8 @@ flowchart LR
 | Path | Restore | Prompt hints | Turn writeback | Automatic compaction | Notes |
 |---|---|---|---|---|---|
 | Claude Code | Yes | Yes | Yes, via transcript/hooks | Yes | Primary hook-based integration |
+| GitHub Copilot (VS Code) | No | Yes, via skill/rules | No | No | Repo-local skill can teach Copilot to call `lcm`, but there is no automatic restore or turn capture yet |
+| Codex | No | Yes, via skill/rules | No | No | Repo-local or global skill today; MCP config in `.codex/config.toml` is still manual, and first-class import/runtime support is tracked in issue #232 |
 
 ## LCM Model
 
@@ -85,7 +87,9 @@ flowchart TD
 ### Prerequisites
 
 - Node.js 22+
-- Claude Code for hook-based Claude integration
+- Claude Code if you want hook-based automation
+- GitHub Copilot in VS Code if you want VS Code integration
+- Codex CLI if you want Codex connector installation or summarization
 
 ### Claude Code
 
@@ -101,6 +105,44 @@ lcm install
 ```
 
 `lcm install` writes config, registers hooks, installs slash commands, registers MCP, and verifies the daemon.
+
+### VS Code (GitHub Copilot)
+
+Install the `lcm` binary first:
+
+```bash
+npm install -g @lossless-claude/lcm
+```
+
+Then install the repo-local Copilot connector:
+
+```bash
+lcm connectors install github-copilot
+lcm connectors doctor github-copilot
+```
+
+This creates a workspace skill under `.github/skills/lcm-memory/SKILL.md` so Copilot can search and store memory through the `lcm` CLI.
+
+### Codex
+
+Install the `lcm` binary first:
+
+```bash
+npm install -g @lossless-claude/lcm
+```
+
+Then install the Codex connector:
+
+```bash
+lcm connectors install codex
+lcm connectors doctor codex
+```
+
+Codex transcript import is not exposed as a first-class public CLI flow yet. Track that gap in issue #232.
+
+If you also want MCP inside Codex, run `lcm connectors install codex --type mcp`. Today that prints the TOML block you must add manually to `.codex/config.toml`.
+
+See [`docs/vscode-codex.md`](docs/vscode-codex.md) for the current VS Code/Codex setup path and known shortcomings.
 
 ## Hooks
 
@@ -147,6 +189,11 @@ lcm status                 # daemon + summarizer mode
 lcm -V                     # version
 
 # Memory inspection
+lcm search "query"        # search episodic and promoted memory
+lcm grep "pattern"        # search messages and summaries
+lcm describe <nodeId>      # inspect metadata for a memory node
+lcm expand <nodeId>        # expand a summary node into source detail
+lcm store "content"       # persist a durable memory entry
 lcm stats                  # memory and compression overview
 lcm stats -v               # per-conversation breakdown
 lcm stats --pool           # connection pool statistics

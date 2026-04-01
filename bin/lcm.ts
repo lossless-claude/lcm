@@ -1,14 +1,24 @@
 #!/usr/bin/env node
+import { realpathSync } from "node:fs";
 import { argv, exit, stdin, stdout } from "node:process";
 import { homedir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Command, Option } from "commander";
+import { DaemonClient } from "../src/daemon/client.js";
 
 function readStdin(): Promise<string> {
   return new Promise((resolve) => {
     if (stdin.isTTY) { resolve(""); return; }
     const chunks: Buffer[] = [];
+    let resolved = false;
+    const timer = setTimeout(() => {
+      if (!resolved) { resolved = true; stdin.destroy(); resolve(Buffer.concat(chunks).toString("utf-8")); }
+    }, 5000);
     stdin.on("data", (chunk: Buffer) => chunks.push(chunk));
-    stdin.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
+    stdin.on("end", () => {
+      if (!resolved) { resolved = true; clearTimeout(timer); resolve(Buffer.concat(chunks).toString("utf-8")); }
+    });
   });
 }
 
@@ -16,6 +26,194 @@ async function withCustomHelp(cmd: Command, commandName: string): Promise<void> 
   const { printHelp } = await import("../src/cli-help.js");
   printHelp(commandName);
   exit(0);
+}
+
+export function shouldRunMain(invokedPath: string | undefined, currentFilePath: string): boolean {
+  if (!invokedPath) return false;
+
+  try {
+    return realpathSync(invokedPath) === realpathSync(currentFilePath);
+  } catch {
+    return invokedPath === currentFilePath;
+  }
+}
+
+export function registerMemoryCommands(program: Command): void {
+  program
+    .command("search <query>")
+    .description("Search memory across episodic and promoted layers")
+    .option("--limit <n>", "Max results per layer", "5")
+    .option("--layer <name>", "Layer to search: episodic or promoted (repeatable)", collectRepeatedOption, [])
+    .option("--tag <tag>", "Require a tag on matching entries (repeatable)", collectRepeatedOption, [])
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (query: string, opts) => {
+      if (opts.help) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("search"); exit(0);
+      }
+
+      const layers = normalizeStringList(opts.layer);
+      const tags = normalizeStringList(opts.tag);
+      ensureAllowedValues(layers, ["episodic", "promoted"], "--layer");
+
+      const client = await createDaemonClientOrExit();
+      const result = await client.post("/search", {
+        cwd: process.cwd(),
+        query,
+        limit: parsePositiveInteger(String(opts.limit ?? "5"), "--limit"),
+        layers,
+        tags,
+      });
+      printJson(result);
+    });
+
+  program
+    .command("grep <query>")
+    .description("Search raw messages and summaries by keyword or regex")
+    .option("--mode <mode>", "Search mode: full_text or regex", "full_text")
+    .option("--scope <scope>", "Scope: messages, summaries, or both", "both")
+    .option("--since <iso>", "Only include matches on or after this ISO timestamp")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (query: string, opts) => {
+      if (opts.help) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("grep"); exit(0);
+      }
+
+      const mode = ensureAllowedValue(opts.mode, ["full_text", "regex"], "--mode");
+      const scope = ensureAllowedValue(opts.scope, ["messages", "summaries", "both"], "--scope");
+
+      const client = await createDaemonClientOrExit();
+      const result = await client.post("/grep", {
+        cwd: process.cwd(),
+        query,
+        mode,
+        scope,
+        since: typeof opts.since === "string" && opts.since.length > 0 ? opts.since : undefined,
+      });
+      printJson(result);
+    });
+
+  program
+    .command("describe <nodeId>")
+    .description("Inspect metadata for a summary or stored memory node")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (nodeId: string, opts) => {
+      if (opts.help) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("describe"); exit(0);
+      }
+
+      const client = await createDaemonClientOrExit();
+      const result = await client.post("/describe", { cwd: process.cwd(), nodeId });
+      printJson(result);
+    });
+
+  program
+    .command("expand <nodeId>")
+    .description("Expand a summary node back into source detail")
+    .option("--depth <n>", "Traversal depth", "1")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (nodeId: string, opts) => {
+      if (opts.help) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("expand"); exit(0);
+      }
+
+      const client = await createDaemonClientOrExit();
+      const result = await client.post("/expand", {
+        cwd: process.cwd(),
+        nodeId,
+        depth: parsePositiveInteger(String(opts.depth ?? "1"), "--depth"),
+      });
+      printJson(result);
+    });
+
+  program
+    .command("store <text>")
+    .description("Store a durable memory entry for the current project")
+    .option("--tag <tag>", "Attach a tag to the stored memory (repeatable)", collectRepeatedOption, [])
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (text: string, opts) => {
+      if (opts.help) {
+        const { printHelp } = await import("../src/cli-help.js");
+        printHelp("store"); exit(0);
+      }
+
+      const client = await createDaemonClientOrExit();
+      const result = await client.post("/store", {
+        cwd: process.cwd(),
+        text,
+        tags: normalizeStringList(opts.tag) ?? [],
+        metadata: {},
+      });
+      printJson(result);
+    });
+}
+
+function collectRepeatedOption(value: string, previous: string[] = []): string[] {
+  return [...previous, value];
+}
+
+function normalizeStringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const normalized = value.filter((item): item is string => typeof item === "string" && item.length > 0);
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function parsePositiveInteger(value: string, optionName: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0 || !Number.isInteger(parsed)) {
+    console.error(`Invalid ${optionName}: ${value}`);
+    exit(1);
+  }
+  return parsed;
+}
+
+function ensureAllowedValues(values: string[] | undefined, allowed: readonly string[], optionName: string): void {
+  if (!values) return;
+  const invalid = values.filter((value) => !allowed.includes(value));
+  if (invalid.length > 0) {
+    console.error(`Invalid ${optionName}: ${invalid.join(", ")}`);
+    exit(1);
+  }
+}
+
+function ensureAllowedValue(value: unknown, allowed: readonly string[], optionName: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !allowed.includes(value)) {
+    console.error(`Invalid ${optionName}: ${String(value)}`);
+    exit(1);
+  }
+  return value;
+}
+
+function printJson(value: unknown): void {
+  stdout.write(JSON.stringify(value, null, 2) + "\n");
+}
+
+async function createDaemonClientOrExit(): Promise<DaemonClient> {
+  const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
+  const { loadDaemonConfig } = await import("../src/daemon/config.js");
+
+  const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
+  const port = config.daemon?.port ?? 3737;
+  const lcDir = join(homedir(), ".lossless-claude");
+  const pidFilePath = join(lcDir, "daemon.pid");
+  const tokenPath = join(lcDir, "daemon.token");
+  const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 5000 });
+
+  if (!connected) {
+    console.error("  Daemon not available. Start it with: lcm daemon start --detach");
+    exit(1);
+  }
+
+  return new DaemonClient(`http://127.0.0.1:${port}`, tokenPath);
 }
 
 async function main() {
@@ -28,7 +226,7 @@ async function main() {
   const program = new Command();
   program
     .name("lcm")
-    .description("lossless context management for Claude Code")
+    .description("lossless context management for coding agents")
     .version(pkg.version, "-V, --version")
     .helpCommand(false)
     .addHelpCommand(false)
@@ -138,6 +336,7 @@ async function main() {
         const minTokens = config.compaction.autoCompactMinTokens;
         const cwd = all ? undefined : process.cwd();
         const tokenPath = join(homedir(), ".lossless-claude", "daemon.token");
+        const client = new DaemonClient(`http://127.0.0.1:${port}`, tokenPath);
 
         const { NinjaRenderer } = await import("../src/cli/pipeline-runner.js");
         const { makeProgressState } = await import("../src/cli/progress-state.js");
@@ -185,15 +384,11 @@ async function main() {
           let totalPromoted = 0;
           for (const promoteCwd of promoteCwds) {
             try {
-              const res = await fetch(`http://127.0.0.1:${port}/promote`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ cwd: promoteCwd, dry_run: dryRun }),
+              const result = await client.post<{ processed: number; promoted: number }>("/promote", {
+                cwd: promoteCwd,
+                dry_run: dryRun,
               });
-              if (res.ok) {
-                const result = await res.json() as { processed: number; promoted: number };
-                totalPromoted += result.promoted;
-              }
+              totalPromoted += result.promoted;
             } catch { /* non-fatal: promote is best-effort */ }
           }
 
@@ -375,26 +570,19 @@ async function main() {
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
       const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
-      const port = config.daemon?.port ?? 3737;
       const jsonFlag: boolean = opts.json ?? false;
+      const client = await createDaemonClientOrExit();
 
       let daemonStatus = "down";
       let statusData: any = null;
 
       try {
-        const res = await fetch(`http://127.0.0.1:${port}/health`);
-        if (res.ok) daemonStatus = "up";
+        const health = await client.health();
+        if (health) daemonStatus = "up";
 
         // Also fetch /status endpoint if daemon is up
         if (daemonStatus === "up") {
-          const statusRes = await fetch(`http://127.0.0.1:${port}/status`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ cwd: process.cwd() }),
-          });
-          if (statusRes.ok) {
-            statusData = await statusRes.json();
-          }
+          statusData = await client.post("/status", { cwd: process.cwd() });
         }
       } catch {}
 
@@ -446,24 +634,14 @@ async function main() {
       }
 
       if (opts.pool) {
-        const { loadDaemonConfig } = await import("../src/daemon/config.js");
-        const { join } = await import("node:path");
-        const { homedir } = await import("node:os");
-        const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
-        const port = config.daemon?.port ?? 3737;
         const jsonFlag: boolean = opts.json ?? false;
+        const client = await createDaemonClientOrExit();
 
         let poolData: any = null;
         try {
-          const res = await fetch(`http://127.0.0.1:${port}/stats/pool`);
-          if (res.ok) {
-            poolData = await res.json();
-          } else {
-            console.error(`Error: daemon returned ${res.status}`);
-            exit(1);
-          }
-        } catch {
-          console.error("Error: could not connect to daemon. Start it with: lcm daemon start --detach");
+          poolData = await client.get("/stats/pool");
+        } catch (err) {
+          console.error(`Error: ${err instanceof Error ? err.message : "could not load pool stats"}`);
           exit(1);
         }
 
@@ -521,6 +699,8 @@ async function main() {
       const failures = results.filter((r: { status: string }) => r.status === "fail");
       exit(failures.length > 0 ? 1 : 0);
     });
+
+  registerMemoryCommands(program);
 
   // ─── diagnose ──────────────────────────────────────────────────────────────
   program
@@ -866,7 +1046,7 @@ async function main() {
         exit(1);
       }
 
-      const baseUrl = `http://127.0.0.1:${port}`;
+      const client = new DaemonClient(`http://127.0.0.1:${port}`);
       const { readdirSync, existsSync, readFileSync } = await import("node:fs");
 
       if (dryRun) console.log("  [dry-run] No changes will be written.\n");
@@ -902,25 +1082,23 @@ async function main() {
           process.stdout.write(`\r  scanning...`);
         }
 
-        const res = await fetch(`${baseUrl}/promote`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cwd, dry_run: dryRun }),
-        });
+        try {
+          const result = await client.post<{ processed: number; promoted: number; conversations?: number }>("/promote", {
+            cwd,
+            dry_run: dryRun,
+          });
 
-        if (!res.ok) {
-          if (verbose) console.error(`  promote failed for ${cwd}: ${res.status}`);
+          totalProcessed += result.processed;
+          totalPromoted += result.promoted;
+
+          if (verbose) {
+            process.stdout.write("\r");
+            const convLabel = result.conversations !== undefined ? `, ${result.conversations} conversation${result.conversations !== 1 ? "s" : ""}` : "";
+            console.log(`  ${cwd}: ${result.processed} scanned${convLabel}, ${result.promoted} promoted`);
+          }
+        } catch (err) {
+          if (verbose) console.error(`  promote failed for ${cwd}: ${err instanceof Error ? err.message : "request failed"}`);
           continue;
-        }
-
-        const result = await res.json() as { processed: number; promoted: number; conversations?: number };
-        totalProcessed += result.processed;
-        totalPromoted += result.promoted;
-
-        if (verbose) {
-          process.stdout.write("\r");
-          const convLabel = result.conversations !== undefined ? `, ${result.conversations} conversation${result.conversations !== 1 ? "s" : ""}` : "";
-          console.log(`  ${cwd}: ${result.processed} scanned${convLabel}, ${result.promoted} promoted`);
         }
       }
       // Clear the progress line
@@ -1097,4 +1275,6 @@ async function main() {
   await program.parseAsync(argv);
 }
 
-main().catch((err) => { console.error(err); exit(1); });
+if (shouldRunMain(argv[1], fileURLToPath(import.meta.url))) {
+  main().catch((err) => { console.error(err); exit(1); });
+}
