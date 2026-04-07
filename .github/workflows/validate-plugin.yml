@@ -1,0 +1,182 @@
+name: Validate Plugin
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - '.claude-plugin/**'
+      - 'skills/**'
+      - 'commands/**'
+      - 'agents/**'
+  pull_request:
+    paths:
+      - '.claude-plugin/**'
+      - 'skills/**'
+      - 'commands/**'
+      - 'agents/**'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-plugin-json:
+    name: Validate plugin.json
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check plugin.json exists
+        run: |
+          if [ ! -f ".claude-plugin/plugin.json" ]; then
+            echo "ERROR: .claude-plugin/plugin.json not found"
+            exit 1
+          fi
+          echo "OK: .claude-plugin/plugin.json exists"
+
+      - name: Validate JSON syntax
+        run: |
+          if ! jq empty .claude-plugin/plugin.json 2>/dev/null; then
+            echo "ERROR: .claude-plugin/plugin.json is not valid JSON"
+            exit 1
+          fi
+          echo "OK: valid JSON"
+
+      - name: Check required fields
+        run: |
+          ERRORS=0
+
+          NAME=$(jq -r '.name // empty' .claude-plugin/plugin.json)
+          if [ -z "$NAME" ]; then
+            echo "ERROR: missing required field: name"
+            ERRORS=$((ERRORS + 1))
+          else
+            echo "OK: name = $NAME"
+          fi
+
+          VERSION=$(jq -r '.version // empty' .claude-plugin/plugin.json)
+          if [ -z "$VERSION" ]; then
+            echo "ERROR: missing required field: version"
+            ERRORS=$((ERRORS + 1))
+          else
+            echo "OK: version = $VERSION"
+          fi
+
+          DESCRIPTION=$(jq -r '.description // empty' .claude-plugin/plugin.json)
+          if [ -z "$DESCRIPTION" ]; then
+            echo "ERROR: missing required field: description"
+            ERRORS=$((ERRORS + 1))
+          else
+            echo "OK: description present"
+          fi
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "FAILED: $ERRORS required field(s) missing"
+            exit 1
+          fi
+
+  validate-components:
+    name: Validate component files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # lcm: skills at .claude-plugin/skills/<name>/SKILL.md
+      - name: Validate skills (.claude-plugin/skills/<name>/SKILL.md)
+        run: |
+          ERRORS=0
+          SKILL_DIR=".claude-plugin/skills"
+          if [ -d "$SKILL_DIR" ]; then
+            for skill_dir in "$SKILL_DIR"/*/; do
+              skill_name=$(basename "$skill_dir")
+              if [ ! -f "$skill_dir/SKILL.md" ]; then
+                echo "ERROR: $SKILL_DIR/$skill_name/SKILL.md not found"
+                ERRORS=$((ERRORS + 1))
+              else
+                echo "OK: $SKILL_DIR/$skill_name/SKILL.md"
+              fi
+            done
+          else
+            echo "INFO: no $SKILL_DIR directory"
+          fi
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "FAILED: $ERRORS skill(s) missing SKILL.md"
+            exit 1
+          fi
+
+      # lcm: commands at .claude-plugin/commands/<name>.md
+      - name: Validate commands (.claude-plugin/commands/<name>.md)
+        run: |
+          ERRORS=0
+          CMD_DIR=".claude-plugin/commands"
+          if [ -d "$CMD_DIR" ]; then
+            for cmd_file in "$CMD_DIR"/*.md; do
+              [ -e "$cmd_file" ] || continue
+              cmd_name=$(basename "$cmd_file")
+              if [ ! -f "$cmd_file" ]; then
+                echo "ERROR: $CMD_DIR/$cmd_name is not a file"
+                ERRORS=$((ERRORS + 1))
+              else
+                echo "OK: $CMD_DIR/$cmd_name"
+              fi
+            done
+          else
+            echo "INFO: no $CMD_DIR directory"
+          fi
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "FAILED: $ERRORS command file(s) invalid"
+            exit 1
+          fi
+
+  validate-structure:
+    name: Validate directory structure (anti-pattern check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure commands/ and skills/ are NOT nested inside .claude-plugin/ (anti-pattern)
+        run: |
+          ERRORS=0
+
+          # For lcm: skills live at .claude-plugin/skills/ — that is correct.
+          # The anti-pattern is having a root-level skills/ or commands/ INSIDE .claude-plugin/
+          # at a depth that duplicates the structure (e.g. .claude-plugin/commands/skills/).
+          # Also check that root-level commands/ or skills/ haven't been accidentally placed
+          # inside .claude-plugin/ as a subdirectory of commands/ or skills/.
+
+          if [ -d ".claude-plugin/commands/skills" ]; then
+            echo "ERROR: skills/ nested inside .claude-plugin/commands/ — anti-pattern"
+            ERRORS=$((ERRORS + 1))
+          fi
+
+          if [ -d ".claude-plugin/commands/commands" ]; then
+            echo "ERROR: commands/ nested inside .claude-plugin/commands/ — anti-pattern"
+            ERRORS=$((ERRORS + 1))
+          fi
+
+          if [ -d ".claude-plugin/skills/commands" ]; then
+            echo "ERROR: commands/ nested inside .claude-plugin/skills/ — anti-pattern"
+            ERRORS=$((ERRORS + 1))
+          fi
+
+          if [ -d ".claude-plugin/skills/skills" ]; then
+            echo "ERROR: skills/ nested inside .claude-plugin/skills/ — anti-pattern"
+            ERRORS=$((ERRORS + 1))
+          fi
+
+          # Verify commands field in plugin.json points to .claude-plugin/commands/
+          COMMANDS_PATH=$(jq -r '.commands // empty' .claude-plugin/plugin.json)
+          if [ -n "$COMMANDS_PATH" ]; then
+            # Normalize: strip leading ./ and trailing /
+            NORMALIZED=$(echo "$COMMANDS_PATH" | sed 's|^\./||; s|/$||')
+            if [ "$NORMALIZED" != ".claude-plugin/commands" ]; then
+              echo "WARNING: plugin.json commands field points to '$COMMANDS_PATH' (expected .claude-plugin/commands/)"
+            else
+              echo "OK: commands field correctly points to .claude-plugin/commands/"
+            fi
+          fi
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "FAILED: $ERRORS structural issue(s) found"
+            exit 1
+          fi
+          echo "OK: no nesting anti-patterns found"
