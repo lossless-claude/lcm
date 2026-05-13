@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { LcmSummarizeFn, SummarizeContext } from "./types.js";
 import {
   LCM_SUMMARIZER_SYSTEM_PROMPT,
@@ -9,6 +12,15 @@ import {
 
 const HAIKU_MODEL = "claude-haiku-4-5-20251001";
 const TIMEOUT_MS = 120_000;
+const EMPTY_MCP_CONFIG = '{"mcpServers":{}}';
+
+let cachedEmptyPluginDir: string | undefined;
+function emptyPluginDir(): string {
+  if (cachedEmptyPluginDir) return cachedEmptyPluginDir;
+  cachedEmptyPluginDir = join(tmpdir(), "lcm-claude-empty-plugins");
+  mkdirSync(cachedEmptyPluginDir, { recursive: true });
+  return cachedEmptyPluginDir;
+}
 
 export function createClaudeProcessSummarizer(): LcmSummarizeFn {
   return async function summarize(text: string, aggressive?: boolean, ctx: SummarizeContext = {}): Promise<string> {
@@ -25,15 +37,25 @@ export function createClaudeProcessSummarizer(): LcmSummarizeFn {
       : buildLeafSummaryPrompt({ text, mode: aggressive ? "aggressive" : "normal", targetTokens });
 
     return new Promise((resolve, reject) => {
+      // Isolation recipe — see calling-cli-agents skill `calling-claude-cli`:
+      // --plugin-dir empty + --strict-mcp-config + --mcp-config '{"mcpServers":{}}'
+      // collapses subprocess cold-start from ~60s to ~5s while preserving the
+      // user's Max subscription (OAuth still works). Stripping ANTHROPIC_API_KEY
+      // from the child env forces the subprocess to bill to the subscription
+      // even when the shell exports it.
       const proc = spawn("claude", [
         "--print",
         "--model", HAIKU_MODEL,
         "--no-session-persistence",
         "--system-prompt", LCM_SUMMARIZER_SYSTEM_PROMPT,
         "--tools", "",
+        "--plugin-dir", emptyPluginDir(),
+        "--strict-mcp-config",
+        "--mcp-config", EMPTY_MCP_CONFIG,
         "--disable-slash-commands",
       ], {
         stdio: ["pipe", "pipe", "pipe"],
+        env: { ...process.env, ANTHROPIC_API_KEY: undefined },
       });
 
       let stdout = "";
