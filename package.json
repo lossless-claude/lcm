@@ -55,7 +55,7 @@
     "@types/safe-regex": "^1.1.6",
     "openai": "^6.32.0",
     "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "vitest": "^4.1.8"
   },
   "peerDependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
