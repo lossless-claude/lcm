@@ -188,7 +188,12 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
         } catch { /* non-fatal */ }
       }
 
-      const context = [orientation, episodicContext, promotedContext, instructionsContext].filter(Boolean).join("\n\n");
+      // `instructionsContext` is deliberately omitted here. On startup/resume/clear the
+      // host harness injects the applicable CLAUDE.md files itself, so echoing the
+      // session_instructions snapshot back would duplicate them in context. The snapshot is
+      // still captured above, and the isPostCompact branch still replays it — a compaction
+      // is the only time the harness's own copy is gone.
+      const context = [orientation, episodicContext, promotedContext].filter(Boolean).join("\n\n");
       const responseBody: { context: string; insights?: Array<{ content: string; confidence: number; tags: string[] }> } = { context };
       if (insights.length > 0) {
         responseBody.insights = insights;
