@@ -38,6 +38,9 @@ if (!existsSync(join(__dirname, "dist"))) {
   } catch {}
 }
 
-// Delegate to the compiled CLI — process.argv passes through unchanged
+// Delegate to the compiled CLI. argv[1] must be rewritten to point at the CLI rather
+// than at this wrapper: bin/lcm.js only calls main() when realpath(argv[1]) matches its
+// own path, so leaving argv[1] as lcm.mjs makes every plugin hook a silent no-op.
 const cliModule = join(__dirname, "dist", "bin", "lcm.js");
+process.argv[1] = cliModule;
 await import(pathToFileURL(cliModule).href);
