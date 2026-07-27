@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -28,8 +28,16 @@ function readClaudeMdFiles(cwd: string): string {
   ];
 
   const parts: string[] = [];
+  const seen = new Set<string>();
   for (const { label, path } of paths) {
     try {
+      // When cwd is $HOME, entries 1 and 3 are the same file; reading it twice duplicates
+      // it in the snapshot, and so in every replay of that snapshot. Key on the canonical
+      // path, not the spelling: cwd arrives realpath'd from validateCwd while homedir()
+      // does not, so the same file can reach here as both /var/… and /private/var/….
+      const key = realpathSync(path);
+      if (seen.has(key)) continue;
+      seen.add(key);
       const content = readFileSync(path, "utf8");
       parts.push(`# ${label}\n${content}`);
     } catch {

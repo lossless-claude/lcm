@@ -134,6 +134,37 @@ describe("POST /restore", () => {
       expect(compactBody.context).toContain("Prefer tabs over spaces.");
     });
 
+    it("captures a CLAUDE.md reachable by two paths only once (cwd === $HOME)", async () => {
+      // os.homedir() reads $HOME on POSIX, so pointing it at tmpDir makes tmpDir the home
+      // dir — which is the real-world case of running Claude with cwd === $HOME. Then
+      // `~/.claude/CLAUDE.md` and `${cwd}/.claude/CLAUDE.md` are the same file.
+      const realHome = process.env.HOME;
+      process.env.HOME = tmpDir;
+      try {
+        mkdirSync(join(tmpDir, ".claude"), { recursive: true });
+        writeFileSync(join(tmpDir, ".claude", "CLAUDE.md"), "Only once please.", "utf8");
+
+        daemon = await createDaemon(loadDaemonConfig(tmpDir, { daemon: { port: 0 } }));
+        const res = await fetch(`http://127.0.0.1:${daemon.address().port}/restore`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: "home-is-cwd", cwd: tmpDir, source: "startup", hook_event_name: "SessionStart" }),
+        });
+        expect(res.status).toBe(200);
+
+        const db = new DatabaseSync(projectDbPath(tmpDir));
+        const row = db.prepare(`SELECT content FROM session_instructions WHERE id = 1`).get() as
+          | { content: string }
+          | undefined;
+        db.close();
+
+        expect(row).toBeDefined();
+        expect(row!.content.split("Only once please.").length - 1).toBe(1);
+      } finally {
+        if (realHome === undefined) delete process.env.HOME;
+        else process.env.HOME = realHome;
+      }
+    });
+
     it("does not re-upsert session_instructions when content hash unchanged", async () => {
       // Write CLAUDE.md
       writeFileSync(join(tmpDir, "CLAUDE.md"), "Stable content.", "utf8");
