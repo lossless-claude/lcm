@@ -107,26 +107,34 @@ describe("POST /restore", () => {
       expect(row!.content_hash).toMatch(/^[a-f0-9]{64}$/);
     });
 
-    it("does not echo project-instructions on startup restore, but still replays them post-compact", async () => {
+    it.each(["startup", "resume", "clear"])("does not echo saved project-instructions on %s, but still replays them post-compact", async (source) => {
       writeFileSync(join(tmpDir, "CLAUDE.md"), "# Project Rules\nPrefer tabs over spaces.", "utf8");
 
       daemon = await createDaemon(loadDaemonConfig(tmpDir, { daemon: { port: 0 } }));
       const port = daemon.address().port;
 
-      // Startup: the harness injects CLAUDE.md itself, so we must not duplicate it.
-      const startupRes = await fetch(`http://127.0.0.1:${port}/restore`, {
+      // Seed the snapshot first: an empty DB cannot expose the old startup echo.
+      const seedRes = await fetch(`http://127.0.0.1:${port}/restore`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: "startup-no-echo", cwd: tmpDir, source: "startup", hook_event_name: "SessionStart" }),
+        body: JSON.stringify({ session_id: "seed-instructions", cwd: tmpDir, source: "startup", hook_event_name: "SessionStart" }),
       });
-      expect(startupRes.status).toBe(200);
-      const startupBody = await startupRes.json();
-      expect(startupBody.context).not.toContain("<project-instructions>");
-      expect(startupBody.context).not.toContain("Prefer tabs over spaces.");
+      expect(seedRes.status).toBe(200);
+      await seedRes.json();
+
+      // The saved instructions must not duplicate the harness's own copy.
+      const restoreRes = await fetch(`http://127.0.0.1:${port}/restore`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: "restore-no-echo", cwd: tmpDir, source, hook_event_name: "SessionStart" }),
+      });
+      expect(restoreRes.status).toBe(200);
+      const restoreBody = await restoreRes.json();
+      expect(restoreBody.context).not.toContain("<project-instructions>");
+      expect(restoreBody.context).not.toContain("Prefer tabs over spaces.");
 
       // ...but the snapshot was still captured, so a later compaction can replay it.
       const compactRes = await fetch(`http://127.0.0.1:${port}/restore`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: "compact-after-startup", cwd: tmpDir, source: "compact", hook_event_name: "SessionStart" }),
+        body: JSON.stringify({ session_id: "restore-no-echo", cwd: tmpDir, source: "compact", hook_event_name: "SessionStart" }),
       });
       expect(compactRes.status).toBe(200);
       const compactBody = await compactRes.json();
