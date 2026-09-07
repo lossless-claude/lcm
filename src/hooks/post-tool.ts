@@ -24,11 +24,14 @@ export async function handlePostToolUse(
   let cwd: string | undefined;
   try {
     const input = JSON.parse(stdin);
-    const { session_id, tool_name, tool_input, tool_response, tool_output } = input;
+    const { session_id, tool_name, tool_input, tool_response, tool_output, hook_event_name, error, is_interrupt } = input;
 
     if (!tool_name || !session_id) return { exitCode: 0, stdout: "" };
 
-    const events = extractPostToolEvents({ tool_name, tool_input: tool_input ?? {}, tool_response, tool_output });
+    const sourceHook = hook_event_name === "PostToolUseFailure" ? "PostToolUseFailure" : "PostToolUse";
+    const events = extractPostToolEvents({
+      tool_name, tool_input: tool_input ?? {}, tool_response, tool_output, hook_event_name: sourceHook, error, is_interrupt,
+    });
     if (events.length === 0) return { exitCode: 0, stdout: "" };
 
     cwd = input.cwd ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
@@ -37,7 +40,7 @@ export async function handlePostToolUse(
 
     try {
       for (const event of events) {
-        db.insertEvent(session_id, event, "PostToolUse");
+        db.insertEvent(session_id, event, sourceHook);
       }
 
       // Tier 1: fire-and-forget daemon promotion for high-priority events.

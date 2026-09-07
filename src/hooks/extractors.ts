@@ -13,6 +13,22 @@ interface PostToolInput {
   tool_input: Record<string, unknown>;
   tool_response?: unknown;
   tool_output?: { isError?: boolean };
+  /** "PostToolUse" (success) or "PostToolUseFailure" (tool threw / MCP error result). */
+  hook_event_name?: string;
+  /** PostToolUseFailure only: error text; for Bash the first line is "Exit code N". */
+  error?: string;
+  /** PostToolUseFailure only: true when the failure was an abort, not a tool error. */
+  is_interrupt?: boolean;
+}
+
+/** PostToolUse never fires for failed tools; failures arrive via PostToolUseFailure. */
+function isToolFailure(input: PostToolInput): boolean {
+  if (input.hook_event_name === "PostToolUseFailure") return input.is_interrupt !== true;
+  return input.tool_output?.isError === true;
+}
+
+function errorHeadline(input: PostToolInput): string {
+  return String(input.error ?? "").split("\n")[0].trim();
 }
 
 const SENSITIVE_PATHS = [".env", ".ssh/", "credentials", "secrets/", ".npmrc", ".netrc"];
@@ -52,10 +68,8 @@ function classifyFile(path: string): string {
 
 function extractBashEvents(input: PostToolInput): ExtractedEvent[] {
   const command = String(input.tool_input.command ?? "");
-  const isError = input.tool_output?.isError === true;
-
   // Error detection (priority 1)
-  if (isError) {
+  if (isToolFailure(input)) {
     const prefix = command.split(/\s+/).slice(0, 3).join(" ");
     return [{ type: "error_tool", category: "error", data: truncate(`Bash error: ${prefix}`), priority: 1 }];
   }
@@ -103,6 +117,16 @@ export function extractPostToolEvents(input: PostToolInput): ExtractedEvent[] {
 
   // Skip lcm_store to prevent feedback loops
   if (tool_name.includes("lcm_store") || tool_name.includes("lcm__lcm_store")) return [];
+
+  // Failed tool (PostToolUseFailure) — error beats the success-shaped extractors below
+  if (input.hook_event_name === "PostToolUseFailure") {
+    if (!isToolFailure(input)) return []; // interrupted, not an error
+    const headline = errorHeadline(input);
+    const subject = tool_name === "Bash"
+      ? `Bash error: ${String(input.tool_input.command ?? "").split(/\s+/).slice(0, 3).join(" ")}`
+      : `${tool_name} error`;
+    return [{ type: "error_tool", category: "error", data: truncate(headline ? `${subject} — ${headline}` : subject), priority: 1 }];
+  }
 
   // AskUserQuestion — extract Q+A pair (priority 1)
   if (tool_name === "AskUserQuestion") {
@@ -165,14 +189,9 @@ export function extractPostToolEvents(input: PostToolInput): ExtractedEvent[] {
     return [{ type: "mcp_call", category: "mcp", data: tool_name, priority: 3 }];
   }
 
-  // Any other tool with isError flag
-  if (input.tool_output?.isError === true) {
-    return [{
-      type: "error_tool",
-      category: "error",
-      data: truncate(`${tool_name} error`),
-      priority: 1,
-    }];
+  // Any other tool with the legacy isError flag
+  if (isToolFailure(input)) {
+    return [{ type: "error_tool", category: "error", data: truncate(`${tool_name} error`), priority: 1 }];
   }
 
   return [];

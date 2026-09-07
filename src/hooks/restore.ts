@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { writeFileSync, readFileSync } from "node:fs";
 
+/** Deadline for the /restore call — SessionStart blocks the session until this hook returns. */
+const RESTORE_TIMEOUT_MS = 10_000;
+
 /** Returns true if lock was acquired, false if another live process holds it. */
 function tryAcquireSessionLock(sessionId: string): boolean {
   const lockPath = join(tmpdir(), `lcm-restore-${sessionId}.lock`);
@@ -70,7 +73,7 @@ export async function handleSessionStart(stdin: string, client: DaemonClient, po
       // Silent fail — scavenge is best-effort
     }
 
-    const result = await client.post<{ context: string; insights?: Array<{ content: string; confidence: number; tags: string[] }> }>("/restore", input);
+    const result = await client.post<{ context: string; insights?: Array<{ content: string; confidence: number; tags: string[] }> }>("/restore", input, { timeoutMs: RESTORE_TIMEOUT_MS });
     let stdout = result.context || "";
 
     if (result.insights && result.insights.length > 0) {

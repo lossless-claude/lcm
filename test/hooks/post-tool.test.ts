@@ -80,4 +80,24 @@ describe("handlePostToolUse", () => {
     }));
     expect(firePromoteEventsRequest).toHaveBeenCalledWith(4242, expect.objectContaining({ cwd: expect.any(String) }));
   });
+
+  it("labels PostToolUseFailure events with their real source hook", async () => {
+    await handlePostToolUse(JSON.stringify({
+      session_id: "test-session",
+      hook_event_name: "PostToolUseFailure",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      error: "Exit code 1\nboom",
+    }));
+    const { EventsDb } = await import("../../src/hooks/events-db.js");
+    const db = new EventsDb(join(dir, "test.db"));
+    try {
+      const rows = db.getUnprocessed(10);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].source_hook).toBe("PostToolUseFailure");
+      expect(rows[0].type).toBe("error_tool");
+    } finally {
+      db.close();
+    }
+  });
 });

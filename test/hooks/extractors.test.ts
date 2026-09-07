@@ -161,6 +161,40 @@ describe("extractPostToolEvents", () => {
   });
 });
 
+describe("extractPostToolEvents — PostToolUseFailure", () => {
+  it("extracts a Bash failure with the exit-code headline", () => {
+    const events = extractPostToolEvents({
+      hook_event_name: "PostToolUseFailure",
+      tool_name: "Bash",
+      tool_input: { command: "npm test --silent" },
+      error: "Exit code 1\nError: Cannot find module 'express'",
+    });
+    expect(events).toEqual([expect.objectContaining({ type: "error_tool", category: "error", priority: 1 })]);
+    expect(events[0].data).toBe("Bash error: npm test --silent — Exit code 1");
+  });
+
+  it("extracts a failure for a tool that normally has a success extractor", () => {
+    const events = extractPostToolEvents({
+      hook_event_name: "PostToolUseFailure",
+      tool_name: "AskUserQuestion",
+      tool_input: { question: "Which db?" },
+      error: "User cancelled",
+    });
+    expect(events).toEqual([expect.objectContaining({ type: "error_tool", data: "AskUserQuestion error — User cancelled" })]);
+  });
+
+  it("ignores interrupts — an abort is not a tool error", () => {
+    const events = extractPostToolEvents({
+      hook_event_name: "PostToolUseFailure",
+      tool_name: "Bash",
+      tool_input: { command: "sleep 100" },
+      error: "aborted",
+      is_interrupt: true,
+    });
+    expect(events).toEqual([]);
+  });
+});
+
 describe("extractUserPromptEvents", () => {
   it("extracts decision from 'always use' pattern", () => {
     const events = extractUserPromptEvents("always use TypeScript for new files");

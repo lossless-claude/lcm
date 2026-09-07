@@ -1,5 +1,6 @@
 export const REQUIRED_HOOKS: { event: string; command: string }[] = [
   { event: "PostToolUse", command: "lcm post-tool" },
+  { event: "PostToolUseFailure", command: "lcm post-tool" },
   { event: "PreCompact", command: "lcm compact --hook" },
   { event: "SessionStart", command: "lcm restore" },
   { event: "SessionEnd", command: "lcm session-end" },

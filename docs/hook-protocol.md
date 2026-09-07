@@ -86,6 +86,14 @@ Invoked on each user prompt. lcm searches memory for relevant hints and injects 
 
 **Response:** Exit code `0`. Hints are injected via stdout when relevant matches are found.
 
+## PostToolUseFailure Hook
+
+**Command:** `lcm post-tool` (same handler as PostToolUse)
+
+Invoked when a tool that started running fails. Claude Code never routes failures through `PostToolUse`, so error events only exist because this hook is registered. The handler records an `error_tool` event (priority 1) in the local sidecar database. The payload carries `tool_name`, `tool_input`, a top-level `error` string (for Bash the first line is `Exit code N`), and optional `is_interrupt`; interrupts are ignored.
+
+**Response:** Always exit code `0`, no stdout.
+
 ## PostToolUse Hook
 
 **Command:** `lcm post-tool`

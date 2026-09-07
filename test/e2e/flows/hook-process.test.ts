@@ -123,6 +123,15 @@ describe("Flow 20: hooks via `node lcm.mjs` with piped stdin", { timeout: 120_00
     expect(r.stdout).toBe("");
   });
 
+  it("post-tool accepts a PostToolUseFailure payload silently", async () => {
+    const r = await runHook(
+      ["post-tool"],
+      payload({ hook_event_name: "PostToolUseFailure", tool_name: "Bash", tool_input: { command: "npm test" }, error: "Exit code 1\nboom" }),
+    );
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toBe("");
+  });
+
   it("session-snapshot exits 0 with a real transcript", async () => {
     const h = handle!;
     const r = await runHook(["session-snapshot"], payload({ transcript_path: h.syntheticFixturePath }));
