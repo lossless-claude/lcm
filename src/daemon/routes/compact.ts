@@ -149,7 +149,11 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
     // Guard must be checked and set synchronously (before any await) to prevent
     // concurrent requests from racing through the has() check before add() runs.
     if (compactingNow.has(session_id)) {
-      sendJson(res, 200, { skipped: true, summary: "Compaction already in progress for this session." });
+      sendJson(res, 200, {
+        skipped: true,
+        replayOutcome: "skipped",
+        summary: "Compaction already in progress for this session.",
+      });
       return;
     }
     compactingNow.add(session_id);
@@ -167,7 +171,12 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
     try {
       const summarize = await getSummarizer(effectiveProvider);
       if (!summarize) {
-        sendJson(res, 200, { summary: "Summarization disabled — no summarizer configured.", providerId: effectiveProvider, providerLabel });
+        sendJson(res, 200, {
+          summary: "Summarization disabled — no summarizer configured.",
+          replayOutcome: "disabled",
+          providerId: effectiveProvider,
+          providerLabel,
+        });
         return;
       }
       const pid = projectId(cwd);
@@ -313,20 +322,23 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
 
           let latestSummaryContent: string | undefined;
           let latestSummaryId: string | undefined;
+          let latestSummaryIds: string[] | undefined;
           if (compactResult.createdSummaryId) {
             const summaryRecord = await summaryStore.getSummary(compactResult.createdSummaryId);
             latestSummaryContent = summaryRecord?.content;
             latestSummaryId = summaryRecord ? compactResult.createdSummaryId : undefined;
+            latestSummaryIds = compactResult.createdSummaryIds;
           } else if (allSummaries.length > 0) {
             // Fall back to the most recent existing summary when no new summary was created
             latestSummaryContent = allSummaries[allSummaries.length - 1]?.content;
-            latestSummaryId = allSummaries[allSummaries.length - 1]?.summaryId;
           }
 
           return {
             summary: summaryMsg,
             latestSummaryContent,
             latestSummaryId,
+            latestSummaryIds,
+            replayOutcome: compactResult.actionTaken ? "compacted" : "no_work",
             tokensBefore: compactResult.tokensBefore,
             tokensAfter: compactResult.tokensAfter,
             providerId: effectiveProvider,

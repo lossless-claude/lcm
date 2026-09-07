@@ -6,6 +6,7 @@ import { runLcmMigrations } from "./db/migration.js";
 import type { ProgressState } from "./cli/progress-state.js";
 import { DaemonClient } from "./daemon/client.js";
 import {
+  appendReplayManifestSessions,
   clearReplayState,
   createReplayRun,
   fingerprintStats,
@@ -20,6 +21,8 @@ export interface UncompactedConversation {
   sessionId: string;
   messages: number;
   tokens: number;
+  sourceMessages: number;
+  sourceTokens: number;
 }
 
 /** Find conversations eligible for compaction, above the token threshold. */
@@ -55,12 +58,20 @@ export function findUncompacted(minTokens: number, readOnly = false, cwdFilter?:
           c.session_id,
           COALESCE(m.msg_count, 0) as messages,
           COALESCE(m.raw_tokens, 0) as tokens,
+          COALESCE(src.msg_count, 0) as source_messages,
+          COALESCE(src.raw_tokens, 0) as source_tokens,
           COALESCE(s.sum_count, 0) as summaries
         FROM conversations c
         LEFT JOIN (
           SELECT conversation_id, COUNT(*) as msg_count, SUM(token_count) as raw_tokens
           FROM messages GROUP BY conversation_id
         ) m ON m.conversation_id = c.conversation_id
+        LEFT JOIN (
+          SELECT conversation_id, COUNT(*) as msg_count, SUM(token_count) as raw_tokens
+          FROM messages
+          WHERE role != 'system'
+          GROUP BY conversation_id
+        ) src ON src.conversation_id = c.conversation_id
         LEFT JOIN (
           SELECT conversation_id, COUNT(*) as sum_count
           FROM summaries GROUP BY conversation_id
@@ -69,7 +80,15 @@ export function findUncompacted(minTokens: number, readOnly = false, cwdFilter?:
           AND (? OR COALESCE(s.sum_count, 0) = 0)
           AND COALESCE(m.raw_tokens, 0) >= ?
         ORDER BY COALESCE(m.raw_tokens, 0) DESC
-      `).all(replay ? 1 : 0, minTokens) as { conversation_id: number; session_id: string; messages: number; tokens: number; summaries: number }[];
+      `).all(replay ? 1 : 0, minTokens) as {
+        conversation_id: number;
+        session_id: string;
+        messages: number;
+        tokens: number;
+        source_messages: number;
+        source_tokens: number;
+        summaries: number;
+      }[];
 
       for (const row of rows) {
         results.push({
@@ -79,6 +98,8 @@ export function findUncompacted(minTokens: number, readOnly = false, cwdFilter?:
           sessionId: row.session_id,
           messages: row.messages,
           tokens: row.tokens,
+          sourceMessages: row.source_messages,
+          sourceTokens: row.source_tokens,
         });
       }
     } catch { /* skip corrupt databases */ }
@@ -115,6 +136,8 @@ export async function batchCompact(opts: {
   // a ledger records completed compactions, so a restarted run skips finished work.
   let replayRuns: Map<string, { runId: string; positions: Map<string, number> }> | null = null;
   let skippedDone = 0;
+  const previousSummaryByCwd = new Map<string, string | undefined>();
+  const lastCompactedSessionIdByCwd = new Map<string, string | null>();
   if (opts.replay && !opts.dryRun && conversations.length > 0) {
     replayRuns = new Map();
     if (opts.restart) {
@@ -129,7 +152,7 @@ export async function batchCompact(opts: {
     const plan = planReplayResume({
       sessions: conversations,
       command: "compact",
-      fingerprint: (c) => fingerprintStats(c.messages, c.tokens),
+      fingerprint: (c) => fingerprintStats(c.sourceMessages, c.sourceTokens),
       restart: opts.restart,
     });
     for (const [cwd, order] of plan.manifests) {
@@ -144,10 +167,23 @@ export async function batchCompact(opts: {
         });
         order.forEach((sid, i) => positions.set(sid, i));
       } else {
-        positions.clear();
         for (const [sid, pos] of plan.positions.get(cwd) ?? []) positions.set(sid, pos);
+        const appends = plan.manifestAppends.get(cwd) ?? [];
+        if (appends.length > 0) {
+          appendReplayManifestSessions({
+            cwd,
+            command: "compact",
+            runId: plan.runIds.get(cwd)!,
+            sessions: appends.map((sessionId) => ({
+              sessionId,
+              position: plan.positions.get(cwd)?.get(sessionId) ?? 0,
+            })),
+            model: opts.replayModel ?? null,
+          });
+        }
       }
       replayRuns.set(cwd, { runId: plan.runIds.get(cwd)!, positions });
+      previousSummaryByCwd.set(cwd, plan.restoredPreviousSummaries.get(cwd));
     }
     skippedDone = plan.doneCount;
     conversations = plan.remaining;
@@ -199,29 +235,47 @@ export async function batchCompact(opts: {
     process.stdout.write(`  compacting: ${label}...`);
     const releaseInFlight = opts.trackInFlight ? opts.trackInFlight() : null;
     try {
-      const data = await client.post<{ summary?: string; skipped?: boolean; tokensBefore?: number; tokensAfter?: number; providerLabel?: string; latestSummaryId?: string }>("/compact", {
+      const data = await client.post<{
+        summary?: string;
+        skipped?: boolean;
+        replayOutcome?: "disabled" | "skipped" | "compacted" | "no_work";
+        tokensBefore?: number;
+        tokensAfter?: number;
+        providerLabel?: string;
+        latestSummaryContent?: string;
+        latestSummaryId?: string;
+        latestSummaryIds?: string[];
+      }>("/compact", {
         session_id: conv.sessionId,
         cwd: conv.cwd,
         skip_ingest: true,
         client: "claude",
+        ...(previousSummaryByCwd.get(conv.cwd) !== undefined ? { previous_summary: previousSummaryByCwd.get(conv.cwd) } : {}),
       });
+      if (data.latestSummaryContent !== undefined) {
+        previousSummaryByCwd.set(conv.cwd, data.latestSummaryContent);
+      }
 
       // Ledger row is written only after the summary is persisted
       // (latestSummaryId in hand), so a row is durable proof of done work.
       // A skipped (already-in-progress) compaction records nothing — the next
       // run retries it.
       const run = replayRuns?.get(conv.cwd);
-      if (run && data.skipped !== true) {
+      const completedReplaySession =
+        data.replayOutcome === "compacted" || data.replayOutcome === "no_work";
+      if (run && completedReplaySession) {
         recordReplayProgress({
           cwd: conv.cwd,
           runId: run.runId,
           sessionId: conv.sessionId,
           position: run.positions.get(conv.sessionId) ?? 0,
-          prevSessionId: null,
-          contentFingerprint: fingerprintStats(conv.messages, conv.tokens),
+          prevSessionId: lastCompactedSessionIdByCwd.get(conv.cwd) ?? null,
+          contentFingerprint: fingerprintStats(conv.sourceMessages, conv.sourceTokens),
           summaryId: data.latestSummaryId ?? null,
+          summaryIds: data.latestSummaryIds ?? [],
           model: opts.replayModel ?? null,
         });
+        lastCompactedSessionIdByCwd.set(conv.cwd, conv.sessionId);
       }
 
       doneCount++;
@@ -264,6 +318,10 @@ export async function batchCompact(opts: {
         });
       }
     } catch (err) {
+      if (opts.replay) {
+        previousSummaryByCwd.set(conv.cwd, undefined);
+        lastCompactedSessionIdByCwd.set(conv.cwd, null);
+      }
       doneCount++;
       const errMsg = err instanceof Error ? err.message : "unknown error";
       console.log(` FAILED (${errMsg})`);

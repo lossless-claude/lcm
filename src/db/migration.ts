@@ -637,6 +637,19 @@ function runLcmMigrationsInner(
     CREATE INDEX IF NOT EXISTS replay_ledger_position_idx ON replay_ledger (run_id, position);
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS replay_ledger_summaries (
+      run_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      summary_id TEXT NOT NULL,
+      ordinal INTEGER NOT NULL,
+      PRIMARY KEY (run_id, session_id, summary_id),
+      FOREIGN KEY (run_id, session_id) REFERENCES replay_ledger(run_id, session_id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS replay_ledger_summaries_run_session_idx
+      ON replay_ledger_summaries (run_id, session_id, ordinal);
+  `);
+
   const fts5Available = options?.fts5Available ?? getLcmDbFeatures(db).fts5Available;
   if (!fts5Available) {
     return;

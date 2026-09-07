@@ -332,7 +332,7 @@ describe("importSessions", () => {
       if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
       if (path === "/compact") {
         compactBodies.push({ session_id: body.session_id, previous_summary: body.previous_summary });
-        return { summary: "stats", latestSummaryContent: `summary-of-${body.session_id}` };
+        return { summary: "stats", replayOutcome: "compacted", latestSummaryContent: `summary-of-${body.session_id}` };
       }
     });
 
@@ -369,6 +369,7 @@ describe("importSessions", () => {
       if (path === "/ingest") return { ingested: 3, totalTokens: 5000 };
       if (path === "/compact") return {
         summary: "done",
+        replayOutcome: "compacted",
         latestSummaryContent: "summary",
         tokensBefore: 5000,
         tokensAfter: 200,
@@ -418,6 +419,7 @@ describe("importSessions", () => {
       if (path === "/ingest") return { ingested: 0, totalTokens: 0 }; // already ingested
       if (path === "/compact") return {
         summary: "done",
+        replayOutcome: "compacted",
         latestSummaryContent: "summary",
         tokensBefore: 3000,
         tokensAfter: 150,
@@ -485,6 +487,7 @@ describe("importSessions", () => {
         }
         return {
           summary: "ok",
+          replayOutcome: "compacted",
           latestSummaryContent: "s2-summary",
           tokensBefore: 900,
           tokensAfter: 100,
@@ -590,7 +593,7 @@ describe("importSessions", () => {
       }
       if (path === "/compact") {
         compactBodies.push({ session_id: body.session_id, previous_summary: body.previous_summary });
-        return { summary: "stats", latestSummaryContent: `summary-of-${body.session_id}` };
+        return { summary: "stats", replayOutcome: "compacted", latestSummaryContent: `summary-of-${body.session_id}` };
       }
     });
 
@@ -696,6 +699,7 @@ describe("importSessions replay resume", () => {
         if (body.session_id === "s3") throw new Error("usage limit");
         return {
           summary: "ok",
+          replayOutcome: "compacted",
           latestSummaryContent: `summary-of-${body.session_id}`,
           latestSummaryId: `sum-${body.session_id}`,
           tokensBefore: 100, tokensAfter: 10,
@@ -723,7 +727,7 @@ describe("importSessions replay resume", () => {
       if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
       if (path === "/compact") {
         compactBodies.push({ session_id: body.session_id, previous_summary: body.previous_summary });
-        return { summary: "ok", latestSummaryContent: "summary-of-s3", latestSummaryId: "sum-s3", tokensBefore: 100, tokensAfter: 10 };
+        return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: "summary-of-s3", latestSummaryId: "sum-s3", tokensBefore: 100, tokensAfter: 10 };
       }
     });
     const r2 = await importSessions(second, {
@@ -748,7 +752,7 @@ describe("importSessions replay resume", () => {
 
     const first = makeMockClient(async (path: string) => {
       if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
-      if (path === "/compact") return { summary: "ok", latestSummaryContent: "s", latestSummaryId: "sum-s1" };
+      if (path === "/compact") return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: "s", latestSummaryId: "sum-s1" };
     });
     await importSessions(first, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
 
@@ -757,7 +761,7 @@ describe("importSessions replay resume", () => {
       if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
       if (path === "/compact") {
         compactCalls.push(body.session_id);
-        return { summary: "ok", latestSummaryContent: "s2", latestSummaryId: "sum2-s1" };
+        return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: "s2", latestSummaryId: "sum2-s1" };
       }
     });
     const r2 = await importSessions(second, {
@@ -796,7 +800,7 @@ describe("importSessions replay resume", () => {
       if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
       if (path === "/compact") {
         compacted.push(body.session_id);
-        return { summary: "ok", latestSummaryContent: "s", latestSummaryId: `sum-${body.session_id}` };
+        return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: "s", latestSummaryId: `sum-${body.session_id}` };
       }
     });
 

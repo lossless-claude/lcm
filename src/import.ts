@@ -8,6 +8,7 @@ import { findAllCodexTranscripts, extractCodexSessionCwd } from "./codex-transcr
 import type { ProgressState } from "./cli/progress-state.js";
 import { projectDbPath, projectId } from "./daemon/project.js";
 import {
+  appendReplayManifestSessions,
   clearReplayState,
   createReplayRun,
   fingerprintFile,
@@ -254,8 +255,8 @@ async function ingestSessionList(
   const ledgerPositions = new Map<string, Map<string, number>>(); // cwd → (sessionId → position)
   const manifestForNewRun = new Map<string, SessionEntry[]>(); // cwd → sessions to freeze
   let doneCount = 0;
-  let previousSummary: string | undefined;
-  const lastProcessedSessionIdByCwd = new Map<string, string | null>();
+  const previousSummaryByCwd = new Map<string, string | undefined>();
+  const lastCompactedSessionIdByCwd = new Map<string, string | null>();
 
   if (options.replay && !options.dryRun && sessions.length > 0) {
     if (options.restart) {
@@ -281,15 +282,30 @@ async function ingestSessionList(
         const order = new Set(sessionIds);
         manifestForNewRun.set(cwd, sessions.filter((s) => s.cwd === cwd && order.has(s.sessionId)));
       } else {
-        ledgerPositions.set(cwd, plan.positions.get(cwd)!);
+        const positions = plan.positions.get(cwd);
+        if (positions) ledgerPositions.set(cwd, positions);
+        const appends = plan.manifestAppends.get(cwd) ?? [];
+        if (appends.length > 0) {
+          appendReplayManifestSessions({
+            cwd,
+            lcmDir: options._lcmDir,
+            command: "import",
+            runId: plan.runIds.get(cwd)!,
+            sessions: appends.map((sessionId) => ({
+              sessionId,
+              position: plan.positions.get(cwd)?.get(sessionId) ?? 0,
+            })),
+            model: options.replayModel ?? null,
+          });
+        }
       }
+      previousSummaryByCwd.set(cwd, plan.restoredPreviousSummaries.get(cwd));
     }
     sessions = plan.remaining;
     doneCount = plan.doneCount;
-    previousSummary = plan.restoredPreviousSummary;
     if (plan.freshCwds.size < plan.manifests.size) {
-      if (plan.droppedPreviousSummary !== undefined) {
-        console.error("  ⚠️ [replay] previous run's chain was broken at the resume point; continuing without prior context");
+      for (const cwd of plan.droppedPreviousSummaries.keys()) {
+        console.error(`  ⚠️ [replay] previous run's chain was broken at the resume point for cwd ${cwd}; continuing without prior context`);
       }
       for (const changed of plan.changedSessionIds) {
         console.error(`  ⚠️ [replay] transcript for session ${changed} changed since the previous run; downstream summaries were threaded against the older version`);
@@ -351,6 +367,14 @@ async function ingestSessionList(
 
     const releaseInFlight = options.trackInFlight ? options.trackInFlight() : null;
     try {
+      let inputFingerprint = "unavailable";
+      if (options.replay) {
+        try {
+          inputFingerprint = fingerprintFile(path);
+        } catch {
+          inputFingerprint = "unavailable";
+        }
+      }
       const res = await client.post<{ ingested: number; totalTokens: number }>('/ingest', {
         session_id: sessionId,
         cwd,
@@ -378,7 +402,9 @@ async function ingestSessionList(
             summary?: string;
             latestSummaryContent?: string;
             latestSummaryId?: string;
+            latestSummaryIds?: string[];
             skipped?: boolean;
+            replayOutcome?: "disabled" | "skipped" | "compacted" | "no_work";
             tokensBefore?: number;
             tokensAfter?: number;
             llmUsage?: CompactLlmUsage;
@@ -387,11 +413,11 @@ async function ingestSessionList(
             cwd,
             skip_ingest: true,
             client: 'claude',
-            ...(previousSummary !== undefined ? { previous_summary: previousSummary } : {}),
+            ...(previousSummaryByCwd.get(cwd) !== undefined ? { previous_summary: previousSummaryByCwd.get(cwd) } : {}),
           });
-          const hadPrevious = previousSummary !== undefined;
+          const hadPrevious = previousSummaryByCwd.get(cwd) !== undefined;
           if (compactRes.latestSummaryContent !== undefined) {
-            previousSummary = compactRes.latestSummaryContent;
+            previousSummaryByCwd.set(cwd, compactRes.latestSummaryContent);
           }
           // Ledger row is written only after the summary is persisted
           // (latestSummaryId in hand). summaryId=null marks a broken chain
@@ -399,24 +425,22 @@ async function ingestSessionList(
           // A skipped (already-in-progress) compaction records nothing — the
           // next run retries it.
           const runId = replayRuns.get(cwd);
-          if (runId !== undefined && compactRes.skipped !== true) {
-            let fingerprint: string;
-            try {
-              fingerprint = fingerprintFile(path);
-            } catch {
-              fingerprint = "unavailable";
-            }
+          const completedReplaySession =
+            compactRes.replayOutcome === "compacted" || compactRes.replayOutcome === "no_work";
+          if (runId !== undefined && completedReplaySession) {
             recordReplayProgress({
               cwd,
               lcmDir: options._lcmDir,
               runId,
               sessionId,
               position: ledgerPositions.get(cwd)?.get(sessionId) ?? 0,
-              prevSessionId: lastProcessedSessionIdByCwd.get(cwd) ?? null,
-              contentFingerprint: fingerprint,
+              prevSessionId: lastCompactedSessionIdByCwd.get(cwd) ?? null,
+              contentFingerprint: inputFingerprint,
               summaryId: compactRes.latestSummaryId ?? null,
+              summaryIds: compactRes.latestSummaryIds ?? [],
               model: options.replayModel ?? null,
             });
+            lastCompactedSessionIdByCwd.set(cwd, sessionId);
           }
           // Use compact's tokensBefore as the authoritative token count for this session.
           // This avoids under-reporting when /ingest returns totalTokens=0 (already-ingested).
@@ -438,7 +462,8 @@ async function ingestSessionList(
           }
         } catch (err) {
           // Non-fatal: import succeeded; compact failure breaks the chain at this link.
-          previousSummary = undefined;
+          previousSummaryByCwd.set(cwd, undefined);
+          lastCompactedSessionIdByCwd.set(cwd, null);
           // Always warn on chain breakage so users know the DAG is incomplete,
           // regardless of whether --verbose was passed.
           console.error(`  \u26a0\ufe0f [replay] compact failed for session ${sessionId}: ${err instanceof Error ? err.message : 'unknown error'}`);
@@ -453,13 +478,15 @@ async function ingestSessionList(
       options.onProgress?.({ completed: processedBase + result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
     } catch (err) {
       result.failed++;
-      if (options.replay) previousSummary = undefined; // chain broken by ingest failure
+      if (options.replay) {
+        previousSummaryByCwd.set(cwd, undefined); // chain broken by ingest failure
+        lastCompactedSessionIdByCwd.set(cwd, null);
+      }
       if (options.verbose) console.log(`  \u274c ${sessionId}: ${err instanceof Error ? err.message : "failed"}`);
       options.onProgress?.({ completed: processedBase + result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
     } finally {
       releaseInFlight?.();
     }
-    lastProcessedSessionIdByCwd.set(cwd, sessionId);
   }
 }
 
