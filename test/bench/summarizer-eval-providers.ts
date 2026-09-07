@@ -1,77 +1,50 @@
 import OpenAI from "openai";
 import { createClaudeProcessSummarizer } from "../../src/llm/claude-process.js";
 import { createOpenAISummarizer } from "../../src/llm/openai.js";
-import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "../../src/llm/types.js";
+import type { LcmSummarizeFn } from "../../src/llm/types.js";
 
 export type EvalProvider = "openrouter" | "openai" | "claude-process";
 
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
 /**
- * The production OpenAI-compatible summarizer against any endpoint, with the
- * response usage captured through the client override so the bench can report
- * tokens without changing production code.
+ * The production OpenAI-compatible summarizer against any endpoint. Token and
+ * cost accounting lives in production now, so the bench adds nothing but the
+ * knobs production has no reason to send.
  */
-function createHttpSummarizer(label: string, baseURL: string, apiKey: string, model: string): LcmSummarizeFn {
-  const client = new OpenAI({ baseURL, apiKey });
+function createHttpSummarizer(baseURL: string, apiKey: string, model: string): LcmSummarizeFn {
   // Reasoning models spend the whole max_tokens budget thinking and return
-  // empty content; production sends no reasoning parameter, so this is an
-  // explicit bench knob, not a prod mirror. LCM_EVAL_REASONING is the JSON
-  // object sent as `reasoning` (e.g. {"effort":"minimal"} or {"enabled":false});
+  // empty content; production sends no reasoning parameter unless configured,
+  // so this is an explicit bench knob. LCM_EVAL_REASONING is the JSON object
+  // sent as `reasoning` (e.g. {"effort":"minimal"} or {"enabled":false});
   // LCM_EVAL_REASONING_EFFORT is the shorthand for the effort form.
   const reasoning: Record<string, unknown> | undefined = process.env.LCM_EVAL_REASONING
     ? (JSON.parse(process.env.LCM_EVAL_REASONING) as Record<string, unknown>)
     : process.env.LCM_EVAL_REASONING_EFFORT
       ? { effort: process.env.LCM_EVAL_REASONING_EFFORT }
       : undefined;
-  // Qwen-style servers (vLLM, MLX) take enable_thinking through chat_template_kwargs.
-  const disableThinking = process.env.LCM_EVAL_DISABLE_THINKING === "1";
 
-  let pendingCtx: SummarizeContext | undefined;
-  const capturing = {
-    chat: {
-      completions: {
-        create: async (params: Parameters<typeof client.chat.completions.create>[0]) => {
-          const extra: Record<string, unknown> = {};
-          // OpenRouter only returns usage.cost when accounting is requested.
-          if (baseURL === OPENROUTER_BASE_URL) extra.usage = { include: true };
-          if (reasoning) extra.reasoning = reasoning;
-          if (disableThinking) extra.chat_template_kwargs = { enable_thinking: false };
-          const response = await client.chat.completions.create({ ...params, ...extra, stream: false });
-          const usage = response.usage;
-          if (usage && pendingCtx?.onUsage) {
-            const cached = (usage.prompt_tokens_details as { cached_tokens?: number } | undefined)?.cached_tokens;
-            // Provider label is wider than the production union; the bench
-            // only reads the numbers and the model.
-            pendingCtx.onUsage({
-              provider: label,
-              model: response.model ?? model,
-              inputTokens: usage.prompt_tokens,
-              cachedInputTokens: cached,
-              outputTokens: usage.completion_tokens,
-              tokensUsed: usage.total_tokens ?? usage.prompt_tokens + usage.completion_tokens,
-              // OpenRouter reports the real charged cost here; plain OpenAI-compatible
-              // servers report nothing, and the bench must say "unknown", not 0.
-              costUsd: typeof (usage as { cost?: unknown }).cost === "number"
-                ? (usage as { cost: number }).cost
-                : undefined,
-            } as unknown as SummarizerUsage);
-          }
-          return response;
+  // Qwen-style servers (vLLM, MLX) take enable_thinking through
+  // chat_template_kwargs, the one parameter with no production path: a client
+  // override is the only place to inject it.
+  let clientOverride: unknown;
+  if (process.env.LCM_EVAL_DISABLE_THINKING === "1") {
+    const client = new OpenAI({ baseURL, apiKey });
+    clientOverride = {
+      chat: {
+        completions: {
+          create: (params: Parameters<typeof client.chat.completions.create>[0]) =>
+            client.chat.completions.create({
+              ...params,
+              chat_template_kwargs: { enable_thinking: false },
+              stream: false,
+            } as typeof params),
         },
       },
-    },
-  };
+    };
+  }
 
-  const inner = createOpenAISummarizer({ model, baseURL, apiKey, _clientOverride: capturing });
-  return async (text, aggressive, ctx = {}) => {
-    pendingCtx = ctx;
-    try {
-      return await inner(text, aggressive, ctx);
-    } finally {
-      pendingCtx = undefined;
-    }
-  };
+  return createOpenAISummarizer({ model, baseURL, apiKey, reasoning, _clientOverride: clientOverride });
 }
 
 function requireEnv(name: string): string {
@@ -84,7 +57,7 @@ export function createEvalSummarizer(provider: EvalProvider, model: string): Lcm
   if (provider === "claude-process") return createClaudeProcessSummarizer({ model });
   if (provider === "openai") {
     // Any OpenAI-compatible server, e.g. a local MLX box: LCM_EVAL_BASE_URL + LCM_EVAL_API_KEY.
-    return createHttpSummarizer("openai", requireEnv("LCM_EVAL_BASE_URL"), process.env.LCM_EVAL_API_KEY ?? "local", model);
+    return createHttpSummarizer(requireEnv("LCM_EVAL_BASE_URL"), process.env.LCM_EVAL_API_KEY ?? "local", model);
   }
-  return createHttpSummarizer("openrouter", OPENROUTER_BASE_URL, requireEnv("OPENROUTER_API_KEY"), model);
+  return createHttpSummarizer(OPENROUTER_BASE_URL, requireEnv("OPENROUTER_API_KEY"), model);
 }

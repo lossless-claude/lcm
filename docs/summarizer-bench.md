@@ -56,7 +56,7 @@ Per run, in `totals`:
 - **`formatPass` / `formatTotal`** — calls whose summary honoured the prompt contract: a `Files:` line on leaf summaries, an `Expand for details about:` trailer on all of them.
 - **`maxTokensHits`** — calls whose output reached the production output cap, meaning the summary was cut off.
 - **`inputTokens` / `outputTokens` / `latencyMs`** — totals across every call.
-- **`costUsd`** — the real charged cost, or `null` when the provider prices nothing. `null` means *unknown*, never *free*; only OpenRouter and the Claude CLI report a cost today (see #345).
+- **`costUsd`** — the real charged cost, or `null` when the provider reports no cost figure. `null` means *unknown*, never *free* — the call was still charged; only OpenRouter and the Claude CLI report the number today.
 - **`failedCalls`** and the top-level `incomplete`, set when the engine itself errored. An incomplete run reports no fact survival, because chunks were left un-summarized and the score would be meaningless.
 - **`plantedFacts`** — which of the synthetic session's planted facts survived into the post-compaction context.
 

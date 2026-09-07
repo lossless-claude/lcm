@@ -65,4 +65,40 @@ describe("createAnthropicSummarizer", () => {
     await expect(summarizer("text", false)).rejects.toThrow("rate limited");
     expect(mockCreate).toHaveBeenCalledTimes(3);
   });
+
+  it("reports usage with cache tokens folded into the full input", async () => {
+    const mockCreate = vi.fn().mockResolvedValue({
+      content: [{ type: "text", text: "Summary." }],
+      model: "served-model",
+      usage: {
+        input_tokens: 100,
+        cache_read_input_tokens: 800,
+        cache_creation_input_tokens: 50,
+        output_tokens: 200,
+      },
+    });
+    const onUsage = vi.fn();
+    await createAnthropicSummarizer({
+      model: "claude-haiku-4-5-20251001", apiKey: "sk-test",
+      _clientOverride: { messages: { create: mockCreate } } as any,
+    })("Conversation text", false, { onUsage });
+    expect(onUsage).toHaveBeenCalledWith({
+      provider: "anthropic",
+      model: "served-model",
+      inputTokens: 950,
+      cachedInputTokens: 800,
+      outputTokens: 200,
+      tokensUsed: 1150,
+    });
+  });
+
+  it("stays silent when the response carries no usage", async () => {
+    const mockCreate = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "Summary." }] });
+    const onUsage = vi.fn();
+    await createAnthropicSummarizer({
+      model: "claude-haiku-4-5-20251001", apiKey: "sk-test",
+      _clientOverride: { messages: { create: mockCreate } } as any,
+    })("text", false, { onUsage });
+    expect(onUsage).not.toHaveBeenCalled();
+  });
 });

@@ -110,4 +110,80 @@ describe("createOpenAISummarizer", () => {
     await expect(summarizer("x".repeat(600), false)).rejects.toThrow("empty content");
     expect(create).toHaveBeenCalledTimes(3);
   });
+
+  it("reports normalized usage, with cached tokens as a subset of the input", async () => {
+    const create = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: "Summary." } }],
+      model: "served-model",
+      usage: {
+        prompt_tokens: 1200,
+        completion_tokens: 300,
+        total_tokens: 1500,
+        prompt_tokens_details: { cached_tokens: 800 },
+        cost: 0.0042,
+      },
+    });
+    const onUsage = vi.fn();
+    await createOpenAISummarizer({
+      model: "requested-model",
+      baseURL: "https://openrouter.ai/api/v1",
+      _clientOverride: { chat: { completions: { create } } } as any,
+    })("Conversation text", false, { onUsage });
+    expect(onUsage).toHaveBeenCalledWith({
+      provider: "openai",
+      model: "served-model",
+      inputTokens: 1200,
+      cachedInputTokens: 800,
+      outputTokens: 300,
+      tokensUsed: 1500,
+      costUsd: 0.0042,
+    });
+  });
+
+  it("leaves costUsd absent when the server prices nothing, and stays silent without usage", async () => {
+    const priced = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: "Summary." } }],
+      usage: { prompt_tokens: 10, completion_tokens: 5 },
+    });
+    const onPriced = vi.fn();
+    await createOpenAISummarizer({
+      model: "m", baseURL: "http://localhost:11435/v1",
+      _clientOverride: { chat: { completions: { create: priced } } } as any,
+    })("text", false, { onUsage: onPriced });
+    expect(onPriced.mock.calls[0][0].costUsd).toBeUndefined();
+    expect(onPriced.mock.calls[0][0].tokensUsed).toBe(15);
+
+    const silent = makeClient("Summary.");
+    const onSilent = vi.fn();
+    await createOpenAISummarizer({
+      model: "m", baseURL: "http://localhost:11435/v1", _clientOverride: silent as any,
+    })("text", false, { onUsage: onSilent });
+    expect(onSilent).not.toHaveBeenCalled();
+  });
+
+  it("reports usage for an empty completion, whose tokens were still charged", async () => {
+    const create = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: "" } }],
+      usage: { prompt_tokens: 10, completion_tokens: 900, total_tokens: 910 },
+    });
+    const onUsage = vi.fn();
+    await expect(
+      createOpenAISummarizer({
+        model: "m", baseURL: "http://x/v1",
+        _clientOverride: { chat: { completions: { create } } } as any,
+        _retryDelayMs: 0,
+      })("x".repeat(600), false, { onUsage }),
+    ).rejects.toThrow("empty content");
+    expect(onUsage).toHaveBeenCalledTimes(3);
+  });
+
+  it("requests cost accounting only from OpenRouter", async () => {
+    const router = makeClient("Summary.");
+    await createOpenAISummarizer({ model: "m", baseURL: "https://openrouter.ai/api/v1", _clientOverride: router as any })("text", false);
+    expect(router.chat.completions.create.mock.calls[0][0].usage).toEqual({ include: true });
+
+    const plain = makeClient("Summary.");
+    await createOpenAISummarizer({ model: "m", baseURL: "http://localhost:11435/v1", _clientOverride: plain as any })("text", false);
+    expect(plain.chat.completions.create.mock.calls[0][0]).not.toHaveProperty("usage");
+  });
 });
