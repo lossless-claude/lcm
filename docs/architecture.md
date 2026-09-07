@@ -119,9 +119,13 @@ version. `--restart` is the way to rebuild that chain.
 `--restart` discards recorded progress and **all** summaries in the
 conversations the run touched, hook-written ones included, rebuilding each
 conversation's context from its messages before starting from scratch. Ledger
-rows of the other replay command for those sessions are dropped too. It
-assumes no daemon is compacting those conversations at the same time; run it
-with the daemon idle.
+rows of the other replay command for those sessions are dropped too. Before
+wiping anything it asks the daemon (`/status`) whether it is still compacting
+a session in those projects and refuses with an error if so. A daemon that is
+not running counts as idle; one that answers `/status` with an error (bad
+token, 5xx) makes `--restart` refuse, since it cannot confirm idleness. The
+check is not atomic with the wipe, so a compaction that starts after it can
+still race.
 
 SIGINT/SIGTERM let the in-flight compaction settle before exiting, so a resumed
 run never duplicates or skips a half-finished session. A second signal exits

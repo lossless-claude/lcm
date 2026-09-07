@@ -10,8 +10,11 @@ import {
   clearReplayState,
   createReplayRun,
   fingerprintStats,
+  isClientGaveUpError,
+  loadLatestSessionSummary,
   planReplayResume,
   recordReplayProgress,
+  refuseRestartDuringCompaction,
 } from "./replay-resume.js";
 
 export interface UncompactedConversation {
@@ -150,9 +153,12 @@ export async function batchCompact(opts: {
   // --restart clears every tracked project, not only those with eligible
   // conversations: recorded state must go even when nothing currently passes
   // the token threshold.
+  const client = new DaemonClient(`http://127.0.0.1:${opts.port}`, opts.tokenPath);
   if (opts.replay && !opts.dryRun && opts.restart) {
+    const projects = findProjects(opts.cwd);
+    await refuseRestartDuringCompaction(client, projects.map((p) => p.cwd));
     let clearFailed = false;
-    for (const { cwd } of findProjects(opts.cwd)) {
+    for (const { cwd } of projects) {
       const ok = await clearReplayState({
         cwd,
         command: "compact",
@@ -245,7 +251,6 @@ export async function batchCompact(opts: {
   let tokensIn = 0;
   let tokensOut = 0;
   const progressErrors: { sessionId: string; message: string }[] = [];
-  const client = new DaemonClient(`http://127.0.0.1:${opts.port}`, opts.tokenPath);
 
   for (const conv of conversations) {
     // Stop starting new work after SIGINT/SIGTERM; the renderer waits for the
@@ -348,13 +353,40 @@ export async function batchCompact(opts: {
         });
       }
     } catch (err) {
+      const errMsg = err instanceof Error ? err.message : "unknown error";
+      let chainNote = "";
       if (opts.replay) {
-        previousSummaryByCwd.set(conv.cwd, undefined);
-        lastCompactedSessionIdByCwd.set(conv.cwd, null);
+        // The chain follows what was persisted: when the client merely gave up
+        // (timeout/abort) the daemon may have stored the summary anyway, so
+        // re-read it; when nothing is stored yet keep the previous link. A real
+        // daemon failure breaks the chain at this link.
+        const gaveUp = isClientGaveUpError(err);
+        const recovered = gaveUp ? await loadLatestSessionSummary({ cwd: conv.cwd, sessionId: conv.sessionId }) : null;
+        if (recovered) {
+          previousSummaryByCwd.set(conv.cwd, recovered.content);
+          const run = replayRuns?.get(conv.cwd);
+          if (run) {
+            recordReplayProgress({
+              cwd: conv.cwd,
+              runId: run.runId,
+              sessionId: conv.sessionId,
+              position: run.positions.get(conv.sessionId) ?? 0,
+              contentFingerprint: fingerprintStats(conv.sourceMessages, conv.sourceTokens),
+              summaryId: recovered.summaryId,
+              outcome: "compacted",
+              model: opts.replayModel ?? null,
+            });
+          }
+          chainNote = "; summary was stored, chain continues";
+        } else if (gaveUp) {
+          chainNote = "; no summary found, chain skips this session";
+        } else {
+          previousSummaryByCwd.set(conv.cwd, undefined);
+          lastCompactedSessionIdByCwd.set(conv.cwd, null);
+        }
       }
       doneCount++;
-      const errMsg = err instanceof Error ? err.message : "unknown error";
-      console.log(` FAILED (${errMsg})`);
+      console.log(` FAILED (${errMsg}${chainNote})`);
       progressErrors.push({ sessionId: conv.sessionId, message: errMsg });
       onProgress?.({
         completed: doneCount,

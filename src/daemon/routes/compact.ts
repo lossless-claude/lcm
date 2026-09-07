@@ -74,8 +74,24 @@ export function buildCompactionMessage(p: {
 export const justCompactedMap = new Map<string, number>();
 export const JUST_COMPACTED_TTL_MS = 30_000;
 
-// Guard against concurrent compactions for the same session
-const compactingNow = new Set<string>();
+// Guard against concurrent compactions for the same session (session_id → cwd)
+const compactingNow = new Map<string, string>();
+
+/**
+ * Session ids currently being compacted for a project. Lets CLI callers detect
+ * an in-flight daemon compaction before a `--restart` wipes the project's
+ * summaries; detection only, the check-then-wipe is not atomic.
+ */
+export function compactingSessionsFor(cwd: string): string[] {
+  const id = projectId(cwd);
+  return [...compactingNow].filter(([, c]) => projectId(c) === id).map(([sessionId]) => sessionId);
+}
+
+/** Register an in-flight compaction; returns the release function. */
+export function markCompacting(sessionId: string, cwd: string): () => void {
+  compactingNow.set(sessionId, cwd);
+  return () => { compactingNow.delete(sessionId); };
+}
 
 export type CompactLlmUsage = {
   provider: string;
@@ -180,7 +196,7 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
       });
       return;
     }
-    compactingNow.add(session_id);
+    const releaseCompacting = markCompacting(session_id, cwd);
 
     const effectiveProvider = resolveEffectiveProvider(config, client);
     const providerLabels: Record<EffectiveProvider, string> = {
@@ -406,7 +422,7 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
         ...(llmUsage ? { llmUsage } : {}),
       });
     } finally {
-      compactingNow.delete(session_id);
+      releaseCompacting();
     }
   };
 }

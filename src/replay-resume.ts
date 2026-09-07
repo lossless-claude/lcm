@@ -22,6 +22,7 @@ import { projectId } from "./daemon/project.js";
 import { closeLcmConnection, getLcmConnection } from "./db/connection.js";
 import { runLcmMigrations } from "./db/migration.js";
 import { SummaryStore } from "./store/summary-store.js";
+import type { DaemonClient } from "./daemon/client.js";
 
 export type ReplayCommand = "import" | "compact";
 
@@ -502,6 +503,45 @@ export function planReplayResume<T extends { sessionId: string; cwd: string }>(o
 }
 
 /**
+ * True when the client gave up on a daemon call (timeout/abort) rather than
+ * the daemon reporting a failure. DaemonClient preserves these error names.
+ */
+export function isClientGaveUpError(err: unknown): boolean {
+  return err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+}
+
+/**
+ * Latest persisted summary for a session, read straight from the project DB.
+ *
+ * Used when the client gave up on a /compact call (timeout/abort) but the
+ * daemon may have finished the work anyway: the chain follows what was
+ * persisted, not whether the HTTP call returned in time. Ordering mirrors the
+ * daemon's own "latest summary" fallback (`getSummariesByConversation`, last).
+ */
+export async function loadLatestSessionSummary(opts: {
+  cwd: string;
+  lcmDir?: string;
+  sessionId: string;
+}): Promise<{ summaryId: string; content: string } | null> {
+  const opened = openProjectDb(projectDbPathFor(opts.cwd, opts.lcmDir));
+  if (opened.kind !== "ready") return null;
+  const { db } = opened;
+  try {
+    const conv = db
+      .prepare("SELECT conversation_id FROM conversations WHERE session_id = ?")
+      .get(opts.sessionId) as { conversation_id: number } | undefined;
+    if (!conv) return null;
+    const summaries = await new SummaryStore(db).getSummariesByConversation(conv.conversation_id);
+    const latest = summaries[summaries.length - 1];
+    return latest ? { summaryId: latest.summaryId, content: latest.content } : null;
+  } catch {
+    return null;
+  } finally {
+    closeDb(opened);
+  }
+}
+
+/**
  * Record a completed session compaction.
  *
  * `outcome` distinguishes a session that produced a summary from one that had
@@ -545,6 +585,43 @@ export function recordReplayProgress(opts: {
     );
   } catch { /* ledger writes are best-effort — the next run re-does the work */ }
   finally { closeDb(opened); }
+}
+
+/**
+ * Refuse `--restart` while the daemon is compacting a conversation in any of
+ * the projects about to be wiped: the daemon's in-flight guard is per-process,
+ * so a CLI-side wipe would race it. Detection only, the check-then-wipe is not
+ * atomic. A daemon that cannot be reached (no process listening) is treated as
+ * idle: nothing can be compacting. A daemon that answers `/status` with an
+ * error (401/403 token mismatch, 5xx) is not: the check cannot confirm it is
+ * idle, so the wipe is refused rather than proceeding blind.
+ */
+export async function refuseRestartDuringCompaction(
+  client: Pick<DaemonClient, "post">,
+  cwds: Iterable<string>,
+): Promise<void> {
+  const busy: string[] = [];
+  for (const cwd of cwds) {
+    let sessions: string[] = [];
+    try {
+      const status = await client.post<{ project?: { compactingSessions?: string[] } }>("/status", { cwd });
+      sessions = status.project?.compactingSessions ?? [];
+    } catch (err) {
+      const httpStatus = (err as { status?: unknown }).status;
+      if (typeof httpStatus !== "number") continue; // network failure: no daemon to be busy
+      throw new Error(
+        `--restart refused: could not confirm the daemon is idle for ${cwd} ` +
+          `(/status returned HTTP ${httpStatus}: ${err instanceof Error ? err.message : String(err)}). ` +
+          "Fix or stop the daemon, then retry.",
+      );
+    }
+    for (const sessionId of sessions) busy.push(`${sessionId} in ${cwd}`);
+  }
+  if (busy.length > 0) {
+    throw new Error(
+      `--restart refused: the daemon is still compacting ${busy.join(", ")}. Wait for it to finish, then retry.`,
+    );
+  }
 }
 
 /**

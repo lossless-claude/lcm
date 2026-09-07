@@ -10,6 +10,7 @@ import { ConversationStore } from "../../../src/store/conversation-store.js";
 import { SummaryStore } from "../../../src/store/summary-store.js";
 import { PromotedStore } from "../../../src/db/promoted.js";
 import { projectDbPath, projectMetaPath, ensureProjectDir } from "../../../src/daemon/project.js";
+import { markCompacting } from "../../../src/daemon/routes/compact.js";
 
 const tempDirs: string[] = [];
 
@@ -121,6 +122,33 @@ describe("POST /status", () => {
     expect(data.project.lastIngest).toBe("2026-03-22T10:00:00.000Z");
     expect(data.project.lastCompact).toBe("2026-03-22T09:00:00.000Z");
     expect(data.project.lastPromote).toBe("2026-03-22T08:00:00.000Z");
+    expect(data.project.compactingSessions).toEqual([]);
+  });
+
+  it("reports sessions the daemon is compacting for the project only", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-status-busy-"));
+    tempDirs.push(tempDir);
+    const otherDir = mkdtempSync(join(tmpdir(), "lossless-status-other-"));
+    tempDirs.push(otherDir);
+    daemon = await createDaemon(loadDaemonConfig("/nonexistent", { daemon: { port: 0 } }));
+    const status = async () => {
+      const res = await fetch(`http://127.0.0.1:${daemon!.address().port}/status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cwd: tempDir }),
+      });
+      return ((await res.json()) as any).project.compactingSessions as string[];
+    };
+
+    const releaseMine = markCompacting("busy-session", tempDir);
+    const releaseOther = markCompacting("other-session", otherDir);
+    try {
+      expect(await status()).toEqual(["busy-session"]);
+    } finally {
+      releaseMine();
+      releaseOther();
+    }
+    expect(await status()).toEqual([]);
   });
 
   it("returns zeros for empty project", async () => {
