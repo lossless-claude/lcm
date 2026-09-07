@@ -1,5 +1,5 @@
 import { spawn as defaultSpawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "./types.js";
@@ -9,18 +9,20 @@ import { buildSummaryPrompt } from "./prompt.js";
 const HAIKU_MODEL = "claude-haiku-4-5-20251001";
 const TIMEOUT_MS = 120_000;
 const EMPTY_MCP_CONFIG = '{"mcpServers":{}}';
+const STDERR_ERROR_MAX_CHARS = 2_000;
 
 let cachedEmptyPluginDir: string | undefined;
 
-/** An existing empty directory: `--plugin-dir` rejects a missing path. */
+/**
+ * An existing empty directory: `--plugin-dir` rejects a missing path. It is
+ * private to this process (mkdtemp, mode 0700) so no other local user can
+ * pre-create a same-named path and plant plugins in it. The cache is assigned
+ * only after creation succeeds.
+ */
 export function emptyPluginDir(): string {
-  if (!cachedEmptyPluginDir) {
-    cachedEmptyPluginDir = join(tmpdir(), "lcm-claude-empty-plugins");
-    mkdirSync(cachedEmptyPluginDir, { recursive: true });
-  }
+  cachedEmptyPluginDir ??= mkdtempSync(join(tmpdir(), "lcm-claude-empty-plugins-"));
   return cachedEmptyPluginDir;
 }
-const STDERR_ERROR_MAX_CHARS = 2_000;
 
 type ClaudeModelUsage = {
   inputTokens?: number;
@@ -126,7 +128,11 @@ function normalizeSpawnError(error: unknown): Error {
  * several seconds per call). `--bare` is not used because it disables OAuth,
  * which would move the cost off the subscription.
  */
-export function buildClaudeArgs(model: string, systemPrompt = LCM_SUMMARIZER_SYSTEM_PROMPT): string[] {
+export function buildClaudeArgs(
+  model: string,
+  systemPrompt = LCM_SUMMARIZER_SYSTEM_PROMPT,
+  pluginDir = emptyPluginDir(),
+): string[] {
   return [
     "--print",
     "--output-format", "json",
@@ -135,7 +141,7 @@ export function buildClaudeArgs(model: string, systemPrompt = LCM_SUMMARIZER_SYS
     "--system-prompt", systemPrompt,
     "--tools", "",
     "--disable-slash-commands",
-    "--plugin-dir", emptyPluginDir(),
+    "--plugin-dir", pluginDir,
     "--strict-mcp-config",
     "--mcp-config", EMPTY_MCP_CONFIG,
     "--setting-sources", "",
@@ -161,7 +167,8 @@ export function createClaudeProcessSummarizer(opts: ClaudeProcessDeps = {}): Lcm
     return new Promise((resolve, reject) => {
       let proc: ChildProcessWithoutNullStreams;
       try {
-        proc = deps.spawn("claude", buildClaudeArgs(deps.model, ctx.taskPrompt), { stdio: ["pipe", "pipe", "pipe"] });
+        // Directory creation happens here, inside the spawn error path.
+        proc = deps.spawn("claude", buildClaudeArgs(deps.model, ctx.taskPrompt, emptyPluginDir()), { stdio: ["pipe", "pipe", "pipe"] });
       } catch (error) {
         reject(normalizeSpawnError(error));
         return;
