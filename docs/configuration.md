@@ -8,7 +8,8 @@ Install the `lcm` binary and add the plugin:
 
 ```bash
 npm install -g @lossless-claude/lcm  # provides the `lcm` command
-claude plugin add github:lossless-claude/lcm
+claude plugin marketplace add lossless-claude/lcm
+claude plugin install lcm@lossless-claude
 lcm install
 ```
 

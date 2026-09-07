@@ -43,14 +43,16 @@ const HELP: Record<string, CommandHelp> = {
   },
 
   daemon: {
-    summary: "Start the context daemon that stores and processes memory.",
-    usage: "lcm daemon start [--detach]",
+    summary: "Start, stop or restart the context daemon that stores and processes memory.",
+    usage: "lcm daemon <start [--detach] | stop | restart>",
     options: [
       ["--detach", "Run in the background; saves PID to ~/.lossless-claude/daemon.pid"],
     ],
     examples: [
-      ["lcm daemon start --detach", "Start daemon in background (recommended)"],
+      ["lcm daemon start --detach", "Start daemon in background (recommended); no-op if already running"],
       ["lcm daemon start", "Start daemon in foreground (for debugging)"],
+      ["lcm daemon restart", "Stop the running daemon and start a fresh one (after an upgrade or rebuild)"],
+      ["lcm daemon stop", "Stop the background daemon"],
     ],
     notes: "The daemon runs on port 3737 by default. Configure via ~/.lossless-claude/config.json.",
   },
@@ -368,7 +370,7 @@ const GROUPS = [
   {
     label: "Runtime",
     commands: [
-      { name: "daemon start [--detach]", summary: "Start the context daemon" },
+      { name: "daemon start|stop|restart", summary: "Manage the context daemon" },
       { name: "status [--json]", summary: "Daemon status and project memory stats" },
       { name: "doctor", summary: "Diagnostics: daemon, hooks, MCP, summarizer" },
       { name: "mcp", summary: "Start the MCP server (stdio transport)" },

@@ -9,12 +9,14 @@ vi.mock("../../src/daemon/lifecycle.js", () => ({
 }));
 
 vi.mock("../../src/db/events-stats.js", () => ({
-  collectEventStats: vi.fn().mockReturnValue({ captured: 0, unprocessed: 0, errors: 0, lastCapture: null }),
+  collectEventStats: vi.fn().mockReturnValue({ captured: 0, unprocessed: 0, errors: 0, lastCapture: null, scanned: 1, total: 1 }),
   collectDetailedEventStats: vi.fn().mockReturnValue({ captured: 0, unprocessed: 0, errors: 0, lastCapture: null, projects: [], recentErrors: [] }),
 }));
 
 import { collectEventStats } from "../../src/db/events-stats.js";
 const mockCollectEventStats = vi.mocked(collectEventStats);
+
+const INSTALLED_LCM = JSON.stringify({ version: 2, plugins: { "lcm@lossless-claude": [{ scope: "user", version: "0.9.0" }] } });
 
 function buildSettingsJson(): string {
   const hooks: Record<string, unknown[]> = {};
@@ -39,6 +41,7 @@ function minimalDeps(overrides: Partial<Parameters<typeof runDoctor>[0]> = {}) {
       if (path.endsWith("package.json")) return JSON.stringify({ version: "0.5.0" });
       if (path.endsWith("CLAUDE.md")) return "<!-- lcm:start -->\n<!-- Claude Code include: @lcm.md -->\n<!-- lcm:end -->\n";
       if (path.endsWith("lcm.md")) return LCM_MD_CONTENT;
+      if (path.endsWith("installed_plugins.json")) return INSTALLED_LCM;
       return "{}";
     },
     writeFileSync: vi.fn(),
@@ -109,7 +112,8 @@ describe("runDoctor daemon version mismatch", () => {
         if (path.endsWith("package.json")) return JSON.stringify({ version: pkgVersion });
         if (path.endsWith("CLAUDE.md")) return "<!-- lcm:start -->\n<!-- Claude Code include: @lcm.md -->\n<!-- lcm:end -->\n";
         if (path.endsWith("lcm.md")) return LCM_MD_CONTENT;
-        return "{}";
+        if (path.endsWith("installed_plugins.json")) return INSTALLED_LCM;
+      return "{}";
       },
       // First fetch: daemon up with old version; second fetch: post-restart with new version
       fetch: vi.fn()
@@ -143,7 +147,8 @@ describe("runDoctor daemon version mismatch", () => {
         if (path.endsWith("package.json")) return JSON.stringify({ version: pkgVersion });
         if (path.endsWith("CLAUDE.md")) return "<!-- lcm:start -->\n<!-- Claude Code include: @lcm.md -->\n<!-- lcm:end -->\n";
         if (path.endsWith("lcm.md")) return LCM_MD_CONTENT;
-        return "{}";
+        if (path.endsWith("installed_plugins.json")) return INSTALLED_LCM;
+      return "{}";
       },
       // Post-restart health still returns old version
       fetch: vi.fn()
@@ -156,7 +161,7 @@ describe("runDoctor daemon version mismatch", () => {
 
     expect(daemonResult?.fixApplied).toBe(false);
     expect(daemonResult?.status).toBe("warn");
-    expect(daemonResult?.message).toContain("did not fix mismatch");
+    expect(daemonResult?.message).toContain("did not fix it");
   });
 });
 
@@ -168,7 +173,8 @@ describe("runDoctor summarizer modes", () => {
         if (path.endsWith("config.json")) return JSON.stringify({ llm: { provider: "auto" } });
         if (path.endsWith("settings.json")) return buildSettingsJson();
         if (path.endsWith("package.json")) return JSON.stringify({ version: "0.5.0" });
-        return "{}";
+        if (path.endsWith("installed_plugins.json")) return INSTALLED_LCM;
+      return "{}";
       },
       writeFileSync: vi.fn(),
       mkdirSync: vi.fn(),
@@ -196,7 +202,7 @@ describe("runDoctor summarizer modes", () => {
 describe("Passive Learning checks", () => {
   it("runs passive learning checks when hooks status is warn (auto-fixed duplicates)", async () => {
     // Use deps where hooks check produces "warn" (duplicate hooks in settings.json auto-fixed)
-    mockCollectEventStats.mockReturnValue({ captured: 10, unprocessed: 0, errors: 0, lastCapture: null });
+    mockCollectEventStats.mockReturnValue({ captured: 10, unprocessed: 0, errors: 0, lastCapture: null, scanned: 1, total: 1 });
     const depsWithBadHooks = minimalDeps({
       readFileSync: (path: string) => {
         if (path.endsWith("settings.json")) return buildSettingsJson(); // duplicate hooks → produces warn
@@ -204,7 +210,8 @@ describe("Passive Learning checks", () => {
         if (path.endsWith("package.json")) return JSON.stringify({ version: "0.5.0" });
         if (path.endsWith("CLAUDE.md")) return "<!-- lcm:start -->\n<!-- Claude Code include: @lcm.md -->\n<!-- lcm:end -->\n";
         if (path.endsWith("lcm.md")) return LCM_MD_CONTENT;
-        return "{}";
+        if (path.endsWith("installed_plugins.json")) return INSTALLED_LCM;
+      return "{}";
       },
     });
     const results = await runDoctor(depsWithBadHooks);
@@ -214,7 +221,7 @@ describe("Passive Learning checks", () => {
   });
 
   it("warns when hooks installed but no events captured", async () => {
-    mockCollectEventStats.mockReturnValue({ captured: 0, unprocessed: 0, errors: 0, lastCapture: null });
+    mockCollectEventStats.mockReturnValue({ captured: 0, unprocessed: 0, errors: 0, lastCapture: null, scanned: 1, total: 1 });
     const results = await runDoctor(minimalDeps({ cwd: "/tmp/test-proj" }));
     const capture = results.find(r => r.name === "events-capture");
     expect(capture?.status).toBe("warn");
@@ -222,14 +229,14 @@ describe("Passive Learning checks", () => {
   });
 
   it("passes when events exist and unprocessed is low", async () => {
-    mockCollectEventStats.mockReturnValue({ captured: 100, unprocessed: 5, errors: 0, lastCapture: "2026-03-26 10:00:00" });
+    mockCollectEventStats.mockReturnValue({ captured: 100, unprocessed: 5, errors: 0, lastCapture: "2026-03-26 10:00:00", scanned: 1, total: 1 });
     const results = await runDoctor(minimalDeps({ cwd: "/tmp/test-proj" }));
     const capture = results.find(r => r.name === "events-capture");
     expect(capture?.status).toBe("pass");
   });
 
   it("warns when unprocessed > 1000", async () => {
-    mockCollectEventStats.mockReturnValue({ captured: 5000, unprocessed: 2000, errors: 0, lastCapture: "2026-03-26 10:00:00" });
+    mockCollectEventStats.mockReturnValue({ captured: 5000, unprocessed: 2000, errors: 0, lastCapture: "2026-03-26 10:00:00", scanned: 1, total: 1 });
     const results = await runDoctor(minimalDeps({ cwd: "/tmp/test-proj" }));
     const capture = results.find(r => r.name === "events-capture");
     expect(capture?.status).toBe("warn");
@@ -237,14 +244,14 @@ describe("Passive Learning checks", () => {
   });
 
   it("fails when errors >= 50", async () => {
-    mockCollectEventStats.mockReturnValue({ captured: 100, unprocessed: 5, errors: 50, lastCapture: "2026-03-26 10:00:00" });
+    mockCollectEventStats.mockReturnValue({ captured: 100, unprocessed: 5, errors: 50, lastCapture: "2026-03-26 10:00:00", scanned: 1, total: 1 });
     const results = await runDoctor(minimalDeps({ cwd: "/tmp/test-proj" }));
     const errors = results.find(r => r.name === "events-errors");
     expect(errors?.status).toBe("fail");
   });
 
   it("passes errors when 0 errors", async () => {
-    mockCollectEventStats.mockReturnValue({ captured: 100, unprocessed: 5, errors: 0, lastCapture: "2026-03-26 10:00:00" });
+    mockCollectEventStats.mockReturnValue({ captured: 100, unprocessed: 5, errors: 0, lastCapture: "2026-03-26 10:00:00", scanned: 1, total: 1 });
     const results = await runDoctor(minimalDeps({ cwd: "/tmp/test-proj" }));
     const errors = results.find(r => r.name === "events-errors");
     expect(errors?.status).toBe("pass");

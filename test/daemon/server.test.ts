@@ -35,6 +35,25 @@ describe("daemon server", () => {
     }
   });
 
+  it("health endpoint reports build fingerprint and pid", async () => {
+    daemon = await createDaemon(loadDaemonConfig("/x", { daemon: { port: 0 } }));
+    const res = await fetch(`http://127.0.0.1:${daemon.address().port}/health`);
+    const body = await res.json() as { build?: string; pid?: number };
+    expect(body.pid).toBe(process.pid);
+    expect(typeof body.build).toBe("string");
+    expect(Number.isNaN(Date.parse(body.build!))).toBe(false);
+  });
+
+  it("rejects with EADDRINUSE when the port is taken instead of crashing the process", async () => {
+    daemon = await createDaemon(loadDaemonConfig("/x", { daemon: { port: 0 } }));
+    const port = daemon.address().port;
+    await expect(createDaemon(loadDaemonConfig("/x", { daemon: { port } })))
+      .rejects.toMatchObject({ code: "EADDRINUSE" });
+    // First daemon still answers
+    const res = await fetch(`http://127.0.0.1:${port}/health`);
+    expect(res.status).toBe(200);
+  });
+
   it("returns 404 for unknown routes", async () => {
     daemon = await createDaemon(loadDaemonConfig("/x", { daemon: { port: 0 } }));
     const res = await fetch(`http://127.0.0.1:${daemon.address().port}/nope`);
