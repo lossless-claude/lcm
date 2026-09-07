@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -8,6 +8,7 @@ import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { runLcmMigrations } from "../../../src/db/migration.js";
 import { projectDbPath } from "../../../src/daemon/project.js";
 import { PromotedStore } from "../../../src/db/promoted.js";
+import { getLcmConnection, closeLcmConnection, getPoolStats } from "../../../src/db/connection.js";
 
 describe("POST /restore", () => {
   let daemon: DaemonInstance | undefined;
@@ -140,6 +141,27 @@ describe("POST /restore", () => {
       const compactBody = await compactRes.json();
       expect(compactBody.context).toContain("<project-instructions>");
       expect(compactBody.context).toContain("Prefer tabs over spaces.");
+    });
+
+    it("releases restore connection references without closing another caller's connection", async () => {
+      const dbPath = projectDbPath(realpathSync(tmpDir));
+      const db = getLcmConnection(dbPath);
+      try {
+        daemon = await createDaemon(loadDaemonConfig(tmpDir, { daemon: { port: 0 } }));
+        for (const source of ["startup", "compact"]) {
+          const res = await fetch(`http://127.0.0.1:${daemon.address().port}/restore`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: "shared-connection", cwd: tmpDir, source, hook_event_name: "SessionStart" }),
+          });
+          expect(res.status).toBe(200);
+          await res.json();
+          expect(getPoolStats().connections.find((entry) => entry.path === dbPath)?.refs).toBe(1);
+          expect(db.prepare("SELECT 1 AS alive").get()).toEqual({ alive: 1 });
+        }
+      } finally {
+        closeLcmConnection(dbPath);
+      }
+      expect(getPoolStats().connections.some((entry) => entry.path === dbPath)).toBe(false);
     });
 
     it("captures a CLAUDE.md reachable by two paths only once (cwd === $HOME)", async () => {

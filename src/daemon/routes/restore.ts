@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
 import { projectDbPath } from "../project.js";
 import { buildOrientationPrompt } from "../orientation.js";
@@ -75,7 +75,7 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
         const dbPath = projectDbPath(cwd);
         if (existsSync(dbPath)) {
           try {
-            const db = new DatabaseSync(dbPath);
+            const db = getLcmConnection(dbPath);
             try {
               runLcmMigrations(db);
               const row = db
@@ -85,7 +85,7 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
                 instructionsContext = `<project-instructions>\n${row.content}\n</project-instructions>`;
               }
             } finally {
-              db.close();
+              closeLcmConnection(dbPath);
             }
           } catch { /* non-fatal */ }
         }
@@ -105,7 +105,7 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
       if (cwd) {
         const dbPath = projectDbPath(cwd);
         mkdirSync(dirname(dbPath), { recursive: true });
-        const db = new DatabaseSync(dbPath);
+        const db = getLcmConnection(dbPath);
         try {
           runLcmMigrations(db);
 
@@ -166,8 +166,9 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
             }
           } catch { /* non-fatal */ }
 
-          db.close();
-        } catch { /* non-fatal */ }
+        } catch { /* non-fatal */ } finally {
+          closeLcmConnection(dbPath);
+        }
       }
 
       // Query passive-capture insights from promoted store
@@ -176,7 +177,7 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
         try {
           const dbPath = projectDbPath(cwd);
           if (existsSync(dbPath)) {
-            const insightsDb = new DatabaseSync(dbPath);
+            const insightsDb = getLcmConnection(dbPath);
             try {
               runLcmMigrations(insightsDb);
               const insightsStore = new PromotedStore(insightsDb);
@@ -190,7 +191,7 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
                 .slice(0, 5)
                 .map((r) => ({ content: r.content, confidence: r.confidence, tags: r.tags }));
             } finally {
-              insightsDb.close();
+              closeLcmConnection(dbPath);
             }
           }
         } catch { /* non-fatal */ }
