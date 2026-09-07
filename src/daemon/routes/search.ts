@@ -24,6 +24,10 @@ export function createSearchHandler(): RouteHandler {
       sendJson(res, 400, { error: "query is required" });
       return;
     }
+    if (input.backend !== undefined && input.backend !== "native") {
+      sendJson(res, 400, { error: "Only native search is available in this build" });
+      return;
+    }
 
     let cwd: string | undefined;
     if (input.cwd) {

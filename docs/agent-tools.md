@@ -16,7 +16,7 @@ Start with grep. If the snippet is enough, stop. If you need metadata, use descr
 
 ### When to search vs. grep
 
-- **`lcm_search`** — Use when looking for knowledge across sessions in natural language. Returns ranked results from both episodic (SQLite) and semantic memory layers.
+- **`lcm_search`** — Use when looking for knowledge across sessions. Returns ranked results from episodic history and promoted project memories.
 - **`lcm_grep`** — Use when you know an exact keyword, error message, or function name from a specific session.
 
 ### When to expand
@@ -33,7 +33,7 @@ Summaries are lossy by design. The "Expand for details about:" footer at the end
 
 ### lcm_search
 
-Hybrid search across episodic memory (SQLite FTS5) and semantic memory. Returns two separate ranked lists. Use when looking for project knowledge spanning multiple sessions.
+Native search across episodic history and promoted memories. Returns two separate ranked lists. Use when looking for project knowledge spanning multiple sessions.
 
 Native episodic matches contain up to 1,000 characters of exact source context, plus `span`,
 `sourceHash`, and `snippetTruncated`. These locate the excerpt in the retained source revision;
@@ -45,7 +45,7 @@ they do not assert that the excerpt answers the question. Promoted memory output
 |-------|------|----------|---------|-------------|
 | `query` | string | ✅ | — | Natural language search query |
 | `limit` | number | | `5` | Max results per layer |
-| `layers` | string[] | | both | `"episodic"`, `"semantic"`, or both |
+| `layers` | string[] | | both | `"episodic"`, `"promoted"`, or both |
 | `tags` | string[] | | — | Filter to entries that include all specified tags |
 
 **Examples:**
@@ -54,8 +54,8 @@ they do not assert that the excerpt answers the question. Promoted memory output
 # Find past decisions about authentication
 lcm_search(query: "authentication decision")
 
-# Search only semantic layer, filtered by tag
-lcm_search(query: "database migration", layers: ["semantic"], tags: ["type:decision"])
+# Search only promoted memories, filtered by tag
+lcm_search(query: "database migration", layers: ["promoted"], tags: ["type:decision"])
 ```
 
 ### lcm_grep

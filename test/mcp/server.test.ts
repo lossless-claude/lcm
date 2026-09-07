@@ -47,6 +47,13 @@ describe("MCP tool definitions", () => {
     const tool = getMcpToolDefinitions().find((t: any) => t.name === "lcm_search");
     expect(tool!.description).toContain("episodic");
   });
+
+  it("advertises the native promoted layer without an external search backend", () => {
+    const tool = getMcpToolDefinitions().find((t: any) => t.name === "lcm_search")!;
+    const properties = tool.inputSchema.properties as Record<string, any>;
+    expect(properties.layers.items.enum).toEqual(["episodic", "promoted"]);
+    expect(properties.backend).toBeUndefined();
+  });
 });
 
 describe("handleDaemonRequest", () => {

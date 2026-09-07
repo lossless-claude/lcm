@@ -18,6 +18,20 @@ afterEach(async () => {
 });
 
 describe("POST /search", () => {
+  it("rejects a requested backend that this native build does not provide", async () => {
+    const config = loadDaemonConfig("/nonexistent");
+    config.daemon.port = 0;
+    const daemon = await createDaemon(config);
+    try {
+      const res = await fetch(`http://127.0.0.1:${daemon.address().port}/search`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: "decision", backend: "unavailable" }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "Only native search is available in this build" });
+    } finally { await daemon.stop(); }
+  });
+
   it("finds promoted memories via FTS5", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-search-"));
     tempDirs.push(tempDir);

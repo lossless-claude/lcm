@@ -2,6 +2,10 @@
 
 **Status:** proposed design, 2026-09-07. No retrieval-quality claim or new dependency is approved by this document.
 
+**Delivery split:** native search evolves independently on `feat/native-search`. The separate
+`feat/qmd-search-integration` branch preserves an optional experiment; it may never be integrated.
+Native delivery, tests and installation must not depend on QMD or its model runtime.
+
 ## Recommendation
 
 Build one deep **EvidenceSearch Module** that returns attributable, budgeted evidence. Give CLI search, automatic recall and evaluation the same retrieval **Interface**. Keep source capture and index maintenance in a separate **CorpusIndex Module**. SQLite remains the local source of truth; lexical and semantic indexes are rebuildable projections.

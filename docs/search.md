@@ -3,6 +3,9 @@
 `lcm search <query>` answers natural-language questions across the episodic layer (messages +
 summaries) and the promoted layer (long-term memories).
 
+This native build has no external search backend dependency. Requests for another backend are
+rejected explicitly; they are not silently evaluated as native search.
+
 ## How queries are prepared
 
 Passing a question verbatim into FTS5 returns empty by construction: FTS5 **ANDs** the terms of a
