@@ -28,6 +28,14 @@ const STDERR_ERROR_MAX_CHARS = 2_000;
 // error message, which always comes after it.
 const BANNER_END_MARKER = "session id:";
 
+function parseTokensUsed(stderr: string): number | undefined {
+  const normalized = stderr.replace(/\r\n/g, "\n");
+  const match = normalized.match(/tokens used\s*\n\s*([0-9][0-9,]*)/i);
+  if (!match) return undefined;
+  const parsed = Number(match[1].replace(/,/g, ""));
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 function skipCodexBanner(stderr: string): string {
   const lines = stderr.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
@@ -136,6 +144,7 @@ function runCodexSummarizer(
   deps: Required<Pick<CodexProcessDeps, "spawn" | "mkdtempSync" | "readFileSync" | "rmSync" | "tmpdir" | "timeoutMs">> & {
     model?: string;
   },
+  onUsage?: SummarizeContext["onUsage"],
 ): Promise<string> {
   const tempDir = deps.mkdtempSync(join(deps.tmpdir(), "lossless-codex-"));
   const outputPath = join(tempDir, "last-message.txt");
@@ -190,6 +199,14 @@ function runCodexSummarizer(
       clearTimeout(timer);
 
       try {
+        const tokensUsed = parseTokensUsed(stderr);
+        if (tokensUsed !== undefined) {
+          onUsage?.({
+            provider: "codex-process",
+            model: deps.model,
+            tokensUsed,
+          });
+        }
         if (code !== 0) {
           throw buildCodexExitError(code, stderr);
         }
@@ -223,6 +240,6 @@ export function createCodexProcessSummarizer(opts: CodexProcessDeps = {}): LcmSu
 
   return async function summarize(text, aggressive, ctx = {}): Promise<string> {
     const prompt = buildPrompt(text, aggressive, ctx);
-    return runCodexSummarizer(prompt, deps);
+    return runCodexSummarizer(prompt, deps, ctx.onUsage);
   };
 }

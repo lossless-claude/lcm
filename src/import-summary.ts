@@ -43,4 +43,25 @@ export function printImportSummary(
 
     console.log(`  ${border}`);
   }
+
+  if (opts.replay && result.replayUsage && result.replayUsage.calls > 0) {
+    const border = "\u2500".repeat(41);
+    const avgPerSession =
+      sessionsProcessed > 0 ? Math.round(result.replayUsage.tokensSpent / sessionsProcessed) : 0;
+    const rows: [string, string][] = [
+      ["Summarizer", `${result.replayUsage.provider} / ${result.replayUsage.model}`],
+      [
+        "Calls",
+        `${result.replayUsage.calls} (${result.replayUsage.okCalls} ok, ${result.replayUsage.failedCalls} failed)`,
+      ],
+      ["Tokens spent", formatNumber(result.replayUsage.tokensSpent)],
+      ["Avg per session", formatNumber(avgPerSession)],
+    ];
+    const labelWidth = Math.max(...rows.map(([l]) => l.length));
+    console.log(`  ${border}`);
+    for (const [label, value] of rows) {
+      console.log(`  ${label.padEnd(labelWidth)} : ${value}`);
+    }
+    console.log(`  ${border}`);
+  }
 }

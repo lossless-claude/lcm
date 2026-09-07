@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import type { DatabaseSync } from "node:sqlite";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
 import { projectId, projectDbPath, projectDir, projectMetaPath, ensureProjectDir, isSafeTranscriptPath } from "../project.js";
@@ -76,6 +77,41 @@ export const JUST_COMPACTED_TTL_MS = 30_000;
 // Guard against concurrent compactions for the same session
 const compactingNow = new Set<string>();
 
+type CompactLlmUsage = {
+  provider: string;
+  model: string;
+  calls: number;
+  okCalls: number;
+  failedCalls: number;
+  tokensSpent: number;
+};
+
+function createCompactLlmUsage(provider: string, model: string): CompactLlmUsage {
+  return { provider, model, calls: 0, okCalls: 0, failedCalls: 0, tokensSpent: 0 };
+}
+
+function recordCompactLlmUsage(db: DatabaseSync, usage: CompactLlmUsage): void {
+  if (usage.calls === 0) return;
+  db.prepare(`
+    INSERT INTO llm_usage_stats (
+      provider, model, calls_total, calls_ok, calls_failed, tokens_spent_total, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(provider, model) DO UPDATE SET
+      calls_total = calls_total + excluded.calls_total,
+      calls_ok = calls_ok + excluded.calls_ok,
+      calls_failed = calls_failed + excluded.calls_failed,
+      tokens_spent_total = tokens_spent_total + excluded.tokens_spent_total,
+      updated_at = datetime('now')
+  `).run(
+    usage.provider,
+    usage.model,
+    usage.calls,
+    usage.okCalls,
+    usage.failedCalls,
+    usage.tokensSpent,
+  );
+}
+
 
 export function createCompactHandler(config: DaemonConfig): RouteHandler {
   const summarizerCache = new Map<EffectiveProvider, Promise<LcmSummarizeFn | null>>();
@@ -138,6 +174,7 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
       const result = await enqueue(pid, async () => {
         const dbPath = projectDbPath(cwd);
         ensureProjectDir(cwd);
+        const llmUsage = createCompactLlmUsage(effectiveProvider, config.llm.model);
 
         const scrubber = await ScrubEngine.forProject(
           config.security?.sensitivePatterns ?? [],
@@ -189,6 +226,29 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
             return { summary: "No messages to compact.", providerId: effectiveProvider, providerLabel };
           }
 
+          const summarizeWithUsage: LcmSummarizeFn = async (text, aggressive, ctx = {}) => {
+            let callTokensSpent = 0;
+            llmUsage.calls += 1;
+            try {
+              const summary = await summarize(text, aggressive, {
+                ...ctx,
+                onUsage: (usage) => {
+                  if (usage.provider === "codex-process") {
+                    callTokensSpent += usage.tokensUsed;
+                  }
+                  ctx.onUsage?.(usage);
+                },
+              });
+              llmUsage.okCalls += 1;
+              llmUsage.tokensSpent += callTokensSpent;
+              return summary;
+            } catch (error) {
+              llmUsage.failedCalls += 1;
+              llmUsage.tokensSpent += callTokensSpent;
+              throw error;
+            }
+          };
+
           const engine = new CompactionEngine(conversationStore, summaryStore, {
             contextThreshold: 0.75,
             freshTailCount: 8,
@@ -205,7 +265,7 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
           const compactResult = await engine.compact({
             conversationId: conversation.conversationId,
             tokenBudget: 200_000,
-            summarize,
+            summarize: summarizeWithUsage,
             force: true,
             previousSummaryContent: validatedPreviousSummary,
           });
@@ -260,15 +320,33 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
             tokensAfter: compactResult.tokensAfter,
             providerId: effectiveProvider,
             providerLabel,
+            ...(llmUsage.calls > 0 ? { llmUsage } : {}),
           };
+        } catch (error) {
+          if (error instanceof Error && llmUsage.calls > 0) {
+            (error as Error & { llmUsage?: CompactLlmUsage }).llmUsage = llmUsage;
+          }
+          throw error;
         } finally {
+          try {
+            recordCompactLlmUsage(db, llmUsage);
+          } catch {
+            // non-fatal stats accounting
+          }
           closeLcmConnection(dbPath);
         }
       }); // end enqueue
 
       sendJson(res, 200, result);
     } catch (err) {
-      sendJson(res, 500, { error: err instanceof Error ? err.message : "compact failed" });
+      const llmUsage =
+        err instanceof Error
+          ? (err as Error & { llmUsage?: CompactLlmUsage }).llmUsage
+          : undefined;
+      sendJson(res, 500, {
+        error: err instanceof Error ? err.message : "compact failed",
+        ...(llmUsage ? { llmUsage } : {}),
+      });
     } finally {
       compactingNow.delete(session_id);
     }
