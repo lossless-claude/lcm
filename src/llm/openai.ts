@@ -60,7 +60,10 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
         });
 
         const textContent = response.choices[0]?.message?.content ?? "";
-        return textContent || text.slice(0, 500);
+        // Empty content is a failure, not a summary: falling back to a slice of
+        // the input would persist raw conversation text as a fake summary.
+        if (!textContent) throw new Error("summarizer returned empty content");
+        return textContent;
       } catch (err: any) {
         if (err?.status === 401) throw err; // auth error: no retry
         lastError = err;
