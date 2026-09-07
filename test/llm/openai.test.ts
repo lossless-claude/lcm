@@ -33,6 +33,13 @@ describe("createOpenAISummarizer", () => {
     expect(args.messages[0].content).toContain("context-compaction summarization engine");
   });
 
+  it("raises max_tokens with the condensed target", async () => {
+    const mockClient = makeClient("Summary.");
+    const summarizer = createOpenAISummarizer({ model: "m", baseURL: "http://x/v1", _clientOverride: mockClient as any });
+    await summarizer("Conversation text", false, { isCondensed: true });
+    expect(mockClient.chat.completions.create.mock.calls[0][0].max_tokens).toBe(4000);
+  });
+
   it("retries 3 times on 5xx error then throws", async () => {
     const err = Object.assign(new Error("server error"), { status: 500 });
     const mockClient = {

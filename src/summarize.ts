@@ -419,6 +419,15 @@ export function resolveTargetTokens(params: {
 }
 
 /**
+ * Output cap for a summary request. The prompts ask for up to 1200 leaf and
+ * 2000 condensed tokens, so a flat cap below that silently truncates the
+ * summary and drops the trailer the expansion path relies on.
+ */
+export function resolveMaxOutputTokens(targetTokens: number): number {
+  return Math.max(1024, targetTokens * 2);
+}
+
+/**
  * Build a leaf (segment) summarization prompt.
  *
  * Normal leaf mode preserves details; aggressive leaf mode keeps only the
