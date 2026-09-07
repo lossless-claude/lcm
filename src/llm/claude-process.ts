@@ -1,10 +1,25 @@
 import { spawn as defaultSpawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "./types.js";
 import { LCM_SUMMARIZER_SYSTEM_PROMPT } from "../summarize.js";
 import { buildSummaryPrompt } from "./prompt.js";
 
 const HAIKU_MODEL = "claude-haiku-4-5-20251001";
 const TIMEOUT_MS = 120_000;
+const EMPTY_MCP_CONFIG = '{"mcpServers":{}}';
+
+let cachedEmptyPluginDir: string | undefined;
+
+/** An existing empty directory: `--plugin-dir` rejects a missing path. */
+export function emptyPluginDir(): string {
+  if (!cachedEmptyPluginDir) {
+    cachedEmptyPluginDir = join(tmpdir(), "lcm-claude-empty-plugins");
+    mkdirSync(cachedEmptyPluginDir, { recursive: true });
+  }
+  return cachedEmptyPluginDir;
+}
 const STDERR_ERROR_MAX_CHARS = 2_000;
 
 type ClaudeModelUsage = {
@@ -104,6 +119,13 @@ function normalizeSpawnError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
+/**
+ * The summarizer needs a bare model call, not a Claude Code session. Without
+ * the isolation flags the CLI loads the user's plugins, MCP servers, settings
+ * and CLAUDE.md files into every prompt (tens of thousands of tokens and
+ * several seconds per call). `--bare` is not used because it disables OAuth,
+ * which would move the cost off the subscription.
+ */
 export function buildClaudeArgs(model: string, systemPrompt = LCM_SUMMARIZER_SYSTEM_PROMPT): string[] {
   return [
     "--print",
@@ -113,6 +135,10 @@ export function buildClaudeArgs(model: string, systemPrompt = LCM_SUMMARIZER_SYS
     "--system-prompt", systemPrompt,
     "--tools", "",
     "--disable-slash-commands",
+    "--plugin-dir", emptyPluginDir(),
+    "--strict-mcp-config",
+    "--mcp-config", EMPTY_MCP_CONFIG,
+    "--setting-sources", "",
   ];
 }
 
