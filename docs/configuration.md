@@ -188,6 +188,10 @@ The accepted shape depends on the provider: GLM 5.3 Flash honours
 `{"enabled":false}`; Mercury 2.5 honours `effort`. When unset, no `reasoning` key
 is sent.
 
+Only the `openai` provider reads this setting: every other provider ignores it
+silently. It must be a JSON object — a string or an array is rejected at config
+load, not at request time.
+
 ### Token cost reporting
 
 Every process-backed provider reports its usage in a normalized shape, stored in
