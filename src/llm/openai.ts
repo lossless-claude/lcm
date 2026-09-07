@@ -40,7 +40,7 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
         condensedTargetTokens: 2000,
       });
 
-    const prompt = ctx.isCondensed
+    const prompt = ctx.taskPrompt !== undefined ? text : ctx.isCondensed
       ? buildCondensedSummaryPrompt({ text, targetTokens, depth: ctx.depth ?? 1 })
       : buildLeafSummaryPrompt({ text, mode: aggressive ? "aggressive" : "normal", targetTokens });
 
@@ -54,7 +54,7 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
           // Merge system content into user message for compatibility with local
           // servers (e.g. MLX/llama.cpp) that don't support role:"system".
           messages: [
-            { role: "user", content: `${LCM_SUMMARIZER_SYSTEM_PROMPT}\n\n${prompt}` },
+            { role: "user", content: `${ctx.taskPrompt ?? LCM_SUMMARIZER_SYSTEM_PROMPT}\n\n${prompt}` },
           ],
         });
 

@@ -1,7 +1,7 @@
-import { mkdtempSync, rmSync, mkdirSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { runLcmMigrations } from "../../src/db/migration.js";
 import { ConversationStore } from "../../src/store/conversation-store.js";
@@ -11,6 +11,11 @@ import { PromotedStore } from "../../src/db/promoted.js";
 import { buildBench, runBench, type BenchFile } from "../../src/bench.js";
 
 const tempDirs: string[] = [];
+
+vi.mock("../../src/daemon/project.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../src/daemon/project.js")>(),
+  projectDbPath: (cwd: string) => join(cwd, "db.sqlite"),
+}));
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
@@ -95,6 +100,69 @@ async function seedProject(cwd: string): Promise<void> {
 }
 
 describe("lcm bench", () => {
+  it("accepts manually curated real wording and short identifier lookups", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    const file = join(cwd, "manual.json");
+    const question = "Why did we choose SQLite for the memory daemon?";
+    writeFileSync(file, JSON.stringify({ version: 1, generator: "manual", queries: [
+      { id: "actual", sessionId: "sess-storage", prompt: question, question, generator: "manual" },
+      { id: "identifier", sessionId: "sess-rollback", prompt: "Investigate PR #1462", question: "PR #1462", generator: "manual" },
+    ] }));
+    const result = await runBench({ cwd, benchFile: file, json: true });
+    expect(result.exitCode, result.stdout).toBe(0);
+    expect(JSON.parse(result.stdout).total).toBe(2);
+    expect(JSON.parse(result.stdout).warnings).toEqual([]);
+  });
+
+  it("still rejects duplicate and empty manual queries", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    const file = join(cwd, "manual.json");
+    const query = { id: "1", sessionId: "sess-storage", prompt: "SQLite", question: "SQLite", generator: "manual" };
+    writeFileSync(file, JSON.stringify({ version: 1, queries: [query, { ...query, id: "2" }] }));
+    expect((await runBench({ cwd, benchFile: file })).stdout).toContain("duplicate question");
+    writeFileSync(file, JSON.stringify({ version: 1, queries: [{ ...query, question: " " }] }));
+    expect((await runBench({ cwd, benchFile: file })).stdout).toContain("nonempty query text");
+    writeFileSync(file, JSON.stringify({ version: 1, queries: [{ ...query, sessionId: " " }] }));
+    expect((await runBench({ cwd, benchFile: file })).stdout).toContain("source session");
+  });
+
+  it("uses an explicit LLM generator without silently substituting mechanical questions", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    const result = await buildBench({ cwd, generator: "llm" }, async () => null);
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain("returned no question");
+    expect(result.out).toBe("");
+  });
+
+  it("rejects duplicate and subjectless generated questions", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    const bad = await buildBench({ cwd, generator: "llm" }, async () => "what did we work on in that session?");
+    expect(bad.exitCode).toBe(1);
+    expect(bad.stdout).toContain("no identifiable subject");
+    const duplicate = await buildBench({ cwd, generator: "llm" }, async () => "How did we recover the customer settings page?");
+    const bench = JSON.parse(readFileSync(duplicate.out, "utf8")) as BenchFile;
+    expect(bench.queries).toHaveLength(1);
+    expect(bench.generator).toBe("llm");
+    expect(duplicate.stdout).toContain("duplicate question");
+  });
+
+  it("rejects empty or duplicate benchmark input before measuring", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    const file = join(cwd, "bench.json");
+    writeFileSync(file, JSON.stringify({ version: 1, queries: [] }));
+    expect((await runBench({ cwd, benchFile: file })).stdout).toContain("nonempty queries");
+    const query = { id: "1", sessionId: "session", prompt: "the original prompt", question: "How did we recover the customer settings page?", generator: "llm" };
+    writeFileSync(file, JSON.stringify({ version: 1, queries: [query, { ...query, id: "2" }] }));
+    expect((await runBench({ cwd, benchFile: file })).stdout).toContain("duplicate question");
+  });
   it("build writes a benchmark file with vocabulary-diverging questions", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
     tempDirs.push(cwd);
