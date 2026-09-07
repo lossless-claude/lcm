@@ -205,12 +205,16 @@ lcm stats --pool           # connection pool statistics
 # Compaction & promotion
 lcm compact                # compact the current project
 lcm compact --all          # compact all tracked projects
+lcm compact --replay       # compact sequentially with threaded context (resumable)
+lcm compact --replay --restart  # discard recorded progress and start from scratch
 lcm promote                # promote durable insights to long-term memory
 lcm promote --all          # promote across all tracked projects
 
 # Import / export
 lcm import                 # import Claude Code sessions for the current project
 lcm import --all           # import all projects
+lcm import --replay        # import and compact with threaded context (resumable)
+lcm import --replay --restart # discard recorded progress and start from scratch
 lcm export                 # export promoted knowledge to JSON
 lcm import-knowledge <f>   # import a knowledge JSON file
 

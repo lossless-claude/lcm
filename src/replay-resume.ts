@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { projectId } from "./daemon/project.js";
+import { runLcmMigrations } from "./db/migration.js";
 
 export type ReplayCommand = "import" | "compact";
 
@@ -88,7 +89,10 @@ function openProjectDb(dbPath: string): DatabaseSync | null {
   try {
     const db = new DatabaseSync(dbPath);
     db.exec("PRAGMA busy_timeout = 5000");
-    // Cheap existence check — throws if the ledger migration has not run yet.
+    // The daemon may hold connections opened before the replay tables existed;
+    // runLcmMigrations is additive and idempotent, so this is a cheap no-op on
+    // current databases and self-heals stale ones.
+    runLcmMigrations(db, { fts5Available: false });
     db.prepare("SELECT 1 FROM replay_ledger LIMIT 1").get();
     return db;
   } catch {
