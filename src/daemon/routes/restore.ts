@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
 import { projectDbPath } from "../project.js";
@@ -105,7 +105,6 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
       // Also capture CLAUDE.md files on startup
       if (cwd) {
         const dbPath = projectDbPath(cwd);
-        mkdirSync(dirname(dbPath), { recursive: true });
         const db = getLcmConnection(dbPath);
         try {
           runLcmMigrations(db);
