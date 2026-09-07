@@ -2,6 +2,8 @@
 
 **Status:** proposed design, 2026-09-07. No retrieval-quality claim or new dependency is approved by this document.
 
+**Implementation follow-up:** the first [QMD SDK Adapter](../qmd-search.md) is implemented and explicitly selectable. This does not complete the broader shared EvidenceSearch Interface, automatic-recall migration, coverage manifests or real-corpus evaluation proposed here.
+
 ## Recommendation
 
 Build one deep **EvidenceSearch Module** that returns attributable, budgeted evidence. Give CLI search, automatic recall and evaluation the same retrieval **Interface**. Keep source capture and index maintenance in a separate **CorpusIndex Module**. SQLite remains the local source of truth; lexical and semantic indexes are rebuildable projections.

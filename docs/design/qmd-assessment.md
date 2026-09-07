@@ -2,6 +2,8 @@
 
 **Assessment:** 2026-09-07. Recommendation for a bounded experiment, not an approved dependency or measured quality result.
 
+**Implementation follow-up:** the user selected SDK adoption. QMD 2.8.3 is now linked behind the opt-in worker Adapter described in [QMD search](../qmd-search.md). Real SDK lexical/hybrid integration checks pass; representative corpus-quality evaluation remains pending. The assessment below records the reasoning before implementation.
+
 ## Recommendation
 
 Evaluate the public `@tobilu/qmd` SDK before implementing a separate hybrid-search stack. Keep LCM's EvidenceSearch Interface and canonical corpus. Put QMD behind an internal candidate-retrieval Seam, with its index treated as a replaceable projection.
