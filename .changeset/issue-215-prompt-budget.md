@@ -1,5 +1,5 @@
 ---
-"lossless-claude": patch
+"@lossless-claude/lcm": patch
 ---
 
 Add prompt-time memory injection budget and deduplication (#215)
