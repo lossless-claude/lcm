@@ -58,8 +58,8 @@ function cleanStalePid(pidFilePath: string): void {
   } catch { /* ignore */ }
 }
 
-export /** PID of the process listening on 127.0.0.1:port, via lsof (macOS/Linux). Undefined when unknown. */
-function findListenerPid(port: number): number | undefined {
+/** PID of the process listening on 127.0.0.1:port, via lsof (macOS/Linux). Undefined when unknown. */
+export function findListenerPid(port: number): number | undefined {
   try {
     const out = spawnSync("lsof", ["-nP", "-tiTCP@127.0.0.1:" + port, "-sTCP:LISTEN"], { encoding: "utf-8" });
     const first = String(out.stdout ?? "").trim().split("\n")[0];
@@ -91,16 +91,21 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
   if (health?.status === "ok") {
     // Version/build check — if mismatch, kill and respawn
     if (isStaleDaemon(health, { version: opts.expectedVersion, build: opts.expectedBuild })) {
-      if (existsSync(opts.pidFilePath)) {
+      // Prefer the pid the daemon reports about itself; the PID file may have drifted.
+      let pid = health.pid;
+      if (pid === undefined && existsSync(opts.pidFilePath)) {
         try {
-          const pid = parseInt(readFileSync(opts.pidFilePath, "utf-8").trim(), 10);
-          if (!isNaN(pid) && isProcessAlive(pid)) {
-            process.kill(pid, "SIGTERM");
-            await sleep(500);
-          }
+          const parsed = parseInt(readFileSync(opts.pidFilePath, "utf-8").trim(), 10);
+          if (!isNaN(parsed)) pid = parsed;
         } catch { /* ignore */ }
-        cleanStalePid(opts.pidFilePath);
       }
+      if (pid !== undefined && pid !== process.pid && isProcessAlive(pid)) {
+        try {
+          process.kill(pid, "SIGTERM");
+          await sleep(500);
+        } catch { /* ignore */ }
+      }
+      cleanStalePid(opts.pidFilePath);
       // Fall through to spawn
     } else {
       return { connected: true, port: opts.port, spawned: false };

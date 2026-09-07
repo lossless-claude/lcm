@@ -47,6 +47,8 @@ function listEventDbsNewestFirst(dir: string): string[] {
 export function collectEventStats(timeoutMs = 2000): EventStats {
   const result: EventStats = { captured: 0, unprocessed: 0, errors: 0, lastCapture: null, scanned: 0, total: 0 };
   const dir = eventsDir();
+  // Listing and sorting the sidecars counts against the budget too.
+  const deadline = Date.now() + timeoutMs;
 
   let files: string[];
   try {
@@ -56,7 +58,6 @@ export function collectEventStats(timeoutMs = 2000): EventStats {
   }
   result.total = files.length;
 
-  const deadline = Date.now() + timeoutMs;
   let scanned = 0;
 
   for (const file of files) {
@@ -95,6 +96,7 @@ export function collectDetailedEventStats(timeoutMs = 2000): DetailedEventStats 
     projects: [], recentErrors: [],
   };
   const dir = eventsDir();
+  const deadline = Date.now() + timeoutMs;
 
   let files: string[];
   try {
@@ -104,7 +106,6 @@ export function collectDetailedEventStats(timeoutMs = 2000): DetailedEventStats 
   }
   result.total = files.length;
 
-  const deadline = Date.now() + timeoutMs;
   let scanned = 0;
 
   for (const file of files) {

@@ -111,6 +111,19 @@ describe("doctor hook validation", () => {
     expect(Object.keys(lastWrite.hooks).length).toBe(REQUIRED_HOOKS.length);
   });
 
+  it("does not strip legacy hooks while re-adding mcpServers.lcm when the plugin is installed but disabled", async () => {
+    const writeFileSync = vi.fn();
+    const hooks: Record<string, unknown[]> = {};
+    for (const { event, command } of REQUIRED_HOOKS) hooks[event] = [{ matcher: "", hooks: [{ type: "command", command }] }];
+    const settings = JSON.stringify({ hooks, enabledPlugins: { "lcm@lossless-claude": false } });
+    const results = await runDoctor(depsFor(settings, INSTALLED_LCM, writeFileSync));
+    expect(results.find(r => r.name === "mcp-lcm")?.fixApplied).toBe(true);
+    const settingsWrites = writeFileSync.mock.calls.filter(c => String(c[0]).endsWith("settings.json"));
+    const lastWrite = JSON.parse(String(settingsWrites.at(-1)?.[1]));
+    expect(lastWrite.mcpServers.lcm).toBeDefined();
+    expect(Object.keys(lastWrite.hooks).length).toBe(REQUIRED_HOOKS.length);
+  });
+
   it("strips duplicate settings.json hooks when the plugin is installed", async () => {
     const writeFileSync = vi.fn();
     const results = await runDoctor(depsFor(settingsWithLcmHooks(), INSTALLED_LCM, writeFileSync));

@@ -416,8 +416,8 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
     results.push({ name: "mcp-lcm", category: "Settings", status: "pass", message: "mcpServers.lcm registered in settings.json" });
   } else {
     try {
-      // mergeClaudeSettings strips lcm hooks from settings.json; only safe when the plugin provides them.
-      const merged = plugin.installed ? mergeClaudeSettings(currentSettings) : { ...currentSettings };
+      // mergeClaudeSettings strips lcm hooks from settings.json; only safe when the plugin actually fires them.
+      const merged = plugin.installed && plugin.enabled ? mergeClaudeSettings(currentSettings) : { ...currentSettings };
       if (typeof merged.mcpServers !== "object" || merged.mcpServers === null) merged.mcpServers = {};
       // Use resolveBinaryPath for consistent binary resolution with installer
       const lcmBinary = resolveBinaryPath(deps);
