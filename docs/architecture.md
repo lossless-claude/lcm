@@ -100,6 +100,23 @@ The **condensed pass** merges summaries at the same depth into a higher-level su
 - Stops when context is under the target token count
 - Used by the overflow recovery path
 
+### Resumable replay runs
+
+`lcm import --replay` and `lcm compact --replay` are resumable. At the start of
+a run the ordered session list is frozen into a per-project `replay_manifest`
+table under a `run_id`; every completed session compaction writes a
+`replay_ledger` row `(run_id, session_id, position, prev_session_id,
+content_fingerprint, summary_id, model)` after its summary is persisted.
+
+A restarted run adopts the latest manifest for its command, skips ledger rows
+whose content fingerprint still matches (transcript `size` + line count +
+`mtime`, or message/token counts for DB-only compactions), restores the
+threaded `previous_summary` chain from the last good row, and continues.
+`--restart` discards recorded progress and the summaries recorded in the
+ledger, then starts from scratch. SIGINT/SIGTERM let the in-flight compaction
+settle before exiting, so a resumed run never duplicates or skips a
+half-finished session.
+
 ### Three-level escalation
 
 Every summarization attempt follows this escalation:
