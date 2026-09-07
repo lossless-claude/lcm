@@ -12,6 +12,7 @@ type OpenAISummarizerOptions = {
   model: string;
   baseURL: string;
   apiKey?: string;
+  reasoning?: Record<string, unknown>;
   _clientOverride?: any;
   _retryDelayMs?: number;
 };
@@ -51,6 +52,9 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
       try {
         const response = await client.chat.completions.create({
           model: opts.model,
+          // `reasoning` is provider-specific and absent from the OpenAI SDK types;
+          // omitted entirely when unset so servers rejecting unknown fields keep working.
+          ...(opts.reasoning ? { reasoning: opts.reasoning } : {}),
           max_tokens: resolveMaxOutputTokens(targetTokens),
           // Merge system content into user message for compatibility with local
           // servers (e.g. MLX/llama.cpp) that don't support role:"system".

@@ -42,7 +42,7 @@ export type DaemonConfig = {
     stalePenalty: number;
     allowStaleOnStrongMatch: boolean;
   };
-  llm: { provider: "auto" | "claude-process" | "codex-process" | "copilot-process" | "anthropic" | "openai" | "disabled"; model: string; apiKey?: string; baseURL: string };
+  llm: { provider: "auto" | "claude-process" | "codex-process" | "copilot-process" | "anthropic" | "openai" | "disabled"; model: string; apiKey?: string; baseURL: string; reasoning?: Record<string, unknown> };
   summarizer: { mock: boolean };
   security: SecurityConfig;
   hooks: { snapshotIntervalSec: number; disableAutoCompact: boolean };

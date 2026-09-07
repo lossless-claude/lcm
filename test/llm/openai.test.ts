@@ -33,6 +33,25 @@ describe("createOpenAISummarizer", () => {
     expect(args.messages[0].content).toContain("context-compaction summarization engine");
   });
 
+  it("sends reasoning verbatim when configured and omits the key otherwise", async () => {
+    const withReasoning = makeClient("Summary.");
+    await createOpenAISummarizer({
+      model: "m",
+      baseURL: "http://x/v1",
+      reasoning: { effort: "minimal" },
+      _clientOverride: withReasoning as any,
+    })("Conversation text", false, {});
+    expect(withReasoning.chat.completions.create.mock.calls[0][0].reasoning).toEqual({ effort: "minimal" });
+
+    const without = makeClient("Summary.");
+    await createOpenAISummarizer({ model: "m", baseURL: "http://x/v1", _clientOverride: without as any })(
+      "Conversation text",
+      false,
+      {},
+    );
+    expect(without.chat.completions.create.mock.calls[0][0]).not.toHaveProperty("reasoning");
+  });
+
   it("raises max_tokens with the condensed target", async () => {
     const mockClient = makeClient("Summary.");
     const summarizer = createOpenAISummarizer({ model: "m", baseURL: "http://x/v1", _clientOverride: mockClient as any });
