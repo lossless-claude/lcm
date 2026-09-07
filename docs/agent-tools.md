@@ -35,6 +35,10 @@ Summaries are lossy by design. The "Expand for details about:" footer at the end
 
 Search episodic and promoted project memory. Native retrieval returns separate layer lists. An explicitly prepared QMD index provides lexical or local hybrid retrieval through the same tool; see [QMD search](./qmd-search.md).
 
+Native episodic matches contain up to 1,000 characters of exact source context, plus `span`,
+`sourceHash`, and `snippetTruncated`. These locate the excerpt in the retained source revision;
+they do not assert that the excerpt answers the question. Promoted memory output is unchanged.
+
 **Parameters:**
 
 | Param | Type | Required | Default | Description |
