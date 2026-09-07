@@ -783,6 +783,52 @@ describe("importSessions replay resume", () => {
     expect(r2.resumed?.doneCount).toBe(2);
   });
 
+  it("keeps the manifest pending past an empty first ingest that creates no database", async () => {
+    const cwd = "/test/resume-empty-first";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2"]);
+    const dbPath = join(lcmDir, "projects", projectId(cwd), "db.sqlite");
+    rmSync(dbPath);
+
+    const client = makeMockClient(async (path: string, body: any) => {
+      if (path === "/ingest") {
+        // An empty transcript returns before the daemon creates the database.
+        if (body.session_id === "s1") return { ingested: 0, totalTokens: 0 };
+        const db = new DatabaseSync(dbPath);
+        runLcmMigrations(db, { fts5Available: false });
+        db.close();
+        return { ingested: 1, totalTokens: 100 };
+      }
+      if (path === "/compact") return { summary: "ok", replayOutcome: "no_work" };
+    });
+    await importSessions(client, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+
+    const db = new DatabaseSync(dbPath);
+    try {
+      const manifest = db.prepare("SELECT session_id FROM replay_manifest ORDER BY position").all() as { session_id: string }[];
+      expect(manifest.map((m) => m.session_id)).toEqual(["s1", "s2"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("replay asks /ingest to re-read completed sessions", async () => {
+    const cwd = "/test/replay-ingest-flag";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1"]);
+    const ingestBodies: Record<string, unknown>[] = [];
+    const client = makeMockClient(async (path: string, body: any) => {
+      if (path === "/ingest") { ingestBodies.push(body); return { ingested: 1, totalTokens: 100 }; }
+      if (path === "/compact") return { summary: "ok", replayOutcome: "compacted" };
+    });
+    await importSessions(client, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+    expect(ingestBodies[0].replay).toBe(true);
+
+    const plain = makeMockClient(async (path: string, body: any) => {
+      if (path === "/ingest") { ingestBodies.push(body); return { ingested: 0, totalTokens: 0 }; }
+    });
+    await importSessions(plain, { cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+    expect(ingestBodies[1].replay).toBeUndefined();
+  });
+
   it("restart forces a full re-run and clears recorded progress", async () => {
     const cwd = "/test/resume-restart";
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1"]);

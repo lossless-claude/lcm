@@ -390,6 +390,8 @@ async function ingestSessionList(
         session_id: sessionId,
         cwd,
         transcript_path: path,
+        // A completed session's transcript may have grown; replay must ingest the tail.
+        ...(options.replay ? { replay: true } : {}),
       });
       if (res.ingested === 0 && res.totalTokens === 0) {
         result.skippedEmpty++;
@@ -412,9 +414,10 @@ async function ingestSessionList(
         if (pendingManifest) {
           // Freeze the manifest once the first ingest has succeeded: a run that
           // dies earlier leaves no resumable state behind, and a first-ever import
-          // has no project database until /ingest creates it.
+          // has no project database until an ingest with content creates it. The
+          // manifest stays pending until it is actually written.
           const runId = replayRuns.get(cwd)!;
-          createReplayRun({
+          const written = createReplayRun({
             cwd,
             lcmDir: options._lcmDir,
             command: "import",
@@ -422,10 +425,12 @@ async function ingestSessionList(
             sessions: pendingManifest,
             model: options.replayModel ?? null,
           });
-          const positions = new Map<string, number>();
-          pendingManifest.forEach((s, i) => positions.set(s.sessionId, i));
-          ledgerPositions.set(cwd, positions);
-          manifestForNewRun.delete(cwd);
+          if (written) {
+            const positions = new Map<string, number>();
+            pendingManifest.forEach((s, i) => positions.set(s.sessionId, i));
+            ledgerPositions.set(cwd, positions);
+            manifestForNewRun.delete(cwd);
+          }
         }
 
         try {

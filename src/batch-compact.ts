@@ -26,17 +26,16 @@ export interface UncompactedConversation {
 }
 
 /** Find conversations eligible for compaction, above the token threshold. */
-export function findUncompacted(minTokens: number, readOnly = false, cwdFilter?: string, replay = false): UncompactedConversation[] {
+/** Every tracked project with a database: its directory and cwd. */
+export function findProjects(cwdFilter?: string): { projDir: string; cwd: string }[] {
   const baseDir = join(homedir(), ".lossless-claude", "projects");
   if (!existsSync(baseDir)) return [];
 
-  const results: UncompactedConversation[] = [];
-
+  const projects: { projDir: string; cwd: string }[] = [];
   for (const entry of readdirSync(baseDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const projDir = join(baseDir, entry.name);
-    const dbPath = join(projDir, "db.sqlite");
-    if (!existsSync(dbPath)) continue;
+    if (!existsSync(join(projDir, "db.sqlite"))) continue;
 
     const metaPath = join(projDir, "meta.json");
     let cwd = "";
@@ -47,7 +46,16 @@ export function findUncompacted(minTokens: number, readOnly = false, cwdFilter?:
     }
     if (!cwd) continue;
     if (cwdFilter && cwd !== cwdFilter) continue;
+    projects.push({ projDir, cwd });
+  }
+  return projects;
+}
 
+export function findUncompacted(minTokens: number, readOnly = false, cwdFilter?: string, replay = false): UncompactedConversation[] {
+  const results: UncompactedConversation[] = [];
+
+  for (const { projDir, cwd } of findProjects(cwdFilter)) {
+    const dbPath = join(projDir, "db.sqlite");
     const db = new DatabaseSync(dbPath);
     try {
       db.exec("PRAGMA busy_timeout = 5000");
@@ -136,6 +144,28 @@ export async function batchCompact(opts: {
   /** Wrap an in-flight conversation's work so signal handlers can wait for it before exiting */
   trackInFlight?: () => () => void;
 }): Promise<{ compacted: number }> {
+  // --restart clears every tracked project, not only those with eligible
+  // conversations: recorded state must go even when nothing currently passes
+  // the token threshold.
+  if (opts.replay && !opts.dryRun && opts.restart) {
+    let clearFailed = false;
+    for (const { cwd } of findProjects(opts.cwd)) {
+      const ok = await clearReplayState({
+        cwd,
+        command: "compact",
+        onSummaryCount: (count) => {
+          if (count > 0) {
+            console.error(`  ⚠️ [replay] --restart discards ${count} summaries in ${cwd}; they will be regenerated`);
+          }
+        },
+      });
+      if (!ok) clearFailed = true;
+    }
+    if (clearFailed) {
+      console.error("  ⚠️ [replay] could not fully clear previous replay state; some stale summaries may remain");
+    }
+  }
+
   let conversations = findUncompacted(opts.minTokens, opts.dryRun, opts.cwd, opts.replay);
   const onProgress = opts.onProgress;
 
@@ -147,24 +177,6 @@ export async function batchCompact(opts: {
   const lastCompactedSessionIdByCwd = new Map<string, string | null>();
   if (opts.replay && !opts.dryRun && conversations.length > 0) {
     replayRuns = new Map();
-    if (opts.restart) {
-      let clearFailed = false;
-      for (const cwd of new Set(conversations.map((c) => c.cwd))) {
-        const ok = await clearReplayState({
-          cwd,
-          command: "compact",
-          onSummaryCount: (count) => {
-            if (count > 0) {
-              console.error(`  ⚠️ [replay] --restart discards ${count} summaries in ${cwd}; they will be regenerated`);
-            }
-          },
-        });
-        if (!ok) clearFailed = true;
-      }
-      if (clearFailed) {
-        console.error("  ⚠️ [replay] could not fully clear previous replay state; some stale summaries may remain");
-      }
-    }
     const plan = planReplayResume({
       sessions: conversations,
       command: "compact",

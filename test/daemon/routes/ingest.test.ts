@@ -171,6 +171,29 @@ describe("POST /ingest", () => {
     }
   });
 
+  it("replay ingests the transcript tail of a session already in session_ingest_log", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-ingest-"));
+    tempDirs.push(tempDir);
+    daemon = await createDaemon(loadDaemonConfig("/nonexistent", { daemon: { port: 0 } }));
+    const url = `http://127.0.0.1:${daemon.address().port}/ingest`;
+    const post = (body: Record<string, unknown>) =>
+      fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const first = [{ role: "user", content: "hello", tokenCount: 1 }];
+    const grown = [...first, { role: "assistant", content: "hi", tokenCount: 1 }];
+
+    await post({ session_id: "done-sess", cwd: tempDir, messages: first });
+    const db = new DatabaseSync(projectDbPath(tempDir));
+    db.prepare("INSERT INTO session_ingest_log (session_id, message_count) VALUES ('done-sess', 1)").run();
+    db.close();
+
+    // The ordinary path trusts the completion log and skips the grown transcript.
+    expect(await (await post({ session_id: "done-sess", cwd: tempDir, messages: grown })).json()).toEqual({ ingested: 0, totalTokens: 0 });
+    // A replay re-reads it and ingests only the tail.
+    expect(await (await post({ session_id: "done-sess", cwd: tempDir, messages: grown, replay: true })).json()).toEqual({ ingested: 1, totalTokens: 2 });
+    // Idempotent: nothing new on the next replay pass.
+    expect(await (await post({ session_id: "done-sess", cwd: tempDir, messages: grown, replay: true })).json()).toEqual({ ingested: 0, totalTokens: 0 });
+  });
+
   it("returns ingested=0 when transcript_path is missing and messages[] is absent", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-ingest-missing-"));
     tempDirs.push(tempDir);

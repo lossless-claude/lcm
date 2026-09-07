@@ -203,8 +203,8 @@ function fetchSummaryContent(db: DatabaseSync, summaryId: string): string | unde
 }
 
 /**
- * Persist a new run's manifest. No-op when `sessions` is empty or the DB
- * cannot be opened.
+ * Persist a new run's manifest. Returns false, writing nothing, when the DB
+ * cannot be opened; callers keep the manifest pending and retry later.
  */
 export function createReplayRun(opts: {
   cwd: string;
@@ -213,9 +213,9 @@ export function createReplayRun(opts: {
   runId: string;
   sessions: { sessionId: string }[];
   model?: string | null;
-}): void {
+}): boolean {
   const opened = openProjectDb(projectDbPathFor(opts.cwd, opts.lcmDir));
-  if (opened.kind !== "ready") return;
+  if (opened.kind !== "ready") return false;
   const { db } = opened;
   try {
     db.exec("BEGIN");
@@ -227,11 +227,12 @@ export function createReplayRun(opts: {
         stmt.run(opts.runId, opts.command, i, s.sessionId, opts.model ?? null);
       });
       db.exec("COMMIT");
+      return true;
     } catch (err) {
       db.exec("ROLLBACK");
       throw err;
     }
-  } catch { /* resume state is best-effort — never fail the run */ }
+  } catch { return false; /* resume state is best-effort — never fail the run */ }
   finally { closeDb(opened); }
 }
 
