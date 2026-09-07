@@ -3,6 +3,14 @@ import { ensureDaemon } from "../daemon/lifecycle.js";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
+/**
+ * Deadline for /compact — summarization calls an LLM, so allow minutes, not seconds.
+ * Keep in sync with the PreCompact `timeout` in .claude-plugin/plugin.json; without a
+ * matching host timeout Claude Code kills the hook at its 60s default and this deadline
+ * never fires.
+ */
+const COMPACT_TIMEOUT_MS = 120_000;
+
 export async function handlePreCompact(stdin: string, client: DaemonClient, port?: number): Promise<{ exitCode: number; stdout: string }> {
   const daemonPort = port ?? 3737;
   const pidFilePath = join(homedir(), ".lossless-claude", "daemon.pid");
@@ -14,7 +22,7 @@ export async function handlePreCompact(stdin: string, client: DaemonClient, port
     const result = await client.post<{ summary: string; latestSummaryContent?: string }>("/compact", {
       ...input,
       client: "claude",
-    });
+    }, { timeoutMs: COMPACT_TIMEOUT_MS });
 
     try {
       const { firePromoteEventsRequest } = await import("./session-end.js");

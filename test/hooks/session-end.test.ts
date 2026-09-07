@@ -46,7 +46,7 @@ describe("handleSessionEnd", () => {
     const stdin = JSON.stringify({ session_id: "s1", cwd: "/tmp" });
     const result = await handleSessionEnd(stdin, client, 3737);
     expect(result.exitCode).toBe(0);
-    expect(client.post).toHaveBeenCalledWith("/ingest", { session_id: "s1", cwd: "/tmp" });
+    expect(client.post).toHaveBeenCalledWith("/ingest", { session_id: "s1", cwd: "/tmp" }, expect.objectContaining({ timeoutMs: expect.any(Number) }));
   });
 
   it("fires compact via http.request when totalTokens exceeds threshold", async () => {

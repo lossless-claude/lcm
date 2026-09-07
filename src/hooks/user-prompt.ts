@@ -27,6 +27,9 @@ When you act on a surfaced memory (use it to inform a decision, avoid a known pi
 lcm_store(text: "Acted on memory <id> — <one-line how>", tags: ["signal:memory_used", "memory_id:<id>"])
 </learning-instruction>`;
 
+/** Deadline for /prompt-search — the user is waiting on every prompt; fall back to the bare instruction. */
+const PROMPT_SEARCH_TIMEOUT_MS = 5_000;
+
 export async function handleUserPromptSubmit(
   stdin: string,
   client: DaemonClient,
@@ -75,7 +78,7 @@ export async function handleUserPromptSubmit(
       cwd: input.cwd,
       session_id: input.session_id,
       learningInstructionBytes: Buffer.byteLength(LEARNING_INSTRUCTION, "utf8"),
-    });
+    }, { timeoutMs: PROMPT_SEARCH_TIMEOUT_MS });
 
     if (!result.hints || result.hints.length === 0) {
       return { exitCode: 0, stdout: LEARNING_INSTRUCTION };

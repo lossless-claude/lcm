@@ -12,6 +12,8 @@ export type EnsureDaemonOptions = {
   expectedBuild?: string;
   spawnCommand?: string;
   spawnArgs?: string[];
+  /** Connect only if a daemon is already up; never spawn one. */
+  noSpawn?: boolean;
   _skipSpawn?: boolean; // for testing — don't attempt to spawn
   _spawnOverride?: typeof spawn;
   _skipHealthWait?: boolean;
@@ -128,7 +130,7 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
   }
 
   // Step 3: Spawn daemon (unless skipped for testing)
-  if (opts._skipSpawn) {
+  if (opts._skipSpawn || opts.noSpawn) {
     return { connected: false, port: opts.port, spawned: false };
   }
 

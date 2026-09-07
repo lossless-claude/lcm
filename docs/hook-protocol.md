@@ -18,7 +18,7 @@ The launcher now correctly starts the CLI. Previously, plugin hooks could exit s
 
 **Command:** `lcm compact --hook`
 
-Invoked by Claude Code before it runs its built-in compaction. lcm intercepts the compaction, writes a DAG summary, and returns exit code `2` with the summary text on stdout. Exit code `0` means lcm deferred (daemon unavailable); exit code `2` means lcm handled the compaction.
+Invoked by Claude Code before it runs its built-in compaction. lcm writes a DAG summary of the session and prints it on stdout. The hook always exits `0`; it never blocks or replaces the built-in compaction. Empty stdout means lcm deferred (daemon unavailable or nothing to compact).
 
 **Stdin fields:**
 
@@ -28,7 +28,7 @@ Invoked by Claude Code before it runs its built-in compaction. lcm intercepts th
 | `cwd` | string | Working directory of the Claude Code session |
 | `hook_event_name` | string | `"PreCompact"` |
 
-**Response:** Exit code `2` + summary text on stdout (replaces Claude Code's built-in compaction), or exit code `0` to defer.
+**Response:** Exit code `0`. Summary text on stdout when the daemon compacted; empty stdout to defer.
 
 ## SessionStart Hook
 
@@ -86,11 +86,19 @@ Invoked on each user prompt. lcm searches memory for relevant hints and injects 
 
 **Response:** Exit code `0`. Hints are injected via stdout when relevant matches are found.
 
+## PostToolUseFailure Hook
+
+**Command:** `lcm post-tool` (same handler as PostToolUse)
+
+Invoked when a tool that started running fails. Claude Code never routes failures through `PostToolUse`, so error events only exist because this hook is registered. The handler records an `error_tool` event (priority 1) in the local sidecar database. The payload carries `tool_name`, `tool_input`, a top-level `error` string (for Bash the first line is `Exit code N`), and optional `is_interrupt`; interrupts are ignored.
+
+**Response:** Always exit code `0`, no stdout.
+
 ## PostToolUse Hook
 
 **Command:** `lcm post-tool`
 
-Invoked after every tool call. lcm extracts structured events (decisions, errors, git ops, etc.) and writes them to the passive-learning sidecar database.
+Invoked after a tool call **succeeds**, and only for the tools the `PostToolUse` matcher in `.claude-plugin/plugin.json` enumerates — the ones lcm has an extractor for. Failures arrive on [PostToolUseFailure](#posttoolusefailure-hook) instead. lcm extracts structured events (decisions, errors, git ops, etc.) and writes them to the passive-learning sidecar database.
 
 **Stdin fields:**
 
@@ -122,6 +130,21 @@ An optional periodic hook that incrementally ingests the live session transcript
 | `hook_event_name` | string | `"SessionSnapshot"` (if provided) |
 
 **Response:** Exit code `0`.
+
+## Deadlines
+
+Every hook bounds its daemon call so a wedged daemon can never hold the session open. The deadline is client-side; the host applies its own per-hook timeout on top, and the shorter of the two wins.
+
+| Hook | Route | Client deadline | Host timeout |
+|------|-------|-----------------|--------------|
+| PreCompact | `/compact` | 120s — summarization calls an LLM | `timeout: 120` on the PreCompact entry in `.claude-plugin/plugin.json` |
+| SessionStart | `/restore` | 10s | host default |
+| SessionEnd | `/ingest` | 10s | host default (SessionEnd hooks share a short budget) |
+| UserPromptSubmit | `/prompt-search` | 5s | host default |
+
+A client deadline longer than the host timeout is dead code — the host kills the hook first. PreCompact is the only hook that declares a matching host `timeout`, and the two must stay in sync.
+
+SessionEnd additionally passes `noSpawn: true`, so it never starts a daemon just to ingest: if none is running the hook exits 0 and the `SessionSnapshot` hook's incremental ingest is the fallback.
 
 ## Auto-heal
 

@@ -6,6 +6,14 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 // Mock eventsDbPath to use temp directory
+vi.mock("../../src/daemon/config.js", () => ({
+  loadDaemonConfig: () => ({ daemon: { port: 4242 } }),
+}));
+vi.mock("../../src/hooks/session-end.js", () => ({
+  firePromoteEventsRequest: vi.fn(),
+}));
+import { firePromoteEventsRequest } from "../../src/hooks/session-end.js";
+
 vi.mock("../../src/db/events-path.js", () => ({
   eventsDbPath: () => join(process.env.TEST_EVENTS_DIR!, "test.db"),
   eventsDir: () => process.env.TEST_EVENTS_DIR!,
@@ -60,5 +68,36 @@ describe("handlePostToolUse", () => {
     });
     const result = await handlePostToolUse(stdin);
     expect(result.exitCode).toBe(0);
+  });
+
+  it("fires priority-1 promotion at the configured daemon port, not the default", async () => {
+    vi.mocked(firePromoteEventsRequest).mockClear();
+    await handlePostToolUse(JSON.stringify({
+      session_id: "test-session",
+      tool_name: "AskUserQuestion",
+      tool_input: { questions: [{ question: "Which db?" }] },
+      tool_response: "postgres",
+    }));
+    expect(firePromoteEventsRequest).toHaveBeenCalledWith(4242, expect.objectContaining({ cwd: expect.any(String) }));
+  });
+
+  it("labels PostToolUseFailure events with their real source hook", async () => {
+    await handlePostToolUse(JSON.stringify({
+      session_id: "test-session",
+      hook_event_name: "PostToolUseFailure",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      error: "Exit code 1\nboom",
+    }));
+    const { EventsDb } = await import("../../src/hooks/events-db.js");
+    const db = new EventsDb(join(dir, "test.db"));
+    try {
+      const rows = db.getUnprocessed(10);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].source_hook).toBe("PostToolUseFailure");
+      expect(rows[0].type).toBe("error_tool");
+    } finally {
+      db.close();
+    }
   });
 });

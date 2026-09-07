@@ -168,4 +168,11 @@ describe("handleSessionStart", () => {
     await handleSessionStart(JSON.stringify({ session_id: "s4", cwd: "/proj" }), client as any);
     expect(mockFirePromote).toHaveBeenCalledWith(3737, { cwd: "/proj" });
   });
+
+  it("exits 0 with empty output on malformed stdin", async () => {
+    mockEnsureDaemon.mockClear();
+    const result = await handleSessionStart("not json", {} as any, 1);
+    expect(result).toEqual({ exitCode: 0, stdout: "" });
+    expect(mockEnsureDaemon).not.toHaveBeenCalled();
+  });
 });
