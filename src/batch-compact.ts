@@ -183,7 +183,6 @@ export async function batchCompact(opts: {
   let replayRuns: Map<string, { runId: string; positions: Map<string, number> }> | null = null;
   let skippedDone = 0;
   const previousSummaryByCwd = new Map<string, string | undefined>();
-  const lastCompactedSessionIdByCwd = new Map<string, string | null>();
   if (opts.replay && !opts.dryRun && conversations.length > 0) {
     replayRuns = new Map();
     const plan = planReplayResume({
@@ -270,6 +269,10 @@ export async function batchCompact(opts: {
     onProgress?.({ current: { sessionId: conv.sessionId, messages: conv.messages, tokens: conv.tokens, startedAt: sessionStart } });
     process.stdout.write(`  compacting: ${label}...`);
     const releaseInFlight = opts.trackInFlight ? opts.trackInFlight() : null;
+    // Captured before the call so a timed-out compact only recovers a summary
+    // persisted after this moment — a stale one from an earlier run is not
+    // mistaken for the in-flight call's result.
+    const compactStartedAt = Date.now();
     try {
       const data = await client.post<{
         summary?: string;
@@ -361,7 +364,9 @@ export async function batchCompact(opts: {
         // re-read it; when nothing is stored yet keep the previous link. A real
         // daemon failure breaks the chain at this link.
         const gaveUp = isClientGaveUpError(err);
-        const recovered = gaveUp ? await loadLatestSessionSummary({ cwd: conv.cwd, sessionId: conv.sessionId }) : null;
+        const recovered = gaveUp
+          ? await loadLatestSessionSummary({ cwd: conv.cwd, sessionId: conv.sessionId, notBefore: compactStartedAt })
+          : null;
         if (recovered) {
           previousSummaryByCwd.set(conv.cwd, recovered.content);
           const run = replayRuns?.get(conv.cwd);
@@ -377,12 +382,17 @@ export async function batchCompact(opts: {
               model: opts.replayModel ?? null,
             });
           }
+          // The ledger records this as compacted, so the run summary must
+          // count it too — otherwise ledger and summary disagree.
+          compacted++;
+          messagesIn += conv.messages;
+          tokensIn += recovered.sourceMessageTokenCount > 0 ? recovered.sourceMessageTokenCount : conv.tokens;
+          tokensOut += recovered.tokenCount;
           chainNote = "; summary was stored, chain continues";
         } else if (gaveUp) {
           chainNote = "; no summary found, chain skips this session";
         } else {
           previousSummaryByCwd.set(conv.cwd, undefined);
-          lastCompactedSessionIdByCwd.set(conv.cwd, null);
         }
       }
       doneCount++;
@@ -390,6 +400,9 @@ export async function batchCompact(opts: {
       progressErrors.push({ sessionId: conv.sessionId, message: errMsg });
       onProgress?.({
         completed: doneCount,
+        messagesIn,
+        tokensIn,
+        tokensOut,
         current: undefined,
         errors: progressErrors,
         lastResult: { sessionId: conv.sessionId, messages: conv.messages, tokensBefore: conv.tokens, elapsed: Date.now() - sessionStart },

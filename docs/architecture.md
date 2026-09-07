@@ -127,6 +127,18 @@ token, 5xx) makes `--restart` refuse, since it cannot confirm idleness. The
 check is not atomic with the wipe, so a compaction that starts after it can
 still race.
 
+The chain follows what the daemon persisted, not whether the HTTP call
+returned in time. When the client gives up on a `/compact` call (timeout,
+abort, or a mid-flight socket drop), the daemon may have finished the
+compaction anyway, so the run re-reads the session's latest persisted summary
+from the project DB — accepting only summaries persisted after the call
+started, so a stale one from an earlier run or hook is not mistaken for the
+in-flight call's result. If a fresh summary is found, the chain continues
+through it and the session is recorded as `compacted` in the ledger despite
+the failed HTTP call. If nothing new was persisted, the previous chain link is
+kept and the session is skipped (retried by the next run). Only a
+daemon-reported failure breaks the chain at that link.
+
 SIGINT/SIGTERM let the in-flight compaction settle before exiting, so a resumed
 run never duplicates or skips a half-finished session. A second signal exits
 at once.

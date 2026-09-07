@@ -278,12 +278,12 @@ async function ingestSessionList(
   const manifestForNewRun = new Map<string, SessionEntry[]>(); // cwd → sessions to freeze
   let doneCount = 0;
   const previousSummaryByCwd = new Map<string, string | undefined>();
-  const lastCompactedSessionIdByCwd = new Map<string, string | null>();
 
   if (options.replay && !options.dryRun && sessions.length > 0) {
     if (options.restart) {
+      // importSessions has already refused the run when any project about to
+      // be cleared is still compacting; this list only performs the clears.
       const cwdsToClear = [...new Set(sessions.map((s) => s.cwd))].filter((cwd) => !clearedCwds.has(cwd));
-      await refuseRestartDuringCompaction(client, cwdsToClear);
       let clearFailed = false;
       for (const cwd of cwdsToClear) {
         clearedCwds.add(cwd);
@@ -391,6 +391,10 @@ async function ingestSessionList(
           inputFingerprint = "unavailable";
         }
       }
+      // Captured before the /compact call below so a timed-out compact only
+      // recovers a summary persisted after the call started — a stale one from
+      // an earlier run is not mistaken for the in-flight call's result.
+      let compactStartedAt = 0;
       const res = await client.post<{ ingested: number; totalTokens: number }>('/ingest', {
         session_id: sessionId,
         cwd,
@@ -440,6 +444,7 @@ async function ingestSessionList(
         }
 
         try {
+          compactStartedAt = Date.now();
           const compactRes = await client.post<{
             summary?: string;
             latestSummaryContent?: string;
@@ -511,7 +516,7 @@ async function ingestSessionList(
           // Warnings print regardless of --verbose so users know the DAG state.
           const gaveUp = isClientGaveUpError(err);
           const recovered = gaveUp
-            ? await loadLatestSessionSummary({ cwd, lcmDir: options._lcmDir, sessionId })
+            ? await loadLatestSessionSummary({ cwd, lcmDir: options._lcmDir, sessionId, notBefore: compactStartedAt })
             : null;
           if (recovered) {
             previousSummaryByCwd.set(cwd, recovered.content);
@@ -529,20 +534,26 @@ async function ingestSessionList(
                 model: options.replayModel ?? null,
               });
             }
+            // The ledger records this as compacted, so the run summary must
+            // count its tokens too — otherwise ledger and summary disagree.
+            result.totalTokens += recovered.sourceMessageTokenCount;
+            result.tokensAfter += recovered.tokenCount;
             console.error(`  \u26a0\ufe0f [replay] compact call gave up for session ${sessionId} (${err instanceof Error ? err.message : 'unknown error'}) but its summary was stored; chain continues`);
           } else if (gaveUp) {
             console.error(`  \u26a0\ufe0f [replay] compact call gave up for session ${sessionId} (${err instanceof Error ? err.message : 'unknown error'}) and no summary was found; chain skips this session`);
           } else {
             previousSummaryByCwd.set(cwd, undefined);
-            lastCompactedSessionIdByCwd.set(cwd, null);
             console.error(`  \u26a0\ufe0f [replay] compact failed for session ${sessionId}: ${err instanceof Error ? err.message : 'unknown error'}`);
           }
           if (err instanceof Error) {
             const llmUsage = (err as Error & { body?: { llmUsage?: CompactLlmUsage } }).body?.llmUsage;
             accumulateReplayUsage(result, llmUsage);
           }
-          // Fall back to ingest's totalTokens so they aren't silently lost.
-          result.totalTokens += res.totalTokens;
+          // Fall back to ingest's totalTokens so they aren't silently lost —
+          // unless the recovered summary already accounted for the session.
+          if (!recovered) {
+            result.totalTokens += res.totalTokens;
+          }
         }
       }
       options.onProgress?.({ completed: processedBase + result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
@@ -550,7 +561,6 @@ async function ingestSessionList(
       result.failed++;
       if (options.replay) {
         previousSummaryByCwd.set(cwd, undefined); // chain broken by ingest failure
-        lastCompactedSessionIdByCwd.set(cwd, null);
       }
       if (options.verbose) console.log(`  \u274c ${sessionId}: ${err instanceof Error ? err.message : "failed"}`);
       options.onProgress?.({ completed: processedBase + result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
@@ -574,7 +584,9 @@ export async function importSessions(
   // lists reach that project.
   const clearedCwds = new Set<string>();
 
-  // --- Claude Code sessions ---
+  // --- Session lists, in import order: every Claude project dir, then every Codex project ---
+  const sessionLists: SessionEntry[][] = [];
+
   if (provider === "claude" || provider === "all") {
     const claudeProjectsDir = options._claudeProjectsDir ?? join(homedir(), '.claude', 'projects');
 
@@ -600,18 +612,10 @@ export async function importSessions(
     }
 
     for (const { dir, cwd } of projectDirs) {
-      const sessionFiles = findSessionFiles(dir);
-      await ingestSessionList(
-        client,
-        sessionFiles.map(f => ({ ...f, cwd })),
-        options,
-        result,
-        clearedCwds,
-      );
+      sessionLists.push(findSessionFiles(dir).map(f => ({ ...f, cwd })));
     }
   }
 
-  // --- Codex CLI sessions ---
   if (provider === "codex" || provider === "all") {
     const codexTranscripts = findAllCodexTranscripts(options._codexDir);
     const targetProject = projectId(options.cwd ?? process.cwd());
@@ -626,9 +630,20 @@ export async function importSessions(
       projects.set(id, sessions);
     }
     // Keep replay context inside one project when importing all projects.
-    for (const sessions of projects.values()) {
-      await ingestSessionList(client, sessions, options, result, clearedCwds);
-    }
+    sessionLists.push(...projects.values());
+  }
+
+  // A `replay && restart` refusal must happen before any wipe: with
+  // `provider all`, refusing only when a later list runs would leave earlier
+  // lists already wiped and regenerated, and a retry would re-wipe them.
+  // Check every project the import will touch first (batch-compact does the
+  // same for its single pass over all projects).
+  if (options.replay && options.restart && !options.dryRun) {
+    await refuseRestartDuringCompaction(client, new Set(sessionLists.flat().map((s) => s.cwd)));
+  }
+
+  for (const sessions of sessionLists) {
+    await ingestSessionList(client, sessions, options, result, clearedCwds);
   }
 
   return result;
