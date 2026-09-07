@@ -52,6 +52,21 @@ describe("loadDaemonConfig", () => {
     expect(c.llm.reasoning).toEqual({ effort: "minimal" });
   });
 
+  it("accepts an empty llm.reasoning object", () => {
+    const c = loadDaemonConfig("/nonexistent/config.json", { llm: { reasoning: {} } });
+    expect(c.llm.reasoning).toEqual({});
+  });
+
+  it.each([
+    ["a string", "minimal"],
+    ["an array", [1, 2]],
+    ["null", null],
+    ["a number", 3],
+  ])("rejects llm.reasoning when it is %s", (_label, value) => {
+    expect(() => loadDaemonConfig("/nonexistent/config.json", { llm: { reasoning: value } }))
+      .toThrow(/llm\.reasoning must be a JSON object/);
+  });
+
   it("accepts codex-process as a provider from file config", () => {
     const c = loadDaemonConfig("/nonexistent/config.json", {
       llm: { provider: "codex-process" }

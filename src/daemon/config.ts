@@ -186,6 +186,17 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
     merged.llm.apiKey = e.ANTHROPIC_API_KEY;
   }
 
+  // Validate: `reasoning` is spread verbatim into the provider request, so a
+  // non-object here fails only at request time as an opaque provider HTTP error.
+  // The shape beyond "is an object" stays free-form: it differs per provider.
+  const reasoning: unknown = merged.llm.reasoning;
+  if (reasoning !== undefined && (typeof reasoning !== "object" || reasoning === null || Array.isArray(reasoning))) {
+    throw new Error(
+      `[lcm] llm.reasoning must be a JSON object (got ${Array.isArray(reasoning) ? "array" : reasoning === null ? "null" : typeof reasoning}). ` +
+      `Example: { "reasoning": { "effort": "minimal" } }`
+    );
+  }
+
   // Validate: anthropic provider requires an API key
   if (merged.llm.provider === "anthropic" && !merged.llm.apiKey) {
     throw new Error(

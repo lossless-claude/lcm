@@ -183,10 +183,15 @@ output budget thinking:
 { "llm": { "provider": "openai", "reasoning": { "effort": "minimal" } } }
 ```
 
-The accepted shape depends on the provider: GLM 5.3 Flash honours
+The value is forwarded untouched, so the accepted shape is whatever the model
+behind your OpenAI-compatible endpoint accepts: GLM 5.3 Flash honours
 `{"effort":"minimal"}` and rejects `{"enabled":false}`; Qwen3.7 Flash honours only
 `{"enabled":false}`; Mercury 2.5 honours `effort`. When unset, no `reasoning` key
 is sent.
+
+`llm.reasoning` is read only by the `openai` provider — `anthropic` and the
+process-backed providers ignore it silently. It must be a JSON object: a string,
+an array, `null` or a number is rejected at config load, not at request time.
 
 ### Token cost reporting
 
