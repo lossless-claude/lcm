@@ -1,65 +1,192 @@
-import { spawn } from "node:child_process";
-import type { LcmSummarizeFn, SummarizeContext } from "./types.js";
-import {
-  LCM_SUMMARIZER_SYSTEM_PROMPT,
-  buildLeafSummaryPrompt,
-  buildCondensedSummaryPrompt,
-  resolveTargetTokens,
-} from "../summarize.js";
+import { spawn as defaultSpawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "./types.js";
+import { LCM_SUMMARIZER_SYSTEM_PROMPT } from "../summarize.js";
+import { buildSummaryPrompt } from "./prompt.js";
 
 const HAIKU_MODEL = "claude-haiku-4-5-20251001";
 const TIMEOUT_MS = 120_000;
+const STDERR_ERROR_MAX_CHARS = 2_000;
 
-export function createClaudeProcessSummarizer(): LcmSummarizeFn {
+type ClaudeModelUsage = {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
+  costUSD?: number;
+};
+
+type ClaudeResult = {
+  type?: string;
+  subtype?: string;
+  is_error?: boolean;
+  result?: string;
+  total_cost_usd?: number;
+  modelUsage?: Record<string, ClaudeModelUsage>;
+};
+
+export type ClaudeJsonOutcome = {
+  content: string;
+  isError: boolean;
+  usage?: SummarizerUsage;
+};
+
+/**
+ * Reads the single result object from `claude --print --output-format json`.
+ *
+ * Claude splits the prompt across three counters — `inputTokens` covers only
+ * the uncached part, with cache reads and cache writes reported separately —
+ * so they are summed into the normalized `inputTokens`, and the cache-read
+ * share is surfaced as `cachedInputTokens`.
+ */
+export function parseClaudeResult(stdout: string, fallbackModel: string): ClaudeJsonOutcome | undefined {
+  const trimmed = stdout.trim();
+  if (!trimmed.startsWith("{")) return undefined;
+
+  let result: ClaudeResult;
+  try {
+    result = JSON.parse(trimmed) as ClaudeResult;
+  } catch {
+    return undefined;
+  }
+
+  const entries = Object.entries(result.modelUsage ?? {});
+  let usage: SummarizerUsage | undefined;
+  if (entries.length > 0) {
+    let inputTokens = 0;
+    let cachedInputTokens = 0;
+    let outputTokens = 0;
+    let costUsd = 0;
+    for (const [, m] of entries) {
+      inputTokens += (m.inputTokens ?? 0) + (m.cacheReadInputTokens ?? 0) + (m.cacheCreationInputTokens ?? 0);
+      cachedInputTokens += m.cacheReadInputTokens ?? 0;
+      outputTokens += m.outputTokens ?? 0;
+      costUsd += m.costUSD ?? 0;
+    }
+    usage = {
+      provider: "claude-process",
+      model: entries[0][0] || fallbackModel,
+      inputTokens,
+      cachedInputTokens,
+      outputTokens,
+      tokensUsed: inputTokens + outputTokens,
+      costUsd: result.total_cost_usd ?? costUsd,
+    };
+  }
+
+  return {
+    content: typeof result.result === "string" ? result.result.trim() : "",
+    isError: result.is_error === true,
+    usage,
+  };
+}
+
+function buildClaudeExitError(code: number | null, stderr: string, stdout: string): Error {
+  const exitLabel = code ?? "unknown";
+  const detail = (stderr.trim() || stdout.trim()) || "no output";
+  const excerpt =
+    detail.length > STDERR_ERROR_MAX_CHARS
+      ? `[...] ${detail.slice(-STDERR_ERROR_MAX_CHARS)}`
+      : detail;
+  return new Error(`claude exited ${exitLabel}: ${excerpt}`);
+}
+
+function friendlyMissingClaudeError(): Error {
+  return new Error([
+    "Claude Code CLI is not installed or not on PATH.",
+    "Install it first, for example: npm install -g @anthropic-ai/claude-code",
+  ].join("\n"));
+}
+
+function normalizeSpawnError(error: unknown): Error {
+  if (error && typeof error === "object" && (error as { code?: unknown }).code === "ENOENT") {
+    return friendlyMissingClaudeError();
+  }
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+export function buildClaudeArgs(model: string): string[] {
+  return [
+    "--print",
+    "--output-format", "json",
+    "--model", model,
+    "--no-session-persistence",
+    "--system-prompt", LCM_SUMMARIZER_SYSTEM_PROMPT,
+    "--tools", "",
+    "--disable-slash-commands",
+  ];
+}
+
+type ClaudeProcessDeps = {
+  model?: string;
+  spawn?: typeof defaultSpawn;
+  timeoutMs?: number;
+};
+
+export function createClaudeProcessSummarizer(opts: ClaudeProcessDeps = {}): LcmSummarizeFn {
+  const deps = {
+    model: opts.model?.trim() || HAIKU_MODEL,
+    spawn: opts.spawn ?? defaultSpawn,
+    timeoutMs: opts.timeoutMs ?? TIMEOUT_MS,
+  };
+
   return async function summarize(text: string, aggressive?: boolean, ctx: SummarizeContext = {}): Promise<string> {
-    const estimatedInputTokens = Math.ceil(text.length / 4);
-    const targetTokens = ctx.targetTokens ?? resolveTargetTokens({
-      inputTokens: estimatedInputTokens,
-      mode: aggressive ? "aggressive" : "normal",
-      isCondensed: ctx.isCondensed ?? false,
-      condensedTargetTokens: 2000,
-    });
-
-    const prompt = ctx.isCondensed
-      ? buildCondensedSummaryPrompt({ text, targetTokens, depth: ctx.depth ?? 1 })
-      : buildLeafSummaryPrompt({ text, mode: aggressive ? "aggressive" : "normal", targetTokens });
+    const prompt = buildSummaryPrompt(text, aggressive, ctx);
 
     return new Promise((resolve, reject) => {
-      const proc = spawn("claude", [
-        "--print",
-        "--model", HAIKU_MODEL,
-        "--no-session-persistence",
-        "--system-prompt", LCM_SUMMARIZER_SYSTEM_PROMPT,
-        "--tools", "",
-        "--disable-slash-commands",
-      ], {
-        stdio: ["pipe", "pipe", "pipe"],
-      });
+      let proc: ChildProcessWithoutNullStreams;
+      try {
+        proc = deps.spawn("claude", buildClaudeArgs(deps.model), { stdio: ["pipe", "pipe", "pipe"] });
+      } catch (error) {
+        reject(normalizeSpawnError(error));
+        return;
+      }
 
       let stdout = "";
       let stderr = "";
+      let finished = false;
 
       proc.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
       proc.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
 
       const timer = setTimeout(() => {
-        proc.kill();
-        reject(new Error(`claude process timed out after ${TIMEOUT_MS / 1000}s`));
-      }, TIMEOUT_MS);
-
-      proc.on("close", (code: number | null) => {
-        clearTimeout(timer);
-        const out = stdout.trim();
-        if (code === 0 && out) {
-          resolve(out);
-        } else {
-          reject(new Error(`claude exited ${code}: ${stderr.slice(0, 200) || "no output"}`));
+        if (finished) return;
+        finished = true;
+        try {
+          proc.kill();
+        } catch {
+          // ignore kill failures during timeout cleanup
         }
-      });
+        reject(new Error(`claude process timed out after ${Math.round(deps.timeoutMs / 1000)}s`));
+      }, deps.timeoutMs);
 
       proc.on("error", (err) => {
+        if (finished) return;
+        finished = true;
         clearTimeout(timer);
-        reject(err);
+        reject(normalizeSpawnError(err));
+      });
+
+      proc.on("close", (code: number | null) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+
+        const outcome = parseClaudeResult(stdout, deps.model);
+        if (outcome?.usage) ctx.onUsage?.(outcome.usage);
+
+        if (code !== 0 || outcome?.isError) {
+          reject(buildClaudeExitError(code, stderr, stdout));
+          return;
+        }
+        if (!outcome) {
+          reject(new Error(`claude produced unparseable output: ${stdout.slice(0, 200) || "empty"}`));
+          return;
+        }
+        if (!outcome.content) {
+          reject(new Error("claude output was empty"));
+          return;
+        }
+        resolve(outcome.content);
       });
 
       proc.stdin.write(prompt);

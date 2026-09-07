@@ -55,6 +55,11 @@ export function printImportSummary(
         `${result.replayUsage.calls} (${result.replayUsage.okCalls} ok, ${result.replayUsage.failedCalls} failed)`,
       ],
       ["Tokens spent", formatNumber(result.replayUsage.tokensSpent)],
+      [
+        "  breakdown",
+        `${formatNumber(result.replayUsage.tokensInput)} in (${formatNumber(result.replayUsage.tokensCached)} cached), ` +
+        `${formatNumber(result.replayUsage.tokensOutput)} out`,
+      ],
       ["Avg per session", formatNumber(avgPerSession)],
     ];
     const labelWidth = Math.max(...rows.map(([l]) => l.length));

@@ -33,6 +33,9 @@ export interface LlmUsageStats {
   okCalls: number;
   failedCalls: number;
   tokensSpent: number;
+  tokensInput: number;
+  tokensCached: number;
+  tokensOutput: number;
 }
 
 interface OverallStats {
@@ -91,10 +94,13 @@ function queryProjectStats(dbPath: string, projectId: string, staleCfg: { staleA
          COALESCE(SUM(calls_total), 0) as calls,
          COALESCE(SUM(calls_ok), 0) as okCalls,
          COALESCE(SUM(calls_failed), 0) as failedCalls,
-         COALESCE(SUM(tokens_spent_total), 0) as tokensSpent
+         COALESCE(SUM(tokens_spent_total), 0) as tokensSpent,
+         COALESCE(SUM(tokens_input_total), 0) as tokensInput,
+         COALESCE(SUM(tokens_cached_total), 0) as tokensCached,
+         COALESCE(SUM(tokens_output_total), 0) as tokensOutput
        FROM llm_usage_stats`,
     ).get() as
-      | { calls: number; okCalls: number; failedCalls: number; tokensSpent: number }
+      | { calls: number; okCalls: number; failedCalls: number; tokensSpent: number; tokensInput: number; tokensCached: number; tokensOutput: number }
       | undefined;
 
     const convRows = db.prepare(`
@@ -165,6 +171,9 @@ function queryProjectStats(dbPath: string, projectId: string, staleCfg: { staleA
         okCalls: llmUsageRow?.okCalls ?? 0,
         failedCalls: llmUsageRow?.failedCalls ?? 0,
         tokensSpent: llmUsageRow?.tokensSpent ?? 0,
+        tokensInput: llmUsageRow?.tokensInput ?? 0,
+        tokensCached: llmUsageRow?.tokensCached ?? 0,
+        tokensOutput: llmUsageRow?.tokensOutput ?? 0,
       },
     };
   } finally {
@@ -378,7 +387,7 @@ export function collectStats(): OverallStats {
       eventsCaptured: 0, eventsUnprocessed: 0, eventsErrors: 0,
       recallStats: emptyRecallStats,
       staleCount: 0,
-      llmUsage: { calls: 0, okCalls: 0, failedCalls: 0, tokensSpent: 0 },
+      llmUsage: { calls: 0, okCalls: 0, failedCalls: 0, tokensSpent: 0, tokensInput: 0, tokensCached: 0, tokensOutput: 0 },
     };
   }
 
@@ -397,7 +406,7 @@ export function collectStats(): OverallStats {
   let totalMemoriesSurfaced = 0;
   let totalMemoriesActedUpon = 0;
   const allTopRecalled: Array<{ id: string; content: string; actCount: number }> = [];
-  const totalLlmUsage: LlmUsageStats = { calls: 0, okCalls: 0, failedCalls: 0, tokensSpent: 0 };
+  const totalLlmUsage: LlmUsageStats = { calls: 0, okCalls: 0, failedCalls: 0, tokensSpent: 0, tokensInput: 0, tokensCached: 0, tokensOutput: 0 };
 
   // Load stale config once for all projects
   let staleCfg = { staleAfterDays: 90, staleSurfacingWithoutUseLimit: 5 };
@@ -440,6 +449,9 @@ export function collectStats(): OverallStats {
       totalLlmUsage.okCalls += projStats.llmUsage.okCalls;
       totalLlmUsage.failedCalls += projStats.llmUsage.failedCalls;
       totalLlmUsage.tokensSpent += projStats.llmUsage.tokensSpent;
+      totalLlmUsage.tokensInput += projStats.llmUsage.tokensInput;
+      totalLlmUsage.tokensCached += projStats.llmUsage.tokensCached;
+      totalLlmUsage.tokensOutput += projStats.llmUsage.tokensOutput;
     } catch {
       // skip corrupt databases
     }

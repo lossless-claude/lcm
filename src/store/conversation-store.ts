@@ -1,6 +1,11 @@
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
-import { sanitizeFts5Query } from "./fts5-sanitize.js";
+import {
+  prepareFts5Query,
+  shouldRetryWithLike,
+  likePlanForPreparedQuery,
+  type Fts5PreparedQuery,
+} from "./fts5-query.js";
 import { buildLikeSearchPlan, createFallbackSnippet } from "./full-text-fallback.js";
 import { validateRegex } from "./regex-safety.js";
 
@@ -623,8 +628,42 @@ export class ConversationStore {
     since?: Date,
     before?: Date,
   ): MessageSearchResult[] {
+    // Natural-language questions ANDed term-by-term almost never match, so
+    // prepare the query first: drop stopwords, then try AND (precise), then
+    // OR ranked by BM25 (the grep baseline behavior), then a substring LIKE
+    // scan when the question's vocabulary does not overlap the corpus.
+    const prepared = prepareFts5Query(query);
+    if (!prepared) {
+      return [];
+    }
+    const expressions = shouldRetryWithLike(prepared)
+      ? [prepared.and, prepared.or]
+      : [prepared.and];
+
+    for (const [index, expression] of expressions.entries()) {
+      const ranked = index > 0;
+      const rows = this.runFullTextMatch(expression, limit, ranked, conversationId, since, before);
+      if (rows.length > 0) {
+        return rows;
+      }
+    }
+
+    if (shouldRetryWithLike(prepared)) {
+      return this.searchLikeTerms(prepared, limit, conversationId, since, before);
+    }
+    return [];
+  }
+
+  private runFullTextMatch(
+    ftsExpression: string,
+    limit: number,
+    ranked: boolean,
+    conversationId?: ConversationId,
+    since?: Date,
+    before?: Date,
+  ): MessageSearchResult[] {
     const where: string[] = ["messages_fts MATCH ?"];
-    const args: Array<string | number> = [sanitizeFts5Query(query)];
+    const args: Array<string | number> = [ftsExpression];
     if (conversationId != null) {
       where.push("m.conversation_id = ?");
       args.push(conversationId);
@@ -639,6 +678,7 @@ export class ConversationStore {
     }
     args.push(limit);
 
+    const orderBy = ranked ? "rank, m.created_at DESC" : "m.created_at DESC";
     const sql = `SELECT
          m.message_id,
          m.conversation_id,
@@ -649,10 +689,59 @@ export class ConversationStore {
        FROM messages_fts
        JOIN messages m ON m.message_id = messages_fts.rowid
        WHERE ${where.join(" AND ")}
-       ORDER BY m.created_at DESC
+       ORDER BY ${orderBy}
        LIMIT ?`;
     const rows = this.db.prepare(sql).all(...args) as unknown as MessageSearchRow[];
     return rows.map(toSearchResult);
+  }
+
+  /** Substring scan OR-ing the prepared terms (vocabulary-mismatch fallback). */
+  private searchLikeTerms(
+    prepared: Fts5PreparedQuery,
+    limit: number,
+    conversationId?: ConversationId,
+    since?: Date,
+    before?: Date,
+  ): MessageSearchResult[] {
+    const plan = likePlanForPreparedQuery("content", prepared);
+    if (plan.terms.length === 0) {
+      return [];
+    }
+
+    const where: string[] = [`(${plan.where.join(" OR ")})`];
+    const args: Array<string | number> = [...plan.args];
+    if (conversationId != null) {
+      where.push("conversation_id = ?");
+      args.push(conversationId);
+    }
+    if (since) {
+      where.push("julianday(created_at) >= julianday(?)");
+      args.push(since.toISOString());
+    }
+    if (before) {
+      where.push("julianday(created_at) < julianday(?)");
+      args.push(before.toISOString());
+    }
+    args.push(limit);
+
+    const rows = this.db
+      .prepare(
+        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
+         FROM messages
+         WHERE ${where.join(" AND ")}
+         ORDER BY created_at DESC
+         LIMIT ?`,
+      )
+      .all(...args) as unknown as MessageRow[];
+
+    return rows.map((row) => ({
+      messageId: row.message_id,
+      conversationId: row.conversation_id,
+      role: row.role,
+      snippet: createFallbackSnippet(row.content, plan.terms),
+      createdAt: new Date(row.created_at),
+      rank: 0,
+    }));
   }
 
   private searchLike(

@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import {
+  prepareFts5Query,
+  shouldRetryWithLike,
+  likePlanForPreparedQuery,
+  type Fts5PreparedQuery,
+} from "../store/fts5-query.js";
 
 export type PromotedRow = {
   id: string;
@@ -72,30 +78,12 @@ export class PromotedStore {
   }
 
   search(query: string, limit: number, filterTags?: string[], projectId?: string): SearchResult[] {
-    const sanitized = query
-      .replace(/[^\w\s]/g, " ")
-      .split(/\s+/)
-      .filter(Boolean)
-      .map((t) => `"${t}"`)
-      .join(" OR ");
+    const prepared = prepareFts5Query(query);
+    if (!prepared) return [];
 
-    if (!sanitized) return [];
-
-    const projectFilter = projectId ? "AND p.project_id = ?" : "";
-    const queryParams: (string | number)[] = [sanitized];
-    if (projectId) queryParams.push(projectId);
-    queryParams.push(limit);
-
-    const rows = this.db.prepare(
-      `SELECT p.id, p.content, p.tags, p.project_id, p.session_id, p.confidence, p.created_at, rank
-       FROM promoted_fts fts
-       JOIN promoted p ON p.rowid = fts.rowid
-       WHERE promoted_fts MATCH ?
-         AND p.archived_at IS NULL
-         ${projectFilter}
-       ORDER BY rank, p.confidence DESC, p.created_at ASC
-       LIMIT ?`
-    ).all(...queryParams) as Array<PromotedRow & { rank: number }>;
+    // OR (not AND): natural-language questions almost never co-occur in a
+    // single memory, and a grep baseline that ORs terms must not win.
+    const rows = this.searchFullText(prepared.or, limit, projectId);
 
     let results = rows.map((r) => ({
       id: r.id,
@@ -108,11 +96,76 @@ export class PromotedStore {
       rank: r.rank,
     }));
 
+    // Vocabulary-mismatch fallback: when the question's words don't overlap
+    // the corpus at all (porter stems diverge), retry as a substring scan so
+    // a natural-language question never returns empty by construction.
+    if (results.length === 0 && shouldRetryWithLike(prepared)) {
+      results = this.searchLikeTerms(prepared, limit, projectId);
+    }
+
     if (filterTags && filterTags.length > 0) {
       results = results.filter((r) => filterTags.every((t) => r.tags.includes(t)));
     }
 
     return results;
+  }
+
+  private searchFullText(
+    ftsExpression: string,
+    limit: number,
+    projectId?: string,
+  ): Array<PromotedRow & { rank: number }> {
+    const projectFilter = projectId ? "AND p.project_id = ?" : "";
+    const queryParams: (string | number)[] = [ftsExpression];
+    if (projectId) queryParams.push(projectId);
+    queryParams.push(limit);
+
+    return this.db.prepare(
+      `SELECT p.id, p.content, p.tags, p.project_id, p.session_id, p.confidence, p.created_at, rank
+       FROM promoted_fts fts
+       JOIN promoted p ON p.rowid = fts.rowid
+       WHERE promoted_fts MATCH ?
+         AND p.archived_at IS NULL
+         ${projectFilter}
+       ORDER BY rank, p.confidence DESC, p.created_at ASC
+       LIMIT ?`
+    ).all(...queryParams) as Array<PromotedRow & { rank: number }>;
+  }
+
+  private searchLikeTerms(
+    prepared: Fts5PreparedQuery,
+    limit: number,
+    projectId?: string,
+  ): SearchResult[] {
+    const plan = likePlanForPreparedQuery("content", prepared);
+    if (plan.terms.length === 0) return [];
+
+    const where: string[] = [`(${plan.where.join(" OR ")})`, "archived_at IS NULL"];
+    const args: Array<string | number> = [...plan.args];
+    if (projectId) {
+      where.push("project_id = ?");
+      args.push(projectId);
+    }
+    args.push(limit);
+
+    const rows = this.db.prepare(
+      `SELECT id, content, tags, project_id, session_id, confidence, created_at
+       FROM promoted
+       WHERE ${where.join(" AND ")}
+       ORDER BY confidence DESC, created_at ASC
+       LIMIT ?`
+    ).all(...args) as PromotedRow[];
+
+    return rows.map((r) => ({
+      id: r.id,
+      content: r.content,
+      tags: JSON.parse(r.tags) as string[],
+      projectId: r.project_id,
+      sessionId: r.session_id,
+      confidence: r.confidence,
+      createdAt: r.created_at,
+      rank: 0,
+    }));
   }
 
   getAll(opts?: { projectId?: string; since?: string; tags?: string[] }): PromotedRow[] {

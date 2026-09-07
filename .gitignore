@@ -19,6 +19,9 @@ sensitive-patterns-test.txt
 *.db
 !data/
 
+# Recall benchmark output (lcm bench — local only, never committed)
+.lcm-bench*.json
+
 # Superpowers local state
 .superpowers/
 .pebbles/

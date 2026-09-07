@@ -2,13 +2,8 @@ import { spawn as defaultSpawn, type ChildProcessWithoutNullStreams, type SpawnO
 import { mkdtempSync as defaultMkdtempSync, readFileSync as defaultReadFileSync, rmSync as defaultRmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { LcmSummarizeFn, SummarizeContext } from "./types.js";
-import {
-  LCM_SUMMARIZER_SYSTEM_PROMPT,
-  buildLeafSummaryPrompt,
-  buildCondensedSummaryPrompt,
-  resolveTargetTokens,
-} from "../summarize.js";
+import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "./types.js";
+import { buildSummaryPromptWithSystem } from "./prompt.js";
 
 const TIMEOUT_MS = 120_000;
 const STDERR_ERROR_MAX_CHARS = 2_000;
@@ -28,7 +23,48 @@ const STDERR_ERROR_MAX_CHARS = 2_000;
 // error message, which always comes after it.
 const BANNER_END_MARKER = "session id:";
 
-function parseTokensUsed(stderr: string): number | undefined {
+type CodexTurnUsage = {
+  input_tokens?: number;
+  cached_input_tokens?: number;
+  output_tokens?: number;
+};
+
+/**
+ * Reads the `turn.completed` event from `codex exec --json`.
+ *
+ * Codex counts `cached_input_tokens` as a SUBSET of `input_tokens`, so the
+ * total it prints as "tokens used" equals input + output. The summary itself
+ * arrives via --output-last-message, so stdout is free for the event stream.
+ */
+export function parseCodexUsage(stdout: string, model?: string): SummarizerUsage | undefined {
+  let usage: CodexTurnUsage | undefined;
+
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+    try {
+      const event = JSON.parse(trimmed) as { type?: string; usage?: CodexTurnUsage };
+      if (event.type === "turn.completed" && event.usage) usage = event.usage;
+    } catch {
+      continue; // partial or non-JSON line — ignore
+    }
+  }
+  if (!usage) return undefined;
+
+  const inputTokens = usage.input_tokens ?? 0;
+  const outputTokens = usage.output_tokens ?? 0;
+  return {
+    provider: "codex-process",
+    model,
+    inputTokens,
+    cachedInputTokens: usage.cached_input_tokens,
+    outputTokens,
+    tokensUsed: inputTokens + outputTokens,
+  };
+}
+
+/** Fallback for older Codex builds that only print a "tokens used" total on stderr. */
+export function parseLegacyCodexTokens(stderr: string): number | undefined {
   const normalized = stderr.replace(/\r\n/g, "\n");
   const match = normalized.match(/tokens used\s*\n\s*([0-9][0-9,]*)/i);
   if (!match) return undefined;
@@ -50,13 +86,41 @@ function skipCodexBanner(stderr: string): string {
   return stderr.trim();
 }
 
+/**
+ * With `--json`, the real failure is a JSONL event on stdout — stderr carries
+ * only unrelated transport noise — so stdout is the primary error source.
+ */
+export function extractCodexErrorEvents(stdout: string): string {
+  const messages: string[] = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{") || !/error|failed/i.test(trimmed)) continue;
+    try {
+      const event = JSON.parse(trimmed) as {
+        type?: string;
+        message?: unknown;
+        error?: { message?: unknown };
+      };
+      if (event.type === "turn.failed" && typeof event.error?.message === "string") {
+        messages.push(event.error.message);
+      } else if (event.type === "error" && typeof event.message === "string") {
+        messages.push(event.message);
+      }
+    } catch {
+      // ignore
+    }
+  }
+  // turn.failed repeats the error event verbatim; keep one copy.
+  return [...new Set(messages)].join("\n");
+}
+
 function isUsageLimitError(text: string): boolean {
   return /usage limit|rate limit|quota|too many requests|\b429\b/i.test(text);
 }
 
-function buildCodexExitError(code: number | null, stderr: string): Error {
+function buildCodexExitError(code: number | null, stderr: string, stdout: string): Error {
   const exitLabel = code ?? "unknown";
-  const detail = skipCodexBanner(stderr);
+  const detail = extractCodexErrorEvents(stdout) || skipCodexBanner(stderr);
   if (!detail) {
     return new Error(`codex exited ${exitLabel}: no output`);
   }
@@ -82,22 +146,6 @@ type CodexProcessDeps = {
   timeoutMs?: number;
 };
 
-function buildPrompt(text: string, aggressive: boolean | undefined, ctx: SummarizeContext): string {
-  const estimatedInputTokens = Math.ceil(text.length / 4);
-  const targetTokens = ctx.targetTokens ?? resolveTargetTokens({
-    inputTokens: estimatedInputTokens,
-    mode: aggressive ? "aggressive" : "normal",
-    isCondensed: ctx.isCondensed ?? false,
-    condensedTargetTokens: 2000,
-  });
-
-  const summaryPrompt = ctx.isCondensed
-    ? buildCondensedSummaryPrompt({ text, targetTokens, depth: ctx.depth ?? 1 })
-    : buildLeafSummaryPrompt({ text, mode: aggressive ? "aggressive" : "normal", targetTokens });
-
-  return [LCM_SUMMARIZER_SYSTEM_PROMPT, summaryPrompt].filter(Boolean).join("\n\n");
-}
-
 function friendlyMissingCodexError(): Error {
   return new Error([
     "Codex CLI is not installed or not on PATH.",
@@ -117,6 +165,7 @@ function buildArgs(outputPath: string, model?: string): string[] {
   const args = [
     "exec",
     "-",
+    "--json",
     "--skip-git-repo-check",
     "--sandbox",
     "read-only",
@@ -199,16 +248,11 @@ function runCodexSummarizer(
       clearTimeout(timer);
 
       try {
-        const tokensUsed = parseTokensUsed(stderr);
-        if (tokensUsed !== undefined) {
-          onUsage?.({
-            provider: "codex-process",
-            model: deps.model,
-            tokensUsed,
-          });
-        }
+        const usage = parseCodexUsage(stdout, deps.model)
+          ?? legacyUsage(parseLegacyCodexTokens(stderr), deps.model);
+        if (usage) onUsage?.(usage);
         if (code !== 0) {
-          throw buildCodexExitError(code, stderr);
+          throw buildCodexExitError(code, stderr, stdout);
         }
         const summary = deps.readFileSync(outputPath, "utf-8").trim();
         if (!summary) {
@@ -227,6 +271,10 @@ function runCodexSummarizer(
   });
 }
 
+function legacyUsage(tokensUsed: number | undefined, model?: string): SummarizerUsage | undefined {
+  return tokensUsed === undefined ? undefined : { provider: "codex-process", model, tokensUsed };
+}
+
 export function createCodexProcessSummarizer(opts: CodexProcessDeps = {}): LcmSummarizeFn {
   const deps = {
     model: opts.model,
@@ -239,7 +287,7 @@ export function createCodexProcessSummarizer(opts: CodexProcessDeps = {}): LcmSu
   };
 
   return async function summarize(text, aggressive, ctx = {}): Promise<string> {
-    const prompt = buildPrompt(text, aggressive, ctx);
+    const prompt = buildSummaryPromptWithSystem(text, aggressive, ctx);
     return runCodexSummarizer(prompt, deps, ctx.onUsage);
   };
 }

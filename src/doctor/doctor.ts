@@ -76,6 +76,15 @@ function addCodexProcessChecks(results: CheckResult[], deps: DoctorDeps): void {
 }
 
 
+function addCopilotProcessChecks(results: CheckResult[], deps: DoctorDeps): void {
+  if (checkBinary(deps, "copilot")) {
+    results.push({ name: "copilot-process", category: "Summarizer", status: "pass", message: "copilot CLI found" });
+  } else {
+    results.push({ name: "copilot-process", category: "Summarizer", status: "fail", message: "copilot CLI not found\n     Fix: npm install -g @github/copilot" });
+  }
+}
+
+
 function testMcpHandshake(): Promise<CheckResult> {
   return new Promise((resolve) => {
     const initMsg = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "doctor", version: "0.1" } } });
@@ -189,7 +198,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
     category: "Stack",
     status: "pass",
     message: config.summarizer === "auto"
-      ? "Summarizer: auto (Claude->claude-process, Codex->codex-process)"
+      ? "Summarizer: auto (Claude->claude-process, Codex->codex-process, Copilot->copilot-process)"
       : `Summarizer: ${config.summarizer}`,
   });
 
@@ -407,10 +416,13 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
   if (config.summarizer === "auto") {
     addClaudeProcessChecks(results, deps);
     addCodexProcessChecks(results, deps);
+    addCopilotProcessChecks(results, deps);
   } else if (config.summarizer === "claude-process") {
     addClaudeProcessChecks(results, deps);
   } else if (config.summarizer === "codex-process") {
     addCodexProcessChecks(results, deps);
+  } else if (config.summarizer === "copilot-process") {
+    addCopilotProcessChecks(results, deps);
   } else if (config.summarizer === "anthropic") {
     if (process.env.ANTHROPIC_API_KEY) {
       results.push({ name: "anthropic-key", category: "Summarizer", status: "pass", message: "ANTHROPIC_API_KEY set" });

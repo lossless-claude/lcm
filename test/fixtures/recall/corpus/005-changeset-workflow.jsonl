@@ -1,0 +1,4 @@
+{"message":{"role":"user","content":"Releases keep surprising people. A fix merges on Tuesday and nobody knows it shipped until the changelog shows up."}}
+{"message":{"role":"assistant","content":"Let's adopt changesets. Every PR that changes user-facing behavior adds a markdown file under .changeset describing the bump, the release workflow assembles those into the changelog, and npm publish happens off main."}}
+{"message":{"role":"user","content":"And the version bump itself? I don't want maintainers hand-editing package.json."}}
+{"message":{"role":"assistant","content":"The changesets action opens an automated version PR that consumes the pending changeset files and bumps the version. Merging that PR to main is what triggers the publish workflow."}}

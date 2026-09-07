@@ -189,6 +189,7 @@ describe("runDoctor summarizer modes", () => {
     expect(results.find((result) => result.name === "stack")?.message).toContain("Summarizer: auto");
     expect(results.some((result) => result.name === "claude-process")).toBe(true);
     expect(results.some((result) => result.name === "codex-process")).toBe(true);
+    expect(results.some((result) => result.name === "copilot-process")).toBe(true);
   });
 });
 

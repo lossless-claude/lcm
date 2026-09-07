@@ -1,0 +1,4 @@
+{"message":{"role":"user","content":"CI failed again on the pricing suite. The jest runner times out waiting for the test database container to become healthy."}}
+{"message":{"role":"assistant","content":"The default wait-on timeout is 30 seconds and postgres takes about 45 seconds to initialize on the shared runners. I'll raise the timeout and add a retry loop around the healthcheck."}}
+{"message":{"role":"user","content":"This flakes two or three times a week and it is destroying trust in the pipeline."}}
+{"message":{"role":"assistant","content":"Bumped the timeout to 120 seconds and the healthcheck now retries every 5 seconds. The pricing suite ran green five times in a row on the same runner pool."}}

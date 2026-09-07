@@ -36,6 +36,19 @@ type SummaryParentEdgeRow = {
   parent_summary_id: string;
 };
 
+/**
+ * Adds the normalized token breakdown to databases created before providers
+ * reported input/cached/output separately. Existing rows keep their totals.
+ */
+function ensureLlmUsageBreakdownColumns(db: DatabaseSync): void {
+  const columns = db.prepare(`PRAGMA table_info(llm_usage_stats)`).all() as SummaryColumnInfo[];
+  for (const name of ["tokens_input_total", "tokens_cached_total", "tokens_output_total"]) {
+    if (!columns.some((col) => col.name === name)) {
+      db.exec(`ALTER TABLE llm_usage_stats ADD COLUMN ${name} INTEGER NOT NULL DEFAULT 0`);
+    }
+  }
+}
+
 function ensureSummaryDepthColumn(db: DatabaseSync): void {
   const summaryColumns = db.prepare(`PRAGMA table_info(summaries)`).all() as SummaryColumnInfo[];
   const hasDepth = summaryColumns.some((col) => col.name === "depth");
@@ -589,10 +602,15 @@ function runLcmMigrationsInner(
       calls_ok INTEGER NOT NULL DEFAULT 0,
       calls_failed INTEGER NOT NULL DEFAULT 0,
       tokens_spent_total INTEGER NOT NULL DEFAULT 0,
+      tokens_input_total INTEGER NOT NULL DEFAULT 0,
+      tokens_cached_total INTEGER NOT NULL DEFAULT 0,
+      tokens_output_total INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (provider, model)
     );
   `);
+
+  ensureLlmUsageBreakdownColumns(db);
 
   // Recall surfacing log — tracks when promoted memories are shown in user-prompt context
   db.exec(`

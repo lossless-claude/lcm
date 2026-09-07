@@ -151,6 +151,7 @@ LCM defaults to `LCM_SUMMARY_PROVIDER=auto`.
 
 - In Claude sessions, `auto` resolves to `claude-process`
 - In Codex sessions, `auto` resolves to `codex-process`
+- In Copilot sessions, `auto` resolves to `copilot-process` — no client identifies itself as `copilot` yet, so today you select it with `LCM_SUMMARY_PROVIDER=copilot-process`
 - If you explicitly set `LCM_SUMMARY_PROVIDER`, that override applies to both CLIs
 
 You can pin a specific summarizer provider and model:
@@ -166,9 +167,33 @@ Valid provider values are:
 - `auto`
 - `claude-process`
 - `codex-process`
+- `copilot-process`
 - `anthropic`
 - `openai`
 - `disabled`
+
+### Token cost reporting
+
+Every process-backed provider reports its usage in a normalized shape, stored in
+`llm_usage_stats` and shown by `lcm import --replay`:
+
+| Provider | Input | Cached | Output | Extra |
+|---|---|---|---|---|
+| `claude-process` | yes | yes | yes | list-price cost in USD |
+| `codex-process` | yes | yes | yes | — |
+| `copilot-process` | no | no | yes | premium requests |
+
+`inputTokens` always counts the full prompt, with `cachedInputTokens` as a subset
+of it, so totals are comparable across providers. The Copilot CLI only exposes
+prompt-token counts in its text output mode, which hard-wraps the summary and is
+therefore unusable here — it reports output tokens and GitHub premium requests
+instead.
+
+Copilot bills per request, not per token: every call costs about 0.33 premium
+requests regardless of size, so a compaction over N chunks costs roughly
+N × 0.33. LCM runs it with no tools, no MCP servers and no repo instructions,
+which keeps the prompt around 6k tokens instead of the ~26k a default session
+spends on tool schemas alone.
 
 Using a cheaper or faster model for summarization can reduce costs, but quality matters because poor summaries compound as they are condensed into higher-level nodes.
 

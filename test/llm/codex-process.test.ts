@@ -68,6 +68,9 @@ describe("createCodexProcessSummarizer", () => {
     const [command, args] = spawn.mock.calls[0];
     expect(command).toBe("codex");
     expect(args).toContain("exec");
+    // --json puts the normalized usage breakdown on stdout; the summary still
+    // arrives through --output-last-message, so the two never collide.
+    expect(args).toContain("--json");
     expect(args).toContain("--skip-git-repo-check");
     expect(args).toContain("--sandbox");
     expect(args).toContain("read-only");

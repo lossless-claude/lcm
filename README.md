@@ -251,7 +251,7 @@ All environment variables are optional. The default summarizer mode is `auto`.
 
 | Variable | Default | Description |
 |---|---|---|
-| `LCM_SUMMARY_PROVIDER` | `auto` | `auto`, `claude-process`, `codex-process`, `anthropic`, `openai`, or `disabled` |
+| `LCM_SUMMARY_PROVIDER` | `auto` | `auto`, `claude-process`, `codex-process`, `copilot-process`, `anthropic`, `openai`, or `disabled` |
 | `LCM_SUMMARY_MODEL` | unset | Optional model override for the selected summarizer provider |
 | `LCM_CONTEXT_THRESHOLD` | `0.75` | Context fill ratio that triggers compaction |
 | `LCM_FRESH_TAIL_COUNT` | `32` | Most recent raw messages protected from compaction |

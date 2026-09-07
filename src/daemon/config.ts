@@ -42,7 +42,7 @@ export type DaemonConfig = {
     stalePenalty: number;
     allowStaleOnStrongMatch: boolean;
   };
-  llm: { provider: "auto" | "claude-process" | "codex-process" | "anthropic" | "openai" | "disabled"; model: string; apiKey?: string; baseURL: string };
+  llm: { provider: "auto" | "claude-process" | "codex-process" | "copilot-process" | "anthropic" | "openai" | "disabled"; model: string; apiKey?: string; baseURL: string };
   summarizer: { mock: boolean };
   security: SecurityConfig;
   hooks: { snapshotIntervalSec: number; disableAutoCompact: boolean };
@@ -145,7 +145,7 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
   if (merged.llm.apiKey) merged.llm.apiKey = merged.llm.apiKey.replace(/\$\{(\w+)\}/g, (_: string, k: string) => e[k] ?? "");
 
   // Env var override: LCM_SUMMARY_PROVIDER takes precedence over config
-  const VALID_PROVIDERS = new Set(["auto", "claude-process", "codex-process", "anthropic", "openai", "disabled"]);
+  const VALID_PROVIDERS = new Set(["auto", "claude-process", "codex-process", "copilot-process", "anthropic", "openai", "disabled"]);
   if (e.LCM_SUMMARY_PROVIDER) {
     if (!VALID_PROVIDERS.has(e.LCM_SUMMARY_PROVIDER)) {
       throw new Error(
