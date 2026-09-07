@@ -896,6 +896,53 @@ describe("importSessions replay resume", () => {
     expect(ledger.n).toBe(1);
   });
 
+  it("restart is refused when /status answers with an HTTP error, but not when the daemon is unreachable", async () => {
+    const cwd = "/test/resume-restart-status-error";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1"]);
+
+    const first = makeMockClient(async (path: string) => {
+      if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
+      if (path === "/compact") return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: "s", latestSummaryId: "sum-s1" };
+    });
+    await importSessions(first, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+    persistSummary(lcmDir, cwd, "s1", "sum-s1", "summary-of-s1");
+    const dbPath = join(lcmDir, "projects", projectId(cwd), "db.sqlite");
+    const countSummaries = () => {
+      const db = new DatabaseSync(dbPath);
+      const row = db.prepare("SELECT COUNT(*) AS n FROM summaries").get() as { n: number };
+      db.close();
+      return row.n;
+    };
+
+    // Reachable daemon that rejects the token: the guard cannot confirm idleness, so it refuses.
+    const unauthorized = makeMockClient(async (path: string) => {
+      if (path === "/status") {
+        const e = new Error("unauthorized") as Error & { status?: number };
+        e.status = 401;
+        throw e;
+      }
+      if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
+      if (path === "/compact") return { summary: "ok", replayOutcome: "compacted" };
+    });
+    await expect(importSessions(unauthorized, {
+      replay: true, restart: true, cwd,
+      _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir,
+    })).rejects.toThrow(/--restart refused: could not confirm.*HTTP 401/);
+    expect(countSummaries()).toBe(1);
+
+    // No daemon listening at all: nothing can be compacting, so the wipe proceeds.
+    const unreachable = makeMockClient(async (path: string) => {
+      if (path === "/status") throw new TypeError("fetch failed: ECONNREFUSED");
+      if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
+      if (path === "/compact") return { summary: "ok", replayOutcome: "compacted" };
+    });
+    await importSessions(unreachable, {
+      replay: true, restart: true, cwd,
+      _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir,
+    });
+    expect(countSummaries()).toBe(0);
+  });
+
   it("dry-run replay does not write manifests or ledgers", async () => {
     const cwd = "/test/resume-dryrun";
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1"]);

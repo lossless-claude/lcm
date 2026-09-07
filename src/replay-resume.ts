@@ -591,8 +591,10 @@ export function recordReplayProgress(opts: {
  * Refuse `--restart` while the daemon is compacting a conversation in any of
  * the projects about to be wiped: the daemon's in-flight guard is per-process,
  * so a CLI-side wipe would race it. Detection only, the check-then-wipe is not
- * atomic. A daemon that cannot be reached (or predates the field) is treated as
- * idle.
+ * atomic. A daemon that cannot be reached (no process listening) is treated as
+ * idle: nothing can be compacting. A daemon that answers `/status` with an
+ * error (401/403 token mismatch, 5xx) is not: the check cannot confirm it is
+ * idle, so the wipe is refused rather than proceeding blind.
  */
 export async function refuseRestartDuringCompaction(
   client: Pick<DaemonClient, "post">,
@@ -604,8 +606,14 @@ export async function refuseRestartDuringCompaction(
     try {
       const status = await client.post<{ project?: { compactingSessions?: string[] } }>("/status", { cwd });
       sessions = status.project?.compactingSessions ?? [];
-    } catch {
-      continue;
+    } catch (err) {
+      const httpStatus = (err as { status?: unknown }).status;
+      if (typeof httpStatus !== "number") continue; // network failure: no daemon to be busy
+      throw new Error(
+        `--restart refused: could not confirm the daemon is idle for ${cwd} ` +
+          `(/status returned HTTP ${httpStatus}: ${err instanceof Error ? err.message : String(err)}). ` +
+          "Fix or stop the daemon, then retry.",
+      );
     }
     for (const sessionId of sessions) busy.push(`${sessionId} in ${cwd}`);
   }
