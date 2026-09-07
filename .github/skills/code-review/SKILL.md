@@ -71,6 +71,12 @@ TypeScript SQLite daemon that persists Claude session memories across context re
 - Daemon HTTP requests must send the `Authorization: ******` header; the token is read via `readAuthToken(join(homedir(), ".lossless-claude", "daemon.token"))`. Auth is mandatory; a 401 arrives as a normal HTTP response, not a socket error — flag client code paths that drop the header or mishandle 401s.
 - `DaemonClient` throws `Error` objects annotated with the HTTP status and parsed JSON body (`e.status`, `e.body`) on non-2xx responses — flag client code that swallows non-2xx responses or loses the status/body annotations.
 
+### 10. Source references in docs and comments
+
+- Prose that points at code must name **symbols**, not line numbers: `CompactionEngine.persistCompactionEvent`, not `src/compaction.ts:1331`. Line numbers rot on any edit above them — nobody has to touch the described code for the reference to go stale, and the stale number still looks plausible. A renamed symbol is greppable; a wrong line number is silent.
+- Flag any `path/to/file.ts:NNN` in Markdown, in a doc comment, or in a commit message, unless it is pinned to an immutable ref (a commit SHA, or an explicitly labelled review-finding identifier).
+- This applies to `.xgh/specs/`, `.xgh/plans/`, `docs/`, `AGENTS.md`, and skill files — anywhere a reader may follow the reference against a branch other than the one it was written on.
+
 ## What to skip
 
 - Do not flag `DatabaseSync` usage in test fixtures that mock the connection — context matters.
