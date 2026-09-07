@@ -20,7 +20,7 @@ Steps 1–4 are the redesign. Steps 5–7 are ordinary bugs Codex found that are
 
 That change alone dissolves `import.ts:440`: a `no_work` row with `summary_id = NULL` is now a complete, valid row — the anchor search simply walks further back to the most recent non-null one.
 
-The anchor's definition matches today's de-facto behaviour, which should be written down rather than reinvented: `getSummariesByConversation` orders `BY created_at`, and `compact.ts:367` takes the last element. So **the anchor is the most recently created summary of that conversation**, regardless of depth.
+The anchor's definition matches today's de-facto behaviour, which should be written down rather than reinvented: `getSummariesByConversation` orders `BY created_at`, and the `else if (allSummaries.length > 0)` fallback in `createCompactHandler` (`src/daemon/routes/compact.ts`) takes the last element. So **the anchor is the most recently created summary of that conversation**, regardless of depth.
 
 **Migrations stay additive.** `.github/skills/code-review/SKILL.md` §7 (merged in #310) forbids destructive DDL, so nothing below drops a table or a column.
 
@@ -73,7 +73,7 @@ In one transaction:
    ORDER BY m.seq
    ```
 
-**Why the exclusion is mandatory:** `CompactionEngine.writeEvent` (`src/compaction.ts:1331`) calls `createMessage` + `createMessageParts` but **never** `appendContextMessage` — verified, `appendContextMessage` has no callers outside its own definition. So event rows live in `messages` and have never been in `context_items`. A naive `INSERT … SELECT FROM messages` would surface `"LCM compaction leaf pass (normal): 5000 -> 200"` into the model's context, which is a regression the current code does not have. Step 6 makes step 7's predicate redundant, but keep both — step 7 must be correct on its own if step 6 is ever reordered or dropped.
+**Why the exclusion is mandatory:** `CompactionEngine.persistCompactionEvent` (its local `writeEvent` closure, `src/compaction.ts`) calls `createMessage` + `createMessageParts` but **never** `appendContextMessage` — verified, `appendContextMessage` has no callers outside its own definition. So event rows live in `messages` and have never been in `context_items`. A naive `INSERT … SELECT FROM messages` would surface `"LCM compaction leaf pass (normal): 5000 -> 200"` into the model's context, which is a regression the current code does not have. Step 6 makes step 7's predicate redundant, but keep both — step 7 must be correct on its own if step 6 is ever reordered or dropped.
 
 Check the FTS5 mirror: `deleteMessageFromFullText` exists for messages — confirm whether summaries have an equivalent index that also needs clearing, and call it for both the summaries and the deleted event messages.
 
@@ -107,7 +107,7 @@ Run `countSummaries` over the affected conversations first and print the total, 
 
 **`src/batch-compact.ts`** — `findUncompacted`'s `source_messages` / `source_tokens` subquery currently uses `role != 'system'`, which over-excludes: `parseTranscript()` accepts `system` and the ingest route persists it.
 
-Use the exact discriminator instead — the compaction event's message part (`src/compaction.ts:1327` writes `role: "system"`, then a part with `part_type: "compaction"`):
+Use the exact discriminator instead — the compaction event's message part — `CompactionEngine.persistCompactionEvent` writes the row with `role: "system"`, then a part with `partType: "compaction"`:
 
 ```sql
 LEFT JOIN (

@@ -7,6 +7,8 @@
 
 PR #302 went through two Codex review rounds. Round 1 filed 13 findings (10 P1); all 13 were addressed in `e6007b3` and the diff was sound on its own terms. Round 2 on `aa57b3f` filed 10 more (7 P1) — and **four were the same findings re-raised**, meaning the round-1 fix had not actually closed them. One P1 was *created* by the round-1 fix. That is not a patch queue converging; it is a model that does not fit.
 
+> **Reference convention:** `file.ts:NNN` labels below are Codex finding identifiers against PR #302 @ `aa57b3f`, not line numbers in `main`. Claims about current behaviour name symbols instead.
+
 ## The mismatch, in one line
 
 `replay_ledger` records a compaction as **one row: `(session_id, summary_id, fingerprint)`**. A compaction is not one summary.
@@ -60,7 +62,7 @@ The argument that settles it: **wiping summaries loses no information.** Message
 
 **`context_items` is a derived view.** Three facts make this true today:
 
-1. **Compaction never deletes messages.** `replaceContextRangeWithSummary` (`src/store/summary-store.ts:617`) deletes only `context_items` rows in a range, inserts one summary item, and resequences ordinals. The only `DELETE FROM messages` in the codebase is `ConversationStore.deleteMessages`, a separate redaction path.
+1. **Compaction never deletes messages.** `SummaryStore.replaceContextRangeWithSummary` deletes only `context_items` rows in a range, inserts one summary item, and resequences ordinals. The only `DELETE FROM messages` in the codebase is `ConversationStore.deleteMessages`, a separate redaction path.
 2. **`messages.seq` is the authoritative order.** Ingest appends in `seq` order; `context_items.ordinal` is a compacted projection of it.
 3. **`summary_messages` records exactly what each summary covers**, so a summary is invertible by construction.
 
@@ -101,15 +103,15 @@ Note the migration is **additive**: `.github/skills/code-review/SKILL.md` §7 fo
 
 ### The rebuild must exclude compaction events
 
-`CompactionEngine.writeEvent` (`src/compaction.ts:1331`) writes its `"LCM compaction leaf pass (normal): 5000 -> 200"` row into `messages` + `message_parts` but **never** into `context_items` — `appendContextMessage` has no callers outside its own definition. So a naive `INSERT … SELECT FROM messages` would surface compaction noise into the model's context, a regression the current code does not have. The rebuild filters on the same `part_type = 'compaction'` predicate used for the fingerprint below, and the wipe deletes those now-stale event rows outright.
+`CompactionEngine.persistCompactionEvent` (its local `writeEvent` closure, `src/compaction.ts`) writes its `"LCM compaction leaf pass (normal): 5000 -> 200"` row into `messages` + `message_parts` but **never** into `context_items` — `appendContextMessage` has no callers outside its own definition. So a naive `INSERT … SELECT FROM messages` would surface compaction noise into the model's context, a regression the current code does not have. The rebuild filters on the same `part_type = 'compaction'` predicate used for the fingerprint below, and the wipe deletes those now-stale event rows outright.
 
 ### The fingerprint has an exact discriminator
 
 Both fingerprint findings reduce to one question — *how do I count source messages while excluding compaction events?* — and it has a factual answer, not a design choice.
 
-`CompactionEngine` writes its event row as `role: "system"` (`src/compaction.ts:1327`), which is why the round-1 fix used `WHERE role != 'system'`. Codex correctly rejected that: `parseTranscript()` also accepts `system` and the ingest route persists it, so genuine transcript system messages get excluded too.
+`CompactionEngine.persistCompactionEvent` writes its event row as `role: "system"`, which is why the round-1 fix used `WHERE role != 'system'`. Codex correctly rejected that: `parseTranscript()` also accepts `system` and the ingest route persists it, so genuine transcript system messages get excluded too.
 
-But the event row also gets a message part with **`part_type = 'compaction'`** (`src/compaction.ts:~1335`). That is exact:
+But the same method also attaches a message part with **`partType: "compaction"`**. That is exact:
 
 ```sql
 WHERE NOT EXISTS (
@@ -145,7 +147,7 @@ That has one consequence for the row shape above: resume must re-establish the c
 
 This is also what dissolves `import.ts:440` cleanly: a `no_work` row with `summary_id = NULL` is a complete, valid row, and the anchor search walks further back to the most recent non-null one instead of treating it as a broken chain.
 
-**The anchor rule, written down.** Today it is implicit: `getSummariesByConversation` orders `BY created_at` and `compact.ts:367` takes the last element. Formalised: *the anchor is the most recently created summary of that conversation, regardless of depth.*
+**The anchor rule, written down.** Today it is implicit: `getSummariesByConversation` orders `BY created_at` and the `else if (allSummaries.length > 0)` fallback in `createCompactHandler` (`src/daemon/routes/compact.ts`) takes the last element. Formalised: *the anchor is the most recently created summary of that conversation, regardless of depth.*
 
 ## Not covered here
 
