@@ -682,6 +682,32 @@ describe("importSessions — provider: codex", () => {
     return dir;
   }
 
+  it("scopes dated rollouts to cwd and isolates replay context with --all", async () => {
+    const codexDir = makeTmpDir();
+    const dated = join(codexDir, "sessions", "2026", "09", "07");
+    mkdirSync(dated, { recursive: true });
+    for (const [id, cwd] of [["a", "/project-a"], ["b", "/project-b"], ["c", "/project-a"]]) {
+      writeFileSync(join(dated, `rollout-${id}.jsonl`), makeCodexSessionMetaLine(id, cwd));
+    }
+    const calls: { path: string; body: any }[] = [];
+    const client = makeMockClient(async (path, body) => {
+      calls.push({ path, body });
+      return path === "/compact"
+        ? { latestSummaryContent: `summary-${(body as { session_id: string }).session_id}` }
+        : { ingested: 1, totalTokens: 10 };
+    });
+    const scoped = await importSessions(client, { provider: "codex", cwd: "/project-a", _codexDir: codexDir });
+    expect(scoped.imported).toBe(2);
+    expect(calls.map(c => c.body.session_id).sort()).toEqual(["a", "c"]);
+    calls.length = 0;
+    await importSessions(client, { provider: "codex", all: true, replay: true, _codexDir: codexDir });
+    const compacts = calls.filter(c => c.path === "/compact").map(c => c.body);
+    expect(compacts).toHaveLength(3);
+    expect(compacts.every(c => c.client === "codex")).toBe(true);
+    expect(compacts.find(c => c.session_id === "b").previous_summary).toBeUndefined();
+    expect(compacts.filter(c => c.cwd === "/project-a")[1].previous_summary).toBeDefined();
+  });
+
   it("imports Codex sessions from _codexDir/archived_sessions/", async () => {
     const codexDir = makeTmpDir();
     const archivedDir = join(codexDir, "archived_sessions");
@@ -704,6 +730,7 @@ describe("importSessions — provider: codex", () => {
 
     const result = await importSessions(client, {
       provider: "codex",
+      cwd,
       _codexDir: codexDir,
     });
 
@@ -711,14 +738,14 @@ describe("importSessions — provider: codex", () => {
     expect(calls[0].path).toBe("/ingest");
     expect((calls[0].body as { session_id: string }).session_id).toBe(sessionId);
     expect((calls[0].body as { cwd: string }).cwd).toBe(cwd);
-    expect((calls[0].body as { transcript_path: string }).transcript_path).toContain(`${sessionId}.jsonl`);
+    expect(calls[0].body).toMatchObject({ transcript_path: join(archivedDir, `${sessionId}.jsonl`), client: "codex" });
     expect(result.imported).toBe(1);
     expect(result.totalMessages).toBe(2);
     expect(result.totalTokens).toBe(200);
     expect(result.failed).toBe(0);
   });
 
-  it("falls back to process.cwd() when session_meta has no cwd", async () => {
+  it("skips sessions without cwd instead of assigning them to the current project", async () => {
     const codexDir = makeTmpDir();
     const archivedDir = join(codexDir, "archived_sessions");
     mkdirSync(archivedDir, { recursive: true });
@@ -740,9 +767,7 @@ describe("importSessions — provider: codex", () => {
       _codexDir: codexDir,
     });
 
-    expect(calls).toHaveLength(1);
-    // Falls back to process.cwd()
-    expect((calls[0].body as { cwd: string }).cwd).toBe(process.cwd());
+    expect(calls).toHaveLength(0);
   });
 
   it("imports nothing when _codexDir does not exist", async () => {
@@ -768,6 +793,7 @@ describe("importSessions — provider: codex", () => {
     const result = await importSessions(client, {
       provider: "codex",
       dryRun: true,
+      cwd: "/ws",
       _codexDir: codexDir,
     });
 
@@ -788,7 +814,7 @@ describe("importSessions — provider: codex", () => {
     const codexDir = makeTmpDir();
     const archivedDir = join(codexDir, "archived_sessions");
     mkdirSync(archivedDir, { recursive: true });
-    writeFileSync(join(archivedDir, "codex-session.jsonl"), makeCodexSessionMetaLine("codex-session", "/workspace"));
+    writeFileSync(join(archivedDir, "codex-session.jsonl"), makeCodexSessionMetaLine("codex-session", cwd));
 
     const sessionIds: string[] = [];
     const client = makeMockClient(async (_path, body) => {
