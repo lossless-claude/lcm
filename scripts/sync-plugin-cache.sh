@@ -11,7 +11,11 @@ set -e
 
 if [ "$LCM_SKIP_CACHE_SYNC" = "1" ]; then exit 0; fi
 
-cd "$(dirname "$0")/.."
+# Best-effort: never fail the build.
+[ -n "${HOME:-}" ] || exit 0
+command -v rsync >/dev/null 2>&1 || exit 0
+
+cd "$(dirname "$0")/.." || exit 0
 
 version=$(node -p "require('./package.json').version" 2>/dev/null) || exit 0
 [ -n "$version" ] || exit 0
@@ -20,5 +24,5 @@ target="$HOME/.claude/plugins/cache/lossless-claude/lcm/$version/dist"
 [ -d "$target" ] || exit 0
 [ -d dist ] || exit 0
 
-rsync -a --delete dist/ "$target/"
+rsync -a --delete dist/ "$target/" || { echo "sync-plugin-cache: rsync failed (ignored)" >&2; exit 0; }
 echo "synced dist/ -> $target"
