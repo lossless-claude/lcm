@@ -19,6 +19,9 @@ import { resolveTargetTokens } from "../../src/summarize.js";
 
 // ── Corpus ─────────────────────────────────────────────────────────────────
 
+/** Same estimate production uses for prompt sizing. */
+const CHARS_PER_TOKEN = 4;
+
 export type CorpusMessage = {
   seq: number;
   role: "user" | "assistant" | "system";
@@ -82,10 +85,11 @@ function fillerTurn(i: number): [string, string] {
 }
 
 /**
- * A synthetic session large enough for three leaf chunks plus one depth-1
- * condensation under production config. The five facts are planted in the
- * first turns so they sit outside the protected fresh tail and must survive
- * summarization to appear in the final context.
+ * A synthetic session large enough for three leaf chunks under production
+ * config; a depth-1 condensation follows only when the leaf summaries are
+ * verbose enough to reach the condensed minimum. The five facts are planted in
+ * the first turns so they sit outside the protected fresh tail and must
+ * survive summarization to appear in the final context.
  */
 export function buildSyntheticSession(): CorpusSession {
   const planted: [string, string][] = [
@@ -119,7 +123,7 @@ export function buildSyntheticSession(): CorpusSession {
       seq: seq++,
       role,
       content,
-      tokenCount: Math.ceil(content.length / 4),
+      tokenCount: Math.ceil(content.length / CHARS_PER_TOKEN),
       createdAt: new Date(base + seq * 60_000).toISOString(),
     });
   };
@@ -171,7 +175,7 @@ export function instrumentSummarizer(inner: LcmSummarizeFn): InstrumentedSummari
     const targetTokens =
       ctx.targetTokens ??
       resolveTargetTokens({
-        inputTokens: Math.ceil(text.length / 4),
+        inputTokens: Math.ceil(text.length / CHARS_PER_TOKEN),
         mode: aggressive ? "aggressive" : "normal",
         isCondensed,
         condensedTargetTokens: 2000,
@@ -199,7 +203,7 @@ export function instrumentSummarizer(inner: LcmSummarizeFn): InstrumentedSummari
       });
       call.latencyMs = Date.now() - started;
       call.outputChars = out.length;
-      call.outputTokensEstimate = Math.ceil(out.length / 4);
+      call.outputTokensEstimate = Math.ceil(out.length / CHARS_PER_TOKEN);
       call.output = out;
       call.format = scoreSummary(out, call.depth);
       call.emptyContentFallback = out === text.slice(0, 500);
@@ -237,7 +241,7 @@ export function scoreSummary(content: string, depth: number): SummaryScore {
   return {
     depth,
     chars: trimmed.length,
-    tokensEstimate: Math.ceil(trimmed.length / 4),
+    tokensEstimate: Math.ceil(trimmed.length / CHARS_PER_TOKEN),
     hasFilesLine: depth === 0 ? /^Files:/m.test(trimmed) : null,
     hasExpandTrailer: lastLine.startsWith(EXPAND_TRAILER),
     isFallback: /\[Truncated from \d+ tokens\]$/.test(trimmed),
@@ -345,8 +349,10 @@ export async function runEval(input: {
   const summaries: EvalRunResult["summaries"] = [];
   for (const item of items) {
     if (item.itemType !== "summary" || !item.summaryId) continue;
-    const s = await summaryStore.getSummary(item.summaryId);
-    if (s) summaries.push({ summaryId: s.summaryId, content: s.content, ...scoreSummary(s.content, s.depth) });
+    const record = await summaryStore.getSummary(item.summaryId);
+    if (record) {
+      summaries.push({ summaryId: record.summaryId, content: record.content, ...scoreSummary(record.content, record.depth) });
+    }
   }
   const tokensAfter = await summaryStore.getContextTokenCount(cid);
   db.close();
