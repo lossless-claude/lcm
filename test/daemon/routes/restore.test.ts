@@ -227,7 +227,7 @@ describe("POST /restore", () => {
         });
         expect(res.status).toBe(200);
 
-        const dbPath = projectDbPath(tmpDir);
+        const dbPath = projectDbPath(realpathSync(tmpDir));
         const db = getLcmConnection(dbPath);
         try {
           const row = db.prepare(`SELECT content FROM session_instructions WHERE id = 1`).get() as
