@@ -63,6 +63,7 @@ describe("summarizer eval harness (offline)", () => {
 //   LCM_EVAL_PROVIDER    openrouter (default) | claude-process
 //   LCM_EVAL_RUNS        runs per session (default 1)
 //   LCM_EVAL_SESSIONS    comma-separated labels to run (default all)
+//   LCM_EVAL_REASONING_EFFORT  openrouter only: reasoning.effort sent with each request (default none)
 
 const model = process.env.LCM_EVAL_MODEL;
 const corpusDir = process.env.LCM_EVAL_CORPUS_DIR;
@@ -70,7 +71,9 @@ const provider = (process.env.LCM_EVAL_PROVIDER ?? "openrouter") as EvalProvider
 const runs = Number(process.env.LCM_EVAL_RUNS ?? "1");
 const only = process.env.LCM_EVAL_SESSIONS?.split(",").map((s) => s.trim()).filter(Boolean);
 
-describe.skipIf(!model || !corpusDir)(`summarizer eval: ${model} via ${provider}`, () => {
+const reasoning = process.env.LCM_EVAL_REASONING_EFFORT ? ` reasoning=${process.env.LCM_EVAL_REASONING_EFFORT}` : "";
+
+describe.skipIf(!model || !corpusDir)(`summarizer eval: ${model} via ${provider}${reasoning}`, () => {
   const sessions: CorpusSession[] = (corpusDir && existsSync(corpusDir)
     ? [...loadCorpusDir(corpusDir), buildSyntheticSession()]
     : []

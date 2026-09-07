@@ -16,13 +16,19 @@ function createOpenRouterSummarizer(model: string): LcmSummarizeFn {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error("OPENROUTER_API_KEY is not set");
   const client = new OpenAI({ baseURL: OPENROUTER_BASE_URL, apiKey });
+  // Reasoning models spend the whole max_tokens budget thinking and return
+  // empty content; production sends no reasoning parameter, so this is an
+  // explicit bench knob (LCM_EVAL_REASONING_EFFORT, e.g. "minimal"), not a
+  // prod mirror.
+  const reasoningEffort = process.env.LCM_EVAL_REASONING_EFFORT;
 
   let pendingCtx: SummarizeContext | undefined;
   const capturing = {
     chat: {
       completions: {
         create: async (params: Parameters<typeof client.chat.completions.create>[0]) => {
-          const response = await client.chat.completions.create({ ...params, stream: false });
+          const reasoning = reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {};
+          const response = await client.chat.completions.create({ ...params, ...reasoning, stream: false });
           const usage = response.usage;
           if (usage && pendingCtx?.onUsage) {
             const cached = (usage.prompt_tokens_details as { cached_tokens?: number } | undefined)?.cached_tokens;
