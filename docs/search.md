@@ -39,25 +39,39 @@ The synthetic fixtures in `test/fixtures/recall/` prove the pipeline works, but 
 clean. Real recall numbers come from your own ingested sessions:
 
 ```bash
-lcm bench build --project /path/to/project --n 20
+lcm bench build --project /path/to/project --n 20 --generator llm
 lcm bench run   --project /path/to/project
 ```
 
-- **`build`** samples ingested conversations, extracts a distinctive user prompt from each, and
-  writes a question that avoids the prompt's own content words (the same vocabulary-divergence rule
-  as the committed fixtures). Output goes to
-  `~/.lossless-claude/projects/<hash>/.lcm-bench.json` — local only, never committed, and
-  `.lcm-bench*.json` is gitignored in case you keep one in a worktree.
-- **`run`** executes each question through the same code path as `lcm search` and reports:
+- **`build`** samples ingested conversations and paraphrases one user prompt per session.
+  `--generator llm` calls your configured summarizer (including its local OpenAI-compatible endpoint).
+  Disabled or mock summarizers cannot produce an LLM benchmark; provider failures do not silently
+  switch to mechanical questions. Review generated questions for a specific subject, correct source
+  session, realistic wording, and representative coverage before relying on a score.
+  The default `--generator mechanical` requires no model and prints a diagnostic-only warning.
+  Empty, copied, generic session-only, or duplicate questions are rejected; build reports skipped
+  questions and may produce fewer than `--n`. If none survive, no file is written.
+  Output defaults to `~/.lossless-claude/projects/<hash>/.lcm-bench.json`, local and uncommitted.
+  Use `--out <file>` to choose another location. Invalid files are rejected by `run` before scoring.
+  Both `build --help` and `run --help` show usage without generating questions or running searches.
+- **`run`** uses the retrieval engine behind `lcm search`, deduplicates matches by session for
+  scoring, and reports:
 
   | metric | what it tells you |
   |---|---|
-  | `recall@5` (search) | fraction of questions whose source session appears in the top 5 |
-  | `recall@5` (grep) | the same questions against a naive OR-`grep` floor — if grep wins, the index is not earning its cost |
+  | `recall@5` (search) | single-source hit@5: fraction whose recorded source session appears in the top 5 |
+  | `recall@5` (grep) | OR over parsed message text in SQLite, ranked by matching message count; not raw-JSONL grep |
   | empty-result rate | fraction returning zero results — the worst failure mode |
   | p95 latency | a retrieval path slower than reading the file is not worth calling |
 
-  Full per-question outcomes land in `.lcm-bench-results.json` next to the benchmark file.
+  The metric named `recall@5` is a single-source hit rate, not complete relevance recall:
+  another session may also answer the question. Review and record those cases before interpreting
+  misses. Ground truth from one sampled prompt cannot prove that its session is the only valid answer.
+  The grep baseline searches parsed messages; results from external raw-JSONL grep are a different
+  experiment and must not be compared as if the corpus and ranking were identical.
+
+  Full per-question outcomes land in `.lcm-bench-results.json` in the project memory directory,
+  even when `--bench-file` points elsewhere.
   `--json` prints the machine-readable report to stdout.
 
 Example output:
@@ -68,7 +82,21 @@ Example output:
   p95 latency    3.2ms
 ```
 
-## The CI gate
+### Manually reviewed queries
+
+Real user wording and short lookups are first-class benchmark inputs. In a version-1 benchmark
+file, set each curated query's `generator` to `"manual"` (and the file-level `generator` to
+`"manual"` for an entirely curated set). Keep `id`, `sessionId`, `prompt`, and `question` on each
+entry: `sessionId` identifies the expected source, `prompt` records the source/context, and
+`question` is the exact query to run. The prompt may equal the query.
+
+Manual queries require nonempty text and a nonempty source session; duplicate query text is
+rejected. They may contain actual copied user questions, short keywords, or identifiers such as
+`PR #1462`, without a question mark. Generated `llm` and `mechanical` entries still undergo the
+stricter paraphrase and generic-question checks. Marking an entry manual records curation; it does
+not automatically prove relevance judgments or corpus representativeness.
+
+## Synthetic regression gate and opt-in real-corpus gate
 
 `test/search/recall-fixtures.test.ts` runs the committed synthetic corpus and fails the build on:
 
@@ -80,8 +108,21 @@ Example output:
 | p95 query latency | ≤ 500 ms |
 
 Thresholds ratchet upward as retrieval improves; they are never tuned down to make a build pass.
-Published quality numbers always come from `lcm bench` on a real corpus, never from the synthetic
-fixtures.
+A passing synthetic gate proves regression coverage, not release quality. Published quality numbers
+must come from a reviewed, representative real corpus. LLM generation alone does not establish
+question quality or corpus representativeness.
+
+To opt into the same thresholds against a reviewed local benchmark:
+
+```bash
+LCM_REAL_BENCH_FILE=/absolute/path/to/.lcm-bench.json \
+LCM_REAL_BENCH_PROJECT=/absolute/path/to/project \
+npm test -- test/bench/real-corpus.test.ts
+```
+
+The real-corpus test is **skipped** when either variable is absent; a configured missing or invalid
+file fails. Questions and source database remain local. A skipped gate or mechanical diagnostic
+score is not evidence that a release meets real-world recall targets.
 
 ## Roadmap: semantic retrieval
 

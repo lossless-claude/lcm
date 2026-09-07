@@ -26,6 +26,8 @@ export type SummarizerUsage = {
 };
 
 export type SummarizeContext = {
+  /** Internal alternate task: send text verbatim with this system instruction. */
+  taskPrompt?: string;
   isCondensed?: boolean;
   targetTokens?: number;
   depth?: number;

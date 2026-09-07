@@ -12,6 +12,7 @@ export function buildSummaryPrompt(
   aggressive: boolean | undefined,
   ctx: SummarizeContext,
 ): string {
+  if (ctx.taskPrompt !== undefined) return text;
   const estimatedInputTokens = Math.ceil(text.length / 4);
   const targetTokens = ctx.targetTokens ?? resolveTargetTokens({
     inputTokens: estimatedInputTokens,
@@ -31,7 +32,7 @@ export function buildSummaryPromptWithSystem(
   aggressive: boolean | undefined,
   ctx: SummarizeContext,
 ): string {
-  return [LCM_SUMMARIZER_SYSTEM_PROMPT, buildSummaryPrompt(text, aggressive, ctx)]
+  return [ctx.taskPrompt ?? LCM_SUMMARIZER_SYSTEM_PROMPT, buildSummaryPrompt(text, aggressive, ctx)]
     .filter(Boolean)
     .join("\n\n");
 }

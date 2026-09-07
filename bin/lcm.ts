@@ -218,6 +218,56 @@ async function createDaemonClientOrExit(): Promise<DaemonClient> {
   return new DaemonClient(`http://127.0.0.1:${port}`, tokenPath);
 }
 
+export function registerBenchCommands(program: Command): void {
+  // ─── bench ─────────────────────────────────────────────────────────────────
+  const benchCmd = new Command("bench").description(
+    "Build and run a natural-language recall benchmark from this project's ingested sessions",
+  );
+  benchCmd.action(() => { benchCmd.outputHelp(); });
+
+  benchCmd
+    .command("build")
+    .description("Sample ingested sessions and write a local benchmark file")
+    .option("--project <path>", "Project directory (default: cwd)")
+    .option("--n <count>", "Number of questions to generate", "20")
+    .option("--out <file>", "Benchmark file path (default: project memory directory)")
+    .option("--generator <mode>", "Question generator: llm or mechanical", "mechanical")
+    .option("--seed <n>", "Deterministic sampling seed", "42")
+    .action(async (opts) => {
+      const cwd = typeof opts.project === "string" ? resolve(opts.project) : process.cwd();
+      const n = parsePositiveInteger(String(opts.n ?? "20"), "--n");
+      const seed = parsePositiveInteger(String(opts.seed ?? "42"), "--seed");
+      if (!["llm", "mechanical"].includes(opts.generator)) throw new Error("--generator must be llm or mechanical");
+      const { buildBench } = await import("../src/bench.js");
+      const result = await buildBench({ cwd, n, seed, out: opts.out, generator: opts.generator });
+      stdout.write(result.stdout);
+      exit(result.exitCode);
+    });
+
+  benchCmd
+    .command("run")
+    .description("Run the benchmark against search and a grep baseline")
+    .option("--project <path>", "Project directory (default: cwd)")
+    .option("--k <n>", "Recall cutoff (default: 5)", "5")
+    .option("--bench-file <file>", "Benchmark file path (default: project memory directory)")
+    .option("--json", "Output structured JSON")
+    .action(async (opts) => {
+      const cwd = typeof opts.project === "string" ? resolve(opts.project) : process.cwd();
+      const k = parsePositiveInteger(String(opts.k ?? "5"), "--k");
+      const { runBench } = await import("../src/bench.js");
+      const result = await runBench({
+        cwd,
+        k,
+        benchFile: opts.benchFile,
+        json: opts.json ?? false,
+      });
+      stdout.write(result.stdout);
+      exit(result.exitCode);
+    });
+
+  program.addCommand(benchCmd);
+}
+
 async function main() {
   const { readFileSync } = await import("node:fs");
   const { join, dirname } = await import("node:path");
@@ -1016,74 +1066,7 @@ async function main() {
       }
     });
 
-  // ─── bench ─────────────────────────────────────────────────────────────────
-  const benchCmd = new Command("bench").description(
-    "Build and run a natural-language recall benchmark from this project's ingested sessions",
-  );
-  benchCmd.helpOption(false).option("-h, --help", "Show help");
-  benchCmd.action((opts) => {
-    if (opts.help) {
-      console.log("Usage: lcm bench <build|run> [options]");
-      console.log("");
-      console.log("  build   Sample ingested sessions and write a benchmark file (local, never committed)");
-      console.log("  run     Execute the benchmark against search and report recall vs a grep baseline");
-      return;
-    }
-    console.error("Usage: lcm bench <build|run> [--project <path>] [--n 20] [--k 5] [--json]");
-    exit(1);
-  });
-
-  benchCmd
-    .command("build")
-    .description("Sample ingested sessions and write a local benchmark file")
-    .option("--project <path>", "Project directory (default: cwd)")
-    .option("--n <count>", "Number of questions to generate", "20")
-    .option("--out <file>", "Benchmark file path (default: <project>/.lcm-bench.json)")
-    .option("--seed <n>", "Deterministic sampling seed", "42")
-    .helpOption(false)
-    .option("-h, --help", "Show help")
-    .action(async (opts) => {
-      if (opts.help) {
-        console.log("Usage: lcm bench build [--project <path>] [--n 20] [--out <file>] [--seed 42]");
-        return;
-      }
-      const cwd = typeof opts.project === "string" ? resolve(opts.project) : process.cwd();
-      const n = parsePositiveInteger(String(opts.n ?? "20"), "--n");
-      const seed = parsePositiveInteger(String(opts.seed ?? "42"), "--seed");
-      const { buildBench } = await import("../src/bench.js");
-      const result = await buildBench({ cwd, n, seed, out: opts.out });
-      stdout.write(result.stdout);
-      exit(result.exitCode);
-    });
-
-  benchCmd
-    .command("run")
-    .description("Run the benchmark against search and a grep baseline")
-    .option("--project <path>", "Project directory (default: cwd)")
-    .option("--k <n>", "Recall cutoff (default: 5)", "5")
-    .option("--bench-file <file>", "Benchmark file path (default: <project>/.lcm-bench.json)")
-    .option("--json", "Output structured JSON")
-    .helpOption(false)
-    .option("-h, --help", "Show help")
-    .action(async (opts) => {
-      if (opts.help) {
-        console.log("Usage: lcm bench run [--project <path>] [--k 5] [--bench-file <file>] [--json]");
-        return;
-      }
-      const cwd = typeof opts.project === "string" ? resolve(opts.project) : process.cwd();
-      const k = parsePositiveInteger(String(opts.k ?? "5"), "--k");
-      const { runBench } = await import("../src/bench.js");
-      const result = await runBench({
-        cwd,
-        k,
-        benchFile: opts.benchFile,
-        json: opts.json ?? false,
-      });
-      stdout.write(result.stdout);
-      exit(result.exitCode);
-    });
-
-  program.addCommand(benchCmd);
+  registerBenchCommands(program);
 
   // ─── promote ───────────────────────────────────────────────────────────────
   program
