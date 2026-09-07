@@ -100,6 +100,33 @@ describe("createCodexProcessSummarizer", () => {
     expect(spawn.mock.calls[0][1]).toContain("gpt-5.4");
   });
 
+  it("reports token usage parsed from stderr", async () => {
+    const child = makeChild(0);
+    child.stderr.write("tokens used\n36,100\n");
+    child.stderr.end();
+    const spawn = vi.fn().mockReturnValue(child);
+    const onUsage = vi.fn();
+    const summarizer = createCodexProcessSummarizer({
+      spawn: spawn as any,
+      mkdtempSync: vi.fn(() => {
+        const dir = mkdtempSync(join(tmpdir(), "lossless-codex-"));
+        tempDirs.push(dir);
+        return dir;
+      }) as any,
+      readFileSync: vi.fn(() => "summary text") as any,
+      rmSync: vi.fn() as any,
+    });
+
+    await expect(
+      summarizer("Conversation text", false, { isCondensed: false, onUsage }),
+    ).resolves.toBe("summary text");
+    expect(onUsage).toHaveBeenCalledWith({
+      provider: "codex-process",
+      model: undefined,
+      tokensUsed: 36100,
+    });
+  });
+
   it("returns a friendly ENOENT error when codex is missing", async () => {
     const summarizer = createCodexProcessSummarizer({
       spawn: vi.fn(() => {
@@ -261,6 +288,32 @@ describe("createCodexProcessSummarizer", () => {
     expect(error!.message).toContain("usage limit");
     expect(error!.message).toContain("wait for the limit to reset or switch models");
     expect(error!.message).toContain("You have hit your usage limit");
+  });
+
+  it("reports token usage even on non-zero exit", async () => {
+    const child = makeChild(1);
+    child.stderr.write("tokens used\n35,576\n");
+    child.stderr.write("ERROR: failure\n");
+    child.stderr.end();
+    const spawn = vi.fn().mockReturnValue(child);
+    const onUsage = vi.fn();
+    const summarizer = createCodexProcessSummarizer({
+      spawn: spawn as any,
+      mkdtempSync: vi.fn(() => {
+        const dir = mkdtempSync(join(tmpdir(), "lossless-codex-"));
+        tempDirs.push(dir);
+        return dir;
+      }) as any,
+      readFileSync: vi.fn() as any,
+      rmSync: vi.fn() as any,
+    });
+
+    await expect(summarizer("Conversation text", false, { onUsage })).rejects.toThrow("codex exited 1");
+    expect(onUsage).toHaveBeenCalledWith({
+      provider: "codex-process",
+      model: undefined,
+      tokensUsed: 35576,
+    });
   });
 
   it("rejects when the output file is empty", async () => {

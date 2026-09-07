@@ -36,8 +36,13 @@ export class DaemonClient {
       headers,
     });
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-      throw new Error(err.error ?? `HTTP ${res.status}`);
+      const err = await res.json().catch(() => ({ error: res.statusText })) as Record<string, unknown>;
+      const e = new Error(
+        typeof err.error === "string" ? err.error : `HTTP ${res.status}`,
+      ) as Error & { status?: number; body?: Record<string, unknown> };
+      e.status = res.status;
+      e.body = err;
+      throw e;
     }
     return await res.json() as T;
   }
@@ -54,8 +59,13 @@ export class DaemonClient {
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-      throw new Error(err.error ?? `HTTP ${res.status}`);
+      const err = await res.json().catch(() => ({ error: res.statusText })) as Record<string, unknown>;
+      const e = new Error(
+        typeof err.error === "string" ? err.error : `HTTP ${res.status}`,
+      ) as Error & { status?: number; body?: Record<string, unknown> };
+      e.status = res.status;
+      e.body = err;
+      throw e;
     }
     return await res.json() as T;
   }

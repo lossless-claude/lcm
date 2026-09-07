@@ -47,6 +47,27 @@ describe("printImportSummary", () => {
     expect(logs.some(l => l.includes("[replay]"))).toBe(true);
   });
 
+  it("shows replay token receipt when replay usage is available", () => {
+    capture();
+    printImportSummary(
+      baseResult({
+        replayUsage: {
+          provider: "codex-process",
+          model: "gpt-5.6-luna",
+          calls: 4,
+          okCalls: 3,
+          failedCalls: 1,
+          tokensSpent: 144000,
+        },
+      }),
+      { replay: true },
+    );
+    expect(logs.some((l) => l.includes("Summarizer") && l.includes("codex-process / gpt-5.6-luna"))).toBe(true);
+    expect(logs.some((l) => l.includes("Calls") && l.includes("4 (3 ok, 1 failed)"))).toBe(true);
+    expect(logs.some((l) => l.includes("Tokens spent") && l.includes("144.0k"))).toBe(true);
+    expect(logs.some((l) => l.includes("Avg per session") && l.includes("36.0k"))).toBe(true);
+  });
+
   it("omits compression stats when not in replay mode", () => {
     capture();
     printImportSummary(baseResult({ tokensAfter: 2000 }));
