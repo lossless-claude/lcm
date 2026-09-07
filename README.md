@@ -287,6 +287,8 @@ npx vitest
 npx tsc --noEmit
 ```
 
+To score a candidate summarizer model against the real compaction engine, see [docs/summarizer-bench.md](docs/summarizer-bench.md). The bench is opt-in — it is skipped unless `LCM_EVAL_MODEL` and `LCM_EVAL_CORPUS_DIR` are set, so `npx vitest` never calls a paid API.
+
 ### Repository layout
 
 ```text
@@ -305,6 +307,7 @@ installer/
   install.ts                  setup wizard
   uninstall.ts                cleanup
 test/
+  bench/                      summarizer eval bench (opt-in, see docs/summarizer-bench.md)
   ...                         Vitest suites
 ```
 
