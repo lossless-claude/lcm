@@ -195,7 +195,7 @@ an array, `null` or a number is rejected at config load, not at request time.
 
 ### Token cost reporting
 
-Every process-backed provider reports its usage in a normalized shape, stored in
+Every provider reports its usage in a normalized shape, stored in
 `llm_usage_stats` and shown by `lcm import --replay`:
 
 | Provider | Input | Cached | Output | Extra |
@@ -203,6 +203,12 @@ Every process-backed provider reports its usage in a normalized shape, stored in
 | `claude-process` | yes | yes | yes | list-price cost in USD |
 | `codex-process` | yes | yes | yes | — |
 | `copilot-process` | no | no | yes | premium requests |
+| `openai` | yes | when the server reports it | yes | real charged cost, OpenRouter only |
+| `anthropic` | yes | yes | yes | — |
+
+A missing cost means *unknown*, never *free*: only the Claude CLI and OpenRouter
+price a call. Against an OpenRouter base URL the `openai` provider asks for cost
+accounting explicitly, because OpenRouter omits the charge otherwise.
 
 `inputTokens` always counts the full prompt, with `cachedInputTokens` as a subset
 of it, so totals are comparable across providers. The Copilot CLI only exposes

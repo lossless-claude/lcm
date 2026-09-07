@@ -1,7 +1,12 @@
-export type SummarizerProvider = "claude-process" | "codex-process" | "copilot-process";
+export type SummarizerProvider =
+  | "claude-process"
+  | "codex-process"
+  | "copilot-process"
+  | "openai"
+  | "anthropic";
 
 /**
- * Normalized token accounting, shared by every process-backed summarizer.
+ * Normalized token accounting, shared by every summarizer that reports it.
  *
  * Conventions (pinned so numbers stay comparable across providers):
  * - `inputTokens` is the FULL prompt cost, cached portion included.
@@ -19,7 +24,11 @@ export type SummarizerUsage = {
   cachedInputTokens?: number;
   outputTokens?: number;
   tokensUsed: number;
-  /** Claude CLI only — list-price cost of the call. */
+  /**
+   * Charged cost of the call, when the provider prices it: the Claude CLI
+   * reports list price, OpenRouter the real charge. Absent means UNKNOWN,
+   * never free — a consumer must not read a missing cost as zero.
+   */
   costUsd?: number;
   /** Copilot CLI only — GitHub's billing unit, not a token count. */
   premiumRequests?: number;

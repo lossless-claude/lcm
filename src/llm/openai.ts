@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import type { LcmSummarizeFn, SummarizeContext } from "./types.js";
+import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "./types.js";
 import {
   LCM_SUMMARIZER_SYSTEM_PROMPT,
   buildLeafSummaryPrompt,
@@ -21,6 +21,40 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * OpenRouter is the only OpenAI-compatible endpoint that prices a call and
+ * reports the real charge, and only when the request asks for accounting.
+ * Plain servers reject unknown top-level fields, so the flag is host-scoped.
+ */
+function isOpenRouter(baseURL: string): boolean {
+  try {
+    return new URL(baseURL).hostname.endsWith("openrouter.ai");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * OpenAI reports `cached_tokens` as a SUBSET of `prompt_tokens`, which is
+ * already the normalized convention: no re-basing needed, unlike Anthropic.
+ */
+function toUsage(response: any, fallbackModel: string): SummarizerUsage | undefined {
+  const usage = response?.usage;
+  if (!usage) return undefined;
+  const inputTokens = usage.prompt_tokens;
+  const outputTokens = usage.completion_tokens;
+  return {
+    provider: "openai",
+    model: response.model || fallbackModel,
+    inputTokens,
+    cachedInputTokens: usage.prompt_tokens_details?.cached_tokens,
+    outputTokens,
+    tokensUsed: usage.total_tokens ?? (inputTokens ?? 0) + (outputTokens ?? 0),
+    // Absent stays absent: a consumer must read it as "unknown", not "free".
+    costUsd: typeof usage.cost === "number" ? usage.cost : undefined,
+  };
+}
+
 export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummarizeFn {
   const client =
     opts._clientOverride ??
@@ -30,6 +64,7 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
     });
   const retryDelayMs = opts._retryDelayMs ?? 1000;
   const MAX_RETRIES = 3;
+  const askForCostAccounting = isOpenRouter(opts.baseURL);
 
   return async function summarize(text, aggressive, ctx: SummarizeContext = {}): Promise<string> {
     const estimatedInputTokens = Math.ceil(text.length / 4);
@@ -55,6 +90,7 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
           // `reasoning` is provider-specific and absent from the OpenAI SDK types;
           // omitted entirely when unset so servers rejecting unknown fields keep working.
           ...(opts.reasoning !== undefined ? { reasoning: opts.reasoning } : {}),
+          ...(askForCostAccounting ? { usage: { include: true } } : {}),
           max_tokens: resolveMaxOutputTokens(targetTokens),
           // Merge system content into user message for compatibility with local
           // servers (e.g. MLX/llama.cpp) that don't support role:"system".
@@ -62,6 +98,11 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
             { role: "user", content: `${ctx.taskPrompt ?? LCM_SUMMARIZER_SYSTEM_PROMPT}\n\n${prompt}` },
           ],
         });
+
+        // Reported before the empty-content check: a reasoning model that
+        // spends the whole budget thinking still charged for those tokens.
+        const usage = toUsage(response, opts.model);
+        if (usage) ctx.onUsage?.(usage);
 
         const textContent = response.choices[0]?.message?.content ?? "";
         // Empty content is a failure, not a summary: falling back to a slice of

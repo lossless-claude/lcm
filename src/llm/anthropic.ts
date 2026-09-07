@@ -6,7 +6,7 @@ import {
   resolveTargetTokens,
   resolveMaxOutputTokens,
 } from "../summarize.js";
-import type { LcmSummarizeFn, SummarizeContext } from "./types.js";
+import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "./types.js";
 
 export type { LcmSummarizeFn } from "./types.js";
 
@@ -19,6 +19,30 @@ type SummarizerOptions = {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Anthropic reports `input_tokens` as the UNCACHED portion only, with cache
+ * reads and writes counted separately. The normalized `inputTokens` is the
+ * full prompt, so the three are summed and `cache_read` is the cached subset.
+ * The API prices nothing, so `costUsd` stays absent — meaning unknown.
+ */
+function toUsage(response: any, fallbackModel: string): SummarizerUsage | undefined {
+  const usage = response?.usage;
+  if (!usage) return undefined;
+  const inputTokens =
+    (usage.input_tokens ?? 0) +
+    (usage.cache_read_input_tokens ?? 0) +
+    (usage.cache_creation_input_tokens ?? 0);
+  const outputTokens = usage.output_tokens ?? 0;
+  return {
+    provider: "anthropic",
+    model: response.model || fallbackModel,
+    inputTokens,
+    cachedInputTokens: usage.cache_read_input_tokens,
+    outputTokens,
+    tokensUsed: inputTokens + outputTokens,
+  };
 }
 
 export function createAnthropicSummarizer(opts: SummarizerOptions): LcmSummarizeFn {
@@ -49,6 +73,11 @@ export function createAnthropicSummarizer(opts: SummarizerOptions): LcmSummarize
           system: ctx.taskPrompt ?? LCM_SUMMARIZER_SYSTEM_PROMPT,
           messages: [{ role: "user", content: prompt }],
         });
+
+        // Reported before the empty-content check: those tokens were charged
+        // even when the model returned nothing usable.
+        const usage = toUsage(response, opts.model);
+        if (usage) ctx.onUsage?.(usage);
 
         const textContent = response.content.find((c: any) => c.type === "text")?.text ?? "";
         // Empty content is a failure, not a summary: falling back to a slice of

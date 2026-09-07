@@ -285,8 +285,8 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
               const summary = await summarize(text, aggressive, {
                 ...ctx,
                 onUsage: (usage) => {
-                  // Every process-backed provider reports normalized usage;
-                  // only providers that report call onUsage at all.
+                  // Every provider reports normalized usage; only providers
+                  // whose response carries it call onUsage at all.
                   sawUsage = true;
                   callTokensSpent.tokens += usage.tokensUsed;
                   callTokensSpent.input += usage.inputTokens ?? 0;
