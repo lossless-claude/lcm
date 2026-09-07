@@ -251,6 +251,7 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
             return { summary: "No messages to compact.", providerId: effectiveProvider, providerLabel };
           }
 
+          let sawReportedUsageModel = false;
           const summarizeWithUsage: LcmSummarizeFn = async (text, aggressive, ctx = {}) => {
             const callTokensSpent = { tokens: 0, input: 0, cached: 0, output: 0 };
             let sawUsage = false;
@@ -265,6 +266,11 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
                   callTokensSpent.input += usage.inputTokens ?? 0;
                   callTokensSpent.cached += usage.cachedInputTokens ?? 0;
                   callTokensSpent.output += usage.outputTokens ?? 0;
+                  const reportedModel = usage.model?.trim();
+                  if (!sawReportedUsageModel && reportedModel) {
+                    llmUsage.model = reportedModel;
+                    sawReportedUsageModel = true;
+                  }
                   ctx.onUsage?.(usage);
                 },
               });

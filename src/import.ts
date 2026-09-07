@@ -190,9 +190,6 @@ function accumulateReplayUsage(result: ImportResult, usage: CompactLlmUsage | un
   if (!result.replayUsage) {
     result.replayUsage = {
       ...usage,
-      tokensInput: usage.tokensInput ?? 0,
-      tokensCached: usage.tokensCached ?? 0,
-      tokensOutput: usage.tokensOutput ?? 0,
     };
     return;
   }
@@ -206,9 +203,9 @@ function accumulateReplayUsage(result: ImportResult, usage: CompactLlmUsage | un
   result.replayUsage.okCalls += usage.okCalls;
   result.replayUsage.failedCalls += usage.failedCalls;
   result.replayUsage.tokensSpent += usage.tokensSpent;
-  result.replayUsage.tokensInput += usage.tokensInput ?? 0;
-  result.replayUsage.tokensCached += usage.tokensCached ?? 0;
-  result.replayUsage.tokensOutput += usage.tokensOutput ?? 0;
+  result.replayUsage.tokensInput += usage.tokensInput;
+  result.replayUsage.tokensCached += usage.tokensCached;
+  result.replayUsage.tokensOutput += usage.tokensOutput;
 }
 
 /**
