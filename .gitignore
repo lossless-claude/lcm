@@ -35,3 +35,7 @@ sensitive-patterns-test.txt
 .env
 dist/
 
+
+# Summarizer eval bench (local only, never committed)
+test/bench/corpus/
+test/bench/results/
