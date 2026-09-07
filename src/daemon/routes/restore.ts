@@ -69,9 +69,9 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
         source === "compact" ||
         (justCompactedMap.has(session_id) && Date.now() - justCompactedMap.get(session_id)! < JUST_COMPACTED_TTL_MS);
 
-      // Query session_instructions for compact/resume paths
+      // Only post-compaction restore consumes the saved instructions.
       let instructionsContext = "";
-      if (cwd) {
+      if (isPostCompact && cwd) {
         const dbPath = projectDbPath(cwd);
         if (existsSync(dbPath)) {
           try {
