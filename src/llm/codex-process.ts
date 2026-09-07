@@ -17,7 +17,7 @@ const STDERR_ERROR_MAX_CHARS = 2_000;
 //   OpenAI Codex v0.153.4
 //   --------
 //   workdir: <path>
-//   model: gpt-5.3-codex-spark
+//   model: <model>
 //   provider: openai
 //   approval: on-request
 //   sandbox: read-only
