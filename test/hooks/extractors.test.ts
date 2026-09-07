@@ -193,6 +193,36 @@ describe("extractPostToolEvents — PostToolUseFailure", () => {
     });
     expect(events).toEqual([]);
   });
+
+  it("drops a failure on a sensitive path, like the success path does", () => {
+    const events = extractPostToolEvents({
+      hook_event_name: "PostToolUseFailure",
+      tool_name: "Read",
+      tool_input: { file_path: "/home/me/.ssh/id_rsa" },
+      error: "EACCES: permission denied",
+    });
+    expect(events).toEqual([]);
+  });
+
+  it("strips a headline that leaks a sensitive path", () => {
+    const events = extractPostToolEvents({
+      hook_event_name: "PostToolUseFailure",
+      tool_name: "Bash",
+      tool_input: { command: "cat .env" },
+      error: "cat: .env: No such file",
+    });
+    expect(events[0].data).toBe("Bash error: cat .env");
+  });
+
+  it("does not stringify a non-string error payload", () => {
+    const events = extractPostToolEvents({
+      hook_event_name: "PostToolUseFailure",
+      tool_name: "Glob",
+      tool_input: { pattern: "**/*.ts" },
+      error: { message: "boom" } as unknown as string,
+    });
+    expect(events[0].data).toBe("Glob error");
+  });
 });
 
 describe("extractUserPromptEvents", () => {

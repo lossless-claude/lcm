@@ -75,14 +75,17 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
-  if (handle) {
-    await handle.cleanup();
-    handle = null;
-  }
-  if (fakeHome) rmSync(fakeHome, { recursive: true, force: true });
-  // restore leaves a per-session lock file in tmpdir
-  for (const f of readdirSync(tmpdir())) {
-    if (f.startsWith("lcm-restore-e2e-proc-")) rmSync(join(tmpdir(), f), { force: true });
+  try {
+    if (handle) {
+      await handle.cleanup();
+      handle = null;
+    }
+  } finally {
+    if (fakeHome) rmSync(fakeHome, { recursive: true, force: true });
+    // restore leaves a per-session lock file in tmpdir
+    for (const f of readdirSync(tmpdir())) {
+      if (f.startsWith("lcm-restore-e2e-proc-")) rmSync(join(tmpdir(), f), { force: true });
+    }
   }
 });
 

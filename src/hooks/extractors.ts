@@ -28,7 +28,8 @@ function isToolFailure(input: PostToolInput): boolean {
 }
 
 function errorHeadline(input: PostToolInput): string {
-  return String(input.error ?? "").split("\n")[0].trim();
+  // stdin is untrusted: a non-string `error` must not become "[object Object]".
+  return (typeof input.error === "string" ? input.error : "").split("\n")[0].trim();
 }
 
 const SENSITIVE_PATHS = [".env", ".ssh/", "credentials", "secrets/", ".npmrc", ".netrc"];
@@ -121,7 +122,11 @@ export function extractPostToolEvents(input: PostToolInput): ExtractedEvent[] {
   // Failed tool (PostToolUseFailure) — error beats the success-shaped extractors below
   if (input.hook_event_name === "PostToolUseFailure") {
     if (!isToolFailure(input)) return []; // interrupted, not an error
-    const headline = errorHeadline(input);
+    // The success path screens sensitive paths; the failure path must too.
+    const failedPath = String(input.tool_input.file_path ?? input.tool_input.path ?? "");
+    if (failedPath && isSensitivePath(failedPath)) return [];
+    const rawHeadline = errorHeadline(input);
+    const headline = isSensitivePath(rawHeadline) ? "" : rawHeadline;
     const subject = tool_name === "Bash"
       ? `Bash error: ${String(input.tool_input.command ?? "").split(/\s+/).slice(0, 3).join(" ")}`
       : `${tool_name} error`;
