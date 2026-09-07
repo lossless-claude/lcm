@@ -15,7 +15,7 @@ import { runLcmMigrations } from "../../src/db/migration.js";
 import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "../../src/llm/types.js";
 import { ConversationStore } from "../../src/store/conversation-store.js";
 import { SummaryStore } from "../../src/store/summary-store.js";
-import { resolveTargetTokens } from "../../src/summarize.js";
+import { resolveMaxOutputTokens, resolveTargetTokens } from "../../src/summarize.js";
 
 // ── Corpus ─────────────────────────────────────────────────────────────────
 
@@ -281,12 +281,11 @@ export type EvalRunResult = {
     /** Format-passing calls over all calls that returned output. */
     formatPass: number;
     formatTotal: number;
-    /** Calls whose output hit the production max_tokens (1024): the summary was cut off. */
+    /** OpenRouter calls whose output reached the production output cap: the summary was cut off. */
     maxTokensHits: number;
   };
 };
 
-const PROD_MAX_OUTPUT_TOKENS = 1024;
 
 /** Exactly the engine config the daemon's /compact route uses. */
 function prodEngineConfig() {
@@ -384,7 +383,9 @@ export async function runEval(input: {
       costUsd: calls.reduce((n, c) => n + (c.usage?.costUsd ?? 0), 0),
       formatPass,
       formatTotal: scoredCalls.length,
-      maxTokensHits: calls.filter((c) => (c.usage?.outputTokens ?? 0) >= PROD_MAX_OUTPUT_TOKENS).length,
+      maxTokensHits: calls.filter(
+        (c) => c.usage?.provider === "openrouter" && (c.usage.outputTokens ?? 0) >= resolveMaxOutputTokens(c.targetTokens),
+      ).length,
     },
   };
 }
