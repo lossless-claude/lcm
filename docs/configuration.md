@@ -211,6 +211,12 @@ back as a number. A missing cost therefore means *unknown*, never *free*.
 Against an OpenRouter base URL the `openai` provider asks for cost accounting
 explicitly, because OpenRouter omits the figure otherwise.
 
+The reported charge is stored in `llm_usage_stats.cost_usd_total`, alongside
+`calls_with_cost` — how many of the recorded calls carried a price. The column
+is left NULL, and `lcm import --replay` prints `unknown`, when nothing reported
+one; a partially priced run is printed as "N of M calls priced" so a partial
+total cannot pass for the run's full cost.
+
 `inputTokens` always counts the full prompt, with `cachedInputTokens` as a subset
 of it, so totals are comparable across providers. The Copilot CLI only exposes
 prompt-token counts in its text output mode, which hard-wraps the summary and is

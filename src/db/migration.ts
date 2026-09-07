@@ -52,11 +52,25 @@ function ensureReplayLedgerOutcomeColumn(db: DatabaseSync): void {
   }
 }
 
+/**
+ * `cost_usd_total` is deliberately nullable with no default: NULL means no
+ * provider ever priced these calls, which must stay distinguishable from a
+ * genuine zero. `calls_with_cost` says how many of `calls_total` carried a
+ * price, so a consumer can tell a complete total from a partial one.
+ */
+const LLM_USAGE_ADDED_COLUMNS: ReadonlyArray<readonly [name: string, ddl: string]> = [
+  ["tokens_input_total", "INTEGER NOT NULL DEFAULT 0"],
+  ["tokens_cached_total", "INTEGER NOT NULL DEFAULT 0"],
+  ["tokens_output_total", "INTEGER NOT NULL DEFAULT 0"],
+  ["cost_usd_total", "REAL"],
+  ["calls_with_cost", "INTEGER NOT NULL DEFAULT 0"],
+];
+
 function ensureLlmUsageBreakdownColumns(db: DatabaseSync): void {
   const columns = db.prepare(`PRAGMA table_info(llm_usage_stats)`).all() as SummaryColumnInfo[];
-  for (const name of ["tokens_input_total", "tokens_cached_total", "tokens_output_total"]) {
+  for (const [name, ddl] of LLM_USAGE_ADDED_COLUMNS) {
     if (!columns.some((col) => col.name === name)) {
-      db.exec(`ALTER TABLE llm_usage_stats ADD COLUMN ${name} INTEGER NOT NULL DEFAULT 0`);
+      db.exec(`ALTER TABLE llm_usage_stats ADD COLUMN ${name} ${ddl}`);
     }
   }
 }
@@ -617,6 +631,9 @@ function runLcmMigrationsInner(
       tokens_input_total INTEGER NOT NULL DEFAULT 0,
       tokens_cached_total INTEGER NOT NULL DEFAULT 0,
       tokens_output_total INTEGER NOT NULL DEFAULT 0,
+      -- NULL means no call was ever priced; never read a missing cost as zero.
+      cost_usd_total REAL,
+      calls_with_cost INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (provider, model)
     );

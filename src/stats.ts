@@ -36,6 +36,10 @@ export interface LlmUsageStats {
   tokensInput: number;
   tokensCached: number;
   tokensOutput: number;
+  /** `null` when nothing priced these calls — unknown, never free. */
+  costUsd: number | null;
+  /** How many of `calls` the cost covers; 0 means the total says nothing. */
+  callsWithCost: number;
 }
 
 interface OverallStats {
@@ -97,10 +101,13 @@ function queryProjectStats(dbPath: string, projectId: string, staleCfg: { staleA
          COALESCE(SUM(tokens_spent_total), 0) as tokensSpent,
          COALESCE(SUM(tokens_input_total), 0) as tokensInput,
          COALESCE(SUM(tokens_cached_total), 0) as tokensCached,
-         COALESCE(SUM(tokens_output_total), 0) as tokensOutput
+         COALESCE(SUM(tokens_output_total), 0) as tokensOutput,
+         -- Deliberately not COALESCEd: all-NULL must stay NULL, not become 0.
+         SUM(cost_usd_total) as costUsd,
+         COALESCE(SUM(calls_with_cost), 0) as callsWithCost
        FROM llm_usage_stats`,
     ).get() as
-      | { calls: number; okCalls: number; failedCalls: number; tokensSpent: number; tokensInput: number; tokensCached: number; tokensOutput: number }
+      | { calls: number; okCalls: number; failedCalls: number; tokensSpent: number; tokensInput: number; tokensCached: number; tokensOutput: number; costUsd: number | null; callsWithCost: number }
       | undefined;
 
     const convRows = db.prepare(`
@@ -174,6 +181,8 @@ function queryProjectStats(dbPath: string, projectId: string, staleCfg: { staleA
         tokensInput: llmUsageRow?.tokensInput ?? 0,
         tokensCached: llmUsageRow?.tokensCached ?? 0,
         tokensOutput: llmUsageRow?.tokensOutput ?? 0,
+        costUsd: llmUsageRow?.costUsd ?? null,
+        callsWithCost: llmUsageRow?.callsWithCost ?? 0,
       },
     };
   } finally {
@@ -387,7 +396,7 @@ export function collectStats(): OverallStats {
       eventsCaptured: 0, eventsUnprocessed: 0, eventsErrors: 0,
       recallStats: emptyRecallStats,
       staleCount: 0,
-      llmUsage: { calls: 0, okCalls: 0, failedCalls: 0, tokensSpent: 0, tokensInput: 0, tokensCached: 0, tokensOutput: 0 },
+      llmUsage: { calls: 0, okCalls: 0, failedCalls: 0, tokensSpent: 0, tokensInput: 0, tokensCached: 0, tokensOutput: 0, costUsd: null, callsWithCost: 0 },
     };
   }
 
@@ -406,7 +415,7 @@ export function collectStats(): OverallStats {
   let totalMemoriesSurfaced = 0;
   let totalMemoriesActedUpon = 0;
   const allTopRecalled: Array<{ id: string; content: string; actCount: number }> = [];
-  const totalLlmUsage: LlmUsageStats = { calls: 0, okCalls: 0, failedCalls: 0, tokensSpent: 0, tokensInput: 0, tokensCached: 0, tokensOutput: 0 };
+  const totalLlmUsage: LlmUsageStats = { calls: 0, okCalls: 0, failedCalls: 0, tokensSpent: 0, tokensInput: 0, tokensCached: 0, tokensOutput: 0, costUsd: null, callsWithCost: 0 };
 
   // Load stale config once for all projects
   let staleCfg = { staleAfterDays: 90, staleSurfacingWithoutUseLimit: 5 };
@@ -452,6 +461,11 @@ export function collectStats(): OverallStats {
       totalLlmUsage.tokensInput += projStats.llmUsage.tokensInput;
       totalLlmUsage.tokensCached += projStats.llmUsage.tokensCached;
       totalLlmUsage.tokensOutput += projStats.llmUsage.tokensOutput;
+      // A project that priced nothing must not drag the total down to 0.
+      if (projStats.llmUsage.costUsd !== null) {
+        totalLlmUsage.costUsd = (totalLlmUsage.costUsd ?? 0) + projStats.llmUsage.costUsd;
+      }
+      totalLlmUsage.callsWithCost += projStats.llmUsage.callsWithCost;
     } catch {
       // skip corrupt databases
     }

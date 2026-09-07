@@ -103,6 +103,13 @@ export type CompactLlmUsage = {
   tokensInput: number;
   tokensCached: number;
   tokensOutput: number;
+  /**
+   * Absent when no call reported a price. `callsWithCost` says how much of
+   * `calls` the figure covers, so a partial total cannot pass for a complete
+   * one — and an absent cost never reads as free.
+   */
+  costUsd?: number;
+  callsWithCost: number;
 };
 
 function createCompactLlmUsage(provider: string, model: string): CompactLlmUsage {
@@ -110,17 +117,24 @@ function createCompactLlmUsage(provider: string, model: string): CompactLlmUsage
     provider, model,
     calls: 0, okCalls: 0, failedCalls: 0,
     tokensSpent: 0, tokensInput: 0, tokensCached: 0, tokensOutput: 0,
+    callsWithCost: 0,
   };
 }
 
 function addTokens(
   usage: CompactLlmUsage,
-  call: { tokens: number; input: number; cached: number; output: number },
+  call: { tokens: number; input: number; cached: number; output: number; cost?: number },
 ): void {
   usage.tokensSpent += call.tokens;
   usage.tokensInput += call.input;
   usage.tokensCached += call.cached;
   usage.tokensOutput += call.output;
+  // Only a reported price advances the counters; an unpriced call leaves the
+  // total exactly as it was, still absent if nothing has priced anything yet.
+  if (call.cost !== undefined) {
+    usage.costUsd = (usage.costUsd ?? 0) + call.cost;
+    usage.callsWithCost += 1;
+  }
 }
 
 export function recordCompactLlmUsage(db: DatabaseSync, usage: CompactLlmUsage): void {
@@ -128,8 +142,9 @@ export function recordCompactLlmUsage(db: DatabaseSync, usage: CompactLlmUsage):
   db.prepare(`
     INSERT INTO llm_usage_stats (
       provider, model, calls_total, calls_ok, calls_failed,
-      tokens_spent_total, tokens_input_total, tokens_cached_total, tokens_output_total, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      tokens_spent_total, tokens_input_total, tokens_cached_total, tokens_output_total,
+      cost_usd_total, calls_with_cost, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     ON CONFLICT(provider, model) DO UPDATE SET
       calls_total = calls_total + excluded.calls_total,
       calls_ok = calls_ok + excluded.calls_ok,
@@ -138,6 +153,12 @@ export function recordCompactLlmUsage(db: DatabaseSync, usage: CompactLlmUsage):
       tokens_input_total = tokens_input_total + excluded.tokens_input_total,
       tokens_cached_total = tokens_cached_total + excluded.tokens_cached_total,
       tokens_output_total = tokens_output_total + excluded.tokens_output_total,
+      -- An unpriced batch must not reset a total an earlier priced batch built.
+      cost_usd_total = CASE
+        WHEN excluded.cost_usd_total IS NULL THEN cost_usd_total
+        ELSE COALESCE(cost_usd_total, 0) + excluded.cost_usd_total
+      END,
+      calls_with_cost = calls_with_cost + excluded.calls_with_cost,
       updated_at = datetime('now')
   `).run(
     usage.provider,
@@ -149,6 +170,9 @@ export function recordCompactLlmUsage(db: DatabaseSync, usage: CompactLlmUsage):
     usage.tokensInput,
     usage.tokensCached,
     usage.tokensOutput,
+    // node:sqlite refuses to bind undefined; absent must reach SQL as NULL.
+    usage.costUsd ?? null,
+    usage.callsWithCost,
   );
 }
 
@@ -279,7 +303,8 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
 
           let sawReportedUsageModel = false;
           const summarizeWithUsage: LcmSummarizeFn = async (text, aggressive, ctx = {}) => {
-            const callTokensSpent = { tokens: 0, input: 0, cached: 0, output: 0 };
+            const callTokensSpent: { tokens: number; input: number; cached: number; output: number; cost?: number } =
+              { tokens: 0, input: 0, cached: 0, output: 0 };
             let sawUsage = false;
             try {
               const summary = await summarize(text, aggressive, {
@@ -292,6 +317,9 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
                   callTokensSpent.input += usage.inputTokens ?? 0;
                   callTokensSpent.cached += usage.cachedInputTokens ?? 0;
                   callTokensSpent.output += usage.outputTokens ?? 0;
+                  if (typeof usage.costUsd === "number") {
+                    callTokensSpent.cost = (callTokensSpent.cost ?? 0) + usage.costUsd;
+                  }
                   const reportedModel = usage.model?.trim();
                   if (!sawReportedUsageModel && reportedModel) {
                     llmUsage.model = reportedModel;

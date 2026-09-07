@@ -58,6 +58,7 @@ describe("printImportSummary", () => {
           okCalls: 3,
           failedCalls: 1,
           tokensSpent: 144000,
+          callsWithCost: 0,
         },
       }),
       { replay: true },
@@ -100,5 +101,55 @@ describe("printImportSummary", () => {
     printImportSummary(baseResult({ totalTokens: 0 }));
     expect(logs.some(l => l.includes("Tokens ingested"))).toBe(false);
     expect(logs.some(l => l.includes("Sessions processed"))).toBe(false);
+  });
+  it("prints the cost with enough precision that a sub-cent charge is visible", () => {
+    capture();
+    printImportSummary(
+      baseResult({
+        replayUsage: {
+          provider: "openai", model: "z-ai/glm-5.3-flash",
+          calls: 4, okCalls: 4, failedCalls: 0, tokensSpent: 144000,
+          costUsd: 0.000082, callsWithCost: 4,
+        },
+      }),
+      { replay: true },
+    );
+    const cost = logs.find((l) => l.includes("Cost"));
+    // Two decimals would render this real charge as "$0.00".
+    expect(cost).toContain("$0.000082");
+    expect(cost).toContain("4 of 4 calls priced");
+  });
+
+  it("says unknown, never $0.00, when no call reported a price", () => {
+    capture();
+    printImportSummary(
+      baseResult({
+        replayUsage: {
+          provider: "anthropic", model: "claude-haiku-4-5-20251001",
+          calls: 4, okCalls: 4, failedCalls: 0, tokensSpent: 144000,
+          callsWithCost: 0,
+        },
+      }),
+      { replay: true },
+    );
+    const cost = logs.find((l) => l.includes("Cost"));
+    expect(cost).toContain("unknown");
+    expect(cost).toContain("0 of 4 calls priced");
+    expect(cost).not.toContain("$");
+  });
+
+  it("flags a partially priced run rather than passing it off as the full cost", () => {
+    capture();
+    printImportSummary(
+      baseResult({
+        replayUsage: {
+          provider: "mixed", model: "mixed",
+          calls: 10, okCalls: 10, failedCalls: 0, tokensSpent: 144000,
+          costUsd: 0.0005, callsWithCost: 3,
+        },
+      }),
+      { replay: true },
+    );
+    expect(logs.find((l) => l.includes("Cost"))).toContain("3 of 10 calls priced");
   });
 });
