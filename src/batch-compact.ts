@@ -26,6 +26,17 @@ export interface UncompactedConversation {
 }
 
 /** Find conversations eligible for compaction, above the token threshold. */
+/** The cwd recorded in a project's meta.json, or "" when absent or corrupt. */
+function readProjectCwd(projDir: string): string {
+  const metaPath = join(projDir, "meta.json");
+  if (!existsSync(metaPath)) return "";
+  try {
+    return JSON.parse(readFileSync(metaPath, "utf-8")).cwd ?? "";
+  } catch {
+    return "";
+  }
+}
+
 /** Every tracked project with a database: its directory and cwd. */
 export function findProjects(cwdFilter?: string): { projDir: string; cwd: string }[] {
   const baseDir = join(homedir(), ".lossless-claude", "projects");
@@ -36,16 +47,8 @@ export function findProjects(cwdFilter?: string): { projDir: string; cwd: string
     if (!entry.isDirectory()) continue;
     const projDir = join(baseDir, entry.name);
     if (!existsSync(join(projDir, "db.sqlite"))) continue;
-
-    const metaPath = join(projDir, "meta.json");
-    let cwd = "";
-    if (existsSync(metaPath)) {
-      try {
-        cwd = JSON.parse(readFileSync(metaPath, "utf-8")).cwd ?? "";
-      } catch { /* skip corrupt meta */ }
-    }
-    if (!cwd) continue;
-    if (cwdFilter && cwd !== cwdFilter) continue;
+    const cwd = readProjectCwd(projDir);
+    if (!cwd || (cwdFilter && cwd !== cwdFilter)) continue;
     projects.push({ projDir, cwd });
   }
   return projects;
