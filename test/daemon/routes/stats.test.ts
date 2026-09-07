@@ -34,10 +34,12 @@ describe("GET /stats", () => {
     });
     expect(body.llmUsage).toMatchObject({
       calls: expect.any(Number),
-      callsOk: expect.any(Number),
-      callsFailed: expect.any(Number),
+      okCalls: expect.any(Number),
+      failedCalls: expect.any(Number),
       tokensSpent: expect.any(Number),
     });
+    expect(body.llmUsage).not.toHaveProperty("callsOk");
+    expect(body.llmUsage).not.toHaveProperty("callsFailed");
   });
 
   it("redactionCounts.total equals sum of built-in, global, and project", { timeout: 60_000 }, async () => {
