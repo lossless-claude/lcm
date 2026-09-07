@@ -1,7 +1,7 @@
 /**
  * Parser for Codex CLI session transcript files.
  *
- * Codex stores sessions in ~/.codex/sessions/<session-id>/<session-id>.jsonl
+ * Codex stores sessions in ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
  * and archives them in ~/.codex/archived_sessions/<name>.jsonl.
  *
  * Each JSONL line is an event object with a top-level `type` and `payload`:
@@ -15,9 +15,10 @@
  * messages use `type: "output_text"` (both carry a `text` string field).
  */
 
-import { readdirSync, readFileSync, existsSync, lstatSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync, lstatSync, openSync, readSync, closeSync, type Dirent } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
+import { StringDecoder } from "node:string_decoder";
 import { estimateTokens } from "./transcript.js";
 import type { ParsedMessage } from "./transcript.js";
 
@@ -123,25 +124,40 @@ export function parseCodexTranscript(transcriptPath: string): ParsedMessage[] {
  * Returns undefined if the session_meta line cannot be found/parsed.
  */
 export function extractCodexSessionCwd(transcriptPath: string): string | undefined {
-  let raw: string;
+  return extractCodexSessionMeta(transcriptPath)?.cwd;
+}
+
+function extractCodexSessionMeta(transcriptPath: string): CodexSessionMetaPayload | undefined {
+  let fd: number | undefined;
   try {
-    raw = readFileSync(transcriptPath, "utf-8");
+    fd = openSync(transcriptPath, "r");
+    const buffer = Buffer.alloc(8192);
+    const decoder = new StringDecoder("utf8");
+    let pending = "";
+    // session_meta is a header. Bound malformed/headerless transcript scanning.
+    for (let bytes = 0; bytes < 1024 * 1024;) {
+      const count = readSync(fd, buffer, 0, buffer.length, null);
+      bytes += count;
+      pending += count === 0 ? decoder.end() : decoder.write(buffer.subarray(0, count));
+      const lines = pending.split("\n");
+      pending = count === 0 ? "" : lines.pop() ?? "";
+      for (const line of lines) {
+        try {
+          const obj = JSON.parse(line) as CodexLine;
+          if (obj.type !== "session_meta") continue;
+          const meta = obj.payload as CodexSessionMetaPayload | undefined;
+          return {
+            id: typeof meta?.id === "string" && meta.id ? meta.id : undefined,
+            cwd: typeof meta?.cwd === "string" && meta.cwd ? meta.cwd : undefined,
+          };
+        } catch { /* skip malformed lines */ }
+      }
+      if (count === 0) break;
+    }
   } catch {
     return undefined;
-  }
-
-  for (const line of raw.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      const obj = JSON.parse(trimmed) as CodexLine;
-      if (obj.type === "session_meta") {
-        const meta = obj.payload as CodexSessionMetaPayload | undefined;
-        if (typeof meta?.cwd === "string" && meta.cwd) return meta.cwd;
-      }
-    } catch {
-      continue;
-    }
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 
   return undefined;
@@ -155,6 +171,7 @@ export interface CodexSessionFile {
   path: string;
   sessionId: string;
   mtime: number;
+  cwd?: string;
 }
 
 /**
@@ -162,23 +179,32 @@ export interface CodexSessionFile {
  *
  * Supported layouts:
  *   - Flat:  <root>/<name>.jsonl         (archived_sessions/)
- *   - Nested: <root>/<id>/<id>.jsonl     (sessions/ layout)
+ *   - Nested: <root>/<id>/<id>.jsonl or <root>/YYYY/MM/DD/rollout-*.jsonl
  */
 export function findCodexSessionFiles(rootDir: string): CodexSessionFile[] {
   const files: CodexSessionFile[] = [];
-  if (!existsSync(rootDir)) return files;
+  let entries: Dirent[];
+  try {
+    if (!existsSync(rootDir) || lstatSync(rootDir).isSymbolicLink()) return files;
+    entries = readdirSync(rootDir, { withFileTypes: true });
+  } catch {
+    // Discovery is best-effort: an unreadable directory must not abort the walk.
+    return files;
+  }
 
-  for (const entry of readdirSync(rootDir, { withFileTypes: true })) {
+  for (const entry of entries) {
     // Flat layout: rootDir/<name>.jsonl
     if (entry.isFile() && !entry.isSymbolicLink() && entry.name.endsWith(".jsonl")) {
       try {
         const full = join(rootDir, entry.name);
         const st = lstatSync(full);
         if (st.isSymbolicLink()) continue; // skip symlinks
+        const meta = extractCodexSessionMeta(full);
         files.push({
           path: full,
-          sessionId: basename(entry.name, ".jsonl"),
+          sessionId: meta?.id ?? basename(entry.name, ".jsonl"),
           mtime: st.mtimeMs,
+          cwd: meta?.cwd,
         });
       } catch {
         // skip unreadable entries
@@ -186,25 +212,9 @@ export function findCodexSessionFiles(rootDir: string): CodexSessionFile[] {
       continue;
     }
 
-    // Nested layout: rootDir/<id>/<id>.jsonl
+    // Walk dated rollouts and legacy nested sessions without following symlinks.
     if (entry.isDirectory() && !entry.isSymbolicLink()) {
-      const nested = join(rootDir, entry.name, `${entry.name}.jsonl`);
-      if (existsSync(nested)) {
-        try {
-          const st = lstatSync(nested);
-          if (st.isSymbolicLink()) {
-            // skip symlinks
-          } else if (st.isFile()) {
-            files.push({
-              path: nested,
-              sessionId: entry.name,
-              mtime: st.mtimeMs,
-            });
-          }
-        } catch {
-          // skip
-        }
-      }
+      files.push(...findCodexSessionFiles(join(rootDir, entry.name)));
     }
   }
 
@@ -220,7 +230,7 @@ export function findCodexSessionFiles(rootDir: string): CodexSessionFile[] {
  *
  * Searches:
  *   - <codexDir>/archived_sessions/*.jsonl  (flat layout)
- *   - <codexDir>/sessions/<id>/<id>.jsonl   (nested layout)
+ *   - <codexDir>/sessions/ recursively    (dated and legacy layouts)
  *
  * Defaults to ~/.codex when codexDir is omitted.
  */
@@ -234,10 +244,12 @@ export function findAllCodexTranscripts(codexDir?: string): CodexSessionFile[] {
   // Active sessions (nested)
   results.push(...findCodexSessionFiles(join(root, "sessions")));
 
-  // De-duplicate by sessionId (flat archive wins over sessions/)
+  // Prefer the latest transcript for an identity, even if an older archive exists.
+  // Archive order is a deterministic tie-breaker for equal modification times.
   const seen = new Map<string, CodexSessionFile>();
   for (const f of results) {
-    if (!seen.has(f.sessionId)) seen.set(f.sessionId, f);
+    const existing = seen.get(f.sessionId);
+    if (!existing || f.mtime > existing.mtime) seen.set(f.sessionId, f);
   }
 
   return [...seen.values()].sort((a, b) => {

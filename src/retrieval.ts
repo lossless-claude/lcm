@@ -241,8 +241,12 @@ export class RetrievalEngine {
       ]);
     }
 
-    messages.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-    summaries.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    // Full-text stores already rank before applying their candidate limits.
+    // Sorting those matches by time here would discard relevance.
+    if (mode === "regex") {
+      messages.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      summaries.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    }
 
     return {
       messages,

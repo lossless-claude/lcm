@@ -629,35 +629,34 @@ export class ConversationStore {
     before?: Date,
   ): MessageSearchResult[] {
     // Natural-language questions ANDed term-by-term almost never match, so
-    // prepare the query first: drop stopwords, then try AND (precise), then
-    // OR ranked by BM25 (the grep baseline behavior), then a substring LIKE
-    // scan when the question's vocabulary does not overlap the corpus.
+    // prepare the query first: drop stopwords, then take AND matches (precise),
+    // fill the remaining candidate slots with OR matches ranked by BM25 (the
+    // grep baseline behavior), then fall back to a substring LIKE scan when
+    // the question's vocabulary does not overlap the corpus at all.
     const prepared = prepareFts5Query(query);
     if (!prepared) {
       return [];
     }
-    const expressions = shouldRetryWithLike(prepared)
-      ? [prepared.and, prepared.or]
-      : [prepared.and];
-
-    for (const [index, expression] of expressions.entries()) {
-      const ranked = index > 0;
-      const rows = this.runFullTextMatch(expression, limit, ranked, conversationId, since, before);
-      if (rows.length > 0) {
-        return rows;
+    const rows = this.runFullTextMatch(prepared.and, limit, conversationId, since, before);
+    if (!shouldRetryWithLike(prepared)) {
+      return rows;
+    }
+    if (rows.length < limit) {
+      const seen = new Set(rows.map((row) => row.messageId));
+      for (const row of this.runFullTextMatch(prepared.or, limit, conversationId, since, before)) {
+        if (rows.length >= limit) break;
+        if (!seen.has(row.messageId)) rows.push(row);
       }
     }
-
-    if (shouldRetryWithLike(prepared)) {
-      return this.searchLikeTerms(prepared, limit, conversationId, since, before);
+    if (rows.length > 0) {
+      return rows;
     }
-    return [];
+    return this.searchLikeTerms(prepared, limit, conversationId, since, before);
   }
 
   private runFullTextMatch(
     ftsExpression: string,
     limit: number,
-    ranked: boolean,
     conversationId?: ConversationId,
     since?: Date,
     before?: Date,
@@ -678,7 +677,6 @@ export class ConversationStore {
     }
     args.push(limit);
 
-    const orderBy = ranked ? "rank, m.created_at DESC" : "m.created_at DESC";
     const sql = `SELECT
          m.message_id,
          m.conversation_id,
@@ -689,7 +687,7 @@ export class ConversationStore {
        FROM messages_fts
        JOIN messages m ON m.message_id = messages_fts.rowid
        WHERE ${where.join(" AND ")}
-       ORDER BY ${orderBy}
+        ORDER BY rank, m.created_at DESC
        LIMIT ?`;
     const rows = this.db.prepare(sql).all(...args) as unknown as MessageSearchRow[];
     return rows.map(toSearchResult);

@@ -1,13 +1,11 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { projectDbPath } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
+import { closeLcmConnection, getLcmConnection } from "../../db/connection.js";
 import { runLcmMigrations } from "../../db/migration.js";
-import { ConversationStore } from "../../store/conversation-store.js";
-import { SummaryStore } from "../../store/summary-store.js";
-import { RetrievalEngine } from "../../retrieval.js";
+import { searchNativeHistory } from "../../search/native-history.js";
 import { PromotedStore } from "../../db/promoted.js";
 import { validateCwd } from "../validate-cwd.js";
 
@@ -24,6 +22,10 @@ export function createSearchHandler(): RouteHandler {
 
     if (!query) {
       sendJson(res, 400, { error: "query is required" });
+      return;
+    }
+    if (input.backend !== undefined && input.backend !== "native") {
+      sendJson(res, 400, { error: "Only native search is available in this build" });
       return;
     }
 
@@ -45,25 +47,15 @@ export function createSearchHandler(): RouteHandler {
       const dbPath = projectDbPath(cwd);
       if (existsSync(dbPath)) {
         mkdirSync(dirname(dbPath), { recursive: true });
-        const db = new DatabaseSync(dbPath);
+        const db = getLcmConnection(dbPath);
         try {
           runLcmMigrations(db);
 
           // Episodic: FTS5 search across messages + summaries
           if (activeLayers.includes("episodic")) {
             try {
-              const convStore = new ConversationStore(db);
-              const summStore = new SummaryStore(db);
-              const engine = new RetrievalEngine(convStore, summStore);
-              const result = await engine.grep({ query, mode: "full_text", scope: "both" });
-              const allMatches = [...result.messages, ...result.summaries];
-              const episodicMatches = filterTags
-                ? allMatches.filter((m) => {
-                    const t = (m as Record<string, unknown>).tags;
-                    return Array.isArray(t) && filterTags.every(ft => t.includes(ft));
-                  })
-                : allMatches;
-              episodic = episodicMatches.slice(0, limit);
+              // History records do not carry promoted-memory tags.
+              episodic = filterTags ? [] : await searchNativeHistory(db, { query, limit });
             } catch (err) {
               // Non-fatal for the response, but never silent: a real failure
               // (malformed FTS5 syntax, missing table, corrupt index) must be
@@ -87,7 +79,7 @@ export function createSearchHandler(): RouteHandler {
           console.warn(`[lcm] /search database open failed: ${describeError(err)}`);
           errors.push(`database: ${describeError(err)}`);
         } finally {
-          db.close();
+          closeLcmConnection(dbPath);
         }
       }
     }

@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import type { DaemonClient } from "./daemon/client.js";
 import { formatNumber, formatRatio } from "./stats.js";
-import { findAllCodexTranscripts, extractCodexSessionCwd } from "./codex-transcript.js";
+import { findAllCodexTranscripts } from "./codex-transcript.js";
 import type { ProgressState } from "./cli/progress-state.js";
 import { projectDbPath, projectId } from "./daemon/project.js";
 import {
@@ -189,6 +189,7 @@ interface SessionEntry {
   path: string;
   sessionId: string;
   cwd: string;
+  client?: "claude" | "codex";
 }
 
 type CompactLlmUsage = {
@@ -352,7 +353,7 @@ async function ingestSessionList(
   const total = sessions.length + doneCount;
   const processedBase = doneCount;
 
-  for (const { path, sessionId, cwd } of sessions) {
+  for (const { path, sessionId, cwd, client: sourceClient = "claude" } of sessions) {
     // Stop starting new work after SIGINT/SIGTERM; the renderer waits for the
     // in-flight session to settle before exiting.
     if (options.onBeforeSession && !options.onBeforeSession()) break;
@@ -390,6 +391,7 @@ async function ingestSessionList(
         session_id: sessionId,
         cwd,
         transcript_path: path,
+        ...(sourceClient === "codex" ? { client: "codex" } : {}),
         // A completed session's transcript may have grown; replay must ingest the tail.
         ...(options.replay ? { replay: true } : {}),
       });
@@ -448,7 +450,7 @@ async function ingestSessionList(
             session_id: sessionId,
             cwd,
             skip_ingest: true,
-            client: 'claude',
+            client: sourceClient,
             ...(previousSummaryByCwd.get(cwd) !== undefined ? { previous_summary: previousSummaryByCwd.get(cwd) } : {}),
           });
           const hadPrevious = previousSummaryByCwd.get(cwd) !== undefined;
@@ -580,14 +582,21 @@ export async function importSessions(
   // --- Codex CLI sessions ---
   if (provider === "codex" || provider === "all") {
     const codexTranscripts = findAllCodexTranscripts(options._codexDir);
-    const codexSessions: SessionEntry[] = codexTranscripts.map(f => ({
-      path: f.path,
-      sessionId: f.sessionId,
-      // Prefer the cwd embedded in the transcript; fall back to process.cwd()
-      cwd: extractCodexSessionCwd(f.path) ?? process.cwd(),
-    }));
-
-    await ingestSessionList(client, codexSessions, options, result, clearedCwds);
+    const targetProject = projectId(options.cwd ?? process.cwd());
+    const projects = new Map<string, SessionEntry[]>();
+    for (const transcript of codexTranscripts) {
+      // Unknown provenance must not be assigned to the invoking project.
+      if (!transcript.cwd) continue;
+      const id = projectId(transcript.cwd);
+      if (!options.all && id !== targetProject) continue;
+      const sessions = projects.get(id) ?? [];
+      sessions.push({ ...transcript, cwd: transcript.cwd, client: "codex" });
+      projects.set(id, sessions);
+    }
+    // Keep replay context inside one project when importing all projects.
+    for (const sessions of projects.values()) {
+      await ingestSessionList(client, sessions, options, result, clearedCwds);
+    }
   }
 
   return result;

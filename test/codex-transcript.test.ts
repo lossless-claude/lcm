@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, utimesSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, utimesSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -229,6 +229,21 @@ describe("findCodexSessionFiles", () => {
     expect(findCodexSessionFiles("/nonexistent")).toEqual([]);
   });
 
+  it("keeps discovering when a nested directory is unreadable", () => {
+    if (process.getuid?.() === 0) return; // root ignores directory permissions
+    const dir = makeTmpDir();
+    writeFileSync(join(dir, "session-ok.jsonl"), "");
+    const locked = join(dir, "locked");
+    mkdirSync(locked);
+    writeFileSync(join(locked, "session-hidden.jsonl"), "");
+    chmodSync(locked, 0o000);
+    try {
+      expect(findCodexSessionFiles(dir).map(f => f.sessionId)).toEqual(["session-ok"]);
+    } finally {
+      chmodSync(locked, 0o700);
+    }
+  });
+
   it("discovers flat .jsonl files", () => {
     const dir = makeTmpDir();
     writeFileSync(join(dir, "session-abc.jsonl"), "");
@@ -306,11 +321,34 @@ describe("findAllCodexTranscripts", () => {
     const sessionDir = join(sessions, "dup-session");
     mkdirSync(sessionDir, { recursive: true });
     writeFileSync(join(sessionDir, "dup-session.jsonl"), "active");
+    const time = new Date("2026-01-01");
+    utimesSync(join(archived, "dup-session.jsonl"), time, time);
+    utimesSync(join(sessionDir, "dup-session.jsonl"), time, time);
 
     const files = findAllCodexTranscripts(codexDir);
     const matches = files.filter(f => f.sessionId === "dup-session");
     expect(matches).toHaveLength(1);
-    // archived_sessions is added first, so it wins
+    // Archive wins the equal-mtime tie.
     expect(matches[0].path).toBe(join(archived, "dup-session.jsonl"));
+  });
+
+  it("discovers dated rollouts and retains the newest copy by metadata identity", () => {
+    const root = makeTmpDir();
+    const activeDir = join(root, "sessions", "2026", "09", "07");
+    const archiveDir = join(root, "archived_sessions");
+    mkdirSync(activeDir, { recursive: true });
+    mkdirSync(archiveDir);
+    const meta = JSON.stringify({ type: "session_meta", payload: { id: "session-uuid", cwd: "/project" } });
+    const archive = join(archiveDir, "old-name.jsonl");
+    const active = join(activeDir, "rollout-2026-09-07-session-uuid.jsonl");
+    writeFileSync(archive, meta);
+    writeFileSync(active, [meta, makeSessionLine("user", "Why was caching removed?"), makeSessionLine("assistant", "It returned stale results.")].join("\n"));
+    utimesSync(archive, new Date("2026-09-01"), new Date("2026-09-01"));
+    const files = findAllCodexTranscripts(root);
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatchObject({ sessionId: "session-uuid", cwd: "/project", path: active });
+    expect(parseCodexTranscript(files[0].path).map(m => [m.role, m.content])).toEqual([
+      ["user", "Why was caching removed?"], ["assistant", "It returned stale results."],
+    ]);
   });
 });

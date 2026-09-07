@@ -9,6 +9,7 @@ import { upsertRedactionCounts } from "../../db/redaction-stats.js";
 import { ConversationStore } from "../../store/conversation-store.js";
 import { SummaryStore } from "../../store/summary-store.js";
 import { parseTranscript, type ParsedMessage } from "../../transcript.js";
+import { extractCodexSessionCwd, parseCodexTranscript } from "../../codex-transcript.js";
 import { ScrubEngine } from "../../scrub.js";
 import { validateCwd } from "../validate-cwd.js";
 
@@ -24,14 +25,20 @@ function isParsedMessage(value: unknown): value is ParsedMessage {
   );
 }
 
-function resolveMessages(input: { messages?: unknown; transcript_path?: string }, cwd: string): ParsedMessage[] {
+function resolveMessages(input: { messages?: unknown; transcript_path?: string; client?: string }, cwd: string): ParsedMessage[] {
   if (Array.isArray(input.messages)) {
     return input.messages.filter(isParsedMessage);
   }
 
   if (input.transcript_path) {
-    const safePath = isSafeTranscriptPath(input.transcript_path, cwd);
+    const client = input.client === "codex" ? "codex" : "claude";
+    const safePath = isSafeTranscriptPath(input.transcript_path, cwd, client);
     if (safePath && existsSync(safePath)) {
+      if (client === "codex") {
+        const transcriptCwd = extractCodexSessionCwd(safePath);
+        if (!transcriptCwd || projectId(transcriptCwd) !== projectId(cwd)) return [];
+        return parseCodexTranscript(safePath);
+      }
       return parseTranscript(safePath);
     }
   }

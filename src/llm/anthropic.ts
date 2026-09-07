@@ -34,7 +34,7 @@ export function createAnthropicSummarizer(opts: SummarizerOptions): LcmSummarize
       condensedTargetTokens: 2000,
     });
 
-    const prompt = ctx.isCondensed
+    const prompt = ctx.taskPrompt !== undefined ? text : ctx.isCondensed
       ? buildCondensedSummaryPrompt({ text, targetTokens, depth: ctx.depth ?? 1 })
       : buildLeafSummaryPrompt({ text, mode: aggressive ? "aggressive" : "normal", targetTokens });
 
@@ -45,7 +45,7 @@ export function createAnthropicSummarizer(opts: SummarizerOptions): LcmSummarize
         const response = await client.messages.create({
           model: opts.model,
           max_tokens: 1024,
-          system: LCM_SUMMARIZER_SYSTEM_PROMPT,
+          system: ctx.taskPrompt ?? LCM_SUMMARIZER_SYSTEM_PROMPT,
           messages: [{ role: "user", content: prompt }],
         });
 
@@ -56,7 +56,7 @@ export function createAnthropicSummarizer(opts: SummarizerOptions): LcmSummarize
           const retry = await client.messages.create({
             model: opts.model,
             max_tokens: 1024,
-            system: LCM_SUMMARIZER_SYSTEM_PROMPT,
+            system: ctx.taskPrompt ?? LCM_SUMMARIZER_SYSTEM_PROMPT,
             messages: [{ role: "user", content: prompt }],
           });
           return retry.content.find((c: any) => c.type === "text")?.text ?? text.slice(0, 500);

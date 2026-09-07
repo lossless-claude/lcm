@@ -104,13 +104,13 @@ function normalizeSpawnError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
-export function buildClaudeArgs(model: string): string[] {
+export function buildClaudeArgs(model: string, systemPrompt = LCM_SUMMARIZER_SYSTEM_PROMPT): string[] {
   return [
     "--print",
     "--output-format", "json",
     "--model", model,
     "--no-session-persistence",
-    "--system-prompt", LCM_SUMMARIZER_SYSTEM_PROMPT,
+    "--system-prompt", systemPrompt,
     "--tools", "",
     "--disable-slash-commands",
   ];
@@ -135,7 +135,7 @@ export function createClaudeProcessSummarizer(opts: ClaudeProcessDeps = {}): Lcm
     return new Promise((resolve, reject) => {
       let proc: ChildProcessWithoutNullStreams;
       try {
-        proc = deps.spawn("claude", buildClaudeArgs(deps.model), { stdio: ["pipe", "pipe", "pipe"] });
+        proc = deps.spawn("claude", buildClaudeArgs(deps.model, ctx.taskPrompt), { stdio: ["pipe", "pipe", "pipe"] });
       } catch (error) {
         reject(normalizeSpawnError(error));
         return;

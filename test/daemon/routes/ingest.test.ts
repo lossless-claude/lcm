@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -20,6 +20,33 @@ describe("POST /ingest", () => {
     for (const dir of tempDirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("parses Codex rollout responses server-side and rejects a mismatched project", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-ingest-codex-"));
+    tempDirs.push(tempDir);
+    const path = join(tempDir, "rollout-2026-09-07-different-filename.jsonl");
+    writeFileSync(path, [
+      { type: "session_meta", payload: { id: "codex-meta-id", cwd: tempDir } },
+      { type: "event_msg", payload: { type: "user_message", message: "duplicate notification" } },
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] } },
+      { type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] } },
+    ].map(line => JSON.stringify(line)).join("\n"));
+    daemon = await createDaemon(loadDaemonConfig("/nonexistent", { daemon: { port: 0 } }));
+    const post = (cwd: string) => fetch(`http://127.0.0.1:${daemon!.address().port}/ingest`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: "codex-meta-id", cwd, client: "codex", transcript_path: path }),
+    });
+    const wrong = await post(tmpdir());
+    expect(await wrong.json()).toEqual({ ingested: 0, totalTokens: 0 });
+    const response = await post(tempDir);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ingested: 2, totalTokens: 3 });
+    const db = new DatabaseSync(projectDbPath(tempDir));
+    try {
+      expect(db.prepare("SELECT role, content FROM messages ORDER BY seq").all().map(r => [r.role, r.content])).toEqual([["user", "hello"], ["assistant", "hi"]]);
+      expect(db.prepare("SELECT session_id FROM conversations").get()?.session_id).toBe("codex-meta-id");
+    } finally { db.close(); }
   });
 
   it("accepts messages[] as an alternative to transcript_path", async () => {
