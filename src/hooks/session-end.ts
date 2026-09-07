@@ -1,10 +1,24 @@
 import type { DaemonClient } from "../daemon/client.js";
 import { ensureDaemon } from "../daemon/lifecycle.js";
 import { loadDaemonConfig } from "../daemon/config.js";
+import { readAuthToken } from "../daemon/auth.js";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { request } from "node:http";
 import { Buffer } from "node:buffer";
+
+/**
+ * Build the Authorization header for daemon requests, if a token is available.
+ *
+ * Auth has been mandatory on the daemon since #109, so every fire-and-forget
+ * request must carry the ****** or it fails with HTTP 401 — silently,
+ * because a 401 is a normal response, not a socket "error" event. Returns an
+ * empty object when no token file exists so callers can spread it unconditionally.
+ */
+function authHeaders(): Record<string, string> {
+  const token = readAuthToken(join(homedir(), ".lossless-claude", "daemon.token"));
+  return token ? { Authorization: "Bearer " + token } : {};
+}
 
 /**
  * Fire a compact request to the daemon without blocking the hook process.
@@ -29,6 +43,7 @@ export function fireCompactRequest(
     headers: {
       "Content-Type": "application/json",
       "Content-Length": Buffer.byteLength(json),
+      ...authHeaders(),
     },
   });
   req.on("socket", (socket) => {
@@ -51,6 +66,7 @@ export function firePromoteRequest(port: number, body: Record<string, unknown>):
     headers: {
       "Content-Type": "application/json",
       "Content-Length": Buffer.byteLength(json),
+      ...authHeaders(),
     },
   });
   req.on("socket", (socket) => {
@@ -68,7 +84,11 @@ export function firePromoteEventsRequest(port: number, body: Record<string, unkn
     port,
     path: "/promote-events",
     method: "POST",
-    headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(json) },
+    headers: {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(json),
+      ...authHeaders(),
+    },
   });
   req.on("socket", (socket) => {
     req.on("finish", () => (socket as import("node:net").Socket).unref());
@@ -88,6 +108,7 @@ export function fireSessionCompleteRequest(port: number, body: Record<string, un
     headers: {
       "Content-Type": "application/json",
       "Content-Length": Buffer.byteLength(json),
+      ...authHeaders(),
     },
   });
   req.on("socket", (socket) => {
