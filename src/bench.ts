@@ -404,10 +404,10 @@ export async function runBench(opts: BenchOptions): Promise<BenchResult> {
     return { out: "", exitCode: 1, stdout: `No project database found for ${opts.cwd}.\n` };
   }
 
-  // Migrations may backfill on first open, so this handle is read-write.
-  const db = getLcmConnection(dbPath);
   // Conversation text is copied here only for the duration of the run.
   const rgDir = await mkdtemp(join(tmpdir(), "lcm-bench-rg-"));
+  // Migrations may backfill on first open, so this handle is read-write.
+  const db = getLcmConnection(dbPath);
   try {
     runLcmMigrations(db);
     const convStore = new ConversationStore(db);
