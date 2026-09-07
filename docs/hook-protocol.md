@@ -41,7 +41,9 @@ The snapshot reads `~/.claude/CLAUDE.md`, `CLAUDE.md` in the working directory, 
 | `session_id` | string | Session identifier |
 | `cwd` | string | Working directory |
 | `hook_event_name` | string | `"SessionStart"` |
-| `source` | string | `"startup"`, `"resume"`, `"clear"`, or `"compact"`; compaction replays the saved instructions |
+| `source` | string (optional) | `"startup"`, `"resume"`, `"clear"`, or `"compact"`; compaction replays the saved instructions |
+
+If `source` is missing or unrecognized, lcm uses a recent compaction marker for the same session to decide whether to replay the saved instructions. Explicit `"startup"`, `"resume"`, and `"clear"` values override that fallback; `"compact"` always requests replay.
 
 **Response:** Exit code `0`. Context is injected via stdout (printed as a `<context>` block that Claude Code prepends to the session).
 
