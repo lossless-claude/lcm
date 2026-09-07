@@ -1,13 +1,20 @@
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync, realpathSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { describe, it, expect, afterEach, beforeEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { createDaemon, type DaemonInstance } from "../../../src/daemon/server.js";
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { runLcmMigrations } from "../../../src/db/migration.js";
 import { projectDbPath } from "../../../src/daemon/project.js";
 import { PromotedStore } from "../../../src/db/promoted.js";
+import { getLcmConnection, closeLcmConnection, getPoolStats } from "../../../src/db/connection.js";
+import { justCompactedMap } from "../../../src/daemon/routes/compact.js";
+
+vi.mock("node:os", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:os")>();
+  return { ...actual, homedir: vi.fn(actual.homedir) };
+});
 
 describe("POST /restore", () => {
   let daemon: DaemonInstance | undefined;
@@ -105,6 +112,135 @@ describe("POST /restore", () => {
       expect(row).toBeDefined();
       expect(row!.content).toContain("Always write tests.");
       expect(row!.content_hash).toMatch(/^[a-f0-9]{64}$/);
+    });
+
+    it.each(["startup", "resume", "clear"])("does not echo saved project-instructions on %s, but still replays them post-compact", async (source) => {
+      writeFileSync(join(tmpDir, "CLAUDE.md"), "# Project Rules\nPrefer tabs over spaces.", "utf8");
+
+      daemon = await createDaemon(loadDaemonConfig(tmpDir, { daemon: { port: 0 } }));
+      const port = daemon.address().port;
+
+      // Seed the snapshot first: an empty DB cannot expose the old startup echo.
+      const seedRes = await fetch(`http://127.0.0.1:${port}/restore`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: "seed-instructions", cwd: tmpDir, source: "startup", hook_event_name: "SessionStart" }),
+      });
+      expect(seedRes.status).toBe(200);
+      await seedRes.json();
+
+      // The saved instructions must not duplicate the harness's own copy.
+      const restoreRes = await fetch(`http://127.0.0.1:${port}/restore`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: "restore-no-echo", cwd: tmpDir, source, hook_event_name: "SessionStart" }),
+      });
+      expect(restoreRes.status).toBe(200);
+      const restoreBody = await restoreRes.json();
+      expect(restoreBody.context).not.toContain("<project-instructions>");
+      expect(restoreBody.context).not.toContain("Prefer tabs over spaces.");
+
+      // ...but the snapshot was still captured, so a later compaction can replay it.
+      const compactRes = await fetch(`http://127.0.0.1:${port}/restore`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: "restore-no-echo", cwd: tmpDir, source: "compact", hook_event_name: "SessionStart" }),
+      });
+      expect(compactRes.status).toBe(200);
+      const compactBody = await compactRes.json();
+      expect(compactBody.context).toContain("<project-instructions>");
+      expect(compactBody.context).toContain("Prefer tabs over spaces.");
+    });
+
+    it.each(["startup", "resume", "clear", undefined])("honors source %s when a recent compaction marker exists", async (source) => {
+      const sessionId = `recent-compact-${source ?? "missing"}`;
+      writeFileSync(join(tmpDir, "CLAUDE.md"), "Saved instructions.", "utf8");
+      daemon = await createDaemon(loadDaemonConfig(tmpDir, { daemon: { port: 0 } }));
+      const url = `http://127.0.0.1:${daemon.address().port}/restore`;
+      const seedRes = await fetch(url, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, cwd: tmpDir, source: "startup" }),
+      });
+      expect(seedRes.status).toBe(200);
+      await seedRes.json();
+      writeFileSync(join(tmpDir, "CLAUDE.md"), "Updated instructions.", "utf8");
+
+      justCompactedMap.set(sessionId, Date.now());
+      try {
+        const res = await fetch(url, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionId, cwd: tmpDir, source }),
+        });
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        if (source === undefined) {
+          expect(body.context).toContain("<project-instructions>");
+          expect(body.context).toContain("Saved instructions.");
+        } else {
+          expect(body.context).not.toContain("<project-instructions>");
+        }
+
+        // Explicit non-compact sources still refresh the snapshot; fallback only replays it.
+        const compactRes = await fetch(url, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionId, cwd: tmpDir, source: "compact" }),
+        });
+        expect(compactRes.status).toBe(200);
+        const compactBody = await compactRes.json();
+        expect(compactBody.context).toContain(source === undefined ? "Saved instructions." : "Updated instructions.");
+      } finally {
+        justCompactedMap.delete(sessionId);
+      }
+    });
+
+    it("releases restore connection references without closing another caller's connection", async () => {
+      const dbPath = projectDbPath(realpathSync(tmpDir));
+      const db = getLcmConnection(dbPath);
+      try {
+        daemon = await createDaemon(loadDaemonConfig(tmpDir, { daemon: { port: 0 } }));
+        for (const source of ["startup", "compact"]) {
+          const res = await fetch(`http://127.0.0.1:${daemon.address().port}/restore`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: "shared-connection", cwd: tmpDir, source, hook_event_name: "SessionStart" }),
+          });
+          expect(res.status).toBe(200);
+          await res.json();
+          expect(getPoolStats().connections.find((entry) => entry.path === dbPath)?.refs).toBe(1);
+          expect(db.prepare("SELECT 1 AS alive").get()).toEqual({ alive: 1 });
+        }
+      } finally {
+        closeLcmConnection(dbPath);
+      }
+      expect(getPoolStats().connections.some((entry) => entry.path === dbPath)).toBe(false);
+    });
+
+    it("captures a CLAUDE.md reachable by two paths only once (cwd === $HOME)", async () => {
+      // Point homedir() at tmpDir to model running Claude with cwd === $HOME. Then
+      // `~/.claude/CLAUDE.md` and `${cwd}/.claude/CLAUDE.md` are the same file.
+      const actual = await vi.importActual<typeof import("node:os")>("node:os");
+      vi.mocked(homedir).mockReturnValue(tmpDir);
+      try {
+        mkdirSync(join(tmpDir, ".claude"), { recursive: true });
+        writeFileSync(join(tmpDir, ".claude", "CLAUDE.md"), "Only once please.", "utf8");
+
+        daemon = await createDaemon(loadDaemonConfig(tmpDir, { daemon: { port: 0 } }));
+        const res = await fetch(`http://127.0.0.1:${daemon.address().port}/restore`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: "home-is-cwd", cwd: tmpDir, source: "startup", hook_event_name: "SessionStart" }),
+        });
+        expect(res.status).toBe(200);
+
+        const dbPath = projectDbPath(realpathSync(tmpDir));
+        const db = getLcmConnection(dbPath);
+        try {
+          const row = db.prepare(`SELECT content FROM session_instructions WHERE id = 1`).get() as
+            | { content: string }
+            | undefined;
+          expect(row).toBeDefined();
+          expect(row!.content.split("Only once please.").length - 1).toBe(1);
+        } finally {
+          closeLcmConnection(dbPath);
+        }
+      } finally {
+        vi.mocked(homedir).mockImplementation(actual.homedir);
+      }
     });
 
     it("does not re-upsert session_instructions when content hash unchanged", async () => {
