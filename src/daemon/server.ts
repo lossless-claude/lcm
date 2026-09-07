@@ -9,6 +9,8 @@ import { createPromoteHandler } from "./routes/promote.js";
 import { createRestoreHandler } from "./routes/restore.js";
 import { createGrepHandler } from "./routes/grep.js";
 import { createSearchHandler } from "./routes/search.js";
+import { createSearchIndexHandler } from "./routes/search-index.js";
+import { createQmdClient, type QmdClient } from "../search/qmd-client.js";
 import { createExpandHandler } from "./routes/expand.js";
 import { createDescribeHandler } from "./routes/describe.js";
 import { createStoreHandler } from "./routes/store.js";
@@ -26,7 +28,7 @@ export { PKG_VERSION };
 
 export type RouteHandler = (req: IncomingMessage, res: ServerResponse, body: string) => Promise<void>;
 export type DaemonInstance = { address: () => AddressInfo; stop: () => Promise<void>; registerRoute: (method: string, path: string, handler: RouteHandler) => void; idleTriggered: boolean };
-export type DaemonOptions = { proxyManager?: ProxyManager; onIdle?: () => void; tokenPath?: string };
+export type DaemonOptions = { proxyManager?: ProxyManager; onIdle?: () => void; tokenPath?: string; qmd?: QmdClient };
 
 const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
 
@@ -65,6 +67,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
     throw new Error(`Auth token file specified but could not be read: ${options.tokenPath}`);
   }
   const routes = new Map<string, RouteHandler>();
+  const qmd = options?.qmd ?? createQmdClient();
 
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
   let idleTriggered = false;
@@ -88,7 +91,8 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   routes.set("POST /promote", createPromoteHandler(config));
   routes.set("POST /restore", createRestoreHandler(config));
   routes.set("POST /grep", createGrepHandler(config));
-  routes.set("POST /search", createSearchHandler());
+  routes.set("POST /search", createSearchHandler(qmd));
+  routes.set("POST /search/index", createSearchIndexHandler(qmd));
   routes.set("POST /expand", createExpandHandler(config));
   routes.set("POST /describe", createDescribeHandler(config));
   routes.set("POST /store", createStoreHandler(config));
@@ -203,6 +207,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
         stop: async () => {
           clearInterval(ingestInterval);
           if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+          await qmd.close();
           if (proxyManager) {
             try { await proxyManager.stop(); } catch { /* non-fatal */ }
           }

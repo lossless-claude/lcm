@@ -43,6 +43,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@sinclair/typebox": "0.34.48",
+    "@tobilu/qmd": "2.8.3",
     "commander": "^14.0.3",
     "js-yaml": "^4.1.1",
     "safe-regex": "^2.1.1"

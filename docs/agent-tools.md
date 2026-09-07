@@ -16,7 +16,7 @@ Start with grep. If the snippet is enough, stop. If you need metadata, use descr
 
 ### When to search vs. grep
 
-- **`lcm_search`** — Use when looking for knowledge across sessions in natural language. Returns ranked results from both episodic (SQLite) and semantic memory layers.
+- **`lcm_search`** — Use when looking for knowledge across sessions. Native retrieval returns episodic and promoted lists; the optional QMD backend returns one ranked evidence list.
 - **`lcm_grep`** — Use when you know an exact keyword, error message, or function name from a specific session.
 
 ### When to expand
@@ -33,16 +33,18 @@ Summaries are lossy by design. The "Expand for details about:" footer at the end
 
 ### lcm_search
 
-Hybrid search across episodic memory (SQLite FTS5) and semantic memory. Returns two separate ranked lists. Use when looking for project knowledge spanning multiple sessions.
+Search episodic and promoted project memory. Native retrieval returns separate layer lists. An explicitly prepared QMD index provides lexical or local hybrid retrieval through the same tool; see [QMD search](./qmd-search.md).
 
 **Parameters:**
 
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `query` | string | ✅ | — | Natural language search query |
-| `limit` | number | | `5` | Max results per layer |
-| `layers` | string[] | | both | `"episodic"`, `"semantic"`, or both |
+| `limit` | number | | `5` | Native: per layer. QMD: total, 1–100 |
+| `layers` | string[] | | both | `"episodic"`, `"promoted"`, or both |
 | `tags` | string[] | | — | Filter to entries that include all specified tags |
+| `backend` | string | | `native` | `native` or `qmd` |
+| `mode` | string | | `lexical` | QMD `lexical` or `hybrid`; hybrid may download local models |
 
 **Examples:**
 
@@ -50,8 +52,11 @@ Hybrid search across episodic memory (SQLite FTS5) and semantic memory. Returns 
 # Find past decisions about authentication
 lcm_search(query: "authentication decision")
 
-# Search only semantic layer, filtered by tag
-lcm_search(query: "database migration", layers: ["semantic"], tags: ["type:decision"])
+# Search only promoted memories, filtered by tag
+lcm_search(query: "database migration", layers: ["promoted"], tags: ["type:decision"])
+
+# Use the prepared QMD index
+lcm_search(query: "database migration", backend: "qmd", mode: "lexical")
 ```
 
 ### lcm_grep
@@ -183,7 +188,7 @@ listing something you need, use `lcm_expand` with that summary's node ID.
 
 ### Performance considerations
 
-- `lcm_search`, `lcm_grep`, and `lcm_describe` are fast (direct database queries)
+- Native `lcm_search`, `lcm_grep`, and `lcm_describe` use local database queries. QMD hybrid search also runs local models; inspect fallback/partial diagnostics and allow for cold starts.
 - `lcm_expand` traverses the DAG and reads source messages — cost scales with depth
 - `lcm_stats` performs full-table scans — use sparingly, not in request handlers
 - Token caps (`LCM_MAX_EXPAND_TOKENS`) prevent runaway expansion

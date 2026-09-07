@@ -3,7 +3,7 @@ import { Command } from "commander";
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerMemoryCommands, shouldRunMain } from "../../bin/lcm.js";
+import { registerIndexCommand, registerMemoryCommands, shouldRunMain } from "../../bin/lcm.js";
 
 describe("memory command registration", () => {
   it("registers all daemon-backed memory commands", () => {
@@ -30,6 +30,16 @@ describe("memory command registration", () => {
     expect(optionFlags).toContain("--layer <name>");
     expect(optionFlags).toContain("--tag <tag>");
     expect(optionFlags).toContain("--limit <n>");
+    expect(optionFlags).toContain("--backend <name>");
+    expect(optionFlags).toContain("--mode <name>");
+  });
+
+  it("index help exits before contacting the daemon or running models", () => {
+    const program = new Command("lcm").helpOption(false);
+    registerIndexCommand(program);
+    const command = program.commands.find(c => c.name() === "index")!;
+    command.exitOverride().configureOutput({ writeOut: () => {}, writeErr: () => {} });
+    expect(() => program.parse(["node", "lcm", "index", "--help"])).toThrow("(outputHelp)");
   });
 
   it("treats symlinked invocation as the same entrypoint", () => {

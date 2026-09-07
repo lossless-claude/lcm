@@ -44,7 +44,9 @@ export function registerMemoryCommands(program: Command): void {
   program
     .command("search <query>")
     .description("Search memory across episodic and promoted layers")
-    .option("--limit <n>", "Max results per layer", "5")
+    .option("--limit <n>", "Max results (native: per layer; QMD: total, up to 100)", "5")
+    .addOption(new Option("--backend <name>", "Search backend").choices(["native", "qmd"]).default("native"))
+    .addOption(new Option("--mode <name>", "QMD mode; hybrid may download and run models").choices(["lexical", "hybrid"]).default("lexical"))
     .option("--layer <name>", "Layer to search: episodic or promoted (repeatable)", collectRepeatedOption, [])
     .option("--tag <tag>", "Require a tag on matching entries (repeatable)", collectRepeatedOption, [])
     .helpOption(false)
@@ -58,6 +60,7 @@ export function registerMemoryCommands(program: Command): void {
       const layers = normalizeStringList(opts.layer);
       const tags = normalizeStringList(opts.tag) ?? [];
       ensureAllowedValues(layers, ["episodic", "promoted"], "--layer");
+      if (opts.backend !== "qmd" && opts.mode === "hybrid") throw new Error("--mode hybrid requires --backend qmd");
 
       const client = await createDaemonClientOrExit();
       const result = await client.post("/search", {
@@ -66,6 +69,7 @@ export function registerMemoryCommands(program: Command): void {
         limit: parsePositiveInteger(String(opts.limit ?? "5"), "--limit"),
         layers,
         tags,
+        ...(opts.backend === "qmd" ? { backend: "qmd", mode: opts.mode } : {}),
       });
       printJson(result);
     });
@@ -266,6 +270,23 @@ export function registerBenchCommands(program: Command): void {
     });
 
   program.addCommand(benchCmd);
+}
+
+export function registerIndexCommand(program: Command): void {
+  program.command("index")
+    .description("Update the QMD projection from this project's retained memory")
+    .helpOption("-h, --help", "Show help")
+    .option("--project <path>", "Project directory (default: cwd)")
+    .option("--embed", "Generate embeddings; may download the configured local model")
+    .option("--timeout <seconds>", "Indexing time budget, up to 86400 seconds", "600")
+    .action(async (opts) => {
+      const client = await createDaemonClientOrExit();
+      printJson(await client.post("/search/index", {
+        cwd: opts.project ? resolve(opts.project) : process.cwd(),
+        embed: opts.embed ?? false,
+        timeoutMs: parsePositiveInteger(String(opts.timeout), "--timeout") * 1000,
+      }));
+    });
 }
 
 async function main() {
@@ -753,6 +774,7 @@ async function main() {
     });
 
   registerMemoryCommands(program);
+  registerIndexCommand(program);
 
   // ─── diagnose ──────────────────────────────────────────────────────────────
   program

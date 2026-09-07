@@ -78,17 +78,34 @@ const HELP: Record<string, CommandHelp> = {
 
   search: {
     summary: "Search memory across episodic and promoted layers for the current project.",
-    usage: "lcm search <query> [--limit N] [--layer episodic|promoted] [--tag <tag>]",
+    usage: "lcm search <query> [--backend native|qmd] [--mode lexical|hybrid] [--limit N] [--layer episodic|promoted] [--tag <tag>]",
     options: [
-      ["--limit N", "Max results per layer (default: 5)"],
+      ["--limit N", "Max results: native per layer; QMD total, up to 100 (default: 5)"],
       ["--layer <name>", "Layer to search: episodic or promoted (repeatable)"],
       ["--tag <tag>", "Filter to entries that include all specified tags (repeatable)"],
+      ["--backend <name>", "native (default) or qmd; QMD requires lcm index"],
+      ["--mode <name>", "QMD lexical (default, no models) or hybrid (local models)"],
     ],
     examples: [
       ["lcm search \"authentication decision\"", "Search both memory layers for auth-related context"],
       ["lcm search \"sqlite migration\" --layer episodic", "Search only episodic memory"],
       ["lcm search \"hook failure\" --tag type:solution", "Filter by tag"],
+      ["lcm search \"decisão de arquitetura\" --backend qmd", "Search the QMD lexical index"],
+      ["lcm search \"why was replay changed?\" --backend qmd --mode hybrid", "Run hybrid retrieval after lcm index --embed"],
     ],
+    notes: "QMD failures return native results with fallback:true and errors. Hybrid may download local models. QMD returns one ranked matches list, with source references and index capabilities.",
+  },
+
+  index: {
+    summary: "Build or update the project's QMD evidence index.",
+    usage: "lcm index [--project <path>] [--embed] [--timeout <seconds>]",
+    options: [
+      ["--project <path>", "Project directory (default: cwd)"],
+      ["--embed", "Generate embeddings; may download a local model"],
+      ["--timeout <seconds>", "Indexing time budget (default: 600, maximum: 86400)"],
+    ],
+    examples: [["lcm index", "Update lexical search without running models"], ["lcm index --embed", "Update lexical search and embeddings"]],
+    notes: "The derived QMD index is separate from the source database. Run again after importing or changing memories. Search does not automatically rebuild the index.",
   },
 
   grep: {

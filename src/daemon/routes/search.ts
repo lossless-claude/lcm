@@ -10,12 +10,15 @@ import { SummaryStore } from "../../store/summary-store.js";
 import { RetrievalEngine } from "../../retrieval.js";
 import { PromotedStore } from "../../db/promoted.js";
 import { validateCwd } from "../validate-cwd.js";
+import type { QmdClient } from "../../search/qmd-client.js";
+import { sanitizeError } from "../safe-error.js";
+import { qmdSearchInput } from "./qmd-input.js";
 
 function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export function createSearchHandler(): RouteHandler {
+export function createSearchHandler(qmd?: Pick<QmdClient, "search">): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
     const { query, limit = 5, layers, tags } = input;
@@ -40,6 +43,28 @@ export function createSearchHandler(): RouteHandler {
     let episodic: unknown[] = [];
     let promoted: unknown[] = [];
     const errors: string[] = [];
+
+    if (input.backend !== undefined && !["native", "qmd"].includes(input.backend)) {
+      sendJson(res, 400, { error: "backend must be native or qmd" });
+      return;
+    }
+    if (input.backend === "qmd") {
+      let request;
+      try {
+        request = qmdSearchInput(input, cwd);
+      } catch (err) {
+        sendJson(res, 400, { error: describeError(err) });
+        return;
+      }
+      try {
+        if (!qmd) throw new Error("QMD worker is unavailable");
+        const result = await qmd.search(request);
+        sendJson(res, 200, { backend: "qmd", ...result });
+        return;
+      } catch (err) {
+        errors.push(`qmd: ${sanitizeError(describeError(err))}`);
+      }
+    }
 
     if (cwd) {
       const dbPath = projectDbPath(cwd);
@@ -92,6 +117,7 @@ export function createSearchHandler(): RouteHandler {
       }
     }
 
-    sendJson(res, 200, errors.length > 0 ? { episodic, promoted, errors } : { episodic, promoted });
+    const fallback = input.backend === "qmd" ? { backend: "native", fallback: true } : {};
+    sendJson(res, 200, errors.length > 0 ? { ...fallback, episodic, promoted, errors } : { episodic, promoted });
   };
 }

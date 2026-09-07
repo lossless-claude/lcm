@@ -47,6 +47,14 @@ describe("MCP tool definitions", () => {
     const tool = getMcpToolDefinitions().find((t: any) => t.name === "lcm_search");
     expect(tool!.description).toContain("episodic");
   });
+
+  it("exposes QMD as an explicit backend with the actual promoted layer", () => {
+    const tool = getMcpToolDefinitions().find((t: any) => t.name === "lcm_search")!;
+    const properties = tool.inputSchema.properties as Record<string, any>;
+    expect(properties.backend.enum).toEqual(["native", "qmd"]);
+    expect(properties.mode.enum).toEqual(["lexical", "hybrid"]);
+    expect(properties.layers.items.enum).toEqual(["episodic", "promoted"]);
+  });
 });
 
 describe("handleDaemonRequest", () => {
