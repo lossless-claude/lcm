@@ -22,6 +22,7 @@ import { projectId } from "./daemon/project.js";
 import { closeLcmConnection, getLcmConnection } from "./db/connection.js";
 import { runLcmMigrations } from "./db/migration.js";
 import { SummaryStore } from "./store/summary-store.js";
+import type { DaemonClient } from "./daemon/client.js";
 
 export type ReplayCommand = "import" | "compact";
 
@@ -584,6 +585,35 @@ export function recordReplayProgress(opts: {
     );
   } catch { /* ledger writes are best-effort — the next run re-does the work */ }
   finally { closeDb(opened); }
+}
+
+/**
+ * Refuse `--restart` while the daemon is compacting a conversation in any of
+ * the projects about to be wiped: the daemon's in-flight guard is per-process,
+ * so a CLI-side wipe would race it. Detection only, the check-then-wipe is not
+ * atomic. A daemon that cannot be reached (or predates the field) is treated as
+ * idle.
+ */
+export async function refuseRestartDuringCompaction(
+  client: Pick<DaemonClient, "post">,
+  cwds: Iterable<string>,
+): Promise<void> {
+  const busy: string[] = [];
+  for (const cwd of cwds) {
+    let sessions: string[] = [];
+    try {
+      const status = await client.post<{ project?: { compactingSessions?: string[] } }>("/status", { cwd });
+      sessions = status.project?.compactingSessions ?? [];
+    } catch {
+      continue;
+    }
+    for (const sessionId of sessions) busy.push(`${sessionId} in ${cwd}`);
+  }
+  if (busy.length > 0) {
+    throw new Error(
+      `--restart refused: the daemon is still compacting ${busy.join(", ")}. Wait for it to finish, then retry.`,
+    );
+  }
 }
 
 /**

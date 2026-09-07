@@ -688,6 +688,14 @@ describe("importSessions replay resume", () => {
     return { claudeProjectsDir, lcmDir, projDir };
   }
 
+  function persistSummary(lcmDir: string, cwd: string, sessionId: string, summaryId: string, content: string): void {
+    const db = new DatabaseSync(join(lcmDir, "projects", projectId(cwd), "db.sqlite"));
+    db.prepare("INSERT INTO conversations (session_id) VALUES (?)").run(sessionId);
+    const conv = db.prepare("SELECT conversation_id FROM conversations WHERE session_id = ?").get(sessionId) as { conversation_id: number };
+    db.prepare("INSERT INTO summaries (summary_id, conversation_id, kind, content, token_count) VALUES (?, ?, 'leaf', ?, 5)").run(summaryId, conv.conversation_id, content);
+    db.close();
+  }
+
   it("second run skips sessions already done in the first run", async () => {
     const cwd = "/test/resume-skip";
     const { claudeProjectsDir, lcmDir, projDir } = setup(cwd, ["s1", "s2", "s3"]);
@@ -856,6 +864,38 @@ describe("importSessions replay resume", () => {
     expect(r2.resumed).toBeUndefined();
   });
 
+  it("restart is refused while the daemon is compacting a session in the project", async () => {
+    const cwd = "/test/resume-restart-busy";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1"]);
+
+    const first = makeMockClient(async (path: string) => {
+      if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
+      if (path === "/compact") return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: "s", latestSummaryId: "sum-s1" };
+    });
+    await importSessions(first, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+    persistSummary(lcmDir, cwd, "s1", "sum-s1", "summary-of-s1");
+
+    const compactCalls: string[] = [];
+    const busy = makeMockClient(async (path: string, body: any) => {
+      if (path === "/status") return { project: { compactingSessions: ["s1"] } };
+      if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
+      if (path === "/compact") { compactCalls.push(body.session_id); return { summary: "ok", replayOutcome: "compacted" }; }
+    });
+    await expect(importSessions(busy, {
+      replay: true, restart: true, cwd,
+      _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir,
+    })).rejects.toThrow(/--restart refused.*s1/);
+
+    // Nothing was wiped or re-run.
+    expect(compactCalls).toEqual([]);
+    const db = new DatabaseSync(join(lcmDir, "projects", projectId(cwd), "db.sqlite"));
+    const summaries = db.prepare("SELECT COUNT(*) AS n FROM summaries").get() as { n: number };
+    const ledger = db.prepare("SELECT COUNT(*) AS n FROM replay_ledger").get() as { n: number };
+    db.close();
+    expect(summaries.n).toBe(1);
+    expect(ledger.n).toBe(1);
+  });
+
   it("dry-run replay does not write manifests or ledgers", async () => {
     const cwd = "/test/resume-dryrun";
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1"]);
@@ -903,14 +943,6 @@ describe("importSessions replay resume", () => {
     const err = new Error("fetch failed");
     err.name = "TimeoutError";
     return err;
-  }
-
-  function persistSummary(lcmDir: string, cwd: string, sessionId: string, summaryId: string, content: string): void {
-    const db = new DatabaseSync(join(lcmDir, "projects", projectId(cwd), "db.sqlite"));
-    db.prepare("INSERT INTO conversations (session_id) VALUES (?)").run(sessionId);
-    const conv = db.prepare("SELECT conversation_id FROM conversations WHERE session_id = ?").get(sessionId) as { conversation_id: number };
-    db.prepare("INSERT INTO summaries (summary_id, conversation_id, kind, content, token_count) VALUES (?, ?, 'leaf', ?, 5)").run(summaryId, conv.conversation_id, content);
-    db.close();
   }
 
   it("a timed-out compact whose summary was stored keeps the chain and records the ledger row", async () => {

@@ -14,6 +14,7 @@ import {
   loadLatestSessionSummary,
   planReplayResume,
   recordReplayProgress,
+  refuseRestartDuringCompaction,
 } from "./replay-resume.js";
 
 export interface UncompactedConversation {
@@ -152,9 +153,12 @@ export async function batchCompact(opts: {
   // --restart clears every tracked project, not only those with eligible
   // conversations: recorded state must go even when nothing currently passes
   // the token threshold.
+  const client = new DaemonClient(`http://127.0.0.1:${opts.port}`, opts.tokenPath);
   if (opts.replay && !opts.dryRun && opts.restart) {
+    const projects = findProjects(opts.cwd);
+    await refuseRestartDuringCompaction(client, projects.map((p) => p.cwd));
     let clearFailed = false;
-    for (const { cwd } of findProjects(opts.cwd)) {
+    for (const { cwd } of projects) {
       const ok = await clearReplayState({
         cwd,
         command: "compact",
@@ -247,7 +251,6 @@ export async function batchCompact(opts: {
   let tokensIn = 0;
   let tokensOut = 0;
   const progressErrors: { sessionId: string; message: string }[] = [];
-  const client = new DaemonClient(`http://127.0.0.1:${opts.port}`, opts.tokenPath);
 
   for (const conv of conversations) {
     // Stop starting new work after SIGINT/SIGTERM; the renderer waits for the

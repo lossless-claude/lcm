@@ -7,6 +7,7 @@ import type { RouteHandler } from "../server.js";
 import { PKG_VERSION } from "../server.js";
 import { validateCwd } from "../validate-cwd.js";
 import { sanitizeError } from "../safe-error.js";
+import { compactingSessionsFor } from "./compact.js";
 
 export function createStatusHandler(config: DaemonConfig, startTime: number, actualPort?: number): RouteHandler {
   return async (_req, res, body) => {
@@ -94,6 +95,7 @@ export function createStatusHandler(config: DaemonConfig, startTime: number, act
           lastIngest,
           lastCompact,
           lastPromote,
+          compactingSessions: compactingSessionsFor(cwd),
         },
       });
     } catch (err) {

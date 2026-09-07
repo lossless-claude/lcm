@@ -16,6 +16,7 @@ import {
   loadLatestSessionSummary,
   planReplayResume,
   recordReplayProgress,
+  refuseRestartDuringCompaction,
 } from "./replay-resume.js";
 
 export type ImportProvider = "claude" | "codex" | "all";
@@ -281,9 +282,10 @@ async function ingestSessionList(
 
   if (options.replay && !options.dryRun && sessions.length > 0) {
     if (options.restart) {
+      const cwdsToClear = [...new Set(sessions.map((s) => s.cwd))].filter((cwd) => !clearedCwds.has(cwd));
+      await refuseRestartDuringCompaction(client, cwdsToClear);
       let clearFailed = false;
-      for (const cwd of new Set(sessions.map((s) => s.cwd))) {
-        if (clearedCwds.has(cwd)) continue;
+      for (const cwd of cwdsToClear) {
         clearedCwds.add(cwd);
         const ok = await clearReplayState({
           cwd,
