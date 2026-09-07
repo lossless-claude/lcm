@@ -80,17 +80,15 @@ describe("createOpenAISummarizer", () => {
     expect(result).toBe("Summary.");
   });
 
-  it("falls back to truncated text if response is empty", async () => {
-    const mockClient = {
-      chat: { completions: { create: vi.fn().mockResolvedValue({ choices: [{ message: { content: "" } }] }) } },
-    };
-    const longText = "x".repeat(600);
+  it("retries on empty content and then throws instead of echoing the input", async () => {
+    const create = vi.fn().mockResolvedValue({ choices: [{ message: { content: "" } }] });
     const summarizer = createOpenAISummarizer({
       model: "test-model",
       baseURL: "http://localhost:11435/v1",
-      _clientOverride: mockClient as any,
+      _clientOverride: { chat: { completions: { create } } } as any,
+      _retryDelayMs: 0,
     });
-    const result = await summarizer(longText, false);
-    expect(result).toBe(longText.slice(0, 500));
+    await expect(summarizer("x".repeat(600), false)).rejects.toThrow("empty content");
+    expect(create).toHaveBeenCalledTimes(3);
   });
 });
