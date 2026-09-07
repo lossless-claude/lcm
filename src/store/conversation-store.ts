@@ -640,9 +640,8 @@ export class ConversationStore {
       ? [prepared.and, prepared.or]
       : [prepared.and];
 
-    for (const [index, expression] of expressions.entries()) {
-      const ranked = index > 0;
-      const rows = this.runFullTextMatch(expression, limit, ranked, conversationId, since, before);
+    for (const expression of expressions) {
+      const rows = this.runFullTextMatch(expression, limit, conversationId, since, before);
       if (rows.length > 0) {
         return rows;
       }
@@ -657,7 +656,6 @@ export class ConversationStore {
   private runFullTextMatch(
     ftsExpression: string,
     limit: number,
-    ranked: boolean,
     conversationId?: ConversationId,
     since?: Date,
     before?: Date,
@@ -678,7 +676,6 @@ export class ConversationStore {
     }
     args.push(limit);
 
-    const orderBy = ranked ? "rank, m.created_at DESC" : "m.created_at DESC";
     const sql = `SELECT
          m.message_id,
          m.conversation_id,
@@ -689,7 +686,7 @@ export class ConversationStore {
        FROM messages_fts
        JOIN messages m ON m.message_id = messages_fts.rowid
        WHERE ${where.join(" AND ")}
-       ORDER BY ${orderBy}
+        ORDER BY rank, m.created_at DESC
        LIMIT ?`;
     const rows = this.db.prepare(sql).all(...args) as unknown as MessageSearchRow[];
     return rows.map(toSearchResult);
