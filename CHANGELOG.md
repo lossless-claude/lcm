@@ -1,5 +1,15 @@
 # @lossless-claude/lcm
 
+## Unreleased
+
+### Added
+- `copilot-process` summarizer provider, backed by the GitHub Copilot CLI. `auto` resolves to it once a client identifies itself as `copilot`; today select it with `LCM_SUMMARY_PROVIDER=copilot-process`.
+- Normalized token cost reporting across all three process providers. `llm_usage_stats` now stores input, cached, and output tokens alongside the total, and `lcm import --replay` prints the breakdown.
+
+### Changed
+- `codex-process` reads its usage from `codex exec --json` instead of the stderr banner, gaining an exact input/cached/output split (the stderr total remains a fallback for older Codex builds).
+- `claude-process` reads `--output-format json`, so it now reports token usage and cost.
+
 ## [0.8.1] - 2026-03-30
 
 ### Added

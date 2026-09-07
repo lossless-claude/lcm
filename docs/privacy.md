@@ -24,6 +24,7 @@ The exception is the summarizer, which you configure explicitly:
 | `disabled` (default) | Nothing |
 | `claude-process` | Messages sent to Anthropic via the `claude` CLI (your Claude subscription) |
 | `codex-process` | Messages sent to OpenAI via the `codex` CLI (your OpenAI subscription) |
+| `copilot-process` | Messages sent to GitHub via the `copilot` CLI (your Copilot subscription) |
 | `anthropic` | Messages sent to Anthropic API (your API key) |
 | `openai` | Messages sent to OpenAI API (your API key) |
 
