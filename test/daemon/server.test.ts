@@ -41,7 +41,7 @@ describe("daemon server", () => {
     const body = await res.json() as { build?: string; pid?: number };
     expect(body.pid).toBe(process.pid);
     expect(typeof body.build).toBe("string");
-    expect(Number.isNaN(Date.parse(body.build!))).toBe(false);
+    expect(body.build).toMatch(/^[0-9a-f]{16}$/);
   });
 
   it("rejects with EADDRINUSE when the port is taken instead of crashing the process", async () => {

@@ -1,4 +1,5 @@
-import { readFileSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -30,14 +31,29 @@ export const PKG_VERSION: string | undefined = (() => {
 })();
 
 /**
- * Fingerprint of the running build: the mtime of this module file.
- * Two daemons with the same PKG_VERSION but different builds (a rebuilt dist,
- * a dev checkout) report different BUILD_IDs, so callers can tell a stale
- * daemon apart from a current one. `undefined` when the file cannot be stat'd.
+ * Content fingerprint of a file: the first 16 hex chars of its sha256.
+ * Throws when the file cannot be read; callers decide how to fail.
+ */
+export function fingerprintFile(path: string): string {
+  return createHash("sha256").update(readFileSync(path)).digest("hex").slice(0, 16);
+}
+
+/**
+ * Fingerprint of the running build: a content hash of this module file.
+ *
+ * The fingerprint must depend on file *content*, not on filesystem metadata:
+ * an installed copy of a build is byte-identical to its source but does not
+ * carry its mtime (copy tools such as `rsync -a` truncate mtimes to whole
+ * seconds), so an mtime-based id makes two identical builds compare unequal
+ * and sends callers into an endless "stale daemon" restart loop.
+ *
+ * Two daemons with the same PKG_VERSION but different builds report different
+ * BUILD_IDs, so callers can tell a stale daemon apart from a current one.
+ * `undefined` when the file cannot be read.
  */
 export const BUILD_ID: string | undefined = (() => {
   try {
-    return new Date(statSync(fileURLToPath(import.meta.url)).mtimeMs).toISOString();
+    return fingerprintFile(fileURLToPath(import.meta.url));
   } catch {
     return undefined;
   }
