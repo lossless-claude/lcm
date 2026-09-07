@@ -40,6 +40,18 @@ type SummaryParentEdgeRow = {
  * Adds the normalized token breakdown to databases created before providers
  * reported input/cached/output separately. Existing rows keep their totals.
  */
+/**
+ * Adds replay_ledger.outcome to databases created before it existed.
+ * 'compacted' is the right default: every pre-existing row was written on the
+ * old code path, which only recorded a session after a real compaction.
+ */
+function ensureReplayLedgerOutcomeColumn(db: DatabaseSync): void {
+  const columns = db.prepare(`PRAGMA table_info(replay_ledger)`).all() as SummaryColumnInfo[];
+  if (!columns.some((col) => col.name === "outcome")) {
+    db.exec(`ALTER TABLE replay_ledger ADD COLUMN outcome TEXT NOT NULL DEFAULT 'compacted'`);
+  }
+}
+
 function ensureLlmUsageBreakdownColumns(db: DatabaseSync): void {
   const columns = db.prepare(`PRAGMA table_info(llm_usage_stats)`).all() as SummaryColumnInfo[];
   for (const name of ["tokens_input_total", "tokens_cached_total", "tokens_output_total"]) {
@@ -649,24 +661,13 @@ function runLcmMigrationsInner(
       content_fingerprint TEXT NOT NULL,
       summary_id TEXT,
       model TEXT,
+      outcome TEXT NOT NULL DEFAULT 'compacted',
       completed_at TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (run_id, session_id)
     );
     CREATE INDEX IF NOT EXISTS replay_ledger_position_idx ON replay_ledger (run_id, position);
   `);
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS replay_ledger_summaries (
-      run_id TEXT NOT NULL,
-      session_id TEXT NOT NULL,
-      summary_id TEXT NOT NULL,
-      ordinal INTEGER NOT NULL,
-      PRIMARY KEY (run_id, session_id, summary_id),
-      FOREIGN KEY (run_id, session_id) REFERENCES replay_ledger(run_id, session_id) ON DELETE CASCADE
-    );
-    CREATE INDEX IF NOT EXISTS replay_ledger_summaries_run_session_idx
-      ON replay_ledger_summaries (run_id, session_id, ordinal);
-  `);
+  ensureReplayLedgerOutcomeColumn(db);
 
   const fts5Available = options?.fts5Available ?? getLcmDbFeatures(db).fts5Available;
   if (!fts5Available) {

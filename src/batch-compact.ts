@@ -66,10 +66,17 @@ export function findUncompacted(minTokens: number, readOnly = false, cwdFilter?:
           SELECT conversation_id, COUNT(*) as msg_count, SUM(token_count) as raw_tokens
           FROM messages GROUP BY conversation_id
         ) m ON m.conversation_id = c.conversation_id
+        -- Source-only counts: exclude the rows compaction itself writes, so a
+        -- conversation's fingerprint is stable across repeated compactions.
+        -- The discriminator is the message part, not role='system' — genuine
+        -- transcript messages carry that role too.
         LEFT JOIN (
           SELECT conversation_id, COUNT(*) as msg_count, SUM(token_count) as raw_tokens
-          FROM messages
-          WHERE role != 'system'
+          FROM messages m
+          WHERE NOT EXISTS (
+            SELECT 1 FROM message_parts p
+            WHERE p.message_id = m.message_id AND p.part_type = 'compaction'
+          )
           GROUP BY conversation_id
         ) src ON src.conversation_id = c.conversation_id
         LEFT JOIN (
@@ -143,7 +150,16 @@ export async function batchCompact(opts: {
     if (opts.restart) {
       let clearFailed = false;
       for (const cwd of new Set(conversations.map((c) => c.cwd))) {
-        if (!clearReplayState({ cwd, command: "compact" })) clearFailed = true;
+        const ok = await clearReplayState({
+          cwd,
+          command: "compact",
+          onSummaryCount: (count) => {
+            if (count > 0) {
+              console.error(`  ⚠️ [replay] --restart discards ${count} summaries in ${cwd}; they will be regenerated`);
+            }
+          },
+        });
+        if (!ok) clearFailed = true;
       }
       if (clearFailed) {
         console.error("  ⚠️ [replay] could not fully clear previous replay state; some stale summaries may remain");
@@ -256,26 +272,25 @@ export async function batchCompact(opts: {
         previousSummaryByCwd.set(conv.cwd, data.latestSummaryContent);
       }
 
-      // Ledger row is written only after the summary is persisted
-      // (latestSummaryId in hand), so a row is durable proof of done work.
-      // A skipped (already-in-progress) compaction records nothing — the next
-      // run retries it.
+      // A row is written only for a session the daemon reports as finished.
+      // A skipped (already-in-progress) or disabled compaction records nothing
+      // — the next run retries it.
       const run = replayRuns?.get(conv.cwd);
-      const completedReplaySession =
-        data.replayOutcome === "compacted" || data.replayOutcome === "no_work";
-      if (run && completedReplaySession) {
+      const outcome =
+        data.replayOutcome === "compacted" || data.replayOutcome === "no_work"
+          ? data.replayOutcome
+          : null;
+      if (run && outcome) {
         recordReplayProgress({
           cwd: conv.cwd,
           runId: run.runId,
           sessionId: conv.sessionId,
           position: run.positions.get(conv.sessionId) ?? 0,
-          prevSessionId: lastCompactedSessionIdByCwd.get(conv.cwd) ?? null,
           contentFingerprint: fingerprintStats(conv.sourceMessages, conv.sourceTokens),
           summaryId: data.latestSummaryId ?? null,
-          summaryIds: data.latestSummaryIds ?? [],
+          outcome,
           model: opts.replayModel ?? null,
         });
-        lastCompactedSessionIdByCwd.set(conv.cwd, conv.sessionId);
       }
 
       doneCount++;

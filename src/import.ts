@@ -257,6 +257,13 @@ async function ingestSessionList(
   sessions: SessionEntry[],
   options: ImportOptions,
   result: ImportResult,
+  /**
+   * Cwds already cleared by `--restart` in this run. Shared across every call,
+   * because a single import can reach the same project from more than one list
+   * (per-project Claude dirs, then Codex) and clearing twice would wipe the
+   * state the first pass had already started rebuilding.
+   */
+  clearedCwds: Set<string>,
 ): Promise<void> {
   // Replay runs are resumable: a manifest freezes the ordering and a ledger
   // records completed compactions, so a restarted run skips finished work.
@@ -273,7 +280,19 @@ async function ingestSessionList(
     if (options.restart) {
       let clearFailed = false;
       for (const cwd of new Set(sessions.map((s) => s.cwd))) {
-        if (!clearReplayState({ cwd, lcmDir: options._lcmDir, command: "import" })) clearFailed = true;
+        if (clearedCwds.has(cwd)) continue;
+        clearedCwds.add(cwd);
+        const ok = await clearReplayState({
+          cwd,
+          lcmDir: options._lcmDir,
+          command: "import",
+          onSummaryCount: (count) => {
+            if (count > 0) {
+              console.error(`  ⚠️ [replay] --restart discards ${count} summaries in ${cwd}; they will be regenerated`);
+            }
+          },
+        });
+        if (!ok) clearFailed = true;
       }
       if (clearFailed) {
         console.error("  ⚠️ [replay] could not fully clear previous replay state; some stale summaries may remain");
@@ -436,22 +455,22 @@ async function ingestSessionList(
           // A skipped (already-in-progress) compaction records nothing — the
           // next run retries it.
           const runId = replayRuns.get(cwd);
-          const completedReplaySession =
-            compactRes.replayOutcome === "compacted" || compactRes.replayOutcome === "no_work";
-          if (runId !== undefined && completedReplaySession) {
+          const outcome =
+            compactRes.replayOutcome === "compacted" || compactRes.replayOutcome === "no_work"
+              ? compactRes.replayOutcome
+              : null;
+          if (runId !== undefined && outcome) {
             recordReplayProgress({
               cwd,
               lcmDir: options._lcmDir,
               runId,
               sessionId,
               position: ledgerPositions.get(cwd)?.get(sessionId) ?? 0,
-              prevSessionId: lastCompactedSessionIdByCwd.get(cwd) ?? null,
               contentFingerprint: inputFingerprint,
               summaryId: compactRes.latestSummaryId ?? null,
-              summaryIds: compactRes.latestSummaryIds ?? [],
+              outcome,
               model: options.replayModel ?? null,
             });
-            lastCompactedSessionIdByCwd.set(cwd, sessionId);
           }
           // Use compact's tokensBefore as the authoritative token count for this session.
           // This avoids under-reporting when /ingest returns totalTokens=0 (already-ingested).
@@ -511,6 +530,9 @@ export async function importSessions(
 ): Promise<ImportResult> {
   const provider: ImportProvider = options.provider ?? "claude";
   const result: ImportResult = { imported: 0, skippedEmpty: 0, failed: 0, totalMessages: 0, totalTokens: 0, tokensAfter: 0 };
+  // One --restart clear per project for the whole import, however many session
+  // lists reach that project.
+  const clearedCwds = new Set<string>();
 
   // --- Claude Code sessions ---
   if (provider === "claude" || provider === "all") {
@@ -544,6 +566,7 @@ export async function importSessions(
         sessionFiles.map(f => ({ ...f, cwd })),
         options,
         result,
+        clearedCwds,
       );
     }
   }
@@ -558,7 +581,7 @@ export async function importSessions(
       cwd: extractCodexSessionCwd(f.path) ?? process.cwd(),
     }));
 
-    await ingestSessionList(client, codexSessions, options, result);
+    await ingestSessionList(client, codexSessions, options, result, clearedCwds);
   }
 
   return result;

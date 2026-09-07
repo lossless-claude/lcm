@@ -40,16 +40,33 @@ function makeProjectDb(lcmDir: string, cwd: string): string {
   return dbPath;
 }
 
-function insertSummary(dbPath: string, summaryId: string, content: string): void {
+function insertSummary(dbPath: string, summaryId: string, content: string, sessionId?: string): void {
   const db = new DatabaseSync(dbPath);
   try {
+    const session = sessionId ?? `conv-for-${summaryId}`;
     db.prepare(
       "INSERT INTO conversations (session_id) VALUES (?) ON CONFLICT DO NOTHING",
-    ).run(`conv-for-${summaryId}`);
-    const conv = db.prepare("SELECT conversation_id FROM conversations ORDER BY conversation_id DESC LIMIT 1").get() as { conversation_id: number };
+    ).run(session);
+    const conv = db.prepare("SELECT conversation_id FROM conversations WHERE session_id = ?").get(session) as { conversation_id: number };
     db.prepare(
       "INSERT INTO summaries (summary_id, conversation_id, kind, content, token_count) VALUES (?, ?, 'leaf', ?, 10)",
     ).run(summaryId, conv.conversation_id, content);
+    db.prepare(
+      "INSERT INTO context_items (conversation_id, ordinal, item_type, summary_id) VALUES (?, (SELECT COALESCE(MAX(ordinal), -1) + 1 FROM context_items WHERE conversation_id = ?), 'summary', ?)",
+    ).run(conv.conversation_id, conv.conversation_id, summaryId);
+  } finally {
+    db.close();
+  }
+}
+
+/** Add a raw message to a conversation so a rebuild has something to restore. */
+function insertMessage(dbPath: string, sessionId: string, seq: number, content: string): void {
+  const db = new DatabaseSync(dbPath);
+  try {
+    const conv = db.prepare("SELECT conversation_id FROM conversations WHERE session_id = ?").get(sessionId) as { conversation_id: number };
+    db.prepare(
+      "INSERT INTO messages (conversation_id, seq, role, content, token_count) VALUES (?, ?, 'user', ?, 5)",
+    ).run(conv.conversation_id, seq, content);
   } finally {
     db.close();
   }
@@ -115,8 +132,7 @@ describe("replay run manifest + ledger", () => {
     });
 
     recordReplayProgress({
-      cwd, lcmDir, runId, sessionId: "s1", position: 0, prevSessionId: null,
-      contentFingerprint: "fp1", summaryId: "sum-1", model: "test-model",
+      cwd, lcmDir, runId, sessionId: "s1", position: 0, contentFingerprint: "fp1", outcome: "compacted" as const, summaryId: "sum-1", model: "test-model",
     });
 
     const rows = ledgerRows(dbPath, runId);
@@ -144,12 +160,10 @@ describe("replay run manifest + ledger", () => {
     const runId = replayRunId();
     createReplayRun({ cwd, lcmDir, command: "import", runId, sessions, model: "m" });
     recordReplayProgress({
-      cwd, lcmDir, runId, sessionId: "s1", position: 0, prevSessionId: null,
-      contentFingerprint: fingerprintFile(f1), summaryId: "sum-1", model: "m",
+      cwd, lcmDir, runId, sessionId: "s1", position: 0, contentFingerprint: fingerprintFile(f1), outcome: "compacted" as const, summaryId: "sum-1", model: "m",
     });
     recordReplayProgress({
-      cwd, lcmDir, runId, sessionId: "s2", position: 1, prevSessionId: "s1",
-      contentFingerprint: fingerprintFile(f2), summaryId: "sum-2", model: "m",
+      cwd, lcmDir, runId, sessionId: "s2", position: 1, contentFingerprint: fingerprintFile(f2), outcome: "compacted" as const, summaryId: "sum-2", model: "m",
     });
 
     const plan = planReplayResume({
@@ -161,8 +175,8 @@ describe("replay run manifest + ledger", () => {
     expect(plan.freshCwds.size).toBe(0);
     expect(plan.doneCount).toBe(2);
     expect(plan.remaining.map((s) => s.sessionId)).toEqual(["s3"]);
-    expect(plan.restoredPreviousSummary).toBe("summary two");
-    expect(plan.droppedPreviousSummary).toBeUndefined();
+    expect(plan.restoredPreviousSummaries.get(cwd)).toBe("summary two");
+    expect(plan.droppedPreviousSummaries.get(cwd)).toBeUndefined();
     expect(plan.changedSessionIds).toEqual([]);
     expect(plan.positions.get(cwd)?.get("s1")).toBe(0);
     expect(plan.positions.get(cwd)?.get("s2")).toBe(1);
@@ -185,12 +199,10 @@ describe("replay run manifest + ledger", () => {
     const runId = replayRunId();
     createReplayRun({ cwd, lcmDir, command: "import", runId, sessions });
     recordReplayProgress({
-      cwd, lcmDir, runId, sessionId: "s1", position: 0, prevSessionId: null,
-      contentFingerprint: fingerprintFile(f1), summaryId: "sum-1",
+      cwd, lcmDir, runId, sessionId: "s1", position: 0, contentFingerprint: fingerprintFile(f1), outcome: "compacted" as const, summaryId: "sum-1",
     });
     recordReplayProgress({
-      cwd, lcmDir, runId, sessionId: "s2", position: 1, prevSessionId: "s1",
-      contentFingerprint: fingerprintFile(f2), summaryId: null,
+      cwd, lcmDir, runId, sessionId: "s2", position: 1, contentFingerprint: fingerprintFile(f2), outcome: "compacted" as const, summaryId: null,
     });
 
     // s2's transcript grows (claude --resume appended to it)
@@ -205,7 +217,7 @@ describe("replay run manifest + ledger", () => {
     expect(plan.remaining.map((s) => s.sessionId)).toEqual(["s2"]);
     expect(plan.changedSessionIds).toEqual(["s2"]);
     // Chain before s2 is intact (s1 has a summary), so it is restored
-    expect(plan.restoredPreviousSummary).toBe("summary one");
+    expect(plan.restoredPreviousSummaries.get(cwd)).toBe("summary one");
   });
 
   it("drops the restored chain when an earlier link was broken (null summary)", () => {
@@ -227,12 +239,10 @@ describe("replay run manifest + ledger", () => {
     createReplayRun({ cwd, lcmDir, command: "import", runId, sessions });
     // s1 completed but produced no summary (broken link)
     recordReplayProgress({
-      cwd, lcmDir, runId, sessionId: "s1", position: 0, prevSessionId: null,
-      contentFingerprint: fingerprintFile(f1), summaryId: null,
+      cwd, lcmDir, runId, sessionId: "s1", position: 0, contentFingerprint: fingerprintFile(f1), outcome: "compacted" as const, summaryId: null,
     });
     recordReplayProgress({
-      cwd, lcmDir, runId, sessionId: "s2", position: 1, prevSessionId: "s1",
-      contentFingerprint: fingerprintFile(f2), summaryId: "sum-2",
+      cwd, lcmDir, runId, sessionId: "s2", position: 1, contentFingerprint: fingerprintFile(f2), outcome: "compacted" as const, summaryId: "sum-2",
     });
 
     const plan = planReplayResume({
@@ -241,8 +251,8 @@ describe("replay run manifest + ledger", () => {
     });
 
     expect(plan.doneCount).toBe(2);
-    expect(plan.restoredPreviousSummary).toBeUndefined();
-    expect(plan.droppedPreviousSummary).toBe("summary two");
+    expect(plan.restoredPreviousSummaries.get(cwd)).toBeUndefined();
+    expect(plan.droppedPreviousSummaries.get(cwd)).toBe("summary two");
   });
 
   it("restart returns everything and ignores prior progress", () => {
@@ -258,8 +268,7 @@ describe("replay run manifest + ledger", () => {
     const runId = replayRunId();
     createReplayRun({ cwd, lcmDir, command: "import", runId, sessions });
     recordReplayProgress({
-      cwd, lcmDir, runId, sessionId: "s1", position: 0, prevSessionId: null,
-      contentFingerprint: fingerprintFile(f1), summaryId: "sum-1",
+      cwd, lcmDir, runId, sessionId: "s1", position: 0, contentFingerprint: fingerprintFile(f1), outcome: "compacted" as const, summaryId: "sum-1",
     });
 
     const plan = planReplayResume({
@@ -274,12 +283,15 @@ describe("replay run manifest + ledger", () => {
     expect(plan.runIds.get(cwd)).not.toBe(runId);
   });
 
-  it("clearReplayState removes ledger, manifest, and recorded summaries only", () => {
+  it("clearReplayState wipes every summary in a touched conversation and rebuilds context", async () => {
     const lcmDir = makeTmpDir();
     const cwd = "/test/replay-clear";
     const dbPath = makeProjectDb(lcmDir, cwd);
-    insertSummary(dbPath, "sum-replay", "replay summary");
-    insertSummary(dbPath, "sum-hook", "hook summary");
+    // Both summaries live in the conversation the replay run touches, which is
+    // the realistic case: a replay compacts on top of hook output.
+    insertSummary(dbPath, "sum-replay", "replay summary", "s1");
+    insertSummary(dbPath, "sum-hook", "hook summary", "s1");
+    insertMessage(dbPath, "s1", 0, "raw message");
 
     const dir = makeTmpDir();
     const f1 = join(dir, "s1.jsonl");
@@ -288,11 +300,10 @@ describe("replay run manifest + ledger", () => {
     const runId = replayRunId();
     createReplayRun({ cwd, lcmDir, command: "import", runId, sessions });
     recordReplayProgress({
-      cwd, lcmDir, runId, sessionId: "s1", position: 0, prevSessionId: null,
-      contentFingerprint: fingerprintFile(f1), summaryId: "sum-replay",
+      cwd, lcmDir, runId, sessionId: "s1", position: 0, contentFingerprint: fingerprintFile(f1), outcome: "compacted" as const, summaryId: "sum-replay",
     });
 
-    expect(clearReplayState({ cwd, lcmDir, command: "import" })).toBe(true);
+    expect(await clearReplayState({ cwd, lcmDir, command: "import" })).toBe(true);
 
     const db = new DatabaseSync(dbPath);
     try {
@@ -302,14 +313,23 @@ describe("replay run manifest + ledger", () => {
       const hookSum = db.prepare("SELECT 1 FROM summaries WHERE summary_id = 'sum-hook'").get();
       expect(manifests.n).toBe(0);
       expect(ledger.n).toBe(0);
-      expect(replaySum).toBeUndefined(); // replay output removed
-      expect(hookSum).toBeDefined();     // hook output preserved
+      // Undo is wholesale: a replay summary can absorb a hook summary as a
+      // parent, so scoping deletes to replay-owned ids would leave the
+      // conversation missing them anyway. Nothing is lost — messages remain.
+      expect(replaySum).toBeUndefined();
+      expect(hookSum).toBeUndefined();
+
+      // Context is rebuilt from the messages that were never deleted.
+      const items = db.prepare(
+        "SELECT item_type, ordinal FROM context_items ORDER BY ordinal",
+      ).all() as { item_type: string; ordinal: number }[];
+      expect(items).toEqual([{ item_type: "message", ordinal: 0 }]);
     } finally {
       db.close();
     }
   });
 
-  it("gracefully handles a missing project DB", () => {
+  it("gracefully handles a missing project DB", async () => {
     const lcmDir = makeTmpDir();
     const plan = planReplayResume({
       lcmDir, command: "import",
@@ -321,9 +341,9 @@ describe("replay run manifest + ledger", () => {
     // record/clear must not throw either
     recordReplayProgress({
       cwd: "/test/no-db", lcmDir, runId: "r", sessionId: "s1", position: 0,
-      prevSessionId: null, contentFingerprint: "fp",
+      contentFingerprint: "fp", outcome: "compacted" as const,
     });
-    expect(clearReplayState({ cwd: "/test/no-db", lcmDir, command: "import" })).toBe(true);
+    expect(await clearReplayState({ cwd: "/test/no-db", lcmDir, command: "import" })).toBe(true);
   });
 
   it("spans multiple projects, keying manifest and ledger to each cwd", () => {
@@ -344,8 +364,7 @@ describe("replay run manifest + ledger", () => {
     const runA = replayRunId();
     createReplayRun({ cwd: cwdA, lcmDir, command: "import", runId: runA, sessions: [{ sessionId: "a1" }] });
     recordReplayProgress({
-      cwd: cwdA, lcmDir, runId: runA, sessionId: "a1", position: 0, prevSessionId: null,
-      contentFingerprint: fingerprintFile(fa1), summaryId: "sum-a1",
+      cwd: cwdA, lcmDir, runId: runA, sessionId: "a1", position: 0, contentFingerprint: fingerprintFile(fa1), outcome: "compacted" as const, summaryId: "sum-a1",
     });
 
     const sessions = [

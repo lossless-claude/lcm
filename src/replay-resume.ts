@@ -21,8 +21,15 @@ import type { DatabaseSync } from "node:sqlite";
 import { projectId } from "./daemon/project.js";
 import { closeLcmConnection, getLcmConnection } from "./db/connection.js";
 import { runLcmMigrations } from "./db/migration.js";
+import { SummaryStore } from "./store/summary-store.js";
 
 export type ReplayCommand = "import" | "compact";
+
+/**
+ * How a session finished. Both values mean "done, skip on resume"; they differ
+ * only in whether a summary — and so a threading anchor — was produced.
+ */
+export type ReplayOutcome = "compacted" | "no_work";
 
 export interface ReplayRunInfo {
   runId: string;
@@ -34,9 +41,10 @@ export interface ReplayRunInfo {
 export interface ReplayLedgerEntry {
   sessionId: string;
   position: number;
-  prevSessionId: string | null;
   contentFingerprint: string;
+  /** Threading anchor; null when the session produced no summary. */
   summaryId: string | null;
+  outcome: ReplayOutcome;
   model: string | null;
   completedAt: string;
 }
@@ -78,10 +86,6 @@ export interface ReplayResumePlan<T extends { sessionId: string }> {
   doneCount: number;
   /** Model recorded on the most recently resumed run, when they differ across projects. */
   previousModel: string | null;
-  /** Threaded summary chain restored across the resumed projects' last good rows. */
-  restoredPreviousSummary: string | undefined;
-  /** Set when the restored chain was dropped because a prior link was broken. */
-  droppedPreviousSummary: string | undefined;
   /** cwd → per-project restored threaded summary content. */
   restoredPreviousSummaries: Map<string, string>;
   /** cwd → per-project dropped threaded summary content warning marker. */
@@ -170,19 +174,20 @@ function loadManifestOrder(db: DatabaseSync, runId: string): string[] {
 
 function loadLedger(db: DatabaseSync, runId: string): Map<string, ReplayLedgerEntry> {
   const rows = db.prepare(
-    "SELECT session_id, position, prev_session_id, content_fingerprint, summary_id, model, completed_at FROM replay_ledger WHERE run_id = ?",
+    "SELECT session_id, position, content_fingerprint, summary_id, outcome, model, completed_at FROM replay_ledger WHERE run_id = ?",
   ).all(runId) as {
-    session_id: string; position: number; prev_session_id: string | null;
-    content_fingerprint: string; summary_id: string | null; model: string | null; completed_at: string;
+    session_id: string; position: number;
+    content_fingerprint: string; summary_id: string | null; outcome: string;
+    model: string | null; completed_at: string;
   }[];
   const map = new Map<string, ReplayLedgerEntry>();
   for (const r of rows) {
     map.set(r.session_id, {
       sessionId: r.session_id,
       position: r.position,
-      prevSessionId: r.prev_session_id,
       contentFingerprint: r.content_fingerprint,
       summaryId: r.summary_id,
+      outcome: r.outcome === "no_work" ? "no_work" : "compacted",
       model: r.model,
       completedAt: r.completed_at,
     });
@@ -335,8 +340,11 @@ function planProject<T extends { sessionId: string }>(opts: {
     const firstRemainingPos = remaining.length > 0
       ? (positionOf.get(remaining[0].sessionId) ?? Number.MAX_SAFE_INTEGER)
       : Number.MAX_SAFE_INTEGER;
+    // Walk back to the most recent row that actually produced a summary. A
+    // no-work session carries no anchor and is skipped over, not treated as a
+    // break — it did its job, there was simply nothing to summarise.
     const anchor = doneRows
-      .filter((r) => r.position < firstRemainingPos)
+      .filter((r) => r.position < firstRemainingPos && r.entry.summaryId !== null)
       .sort((a, b) => b.position - a.position)[0];
 
     let restored: string | undefined;
@@ -344,10 +352,12 @@ function planProject<T extends { sessionId: string }>(opts: {
     if (anchor && anchor.entry.summaryId) {
       const content = fetchSummaryContent(db, anchor.entry.summaryId);
       if (content !== undefined) {
-        // The chain is intact when every done row before the anchor also has a
-        // summary; a NULL summary_id marks a link where the chain was broken.
+        // A genuine break is a session that compacted but whose summary was
+        // never recorded. A no-work row with a null summary is not one.
         const broken = db.prepare(
-          "SELECT 1 FROM replay_ledger WHERE run_id = ? AND position < ? AND summary_id IS NULL LIMIT 1",
+          `SELECT 1 FROM replay_ledger
+           WHERE run_id = ? AND position < ? AND summary_id IS NULL AND outcome = 'compacted'
+           LIMIT 1`,
         ).get(prev.runId, anchor.position);
         if (broken) {
           dropped = content;
@@ -400,8 +410,6 @@ export function planReplayResume<T extends { sessionId: string; cwd: string }>(o
     remaining: [],
     doneCount: 0,
     previousModel: null,
-    restoredPreviousSummary: undefined,
-    droppedPreviousSummary: undefined,
     restoredPreviousSummaries: new Map(),
     droppedPreviousSummaries: new Map(),
     changedSessionIds: [],
@@ -420,9 +428,6 @@ export function planReplayResume<T extends { sessionId: string; cwd: string }>(o
     if (!firstInputIdxByCwd.has(session.cwd)) firstInputIdxByCwd.set(session.cwd, index);
   });
 
-  // Chain restore candidates across projects, ordered by each project's first
-  // remaining session position in the input list.
-  const chainCandidates: { firstInputIdx: number; restored?: string; dropped?: string }[] = [];
   const remainingByCwd = new Map<string, T[]>();
 
   for (const [cwd, sessions] of byCwd) {
@@ -467,14 +472,6 @@ export function planReplayResume<T extends { sessionId: string; cwd: string }>(o
       if (project.droppedPreviousSummary !== undefined) {
         plan.droppedPreviousSummaries.set(cwd, project.droppedPreviousSummary);
       }
-      if (project.restoredPreviousSummary !== undefined || project.droppedPreviousSummary !== undefined) {
-        const anchor = project.remaining.length > 0 ? project.remaining[0] : sessions[sessions.length - 1];
-        chainCandidates.push({
-          firstInputIdx: opts.sessions.indexOf(anchor),
-          restored: project.restoredPreviousSummary,
-          dropped: project.droppedPreviousSummary,
-        });
-      }
     }
     remainingByCwd.set(cwd, project.remaining);
   }
@@ -500,22 +497,16 @@ export function planReplayResume<T extends { sessionId: string; cwd: string }>(o
     return (firstInputIdxByCwd.get(a.cwd) ?? Number.MAX_SAFE_INTEGER) - (firstInputIdxByCwd.get(b.cwd) ?? Number.MAX_SAFE_INTEGER);
   });
 
-  // The threaded chain resumes from the project whose remaining work starts
-  // earliest in the input order.
-  chainCandidates.sort((a, b) => a.firstInputIdx - b.firstInputIdx);
-  const chain = chainCandidates[0];
-  if (chain) {
-    plan.restoredPreviousSummary = chain.restored;
-    plan.droppedPreviousSummary = chain.dropped;
-  }
-
   return plan;
 }
 
 /**
- * Record a completed session compaction. Must be called only after the
- * session's summary has been persisted (latestSummaryId in hand), so a ledger
- * row is always durable proof of done work.
+ * Record a completed session compaction.
+ *
+ * `outcome` distinguishes a session that produced a summary from one that had
+ * no work to do; both are complete, so both are skipped on resume. `summaryId`
+ * is the threading anchor and is null for a no-work session — the anchor search
+ * walks back past it rather than treating it as a broken chain.
  */
 export function recordReplayProgress(opts: {
   cwd: string;
@@ -523,253 +514,83 @@ export function recordReplayProgress(opts: {
   runId: string;
   sessionId: string;
   position: number;
-  prevSessionId: string | null;
   contentFingerprint: string;
+  outcome: ReplayOutcome;
   summaryId?: string | null;
-  summaryIds?: string[];
   model?: string | null;
 }): void {
   const opened = openProjectDb(projectDbPathFor(opts.cwd, opts.lcmDir));
   if (opened.kind !== "ready") return;
   const { db } = opened;
   try {
-    db.exec("BEGIN");
-    try {
-      db.prepare(`
-      INSERT INTO replay_ledger (run_id, session_id, position, prev_session_id, content_fingerprint, summary_id, model)
+    db.prepare(`
+      INSERT INTO replay_ledger (run_id, session_id, position, content_fingerprint, summary_id, outcome, model)
       VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (run_id, session_id) DO UPDATE SET
         position = excluded.position,
-        prev_session_id = excluded.prev_session_id,
         content_fingerprint = excluded.content_fingerprint,
         summary_id = excluded.summary_id,
+        outcome = excluded.outcome,
         model = excluded.model,
         completed_at = datetime('now')
     `).run(
       opts.runId,
       opts.sessionId,
       opts.position,
-      opts.prevSessionId,
       opts.contentFingerprint,
       opts.summaryId ?? null,
+      opts.outcome,
       opts.model ?? null,
     );
-      const uniqueSummaryIds = Array.from(new Set((opts.summaryIds ?? []).filter((id) => id.trim().length > 0)));
-      db.prepare(
-        "DELETE FROM replay_ledger_summaries WHERE run_id = ? AND session_id = ?",
-      ).run(opts.runId, opts.sessionId);
-      if (uniqueSummaryIds.length > 0) {
-        const summaryStmt = db.prepare(
-          "INSERT INTO replay_ledger_summaries (run_id, session_id, summary_id, ordinal) VALUES (?, ?, ?, ?)",
-        );
-        uniqueSummaryIds.forEach((summaryId, ordinal) => {
-          summaryStmt.run(opts.runId, opts.sessionId, summaryId, ordinal);
-        });
-      }
-      db.exec("COMMIT");
-    } catch (err) {
-      db.exec("ROLLBACK");
-      throw err;
-    }
   } catch { /* ledger writes are best-effort — the next run re-does the work */ }
   finally { closeDb(opened); }
 }
 
-function loadReplaySummaryIds(db: DatabaseSync, command: ReplayCommand): string[] {
-  const rows = db.prepare(`
-    SELECT DISTINCT summary_id
-    FROM (
-      SELECT l.summary_id AS summary_id
-      FROM replay_ledger l
-      JOIN replay_manifest m ON m.run_id = l.run_id
-      WHERE m.command = ? AND l.summary_id IS NOT NULL
-      UNION ALL
-      SELECT ls.summary_id AS summary_id
-      FROM replay_ledger_summaries ls
-      JOIN replay_manifest m ON m.run_id = ls.run_id
-      WHERE m.command = ?
-    )
-  `).all(command, command) as { summary_id: string }[];
-  return rows.map((row) => row.summary_id);
-}
-
-function expandSummaryToMessageIds(db: DatabaseSync, summaryId: string, conversationId: number): number[] {
-  const rows = db.prepare(`
-    WITH RECURSIVE lineage(summary_id) AS (
-      SELECT ?
-      UNION ALL
-      SELECT sp.parent_summary_id
-      FROM summary_parents sp
-      JOIN lineage l ON l.summary_id = sp.summary_id
-    )
-    SELECT DISTINCT m.message_id, m.seq
-    FROM summary_messages sm
-    JOIN lineage l ON l.summary_id = sm.summary_id
-    JOIN messages m ON m.message_id = sm.message_id
-    WHERE m.conversation_id = ?
-    ORDER BY m.seq ASC, m.message_id ASC
-  `).all(summaryId, conversationId) as { message_id: number; seq: number }[];
-  return rows.map((row) => row.message_id);
-}
-
-function restoreContextFromReplaySummaries(db: DatabaseSync, replaySummaryIds: string[]): void {
-  if (replaySummaryIds.length === 0) return;
-  const replaySummarySet = new Set(replaySummaryIds);
-  const rows = db.prepare(`
-    SELECT conversation_id, ordinal, item_type, message_id, summary_id
-    FROM context_items
-    ORDER BY conversation_id ASC, ordinal ASC
-  `).all() as Array<{
-    conversation_id: number;
-    ordinal: number;
-    item_type: "message" | "summary";
-    message_id: number | null;
-    summary_id: string | null;
-  }>;
-
-  const byConversation = new Map<number, typeof rows>();
-  for (const row of rows) {
-    const list = byConversation.get(row.conversation_id) ?? [];
-    list.push(row);
-    byConversation.set(row.conversation_id, list);
-  }
-
-  const expandedCache = new Map<string, number[]>();
-  for (const [conversationId, contextRows] of byConversation) {
-    let touched = false;
-    const rewritten: Array<{ itemType: "message" | "summary"; messageId: number | null; summaryId: string | null }> = [];
-    for (const row of contextRows) {
-      if (row.item_type === "summary" && row.summary_id && replaySummarySet.has(row.summary_id)) {
-        touched = true;
-        let messageIds = expandedCache.get(row.summary_id);
-        if (!messageIds) {
-          messageIds = expandSummaryToMessageIds(db, row.summary_id, conversationId);
-          expandedCache.set(row.summary_id, messageIds);
-        }
-        for (const messageId of messageIds) {
-          rewritten.push({ itemType: "message", messageId, summaryId: null });
-        }
-      } else {
-        rewritten.push({
-          itemType: row.item_type,
-          messageId: row.message_id,
-          summaryId: row.summary_id,
-        });
-      }
-    }
-
-    if (!touched) continue;
-    db.prepare("DELETE FROM context_items WHERE conversation_id = ?").run(conversationId);
-    const insert = db.prepare(
-      "INSERT INTO context_items (conversation_id, ordinal, item_type, message_id, summary_id) VALUES (?, ?, ?, ?, ?)",
-    );
-    rewritten.forEach((item, ordinal) => {
-      insert.run(conversationId, ordinal, item.itemType, item.messageId, item.summaryId);
-    });
-  }
-}
-
 /**
- * `--restart`: delete ledger rows for this command's runs, plus the summaries
- * they recorded (replay output only — hook-written summaries are untouched).
- * Dependent rows in context_items / summary_parents / summary_messages are
- * removed for the ledger-recorded summaries only. Returns false when the clear
- * could not complete, so callers can warn instead of silently keeping state.
+ * `--restart`: drop this command's replay runs and undo their compaction.
+ *
+ * Undo is wholesale, not surgical: every summary in a touched conversation is
+ * removed and its context rebuilt from messages, including summaries written
+ * outside a replay. That is sound because no information is lost — messages are
+ * never deleted and context_items is a projection over them — and necessary
+ * because a replay summary can absorb an earlier one as a parent, so scoping
+ * deletes to replay-owned ids leaves the conversation missing them anyway.
+ *
+ * Returns false when the clear could not complete, so callers can warn instead
+ * of silently keeping state.
  */
-export function clearReplayState(opts: {
+export async function clearReplayState(opts: {
   cwd: string;
   lcmDir?: string;
   command: ReplayCommand;
-}): boolean {
+  /** Called with the number of summaries about to be discarded, before any are. */
+  onSummaryCount?: (count: number) => void;
+}): Promise<boolean> {
   const opened = openProjectDb(projectDbPathFor(opts.cwd, opts.lcmDir));
   if (opened.kind === "missing") return true; // nothing to clear
   if (opened.kind === "error") return false; // existing DB could not be opened
   const { db } = opened;
   try {
+    const conversationIds = loadReplayConversationIds(db, opts.command);
+    const store = new SummaryStore(db);
+
+    if (opts.onSummaryCount) {
+      let total = 0;
+      for (const conversationId of conversationIds) {
+        total += await store.countSummaries(conversationId);
+      }
+      opts.onSummaryCount(total);
+    }
+
+    // Each conversation resets in its own transaction. A failure part-way
+    // leaves earlier conversations reset and the ledger intact, so the next
+    // --restart retries the rest rather than losing track of them.
+    for (const conversationId of conversationIds) {
+      await store.resetConversationContext(conversationId);
+    }
+
     db.exec("BEGIN");
     try {
-      const replaySummaryIds = loadReplaySummaryIds(db, opts.command);
-      restoreContextFromReplaySummaries(db, replaySummaryIds);
-      db.prepare(`
-        DELETE FROM context_items
-        WHERE summary_id IN (
-          SELECT summary_id FROM (
-            SELECT l.summary_id AS summary_id
-            FROM replay_ledger l
-            JOIN replay_manifest m ON m.run_id = l.run_id
-            WHERE m.command = ? AND l.summary_id IS NOT NULL
-            UNION ALL
-            SELECT ls.summary_id AS summary_id
-            FROM replay_ledger_summaries ls
-            JOIN replay_manifest m ON m.run_id = ls.run_id
-            WHERE m.command = ?
-          )
-        )
-      `).run(opts.command, opts.command);
-      db.prepare(`
-        DELETE FROM summary_parents
-        WHERE summary_id IN (
-          SELECT summary_id FROM (
-            SELECT l.summary_id AS summary_id
-            FROM replay_ledger l
-            JOIN replay_manifest m ON m.run_id = l.run_id
-            WHERE m.command = ? AND l.summary_id IS NOT NULL
-            UNION ALL
-            SELECT ls.summary_id AS summary_id
-            FROM replay_ledger_summaries ls
-            JOIN replay_manifest m ON m.run_id = ls.run_id
-            WHERE m.command = ?
-          )
-        )
-        OR parent_summary_id IN (
-          SELECT summary_id FROM (
-            SELECT l.summary_id AS summary_id
-            FROM replay_ledger l
-            JOIN replay_manifest m ON m.run_id = l.run_id
-            WHERE m.command = ? AND l.summary_id IS NOT NULL
-            UNION ALL
-            SELECT ls.summary_id AS summary_id
-            FROM replay_ledger_summaries ls
-            JOIN replay_manifest m ON m.run_id = ls.run_id
-            WHERE m.command = ?
-          )
-        )
-      `).run(opts.command, opts.command, opts.command, opts.command);
-      db.prepare(`
-        DELETE FROM summary_messages
-        WHERE summary_id IN (
-          SELECT summary_id FROM (
-            SELECT l.summary_id AS summary_id
-            FROM replay_ledger l
-            JOIN replay_manifest m ON m.run_id = l.run_id
-            WHERE m.command = ? AND l.summary_id IS NOT NULL
-            UNION ALL
-            SELECT ls.summary_id AS summary_id
-            FROM replay_ledger_summaries ls
-            JOIN replay_manifest m ON m.run_id = ls.run_id
-            WHERE m.command = ?
-          )
-        )
-      `).run(opts.command, opts.command);
-      db.prepare(`
-        DELETE FROM summaries
-        WHERE summary_id IN (
-          SELECT summary_id FROM (
-            SELECT l.summary_id AS summary_id
-            FROM replay_ledger l
-            JOIN replay_manifest m ON m.run_id = l.run_id
-            WHERE m.command = ? AND l.summary_id IS NOT NULL
-            UNION ALL
-            SELECT ls.summary_id AS summary_id
-            FROM replay_ledger_summaries ls
-            JOIN replay_manifest m ON m.run_id = ls.run_id
-            WHERE m.command = ?
-          )
-        )
-      `).run(opts.command, opts.command);
-      db.prepare(
-        "DELETE FROM replay_ledger_summaries WHERE run_id IN (SELECT DISTINCT run_id FROM replay_manifest WHERE command = ?)",
-      ).run(opts.command);
       db.prepare(
         "DELETE FROM replay_ledger WHERE run_id IN (SELECT DISTINCT run_id FROM replay_manifest WHERE command = ?)",
       ).run(opts.command);
@@ -785,4 +606,17 @@ export function clearReplayState(opts: {
   } finally {
     closeDb(opened);
   }
+}
+
+/** Conversations touched by any run of this command, via its frozen manifest. */
+function loadReplayConversationIds(db: DatabaseSync, command: ReplayCommand): number[] {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT c.conversation_id
+       FROM replay_manifest m
+       JOIN conversations c ON c.session_id = m.session_id
+       WHERE m.command = ?`,
+    )
+    .all(command) as unknown as { conversation_id: number }[];
+  return rows.map((row) => row.conversation_id);
 }
