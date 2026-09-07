@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { join } from "node:path";
+import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
 import { projectDbPath } from "../project.js";
 import { buildOrientationPrompt } from "../orientation.js";
@@ -28,8 +28,16 @@ function readClaudeMdFiles(cwd: string): string {
   ];
 
   const parts: string[] = [];
+  const seen = new Set<string>();
   for (const { label, path } of paths) {
     try {
+      // When cwd is $HOME, entries 1 and 3 are the same file; reading it twice duplicates
+      // it in the snapshot, and so in every replay of that snapshot. Key on the canonical
+      // path, not the spelling: cwd arrives realpath'd from validateCwd while homedir()
+      // does not, so the same file can reach here as both /var/… and /private/var/….
+      const key = realpathSync(path);
+      if (seen.has(key)) continue;
+      seen.add(key);
       const content = readFileSync(path, "utf8");
       parts.push(`# ${label}\n${content}`);
     } catch {
@@ -56,18 +64,19 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
       }
       const orientation = buildOrientationPrompt();
 
-      // Post-compaction detection
+      // Explicit session lifecycle sources override the recent-compaction fallback.
+      const isExplicitNonCompact = source === "startup" || source === "resume" || source === "clear";
       const isPostCompact =
         source === "compact" ||
-        (justCompactedMap.has(session_id) && Date.now() - justCompactedMap.get(session_id)! < JUST_COMPACTED_TTL_MS);
+        (!isExplicitNonCompact && justCompactedMap.has(session_id) && Date.now() - justCompactedMap.get(session_id)! < JUST_COMPACTED_TTL_MS);
 
-      // Query session_instructions for compact/resume paths
+      // Only post-compaction restore consumes the saved instructions.
       let instructionsContext = "";
-      if (cwd) {
+      if (isPostCompact && cwd) {
         const dbPath = projectDbPath(cwd);
         if (existsSync(dbPath)) {
           try {
-            const db = new DatabaseSync(dbPath);
+            const db = getLcmConnection(dbPath);
             try {
               runLcmMigrations(db);
               const row = db
@@ -77,7 +86,7 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
                 instructionsContext = `<project-instructions>\n${row.content}\n</project-instructions>`;
               }
             } finally {
-              db.close();
+              closeLcmConnection(dbPath);
             }
           } catch { /* non-fatal */ }
         }
@@ -96,8 +105,7 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
       // Also capture CLAUDE.md files on startup
       if (cwd) {
         const dbPath = projectDbPath(cwd);
-        mkdirSync(dirname(dbPath), { recursive: true });
-        const db = new DatabaseSync(dbPath);
+        const db = getLcmConnection(dbPath);
         try {
           runLcmMigrations(db);
 
@@ -158,8 +166,9 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
             }
           } catch { /* non-fatal */ }
 
-          db.close();
-        } catch { /* non-fatal */ }
+        } catch { /* non-fatal */ } finally {
+          closeLcmConnection(dbPath);
+        }
       }
 
       // Query passive-capture insights from promoted store
@@ -168,7 +177,7 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
         try {
           const dbPath = projectDbPath(cwd);
           if (existsSync(dbPath)) {
-            const insightsDb = new DatabaseSync(dbPath);
+            const insightsDb = getLcmConnection(dbPath);
             try {
               runLcmMigrations(insightsDb);
               const insightsStore = new PromotedStore(insightsDb);
@@ -182,13 +191,18 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
                 .slice(0, 5)
                 .map((r) => ({ content: r.content, confidence: r.confidence, tags: r.tags }));
             } finally {
-              insightsDb.close();
+              closeLcmConnection(dbPath);
             }
           }
         } catch { /* non-fatal */ }
       }
 
-      const context = [orientation, episodicContext, promotedContext, instructionsContext].filter(Boolean).join("\n\n");
+      // `instructionsContext` is deliberately omitted here. On startup/resume/clear the
+      // host harness injects the applicable CLAUDE.md files itself, so echoing the
+      // session_instructions snapshot back would duplicate them in context. The snapshot is
+      // still captured above, and the isPostCompact branch still replays it — a compaction
+      // is the only time the harness's own copy is gone.
+      const context = [orientation, episodicContext, promotedContext].filter(Boolean).join("\n\n");
       const responseBody: { context: string; insights?: Array<{ content: string; confidence: number; tags: string[] }> } = { context };
       if (insights.length > 0) {
         responseBody.insights = insights;

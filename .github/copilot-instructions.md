@@ -26,6 +26,7 @@ This repo is a TypeScript SQLite daemon that persists Claude session memories ac
   - Any path that runs more than once per user action
   - Startup initialization (lazy evaluation only)
 - Flag any `collectStats()` call that isn't in a dedicated stats endpoint or background job.
+- When a response stops using queried data on a code path, gate the associated reads and read-only connection setup to paths that still consume it; preserve required capture writes.
 
 ### Test coverage
 - New HTTP routes must have corresponding tests in `test/daemon/routes/`.
