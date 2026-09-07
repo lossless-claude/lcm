@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { handleSessionEnd } from "../../src/hooks/session-end.js";
+import { readAuthToken } from "../../src/daemon/auth.js";
 
 vi.mock("../../src/daemon/lifecycle.js", () => ({
   ensureDaemon: vi.fn().mockResolvedValue({ connected: true }),
@@ -9,6 +10,10 @@ vi.mock("../../src/daemon/config.js", () => ({
   loadDaemonConfig: vi.fn().mockReturnValue({
     compaction: { autoCompactMinTokens: 10000 },
   }),
+}));
+
+vi.mock("../../src/daemon/auth.js", () => ({
+  readAuthToken: vi.fn().mockReturnValue("test-token-abc"),
 }));
 
 const mockHttpReq = vi.hoisted(() => ({
@@ -201,6 +206,36 @@ describe("handleSessionEnd", () => {
     );
     expect(filteredCalls.length).toBe(0);
     stderrSpy.mockRestore();
+  });
+
+  it("sends Authorization header on all fire-and-forget requests", async () => {
+    const { request } = await import("node:http");
+    const client = createMockClient({ ingested: 5, totalTokens: 100 });
+    await handleSessionEnd(JSON.stringify({ session_id: "s1", cwd: "/tmp" }), client, 3737);
+    const httpReqMock = vi.mocked(request);
+    const paths = ["/compact", "/promote", "/promote-events", "/session-complete"];
+    for (const path of paths) {
+      const calls = httpReqMock.mock.calls.filter((args: any[]) => args[0]?.path === path);
+      expect(calls.length, `expected a request to ${path}`).toBeGreaterThan(0);
+      const expected = "Bearer " + readAuthToken("/nonexistent");
+      for (const call of calls) {
+        expect(call[0]?.headers?.Authorization).toBe(expected);
+      }
+    }
+  });
+
+  it("omits Authorization header when no daemon token exists", async () => {
+    vi.mocked(readAuthToken).mockReturnValueOnce(null)
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce(null);
+    const { request } = await import("node:http");
+    const client = createMockClient({ ingested: 5, totalTokens: 100 });
+    await handleSessionEnd(JSON.stringify({ session_id: "s1", cwd: "/tmp" }), client, 3737);
+    const httpReqMock = vi.mocked(request);
+    for (const call of httpReqMock.mock.calls) {
+      expect(call[0]?.headers?.Authorization).toBeUndefined();
+    }
   });
 });
 
