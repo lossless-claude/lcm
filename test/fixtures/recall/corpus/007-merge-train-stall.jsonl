@@ -1,0 +1,4 @@
+{"message":{"role":"user","content":"The merge train has been stuck since noon. Five PRs are queued and none of them are moving."}}
+{"message":{"role":"assistant","content":"The head PR's required status check never reported because the webhook delivery failed. The train waits for the check indefinitely instead of timing out."}}
+{"message":{"role":"user","content":"Can we make the train resilient to a lost webhook instead of babysitting it?"}}
+{"message":{"role":"assistant","content":"Added a polling fallback: if the required check has not reported within ten minutes, the train polls the check-runs API directly and continues. I also added a hard two-hour timeout that ejects a stalled PR from the train with a comment explaining why."}}

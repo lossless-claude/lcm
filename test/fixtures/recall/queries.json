@@ -1,0 +1,212 @@
+[
+  {
+    "id": "001",
+    "session_id": "001-deploy-rollback",
+    "question": "how did we undo that broken release?",
+    "forbidden_terms": ["rollback", "revert", "deploy"],
+    "rationale": "asks with everyday words; the transcript only ever says 'rollback'/'revert'"
+  },
+  {
+    "id": "001b",
+    "session_id": "001-deploy-rollback",
+    "question": "what happened when the settings screen came up empty for customers?",
+    "forbidden_terms": ["rollback", "revert", "deploy"],
+    "rationale": "describes the symptom rather than the fix"
+  },
+  {
+    "id": "001c",
+    "session_id": "001-deploy-rollback",
+    "question": "¿cómo deshicimos el lanzamiento defectuoso?",
+    "forbidden_terms": ["rollback", "revert", "deploy"],
+    "rationale": "asks in a different language from the transcript"
+  },
+  {
+    "id": "002",
+    "session_id": "002-flaky-ci-timeout",
+    "question": "why do the automated checks keep dying before they even start?",
+    "forbidden_terms": ["timeout", "healthcheck", "container", "jest", "postgres", "flakes"],
+    "rationale": "describes the outcome (checks dying) instead of the timeout mechanism"
+  },
+  {
+    "id": "002b",
+    "session_id": "002-flaky-ci-timeout",
+    "question": "what made the builds on the shared machines unreliable last quarter?",
+    "forbidden_terms": ["timeout", "healthcheck", "container", "jest", "postgres", "flakes"],
+    "rationale": "asks about reliability of builds, none of the mechanism words"
+  },
+  {
+    "id": "002c",
+    "session_id": "002-flaky-ci-timeout",
+    "question": "how did we stop the pricing tests from randomly failing?",
+    "forbidden_terms": ["timeout", "healthcheck", "container", "jest", "postgres", "flakes"],
+    "rationale": "asks about the fix via its effect (no more random failures)"
+  },
+  {
+    "id": "003",
+    "session_id": "003-sqlite-over-postgres",
+    "question": "what did we pick to store the data in, and what tipped the scales?",
+    "forbidden_terms": ["sqlite", "postgres", "database", "storage", "wal", "fts5"],
+    "rationale": "asks for a decision and its reasoning without naming either option"
+  },
+  {
+    "id": "003b",
+    "session_id": "003-sqlite-over-postgres",
+    "question": "which option avoids running a separate server process on a laptop?",
+    "forbidden_terms": ["sqlite", "postgres", "database", "storage", "wal", "fts5"],
+    "rationale": "describes the winning property (no server) instead of the product names"
+  },
+  {
+    "id": "003c",
+    "session_id": "003-sqlite-over-postgres",
+    "question": "what were the reasons behind the persistence choice for the daemon?",
+    "forbidden_terms": ["sqlite", "postgres", "database", "storage", "wal", "fts5"],
+    "rationale": "asks about implicit reasoning ('operations burden') with generic words"
+  },
+  {
+    "id": "004",
+    "session_id": "004-auth-middleware",
+    "question": "how do we keep strangers from calling our local endpoints?",
+    "forbidden_terms": ["token", "authorization", "bearer", "middleware", "authenticates", "401"],
+    "rationale": "asks about the goal (keeping strangers out), not the mechanism"
+  },
+  {
+    "id": "004b",
+    "session_id": "004-auth-middleware",
+    "question": "what stops a random script from posting into the daemon?",
+    "forbidden_terms": ["token", "authorization", "bearer", "middleware", "authenticates", "401"],
+    "rationale": "rephrases the threat scenario in plain words"
+  },
+  {
+    "id": "004c",
+    "session_id": "004-auth-middleware",
+    "question": "how did the hooks prove who they were when talking to the service?",
+    "forbidden_terms": ["token", "authorization", "bearer", "middleware", "authenticates", "401"],
+    "rationale": "asks about identity proof without the word 'authentication'"
+  },
+  {
+    "id": "005",
+    "session_id": "005-changeset-workflow",
+    "question": "how do we make shipping predictable so nobody is surprised?",
+    "forbidden_terms": ["changeset", "changelog", "publish", "version", "release"],
+    "rationale": "asks about predictability of shipping without any release-process vocabulary"
+  },
+  {
+    "id": "005b",
+    "session_id": "005-changeset-workflow",
+    "question": "where does the text for the release notes come from now?",
+    "forbidden_terms": ["changeset", "changelog", "publish", "version"],
+    "rationale": "asks about the source of release notes; transcript says 'changelog is assembled'"
+  },
+  {
+    "id": "005c",
+    "session_id": "005-changeset-workflow",
+    "question": "who bumps the package number when we merge?",
+    "forbidden_terms": ["changeset", "changelog", "publish", "version"],
+    "rationale": "asks about automation of the version bump in everyday words"
+  },
+  {
+    "id": "006",
+    "session_id": "006-image-orientation",
+    "question": "why do pictures from phones show up sideways?",
+    "forbidden_terms": ["exif", "orientation", "rotation", "metadata", "normalize"],
+    "rationale": "the everyday complaint; the transcript explains via EXIF metadata"
+  },
+  {
+    "id": "006b",
+    "session_id": "006-image-orientation",
+    "question": "when do we fix the photo, at upload or at render?",
+    "forbidden_terms": ["exif", "orientation", "rotation", "metadata", "normalize"],
+    "rationale": "asks about the design decision (when to fix) without the jargon"
+  },
+  {
+    "id": "006c",
+    "session_id": "006-image-orientation",
+    "question": "how did profile photos get straightened out?",
+    "forbidden_terms": ["exif", "orientation", "rotation", "metadata", "normalize"],
+    "rationale": "describes the outcome ('straightened out') rather than the transform"
+  },
+  {
+    "id": "007",
+    "session_id": "007-merge-train-stall",
+    "question": "why are the queued pull requests not moving?",
+    "forbidden_terms": ["train", "webhook", "check", "polling", "status"],
+    "rationale": "asks about the symptom (stuck queue) without the merge-train vocabulary"
+  },
+  {
+    "id": "007b",
+    "session_id": "007-merge-train-stall",
+    "question": "how do we recover when github forgets to tell us something?",
+    "forbidden_terms": ["train", "webhook", "check", "polling", "status"],
+    "rationale": "describes a lost webhook as 'github forgets to tell us'"
+  },
+  {
+    "id": "007c",
+    "session_id": "007-merge-train-stall",
+    "question": "what happens to a PR that sits in line forever?",
+    "forbidden_terms": ["train", "webhook", "check", "polling", "status"],
+    "rationale": "asks about the eject behavior without any of its terms"
+  },
+  {
+    "id": "008",
+    "session_id": "008-connection-pool-leak",
+    "question": "what knocked the API over in the middle of the night?",
+    "forbidden_terms": ["pool", "connection", "leak", "release", "reaper", "checkout"],
+    "rationale": "asks for the incident cause in plain words"
+  },
+  {
+    "id": "008b",
+    "session_id": "008-connection-pool-leak",
+    "question": "how does one slow endpoint manage to starve everything else?",
+    "forbidden_terms": ["pool", "connection", "leak", "release", "reaper", "checkout"],
+    "rationale": "asks about resource starvation without naming the resource"
+  },
+  {
+    "id": "008c",
+    "session_id": "008-connection-pool-leak",
+    "question": "how do borrowed database handles get returned now?",
+    "forbidden_terms": ["pool", "connection", "leak", "release", "reaper", "checkout"],
+    "rationale": "describes pooled connections as 'borrowed handles'"
+  },
+  {
+    "id": "009",
+    "session_id": "009-rate-limit-429",
+    "question": "what do we do when the provider tells us to slow down?",
+    "forbidden_terms": ["429", "rate", "backoff", "retry", "limiter", "throttle"],
+    "rationale": "paraphrases rate limiting as 'tells us to slow down'"
+  },
+  {
+    "id": "009b",
+    "session_id": "009-rate-limit-429",
+    "question": "why did the big summarization run keep dying halfway through?",
+    "forbidden_terms": ["429", "rate", "backoff", "retry", "limiter", "throttle"],
+    "rationale": "asks about the batch failure symptom, not the HTTP status"
+  },
+  {
+    "id": "009c",
+    "session_id": "009-rate-limit-429",
+    "question": "how do we ask again politely instead of giving up?",
+    "forbidden_terms": ["429", "rate", "backoff", "retry", "limiter", "throttle"],
+    "rationale": "describes retry-with-backoff as 'ask again politely'"
+  },
+  {
+    "id": "010",
+    "session_id": "010-sqlite-wal-checkpoint",
+    "question": "why does the daemon freeze every couple of hours?",
+    "forbidden_terms": ["wal", "checkpoint", "write-ahead", "autocheckpoint", "pages"],
+    "rationale": "asks about the stall symptom without any WAL vocabulary"
+  },
+  {
+    "id": "010b",
+    "session_id": "010-sqlite-wal-checkpoint",
+    "question": "what was that giant sidecar file next to the database?",
+    "forbidden_terms": ["wal", "checkpoint", "write-ahead", "autocheckpoint", "pages"],
+    "rationale": "describes db.sqlite-wal as a 'giant sidecar file'"
+  },
+  {
+    "id": "010c",
+    "session_id": "010-sqlite-wal-checkpoint",
+    "question": "how did we make the pauses go away?",
+    "forbidden_terms": ["wal", "checkpoint", "write-ahead", "autocheckpoint", "pages"],
+    "rationale": "asks about the fix via its effect (no more pauses)"
+  }
+]

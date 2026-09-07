@@ -1,0 +1,4 @@
+{"message":{"role":"user","content":"Users upload photos from their phones and they show up sideways on the profile page."}}
+{"message":{"role":"assistant","content":"Phone cameras store the photo in sensor orientation and record the intended rotation in EXIF metadata. Browsers do not apply EXIF rotation for every decode path, so the stored pixels render unrotated."}}
+{"message":{"role":"user","content":"So the fix is to normalize the photo when it is uploaded, not at render time?"}}
+{"message":{"role":"assistant","content":"Exactly. The upload handler now reads the EXIF orientation tag, applies the rotation to the pixels, strips the tag, and stores the normalized image. Profile pages render correctly regardless of the device."}}
