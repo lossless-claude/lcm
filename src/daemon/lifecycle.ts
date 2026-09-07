@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { join, dirname } from "node:path";
 import { ensureAuthToken } from "./auth.js";
 
@@ -8,6 +8,8 @@ export type EnsureDaemonOptions = {
   pidFilePath: string;
   spawnTimeoutMs: number;
   expectedVersion?: string;
+  /** Build fingerprint (BUILD_ID) the daemon must report; a daemon without one is accepted. */
+  expectedBuild?: string;
   spawnCommand?: string;
   spawnArgs?: string[];
   _skipSpawn?: boolean; // for testing — don't attempt to spawn
@@ -22,11 +24,20 @@ export type EnsureDaemonResult = {
   spawned: boolean;
 };
 
-type HealthResponse = {
+export type HealthResponse = {
   status: string;
   version?: string;
+  build?: string;
+  pid?: number;
   uptime?: number;
 };
+
+/** True when the daemon reports a version or build that differs from what the caller expects. */
+export function isStaleDaemon(health: HealthResponse, expected: { version?: string; build?: string }): boolean {
+  if (expected.version && health.version && health.version !== expected.version) return true;
+  if (expected.build && health.build && health.build !== expected.build) return true;
+  return false;
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -47,9 +58,21 @@ function cleanStalePid(pidFilePath: string): void {
   } catch { /* ignore */ }
 }
 
-async function checkDaemonHealth(
+/** PID of the process listening on 127.0.0.1:port, via lsof (macOS/Linux). Undefined when unknown. */
+export function findListenerPid(port: number): number | undefined {
+  try {
+    const out = spawnSync("lsof", ["-nP", "-tiTCP@127.0.0.1:" + port, "-sTCP:LISTEN"], { encoding: "utf-8" });
+    const first = String(out.stdout ?? "").trim().split("\n")[0];
+    const pid = parseInt(first, 10);
+    return Number.isNaN(pid) ? undefined : pid;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function checkDaemonHealth(
   port: number,
-  fetchFn: typeof globalThis.fetch,
+  fetchFn: typeof globalThis.fetch = globalThis.fetch,
 ): Promise<HealthResponse | null> {
   try {
     const res = await fetchFn(`http://127.0.0.1:${port}/health`);
@@ -66,18 +89,23 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
   // Step 1: Check if daemon is already running via health check
   const health = await checkDaemonHealth(opts.port, fetchFn);
   if (health?.status === "ok") {
-    // Version check — if mismatch, kill and respawn
-    if (opts.expectedVersion && health.version && health.version !== opts.expectedVersion) {
-      if (existsSync(opts.pidFilePath)) {
+    // Version/build check — if mismatch, kill and respawn
+    if (isStaleDaemon(health, { version: opts.expectedVersion, build: opts.expectedBuild })) {
+      // Prefer the pid the daemon reports about itself; the PID file may have drifted.
+      let pid = health.pid;
+      if (pid === undefined && existsSync(opts.pidFilePath)) {
         try {
-          const pid = parseInt(readFileSync(opts.pidFilePath, "utf-8").trim(), 10);
-          if (!isNaN(pid) && isProcessAlive(pid)) {
-            process.kill(pid, "SIGTERM");
-            await sleep(500);
-          }
+          const parsed = parseInt(readFileSync(opts.pidFilePath, "utf-8").trim(), 10);
+          if (!isNaN(parsed)) pid = parsed;
         } catch { /* ignore */ }
-        cleanStalePid(opts.pidFilePath);
       }
+      if (pid !== undefined && pid !== process.pid && isProcessAlive(pid)) {
+        try {
+          process.kill(pid, "SIGTERM");
+          await sleep(500);
+        } catch { /* ignore */ }
+      }
+      cleanStalePid(opts.pidFilePath);
       // Fall through to spawn
     } else {
       return { connected: true, port: opts.port, spawned: false };
@@ -131,7 +159,7 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
   while (Date.now() < deadline) {
     const h = await checkDaemonHealth(opts.port, fetchFn);
     if (h?.status === "ok") {
-      if (opts.expectedVersion && h.version && h.version !== opts.expectedVersion) {
+      if (isStaleDaemon(h, { version: opts.expectedVersion, build: opts.expectedBuild })) {
         await sleep(300);
         continue;
       }
@@ -141,4 +169,44 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
   }
 
   return { connected: false, port: opts.port, spawned: true };
+}
+
+/**
+ * Stop the daemon recorded in the PID file. Resolves true when the daemon is
+ * confirmed down (health no longer answers), false when it is still up after
+ * the timeout. A missing or dead PID with no daemon answering counts as stopped.
+ */
+export async function stopDaemon(opts: {
+  port: number;
+  pidFilePath: string;
+  timeoutMs?: number;
+  _fetchOverride?: typeof globalThis.fetch;
+}): Promise<{ stopped: boolean; pid?: number }> {
+  const fetchFn = opts._fetchOverride ?? globalThis.fetch;
+  let pid: number | undefined;
+  if (existsSync(opts.pidFilePath)) {
+    try {
+      const parsed = parseInt(readFileSync(opts.pidFilePath, "utf-8").trim(), 10);
+      if (!isNaN(parsed)) pid = parsed;
+    } catch { /* ignore */ }
+  }
+  if (pid === undefined || !isProcessAlive(pid)) {
+    const health = await checkDaemonHealth(opts.port, fetchFn);
+    // Daemons from older builds report no pid; fall back to whoever listens on the port.
+    pid = health?.pid ?? (health ? findListenerPid(opts.port) : undefined) ?? pid;
+  }
+  if (pid !== undefined && isProcessAlive(pid)) {
+    try { process.kill(pid, "SIGTERM"); } catch { /* ignore */ }
+  }
+  const deadline = Date.now() + (opts.timeoutMs ?? 5000);
+  while (Date.now() < deadline) {
+    const alive = pid !== undefined && isProcessAlive(pid);
+    const health = alive ? await checkDaemonHealth(opts.port, fetchFn) : null;
+    if (!alive && !health) {
+      cleanStalePid(opts.pidFilePath);
+      return { stopped: true, pid };
+    }
+    await sleep(200);
+  }
+  return { stopped: false, pid };
 }

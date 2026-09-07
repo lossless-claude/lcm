@@ -303,45 +303,122 @@ async function main() {
   // ─── daemon ────────────────────────────────────────────────────────────────
   const daemonCmd = new Command("daemon").description("Start the context daemon");
   daemonCmd.helpOption(false).option("-h, --help", "Show help");
+  const daemonPaths = () => {
+    const lcDir = join(homedir(), ".lossless-claude");
+    return { lcDir, pidFilePath: join(lcDir, "daemon.pid"), tokenPath: join(lcDir, "daemon.token"), configPath: join(lcDir, "config.json") };
+  };
+  const describeRunning = (port: number, h: { pid?: number; version?: string; uptime?: number }) =>
+    `lcm daemon already running on port ${port}` +
+    ` (pid ${h.pid ?? "?"}, v${h.version ?? "?"}, up ${h.uptime ?? 0}s)`;
+
   daemonCmd.command("start")
     .description("Start the context daemon")
     .option("--detach", "Run in the background")
     .option("-h, --help", "Show help")
     .action(async (opts) => {
       if (opts.help) { await withCustomHelp(daemonCmd, "daemon"); return; }
-      if (opts.detach) {
-        const { spawn } = await import("node:child_process");
-        const child = spawn(process.execPath, [process.argv[1], "daemon", "start"], {
-          detached: true,
-          stdio: "ignore",
-          env: process.env,
-        });
-        child.unref();
-        if (child.pid) {
-          const { writeFileSync, mkdirSync } = await import("node:fs");
-          const { join } = await import("node:path");
-          const { homedir } = await import("node:os");
-          const lcDir = join(homedir(), ".lossless-claude");
-          mkdirSync(lcDir, { recursive: true });
-          writeFileSync(join(lcDir, "daemon.pid"), String(child.pid));
-          console.log(`lcm daemon started in background (PID ${child.pid})`);
-        }
-        exit(0);
-      }
-      const { createDaemon } = await import("../src/daemon/server.js");
+      const { ensureDaemon, checkDaemonHealth, isStaleDaemon } = await import("../src/daemon/lifecycle.js");
       const { loadDaemonConfig } = await import("../src/daemon/config.js");
+      const { PKG_VERSION, BUILD_ID } = await import("../src/daemon/version.js");
+      const { lcDir, pidFilePath, tokenPath, configPath } = daemonPaths();
+      const config = loadDaemonConfig(configPath);
+      const port = config.daemon?.port ?? 3737;
+
+      const running = await checkDaemonHealth(port);
+      if (running?.status === "ok") {
+        console.log(describeRunning(port, running));
+        if (running.pid) {
+          // Heal a PID file that drifted from the daemon that actually answers
+          const { readFileSync, writeFileSync, mkdirSync } = await import("node:fs");
+          let recorded: string | undefined;
+          try { recorded = readFileSync(pidFilePath, "utf-8").trim(); } catch { /* missing */ }
+          if (recorded !== String(running.pid)) {
+            mkdirSync(lcDir, { recursive: true });
+            writeFileSync(pidFilePath, String(running.pid));
+          }
+        }
+        if (isStaleDaemon(running, { version: PKG_VERSION, build: BUILD_ID })) {
+          console.log("  Running build differs from the installed one. Restart with: lcm daemon restart");
+        }
+        return;
+      }
+
+      if (opts.detach) {
+        const { mkdirSync } = await import("node:fs");
+        mkdirSync(lcDir, { recursive: true });
+        const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 10000 });
+        if (!connected) {
+          console.error(`lcm daemon did not answer on port ${port} within 10s — check ~/.lossless-claude/daemon.log`);
+          exit(1);
+        }
+        const h = await checkDaemonHealth(port);
+        console.log(`lcm daemon started in background on port ${port} (pid ${h?.pid ?? "?"})`);
+        return;
+      }
+
+      const { createDaemon } = await import("../src/daemon/server.js");
       const { ensureAuthToken } = await import("../src/daemon/auth.js");
-      const { join } = await import("node:path");
-      const { homedir } = await import("node:os");
-      const lcDir = join(homedir(), ".lossless-claude");
-      const tokenPath = join(lcDir, "daemon.token");
       ensureAuthToken(tokenPath);
-      const config = loadDaemonConfig(join(lcDir, "config.json"));
-      const daemon = await createDaemon(config, { tokenPath });
-      console.log(`lcm daemon started on port ${daemon.address().port}`);
+      try {
+        const daemon = await createDaemon(config, { tokenPath });
+        console.log(`lcm daemon started on port ${daemon.address().port}`);
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException)?.code;
+        if (code === "EADDRINUSE") {
+          console.error(`Port ${port} is already in use by another process (not an lcm daemon). Stop it or change daemon.port in ${configPath}.`);
+        } else {
+          console.error(`lcm daemon failed to start: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        exit(1);
+      }
       process.on("SIGTERM", () => exit(0));
       process.on("SIGINT", () => exit(0));
     });
+
+  daemonCmd.command("stop")
+    .description("Stop the background daemon")
+    .option("-h, --help", "Show help")
+    .action(async (opts) => {
+      if (opts.help) { await withCustomHelp(daemonCmd, "daemon"); return; }
+      const { stopDaemon, checkDaemonHealth } = await import("../src/daemon/lifecycle.js");
+      const { loadDaemonConfig } = await import("../src/daemon/config.js");
+      const { pidFilePath, configPath } = daemonPaths();
+      const port = loadDaemonConfig(configPath).daemon?.port ?? 3737;
+      const before = await checkDaemonHealth(port);
+      const { stopped, pid } = await stopDaemon({ port, pidFilePath });
+      if (!stopped) {
+        console.error(`lcm daemon on port ${port} is still up (pid ${pid ?? "?"}) — stop it manually`);
+        exit(1);
+      }
+      console.log(before ? `lcm daemon stopped (pid ${pid ?? before.pid ?? "?"})` : "lcm daemon was not running");
+    });
+
+  daemonCmd.command("restart")
+    .description("Restart the background daemon")
+    .option("-h, --help", "Show help")
+    .action(async (opts) => {
+      if (opts.help) { await withCustomHelp(daemonCmd, "daemon"); return; }
+      const { stopDaemon, ensureDaemon, checkDaemonHealth } = await import("../src/daemon/lifecycle.js");
+      const { loadDaemonConfig } = await import("../src/daemon/config.js");
+      const { PKG_VERSION, BUILD_ID } = await import("../src/daemon/version.js");
+      const { lcDir, pidFilePath, configPath } = daemonPaths();
+      const port = loadDaemonConfig(configPath).daemon?.port ?? 3737;
+      const { stopped, pid } = await stopDaemon({ port, pidFilePath });
+      if (!stopped) {
+        console.error(`lcm daemon on port ${port} is still up (pid ${pid ?? "?"}) — stop it manually`);
+        exit(1);
+      }
+      const { mkdirSync } = await import("node:fs");
+      mkdirSync(lcDir, { recursive: true });
+      const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 10000, expectedVersion: PKG_VERSION, expectedBuild: BUILD_ID });
+      if (!connected) {
+        console.error(`lcm daemon did not answer on port ${port} within 10s — check ~/.lossless-claude/daemon.log`);
+        exit(1);
+      }
+      const h = await checkDaemonHealth(port);
+      console.log(`lcm daemon restarted on port ${port} (pid ${h?.pid ?? "?"}, v${h?.version ?? "?"})`);
+    });
+
   daemonCmd.action(async (opts) => {
     if (opts.help) { await withCustomHelp(daemonCmd, "daemon"); return; }
   });

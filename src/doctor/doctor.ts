@@ -9,6 +9,7 @@ import { NATIVE_PATTERNS, ScrubEngine, readGitleaksSyncDate } from "../scrub.js"
 import { GITLEAKS_PATTERNS } from "../generated-patterns.js";
 import { projectDir } from "../daemon/project.js";
 import { collectEventStats, collectDetailedEventStats } from "../db/events-stats.js";
+import { BUILD_ID } from "../daemon/version.js";
 
 const COLORS = {
   green: "\x1b[0;32m",
@@ -53,6 +54,22 @@ function loadConfig(deps: DoctorDeps): DoctorConfig {
     port: (config.daemon as Record<string, number> | undefined)?.port ?? (config as Record<string, unknown>).port as number ?? 3737,
     summarizer: llm?.provider ?? "disabled",
   };
+}
+
+type PluginRegistration = { installed: boolean; enabled: boolean; key?: string };
+
+/** Look up the lcm plugin in Claude Code's plugin registry and enabledPlugins. */
+function readLcmPluginRegistration(deps: DoctorDeps, settings: Record<string, unknown>): PluginRegistration {
+  const registryPath = join(deps.homedir, ".claude", "plugins", "installed_plugins.json");
+  let key: string | undefined;
+  try {
+    const registry = JSON.parse(deps.readFileSync(registryPath, "utf-8")) as { plugins?: Record<string, unknown> };
+    const plugins = registry?.plugins && typeof registry.plugins === "object" ? registry.plugins : {};
+    key = Object.keys(plugins).find(k => k === "lcm" || k.startsWith("lcm@"));
+  } catch { /* no registry — plugin not installed */ }
+  if (!key) return { installed: false, enabled: false };
+  const enabledPlugins = settings.enabledPlugins as Record<string, unknown> | undefined;
+  return { installed: true, enabled: enabledPlugins?.[key] !== false, key };
 }
 
 function checkBinary(deps: DoctorDeps, command: string): boolean {
@@ -139,14 +156,15 @@ function checkPassiveLearning(results: CheckResult[], hooksInstalled: boolean, v
   if (!hooksInstalled) return;
 
   const stats = verbose ? collectDetailedEventStats(2000) : collectEventStats(2000);
+  const sampled = stats.total > stats.scanned ? ` [sampled ${stats.scanned} of ${stats.total} project DBs, newest first]` : "";
 
   // Capture check
   if (stats.captured === 0) {
     results.push({ name: "events-capture", category: "Passive Learning", status: "warn", message: "No events captured — passive learning may not be active\n     Fix: run 'lcm install' to re-register hooks, then use a Bash or Edit tool to trigger the first event capture; re-run /lcm-doctor to verify" });
   } else if (stats.unprocessed > 1000) {
-    results.push({ name: "events-capture", category: "Passive Learning", status: "warn", message: `${stats.captured} events (${stats.unprocessed} unprocessed) — daemon may be offline — run: lcm daemon start` });
+    results.push({ name: "events-capture", category: "Passive Learning", status: "warn", message: `${stats.captured} events (${stats.unprocessed} unprocessed)${sampled} — events are promoted per project at session end, so inactive projects keep a backlog\n     Fix: lcm doctor -v  (per-project counts; backlogs drain when that project's next session ends)` });
   } else {
-    results.push({ name: "events-capture", category: "Passive Learning", status: "pass", message: `${stats.captured} events captured (${stats.unprocessed} unprocessed)` });
+    results.push({ name: "events-capture", category: "Passive Learning", status: "pass", message: `${stats.captured} events captured (${stats.unprocessed} unprocessed)${sampled}` });
   }
 
   // Error check
@@ -225,64 +243,73 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
   // ── Daemon ──
   let daemonHealthy = false;
   let daemonVersion: string | undefined;
+  let daemonBuild: string | undefined;
   try {
     const res = await deps.fetch(`http://127.0.0.1:${config.port}/health`);
     if (res.ok) {
-      const h = (await res.json()) as { status?: string; version?: string };
+      const h = (await res.json()) as { status?: string; version?: string; build?: string };
       daemonHealthy = h.status === "ok";
       daemonVersion = h.version;
+      daemonBuild = h.build;
     }
   } catch {}
 
   if (daemonHealthy) {
     const pidFilePath = join(deps.homedir, ".lossless-claude", "daemon.pid");
-    if (pkgVersion && daemonVersion && daemonVersion !== pkgVersion) {
-      // Version mismatch — auto-restart with expectedVersion to kill stale daemon and spawn fresh
+    const versionMismatch = Boolean(pkgVersion && daemonVersion && daemonVersion !== pkgVersion);
+    const buildMismatch = Boolean(BUILD_ID && daemonBuild && daemonBuild !== BUILD_ID);
+    if (versionMismatch || buildMismatch) {
+      // Stale daemon (older version, or same version from an older build) — restart it
+      const runningLabel = versionMismatch ? `v${daemonVersion}` : `build ${daemonBuild}`;
+      const installedLabel = versionMismatch ? `v${pkgVersion}` : `build ${BUILD_ID}`;
       try {
         const { ensureDaemon } = await import("../daemon/lifecycle.js");
-        const { connected } = await ensureDaemon({ port: config.port, pidFilePath, spawnTimeoutMs: 10000, expectedVersion: pkgVersion });
+        const { connected } = await ensureDaemon({ port: config.port, pidFilePath, spawnTimeoutMs: 10000, expectedVersion: pkgVersion, expectedBuild: BUILD_ID });
 
         // Re-fetch health to verify restart actually fixed the version
         let postRestartVersion: string | undefined;
+        let postRestartBuild: string | undefined;
         let postRestartOk = false;
         if (connected) {
           try {
             const res = await deps.fetch(`http://127.0.0.1:${config.port}/health`);
             if (res.ok) {
-              const h = (await res.json()) as { status?: string; version?: string };
+              const h = (await res.json()) as { status?: string; version?: string; build?: string };
               postRestartOk = h.status === "ok";
               postRestartVersion = h.version;
+              postRestartBuild = h.build;
             }
           } catch { /* non-fatal */ }
         }
 
-        const fixApplied = connected && postRestartOk && postRestartVersion === pkgVersion;
+        const versionFixed = !pkgVersion || postRestartVersion === pkgVersion;
+        const buildFixed = !BUILD_ID || !postRestartBuild || postRestartBuild === BUILD_ID;
+        const fixApplied = connected && postRestartOk && versionFixed && buildFixed;
         if (fixApplied) {
           results.push({
             name: "daemon", category: "Daemon", status: "warn",
-            message: `localhost:${config.port} — restarted (v${daemonVersion} → v${pkgVersion})`,
+            message: `localhost:${config.port} — restarted (${runningLabel} → ${installedLabel})`,
             fixApplied: true,
           });
           daemonHealthy = true;
         } else if (connected) {
-          const runningVersion = postRestartVersion ?? daemonVersion;
           results.push({
             name: "daemon", category: "Daemon", status: "warn",
-            message: `localhost:${config.port} — version mismatch (v${runningVersion} running, v${pkgVersion} installed); restart did not fix mismatch\n     Fix: lcm daemon restart`,
+            message: `localhost:${config.port} — stale daemon (${runningLabel} running, ${installedLabel} installed); restart did not fix it\n     Fix: lcm daemon restart`,
             fixApplied: false,
           });
           daemonHealthy = false;
         } else {
           results.push({
             name: "daemon", category: "Daemon", status: "fail",
-            message: `localhost:${config.port} — version mismatch (v${daemonVersion} running, v${pkgVersion} installed); restart failed\n     Fix: lcm daemon restart`,
+            message: `localhost:${config.port} — stale daemon (${runningLabel} running, ${installedLabel} installed); restart failed\n     Fix: lcm daemon restart`,
             fixApplied: false,
           });
           daemonHealthy = false;
         }
       } catch {
         results.push({ name: "daemon", category: "Daemon", status: "warn",
-          message: `localhost:${config.port} — version mismatch (v${daemonVersion} running, v${pkgVersion} installed)\n     Fix: lcm daemon restart` });
+          message: `localhost:${config.port} — stale daemon (${runningLabel} running, ${installedLabel} installed)\n     Fix: lcm daemon restart` });
       }
     } else {
       results.push({ name: "daemon", category: "Daemon", status: "pass", message: `localhost:${config.port} (up)` });
@@ -313,20 +340,45 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
     settingsData = JSON.parse(deps.readFileSync(settingsPath, "utf-8"));
   } catch {}
 
-  // Hooks are owned by plugin.json, not settings.json.
-  // If hooks leaked into settings.json (old installer), clean them up.
+  // Hooks are owned by the lcm Claude Code plugin, not settings.json.
+  // Verify the plugin is actually registered and enabled; otherwise no hook fires at all.
+  const plugin = readLcmPluginRegistration(deps, settingsData);
   const hooks = settingsData.hooks as Record<string, unknown[]> | undefined;
-  const duplicateHooks: string[] = [];
-
+  const settingsHookEvents: string[] = [];
   for (const { event, command } of REQUIRED_HOOKS) {
     const entries = hooks?.[event];
     const found = Array.isArray(entries) && entries.some((e: any) =>
       Array.isArray(e?.hooks) && e.hooks.some((h: any) => h.command === command)
     );
-    if (found) duplicateHooks.push(event);
+    if (found) settingsHookEvents.push(event);
   }
+  const legacyHooksComplete = settingsHookEvents.length === REQUIRED_HOOKS.length;
+  const hookEventList = REQUIRED_HOOKS.map(h => h.event).join(", ");
+  const installFix = "Fix: claude plugin marketplace add lossless-claude/lcm && claude plugin install lcm@lossless-claude  (then start a new Claude Code session)";
 
-  if (duplicateHooks.length > 0) {
+  if (!plugin.installed && legacyHooksComplete) {
+    results.push({
+      name: "hooks",
+      category: "Settings",
+      status: "pass",
+      message: `${REQUIRED_HOOKS.map(h => `${h.event} \u2713`).join("  ")}  (via settings.json — plugin not installed)`,
+    });
+  } else if (!plugin.installed) {
+    results.push({
+      name: "hooks",
+      category: "Settings",
+      status: "fail",
+      message: `lcm plugin not installed in Claude Code — no lcm hook fires (${hookEventList})\n     ${installFix}`,
+    });
+  } else if (!plugin.enabled) {
+    results.push({
+      name: "hooks",
+      category: "Settings",
+      status: "fail",
+      message: `lcm plugin (${plugin.key}) is disabled in settings.json enabledPlugins — no lcm hook fires (${hookEventList})\n     Fix: enable it via /plugin in Claude Code, then start a new session`,
+    });
+  } else if (settingsHookEvents.length > 0) {
+    // Plugin owns the hooks; copies left in settings.json (old installer) fire twice.
     try {
       settingsData = mergeClaudeSettings(settingsData);
       deps.writeFileSync(settingsPath, JSON.stringify(settingsData, null, 2));
@@ -334,7 +386,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
         name: "hooks",
         category: "Settings",
         status: "warn",
-        message: `Removed duplicate ${duplicateHooks.join(", ")} from settings.json (plugin.json owns hooks)`,
+        message: `Removed duplicate ${settingsHookEvents.join(", ")} from settings.json (plugin.json owns hooks)`,
         fixApplied: true,
       });
     } catch {
@@ -342,7 +394,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
         name: "hooks",
         category: "Settings",
         status: "warn",
-        message: `Duplicate ${duplicateHooks.join(", ")} hook ${duplicateHooks.length === 1 ? "entry" : "entries"} in ${settingsPath} — remove the \`hooks.${duplicateHooks[0]}\` block(s) from that file, then run: lcm install`,
+        message: `Duplicate ${settingsHookEvents.join(", ")} hook ${settingsHookEvents.length === 1 ? "entry" : "entries"} in ${settingsPath} — remove the \`hooks.${settingsHookEvents[0]}\` block(s) from that file, then run: lcm install`,
       });
     }
   } else {
@@ -350,7 +402,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
       name: "hooks",
       category: "Settings",
       status: "pass",
-      message: REQUIRED_HOOKS.map(h => `${h.event} \u2713`).join("  "),
+      message: `${REQUIRED_HOOKS.map(h => `${h.event} \u2713`).join("  ")}  (plugin ${plugin.key})`,
     });
   }
 
@@ -364,7 +416,8 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
     results.push({ name: "mcp-lcm", category: "Settings", status: "pass", message: "mcpServers.lcm registered in settings.json" });
   } else {
     try {
-      const merged = mergeClaudeSettings(currentSettings);
+      // mergeClaudeSettings strips lcm hooks from settings.json; only safe when the plugin actually fires them.
+      const merged = plugin.installed && plugin.enabled ? mergeClaudeSettings(currentSettings) : { ...currentSettings };
       if (typeof merged.mcpServers !== "object" || merged.mcpServers === null) merged.mcpServers = {};
       // Use resolveBinaryPath for consistent binary resolution with installer
       const lcmBinary = resolveBinaryPath(deps);

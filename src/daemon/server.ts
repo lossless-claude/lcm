@@ -21,7 +21,7 @@ import { createPromoteEventsHandler } from "./routes/promote-events.js";
 import { createStatsHandler } from "./routes/stats.js";
 import { createPoolStatsHandler } from "./routes/pool-stats.js";
 import { createReviewStaleHandler } from "./routes/review-stale.js";
-import { PKG_VERSION } from "./version.js";
+import { PKG_VERSION, BUILD_ID } from "./version.js";
 export { PKG_VERSION };
 
 export type RouteHandler = (req: IncomingMessage, res: ServerResponse, body: string) => Promise<void>;
@@ -83,7 +83,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   }
 
   routes.set("GET /health", async (_req, res) =>
-    sendJson(res, 200, { status: "ok", version: PKG_VERSION, uptime: Math.floor((Date.now() - startTime) / 1000) }));
+    sendJson(res, 200, { status: "ok", version: PKG_VERSION, build: BUILD_ID, pid: process.pid, uptime: Math.floor((Date.now() - startTime) / 1000) }));
   routes.set("POST /compact", createCompactHandler(config));
   routes.set("POST /promote", createPromoteHandler(config));
   routes.set("POST /restore", createRestoreHandler(config));
@@ -189,7 +189,12 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
     }
   }
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    server.once("error", (err) => {
+      clearInterval(ingestInterval);
+      if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+      reject(err);
+    });
     server.listen(config.daemon.port, "127.0.0.1", () => {
       resetIdleTimer();
       const addr = server.address() as AddressInfo;

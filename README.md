@@ -100,7 +100,8 @@ npm install -g @lossless-claude/lcm  # provides the `lcm` command
 ```
 
 ```bash
-claude plugin add github:lossless-claude/lcm
+claude plugin marketplace add lossless-claude/lcm
+claude plugin install lcm@lossless-claude
 lcm install
 ```
 

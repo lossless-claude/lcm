@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ensureDaemon } from "../../src/daemon/lifecycle.js";
+import { ensureDaemon, isStaleDaemon, stopDaemon } from "../../src/daemon/lifecycle.js";
 
 const tempDirs: string[] = [];
 
@@ -99,6 +99,60 @@ describe("ensureDaemon", () => {
       // daemon may have been killed by version mismatch logic
       try { await daemon.stop(); } catch { /* may already be stopped */ }
     }
+  });
+
+  it("treats a build mismatch like a version mismatch", async () => {
+    const { createDaemon } = await import("../../src/daemon/server.js");
+    const { loadDaemonConfig } = await import("../../src/daemon/config.js");
+    const config = loadDaemonConfig("/nonexistent");
+    config.daemon.port = 0;
+    config.daemon.idleTimeoutMs = 0;
+    const daemon = await createDaemon(config);
+    const port = daemon.address().port;
+
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-build-"));
+    tempDirs.push(tempDir);
+    const pidFile = join(tempDir, "daemon.pid");
+
+    try {
+      const sameBuild = await ensureDaemon({ port, pidFilePath: pidFile, spawnTimeoutMs: 1000, expectedBuild: undefined, _skipSpawn: true });
+      expect(sameBuild.connected).toBe(true);
+      const result = await ensureDaemon({
+        port,
+        pidFilePath: pidFile,
+        spawnTimeoutMs: 1000,
+        expectedBuild: "2000-01-01T00:00:00.000Z",
+        _skipSpawn: true,
+      });
+      expect(result.connected).toBe(false);
+    } finally {
+      try { await daemon.stop(); } catch { /* may already be stopped */ }
+    }
+  });
+
+  it("isStaleDaemon accepts daemons that report no build", () => {
+    expect(isStaleDaemon({ status: "ok", version: "1.0.0" }, { version: "1.0.0", build: "b1" })).toBe(false);
+    expect(isStaleDaemon({ status: "ok", version: "1.0.0", build: "b0" }, { version: "1.0.0", build: "b1" })).toBe(true);
+    expect(isStaleDaemon({ status: "ok", version: "0.9.0", build: "b1" }, { version: "1.0.0", build: "b1" })).toBe(true);
+    expect(isStaleDaemon({ status: "ok" }, { version: "1.0.0", build: "b1" })).toBe(false);
+  });
+
+  it("stopDaemon reports not running when nothing listens and no PID file exists", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-stop-"));
+    tempDirs.push(tempDir);
+    const result = await stopDaemon({ port: 1, pidFilePath: join(tempDir, "daemon.pid"), timeoutMs: 500 });
+    expect(result.stopped).toBe(true);
+    expect(result.pid).toBeUndefined();
+  });
+
+  it("stopDaemon removes a stale PID file for a dead process", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-stop2-"));
+    tempDirs.push(tempDir);
+    const pidFile = join(tempDir, "daemon.pid");
+    writeFileSync(pidFile, "999999");
+    const result = await stopDaemon({ port: 1, pidFilePath: pidFile, timeoutMs: 500 });
+    expect(result.stopped).toBe(true);
+    expect(existsSync(pidFile)).toBe(false);
   });
 
   it("does not connect when health wait returns a daemon with mismatched version", async () => {

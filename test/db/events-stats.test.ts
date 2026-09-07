@@ -47,6 +47,8 @@ describe("collectEventStats", () => {
     expect(stats.captured).toBe(3);
     expect(stats.unprocessed).toBe(3);
     expect(stats.errors).toBe(1);
+    expect(stats.scanned).toBe(2);
+    expect(stats.total).toBe(2);
   });
 
   it("skips non-.db files in events directory", () => {
