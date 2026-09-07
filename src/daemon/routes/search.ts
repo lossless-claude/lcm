@@ -11,6 +11,10 @@ import { RetrievalEngine } from "../../retrieval.js";
 import { PromotedStore } from "../../db/promoted.js";
 import { validateCwd } from "../validate-cwd.js";
 
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 export function createSearchHandler(): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
@@ -35,6 +39,7 @@ export function createSearchHandler(): RouteHandler {
 
     let episodic: unknown[] = [];
     let promoted: unknown[] = [];
+    const errors: string[] = [];
 
     if (cwd) {
       const dbPath = projectDbPath(cwd);
@@ -59,7 +64,13 @@ export function createSearchHandler(): RouteHandler {
                   })
                 : allMatches;
               episodic = episodicMatches.slice(0, limit);
-            } catch { /* non-fatal */ }
+            } catch (err) {
+              // Non-fatal for the response, but never silent: a real failure
+              // (malformed FTS5 syntax, missing table, corrupt index) must be
+              // distinguishable from a query that legitimately matched nothing.
+              console.warn(`[lcm] /search episodic layer failed: ${describeError(err)}`);
+              errors.push(`episodic: ${describeError(err)}`);
+            }
           }
 
           // Promoted: FTS5 search across promoted memories
@@ -67,15 +78,20 @@ export function createSearchHandler(): RouteHandler {
             try {
               const promotedStore = new PromotedStore(db);
               promoted = promotedStore.search(query, limit, filterTags);
-            } catch { /* non-fatal */ }
+            } catch (err) {
+              console.warn(`[lcm] /search promoted layer failed: ${describeError(err)}`);
+              errors.push(`promoted: ${describeError(err)}`);
+            }
           }
-        } catch { /* non-fatal */ }
-        finally {
+        } catch (err) {
+          console.warn(`[lcm] /search database open failed: ${describeError(err)}`);
+          errors.push(`database: ${describeError(err)}`);
+        } finally {
           db.close();
         }
       }
     }
 
-    sendJson(res, 200, { episodic, promoted });
+    sendJson(res, 200, errors.length > 0 ? { episodic, promoted, errors } : { episodic, promoted });
   };
 }

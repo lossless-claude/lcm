@@ -68,6 +68,59 @@ describe("POST /search", () => {
       const data = await res.json() as Record<string, unknown>;
       expect(data).toHaveProperty("episodic");
       expect(data).toHaveProperty("promoted");
+      // A clean query has no errors key — errors only appear on real failures.
+      expect(data.errors).toBeUndefined();
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it("natural-language questions find episodic content (issue #309)", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-search-nl-"));
+    tempDirs.push(tempDir);
+
+    const dbPath = projectDbPath(tempDir);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    runLcmMigrations(db);
+    const { ConversationStore } = await import("../../../src/store/conversation-store.js");
+    const { SummaryStore } = await import("../../../src/store/summary-store.js");
+    const convStore = new ConversationStore(db);
+    const summStore = new SummaryStore(db);
+    const conv = await convStore.createConversation({ sessionId: "sess-1" });
+    await convStore.createMessage({
+      conversationId: conv.conversationId,
+      seq: 0,
+      role: "user",
+      content: "We rolled back the broken deploy and reverted the release.",
+      tokenCount: 12,
+    });
+    await summStore.insertSummary({
+      summaryId: "sum_1",
+      conversationId: conv.conversationId,
+      kind: "leaf",
+      content: "We rolled back the broken deploy and reverted the release.",
+      tokenCount: 12,
+    });
+    db.close();
+
+    const config = loadDaemonConfig("/nonexistent");
+    config.daemon.port = 0;
+    const daemon = await createDaemon(config);
+    const port = daemon.address().port;
+
+    try {
+      // None of the question's content words co-occur in the document under
+      // AND semantics ("undo" never stems to "revert"); before the fix this
+      // returned { episodic: [], promoted: [] }.
+      const res = await fetch(`http://127.0.0.1:${port}/search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: "how did we undo that broken release?", cwd: tempDir }),
+      });
+      const data = await res.json() as { episodic: unknown[]; promoted: unknown[] };
+      expect(res.status).toBe(200);
+      expect(data.episodic.length).toBeGreaterThan(0);
     } finally {
       await daemon.stop();
     }

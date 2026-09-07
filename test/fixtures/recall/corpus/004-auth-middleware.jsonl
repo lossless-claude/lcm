@@ -1,0 +1,4 @@
+{"message":{"role":"user","content":"Someone hit our daemon's ingest endpoint from a random script last night. There was nothing stopping them."}}
+{"message":{"role":"assistant","content":"Right, the daemon binds localhost but nothing authenticates requests. I'll add a bearer-token middleware: the daemon generates a token into ~/.lossless-claude/daemon.token on first start, and every route except the health check requires the Authorization header."}}
+{"message":{"role":"user","content":"Do the hooks and the CLI read the same token file? They all talk to the daemon."}}
+{"message":{"role":"assistant","content":"Yes — the middleware reads the token once at startup, and the CLI, hooks, and MCP server all send Authorization: ****** the file contents. Unauthenticated requests now get a 401."}}

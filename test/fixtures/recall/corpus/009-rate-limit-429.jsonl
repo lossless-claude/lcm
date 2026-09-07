@@ -1,0 +1,4 @@
+{"message":{"role":"user","content":"The llm summarizer dies halfway through a big compaction batch. The provider returns 429 and we abort the whole run."}}
+{"message":{"role":"assistant","content":"We're sending requests in a tight loop and hitting the provider's rate limiter. The SDK surfaces 429 as a retriable error but we never retry it."}}
+{"message":{"role":"user","content":"Retry it then, but politely. I don't want to hammer an already overloaded provider."}}
+{"message":{"role":"assistant","content":"The client now retries 429 responses with exponential backoff, honors the Retry-After header when present, and caps attempts at five. A full compaction batch of 200 summaries completed without manual intervention."}}

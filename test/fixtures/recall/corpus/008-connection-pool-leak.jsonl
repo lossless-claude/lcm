@@ -1,0 +1,4 @@
+{"message":{"role":"user","content":"Production fell over at 3am. The API stopped accepting connections and the database showed hundreds of idle clients."}}
+{"message":{"role":"assistant","content":"The pool exhaustion trace points at the report endpoint: it checks out a connection, streams rows, and the error path when the client disconnects never releases the connection back to the pool."}}
+{"message":{"role":"user","content":"How do we keep one bad endpoint from starving the whole service again?"}}
+{"message":{"role":"assistant","content":"Two changes. The report handler now releases in a finally block so every path returns the connection. And the pool has an idle-timeout reaper plus a max-checkout duration, so a leaked connection is reclaimed instead of held forever."}}
