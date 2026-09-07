@@ -47,9 +47,10 @@ function isUsageLimitError(text: string): boolean {
 }
 
 function buildCodexExitError(code: number | null, stderr: string): Error {
+  const exitLabel = code ?? "unknown";
   const detail = skipCodexBanner(stderr);
   if (!detail) {
-    return new Error(`codex exited ${code}: no output`);
+    return new Error(`codex exited ${exitLabel}: no output`);
   }
   const excerpt =
     detail.length > STDERR_ERROR_MAX_CHARS
@@ -57,10 +58,10 @@ function buildCodexExitError(code: number | null, stderr: string): Error {
       : detail;
   if (isUsageLimitError(detail)) {
     return new Error(
-      `codex usage limit reached (exit ${code}) — wait for the limit to reset or switch models before retrying.\n${excerpt}`,
+      `codex usage limit reached (exit ${exitLabel}) — wait for the limit to reset or switch models before retrying.\n${excerpt}`,
     );
   }
-  return new Error(`codex exited ${code}: ${excerpt}`);
+  return new Error(`codex exited ${exitLabel}: ${excerpt}`);
 }
 
 type CodexProcessDeps = {
