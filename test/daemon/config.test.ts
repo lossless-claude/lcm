@@ -93,6 +93,13 @@ describe("loadDaemonConfig", () => {
     expect(c.llm.provider).toBe("auto");
   });
 
+  it("accepts copilot-process as a provider from file config", () => {
+    const c = loadDaemonConfig("/nonexistent/config.json", {
+      llm: { provider: "copilot-process" }
+    });
+    expect(c.llm.provider).toBe("copilot-process");
+  });
+
   it("accepts LCM_SUMMARY_PROVIDER=codex-process", () => {
     const c = loadDaemonConfig("/nonexistent", {}, { LCM_SUMMARY_PROVIDER: "codex-process" });
     expect(c.llm.provider).toBe("codex-process");

@@ -77,30 +77,51 @@ export const JUST_COMPACTED_TTL_MS = 30_000;
 // Guard against concurrent compactions for the same session
 const compactingNow = new Set<string>();
 
-type CompactLlmUsage = {
+export type CompactLlmUsage = {
   provider: string;
   model: string;
   calls: number;
   okCalls: number;
   failedCalls: number;
   tokensSpent: number;
+  tokensInput: number;
+  tokensCached: number;
+  tokensOutput: number;
 };
 
 function createCompactLlmUsage(provider: string, model: string): CompactLlmUsage {
-  return { provider, model, calls: 0, okCalls: 0, failedCalls: 0, tokensSpent: 0 };
+  return {
+    provider, model,
+    calls: 0, okCalls: 0, failedCalls: 0,
+    tokensSpent: 0, tokensInput: 0, tokensCached: 0, tokensOutput: 0,
+  };
 }
 
-function recordCompactLlmUsage(db: DatabaseSync, usage: CompactLlmUsage): void {
+function addTokens(
+  usage: CompactLlmUsage,
+  call: { tokens: number; input: number; cached: number; output: number },
+): void {
+  usage.tokensSpent += call.tokens;
+  usage.tokensInput += call.input;
+  usage.tokensCached += call.cached;
+  usage.tokensOutput += call.output;
+}
+
+export function recordCompactLlmUsage(db: DatabaseSync, usage: CompactLlmUsage): void {
   if (usage.calls === 0) return;
   db.prepare(`
     INSERT INTO llm_usage_stats (
-      provider, model, calls_total, calls_ok, calls_failed, tokens_spent_total, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+      provider, model, calls_total, calls_ok, calls_failed,
+      tokens_spent_total, tokens_input_total, tokens_cached_total, tokens_output_total, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     ON CONFLICT(provider, model) DO UPDATE SET
       calls_total = calls_total + excluded.calls_total,
       calls_ok = calls_ok + excluded.calls_ok,
       calls_failed = calls_failed + excluded.calls_failed,
       tokens_spent_total = tokens_spent_total + excluded.tokens_spent_total,
+      tokens_input_total = tokens_input_total + excluded.tokens_input_total,
+      tokens_cached_total = tokens_cached_total + excluded.tokens_cached_total,
+      tokens_output_total = tokens_output_total + excluded.tokens_output_total,
       updated_at = datetime('now')
   `).run(
     usage.provider,
@@ -109,6 +130,9 @@ function recordCompactLlmUsage(db: DatabaseSync, usage: CompactLlmUsage): void {
     usage.okCalls,
     usage.failedCalls,
     usage.tokensSpent,
+    usage.tokensInput,
+    usage.tokensCached,
+    usage.tokensOutput,
   );
 }
 
@@ -158,6 +182,7 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
     const providerLabels: Record<EffectiveProvider, string> = {
       "claude-process": "Claude (process)",
       "codex-process": "Codex (process)",
+      "copilot-process": "Copilot (process)",
       "anthropic": "Anthropic API",
       "openai": "OpenAI API",
       "disabled": "Disabled",
@@ -226,16 +251,25 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
             return { summary: "No messages to compact.", providerId: effectiveProvider, providerLabel };
           }
 
+          let sawReportedUsageModel = false;
           const summarizeWithUsage: LcmSummarizeFn = async (text, aggressive, ctx = {}) => {
-            let callTokensSpent = 0;
+            const callTokensSpent = { tokens: 0, input: 0, cached: 0, output: 0 };
             let sawUsage = false;
             try {
               const summary = await summarize(text, aggressive, {
                 ...ctx,
                 onUsage: (usage) => {
-                  if (usage.provider === "codex-process") {
-                    sawUsage = true;
-                    callTokensSpent += usage.tokensUsed;
+                  // Every process-backed provider reports normalized usage;
+                  // only providers that report call onUsage at all.
+                  sawUsage = true;
+                  callTokensSpent.tokens += usage.tokensUsed;
+                  callTokensSpent.input += usage.inputTokens ?? 0;
+                  callTokensSpent.cached += usage.cachedInputTokens ?? 0;
+                  callTokensSpent.output += usage.outputTokens ?? 0;
+                  const reportedModel = usage.model?.trim();
+                  if (!sawReportedUsageModel && reportedModel) {
+                    llmUsage.model = reportedModel;
+                    sawReportedUsageModel = true;
                   }
                   ctx.onUsage?.(usage);
                 },
@@ -243,14 +277,14 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
               if (sawUsage) {
                 llmUsage.calls += 1;
                 llmUsage.okCalls += 1;
-                llmUsage.tokensSpent += callTokensSpent;
+                addTokens(llmUsage, callTokensSpent);
               }
               return summary;
             } catch (error) {
               if (sawUsage) {
                 llmUsage.calls += 1;
                 llmUsage.failedCalls += 1;
-                llmUsage.tokensSpent += callTokensSpent;
+                addTokens(llmUsage, callTokensSpent);
               }
               throw error;
             }

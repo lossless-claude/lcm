@@ -42,6 +42,9 @@ export interface ImportResult {
     okCalls: number;
     failedCalls: number;
     tokensSpent: number;
+    tokensInput: number;
+    tokensCached: number;
+    tokensOutput: number;
   };
 }
 
@@ -177,12 +180,17 @@ type CompactLlmUsage = {
   okCalls: number;
   failedCalls: number;
   tokensSpent: number;
+  tokensInput: number;
+  tokensCached: number;
+  tokensOutput: number;
 };
 
 function accumulateReplayUsage(result: ImportResult, usage: CompactLlmUsage | undefined): void {
   if (!usage || usage.calls <= 0) return;
   if (!result.replayUsage) {
-    result.replayUsage = { ...usage };
+    result.replayUsage = {
+      ...usage,
+    };
     return;
   }
   if (result.replayUsage.provider !== usage.provider) {
@@ -195,6 +203,9 @@ function accumulateReplayUsage(result: ImportResult, usage: CompactLlmUsage | un
   result.replayUsage.okCalls += usage.okCalls;
   result.replayUsage.failedCalls += usage.failedCalls;
   result.replayUsage.tokensSpent += usage.tokensSpent;
+  result.replayUsage.tokensInput += usage.tokensInput;
+  result.replayUsage.tokensCached += usage.tokensCached;
+  result.replayUsage.tokensOutput += usage.tokensOutput;
 }
 
 /**

@@ -27,7 +27,12 @@ vi.mock("../../../src/llm/codex-process.js", () => ({
   createCodexProcessSummarizer: vi.fn().mockReturnValue(async () => "codex-process-summary"),
 }));
 
+vi.mock("../../../src/llm/copilot-process.js", () => ({
+  createCopilotProcessSummarizer: vi.fn().mockReturnValue(async () => "copilot-process-summary"),
+}));
+
 import { createClaudeProcessSummarizer } from "../../../src/llm/claude-process.js";
+import { createCopilotProcessSummarizer } from "../../../src/llm/copilot-process.js";
 import { createCodexProcessSummarizer } from "../../../src/llm/codex-process.js";
 import { createAnthropicSummarizer } from "../../../src/llm/anthropic.js";
 import { createOpenAISummarizer } from "../../../src/llm/openai.js";
@@ -226,6 +231,26 @@ describe("createCompactHandler — summarizer branching", () => {
     const { res } = mockRes();
     await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd, client: "codex" }));
     expect(createCodexProcessSummarizer).toHaveBeenCalled();
+    expect(createClaudeProcessSummarizer).not.toHaveBeenCalled();
+  });
+
+  it("uses createCopilotProcessSummarizer when provider is copilot-process", async () => {
+    vi.clearAllMocks();
+    const handler = createCompactHandler(makeConfig("copilot-process"));
+    const { res } = mockRes();
+    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd }));
+
+    expect(createCopilotProcessSummarizer).toHaveBeenCalledWith(expect.objectContaining({ model: "test-model" }));
+    expect(createClaudeProcessSummarizer).not.toHaveBeenCalled();
+  });
+
+  it("auto + client=copilot resolves to copilot-process", async () => {
+    vi.clearAllMocks();
+    const handler = createCompactHandler(makeConfig("auto"));
+    const { res } = mockRes();
+    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd, client: "copilot" }));
+
+    expect(createCopilotProcessSummarizer).toHaveBeenCalled();
     expect(createClaudeProcessSummarizer).not.toHaveBeenCalled();
   });
 
