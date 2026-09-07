@@ -19,14 +19,18 @@ function createHttpSummarizer(label: string, baseURL: string, apiKey: string, mo
   // explicit bench knob (LCM_EVAL_REASONING_EFFORT, e.g. "minimal"), not a
   // prod mirror.
   const reasoningEffort = process.env.LCM_EVAL_REASONING_EFFORT;
+  // Qwen-style servers (vLLM, MLX) take enable_thinking through chat_template_kwargs.
+  const disableThinking = process.env.LCM_EVAL_DISABLE_THINKING === "1";
 
   let pendingCtx: SummarizeContext | undefined;
   const capturing = {
     chat: {
       completions: {
         create: async (params: Parameters<typeof client.chat.completions.create>[0]) => {
-          const reasoning = reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {};
-          const response = await client.chat.completions.create({ ...params, ...reasoning, stream: false });
+          const extra: Record<string, unknown> = {};
+          if (reasoningEffort) extra.reasoning = { effort: reasoningEffort };
+          if (disableThinking) extra.chat_template_kwargs = { enable_thinking: false };
+          const response = await client.chat.completions.create({ ...params, ...extra, stream: false });
           const usage = response.usage;
           if (usage && pendingCtx?.onUsage) {
             const cached = (usage.prompt_tokens_details as { cached_tokens?: number } | undefined)?.cached_tokens;
