@@ -29,12 +29,12 @@ const STDERR_ERROR_MAX_CHARS = 2_000;
 const BANNER_END_MARKER = "session id:";
 
 function skipCodexBanner(stderr: string): string {
-  const lines = stderr.split("\n");
+  const lines = stderr.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trimStart();
+    const line = lines[i].trim();
     if (line === "--------" || /^openai codex\b/i.test(line)) continue;
-    if (/^(workdir|model|provider|approval|sandbox|reasoning effort|reasoning summaries):/.test(line)) continue;
-    if (line.startsWith(BANNER_END_MARKER)) {
+    if (/^(workdir|model|provider|approval|sandbox|reasoning effort|reasoning summaries):/i.test(line)) continue;
+    if (line.toLowerCase().startsWith(BANNER_END_MARKER)) {
       return lines.slice(i + 1).join("\n").trim();
     }
     return lines.slice(i).join("\n").trim();
@@ -43,7 +43,7 @@ function skipCodexBanner(stderr: string): string {
 }
 
 function isUsageLimitError(text: string): boolean {
-  return /usage limit|rate limit|quota|too many requests|429/.test(text);
+  return /usage limit|rate limit|quota|too many requests|\b429\b/i.test(text);
 }
 
 function buildCodexExitError(code: number | null, stderr: string): Error {
