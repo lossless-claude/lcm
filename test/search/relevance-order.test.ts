@@ -54,3 +54,39 @@ describe("full-text relevance survives retrieval and candidate limits", () => {
     expect(result.summaries.map((s) => s.conversationId)).toEqual([2, 1]);
   });
 });
+
+describe("full-text candidate fill", () => {
+  let db: DatabaseSync;
+  let engine: RetrievalEngine;
+
+  beforeEach(async () => {
+    db = new DatabaseSync(":memory:");
+    runLcmMigrations(db);
+    const conversations = new ConversationStore(db);
+    const summaries = new SummaryStore(db);
+    engine = new RetrievalEngine(conversations, summaries);
+    for (const [index, content] of [
+      "Only the lantern is mentioned here.",
+      "Both the lantern and the compass appear here.",
+      "Only the compass is mentioned here.",
+    ].entries()) {
+      const conversation = await conversations.createConversation({ sessionId: `session-${index}` });
+      await conversations.createMessage({ conversationId: conversation.conversationId, seq: 0, role: "user", content, tokenCount: 10 });
+      await summaries.insertSummary({ summaryId: `summary-${index}`, conversationId: conversation.conversationId, kind: "leaf", content, tokenCount: 10 });
+    }
+  });
+
+  afterEach(() => db.close());
+
+  it("keeps all-term matches first and fills remaining slots with any-term matches", async () => {
+    const result = await engine.grep({ query: "lantern compass", mode: "full_text", scope: "both" });
+    expect(result.messages.map((m) => m.conversationId)).toEqual([2, 1, 3]);
+    expect(result.summaries.map((s) => s.conversationId)).toEqual([2, 1, 3]);
+  });
+
+  it("respects the candidate limit while filling", async () => {
+    const result = await engine.grep({ query: "lantern compass", mode: "full_text", scope: "both", limit: 2 });
+    expect(result.messages.map((m) => m.conversationId)).toEqual([2, 1]);
+    expect(result.summaries).toHaveLength(2);
+  });
+});

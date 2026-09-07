@@ -735,28 +735,29 @@ export class SummaryStore {
     before?: Date,
   ): SummarySearchResult[] {
     // Natural-language questions ANDed term-by-term almost never match, so
-    // prepare the query first: drop stopwords, then try AND (precise), then
-    // OR ranked by BM25 (the grep baseline behavior), then a substring LIKE
-    // scan when the question's vocabulary does not overlap the corpus.
+    // prepare the query first: drop stopwords, then take AND matches (precise),
+    // fill the remaining candidate slots with OR matches ranked by BM25 (the
+    // grep baseline behavior), then fall back to a substring LIKE scan when
+    // the question's vocabulary does not overlap the corpus at all.
     const prepared = prepareFts5Query(query);
     if (!prepared) {
       return [];
     }
-    const expressions = shouldRetryWithLike(prepared)
-      ? [prepared.and, prepared.or]
-      : [prepared.and];
-
-    for (const expression of expressions) {
-      const rows = this.runFullTextMatch(expression, limit, conversationId, since, before);
-      if (rows.length > 0) {
-        return rows;
+    const rows = this.runFullTextMatch(prepared.and, limit, conversationId, since, before);
+    if (!shouldRetryWithLike(prepared)) {
+      return rows;
+    }
+    if (rows.length < limit) {
+      const seen = new Set(rows.map((row) => row.summaryId));
+      for (const row of this.runFullTextMatch(prepared.or, limit, conversationId, since, before)) {
+        if (rows.length >= limit) break;
+        if (!seen.has(row.summaryId)) rows.push(row);
       }
     }
-
-    if (shouldRetryWithLike(prepared)) {
-      return this.searchLikeTerms(prepared, limit, conversationId, since, before);
+    if (rows.length > 0) {
+      return rows;
     }
-    return [];
+    return this.searchLikeTerms(prepared, limit, conversationId, since, before);
   }
 
   private runFullTextMatch(
