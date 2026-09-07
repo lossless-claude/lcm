@@ -139,7 +139,7 @@ export async function rankNativeHistory(
   return fuseHistoryBySession(await attach(result.messages), await attach(result.summaries), input.limit);
 }
 
-/** Read one request's ranked history and bounded source context on its own DB connection. */
+/** Read one request's ranked history and bounded source context inside a savepoint on the caller's connection. */
 export async function searchNativeHistory(
   db: DatabaseSync,
   input: { query: string; limit: number },

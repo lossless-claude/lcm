@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, utimesSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, utimesSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -227,6 +227,21 @@ describe("extractCodexSessionCwd", () => {
 describe("findCodexSessionFiles", () => {
   it("returns empty array for nonexistent directory", () => {
     expect(findCodexSessionFiles("/nonexistent")).toEqual([]);
+  });
+
+  it("keeps discovering when a nested directory is unreadable", () => {
+    if (process.getuid?.() === 0) return; // root ignores directory permissions
+    const dir = makeTmpDir();
+    writeFileSync(join(dir, "session-ok.jsonl"), "");
+    const locked = join(dir, "locked");
+    mkdirSync(locked);
+    writeFileSync(join(locked, "session-hidden.jsonl"), "");
+    chmodSync(locked, 0o000);
+    try {
+      expect(findCodexSessionFiles(dir).map(f => f.sessionId)).toEqual(["session-ok"]);
+    } finally {
+      chmodSync(locked, 0o700);
+    }
   });
 
   it("discovers flat .jsonl files", () => {

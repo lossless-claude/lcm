@@ -15,7 +15,7 @@
  * messages use `type: "output_text"` (both carry a `text` string field).
  */
 
-import { readdirSync, readFileSync, existsSync, lstatSync, openSync, readSync, closeSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync, lstatSync, openSync, readSync, closeSync, type Dirent } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { StringDecoder } from "node:string_decoder";
@@ -183,9 +183,16 @@ export interface CodexSessionFile {
  */
 export function findCodexSessionFiles(rootDir: string): CodexSessionFile[] {
   const files: CodexSessionFile[] = [];
-  if (!existsSync(rootDir) || lstatSync(rootDir).isSymbolicLink()) return files;
+  let entries: Dirent[];
+  try {
+    if (!existsSync(rootDir) || lstatSync(rootDir).isSymbolicLink()) return files;
+    entries = readdirSync(rootDir, { withFileTypes: true });
+  } catch {
+    // Discovery is best-effort: an unreadable directory must not abort the walk.
+    return files;
+  }
 
-  for (const entry of readdirSync(rootDir, { withFileTypes: true })) {
+  for (const entry of entries) {
     // Flat layout: rootDir/<name>.jsonl
     if (entry.isFile() && !entry.isSymbolicLink() && entry.name.endsWith(".jsonl")) {
       try {

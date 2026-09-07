@@ -28,9 +28,13 @@ one-term lookup.
 
 Full-text matches are ordered by BM25 relevance within each source (messages or summaries),
 including AND and single-keyword queries, before candidate limits are applied. Newer matches
-break relevance ties. Regex lookup remains newest-first. The search response still lists
-message matches before summary matches; it does not yet rank the two sources jointly or
-guarantee that five results represent five different sessions.
+break relevance ties. Regex lookup remains newest-first. When the all-term match returns fewer
+candidates than the limit, the remaining slots are filled with BM25-ranked any-term matches.
+
+The search response then fuses message and summary candidates by session: each session scores
+the sum of the reciprocal ranks of its best message and its best summary, so evidence present
+in both sources rises. Results are emitted round-robin, one hit per session per pass, with a
+session's messages before its summaries, so a small limit spans several sessions.
 
 Native `search` expands each selected episodic result around its FTS match into at most 1,000
 UTF-16 characters of exact retained source text. Results include `span.start`, `span.end`,
@@ -80,14 +84,14 @@ lcm bench run   --project /path/to/project
   | metric | what it tells you |
   |---|---|
   | `recall@5` (search) | single-source hit@5: fraction whose recorded source session appears in the top 5 |
-  | `recall@5` (grep) | OR over parsed message text in SQLite, ranked by matching message count; not raw-JSONL grep |
+  | `recall@5` (grep) | real ripgrep over the same retained messages, summaries and promoted memories, ranked by matched terms then occurrences; falls back to a labelled SQLite LIKE baseline when `rg` is missing. Not raw-JSONL grep |
   | empty-result rate | fraction returning zero results — the worst failure mode |
   | p95 latency | a retrieval path slower than reading the file is not worth calling |
 
   The metric named `recall@5` is a single-source hit rate, not complete relevance recall:
   another session may also answer the question. Review and record those cases before interpreting
   misses. Ground truth from one sampled prompt cannot prove that its session is the only valid answer.
-  The grep baseline searches parsed messages; results from external raw-JSONL grep are a different
+  The grep baseline searches the retained corpus; results from external raw-JSONL grep are a different
   experiment and must not be compared as if the corpus and ranking were identical.
 
   Full per-question outcomes land in `.lcm-bench-results.json` in the project memory directory,
