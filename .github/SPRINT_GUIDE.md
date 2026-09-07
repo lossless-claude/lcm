@@ -15,7 +15,7 @@ Format: `W2026-NN` where NN is the ISO week number.
 ### Daily
 1. `/standup` — review yesterday, plan today
 2. Work items from project board (highest priority first)
-3. PRs follow quality gates: ar-coverage, quality-gates
+3. PRs follow currently required branch protection checks
 4. End of day: `/introspection` for all agents
 
 ### Weekly Ceremony
