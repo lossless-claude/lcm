@@ -228,23 +228,30 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
 
           const summarizeWithUsage: LcmSummarizeFn = async (text, aggressive, ctx = {}) => {
             let callTokensSpent = 0;
-            llmUsage.calls += 1;
+            let sawUsage = false;
             try {
               const summary = await summarize(text, aggressive, {
                 ...ctx,
                 onUsage: (usage) => {
                   if (usage.provider === "codex-process") {
+                    sawUsage = true;
                     callTokensSpent += usage.tokensUsed;
                   }
                   ctx.onUsage?.(usage);
                 },
               });
-              llmUsage.okCalls += 1;
-              llmUsage.tokensSpent += callTokensSpent;
+              if (sawUsage) {
+                llmUsage.calls += 1;
+                llmUsage.okCalls += 1;
+                llmUsage.tokensSpent += callTokensSpent;
+              }
               return summary;
             } catch (error) {
-              llmUsage.failedCalls += 1;
-              llmUsage.tokensSpent += callTokensSpent;
+              if (sawUsage) {
+                llmUsage.calls += 1;
+                llmUsage.failedCalls += 1;
+                llmUsage.tokensSpent += callTokensSpent;
+              }
               throw error;
             }
           };
