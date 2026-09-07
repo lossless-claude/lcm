@@ -8,6 +8,12 @@ All hooks receive a JSON object via stdin. lcm hooks are invoked as shell comman
 lcm <hook-command> < <stdin-json>
 ```
 
+## Plugin installations
+
+When installed as a Claude Code plugin, hooks run through the plugin's `lcm.mjs` launcher. The launcher starts the same CLI commands described below and forwards their arguments and stdin payloads.
+
+The launcher now correctly starts the CLI. Previously, plugin hooks could exit silently without restoring context or recording session activity. Update the installed plugin to receive this fix; no hook configuration changes are required.
+
 ## PreCompact Hook
 
 **Command:** `lcm compact --hook`
@@ -30,6 +36,10 @@ Invoked by Claude Code before it runs its built-in compaction. lcm intercepts th
 
 Invoked at the start of a Claude Code session. lcm restores recent summaries and promoted memory, injects them as a user message prefix, and prints a `<context>` block on stdout.
 
+On startup, resume, and clear, lcm saves a snapshot of the applicable `CLAUDE.md` files without adding another copy to the restored context. Claude Code supplies those instructions itself. After compaction, lcm replays the saved snapshot so the instructions remain available.
+
+The snapshot reads `~/.claude/CLAUDE.md`, `CLAUDE.md` in the working directory, and `.claude/CLAUDE.md` in the working directory. If multiple paths resolve to the same file, lcm includes it only once, including when you start Claude Code in your home directory. This behavior is automatic and needs no configuration.
+
 **Stdin fields:**
 
 | Field | Type | Description |
@@ -37,6 +47,9 @@ Invoked at the start of a Claude Code session. lcm restores recent summaries and
 | `session_id` | string | Session identifier |
 | `cwd` | string | Working directory |
 | `hook_event_name` | string | `"SessionStart"` |
+| `source` | string (optional) | `"startup"`, `"resume"`, `"clear"`, or `"compact"`; compaction replays the saved instructions |
+
+If `source` is missing or unrecognized, lcm uses a recent compaction marker for the same session to decide whether to replay the saved instructions. Explicit `"startup"`, `"resume"`, and `"clear"` values override that fallback; `"compact"` always requests replay.
 
 **Response:** Exit code `0`. Context is injected via stdout (printed as a `<context>` block that Claude Code prepends to the session).
 

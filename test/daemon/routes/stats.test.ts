@@ -15,7 +15,7 @@ describe("GET /stats", () => {
     await daemon.stop();
   });
 
-  it("returns 200 with OverallStats shape including redactionCounts", { timeout: 60_000 }, async () => {
+  it("returns 200 with OverallStats shape including redactionCounts and llmUsage", { timeout: 60_000 }, async () => {
     const res = await fetch(`http://127.0.0.1:${port}/stats`);
     expect(res.status).toBe(200);
 
@@ -25,12 +25,21 @@ describe("GET /stats", () => {
     expect(body).toHaveProperty("messages");
     expect(body).toHaveProperty("summaries");
     expect(body).toHaveProperty("redactionCounts");
+    expect(body).toHaveProperty("llmUsage");
     expect(body.redactionCounts).toMatchObject({
       builtIn: expect.any(Number),
       global: expect.any(Number),
       project: expect.any(Number),
       total: expect.any(Number),
     });
+    expect(body.llmUsage).toMatchObject({
+      calls: expect.any(Number),
+      okCalls: expect.any(Number),
+      failedCalls: expect.any(Number),
+      tokensSpent: expect.any(Number),
+    });
+    expect(body.llmUsage).not.toHaveProperty("callsOk");
+    expect(body.llmUsage).not.toHaveProperty("callsFailed");
   });
 
   it("redactionCounts.total equals sum of built-in, global, and project", { timeout: 60_000 }, async () => {

@@ -52,6 +52,14 @@ export interface ImportResult {
   tokensAfter: number;
   /** Present when a replay run resumed from a previous run's recorded progress */
   resumed?: { doneCount: number; totalCount: number; model?: string };
+  replayUsage?: {
+    provider: string;
+    model: string;
+    calls: number;
+    okCalls: number;
+    failedCalls: number;
+    tokensSpent: number;
+  };
 }
 
 export function cwdToProjectHash(cwd: string): string {
@@ -177,6 +185,33 @@ interface SessionEntry {
   path: string;
   sessionId: string;
   cwd: string;
+}
+
+type CompactLlmUsage = {
+  provider: string;
+  model: string;
+  calls: number;
+  okCalls: number;
+  failedCalls: number;
+  tokensSpent: number;
+};
+
+function accumulateReplayUsage(result: ImportResult, usage: CompactLlmUsage | undefined): void {
+  if (!usage || usage.calls <= 0) return;
+  if (!result.replayUsage) {
+    result.replayUsage = { ...usage };
+    return;
+  }
+  if (result.replayUsage.provider !== usage.provider) {
+    result.replayUsage.provider = "mixed";
+  }
+  if (result.replayUsage.model !== usage.model) {
+    result.replayUsage.model = "mixed";
+  }
+  result.replayUsage.calls += usage.calls;
+  result.replayUsage.okCalls += usage.okCalls;
+  result.replayUsage.failedCalls += usage.failedCalls;
+  result.replayUsage.tokensSpent += usage.tokensSpent;
 }
 
 /**
@@ -330,6 +365,7 @@ async function ingestSessionList(
             skipped?: boolean;
             tokensBefore?: number;
             tokensAfter?: number;
+            llmUsage?: CompactLlmUsage;
           }>('/compact', {
             session_id: sessionId,
             cwd,
@@ -371,6 +407,7 @@ async function ingestSessionList(
           if (typeof compactRes.tokensAfter === 'number') {
             result.tokensAfter += compactRes.tokensAfter;
           }
+          accumulateReplayUsage(result, compactRes.llmUsage);
           if (options.verbose) {
             const ctx = hadPrevious ? ' (with prior context)' : '';
             if (typeof compactRes.tokensBefore === 'number' && typeof compactRes.tokensAfter === 'number' && compactRes.tokensAfter < compactRes.tokensBefore) {
@@ -386,6 +423,10 @@ async function ingestSessionList(
           // Always warn on chain breakage so users know the DAG is incomplete,
           // regardless of whether --verbose was passed.
           console.error(`  \u26a0\ufe0f [replay] compact failed for session ${sessionId}: ${err instanceof Error ? err.message : 'unknown error'}`);
+          if (err instanceof Error) {
+            const llmUsage = (err as Error & { body?: { llmUsage?: CompactLlmUsage } }).body?.llmUsage;
+            accumulateReplayUsage(result, llmUsage);
+          }
           // Fall back to ingest's totalTokens so they aren't silently lost.
           result.totalTokens += res.totalTokens;
         }

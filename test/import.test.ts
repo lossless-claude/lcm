@@ -372,6 +372,14 @@ describe("importSessions", () => {
         latestSummaryContent: "summary",
         tokensBefore: 5000,
         tokensAfter: 200,
+        llmUsage: {
+          provider: "codex-process",
+          model: "gpt-5.6-luna",
+          calls: 1,
+          okCalls: 1,
+          failedCalls: 0,
+          tokensSpent: 36000,
+        },
       };
     });
 
@@ -386,6 +394,14 @@ describe("importSessions", () => {
     expect(result.tokensAfter).toBe(400);     // 200 * 2 sessions
     expect(result.imported).toBe(2);
     expect(result.totalMessages).toBe(6);     // 3 * 2 sessions
+    expect(result.replayUsage).toMatchObject({
+      provider: "codex-process",
+      model: "gpt-5.6-luna",
+      calls: 2,
+      okCalls: 2,
+      failedCalls: 0,
+      tokensSpent: 72000,
+    });
   });
 
   it("replay mode: already-ingested session still reports tokens from compact response", async () => {
@@ -442,8 +458,45 @@ describe("importSessions", () => {
       if (path === "/ingest") return { ingested: 2, totalTokens: 1000 };
       if (path === "/compact") {
         compactCalls.push(body.session_id);
-        if (body.session_id === "session-1") throw new Error("compact exploded");
-        return { summary: "ok", latestSummaryContent: "s2-summary", tokensBefore: 900, tokensAfter: 100 };
+        if (body.session_id === "session-1") {
+          const err = new Error("compact exploded") as Error & {
+            body?: {
+              llmUsage?: {
+                provider: string;
+                model: string;
+                calls: number;
+                okCalls: number;
+                failedCalls: number;
+                tokensSpent: number;
+              };
+            };
+          };
+          err.body = {
+            llmUsage: {
+              provider: "codex-process",
+              model: "gpt-5.6-luna",
+              calls: 1,
+              okCalls: 0,
+              failedCalls: 1,
+              tokensSpent: 35000,
+            },
+          };
+          throw err;
+        }
+        return {
+          summary: "ok",
+          latestSummaryContent: "s2-summary",
+          tokensBefore: 900,
+          tokensAfter: 100,
+          llmUsage: {
+            provider: "codex-process",
+            model: "gpt-5.6-luna",
+            calls: 1,
+            okCalls: 1,
+            failedCalls: 0,
+            tokensSpent: 34000,
+          },
+        };
       }
     });
 
@@ -474,6 +527,14 @@ describe("importSessions", () => {
     // session-2 compact succeeded → uses tokensBefore (900)
     expect(result.totalTokens).toBe(1900);
     expect(result.tokensAfter).toBe(100);
+    expect(result.replayUsage).toMatchObject({
+      provider: "codex-process",
+      model: "gpt-5.6-luna",
+      calls: 2,
+      okCalls: 1,
+      failedCalls: 1,
+      tokensSpent: 69000,
+    });
 
     // session-2 should NOT have gotten session-1's summary (chain broken)
     // We verify by checking the compact call for session-2 had no previous_summary
