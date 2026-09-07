@@ -98,7 +98,7 @@ Invoked when a tool that started running fails. Claude Code never routes failure
 
 **Command:** `lcm post-tool`
 
-Invoked after every tool call. lcm extracts structured events (decisions, errors, git ops, etc.) and writes them to the passive-learning sidecar database.
+Invoked after a tool call **succeeds**, and only for the tools the `PostToolUse` matcher in `.claude-plugin/plugin.json` enumerates — the ones lcm has an extractor for. Failures arrive on [PostToolUseFailure](#posttoolusefailure-hook) instead. lcm extracts structured events (decisions, errors, git ops, etc.) and writes them to the passive-learning sidecar database.
 
 **Stdin fields:**
 
@@ -130,6 +130,21 @@ An optional periodic hook that incrementally ingests the live session transcript
 | `hook_event_name` | string | `"SessionSnapshot"` (if provided) |
 
 **Response:** Exit code `0`.
+
+## Deadlines
+
+Every hook bounds its daemon call so a wedged daemon can never hold the session open. The deadline is client-side; the host applies its own per-hook timeout on top, and the shorter of the two wins.
+
+| Hook | Route | Client deadline | Host timeout |
+|------|-------|-----------------|--------------|
+| PreCompact | `/compact` | 120s — summarization calls an LLM | `timeout: 120` on the PreCompact entry in `.claude-plugin/plugin.json` |
+| SessionStart | `/restore` | 10s | host default |
+| SessionEnd | `/ingest` | 10s | host default (SessionEnd hooks share a short budget) |
+| UserPromptSubmit | `/prompt-search` | 5s | host default |
+
+A client deadline longer than the host timeout is dead code — the host kills the hook first. PreCompact is the only hook that declares a matching host `timeout`, and the two must stay in sync.
+
+SessionEnd additionally passes `noSpawn: true`, so it never starts a daemon just to ingest: if none is running the hook exits 0 and the `SessionSnapshot` hook's incremental ingest is the fallback.
 
 ## Auto-heal
 

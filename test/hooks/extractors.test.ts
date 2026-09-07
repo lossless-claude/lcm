@@ -204,14 +204,24 @@ describe("extractPostToolEvents — PostToolUseFailure", () => {
     expect(events).toEqual([]);
   });
 
-  it("strips a headline that leaks a sensitive path", () => {
+  it("strips the command and the headline when either leaks a sensitive path", () => {
     const events = extractPostToolEvents({
       hook_event_name: "PostToolUseFailure",
       tool_name: "Bash",
       tool_input: { command: "cat .env" },
       error: "cat: .env: No such file",
     });
-    expect(events[0].data).toBe("Bash error: cat .env");
+    expect(events[0].data).toBe("Bash error");
+  });
+
+  it("keeps the command prefix when nothing is sensitive", () => {
+    const events = extractPostToolEvents({
+      hook_event_name: "PostToolUseFailure",
+      tool_name: "Bash",
+      tool_input: { command: "npm run build --silent" },
+      error: "Exit code 2\nsomething broke",
+    });
+    expect(events[0].data).toBe("Bash error: npm run build — Exit code 2");
   });
 
   it("does not stringify a non-string error payload", () => {

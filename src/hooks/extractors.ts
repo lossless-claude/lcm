@@ -127,8 +127,9 @@ export function extractPostToolEvents(input: PostToolInput): ExtractedEvent[] {
     if (failedPath && isSensitivePath(failedPath)) return [];
     const rawHeadline = errorHeadline(input);
     const headline = isSensitivePath(rawHeadline) ? "" : rawHeadline;
+    const commandPrefix = String(input.tool_input.command ?? "").split(/\s+/).slice(0, 3).join(" ");
     const subject = tool_name === "Bash"
-      ? `Bash error: ${String(input.tool_input.command ?? "").split(/\s+/).slice(0, 3).join(" ")}`
+      ? `Bash error${isSensitivePath(commandPrefix) ? "" : `: ${commandPrefix}`}`
       : `${tool_name} error`;
     return [{ type: "error_tool", category: "error", data: truncate(headline ? `${subject} — ${headline}` : subject), priority: 1 }];
   }
