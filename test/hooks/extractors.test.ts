@@ -161,6 +161,80 @@ describe("extractPostToolEvents", () => {
   });
 });
 
+describe("extractPostToolEvents — PostToolUseFailure", () => {
+  it("extracts a Bash failure with the exit-code headline", () => {
+    const events = extractPostToolEvents({
+      hook_event_name: "PostToolUseFailure",
+      tool_name: "Bash",
+      tool_input: { command: "npm test --silent" },
+      error: "Exit code 1\nError: Cannot find module 'express'",
+    });
+    expect(events).toEqual([expect.objectContaining({ type: "error_tool", category: "error", priority: 1 })]);
+    expect(events[0].data).toBe("Bash error: npm test --silent — Exit code 1");
+  });
+
+  it("extracts a failure for a tool that normally has a success extractor", () => {
+    const events = extractPostToolEvents({
+      hook_event_name: "PostToolUseFailure",
+      tool_name: "AskUserQuestion",
+      tool_input: { question: "Which db?" },
+      error: "User cancelled",
+    });
+    expect(events).toEqual([expect.objectContaining({ type: "error_tool", data: "AskUserQuestion error — User cancelled" })]);
+  });
+
+  it("ignores interrupts — an abort is not a tool error", () => {
+    const events = extractPostToolEvents({
+      hook_event_name: "PostToolUseFailure",
+      tool_name: "Bash",
+      tool_input: { command: "sleep 100" },
+      error: "aborted",
+      is_interrupt: true,
+    });
+    expect(events).toEqual([]);
+  });
+
+  it("drops a failure on a sensitive path, like the success path does", () => {
+    const events = extractPostToolEvents({
+      hook_event_name: "PostToolUseFailure",
+      tool_name: "Read",
+      tool_input: { file_path: "/home/me/.ssh/id_rsa" },
+      error: "EACCES: permission denied",
+    });
+    expect(events).toEqual([]);
+  });
+
+  it("strips the command and the headline when either leaks a sensitive path", () => {
+    const events = extractPostToolEvents({
+      hook_event_name: "PostToolUseFailure",
+      tool_name: "Bash",
+      tool_input: { command: "cat .env" },
+      error: "cat: .env: No such file",
+    });
+    expect(events[0].data).toBe("Bash error");
+  });
+
+  it("keeps the command prefix when nothing is sensitive", () => {
+    const events = extractPostToolEvents({
+      hook_event_name: "PostToolUseFailure",
+      tool_name: "Bash",
+      tool_input: { command: "npm run build --silent" },
+      error: "Exit code 2\nsomething broke",
+    });
+    expect(events[0].data).toBe("Bash error: npm run build — Exit code 2");
+  });
+
+  it("does not stringify a non-string error payload", () => {
+    const events = extractPostToolEvents({
+      hook_event_name: "PostToolUseFailure",
+      tool_name: "Glob",
+      tool_input: { pattern: "**/*.ts" },
+      error: { message: "boom" } as unknown as string,
+    });
+    expect(events[0].data).toBe("Glob error");
+  });
+});
+
 describe("extractUserPromptEvents", () => {
   it("extracts decision from 'always use' pattern", () => {
     const events = extractUserPromptEvents("always use TypeScript for new files");

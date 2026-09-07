@@ -21,7 +21,7 @@
     "PreCompact": [
       {
         "matcher": "",
-        "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" compact --hook" }]
+        "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" compact --hook", "timeout": 120 }]
       }
     ],
     "SessionStart": [
@@ -49,6 +49,12 @@
       }
     ],
     "PostToolUse": [
+      {
+        "matcher": "^(Agent|AskUserQuestion|Bash|EnterPlanMode|ExitPlanMode|Read|Edit|Write|Glob|Grep|TaskCreate|TaskUpdate|Skill|mcp__.*)$",
+        "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" post-tool" }]
+      }
+    ],
+    "PostToolUseFailure": [
       {
         "matcher": "",
         "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" post-tool" }]

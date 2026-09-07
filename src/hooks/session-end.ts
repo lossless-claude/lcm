@@ -120,6 +120,9 @@ export function fireSessionCompleteRequest(port: number, body: Record<string, un
   req.end();
 }
 
+/** Deadline for /ingest at SessionEnd — the host kills the hook long before this anyway. */
+const INGEST_TIMEOUT_MS = 10_000;
+
 export async function handleSessionEnd(
   stdin: string,
   client: DaemonClient,
@@ -127,10 +130,13 @@ export async function handleSessionEnd(
 ): Promise<{ exitCode: number; stdout: string }> {
   const daemonPort = port ?? 3737;
   const pidFilePath = join(homedir(), ".lossless-claude", "daemon.pid");
+  // Claude Code gives SessionEnd hooks a shared 1.5s budget: never spawn a daemon here,
+  // only talk to one that is already up. The Stop hook has been ingesting incrementally.
   const { connected } = await ensureDaemon({
     port: daemonPort,
     pidFilePath,
-    spawnTimeoutMs: 5000,
+    spawnTimeoutMs: 0,
+    noSpawn: true,
   });
   if (!connected) return { exitCode: 0, stdout: "" };
 
@@ -141,7 +147,7 @@ export async function handleSessionEnd(
       totalTokens?: number;
       redacted?: number;
       redactedCategories?: string[];
-    }>("/ingest", input);
+    }>("/ingest", input, { timeoutMs: INGEST_TIMEOUT_MS });
 
     const configPath = join(homedir(), ".lossless-claude", "config.json");
     const config = loadDaemonConfig(configPath);

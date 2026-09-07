@@ -48,7 +48,7 @@ describe("handleUserPromptSubmit", () => {
     expect(result.stdout).toContain("PostgreSQL");
     expect(client.post).toHaveBeenCalledWith("/prompt-search", expect.objectContaining({
       learningInstructionBytes: expect.any(Number),
-    }));
+    }), expect.objectContaining({ timeoutMs: expect.any(Number) }));
   });
 
   it("includes surfaced-memory-ids comment when ids are returned", async () => {
@@ -193,7 +193,7 @@ describe("handleUserPromptSubmit", () => {
     );
     expect(mockClose).toHaveBeenCalled();
     // prompt-search still called
-    expect(mockClient.post).toHaveBeenCalledWith("/prompt-search", expect.any(Object));
+    expect(mockClient.post).toHaveBeenCalledWith("/prompt-search", expect.any(Object), expect.any(Object));
   });
 
   it("continues normally if sidecar extraction fails", async () => {
@@ -213,7 +213,7 @@ describe("handleUserPromptSubmit", () => {
 
     expect(result.exitCode).toBe(0);
     // prompt-search still called despite extraction failure
-    expect(mockClient.post).toHaveBeenCalledWith("/prompt-search", expect.any(Object));
+    expect(mockClient.post).toHaveBeenCalledWith("/prompt-search", expect.any(Object), expect.any(Object));
     expect(result.stdout).toContain("<memory-context>");
     expect(result.stdout).toContain("recovered hint");
   });

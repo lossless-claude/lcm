@@ -41,7 +41,7 @@ describe("Flow 14: SessionEnd hook", { timeout: 60_000 }, () => {
 });
 
 describe("Flow 15: PreCompact hook", { timeout: 60_000 }, () => {
-  it("returns exit 2 with summary text", async () => {
+  it("returns exit 0 with summary text", async () => {
     const h = handle!;
 
     // First ingest some data so there is something to compact
@@ -66,30 +66,58 @@ describe("Flow 15: PreCompact hook", { timeout: 60_000 }, () => {
     const { handlePreCompact } = await import("../../../src/hooks/compact.js");
     const result = await handlePreCompact(stdinData, client, h.daemonPort);
 
-    // exit 2 = replace native compaction; exit 0 = disabled provider (also acceptable)
-    expect([0, 2]).toContain(result.exitCode);
-    // When exit 2, stdout should contain summary text
-    if (result.exitCode === 2) {
-      expect(result.stdout).toBeTruthy();
-    }
+    // PreCompact never blocks native compaction: always exit 0 with the summary on stdout
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBeTruthy();
   });
 });
 
 describe("Flow 16: Auto-heal", { timeout: 60_000 }, () => {
-  it("validateAndFixHooks with custom deps does not throw", async () => {
+  it("strips duplicate lcm hooks from a real settings.json and keeps mcpServers.lcm", async () => {
     const { validateAndFixHooks } = await import("../../../src/hooks/auto-heal.js");
+    const { REQUIRED_HOOKS } = await import("../../../installer/install.js");
+    const fs = await import("node:fs");
+    const { join } = await import("node:path");
+    const h = handle!;
 
-    // Provide mock deps that simulate no settings file present
-    const mockDeps = {
-      readFileSync: (_path: string, _enc: string): string => "{}",
-      writeFileSync: (_path: string, _data: string): void => {},
-      existsSync: (_path: string): boolean => false,
-      mkdirSync: (_path: string, _opts?: { recursive: boolean }): void => {},
-      appendFileSync: (_path: string, _data: string): void => {},
+    const settingsPath = join(h.tmpDir, "claude-settings", "settings.json");
+    fs.mkdirSync(join(h.tmpDir, "claude-settings"), { recursive: true });
+    const hooks: Record<string, unknown[]> = {};
+    for (const { event, command } of REQUIRED_HOOKS) {
+      hooks[event] = [{ matcher: "", hooks: [{ type: "command", command }] }];
+    }
+    hooks.PostToolUse.push({ matcher: "Bash", hooks: [{ type: "command", command: "echo user-hook" }] });
+    fs.writeFileSync(settingsPath, JSON.stringify({ hooks, mcpServers: { lcm: { command: "lcm", args: ["mcp"] } } }));
+
+    validateAndFixHooks({
+      readFileSync: (p: string, enc: string) => fs.readFileSync(p, enc as BufferEncoding),
+      writeFileSync: fs.writeFileSync,
+      existsSync: fs.existsSync,
+      mkdirSync: fs.mkdirSync,
+      appendFileSync: fs.appendFileSync,
+      settingsPath,
+      logPath: join(h.tmpDir, "claude-settings", "auto-heal.log"),
+    });
+
+    const after = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+    const remaining = JSON.stringify(after.hooks ?? {});
+    for (const { command } of REQUIRED_HOOKS) expect(remaining).not.toContain(command);
+    expect(after.hooks.PostToolUse).toEqual([{ matcher: "Bash", hooks: [{ type: "command", command: "echo user-hook" }] }]);
+    expect(after.mcpServers.lcm).toEqual({ command: "lcm", args: ["mcp"] });
+  });
+
+  it("does nothing when no settings.json exists", async () => {
+    const { validateAndFixHooks } = await import("../../../src/hooks/auto-heal.js");
+    const writes: string[] = [];
+    validateAndFixHooks({
+      readFileSync: (): string => { throw new Error("ENOENT"); },
+      writeFileSync: (p: string): void => { writes.push(p); },
+      existsSync: (): boolean => false,
+      mkdirSync: (): void => {},
+      appendFileSync: (): void => {},
       settingsPath: "/nonexistent/settings.json",
       logPath: "/nonexistent/auto-heal.log",
-    };
-
-    expect(() => validateAndFixHooks(mockDeps)).not.toThrow();
+    });
+    expect(writes).toEqual([]);
   });
 });

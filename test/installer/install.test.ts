@@ -56,9 +56,9 @@ describe("mergeClaudeSettings", () => {
     expect(r.mcpServers).toEqual({ lcm: { command: "lcm", args: ["mcp"] } });
   });
 
-  it("REQUIRED_HOOKS contains exactly 6 expected events", () => {
+  it("REQUIRED_HOOKS contains exactly 7 expected events", () => {
     expect(REQUIRED_HOOKS.map(h => h.event).sort()).toEqual([
-      "PostToolUse", "PreCompact", "SessionEnd", "SessionStart", "Stop", "UserPromptSubmit",
+      "PostToolUse", "PostToolUseFailure", "PreCompact", "SessionEnd", "SessionStart", "Stop", "UserPromptSubmit",
     ]);
   });
 

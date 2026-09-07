@@ -42,20 +42,20 @@ import { ensureBootstrapped } from "../../src/bootstrap.js";
 
 describe("HOOK_COMMANDS", () => {
   it("has an entry for every REQUIRED_HOOKS event", () => {
-    const commandToEvent: Record<string, string> = {
-      "compact": "PreCompact",
-      "post-tool": "PostToolUse",
-      "restore": "SessionStart",
-      "session-end": "SessionEnd",
-      "session-snapshot": "Stop",
-      "user-prompt": "UserPromptSubmit",
+    const eventToCommand: Record<string, string> = {
+      PreCompact: "compact",
+      PostToolUse: "post-tool",
+      PostToolUseFailure: "post-tool",
+      SessionStart: "restore",
+      SessionEnd: "session-end",
+      Stop: "session-snapshot",
+      UserPromptSubmit: "user-prompt",
     };
     for (const cmd of HOOK_COMMANDS) {
-      expect(commandToEvent[cmd]).toBeDefined();
+      expect(Object.values(eventToCommand)).toContain(cmd);
     }
     for (const { event } of REQUIRED_HOOKS) {
-      const cmd = Object.entries(commandToEvent).find(([, e]) => e === event)?.[0];
-      expect(HOOK_COMMANDS).toContain(cmd);
+      expect(HOOK_COMMANDS).toContain(eventToCommand[event]);
     }
   });
 });

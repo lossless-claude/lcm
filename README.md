@@ -151,14 +151,17 @@ See [`docs/vscode-codex.md`](docs/vscode-codex.md) for the current VS Code/Codex
 
 ## Hooks
 
-Claude Code uses four hooks. All hooks auto-heal: each validates that all required entries remain registered and repairs missing entries before continuing.
+The plugin registers seven hooks. Every hook fails open (exit 0) and, before running, removes stale copies of itself left in `settings.json` by older installers so nothing fires twice.
 
 | Hook | Command | Purpose |
 |---|---|---|
-| `PreCompact` | `lcm compact --hook` | Intercepts compaction and writes DAG summaries |
+| `PreCompact` | `lcm compact --hook` | Writes a DAG summary before compaction |
 | `SessionStart` | `lcm restore` | Restores project context, recent summaries, and promoted memory |
 | `SessionEnd` | `lcm session-end` | Ingests the completed Claude transcript |
 | `UserPromptSubmit` | `lcm user-prompt` | Searches memory and injects prompt-time hints |
+| `Stop` | `lcm session-snapshot` | Rolling transcript ingest, throttled |
+| `PostToolUse` | `lcm post-tool` | Passive learning: records decisions, plans, files, commands |
+| `PostToolUseFailure` | `lcm post-tool` | Passive learning: records tool errors |
 
 ```mermaid
 flowchart LR
@@ -240,7 +243,8 @@ lcm compact --hook         # PreCompact hook
 lcm restore                # SessionStart hook
 lcm session-end            # SessionEnd hook
 lcm user-prompt            # UserPromptSubmit hook
-lcm post-tool              # PostToolUse hook (passive learning)
+lcm post-tool              # PostToolUse + PostToolUseFailure hooks (passive learning)
+lcm session-snapshot       # Stop hook (rolling ingest)
 
 # MCP server
 lcm mcp                    # start MCP server
