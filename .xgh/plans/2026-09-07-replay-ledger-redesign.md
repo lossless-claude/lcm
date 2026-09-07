@@ -4,6 +4,8 @@
 **Supersedes:** the ledger implementation in PR #302 (draft)
 **Date:** 2026-09-07
 
+> **Reference convention:** `file.ts:NNN` labels are Codex finding identifiers against PR #302 @ `aa57b3f`, not line numbers in `main`. Claims about current behaviour name symbols instead.
+
 ## Approach
 
 Rework `copilot/make-replay-resumable` in place rather than starting a new branch — the manifest model, the `seenGap` suffix-resume rule and the SIGINT drain work are sound and should survive. What comes out is the ledger's summary bookkeeping and the `--restart` lineage machinery.
