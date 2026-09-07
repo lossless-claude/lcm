@@ -85,17 +85,23 @@ CREATE TABLE replay_ledger (
   session_id         TEXT NOT NULL,
   position           INTEGER NOT NULL,
   content_fingerprint TEXT NOT NULL,
+  summary_id         TEXT,             -- nullable; threading anchor ONLY (see below)
   outcome            TEXT NOT NULL,   -- 'compacted' | 'no_work'
   completed_at       TEXT NOT NULL,
   PRIMARY KEY (run_id, session_id)
 );
 ```
 
-Gone: `summary_id`, `prev_session_id`, and the whole `replay_ledger_summaries` table added in round 1.
+Gone: `prev_session_id`, and the whole `replay_ledger_summaries` table added in round 1. `summary_id` survives but stops being the thing `--restart` deletes — see "Cross-session threading" below.
+
+Note the migration is **additive**: `.github/skills/code-review/SKILL.md` §7 forbids destructive DDL, so the unused columns stay in the schema and simply stop being written, and `replay_ledger_summaries` is removed from the create path rather than dropped.
 
 - **Resume** = skip rows whose fingerprint matches *and* that precede the first gap (the `seenGap` rule from round 1 is right and survives).
 - **Restart** = for each session in the run's manifest: wipe that conversation's summaries, rebuild `context_items`, delete its ledger rows.
-- **Threading** needs no stored column. "The latest summary content for the last done session's conversation" is a query against `summaries` at plan time, not state carried in the ledger.
+
+### The rebuild must exclude compaction events
+
+`CompactionEngine.writeEvent` (`src/compaction.ts:1331`) writes its `"LCM compaction leaf pass (normal): 5000 -> 200"` row into `messages` + `message_parts` but **never** into `context_items` — `appendContextMessage` has no callers outside its own definition. So a naive `INSERT … SELECT FROM messages` would surface compaction noise into the model's context, a regression the current code does not have. The rebuild filters on the same `part_type = 'compaction'` predicate used for the fingerprint below, and the wipe deletes those now-stale event rows outright.
 
 ### The fingerprint has an exact discriminator
 
@@ -119,7 +125,7 @@ WHERE NOT EXISTS (
 | Finding | Under the rebuild model |
 |---|---|
 | `db/migration.ts:650` — only final `latestSummaryId` retained | **Dissolves.** No summary ids in the ledger at all. |
-| `import.ts:440` — `no_work` records `summary_id = NULL`, kills the anchor | **Dissolves.** No anchor concept; `outcome` is a first-class column. |
+| `import.ts:440` — `no_work` records `summary_id = NULL`, kills the anchor | **Dissolves.** `outcome` is a first-class column, so a NULL-anchor row is complete and valid; the anchor search walks further back. |
 | `replay-resume.ts:642` — sources hidden beneath surviving summaries | **Dissolves.** No expansion; rebuild from `messages`. |
 | `batch-compact.ts:274` — unstable batch fingerprint | **Collapses** into the `part_type = 'compaction'` predicate. |
 | `batch-compact.ts:72` — `role = 'system'` over-excludes | **Same predicate.** One fix, both findings. |
@@ -131,11 +137,15 @@ WHERE NOT EXISTS (
 
 Three P1s vanish. Two collapse into one predicate. Three are plain bugs. Two are unrelated hygiene. That is what convergence looks like.
 
-## Open question
+## Cross-session threading — kept
 
-**Cross-session threading.** Is `previous_summary` threading *across sessions* worth keeping at all? It is the source of the per-project chain bugs, the "broken chain" warnings, and the `prev_session_id` column. If each session compacts independently, several findings stop existing. If it materially improves summary quality it stays — but then it must be a plan-time lookup against `summaries`, never ledger state.
+**Decision (Pedro, 2026-09-07): `previous_summary` continues to cross sessions.** It is worth the per-project chain bookkeeping.
 
-Undecided; does not block the ledger rework, since the chosen row shape carries no threading state either way.
+That has one consequence for the row shape above: resume must re-establish the chain in a fresh process, so **`summary_id` stays as a nullable anchor-only column**. Its purpose changes rather than disappearing — it is no longer what `--restart` deletes (that is conversation-scoped now), only where the chain picks up. `prev_session_id` still goes.
+
+This is also what dissolves `import.ts:440` cleanly: a `no_work` row with `summary_id = NULL` is a complete, valid row, and the anchor search walks further back to the most recent non-null one instead of treating it as a broken chain.
+
+**The anchor rule, written down.** Today it is implicit: `getSummariesByConversation` orders `BY created_at` and `compact.ts:367` takes the last element. Formalised: *the anchor is the most recently created summary of that conversation, regardless of depth.*
 
 ## Not covered here
 
