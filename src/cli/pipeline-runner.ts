@@ -31,11 +31,62 @@ export class NinjaRenderer {
   private intervalId?: ReturnType<typeof setInterval>;
   private firstFrame = true;
   private sigintHandler?: () => void;
+  private sigtermHandler?: () => void;
   private sigwinchHandler?: () => void;
+  private inFlight = 0;
+  private drainWaiter: (() => void) | null = null;
+  private signalReceived: { code: number } | null = null;
 
   constructor(opts: PipelineRunnerOpts) {
     this.state = opts.state;
     this.opts = opts.renderOpts;
+  }
+
+  /**
+   * Mark an in-flight unit of work (e.g. a /compact request). The first signal
+   * waits for in-flight work to finish before exiting, so a killed run never
+   * leaves a session half-recorded — resume either sees it done or redoes it.
+   * A second signal exits at once, so a hung request can still be interrupted.
+   * Returns a release function; call it when the work settles.
+   */
+  trackInFlight(): () => void {
+    this.inFlight++;
+    return () => {
+      this.inFlight--;
+      if (this.inFlight === 0 && this.drainWaiter) {
+        const waiter = this.drainWaiter;
+        this.drainWaiter = null;
+        waiter();
+      }
+    };
+  }
+
+  /** True after SIGINT/SIGTERM — loops should stop starting new work. */
+  get shouldStop(): boolean {
+    return this.state.aborted === true;
+  }
+
+  private _waitForInFlight(): Promise<void> {
+    if (this.inFlight === 0) return Promise.resolve();
+    return new Promise((resolve) => {
+      this.drainWaiter = resolve;
+    });
+  }
+
+  private _onSignal(code: number): void {
+    if (this.signalReceived) {
+      // Second signal: stop waiting for the drain and exit now.
+      this.stop();
+      process.exit(code);
+      return;
+    }
+    this.signalReceived = { code };
+    this.state.aborted = true;
+    void this._waitForInFlight().then(() => {
+      this.stop();
+      this.printSummary();
+      process.exit(code);
+    });
   }
 
   /** Start the render loop and register signal handlers. */
@@ -48,14 +99,13 @@ export class NinjaRenderer {
     };
     process.on('SIGWINCH', this.sigwinchHandler);
 
-    // Register SIGINT for clean partial summary
-    this.sigintHandler = () => {
-      this.state.aborted = true;
-      this.stop();
-      this.printSummary();
-      process.exit(130);
-    };
+    // SIGINT/SIGTERM: let in-flight work finish (or be marked incomplete)
+    // before exiting, so a resumed run doesn't duplicate or skip it.
+    // A repeated signal exits immediately.
+    this.sigintHandler = () => this._onSignal(130);
     process.on('SIGINT', this.sigintHandler);
+    this.sigtermHandler = () => this._onSignal(143);
+    process.on('SIGTERM', this.sigtermHandler);
 
     if (isTTY && !verbose) {
       // Emit blank lines to reserve space for the 3-line frame
@@ -78,6 +128,10 @@ export class NinjaRenderer {
     if (this.sigintHandler) {
       process.removeListener('SIGINT', this.sigintHandler);
       this.sigintHandler = undefined;
+    }
+    if (this.sigtermHandler) {
+      process.removeListener('SIGTERM', this.sigtermHandler);
+      this.sigtermHandler = undefined;
     }
     if (this.sigwinchHandler) {
       process.removeListener('SIGWINCH', this.sigwinchHandler);

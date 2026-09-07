@@ -7,6 +7,14 @@ import { formatNumber, formatRatio } from "./stats.js";
 import { findAllCodexTranscripts, extractCodexSessionCwd } from "./codex-transcript.js";
 import type { ProgressState } from "./cli/progress-state.js";
 import { projectDbPath, projectId } from "./daemon/project.js";
+import {
+  appendReplayManifestSessions,
+  clearReplayState,
+  createReplayRun,
+  fingerprintFile,
+  planReplayResume,
+  recordReplayProgress,
+} from "./replay-resume.js";
 
 export type ImportProvider = "claude" | "codex" | "all";
 
@@ -16,10 +24,18 @@ interface ImportOptions {
   dryRun?: boolean;
   cwd?: string;
   replay?: boolean;
+  /** Replay only: discard recorded progress and start from scratch */
+  restart?: boolean;
+  /** Replay only: model label recorded in the ledger (shown on resume) */
+  replayModel?: string;
   /** Which transcript provider to import from (default: "claude") */
   provider?: ImportProvider;
   /** Called with state patches as each session is processed — used by the ninja renderer */
   onProgress?: (patch: Partial<ProgressState>) => void;
+  /** Called before each session starts; return false to stop the run (e.g. after SIGINT/SIGTERM) */
+  onBeforeSession?: () => boolean;
+  /** Wrap an in-flight session's work so signal handlers can wait for it before exiting */
+  trackInFlight?: () => () => void;
   /** Override ~/.claude/projects path — used in tests only */
   _claudeProjectsDir?: string;
   /** Override ~/.lossless-claude path — used in tests only */
@@ -35,6 +51,8 @@ export interface ImportResult {
   totalMessages: number;
   totalTokens: number;
   tokensAfter: number;
+  /** Present when a replay run resumed from a previous run's recorded progress */
+  resumed?: { doneCount: number; totalCount: number; model?: string };
   replayUsage?: {
     provider: string;
     model: string;
@@ -239,11 +257,106 @@ async function ingestSessionList(
   sessions: SessionEntry[],
   options: ImportOptions,
   result: ImportResult,
+  /**
+   * Cwds already cleared by `--restart` in this run. Shared across every call,
+   * because a single import can reach the same project from more than one list
+   * (per-project Claude dirs, then Codex) and clearing twice would wipe the
+   * state the first pass had already started rebuilding.
+   */
+  clearedCwds: Set<string>,
 ): Promise<void> {
-  let previousSummary: string | undefined;
-  const total = sessions.length;
+  // Replay runs are resumable: a manifest freezes the ordering and a ledger
+  // records completed compactions, so a restarted run skips finished work.
+  // State lives per project DB, keyed by each session's own cwd (a codex/all
+  // import can span multiple projects in one list).
+  const replayRuns = new Map<string, string>(); // cwd → runId
+  const ledgerPositions = new Map<string, Map<string, number>>(); // cwd → (sessionId → position)
+  const manifestForNewRun = new Map<string, SessionEntry[]>(); // cwd → sessions to freeze
+  let doneCount = 0;
+  const previousSummaryByCwd = new Map<string, string | undefined>();
+  const lastCompactedSessionIdByCwd = new Map<string, string | null>();
+
+  if (options.replay && !options.dryRun && sessions.length > 0) {
+    if (options.restart) {
+      let clearFailed = false;
+      for (const cwd of new Set(sessions.map((s) => s.cwd))) {
+        if (clearedCwds.has(cwd)) continue;
+        clearedCwds.add(cwd);
+        const ok = await clearReplayState({
+          cwd,
+          lcmDir: options._lcmDir,
+          command: "import",
+          onSummaryCount: (count) => {
+            if (count > 0) {
+              console.error(`  ⚠️ [replay] --restart discards ${count} summaries in ${cwd}; they will be regenerated`);
+            }
+          },
+        });
+        if (!ok) clearFailed = true;
+      }
+      if (clearFailed) {
+        console.error("  ⚠️ [replay] could not fully clear previous replay state; some stale summaries may remain");
+      }
+    }
+    const plan = planReplayResume({
+      sessions,
+      lcmDir: options._lcmDir,
+      command: "import",
+      fingerprint: (s) => fingerprintFile(s.path),
+      restart: options.restart,
+    });
+    for (const [cwd, sessionIds] of plan.manifests) {
+      replayRuns.set(cwd, plan.runIds.get(cwd)!);
+      if (plan.freshCwds.has(cwd)) {
+        // Fresh project run — freeze the manifest once the loop reaches it.
+        const order = new Set(sessionIds);
+        manifestForNewRun.set(cwd, sessions.filter((s) => s.cwd === cwd && order.has(s.sessionId)));
+      } else {
+        const positions = plan.positions.get(cwd);
+        if (positions) ledgerPositions.set(cwd, positions);
+        const appends = plan.manifestAppends.get(cwd) ?? [];
+        if (appends.length > 0) {
+          appendReplayManifestSessions({
+            cwd,
+            lcmDir: options._lcmDir,
+            command: "import",
+            runId: plan.runIds.get(cwd)!,
+            sessions: appends.map((sessionId) => ({
+              sessionId,
+              position: plan.positions.get(cwd)?.get(sessionId) ?? 0,
+            })),
+            model: options.replayModel ?? null,
+          });
+        }
+      }
+      previousSummaryByCwd.set(cwd, plan.restoredPreviousSummaries.get(cwd));
+    }
+    sessions = plan.remaining;
+    doneCount = plan.doneCount;
+    if (plan.freshCwds.size < plan.manifests.size) {
+      for (const cwd of plan.droppedPreviousSummaries.keys()) {
+        console.error(`  ⚠️ [replay] previous run's chain was broken at the resume point for cwd ${cwd}; continuing without prior context`);
+      }
+      for (const changed of plan.changedSessionIds) {
+        console.error(`  ⚠️ [replay] transcript for session ${changed} changed since the previous run; downstream summaries were threaded against the older version`);
+      }
+      const resumed: ImportResult["resumed"] = {
+        doneCount: plan.doneCount,
+        totalCount: plan.doneCount + plan.remaining.length,
+        model: plan.previousModel ?? undefined,
+      };
+      result.resumed = resumed;
+      options.onProgress?.({ resumed });
+    }
+  }
+  const total = sessions.length + doneCount;
+  const processedBase = doneCount;
 
   for (const { path, sessionId, cwd } of sessions) {
+    // Stop starting new work after SIGINT/SIGTERM; the renderer waits for the
+    // in-flight session to settle before exiting.
+    if (options.onBeforeSession && !options.onBeforeSession()) break;
+
     if (options.dryRun) {
       if (options.verbose) {
         const replayNote = options.replay ? " (would compact)" : "";
@@ -259,15 +372,26 @@ async function ingestSessionList(
     if (!options.replay && isSessionAlreadyIngested(cwd, sessionId, options._lcmDir)) {
       result.skippedEmpty++;
       if (options.verbose) console.log(`  ↩️ ${sessionId}: already fully ingested`);
-      options.onProgress?.({ completed: result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
+      options.onProgress?.({ completed: processedBase + result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
       continue;
     }
 
+    const releaseInFlight = options.trackInFlight ? options.trackInFlight() : null;
     try {
+      let inputFingerprint = "unavailable";
+      if (options.replay) {
+        try {
+          inputFingerprint = fingerprintFile(path);
+        } catch {
+          inputFingerprint = "unavailable";
+        }
+      }
       const res = await client.post<{ ingested: number; totalTokens: number }>('/ingest', {
         session_id: sessionId,
         cwd,
         transcript_path: path,
+        // A completed session's transcript may have grown; replay must ingest the tail.
+        ...(options.replay ? { replay: true } : {}),
       });
       if (res.ingested === 0 && res.totalTokens === 0) {
         result.skippedEmpty++;
@@ -286,11 +410,37 @@ async function ingestSessionList(
       // Replay: compact immediately after every session (even already-ingested ones)
       // so that re-runs are idempotent and the temporal chain stays intact.
       if (options.replay) {
+        const pendingManifest = manifestForNewRun.get(cwd);
+        if (pendingManifest) {
+          // Freeze the manifest once the first ingest has succeeded: a run that
+          // dies earlier leaves no resumable state behind, and a first-ever import
+          // has no project database until an ingest with content creates it. The
+          // manifest stays pending until it is actually written.
+          const runId = replayRuns.get(cwd)!;
+          const written = createReplayRun({
+            cwd,
+            lcmDir: options._lcmDir,
+            command: "import",
+            runId,
+            sessions: pendingManifest,
+            model: options.replayModel ?? null,
+          });
+          if (written) {
+            const positions = new Map<string, number>();
+            pendingManifest.forEach((s, i) => positions.set(s.sessionId, i));
+            ledgerPositions.set(cwd, positions);
+            manifestForNewRun.delete(cwd);
+          }
+        }
+
         try {
           const compactRes = await client.post<{
             summary?: string;
             latestSummaryContent?: string;
+            latestSummaryId?: string;
+            latestSummaryIds?: string[];
             skipped?: boolean;
+            replayOutcome?: "disabled" | "skipped" | "compacted" | "no_work";
             tokensBefore?: number;
             tokensAfter?: number;
             llmUsage?: CompactLlmUsage;
@@ -299,11 +449,34 @@ async function ingestSessionList(
             cwd,
             skip_ingest: true,
             client: 'claude',
-            ...(previousSummary !== undefined ? { previous_summary: previousSummary } : {}),
+            ...(previousSummaryByCwd.get(cwd) !== undefined ? { previous_summary: previousSummaryByCwd.get(cwd) } : {}),
           });
-          const hadPrevious = previousSummary !== undefined;
+          const hadPrevious = previousSummaryByCwd.get(cwd) !== undefined;
           if (compactRes.latestSummaryContent !== undefined) {
-            previousSummary = compactRes.latestSummaryContent;
+            previousSummaryByCwd.set(cwd, compactRes.latestSummaryContent);
+          }
+          // Ledger row is written only after the summary is persisted
+          // (latestSummaryId in hand). summaryId=null marks a broken chain
+          // link; the session itself is still recorded as done.
+          // A skipped (already-in-progress) compaction records nothing — the
+          // next run retries it.
+          const runId = replayRuns.get(cwd);
+          const outcome =
+            compactRes.replayOutcome === "compacted" || compactRes.replayOutcome === "no_work"
+              ? compactRes.replayOutcome
+              : null;
+          if (runId !== undefined && outcome) {
+            recordReplayProgress({
+              cwd,
+              lcmDir: options._lcmDir,
+              runId,
+              sessionId,
+              position: ledgerPositions.get(cwd)?.get(sessionId) ?? 0,
+              contentFingerprint: inputFingerprint,
+              summaryId: compactRes.latestSummaryId ?? null,
+              outcome,
+              model: options.replayModel ?? null,
+            });
           }
           // Use compact's tokensBefore as the authoritative token count for this session.
           // This avoids under-reporting when /ingest returns totalTokens=0 (already-ingested).
@@ -325,7 +498,8 @@ async function ingestSessionList(
           }
         } catch (err) {
           // Non-fatal: import succeeded; compact failure breaks the chain at this link.
-          previousSummary = undefined;
+          previousSummaryByCwd.set(cwd, undefined);
+          lastCompactedSessionIdByCwd.set(cwd, null);
           // Always warn on chain breakage so users know the DAG is incomplete,
           // regardless of whether --verbose was passed.
           console.error(`  \u26a0\ufe0f [replay] compact failed for session ${sessionId}: ${err instanceof Error ? err.message : 'unknown error'}`);
@@ -337,12 +511,17 @@ async function ingestSessionList(
           result.totalTokens += res.totalTokens;
         }
       }
-      options.onProgress?.({ completed: result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
+      options.onProgress?.({ completed: processedBase + result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
     } catch (err) {
       result.failed++;
-      if (options.replay) previousSummary = undefined; // chain broken by ingest failure
+      if (options.replay) {
+        previousSummaryByCwd.set(cwd, undefined); // chain broken by ingest failure
+        lastCompactedSessionIdByCwd.set(cwd, null);
+      }
       if (options.verbose) console.log(`  \u274c ${sessionId}: ${err instanceof Error ? err.message : "failed"}`);
-      options.onProgress?.({ completed: result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
+      options.onProgress?.({ completed: processedBase + result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
+    } finally {
+      releaseInFlight?.();
     }
   }
 }
@@ -357,6 +536,9 @@ export async function importSessions(
 ): Promise<ImportResult> {
   const provider: ImportProvider = options.provider ?? "claude";
   const result: ImportResult = { imported: 0, skippedEmpty: 0, failed: 0, totalMessages: 0, totalTokens: 0, tokensAfter: 0 };
+  // One --restart clear per project for the whole import, however many session
+  // lists reach that project.
+  const clearedCwds = new Set<string>();
 
   // --- Claude Code sessions ---
   if (provider === "claude" || provider === "all") {
@@ -390,6 +572,7 @@ export async function importSessions(
         sessionFiles.map(f => ({ ...f, cwd })),
         options,
         result,
+        clearedCwds,
       );
     }
   }
@@ -404,7 +587,7 @@ export async function importSessions(
       cwd: extractCodexSessionCwd(f.path) ?? process.cwd(),
     }));
 
-    await ingestSessionList(client, codexSessions, options, result);
+    await ingestSessionList(client, codexSessions, options, result, clearedCwds);
   }
 
   return result;

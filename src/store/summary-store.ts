@@ -560,6 +560,123 @@ export class SummaryStore {
     return rows.map((row) => row.depth);
   }
 
+  /** How many summaries a conversation currently holds. */
+  async countSummaries(conversationId: number): Promise<number> {
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM summaries WHERE conversation_id = ?`)
+      .get(conversationId) as unknown as { n: number };
+    return row.n;
+  }
+
+  /**
+   * Drop every summary in a conversation and rebuild context_items from its
+   * messages, in seq order.
+   *
+   * This is sound because context_items is a derived view: compaction only
+   * rewrites it, never deletes messages, so nothing is lost that cannot be
+   * re-derived. Callers use it to undo compaction wholesale rather than
+   * unpicking individual summaries.
+   *
+   * Compaction-event messages are dropped and excluded from the rebuild — they
+   * describe summaries that no longer exist, and have never been context items.
+   *
+   * Returns the number of summaries removed.
+   */
+  async resetConversationContext(conversationId: number): Promise<number> {
+    this.db.exec("BEGIN");
+    try {
+      const summaryRows = this.db
+        .prepare(`SELECT summary_id FROM summaries WHERE conversation_id = ?`)
+        .all(conversationId) as unknown as { summary_id: string }[];
+      const summaryIds = summaryRows.map((row) => row.summary_id);
+
+      if (summaryIds.length > 0) {
+        const placeholders = summaryIds.map(() => "?").join(", ");
+        this.db
+          .prepare(`DELETE FROM summary_messages WHERE summary_id IN (${placeholders})`)
+          .run(...summaryIds);
+        this.db
+          .prepare(
+            `DELETE FROM summary_parents
+             WHERE summary_id IN (${placeholders})
+                OR parent_summary_id IN (${placeholders})`,
+          )
+          .run(...summaryIds, ...summaryIds);
+      }
+
+      this.db.prepare(`DELETE FROM context_items WHERE conversation_id = ?`).run(conversationId);
+      this.db.prepare(`DELETE FROM summaries WHERE conversation_id = ?`).run(conversationId);
+
+      // Compaction events narrate summaries that are now gone.
+      const eventRows = this.db
+        .prepare(
+          `SELECT m.message_id FROM messages m
+           WHERE m.conversation_id = ?
+             AND EXISTS (
+               SELECT 1 FROM message_parts p
+               WHERE p.message_id = m.message_id AND p.part_type = 'compaction'
+             )`,
+        )
+        .all(conversationId) as unknown as { message_id: number }[];
+      const eventMessageIds = eventRows.map((row) => row.message_id);
+
+      if (eventMessageIds.length > 0) {
+        const placeholders = eventMessageIds.map(() => "?").join(", ");
+        this.db
+          .prepare(`DELETE FROM messages WHERE message_id IN (${placeholders})`)
+          .run(...eventMessageIds);
+      }
+
+      // The predicate is redundant after the delete above, and deliberately
+      // kept: this statement must stay correct on its own.
+      this.db
+        .prepare(
+          `INSERT INTO context_items (conversation_id, ordinal, item_type, message_id)
+           SELECT ?, ROW_NUMBER() OVER (ORDER BY m.seq) - 1, 'message', m.message_id
+           FROM messages m
+           WHERE m.conversation_id = ?
+             AND NOT EXISTS (
+               SELECT 1 FROM message_parts p
+               WHERE p.message_id = m.message_id AND p.part_type = 'compaction'
+             )
+           ORDER BY m.seq`,
+        )
+        .run(conversationId, conversationId);
+
+      this.db.exec("COMMIT");
+
+      // Best-effort, and outside the transaction: a stale FTS row makes search
+      // return a dead id, it does not corrupt context.
+      if (this.fts5Available) {
+        if (summaryIds.length > 0) {
+          const placeholders = summaryIds.map(() => "?").join(", ");
+          try {
+            this.db
+              .prepare(`DELETE FROM summaries_fts WHERE summary_id IN (${placeholders})`)
+              .run(...summaryIds);
+          } catch {
+            // FTS cleanup failed — search may surface removed summaries.
+          }
+        }
+        if (eventMessageIds.length > 0) {
+          const placeholders = eventMessageIds.map(() => "?").join(", ");
+          try {
+            this.db
+              .prepare(`DELETE FROM messages_fts WHERE rowid IN (${placeholders})`)
+              .run(...eventMessageIds);
+          } catch {
+            // FTS cleanup failed — search may surface removed event messages.
+          }
+        }
+      }
+
+      return summaryIds.length;
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
   async appendContextMessage(conversationId: number, messageId: number): Promise<void> {
     const row = this.db
       .prepare(

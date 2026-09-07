@@ -21,6 +21,8 @@ export interface CompactionResult {
   tokensAfter: number;
   /** Summary created (if any) */
   createdSummaryId?: string;
+  /** All summaries created by this request, in creation order. */
+  createdSummaryIds?: string[];
   /** Whether condensation was performed */
   condensed: boolean;
   /** Escalation level used: "normal" | "aggressive" | "fallback" */
@@ -301,6 +303,7 @@ export class CompactionEngine {
     let tokensAfter = tokensAfterLeaf;
     let condensed = false;
     let createdSummaryId = leafResult.summaryId;
+    const createdSummaryIds = [leafResult.summaryId];
     let level = leafResult.level;
 
     const incrementalMaxDepth = this.resolveIncrementalMaxDepth();
@@ -333,6 +336,7 @@ export class CompactionEngine {
         tokensAfter = passTokensAfter;
         condensed = true;
         createdSummaryId = condenseResult.summaryId;
+        createdSummaryIds.push(condenseResult.summaryId);
         level = condenseResult.level;
 
         if (passTokensAfter >= passTokensBefore) {
@@ -346,6 +350,7 @@ export class CompactionEngine {
       tokensBefore,
       tokensAfter,
       createdSummaryId,
+      createdSummaryIds,
       condensed,
       level,
     };
@@ -395,6 +400,7 @@ export class CompactionEngine {
     let actionTaken = false;
     let condensed = false;
     let createdSummaryId: string | undefined;
+    const createdSummaryIds: string[] = [];
     let level: CompactionLevel | undefined;
     // Seed from caller (cross-session replay) or start fresh
     let previousSummaryContent: string | undefined;
@@ -435,6 +441,7 @@ export class CompactionEngine {
 
       actionTaken = true;
       createdSummaryId = leafResult.summaryId;
+      createdSummaryIds.push(leafResult.summaryId);
       level = leafResult.level;
       previousSummaryContent = leafResult.content;
 
@@ -474,6 +481,7 @@ export class CompactionEngine {
       actionTaken = true;
       condensed = true;
       createdSummaryId = condenseResult.summaryId;
+      createdSummaryIds.push(condenseResult.summaryId);
       level = condenseResult.level;
 
       if (passTokensAfter >= passTokensBefore || passTokensAfter >= previousTokens) {
@@ -489,6 +497,7 @@ export class CompactionEngine {
       tokensBefore,
       tokensAfter,
       createdSummaryId,
+      createdSummaryIds,
       condensed,
       level,
     };
