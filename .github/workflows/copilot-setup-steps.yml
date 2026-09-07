@@ -8,12 +8,9 @@
 # drift apart.
 name: Copilot setup steps
 
-env:
-  # Pin the version: an unpinned "latest" changes the review environment
-  # underneath us without a commit to point at.
-  CBM_VERSION: v0.10.8
-  CBM_ASSET: codebase-memory-mcp-linux-amd64-portable.tar.gz
-
+# Copilot copies only the job's `steps` into its own environment: workflow- and
+# job-level `env` are dropped there, so every value a step needs is declared
+# on that step. Keep the pin identical in both places below.
 # Copilot invokes the `copilot-setup-steps` job directly; the triggers below only
 # exist so the job can be exercised manually and validated on its own PRs.
 on:
@@ -40,12 +37,16 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.local/bin/codebase-memory-mcp
-          key: cbm-${{ env.CBM_VERSION }}-linux-amd64
+          key: cbm-v0.10.8-linux-amd64
 
       - name: Install codebase-memory-mcp
         if: steps.cbm-cache.outputs.cache-hit != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          # Pin the version: an unpinned "latest" changes the review environment
+          # underneath us without a commit to point at.
+          CBM_VERSION: v0.10.8
+          CBM_ASSET: codebase-memory-mcp-linux-amd64-portable.tar.gz
         run: |
           set -euo pipefail
           mkdir -p ~/.local/bin
