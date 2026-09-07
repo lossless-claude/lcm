@@ -16,9 +16,14 @@ function createHttpSummarizer(label: string, baseURL: string, apiKey: string, mo
   const client = new OpenAI({ baseURL, apiKey });
   // Reasoning models spend the whole max_tokens budget thinking and return
   // empty content; production sends no reasoning parameter, so this is an
-  // explicit bench knob (LCM_EVAL_REASONING_EFFORT, e.g. "minimal"), not a
-  // prod mirror.
-  const reasoningEffort = process.env.LCM_EVAL_REASONING_EFFORT;
+  // explicit bench knob, not a prod mirror. LCM_EVAL_REASONING is the JSON
+  // object sent as `reasoning` (e.g. {"effort":"minimal"} or {"enabled":false});
+  // LCM_EVAL_REASONING_EFFORT is the shorthand for the effort form.
+  const reasoning: Record<string, unknown> | undefined = process.env.LCM_EVAL_REASONING
+    ? (JSON.parse(process.env.LCM_EVAL_REASONING) as Record<string, unknown>)
+    : process.env.LCM_EVAL_REASONING_EFFORT
+      ? { effort: process.env.LCM_EVAL_REASONING_EFFORT }
+      : undefined;
   // Qwen-style servers (vLLM, MLX) take enable_thinking through chat_template_kwargs.
   const disableThinking = process.env.LCM_EVAL_DISABLE_THINKING === "1";
 
@@ -28,7 +33,7 @@ function createHttpSummarizer(label: string, baseURL: string, apiKey: string, mo
       completions: {
         create: async (params: Parameters<typeof client.chat.completions.create>[0]) => {
           const extra: Record<string, unknown> = {};
-          if (reasoningEffort) extra.reasoning = { effort: reasoningEffort };
+          if (reasoning) extra.reasoning = reasoning;
           if (disableThinking) extra.chat_template_kwargs = { enable_thinking: false };
           const response = await client.chat.completions.create({ ...params, ...extra, stream: false });
           const usage = response.usage;

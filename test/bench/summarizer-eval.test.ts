@@ -64,7 +64,8 @@ describe("summarizer eval harness (offline)", () => {
 //   LCM_EVAL_BASE_URL    openai only: OpenAI-compatible endpoint; LCM_EVAL_API_KEY optional
 //   LCM_EVAL_RUNS        runs per session (default 1)
 //   LCM_EVAL_SESSIONS    comma-separated labels to run (default all)
-//   LCM_EVAL_REASONING_EFFORT  http providers: reasoning.effort sent with each request (default none)
+//   LCM_EVAL_REASONING         http providers: JSON sent as `reasoning`, e.g. {"enabled":false} (default none)
+//   LCM_EVAL_REASONING_EFFORT  shorthand for LCM_EVAL_REASONING={"effort":"<value>"}
 //   LCM_EVAL_DISABLE_THINKING  http providers: "1" sends chat_template_kwargs.enable_thinking=false (Qwen-style servers)
 
 const model = process.env.LCM_EVAL_MODEL;
@@ -74,6 +75,7 @@ const runs = Number(process.env.LCM_EVAL_RUNS ?? "1");
 const only = process.env.LCM_EVAL_SESSIONS?.split(",").map((s) => s.trim()).filter(Boolean);
 
 const reasoning =
+  (process.env.LCM_EVAL_REASONING ? ` reasoning=${process.env.LCM_EVAL_REASONING}` : "") +
   (process.env.LCM_EVAL_REASONING_EFFORT ? ` reasoning=${process.env.LCM_EVAL_REASONING_EFFORT}` : "") +
   (process.env.LCM_EVAL_DISABLE_THINKING === "1" ? " thinking=off" : "");
 
