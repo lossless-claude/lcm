@@ -505,9 +505,16 @@ export function planReplayResume<T extends { sessionId: string; cwd: string }>(o
 /**
  * True when the client gave up on a daemon call (timeout/abort) rather than
  * the daemon reporting a failure. DaemonClient preserves these error names.
+ * A mid-flight socket drop (ECONNRESET / undici's UND_ERR_SOCKET) counts too:
+ * the daemon may still be persisting the summary, so the caller should re-read
+ * rather than break the chain. DaemonClient normalizes network failures to a
+ * TypeError whose `cause` is the original error.
  */
 export function isClientGaveUpError(err: unknown): boolean {
-  return err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+  if (!(err instanceof Error)) return false;
+  if (err.name === "TimeoutError" || err.name === "AbortError") return true;
+  const code = (err.cause as { code?: unknown } | undefined)?.code;
+  return code === "ECONNRESET" || code === "UND_ERR_SOCKET";
 }
 
 /**
@@ -517,24 +524,69 @@ export function isClientGaveUpError(err: unknown): boolean {
  * daemon may have finished the work anyway: the chain follows what was
  * persisted, not whether the HTTP call returned in time. Ordering mirrors the
  * daemon's own "latest summary" fallback (`getSummariesByConversation`, last).
+ *
+ * Pass `notBefore` (a timestamp captured just before the /compact call) to
+ * only accept summaries persisted after the call started: a pre-existing
+ * summary from an earlier run or hook must not be mistaken for the in-flight
+ * call's result. Summaries store `created_at` as `datetime('now')` (whole
+ * seconds, UTC), so `notBefore` is rounded DOWN to the second: a summary
+ * persisted later in the same second the call started is still recovered,
+ * while anything from an earlier second is certainly stale.
+ *
+ * Returns three distinct token metrics that callers must not conflate:
+ * - `sourceMessageTokenCount`: tokens of the messages folded into this one
+ *   summary (not the conversation's total).
+ * - `summaryTokenCount`: size of the summary text itself.
+ * - `contextTokenCount`: the conversation's current total context tokens
+ *   (tail messages + summaries), i.e. the same metric `/compact` reports as
+ *   `tokensAfter`.
  */
 export async function loadLatestSessionSummary(opts: {
   cwd: string;
   lcmDir?: string;
   sessionId: string;
-}): Promise<{ summaryId: string; content: string } | null> {
+  /** Epoch ms; only summaries persisted at or after this time are returned. */
+  notBefore?: number;
+}): Promise<{
+  summaryId: string;
+  content: string;
+  summaryTokenCount: number;
+  sourceMessageTokenCount: number;
+  contextTokenCount: number;
+} | null> {
   const opened = openProjectDb(projectDbPathFor(opts.cwd, opts.lcmDir));
-  if (opened.kind !== "ready") return null;
+  if (opened.kind !== "ready") {
+    if (opened.kind === "error") {
+      console.error(`  ⚠️ [replay] could not read latest summary for session ${opts.sessionId}: project database failed to open`);
+    }
+    return null;
+  }
   const { db } = opened;
   try {
     const conv = db
       .prepare("SELECT conversation_id FROM conversations WHERE session_id = ?")
       .get(opts.sessionId) as { conversation_id: number } | undefined;
     if (!conv) return null;
-    const summaries = await new SummaryStore(db).getSummariesByConversation(conv.conversation_id);
+    const summaryStore = new SummaryStore(db);
+    let summaries = await summaryStore.getSummariesByConversation(conv.conversation_id);
+    if (opts.notBefore !== undefined) {
+      // created_at has whole-second precision; floor the boundary so a summary
+      // persisted later in the same second the call started is not excluded.
+      const cutoff = new Date(Math.floor(opts.notBefore / 1000) * 1000);
+      summaries = summaries.filter((s) => s.createdAt >= cutoff);
+    }
     const latest = summaries[summaries.length - 1];
-    return latest ? { summaryId: latest.summaryId, content: latest.content } : null;
-  } catch {
+    if (!latest) return null;
+    const contextTokenCount = await summaryStore.getContextTokenCount(conv.conversation_id);
+    return {
+      summaryId: latest.summaryId,
+      content: latest.content,
+      summaryTokenCount: latest.tokenCount,
+      sourceMessageTokenCount: latest.sourceMessageTokenCount,
+      contextTokenCount,
+    };
+  } catch (err) {
+    console.error(`  ⚠️ [replay] could not read latest summary for session ${opts.sessionId}: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   } finally {
     closeDb(opened);

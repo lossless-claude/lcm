@@ -10,6 +10,8 @@ import {
   createReplayRun,
   fingerprintFile,
   fingerprintStats,
+  isClientGaveUpError,
+  loadLatestSessionSummary,
   planReplayResume,
   recordReplayProgress,
   replayRunId,
@@ -40,7 +42,7 @@ function makeProjectDb(lcmDir: string, cwd: string): string {
   return dbPath;
 }
 
-function insertSummary(dbPath: string, summaryId: string, content: string, sessionId?: string): void {
+function insertSummary(dbPath: string, summaryId: string, content: string, sessionId?: string, opts?: { tokenCount?: number; sourceMessageTokenCount?: number; createdAt?: string }): void {
   const db = new DatabaseSync(dbPath);
   try {
     const session = sessionId ?? `conv-for-${summaryId}`;
@@ -49,8 +51,20 @@ function insertSummary(dbPath: string, summaryId: string, content: string, sessi
     ).run(session);
     const conv = db.prepare("SELECT conversation_id FROM conversations WHERE session_id = ?").get(session) as { conversation_id: number };
     db.prepare(
-      "INSERT INTO summaries (summary_id, conversation_id, kind, content, token_count) VALUES (?, ?, 'leaf', ?, 10)",
-    ).run(summaryId, conv.conversation_id, content);
+      `INSERT INTO summaries (summary_id, conversation_id, kind, content, token_count, source_message_token_count, created_at)
+       VALUES (?, ?, 'leaf', ?, ?, ?, COALESCE(?, datetime('now')))`,
+    ).run(summaryId, conv.conversation_id, content, opts?.tokenCount ?? 10, opts?.sourceMessageTokenCount ?? 0, opts?.createdAt ?? null);
+    // Replaying a project DB re-runs migrations, and the metadata backfill
+    // recomputes source_message_token_count from summary_messages — so a
+    // fixture claiming source tokens must link real source messages, like the
+    // daemon does when it persists a compaction summary.
+    if (opts?.sourceMessageTokenCount) {
+      db.prepare(
+        "INSERT INTO messages (conversation_id, seq, role, content, token_count) VALUES (?, (SELECT COALESCE(MAX(seq), -1) + 1 FROM messages WHERE conversation_id = ?), 'user', 'source', ?)",
+      ).run(conv.conversation_id, conv.conversation_id, opts.sourceMessageTokenCount);
+      const msg = db.prepare("SELECT MAX(message_id) AS id FROM messages WHERE conversation_id = ?").get(conv.conversation_id) as { id: number };
+      db.prepare("INSERT INTO summary_messages (summary_id, message_id, ordinal) VALUES (?, ?, 0)").run(summaryId, msg.id);
+    }
     db.prepare(
       "INSERT INTO context_items (conversation_id, ordinal, item_type, summary_id) VALUES (?, (SELECT COALESCE(MAX(ordinal), -1) + 1 FROM context_items WHERE conversation_id = ?), 'summary', ?)",
     ).run(conv.conversation_id, conv.conversation_id, summaryId);
@@ -432,5 +446,96 @@ describe("replay run manifest + ledger", () => {
     } finally {
       db.close();
     }
+  });
+});
+
+describe("isClientGaveUpError", () => {
+  it("matches timeout and abort errors by name", () => {
+    const timeout = new Error("Request timed out");
+    timeout.name = "TimeoutError";
+    const abort = new Error("Request aborted");
+    abort.name = "AbortError";
+    expect(isClientGaveUpError(timeout)).toBe(true);
+    expect(isClientGaveUpError(abort)).toBe(true);
+  });
+
+  it("matches mid-flight socket drops via the original error's code", () => {
+    // DaemonClient normalizes network failures to a TypeError whose `cause` is
+    // the original socket error.
+    const socketReset = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+    const normalized = new TypeError("fetch failed", { cause: socketReset });
+    expect(isClientGaveUpError(normalized)).toBe(true);
+
+    const undiciSocket = Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" });
+    expect(isClientGaveUpError(new TypeError("fetch failed", { cause: undiciSocket }))).toBe(true);
+  });
+
+  it("does not match daemon-reported failures or non-error values", () => {
+    expect(isClientGaveUpError(new Error("HTTP 500"))).toBe(false);
+    expect(isClientGaveUpError(new TypeError("fetch failed"))).toBe(false);
+    expect(isClientGaveUpError("TimeoutError")).toBe(false);
+    expect(isClientGaveUpError(null)).toBe(false);
+    // A cause without one of the socket codes is not a client-side give-up.
+    expect(isClientGaveUpError(new Error("boom", { cause: new Error("inner") }))).toBe(false);
+  });
+});
+
+describe("loadLatestSessionSummary", () => {
+  it("returns the latest summary with its token counts", async () => {
+    const lcmDir = makeTmpDir();
+    const cwd = "/test/load-latest";
+    const dbPath = makeProjectDb(lcmDir, cwd);
+    insertSummary(dbPath, "sum-1", "older", "s1");
+    insertSummary(dbPath, "sum-2", "latest", "s1", { tokenCount: 42, sourceMessageTokenCount: 900 });
+
+    const latest = await loadLatestSessionSummary({ cwd, lcmDir, sessionId: "s1" });
+    expect(latest?.summaryId).toBe("sum-2");
+    expect(latest?.content).toBe("latest");
+    expect(latest?.summaryTokenCount).toBe(42);
+    expect(latest?.sourceMessageTokenCount).toBe(900);
+    // Context tokens (both summaries' token_count, since both are linked into
+    // context_items) is a distinct metric from either summary's own tokenCount.
+    expect(latest?.contextTokenCount).toBe(52);
+  });
+
+  it("returns null when the session has no summary", async () => {
+    const lcmDir = makeTmpDir();
+    const cwd = "/test/load-none";
+    makeProjectDb(lcmDir, cwd);
+    expect(await loadLatestSessionSummary({ cwd, lcmDir, sessionId: "s1" })).toBeNull();
+  });
+
+  it("notBefore filters out summaries persisted before the compact call started", async () => {
+    const lcmDir = makeTmpDir();
+    const cwd = "/test/load-stale";
+    const dbPath = makeProjectDb(lcmDir, cwd);
+    // A summary persisted two minutes ago — e.g. an earlier run or a hook.
+    const staleAt = new Date(Date.now() - 120_000).toISOString().replace("T", " ").slice(0, 19);
+    insertSummary(dbPath, "sum-stale", "stale summary", "s1", { createdAt: staleAt });
+
+    // Without a recency bound the stale summary is returned…
+    expect((await loadLatestSessionSummary({ cwd, lcmDir, sessionId: "s1" }))?.summaryId).toBe("sum-stale");
+    // …but a caller that captured the time before its /compact call must not
+    // mistake it for the in-flight call's result.
+    expect(await loadLatestSessionSummary({ cwd, lcmDir, sessionId: "s1", notBefore: Date.now() })).toBeNull();
+
+    // The compact call starts now; the daemon persists the summary while the
+    // client is still waiting (and then the client times out).
+    const notBefore = Date.now();
+    insertSummary(dbPath, "sum-fresh", "fresh summary", "s1");
+    const recovered = await loadLatestSessionSummary({ cwd, lcmDir, sessionId: "s1", notBefore });
+    expect(recovered?.summaryId).toBe("sum-fresh");
+    expect(recovered?.content).toBe("fresh summary");
+  });
+
+  it("accepts a summary written in the same second the call started", async () => {
+    const lcmDir = makeTmpDir();
+    const cwd = "/test/load-same-second";
+    const dbPath = makeProjectDb(lcmDir, cwd);
+    // Summaries are stored with whole-second precision; a millisecond
+    // notBefore must still recover a summary written later in that second.
+    const notBefore = Date.now();
+    insertSummary(dbPath, "sum-now", "just written", "s1");
+    expect((await loadLatestSessionSummary({ cwd, lcmDir, sessionId: "s1", notBefore }))?.summaryId).toBe("sum-now");
   });
 });

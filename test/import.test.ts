@@ -688,11 +688,29 @@ describe("importSessions replay resume", () => {
     return { claudeProjectsDir, lcmDir, projDir };
   }
 
-  function persistSummary(lcmDir: string, cwd: string, sessionId: string, summaryId: string, content: string): void {
+  function persistSummary(lcmDir: string, cwd: string, sessionId: string, summaryId: string, content: string, opts?: { tokenCount?: number; sourceMessageTokenCount?: number; createdAt?: string }): void {
     const db = new DatabaseSync(join(lcmDir, "projects", projectId(cwd), "db.sqlite"));
-    db.prepare("INSERT INTO conversations (session_id) VALUES (?)").run(sessionId);
+    db.prepare("INSERT INTO conversations (session_id) VALUES (?) ON CONFLICT DO NOTHING").run(sessionId);
     const conv = db.prepare("SELECT conversation_id FROM conversations WHERE session_id = ?").get(sessionId) as { conversation_id: number };
-    db.prepare("INSERT INTO summaries (summary_id, conversation_id, kind, content, token_count) VALUES (?, ?, 'leaf', ?, 5)").run(summaryId, conv.conversation_id, content);
+    db.prepare(
+      `INSERT INTO summaries (summary_id, conversation_id, kind, content, token_count, source_message_token_count, created_at)
+       VALUES (?, ?, 'leaf', ?, ?, ?, COALESCE(?, datetime('now')))`,
+    ).run(summaryId, conv.conversation_id, content, opts?.tokenCount ?? 5, opts?.sourceMessageTokenCount ?? 0, opts?.createdAt ?? null);
+    // The migration backfill recomputes source_message_token_count from
+    // summary_messages, so a fixture claiming source tokens must link real
+    // source messages like the daemon does when it persists a summary.
+    if (opts?.sourceMessageTokenCount) {
+      db.prepare(
+        "INSERT INTO messages (conversation_id, seq, role, content, token_count) VALUES (?, (SELECT COALESCE(MAX(seq), -1) + 1 FROM messages WHERE conversation_id = ?), 'user', 'source', ?)",
+      ).run(conv.conversation_id, conv.conversation_id, opts.sourceMessageTokenCount);
+      const msg = db.prepare("SELECT MAX(message_id) AS id FROM messages WHERE conversation_id = ?").get(conv.conversation_id) as { id: number };
+      db.prepare("INSERT INTO summary_messages (summary_id, message_id, ordinal) VALUES (?, ?, 0)").run(summaryId, msg.id);
+    }
+    // Link the summary into context_items, like the daemon does when it
+    // persists a compaction summary — this is what getContextTokenCount sums.
+    db.prepare(
+      "INSERT INTO context_items (conversation_id, ordinal, item_type, summary_id) VALUES (?, (SELECT COALESCE(MAX(ordinal), -1) + 1 FROM context_items WHERE conversation_id = ?), 'summary', ?)",
+    ).run(conv.conversation_id, conv.conversation_id, summaryId);
     db.close();
   }
 
@@ -1046,6 +1064,127 @@ describe("importSessions replay resume", () => {
     const row = db.prepare("SELECT COUNT(*) AS n FROM replay_ledger WHERE session_id = 's2'").get() as { n: number };
     db.close();
     expect(row.n).toBe(0);
+  });
+
+  it("a timed-out compact does not mistake a pre-existing summary for its result", async () => {
+    const cwd = "/test/timeout-stale";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2"]);
+    const stderrLines: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: any[]) => { stderrLines.push(args.join(" ")); });
+
+    // s2 already carries a summary from an earlier run or hook. When its
+    // compact times out and the daemon never persists a new one, that stale
+    // summary must not be recorded as the result.
+    const staleAt = new Date(Date.now() - 120_000).toISOString().replace("T", " ").slice(0, 19);
+    persistSummary(lcmDir, cwd, "s2", "sum-stale-s2", "stale-s2", { createdAt: staleAt });
+
+    const compactBodies: { session_id: string; previous_summary?: string }[] = [];
+    const client = makeMockClient(async (path: string, body: any) => {
+      if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
+      if (path === "/compact") {
+        compactBodies.push({ session_id: body.session_id, previous_summary: body.previous_summary });
+        if (body.session_id === "s2") throw timeoutError();
+        return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: `summary-of-${body.session_id}`, latestSummaryId: `sum-${body.session_id}`, tokensBefore: 100, tokensAfter: 10 };
+      }
+    });
+    await importSessions(client, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+
+    // s2 is skipped (its stale summary is not recovered), so s1's summary is
+    // still threaded and s2 records no ledger row.
+    expect(compactBodies.map((b) => b.previous_summary)).toEqual([undefined, "summary-of-s1"]);
+    expect(stderrLines.some((l) => l.includes("s2") && l.includes("chain skips"))).toBe(true);
+
+    const db = new DatabaseSync(join(lcmDir, "projects", projectId(cwd), "db.sqlite"));
+    const row = db.prepare("SELECT COUNT(*) AS n FROM replay_ledger WHERE session_id = 's2'").get() as { n: number };
+    db.close();
+    expect(row.n).toBe(0);
+  });
+
+  it("a timed-out compact whose fresh summary was stored counts its tokens", async () => {
+    const cwd = "/test/timeout-tokens";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1"]);
+    const stderrLines: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: any[]) => { stderrLines.push(args.join(" ")); });
+
+    const client = makeMockClient(async (path: string, body: any) => {
+      if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
+      if (path === "/compact") {
+        // The daemon finished and stored the summary (linked to its source
+        // messages), but the client gave up waiting for the response.
+        persistSummary(lcmDir, cwd, body.session_id, "sum-s1", "summary-of-s1", { tokenCount: 12, sourceMessageTokenCount: 400 });
+        throw timeoutError();
+      }
+    });
+    const result = await importSessions(client, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+
+    expect(stderrLines.some((l) => l.includes("s1") && l.includes("chain continues"))).toBe(true);
+    // Ledger and chain record the compaction, and the run summary counts the
+    // recovered summary's tokens instead of silently falling back to ingest's.
+    expect(result.totalTokens).toBe(400);
+    expect(result.tokensAfter).toBe(12);
+  });
+
+  it("a recovered summary with sourceMessageTokenCount=0 falls back to ingest's totalTokens", async () => {
+    const cwd = "/test/timeout-tokens-zero-source";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1"]);
+    const stderrLines: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: any[]) => { stderrLines.push(args.join(" ")); });
+
+    const client = makeMockClient(async (path: string, body: any) => {
+      if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
+      if (path === "/compact") {
+        // Recovered summary has no linked source messages (e.g. missing
+        // links/backfill results), so sourceMessageTokenCount is 0.
+        persistSummary(lcmDir, cwd, body.session_id, "sum-s1", "summary-of-s1", { tokenCount: 12, sourceMessageTokenCount: 0 });
+        throw timeoutError();
+      }
+    });
+    const result = await importSessions(client, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+
+    // Without the fallback these tokens would be silently lost (0 added).
+    expect(result.totalTokens).toBe(100);
+    expect(result.tokensAfter).toBe(12);
+  });
+
+  it("restart refusal checks every provider list before any state is wiped", async () => {
+    // Claude project dir for cwd A, codex rollout for cwd B; A imports first.
+    const claudeProjectsDir = makeTmpDir();
+    const lcmDir = makeTmpDir();
+    const cwdA = "/test/multi-a";
+    const cwdB = "/test/multi-b";
+    mkdirSync(join(lcmDir, "projects", projectId(cwdA)), { recursive: true });
+    writeFileSync(join(lcmDir, "projects", projectId(cwdA), "meta.json"), JSON.stringify({ cwd: cwdA }));
+    const projDirA = join(claudeProjectsDir, cwdToProjectHash(cwdA));
+    mkdirSync(projDirA, { recursive: true });
+    writeFileSync(join(projDirA, "a1.jsonl"), '{"session":"a1"}\n');
+
+    const codexDir = makeTmpDir();
+    const archivedDir = join(codexDir, "archived_sessions");
+    mkdirSync(archivedDir, { recursive: true });
+    writeFileSync(join(archivedDir, "rollout-b1.jsonl"), makeCodexSessionMetaLine("b1", cwdB));
+
+    const ingested: string[] = [];
+    const statusCalls: string[] = [];
+    const client = makeMockClient(async (path: string, body: any) => {
+      if (path === "/status") {
+        statusCalls.push(body.cwd);
+        // The codex list (checked after the claude one) is still compacting.
+        if (body.cwd === cwdB) return { project: { compactingSessions: ["b1"] } };
+        return { project: { compactingSessions: [] } };
+      }
+      if (path === "/ingest") { ingested.push(body.session_id); return { ingested: 1, totalTokens: 10 }; }
+      if (path === "/compact") return { summary: "ok", replayOutcome: "compacted" };
+    });
+
+    await expect(importSessions(client, {
+      provider: "all", replay: true, restart: true, all: true,
+      _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir, _codexDir: codexDir,
+    })).rejects.toThrow(/--restart refused.*b1/);
+
+    // Every project was checked before anything ran, so no ingest/compact
+    // started and nothing was wiped.
+    expect(statusCalls.sort()).toEqual([cwdA, cwdB].sort());
+    expect(ingested).toEqual([]);
   });
 });
 
