@@ -141,11 +141,12 @@ const HELP: Record<string, CommandHelp> = {
 
   compact: {
     summary: "Compact conversation context into DAG summary nodes.",
-    usage: "lcm compact [--all] [--dry-run] [--replay] [--no-promote]",
+    usage: "lcm compact [--all] [--dry-run] [--replay] [--restart] [--no-promote]",
     options: [
       ["--all", "Compact all tracked projects (default: current project only)"],
       ["--dry-run", "Show what would be compacted without writing anything"],
-      ["--replay", "Compact sequentially, threading each summary through the prior context"],
+      ["--replay", "Compact sequentially, threading each summary through the prior context (resumes where the last run stopped)"],
+      ["--restart", "With --replay: discard recorded progress and all summaries in the conversations the run touches, then start from scratch"],
       ["--no-promote", "Skip the automatic promote step that runs after compaction"],
     ],
     examples: [
@@ -160,13 +161,14 @@ const HELP: Record<string, CommandHelp> = {
 
   import: {
     summary: "Import Claude Code or Codex session transcripts into lossless memory.",
-    usage: "lcm import [--provider claude|codex|all] [--all] [--verbose] [--dry-run] [--replay]",
+    usage: "lcm import [--provider claude|codex|all] [--all] [--verbose] [--dry-run] [--replay] [--restart]",
     options: [
       ["--provider <provider>", "Transcript source: claude (default), codex, all"],
       ["--all", "Import all projects (default: current project only)"],
       ["--verbose", "Show per-session import detail"],
       ["--dry-run", "Preview without importing"],
-      ["--replay", "Replay compaction for each imported session"],
+      ["--replay", "Replay compaction for each imported session (resumes where the last run stopped)"],
+      ["--restart", "With --replay: discard recorded progress and all summaries in the conversations the run touches, then start from scratch"],
     ],
     examples: [
       ["lcm import", "Import current Claude Code project sessions"],
@@ -380,8 +382,8 @@ const GROUPS = [
       { name: "describe <nodeId>", summary: "Inspect metadata for a memory node" },
       { name: "expand <nodeId> [--depth N]", summary: "Expand a summary node into source detail" },
       { name: "store <text> [--tag ...]", summary: "Store a durable memory entry" },
-      { name: "compact [--all] [--dry-run] [--replay] [--no-promote]", summary: "Compact conversations into DAG summaries (auto-promotes after)" },
-      { name: "import [--provider claude|codex|all] [--all] [--dry-run] [--replay]", summary: "Import Claude Code or Codex session transcripts" },
+      { name: "compact [--all] [--dry-run] [--replay] [--restart] [--no-promote]", summary: "Compact conversations into DAG summaries (auto-promotes after)" },
+      { name: "import [--provider claude|codex|all] [--all] [--verbose] [--dry-run] [--replay] [--restart]", summary: "Import Claude Code or Codex session transcripts" },
       { name: "promote [--all] [--verbose] [--dry-run]", summary: "Promote insights to long-term memory" },
       { name: "stats [-v]", summary: "Memory inventory and compression ratios" },
       { name: "diagnose [--all] [--days N] [--verbose] [--json]", summary: "Scan sessions for hook failures and issues" },

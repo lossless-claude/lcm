@@ -84,9 +84,13 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
       runLcmMigrations(db);
 
       // Check if session is already fully ingested in session_ingest_log — using the same
-      // db connection to avoid double-open overhead and lock contention.
+      // db connection to avoid double-open overhead and lock contention. A replay
+      // skips this shortcut: it re-reads transcripts that may have grown since the
+      // session completed, and the stored-count slice below keeps it idempotent.
       try {
-        const row = db.prepare("SELECT 1 FROM session_ingest_log WHERE session_id = ?").get(session_id);
+        const row = input.replay === true
+          ? undefined
+          : db.prepare("SELECT 1 FROM session_ingest_log WHERE session_id = ?").get(session_id);
         if (row) {
           // Session already fully ingested — skip
           sendJson(res, 200, { ingested: 0, totalTokens: 0 });

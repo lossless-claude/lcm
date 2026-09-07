@@ -6,7 +6,7 @@
 
 Rework the `copilot/make-replay-resumable` branch in place. The manifest model, the suffix-resume rule and the SIGINT drain are sound and survive; what comes out is the ledger's summary bookkeeping and the `--restart` lineage machinery.
 
-Steps 1–4 are the redesign. Steps 5–7 are bugs independent of the model and can land in any order. Step 8 is unrelated hygiene for its own PR.
+Steps 1–4 are the redesign. Steps 5–7 are bugs independent of the model and can land in any order. Step 8 lands in this PR: both items exist only on this branch.
 
 ---
 
@@ -119,7 +119,7 @@ The `/compact` request must carry `previous_summary` from `previousSummaryByCwd`
 - **`src/replay-resume.ts`** — confirm every consumer reads the per-`cwd` `restoredPreviousSummaries` map, and that the single-value `restoredPreviousSummary` / `droppedPreviousSummary` fields are removed rather than merely shadowed.
 - **`src/import.ts`** — with `provider: "all"`, `ingestSessionList()` runs twice. Hoist the `--restart` clear into `importSessions`, or guard it with a per-`(cwd, command)` set for the whole call, so a shared `cwd` is cleared once.
 
-## 8. Unrelated — separate PR
+## 8. Signal handling and docs — same PR
 
 - **`src/cli/pipeline-runner.ts`** — a second SIGINT/SIGTERM is discarded, so a hung daemon POST cannot be interrupted. Let the second signal force exit.
 - **`docs/architecture.md`** — the doc describes a size + line-count + mtime fingerprint; `fingerprintFile` persists size + floored mtime.
@@ -137,9 +137,9 @@ The `/compact` request must carry `previous_summary` from `previousSummaryByCwd`
 
 `npm run typecheck` and `npm test`. Two pre-existing unrelated failures have been observed on this branch: `test/daemon/routes/restore.test.ts` and `test/daemon/routes/stats.test.ts` (the latter a 60s `/stats` timeout).
 
-## Known gap, not addressed here
+## Daemon race on `--restart`
 
-`--restart` runs in the CLI process and wipes summaries while the daemon may be compacting the same conversation. The daemon's `compactingNow` guard is per-request and in-process, so it does not serialise against an external wipe. Pre-existing, not introduced by this redesign — either refuse `--restart` while a daemon lock is held, or state explicitly that it assumes no concurrent compaction.
+`--restart` runs in the CLI process and wipes summaries; the daemon's `compactingNow` guard is per-request and in-process, so nothing serialises the two. Decision: document the assumption in `docs/architecture.md` (run `--restart` with the daemon idle). Refusing `--restart` while a daemon lock is held is a follow-up issue.
 
 ## Docs to update in the same PR
 

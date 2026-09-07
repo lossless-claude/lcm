@@ -1,6 +1,16 @@
 import type { DatabaseSync } from "node:sqlite";
 import { getLcmDbFeatures } from "./features.js";
 
+/** Disable foreign keys around a migration sweep (SQLite forbids toggling inside a transaction). */
+export function withForeignKeysDisabled(db: DatabaseSync, fn: () => void): void {
+  db.exec("PRAGMA foreign_keys = OFF");
+  try {
+    fn();
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
 type SummaryColumnInfo = {
   name?: string;
 };
@@ -30,6 +40,18 @@ type SummaryParentEdgeRow = {
  * Adds the normalized token breakdown to databases created before providers
  * reported input/cached/output separately. Existing rows keep their totals.
  */
+/**
+ * Adds replay_ledger.outcome to databases created before it existed.
+ * 'compacted' is the right default: every pre-existing row was written on the
+ * old code path, which only recorded a session after a real compaction.
+ */
+function ensureReplayLedgerOutcomeColumn(db: DatabaseSync): void {
+  const columns = db.prepare(`PRAGMA table_info(replay_ledger)`).all() as SummaryColumnInfo[];
+  if (!columns.some((col) => col.name === "outcome")) {
+    db.exec(`ALTER TABLE replay_ledger ADD COLUMN outcome TEXT NOT NULL DEFAULT 'compacted'`);
+  }
+}
+
 function ensureLlmUsageBreakdownColumns(db: DatabaseSync): void {
   const columns = db.prepare(`PRAGMA table_info(llm_usage_stats)`).all() as SummaryColumnInfo[];
   for (const name of ["tokens_input_total", "tokens_cached_total", "tokens_output_total"]) {
@@ -372,6 +394,15 @@ export function runLcmMigrations(
   db: DatabaseSync,
   options?: { fts5Available?: boolean },
 ): void {
+  // Foreign keys can stall schema changes against legacy rows (e.g. FTS
+  // rebuilds that reinsert messages) — disable them for the sweep.
+  withForeignKeysDisabled(db, () => runLcmMigrationsInner(db, options));
+}
+
+function runLcmMigrationsInner(
+  db: DatabaseSync,
+  options?: { fts5Available?: boolean },
+): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS conversations (
       conversation_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -603,6 +634,40 @@ export function runLcmMigrations(
     );
     CREATE INDEX IF NOT EXISTS recall_surfacing_memory_idx ON recall_surfacing (memory_id);
   `);
+
+  // Replay manifest — the ordered session list frozen at the start of a replay run.
+  // Makes "resume" deterministic: the same set in the same order across runs.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS replay_manifest (
+      run_id TEXT NOT NULL,
+      command TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      session_id TEXT NOT NULL,
+      model TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (run_id, position)
+    );
+    CREATE INDEX IF NOT EXISTS replay_manifest_session_idx ON replay_manifest (run_id, session_id);
+  `);
+
+  // Replay ledger — one row per completed session compaction. A row is written
+  // only after its summary is persisted, so a row is durable proof of done work.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS replay_ledger (
+      run_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      prev_session_id TEXT,
+      content_fingerprint TEXT NOT NULL,
+      summary_id TEXT,
+      model TEXT,
+      outcome TEXT NOT NULL DEFAULT 'compacted',
+      completed_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (run_id, session_id)
+    );
+    CREATE INDEX IF NOT EXISTS replay_ledger_position_idx ON replay_ledger (run_id, position);
+  `);
+  ensureReplayLedgerOutcomeColumn(db);
 
   const fts5Available = options?.fts5Available ?? getLcmDbFeatures(db).fts5Available;
   if (!fts5Available) {

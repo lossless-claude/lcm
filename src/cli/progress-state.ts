@@ -61,6 +61,9 @@ export interface ProgressState {
   /** DAG metrics (updated after compact/promote phases) */
   dag?: ProgressDag;
 
+  /** Set when a replay run resumed from recorded progress */
+  resumed?: { doneCount: number; totalCount: number; model?: string };
+
   /** Wall-clock start time */
   startedAt: number;
 
