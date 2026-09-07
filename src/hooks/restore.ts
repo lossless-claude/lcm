@@ -30,7 +30,12 @@ function tryAcquireSessionLock(sessionId: string): boolean {
 }
 
 export async function handleSessionStart(stdin: string, client: DaemonClient, port?: number): Promise<{ exitCode: number; stdout: string }> {
-  const input = JSON.parse(stdin || "{}");
+  let input: Record<string, any>;
+  try {
+    input = JSON.parse(stdin || "{}");
+  } catch {
+    return { exitCode: 0, stdout: "" }; // malformed stdin must never block session start
+  }
   const sessionId = input.session_id ?? "";
   if (sessionId && !tryAcquireSessionLock(sessionId)) {
     return { exitCode: 0, stdout: "" };

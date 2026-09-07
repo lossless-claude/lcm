@@ -5,6 +5,18 @@ import { eventsDbPath } from "../db/events-path.js";
 import { firePromoteEventsRequest } from "./session-end.js";
 import { safeLogError } from "./hook-errors.js";
 
+/** Daemon port from ~/.lossless-claude/config.json — Claude Code does not pass it on stdin. */
+async function configuredDaemonPort(): Promise<number> {
+  try {
+    const { loadDaemonConfig } = await import("../daemon/config.js");
+    const { join } = await import("node:path");
+    const { homedir } = await import("node:os");
+    return loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json")).daemon?.port ?? 3737;
+  } catch {
+    return 3737;
+  }
+}
+
 
 export async function handlePostToolUse(
   stdin: string,
@@ -34,8 +46,7 @@ export async function handlePostToolUse(
       // at session-end. No additional de-duplication guard needed.
       const hasPriority1 = events.some(e => e.priority === 1);
       if (hasPriority1) {
-        const port = input.daemon_port ?? 3737;
-        firePromoteEventsRequest(port, { cwd });
+        firePromoteEventsRequest(await configuredDaemonPort(), { cwd });
       }
     } finally {
       db.close();

@@ -41,7 +41,7 @@ describe("Flow 14: SessionEnd hook", { timeout: 60_000 }, () => {
 });
 
 describe("Flow 15: PreCompact hook", { timeout: 60_000 }, () => {
-  it("returns exit 2 with summary text", async () => {
+  it("returns exit 0 with summary text", async () => {
     const h = handle!;
 
     // First ingest some data so there is something to compact
@@ -66,12 +66,9 @@ describe("Flow 15: PreCompact hook", { timeout: 60_000 }, () => {
     const { handlePreCompact } = await import("../../../src/hooks/compact.js");
     const result = await handlePreCompact(stdinData, client, h.daemonPort);
 
-    // exit 2 = replace native compaction; exit 0 = disabled provider (also acceptable)
-    expect([0, 2]).toContain(result.exitCode);
-    // When exit 2, stdout should contain summary text
-    if (result.exitCode === 2) {
-      expect(result.stdout).toBeTruthy();
-    }
+    // PreCompact never blocks native compaction: always exit 0 with the summary on stdout
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBeTruthy();
   });
 });
 
