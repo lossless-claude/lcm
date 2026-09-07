@@ -8,6 +8,12 @@
 # drift apart.
 name: Copilot setup steps
 
+env:
+  # Pin the version: an unpinned "latest" changes the review environment
+  # underneath us without a commit to point at.
+  CBM_VERSION: v0.10.8
+  CBM_ASSET: codebase-memory-mcp-linux-amd64-portable.tar.gz
+
 # Copilot invokes the `copilot-setup-steps` job directly; the triggers below only
 # exist so the job can be exercised manually and validated on its own PRs.
 on:
@@ -25,12 +31,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-
-    env:
-      # Pin the version: an unpinned "latest" changes the review environment
-      # underneath us without a commit to point at.
-      CBM_VERSION: v0.10.8
-      CBM_ASSET: codebase-memory-mcp-linux-amd64-portable.tar.gz
 
     steps:
       - uses: actions/checkout@v4

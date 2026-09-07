@@ -214,7 +214,11 @@ export function findCodexSessionFiles(rootDir: string): CodexSessionFile[] {
 
     // Walk dated rollouts and legacy nested sessions without following symlinks.
     if (entry.isDirectory() && !entry.isSymbolicLink()) {
-      files.push(...findCodexSessionFiles(join(rootDir, entry.name)));
+      try {
+        files.push(...findCodexSessionFiles(join(rootDir, entry.name)));
+      } catch {
+        // Discovery is best-effort: skip subdirectories that fail mid-walk.
+      }
     }
   }
 
