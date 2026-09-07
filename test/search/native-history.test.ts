@@ -75,3 +75,24 @@ it("keeps source context available when FTS is unavailable", async () => {
   expect(hit.snippet).toContain("recovered because retries were bounded");
   expect(hit.snippet).toBe(content.slice(hit.span.start, hit.span.end));
 });
+
+it("ranks a session corroborated by a message and a summary above a single top message", async () => {
+  await messages.createConversation({ sessionId: "corroborated" });
+  await seed("Saffron retry Saffron retry: the strongest single message.");
+  await messages.createMessage({ conversationId: 2, seq: 1, role: "assistant", content: "Saffron retry noted in the message.", tokenCount: 10 });
+  await summaries.insertSummary({ summaryId: "summary-2", conversationId: 2, kind: "leaf", content: "Saffron retry recorded in the summary.", tokenCount: 10 });
+  const hits = await searchNativeHistory(db, { query: "Saffron retry", limit: 5 });
+  expect(hits.map((hit) => hit.sessionId)).toEqual(["corroborated", "native-context", "corroborated"]);
+  expect(hits[0]).toMatchObject({ conversationId: 2 });
+  expect("messageId" in hits[0]).toBe(true);
+  expect("summaryId" in hits[2]).toBe(true);
+});
+
+it("spreads a small limit across sessions before returning second hits", async () => {
+  await messages.createConversation({ sessionId: "second" });
+  await seed("Saffron once.");
+  await messages.createMessage({ conversationId: 1, seq: 2, role: "assistant", content: "Saffron twice.", tokenCount: 5 });
+  await messages.createMessage({ conversationId: 2, seq: 1, role: "assistant", content: "Saffron elsewhere.", tokenCount: 5 });
+  const hits = await searchNativeHistory(db, { query: "Saffron", limit: 2 });
+  expect(new Set(hits.map((hit) => hit.sessionId))).toEqual(new Set(["native-context", "second"]));
+});

@@ -7,9 +7,8 @@ import { projectDbPath, projectId } from "./daemon/project.js";
 import { closeLcmConnection, getLcmConnection } from "./db/connection.js";
 import { runLcmMigrations } from "./db/migration.js";
 import { ConversationStore } from "./store/conversation-store.js";
-import { SummaryStore } from "./store/summary-store.js";
 import { PromotedStore } from "./db/promoted.js";
-import { RetrievalEngine } from "./retrieval.js";
+import { rankNativeHistory } from "./search/native-history.js";
 import { extractQueryTerms } from "./store/fts5-query.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -412,7 +411,6 @@ export async function runBench(opts: BenchOptions): Promise<BenchResult> {
   try {
     runLcmMigrations(db);
     const convStore = new ConversationStore(db);
-    const engine = new RetrievalEngine(convStore, new SummaryStore(db));
     const promotedStore = new PromotedStore(db);
     const pid = projectId(opts.cwd);
 
@@ -429,18 +427,17 @@ export async function runBench(opts: BenchOptions): Promise<BenchResult> {
     const outcomes: QueryOutcome[] = [];
     for (const q of bench.queries) {
       const start = performance.now();
-      const grepResult = await engine.grep({ query: q.question, mode: "full_text", scope: "both" });
+      // The same ranking explicit search emits, so the bench measures what callers see.
+      const history = await rankNativeHistory(db, { query: q.question, limit: k });
       const promoted = promotedStore.search(q.question, k, undefined, pid);
       const latencyMs = performance.now() - start;
 
       const sessionIds: string[] = [];
       const seen = new Set<string>();
-      for (const match of [...grepResult.messages, ...grepResult.summaries]) {
-        const conv = await convStore.getConversation(match.conversationId);
-        const sid = conv?.sessionId;
-        if (sid && !seen.has(sid)) {
-          seen.add(sid);
-          sessionIds.push(sid);
+      for (const hit of history) {
+        if (hit.sessionId && !seen.has(hit.sessionId)) {
+          seen.add(hit.sessionId);
+          sessionIds.push(hit.sessionId);
         }
       }
       for (const mem of promoted) {

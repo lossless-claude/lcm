@@ -6,7 +6,10 @@ import { SummaryStore, type SummarySearchResult } from "../store/summary-store.j
 import { prepareFts5Query } from "../store/fts5-query.js";
 
 const MAX_SNIPPET_CHARS = 1000;
+/** Reciprocal-rank offset: small enough that a top position still outweighs one corroborating source further down. */
+const FUSION_RANK_OFFSET = 10;
 type HistoryHit = MessageSearchResult | SummarySearchResult;
+export type RankedHistoryHit = HistoryHit & { sessionId: string | null };
 type SourceContext = {
   snippet: string;
   span: { start: number; end: number };
@@ -74,6 +77,68 @@ function sourceContext(content: string, anchor: { start: number; length: number 
   };
 }
 
+/**
+ * Fuse message and summary candidates by session: a session scores the sum of
+ * reciprocal ranks of its best message and best summary, so evidence present
+ * in both sources rises. Emission is round-robin, one hit per session per
+ * pass (messages before summaries), so a small limit spans several sessions.
+ */
+export function fuseHistoryBySession(
+  messages: RankedHistoryHit[],
+  summaries: RankedHistoryHit[],
+  limit: number,
+): RankedHistoryHit[] {
+  const groupOf = (hit: RankedHistoryHit) => hit.sessionId ?? `conversation:${hit.conversationId}`;
+  const score = new Map<string, number>();
+  for (const list of [messages, summaries]) {
+    const seen = new Set<string>();
+    list.forEach((hit, position) => {
+      const group = groupOf(hit);
+      if (seen.has(group)) return;
+      seen.add(group);
+      score.set(group, (score.get(group) ?? 0) + 1 / (FUSION_RANK_OFFSET + position));
+    });
+  }
+  const groups = [...score.entries()].sort((a, b) => b[1] - a[1]).map(([group]) => group);
+  const hitsOf = new Map<string, RankedHistoryHit[]>(groups.map(group => [group, []]));
+  for (const hit of [...messages, ...summaries]) hitsOf.get(groupOf(hit))!.push(hit);
+  const fused: RankedHistoryHit[] = [];
+  for (let pass = 0; fused.length < limit; pass++) {
+    let emitted = false;
+    for (const group of groups) {
+      const hit = hitsOf.get(group)![pass];
+      if (!hit || fused.length >= limit) continue;
+      fused.push(hit);
+      emitted = true;
+    }
+    if (!emitted) break;
+  }
+  return fused;
+}
+
+/** Rank one request's history candidates without loading source context. */
+export async function rankNativeHistory(
+  db: DatabaseSync,
+  input: { query: string; limit: number },
+): Promise<RankedHistoryHit[]> {
+  const messages = new ConversationStore(db);
+  const summaries = new SummaryStore(db);
+  const engine = new RetrievalEngine(messages, summaries);
+  const result = await engine.grep({ query: input.query, mode: "full_text", scope: "both" });
+  const sessionOf = new Map<number, string | null>();
+  const attach = async (hits: HistoryHit[]): Promise<RankedHistoryHit[]> => {
+    const ranked: RankedHistoryHit[] = [];
+    for (const hit of hits) {
+      if (!sessionOf.has(hit.conversationId)) {
+        sessionOf.set(hit.conversationId, (await messages.getConversation(hit.conversationId))?.sessionId ?? null);
+      }
+      ranked.push({ ...hit, sessionId: sessionOf.get(hit.conversationId) ?? null });
+    }
+    return ranked;
+  };
+  return fuseHistoryBySession(await attach(result.messages), await attach(result.summaries), input.limit);
+}
+
 /** Read one request's ranked history and bounded source context on its own DB connection. */
 export async function searchNativeHistory(
   db: DatabaseSync,
@@ -81,11 +146,9 @@ export async function searchNativeHistory(
 ): Promise<NativeHistoryHit[]> {
   const messages = new ConversationStore(db);
   const summaries = new SummaryStore(db);
-  const engine = new RetrievalEngine(messages, summaries);
   db.exec("SAVEPOINT native_history_read");
   try {
-    const result = await engine.grep({ query: input.query, mode: "full_text", scope: "both" });
-    const selected = [...result.messages, ...result.summaries].slice(0, input.limit);
+    const selected = await rankNativeHistory(db, input);
     const matches: NativeHistoryHit[] = [];
     for (const hit of selected) {
       const source = "messageId" in hit
