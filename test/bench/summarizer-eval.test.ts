@@ -30,6 +30,7 @@ describe("summarizer eval harness (offline)", () => {
     expect(result.calls.filter((c) => c.pass === "leaf").length).toBeGreaterThanOrEqual(3);
     expect(result.calls.filter((c) => c.pass === "condensed" && c.depth === 1).length).toBeGreaterThanOrEqual(1);
     expect(result.summaries.some((s) => s.depth === 1)).toBe(true);
+    expect(result.totals.formatTotal).toBe(result.calls.length);
     expect(result.totals.formatPass).toBe(result.totals.formatTotal);
     expect(result.plantedFacts?.map((f) => f.name)).toHaveLength(5);
     expect(result.tokensAfter).toBeLessThan(result.tokensBefore);
@@ -94,8 +95,8 @@ describe.skipIf(!model || !corpusDir)(`summarizer eval: ${model} via ${provider}
             ` tokens=${result.tokensBefore}->${result.tokensAfter} latency=${result.totals.latencyMs}ms` +
             `${facts}${result.incomplete ? " INCOMPLETE" : ""} -> ${file}`,
         );
-        // A 429 after retries is recorded as partial, not a test failure.
-        expect(result.summaries.length).toBeGreaterThan(0);
+        // A failed or partial run is recorded, not asserted: the JSON is the deliverable.
+        expect(existsSync(file)).toBe(true);
       }, 0);
     }
   }

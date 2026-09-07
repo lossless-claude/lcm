@@ -152,6 +152,9 @@ export type SummarizerCall = {
   outputChars: number;
   outputTokensEstimate: number;
   latencyMs: number;
+  output?: string;
+  /** Format checks on this call's output; leaf summaries get condensed away and would otherwise go unscored. */
+  format?: SummaryScore;
   usage?: EvalUsage;
   /** openai.ts returns the input prefix when the model sends empty content. */
   emptyContentFallback: boolean;
@@ -197,6 +200,8 @@ export function instrumentSummarizer(inner: LcmSummarizeFn): InstrumentedSummari
       call.latencyMs = Date.now() - started;
       call.outputChars = out.length;
       call.outputTokensEstimate = Math.ceil(out.length / 4);
+      call.output = out;
+      call.format = scoreSummary(out, call.depth);
       call.emptyContentFallback = out === text.slice(0, 500);
       return out;
     } catch (err) {
@@ -269,6 +274,7 @@ export type EvalRunResult = {
     inputTokens: number;
     outputTokens: number;
     costUsd: number;
+    /** Format-passing calls over all calls that returned output. */
     formatPass: number;
     formatTotal: number;
     /** Calls whose output hit the production max_tokens (1024): the summary was cut off. */
@@ -345,8 +351,9 @@ export async function runEval(input: {
   const tokensAfter = await summaryStore.getContextTokenCount(cid);
   db.close();
 
-  const contextText = summaries.map((s) => s.content).join("\n\n");
-  const formatPass = summaries.filter((s) => s.hasExpandTrailer && s.hasFilesLine !== false).length;
+  const contextText = summaries.map((summary) => summary.content).join("\n\n");
+  const scoredCalls = calls.filter((c) => c.format);
+  const formatPass = scoredCalls.filter((c) => c.format!.hasExpandTrailer && c.format!.hasFilesLine !== false).length;
 
   return {
     label: session.label,
@@ -370,7 +377,7 @@ export async function runEval(input: {
       outputTokens: calls.reduce((n, c) => n + (c.usage?.outputTokens ?? 0), 0),
       costUsd: calls.reduce((n, c) => n + (c.usage?.costUsd ?? 0), 0),
       formatPass,
-      formatTotal: summaries.length,
+      formatTotal: scoredCalls.length,
       maxTokensHits: calls.filter((c) => (c.usage?.outputTokens ?? 0) >= PROD_MAX_OUTPUT_TOKENS).length,
     },
   };
