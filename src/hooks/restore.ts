@@ -32,14 +32,21 @@ function tryAcquireSessionLock(sessionId: string): boolean {
   }
 }
 
+/** Hook stdin payload — only the fields this hook reads are typed; the rest is forwarded verbatim. */
+type SessionStartInput = {
+  session_id?: string;
+  cwd?: string;
+  [key: string]: unknown;
+};
+
 export async function handleSessionStart(stdin: string, client: DaemonClient, port?: number): Promise<{ exitCode: number; stdout: string }> {
-  let input: Record<string, any>;
+  let input: SessionStartInput;
   try {
-    input = JSON.parse(stdin || "{}");
+    input = (JSON.parse(stdin || "{}") ?? {}) as SessionStartInput;
   } catch {
     return { exitCode: 0, stdout: "" }; // malformed stdin must never block session start
   }
-  const sessionId = input.session_id ?? "";
+  const sessionId = typeof input.session_id === "string" ? input.session_id : "";
   if (sessionId && !tryAcquireSessionLock(sessionId)) {
     return { exitCode: 0, stdout: "" };
   }
