@@ -17,7 +17,7 @@
 ## Branch Protection
 
 - `main` branch is protected — PRs required
-- Status checks must pass: ar-coverage, quality-gates
+- Status checks must pass: required checks configured in repository branch protection rules
 - Force push is disabled
 - Branch deletion is disabled
 
