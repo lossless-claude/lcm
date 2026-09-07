@@ -963,7 +963,8 @@ async function main() {
   // ─── import ────────────────────────────────────────────────────────────────
   program
     .command("import")
-    .description("Import Claude Code session transcripts into lossless memory")
+    .description("Import Claude Code or Codex session transcripts into lossless memory")
+    .option("--provider <provider>", "Transcript source: claude, codex, all", "claude")
     .option("--all", "Import all projects")
     .option("--verbose", "Show per-session import detail")
     .option("--dry-run", "Preview without importing")
@@ -987,15 +988,11 @@ async function main() {
       const { makeProgressState } = await import("../src/cli/progress-state.js");
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
-      const { existsSync, readdirSync } = await import("node:fs");
-      const { importSessions, cwdToProjectHash, findSessionFiles } = await import("../src/import.js");
+      const { importSessions } = await import("../src/import.js");
       type ImportProvider = import("../src/import.js").ImportProvider;
 
-      // --codex is a shorthand for --provider codex
       let provider: ImportProvider = "claude";
-      if (opts.codex) {
-        provider = "codex";
-      } else if (opts.provider) {
+      if (opts.provider) {
         const provVal = opts.provider as string;
         if (provVal === "claude" || provVal === "codex" || provVal === "all") {
           provider = provVal as ImportProvider;
@@ -1007,32 +1004,21 @@ async function main() {
 
       const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
       const port = config.daemon?.port ?? 3737;
+      const client = new DaemonClient(`http://127.0.0.1:${port}`);
+      const preview = await importSessions(client, { all, provider, dryRun: true, verbose: dryRun && verbose, replay });
+      if (dryRun) {
+        console.log(`  [dry-run] ${preview.imported} ${provider} sessions selected (${all ? "all projects" : "current project"})${replay ? "; would compact each session" : ""}. No changes written.`);
+        return;
+      }
       const pidFilePath = join(homedir(), ".lossless-claude", "daemon.pid");
       const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 5000 });
       if (!connected) { console.error("  Daemon not available"); exit(1); }
-
-      // Pre-scan for session count (enables accurate live progress bar)
-      const claudeProjectsDir = join(homedir(), ".claude", "projects");
-      let sessionCount = 0;
-      if (all) {
-        if (existsSync(claudeProjectsDir)) {
-          for (const entry of readdirSync(claudeProjectsDir, { withFileTypes: true })) {
-            if (!entry.isDirectory()) continue;
-            sessionCount += findSessionFiles(join(claudeProjectsDir, entry.name)).length;
-          }
-        }
-      } else {
-        const cwd = process.cwd();
-        const hash = cwdToProjectHash(cwd);
-        const dir = join(claudeProjectsDir, hash);
-        if (existsSync(dir)) sessionCount = findSessionFiles(dir).length;
-      }
 
       const isTTY = process.stdout.isTTY ?? false;
       const renderOpts = { isTTY, width: process.stdout.columns ?? 80, color: isTTY, verbose };
       const state = makeProgressState({
         phases: [{ name: "Import", status: "active" }],
-        total: sessionCount,
+        total: preview.imported,
         dryRun,
       });
       const renderer = new NinjaRenderer({ state, renderOpts });
@@ -1044,7 +1030,6 @@ async function main() {
       console.log(`\n  Importing ${providerLabel} sessions${all ? " (all projects)" : ""}...\n`);
       renderer.start();
 
-      const client = new DaemonClient(`http://127.0.0.1:${port}`);
       const result = await importSessions(client, {
         all, verbose, dryRun, replay, provider,
         onProgress: (patch) => {

@@ -49,8 +49,11 @@ function realpathDeep(p: string): string {
   return p; // fallback: return original
 }
 
-export function isSafeTranscriptPath(transcriptPath: string, cwd: string): string | false {
+export function isSafeTranscriptPath(transcriptPath: string, cwd: string, client: "claude" | "codex" = "claude"): string | false {
   const resolved = resolve(transcriptPath);
+  const transcriptBases = client === "codex"
+    ? [pathJoin(homedir(), ".codex", "sessions"), pathJoin(homedir(), ".codex", "archived_sessions")]
+    : [pathJoin(homedir(), ".claude", "projects")];
 
   // Check for symlinks: if the resolved path is a symlink, follow it and re-validate.
   let lstat: ReturnType<typeof lstatSync> | null = null;
@@ -61,7 +64,7 @@ export function isSafeTranscriptPath(transcriptPath: string, cwd: string): strin
     let real: string;
     try { real = realpathSync(resolved); } catch { return false; }
     const allowedBases = [
-      tryRealpath(pathJoin(homedir(), ".claude", "projects")),
+      ...transcriptBases.map(tryRealpath),
       tryRealpath(resolve(cwd)),
     ];
     for (const base of allowedBases) {
@@ -81,7 +84,7 @@ export function isSafeTranscriptPath(transcriptPath: string, cwd: string): strin
   // resolved (e.g. /tmp/transcript.jsonl -> /private/tmp/transcript.jsonl on macOS).
   const candidate = realpathDeep(resolved);
   const allowedBases = [
-    tryRealpath(pathJoin(homedir(), ".claude", "projects")),
+    ...transcriptBases.map(tryRealpath),
     tryRealpath(resolve(cwd)),
   ];
   for (const base of allowedBases) {

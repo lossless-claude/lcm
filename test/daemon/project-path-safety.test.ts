@@ -15,6 +15,16 @@ describe("isSafeTranscriptPath", () => {
     expect(isSafeTranscriptPath(join(cwd, "transcript.jsonl"), cwd)).toBeTruthy();
   });
 
+  it("allows only Codex transcript roots when explicitly selected", () => {
+    for (const root of ["sessions", "archived_sessions"]) {
+      const p = join(homedir(), ".codex", root, "2026", "09", "rollout.jsonl");
+      expect(isSafeTranscriptPath(p, cwd, "codex")).toBeTruthy();
+      expect(isSafeTranscriptPath(p, cwd)).toBe(false);
+    }
+    expect(isSafeTranscriptPath(join(homedir(), ".codex", "auth.json"), cwd, "codex")).toBe(false);
+    expect(isSafeTranscriptPath(join(homedir(), ".codex", "sessions", "..", "auth.json"), cwd, "codex")).toBe(false);
+  });
+
   it("rejects paths outside allowed bases", () => {
     expect(isSafeTranscriptPath("/etc/passwd", cwd)).toBe(false);
     expect(isSafeTranscriptPath(join(homedir(), ".ssh", "id_rsa"), cwd)).toBe(false);
