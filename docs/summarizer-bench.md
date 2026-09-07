@@ -62,9 +62,11 @@ Per run, in `totals`:
 
 ## Parity with production
 
-`prodEngineConfig()` in `test/bench/summarizer-eval-harness.ts` mirrors the daemon's `/compact` engine configuration, with two deliberate deviations, both documented at that function:
+The bench does not copy the production engine configuration — it calls the same function. `compactEngineConfig()` in `src/compaction.ts` is the single source of truth, used by both the daemon's `/compact` route and the bench, and both compact against the same `COMPACT_TOKEN_BUDGET`. A change to the engine's thresholds, fan-outs, depth limits or round cap reaches the bench automatically; it cannot drift into measuring an engine production does not run.
 
-- `leafTargetTokens` uses the compiled-in default rather than the operator's live `config.json`, so a run is reproducible across machines.
-- No scrubber: stored messages were already scrubbed at ingest, and the export copies stored content verbatim.
+Only two values are per-caller arguments, and the bench differs on both deliberately:
 
-Everything else — thresholds, fan-outs, depth limits, round cap, token budget — matches. When the `/compact` route changes, that function has to change with it.
+- `leafTargetTokens` — the bench passes the compiled-in `DEFAULT_LEAF_TOKENS`, not the operator's live `config.json`, so a run is reproducible across machines.
+- `scrubber` — none: stored messages were already scrubbed at ingest, and the export copies stored content verbatim.
+
+`test/compaction.test.ts` pins this: it asserts that every field except those two comes out identical for both callers.
