@@ -270,3 +270,5 @@ No repository-wide cleanup is bundled into this design. Validate remaining scann
 ## Decisions still requiring evidence
 
 The proposed Module shape and lifecycle are concrete enough for the first two increments. Encoder/reranker choice, vector engine, passage sizes, candidate counts, semantic default latency, contextual indexing, and advanced graph retrieval remain experiments. The operating assumption about remote inference remains provisional. A state-of-the-art claim requires a representative measured result; an architecture diagram cannot supply it.
+
+**QMD follow-up:** the supported `@tobilu/qmd` SDK is now the first integration candidate to evaluate before rebuilding the hybrid pipeline. Keep the EvidenceSearch Interface and LCM source ownership; test QMD as an internal Adapter with a derived evidence projection. See the [versioned assessment and experiment](./qmd-assessment.md). This changes the implementation investigation order, not the dependency approval status.
