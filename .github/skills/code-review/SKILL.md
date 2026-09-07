@@ -68,7 +68,7 @@ TypeScript SQLite daemon that persists Claude session memories across context re
 
 ### 9. Daemon client conventions
 
-- Daemon HTTP requests must send the `Authorization: ****** header; the token is read via `readAuthToken(join(homedir(), ".lossless-claude", "daemon.token"))`. Auth is mandatory; a 401 arrives as a normal HTTP response, not a socket error — flag client code paths that drop the header or mishandle 401s.
+- Daemon HTTP requests must send the `Authorization: ******` header; the token is read via `readAuthToken(join(homedir(), ".lossless-claude", "daemon.token"))`. Auth is mandatory; a 401 arrives as a normal HTTP response, not a socket error — flag client code paths that drop the header or mishandle 401s.
 - `DaemonClient` throws `Error` objects annotated with the HTTP status and parsed JSON body (`e.status`, `e.body`) on non-2xx responses — flag client code that swallows non-2xx responses or loses the status/body annotations.
 
 ## What to skip
