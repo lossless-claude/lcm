@@ -281,9 +281,11 @@ async function ingestSessionList(
 
   if (options.replay && !options.dryRun && sessions.length > 0) {
     if (options.restart) {
-      // importSessions has already refused the run when any project about to
-      // be cleared is still compacting; this list only performs the clears.
+      // importSessions refuses the whole run up front, but that check can be
+      // minutes stale by the time a later list reaches its own clear, so
+      // re-check immediately before wiping this list's projects.
       const cwdsToClear = [...new Set(sessions.map((s) => s.cwd))].filter((cwd) => !clearedCwds.has(cwd));
+      await refuseRestartDuringCompaction(client, new Set(cwdsToClear));
       let clearFailed = false;
       for (const cwd of cwdsToClear) {
         clearedCwds.add(cwd);

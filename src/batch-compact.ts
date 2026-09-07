@@ -358,6 +358,7 @@ export async function batchCompact(opts: {
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : "unknown error";
       let chainNote = "";
+      let recoveredTokensAfter: number | undefined;
       if (opts.replay) {
         // The chain follows what was persisted: when the client merely gave up
         // (timeout/abort) the daemon may have stored the summary anyway, so
@@ -392,6 +393,7 @@ export async function batchCompact(opts: {
           // the success path above.
           tokensIn += conv.tokens;
           tokensOut += recovered.contextTokenCount;
+          recoveredTokensAfter = recovered.contextTokenCount;
           chainNote = "; summary was stored, chain continues";
         } else if (gaveUp) {
           chainNote = "; no summary found, chain skips this session";
@@ -401,7 +403,7 @@ export async function batchCompact(opts: {
       }
       doneCount++;
       console.log(` FAILED (${errMsg}${chainNote})`);
-      progressErrors.push({ sessionId: conv.sessionId, message: errMsg });
+      progressErrors.push({ sessionId: conv.sessionId, message: `${errMsg}${chainNote}` });
       onProgress?.({
         completed: doneCount,
         messagesIn,
@@ -409,7 +411,7 @@ export async function batchCompact(opts: {
         tokensOut,
         current: undefined,
         errors: progressErrors,
-        lastResult: { sessionId: conv.sessionId, messages: conv.messages, tokensBefore: conv.tokens, elapsed: Date.now() - sessionStart },
+        lastResult: { sessionId: conv.sessionId, messages: conv.messages, tokensBefore: conv.tokens, tokensAfter: recoveredTokensAfter, elapsed: Date.now() - sessionStart },
       });
     } finally {
       releaseInFlight?.();

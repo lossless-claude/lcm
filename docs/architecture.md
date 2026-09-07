@@ -131,9 +131,10 @@ The chain follows what the daemon persisted, not whether the HTTP call
 returned in time. When the client gives up on a `/compact` call (timeout,
 abort, or a mid-flight socket drop), the daemon may have finished the
 compaction anyway, so the run re-reads the session's latest persisted summary
-from the project DB — accepting only summaries persisted after the call
-started, so a stale one from an earlier run or hook is not mistaken for the
-in-flight call's result. If a fresh summary is found, the chain continues
+from the project DB — accepting only summaries persisted no earlier than the
+second the call started (`created_at` has whole-second precision), so a stale
+one from an earlier run or hook is not mistaken for the in-flight call's
+result. If a fresh summary is found, the chain continues
 through it and the session is recorded as `compacted` in the ledger despite
 the failed HTTP call. If nothing new was persisted, the previous chain link is
 kept and the session is skipped (retried by the next run). Only a
