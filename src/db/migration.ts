@@ -562,6 +562,19 @@ export function runLcmMigrations(
     );
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS llm_usage_stats (
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      calls_total INTEGER NOT NULL DEFAULT 0,
+      calls_ok INTEGER NOT NULL DEFAULT 0,
+      calls_failed INTEGER NOT NULL DEFAULT 0,
+      tokens_spent_total INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (provider, model)
+    );
+  `);
+
   // Recall surfacing log — tracks when promoted memories are shown in user-prompt context
   db.exec(`
     CREATE TABLE IF NOT EXISTS recall_surfacing (
