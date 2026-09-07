@@ -14,7 +14,7 @@ const TIMEOUT_MS = 120_000;
 const STDERR_ERROR_MAX_CHARS = 2_000;
 
 // The Codex CLI writes a config banner to stderr before any useful output:
-//   OpenAI Codex v0.153.4
+//   OpenAI Codex <version>
 //   --------
 //   workdir: <path>
 //   model: <model>
