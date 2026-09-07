@@ -8,6 +8,10 @@
 set -euo pipefail
 
 db="$1"; cid="$2"; out="$3"
+if ! [[ "$cid" =~ ^[0-9]+$ ]]; then
+  echo "conversation_id must be a plain integer, got: $cid" >&2
+  exit 1
+fi
 mkdir -p "$(dirname "$out")"
 sqlite3 -json "file:${db}?immutable=1" \
   "select seq, role, content, token_count as tokenCount, created_at as createdAt

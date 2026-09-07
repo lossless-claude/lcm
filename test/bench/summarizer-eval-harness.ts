@@ -287,7 +287,14 @@ export type EvalRunResult = {
 };
 
 
-/** Exactly the engine config the daemon's /compact route uses. */
+/**
+ * The daemon's /compact engine config, with two deliberate deviations:
+ *  - leafTargetTokens is the hardcoded default (1000) rather than the live
+ *    `config.compaction.leafTokens`, so a bench run is reproducible across
+ *    machines regardless of the operator's local config.json.
+ *  - no scrubber: stored messages were scrubbed at ingest, and the corpus
+ *    export copies stored content verbatim, so there is nothing left to scrub.
+ */
 function prodEngineConfig() {
   return {
     contextThreshold: 0.75,
@@ -299,8 +306,6 @@ function prodEngineConfig() {
     leafTargetTokens: 1000,
     condensedTargetTokens: 900,
     maxRounds: 10,
-    // No scrubber: stored messages were scrubbed at ingest, and the corpus
-    // export copies stored content verbatim.
   };
 }
 

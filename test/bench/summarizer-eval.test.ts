@@ -68,10 +68,27 @@ describe("summarizer eval harness (offline)", () => {
 //   LCM_EVAL_REASONING_EFFORT  shorthand for LCM_EVAL_REASONING={"effort":"<value>"}
 //   LCM_EVAL_DISABLE_THINKING  http providers: "1" sends chat_template_kwargs.enable_thinking=false (Qwen-style servers)
 
+const EVAL_PROVIDERS: readonly EvalProvider[] = ["openrouter", "openai", "claude-process"];
+
+function parseProvider(value: string | undefined): EvalProvider {
+  if (value === undefined) return "openrouter";
+  if ((EVAL_PROVIDERS as readonly string[]).includes(value)) return value as EvalProvider;
+  throw new Error(`LCM_EVAL_PROVIDER must be one of ${EVAL_PROVIDERS.join(", ")}, got: ${value}`);
+}
+
+function parseRuns(value: string | undefined): number {
+  if (value === undefined) return 1;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(`LCM_EVAL_RUNS must be a positive integer, got: ${value}`);
+  }
+  return n;
+}
+
 const model = process.env.LCM_EVAL_MODEL;
 const corpusDir = process.env.LCM_EVAL_CORPUS_DIR;
-const provider = (process.env.LCM_EVAL_PROVIDER ?? "openrouter") as EvalProvider;
-const runs = Number(process.env.LCM_EVAL_RUNS ?? "1");
+const provider = parseProvider(process.env.LCM_EVAL_PROVIDER);
+const runs = parseRuns(process.env.LCM_EVAL_RUNS);
 const only = process.env.LCM_EVAL_SESSIONS?.split(",").map((s) => s.trim()).filter(Boolean);
 
 const reasoning =
