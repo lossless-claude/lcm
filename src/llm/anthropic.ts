@@ -4,6 +4,7 @@ import {
   buildLeafSummaryPrompt,
   buildCondensedSummaryPrompt,
   resolveTargetTokens,
+  resolveMaxOutputTokens,
 } from "../summarize.js";
 import type { LcmSummarizeFn, SummarizeContext } from "./types.js";
 
@@ -44,7 +45,7 @@ export function createAnthropicSummarizer(opts: SummarizerOptions): LcmSummarize
       try {
         const response = await client.messages.create({
           model: opts.model,
-          max_tokens: 1024,
+          max_tokens: resolveMaxOutputTokens(targetTokens),
           system: ctx.taskPrompt ?? LCM_SUMMARIZER_SYSTEM_PROMPT,
           messages: [{ role: "user", content: prompt }],
         });
@@ -55,7 +56,7 @@ export function createAnthropicSummarizer(opts: SummarizerOptions): LcmSummarize
           // Single retry on empty response
           const retry = await client.messages.create({
             model: opts.model,
-            max_tokens: 1024,
+            max_tokens: resolveMaxOutputTokens(targetTokens),
             system: ctx.taskPrompt ?? LCM_SUMMARIZER_SYSTEM_PROMPT,
             messages: [{ role: "user", content: prompt }],
           });

@@ -5,6 +5,7 @@ import {
   buildLeafSummaryPrompt,
   buildCondensedSummaryPrompt,
   resolveTargetTokens,
+  resolveMaxOutputTokens,
 } from "../summarize.js";
 
 type OpenAISummarizerOptions = {
@@ -50,7 +51,7 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
       try {
         const response = await client.chat.completions.create({
           model: opts.model,
-          max_tokens: 1024,
+          max_tokens: resolveMaxOutputTokens(targetTokens),
           // Merge system content into user message for compatibility with local
           // servers (e.g. MLX/llama.cpp) that don't support role:"system".
           messages: [
