@@ -204,6 +204,18 @@ describe("createCompactHandler — summarizer branching", () => {
     expect(createAnthropicSummarizer).not.toHaveBeenCalled();
   });
 
+  it("passes llm.reasoning through to createOpenAISummarizer", async () => {
+    vi.clearAllMocks();
+    const config = makeConfig("openai");
+    (config.llm as any).reasoning = { effort: "minimal" };
+    const handler = createCompactHandler(config);
+    const { res } = mockRes();
+    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd }));
+    expect(createOpenAISummarizer).toHaveBeenCalledWith(
+      expect.objectContaining({ reasoning: { effort: "minimal" } })
+    );
+  });
+
   it("returns no-op when provider is 'disabled' — no summarizer created", async () => {
     vi.clearAllMocks();
     const handler = createCompactHandler(makeConfig("disabled"));

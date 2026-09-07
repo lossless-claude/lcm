@@ -39,6 +39,7 @@ export async function createSummarizer(
       model: config.llm.model,
       baseURL: config.llm.baseURL,
       apiKey: config.llm.apiKey,
+      reasoning: config.llm.reasoning,
     });
   }
   // anthropic

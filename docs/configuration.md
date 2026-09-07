@@ -173,6 +173,21 @@ Valid provider values are:
 - `openai`
 - `disabled`
 
+### Reasoning parameter
+
+The `openai` provider sends `llm.reasoning` verbatim with each chat completion
+request, for models that reason by default and would otherwise spend the whole
+output budget thinking:
+
+```json
+{ "llm": { "provider": "openai", "reasoning": { "effort": "minimal" } } }
+```
+
+The accepted shape depends on the provider: GLM 5.3 Flash honours
+`{"effort":"minimal"}` and rejects `{"enabled":false}`; Qwen3.7 Flash honours only
+`{"enabled":false}`; Mercury 2.5 honours `effort`. When unset, no `reasoning` key
+is sent.
+
 ### Token cost reporting
 
 Every process-backed provider reports its usage in a normalized shape, stored in
