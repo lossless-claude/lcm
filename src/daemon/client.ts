@@ -99,15 +99,27 @@ export class DaemonClient {
           res.on("data", (chunk) => chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk));
           res.on("end", () => {
             if (settled) return;
-            settled = true;
             const text = Buffer.concat(chunks).toString("utf-8");
+            const status = res.statusCode ?? 0;
             let parsed: unknown;
             try {
               parsed = text ? JSON.parse(text) : {};
-            } catch {
+            } catch (parseErr) {
+              if (status >= 200 && status < 300) {
+                // A 2xx with unparseable JSON is a daemon/proxy bug, not a
+                // valid success payload -- reject rather than silently
+                // resolving a fake `{ error }` object mistyped as T.
+                settled = true;
+                const message = parseErr instanceof Error ? parseErr.message : String(parseErr);
+                reject(new Error(`Invalid JSON in response body (status ${status}): ${message}`));
+                return;
+              }
+              // Non-2xx responses legitimately may carry a non-JSON error
+              // body (plain text, HTML error page, etc.) -- fall back to an
+              // error envelope built from the raw text.
               parsed = { error: text || res.statusMessage };
             }
-            const status = res.statusCode ?? 0;
+            settled = true;
             if (status < 200 || status >= 300) {
               const errBody = (parsed ?? {}) as Record<string, unknown>;
               const e = new Error(
