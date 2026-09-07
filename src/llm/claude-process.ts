@@ -15,7 +15,7 @@ let cachedEmptyPluginDir: string | undefined;
 
 /**
  * An existing empty directory: `--plugin-dir` rejects a missing path. It is
- * private to this process (mkdtemp, mode 0700) so no other local user can
+ * private to this process (mkdtemp; on POSIX, mode 0700) so no other local user can
  * pre-create a same-named path and plant plugins in it. The cache is assigned
  * only after creation succeeds.
  */
