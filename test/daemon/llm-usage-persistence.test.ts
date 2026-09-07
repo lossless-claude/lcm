@@ -20,6 +20,7 @@ function usage(overrides: Partial<CompactLlmUsage> = {}): CompactLlmUsage {
     tokensInput: 30592,
     tokensCached: 7040,
     tokensOutput: 5,
+    callsWithCost: 0,
     ...overrides,
   };
 }
@@ -121,6 +122,7 @@ describe("llm_usage_stats persistence", () => {
         .map((c) => c.name);
       expect(columns).toEqual(expect.arrayContaining([
         "tokens_input_total", "tokens_cached_total", "tokens_output_total",
+        "cost_usd_total", "calls_with_cost",
       ]));
 
       const [row] = readRow(db);
@@ -130,12 +132,57 @@ describe("llm_usage_stats persistence", () => {
         // Historical rows have no breakdown; they backfill to zero, not to the total.
         tokens_input_total: 0,
         tokens_output_total: 0,
+        calls_with_cost: 0,
       });
+      // Cost must backfill to NULL, not 0: nobody priced those historical calls.
+      expect(row.cost_usd_total).toBeNull();
 
       // The upgraded table still accepts the new write path.
       recordCompactLlmUsage(db, usage({ tokensSpent: 1 }));
       expect(readRow(db)).toHaveLength(1);
       expect(readRow(db)[0].tokens_input_total).toBe(30592);
+    } finally {
+      db.close();
+    }
+  });
+  it("leaves cost NULL when no call reported a price", () => {
+    const db = migratedDb();
+    try {
+      recordCompactLlmUsage(db, usage());
+      const [row] = readRow(db);
+      // NULL, not 0: the calls were charged, the provider just never said how much.
+      expect(row.cost_usd_total).toBeNull();
+      expect(row.calls_with_cost).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("accumulates a reported cost across writes", () => {
+    const db = migratedDb();
+    try {
+      recordCompactLlmUsage(db, usage({ costUsd: 0.000042, callsWithCost: 1 }));
+      recordCompactLlmUsage(db, usage({ costUsd: 0.000058, callsWithCost: 1 }));
+      const [row] = readRow(db);
+      expect(row.cost_usd_total).toBeCloseTo(0.0001, 9);
+      expect(row.calls_with_cost).toBe(2);
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each([
+    ["priced first, then unpriced", [{ costUsd: 0.0002, callsWithCost: 1 }, {}]],
+    ["unpriced first, then priced", [{}, { costUsd: 0.0002, callsWithCost: 1 }]],
+  ])("preserves a known cost when an unpriced write lands (%s)", (_label, writes) => {
+    const db = migratedDb();
+    try {
+      for (const w of writes) recordCompactLlmUsage(db, usage(w));
+      const [row] = readRow(db);
+      // An unpriced batch must neither erase the total nor inflate the coverage.
+      expect(row.cost_usd_total).toBeCloseTo(0.0002, 9);
+      expect(row.calls_with_cost).toBe(1);
+      expect(row.calls_total).toBe(2);
     } finally {
       db.close();
     }

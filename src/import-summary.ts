@@ -1,6 +1,15 @@
 import type { ImportResult } from "./import.js";
 import { formatNumber, formatRatio } from "./stats.js";
 
+/**
+ * Summarizer calls cost fractions of a cent, so two decimals would print a real
+ * charge as "$0.00" — the same "absent reads as free" bug this figure exists to
+ * kill. Sub-dollar amounts keep six decimals.
+ */
+function formatUsd(n: number): string {
+  return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(6)}`;
+}
+
 export function printImportSummary(
   result: ImportResult,
   opts: { replay?: boolean } = {},
@@ -61,6 +70,14 @@ export function printImportSummary(
         `${formatNumber(result.replayUsage.tokensOutput)} out`,
       ],
       ["Avg per session", formatNumber(avgPerSession)],
+      [
+        "Cost",
+        // Zero priced calls means nobody reported a price, which is unknown —
+        // printing $0.00 here would claim the run was free.
+        result.replayUsage.callsWithCost > 0 && result.replayUsage.costUsd !== undefined
+          ? `${formatUsd(result.replayUsage.costUsd)} (${result.replayUsage.callsWithCost} of ${result.replayUsage.calls} calls priced)`
+          : `unknown (0 of ${result.replayUsage.calls} calls priced)`,
+      ],
     ];
     const labelWidth = Math.max(...rows.map(([l]) => l.length));
     console.log(`  ${border}`);

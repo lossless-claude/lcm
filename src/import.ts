@@ -66,6 +66,8 @@ export interface ImportResult {
     tokensInput: number;
     tokensCached: number;
     tokensOutput: number;
+    costUsd?: number;
+    callsWithCost: number;
   };
 }
 
@@ -205,6 +207,8 @@ type CompactLlmUsage = {
   tokensInput: number;
   tokensCached: number;
   tokensOutput: number;
+  costUsd?: number;
+  callsWithCost: number;
 };
 
 function accumulateReplayUsage(result: ImportResult, usage: CompactLlmUsage | undefined): void {
@@ -228,6 +232,11 @@ function accumulateReplayUsage(result: ImportResult, usage: CompactLlmUsage | un
   result.replayUsage.tokensInput += usage.tokensInput;
   result.replayUsage.tokensCached += usage.tokensCached;
   result.replayUsage.tokensOutput += usage.tokensOutput;
+  // Absent stays absent: only a reported price contributes to the total.
+  if (usage.costUsd !== undefined) {
+    result.replayUsage.costUsd = (result.replayUsage.costUsd ?? 0) + usage.costUsd;
+  }
+  result.replayUsage.callsWithCost += usage.callsWithCost;
 }
 
 /**
