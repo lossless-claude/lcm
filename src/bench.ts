@@ -11,6 +11,9 @@ import { SummaryStore } from "./store/summary-store.js";
 import { PromotedStore } from "./db/promoted.js";
 import { RetrievalEngine } from "./retrieval.js";
 import { extractQueryTerms } from "./store/fts5-query.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { prepareRgCorpus, searchRg, type GrepDocument, type PreparedRgCorpus } from "./bench/rg-baseline.js";
 
 /**
  * Layer 2 recall benchmark (issue #309): build and run a natural-language
@@ -344,6 +347,36 @@ function grepSessionIds(db: DatabaseSync, question: string): string[] {
   return rows.map((r) => r.session_id);
 }
 
+const SQL_BASELINE = "OR over parsed SQLite messages, ranked by matching message count";
+const RG_BASELINE = "ripgrep over the same retained messages, summaries and promoted memories, ranked by matched terms then occurrences";
+
+type RgBaseline = { corpus: PreparedRgCorpus; sessionOf: Map<string, string> };
+
+/** Same retained rows the native search can hit, written verbatim for a real ripgrep run. */
+async function buildRgBaseline(db: DatabaseSync, pid: string, directory: string): Promise<RgBaseline> {
+  const rows = [
+    ...(db.prepare("SELECT 'm:' || m.message_id AS id, m.content AS text, c.session_id AS session_id FROM messages m JOIN conversations c ON c.conversation_id = m.conversation_id").all() as Array<{ id: string; text: string; session_id: string | null }>),
+    ...(db.prepare("SELECT 's:' || s.summary_id AS id, s.content AS text, c.session_id AS session_id FROM summaries s JOIN conversations c ON c.conversation_id = s.conversation_id").all() as Array<{ id: string; text: string; session_id: string | null }>),
+    ...(db.prepare("SELECT 'p:' || id AS id, content AS text, session_id FROM promoted WHERE project_id = ?").all(pid) as Array<{ id: string; text: string; session_id: string | null }>),
+  ];
+  const documents: GrepDocument[] = rows.map((r) => ({ id: r.id, text: r.text }));
+  const sessionOf = new Map(rows.filter((r) => r.session_id).map((r) => [r.id, r.session_id as string]));
+  return { corpus: await prepareRgCorpus(documents, directory), sessionOf };
+}
+
+async function rgSessionIds(baseline: RgBaseline, question: string, k: number): Promise<string[]> {
+  const terms = extractQueryTerms(question);
+  if (terms.length === 0) return [];
+  const { hits } = await searchRg(baseline.corpus, terms, Number.MAX_SAFE_INTEGER);
+  const sessionIds: string[] = [];
+  for (const hit of hits) {
+    const sid = baseline.sessionOf.get(hit.id);
+    if (sid && !sessionIds.includes(sid)) sessionIds.push(sid);
+    if (sessionIds.length >= k) break;
+  }
+  return sessionIds;
+}
+
 export async function runBench(opts: BenchOptions): Promise<BenchResult> {
   const k = opts.k ?? 5;
   if (!Number.isInteger(k) || k < 1) return { out: "", exitCode: 1, stdout: "Recall cutoff must be a positive integer.\n" };
@@ -374,12 +407,24 @@ export async function runBench(opts: BenchOptions): Promise<BenchResult> {
 
   // Migrations may backfill on first open, so this handle is read-write.
   const db = getLcmConnection(dbPath);
+  // Conversation text is copied here only for the duration of the run.
+  const rgDir = await mkdtemp(join(tmpdir(), "lcm-bench-rg-"));
   try {
     runLcmMigrations(db);
     const convStore = new ConversationStore(db);
     const engine = new RetrievalEngine(convStore, new SummaryStore(db));
     const promotedStore = new PromotedStore(db);
     const pid = projectId(opts.cwd);
+
+    let rgBaseline: RgBaseline | undefined;
+    let baselineWarning: string | undefined;
+    try {
+      rgBaseline = await buildRgBaseline(db, pid, rgDir);
+      await searchRg(rgBaseline.corpus, ["lcm"], 1);
+    } catch (error) {
+      rgBaseline = undefined;
+      baselineWarning = `ripgrep baseline unavailable (${error instanceof Error ? error.message : String(error)}); grep column uses the SQLite LIKE fallback.`;
+    }
 
     const outcomes: QueryOutcome[] = [];
     for (const q of bench.queries) {
@@ -407,7 +452,8 @@ export async function runBench(opts: BenchOptions): Promise<BenchResult> {
 
       const empty = sessionIds.length === 0;
       const searchHit = sessionIds.slice(0, k).includes(q.sessionId);
-      const grepHit = grepSessionIds(db, q.question).slice(0, k).includes(q.sessionId);
+      const grepTopK = rgBaseline ? await rgSessionIds(rgBaseline, q.question, k) : grepSessionIds(db, q.question).slice(0, k);
+      const grepHit = grepTopK.includes(q.sessionId);
       outcomes.push({
         id: q.id,
         question: q.question,
@@ -432,8 +478,11 @@ export async function runBench(opts: BenchOptions): Promise<BenchResult> {
     const report = {
       file,
       metric: "single-source hit rate",
-      baseline: "OR over parsed SQLite messages, ranked by matching message count",
-      warnings: bench.queries.some((q) => q.generator !== "llm" && q.generator !== "manual") ? ["Mechanical or unverified questions: diagnostic score, not release evidence."] : [],
+      baseline: rgBaseline ? RG_BASELINE : SQL_BASELINE,
+      warnings: [
+        ...(bench.queries.some((q) => q.generator !== "llm" && q.generator !== "manual") ? ["Mechanical or unverified questions: diagnostic score, not release evidence."] : []),
+        ...(baselineWarning ? [baselineWarning] : []),
+      ],
       total,
       k,
       searchRecall,
@@ -471,5 +520,6 @@ export async function runBench(opts: BenchOptions): Promise<BenchResult> {
     return { out: resultsPath, exitCode: 0, stdout: lines.join("\n") };
   } finally {
     closeLcmConnection(dbPath);
+    await rm(rgDir, { recursive: true, force: true });
   }
 }
