@@ -42,7 +42,7 @@ test/bench/export-eval-session.sh \
 `<project-id>` is the sha256 of the project's canonicalized working directory (`projectId` in `src/daemon/project.ts`). To find the one for a given project:
 
 ```bash
-node -e 'import("./dist/src/daemon/project.js").then(p => console.log(p.projectDbPath(process.argv[1])))' /path/to/project
+npm run build && node -e 'import("./dist/src/daemon/project.js").then(p => console.log(p.projectDbPath(process.argv[1])))' /path/to/project
 ```
 
 The database is opened read-only through the immutable URI — the only form that opens these WAL databases without taking a lock, so it is safe to run against a live install. A conversation id that matches no messages fails rather than leaving an empty file behind.
