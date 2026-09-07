@@ -90,7 +90,7 @@ describe.skipIf(!model || !corpusDir)(`summarizer eval: ${model} via ${provider}
           : "";
         console.log(
           `${session.label} run ${run}: calls=${result.totals.calls} failed=${result.totals.failedCalls}` +
-            ` format=${result.totals.formatPass}/${result.totals.formatTotal}` +
+            ` format=${result.totals.formatPass}/${result.totals.formatTotal} maxTokensHits=${result.totals.maxTokensHits}` +
             ` tokens=${result.tokensBefore}->${result.tokensAfter} latency=${result.totals.latencyMs}ms` +
             `${facts}${result.incomplete ? " INCOMPLETE" : ""} -> ${file}`,
         );
