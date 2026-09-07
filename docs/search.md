@@ -29,6 +29,17 @@ break relevance ties. Regex lookup remains newest-first. The search response sti
 message matches before summary matches; it does not yet rank the two sources jointly or
 guarantee that five results represent five different sessions.
 
+Native `search` expands each selected episodic result around its FTS match into at most 1,000
+UTF-16 characters of exact retained source text. Results include `span.start`, `span.end`,
+`sourceHash` (SHA-256 of the complete retained text), and `snippetTruncated`. Spans describe
+positions in that source revision; astral Unicode characters are not split at excerpt edges.
+Short sources are returned whole. This adds readable context without changing result ranking.
+`grep` keeps its compact snippets, and promoted memories retain their existing response format.
+
+An episodic search uses one SQLite read snapshot for matching and source context. With the default
+limit of five, episodic snippet text is bounded at 5,000 characters; metadata and promoted-memory
+content are additional. This is a character cap, not a model-token budget or proof of answer support.
+
 Single-word matches and BM25 relevance come from FTS5; see [fts5.md](./fts5.md) if your Node
 runtime lacks FTS5 (search then falls back to LIKE over the same prepared terms).
 

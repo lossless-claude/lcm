@@ -35,6 +35,10 @@ Summaries are lossy by design. The "Expand for details about:" footer at the end
 
 Hybrid search across episodic memory (SQLite FTS5) and semantic memory. Returns two separate ranked lists. Use when looking for project knowledge spanning multiple sessions.
 
+Native episodic matches contain up to 1,000 characters of exact source context, plus `span`,
+`sourceHash`, and `snippetTruncated`. These locate the excerpt in the retained source revision;
+they do not assert that the excerpt answers the question. Promoted memory output is unchanged.
+
 **Parameters:**
 
 | Param | Type | Required | Default | Description |

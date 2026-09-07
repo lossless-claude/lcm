@@ -1,0 +1,77 @@
+import { DatabaseSync } from "node:sqlite";
+import { createHash } from "node:crypto";
+import { beforeEach, afterEach, expect, it } from "vitest";
+import { runLcmMigrations } from "../../src/db/migration.js";
+import { ConversationStore } from "../../src/store/conversation-store.js";
+import { SummaryStore } from "../../src/store/summary-store.js";
+import { searchNativeHistory } from "../../src/search/native-history.js";
+
+let db: DatabaseSync;
+let messages: ConversationStore;
+let summaries: SummaryStore;
+beforeEach(async () => {
+  db = new DatabaseSync(":memory:");
+  runLcmMigrations(db);
+  messages = new ConversationStore(db);
+  summaries = new SummaryStore(db);
+  await messages.createConversation({ sessionId: "native-context" });
+});
+afterEach(() => db.close());
+
+async function seed(content: string) {
+  return messages.createMessage({ conversationId: 1, seq: 1, role: "assistant", content, tokenCount: 50 });
+}
+
+it("returns the explanation beyond the short FTS snippet near a late match", async () => {
+  const reason = "Retrying with bounded exponential backoff resolved the outage.";
+  const content = "Unrelated history. ".repeat(200) + "Saffron failed. " + "Diagnostic detail. ".repeat(20) + reason;
+  const source = await seed(content);
+  const short = await messages.searchMessages({ query: "Saffron", mode: "full_text" });
+  expect(short[0].snippet).not.toContain(reason);
+  const [hit] = await searchNativeHistory(db, { query: "Saffron", limit: 5 });
+  expect(hit).toMatchObject({ messageId: source.messageId, snippetTruncated: true });
+  expect(hit.snippet).toContain(reason);
+  expect(hit.snippet.length).toBeLessThanOrEqual(1000);
+  expect(hit.span.start).toBeGreaterThan(0);
+  expect(hit.snippet).toBe(content.slice(hit.span.start, hit.span.end));
+  expect(hit.sourceHash).toBe(createHash("sha256").update(content).digest("hex"));
+});
+
+it("preserves complete short sources and message-before-summary ordering", async () => {
+  const content = "Saffron recovered after a retry.";
+  const message = await seed(content);
+  await summaries.insertSummary({ summaryId: "summary", conversationId: 1, kind: "leaf", content, tokenCount: 10 });
+  const hits = await searchNativeHistory(db, { query: "Saffron", limit: 5 });
+  expect(hits).toHaveLength(2);
+  expect(hits[0]).toMatchObject({ messageId: message.messageId, snippet: content, snippetTruncated: false });
+  expect(hits[1]).toMatchObject({ summaryId: "summary", snippet: content });
+  expect(await searchNativeHistory(db, { query: "Saffron", limit: 1 })).toHaveLength(1);
+  expect(await searchNativeHistory(db, { query: "Saffron", limit: 0 })).toEqual([]);
+});
+
+it("keeps Unicode text intact at bounded snippet edges", async () => {
+  const content = "🌿".repeat(800) + " Saffron " + "🌿".repeat(800);
+  await seed(content);
+  const [hit] = await searchNativeHistory(db, { query: "Saffron", limit: 1 });
+  expect(hit.snippet).toContain("Saffron");
+  expect(hit.snippet).not.toMatch(/\p{Surrogate}/u);
+  expect(hit.snippet).toBe(content.slice(hit.span.start, hit.span.end));
+  expect(hit.snippet.length).toBeLessThanOrEqual(1000);
+});
+
+it("preserves the caller's transaction and does not change source records", async () => {
+  db.exec("BEGIN");
+  await seed("Saffron decision.");
+  expect(await searchNativeHistory(db, { query: "Saffron", limit: 1 })).toHaveLength(1);
+  db.exec("ROLLBACK");
+  expect(await messages.getMessageCount(1)).toBe(0);
+});
+
+it("keeps source context available when FTS is unavailable", async () => {
+  const content = "Earlier context. ".repeat(100) + "Saffron recovered because retries were bounded.";
+  await seed(content);
+  db.exec("DROP TABLE messages_fts; DROP TABLE summaries_fts");
+  const [hit] = await searchNativeHistory(db, { query: "Saffron", limit: 1 });
+  expect(hit.snippet).toContain("recovered because retries were bounded");
+  expect(hit.snippet).toBe(content.slice(hit.span.start, hit.span.end));
+});
