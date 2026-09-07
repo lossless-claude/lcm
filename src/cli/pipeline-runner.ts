@@ -43,9 +43,10 @@ export class NinjaRenderer {
   }
 
   /**
-   * Mark an in-flight unit of work (e.g. a /compact request). Signal handlers
-   * wait for in-flight work to finish before exiting, so a killed run never
+   * Mark an in-flight unit of work (e.g. a /compact request). The first signal
+   * waits for in-flight work to finish before exiting, so a killed run never
    * leaves a session half-recorded — resume either sees it done or redoes it.
+   * A second signal exits at once, so a hung request can still be interrupted.
    * Returns a release function; call it when the work settles.
    */
   trackInFlight(): () => void {
@@ -73,7 +74,12 @@ export class NinjaRenderer {
   }
 
   private _onSignal(code: number): void {
-    if (this.signalReceived) return; // second signal: keep waiting for the drain
+    if (this.signalReceived) {
+      // Second signal: stop waiting for the drain and exit now.
+      this.stop();
+      process.exit(code);
+      return;
+    }
     this.signalReceived = { code };
     this.state.aborted = true;
     void this._waitForInFlight().then(() => {
@@ -95,6 +101,7 @@ export class NinjaRenderer {
 
     // SIGINT/SIGTERM: let in-flight work finish (or be marked incomplete)
     // before exiting, so a resumed run doesn't duplicate or skip it.
+    // A repeated signal exits immediately.
     this.sigintHandler = () => this._onSignal(130);
     process.on('SIGINT', this.sigintHandler);
     this.sigtermHandler = () => this._onSignal(143);

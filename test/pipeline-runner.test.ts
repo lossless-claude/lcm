@@ -56,6 +56,26 @@ describe("NinjaRenderer signal handling", () => {
     renderer.stop();
   });
 
+  it("a second SIGINT exits immediately without waiting for in-flight work", async () => {
+    const renderer = makeRenderer();
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    renderer.start();
+
+    const release = renderer.trackInFlight();
+
+    process.emit("SIGINT");
+    await new Promise((r) => setImmediate(r));
+    expect(exitSpy).not.toHaveBeenCalled();
+
+    // The work is hung; a second signal must not wait for it
+    process.emit("SIGINT");
+    expect(exitSpy).toHaveBeenCalledWith(130);
+
+    release();
+    renderer.stop();
+  });
+
   it("SIGTERM exits with 143 after in-flight work drains", async () => {
     const renderer = makeRenderer();
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {}) as never);

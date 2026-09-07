@@ -146,7 +146,7 @@ const HELP: Record<string, CommandHelp> = {
       ["--all", "Compact all tracked projects (default: current project only)"],
       ["--dry-run", "Show what would be compacted without writing anything"],
       ["--replay", "Compact sequentially, threading each summary through the prior context (resumes where the last run stopped)"],
-      ["--restart", "With --replay: discard recorded progress and start from scratch"],
+      ["--restart", "With --replay: discard recorded progress and all summaries in the conversations the run touches, then start from scratch"],
       ["--no-promote", "Skip the automatic promote step that runs after compaction"],
     ],
     examples: [
@@ -167,7 +167,7 @@ const HELP: Record<string, CommandHelp> = {
       ["--verbose", "Show per-session import detail"],
       ["--dry-run", "Preview without importing"],
       ["--replay", "Replay compaction for each imported session (resumes where the last run stopped)"],
-      ["--restart", "With --replay: discard recorded progress and start from scratch"],
+      ["--restart", "With --replay: discard recorded progress and all summaries in the conversations the run touches, then start from scratch"],
     ],
     examples: [
       ["lcm import", "Import current Claude Code project sessions"],
