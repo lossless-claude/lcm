@@ -746,9 +746,8 @@ export class SummaryStore {
       ? [prepared.and, prepared.or]
       : [prepared.and];
 
-    for (const [index, expression] of expressions.entries()) {
-      const ranked = index > 0;
-      const rows = this.runFullTextMatch(expression, limit, ranked, conversationId, since, before);
+    for (const expression of expressions) {
+      const rows = this.runFullTextMatch(expression, limit, conversationId, since, before);
       if (rows.length > 0) {
         return rows;
       }
@@ -763,7 +762,6 @@ export class SummaryStore {
   private runFullTextMatch(
     ftsExpression: string,
     limit: number,
-    ranked: boolean,
     conversationId?: number,
     since?: Date,
     before?: Date,
@@ -784,7 +782,6 @@ export class SummaryStore {
     }
     args.push(limit);
 
-    const orderBy = ranked ? "rank, s.created_at DESC" : "s.created_at DESC";
     const sql = `SELECT
          summaries_fts.summary_id,
          s.conversation_id,
@@ -795,7 +792,7 @@ export class SummaryStore {
        FROM summaries_fts
        JOIN summaries s ON s.summary_id = summaries_fts.summary_id
        WHERE ${where.join(" AND ")}
-       ORDER BY ${orderBy}
+       ORDER BY rank, s.created_at DESC
        LIMIT ?`;
     const rows = this.db.prepare(sql).all(...args) as unknown as SummarySearchRow[];
     return rows.map(toSearchResult);

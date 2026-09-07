@@ -23,6 +23,12 @@ multi-word query, so an eight-word question requires all eight words to co-occur
 Single-keyword queries (`lcm search worktrees`) keep strict semantics — no LIKE fallback for a
 one-term lookup.
 
+Full-text matches are ordered by BM25 relevance within each source (messages or summaries),
+including AND and single-keyword queries, before candidate limits are applied. Newer matches
+break relevance ties. Regex lookup remains newest-first. The search response still lists
+message matches before summary matches; it does not yet rank the two sources jointly or
+guarantee that five results represent five different sessions.
+
 Single-word matches and BM25 relevance come from FTS5; see [fts5.md](./fts5.md) if your Node
 runtime lacks FTS5 (search then falls back to LIKE over the same prepared terms).
 
