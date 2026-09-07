@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { parseSqliteDate } from "../db/sqlite-date.js";
 import { randomUUID } from "node:crypto";
 import {
   prepareFts5Query,
@@ -162,9 +163,9 @@ function toConversationRecord(row: ConversationRow): ConversationRecord {
     conversationId: row.conversation_id,
     sessionId: row.session_id,
     title: row.title,
-    bootstrappedAt: row.bootstrapped_at ? new Date(row.bootstrapped_at) : null,
-    createdAt: new Date(row.created_at),
-    updatedAt: new Date(row.updated_at),
+    bootstrappedAt: row.bootstrapped_at ? parseSqliteDate(row.bootstrapped_at) : null,
+    createdAt: parseSqliteDate(row.created_at),
+    updatedAt: parseSqliteDate(row.updated_at),
   };
 }
 
@@ -176,7 +177,7 @@ function toMessageRecord(row: MessageRow): MessageRecord {
     role: row.role,
     content: row.content,
     tokenCount: row.token_count,
-    createdAt: new Date(row.created_at),
+    createdAt: parseSqliteDate(row.created_at),
   };
 }
 
@@ -186,7 +187,7 @@ function toSearchResult(row: MessageSearchRow): MessageSearchResult {
     conversationId: row.conversation_id,
     role: row.role,
     snippet: row.snippet,
-    createdAt: new Date(row.created_at),
+    createdAt: parseSqliteDate(row.created_at),
     rank: row.rank,
   };
 }
@@ -737,7 +738,7 @@ export class ConversationStore {
       conversationId: row.conversation_id,
       role: row.role,
       snippet: createFallbackSnippet(row.content, plan.terms),
-      createdAt: new Date(row.created_at),
+      createdAt: parseSqliteDate(row.created_at),
       rank: 0,
     }));
   }
@@ -786,7 +787,7 @@ export class ConversationStore {
       conversationId: row.conversation_id,
       role: row.role,
       snippet: createFallbackSnippet(row.content, plan.terms),
-      createdAt: new Date(row.created_at),
+      createdAt: parseSqliteDate(row.created_at),
       rank: 0,
     }));
   }
@@ -837,7 +838,7 @@ export class ConversationStore {
           conversationId: row.conversation_id,
           role: row.role,
           snippet: match[0],
-          createdAt: new Date(row.created_at),
+          createdAt: parseSqliteDate(row.created_at),
           rank: 0,
         });
       }
