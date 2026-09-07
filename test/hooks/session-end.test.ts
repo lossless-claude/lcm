@@ -217,7 +217,7 @@ describe("handleSessionEnd", () => {
     for (const path of paths) {
       const calls = httpReqMock.mock.calls.filter((args: any[]) => args[0]?.path === path);
       expect(calls.length, `expected a request to ${path}`).toBeGreaterThan(0);
-      const expected = "Bearer " + readAuthToken("/nonexistent");
+      const expected = "Bearer test-token-abc";
       for (const call of calls) {
         expect(call[0]?.headers?.Authorization).toBe(expected);
       }
