@@ -22,9 +22,9 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * OpenRouter is the only OpenAI-compatible endpoint that prices a call and
- * reports the real charge, and only when the request asks for accounting.
- * Plain servers reject unknown top-level fields, so the flag is host-scoped.
+ * Every provider charges; OpenRouter is the only OpenAI-compatible endpoint
+ * that REPORTS the charge back (`usage.cost`), and only when the request opts
+ * in. Plain servers reject unknown top-level fields, so the flag is host-scoped.
  */
 function isOpenRouter(baseURL: string): boolean {
   try {

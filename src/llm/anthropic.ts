@@ -25,7 +25,8 @@ function sleep(ms: number): Promise<void> {
  * Anthropic reports `input_tokens` as the UNCACHED portion only, with cache
  * reads and writes counted separately. The normalized `inputTokens` is the
  * full prompt, so the three are summed and `cache_read` is the cached subset.
- * The API prices nothing, so `costUsd` stays absent — meaning unknown.
+ * The API returns no cost figure, so `costUsd` stays absent — meaning
+ * unknown, not free: the call is still charged.
  */
 function toUsage(response: any, fallbackModel: string): SummarizerUsage | undefined {
   const usage = response?.usage;

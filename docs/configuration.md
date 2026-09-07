@@ -206,9 +206,10 @@ Every provider reports its usage in a normalized shape, stored in
 | `openai` | yes | when the server reports it | yes | real charged cost, OpenRouter only |
 | `anthropic` | yes | yes | yes | — |
 
-A missing cost means *unknown*, never *free*: only the Claude CLI and OpenRouter
-price a call. Against an OpenRouter base URL the `openai` provider asks for cost
-accounting explicitly, because OpenRouter omits the charge otherwise.
+Every provider charges; only the Claude CLI and OpenRouter report the charge
+back as a number. A missing cost therefore means *unknown*, never *free*.
+Against an OpenRouter base URL the `openai` provider asks for cost accounting
+explicitly, because OpenRouter omits the figure otherwise.
 
 `inputTokens` always counts the full prompt, with `cachedInputTokens` as a subset
 of it, so totals are comparable across providers. The Copilot CLI only exposes
