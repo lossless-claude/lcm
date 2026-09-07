@@ -329,6 +329,36 @@ describe("replay run manifest + ledger", () => {
     }
   });
 
+  it("clearReplayState drops the other command's ledger rows for the wiped sessions", async () => {
+    const lcmDir = makeTmpDir();
+    const cwd = "/test/replay-clear-cross";
+    const dbPath = makeProjectDb(lcmDir, cwd);
+    insertSummary(dbPath, "sum-s1", "summary", "s1");
+    insertMessage(dbPath, "s1", 0, "raw message");
+
+    const sessions = [{ sessionId: "s1" }];
+    const importRun = replayRunId();
+    const compactRun = replayRunId();
+    createReplayRun({ cwd, lcmDir, command: "import", runId: importRun, sessions });
+    createReplayRun({ cwd, lcmDir, command: "compact", runId: compactRun, sessions });
+    recordReplayProgress({ cwd, lcmDir, runId: importRun, sessionId: "s1", position: 0, contentFingerprint: "a", outcome: "compacted" as const, summaryId: "sum-s1" });
+    recordReplayProgress({ cwd, lcmDir, runId: compactRun, sessionId: "s1", position: 0, contentFingerprint: "db:1:5", outcome: "compacted" as const, summaryId: "sum-s1" });
+
+    expect(await clearReplayState({ cwd, lcmDir, command: "import" })).toBe(true);
+
+    const db = new DatabaseSync(dbPath);
+    try {
+      const ledger = db.prepare("SELECT COUNT(*) AS n FROM replay_ledger").get() as { n: number };
+      const manifests = db.prepare("SELECT command FROM replay_manifest").all() as { command: string }[];
+      // The summary is gone for both commands, so neither may still claim s1 done.
+      expect(ledger.n).toBe(0);
+      // The other command keeps its manifest and re-enqueues from the gap.
+      expect(manifests.map((m) => m.command)).toEqual(["compact"]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("gracefully handles a missing project DB", async () => {
     const lcmDir = makeTmpDir();
     const plan = planReplayResume({

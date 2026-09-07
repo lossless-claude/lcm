@@ -367,25 +367,6 @@ async function ingestSessionList(
       continue;
     }
 
-    const pendingManifest = manifestForNewRun.get(cwd);
-    if (pendingManifest) {
-      // Freeze the manifest at the moment the run actually starts (a run that
-      // dies before its first session leaves no resumable state behind).
-      const runId = replayRuns.get(cwd)!;
-      createReplayRun({
-        cwd,
-        lcmDir: options._lcmDir,
-        command: "import",
-        runId,
-        sessions: pendingManifest,
-        model: options.replayModel ?? null,
-      });
-      const positions = new Map<string, number>();
-      pendingManifest.forEach((s, i) => positions.set(s.sessionId, i));
-      ledgerPositions.set(cwd, positions);
-      manifestForNewRun.delete(cwd);
-    }
-
     // Skip sessions already recorded in session_ingest_log (unless in replay mode,
     // where compaction must still run to keep the temporal chain intact).
     if (!options.replay && isSessionAlreadyIngested(cwd, sessionId, options._lcmDir)) {
@@ -427,6 +408,26 @@ async function ingestSessionList(
       // Replay: compact immediately after every session (even already-ingested ones)
       // so that re-runs are idempotent and the temporal chain stays intact.
       if (options.replay) {
+        const pendingManifest = manifestForNewRun.get(cwd);
+        if (pendingManifest) {
+          // Freeze the manifest once the first ingest has succeeded: a run that
+          // dies earlier leaves no resumable state behind, and a first-ever import
+          // has no project database until /ingest creates it.
+          const runId = replayRuns.get(cwd)!;
+          createReplayRun({
+            cwd,
+            lcmDir: options._lcmDir,
+            command: "import",
+            runId,
+            sessions: pendingManifest,
+            model: options.replayModel ?? null,
+          });
+          const positions = new Map<string, number>();
+          pendingManifest.forEach((s, i) => positions.set(s.sessionId, i));
+          ledgerPositions.set(cwd, positions);
+          manifestForNewRun.delete(cwd);
+        }
+
         try {
           const compactRes = await client.post<{
             summary?: string;

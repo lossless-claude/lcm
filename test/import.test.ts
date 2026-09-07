@@ -746,6 +746,43 @@ describe("importSessions replay resume", () => {
     expect(projDir).toBeTruthy();
   });
 
+  it("first-ever replay into a project with no database still records its manifest", async () => {
+    const cwd = "/test/resume-fresh-db";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2"]);
+    const dbPath = join(lcmDir, "projects", projectId(cwd), "db.sqlite");
+    rmSync(dbPath);
+
+    // The daemon creates the database on the first /ingest.
+    const client = makeMockClient(async (path: string) => {
+      if (path === "/ingest") {
+        const db = new DatabaseSync(dbPath);
+        runLcmMigrations(db, { fts5Available: false });
+        db.close();
+        return { ingested: 1, totalTokens: 100 };
+      }
+      if (path === "/compact") return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: "s", latestSummaryId: "sum" };
+    });
+    await importSessions(client, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+
+    const db = new DatabaseSync(dbPath);
+    try {
+      const manifest = db.prepare("SELECT COUNT(*) AS n FROM replay_manifest").get() as { n: number };
+      const ledger = db.prepare("SELECT COUNT(*) AS n FROM replay_ledger").get() as { n: number };
+      expect(manifest.n).toBe(2);
+      expect(ledger.n).toBe(2);
+    } finally {
+      db.close();
+    }
+
+    // The second run resumes instead of starting over.
+    const second = makeMockClient(async (path: string) => {
+      if (path === "/ingest") return { ingested: 0, totalTokens: 0 };
+      if (path === "/compact") return { summary: "ok", replayOutcome: "compacted" };
+    });
+    const r2 = await importSessions(second, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+    expect(r2.resumed?.doneCount).toBe(2);
+  });
+
   it("restart forces a full re-run and clears recorded progress", async () => {
     const cwd = "/test/resume-restart";
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1"]);

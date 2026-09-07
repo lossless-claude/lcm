@@ -257,7 +257,8 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
           const tokenCount = await summaryStore.getContextTokenCount(conversation.conversationId);
 
           if (tokenCount === 0) {
-            return { summary: "No messages to compact.", providerId: effectiveProvider, providerLabel };
+            // A replay ledgers this as done; otherwise every later run sees a gap here.
+            return { summary: "No messages to compact.", replayOutcome: "no_work", providerId: effectiveProvider, providerLabel };
           }
 
           let sawReportedUsageModel = false;

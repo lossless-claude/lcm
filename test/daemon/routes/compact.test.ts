@@ -313,6 +313,18 @@ describe("POST /compact", () => {
     expect(typeof body.summary).toBe("string");
   });
 
+  it("reports no_work when the conversation has nothing to compact", async () => {
+    daemon = await createDaemon(loadDaemonConfig("/x", { daemon: { port: 0 }, llm: { apiKey: "sk-test" } }));
+    const res = await fetch(`http://127.0.0.1:${daemon.address().port}/compact`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: "empty-sess", cwd: mkdtempSync(join(tmpdir(), "lossless-compact-proj-")), skip_ingest: true }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.replayOutcome).toBe("no_work");
+  });
+
   it("skips transcript ingestion when skip_ingest is true", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-compact-"));
     tempDirs.push(tempDir);

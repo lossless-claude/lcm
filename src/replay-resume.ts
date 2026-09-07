@@ -548,6 +548,8 @@ export function recordReplayProgress(opts: {
 
 /**
  * `--restart`: drop this command's replay runs and undo their compaction.
+ * Ledger rows of the other command for the same sessions are dropped as well,
+ * since the summaries they point at are gone.
  *
  * Undo is wholesale, not surgical: every summary in a touched conversation is
  * removed and its context rebuilt from messages, including summaries written
@@ -591,8 +593,11 @@ export async function clearReplayState(opts: {
 
     db.exec("BEGIN");
     try {
+      // Summaries are shared across commands, so every ledger row for a wiped
+      // session goes too, whichever command wrote it. The other command keeps
+      // its manifest and re-enqueues the suffix from the first wiped session.
       db.prepare(
-        "DELETE FROM replay_ledger WHERE run_id IN (SELECT DISTINCT run_id FROM replay_manifest WHERE command = ?)",
+        "DELETE FROM replay_ledger WHERE session_id IN (SELECT session_id FROM replay_manifest WHERE command = ?)",
       ).run(opts.command);
       db.prepare("DELETE FROM replay_manifest WHERE command = ?").run(opts.command);
       db.exec("COMMIT");

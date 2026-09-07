@@ -112,10 +112,14 @@ threading anchor: the most recently created summary of that conversation.
 A restarted run adopts the latest manifest for its command, skips ledger rows
 whose content fingerprint still matches (transcript `size` + floored `mtime`,
 or message/token counts for DB-only compactions), restores the threaded
-`previous_summary` chain from the last good row, and continues.
+`previous_summary` chain from the last good row, and continues. A session
+whose content changed is recompacted on its own; the sessions after it are
+re-enqueued but keep their existing summaries, threaded against the older
+version. `--restart` is the way to rebuild that chain.
 `--restart` discards recorded progress and **all** summaries in the
 conversations the run touched, hook-written ones included, rebuilding each
-conversation's context from its messages before starting from scratch. It
+conversation's context from its messages before starting from scratch. Ledger
+rows of the other replay command for those sessions are dropped too. It
 assumes no daemon is compacting those conversations at the same time; run it
 with the daemon idle.
 
