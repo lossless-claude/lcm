@@ -1,8 +1,8 @@
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { describe, it, expect, afterEach, beforeEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { createDaemon, type DaemonInstance } from "../../../src/daemon/server.js";
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { runLcmMigrations } from "../../../src/db/migration.js";
@@ -10,6 +10,11 @@ import { projectDbPath } from "../../../src/daemon/project.js";
 import { PromotedStore } from "../../../src/db/promoted.js";
 import { getLcmConnection, closeLcmConnection, getPoolStats } from "../../../src/db/connection.js";
 import { justCompactedMap } from "../../../src/daemon/routes/compact.js";
+
+vi.mock("node:os", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:os")>();
+  return { ...actual, homedir: vi.fn(actual.homedir) };
+});
 
 describe("POST /restore", () => {
   let daemon: DaemonInstance | undefined;
@@ -207,11 +212,10 @@ describe("POST /restore", () => {
     });
 
     it("captures a CLAUDE.md reachable by two paths only once (cwd === $HOME)", async () => {
-      // os.homedir() reads $HOME on POSIX, so pointing it at tmpDir makes tmpDir the home
-      // dir — which is the real-world case of running Claude with cwd === $HOME. Then
+      // Point homedir() at tmpDir to model running Claude with cwd === $HOME. Then
       // `~/.claude/CLAUDE.md` and `${cwd}/.claude/CLAUDE.md` are the same file.
-      const realHome = process.env.HOME;
-      process.env.HOME = tmpDir;
+      const actual = await vi.importActual<typeof import("node:os")>("node:os");
+      vi.mocked(homedir).mockReturnValue(tmpDir);
       try {
         mkdirSync(join(tmpDir, ".claude"), { recursive: true });
         writeFileSync(join(tmpDir, ".claude", "CLAUDE.md"), "Only once please.", "utf8");
@@ -235,8 +239,7 @@ describe("POST /restore", () => {
           closeLcmConnection(dbPath);
         }
       } finally {
-        if (realHome === undefined) delete process.env.HOME;
-        else process.env.HOME = realHome;
+        vi.mocked(homedir).mockImplementation(actual.homedir);
       }
     });
 
