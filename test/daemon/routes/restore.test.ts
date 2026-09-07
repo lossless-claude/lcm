@@ -223,14 +223,17 @@ describe("POST /restore", () => {
         });
         expect(res.status).toBe(200);
 
-        const db = new DatabaseSync(projectDbPath(tmpDir));
-        const row = db.prepare(`SELECT content FROM session_instructions WHERE id = 1`).get() as
-          | { content: string }
-          | undefined;
-        db.close();
-
-        expect(row).toBeDefined();
-        expect(row!.content.split("Only once please.").length - 1).toBe(1);
+        const dbPath = projectDbPath(tmpDir);
+        const db = getLcmConnection(dbPath);
+        try {
+          const row = db.prepare(`SELECT content FROM session_instructions WHERE id = 1`).get() as
+            | { content: string }
+            | undefined;
+          expect(row).toBeDefined();
+          expect(row!.content.split("Only once please.").length - 1).toBe(1);
+        } finally {
+          closeLcmConnection(dbPath);
+        }
       } finally {
         if (realHome === undefined) delete process.env.HOME;
         else process.env.HOME = realHome;
