@@ -1,7 +1,12 @@
-# Configures the ephemeral environment GitHub Copilot code review runs in.
-# Preinstalls codebase-memory-mcp and indexes this repo, so the MCP server
-# registered in repo settings has a graph to answer from.
-name: Copilot code review setup
+# Configures the ephemeral environment for BOTH Copilot code review and
+# Copilot cloud agent. Preinstalls codebase-memory-mcp and indexes this repo,
+# so the MCP server registered in repo settings has a graph to answer from.
+#
+# One file serves both on purpose: code review falls back to
+# copilot-setup-steps.yml when copilot-code-review.yml is absent, so keeping
+# only this one means the reviewer and the agent that writes fixes cannot
+# drift apart.
+name: Copilot setup steps
 
 # Copilot invokes the `copilot-setup-steps` job directly; the triggers below only
 # exist so the job can be exercised manually and validated on its own PRs.
@@ -9,10 +14,10 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - .github/workflows/copilot-code-review.yml
+      - .github/workflows/copilot-setup-steps.yml
   pull_request:
     paths:
-      - .github/workflows/copilot-code-review.yml
+      - .github/workflows/copilot-setup-steps.yml
 
 jobs:
   # The job MUST be called `copilot-setup-steps` or Copilot will not pick it up.
