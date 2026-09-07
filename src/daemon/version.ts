@@ -39,19 +39,42 @@ export function fingerprintFile(path: string): string {
 }
 
 /**
- * Fingerprint of the running build: a content hash of this module file.
+ * Reads a build id written next to the emitted JavaScript, trying each
+ * candidate directory in order. Returns `undefined` when no readable,
+ * well-formed id is found.
+ */
+export function readBuildIdFile(dirs: string[]): string | undefined {
+  for (const dir of dirs) {
+    try {
+      const id = readFileSync(join(dir, "BUILD_ID"), "utf-8").trim();
+      if (/^[0-9a-f]{16}$/.test(id)) return id;
+    } catch { /* try next candidate */ }
+  }
+  return undefined;
+}
+
+/**
+ * Fingerprint of the running build.
  *
- * The fingerprint must depend on file *content*, not on filesystem metadata:
+ * The primary source is `dist/BUILD_ID`, written at build time as a hash over
+ * every emitted JavaScript file, so that *any* rebuild changes the id. The
+ * fallback, used in a checkout that has not run the build step, is a content
+ * hash of this module file alone.
+ *
+ * The fingerprint must depend on file *content*, never on filesystem metadata:
  * an installed copy of a build is byte-identical to its source but does not
- * carry its mtime (copy tools such as `rsync -a` truncate mtimes to whole
+ * carry its mtimes (copy tools such as `rsync -a` truncate them to whole
  * seconds), so an mtime-based id makes two identical builds compare unequal
  * and sends callers into an endless "stale daemon" restart loop.
  *
  * Two daemons with the same PKG_VERSION but different builds report different
  * BUILD_IDs, so callers can tell a stale daemon apart from a current one.
- * `undefined` when the file cannot be read.
+ * `undefined` when nothing can be read.
  */
 export const BUILD_ID: string | undefined = (() => {
+  // Production / installed: dist/src/daemon → 2 levels up = dist root
+  const fromFile = readBuildIdFile([join(__dirname, "..", "..")]);
+  if (fromFile) return fromFile;
   try {
     return fingerprintFile(fileURLToPath(import.meta.url));
   } catch {
