@@ -124,7 +124,7 @@ export function buildSyntheticSession(): CorpusSession {
       role,
       content,
       tokenCount: Math.ceil(content.length / CHARS_PER_TOKEN),
-      createdAt: new Date(base + seq * 60_000).toISOString(),
+      createdAt: new Date(base + (seq - 1) * 60_000).toISOString(),
     });
   };
 
@@ -206,7 +206,9 @@ export function instrumentSummarizer(inner: LcmSummarizeFn): InstrumentedSummari
       call.outputTokensEstimate = Math.ceil(out.length / CHARS_PER_TOKEN);
       call.output = out;
       call.format = scoreSummary(out, call.depth);
-      call.emptyContentFallback = out === text.slice(0, 500);
+      // Must match the empty-content fallback in src/llm/openai.ts; pinned by the
+    // "detects the production empty-content fallback" offline test.
+    call.emptyContentFallback = out === text.slice(0, 500);
       return out;
     } catch (err) {
       call.latencyMs = Date.now() - started;
@@ -260,6 +262,10 @@ export function checkPlantedFacts(
 export type EvalRunResult = {
   label: string;
   model: string;
+  /** Which bench provider produced this run — the same model scores differently per provider. */
+  provider: string;
+  /** Reasoning/thinking knobs in effect, if any; part of the result identity. */
+  variant?: string;
   run: number;
   startedAt: string;
   incomplete: boolean;
@@ -277,7 +283,8 @@ export type EvalRunResult = {
     latencyMs: number;
     inputTokens: number;
     outputTokens: number;
-    costUsd: number;
+    /** null when no call reported a cost — the provider does not price its calls. */
+    costUsd: number | null;
     /** Format-passing calls over all calls that returned output. */
     formatPass: number;
     formatTotal: number;
@@ -313,9 +320,11 @@ export async function runEval(input: {
   session: CorpusSession;
   summarizer: LcmSummarizeFn;
   model: string;
+  provider: string;
+  variant?: string;
   run: number;
 }): Promise<EvalRunResult> {
-  const { session, model, run } = input;
+  const { session, model, provider, variant, run } = input;
   const db = new DatabaseSync(":memory:");
   runLcmMigrations(db);
   const conversationStore = new ConversationStore(db);
@@ -367,6 +376,8 @@ export async function runEval(input: {
 
   return {
     label: session.label,
+    provider,
+    variant,
     model,
     run,
     startedAt,
@@ -378,14 +389,18 @@ export async function runEval(input: {
     tokensAfter,
     calls,
     summaries,
-    plantedFacts: session.plantedFacts ? checkPlantedFacts(contextText, session.plantedFacts) : undefined,
+    // An incomplete run leaves chunks un-summarized, so fact survival would be
+    // scored against a partial context — report nothing rather than a low score.
+    plantedFacts: session.plantedFacts && error === undefined ? checkPlantedFacts(contextText, session.plantedFacts) : undefined,
     totals: {
       calls: calls.length,
       failedCalls: calls.filter((c) => c.error).length,
       latencyMs: calls.reduce((n, c) => n + c.latencyMs, 0),
       inputTokens: calls.reduce((n, c) => n + (c.usage?.inputTokens ?? 0), 0),
       outputTokens: calls.reduce((n, c) => n + (c.usage?.outputTokens ?? 0), 0),
-      costUsd: calls.reduce((n, c) => n + (c.usage?.costUsd ?? 0), 0),
+      costUsd: calls.some((c) => typeof c.usage?.costUsd === "number")
+        ? calls.reduce((n, c) => n + (c.usage?.costUsd ?? 0), 0)
+        : null,
       formatPass,
       formatTotal: scoredCalls.length,
       maxTokensHits: calls.filter(
@@ -397,8 +412,12 @@ export async function runEval(input: {
 
 export function writeResult(dir: string, result: EvalRunResult): string {
   mkdirSync(dir, { recursive: true });
-  const safeModel = result.model.replace(/[^a-z0-9.-]+/gi, "_");
-  const file = join(dir, `${safeModel}__${result.label}__run${result.run}.json`);
+  const safe = (v: string) => v.replace(/[^a-z0-9.-]+/gi, "_");
+  // provider and variant are part of the run's identity: the same model scores
+  // differently under a different provider or reasoning setting, and leaving
+  // them out of the path made those runs overwrite each other.
+  const variant = result.variant ? `__${safe(result.variant)}` : "";
+  const file = join(dir, `${safe(result.model)}__${safe(result.provider)}${variant}__${result.label}__run${result.run}.json`);
   writeFileSync(file, JSON.stringify(result, null, 2));
   return file;
 }

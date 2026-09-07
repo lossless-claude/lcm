@@ -16,4 +16,11 @@ mkdir -p "$(dirname "$out")"
 sqlite3 -json "file:${db}?immutable=1" \
   "select seq, role, content, token_count as tokenCount, created_at as createdAt
    from messages where conversation_id = ${cid} order by seq" > "$out"
-echo "$out: $(python3 -c "import json;m=json.load(open('$out'));print(len(m),'messages',sum(x['tokenCount'] for x in m),'tokens')")"
+# sqlite3 -json prints nothing (not []) for zero rows; leaving the empty file
+# behind would break loadCorpusDir later with an opaque JSON parse error.
+if ! [[ -s "$out" ]]; then
+  echo "no messages for conversation_id $cid" >&2
+  rm -f "$out"
+  exit 1
+fi
+echo "$out: $(python3 -c "import json,sys;m=json.load(open(sys.argv[1]));print(len(m),'messages',sum(x['tokenCount'] or 0 for x in m),'tokens')" "$out")"

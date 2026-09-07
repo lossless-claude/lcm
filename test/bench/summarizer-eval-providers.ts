@@ -33,6 +33,8 @@ function createHttpSummarizer(label: string, baseURL: string, apiKey: string, mo
       completions: {
         create: async (params: Parameters<typeof client.chat.completions.create>[0]) => {
           const extra: Record<string, unknown> = {};
+          // OpenRouter only returns usage.cost when accounting is requested.
+          if (baseURL === OPENROUTER_BASE_URL) extra.usage = { include: true };
           if (reasoning) extra.reasoning = reasoning;
           if (disableThinking) extra.chat_template_kwargs = { enable_thinking: false };
           const response = await client.chat.completions.create({ ...params, ...extra, stream: false });
@@ -48,6 +50,11 @@ function createHttpSummarizer(label: string, baseURL: string, apiKey: string, mo
               cachedInputTokens: cached,
               outputTokens: usage.completion_tokens,
               tokensUsed: usage.total_tokens ?? usage.prompt_tokens + usage.completion_tokens,
+              // OpenRouter reports the real charged cost here; plain OpenAI-compatible
+              // servers report nothing, and the bench must say "unknown", not 0.
+              costUsd: typeof (usage as { cost?: unknown }).cost === "number"
+                ? (usage as { cost: number }).cost
+                : undefined,
             } as unknown as SummarizerUsage);
           }
           return response;

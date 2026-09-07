@@ -24,7 +24,7 @@ const fakeSummarizer: LcmSummarizeFn = async (text, _aggressive, ctx = {}) => {
 describe("summarizer eval harness (offline)", () => {
   it("runs leaf and depth-1 passes under production config and scores them", async () => {
     const session = buildSyntheticSession();
-    const result = await runEval({ session, summarizer: fakeSummarizer, model: "fake", run: 1 });
+    const result = await runEval({ session, summarizer: fakeSummarizer, model: "fake", provider: "fake", run: 1 });
 
     expect(result.incomplete).toBe(false);
     expect(result.calls.filter((c) => c.pass === "leaf").length).toBeGreaterThanOrEqual(3);
@@ -45,11 +45,21 @@ describe("summarizer eval harness (offline)", () => {
     expect(scoreSummary("raw text\n[Truncated from 900 tokens]", 0).isFallback).toBe(true);
   });
 
+  it("detects the production empty-content fallback", async () => {
+    // openai.ts returns text.slice(0, 500) when the model sends empty content.
+    const echoing: LcmSummarizeFn = async (text) => text.slice(0, 500);
+    const result = await runEval({
+      session: buildSyntheticSession(), summarizer: echoing, model: "fake", provider: "fake", run: 1,
+    });
+    expect(result.calls.length).toBeGreaterThan(0);
+    expect(result.calls.every((c) => c.emptyContentFallback)).toBe(true);
+  }, 30_000);
+
   it("marks a run incomplete when the summarizer keeps failing", async () => {
     const failing: LcmSummarizeFn = async () => {
       throw new Error("429 rate limited");
     };
-    const result = await runEval({ session: buildSyntheticSession(), summarizer: failing, model: "fake", run: 1 });
+    const result = await runEval({ session: buildSyntheticSession(), summarizer: failing, model: "fake", provider: "fake", run: 1 });
     expect(result.incomplete).toBe(true);
     expect(result.error).toContain("429");
     expect(result.totals.failedCalls).toBe(1);
@@ -96,8 +106,14 @@ const reasoning =
   (process.env.LCM_EVAL_REASONING_EFFORT ? ` reasoning=${process.env.LCM_EVAL_REASONING_EFFORT}` : "") +
   (process.env.LCM_EVAL_DISABLE_THINKING === "1" ? " thinking=off" : "");
 
+/** The reasoning/thinking knobs, as a filename-safe run identity. */
+const variant = reasoning.trim().replace(/\s+/g, "_") || undefined;
+
 describe.skipIf(!model || !corpusDir)(`summarizer eval: ${model} via ${provider}${reasoning}`, () => {
-  const sessions: CorpusSession[] = (corpusDir && existsSync(corpusDir)
+  if (corpusDir && !existsSync(corpusDir)) {
+    throw new Error(`LCM_EVAL_CORPUS_DIR does not exist: ${corpusDir}`);
+  }
+  const sessions: CorpusSession[] = (corpusDir
     ? [...loadCorpusDir(corpusDir), buildSyntheticSession()]
     : []
   ).filter((s) => !only || only.includes(s.label));
@@ -110,7 +126,7 @@ describe.skipIf(!model || !corpusDir)(`summarizer eval: ${model} via ${provider}
     for (let run = 1; run <= runs; run++) {
       it(`${session.label} run ${run}`, async () => {
         const summarizer = createEvalSummarizer(provider, model!);
-        const result = await runEval({ session, summarizer, model: model!, run });
+        const result = await runEval({ session, summarizer, model: model!, provider, variant, run });
         const file = writeResult(RESULTS_DIR, result);
         const facts = result.plantedFacts
           ? ` facts=${result.plantedFacts.filter((f) => f.survived).length}/${result.plantedFacts.length}`
