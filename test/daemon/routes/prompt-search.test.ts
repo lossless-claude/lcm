@@ -736,9 +736,16 @@ describe("POST /prompt-search", () => {
     const db = new DatabaseSync(dbPath);
     runLcmMigrations(db);
     const store = new PromotedStore(db);
-    const firstId = store.insert({ content: `Primary memory ${"alpha ".repeat(30)}`, tags: ["workflow"], projectId: "p1" });
-    const secondId = store.insert({ content: `Secondary memory ${"beta ".repeat(30)}`, tags: ["workflow"], projectId: "p1" });
-    const thirdId = store.insert({ content: `Tertiary memory ${"gamma ".repeat(30)}`, tags: ["workflow"], projectId: "p1" });
+    const firstId = store.insert({ content: `Primary memory ${"alpha ".repeat(30)}`, tags: ["workflow"], projectId: "p1", confidence: 1.0 });
+    const secondId = store.insert({ content: `Secondary memory ${"beta ".repeat(30)}`, tags: ["workflow"], projectId: "p1", confidence: 0.9 });
+    const thirdId = store.insert({ content: `Tertiary memory ${"gamma ".repeat(30)}`, tags: ["workflow"], projectId: "p1", confidence: 0.8 });
+    // Pin created_at so recency decay cannot reorder the fixtures depending on
+    // when the daemon's wall clock is read relative to insert time.
+    const fixedCreatedAt = "2020-01-01 00:00:00";
+    const pinTimestamp = db.prepare("UPDATE promoted SET created_at = ? WHERE id = ?");
+    pinTimestamp.run(fixedCreatedAt, firstId);
+    pinTimestamp.run(fixedCreatedAt, secondId);
+    pinTimestamp.run(fixedCreatedAt, thirdId);
     db.close();
 
     const config = loadDaemonConfig("/nonexistent");
