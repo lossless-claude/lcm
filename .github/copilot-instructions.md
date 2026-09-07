@@ -2,6 +2,17 @@
 
 This repo is a TypeScript SQLite daemon that persists Claude session memories across context resets. It uses Node.js `DatabaseSync` (synchronous SQLite API) and exposes an HTTP daemon with REST routes.
 
+## codebase-memory MCP
+
+A `codebase-memory` MCP server is preloaded with a graph of this repo.
+
+- `list_projects` first — the project name comes from the checkout path; never guess it.
+- `trace_path` before changing any signature, return shape, or schema column. "Nothing else depends on this" is not a claim you may make without it.
+- `search_graph` to find a symbol, `get_code_snippet` for its source, `query_graph` for multi-hop questions.
+- `search_code` only for literal or non-code text.
+
+Before reporting a review finding as fixed, verify it against the graph. Editing the file a finding points at is not the same as closing it. State which findings you verified and how.
+
 ## Primary concerns
 
 ### Database connection pattern (highest priority)

@@ -1,70 +1,47 @@
 # Replay ledger redesign
 
-**Status:** design, not implemented · **Supersedes:** the ledger model in PR #302 (now draft)
-**Date:** 2026-09-07
+**Status:** design, not implemented · **Date:** 2026-09-07
 
-## Why this exists
+## The mismatch
 
-PR #302 went through two Codex review rounds. Round 1 filed 13 findings (10 P1); all 13 were addressed in `e6007b3` and the diff was sound on its own terms. Round 2 on `aa57b3f` filed 10 more (7 P1) — and **four were the same findings re-raised**, meaning the round-1 fix had not actually closed them. One P1 was *created* by the round-1 fix. That is not a patch queue converging; it is a model that does not fit.
+`replay_ledger` records a compaction as one row: `(session_id, summary_id, fingerprint)`. A compaction is not one summary. Four consequences, each of which has to be handled somewhere:
 
-## The mismatch, in one line
+| Reality | The row cannot express it |
+|---|---|
+| One `/compact` produces several summaries across depths | only a single `latestSummaryId` fits |
+| A session can complete producing **no** summary | `summary_id = NULL` reads as a broken chain, destroying the resume anchor |
+| A replay summary is later absorbed by a normal or hook-created condensed summary | a direct-membership check finds nothing to restore, and the parent is deleted anyway |
+| The "unchanged" fingerprint counts rows compaction itself writes | every completed session looks changed and is replayed again |
 
-`replay_ledger` records a compaction as **one row: `(session_id, summary_id, fingerprint)`**. A compaction is not one summary.
+Patching these individually keeps exposing the next one: they are the same defect from four angles.
 
-Every recurring P1 is a place where that shape is too narrow:
+## Decision: `--restart` wipes, it does not undo
 
-| Reality | Row can't express it | Finding |
-|---|---|---|
-| One `/compact` produces several summaries across depths | only `latestSummaryId` fits | `db/migration.ts:650` |
-| A session can complete producing **no** summary (`no_work`) | row records `summary_id = NULL`, destroying the resume anchor | `import.ts:440` (introduced by the round-1 fix) |
-| A replay summary is later absorbed by a normal/hook condensed summary | direct-membership check restores nothing, then the parent is deleted anyway | `replay-resume.ts:642` |
-| The "unchanged" fingerprint is computed over rows compaction itself writes | every completed session looks changed | `batch-compact.ts:274`, `batch-compact.ts:72` |
+The constraint that forces surgical undo is the promise that hook-written summaries survive `--restart`, by scoping deletes to replay-owned `summary_id`s. **That promise is dropped.**
 
-Patching each symptom keeps exposing the next one because they are the same defect seen from four angles.
-
-## The decision: drop the "untouched summaries" promise
-
-The constraint that forced all the surgery is stated in **PR #302's own description**, not in `AGENTS.md` or any pre-existing repo contract:
-
-> `--restart` (new flag on both commands) deletes ledger rows and the summaries they recorded — **hook-written summaries are untouched** since deletes are scoped to ledger `summary_id`s.
-
-(Codex's `AGENTS.md:L78` citations point at the generic "Doc/code alignment" review bullet, not at a summary-lifetime guarantee. There was no older promise to honour.)
-
-Keeping it required walking `summary_parents` lineage, expanding summaries back into source messages, and splicing `context_items` in place — the machinery that did not converge across two review rounds.
-
-### Why the promise is hard to keep
-
-Mixing is the *normal* case, not the exception. `findUncompacted` deliberately includes already-compacted conversations under replay:
+**It cannot hold as written.** Mixing is the normal case: `findUncompacted` deliberately includes already-compacted conversations under replay —
 
 ```sql
 AND (? OR COALESCE(s.sum_count, 0) = 0)   -- replay=1 → include already-summarised conversations
 ```
 
-So a replay routinely compacts on top of hook-written summaries, and a replay summary can **absorb** a hook summary as a parent. Deleting only replay-scoped `summary_id`s then leaves the conversation without the hook summaries anyway — the promise fails precisely where it was meant to hold.
+— so a replay routinely compacts on top of hook summaries, and a replay summary can absorb a hook summary as a parent. Scoped deletes then leave the conversation without its hook summaries anyway. The promise fails exactly where it was meant to hold.
 
-### Three positions, and the one chosen
+**Dropping it is cheap.** Wiping summaries loses no information: messages are never deleted, and `context_items` is a projection over them, so everything wiped is re-derivable. The cost is LLM calls to re-summarise — money and time, not data.
 
-| | Behaviour | Cost |
-|---|---|---|
-| **1. Wipe** *(chosen)* | `--restart` deletes **all** summaries in the conversations the run touched and rebuilds `context_items` from `messages` | Hook summaries are regenerated by the next compaction |
-| 2. Refuse | `--restart` skips conversations carrying non-replay summaries | Since mixing is normal, `--restart` would refuse almost always — a flag that rarely works |
-| 3. Exact undo | current #302 approach | Two rounds without convergence; source of 3 of the P1s |
+The alternative — refusing `--restart` on conversations carrying non-replay summaries — keeps the guarantee, but since mixing is normal it would refuse almost every run.
 
-**Decision (Pedro, 2026-09-07): option 1.**
+`--restart` reports how many summaries it will discard before discarding them.
 
-The argument that settles it: **wiping summaries loses no information.** Messages are never deleted; `context_items` is a projection. Everything wiped is re-derivable. The real cost is LLM calls to re-summarise — money and time, not data. Option 2 protects cheap-to-rebuild work at the price of a `--restart` that almost never runs.
+## The model
 
-`--restart` must therefore print how many summaries it will regenerate before doing it.
+**`context_items` is a derived view.** Three facts:
 
-## The model, if the promise is relaxed
+1. **Compaction never deletes messages.** `SummaryStore.replaceContextRangeWithSummary` deletes only `context_items` rows in a range, inserts one summary item, and resequences ordinals. The only `DELETE FROM messages` is `ConversationStore.deleteMessages`, a separate redaction path.
+2. **`messages.seq` is the authoritative order.** `context_items.ordinal` is a compacted projection of it.
+3. **`summary_messages` records what each summary covers**, so a summary is invertible by construction.
 
-**`context_items` is a derived view.** Three facts make this true today:
-
-1. **Compaction never deletes messages.** `replaceContextRangeWithSummary` (`src/store/summary-store.ts:617`) deletes only `context_items` rows in a range, inserts one summary item, and resequences ordinals. The only `DELETE FROM messages` in the codebase is `ConversationStore.deleteMessages`, a separate redaction path.
-2. **`messages.seq` is the authoritative order.** Ingest appends in `seq` order; `context_items.ordinal` is a compacted projection of it.
-3. **`summary_messages` records exactly what each summary covers**, so a summary is invertible by construction.
-
-Therefore `--restart` does not need to *invert* anything:
+So `--restart` rebuilds rather than inverts:
 
 ```
 restart(conversation):
@@ -75,41 +52,39 @@ restart(conversation):
   -- then drop the summaries the run produced, with their parents/messages links
 ```
 
-No lineage walk, no expansion, no ordinal splicing, no cache keyed by the wrong thing. Roughly 20 lines; no such helper exists today (`grep -rn "DELETE FROM context_items" src/` returns only the two call sites above).
+No lineage walk, no expansion, no ordinal splicing. No such helper exists today.
 
-### The ledger row becomes
+### The rebuild must exclude compaction events
+
+`CompactionEngine.persistCompactionEvent` writes its `"LCM compaction leaf pass…"` row into `messages` + `message_parts` but never into `context_items` — `appendContextMessage` has no callers outside its own definition. A naive `INSERT … SELECT FROM messages` would therefore surface compaction noise into the model's context, a regression the current code does not have. The rebuild filters on the `part_type = 'compaction'` predicate below, and the wipe deletes those now-stale event rows.
+
+### The ledger row
 
 ```sql
 CREATE TABLE replay_ledger (
-  run_id             TEXT NOT NULL,
-  session_id         TEXT NOT NULL,
-  position           INTEGER NOT NULL,
+  run_id              TEXT NOT NULL,
+  session_id          TEXT NOT NULL,
+  position            INTEGER NOT NULL,
   content_fingerprint TEXT NOT NULL,
-  summary_id         TEXT,             -- nullable; threading anchor ONLY (see below)
-  outcome            TEXT NOT NULL,   -- 'compacted' | 'no_work'
-  completed_at       TEXT NOT NULL,
+  summary_id          TEXT,            -- nullable; threading anchor only
+  outcome             TEXT NOT NULL,   -- 'compacted' | 'no_work'
+  completed_at        TEXT NOT NULL,
   PRIMARY KEY (run_id, session_id)
 );
 ```
 
-Gone: `prev_session_id`, and the whole `replay_ledger_summaries` table added in round 1. `summary_id` survives but stops being the thing `--restart` deletes — see "Cross-session threading" below.
+`prev_session_id` goes, as does the separate per-summary table. `summary_id` survives but stops being what `--restart` deletes.
 
-Note the migration is **additive**: `.github/skills/code-review/SKILL.md` §7 forbids destructive DDL, so the unused columns stay in the schema and simply stop being written, and `replay_ledger_summaries` is removed from the create path rather than dropped.
+The migration is **additive** — `.github/skills/code-review/SKILL.md` §7 forbids destructive DDL — so retired columns stay in the schema and simply stop being written.
 
-- **Resume** = skip rows whose fingerprint matches *and* that precede the first gap (the `seenGap` rule from round 1 is right and survives).
-- **Restart** = for each session in the run's manifest: wipe that conversation's summaries, rebuild `context_items`, delete its ledger rows.
+- **Resume** — skip rows whose fingerprint matches *and* that precede the first gap.
+- **Restart** — for each session in the run's manifest: wipe that conversation's summaries, rebuild `context_items`, delete its ledger rows.
 
-### The rebuild must exclude compaction events
+### The fingerprint discriminator
 
-`CompactionEngine.writeEvent` (`src/compaction.ts:1331`) writes its `"LCM compaction leaf pass (normal): 5000 -> 200"` row into `messages` + `message_parts` but **never** into `context_items` — `appendContextMessage` has no callers outside its own definition. So a naive `INSERT … SELECT FROM messages` would surface compaction noise into the model's context, a regression the current code does not have. The rebuild filters on the same `part_type = 'compaction'` predicate used for the fingerprint below, and the wipe deletes those now-stale event rows outright.
+Counting source messages while excluding compaction events has a factual answer, not a design choice.
 
-### The fingerprint has an exact discriminator
-
-Both fingerprint findings reduce to one question — *how do I count source messages while excluding compaction events?* — and it has a factual answer, not a design choice.
-
-`CompactionEngine` writes its event row as `role: "system"` (`src/compaction.ts:1327`), which is why the round-1 fix used `WHERE role != 'system'`. Codex correctly rejected that: `parseTranscript()` also accepts `system` and the ingest route persists it, so genuine transcript system messages get excluded too.
-
-But the event row also gets a message part with **`part_type = 'compaction'`** (`src/compaction.ts:~1335`). That is exact:
+`CompactionEngine.persistCompactionEvent` writes its event row with `role: "system"`, so `WHERE role != 'system'` looks right — but `parseTranscript()` also accepts `system` and the ingest route persists it, so that over-excludes genuine transcript messages. The same method attaches a message part with `partType: "compaction"`. That is exact:
 
 ```sql
 WHERE NOT EXISTS (
@@ -118,35 +93,16 @@ WHERE NOT EXISTS (
 )
 ```
 
-(Side note: that part's `metadata` already carries `createdSummaryIds`. The information the round-1 ledger table was invented to store already exists — another sign the table was the wrong answer.)
-
-## What this does to the round-2 findings
-
-| Finding | Under the rebuild model |
-|---|---|
-| `db/migration.ts:650` — only final `latestSummaryId` retained | **Dissolves.** No summary ids in the ledger at all. |
-| `import.ts:440` — `no_work` records `summary_id = NULL`, kills the anchor | **Dissolves.** `outcome` is a first-class column, so a NULL-anchor row is complete and valid; the anchor search walks further back. |
-| `replay-resume.ts:642` — sources hidden beneath surviving summaries | **Dissolves.** No expansion; rebuild from `messages`. |
-| `batch-compact.ts:274` — unstable batch fingerprint | **Collapses** into the `part_type = 'compaction'` predicate. |
-| `batch-compact.ts:72` — `role = 'system'` over-excludes | **Same predicate.** One fix, both findings. |
-| `batch-compact.ts:156` — `batchCompact()` never sends `previous_summary` | **Ordinary bug.** Independent of the ledger model. |
-| `replay-resume.ts:509` — restored chains collapse across projects | **Ordinary bug.** Per-`cwd` map; round-1 fix was on the right track. |
-| `import.ts:276` — `provider: "all"` clears replay state twice | **Ordinary bug.** Guard the clear per `(cwd, command)` for the whole `importSessions` call. |
-| `cli/pipeline-runner.ts:76` — second SIGINT discarded | **Unrelated.** Separate commit. |
-| `docs/architecture.md:113` — fingerprint doc drift | **Unrelated.** Separate commit (docs say size + line count + mtime; `fingerprintFile` persists size + floored mtime). |
-
-Three P1s vanish. Two collapse into one predicate. Three are plain bugs. Two are unrelated hygiene. That is what convergence looks like.
+That part's `metadata` already carries `createdSummaryIds` — the information a separate ledger table would exist to store is already recorded.
 
 ## Cross-session threading — kept
 
-**Decision (Pedro, 2026-09-07): `previous_summary` continues to cross sessions.** It is worth the per-project chain bookkeeping.
+`previous_summary` continues to cross sessions; it is worth the per-project chain bookkeeping.
 
-That has one consequence for the row shape above: resume must re-establish the chain in a fresh process, so **`summary_id` stays as a nullable anchor-only column**. Its purpose changes rather than disappearing — it is no longer what `--restart` deletes (that is conversation-scoped now), only where the chain picks up. `prev_session_id` still goes.
+Resume must therefore re-establish the chain in a fresh process, which is why `summary_id` stays as a nullable anchor. A `no_work` row with a NULL anchor is complete and valid — the anchor search walks further back to the most recent non-null one rather than treating it as a broken chain.
 
-This is also what dissolves `import.ts:440` cleanly: a `no_work` row with `summary_id = NULL` is a complete, valid row, and the anchor search walks further back to the most recent non-null one instead of treating it as a broken chain.
+**Anchor rule.** Implicit today: `getSummariesByConversation` orders `BY created_at` and the `else if (allSummaries.length > 0)` fallback in `createCompactHandler` takes the last element. Formalised: *the anchor is the most recently created summary of that conversation, regardless of depth.*
 
-**The anchor rule, written down.** Today it is implicit: `getSummariesByConversation` orders `BY created_at` and `compact.ts:367` takes the last element. Formalised: *the anchor is the most recently created summary of that conversation, regardless of depth.*
+## Not covered
 
-## Not covered here
-
-The manifest model (`replay_manifest`, frozen order, appends on adoption) is sound and survives unchanged, as does the `seenGap` suffix-resume rule. This redesign touches the ledger and `--restart` only.
+The manifest model (`replay_manifest`, frozen order, appends on adoption) is sound and survives unchanged, as does the suffix-resume rule that replays everything after the first incomplete position. This redesign touches the ledger and `--restart` only.

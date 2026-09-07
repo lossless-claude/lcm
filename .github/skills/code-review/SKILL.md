@@ -7,6 +7,19 @@ description: Review code changes in the lossless-claude/lcm repository. Use when
 
 Review code changes in this repository against the project rules below. These rules exist because they have caused real production bugs — flag violations with high confidence.
 
+## codebase-memory MCP
+
+A `codebase-memory` MCP server is preloaded with a graph of this repo. Use it whenever a rule below needs evidence from outside the diff.
+
+- `list_projects` first — the project name comes from the checkout path; never guess it.
+- `trace_path` for callers and callees. This is what settles "does anything else depend on this?"
+- `search_graph` to find a symbol, `get_code_snippet` for its source, `query_graph` for multi-hop questions, `get_architecture` for orientation.
+- `search_code` only for literal or non-code text, or where graph coverage is thin.
+
+Rules that are unreliable without it: **#1** (a caller may own the close), **#4** (`collectStats()` is often reached indirectly), **#5** (existing tests live outside the diff), **#10** (whether a named symbol still exists).
+
+Cite what you looked up. "Nothing else calls this" is not reviewable unless you say how you checked.
+
 ## Repository context
 
 TypeScript SQLite daemon that persists Claude session memories across context resets. Uses Node.js `DatabaseSync` (synchronous SQLite API from `node:sqlite`) and exposes an HTTP daemon with REST routes.
@@ -70,6 +83,12 @@ TypeScript SQLite daemon that persists Claude session memories across context re
 
 - Daemon HTTP requests must send the `Authorization: ******` header; the token is read via `readAuthToken(join(homedir(), ".lossless-claude", "daemon.token"))`. Auth is mandatory; a 401 arrives as a normal HTTP response, not a socket error — flag client code paths that drop the header or mishandle 401s.
 - `DaemonClient` throws `Error` objects annotated with the HTTP status and parsed JSON body (`e.status`, `e.body`) on non-2xx responses — flag client code that swallows non-2xx responses or loses the status/body annotations.
+
+### 10. Source references in prose
+
+- Point at **symbols**, not line numbers: `CompactionEngine.persistCompactionEvent`, not `src/compaction.ts:1331`. Line numbers rot on any edit above them, and a stale one still looks plausible; a renamed symbol is greppable.
+- Flag any `path/to/file.ts:NNN` in Markdown, doc comments, or commit messages, unless pinned to an immutable ref (a commit SHA, or a labelled review-finding identifier).
+- Applies to `.xgh/specs/`, `.xgh/plans/`, `docs/`, `AGENTS.md`, and skill files.
 
 ## What to skip
 
