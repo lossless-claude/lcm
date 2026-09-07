@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { projectDbPath } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
+import { closeLcmConnection, getLcmConnection } from "../../db/connection.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { searchNativeHistory } from "../../search/native-history.js";
 import { PromotedStore } from "../../db/promoted.js";
@@ -47,7 +47,7 @@ export function createSearchHandler(): RouteHandler {
       const dbPath = projectDbPath(cwd);
       if (existsSync(dbPath)) {
         mkdirSync(dirname(dbPath), { recursive: true });
-        const db = new DatabaseSync(dbPath);
+        const db = getLcmConnection(dbPath);
         try {
           runLcmMigrations(db);
 
@@ -79,7 +79,7 @@ export function createSearchHandler(): RouteHandler {
           console.warn(`[lcm] /search database open failed: ${describeError(err)}`);
           errors.push(`database: ${describeError(err)}`);
         } finally {
-          db.close();
+          closeLcmConnection(dbPath);
         }
       }
     }
