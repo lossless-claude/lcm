@@ -11,6 +11,58 @@ import {
 } from "../summarize.js";
 
 const TIMEOUT_MS = 120_000;
+const STDERR_ERROR_MAX_CHARS = 2_000;
+
+// The Codex CLI writes a config banner to stderr before any useful output:
+//   OpenAI Codex <version>
+//   --------
+//   workdir: <path>
+//   model: <model>
+//   provider: openai
+//   approval: on-request
+//   sandbox: read-only
+//   reasoning effort: medium
+//   reasoning summaries: none
+//   session id: <uuid>
+// The banner alone is ~279 bytes, so head-truncating stderr loses the actual
+// error message, which always comes after it.
+const BANNER_END_MARKER = "session id:";
+
+function skipCodexBanner(stderr: string): string {
+  const lines = stderr.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line === "--------" || /^openai codex\b/i.test(line)) continue;
+    if (/^(workdir|model|provider|approval|sandbox|reasoning effort|reasoning summaries):/i.test(line)) continue;
+    if (line.toLowerCase().startsWith(BANNER_END_MARKER)) {
+      return lines.slice(i + 1).join("\n").trim();
+    }
+    return lines.slice(i).join("\n").trim();
+  }
+  return stderr.trim();
+}
+
+function isUsageLimitError(text: string): boolean {
+  return /usage limit|rate limit|quota|too many requests|\b429\b/i.test(text);
+}
+
+function buildCodexExitError(code: number | null, stderr: string): Error {
+  const exitLabel = code ?? "unknown";
+  const detail = skipCodexBanner(stderr);
+  if (!detail) {
+    return new Error(`codex exited ${exitLabel}: no output`);
+  }
+  const excerpt =
+    detail.length > STDERR_ERROR_MAX_CHARS
+      ? `[...] ${detail.slice(-STDERR_ERROR_MAX_CHARS)}`
+      : detail;
+  if (isUsageLimitError(detail)) {
+    return new Error(
+      `codex usage limit reached (exit ${exitLabel}) — wait for the limit to reset or switch models before retrying.\n${excerpt}`,
+    );
+  }
+  return new Error(`codex exited ${exitLabel}: ${excerpt}`);
+}
 
 type CodexProcessDeps = {
   model?: string;
@@ -139,7 +191,7 @@ function runCodexSummarizer(
 
       try {
         if (code !== 0) {
-          throw new Error(`codex exited ${code}: ${stderr.slice(0, 200) || "no output"}`);
+          throw buildCodexExitError(code, stderr);
         }
         const summary = deps.readFileSync(outputPath, "utf-8").trim();
         if (!summary) {

@@ -19,7 +19,16 @@ function makeChild(exitCode = 0): FakeChild {
   child.stderr = new PassThrough();
   child.stdin = new PassThrough();
   child.kill = vi.fn();
-  queueMicrotask(() => child.emit("close", exitCode));
+  // Emit close only after stderr has flushed, mirroring real spawned processes
+  // (queueMicrotask would fire close before Node 22 delivers buffered data).
+  // Tests that write to stderr call .end() themselves; for tests that never
+  // touch stderr, end it on the next tick so close still fires.
+  child.stderr.on("end", () => setImmediate(() => child.emit("close", exitCode)));
+  queueMicrotask(() => {
+    if (!child.stderr.writableEnded && !child.stderr.destroyed) {
+      child.stderr.end();
+    }
+  });
   return child;
 }
 
@@ -128,6 +137,130 @@ describe("createCodexProcessSummarizer", () => {
 
     await expect(summarizer("Conversation text", false)).rejects.toThrow("codex exited 1");
     expect(readFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  const CODEX_BANNER = [
+    "OpenAI Codex v0.153.4",
+    "--------",
+    "workdir: /Users/someone/project",
+    "model: gpt-5.3-codex-spark",
+    "provider: openai",
+    "approval: on-request",
+    "sandbox: read-only",
+    "reasoning effort: medium",
+    "reasoning summaries: none",
+    "session id: 3f8e2c1a-0000-0000-0000-abcdef012345",
+    "",
+  ].join("\n");
+
+  it("skips the codex stderr banner so the real error is visible", async () => {
+    const child = makeChild(1);
+    child.stderr.write(CODEX_BANNER);
+    child.stderr.write("Error: stream disconnected before completion\n");
+    child.stderr.end();
+    const spawn = vi.fn().mockReturnValue(child);
+    const summarizer = createCodexProcessSummarizer({
+      spawn: spawn as any,
+      mkdtempSync: vi.fn(() => {
+        const dir = mkdtempSync(join(tmpdir(), "lossless-codex-"));
+        tempDirs.push(dir);
+        return dir;
+      }) as any,
+      readFileSync: vi.fn(() => "summary text") as any,
+      rmSync: vi.fn() as any,
+    });
+
+    let error: Error | undefined;
+    try {
+      await summarizer("Conversation text", false);
+    } catch (err) {
+      error = err as Error;
+    }
+    expect(error).toBeDefined();
+    expect(error!.message).toContain("codex exited 1");
+    expect(error!.message).toContain("Error: stream disconnected before completion");
+    expect(error!.message).not.toContain("OpenAI Codex v0.153.4");
+    expect(error!.message).not.toContain("workdir:");
+  });
+
+  it("reports 'no output' when stderr is only the codex banner", async () => {
+    const child = makeChild(1);
+    child.stderr.write(CODEX_BANNER);
+    child.stderr.end();
+    const spawn = vi.fn().mockReturnValue(child);
+    const summarizer = createCodexProcessSummarizer({
+      spawn: spawn as any,
+      mkdtempSync: vi.fn(() => {
+        const dir = mkdtempSync(join(tmpdir(), "lossless-codex-"));
+        tempDirs.push(dir);
+        return dir;
+      }) as any,
+      readFileSync: vi.fn() as any,
+      rmSync: vi.fn() as any,
+    });
+
+    await expect(summarizer("Conversation text", false)).rejects.toThrow(
+      "codex exited 1: no output",
+    );
+  });
+
+  it("keeps the tail of stderr when it exceeds the error excerpt limit", async () => {
+    const child = makeChild(1);
+    child.stderr.write(CODEX_BANNER);
+    child.stderr.write("noise line\n".repeat(500));
+    child.stderr.write("ERROR: the real failure reason is here\n");
+    child.stderr.end();
+    const spawn = vi.fn().mockReturnValue(child);
+    const summarizer = createCodexProcessSummarizer({
+      spawn: spawn as any,
+      mkdtempSync: vi.fn(() => {
+        const dir = mkdtempSync(join(tmpdir(), "lossless-codex-"));
+        tempDirs.push(dir);
+        return dir;
+      }) as any,
+      readFileSync: vi.fn() as any,
+      rmSync: vi.fn() as any,
+    });
+
+    let error: Error | undefined;
+    try {
+      await summarizer("Conversation text", false);
+    } catch (err) {
+      error = err as Error;
+    }
+    expect(error).toBeDefined();
+    expect(error!.message).toContain("ERROR: the real failure reason is here");
+    expect(error!.message).toContain("[...]");
+    expect(error!.message.length).toBeLessThan(2_200);
+  });
+
+  it("surfaces usage-limit failures with an actionable message", async () => {
+    const child = makeChild(1);
+    child.stderr.write(CODEX_BANNER);
+    child.stderr.write("ERROR: You have hit your usage limit. Try again later.\n");
+    child.stderr.end();
+    const spawn = vi.fn().mockReturnValue(child);
+    const summarizer = createCodexProcessSummarizer({
+      spawn: spawn as any,
+      mkdtempSync: vi.fn(() => {
+        const dir = mkdtempSync(join(tmpdir(), "lossless-codex-"));
+        tempDirs.push(dir);
+        return dir;
+      }) as any,
+      readFileSync: vi.fn() as any,
+      rmSync: vi.fn() as any,
+    });
+
+    let error: Error | undefined;
+    try {
+      await summarizer("Conversation text", false);
+    } catch (err) {
+      error = err as Error;
+    }
+    expect(error).toBeDefined();
+    expect(error!.message).toContain("usage limit");
+    expect(error!.message).toContain("wait for the limit to reset or switch models");
+    expect(error!.message).toContain("You have hit your usage limit");
   });
 
   it("rejects when the output file is empty", async () => {
