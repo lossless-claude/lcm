@@ -207,7 +207,7 @@ describe("createCompactHandler — summarizer branching", () => {
   it("passes llm.reasoning through to createOpenAISummarizer", async () => {
     vi.clearAllMocks();
     const config = makeConfig("openai");
-    (config.llm as any).reasoning = { effort: "minimal" };
+    config.llm.reasoning = { effort: "minimal" };
     const handler = createCompactHandler(config);
     const { res } = mockRes();
     await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd }));

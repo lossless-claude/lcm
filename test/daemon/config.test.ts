@@ -44,7 +44,7 @@ describe("loadDaemonConfig", () => {
     expect(c.llm.model).toBe("qwen2.5:14b");
   });
 
-  it("defaults llm.reasoning to undefined and merges it from file config", () => {
+  it("defaults llm.reasoning to undefined and merges it from overrides", () => {
     expect(loadDaemonConfig("/nonexistent/config.json").llm.reasoning).toBeUndefined();
     const c = loadDaemonConfig("/nonexistent/config.json", {
       llm: { provider: "openai", reasoning: { effort: "minimal" } }
