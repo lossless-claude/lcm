@@ -56,6 +56,37 @@ export interface CompactionConfig {
   scrubber?: ScrubEngine;
 }
 
+/** Token budget the `/compact` route compacts against. */
+export const COMPACT_TOKEN_BUDGET = 200_000;
+
+/**
+ * The engine configuration the daemon's `/compact` route runs.
+ *
+ * Single source of truth: the summarizer eval bench builds its engine from this
+ * same function, so the bench cannot silently drift into measuring a different
+ * engine than production runs. Only the two genuinely per-caller values are
+ * arguments — the bench passes the compiled-in `DEFAULT_LEAF_TOKENS` (a run must
+ * be reproducible across machines, not follow the operator's config.json) and no
+ * scrubber (its corpus was scrubbed at ingest).
+ */
+export function compactEngineConfig(opts: {
+  leafTargetTokens: number;
+  scrubber?: ScrubEngine;
+}): CompactionConfig {
+  return {
+    contextThreshold: 0.75,
+    freshTailCount: 8,
+    leafMinFanout: 3,
+    condensedMinFanout: 2,
+    condensedMinFanoutHard: 1,
+    incrementalMaxDepth: 0,
+    leafTargetTokens: opts.leafTargetTokens,
+    condensedTargetTokens: 900,
+    maxRounds: 10,
+    scrubber: opts.scrubber,
+  };
+}
+
 type CompactionLevel = "normal" | "aggressive" | "fallback";
 type CompactionPass = "leaf" | "condensed";
 type CompactionSummarizeOptions = {

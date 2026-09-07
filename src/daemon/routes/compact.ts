@@ -10,7 +10,7 @@ import { runLcmMigrations } from "../../db/migration.js";
 import { upsertRedactionCounts } from "../../db/redaction-stats.js";
 import { ConversationStore } from "../../store/conversation-store.js";
 import { SummaryStore } from "../../store/summary-store.js";
-import { CompactionEngine } from "../../compaction.js";
+import { CompactionEngine, compactEngineConfig, COMPACT_TOKEN_BUDGET } from "../../compaction.js";
 import { parseTranscript } from "../../transcript.js";
 import type { LcmSummarizeFn } from "../../llm/types.js";
 import { ScrubEngine } from "../../scrub.js";
@@ -316,22 +316,14 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
             }
           };
 
-          const engine = new CompactionEngine(conversationStore, summaryStore, {
-            contextThreshold: 0.75,
-            freshTailCount: 8,
-            leafMinFanout: 3,
-            condensedMinFanout: 2,
-            condensedMinFanoutHard: 1,
-            incrementalMaxDepth: 0,
+          const engine = new CompactionEngine(conversationStore, summaryStore, compactEngineConfig({
             leafTargetTokens: config.compaction.leafTokens,
-            condensedTargetTokens: 900,
-            maxRounds: 10,
             scrubber,
-          });
+          }));
 
           const compactResult = await engine.compact({
             conversationId: conversation.conversationId,
-            tokenBudget: 200_000,
+            tokenBudget: COMPACT_TOKEN_BUDGET,
             summarize: summarizeWithUsage,
             force: true,
             previousSummaryContent: validatedPreviousSummary,

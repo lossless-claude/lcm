@@ -10,7 +10,8 @@
 import { readFileSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { CompactionEngine } from "../../src/compaction.js";
+import { CompactionEngine, compactEngineConfig, COMPACT_TOKEN_BUDGET } from "../../src/compaction.js";
+import { DEFAULT_LEAF_TOKENS } from "../../src/daemon/config.js";
 import { runLcmMigrations } from "../../src/db/migration.js";
 import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "../../src/llm/types.js";
 import { ConversationStore } from "../../src/store/conversation-store.js";
@@ -294,27 +295,6 @@ export type EvalRunResult = {
 };
 
 
-/**
- * The daemon's /compact engine config, with two deliberate deviations:
- *  - leafTargetTokens is the hardcoded default (1000) rather than the live
- *    `config.compaction.leafTokens`, so a bench run is reproducible across
- *    machines regardless of the operator's local config.json.
- *  - no scrubber: stored messages were scrubbed at ingest, and the corpus
- *    export copies stored content verbatim, so there is nothing left to scrub.
- */
-function prodEngineConfig() {
-  return {
-    contextThreshold: 0.75,
-    freshTailCount: 8,
-    leafMinFanout: 3,
-    condensedMinFanout: 2,
-    condensedMinFanoutHard: 1,
-    incrementalMaxDepth: 0,
-    leafTargetTokens: 1000,
-    condensedTargetTokens: 900,
-    maxRounds: 10,
-  };
-}
 
 export async function runEval(input: {
   session: CorpusSession;
@@ -347,13 +327,18 @@ export async function runEval(input: {
   await summaryStore.appendContextMessages(cid, records.map((r) => r.messageId));
 
   const { summarize, calls } = instrumentSummarizer(input.summarizer);
-  const engine = new CompactionEngine(conversationStore, summaryStore, prodEngineConfig());
+  const engine = new CompactionEngine(conversationStore, summaryStore, compactEngineConfig({
+    // The compiled-in default, not the operator's config.json: a bench run must
+    // be reproducible across machines. No scrubber — corpus content was already
+    // scrubbed at ingest and the export copies stored content verbatim.
+    leafTargetTokens: DEFAULT_LEAF_TOKENS,
+  }));
   const tokensBefore = await summaryStore.getContextTokenCount(cid);
   const startedAt = new Date().toISOString();
 
   let error: string | undefined;
   try {
-    await engine.compact({ conversationId: cid, tokenBudget: 200_000, summarize, force: true });
+    await engine.compact({ conversationId: cid, tokenBudget: COMPACT_TOKEN_BUDGET, summarize, force: true });
   } catch (err) {
     error = err instanceof Error ? err.message : String(err);
   }
