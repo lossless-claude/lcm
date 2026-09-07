@@ -140,7 +140,7 @@ describe("replay run manifest + ledger", () => {
     writeFileSync(f2, "two\n");
     writeFileSync(f3, "three\n");
 
-    const sessions = [f1, f2, f3].map((p, i) => ({ sessionId: `s${i + 1}`, path: p }));
+    const sessions = [f1, f2, f3].map((p, i) => ({ sessionId: `s${i + 1}`, path: p, cwd }));
     const runId = replayRunId();
     createReplayRun({ cwd, lcmDir, command: "import", runId, sessions, model: "m" });
     recordReplayProgress({
@@ -153,16 +153,20 @@ describe("replay run manifest + ledger", () => {
     });
 
     const plan = planReplayResume({
-      cwd, lcmDir, command: "import", sessions,
+      sessions, lcmDir, command: "import",
       fingerprint: (s) => fingerprintFile(s.path),
     });
 
-    expect(plan.runId).toBe(runId);
+    expect(plan.runIds.get(cwd)).toBe(runId);
+    expect(plan.freshCwds.size).toBe(0);
     expect(plan.doneCount).toBe(2);
     expect(plan.remaining.map((s) => s.sessionId)).toEqual(["s3"]);
     expect(plan.restoredPreviousSummary).toBe("summary two");
     expect(plan.droppedPreviousSummary).toBeUndefined();
-    expect(plan.changedSessionId).toBeNull();
+    expect(plan.changedSessionIds).toEqual([]);
+    expect(plan.positions.get(cwd)?.get("s1")).toBe(0);
+    expect(plan.positions.get(cwd)?.get("s2")).toBe(1);
+    expect(plan.positions.get(cwd)?.get("s3")).toBe(2);
   });
 
   it("reprocesses a session whose transcript changed and reports it", () => {
@@ -177,7 +181,7 @@ describe("replay run manifest + ledger", () => {
     writeFileSync(f1, "one\n");
     writeFileSync(f2, "two\n");
 
-    const sessions = [{ sessionId: "s1", path: f1 }, { sessionId: "s2", path: f2 }];
+    const sessions = [{ sessionId: "s1", path: f1, cwd }, { sessionId: "s2", path: f2, cwd }];
     const runId = replayRunId();
     createReplayRun({ cwd, lcmDir, command: "import", runId, sessions });
     recordReplayProgress({
@@ -193,13 +197,13 @@ describe("replay run manifest + ledger", () => {
     writeFileSync(f2, "two\ngrown\n");
 
     const plan = planReplayResume({
-      cwd, lcmDir, command: "import", sessions,
+      sessions, lcmDir, command: "import",
       fingerprint: (s) => fingerprintFile(s.path),
     });
 
     expect(plan.doneCount).toBe(1);
     expect(plan.remaining.map((s) => s.sessionId)).toEqual(["s2"]);
-    expect(plan.changedSessionId).toBe("s2");
+    expect(plan.changedSessionIds).toEqual(["s2"]);
     // Chain before s2 is intact (s1 has a summary), so it is restored
     expect(plan.restoredPreviousSummary).toBe("summary one");
   });
@@ -218,7 +222,7 @@ describe("replay run manifest + ledger", () => {
     writeFileSync(f2, "two\n");
     writeFileSync(f3, "three\n");
 
-    const sessions = [f1, f2, f3].map((p, i) => ({ sessionId: `s${i + 1}`, path: p }));
+    const sessions = [f1, f2, f3].map((p, i) => ({ sessionId: `s${i + 1}`, path: p, cwd }));
     const runId = replayRunId();
     createReplayRun({ cwd, lcmDir, command: "import", runId, sessions });
     // s1 completed but produced no summary (broken link)
@@ -232,7 +236,7 @@ describe("replay run manifest + ledger", () => {
     });
 
     const plan = planReplayResume({
-      cwd, lcmDir, command: "import", sessions,
+      sessions, lcmDir, command: "import",
       fingerprint: (s) => fingerprintFile(s.path),
     });
 
@@ -250,7 +254,7 @@ describe("replay run manifest + ledger", () => {
     const dir = makeTmpDir();
     const f1 = join(dir, "s1.jsonl");
     writeFileSync(f1, "one\n");
-    const sessions = [{ sessionId: "s1", path: f1 }];
+    const sessions = [{ sessionId: "s1", path: f1, cwd }];
     const runId = replayRunId();
     createReplayRun({ cwd, lcmDir, command: "import", runId, sessions });
     recordReplayProgress({
@@ -259,14 +263,15 @@ describe("replay run manifest + ledger", () => {
     });
 
     const plan = planReplayResume({
-      cwd, lcmDir, command: "import", sessions,
+      sessions, lcmDir, command: "import",
       fingerprint: (s) => fingerprintFile(s.path),
       restart: true,
     });
 
-    expect(plan.previousRunId).toBeNull();
+    expect(plan.freshCwds.has(cwd)).toBe(true);
     expect(plan.doneCount).toBe(0);
     expect(plan.remaining).toHaveLength(1);
+    expect(plan.runIds.get(cwd)).not.toBe(runId);
   });
 
   it("clearReplayState removes ledger, manifest, and recorded summaries only", () => {
@@ -287,7 +292,7 @@ describe("replay run manifest + ledger", () => {
       contentFingerprint: fingerprintFile(f1), summaryId: "sum-replay",
     });
 
-    clearReplayState({ cwd, lcmDir, command: "import" });
+    expect(clearReplayState({ cwd, lcmDir, command: "import" })).toBe(true);
 
     const db = new DatabaseSync(dbPath);
     try {
@@ -307,18 +312,58 @@ describe("replay run manifest + ledger", () => {
   it("gracefully handles a missing project DB", () => {
     const lcmDir = makeTmpDir();
     const plan = planReplayResume({
-      cwd: "/test/no-db", lcmDir, command: "import",
-      sessions: [{ sessionId: "s1" }],
+      lcmDir, command: "import",
+      sessions: [{ sessionId: "s1", cwd: "/test/no-db" }],
       fingerprint: () => "fp",
     });
-    expect(plan.previousRunId).toBeNull();
+    expect(plan.freshCwds.has("/test/no-db")).toBe(true);
     expect(plan.remaining).toHaveLength(1);
     // record/clear must not throw either
     recordReplayProgress({
       cwd: "/test/no-db", lcmDir, runId: "r", sessionId: "s1", position: 0,
       prevSessionId: null, contentFingerprint: "fp",
     });
-    clearReplayState({ cwd: "/test/no-db", lcmDir, command: "import" });
+    expect(clearReplayState({ cwd: "/test/no-db", lcmDir, command: "import" })).toBe(true);
+  });
+
+  it("spans multiple projects, keying manifest and ledger to each cwd", () => {
+    const lcmDir = makeTmpDir();
+    const cwdA = "/test/multi-a";
+    const cwdB = "/test/multi-b";
+    const dbA = makeProjectDb(lcmDir, cwdA);
+    makeProjectDb(lcmDir, cwdB);
+    insertSummary(dbA, "sum-a1", "summary a1");
+
+    const dir = makeTmpDir();
+    const fa1 = join(dir, "a1.jsonl");
+    const fb1 = join(dir, "b1.jsonl");
+    writeFileSync(fa1, "a\n");
+    writeFileSync(fb1, "b\n");
+
+    // Prior run only covered project A's session
+    const runA = replayRunId();
+    createReplayRun({ cwd: cwdA, lcmDir, command: "import", runId: runA, sessions: [{ sessionId: "a1" }] });
+    recordReplayProgress({
+      cwd: cwdA, lcmDir, runId: runA, sessionId: "a1", position: 0, prevSessionId: null,
+      contentFingerprint: fingerprintFile(fa1), summaryId: "sum-a1",
+    });
+
+    const sessions = [
+      { sessionId: "a1", path: fa1, cwd: cwdA },
+      { sessionId: "b1", path: fb1, cwd: cwdB },
+    ];
+    const plan = planReplayResume({
+      sessions, lcmDir, command: "import",
+      fingerprint: (s) => fingerprintFile(s.path),
+    });
+
+    // A resumed (a1 done), B is fresh (b1 remaining)
+    expect(plan.freshCwds.has(cwdB)).toBe(true);
+    expect(plan.freshCwds.has(cwdA)).toBe(false);
+    expect(plan.runIds.get(cwdA)).toBe(runA);
+    expect(plan.doneCount).toBe(1);
+    expect(plan.remaining.map((s) => s.sessionId)).toEqual(["b1"]);
+    expect(plan.manifests.get(cwdB)).toEqual(["b1"]);
   });
 
   it("keeps manifests from older runs (history is not rotated)", () => {

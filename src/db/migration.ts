@@ -1,6 +1,16 @@
 import type { DatabaseSync } from "node:sqlite";
 import { getLcmDbFeatures } from "./features.js";
 
+/** Disable foreign keys around a migration sweep (SQLite forbids toggling inside a transaction). */
+export function withForeignKeysDisabled(db: DatabaseSync, fn: () => void): void {
+  db.exec("PRAGMA foreign_keys = OFF");
+  try {
+    fn();
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
 type SummaryColumnInfo = {
   name?: string;
 };
@@ -356,6 +366,15 @@ function backfillSummaryMetadata(db: DatabaseSync): void {
 }
 
 export function runLcmMigrations(
+  db: DatabaseSync,
+  options?: { fts5Available?: boolean },
+): void {
+  // Foreign keys can stall schema changes against legacy rows (e.g. FTS
+  // rebuilds that reinsert messages) — disable them for the sweep.
+  withForeignKeysDisabled(db, () => runLcmMigrationsInner(db, options));
+}
+
+function runLcmMigrationsInner(
   db: DatabaseSync,
   options?: { fts5Available?: boolean },
 ): void {

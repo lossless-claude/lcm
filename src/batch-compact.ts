@@ -117,50 +117,48 @@ export async function batchCompact(opts: {
   let skippedDone = 0;
   if (opts.replay && !opts.dryRun && conversations.length > 0) {
     replayRuns = new Map();
-    const byCwd = new Map<string, UncompactedConversation[]>();
-    for (const conv of conversations) {
-      const list = byCwd.get(conv.cwd) ?? [];
-      list.push(conv);
-      byCwd.set(conv.cwd, list);
-    }
-    const remainingAll: UncompactedConversation[] = [];
-    for (const [cwd, list] of byCwd) {
-      if (opts.restart) {
-        clearReplayState({ cwd, command: "compact" });
+    if (opts.restart) {
+      let clearFailed = false;
+      for (const cwd of new Set(conversations.map((c) => c.cwd))) {
+        if (!clearReplayState({ cwd, command: "compact" })) clearFailed = true;
       }
-      const plan = planReplayResume({
-        cwd,
-        command: "compact",
-        sessions: list,
-        fingerprint: (c) => fingerprintStats(c.messages, c.tokens),
-        restart: opts.restart,
-      });
+      if (clearFailed) {
+        console.error("  ⚠️ [replay] could not fully clear previous replay state; some stale summaries may remain");
+      }
+    }
+    const plan = planReplayResume({
+      sessions: conversations,
+      command: "compact",
+      fingerprint: (c) => fingerprintStats(c.messages, c.tokens),
+      restart: opts.restart,
+    });
+    for (const [cwd, order] of plan.manifests) {
       const positions = new Map<string, number>();
-      if (plan.previousRunId === null) {
+      if (plan.freshCwds.has(cwd)) {
         createReplayRun({
           cwd,
           command: "compact",
-          runId: plan.runId,
-          sessions: list,
+          runId: plan.runIds.get(cwd)!,
+          sessions: order.map((sessionId) => ({ sessionId })),
           model: opts.replayModel ?? null,
         });
-        list.forEach((c, i) => positions.set(c.sessionId, i));
-        remainingAll.push(...list);
+        order.forEach((sid, i) => positions.set(sid, i));
       } else {
-        skippedDone += plan.doneCount;
-        remainingAll.push(...plan.remaining);
-        if (plan.remaining.length > 0 || plan.doneCount > 0) {
-          onProgress?.({
-            resumed: { doneCount: plan.doneCount, totalCount: plan.doneCount + plan.remaining.length, model: plan.previousModel ?? undefined },
-          });
-        }
-        if (plan.changedSessionId !== null) {
-          console.error(`  ⚠️ [replay] conversation for session ${plan.changedSessionId} changed since the previous run; downstream summaries were built on the older version`);
-        }
+        positions.clear();
+        for (const [sid, pos] of plan.positions.get(cwd) ?? []) positions.set(sid, pos);
       }
-      replayRuns.set(cwd, { runId: plan.runId, positions });
+      replayRuns.set(cwd, { runId: plan.runIds.get(cwd)!, positions });
     }
-    conversations = remainingAll;
+    skippedDone = plan.doneCount;
+    conversations = plan.remaining;
+    if (plan.doneCount > 0) {
+      onProgress?.({
+        resumed: { doneCount: plan.doneCount, totalCount: plan.doneCount + plan.remaining.length, model: plan.previousModel ?? undefined },
+      });
+    }
+    for (const changed of plan.changedSessionIds) {
+      console.error(`  ⚠️ [replay] conversation for session ${changed} changed since the previous run; downstream summaries were built on the older version`);
+    }
   }
 
   if (conversations.length === 0) {
@@ -210,8 +208,10 @@ export async function batchCompact(opts: {
 
       // Ledger row is written only after the summary is persisted
       // (latestSummaryId in hand), so a row is durable proof of done work.
+      // A skipped (already-in-progress) compaction records nothing — the next
+      // run retries it.
       const run = replayRuns?.get(conv.cwd);
-      if (run) {
+      if (run && data.skipped !== true) {
         recordReplayProgress({
           cwd: conv.cwd,
           runId: run.runId,

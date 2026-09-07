@@ -248,39 +248,51 @@ async function ingestSessionList(
 ): Promise<void> {
   // Replay runs are resumable: a manifest freezes the ordering and a ledger
   // records completed compactions, so a restarted run skips finished work.
-  let replayRunId: string | null = null;
-  const ledgerPositions = new Map<string, number>();
-  let manifestForNewRun: SessionEntry[] | null = null;
+  // State lives per project DB, keyed by each session's own cwd (a codex/all
+  // import can span multiple projects in one list).
+  const replayRuns = new Map<string, string>(); // cwd → runId
+  const ledgerPositions = new Map<string, Map<string, number>>(); // cwd → (sessionId → position)
+  const manifestForNewRun = new Map<string, SessionEntry[]>(); // cwd → sessions to freeze
   let doneCount = 0;
   let previousSummary: string | undefined;
   let lastProcessedSessionId: string | null = null;
 
   if (options.replay && !options.dryRun && sessions.length > 0) {
-    const cwd = sessions[0].cwd;
     if (options.restart) {
-      clearReplayState({ cwd, lcmDir: options._lcmDir, command: "import" });
+      let clearFailed = false;
+      for (const cwd of new Set(sessions.map((s) => s.cwd))) {
+        if (!clearReplayState({ cwd, lcmDir: options._lcmDir, command: "import" })) clearFailed = true;
+      }
+      if (clearFailed) {
+        console.error("  ⚠️ [replay] could not fully clear previous replay state; some stale summaries may remain");
+      }
     }
     const plan = planReplayResume({
-      cwd,
+      sessions,
       lcmDir: options._lcmDir,
       command: "import",
-      sessions,
       fingerprint: (s) => fingerprintFile(s.path),
       restart: options.restart,
     });
-    replayRunId = plan.runId;
-    if (plan.previousRunId === null) {
-      // Fresh run — freeze the manifest once the loop starts.
-      manifestForNewRun = [...sessions];
-    } else {
-      sessions = plan.remaining;
-      doneCount = plan.doneCount;
-      previousSummary = plan.restoredPreviousSummary;
+    for (const [cwd, sessionIds] of plan.manifests) {
+      replayRuns.set(cwd, plan.runIds.get(cwd)!);
+      if (plan.freshCwds.has(cwd)) {
+        // Fresh project run — freeze the manifest once the loop reaches it.
+        const order = new Set(sessionIds);
+        manifestForNewRun.set(cwd, sessions.filter((s) => s.cwd === cwd && order.has(s.sessionId)));
+      } else {
+        ledgerPositions.set(cwd, plan.positions.get(cwd)!);
+      }
+    }
+    sessions = plan.remaining;
+    doneCount = plan.doneCount;
+    previousSummary = plan.restoredPreviousSummary;
+    if (plan.freshCwds.size < plan.manifests.size) {
       if (plan.droppedPreviousSummary !== undefined) {
         console.error("  ⚠️ [replay] previous run's chain was broken at the resume point; continuing without prior context");
       }
-      if (plan.changedSessionId !== null) {
-        console.error(`  ⚠️ [replay] transcript for session ${plan.changedSessionId} changed since the previous run; downstream summaries were threaded against the older version`);
+      for (const changed of plan.changedSessionIds) {
+        console.error(`  ⚠️ [replay] transcript for session ${changed} changed since the previous run; downstream summaries were threaded against the older version`);
       }
       const resumed: ImportResult["resumed"] = {
         doneCount: plan.doneCount,
@@ -309,19 +321,23 @@ async function ingestSessionList(
       continue;
     }
 
-    if (replayRunId !== null && manifestForNewRun !== null) {
+    const pendingManifest = manifestForNewRun.get(cwd);
+    if (pendingManifest) {
       // Freeze the manifest at the moment the run actually starts (a run that
       // dies before its first session leaves no resumable state behind).
+      const runId = replayRuns.get(cwd)!;
       createReplayRun({
         cwd,
         lcmDir: options._lcmDir,
         command: "import",
-        runId: replayRunId,
-        sessions: manifestForNewRun,
+        runId,
+        sessions: pendingManifest,
         model: options.replayModel ?? null,
       });
-      manifestForNewRun.forEach((s, i) => ledgerPositions.set(s.sessionId, i));
-      manifestForNewRun = null;
+      const positions = new Map<string, number>();
+      pendingManifest.forEach((s, i) => positions.set(s.sessionId, i));
+      ledgerPositions.set(cwd, positions);
+      manifestForNewRun.delete(cwd);
     }
 
     // Skip sessions already recorded in session_ingest_log (unless in replay mode,
@@ -380,7 +396,10 @@ async function ingestSessionList(
           // Ledger row is written only after the summary is persisted
           // (latestSummaryId in hand). summaryId=null marks a broken chain
           // link; the session itself is still recorded as done.
-          if (replayRunId !== null) {
+          // A skipped (already-in-progress) compaction records nothing — the
+          // next run retries it.
+          const runId = replayRuns.get(cwd);
+          if (runId !== undefined && compactRes.skipped !== true) {
             let fingerprint: string;
             try {
               fingerprint = fingerprintFile(path);
@@ -390,9 +409,9 @@ async function ingestSessionList(
             recordReplayProgress({
               cwd,
               lcmDir: options._lcmDir,
-              runId: replayRunId,
+              runId,
               sessionId,
-              position: ledgerPositions.get(sessionId) ?? 0,
+              position: ledgerPositions.get(cwd)?.get(sessionId) ?? 0,
               prevSessionId: lastProcessedSessionId,
               contentFingerprint: fingerprint,
               summaryId: compactRes.latestSummaryId ?? null,
