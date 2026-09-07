@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { CompactionEngine, type CompactionSummarizeFn } from "../src/compaction.js";
+import { CompactionEngine, compactEngineConfig, type CompactionSummarizeFn } from "../src/compaction.js";
 import type { ConversationStore } from "../src/store/conversation-store.js";
 import type { SummaryStore } from "../src/store/summary-store.js";
 
@@ -64,5 +64,27 @@ describe("CompactionEngine.compact — previousSummaryContent seeding", () => {
 
     expect(summarizeCalls.length).toBeGreaterThan(0);
     expect(summarizeCalls[0].previousSummary).toBe("prior context");
+  });
+});
+
+describe("compactEngineConfig", () => {
+  it("threads through the only two per-caller values", () => {
+    const scrubber = {} as never;
+    const withScrubber = compactEngineConfig({ leafTargetTokens: 2500, scrubber });
+    expect(withScrubber.leafTargetTokens).toBe(2500);
+    expect(withScrubber.scrubber).toBe(scrubber);
+
+    const without = compactEngineConfig({ leafTargetTokens: 1000 });
+    expect(without.scrubber).toBeUndefined();
+  });
+
+  it("is the same engine for every caller, so the bench cannot drift from /compact", () => {
+    // Only leafTargetTokens and scrubber may differ between the daemon route
+    // and the summarizer bench; everything else must come out identical.
+    const route = compactEngineConfig({ leafTargetTokens: 4000, scrubber: {} as never });
+    const bench = compactEngineConfig({ leafTargetTokens: 1000 });
+    const { leafTargetTokens: _a, scrubber: _b, ...routeRest } = route;
+    const { leafTargetTokens: _c, scrubber: _d, ...benchRest } = bench;
+    expect(benchRest).toEqual(routeRest);
   });
 });
