@@ -60,7 +60,8 @@ describe("summarizer eval harness (offline)", () => {
 //
 //   LCM_EVAL_MODEL       candidate model id (required)
 //   LCM_EVAL_CORPUS_DIR  directory of <label>.json exports (required)
-//   LCM_EVAL_PROVIDER    openrouter (default) | claude-process
+//   LCM_EVAL_PROVIDER    openrouter (default) | openai | claude-process
+//   LCM_EVAL_BASE_URL    openai only: OpenAI-compatible endpoint; LCM_EVAL_API_KEY optional
 //   LCM_EVAL_RUNS        runs per session (default 1)
 //   LCM_EVAL_SESSIONS    comma-separated labels to run (default all)
 //   LCM_EVAL_REASONING_EFFORT  openrouter only: reasoning.effort sent with each request (default none)

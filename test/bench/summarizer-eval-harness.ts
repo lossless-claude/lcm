@@ -281,7 +281,7 @@ export type EvalRunResult = {
     /** Format-passing calls over all calls that returned output. */
     formatPass: number;
     formatTotal: number;
-    /** OpenRouter calls whose output reached the production output cap: the summary was cut off. */
+    /** HTTP-provider calls whose output reached the production output cap: the summary was cut off. */
     maxTokensHits: number;
   };
 };
@@ -384,7 +384,7 @@ export async function runEval(input: {
       formatPass,
       formatTotal: scoredCalls.length,
       maxTokensHits: calls.filter(
-        (c) => c.usage?.provider === "openrouter" && (c.usage.outputTokens ?? 0) >= resolveMaxOutputTokens(c.targetTokens),
+        (c) => c.usage?.provider !== "claude-process" && (c.usage?.outputTokens ?? 0) >= resolveMaxOutputTokens(c.targetTokens),
       ).length,
     },
   };
