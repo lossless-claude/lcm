@@ -573,6 +573,38 @@ export function runLcmMigrations(
     CREATE INDEX IF NOT EXISTS recall_surfacing_memory_idx ON recall_surfacing (memory_id);
   `);
 
+  // Replay manifest — the ordered session list frozen at the start of a replay run.
+  // Makes "resume" deterministic: the same set in the same order across runs.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS replay_manifest (
+      run_id TEXT NOT NULL,
+      command TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      session_id TEXT NOT NULL,
+      model TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (run_id, position)
+    );
+    CREATE INDEX IF NOT EXISTS replay_manifest_session_idx ON replay_manifest (run_id, session_id);
+  `);
+
+  // Replay ledger — one row per completed session compaction. A row is written
+  // only after its summary is persisted, so a row is durable proof of done work.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS replay_ledger (
+      run_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      prev_session_id TEXT,
+      content_fingerprint TEXT NOT NULL,
+      summary_id TEXT,
+      model TEXT,
+      completed_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (run_id, session_id)
+    );
+    CREATE INDEX IF NOT EXISTS replay_ledger_position_idx ON replay_ledger (run_id, position);
+  `);
+
   const fts5Available = options?.fts5Available ?? getLcmDbFeatures(db).fts5Available;
   if (!fts5Available) {
     return;

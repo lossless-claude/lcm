@@ -7,6 +7,13 @@ import { formatNumber, formatRatio } from "./stats.js";
 import { findAllCodexTranscripts, extractCodexSessionCwd } from "./codex-transcript.js";
 import type { ProgressState } from "./cli/progress-state.js";
 import { projectDbPath, projectId } from "./daemon/project.js";
+import {
+  clearReplayState,
+  createReplayRun,
+  fingerprintFile,
+  planReplayResume,
+  recordReplayProgress,
+} from "./replay-resume.js";
 
 export type ImportProvider = "claude" | "codex" | "all";
 
@@ -16,10 +23,18 @@ interface ImportOptions {
   dryRun?: boolean;
   cwd?: string;
   replay?: boolean;
+  /** Replay only: discard recorded progress and start from scratch */
+  restart?: boolean;
+  /** Replay only: model label recorded in the ledger (shown on resume) */
+  replayModel?: string;
   /** Which transcript provider to import from (default: "claude") */
   provider?: ImportProvider;
   /** Called with state patches as each session is processed — used by the ninja renderer */
   onProgress?: (patch: Partial<ProgressState>) => void;
+  /** Called before each session starts; return false to stop the run (e.g. after SIGINT/SIGTERM) */
+  onBeforeSession?: () => boolean;
+  /** Wrap an in-flight session's work so signal handlers can wait for it before exiting */
+  trackInFlight?: () => () => void;
   /** Override ~/.claude/projects path — used in tests only */
   _claudeProjectsDir?: string;
   /** Override ~/.lossless-claude path — used in tests only */
@@ -35,6 +50,8 @@ export interface ImportResult {
   totalMessages: number;
   totalTokens: number;
   tokensAfter: number;
+  /** Present when a replay run resumed from a previous run's recorded progress */
+  resumed?: { doneCount: number; totalCount: number; model?: string };
 }
 
 export function cwdToProjectHash(cwd: string): string {
@@ -194,10 +211,59 @@ async function ingestSessionList(
   options: ImportOptions,
   result: ImportResult,
 ): Promise<void> {
+  // Replay runs are resumable: a manifest freezes the ordering and a ledger
+  // records completed compactions, so a restarted run skips finished work.
+  let replayRunId: string | null = null;
+  const ledgerPositions = new Map<string, number>();
+  let manifestForNewRun: SessionEntry[] | null = null;
+  let doneCount = 0;
   let previousSummary: string | undefined;
-  const total = sessions.length;
+  let lastProcessedSessionId: string | null = null;
+
+  if (options.replay && !options.dryRun && sessions.length > 0) {
+    const cwd = sessions[0].cwd;
+    if (options.restart) {
+      clearReplayState({ cwd, lcmDir: options._lcmDir, command: "import" });
+    }
+    const plan = planReplayResume({
+      cwd,
+      lcmDir: options._lcmDir,
+      command: "import",
+      sessions,
+      fingerprint: (s) => fingerprintFile(s.path),
+      restart: options.restart,
+    });
+    replayRunId = plan.runId;
+    if (plan.previousRunId === null) {
+      // Fresh run — freeze the manifest once the loop starts.
+      manifestForNewRun = [...sessions];
+    } else {
+      sessions = plan.remaining;
+      doneCount = plan.doneCount;
+      previousSummary = plan.restoredPreviousSummary;
+      if (plan.droppedPreviousSummary !== undefined) {
+        console.error("  ⚠️ [replay] previous run's chain was broken at the resume point; continuing without prior context");
+      }
+      if (plan.changedSessionId !== null) {
+        console.error(`  ⚠️ [replay] transcript for session ${plan.changedSessionId} changed since the previous run; downstream summaries were threaded against the older version`);
+      }
+      const resumed: ImportResult["resumed"] = {
+        doneCount: plan.doneCount,
+        totalCount: plan.doneCount + plan.remaining.length,
+        model: plan.previousModel ?? undefined,
+      };
+      result.resumed = resumed;
+      options.onProgress?.({ resumed });
+    }
+  }
+  const total = sessions.length + doneCount;
+  const processedBase = doneCount;
 
   for (const { path, sessionId, cwd } of sessions) {
+    // Stop starting new work after SIGINT/SIGTERM; the renderer waits for the
+    // in-flight session to settle before exiting.
+    if (options.onBeforeSession && !options.onBeforeSession()) break;
+
     if (options.dryRun) {
       if (options.verbose) {
         const replayNote = options.replay ? " (would compact)" : "";
@@ -208,15 +274,31 @@ async function ingestSessionList(
       continue;
     }
 
+    if (replayRunId !== null && manifestForNewRun !== null) {
+      // Freeze the manifest at the moment the run actually starts (a run that
+      // dies before its first session leaves no resumable state behind).
+      createReplayRun({
+        cwd,
+        lcmDir: options._lcmDir,
+        command: "import",
+        runId: replayRunId,
+        sessions: manifestForNewRun,
+        model: options.replayModel ?? null,
+      });
+      manifestForNewRun.forEach((s, i) => ledgerPositions.set(s.sessionId, i));
+      manifestForNewRun = null;
+    }
+
     // Skip sessions already recorded in session_ingest_log (unless in replay mode,
     // where compaction must still run to keep the temporal chain intact).
     if (!options.replay && isSessionAlreadyIngested(cwd, sessionId, options._lcmDir)) {
       result.skippedEmpty++;
       if (options.verbose) console.log(`  ↩️ ${sessionId}: already fully ingested`);
-      options.onProgress?.({ completed: result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
+      options.onProgress?.({ completed: processedBase + result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
       continue;
     }
 
+    const releaseInFlight = options.trackInFlight ? options.trackInFlight() : null;
     try {
       const res = await client.post<{ ingested: number; totalTokens: number }>('/ingest', {
         session_id: sessionId,
@@ -244,6 +326,7 @@ async function ingestSessionList(
           const compactRes = await client.post<{
             summary?: string;
             latestSummaryContent?: string;
+            latestSummaryId?: string;
             skipped?: boolean;
             tokensBefore?: number;
             tokensAfter?: number;
@@ -257,6 +340,28 @@ async function ingestSessionList(
           const hadPrevious = previousSummary !== undefined;
           if (compactRes.latestSummaryContent !== undefined) {
             previousSummary = compactRes.latestSummaryContent;
+          }
+          // Ledger row is written only after the summary is persisted
+          // (latestSummaryId in hand). summaryId=null marks a broken chain
+          // link; the session itself is still recorded as done.
+          if (replayRunId !== null) {
+            let fingerprint: string;
+            try {
+              fingerprint = fingerprintFile(path);
+            } catch {
+              fingerprint = "unavailable";
+            }
+            recordReplayProgress({
+              cwd,
+              lcmDir: options._lcmDir,
+              runId: replayRunId,
+              sessionId,
+              position: ledgerPositions.get(sessionId) ?? 0,
+              prevSessionId: lastProcessedSessionId,
+              contentFingerprint: fingerprint,
+              summaryId: compactRes.latestSummaryId ?? null,
+              model: options.replayModel ?? null,
+            });
           }
           // Use compact's tokensBefore as the authoritative token count for this session.
           // This avoids under-reporting when /ingest returns totalTokens=0 (already-ingested).
@@ -285,13 +390,16 @@ async function ingestSessionList(
           result.totalTokens += res.totalTokens;
         }
       }
-      options.onProgress?.({ completed: result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
+      options.onProgress?.({ completed: processedBase + result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
     } catch (err) {
       result.failed++;
       if (options.replay) previousSummary = undefined; // chain broken by ingest failure
       if (options.verbose) console.log(`  \u274c ${sessionId}: ${err instanceof Error ? err.message : "failed"}`);
-      options.onProgress?.({ completed: result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
+      options.onProgress?.({ completed: processedBase + result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
+    } finally {
+      releaseInFlight?.();
     }
+    lastProcessedSessionId = sessionId;
   }
 }
 

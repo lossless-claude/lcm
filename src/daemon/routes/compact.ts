@@ -245,17 +245,21 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
             : "No compaction needed.";
 
           let latestSummaryContent: string | undefined;
+          let latestSummaryId: string | undefined;
           if (compactResult.createdSummaryId) {
             const summaryRecord = await summaryStore.getSummary(compactResult.createdSummaryId);
             latestSummaryContent = summaryRecord?.content;
+            latestSummaryId = summaryRecord ? compactResult.createdSummaryId : undefined;
           } else if (allSummaries.length > 0) {
             // Fall back to the most recent existing summary when no new summary was created
             latestSummaryContent = allSummaries[allSummaries.length - 1]?.content;
+            latestSummaryId = allSummaries[allSummaries.length - 1]?.summaryId;
           }
 
           return {
             summary: summaryMsg,
             latestSummaryContent,
+            latestSummaryId,
             tokensBefore: compactResult.tokensBefore,
             tokensAfter: compactResult.tokensAfter,
             providerId: effectiveProvider,

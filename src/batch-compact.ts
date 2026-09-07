@@ -5,6 +5,13 @@ import { DatabaseSync } from "node:sqlite";
 import { runLcmMigrations } from "./db/migration.js";
 import type { ProgressState } from "./cli/progress-state.js";
 import { DaemonClient } from "./daemon/client.js";
+import {
+  clearReplayState,
+  createReplayRun,
+  fingerprintStats,
+  planReplayResume,
+  recordReplayProgress,
+} from "./replay-resume.js";
 
 export interface UncompactedConversation {
   projectDir: string;
@@ -88,13 +95,73 @@ export async function batchCompact(opts: {
   port: number;
   cwd?: string;
   replay?: boolean;
+  /** Replay only: discard recorded progress and start from scratch */
+  restart?: boolean;
   verbose?: boolean;
   tokenPath?: string;
+  /** Replay only: model label recorded in the ledger (shown on resume) */
+  replayModel?: string;
   /** Called with state patches as each session is processed — used by the ninja renderer */
   onProgress?: (patch: Partial<ProgressState>) => void;
+  /** Called before each conversation starts; return false to stop the run (e.g. after SIGINT/SIGTERM) */
+  onBeforeSession?: () => boolean;
+  /** Wrap an in-flight conversation's work so signal handlers can wait for it before exiting */
+  trackInFlight?: () => () => void;
 }): Promise<{ compacted: number }> {
-  const conversations = findUncompacted(opts.minTokens, opts.dryRun, opts.cwd, opts.replay);
+  let conversations = findUncompacted(opts.minTokens, opts.dryRun, opts.cwd, opts.replay);
   const onProgress = opts.onProgress;
+
+  // Replay runs are resumable: a per-project manifest freezes the ordering and
+  // a ledger records completed compactions, so a restarted run skips finished work.
+  let replayRuns: Map<string, { runId: string; positions: Map<string, number> }> | null = null;
+  let skippedDone = 0;
+  if (opts.replay && !opts.dryRun && conversations.length > 0) {
+    replayRuns = new Map();
+    const byCwd = new Map<string, UncompactedConversation[]>();
+    for (const conv of conversations) {
+      const list = byCwd.get(conv.cwd) ?? [];
+      list.push(conv);
+      byCwd.set(conv.cwd, list);
+    }
+    const remainingAll: UncompactedConversation[] = [];
+    for (const [cwd, list] of byCwd) {
+      if (opts.restart) {
+        clearReplayState({ cwd, command: "compact" });
+      }
+      const plan = planReplayResume({
+        cwd,
+        command: "compact",
+        sessions: list,
+        fingerprint: (c) => fingerprintStats(c.messages, c.tokens),
+        restart: opts.restart,
+      });
+      const positions = new Map<string, number>();
+      if (plan.previousRunId === null) {
+        createReplayRun({
+          cwd,
+          command: "compact",
+          runId: plan.runId,
+          sessions: list,
+          model: opts.replayModel ?? null,
+        });
+        list.forEach((c, i) => positions.set(c.sessionId, i));
+        remainingAll.push(...list);
+      } else {
+        skippedDone += plan.doneCount;
+        remainingAll.push(...plan.remaining);
+        if (plan.remaining.length > 0 || plan.doneCount > 0) {
+          onProgress?.({
+            resumed: { doneCount: plan.doneCount, totalCount: plan.doneCount + plan.remaining.length, model: plan.previousModel ?? undefined },
+          });
+        }
+        if (plan.changedSessionId !== null) {
+          console.error(`  ⚠️ [replay] conversation for session ${plan.changedSessionId} changed since the previous run; downstream summaries were built on the older version`);
+        }
+      }
+      replayRuns.set(cwd, { runId: plan.runId, positions });
+    }
+    conversations = remainingAll;
+  }
 
   if (conversations.length === 0) {
     console.log("Nothing to compact — all sessions are up to date.");
@@ -105,10 +172,10 @@ export async function batchCompact(opts: {
   console.log(`Found ${conversations.length} uncompacted conversation${conversations.length > 1 ? "s" : ""} (${(totalTokens / 1000).toFixed(1)}k tokens)\n`);
 
   // Notify renderer of total so it can show accurate progress
-  onProgress?.({ total: conversations.length });
+  onProgress?.({ total: conversations.length + skippedDone });
 
   let compacted = 0;
-  let doneCount = 0;
+  let doneCount = skippedDone;
   let messagesIn = 0;
   let tokensIn = 0;
   let tokensOut = 0;
@@ -116,6 +183,10 @@ export async function batchCompact(opts: {
   const client = new DaemonClient(`http://127.0.0.1:${opts.port}`, opts.tokenPath);
 
   for (const conv of conversations) {
+    // Stop starting new work after SIGINT/SIGTERM; the renderer waits for the
+    // in-flight compaction to settle before exiting.
+    if (opts.onBeforeSession && !opts.onBeforeSession()) break;
+
     const label = `${conv.cwd} conv #${conv.conversationId} (${conv.messages} msgs, ${(conv.tokens / 1000).toFixed(1)}k tokens)`;
 
     if (opts.dryRun) {
@@ -128,13 +199,30 @@ export async function batchCompact(opts: {
     const sessionStart = Date.now();
     onProgress?.({ current: { sessionId: conv.sessionId, messages: conv.messages, tokens: conv.tokens, startedAt: sessionStart } });
     process.stdout.write(`  compacting: ${label}...`);
+    const releaseInFlight = opts.trackInFlight ? opts.trackInFlight() : null;
     try {
-      const data = await client.post<{ summary?: string; skipped?: boolean; tokensBefore?: number; tokensAfter?: number; providerLabel?: string }>("/compact", {
+      const data = await client.post<{ summary?: string; skipped?: boolean; tokensBefore?: number; tokensAfter?: number; providerLabel?: string; latestSummaryId?: string }>("/compact", {
         session_id: conv.sessionId,
         cwd: conv.cwd,
         skip_ingest: true,
         client: "claude",
       });
+
+      // Ledger row is written only after the summary is persisted
+      // (latestSummaryId in hand), so a row is durable proof of done work.
+      const run = replayRuns?.get(conv.cwd);
+      if (run) {
+        recordReplayProgress({
+          cwd: conv.cwd,
+          runId: run.runId,
+          sessionId: conv.sessionId,
+          position: run.positions.get(conv.sessionId) ?? 0,
+          prevSessionId: null,
+          contentFingerprint: fingerprintStats(conv.messages, conv.tokens),
+          summaryId: data.latestSummaryId ?? null,
+          model: opts.replayModel ?? null,
+        });
+      }
 
       doneCount++;
       if (data.skipped) {
@@ -186,6 +274,8 @@ export async function batchCompact(opts: {
         errors: progressErrors,
         lastResult: { sessionId: conv.sessionId, messages: conv.messages, tokensBefore: conv.tokens, elapsed: Date.now() - sessionStart },
       });
+    } finally {
+      releaseInFlight?.();
     }
   }
 

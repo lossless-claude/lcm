@@ -304,6 +304,7 @@ async function main() {
     .option("--all", "Compact all tracked projects")
     .option("--dry-run", "Show what would be compacted without writing")
     .option("--replay", "Compact sequentially with threaded context")
+    .option("--restart", "Discard recorded replay progress and start from scratch")
     .option("--no-promote", "Skip the automatic promote step")
     .option("-v, --verbose", "Show per-session token details")
     .addOption(new Option("--hook", "Hook dispatch mode (internal)").hideHelp())
@@ -318,6 +319,7 @@ async function main() {
       const dryRun: boolean = opts.dryRun ?? false;
       const verbose: boolean = opts.verbose ?? false;
       const replay: boolean = opts.replay ?? false;
+      const restart: boolean = opts.restart ?? false;
       // Hook dispatch only when --hook is explicit; all other invocations go to batch.
       const hook: boolean = opts.hook ?? false;
       if (!hook) {
@@ -348,9 +350,17 @@ async function main() {
         const compactRenderer = new NinjaRenderer({ state: compactState, renderOpts });
         compactRenderer.start();
 
+        const replayModel = config.llm.model || undefined;
         const { compacted } = await batchCompact({
-          minTokens, dryRun, port, cwd, replay, verbose, tokenPath,
+          minTokens, dryRun, port, cwd, replay, restart, verbose, tokenPath,
+          replayModel,
+          onBeforeSession: () => !compactRenderer.shouldStop,
+          trackInFlight: () => compactRenderer.trackInFlight(),
           onProgress: (patch) => {
+            if (patch.resumed) {
+              const model = patch.resumed.model ? `, ${patch.resumed.model}` : "";
+              console.log(`  resuming: ${patch.resumed.doneCount}/${patch.resumed.totalCount} done, ${patch.resumed.totalCount - patch.resumed.doneCount} remaining${model}`);
+            }
             Object.assign(compactState, patch);
             if (patch.lastResult) compactRenderer.sessionDone();
           },
@@ -918,6 +928,7 @@ async function main() {
     .option("--verbose", "Show per-session import detail")
     .option("--dry-run", "Preview without importing")
     .option("--replay", "Replay compaction for each imported session")
+    .option("--restart", "Discard recorded replay progress and start from scratch")
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
@@ -929,6 +940,7 @@ async function main() {
       const verbose: boolean = opts.verbose ?? false;
       const dryRun: boolean = opts.dryRun ?? false;
       const replay: boolean = opts.replay ?? false;
+      const restart: boolean = opts.restart ?? false;
 
       const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
       const { DaemonClient } = await import("../src/daemon/client.js");
@@ -996,8 +1008,15 @@ async function main() {
 
       const client = new DaemonClient(`http://127.0.0.1:${port}`);
       const result = await importSessions(client, {
-        all, verbose, dryRun, replay, provider,
+        all, verbose, dryRun, replay, restart, provider,
+        replayModel: config.llm.model || undefined,
+        onBeforeSession: () => !renderer.shouldStop,
+        trackInFlight: () => renderer.trackInFlight(),
         onProgress: (patch) => {
+          if (patch.resumed) {
+            const model = patch.resumed.model ? `, ${patch.resumed.model}` : "";
+            console.log(`  resuming: ${patch.resumed.doneCount}/${patch.resumed.totalCount} done, ${patch.resumed.totalCount - patch.resumed.doneCount} remaining${model}`);
+          }
           Object.assign(state, patch);
           if (patch.lastResult) renderer.sessionDone();
         },

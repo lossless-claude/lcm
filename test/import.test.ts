@@ -2,8 +2,11 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, utimesSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { cwdToProjectHash, findSessionFiles, importSessions } from "../src/import.js";
 import type { DaemonClient } from "../src/daemon/client.js";
+import { runLcmMigrations } from "../src/db/migration.js";
+import { projectId } from "../src/daemon/project.js";
 
 // --- cwdToProjectHash ---
 
@@ -582,6 +585,170 @@ describe("importSessions", () => {
     // Verify the result reflects the skip
     expect(result.skippedEmpty).toBe(1);
     expect(result.imported).toBe(0);
+  });
+});
+
+// --- importSessions replay resume (manifest + ledger) ---
+
+describe("importSessions replay resume", () => {
+  const dirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of dirs) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    dirs.length = 0;
+    vi.restoreAllMocks();
+  });
+
+  function makeTmpDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), "lcm-import-resume-"));
+    dirs.push(dir);
+    return dir;
+  }
+
+  /** Set up a project dir with transcripts and an lcmDir with a migrated project DB. */
+  function setup(cwd: string, sessionIds: string[]): { claudeProjectsDir: string; lcmDir: string; projDir: string } {
+    const claudeProjectsDir = makeTmpDir();
+    const lcmDir = makeTmpDir();
+    const projDir = join(claudeProjectsDir, cwdToProjectHash(cwd));
+    mkdirSync(projDir, { recursive: true });
+    for (const id of sessionIds) {
+      writeFileSync(join(projDir, `${id}.jsonl`), `{"session":"${id}"}\n`);
+    }
+    const dbDir = join(lcmDir, "projects", projectId(cwd));
+    mkdirSync(dbDir, { recursive: true });
+    const db = new DatabaseSync(join(dbDir, "db.sqlite"));
+    runLcmMigrations(db, { fts5Available: false });
+    db.close();
+    return { claudeProjectsDir, lcmDir, projDir };
+  }
+
+  it("second run skips sessions already done in the first run", async () => {
+    const cwd = "/test/resume-skip";
+    const { claudeProjectsDir, lcmDir, projDir } = setup(cwd, ["s1", "s2", "s3"]);
+
+    // First run: s3 fails (simulating a crash/usage-limit before its compact)
+    const first = makeMockClient(async (path: string, body: any) => {
+      if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
+      if (path === "/compact") {
+        if (body.session_id === "s3") throw new Error("usage limit");
+        return {
+          summary: "ok",
+          latestSummaryContent: `summary-of-${body.session_id}`,
+          latestSummaryId: `sum-${body.session_id}`,
+          tokensBefore: 100, tokensAfter: 10,
+        };
+      }
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const r1 = await importSessions(first, {
+      replay: true, cwd,
+      _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir,
+    });
+    expect(r1.resumed).toBeUndefined(); // fresh run — nothing to resume
+
+    // Persist a real summary so resume can restore the chain
+    const dbPath = join(lcmDir, "projects", projectId(cwd), "db.sqlite");
+    const db = new DatabaseSync(dbPath);
+    db.prepare("INSERT INTO conversations (session_id) VALUES ('s2')").run();
+    const conv = db.prepare("SELECT conversation_id FROM conversations WHERE session_id = 's2'").get() as { conversation_id: number };
+    db.prepare("INSERT INTO summaries (summary_id, conversation_id, kind, content, token_count) VALUES ('sum-s2', ?, 'leaf', 'summary-of-s2', 5)").run(conv.conversation_id);
+    db.close();
+
+    // Second run: s1 and s2 must be skipped, s3 retried with restored context
+    const compactBodies: { session_id: string; previous_summary?: string }[] = [];
+    const second = makeMockClient(async (path: string, body: any) => {
+      if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
+      if (path === "/compact") {
+        compactBodies.push({ session_id: body.session_id, previous_summary: body.previous_summary });
+        return { summary: "ok", latestSummaryContent: "summary-of-s3", latestSummaryId: "sum-s3", tokensBefore: 100, tokensAfter: 10 };
+      }
+    });
+    const r2 = await importSessions(second, {
+      replay: true, cwd,
+      _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir,
+    });
+
+    expect(compactBodies).toHaveLength(1);
+    expect(compactBodies[0].session_id).toBe("s3");
+    expect(compactBodies[0].previous_summary).toBe("summary-of-s2");
+    expect(r2.resumed).toBeDefined();
+    expect(r2.resumed?.doneCount).toBe(2);
+    expect(r2.resumed?.totalCount).toBe(3);
+
+    // transcript files untouched — used only for fingerprinting
+    expect(projDir).toBeTruthy();
+  });
+
+  it("restart forces a full re-run and clears recorded progress", async () => {
+    const cwd = "/test/resume-restart";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1"]);
+
+    const first = makeMockClient(async (path: string) => {
+      if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
+      if (path === "/compact") return { summary: "ok", latestSummaryContent: "s", latestSummaryId: "sum-s1" };
+    });
+    await importSessions(first, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+
+    const compactCalls: string[] = [];
+    const second = makeMockClient(async (path: string, body: any) => {
+      if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
+      if (path === "/compact") {
+        compactCalls.push(body.session_id);
+        return { summary: "ok", latestSummaryContent: "s2", latestSummaryId: "sum2-s1" };
+      }
+    });
+    const r2 = await importSessions(second, {
+      replay: true, restart: true, cwd,
+      _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir,
+    });
+
+    expect(compactCalls).toEqual(["s1"]);
+    expect(r2.resumed).toBeUndefined();
+  });
+
+  it("dry-run replay does not write manifests or ledgers", async () => {
+    const cwd = "/test/resume-dryrun";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1"]);
+
+    const client = makeMockClient(async () => ({ ingested: 0, totalTokens: 0 }));
+    await importSessions(client, {
+      replay: true, dryRun: true, cwd,
+      _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir,
+    });
+
+    const db = new DatabaseSync(join(lcmDir, "projects", projectId(cwd), "db.sqlite"));
+    const manifests = db.prepare("SELECT COUNT(*) AS n FROM replay_manifest").get() as { n: number };
+    const ledger = db.prepare("SELECT COUNT(*) AS n FROM replay_ledger").get() as { n: number };
+    db.close();
+    expect(manifests.n).toBe(0);
+    expect(ledger.n).toBe(0);
+  });
+
+  it("stops starting new sessions when onBeforeSession returns false", async () => {
+    const cwd = "/test/resume-abort";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2", "s3"]);
+
+    const compacted: string[] = [];
+    const client = makeMockClient(async (path: string, body: any) => {
+      if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
+      if (path === "/compact") {
+        compacted.push(body.session_id);
+        return { summary: "ok", latestSummaryContent: "s", latestSummaryId: `sum-${body.session_id}` };
+      }
+    });
+
+    let calls = 0;
+    const result = await importSessions(client, {
+      replay: true, cwd,
+      _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir,
+      // Abort after the first session
+      onBeforeSession: () => ++calls <= 1,
+    });
+
+    expect(compacted).toEqual(["s1"]);
+    expect(result.imported).toBe(1);
   });
 });
 
