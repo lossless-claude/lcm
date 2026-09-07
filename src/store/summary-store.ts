@@ -1,5 +1,4 @@
 import type { DatabaseSync } from "node:sqlite";
-import { sanitizeFts5Query } from "./fts5-sanitize.js";
 import {
   prepareFts5Query,
   shouldRetryWithLike,

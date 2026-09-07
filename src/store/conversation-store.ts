@@ -1,6 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
-import { sanitizeFts5Query } from "./fts5-sanitize.js";
 import {
   prepareFts5Query,
   shouldRetryWithLike,

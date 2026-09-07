@@ -93,7 +93,7 @@ function newStemmerProbe(): DatabaseSync {
 const stemEquivalenceCache = new Map<string, boolean>();
 
 function stemsEquivalentCached(probe: DatabaseSync, term: string, surface: string): boolean {
-  const key = `${term}${surface}`;
+  const key = `${term}\u0000${surface}`;
   const cached = stemEquivalenceCache.get(key);
   if (cached !== undefined) return cached;
   const result = stemsEquivalent(probe, term, surface);

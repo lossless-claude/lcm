@@ -1,8 +1,9 @@
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import { projectDbPath, projectId } from "./daemon/project.js";
+import { closeLcmConnection, getLcmConnection } from "./db/connection.js";
 import { runLcmMigrations } from "./db/migration.js";
 import { ConversationStore } from "./store/conversation-store.js";
 import { SummaryStore } from "./store/summary-store.js";
@@ -191,7 +192,7 @@ export async function buildBench(
     };
   }
 
-  const db = new DatabaseSync(dbPath, { readOnly: true });
+  const db = getLcmConnection(dbPath);
   try {
     const convStore = new ConversationStore(db);
     const conversations = (await convStore.listConversations()).filter(
@@ -263,7 +264,7 @@ export async function buildBench(
       stdout: `Wrote ${queries.length} benchmark questions (${bench.generator}) to ${out}\n`,
     };
   } finally {
-    db.close();
+    closeLcmConnection(dbPath);
   }
 }
 
@@ -319,7 +320,7 @@ export async function runBench(opts: BenchOptions): Promise<BenchResult> {
   }
 
   // Migrations may backfill on first open, so this handle is read-write.
-  const db = new DatabaseSync(dbPath);
+  const db = getLcmConnection(dbPath);
   try {
     runLcmMigrations(db);
     const convStore = new ConversationStore(db);
@@ -412,6 +413,6 @@ export async function runBench(opts: BenchOptions): Promise<BenchResult> {
     lines.push(`  full results written to ${resultsPath}`, "");
     return { out: resultsPath, exitCode: 0, stdout: lines.join("\n") };
   } finally {
-    db.close();
+    closeLcmConnection(dbPath);
   }
 }
