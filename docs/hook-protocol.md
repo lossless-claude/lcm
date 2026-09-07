@@ -8,6 +8,12 @@ All hooks receive a JSON object via stdin. lcm hooks are invoked as shell comman
 lcm <hook-command> < <stdin-json>
 ```
 
+## Plugin installations
+
+When installed as a Claude Code plugin, hooks run through the plugin's `lcm.mjs` launcher. The launcher starts the same CLI commands described below and forwards their arguments and stdin payloads.
+
+The launcher now correctly starts the CLI. Previously, plugin hooks could exit silently without restoring context or recording session activity. Update the installed plugin to receive this fix; no hook configuration changes are required.
+
 ## PreCompact Hook
 
 **Command:** `lcm compact --hook`
