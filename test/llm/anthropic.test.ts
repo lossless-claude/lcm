@@ -19,16 +19,28 @@ describe("createAnthropicSummarizer", () => {
     expect(args.system).toBeDefined();
   });
 
-  it("retries once on empty content, then returns", async () => {
+  it("retries on empty content, then returns", async () => {
     const mockCreate = vi.fn()
       .mockResolvedValueOnce({ content: [] })
       .mockResolvedValueOnce({ content: [{ type: "text", text: "Retry." }] });
     const summarizer = createAnthropicSummarizer({
       model: "claude-haiku-4-5-20251001", apiKey: "sk-test",
       _clientOverride: { messages: { create: mockCreate } } as any,
+      _retryDelayMs: 0,
     });
     expect(await summarizer("text", false)).toBe("Retry.");
     expect(mockCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws after retries when content stays empty instead of echoing the input", async () => {
+    const mockCreate = vi.fn().mockResolvedValue({ content: [] });
+    const summarizer = createAnthropicSummarizer({
+      model: "claude-haiku-4-5-20251001", apiKey: "sk-test",
+      _clientOverride: { messages: { create: mockCreate } } as any,
+      _retryDelayMs: 0,
+    });
+    await expect(summarizer("x".repeat(600), false)).rejects.toThrow("empty content");
+    expect(mockCreate).toHaveBeenCalledTimes(3);
   });
 
   it("throws immediately on 401 auth error", async () => {

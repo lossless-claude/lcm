@@ -5,6 +5,7 @@ import {
   buildLeafSummaryPrompt,
   buildCondensedSummaryPrompt,
   resolveTargetTokens,
+  resolveMaxOutputTokens,
 } from "../summarize.js";
 
 type OpenAISummarizerOptions = {
@@ -50,7 +51,7 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
       try {
         const response = await client.chat.completions.create({
           model: opts.model,
-          max_tokens: 1024,
+          max_tokens: resolveMaxOutputTokens(targetTokens),
           // Merge system content into user message for compatibility with local
           // servers (e.g. MLX/llama.cpp) that don't support role:"system".
           messages: [
@@ -59,7 +60,10 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
         });
 
         const textContent = response.choices[0]?.message?.content ?? "";
-        return textContent || text.slice(0, 500);
+        // Empty content is a failure, not a summary: falling back to a slice of
+        // the input would persist raw conversation text as a fake summary.
+        if (!textContent) throw new Error("summarizer returned empty content");
+        return textContent;
       } catch (err: any) {
         if (err?.status === 401) throw err; // auth error: no retry
         lastError = err;

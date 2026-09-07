@@ -4,6 +4,7 @@ import {
   buildLeafSummaryPrompt,
   buildCondensedSummaryPrompt,
   resolveTargetTokens,
+  resolveMaxOutputTokens,
 } from "../../src/summarize.js";
 
 describe("summarize exports", () => {
@@ -19,6 +20,11 @@ describe("summarize exports", () => {
   it("buildCondensedSummaryPrompt returns non-empty string", () => {
     const p = buildCondensedSummaryPrompt({ text: "Summaries", targetTokens: 200, depth: 2 });
     expect(typeof p).toBe("string");
+  });
+  it("resolveMaxOutputTokens never caps below the target", () => {
+    expect(resolveMaxOutputTokens(192)).toBe(1024);
+    expect(resolveMaxOutputTokens(1200)).toBe(2400);
+    expect(resolveMaxOutputTokens(2000)).toBe(4000);
   });
   it("resolveTargetTokens returns number", () => {
     expect(typeof resolveTargetTokens({ inputTokens: 1000, mode: "normal", isCondensed: false, condensedTargetTokens: 2000 })).toBe("number");

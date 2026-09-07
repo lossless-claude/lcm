@@ -4,6 +4,7 @@ import {
   buildLeafSummaryPrompt,
   buildCondensedSummaryPrompt,
   resolveTargetTokens,
+  resolveMaxOutputTokens,
 } from "../summarize.js";
 import type { LcmSummarizeFn, SummarizeContext } from "./types.js";
 
@@ -44,25 +45,16 @@ export function createAnthropicSummarizer(opts: SummarizerOptions): LcmSummarize
       try {
         const response = await client.messages.create({
           model: opts.model,
-          max_tokens: 1024,
+          max_tokens: resolveMaxOutputTokens(targetTokens),
           system: ctx.taskPrompt ?? LCM_SUMMARIZER_SYSTEM_PROMPT,
           messages: [{ role: "user", content: prompt }],
         });
 
         const textContent = response.content.find((c: any) => c.type === "text")?.text ?? "";
-
-        if (!textContent && attempt === 0) {
-          // Single retry on empty response
-          const retry = await client.messages.create({
-            model: opts.model,
-            max_tokens: 1024,
-            system: ctx.taskPrompt ?? LCM_SUMMARIZER_SYSTEM_PROMPT,
-            messages: [{ role: "user", content: prompt }],
-          });
-          return retry.content.find((c: any) => c.type === "text")?.text ?? text.slice(0, 500);
-        }
-
-        return textContent || text.slice(0, 500);
+        // Empty content is a failure, not a summary: falling back to a slice of
+        // the input would persist raw conversation text as a fake summary.
+        if (!textContent) throw new Error("summarizer returned empty content");
+        return textContent;
       } catch (err: any) {
         if (err?.status === 401) throw err; // auth error: no retry
         lastError = err;
