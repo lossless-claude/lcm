@@ -12,6 +12,8 @@ import {
   clearReplayState,
   createReplayRun,
   fingerprintFile,
+  isClientGaveUpError,
+  loadLatestSessionSummary,
   planReplayResume,
   recordReplayProgress,
 } from "./replay-resume.js";
@@ -499,12 +501,40 @@ async function ingestSessionList(
             }
           }
         } catch (err) {
-          // Non-fatal: import succeeded; compact failure breaks the chain at this link.
-          previousSummaryByCwd.set(cwd, undefined);
-          lastCompactedSessionIdByCwd.set(cwd, null);
-          // Always warn on chain breakage so users know the DAG is incomplete,
-          // regardless of whether --verbose was passed.
-          console.error(`  \u26a0\ufe0f [replay] compact failed for session ${sessionId}: ${err instanceof Error ? err.message : 'unknown error'}`);
+          // Non-fatal: import succeeded. The chain follows what was persisted:
+          // when the client merely gave up (timeout/abort) the daemon may have
+          // stored the summary anyway, so re-read it; when nothing is stored
+          // yet keep the previous link rather than summarising the next session
+          // blind. A real daemon failure breaks the chain at this link.
+          // Warnings print regardless of --verbose so users know the DAG state.
+          const gaveUp = isClientGaveUpError(err);
+          const recovered = gaveUp
+            ? await loadLatestSessionSummary({ cwd, lcmDir: options._lcmDir, sessionId })
+            : null;
+          if (recovered) {
+            previousSummaryByCwd.set(cwd, recovered.content);
+            const runId = replayRuns.get(cwd);
+            if (runId !== undefined) {
+              recordReplayProgress({
+                cwd,
+                lcmDir: options._lcmDir,
+                runId,
+                sessionId,
+                position: ledgerPositions.get(cwd)?.get(sessionId) ?? 0,
+                contentFingerprint: inputFingerprint,
+                summaryId: recovered.summaryId,
+                outcome: "compacted",
+                model: options.replayModel ?? null,
+              });
+            }
+            console.error(`  \u26a0\ufe0f [replay] compact call gave up for session ${sessionId} (${err instanceof Error ? err.message : 'unknown error'}) but its summary was stored; chain continues`);
+          } else if (gaveUp) {
+            console.error(`  \u26a0\ufe0f [replay] compact call gave up for session ${sessionId} (${err instanceof Error ? err.message : 'unknown error'}) and no summary was found; chain skips this session`);
+          } else {
+            previousSummaryByCwd.set(cwd, undefined);
+            lastCompactedSessionIdByCwd.set(cwd, null);
+            console.error(`  \u26a0\ufe0f [replay] compact failed for session ${sessionId}: ${err instanceof Error ? err.message : 'unknown error'}`);
+          }
           if (err instanceof Error) {
             const llmUsage = (err as Error & { body?: { llmUsage?: CompactLlmUsage } }).body?.llmUsage;
             accumulateReplayUsage(result, llmUsage);

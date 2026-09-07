@@ -502,6 +502,45 @@ export function planReplayResume<T extends { sessionId: string; cwd: string }>(o
 }
 
 /**
+ * True when the client gave up on a daemon call (timeout/abort) rather than
+ * the daemon reporting a failure. DaemonClient preserves these error names.
+ */
+export function isClientGaveUpError(err: unknown): boolean {
+  return err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+}
+
+/**
+ * Latest persisted summary for a session, read straight from the project DB.
+ *
+ * Used when the client gave up on a /compact call (timeout/abort) but the
+ * daemon may have finished the work anyway: the chain follows what was
+ * persisted, not whether the HTTP call returned in time. Ordering mirrors the
+ * daemon's own "latest summary" fallback (`getSummariesByConversation`, last).
+ */
+export async function loadLatestSessionSummary(opts: {
+  cwd: string;
+  lcmDir?: string;
+  sessionId: string;
+}): Promise<{ summaryId: string; content: string } | null> {
+  const opened = openProjectDb(projectDbPathFor(opts.cwd, opts.lcmDir));
+  if (opened.kind !== "ready") return null;
+  const { db } = opened;
+  try {
+    const conv = db
+      .prepare("SELECT conversation_id FROM conversations WHERE session_id = ?")
+      .get(opts.sessionId) as { conversation_id: number } | undefined;
+    if (!conv) return null;
+    const summaries = await new SummaryStore(db).getSummariesByConversation(conv.conversation_id);
+    const latest = summaries[summaries.length - 1];
+    return latest ? { summaryId: latest.summaryId, content: latest.content } : null;
+  } catch {
+    return null;
+  } finally {
+    closeDb(opened);
+  }
+}
+
+/**
  * Record a completed session compaction.
  *
  * `outcome` distinguishes a session that produced a summary from one that had

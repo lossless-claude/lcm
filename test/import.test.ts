@@ -898,6 +898,76 @@ describe("importSessions replay resume", () => {
     expect(compacted).toEqual(["s1"]);
     expect(result.imported).toBe(1);
   });
+
+  function timeoutError(): Error {
+    const err = new Error("fetch failed");
+    err.name = "TimeoutError";
+    return err;
+  }
+
+  function persistSummary(lcmDir: string, cwd: string, sessionId: string, summaryId: string, content: string): void {
+    const db = new DatabaseSync(join(lcmDir, "projects", projectId(cwd), "db.sqlite"));
+    db.prepare("INSERT INTO conversations (session_id) VALUES (?)").run(sessionId);
+    const conv = db.prepare("SELECT conversation_id FROM conversations WHERE session_id = ?").get(sessionId) as { conversation_id: number };
+    db.prepare("INSERT INTO summaries (summary_id, conversation_id, kind, content, token_count) VALUES (?, ?, 'leaf', ?, 5)").run(summaryId, conv.conversation_id, content);
+    db.close();
+  }
+
+  it("a timed-out compact whose summary was stored keeps the chain and records the ledger row", async () => {
+    const cwd = "/test/timeout-stored";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2", "s3"]);
+    const stderrLines: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: any[]) => { stderrLines.push(args.join(" ")); });
+
+    const compactBodies: { session_id: string; previous_summary?: string }[] = [];
+    const client = makeMockClient(async (path: string, body: any) => {
+      if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
+      if (path === "/compact") {
+        compactBodies.push({ session_id: body.session_id, previous_summary: body.previous_summary });
+        if (body.session_id === "s2") {
+          // Daemon finished and stored the summary, but the client gave up waiting.
+          persistSummary(lcmDir, cwd, "s2", "sum-s2", "summary-of-s2");
+          throw timeoutError();
+        }
+        return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: `summary-of-${body.session_id}`, latestSummaryId: `sum-${body.session_id}`, tokensBefore: 100, tokensAfter: 10 };
+      }
+    });
+    await importSessions(client, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+
+    expect(compactBodies.map((b) => b.previous_summary)).toEqual([undefined, "summary-of-s1", "summary-of-s2"]);
+    expect(stderrLines.some((l) => l.includes("s2") && l.includes("chain continues"))).toBe(true);
+
+    const db = new DatabaseSync(join(lcmDir, "projects", projectId(cwd), "db.sqlite"));
+    const row = db.prepare("SELECT summary_id FROM replay_ledger WHERE session_id = 's2'").get() as { summary_id: string } | undefined;
+    db.close();
+    expect(row?.summary_id).toBe("sum-s2");
+  });
+
+  it("a timed-out compact with no stored summary keeps the previous link instead of blanking it", async () => {
+    const cwd = "/test/timeout-missing";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2", "s3"]);
+    const stderrLines: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: any[]) => { stderrLines.push(args.join(" ")); });
+
+    const compactBodies: { session_id: string; previous_summary?: string }[] = [];
+    const client = makeMockClient(async (path: string, body: any) => {
+      if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
+      if (path === "/compact") {
+        compactBodies.push({ session_id: body.session_id, previous_summary: body.previous_summary });
+        if (body.session_id === "s2") throw timeoutError();
+        return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: `summary-of-${body.session_id}`, latestSummaryId: `sum-${body.session_id}`, tokensBefore: 100, tokensAfter: 10 };
+      }
+    });
+    await importSessions(client, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+
+    expect(compactBodies.map((b) => b.previous_summary)).toEqual([undefined, "summary-of-s1", "summary-of-s1"]);
+    expect(stderrLines.some((l) => l.includes("s2") && l.includes("chain skips"))).toBe(true);
+
+    const db = new DatabaseSync(join(lcmDir, "projects", projectId(cwd), "db.sqlite"));
+    const row = db.prepare("SELECT COUNT(*) AS n FROM replay_ledger WHERE session_id = 's2'").get() as { n: number };
+    db.close();
+    expect(row.n).toBe(0);
+  });
 });
 
 // --- importSessions with provider: "codex" ---
