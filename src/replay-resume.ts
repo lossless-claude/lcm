@@ -532,6 +532,14 @@ export function isClientGaveUpError(err: unknown): boolean {
  * seconds, UTC), so `notBefore` is rounded DOWN to the second: a summary
  * persisted later in the same second the call started is still recovered,
  * while anything from an earlier second is certainly stale.
+ *
+ * Returns three distinct token metrics that callers must not conflate:
+ * - `sourceMessageTokenCount`: tokens of the messages folded into this one
+ *   summary (not the conversation's total).
+ * - `summaryTokenCount`: size of the summary text itself.
+ * - `contextTokenCount`: the conversation's current total context tokens
+ *   (tail messages + summaries), i.e. the same metric `/compact` reports as
+ *   `tokensAfter`.
  */
 export async function loadLatestSessionSummary(opts: {
   cwd: string;
@@ -539,7 +547,13 @@ export async function loadLatestSessionSummary(opts: {
   sessionId: string;
   /** Epoch ms; only summaries persisted at or after this time are returned. */
   notBefore?: number;
-}): Promise<{ summaryId: string; content: string; tokenCount: number; sourceMessageTokenCount: number } | null> {
+}): Promise<{
+  summaryId: string;
+  content: string;
+  summaryTokenCount: number;
+  sourceMessageTokenCount: number;
+  contextTokenCount: number;
+} | null> {
   const opened = openProjectDb(projectDbPathFor(opts.cwd, opts.lcmDir));
   if (opened.kind !== "ready") {
     if (opened.kind === "error") {
@@ -553,7 +567,8 @@ export async function loadLatestSessionSummary(opts: {
       .prepare("SELECT conversation_id FROM conversations WHERE session_id = ?")
       .get(opts.sessionId) as { conversation_id: number } | undefined;
     if (!conv) return null;
-    let summaries = await new SummaryStore(db).getSummariesByConversation(conv.conversation_id);
+    const summaryStore = new SummaryStore(db);
+    let summaries = await summaryStore.getSummariesByConversation(conv.conversation_id);
     if (opts.notBefore !== undefined) {
       // created_at has whole-second precision; floor the boundary so a summary
       // persisted later in the same second the call started is not excluded.
@@ -561,14 +576,15 @@ export async function loadLatestSessionSummary(opts: {
       summaries = summaries.filter((s) => s.createdAt >= cutoff);
     }
     const latest = summaries[summaries.length - 1];
-    return latest
-      ? {
-          summaryId: latest.summaryId,
-          content: latest.content,
-          tokenCount: latest.tokenCount,
-          sourceMessageTokenCount: latest.sourceMessageTokenCount,
-        }
-      : null;
+    if (!latest) return null;
+    const contextTokenCount = await summaryStore.getContextTokenCount(conv.conversation_id);
+    return {
+      summaryId: latest.summaryId,
+      content: latest.content,
+      summaryTokenCount: latest.tokenCount,
+      sourceMessageTokenCount: latest.sourceMessageTokenCount,
+      contextTokenCount,
+    };
   } catch (err) {
     console.error(`  ⚠️ [replay] could not read latest summary for session ${opts.sessionId}: ${err instanceof Error ? err.message : String(err)}`);
     return null;

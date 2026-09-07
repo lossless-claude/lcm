@@ -706,6 +706,11 @@ describe("importSessions replay resume", () => {
       const msg = db.prepare("SELECT MAX(message_id) AS id FROM messages WHERE conversation_id = ?").get(conv.conversation_id) as { id: number };
       db.prepare("INSERT INTO summary_messages (summary_id, message_id, ordinal) VALUES (?, ?, 0)").run(summaryId, msg.id);
     }
+    // Link the summary into context_items, like the daemon does when it
+    // persists a compaction summary — this is what getContextTokenCount sums.
+    db.prepare(
+      "INSERT INTO context_items (conversation_id, ordinal, item_type, summary_id) VALUES (?, (SELECT COALESCE(MAX(ordinal), -1) + 1 FROM context_items WHERE conversation_id = ?), 'summary', ?)",
+    ).run(conv.conversation_id, conv.conversation_id, summaryId);
     db.close();
   }
 
@@ -1116,6 +1121,28 @@ describe("importSessions replay resume", () => {
     // Ledger and chain record the compaction, and the run summary counts the
     // recovered summary's tokens instead of silently falling back to ingest's.
     expect(result.totalTokens).toBe(400);
+    expect(result.tokensAfter).toBe(12);
+  });
+
+  it("a recovered summary with sourceMessageTokenCount=0 falls back to ingest's totalTokens", async () => {
+    const cwd = "/test/timeout-tokens-zero-source";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1"]);
+    const stderrLines: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: any[]) => { stderrLines.push(args.join(" ")); });
+
+    const client = makeMockClient(async (path: string, body: any) => {
+      if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
+      if (path === "/compact") {
+        // Recovered summary has no linked source messages (e.g. missing
+        // links/backfill results), so sourceMessageTokenCount is 0.
+        persistSummary(lcmDir, cwd, body.session_id, "sum-s1", "summary-of-s1", { tokenCount: 12, sourceMessageTokenCount: 0 });
+        throw timeoutError();
+      }
+    });
+    const result = await importSessions(client, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+
+    // Without the fallback these tokens would be silently lost (0 added).
+    expect(result.totalTokens).toBe(100);
     expect(result.tokensAfter).toBe(12);
   });
 

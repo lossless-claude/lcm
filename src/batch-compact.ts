@@ -386,8 +386,12 @@ export async function batchCompact(opts: {
           // count it too — otherwise ledger and summary disagree.
           compacted++;
           messagesIn += conv.messages;
-          tokensIn += recovered.sourceMessageTokenCount > 0 ? recovered.sourceMessageTokenCount : conv.tokens;
-          tokensOut += recovered.tokenCount;
+          // recovered.sourceMessageTokenCount is only the tokens folded into this
+          // one summary, not the conversation's total context before compaction;
+          // conv.tokens (raw_tokens) is the same proxy used for tokensBefore on
+          // the success path above.
+          tokensIn += conv.tokens;
+          tokensOut += recovered.contextTokenCount;
           chainNote = "; summary was stored, chain continues";
         } else if (gaveUp) {
           chainNote = "; no summary found, chain skips this session";

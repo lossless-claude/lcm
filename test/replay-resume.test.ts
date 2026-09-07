@@ -491,8 +491,11 @@ describe("loadLatestSessionSummary", () => {
     const latest = await loadLatestSessionSummary({ cwd, lcmDir, sessionId: "s1" });
     expect(latest?.summaryId).toBe("sum-2");
     expect(latest?.content).toBe("latest");
-    expect(latest?.tokenCount).toBe(42);
+    expect(latest?.summaryTokenCount).toBe(42);
     expect(latest?.sourceMessageTokenCount).toBe(900);
+    // Context tokens (both summaries' token_count, since both are linked into
+    // context_items) is a distinct metric from either summary's own tokenCount.
+    expect(latest?.contextTokenCount).toBe(52);
   });
 
   it("returns null when the session has no summary", async () => {

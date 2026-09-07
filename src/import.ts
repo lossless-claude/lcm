@@ -536,8 +536,11 @@ async function ingestSessionList(
             }
             // The ledger records this as compacted, so the run summary must
             // count its tokens too — otherwise ledger and summary disagree.
-            result.totalTokens += recovered.sourceMessageTokenCount;
-            result.tokensAfter += recovered.tokenCount;
+            // sourceMessageTokenCount can be 0 (e.g. missing links/backfill
+            // results); fall back to the ingest's totalTokens so tokens aren't
+            // silently dropped from the run total.
+            result.totalTokens += recovered.sourceMessageTokenCount > 0 ? recovered.sourceMessageTokenCount : res.totalTokens;
+            result.tokensAfter += recovered.contextTokenCount;
             console.error(`  \u26a0\ufe0f [replay] compact call gave up for session ${sessionId} (${err instanceof Error ? err.message : 'unknown error'}) but its summary was stored; chain continues`);
           } else if (gaveUp) {
             console.error(`  \u26a0\ufe0f [replay] compact call gave up for session ${sessionId} (${err instanceof Error ? err.message : 'unknown error'}) and no summary was found; chain skips this session`);
