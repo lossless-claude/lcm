@@ -64,10 +64,11 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
       }
       const orientation = buildOrientationPrompt();
 
-      // Post-compaction detection
+      // Explicit session lifecycle sources override the recent-compaction fallback.
+      const isExplicitNonCompact = source === "startup" || source === "resume" || source === "clear";
       const isPostCompact =
         source === "compact" ||
-        (justCompactedMap.has(session_id) && Date.now() - justCompactedMap.get(session_id)! < JUST_COMPACTED_TTL_MS);
+        (!isExplicitNonCompact && justCompactedMap.has(session_id) && Date.now() - justCompactedMap.get(session_id)! < JUST_COMPACTED_TTL_MS);
 
       // Only post-compaction restore consumes the saved instructions.
       let instructionsContext = "";

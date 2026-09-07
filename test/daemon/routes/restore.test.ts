@@ -9,6 +9,7 @@ import { runLcmMigrations } from "../../../src/db/migration.js";
 import { projectDbPath } from "../../../src/daemon/project.js";
 import { PromotedStore } from "../../../src/db/promoted.js";
 import { getLcmConnection, closeLcmConnection, getPoolStats } from "../../../src/db/connection.js";
+import { justCompactedMap } from "../../../src/daemon/routes/compact.js";
 
 describe("POST /restore", () => {
   let daemon: DaemonInstance | undefined;
@@ -141,6 +142,47 @@ describe("POST /restore", () => {
       const compactBody = await compactRes.json();
       expect(compactBody.context).toContain("<project-instructions>");
       expect(compactBody.context).toContain("Prefer tabs over spaces.");
+    });
+
+    it.each(["startup", "resume", "clear", undefined])("honors source %s when a recent compaction marker exists", async (source) => {
+      const sessionId = `recent-compact-${source ?? "missing"}`;
+      writeFileSync(join(tmpDir, "CLAUDE.md"), "Saved instructions.", "utf8");
+      daemon = await createDaemon(loadDaemonConfig(tmpDir, { daemon: { port: 0 } }));
+      const url = `http://127.0.0.1:${daemon.address().port}/restore`;
+      const seedRes = await fetch(url, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, cwd: tmpDir, source: "startup" }),
+      });
+      expect(seedRes.status).toBe(200);
+      await seedRes.json();
+      writeFileSync(join(tmpDir, "CLAUDE.md"), "Updated instructions.", "utf8");
+
+      justCompactedMap.set(sessionId, Date.now());
+      try {
+        const res = await fetch(url, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionId, cwd: tmpDir, source }),
+        });
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        if (source === undefined) {
+          expect(body.context).toContain("<project-instructions>");
+          expect(body.context).toContain("Saved instructions.");
+        } else {
+          expect(body.context).not.toContain("<project-instructions>");
+        }
+
+        // Explicit non-compact sources still refresh the snapshot; fallback only replays it.
+        const compactRes = await fetch(url, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionId, cwd: tmpDir, source: "compact" }),
+        });
+        expect(compactRes.status).toBe(200);
+        const compactBody = await compactRes.json();
+        expect(compactBody.context).toContain(source === undefined ? "Saved instructions." : "Updated instructions.");
+      } finally {
+        justCompactedMap.delete(sessionId);
+      }
     });
 
     it("releases restore connection references without closing another caller's connection", async () => {
