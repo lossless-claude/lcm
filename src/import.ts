@@ -255,7 +255,7 @@ async function ingestSessionList(
   const manifestForNewRun = new Map<string, SessionEntry[]>(); // cwd → sessions to freeze
   let doneCount = 0;
   let previousSummary: string | undefined;
-  let lastProcessedSessionId: string | null = null;
+  const lastProcessedSessionIdByCwd = new Map<string, string | null>();
 
   if (options.replay && !options.dryRun && sessions.length > 0) {
     if (options.restart) {
@@ -412,7 +412,7 @@ async function ingestSessionList(
               runId,
               sessionId,
               position: ledgerPositions.get(cwd)?.get(sessionId) ?? 0,
-              prevSessionId: lastProcessedSessionId,
+              prevSessionId: lastProcessedSessionIdByCwd.get(cwd) ?? null,
               contentFingerprint: fingerprint,
               summaryId: compactRes.latestSummaryId ?? null,
               model: options.replayModel ?? null,
@@ -459,7 +459,7 @@ async function ingestSessionList(
     } finally {
       releaseInFlight?.();
     }
-    lastProcessedSessionId = sessionId;
+    lastProcessedSessionIdByCwd.set(cwd, sessionId);
   }
 }
 

@@ -14,12 +14,12 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { projectId } from "./daemon/project.js";
-import { runLcmMigrations, withForeignKeysDisabled } from "./db/migration.js";
+import { runLcmMigrations } from "./db/migration.js";
 
 export type ReplayCommand = "import" | "compact";
 
@@ -50,7 +50,7 @@ interface ProjectPlan<T extends { sessionId: string }> {
   positions: Map<string, number>;
   restoredPreviousSummary: string | undefined;
   droppedPreviousSummary: string | undefined;
-  changedSessionId: string | null;
+  changedSessionIds: string[];
 }
 
 export interface ReplayResumePlan<T extends { sessionId: string }> {
@@ -86,9 +86,17 @@ export function replayRunId(): string {
  */
 export function fingerprintFile(path: string): string {
   const st = statSync(path);
-  const buf = readFileSync(path);
   let lines = 0;
-  for (const b of buf) if (b === 0x0a) lines++;
+  const fd = openSync(path, "r");
+  try {
+    const chunk = Buffer.alloc(64 * 1024);
+    let bytesRead: number;
+    while ((bytesRead = readSync(fd, chunk, 0, chunk.length, null)) > 0) {
+      for (let i = 0; i < bytesRead; i++) if (chunk[i] === 0x0a) lines++;
+    }
+  } finally {
+    closeSync(fd);
+  }
   return `${st.size}:${lines}:${Math.floor(st.mtimeMs)}`;
 }
 
@@ -106,8 +114,9 @@ const migratedDbPaths = new Set<string>();
 
 function openProjectDb(dbPath: string): DatabaseSync | null {
   if (!existsSync(dbPath)) return null;
+  let db: DatabaseSync | null = null;
   try {
-    const db = new DatabaseSync(dbPath);
+    db = new DatabaseSync(dbPath);
     db.exec("PRAGMA busy_timeout = 5000");
     if (!migratedDbPaths.has(dbPath)) {
       // The daemon may hold connections opened before the replay tables
@@ -119,6 +128,7 @@ function openProjectDb(dbPath: string): DatabaseSync | null {
     db.prepare("SELECT 1 FROM replay_ledger LIMIT 1").get();
     return db;
   } catch {
+    closeDb(db);
     return null;
   }
 }
@@ -233,7 +243,7 @@ function planProject<T extends { sessionId: string }>(opts: {
     positions: new Map(),
     restoredPreviousSummary: undefined,
     droppedPreviousSummary: undefined,
-    changedSessionId: null,
+    changedSessionIds: [],
   };
 
   const db = openProjectDb(projectDbPathFor(opts.cwd, opts.lcmDir));
@@ -250,7 +260,7 @@ function planProject<T extends { sessionId: string }>(opts: {
 
     const doneRows: { position: number; entry: ReplayLedgerEntry }[] = [];
     const remaining: T[] = [];
-    let changedSessionId: string | null = null;
+    const changedSessionIds: string[] = [];
 
     for (const session of opts.sessions) {
       const entry = ledger.get(session.sessionId);
@@ -259,8 +269,8 @@ function planProject<T extends { sessionId: string }>(opts: {
       if (entry && fp !== null && entry.contentFingerprint === fp) {
         doneRows.push({ position: positionOf.get(session.sessionId) ?? entry.position, entry });
       } else {
-        if (entry && fp !== null && entry.contentFingerprint !== fp && changedSessionId === null) {
-          changedSessionId = session.sessionId;
+        if (entry && fp !== null && entry.contentFingerprint !== fp) {
+          changedSessionIds.push(session.sessionId);
         }
         remaining.push(session);
       }
@@ -302,7 +312,7 @@ function planProject<T extends { sessionId: string }>(opts: {
       positions: positionOf,
       restoredPreviousSummary: restored,
       droppedPreviousSummary: dropped,
-      changedSessionId,
+      changedSessionIds,
     };
   } catch {
     return null;
@@ -369,7 +379,7 @@ export function planReplayResume<T extends { sessionId: string; cwd: string }>(o
       positions: new Map<string, number>(),
       restoredPreviousSummary: undefined,
       droppedPreviousSummary: undefined,
-      changedSessionId: null,
+      changedSessionIds: [],
     };
 
     plan.runIds.set(cwd, project.runId);
@@ -381,7 +391,7 @@ export function planReplayResume<T extends { sessionId: string; cwd: string }>(o
       plan.manifests.set(cwd, [...project.positions.entries()].sort((a, b) => a[1] - b[1]).map(([sid]) => sid));
       plan.doneCount += project.doneCount;
       if (project.previousModel) plan.previousModel = project.previousModel;
-      if (project.changedSessionId) plan.changedSessionIds.push(project.changedSessionId);
+      if (project.changedSessionIds.length > 0) plan.changedSessionIds.push(...project.changedSessionIds);
       if (project.restoredPreviousSummary !== undefined || project.droppedPreviousSummary !== undefined) {
         const anchor = project.remaining.length > 0 ? project.remaining[0] : sessions[sessions.length - 1];
         chainCandidates.push({
