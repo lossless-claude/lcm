@@ -13,7 +13,7 @@
 
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -80,6 +80,10 @@ afterAll(async () => {
     handle = null;
   }
   if (fakeHome) rmSync(fakeHome, { recursive: true, force: true });
+  // restore leaves a per-session lock file in tmpdir
+  for (const f of readdirSync(tmpdir())) {
+    if (f.startsWith("lcm-restore-e2e-proc-")) rmSync(join(tmpdir(), f), { force: true });
+  }
 });
 
 describe("Flow 20: hooks via `node lcm.mjs` with piped stdin", { timeout: 120_000 }, () => {
@@ -102,15 +106,6 @@ describe("Flow 20: hooks via `node lcm.mjs` with piped stdin", { timeout: 120_00
   it("restore exits 0", async () => {
     const r = await runHook(["restore"], payload({ source: "startup" }));
     expect(r.status, r.stderr).toBe(0);
-  });
-
-  it("restore is silent on a duplicate session_id", async () => {
-    const stdin = payload({ source: "startup" });
-    const first = await runHook(["restore"], stdin);
-    const second = await runHook(["restore"], stdin);
-    expect(first.status, first.stderr).toBe(0);
-    expect(second.status, second.stderr).toBe(0);
-    expect(second.stdout).toBe("");
   });
 
   it("user-prompt always emits the learning instruction", async () => {

@@ -18,7 +18,7 @@ The launcher now correctly starts the CLI. Previously, plugin hooks could exit s
 
 **Command:** `lcm compact --hook`
 
-Invoked by Claude Code before it runs its built-in compaction. lcm writes a DAG summary of the session and prints it on stdout so it is preserved alongside Claude Code's own compaction. The hook always exits `0`; it never replaces or blocks the built-in compaction. Empty stdout means lcm deferred (daemon unavailable or nothing to compact).
+Invoked by Claude Code before it runs its built-in compaction. lcm writes a DAG summary of the session and prints it on stdout. The hook always exits `0`; it never blocks or replaces the built-in compaction. Empty stdout means lcm deferred (daemon unavailable or nothing to compact).
 
 **Stdin fields:**
 
