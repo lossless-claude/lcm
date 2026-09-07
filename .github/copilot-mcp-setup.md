@@ -52,7 +52,7 @@ The tool list is read-only on purpose: `index_repository`, `manage_adr`, `ingest
 
 ## Why MCP and not the CLI
 
-The CLI would be preferable — it would live entirely in the repo, be reviewable in a PR, and testable on a branch. But GitHub documents the reviewer's agentic surface as *full project context gathering* and *passing suggestions to the cloud agent*, with tool use defined as MCP servers plus agent skills. There is no documented way for a review to run a shell command, so there is nowhere for a CLI call to execute.
+The CLI would live entirely in the repo — reviewable and testable on a branch. But GitHub documents the reviewer's tool surface as MCP servers plus agent skills, with no shell, so a CLI call would have nowhere to execute.
 
 ## One workflow, both agents
 
@@ -61,9 +61,7 @@ The MCP registration is shared by Copilot code review and Copilot cloud agent, b
 - `copilot-setup-steps.yml` — used by the cloud agent, **and by code review when `copilot-code-review.yml` is absent**.
 - `copilot-code-review.yml` — used by code review instead, when present.
 
-So this repo deliberately keeps **only `copilot-setup-steps.yml`**. Both agents get the same binary and the same index, and there is no second file to forget when the version is bumped. Add `copilot-code-review.yml` only if the two ever genuinely need different environments.
-
-Giving the cloud agent the graph is arguably the more valuable half. On #302 it reported four Codex findings as fixed that were still open on the next round — the kind of thing `trace_path` exists to catch. `.github/copilot-instructions.md` tells it to verify findings against the graph before claiming them closed.
+This repo keeps **only `copilot-setup-steps.yml`**, so both agents share one binary and one index, and there is no second file to forget when the version is bumped. Add `copilot-code-review.yml` only if the two ever need different environments.
 
 ## Verifying it works
 

@@ -2,16 +2,16 @@
 
 This repo is a TypeScript SQLite daemon that persists Claude session memories across context resets. It uses Node.js `DatabaseSync` (synchronous SQLite API) and exposes an HTTP daemon with REST routes.
 
-## Use the codebase-memory MCP server
+## codebase-memory MCP
 
-A `codebase-memory` MCP server is available, preloaded with a graph of this codebase by `.github/workflows/copilot-setup-steps.yml`. **Use it before claiming a change is complete.**
+A `codebase-memory` MCP server is preloaded with a graph of this repo.
 
-- `list_projects` first — the project name comes from the checkout path, so do not guess it.
-- `trace_path` before changing any signature, return shape, or column: it answers "what else depends on this?" A claim that nothing else is affected is not credible without it.
-- `search_graph` to locate a symbol, `get_code_snippet` for its exact source, `query_graph` for multi-hop questions.
+- `list_projects` first — the project name comes from the checkout path; never guess it.
+- `trace_path` before changing any signature, return shape, or schema column. "Nothing else depends on this" is not a claim you may make without it.
+- `search_graph` to find a symbol, `get_code_snippet` for its source, `query_graph` for multi-hop questions.
 - `search_code` only for literal or non-code text.
 
-**When you are asked to address review findings, verify each one against the graph before reporting it fixed.** Editing the file a finding points at is not the same as closing it — a fix that misses a second call site, or that reintroduces the problem one layer up, will be re-raised on the next review round. Say which findings you verified and how.
+Before reporting a review finding as fixed, verify it against the graph. Editing the file a finding points at is not the same as closing it. State which findings you verified and how.
 
 ## Primary concerns
 

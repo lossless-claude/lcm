@@ -7,21 +7,18 @@ description: Review code changes in the lossless-claude/lcm repository. Use when
 
 Review code changes in this repository against the project rules below. These rules exist because they have caused real production bugs — flag violations with high confidence.
 
-## Use the codebase-memory MCP server
+## codebase-memory MCP
 
-This repository has a `codebase-memory` MCP server available, preloaded with a graph of the whole codebase by `.github/workflows/copilot-code-review.yml`. **Use it** — a diff alone cannot tell you whether a change breaks a caller three files away.
+A `codebase-memory` MCP server is preloaded with a graph of this repo. Use it whenever a rule below needs evidence from outside the diff.
 
-Reach for it whenever a rule below needs evidence from outside the diff:
-
-- `list_projects` first — the project name is derived from the checkout path, so do not guess it.
-- `search_graph` to find a symbol; `get_code_snippet` for its exact source.
-- `trace_path` for callers and callees — this is what answers "does anything else depend on this?" before you flag or clear a signature change.
-- `query_graph` for multi-hop questions; `get_architecture` for orientation.
+- `list_projects` first — the project name comes from the checkout path; never guess it.
+- `trace_path` for callers and callees. This is what settles "does anything else depend on this?"
+- `search_graph` to find a symbol, `get_code_snippet` for its source, `query_graph` for multi-hop questions, `get_architecture` for orientation.
 - `search_code` only for literal or non-code text, or where graph coverage is thin.
 
-Concretely, the rules below that are unreliable without it: **#1** (a `getLcmConnection()` without a matching close may be closed by a caller), **#4** (`collectStats()` may be reached indirectly — trace it rather than eyeballing the diff), **#5** (whether a route already has tests lives outside the diff), and **#10** (whether a symbol named in prose still exists).
+Rules that are unreliable without it: **#1** (a caller may own the close), **#4** (`collectStats()` is often reached indirectly), **#5** (existing tests live outside the diff), **#10** (whether a named symbol still exists).
 
-Cite what you looked up. A finding backed by a `trace_path` result is worth more than one backed by a guess, and a claim that "nothing else calls this" is not reviewable unless you say how you checked.
+Cite what you looked up. "Nothing else calls this" is not reviewable unless you say how you checked.
 
 ## Repository context
 
@@ -87,11 +84,11 @@ TypeScript SQLite daemon that persists Claude session memories across context re
 - Daemon HTTP requests must send the `Authorization: ******` header; the token is read via `readAuthToken(join(homedir(), ".lossless-claude", "daemon.token"))`. Auth is mandatory; a 401 arrives as a normal HTTP response, not a socket error — flag client code paths that drop the header or mishandle 401s.
 - `DaemonClient` throws `Error` objects annotated with the HTTP status and parsed JSON body (`e.status`, `e.body`) on non-2xx responses — flag client code that swallows non-2xx responses or loses the status/body annotations.
 
-### 10. Source references in docs and comments
+### 10. Source references in prose
 
-- Prose that points at code must name **symbols**, not line numbers: `CompactionEngine.persistCompactionEvent`, not `src/compaction.ts:1331`. Line numbers rot on any edit above them — nobody has to touch the described code for the reference to go stale, and the stale number still looks plausible. A renamed symbol is greppable; a wrong line number is silent.
-- Flag any `path/to/file.ts:NNN` in Markdown, in a doc comment, or in a commit message, unless it is pinned to an immutable ref (a commit SHA, or an explicitly labelled review-finding identifier).
-- This applies to `.xgh/specs/`, `.xgh/plans/`, `docs/`, `AGENTS.md`, and skill files — anywhere a reader may follow the reference against a branch other than the one it was written on.
+- Point at **symbols**, not line numbers: `CompactionEngine.persistCompactionEvent`, not `src/compaction.ts:1331`. Line numbers rot on any edit above them, and a stale one still looks plausible; a renamed symbol is greppable.
+- Flag any `path/to/file.ts:NNN` in Markdown, doc comments, or commit messages, unless pinned to an immutable ref (a commit SHA, or a labelled review-finding identifier).
+- Applies to `.xgh/specs/`, `.xgh/plans/`, `docs/`, `AGENTS.md`, and skill files.
 
 ## What to skip
 
