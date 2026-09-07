@@ -92,8 +92,14 @@ export class DaemonClient {
         },
         (res) => {
           const chunks: Buffer[] = [];
+          res.on("error", (err) => {
+            const e = err instanceof Error ? err : new Error(String(err));
+            fail(e);
+          });
           res.on("data", (chunk) => chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk));
           res.on("end", () => {
+            if (settled) return;
+            settled = true;
             const text = Buffer.concat(chunks).toString("utf-8");
             let parsed: unknown;
             try {
