@@ -1,0 +1,4 @@
+{"message":{"role":"user","content":"For the memory daemon we need to pick a storage engine. I'm leaning towards SQLite but I want the tradeoffs on record."}}
+{"message":{"role":"assistant","content":"SQLite is embedded, needs no separate process, and supports WAL plus FTS5 in-process. Postgres would give us concurrent writers and richer operators, but it forces every user to run a database server just to store session history."}}
+{"message":{"role":"user","content":"Operations burden matters more than write concurrency here. This runs on a laptop, not in a datacenter."}}
+{"message":{"role":"assistant","content":"Decision recorded: SQLite over Postgres for the daemon. The deciding factors were zero infrastructure, in-process full-text search, and single-writer access being sufficient for one user."}}

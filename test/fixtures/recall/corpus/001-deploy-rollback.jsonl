@@ -1,0 +1,4 @@
+{"message":{"role":"user","content":"The 2.4.1 release went out this morning and customers are already reporting the settings page is blank. We need to roll back the deploy right now."}}
+{"message":{"role":"assistant","content":"Agreed, reverting is the right call. I'll rollback the deployment to the 2.4.0 build with the release tooling, then redeploy once we understand the failure."}}
+{"message":{"role":"user","content":"Make sure the rollback script also purges the CDN cache, otherwise clients keep fetching the broken bundle."}}
+{"message":{"role":"assistant","content":"Done. The revert completed, the CDN cache was purged, and the settings page renders again. I tagged the rollback commit so the postmortem can reference the exact deploy we reverted."}}
