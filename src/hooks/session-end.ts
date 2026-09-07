@@ -11,9 +11,10 @@ import { Buffer } from "node:buffer";
  * Build the Authorization header for daemon requests, if a token is available.
  *
  * Auth has been mandatory on the daemon since #109, so every fire-and-forget
- * request must carry the ****** or it fails with HTTP 401 — silently,
- * because a 401 is a normal response, not a socket "error" event. Returns an
- * empty object when no token file exists so callers can spread it unconditionally.
+ * request must carry an `Authorization: Bearer <token>` header or it fails with
+ * HTTP 401 — silently, because a 401 is a normal response, not a socket "error"
+ * event. Returns an empty object when no token file exists so callers can spread
+ * it unconditionally.
  */
 function authHeaders(): Record<string, string> {
   const token = readAuthToken(join(homedir(), ".lossless-claude", "daemon.token"));
