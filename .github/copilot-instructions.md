@@ -2,9 +2,19 @@
 
 This repo is a TypeScript SQLite daemon that persists Claude session memories across context resets. It uses Node.js `DatabaseSync` (synchronous SQLite API) and exposes an HTTP daemon with REST routes.
 
-## codebase-memory MCP
+## Required first step: query the codebase-memory graph
 
-A `codebase-memory` MCP server is preloaded with a graph of this repo.
+A `codebase-memory` MCP server is running with a prebuilt graph of this repo. Use it before any text search or file view; built-in grep/regex search and line-range file reads are fallbacks, not the starting point.
+
+Do this, in order, before reading any diff hunk:
+
+1. `list_projects` — the project name comes from the checkout path; never guess it.
+2. For every changed exported function, class, route or schema column, `search_graph` to locate it and `trace_path` to list its callers and callees.
+3. `get_code_snippet` for the source you need; `query_graph` for multi-hop questions.
+
+Fall back to built-in search only when a graph call errors, and say so. The review body must open with a short "Graph calls" list naming the tools used and the symbols traced; a review without that list is incomplete.
+
+## codebase-memory MCP
 
 - `list_projects` first — the project name comes from the checkout path; never guess it.
 - `trace_path` before changing any signature, return shape, or schema column. "Nothing else depends on this" is not a claim you may make without it.
