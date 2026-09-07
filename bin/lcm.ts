@@ -327,6 +327,16 @@ async function main() {
       const running = await checkDaemonHealth(port);
       if (running?.status === "ok") {
         console.log(describeRunning(port, running));
+        if (running.pid) {
+          // Heal a PID file that drifted from the daemon that actually answers
+          const { readFileSync, writeFileSync, mkdirSync } = await import("node:fs");
+          let recorded: string | undefined;
+          try { recorded = readFileSync(pidFilePath, "utf-8").trim(); } catch { /* missing */ }
+          if (recorded !== String(running.pid)) {
+            mkdirSync(lcDir, { recursive: true });
+            writeFileSync(pidFilePath, String(running.pid));
+          }
+        }
         if (isStaleDaemon(running, { version: PKG_VERSION, build: BUILD_ID })) {
           console.log("  Running build differs from the installed one. Restart with: lcm daemon restart");
         }
