@@ -321,6 +321,74 @@ describe("lcm bench", () => {
     expect(bench.queries.some((q) => q.prompt === unique)).toBe(true);
   });
 
+  it("treats prompts differing only in surrounding whitespace as the same evidence", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    const shared = "The Kubernetes ingress controller keeps dropping websocket upgrades after a rolling restart.";
+    await addSessions(cwd, [
+      { sessionId: "sess-ws-a", prompt: shared },
+      { sessionId: "sess-ws-b", prompt: `${shared}\n` },
+    ]);
+
+    const build = await buildBench({ cwd, n: 20, seed: 7 });
+    expect(build.exitCode, build.stdout).toBe(0);
+    const bench = JSON.parse(readFileSync(build.out, "utf-8")) as BenchFile;
+    expect(bench.queries.some((q) => q.prompt.trim() === shared)).toBe(false);
+  });
+
+  it("groups repeats the same way on both sides of the trim", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    // A non-breaking space: `String.trim` strips it, SQLite's TRIM does not.
+    // Both sides must agree, or the lookup key can never equal the group key.
+    // Identical text in both sessions, so SQLite groups them under a key that
+    // still carries the non-breaking space. `String.trim` would strip it and
+    // look up a key that key can never equal.
+    const shared = "\u00a0The Stripe reconciliation job double-charged annual plans during the timezone migration.\u00a0";
+    await addSessions(cwd, [
+      { sessionId: "sess-nbsp-a", prompt: shared },
+      { sessionId: "sess-nbsp-b", prompt: shared },
+    ]);
+
+    const build = await buildBench({ cwd, n: 20, seed: 7 });
+    expect(build.exitCode, build.stdout).toBe(0);
+    const bench = JSON.parse(readFileSync(build.out, "utf-8")) as BenchFile;
+    expect(bench.queries.length).toBeGreaterThan(0);
+    // Neither copy is unique evidence, so neither may be sampled as if it were.
+    expect(bench.queries.some((q) => q.prompt.includes("Stripe reconciliation"))).toBe(false);
+  });
+
+  it("matches a labelled session that carries stray whitespace", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    const file = join(cwd, "manual.json");
+    const question = "Why did we choose SQLite for the memory daemon?";
+    writeFileSync(file, JSON.stringify({ version: 1, queries: [
+      { id: "spaced", sessionId: " sess-storage ", prompt: question, question, generator: "manual" },
+    ] }));
+
+    const run = await runBench({ cwd, benchFile: file, k: 5, json: true });
+    expect(run.exitCode, run.stdout).toBe(0);
+    expect(JSON.parse(run.stdout).searchHitRate).toBe(1);
+  });
+
+  it("names the real problem when the benchmark exists but does not parse", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    const file = join(cwd, "broken.json");
+    writeFileSync(file, '{ "version": 1, "queries": [ }');
+
+    const run = await runBench({ cwd, benchFile: file });
+    expect(run.exitCode).toBe(1);
+    expect(run.stdout).toContain("Could not read the benchmark");
+    // Never the advice whose remedy would overwrite the file being fixed.
+    expect(run.stdout).not.toContain("lcm bench build");
+  });
+
   it("never samples harness boilerplate as a prompt", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
     tempDirs.push(cwd);
