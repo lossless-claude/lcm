@@ -60,8 +60,39 @@ function readDaemon($: EngineInterface): Promise<Daemon> {
   return daemon;
 }
 
-/** POST `body` to the daemon; resolves to the parsed JSON, or null when the daemon is down or lacks the route. */
-async function postDaemon($: EngineInterface, route: string, body: unknown): Promise<Record<string, unknown> | null> {
+/** Last time this module asked the host to start the daemon; one attempt per cooldown window. */
+let lastDaemonStartAt = 0;
+const DAEMON_START_COOLDOWN_MS = 60_000;
+const DAEMON_START_TIMEOUT_MS = 15_000;
+let warnedNoLcmBinary = false;
+
+/**
+ * The daemon exits when idle and the command hooks used to bring it back (ensureDaemon).
+ * While this module owns the events, it must do the same, or every tool call and prompt
+ * between the idle exit and the next SessionStart is lost. `lcm daemon start --detach`
+ * spawns the daemon and waits until /health answers.
+ */
+async function startDaemon($: EngineInterface): Promise<boolean> {
+  const now = Date.now();
+  if (now - lastDaemonStartAt < DAEMON_START_COOLDOWN_MS) return false;
+  lastDaemonStartAt = now;
+  const run = await $.process.run(
+    ["sh", "-c", 'command -v lcm >/dev/null 2>&1 || exit 127; exec lcm daemon start --detach'],
+    { timeoutMs: DAEMON_START_TIMEOUT_MS },
+  ).catch(() => null);
+  if (run?.exitCode === 0) return true;
+  if (run?.exitCode === 127 && !warnedNoLcmBinary) {
+    warnedNoLcmBinary = true;
+    $.ui.log("[lcm] daemon is down and no `lcm` binary is on PATH to start it; events are lost until a command hook restarts it");
+  } else if (run && run.exitCode !== 127) {
+    $.ui.log(`[lcm] daemon start failed (exit ${run.exitCode}): ${run.stderr.trim().split("\n")[0] ?? ""}`);
+  }
+  return false;
+}
+
+type PostOutcome = { body: Record<string, unknown> | null; connectionFailed: boolean };
+
+async function postOnce($: EngineInterface, route: string, body: unknown): Promise<PostOutcome> {
   try {
     const { port, token } = await readDaemon($);
     const res = await $.http.fetch(`http://127.0.0.1:${port}${route}`, {
@@ -74,23 +105,38 @@ async function postDaemon($: EngineInterface, route: string, body: unknown): Pro
         missingRoutes.add(route);
         $.ui.log(`[lcm] daemon has no ${route} route (older lcm build); the command hooks still record`);
       }
-      return null;
+      return { body: null, connectionFailed: false };
     }
     if (!res.ok) {
       $.ui.log(`[lcm] ${route}: daemon answered ${res.status}`);
-      return null;
+      return { body: null, connectionFailed: false };
     }
-    return JSON.parse(res.text) as Record<string, unknown>;
-  } catch (err) {
-    // Daemon down or slow: the event itself is unaffected; only the memory side-effect is lost.
-    $.ui.log(`[lcm] ${route}: ${err instanceof Error ? err.message : String(err)}`);
-    return null;
+    return { body: JSON.parse(res.text) as Record<string, unknown>, connectionFailed: false };
+  } catch {
+    // No listener on the port: the daemon idled out or was never started.
+    return { body: null, connectionFailed: true };
   }
+}
+
+/**
+ * POST `body` to the daemon; resolves to the parsed JSON, or null when the daemon lacks the
+ * route or cannot be reached. On a connection failure it starts the daemon and retries once.
+ */
+async function postDaemon($: EngineInterface, route: string, body: unknown): Promise<Record<string, unknown> | null> {
+  const first = await postOnce($, route, body);
+  if (!first.connectionFailed) return first.body;
+  if (!(await startDaemon($))) return null;
+  const second = await postOnce($, route, body);
+  if (second.connectionFailed) $.ui.log(`[lcm] ${route}: daemon still unreachable after start`);
+  return second.body;
 }
 
 export const register: Register = (on) => {
   on("session.start", ($, e, next) => {
-    void readDaemon($);
+    // Warm up: read the daemon's address and make sure it is listening before the first prompt,
+    // without depending on the SessionStart command hook having done it.
+    void readDaemon($).then(({ port }) =>
+      $.http.fetch(`http://127.0.0.1:${port}/health`).then(() => undefined, () => startDaemon($)));
     return next(e);
   });
 
