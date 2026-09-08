@@ -172,6 +172,19 @@ Valid provider values are:
 - `anthropic`
 - `openai`
 - `disabled`
+- `session` (early access, see below)
+
+### Session provider
+
+`llm.provider: "session"` asks the live Claude Code session that owns the transcript to run each summarization through its own client, via lcm's function-hooks module (`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`; see `docs/hook-protocol.md`). Leaf chunks go to `haiku` through `$.model.complete`; condensed nodes go through `$.model.fork`, so the session's own model sees the whole conversation. Tokens are charged to the session's Claude account.
+
+```json
+{ "llm": { "provider": "session", "fallbackProvider": "claude-process" } }
+```
+
+- `llm.fallbackProvider` answers a job the session does not serve within 20 s (no module loaded, session gone, spend cap reached, or an error). Any provider except `session` is valid. When absent, the `auto` resolution above applies. A provider you name explicitly in `llm.provider` is never replaced by the session path.
+- The module spends at most `sessionSummarizerMaxOutputTokens` output tokens per session; set it in the plugin's `userConfig` (default 50000, 0 disables serving jobs).
+- Usage is recorded as `session:haiku` or `session:fork`; `complete` calls have estimated token counts, counted in `llm_usage_stats.calls_estimated`.
 
 ### Reasoning parameter
 
