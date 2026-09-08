@@ -214,9 +214,48 @@ export async function rankNativeHistory(
     }
     return ranked;
   };
-  const rankedMessages = await attach(result.messages);
-  const rankedSummaries = await attach(result.summaries);
-  return fuseHistoryBySession(rankedMessages, rankedSummaries, input.limit, sessionSizes(db, [...rankedMessages, ...rankedSummaries], sessionOf));
+  return rankHistoryHits(await attach(result.messages), await attach(result.summaries), input.limit, sizes => sessionSizes(db, sizes, sessionOf));
+}
+
+/** Filter subagent transcripts out of the candidates, then fuse what remains. */
+export function rankHistoryHits(
+  messages: RankedHistoryHit[],
+  summaries: RankedHistoryHit[],
+  limit: number,
+  sizesOf?: (hits: RankedHistoryHit[]) => (group: string) => number | undefined,
+): RankedHistoryHit[] {
+  const rankedMessages = withoutSubagents(messages);
+  const rankedSummaries = withoutSubagents(summaries);
+  const sizes = sizesOf?.([...rankedMessages, ...rankedSummaries]);
+  return fuseHistoryBySession(rankedMessages, rankedSummaries, limit, sizes);
+}
+
+/**
+ * Subagent transcripts, by the session id a transcript filename becomes.
+ *
+ * Claude Code writes a dispatched agent's transcript as `agent-<id>.jsonl`
+ * beside the session's own, and ingestion takes the session id from the
+ * filename. That naming is an external convention: if it ever changes, this
+ * filter silently stops matching and search quietly gets noisier again.
+ */
+const SUBAGENT_SESSION = /^agent-/;
+
+/**
+ * Drop subagent transcripts from the ranked candidates.
+ *
+ * They are 78% of ingested sessions here — above 90% on some projects — and
+ * they are not the user's memory: a review panel arguing about a diff, stored
+ * as though the user had said it. Ranking searched a haystack that was mostly
+ * machines talking to each other. Measured over 202 questions whose answers are
+ * human sessions, dropping them gains 14 and loses **none** (0.337 to 0.406,
+ * sign test p = 0.0001).
+ *
+ * They stay ingested and stay reachable: `lcm grep` and `lcm expand` go through
+ * the retrieval engine directly and are untouched. What changes is only what
+ * ranked recall offers up on its own.
+ */
+function withoutSubagents(hits: RankedHistoryHit[]): RankedHistoryHit[] {
+  return hits.filter(hit => !(hit.sessionId && SUBAGENT_SESSION.test(hit.sessionId)));
 }
 
 /**

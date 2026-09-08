@@ -447,8 +447,11 @@ export async function buildBench(
     // Migrations may backfill on first open, so this handle is read-write.
     runLcmMigrations(db);
     const convStore = new ConversationStore(db);
+    // Questions must come from the population search can return. Search skips
+    // subagent transcripts, so a question labelled with one is unanswerable by
+    // construction and would score as a miss that no ranking could fix.
     const conversations = (await convStore.listConversations()).filter(
-      (c) => c.sessionId.length > 0,
+      (c) => c.sessionId.length > 0 && !c.sessionId.startsWith("agent-"),
     );
     if (conversations.length === 0) {
       return { out: "", exitCode: 1, stdout: "No conversations in the project database.\n" };

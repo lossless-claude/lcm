@@ -88,6 +88,10 @@ lcm bench run   --project /path/to/project
   Output defaults to `~/.lossless-claude/projects/<hash>/.lcm-bench.json`, local and uncommitted.
   Use `--out <file>` to choose another location. Invalid files are rejected by `run` before scoring.
   Both `build --help` and `run --help` show usage without generating questions or running searches.
+Questions are sampled from the user's own sessions only. Subagent transcripts — the `agent-*`
+sessions Claude Code writes for dispatched agents — are skipped, because `lcm search` does not
+return them either, so a question labelled with one could never be answered.
+
 - **`run`** uses the retrieval engine behind `lcm search`, deduplicates matches by session for
   scoring, and reports:
 
