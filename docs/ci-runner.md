@@ -1,10 +1,8 @@
 # CI on the Mac mini
 
 The `ci` job targets the repository-scoped runner `mac-mini-m4-lcm`, with labels
-`self-hosted`, `macOS`, `ARM64`, and `lcm`. Registration and service activation
-are pending; provision the runner before merging, or jobs will remain queued.
-Its service and working directory must be separate from dwigt's runner on the
-same host. Node 22 is provisioned by
+`self-hosted`, `macOS`, `ARM64`, and `lcm`. Its launchd service and working
+directory are separate from dwigt's runner on the same host. Node 22 is provisioned by
 `actions/setup-node`; ripgrep must be available on the service's saved PATH
 (Homebrew installs it in `/opt/homebrew/bin`).
 
@@ -15,7 +13,7 @@ cancelled, and each run has a 30-minute timeout.
 ## Isolation
 
 Fork pull requests run on GitHub-hosted Linux. Same-repository branches execute
-on the persistent Mac mini and must be trusted. The proposed service uses the
+on the persistent Mac mini and must be trusted. The service uses the
 host's existing runner account; a temporary HOME is filesystem hygiene, not a
 security sandbox or a separate operating-system identity.
 
@@ -26,7 +24,7 @@ fixtures, npm data, and build hooks away from the interactive LCM installation.
 
 ## Operations
 
-Install the LCM instance in `~/actions-runner-lcm`. Use its own `svc.sh` to inspect
+The LCM instance lives in `~/actions-runner-lcm`. Use its own `svc.sh` to inspect
 or restart it; do not reconfigure or stop dwigt's instance. Runner credentials
 stay outside this repository. A fresh registration requires a short-lived token
 from this repository and the additional `lcm` label. Verify the service's `.path`
