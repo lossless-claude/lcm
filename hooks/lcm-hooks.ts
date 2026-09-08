@@ -1,8 +1,9 @@
 // hooks/lcm-hooks.ts — lcm's function-hooks module (Claude Code early access).
 //
-// Loaded only when CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1. While it is loaded, the PostToolUse,
-// PostToolUseFailure and UserPromptSubmit command hooks stay silent (functionHooksActive in
-// src/hooks/post-tool.ts) and this module does their work through the daemon:
+// Loaded only when CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1. It claims the session in a temp-dir
+// file at session.start, and while that claim stands the PostToolUse, PostToolUseFailure,
+// UserPromptSubmit and Stop command hooks stay silent (functionHooksOwnSession in
+// src/hooks/session-claim.ts) and this module does their work through the daemon:
 //   tool.call       → POST /tool-event    (the daemon writes the passive-learning rows)
 //   prompt.submit   → POST /prompt-search (memory hits ride as hidden context on the prompt)
 //   prompt.section  → the learning instruction is appended once to the system prompt's
@@ -22,6 +23,8 @@ const CAPTURED_TOOLS = new Set([
   "Read", "Edit", "Write", "Glob", "Grep", "TaskCreate", "TaskUpdate", "Skill",
 ]);
 const DEFAULT_PORT = 3737;
+/** Fallback when the host command cannot report TMPDIR; matches Node os.tmpdir() on POSIX. */
+const DEFAULT_TMP_DIR = "/tmp";
 /** Same default as hooks.snapshotIntervalSec for the Stop command hook: one ingest a minute. */
 const INGEST_INTERVAL_MS = 60_000;
 let lastIngestAt = 0;
@@ -45,8 +48,9 @@ When you act on a surfaced memory (use it to inform a decision, avoid a known pi
 lcm_store(text: "Acted on memory <id> — <one-line how>", tags: ["signal:memory_used", "memory_id:<id>"])
 </learning-instruction>`;
 
-type Daemon = { port: number; token: string | null };
-let daemon: Promise<Daemon> | null = null;
+/** What the module cannot read for itself: everything outside $.fs's project-and-temp reach. */
+type HostEnv = { port: number; token: string | null; tmpDir: string };
+let hostEnv: Promise<HostEnv> | null = null;
 /** Routes the running daemon answered 404 for: an older lcm build. Logged once each, not per call. */
 const missingRoutes = new Set<string>();
 
@@ -60,17 +64,38 @@ function parsePort(configJson: string): number {
   }
 }
 
-// The daemon's port and bearer token live under ~/.lossless-claude, outside $.fs's
-// reach (project and temp dir only), so a host command reads them once per module load.
-function readDaemon($: EngineInterface): Promise<Daemon> {
-  daemon ??= $.process.run(["sh", "-c",
-    'cat "$HOME/.lossless-claude/daemon.token" 2>/dev/null; echo; echo "__CONFIG__"; cat "$HOME/.lossless-claude/config.json" 2>/dev/null',
+// The daemon's port and bearer token live under ~/.lossless-claude, and TMPDIR is an
+// environment value; neither is reachable through $.fs (project and temp dir only), so
+// one host command reads all three once per module load.
+function readHostEnv($: EngineInterface): Promise<HostEnv> {
+  hostEnv ??= $.process.run(["sh", "-c",
+    'cat "$HOME/.lossless-claude/daemon.token" 2>/dev/null; echo; echo "__CONFIG__"; '
+    + 'cat "$HOME/.lossless-claude/config.json" 2>/dev/null; echo; echo "__TMPDIR__"; '
+    + 'printf %s "${TMPDIR:-/tmp}"',
   ]).then(({ stdout }) => {
-    const [tokenPart, configPart = ""] = stdout.split("__CONFIG__");
-    const token = tokenPart.trim() || null;
-    return { port: parsePort(configPart), token };
-  }, () => ({ port: DEFAULT_PORT, token: null }));
-  return daemon;
+    const [tokenPart, afterToken = ""] = stdout.split("__CONFIG__");
+    const [configPart, tmpPart = ""] = afterToken.split("__TMPDIR__");
+    return {
+      port: parsePort(configPart),
+      token: tokenPart.trim() || null,
+      tmpDir: tmpPart.trim().replace(/\/+$/, "") || DEFAULT_TMP_DIR,
+    };
+  }, () => ({ port: DEFAULT_PORT, token: null, tmpDir: DEFAULT_TMP_DIR }));
+  return hostEnv;
+}
+
+/**
+ * Tell the command hooks this module is live for this session, so they stay silent
+ * instead of doing the same work again. Written before the first prompt and read by
+ * functionHooksOwnSession in src/hooks/session-claim.ts, which names the same file from
+ * Node's os.tmpdir(). No claim means "not mine", costing a duplicate row rather than a
+ * lost one, so nothing here is worth failing session.start over.
+ */
+async function claimSession($: EngineInterface, sessionId: string): Promise<void> {
+  if (!sessionId) return;
+  const { tmpDir } = await readHostEnv($);
+  const file = `${tmpDir}/lcm-claim-${sessionId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`;
+  await $.fs.writeFile(file, JSON.stringify({ sessionId, ts: Date.now() }));
 }
 
 /** Last time this module asked the host to start the daemon; one attempt per cooldown window. */
@@ -116,7 +141,7 @@ function logMissingRoute($: EngineInterface, route: string, consequence: string)
 
 async function postOnce($: EngineInterface, route: string, body: unknown): Promise<PostOutcome> {
   try {
-    const { port, token } = await readDaemon($);
+    const { port, token } = await readHostEnv($);
     const res = await $.http.fetch(`http://127.0.0.1:${port}${route}`, {
       method: "POST",
       headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
@@ -214,7 +239,7 @@ type PollOutcome =
   | { wait: number; shortPoll?: true };
 
 function fetchNextJob($: EngineInterface, sessionId: string, shortPoll: boolean) {
-  return readDaemon($).then(({ port, token }) => $.http.fetch(
+  return readHostEnv($).then(({ port, token }) => $.http.fetch(
     `http://127.0.0.1:${port}/summarize-jobs/next?session_id=${encodeURIComponent(sessionId)}${shortPoll ? "&wait_ms=0" : ""}`,
     { headers: token ? { authorization: `Bearer ${token}` } : {} },
   ));
@@ -229,7 +254,7 @@ function classifyPollResponse($: EngineInterface, status: number): { wait: numbe
     logMissingRoute($, "/summarize-jobs/next", "retrying every minute");
     return { wait: MISSING_ROUTE_RETRY_MS };
   }
-  if (status === 401) daemon = null;
+  if (status === 401) hostEnv = null;
   $.ui.log(`[lcm] /summarize-jobs/next: daemon answered ${status}`);
   return { wait: POLL_BACKOFF_MS };
 }
@@ -247,7 +272,7 @@ async function nextSummaryJob(
   } catch {
     // Some hosts cap HTTP request duration below the daemon's 25-second hold.
     await startDaemon($);
-    daemon = null; // A restarted daemon may have a new bearer token.
+    hostEnv = null; // A restarted daemon may have a new bearer token.
     return { wait: POLL_BACKOFF_MS, shortPoll: true };
   }
   // Do not run a prompt belonging to another session, even on a malformed response.
@@ -307,8 +332,14 @@ type On = Parameters<Register>[0];
 
 /** Read the daemon's address and make sure it is listening before the first prompt. */
 function registerSessionStart(on: On, summaryCap: number): void {
-  on("session.start", ($, e, next) => {
-    void readDaemon($).then(({ port }) =>
+  on("session.start", async ($, e, next) => {
+    // Awaited, unlike the health probe: a command hook that runs before the claim lands
+    // would record the same events this module is about to record.
+    const sessionId = await $.session.id();
+    await claimSession($, sessionId).catch((error: unknown) => {
+      $.ui.log(`[lcm] could not claim the session, command hooks stay active: ${String(error)}`);
+    });
+    void readHostEnv($).then(({ port }) =>
       $.http.fetch(`http://127.0.0.1:${port}/health`).then(() => undefined, () => startDaemon($)));
     if (summaryCap > 0 && !summaryPollerStarted) {
       summaryPollerStarted = true;

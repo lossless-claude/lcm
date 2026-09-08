@@ -4,6 +4,10 @@ import { EventsDb } from "./events-db.js";
 import { eventsDbPath } from "../db/events-path.js";
 import { firePromoteEventsRequest } from "./session-end.js";
 import { safeLogError } from "./hook-errors.js";
+import { functionHooksOwnSession } from "./session-claim.js";
+
+// Back-compat re-export: some callers historically imported the function-hooks gate from this module.
+export { functionHooksActive, functionHooksOwnSession } from "./session-claim.js";
 
 /** Daemon port from ~/.lossless-claude/config.json — Claude Code does not pass it on stdin. */
 async function configuredDaemonPort(): Promise<number> {
@@ -77,26 +81,19 @@ export function recordPostToolEvents(payload: PostToolPayload): RecordedPostTool
   return { recorded, hasPriority1: events.some(e => e.priority === 1), sourceHook };
 }
 
-/**
- * When the function-hooks module is loaded it records every tool call through the daemon's
- * POST /tool-event route; the command hook must then stay silent or every event lands twice.
- * The env var is the switch that loads the module, so it is also the dedup signal.
- */
-export function functionHooksActive(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS === "1";
-}
-
 export async function handlePostToolUse(
   stdin: string,
 ): Promise<{ exitCode: number; stdout: string }> {
   let cwd: string | undefined;
   let sourceHook = "PostToolUse";
   try {
-    if (functionHooksActive()) return { exitCode: 0, stdout: "" };
-
     const input = JSON.parse(stdin);
     const { session_id, tool_name } = input;
     if (!tool_name || !session_id) return { exitCode: 0, stdout: "" };
+
+    // The module records every tool call through POST /tool-event while it owns the
+    // session; recording here too would write the same events a second time.
+    if (functionHooksOwnSession(session_id)) return { exitCode: 0, stdout: "" };
 
     cwd = input.cwd ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
     const outcome = recordPostToolEvents({ ...input, cwd: cwd as string });

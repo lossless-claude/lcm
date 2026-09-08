@@ -13,7 +13,8 @@ async function start(options: Record<string, number> = {}, jobs: unknown[] = [le
   const done = new Promise<void>((resolve) => { finish = resolve; });
   const engine = {
     session: { id: vi.fn(async () => sessionId) },
-    process: { run: vi.fn(async () => ({ stdout: "secret\n__CONFIG__\n{}", exitCode: 0 })) },
+    process: { run: vi.fn(async () => ({ stdout: "secret\n__CONFIG__\n{}\n__TMPDIR__/tmp", exitCode: 0 })) },
+    fs: { writeFile: vi.fn(async () => undefined) },
     model: {
       complete: vi.fn(async () => "  summary  "),
       fork: vi.fn(async (): Promise<any> => null),
@@ -50,19 +51,30 @@ async function start(options: Record<string, number> = {}, jobs: unknown[] = [le
 describe("function-hook session summarizer", () => {
   beforeEach(() => vi.resetModules());
 
-  it("does not poll when disabled and leaves session.start nonblocking", async () => {
+  it("claims the session but starts no poller when the summarizer is disabled", async () => {
     const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
-    expect(harness.trigger()).toEqual({});
-    await Promise.resolve();
-    expect(harness.engine.session.id).not.toHaveBeenCalled();
+    expect(await harness.trigger()).toEqual({});
+    expect(harness.engine.fs.writeFile).toHaveBeenCalledWith(
+      `/tmp/lcm-claim-${sessionId.replace("/", "_")}.json`,
+      expect.stringContaining(`"sessionId":"${sessionId}"`),
+    );
+    expect(harness.engine.model.complete).not.toHaveBeenCalled();
+  });
+
+  it("lets session.start finish when the claim cannot be written", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
+    harness.engine.fs.writeFile.mockRejectedValueOnce(new Error("read-only fs"));
+    expect(await harness.trigger()).toEqual({});
+    expect(harness.engine.ui.log).toHaveBeenCalledWith(expect.stringContaining("could not claim the session"));
   });
 
   it("starts one poller, uses the session bearer, and reports estimated Haiku usage", async () => {
     const { trigger, done, engine, posts } = await start();
-    trigger();
-    trigger();
+    await trigger();
+    await trigger();
     await done;
-    expect(engine.session.id).toHaveBeenCalledTimes(1);
+    // Two session.start calls claim the session twice; only the first starts a poller.
+    expect(engine.model.complete).toHaveBeenCalledTimes(1);
     expect(engine.http.fetch).toHaveBeenCalledWith(
       expect.stringContaining("session_id=session%2Fone"),
       { headers: { authorization: "Bearer secret" } },
