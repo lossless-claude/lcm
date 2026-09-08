@@ -24,6 +24,7 @@ export interface EventRow {
   priority: number;
   source_hook: string;
   tool_use_id: string | null;
+  prompt_hash: string | null;
   prev_event_id: number | null;
   processed_at: string | null;
   created_at: string;
@@ -42,7 +43,7 @@ export interface PatternReinforcementStats {
   distinctSessions: number;
 }
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -56,6 +57,7 @@ CREATE TABLE IF NOT EXISTS events (
   priority      INTEGER DEFAULT 3,
   source_hook   TEXT NOT NULL,
   tool_use_id   TEXT,
+  prompt_hash   TEXT,
   prev_event_id INTEGER,
   processed_at  TEXT,
   created_at    TEXT DEFAULT (datetime('now'))
@@ -64,6 +66,7 @@ CREATE INDEX IF NOT EXISTS idx_events_unprocessed ON events(processed_at) WHERE 
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_pattern_lookup ON events(type, category, data, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_tool_use ON events(session_id, tool_use_id);
+CREATE INDEX IF NOT EXISTS idx_events_prompt ON events(session_id, prompt_hash);
 CREATE TABLE IF NOT EXISTS error_log (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   hook       TEXT NOT NULL,
@@ -100,11 +103,11 @@ export class EventsDb {
     }
   }
 
-  /** Rows written before v4 have no tool_use_id and never dedup against. */
-  private ensureToolUseIdColumn(): void {
+  /** Rows written before the column existed have no key and never dedup against. */
+  private ensureColumn(name: "tool_use_id" | "prompt_hash"): void {
     const columns = this.db.prepare("PRAGMA table_info(events)").all() as { name: string }[];
-    if (!columns.some((c) => c.name === "tool_use_id")) {
-      this.db.exec("ALTER TABLE events ADD COLUMN tool_use_id TEXT");
+    if (!columns.some((c) => c.name === name)) {
+      this.db.exec(`ALTER TABLE events ADD COLUMN ${name} TEXT`);
     }
   }
 
@@ -137,11 +140,13 @@ export class EventsDb {
         CREATE INDEX IF NOT EXISTS idx_error_log_created ON error_log(created_at);
         CREATE INDEX IF NOT EXISTS idx_events_pattern_lookup ON events(type, category, data, created_at);
       `);
-      // The events table here may predate v4, so the column has to exist before the index.
-      this.ensureToolUseIdColumn();
-      this.db.exec(
-        "CREATE INDEX IF NOT EXISTS idx_events_tool_use ON events(session_id, tool_use_id)"
-      );
+      // The events table here may predate v4, so the columns have to exist before the indexes.
+      this.ensureColumn("tool_use_id");
+      this.ensureColumn("prompt_hash");
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_events_tool_use ON events(session_id, tool_use_id);
+        CREATE INDEX IF NOT EXISTS idx_events_prompt ON events(session_id, prompt_hash);
+      `);
       return;
     }
 
@@ -168,9 +173,15 @@ export class EventsDb {
           );
         }
         if (currentVersion < 4) {
-          this.ensureToolUseIdColumn();
+          this.ensureColumn("tool_use_id");
           this.db.exec(
             "CREATE INDEX IF NOT EXISTS idx_events_tool_use ON events(session_id, tool_use_id)"
+          );
+        }
+        if (currentVersion < 5) {
+          this.ensureColumn("prompt_hash");
+          this.db.exec(
+            "CREATE INDEX IF NOT EXISTS idx_events_prompt ON events(session_id, prompt_hash)"
           );
         }
         this.db.prepare("UPDATE schema_version SET version = ?").run(SCHEMA_VERSION);
@@ -183,17 +194,26 @@ export class EventsDb {
     }
   }
 
-  insertEvent(sessionId: string, event: ExtractedEvent, sourceHook: string, toolUseId?: string): number {
+  /** The key a row dedups on: which one it is depends on what produced the event. */
+  private insertRow(
+    sessionId: string, event: ExtractedEvent, sourceHook: string,
+    keys: { toolUseId?: string; promptHash?: string } = {},
+  ): number {
     const stmt = this.db.prepare(`
-      INSERT INTO events (session_id, seq, type, category, data, priority, source_hook, tool_use_id)
+      INSERT INTO events (session_id, seq, type, category, data, priority, source_hook, tool_use_id, prompt_hash)
       VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE session_id = ?),
-              ?, ?, ?, ?, ?, ?)
+              ?, ?, ?, ?, ?, ?, ?)
     `);
     const result = stmt.run(
       sessionId, sessionId,
-      event.type, event.category, event.data, event.priority, sourceHook, toolUseId ?? null
+      event.type, event.category, event.data, event.priority, sourceHook,
+      keys.toolUseId ?? null, keys.promptHash ?? null,
     );
     return Number(result.lastInsertRowid);
+  }
+
+  insertEvent(sessionId: string, event: ExtractedEvent, sourceHook: string, toolUseId?: string): number {
+    return this.insertRow(sessionId, event, sourceHook, { toolUseId });
   }
 
   /**
@@ -226,6 +246,47 @@ export class EventsDb {
       const duplicate = this.hasToolCall(sessionId, toolUseId);
       if (!duplicate) {
         for (const event of events) this.insertEvent(sessionId, event, sourceHook, toolUseId);
+      }
+      this.db.exec("COMMIT");
+      return duplicate ? 0 : events.length;
+    } catch (e) {
+      try { this.db.exec("ROLLBACK"); } catch { /* the transaction is already gone */ }
+      throw e;
+    }
+  }
+
+  /**
+   * True when this prompt's events were already recorded, whichever path recorded them.
+   *
+   * Unlike a tool call, a prompt carries no id both paths can see: the command hook's
+   * stdin has `prompt_id`, the module's `prompt.submit` has only the text. The content
+   * hash is what they share. Two identical prompts in one session collapse to one row
+   * set, which is right rather than lossy — the extractor is a pure function of the text,
+   * so the second set would be a copy of the first.
+   */
+  hasPromptEvents(sessionId: string, promptHash: string): boolean {
+    const row = this.db.prepare(
+      "SELECT 1 FROM events WHERE session_id = ? AND prompt_hash = ? LIMIT 1"
+    ).get(sessionId, promptHash);
+    return row !== undefined;
+  }
+
+  /**
+   * Writes one prompt's events, or none when another path already recorded that prompt.
+   * The check and the inserts share one write transaction, as tool calls do.
+   */
+  insertPromptEvents(sessionId: string, events: ExtractedEvent[], promptHash?: string): number {
+    if (!promptHash) {
+      for (const event of events) this.insertRow(sessionId, event, "UserPromptSubmit");
+      return events.length;
+    }
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const duplicate = this.hasPromptEvents(sessionId, promptHash);
+      if (!duplicate) {
+        for (const event of events) {
+          this.insertRow(sessionId, event, "UserPromptSubmit", { promptHash });
+        }
       }
       this.db.exec("COMMIT");
       return duplicate ? 0 : events.length;

@@ -24,16 +24,19 @@ export async function recordUserPromptEvents(prompt: string, sessionId: string, 
   const { extractUserPromptEvents } = await import("./extractors.js");
   const { EventsDb } = await import("./events-db.js");
   const { eventsDbPath } = await import("../db/events-path.js");
+  const { createHash } = await import("node:crypto");
 
   const events = extractUserPromptEvents(prompt);
   if (events.length === 0) return 0;
+  // The dedup key both paths can compute: the module's prompt.submit sees the text and
+  // no prompt id, so the id the command hook's stdin carries is no use here.
+  const promptHash = createHash("sha256").update(prompt).digest("hex");
   const db = new EventsDb(eventsDbPath(cwd));
   try {
-    for (const event of events) db.insertEvent(sessionId, event, "UserPromptSubmit");
+    return db.insertPromptEvents(sessionId, events, promptHash);
   } finally {
     db.close();
   }
-  return events.length;
 }
 
 export async function handleUserPromptSubmit(
