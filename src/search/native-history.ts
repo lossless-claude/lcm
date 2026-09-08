@@ -121,6 +121,43 @@ function drawBySession(
  * leftover to the other. Emission stays round-robin, one hit per session per
  * pass, so a small limit still spans several sessions.
  */
+/** How many of a session's rows contribute to its score in one source list. */
+const TOP_K_ROWS = Number(process.env.LCM_FUSION_K ?? 1);
+
+/**
+ * A session's score in one source list: the mean reciprocal rank of its best
+ * `k` rows.
+ *
+ * At k=1 this is the historical rule — a session scores the reciprocal rank of
+ * the single best position it reached. That rewards a long session for entering
+ * the pool many times: one of its rows lands high on almost any query, and
+ * measured, a 368 KB session took 11 of 13 top-5 slots on unrelated questions.
+ *
+ * Above k=1 the extra rows have to earn their place. A session whose next rows
+ * are mediocre pulls its own mean down, while one whose rows are uniformly
+ * relevant holds it up — so length only helps when the length is on topic.
+ * A session with fewer than `k` rows averages over what it has, so a short
+ * session is not penalised for being short.
+ */
+function scoreBySession(
+  list: RankedHistoryHit[],
+  groupOf: (hit: RankedHistoryHit) => string,
+  k: number,
+): Map<string, number> {
+  const positions = new Map<string, number[]>();
+  list.forEach((hit, position) => {
+    const rows = positions.get(groupOf(hit));
+    if (rows === undefined) positions.set(groupOf(hit), [position]);
+    else if (rows.length < k) rows.push(position);
+  });
+  const score = new Map<string, number>();
+  for (const [group, rows] of positions) {
+    const total = rows.reduce((sum, position) => sum + 1 / (FUSION_RANK_OFFSET + position), 0);
+    score.set(group, total / rows.length);
+  }
+  return score;
+}
+
 export function fuseHistoryBySession(
   messages: RankedHistoryHit[],
   summaries: RankedHistoryHit[],
@@ -129,13 +166,9 @@ export function fuseHistoryBySession(
   const groupOf = (hit: RankedHistoryHit) => hit.sessionId ?? `conversation:${hit.conversationId}`;
   const score = new Map<string, number>();
   for (const list of [messages, summaries]) {
-    const seen = new Set<string>();
-    list.forEach((hit, position) => {
-      const group = groupOf(hit);
-      if (seen.has(group)) return;
-      seen.add(group);
-      score.set(group, (score.get(group) ?? 0) + 1 / (FUSION_RANK_OFFSET + position));
-    });
+    for (const [group, value] of scoreBySession(list, groupOf, TOP_K_ROWS)) {
+      score.set(group, (score.get(group) ?? 0) + value);
+    }
   }
   const groups = [...score.entries()].sort((a, b) => b[1] - a[1]).map(([group]) => group);
 
