@@ -75,17 +75,21 @@ jobs:
         if: steps.check.outputs.skip == 'false'
         run: npm test
 
-      - name: Verify npm identity
+      # Trusted publishing (OIDC) needs npm 11.5.1+; Node 22 ships npm 10.x.
+      # Upgraded only here, after the build and tests have run on the stock
+      # npm, so the release artifact is built exactly as CI builds it. Pinned
+      # below 12, whose install defaults (allowScripts off) would change how
+      # dependencies install.
+      - name: Upgrade npm for trusted publishing
         if: steps.check.outputs.skip == 'false'
-        run: npm whoami
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm install -g npm@^11.5.1
 
-      - name: Publish to npm
+      # No NODE_AUTH_TOKEN: the registry authenticates the workflow itself
+      # through the OIDC token granted by `id-token: write`. 2FA-bypass
+      # automation tokens lose direct publish around January 2027.
+      - name: Publish to npm via trusted publishing
         if: steps.check.outputs.skip == 'false'
         run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create and push release tag
         if: steps.check.outputs.skip == 'false'
