@@ -245,6 +245,9 @@ async function configuredSummarizer(): Promise<LcmSummarizeFn> {
  * recall, a task the person never performs.
  */
 export async function configuredQuestionGenerator(language: string): Promise<QuestionGenerator> {
+  const parsed = parseLanguageTag(language);
+  if (!parsed) throw new Error(`Language must be a BCP 47 tag such as en or pt-BR, got "${language}".`);
+  language = parsed;
   const summarize = await configuredSummarizer();
   return (prompt) => summarize(
     prompt,
@@ -259,7 +262,8 @@ export async function configuredQuestionGenerator(language: string): Promise<Que
   );
 }
 
-const LANGUAGE_TAG = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/;
+const LANGUAGE_TAG = /^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/;
+const MAX_LANGUAGE_TAG_LENGTH = 64;
 const LANGUAGE_SAMPLE_SIZE = 20;
 
 /**
@@ -269,10 +273,18 @@ const LANGUAGE_SAMPLE_SIZE = 20;
  */
 export function parseLanguageTag(reply: string): string | null {
   const tag = reply.trim().replace(/^[`"']+|[`"'.]+$/g, "").replaceAll("_", "-");
-  if (!LANGUAGE_TAG.test(tag.toLowerCase())) return null;
+  if (!tag || tag.length > MAX_LANGUAGE_TAG_LENGTH) return null;
+  if (!LANGUAGE_TAG.test(tag)) return null;
   return tag
     .split("-")
-    .map((part, i) => (i === 0 ? part.toLowerCase() : part.length === 2 ? part.toUpperCase() : part))
+    .map((part, i) => {
+      const lower = part.toLowerCase();
+      if (i === 0) return lower;
+      if (part.length === 4 && /^[A-Za-z]{4}$/.test(part)) return lower[0].toUpperCase() + lower.slice(1);
+      if (part.length === 2 && /^[A-Za-z]{2}$/.test(part)) return part.toUpperCase();
+      if (part.length === 1 && /^[A-Za-z]$/.test(part)) return lower;
+      return lower;
+    })
     .join("-");
 }
 
