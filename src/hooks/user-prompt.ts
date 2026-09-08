@@ -4,37 +4,48 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { safeLogError } from "./hook-errors.js";
 import { buildMemoryContext } from "./memory-context.js";
+import { LEARNING_INSTRUCTION } from "./learning-instruction.js";
+import { functionHooksActive } from "./post-tool.js";
 
 type PromptSearchResponse = {
   hints: string[];
   ids?: string[];
 };
 
-const LEARNING_INSTRUCTION = `<learning-instruction>
-When you recognize a durable insight, call lcm_store immediately:
-- decision: architectural/design choice with trade-offs
-- preference: user working style or tool preference
-- root-cause: bug cause that took effort to uncover
-- pattern: codebase convention not documented elsewhere
-- gotcha: non-obvious pitfall or footgun
-- solution: non-trivial fix worth remembering
-- workflow: multi-step process that works
-
-Tag prefixes: type: | scope: | project: | sprint: | source: | priority: | owner: | signal:
-Usage: lcm_store(text: "concise insight with why", tags: ["type:decision", "project:<repo>"])
-
-When you act on a surfaced memory (use it to inform a decision, avoid a known pitfall, or reference it in your work), emit:
-lcm_store(text: "Acted on memory <id> — <one-line how>", tags: ["signal:memory_used", "memory_id:<id>"])
-</learning-instruction>`;
-
 /** Deadline for /prompt-search — the user is waiting on every prompt; fall back to the bare instruction. */
 const PROMPT_SEARCH_TIMEOUT_MS = 5_000;
+
+/**
+ * Extract passive-learning events from one user prompt and write them to the project's
+ * events DB. Shared by the command hook and the daemon's /prompt-search route
+ * (`recordEvents: true`, the function-hooks module's path). Returns the rows written.
+ */
+export async function recordUserPromptEvents(prompt: string, sessionId: string, cwd: string): Promise<number> {
+  const { extractUserPromptEvents } = await import("./extractors.js");
+  const { EventsDb } = await import("./events-db.js");
+  const { eventsDbPath } = await import("../db/events-path.js");
+
+  const events = extractUserPromptEvents(prompt);
+  if (events.length === 0) return 0;
+  const db = new EventsDb(eventsDbPath(cwd));
+  try {
+    for (const event of events) db.insertEvent(sessionId, event, "UserPromptSubmit");
+  } finally {
+    db.close();
+  }
+  return events.length;
+}
 
 export async function handleUserPromptSubmit(
   stdin: string,
   client: DaemonClient,
   port?: number,
 ): Promise<{ exitCode: number; stdout: string }> {
+  // The function-hooks module owns this event while it is loaded: prompt.section carries the
+  // instruction and prompt.submit carries the memory context, so anything printed here would
+  // reach the model twice.
+  if (functionHooksActive()) return { exitCode: 0, stdout: "" };
+
   const daemonPort = port ?? 3737;
   const pidFilePath = join(homedir(), ".lossless-claude", "daemon.pid");
   const { connected } = await ensureDaemon({ port: daemonPort, pidFilePath, spawnTimeoutMs: 5000 });
@@ -48,23 +59,9 @@ export async function handleUserPromptSubmit(
 
     // Sidecar event extraction — must happen before prompt-search, must never throw
     try {
-      const { extractUserPromptEvents } = await import("./extractors.js");
-      const { EventsDb } = await import("./events-db.js");
-      const { eventsDbPath } = await import("../db/events-path.js");
-
-      const prompt = String(input.prompt ?? "");
-      const events = extractUserPromptEvents(prompt);
-
-      if (events.length > 0 && input.session_id && typeof input.session_id === "string") {
+      if (input.session_id && typeof input.session_id === "string") {
         const cwd = input.cwd ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
-        const db = new EventsDb(eventsDbPath(cwd));
-        try {
-          for (const event of events) {
-            db.insertEvent(input.session_id, event, "UserPromptSubmit");
-          }
-        } finally {
-          db.close();
-        }
+        await recordUserPromptEvents(String(input.prompt), input.session_id, cwd);
       }
     } catch (e) {
       safeLogError("UserPromptSubmit", e, {

@@ -114,6 +114,24 @@ Invoked after a tool call **succeeds**, and only for the tools the `PostToolUse`
 
 **Response:** Always exit code `0`. This hook runs on every tool call and must be fast; it does no network I/O and only writes to a local sidecar SQLite database.
 
+## Function hooks module (early access)
+
+**Module:** `hooks/lcm-hooks.ts`, named by `hooks/hooks.json` under `modules`. Loaded only when Claude Code runs with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`; the command hooks above keep working without it.
+
+One `tool.call` hook replaces both PostToolUse and PostToolUseFailure: it awaits the tool, reads `isError` on the result, and POSTs the same payload the command hook reads on stdin to the daemon's `POST /tool-event` route, which runs the same extractors and writes the same rows (`source_hook` is `PostToolUse` or `PostToolUseFailure` as before). The module runs in Claude Code's hooks worker with no Node and no SQLite, which is why the daemon writes. It reads the daemon port and bearer token once per load through a host command, because `$.fs` cannot leave the project directory.
+
+`prompt.submit` replaces UserPromptSubmit: it POSTs `/prompt-search` with `recordEvents: true` (the daemon extracts the prompt's events) and `format: "context"` (the daemon returns the rendered `<memory-context>` block), and attaches that block as hidden `context` on the prompt, which the model reads and the user never sees. The learning instruction no longer rides on every prompt: a `prompt.section` hook on the system prompt's `memory` section appends it once, cached for the session. This assumes the engine raises `prompt.section` for `memory` even when core omits the section (sections with null core text were observed firing in Claude Code 2.1.263). The module reports `learningInstructionBytes: 0` to `/prompt-search`, but the daemon's reserve is `max(reservedForLearningInstruction, learningInstructionBytes)`, so the hint budget stays what it was; the freed bytes are not spent on more hints. The module keeps a verbatim copy of `src/hooks/learning-instruction.ts`; a test fails when the two drift.
+
+`turn.complete` replaces the Stop hook's `session-snapshot`: at most once a minute it POSTs `/ingest` with `session_id` and `cwd` only, and `/ingest` derives the transcript file from them (`~/.claude/projects/<cwd slug>/<session_id>.jsonl`, still checked by `isSafeTranscriptPath`), then POSTs `/promote-events`. A caller that has `transcript_path` keeps sending it; the derivation is only the fallback.
+
+A daemon that answers 404 (an older lcm build without these routes) is logged once per route per session, not per call.
+
+**Daemon lifecycle:** the daemon exits when idle, and the command hooks brought it back through `ensureDaemon`. The module does the same: on a connection failure it runs `lcm daemon start --detach` through the host (at most once per minute) and retries the request once, and `session.start` checks `/health` before the first prompt. This needs an `lcm` binary on PATH; without one the module logs it once and events are lost until a command hook (SessionStart, Stop, SessionEnd) restarts the daemon.
+
+**Dedup rule:** while `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` is set, `lcm post-tool`, `lcm user-prompt` and `lcm session-snapshot` exit without recording or printing anything; otherwise every event would land twice and the model would read the memory context twice. The variable is one of two switches that load the module; the other is Claude Code's remote gate (`tengu_plugin_hooks_modules`), which the command hook cannot see. Known limits of this rule: a module that fails to load loses passive capture for the session (the failure is named in Claude Code's debug log), and a session where the remote gate loads the module without the variable records every event twice. The durable fix is dedup on `(session_id, tool_use_id)` in the events DB, which both paths receive.
+
+**Types:** run `/plugin-types` in a session with the flag on; it writes `claude-code.d.ts` for the running build. Regenerate after a Claude Code update rather than editing. `claude plugin validate` reads the module statically: `$` may only be passed to a top-level function, and calls must be spelled `$.noun.method(...)`.
+
 ## SessionSnapshot Hook
 
 **Command:** `lcm session-snapshot`

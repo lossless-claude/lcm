@@ -21,6 +21,19 @@ export const projectDbPath = (cwd: string): string =>
 export const projectMetaPath = (cwd: string): string =>
   join(projectDir(cwd), "meta.json");
 
+/**
+ * Where Claude Code writes a session's transcript: ~/.claude/projects/<cwd with every
+ * non-alphanumeric character replaced by "-">/<session_id>.jsonl. Used when a caller knows
+ * the session but not the file (the function-hooks module has `$.session.id()` and
+ * `$.session.cwd()`, not `transcript_path`). Returns null for a session id that is not a
+ * plain file name.
+ */
+export function claudeTranscriptPath(cwd: string, sessionId: string): string | null {
+  if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) return null;
+  const projectSlug = cwd.replace(/[^A-Za-z0-9]/g, "-");
+  return join(homedir(), ".claude", "projects", projectSlug, `${sessionId}.jsonl`);
+}
+
 function tryRealpath(p: string): string {
   try { return realpathSync(p); } catch { return p; }
 }

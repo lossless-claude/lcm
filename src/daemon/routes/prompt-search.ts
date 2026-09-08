@@ -8,7 +8,9 @@ import { closeLcmConnection, getLcmConnection } from "../../db/connection.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { PromotedStore, type SearchResult } from "../../db/promoted.js";
 import { RecallStore, type RecallFeedback } from "../../db/recall.js";
-import { selectMemoryHintsWithinBudget } from "../../hooks/memory-context.js";
+import { buildMemoryContext, selectMemoryHintsWithinBudget } from "../../hooks/memory-context.js";
+import { recordUserPromptEvents } from "../../hooks/user-prompt.js";
+import { safeLogError } from "../../hooks/hook-errors.js";
 import { validateCwd } from "../validate-cwd.js";
 
 const CANDIDATE_LIMIT_MULTIPLIER = 5;
@@ -169,6 +171,10 @@ export interface PromptSearchRequest {
   learningInstructionBytes?: number;
   logSurfacing?: boolean;
   debug?: boolean;
+  /** Also extract passive-learning events from the prompt (the function-hooks module cannot write SQLite). */
+  recordEvents?: boolean;
+  /** `"context"`: add the rendered `<memory-context>` block to the response as `context`. */
+  format?: "context";
 }
 
 function validatePromptSearchInput(input: unknown): PromptSearchRequest {
@@ -194,6 +200,8 @@ function validatePromptSearchInput(input: unknown): PromptSearchRequest {
         : undefined,
     logSurfacing: obj.logSurfacing !== false,
     debug: obj.debug === true,
+    recordEvents: obj.recordEvents === true,
+    format: obj.format === "context" ? "context" : undefined,
   };
 }
 
@@ -208,7 +216,7 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
       return;
     }
 
-    const { query, session_id, cwd, learningInstructionBytes, logSurfacing, debug: isDebug } = input;
+    const { query, session_id, cwd, learningInstructionBytes, logSurfacing, debug: isDebug, recordEvents, format } = input;
 
     // Redundant check (validatePromptSearchInput should have already caught these),
     // but kept for defensive programming.
@@ -223,6 +231,16 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
     } catch {
       sendJson(res, 200, { hints: [] });
       return;
+    }
+
+    // Before any early return: the prompt's events are worth recording even when this
+    // project has no memory to search yet.
+    if (recordEvents && session_id) {
+      try {
+        await recordUserPromptEvents(query, session_id, validatedCwd);
+      } catch (err) {
+        safeLogError("UserPromptSubmit", err, { cwd: validatedCwd, sessionId: session_id });
+      }
     }
 
     const dbPath = projectDbPath(validatedCwd);
@@ -337,7 +355,13 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
         }
       } catch { /* non-fatal */ }
 
-      sendJson(res, 200, debugResponse ? { hints, ids, debug: debugResponse } : { hints, ids });
+      const context = format === "context" ? buildMemoryContext(hints, ids) : null;
+      sendJson(res, 200, {
+        hints,
+        ids,
+        ...(context ? { context } : {}),
+        ...(debugResponse ? { debug: debugResponse } : {}),
+      });
     } catch {
       sendJson(res, 200, { hints: [] });
     } finally {

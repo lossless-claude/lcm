@@ -12,6 +12,23 @@ function makeDeps(overrides: Partial<SnapshotDeps> = {}): SnapshotDeps {
 }
 
 describe("handleSessionSnapshot", () => {
+  it("stays silent while the function-hooks module ingests on turn.complete", async () => {
+    process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = "1";
+    try {
+      const deps = makeDeps();
+      const { handleSessionSnapshot } = await import("../../src/hooks/session-snapshot.js");
+      const result = await handleSessionSnapshot(
+        JSON.stringify({ session_id: "abc-123", cwd: "/tmp/test", transcript_path: "/tmp/session.jsonl" }),
+        deps,
+      );
+      expect(result).toEqual({ exitCode: 0, stdout: "" });
+      expect(deps.post).not.toHaveBeenCalled();
+      expect(deps.writeFileSync).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS;
+    }
+  });
+
   it("ingests when no cursor file exists", async () => {
     const deps = makeDeps({
       statSync: vi.fn().mockImplementation(() => { throw new Error("ENOENT"); }),

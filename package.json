@@ -26,6 +26,7 @@
     "mcp.mjs",
     "lcm.mjs",
     ".claude-plugin/",
+    "hooks/",
     "docs/",
     "README.md",
     "LICENSE"
