@@ -109,11 +109,12 @@ describe("POST /ingest", () => {
       }),
     });
     expect(invalidImport.status).toBe(400);
-    expect(await invalidImport.json()).toEqual({ error: "Invalid Codex transcript JSONL at line 3" });
+    const invalidOffset = Buffer.byteLength(`${meta}\n${first}\n`, "utf8");
+    expect(await invalidImport.json()).toEqual({ error: `Invalid Codex transcript JSONL at byte offset ${invalidOffset}` });
     writeFileSync(path, `${meta}\n${first}\n${second.slice(0, -8)}\n`);
     const invalidLive = await postLive();
     expect(invalidLive.status).toBe(400);
-    expect(await invalidLive.json()).toEqual({ error: "Invalid Codex transcript JSONL at line 3" });
+    expect(await invalidLive.json()).toEqual({ error: `Invalid Codex transcript JSONL at byte offset ${invalidOffset}` });
 
     await daemon.stop();
     daemon = undefined;

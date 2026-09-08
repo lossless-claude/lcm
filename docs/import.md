@@ -18,4 +18,6 @@ Codex discovery reads `~/.codex/sessions/` and `~/.codex/archived_sessions/` rec
 
 `lcm compact --replay` operates on conversations already stored in LCM, including Codex conversations. It does not scan transcript directories. Use `lcm import --replay` to discover historical files that LCM has not captured yet.
 
+Codex import and live capture share a durable byte cursor. A repeated import reads only the appended suffix when its checkpoint is valid. File replacement, truncation, or growth after a previously imported final record without a newline requires a recovery scan. Cursor updates commit with message writes, so failed requests remain retryable without skipping or duplicating stored messages.
+
 `--replay` compacts selected sessions with context from earlier sessions in that project and source, resuming recorded progress on repeated runs. Replay context never crosses between Codex projects. Codex imports and lifecycle hooks use the same session identity and ingestion path: repeated captures do not duplicate messages, while later transcript growth remains ingestible. User and assistant message text is extracted from Codex response events; duplicate event notifications and tool events are not imported as messages. LCM's internal Codex summarizer runs without hooks and with ephemeral sessions, so its own work does not become future replay input.

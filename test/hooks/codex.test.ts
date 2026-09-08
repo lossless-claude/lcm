@@ -73,6 +73,20 @@ describe("Codex native lifecycle adapter", () => {
     expect(outputContext(result.stdout).additionalContext).toBe("remember quartz");
   });
 
+  it("finds recent restoration evidence without reading an oversized old prefix", async () => {
+    const file = transcriptWith([restoredRecord("developer", "x".repeat(600_000)), { type: "compacted" }, restoredRecord()]);
+    const { deps } = dependencies({ "/restore": { context: "remember quartz" } });
+    expect(await dispatchCodexHook(payload("SessionStart", { source: "compact", transcript_path: file }), deps))
+      .toEqual({ exitCode: 0, stdout: "" });
+  });
+
+  it("restores when the compaction boundary lies outside the bounded evidence window", async () => {
+    const file = transcriptWith([{ type: "compacted" }, restoredRecord("developer", "x".repeat(600_000)), restoredRecord()]);
+    const { deps } = dependencies({ "/restore": { context: "remember quartz" } });
+    const result = await dispatchCodexHook(payload("SessionStart", { source: "compact", transcript_path: file }), deps);
+    expect(outputContext(result.stdout).additionalContext).toBe("remember quartz");
+  });
+
   it.each(["startup", "resume", "clear", "compact"])("restores on %s after capturing pending transcript content", async (source) => {
     const { post, deps } = dependencies({ "/restore": { context: "Remember the quartz migration." } });
     const result = await dispatchCodexHook(payload("SessionStart", { source }), deps);

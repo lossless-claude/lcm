@@ -117,6 +117,23 @@ describe("parseCodexTranscript", () => {
     );
   });
 
+  it("keeps replacement decoding permissive but rejects invalid UTF-8 in strict mode", () => {
+    const dir = makeTmpDir();
+    const file = join(dir, "session.jsonl");
+    const template = makeSessionLine("assistant", "MARKER");
+    const marker = template.indexOf("MARKER");
+    writeFileSync(file, Buffer.concat([
+      Buffer.from(template.slice(0, marker), "utf8"),
+      Buffer.from([0xc3]),
+      Buffer.from(`${template.slice(marker + "MARKER".length)}\n`, "utf8"),
+    ]));
+
+    expect(parseCodexTranscript(file).map(message => message.content)).toEqual(["�"]);
+    expect(() => parseCodexTranscript(file, { strict: true })).toThrow(
+      "Invalid Codex transcript UTF-8",
+    );
+  });
+
   it("skips session_meta and event_msg lines", () => {
     const dir = makeTmpDir();
     const file = join(dir, "session.jsonl");

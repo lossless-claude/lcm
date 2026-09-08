@@ -56,6 +56,8 @@ On resume after automatic compaction, Codex can emit both `SessionStart(resume)`
 
 Malformed completed records, unreadable files, and mismatched session/project metadata produce ingestion errors rather than successful empty imports. Hooks report these failures on stderr and allow the Codex operation to continue. Ingestion and compaction share the project write queue.
 
+Live ingestion uses a byte cursor persisted in SQLite with the newly captured messages. Subsequent events read only appended bytes and a bounded metadata header, using asynchronous file reads. Restarts reuse the checkpoint; missing or invalid checkpoints trigger recovery scans. The context-deduplication check also uses a bounded tail read instead of loading the complete rollout.
+
 Codex uses its own transcript parser and instruction lifecycle. LCM does not capture or replay `CLAUDE.md` into Codex. New sessions restore recent project context; resumed sessions restore their own context. Memory output is bounded, and full captured history remains searchable through `lcm search` and `lcm grep`.
 
 Optional guidance-only installation remains available with `lcm connectors install codex --type skill`. MCP is optional and its TOML configuration remains manual.

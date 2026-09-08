@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { readFileSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { DaemonClient } from "../daemon/client.js";
 import { loadDaemonConfig } from "../daemon/config.js";
 import { ensureDaemon } from "../daemon/lifecycle.js";
@@ -10,6 +10,7 @@ const EVENTS = new Set([
   "SessionStart", "UserPromptSubmit", "Stop", "Interrupt", "SessionEnd", "PreCompact",
 ]);
 const CONTEXT_BYTES = 16_000;
+const RESTORE_EVIDENCE_BYTES = 256 * 1024;
 const EMPTY = { exitCode: 0, stdout: "" };
 
 type CodexInput = {
@@ -77,17 +78,35 @@ function contextOutput(event: string, context: string): typeof EMPTY {
   };
 }
 
+async function readRestoreEvidence(transcriptPath: string): Promise<string | null> {
+  const file = await open(transcriptPath, "r");
+  try {
+    const { size } = await file.stat();
+    const length = Math.min(size, RESTORE_EVIDENCE_BYTES);
+    const buffer = Buffer.allocUnsafe(length);
+    const { bytesRead } = await file.read(buffer, 0, length, size - length);
+    if (bytesRead !== length) return null;
+    const tail = buffer.toString("utf8");
+    // A bounded tail may begin inside a record or a UTF-8 character.
+    const start = size > length ? tail.indexOf("\n") + 1 : 0;
+    if (size > length && start === 0) return null;
+    return tail.slice(start);
+  } finally {
+    await file.close();
+  }
+}
+
 /** A resume hook can already have restored this exact context after compaction. */
-function hasContextAfterCompaction(transcriptPath: string, context: string): boolean {
+async function hasContextAfterCompaction(transcriptPath: string, context: string): Promise<boolean> {
   if (!context.trim()) return false;
   const expected = boundContext(context);
   let compacted = false;
   let found = false;
   try {
-    const transcript = readFileSync(transcriptPath, "utf8");
+    const transcript = await readRestoreEvidence(transcriptPath);
     // An unfinished record could be a newer compaction boundary. Never use a
     // partial snapshot as evidence that the old developer context survived.
-    if (!transcript.endsWith("\n")) return false;
+    if (!transcript?.endsWith("\n")) return false;
     for (const line of transcript.split("\n")) {
       if (!line.trim()) continue;
       let record;
@@ -150,7 +169,7 @@ export async function dispatchCodexHook(
         ...identity, source: input.source ?? "startup",
       }, { timeoutMs: 10_000, signal });
       if (input.source === "compact" && transcriptValidated && input.transcript_path &&
-          hasContextAfterCompaction(input.transcript_path, restored.context ?? "")) return EMPTY;
+          await hasContextAfterCompaction(input.transcript_path, restored.context ?? "")) return EMPTY;
       return contextOutput("SessionStart", restored.context ?? "");
     }
     if (input.hook_event_name === "UserPromptSubmit" && input.prompt?.trim()) {

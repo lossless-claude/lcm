@@ -13,6 +13,27 @@ import { extractCodexSessionMeta, parseCodexTranscript } from "../../codex-trans
 import { ScrubEngine } from "../../scrub.js";
 import { validateCwd } from "../validate-cwd.js";
 import { enqueue } from "../project-queue.js";
+import { readCodexTranscriptDelta, type CodexTranscriptCursor } from "../../codex-transcript-reader.js";
+import { loadCodexCursor, saveCodexCursor } from "../../db/codex-cursor.js";
+
+class TranscriptError extends Error {}
+
+function codexTranscriptPath(path: string, cwd: string): string {
+  const safePath = isSafeTranscriptPath(path, cwd, "codex");
+  if (!safePath) throw new Error("Codex transcript path is not allowed");
+  if (!existsSync(safePath)) throw new Error("Codex transcript is unreadable");
+  return safePath;
+}
+
+function validateCodexMetadata(
+  meta: { cwd?: string; id?: string } | undefined, input: IngestInput, cwd: string,
+): void {
+  if (!meta?.cwd) throw new Error("Codex transcript metadata is missing a cwd");
+  if (projectId(meta.cwd) !== projectId(cwd)) throw new Error("Codex transcript cwd does not match requested project");
+  if (meta.id ? meta.id !== input.session_id : input.source !== "import") {
+    throw new Error("Codex transcript session id does not match request");
+  }
+}
 
 function isParsedMessage(value: unknown): value is ParsedMessage {
   if (!value || typeof value !== "object") return false;
@@ -59,13 +80,7 @@ export function resolveIngestMessages(input: IngestInput, cwd: string): ParsedMe
       if (client !== "codex") return parseTranscript(safePath);
 
       const meta = extractCodexSessionMeta(safePath);
-      if (!meta?.cwd) throw new Error("Codex transcript metadata is missing a cwd");
-      if (projectId(meta.cwd) !== projectId(cwd)) {
-        throw new Error("Codex transcript cwd does not match requested project");
-      }
-      if (meta.id ? meta.id !== input.session_id : input.source !== "import") {
-        throw new Error("Codex transcript session id does not match request");
-      }
+      validateCodexMetadata(meta, input, cwd);
       return parseCodexTranscript(safePath, {
         includeTrailingRecord: input.source === "import",
         strict: true,
@@ -96,14 +111,19 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
 
     const dbPath = projectDbPath(cwd);
 
-    let parsed: ParsedMessage[];
+    let parsed: ParsedMessage[] = [];
+    let codexPath: string | undefined;
     try {
-      parsed = resolveIngestMessages(input, cwd);
+      if (input.client === "codex" && input.transcript_path && !Array.isArray(input.messages)) {
+        codexPath = codexTranscriptPath(input.transcript_path, cwd);
+      } else {
+        parsed = resolveIngestMessages(input, cwd);
+      }
     } catch (err) {
       sendJson(res, 400, { error: err instanceof Error ? err.message : "invalid transcript" });
       return;
     }
-    if (parsed.length === 0) {
+    if (parsed.length === 0 && !codexPath) {
       sendJson(res, 200, { ingested: 0, totalTokens: 0 });
       return;
     }
@@ -135,11 +155,32 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
 
           const conversationStore = new ConversationStore(db);
           const summaryStore = new SummaryStore(db);
+          const existing = db.prepare("SELECT conversation_id FROM conversations WHERE session_id = ?")
+            .get(session_id) as { conversation_id: number } | undefined;
+          const storedCount = existing ? await conversationStore.getMessageCount(existing.conversation_id) : 0;
+          let cursor: CodexTranscriptCursor | undefined;
+          let sourceCount = 0;
+          if (codexPath) {
+            let prior = existing ? loadCodexCursor(db, existing.conversation_id, codexPath) : undefined;
+            if (prior && prior.messageCount > storedCount) prior = undefined;
+            try {
+              const delta = await readCodexTranscriptDelta(codexPath, {
+                cursor: prior, includeTrailingRecord: input.source === "import",
+              });
+              validateCodexMetadata(delta.sessionMeta, input, cwd);
+              parsed = delta.messages;
+              sourceCount = delta.resumed && prior ? prior.messageCount : 0;
+              cursor = delta.cursor;
+            } catch (error) {
+              throw new TranscriptError(error instanceof Error ? error.message : "invalid transcript");
+            }
+          }
           const conversation = await conversationStore.getOrCreateConversation(session_id);
-          const storedCount = await conversationStore.getMessageCount(conversation.conversationId);
-          const newMessages = parsed.slice(storedCount);
+          // Imports can put the database ahead of a live newline-boundary cursor.
+          // Skip that already-stored source prefix without rereading earlier bytes.
+          const newMessages = parsed.slice(Math.max(0, storedCount - sourceCount));
 
-          if (newMessages.length === 0) return { ingested: 0, totalTokens: 0 };
+          if (newMessages.length === 0 && !cursor) return { ingested: 0, totalTokens: 0 };
 
           const totalCounts = { gitleaks: 0, builtIn: 0, global: 0, project: 0 };
           const inputs = newMessages.map((m, i) => {
@@ -157,11 +198,17 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
             };
           });
           const records = await conversationStore.withTransaction(async () => {
-            const created = await conversationStore.createMessagesBulk(inputs);
-            upsertRedactionCounts(db, pid, totalCounts);
-            await summaryStore.appendContextMessages(conversation.conversationId, created.map((r) => r.messageId));
+            const created = inputs.length > 0 ? await conversationStore.createMessagesBulk(inputs) : [];
+            if (created.length > 0) {
+              upsertRedactionCounts(db, pid, totalCounts);
+              await summaryStore.appendContextMessages(conversation.conversationId, created.map((r) => r.messageId));
+            }
+            if (cursor && codexPath) saveCodexCursor(db, {
+              conversationId: conversation.conversationId, transcriptPath: codexPath, cursor,
+            });
             return created;
           });
+          if (records.length === 0) return { ingested: 0, totalTokens: 0 };
 
           try {
             const metaPath = projectMetaPath(cwd);
@@ -194,7 +241,7 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
       });
       sendJson(res, 200, result);
     } catch (err) {
-      sendJson(res, 500, { error: err instanceof Error ? err.message : "ingest failed" });
+      sendJson(res, err instanceof TranscriptError ? 400 : 500, { error: err instanceof Error ? err.message : "ingest failed" });
     }
   };
 }

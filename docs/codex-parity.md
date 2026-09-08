@@ -11,7 +11,8 @@ LCM captures Codex sessions automatically through native hooks, restores relevan
 - `src/connectors/codex-hooks.ts`: native hook registration, preservation of unrelated configuration, and installation diagnostics.
 - `src/hooks/codex.ts`: Codex lifecycle input normalization, request deadlines, bounded developer context, and fail-open behavior.
 - `src/connectors/installer.ts`: Codex TOML MCP registration remains manual.
-- `src/codex-transcript.ts` and `src/daemon/routes/ingest.ts`: Codex transcript parsing and shared incremental ingestion for live hooks and historical imports.
+- `src/codex-transcript-reader.ts` and `src/daemon/routes/ingest.ts`: asynchronous suffix reading and shared incremental ingestion for live hooks and historical imports.
+- `src/db/codex-cursor.ts`: byte checkpoints committed atomically with their messages.
 - `src/daemon/routes/restore.ts` and `src/daemon/routes/prompt-search.ts`: restoration from session context and recall from promoted and episodic memory.
 - `src/import.ts` and `bin/lcm.ts`: replay discovery across both providers, with explicit provider selection preserved.
 - `src/llm/codex-process.ts`: internal summaries disable hooks and use ephemeral sessions to prevent self-capture.
@@ -40,7 +41,8 @@ The hooks reference does not establish a minimum supported version or a complete
 ## Data and lifecycle boundaries
 
 - Raw Codex session UUIDs are shared by hooks, import, replay, and restore. Transcript metadata must match the target project. Legacy historical imports may use the discovery filename identity when metadata has no UUID.
-- Ingestion resumes from the stored message count. This assumes an append-only transcript with a stable parsed prefix; rewriting previously completed records is unsupported.
+- Ingestion resumes from a persisted byte offset and canonical source-message count. It reads the appended suffix asynchronously, plus a bounded metadata header. Missing or invalid cursors require a full scan; replacement, truncation, and growth after an imported non-newline EOF invalidate the cursor. The transcript must retain a stable parsed prefix; rewriting previously completed records is unsupported.
+- Cursor advancement and message insertion share one SQLite transaction. Failed parsing or database writes do not advance the checkpoint, and overlapping imports skip source messages already stored in the database.
 - Live capture defers non-newline trailing records. Historical import accepts a complete final JSON record without a newline. Repeated lifecycle events and import do not duplicate captured messages.
 - Codex restore uses bounded summaries and unsummarized user/assistant context. A new startup can fall back to the latest nonempty project conversation; resume and compaction use the current session.
 - Codex owns its instruction lifecycle. LCM never replays the Claude instruction snapshot into Codex.
@@ -59,7 +61,7 @@ LCM_CODEX_NATIVE_RUNTIME=1 npx vitest run test/e2e/flows/codex-native-runtime.te
 
 Verified with Codex CLI 0.153.4: untrusted hooks are skipped; vetted fixture hooks run at startup, resume, prompt, stop, and automatic compaction; hook context reaches the provider as developer messages; the current prompt is absent from the transcript at prompt-hook time; both current messages are present at stop-hook time. Automatic compaction followed by resume emits both `SessionStart(resume)` and `SessionStart(compact)`, and the host retains both outputs. LCM suppresses an identical compact restoration only when the raw transcript proves it was already emitted as developer context after the latest `compacted` record. A new compaction invalidates that evidence.
 
-The native probe also invokes the production hook adapter with deterministic daemon responses across two automatic compaction generations. It verifies that each fresh compaction marker is fully written before the compact-start callback and that each continuation contains exactly one restored context. Incomplete, malformed, or unreadable transcript snapshots cannot suppress restoration.
+The native probe also invokes the production hook adapter with deterministic daemon responses across two automatic compaction generations. It verifies that each fresh compaction marker is fully written before the compact-start callback and that each continuation contains exactly one restored context. The deduplication check reads at most a 256 KiB tail asynchronously; incomplete, malformed, unreadable, or missing compaction-boundary evidence cannot suppress restoration.
 
 The test uses Codex's automation-only trust bypass solely for its own disposable fixture and never changes user trust records. Desktop App activation is not covered by this probe. A direct App Server manual-compaction probe completed but did not execute fixture hooks, so it is not evidence of hook activation in the App.
 
