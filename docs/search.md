@@ -50,6 +50,28 @@ content are additional. This is a character cap, not a model-token budget or pro
 Single-word matches and BM25 relevance come from FTS5; see [fts5.md](./fts5.md) if your Node
 runtime lacks FTS5 (search then falls back to LIKE over the same prepared terms).
 
+### Language packs
+
+Query preparation always drops English function words. Every other language gets a **language
+pack**: a JSON file at `~/.lossless-claude/languages/<tag>.json` holding that language's function
+words, generated once by the configured summarizer the first time a corpus in that language is
+seen, and reused from then on. A pack applies to a query when at least two of the query's words are
+its function words, so a pt-BR question loses "que", "como", "para" the way an English one loses
+"what", "how", "for", and a single accidental collision in another language changes nothing.
+
+Packs are created by the daemon: after an ingest, a project with no recorded language and at least
+20 human turns (tool output pasted into a user turn does not count) is sampled, the model names the
+language, the tag is written to the project's `meta.json` as `language`, and the pack is generated if
+this machine has none. `lcm bench build --generator llm` does the same on a corpus it detects. A
+mock or disabled summarizer skips the step; a provider failure is logged once per project per daemon
+lifetime and not retried until restart. Without a pack, a question in that language goes through
+whole, function words included — today's behaviour.
+
+Packs are plain JSON, reviewable and hand-editable; deleting one makes the next detection regenerate
+it. On the 74 pt-BR bench questions built at `ea10a75`, dropping pt-BR function words alone moved
+hit@5 from 0.419 to 0.486 (+7 / −2) with no model call at search time. `LCM_LANGUAGES_DIR` points
+the loader elsewhere; the test suite uses it so no test reads a developer's real packs.
+
 ### Failure visibility
 
 The `/search` daemon route never fails hard on a bad query, but it never fails silently either:
