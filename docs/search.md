@@ -1,4 +1,4 @@
-# Search & recall benchmarking
+# Search & retrieval benchmarking
 
 `lcm search <query>` answers natural-language questions across the episodic layer (messages +
 summaries) and the promoted layer (long-term memories).
@@ -85,7 +85,7 @@ lcm bench run   --project /path/to/project
 
   | metric | what it tells you |
   |---|---|
-  | `hit@5` (search) | fraction of questions whose labelled session appears in the top 5 |
+  | `hit@5` (search) | fraction of questions where any labelled session (`sessionId` or `sessionIds`) appears in the top 5 |
   | `hit@5` (grep) | real ripgrep over the same retained messages, summaries and promoted memories, ranked by matched terms then occurrences; falls back to a labelled SQLite LIKE baseline when `rg` is missing. Not raw-JSONL grep |
   | empty-result rate | fraction returning zero results — the worst failure mode |
   | p95 latency | a retrieval path slower than reading the file is not worth calling |
@@ -94,6 +94,8 @@ lcm bench run   --project /path/to/project
   relevance recall: a session outside the labels may also answer the question. When review finds
   such a session, add it to the query's optional `sessionIds` list — every session listed there is
   scored as a hit alongside `sessionId`. Do not quote a hit rate as a recall figure.
+  Keep a curated file outside the default path (`--out` / `--bench-file`): `bench build`
+  overwrites `.lcm-bench.json` without merging, so hand-added labels there are lost.
   The grep baseline searches the retained corpus; results from external raw-JSONL grep are a different
   experiment and must not be compared as if the corpus and ranking were identical.
 
