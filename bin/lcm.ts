@@ -233,13 +233,14 @@ export function registerBenchCommands(program: Command): void {
     .option("--out <file>", "Benchmark file path (default: project memory directory)")
     .option("--generator <mode>", "Question generator: llm or mechanical", "mechanical")
     .option("--seed <n>", "Deterministic sampling seed", "42")
+    .option("--language <tag>", "Language to write LLM questions in (BCP 47, e.g. pt-BR); default: detected from the corpus")
     .action(async (opts) => {
       const cwd = typeof opts.project === "string" ? resolve(opts.project) : process.cwd();
       const n = parsePositiveInteger(String(opts.n ?? "20"), "--n");
       const seed = parsePositiveInteger(String(opts.seed ?? "42"), "--seed");
       if (!["llm", "mechanical"].includes(opts.generator)) throw new Error("--generator must be llm or mechanical");
       const { buildBench } = await import("../src/bench.js");
-      const result = await buildBench({ cwd, n, seed, out: opts.out, generator: opts.generator });
+      const result = await buildBench({ cwd, n, seed, out: opts.out, generator: opts.generator, language: opts.language });
       stdout.write(result.stdout);
       exit(result.exitCode);
     });
