@@ -6,12 +6,20 @@ import { requiresRestart } from "./types.js";
 import { LCM_MARKERS } from "./constants.js";
 import { generateContent } from "./template-service.js";
 import { findAgent, AGENTS } from "./registry.js";
+import {
+  diagnoseCodexHooks,
+  installCodexHooks,
+  removeCodexHooks,
+  type CodexHookCommandOptions,
+  type CodexHooksDiagnosis,
+} from "./codex-hooks.js";
 
 export interface InstallResult {
   success: boolean;
   path: string;
   requiresRestart: boolean;
   manual?: string;
+  notice?: string;
 }
 
 export interface InstalledConnector {
@@ -77,7 +85,12 @@ function removeMcpJson(filePath: string): boolean {
   return true;
 }
 
-export function installConnector(agentIdOrName: string, type?: ConnectorType, cwd: string = process.cwd()): InstallResult {
+export function installConnector(
+  agentIdOrName: string,
+  type?: ConnectorType,
+  cwd: string = process.cwd(),
+  options: CodexHookCommandOptions = {},
+): InstallResult {
   const agent = findAgent(agentIdOrName);
   if (!agent) throw new Error(`Unknown agent: ${agentIdOrName}`);
 
@@ -103,6 +116,16 @@ export function installConnector(agentIdOrName: string, type?: ConnectorType, cw
   if (!configPath) throw new Error(`No config path defined for ${agent.name} with type ${connectorType}`);
 
   const resolvedPath = resolveConfigPath(configPath, cwd);
+
+  if (connectorType === 'hooks') {
+    installCodexHooks(resolvedPath, options);
+    return {
+      success: true,
+      path: resolvedPath,
+      requiresRestart: requiresRestart(connectorType),
+      notice: 'Codex requires trust review for non-managed hooks. Review this connector with /hooks after restarting Codex.',
+    };
+  }
 
   if (connectorType === 'mcp') {
     if (configPath.endsWith('.toml')) {
@@ -141,6 +164,10 @@ export function removeConnector(agentIdOrName: string, type?: ConnectorType, cwd
 
   const resolvedPath = resolveConfigPath(configPath, cwd);
 
+  if (connectorType === 'hooks') {
+    return removeCodexHooks(resolvedPath);
+  }
+
   if (connectorType === 'mcp') {
     return removeMcpJson(resolvedPath);
   }
@@ -177,7 +204,12 @@ export function listConnectors(cwd: string = process.cwd()): InstalledConnector[
 
       const resolvedPath = resolveConfigPath(configPath, cwd);
 
-      if (type === 'mcp') {
+      if (type === 'hooks') {
+        const diagnosis = diagnoseCodexHooks(resolvedPath);
+        if (diagnosis.installed) {
+          installed.push({ agentId: agent.id, agentName: agent.name, type, path: resolvedPath });
+        }
+      } else if (type === 'mcp') {
         if (resolvedPath.endsWith('.toml')) continue; // Skip TOML files
         if (existsSync(resolvedPath)) {
           try {
@@ -207,4 +239,24 @@ export function listConnectors(cwd: string = process.cwd()): InstalledConnector[
   }
 
   return installed;
+}
+
+export function diagnoseConnector(
+  agentIdOrName: string,
+  type?: ConnectorType,
+  cwd: string = process.cwd(),
+  options: CodexHookCommandOptions = {},
+): CodexHooksDiagnosis {
+  const agent = findAgent(agentIdOrName);
+  if (!agent) throw new Error(`Unknown agent: ${agentIdOrName}`);
+  const connectorType = type ?? agent.defaultType;
+  if (connectorType !== 'hooks') {
+    throw new Error(`Detailed connector diagnostics are not available for type "${connectorType}"`);
+  }
+  if (!agent.supportedTypes.includes(connectorType)) {
+    throw new Error(`Agent "${agent.name}" does not support connector type "${connectorType}". Supported: ${agent.supportedTypes.join(', ')}`);
+  }
+  const configPath = agent.configPaths.hooks;
+  if (!configPath) throw new Error(`No config path defined for ${agent.name} with type ${connectorType}`);
+  return diagnoseCodexHooks(resolveConfigPath(configPath, cwd), options);
 }

@@ -348,6 +348,10 @@ export class SummaryStore {
   }
 
   async getSummary(summaryId: string): Promise<SummaryRecord | null> {
+    return this.getSummarySync(summaryId);
+  }
+
+  getSummarySync(summaryId: string): SummaryRecord | null {
     const row = this.db
       .prepare(
         `SELECT summary_id, conversation_id, kind, depth, content, token_count, file_ids,
@@ -818,6 +822,10 @@ export class SummaryStore {
   // ── Search ────────────────────────────────────────────────────────────────
 
   async searchSummaries(input: SummarySearchInput): Promise<SummarySearchResult[]> {
+    return this.searchSummariesSync(input);
+  }
+
+  searchSummariesSync(input: SummarySearchInput): SummarySearchResult[] {
     const limit = input.limit ?? 50;
 
     if (input.mode === "full_text") {

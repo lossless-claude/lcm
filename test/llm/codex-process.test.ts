@@ -71,6 +71,9 @@ describe("createCodexProcessSummarizer", () => {
     // --json puts the normalized usage breakdown on stdout; the summary still
     // arrives through --output-last-message, so the two never collide.
     expect(args).toContain("--json");
+    expect(args).toContain("--ephemeral");
+    expect(args).toContain("features.hooks=false");
+    expect(spawn.mock.calls[0][2].cwd).toBe(tempDirs[0]);
     expect(args).toContain("--skip-git-repo-check");
     expect(args).toContain("--sandbox");
     expect(args).toContain("read-only");

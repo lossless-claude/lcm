@@ -54,7 +54,16 @@ describe("connector registry", () => {
   it("requiresRestart returns false only for rules", () => {
     expect(requiresRestart("rules")).toBe(false);
     expect(requiresRestart("hook")).toBe(true);
+    expect(requiresRestart("hooks")).toBe(true);
     expect(requiresRestart("mcp")).toBe(true);
     expect(requiresRestart("skill")).toBe(true);
+  });
+
+  it("uses native hooks as the default Codex connector", () => {
+    const codex = findAgent("codex");
+    expect(CONNECTOR_TYPES).toContain("hooks");
+    expect(codex?.defaultType).toBe("hooks");
+    expect(codex?.supportedTypes).toContain("skill");
+    expect(codex?.configPaths.hooks).toBe(".codex/hooks.json");
   });
 });

@@ -166,6 +166,11 @@ function buildArgs(outputPath: string, model?: string): string[] {
     "exec",
     "-",
     "--json",
+    // Summarization is internal work: never feed it back into lifecycle hooks
+    // or persist a synthetic session for the next import/replay to discover.
+    "--ephemeral",
+    "-c",
+    "features.hooks=false",
     "--skip-git-repo-check",
     "--sandbox",
     "read-only",
@@ -204,6 +209,7 @@ function runCodexSummarizer(
     try {
       child = deps.spawn("codex", buildArgs(outputPath, deps.model), {
         stdio: ["pipe", "pipe", "pipe"],
+        cwd: tempDir,
       });
     } catch (error) {
       cleanupTempDir(deps.rmSync, tempDir);

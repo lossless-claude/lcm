@@ -12,6 +12,7 @@ import { buildMemoryContext, selectMemoryHintsWithinBudget } from "../../hooks/m
 import { recordUserPromptEvents } from "../../hooks/user-prompt.js";
 import { safeLogError } from "../../hooks/hook-errors.js";
 import { validateCwd } from "../validate-cwd.js";
+import { searchNativeHistory } from "../../search/native-history.js";
 
 const CANDIDATE_LIMIT_MULTIPLIER = 5;
 const MIN_CANDIDATE_LIMIT = 10;
@@ -175,6 +176,7 @@ export interface PromptSearchRequest {
   recordEvents?: boolean;
   /** `"context"`: add the rendered `<memory-context>` block to the response as `context`. */
   format?: "context";
+  client?: "codex";
 }
 
 function validatePromptSearchInput(input: unknown): PromptSearchRequest {
@@ -202,6 +204,7 @@ function validatePromptSearchInput(input: unknown): PromptSearchRequest {
     debug: obj.debug === true,
     recordEvents: obj.recordEvents === true,
     format: obj.format === "context" ? "context" : undefined,
+    client: obj.client === "codex" ? "codex" : undefined,
   };
 }
 
@@ -303,15 +306,27 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
         resurfaceMargin,
       );
 
+      // Codex's live capture is searchable before promotion or summarization.
+      // Keep promoted ranking intact, and fill the same bounded hint budget
+      // with native episodic matches rather than requiring a manual import.
+      const history = input.client === "codex"
+        ? await searchNativeHistory(db, { query, limit: targetHintCount })
+        : [];
+      const candidates = filtered.map((result) => ({
+        id: result.id,
+        hint: result.content.length > snippetLength
+          ? result.content.slice(0, snippetLength) + "..."
+          : result.content,
+      }));
+      candidates.push(...history.map(hit => ({
+        id: "messageId" in hit ? `message:${hit.messageId}` : hit.summaryId,
+        hint: hit.snippet.length > snippetLength ? hit.snippet.slice(0, snippetLength) + "..." : hit.snippet,
+      })));
+
       // Pass the full filtered list (not sliced to maxResults) so the budget
       // selector can choose the best-fitting subset after dedup and truncation.
       const selection = selectMemoryHintsWithinBudget(
-        filtered.map((result) => ({
-          id: result.id,
-          hint: result.content.length > snippetLength
-            ? result.content.slice(0, snippetLength) + "..."
-            : result.content,
-        })),
+        candidates,
         {
           totalByteBudget: maxInjectedMemoryBytes,
           reservedForLearningInstruction,
@@ -351,7 +366,8 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
       // Log surfacing events (best-effort, never throws)
       try {
         if (logSurfacing) {
-          recallStore.logSurfacing(ids, session_id ?? null);
+          const promotedIds = new Set(results.map(result => result.id));
+          recallStore.logSurfacing(ids.filter(id => promotedIds.has(id)), session_id ?? null);
         }
       } catch { /* non-fatal */ }
 

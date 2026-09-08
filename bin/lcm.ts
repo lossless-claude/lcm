@@ -546,6 +546,16 @@ async function main() {
       exit(r.exitCode);
     });
 
+  program
+    .command("codex-hook")
+    .description("Dispatch a native Codex lifecycle hook")
+    .action(async () => {
+      const { dispatchCodexHook } = await import("../src/hooks/codex.js");
+      const result = await dispatchCodexHook(await readStdin());
+      if (result.stdout) stdout.write(result.stdout + "\n");
+      exit(result.exitCode);
+    });
+
   // ─── restore (hook) ────────────────────────────────────────────────────────
   program
     .command("restore")
@@ -935,7 +945,7 @@ async function main() {
   connectorsCmd
     .command("install <agent>")
     .description("Install a connector for an agent")
-    .option("--type <type>", "Connector type: rules, mcp, or skill")
+    .option("--type <type>", "Connector type: rules, mcp, skill, or hooks")
     .option("--global", "Install into the global agent config in your home directory")
     .helpOption(false)
     .option("-h, --help", "Show help")
@@ -944,7 +954,7 @@ async function main() {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("connectors"); exit(0);
       }
-      if (!agentName) { console.error("Usage: lcm connectors install <agent> [--type rules|mcp|skill] [--global]"); exit(1); }
+      if (!agentName) { console.error("Usage: lcm connectors install <agent> [--type rules|mcp|skill|hooks] [--global]"); exit(1); }
       const type: any = opts.type;
       const { installConnector } = await import("../src/connectors/installer.js");
       try {
@@ -955,6 +965,7 @@ async function main() {
           console.log(`\n  ✓ Installed ${type ?? "default"} connector for ${agentName}`);
           console.log(`    Path: ${(result as any).path}`);
           if ((result as any).requiresRestart) console.log("    Restart the agent to activate.");
+          if (result.notice) console.log(`    ${result.notice}`);
           console.log();
         }
       } catch (err: any) {
@@ -966,7 +977,7 @@ async function main() {
   connectorsCmd
     .command("remove <agent>")
     .description("Remove a connector for an agent")
-    .option("--type <type>", "Connector type: rules, mcp, or skill")
+    .option("--type <type>", "Connector type: rules, mcp, skill, or hooks")
     .option("--global", "Remove from the global agent config in your home directory")
     .helpOption(false)
     .option("-h, --help", "Show help")
@@ -975,7 +986,7 @@ async function main() {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("connectors"); exit(0);
       }
-      if (!agentName) { console.error("Usage: lcm connectors remove <agent> [--type rules|mcp|skill] [--global]"); exit(1); }
+      if (!agentName) { console.error("Usage: lcm connectors remove <agent> [--type rules|mcp|skill|hooks] [--global]"); exit(1); }
       const type: any = opts.type;
       const { removeConnector } = await import("../src/connectors/installer.js");
       try {
@@ -1003,7 +1014,7 @@ async function main() {
         printHelp("connectors"); exit(0);
       }
       const { AGENTS } = await import("../src/connectors/registry.js");
-      const { listConnectors } = await import("../src/connectors/installer.js");
+      const { listConnectors, diagnoseConnector } = await import("../src/connectors/installer.js");
       const { findAgent } = await import("../src/connectors/registry.js");
       const found = agentName ? findAgent(agentName) : undefined;
       const agents = found ? [found] : agentName ? [] : AGENTS;
@@ -1013,11 +1024,18 @@ async function main() {
       const installed = listConnectors(opts.global ? homedir() : process.cwd());
       console.log("\n  Connector health:\n");
       for (const agent of agents) {
+        if (agent.id === "codex") {
+          const diagnosis = diagnoseConnector("codex", undefined, opts.global ? homedir() : process.cwd());
+          console.log(`  ${diagnosis.status === "installed" ? "○" : "⚠"} Codex: ${diagnosis.message}`);
+          console.log(`    Path: ${diagnosis.path}`);
+          for (const issue of diagnosis.issues) console.log(`    ${issue}`);
+        }
         const agentConnectors = installed.filter((c: any) => c.agentId === (agent as any).id);
         if ((agentConnectors as any[]).length === 0) {
           console.log(`  ⚠ ${(agent as any).name}: no connectors installed`);
         } else {
           for (const c of agentConnectors as any[]) {
+            if (agent.id === "codex" && c.type === "hooks") continue;
             console.log(`  ✓ ${(agent as any).name}: ${c.type} at ${c.path}`);
           }
         }
@@ -1052,7 +1070,8 @@ async function main() {
   program
     .command("import")
     .description("Import Claude Code or Codex session transcripts into lossless memory")
-    .option("--provider <provider>", "Transcript source: claude, codex, all", "claude")
+    .option("--provider <provider>", "Transcript source: claude, codex, all (replay defaults to all)")
+    .option("--codex", "Import Codex transcripts (alias for --provider codex)")
     .option("--all", "Import all projects")
     .option("--verbose", "Show per-session import detail")
     .option("--dry-run", "Preview without importing")
@@ -1081,7 +1100,11 @@ async function main() {
       const { importSessions } = await import("../src/import.js");
       type ImportProvider = import("../src/import.js").ImportProvider;
 
-      let provider: ImportProvider = "claude";
+      let provider: ImportProvider = opts.codex ? "codex" : replay ? "all" : "claude";
+      if (opts.codex && opts.provider && opts.provider !== "codex") {
+        console.error("  --codex cannot be combined with a different --provider");
+        exit(1);
+      }
       if (opts.provider) {
         const provVal = opts.provider as string;
         if (provVal === "claude" || provVal === "codex" || provVal === "all") {
