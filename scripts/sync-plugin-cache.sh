@@ -29,5 +29,7 @@ echo "synced dist/ -> $target"
 
 # The function-hooks module is loaded from the plugin root, not dist/, so it drifts the same way.
 if [ -d hooks ]; then
-  rsync -a --delete hooks/ "$(dirname "$target")/hooks/" && echo "synced hooks/ -> $(dirname "$target")/hooks"
+  rsync -a --delete hooks/ "$(dirname "$target")/hooks/" \
+    || { echo "sync-plugin-cache: hooks rsync failed (ignored)" >&2; exit 0; }
+  echo "synced hooks/ -> $(dirname "$target")/hooks"
 fi

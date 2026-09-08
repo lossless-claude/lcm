@@ -15,8 +15,18 @@ export function createToolEventHandler(config: DaemonConfig): RouteHandler {
   const promoteEvents = createPromoteEventsHandler(config);
 
   return async (_req, res, body) => {
-    const input = JSON.parse(body || "{}");
-    if (!input.session_id || typeof input.tool_name !== "string" || !input.cwd) {
+    let input: Record<string, unknown>;
+    try {
+      input = JSON.parse(body || "{}") as Record<string, unknown>;
+    } catch {
+      sendJson(res, 400, { error: "Invalid JSON body" });
+      return;
+    }
+    // session_id becomes a TEXT key in SQLite; a non-string would write rows that never
+    // match the ones the command hook path writes.
+    if (typeof input.session_id !== "string" || !input.session_id
+      || typeof input.tool_name !== "string" || !input.tool_name
+      || typeof input.cwd !== "string" || !input.cwd) {
       sendJson(res, 400, { error: "session_id, tool_name and cwd required" });
       return;
     }
@@ -28,7 +38,9 @@ export function createToolEventHandler(config: DaemonConfig): RouteHandler {
       return;
     }
 
-    const outcome = recordPostToolEvents({ ...input, cwd });
+    const outcome = recordPostToolEvents({
+      ...input, cwd, session_id: input.session_id, tool_name: input.tool_name,
+    });
     sendJson(res, 200, { recorded: outcome.recorded, promoted: outcome.hasPriority1 });
 
     // Same tier-1 rule as the command hook: a priority-1 event is promoted now, not at

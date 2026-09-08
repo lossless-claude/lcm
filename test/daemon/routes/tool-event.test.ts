@@ -46,6 +46,24 @@ describe("POST /tool-event", () => {
     expect(out.status).toBe(400);
   });
 
+  it("answers 400 on a malformed JSON body instead of throwing", async () => {
+    const { res, out } = respond();
+    await handler({} as never, res, "{not json");
+    expect(out.status).toBe(400);
+  });
+
+  it("rejects a non-string session_id", async () => {
+    const { res, out } = respond();
+    await handler({} as never, res, JSON.stringify({ session_id: 42, tool_name: "Bash", cwd: dir }));
+    expect(out.status).toBe(400);
+  });
+
+  it("rejects a non-string cwd", async () => {
+    const { res, out } = respond();
+    await handler({} as never, res, JSON.stringify({ session_id: "s1", tool_name: "Bash", cwd: { path: dir } }));
+    expect(out.status).toBe(400);
+  });
+
   it("writes the same event row the PostToolUse command hook writes", async () => {
     const { res, out } = respond();
     await handler({} as never, res, JSON.stringify({
