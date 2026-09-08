@@ -107,6 +107,7 @@ Invoked after a tool call **succeeds**, and only for the tools the `PostToolUse`
 | `session_id` | string | Session identifier |
 | `cwd` | string | Working directory |
 | `tool_name` | string | Name of the tool that was called |
+| `tool_use_id` | string | Claude Code's id for this call; the dedup key |
 | `tool_input` | object | The tool's input arguments |
 | `tool_response` | any | The tool's response object |
 | `tool_output` | string | Plaintext output (if available) |
@@ -130,7 +131,9 @@ A daemon that answers 404 (an older lcm build without these routes) is logged on
 
 **Daemon lifecycle:** the daemon exits when idle, and the command hooks brought it back through `ensureDaemon`. The module does the same: on a connection failure it runs `lcm daemon start --detach` through the host (at most once per minute) and retries the request once, and `session.start` checks `/health` before the first prompt. This needs an `lcm` binary on PATH; without one the module logs it once and events are lost until a command hook (SessionStart, Stop, SessionEnd) restarts the daemon.
 
-**Dedup rule:** while `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` is set, `lcm post-tool`, `lcm user-prompt` and `lcm session-snapshot` exit without recording or printing anything; otherwise every event would land twice and the model would read the memory context twice. The variable is one of two switches that load the module; the other is Claude Code's remote gate (`tengu_plugin_hooks_modules`), which the command hook cannot see. Known limits of this rule: a module that fails to load loses passive capture for the session (the failure is named in Claude Code's debug log), and a session where the remote gate loads the module without the variable records every event twice. The durable fix is dedup on `(session_id, tool_use_id)` in the events DB, which both paths receive.
+**Dedup rule:** while `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` is set, `lcm post-tool`, `lcm user-prompt` and `lcm session-snapshot` exit without recording or printing anything; otherwise every event would land twice and the model would read the memory context twice. The variable is one of two switches that load the module; the other is Claude Code's remote gate (`tengu_plugin_hooks_modules`), which the command hook cannot see. A module that fails to load still loses passive capture for the session; the failure is named in Claude Code's debug log.
+
+**Dedup on the call id:** the env var only avoids the wasted work. The durable guard is `tool_use_id`, which both paths receive: `recordPostToolEvents` skips a call whose `(session_id, tool_use_id)` is already in the events DB, so a session where the remote gate loads the module without the variable records each call once. The whole call is skipped rather than each event, because one call extracts several events. Rows written before schema v4 have no id and never dedup against; a payload without one is recorded as before.
 
 **Types:** run `/plugin-types` in a session with the flag on; it writes `claude-code.d.ts` for the running build. Regenerate after a Claude Code update rather than editing. `claude plugin validate` reads the module statically: `$` may only be passed to a top-level function, and calls must be spelled `$.noun.method(...)`.
 
