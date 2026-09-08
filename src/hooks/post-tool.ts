@@ -6,7 +6,7 @@ import { firePromoteEventsRequest } from "./session-end.js";
 import { safeLogError } from "./hook-errors.js";
 import { functionHooksOwnSession } from "./session-claim.js";
 
-// Re-exported so the other command hooks keep one import site for the gate.
+// Back-compat re-export: some callers historically imported the function-hooks gate from this module.
 export { functionHooksActive, functionHooksOwnSession } from "./session-claim.js";
 
 /** Daemon port from ~/.lossless-claude/config.json — Claude Code does not pass it on stdin. */
