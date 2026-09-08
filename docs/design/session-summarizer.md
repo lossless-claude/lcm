@@ -1,6 +1,6 @@
 # Session summarizer: the daemon asks the live session to summarize
 
-Status: design approved 2026-09-08. Not implemented. Builds on the function-hooks module in `hooks/lcm-hooks.ts` (PR #377).
+Status: implemented in PR #382. Builds on the function-hooks module in `hooks/lcm-hooks.ts` (PR #377).
 
 ## What it is
 

@@ -160,11 +160,12 @@ async function completeSummary($: EngineInterface, job: SummaryJob): Promise<Sum
   const text = await $.model.complete({
     model: "haiku", system: job.system, prompt: job.prompt, maxTokens: job.maxTokens,
   });
+  const trimmed = text.trim();
   return {
-    text: text.trim(), providerId: "session:haiku",
+    text: trimmed, providerId: "session:haiku",
     usage: {
       input_tokens: Math.ceil((job.system.length + job.prompt.length) / 4),
-      output_tokens: Math.ceil(text.length / 4), estimated: true,
+      output_tokens: Math.ceil(trimmed.length / 4), estimated: true,
     },
   };
 }

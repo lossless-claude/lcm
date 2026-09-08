@@ -340,7 +340,9 @@ export function createCompactHandler(config: DaemonConfig, jobs?: SummarizeJobSt
                     bucket = createCompactLlmUsage(usage.provider, usage.model ?? config.llm.model);
                     callUsage.set(key, bucket);
                   }
-                  bucket.callsEstimated = (bucket.callsEstimated ?? 0) || (usage.estimated ? 1 : 0);
+                  // One per estimated response, not a flag: a call that retries reports
+                  // usage more than once and each estimated response counts.
+                  bucket.callsEstimated = (bucket.callsEstimated ?? 0) + (usage.estimated ? 1 : 0);
                   addTokens(bucket, { tokens: usage.tokensUsed, input: usage.inputTokens ?? 0,
                     cached: usage.cachedInputTokens ?? 0, output: usage.outputTokens ?? 0, cost: usage.costUsd });
 

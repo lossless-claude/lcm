@@ -67,7 +67,7 @@ describe("function-hook session summarizer", () => {
       { headers: { authorization: "Bearer secret" } },
     );
     expect(engine.model.complete).toHaveBeenCalledWith({ model: "haiku", system: "system", prompt: "prompt", maxTokens: 1024 });
-    expect(posts[0].body).toEqual({ text: "summary", providerId: "session:haiku", usage: { input_tokens: 3, output_tokens: 3, estimated: true } });
+    expect(posts[0].body).toEqual({ text: "summary", providerId: "session:haiku", usage: { input_tokens: 3, output_tokens: 2, estimated: true } });
   });
 
   it("uses forks for condensed jobs and accounts exact usage", async () => {
@@ -97,7 +97,7 @@ describe("function-hook session summarizer", () => {
   });
 
   it("stops when a response exceeds the spend cap", async () => {
-    const { trigger, done, engine, posts } = await start({ sessionSummarizerMaxOutputTokens: 2 }, [leaf, leaf]);
+    const { trigger, done, engine, posts } = await start({ sessionSummarizerMaxOutputTokens: 1 }, [leaf, leaf]);
     trigger();
     await done;
     expect(posts[0].body).toEqual({ error: "spend cap" });
@@ -105,7 +105,7 @@ describe("function-hook session summarizer", () => {
   });
 
   it("does not spend again once the cap has been reached", async () => {
-    const { trigger, done, engine, posts } = await start({ sessionSummarizerMaxOutputTokens: 3 }, [leaf, leaf]);
+    const { trigger, done, engine, posts } = await start({ sessionSummarizerMaxOutputTokens: 2 }, [leaf, leaf]);
     trigger();
     await done;
     expect(posts[1].body).toEqual({ error: "spend cap" });
