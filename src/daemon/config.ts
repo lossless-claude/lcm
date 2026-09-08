@@ -19,7 +19,8 @@ export type DaemonConfig = {
   version: number;
   daemon: { port: number; socketPath: string; logLevel: string; logMaxSizeMB: number; logRetentionDays: number; idleTimeoutMs: number };
   compaction: {
-    leafTokens: number; maxDepth: number; autoCompactMinTokens: number;
+    /** Below this many tokens `lcm compact` leaves a conversation alone; 0 compacts every one. */
+    autoCompactMinTokens: number;
     promotionThresholds: { minDepth: number; compressionRatio: number; keywords: Record<string, string[]>; architecturePatterns: string[]; dedupBm25Threshold: number; dedupCandidateLimit: number; eventConfidence?: { decision?: number; plan?: number; errorFix?: number; batch?: number; pattern?: number }; reinforcementBoost?: number; maxConfidence?: number; insightsMaxAgeDays?: number };
   };
   restoration: {
@@ -50,18 +51,11 @@ export type DaemonConfig = {
   hooks: { snapshotIntervalSec: number; disableAutoCompact: boolean };
 };
 
-/**
- * Default target tokens for a leaf summary. Exported because the summarizer
- * bench builds the production engine config without an operator's config.json:
- * it needs this value by name, not as a copied literal that can drift.
- */
-export const DEFAULT_LEAF_TOKENS = 1000;
-
 const DEFAULTS: DaemonConfig = {
   version: 1,
   daemon: { port: 3737, socketPath: join(homedir(), ".lossless-claude", "daemon.sock"), logLevel: "info", logMaxSizeMB: 10, logRetentionDays: 7, idleTimeoutMs: 1800000 },
   compaction: {
-    leafTokens: DEFAULT_LEAF_TOKENS, maxDepth: 5, autoCompactMinTokens: 10000,
+    autoCompactMinTokens: 10000,
     promotionThresholds: {
       minDepth: 2, compressionRatio: 0.3,
       keywords: { decision: ["decided", "agreed", "will use", "going with", "chosen"], fix: ["fixed", "root cause", "workaround", "resolved"] },

@@ -11,7 +11,6 @@ describe("loadDaemonConfig", () => {
     expect(c.daemon.socketPath).toContain("daemon.sock");
     expect(c.llm.provider).toBe("auto");
     expect(c.llm.model).toBe("");
-    expect(c.compaction.leafTokens).toBe(1000);
     expect(c.restoration.recentSummaries).toBe(3);
     expect(c.restoration.recallUsageBoost).toBe(0.75);
     expect(c.restoration.surfacingCooldownWindow).toBe(2);
@@ -209,6 +208,13 @@ describe("loadDaemonConfig", () => {
       compaction: { autoCompactMinTokens: 0 },
     });
     expect(c.compaction.autoCompactMinTokens).toBe(0);
+  });
+
+  it("still loads a config file that sets the removed leafTokens and maxDepth", () => {
+    const c = loadDaemonConfig("/nonexistent/config.json", {
+      compaction: { leafTokens: 500, maxDepth: 9 },
+    });
+    expect(c.compaction.autoCompactMinTokens).toBe(10000);
   });
 
   it("defaults security.sensitivePatterns to empty array", () => {

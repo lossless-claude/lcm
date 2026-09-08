@@ -11,7 +11,6 @@ import { readFileSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { CompactionEngine, compactEngineConfig, COMPACT_TOKEN_BUDGET } from "../../src/compaction.js";
-import { DEFAULT_LEAF_TOKENS } from "../../src/daemon/config.js";
 import { runLcmMigrations } from "../../src/db/migration.js";
 import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "../../src/llm/types.js";
 import { ConversationStore } from "../../src/store/conversation-store.js";
@@ -327,12 +326,9 @@ export async function runEval(input: {
   await summaryStore.appendContextMessages(cid, records.map((r) => r.messageId));
 
   const { summarize, calls } = instrumentSummarizer(input.summarizer);
-  const engine = new CompactionEngine(conversationStore, summaryStore, compactEngineConfig({
-    // The compiled-in default, not the operator's config.json: a bench run must
-    // be reproducible across machines. No scrubber — corpus content was already
-    // scrubbed at ingest and the export copies stored content verbatim.
-    leafTargetTokens: DEFAULT_LEAF_TOKENS,
-  }));
+  // No scrubber: corpus content was already scrubbed at ingest and the export
+  // copies stored content verbatim.
+  const engine = new CompactionEngine(conversationStore, summaryStore, compactEngineConfig());
   const tokensBefore = await summaryStore.getContextTokenCount(cid);
   const startedAt = new Date().toISOString();
 

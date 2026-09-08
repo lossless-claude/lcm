@@ -381,10 +381,7 @@ export function createCompactHandler(config: DaemonConfig, jobs?: SummarizeJobSt
             }
           };
 
-          const engine = new CompactionEngine(conversationStore, summaryStore, compactEngineConfig({
-            leafTargetTokens: config.compaction.leafTokens,
-            scrubber,
-          }));
+          const engine = new CompactionEngine(conversationStore, summaryStore, compactEngineConfig({ scrubber }));
 
           const compactResult = await engine.compact({
             conversationId: conversation.conversationId,
