@@ -149,7 +149,9 @@ async function postOnce($: EngineInterface, route: string, body: unknown): Promi
       body: JSON.stringify(body),
     });
     if (res.status === 404) {
-      logMissingRoute($, route, "the command hooks still record");
+      // Not "the command hooks still record": they stand down while this module holds the
+      // session, so an older daemon means the call is simply lost.
+      logMissingRoute($, route, "this call is dropped until the daemon is upgraded");
       return { body: null, connectionFailed: false };
     }
     if (!res.ok) {
