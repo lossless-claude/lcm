@@ -219,9 +219,13 @@ export class RetrievalEngine {
   /**
    * Search compacted history using regex or full-text search.
    *
-   * Depending on `scope`, searches messages, summaries, or both (in parallel).
+   * Depending on `scope`, searches messages, summaries, or both.
    */
   async grep(input: GrepInput): Promise<GrepResult> {
+    return this.grepSync(input);
+  }
+
+  grepSync(input: GrepInput): GrepResult {
     const { query, mode, scope, conversationId, since, before, limit } = input;
 
     const searchInput = { query, mode, conversationId, since, before, limit };
@@ -230,15 +234,12 @@ export class RetrievalEngine {
     let summaries: SummarySearchResult[] = [];
 
     if (scope === "messages") {
-      messages = await this.conversationStore.searchMessages(searchInput);
+      messages = this.conversationStore.searchMessagesSync(searchInput);
     } else if (scope === "summaries") {
-      summaries = await this.summaryStore.searchSummaries(searchInput);
+      summaries = this.summaryStore.searchSummariesSync(searchInput);
     } else {
-      // scope === "both" — run in parallel
-      [messages, summaries] = await Promise.all([
-        this.conversationStore.searchMessages(searchInput),
-        this.summaryStore.searchSummaries(searchInput),
-      ]);
+      messages = this.conversationStore.searchMessagesSync(searchInput);
+      summaries = this.summaryStore.searchSummariesSync(searchInput);
     }
 
     // Full-text stores already rank before applying their candidate limits.

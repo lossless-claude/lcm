@@ -139,10 +139,13 @@ lcm connectors install codex
 lcm connectors doctor codex
 ```
 
-Import older Codex sessions when needed:
+The default connector installs native hooks for automatic restore, prompt recall, incremental turn capture, and compaction continuity. Review and trust them in Codex `/hooks`; connector diagnostics distinguish configuration from activation. See [Codex setup](docs/vscode-codex.md).
+
+Import older Codex sessions or replay both Claude and Codex history:
 
 ```bash
 lcm import --codex
+lcm import --replay
 ```
 
 If you also want MCP inside Codex, run `lcm connectors install codex --type mcp`. Today that prints the TOML block you must add manually to `.codex/config.toml`.

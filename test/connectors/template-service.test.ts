@@ -149,4 +149,8 @@ describe('generateContent dispatch', () => {
   it('throws for hook type', () => {
     expect(() => generateContent(mockAgent, 'hook')).toThrow('Hook connectors are managed by the plugin system');
   });
+
+  it('throws for native hooks type', () => {
+    expect(() => generateContent(mockAgent, 'hooks')).toThrow('Native hook connectors are managed by the connector installer');
+  });
 });

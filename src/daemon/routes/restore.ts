@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
 import { projectDbPath } from "../project.js";
@@ -19,6 +20,154 @@ type SessionInstructionsRow = {
   content_hash: string;
   updated_at: string;
 };
+
+type CodexContextItemRow = {
+  ordinal: number;
+  item_type: "message" | "summary";
+  role: "user" | "assistant" | null;
+  content: string;
+};
+
+function fitFencedText(content: string, tag: string, byteBudget: number): string {
+  const normalized = content.trim();
+  const budget = Math.max(0, Math.floor(byteBudget));
+  if (!normalized || budget === 0) return "";
+
+  const full = fenceContent(normalized, tag);
+  if (Buffer.byteLength(full, "utf8") <= budget) return full;
+
+  const points = Array.from(normalized);
+  let low = 0;
+  let high = points.length;
+  let best = "";
+  while (low <= high) {
+    const middle = (low + high) >>> 1;
+    const candidate = `${points.slice(0, middle).join("").trimEnd()}...`;
+    const fenced = fenceContent(candidate, tag);
+    if (Buffer.byteLength(fenced, "utf8") <= budget) {
+      best = fenced;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return best;
+}
+
+function fitRecentContextItems(items: string[], tag: string, byteBudget: number): string {
+  const normalized = items.map((item) => item.trim()).filter(Boolean);
+  const selected: string[] = [];
+
+  for (let index = normalized.length - 1; index >= 0; index--) {
+    const candidate = [normalized[index], ...selected];
+    const fenced = fenceContent(candidate.join("\n\n"), tag);
+    if (Buffer.byteLength(fenced, "utf8") <= byteBudget) {
+      selected.unshift(normalized[index]);
+      continue;
+    }
+    if (selected.length === 0) {
+      return fitFencedText(normalized[index], tag, byteBudget);
+    }
+    break;
+  }
+
+  return selected.length > 0 ? fenceContent(selected.join("\n\n"), tag) : "";
+}
+
+function remainingContextBudget(parts: string[], totalBudget: number): number {
+  const used = Buffer.byteLength(parts.join("\n\n"), "utf8");
+  const separator = parts.length > 0 ? Buffer.byteLength("\n\n", "utf8") : 0;
+  return Math.max(0, Math.floor(totalBudget) - used - separator);
+}
+
+function readCodexContext(
+  db: DatabaseSync,
+  sessionId: unknown,
+  source: unknown,
+  itemLimit: number,
+  byteBudget: number,
+): string {
+  const limit = Math.max(0, Math.floor(itemLimit));
+  if (limit === 0) return "";
+  const current = typeof sessionId === "string" && sessionId
+    ? db.prepare(
+        `SELECT conversation_id FROM conversations
+         WHERE session_id = ?
+         ORDER BY updated_at DESC, conversation_id DESC
+         LIMIT 1`,
+      ).get(sessionId) as { conversation_id: number } | undefined
+    : undefined;
+  const readRows = (conversationId: number): CodexContextItemRow[] => {
+    const contextRows = db.prepare(
+      `WITH ranked AS (
+         SELECT ci.ordinal, ci.item_type, m.role, COALESCE(m.content, s.content) AS content,
+                ROW_NUMBER() OVER (PARTITION BY ci.item_type ORDER BY ci.ordinal DESC) AS item_rank
+         FROM context_items ci
+         LEFT JOIN messages m ON ci.item_type = 'message' AND m.message_id = ci.message_id
+         LEFT JOIN summaries s ON ci.item_type = 'summary' AND s.summary_id = ci.summary_id
+         WHERE ci.conversation_id = ?
+           AND ((ci.item_type = 'summary' AND s.content IS NOT NULL)
+             OR (ci.item_type = 'message' AND m.role IN ('user', 'assistant') AND m.content IS NOT NULL))
+       )
+       SELECT ordinal, item_type, role, content
+       FROM ranked
+       WHERE item_rank <= ?
+       ORDER BY ordinal`,
+    ).all(conversationId, limit) as unknown as CodexContextItemRow[];
+    if (contextRows.length > 0) return contextRows;
+
+    // Older imports may have messages but no materialized context_items. Those messages
+    // are still useful when no summarizer has produced a context sequence yet.
+    return (db.prepare(
+      `SELECT seq AS ordinal, 'message' AS item_type, role, content
+       FROM messages
+       WHERE conversation_id = ? AND role IN ('user', 'assistant')
+       ORDER BY seq DESC
+       LIMIT ?`,
+    ).all(conversationId, limit) as unknown as CodexContextItemRow[]).reverse();
+  };
+
+  let conversation = current;
+  let rows = conversation ? readRows(conversation.conversation_id) : [];
+  let isCurrentSession = rows.length > 0;
+
+  // SessionStart can run after a metadata-only ingest has created the new conversation.
+  // An empty shell must not mask the latest useful context from the same project.
+  if (rows.length === 0 && source === "startup") {
+    conversation = db.prepare(
+      `SELECT c.conversation_id FROM conversations c
+       WHERE c.session_id != ?
+         AND (EXISTS (
+           SELECT 1 FROM messages m
+           WHERE m.conversation_id = c.conversation_id AND m.role IN ('user', 'assistant')
+         ) OR EXISTS (
+           SELECT 1 FROM summaries s WHERE s.conversation_id = c.conversation_id
+         ))
+       ORDER BY MAX(
+         COALESCE((
+           SELECT MAX(julianday(m.created_at)) FROM messages m
+           WHERE m.conversation_id = c.conversation_id
+             AND m.role IN ('user', 'assistant')
+         ), -1),
+         COALESCE((
+           SELECT MAX(julianday(s.created_at)) FROM summaries s
+           WHERE s.conversation_id = c.conversation_id
+         ), -1)
+       ) DESC, c.conversation_id DESC
+       LIMIT 1`,
+    ).get(typeof sessionId === "string" ? sessionId : "") as { conversation_id: number } | undefined;
+    rows = conversation ? readRows(conversation.conversation_id) : [];
+    isCurrentSession = false;
+  }
+
+  if (!conversation || rows.length === 0) return "";
+
+  const items = rows.map((row) => row.item_type === "summary"
+    ? `Summary:\n${row.content}`
+    : `${row.role === "assistant" ? "Assistant" : "User"}:\n${row.content}`);
+  const tag = isCurrentSession ? "recent-session-context" : "recent-project-context";
+  return fitRecentContextItems(items, tag, byteBudget);
+}
 
 function readClaudeMdFiles(cwd: string): string {
   const paths = [
@@ -53,6 +202,7 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
     try {
       const input = JSON.parse(body || "{}");
       const { session_id, source } = input;
+      const isCodex = input.client === "codex";
       let cwd: string | undefined;
       if (input.cwd) {
         try {
@@ -63,6 +213,8 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
         }
       }
       const orientation = buildOrientationPrompt();
+      const codexContextParts = orientation ? [orientation] : [];
+      const codexContextBudget = config.restoration.maxInjectedMemoryBytes;
 
       // Explicit session lifecycle sources override the recent-compaction fallback.
       const isExplicitNonCompact = source === "startup" || source === "resume" || source === "clear";
@@ -72,7 +224,7 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
 
       // Only post-compaction restore consumes the saved instructions.
       let instructionsContext = "";
-      if (isPostCompact && cwd) {
+      if (!isCodex && isPostCompact && cwd) {
         const dbPath = projectDbPath(cwd);
         if (existsSync(dbPath)) {
           try {
@@ -92,7 +244,7 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
         }
       }
 
-      if (isPostCompact) {
+      if (!isCodex && isPostCompact) {
         const context = [orientation, instructionsContext].filter(Boolean).join("\n\n");
         sendJson(res, 200, { context });
         return;
@@ -101,27 +253,38 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
       let episodicContext = "";
       let promotedContext = "";
 
-      // Episodic: query recent summaries from project SQLite DB
-      // Also capture CLAUDE.md files on startup
+      // Restore project-scoped episodic context. Claude also refreshes its instruction
+      // snapshot on non-compact starts; Codex leaves native host instructions alone.
       if (cwd) {
         const dbPath = projectDbPath(cwd);
         const db = getLcmConnection(dbPath);
         try {
           runLcmMigrations(db);
 
-          const rows = db.prepare(
-            `SELECT s.content FROM summaries s
-             JOIN conversations c ON s.conversation_id = c.conversation_id
-             WHERE c.session_id = ?
-             ORDER BY s.depth DESC, s.created_at DESC
-             LIMIT ?`,
-          ).all(session_id, config.restoration.recentSummaries) as Array<{ content: string }>;
-
-          if (rows.length > 0) {
-            episodicContext = fenceContent(
-              rows.map((r) => r.content).join("\n\n"),
-              "recent-session-context",
+          if (isCodex) {
+            const context = readCodexContext(
+              db,
+              session_id,
+              source,
+              config.restoration.recentSummaries,
+              remainingContextBudget(codexContextParts, codexContextBudget),
             );
+            if (context) codexContextParts.push(context);
+          } else {
+            const rows = db.prepare(
+              `SELECT s.content FROM summaries s
+               JOIN conversations c ON s.conversation_id = c.conversation_id
+               WHERE c.session_id = ?
+               ORDER BY s.depth DESC, s.created_at DESC
+               LIMIT ?`,
+            ).all(session_id, config.restoration.recentSummaries) as Array<{ content: string }>;
+
+            if (rows.length > 0) {
+              episodicContext = fenceContent(
+                rows.map((r) => r.content).join("\n\n"),
+                "recent-session-context",
+              );
+            }
           }
 
           // Promoted: cross-session knowledge from SQLite
@@ -137,34 +300,45 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
               .filter((r) => !r.createdAt || Date.parse(r.createdAt) >= cutoffMs)
               .slice(0, 5);
             if (results.length > 0) {
-              promotedContext = fenceContent(
-                results.map((r) => r.content).join("\n\n"),
-                "project-knowledge",
-              );
+              if (isCodex) {
+                const context = fitFencedText(
+                  results.map((r) => r.content).join("\n\n"),
+                  "project-knowledge",
+                  remainingContextBudget(codexContextParts, codexContextBudget),
+                );
+                if (context) codexContextParts.push(context);
+              } else {
+                promotedContext = fenceContent(
+                  results.map((r) => r.content).join("\n\n"),
+                  "project-knowledge",
+                );
+              }
             }
           } catch { /* non-fatal */ }
 
           // Capture CLAUDE.md files and upsert into session_instructions if changed
-          try {
-            const claudeMdContent = readClaudeMdFiles(cwd);
-            if (claudeMdContent) {
-              const hash = createHash("sha256").update(claudeMdContent).digest("hex");
-              const existing = db
-                .prepare(`SELECT content_hash FROM session_instructions WHERE id = 1`)
-                .get() as { content_hash: string } | undefined;
+          if (!isCodex) {
+            try {
+              const claudeMdContent = readClaudeMdFiles(cwd);
+              if (claudeMdContent) {
+                const hash = createHash("sha256").update(claudeMdContent).digest("hex");
+                const existing = db
+                  .prepare(`SELECT content_hash FROM session_instructions WHERE id = 1`)
+                  .get() as { content_hash: string } | undefined;
 
-              if (!existing || existing.content_hash !== hash) {
-                db.prepare(
-                  `INSERT INTO session_instructions (id, content, content_hash, updated_at)
-                   VALUES (1, ?, ?, datetime('now'))
-                   ON CONFLICT(id) DO UPDATE SET
-                     content = excluded.content,
-                     content_hash = excluded.content_hash,
-                     updated_at = excluded.updated_at`,
-                ).run(claudeMdContent, hash);
+                if (!existing || existing.content_hash !== hash) {
+                  db.prepare(
+                    `INSERT INTO session_instructions (id, content, content_hash, updated_at)
+                     VALUES (1, ?, ?, datetime('now'))
+                     ON CONFLICT(id) DO UPDATE SET
+                       content = excluded.content,
+                       content_hash = excluded.content_hash,
+                       updated_at = excluded.updated_at`,
+                  ).run(claudeMdContent, hash);
+                }
               }
-            }
-          } catch { /* non-fatal */ }
+            } catch { /* non-fatal */ }
+          }
 
         } catch { /* non-fatal */ } finally {
           closeLcmConnection(dbPath);
@@ -202,7 +376,9 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
       // session_instructions snapshot back would duplicate them in context. The snapshot is
       // still captured above, and the isPostCompact branch still replays it — a compaction
       // is the only time the harness's own copy is gone.
-      const context = [orientation, episodicContext, promotedContext].filter(Boolean).join("\n\n");
+      const context = isCodex
+        ? codexContextParts.join("\n\n")
+        : [orientation, episodicContext, promotedContext].filter(Boolean).join("\n\n");
       const responseBody: { context: string; insights?: Array<{ content: string; confidence: number; tags: string[] }> } = { context };
       if (insights.length > 0) {
         responseBody.insights = insights;

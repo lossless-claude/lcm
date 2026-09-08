@@ -199,22 +199,29 @@ export async function rankNativeHistory(
   db: DatabaseSync,
   input: { query: string; limit: number },
 ): Promise<RankedHistoryHit[]> {
+  return rankNativeHistorySync(db, input);
+}
+
+function rankNativeHistorySync(
+  db: DatabaseSync,
+  input: { query: string; limit: number },
+): RankedHistoryHit[] {
   const messages = new ConversationStore(db);
   const summaries = new SummaryStore(db);
   const engine = new RetrievalEngine(messages, summaries);
-  const result = await engine.grep({ query: input.query, mode: "full_text", scope: "both" });
+  const result = engine.grepSync({ query: input.query, mode: "full_text", scope: "both" });
   const sessionOf = new Map<number, string | null>();
-  const attach = async (hits: HistoryHit[]): Promise<RankedHistoryHit[]> => {
+  const attach = (hits: HistoryHit[]): RankedHistoryHit[] => {
     const ranked: RankedHistoryHit[] = [];
     for (const hit of hits) {
       if (!sessionOf.has(hit.conversationId)) {
-        sessionOf.set(hit.conversationId, (await messages.getConversation(hit.conversationId))?.sessionId ?? null);
+        sessionOf.set(hit.conversationId, messages.getConversationSync(hit.conversationId)?.sessionId ?? null);
       }
       ranked.push({ ...hit, sessionId: sessionOf.get(hit.conversationId) ?? null });
     }
     return ranked;
   };
-  return rankHistoryHits(await attach(result.messages), await attach(result.summaries), input.limit, sizes => sessionSizes(db, sizes, sessionOf));
+  return rankHistoryHits(attach(result.messages), attach(result.summaries), input.limit, sizes => sessionSizes(db, sizes, sessionOf));
 }
 
 /** Filter subagent transcripts out of the candidates, then fuse what remains. */
@@ -293,14 +300,16 @@ export async function searchNativeHistory(
 ): Promise<NativeHistoryHit[]> {
   const messages = new ConversationStore(db);
   const summaries = new SummaryStore(db);
+  // Every read below must remain synchronous until RELEASE so one pooled
+  // connection cannot mix ranking and source context from different snapshots.
   db.exec("SAVEPOINT native_history_read");
   try {
-    const selected = await rankNativeHistory(db, input);
+    const selected = rankNativeHistorySync(db, input);
     const matches: NativeHistoryHit[] = [];
     for (const hit of selected) {
       const source = "messageId" in hit
-        ? await messages.getMessageById(hit.messageId)
-        : await summaries.getSummary(hit.summaryId);
+        ? messages.getMessageByIdSync(hit.messageId)
+        : summaries.getSummarySync(hit.summaryId);
       if (source) matches.push({ ...hit, ...sourceContext(source.content, matchedAnchor(db, hit, input.query, source.content)) });
     }
     return matches;

@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { getLcmDbFeatures } from "./features.js";
+import { ensureCodexCursorTable } from "./codex-cursor.js";
 
 /** Disable foreign keys around a migration sweep (SQLite forbids toggling inside a transaction). */
 export function withForeignKeysDisabled(db: DatabaseSync, fn: () => void): void {
@@ -686,6 +687,7 @@ function runLcmMigrationsInner(
     CREATE INDEX IF NOT EXISTS replay_ledger_position_idx ON replay_ledger (run_id, position);
   `);
   ensureReplayLedgerOutcomeColumn(db);
+  ensureCodexCursorTable(db);
 
   const fts5Available = options?.fts5Available ?? getLcmDbFeatures(db).fts5Available;
   if (!fts5Available) {

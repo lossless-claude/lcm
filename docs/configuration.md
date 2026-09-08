@@ -37,10 +37,13 @@ lcm connectors install codex
 lcm connectors doctor codex
 ```
 
-Import historical Codex sessions with:
+The default Codex connector writes native lifecycle hooks to `.codex/hooks.json`. Review their trust in Codex `/hooks`. Use `--global` for the user-wide configuration or `--type skill` for guidance only.
+
+Import historical Codex sessions or replay both sources with:
 
 ```bash
 lcm import --codex
+lcm import --replay
 ```
 
 For current limitations and the manual MCP step for Codex TOML config, see [`docs/vscode-codex.md`](vscode-codex.md).
