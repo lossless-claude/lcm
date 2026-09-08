@@ -257,6 +257,17 @@ function questionProblem(question: unknown, ctx: { prompt: string; seen: Set<str
  * repeated multi-megabyte pastes of a real transcript never load.
  */
 const SQL_WHITESPACE = "char(32) || char(9) || char(10) || char(13) || char(11) || char(12)";
+/** The same characters, so the lookup key and the grouping key are one rule. */
+const ASCII_WHITESPACE = /^[ \t\n\r\v\f]+|[ \t\n\r\v\f]+$/g;
+
+/**
+ * `String.trim` also strips Unicode spaces SQLite leaves in place, which would
+ * build a lookup key the grouping key can never equal — a repeated prompt
+ * padded with a non-breaking space would read as unique evidence again.
+ */
+function trimLikeSql(content: string): string {
+  return content.replace(ASCII_WHITESPACE, "");
+}
 
 function repeatedPrompts(db: DatabaseSync): Set<string> {
   const rows = db
@@ -301,7 +312,7 @@ type SampledQuery =
 async function sampleQuery(conv: SampledConversation, ctx: SampleContext, id: string): Promise<SampledQuery> {
   const messages = await ctx.convStore.getMessages(conv.conversationId);
   const candidates = messages.filter(
-    (m) => m.role === "user" && isDistinctivePrompt(m.content) && !ctx.repeated.has(m.content.trim()),
+    (m) => m.role === "user" && isDistinctivePrompt(m.content) && !ctx.repeated.has(trimLikeSql(m.content)),
   );
   if (candidates.length === 0) return { status: "skipped" };
   const prompt = candidates[Math.floor(ctx.rand() * candidates.length)];

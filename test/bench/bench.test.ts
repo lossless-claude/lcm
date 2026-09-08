@@ -338,6 +338,29 @@ describe("lcm bench", () => {
     expect(bench.queries.some((q) => q.prompt.trim() === shared)).toBe(false);
   });
 
+  it("groups repeats the same way on both sides of the trim", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    // A non-breaking space: `String.trim` strips it, SQLite's TRIM does not.
+    // Both sides must agree, or the lookup key can never equal the group key.
+    // Identical text in both sessions, so SQLite groups them under a key that
+    // still carries the non-breaking space. `String.trim` would strip it and
+    // look up a key that key can never equal.
+    const shared = "\u00a0The Stripe reconciliation job double-charged annual plans during the timezone migration.\u00a0";
+    await addSessions(cwd, [
+      { sessionId: "sess-nbsp-a", prompt: shared },
+      { sessionId: "sess-nbsp-b", prompt: shared },
+    ]);
+
+    const build = await buildBench({ cwd, n: 20, seed: 7 });
+    expect(build.exitCode, build.stdout).toBe(0);
+    const bench = JSON.parse(readFileSync(build.out, "utf-8")) as BenchFile;
+    expect(bench.queries.length).toBeGreaterThan(0);
+    // Neither copy is unique evidence, so neither may be sampled as if it were.
+    expect(bench.queries.some((q) => q.prompt.includes("Stripe reconciliation"))).toBe(false);
+  });
+
   it("matches a labelled session that carries stray whitespace", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
     tempDirs.push(cwd);
