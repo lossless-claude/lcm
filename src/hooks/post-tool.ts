@@ -25,6 +25,8 @@ export interface PostToolPayload {
   tool_input?: Record<string, unknown>;
   tool_response?: unknown;
   tool_output?: { isError?: boolean };
+  /** Claude Code's id for this tool call; both hook paths receive it. */
+  tool_use_id?: string;
   hook_event_name?: string;
   error?: string;
   is_interrupt?: boolean;
@@ -58,7 +60,14 @@ export function recordPostToolEvents(payload: PostToolPayload): RecordedPostTool
 
   const db = new EventsDb(eventsDbPath(payload.cwd));
   try {
-    for (const event of events) db.insertEvent(payload.session_id, event, sourceHook);
+    // Skip the whole call, not each event: one call extracts several events, and a
+    // per-event check would leave a half batch when the paths raced.
+    if (payload.tool_use_id && db.hasToolCall(payload.session_id, payload.tool_use_id)) {
+      return { recorded: 0, hasPriority1: false, sourceHook };
+    }
+    for (const event of events) {
+      db.insertEvent(payload.session_id, event, sourceHook, payload.tool_use_id);
+    }
   } finally {
     db.close();
   }
