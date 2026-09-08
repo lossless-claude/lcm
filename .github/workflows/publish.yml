@@ -2,7 +2,10 @@ name: Publish Package
 
 on:
   push:
-    branches: [stable]
+    # `main` is the release branch: merging the changesets version PR bumps
+    # package.json, which publishes. The guard below skips a version that is
+    # already on npm or already tagged, so ordinary merges are no-ops.
+    branches: [main]
     paths: [package.json]
   workflow_dispatch:
     inputs:
@@ -54,17 +57,23 @@ jobs:
         if: steps.check.outputs.skip == 'false'
         run: npm ci
 
+      # Kept in step with ci.yml: the hook-process e2e tests exec dist/bin/lcm.js
+      # and the bench baseline shells out to ripgrep, so both must exist first.
+      - name: Install ripgrep (bench baseline)
+        if: steps.check.outputs.skip == 'false'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+
       - name: Type-check
         if: steps.check.outputs.skip == 'false'
         run: npm run typecheck
 
-      - name: Run tests
-        if: steps.check.outputs.skip == 'false'
-        run: npm test
-
       - name: Build
         if: steps.check.outputs.skip == 'false'
         run: npm run build
+
+      - name: Run tests
+        if: steps.check.outputs.skip == 'false'
+        run: npm test
 
       - name: Verify npm identity
         if: steps.check.outputs.skip == 'false'
@@ -101,19 +110,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          # Get the top version block from CHANGELOG.md
-          CHANGELOG_BLOCK=$(awk "/^## \[${VERSION}\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md)
-          # Build enriched notes
-          NPM_BADGE="📦 **npm:** \`npm install @lossless-claude/lcm@${VERSION}\`"
-          FULL_NOTES="${NPM_BADGE}
-
----
-
-## Changelog
-
-${CHANGELOG_BLOCK}
-
----
-
-🔖 [Full Changelog](https://github.com/lossless-claude/lcm/blob/stable/CHANGELOG.md)"
-          gh release edit "v${VERSION}" --notes "$FULL_NOTES"
+          # Top version block from CHANGELOG.md, without its own heading.
+          awk "/^## \\[${VERSION}\\]/{found=1; next} found && /^## \\[/{exit} found{print}" CHANGELOG.md > /tmp/changelog-block.md
+          # Written to a file rather than an inline string: the notes contain
+          # lines that must start at column 0, which a YAML block scalar cannot
+          # hold without ending itself.
+          {
+            printf '📦 **npm:** `npm install @lossless-claude/lcm@%s`\n\n' "$VERSION"
+            printf -- '---\n\n## Changelog\n\n'
+            cat /tmp/changelog-block.md
+            printf -- '\n---\n\n🔖 [Full Changelog](https://github.com/lossless-claude/lcm/blob/main/CHANGELOG.md)\n'
+          } > /tmp/release-notes.md
+          gh release edit "v${VERSION}" --notes-file /tmp/release-notes.md
