@@ -87,6 +87,8 @@ function readCodexContext(
   itemLimit: number,
   byteBudget: number,
 ): string {
+  const limit = Math.max(0, Math.floor(itemLimit));
+  if (limit === 0) return "";
   const current = typeof sessionId === "string" && sessionId
     ? db.prepare(
         `SELECT conversation_id FROM conversations
@@ -95,7 +97,6 @@ function readCodexContext(
          LIMIT 1`,
       ).get(sessionId) as { conversation_id: number } | undefined
     : undefined;
-  const limit = Math.max(1, Math.floor(itemLimit));
   const readRows = (conversationId: number): CodexContextItemRow[] => {
     const contextRows = db.prepare(
       `WITH ranked AS (

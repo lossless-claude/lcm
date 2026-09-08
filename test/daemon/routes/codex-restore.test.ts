@@ -7,6 +7,7 @@ import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { projectDbPath } from "../../../src/daemon/project.js";
 import { createDaemon, type DaemonInstance } from "../../../src/daemon/server.js";
 import { runLcmMigrations } from "../../../src/db/migration.js";
+import { PromotedStore } from "../../../src/db/promoted.js";
 import { ConversationStore } from "../../../src/store/conversation-store.js";
 import { SummaryStore } from "../../../src/store/summary-store.js";
 
@@ -199,5 +200,33 @@ describe("POST /restore for Codex", () => {
     expect(Buffer.byteLength(body.context, "utf8")).toBeLessThanOrEqual(220);
     expect(body.context).toContain("NEWEST-CONTEXT");
     expect(body.context).toContain("</recent-session-context>");
+  });
+
+  it.each(["startup", "resume", "clear", "compact"])("honors recentSummaries=0 on %s without disabling promoted memory", async (source) => {
+    const cwd = makeProject();
+    await seedConversation({
+      cwd,
+      sessionId: "codex-disabled-recent",
+      summary: "RECENT SUMMARY SHOULD STAY DISABLED",
+      messages: [{ role: "user", content: "RECENT MESSAGE SHOULD STAY DISABLED" }],
+    });
+    const db = new DatabaseSync(projectDbPath(cwd));
+    try {
+      new PromotedStore(db).insert({
+        content: "Project context: durable project knowledge remains enabled.",
+        tags: ["type:decision"], projectId: cwd, confidence: 0.9,
+      });
+    } finally { db.close(); }
+    daemon = await createDaemon(loadDaemonConfig(cwd, {
+      daemon: { port: 0 }, restoration: { recentSummaries: 0 },
+    }));
+
+    for (const sessionId of source === "startup" ? ["codex-disabled-recent", "new-session"] : ["codex-disabled-recent"]) {
+      const body = await restore(cwd, sessionId, source);
+      expect(body.context).not.toContain("SHOULD STAY DISABLED");
+      expect(body.context).not.toContain("<recent-session-context>");
+      expect(body.context).not.toContain("<recent-project-context>");
+      expect(body.context).toContain("durable project knowledge remains enabled");
+    }
   });
 });

@@ -252,6 +252,10 @@ export class ConversationStore {
   }
 
   async getConversation(conversationId: ConversationId): Promise<ConversationRecord | null> {
+    return this.getConversationSync(conversationId);
+  }
+
+  getConversationSync(conversationId: ConversationId): ConversationRecord | null {
     const row = this.db
       .prepare(
         `SELECT conversation_id, session_id, title, bootstrapped_at, created_at, updated_at
@@ -441,6 +445,10 @@ export class ConversationStore {
   }
 
   async getMessageById(messageId: MessageId): Promise<MessageRecord | null> {
+    return this.getMessageByIdSync(messageId);
+  }
+
+  getMessageByIdSync(messageId: MessageId): MessageRecord | null {
     const row = this.db
       .prepare(
         `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
@@ -571,6 +579,10 @@ export class ConversationStore {
   // ── Search ────────────────────────────────────────────────────────────────
 
   async searchMessages(input: MessageSearchInput): Promise<MessageSearchResult[]> {
+    return this.searchMessagesSync(input);
+  }
+
+  searchMessagesSync(input: MessageSearchInput): MessageSearchResult[] {
     const limit = input.limit ?? 50;
 
     if (input.mode === "full_text") {
