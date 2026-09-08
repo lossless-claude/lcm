@@ -547,6 +547,20 @@ function collectSessionIds(...groups: Array<Array<{ sessionId?: string | null }>
   return [...new Set(ranked)];
 }
 
+/**
+ * Rows to request per session slot, so both columns are cut at the same point.
+ *
+ * The score is over sessions, but search ranks rows. Asking for `k` rows and
+ * then deduplicating by session surfaced 3.3 sessions per query on a real
+ * 105-session corpus, never 5 — several rows of one session ate the budget —
+ * while the ripgrep baseline walks its hits until it has `k` distinct sessions
+ * and always fills them. That handed grep more chances than search on the same
+ * question. Doubling the row budget fills all `k` slots on both benchmarks
+ * measured, and larger multiples change no score, so the value is a saturation
+ * point rather than a tuned one.
+ */
+const SESSION_ROW_BUDGET = 2;
+
 type ScoreContext = {
   db: DatabaseSync;
   promotedStore: PromotedStore;
@@ -558,8 +572,8 @@ type ScoreContext = {
 async function scoreQuery(query: BenchQuery, ctx: ScoreContext): Promise<QueryOutcome> {
   const start = performance.now();
   // The same ranking explicit search emits, so the bench measures what callers see.
-  const history = await rankNativeHistory(ctx.db, { query: query.question, limit: ctx.k });
-  const promoted = ctx.promotedStore.search(query.question, ctx.k, undefined, ctx.projectId);
+  const history = await rankNativeHistory(ctx.db, { query: query.question, limit: ctx.k * SESSION_ROW_BUDGET });
+  const promoted = ctx.promotedStore.search(query.question, ctx.k * SESSION_ROW_BUDGET, undefined, ctx.projectId);
   const latencyMs = performance.now() - start;
 
   const sessionIds = collectSessionIds(history, promoted);

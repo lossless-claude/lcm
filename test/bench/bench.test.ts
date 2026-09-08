@@ -99,22 +99,21 @@ async function seedProject(cwd: string): Promise<void> {
   }
 }
 
-/** Adds one-prompt sessions to an already seeded project. */
-async function addSessions(cwd: string, entries: Array<{ sessionId: string; prompt: string }>): Promise<void> {
+/** Adds sessions to an already seeded project; `prompt` may carry several turns. */
+async function addSessions(cwd: string, entries: Array<{ sessionId: string; prompt: string | string[] }>): Promise<void> {
   const db = new DatabaseSync(projectDbPath(cwd));
   try {
     const convStore = new ConversationStore(db);
     for (const entry of entries) {
       const conv = await convStore.createConversation({ sessionId: entry.sessionId });
-      await convStore.createMessagesBulk([
-        {
-          conversationId: conv.conversationId,
-          seq: 0,
-          role: "user" as const,
-          content: entry.prompt,
-          tokenCount: Math.ceil(entry.prompt.length / 4),
-        },
-      ]);
+      const prompts = Array.isArray(entry.prompt) ? entry.prompt : [entry.prompt];
+      await convStore.createMessagesBulk(prompts.map((content, seq) => ({
+        conversationId: conv.conversationId,
+        seq,
+        role: "user" as const,
+        content,
+        tokenCount: Math.ceil(content.length / 4),
+      })));
     }
   } finally {
     db.close();
@@ -425,5 +424,31 @@ describe("lcm bench", () => {
 
     writeFileSync(file, JSON.stringify({ version: 1, queries: [{ ...query, sessionIds: [" "] }] }));
     expect((await runBench({ cwd, benchFile: file })).stdout).toContain("sessionIds must be a list");
+  });
+
+  it("gives search enough rows to fill every session slot the grep column fills", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    // Six sessions on the same subject, each with several matching turns, so a
+    // row budget spent inside one session starves the others of a slot.
+    await addSessions(cwd, Array.from({ length: 6 }, (_, i) => ({
+      sessionId: `sess-quota-${i}`,
+      prompt: [
+        `The nightly quota reconciliation job overshot its budget again on shard ${i} and paged the on-call engineer.`,
+        `Quota reconciliation paged us twice more on shard ${i}; the budget alarm keeps firing before the job finishes.`,
+        `We raised the quota budget for shard ${i} and the reconciliation job stopped paging, but it still overshoots.`,
+      ],
+    })));
+    const file = join(cwd, "manual.json");
+    const question = "quota reconciliation budget shard paged";
+    writeFileSync(file, JSON.stringify({ version: 1, queries: [
+      { id: "wide", sessionId: "sess-quota-0", prompt: question, question, generator: "manual" },
+    ] }));
+
+    const run = await runBench({ cwd, benchFile: file, k: 5 });
+    expect(run.exitCode, run.stdout).toBe(0);
+    const { outcomes } = JSON.parse(readFileSync(run.out, "utf-8")) as { outcomes: Array<{ searchTopK: string[] }> };
+    expect(outcomes[0].searchTopK).toHaveLength(5);
   });
 });
