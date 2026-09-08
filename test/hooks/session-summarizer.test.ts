@@ -118,7 +118,7 @@ describe("function-hook session summarizer", () => {
     await done; // first poll answered 404
     await vi.waitFor(() => expect(retries).toHaveLength(1));
     expect(engine.clock.after).toHaveBeenCalledWith(60_000, expect.any(Function));
-    expect(engine.ui.log).toHaveBeenCalledWith(expect.stringContaining("no session summarizer route"));
+    expect(engine.ui.log).toHaveBeenCalledWith(expect.stringContaining("no /summarize-jobs/next route"));
     jobs.push(leaf); // a daemon with the route is back
     retries[0]();
     await vi.waitFor(() => expect(posts).toHaveLength(1));
