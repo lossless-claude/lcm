@@ -111,6 +111,29 @@ Example output:
   p95 latency    3.2ms
 ```
 
+### Measuring a ranking change across corpora
+
+One benchmark cannot separate a ranking improvement from noise. `scripts/bench-corpora.mts`
+scores several local projects at once and pools the result:
+
+```bash
+npx tsx scripts/bench-corpora.mts build   # (re)generate one question set per corpus
+npx tsx scripts/bench-corpora.mts run     # score them all, print the pooled hit rate
+```
+
+Corpora come from `LCM_BENCH_CORPORA` (colon-separated project paths) or, unset, from every
+ingested project whose database is large enough to hold one. Question sets are written next to
+each project database as `.lcm-bench-validation.json` and the seed is fixed, so two runs score
+the same questions and are comparable.
+
+These are mechanically generated questions: diagnostic only, never release evidence. What the
+harness is for is the **direction** of a change and whether one corpus disagrees with another.
+Two ranking changes that read as clean wins on a single 13-question set did not survive it —
+query-term coverage in session fusion was +2 there and +1 pooled over 221 questions, and
+enlarging the candidate pool came out negative while pushing p95 past the latency budget.
+
+Require a non-negative direction on every corpus, not just a better pooled number.
+
 ### Manually reviewed queries
 
 Real user wording and short lookups are first-class benchmark inputs. In a version-1 benchmark
