@@ -26,3 +26,8 @@ target="$HOME/.claude/plugins/cache/lossless-claude/lcm/$version/dist"
 
 rsync -a --delete dist/ "$target/" || { echo "sync-plugin-cache: rsync failed (ignored)" >&2; exit 0; }
 echo "synced dist/ -> $target"
+
+# The function-hooks module is loaded from the plugin root, not dist/, so it drifts the same way.
+if [ -d hooks ]; then
+  rsync -a --delete hooks/ "$(dirname "$target")/hooks/" && echo "synced hooks/ -> $(dirname "$target")/hooks"
+fi

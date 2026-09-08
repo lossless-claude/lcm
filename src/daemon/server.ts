@@ -21,6 +21,7 @@ import { createPromoteEventsHandler } from "./routes/promote-events.js";
 import { createStatsHandler } from "./routes/stats.js";
 import { createPoolStatsHandler } from "./routes/pool-stats.js";
 import { createReviewStaleHandler } from "./routes/review-stale.js";
+import { createToolEventHandler } from "./routes/tool-event.js";
 import { PKG_VERSION, BUILD_ID } from "./version.js";
 export { PKG_VERSION };
 
@@ -97,6 +98,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   routes.set("POST /prompt-search", createPromptSearchHandler(config));
   routes.set("POST /session-complete", createSessionCompleteHandler());
   routes.set("POST /promote-events", createPromoteEventsHandler(config));
+  routes.set("POST /tool-event", createToolEventHandler(config));
   routes.set("GET /stats", createStatsHandler());
   routes.set("GET /stats/pool", createPoolStatsHandler());
   routes.set("POST /review-stale", createReviewStaleHandler(config));

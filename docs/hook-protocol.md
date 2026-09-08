@@ -114,6 +114,16 @@ Invoked after a tool call **succeeds**, and only for the tools the `PostToolUse`
 
 **Response:** Always exit code `0`. This hook runs on every tool call and must be fast; it does no network I/O and only writes to a local sidecar SQLite database.
 
+## Function hooks module (early access)
+
+**Module:** `hooks/lcm-hooks.ts`, named by `hooks/hooks.json` under `modules`. Loaded only when Claude Code runs with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`; the command hooks above keep working without it.
+
+One `tool.call` hook replaces both PostToolUse and PostToolUseFailure: it awaits the tool, reads `isError` on the result, and POSTs the same payload the command hook reads on stdin to the daemon's `POST /tool-event` route, which runs the same extractors and writes the same rows (`source_hook` is `PostToolUse` or `PostToolUseFailure` as before). The module runs in Claude Code's hooks worker with no Node and no SQLite, which is why the daemon writes. It reads the daemon port and bearer token once per load through a host command, because `$.fs` cannot leave the project directory.
+
+**Dedup rule:** while `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` is set, `lcm post-tool` exits without recording anything; otherwise every tool call would land twice. The variable is one of two switches that load the module; the other is Claude Code's remote gate (`tengu_plugin_hooks_modules`), which the command hook cannot see. Known limits of this rule: a module that fails to load loses passive capture for the session (the failure is named in Claude Code's debug log), and a session where the remote gate loads the module without the variable records every event twice. The durable fix is dedup on `(session_id, tool_use_id)` in the events DB, which both paths receive.
+
+**Types:** run `/plugin-types` in a session with the flag on; it writes `claude-code.d.ts` for the running build. Regenerate after a Claude Code update rather than editing. `claude plugin validate` reads the module statically: `$` may only be passed to a top-level function, and calls must be spelled `$.noun.method(...)`.
+
 ## SessionSnapshot Hook
 
 **Command:** `lcm session-snapshot`

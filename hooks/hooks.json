@@ -1,0 +1,3 @@
+{
+  "modules": ["./lcm-hooks.ts"]
+}

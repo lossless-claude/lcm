@@ -55,6 +55,23 @@ describe("handlePostToolUse", () => {
     expect(result.stdout).toBe("");
   });
 
+  it("stays silent while the function-hooks module records tool calls (no double capture)", async () => {
+    process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = "1";
+    vi.mocked(firePromoteEventsRequest).mockClear();
+    try {
+      const stdin = JSON.stringify({
+        session_id: "test-session", tool_name: "Bash", tool_input: { command: "npm test" },
+        hook_event_name: "PostToolUseFailure", error: "Exit code 1",
+      });
+      expect(await handlePostToolUse(stdin)).toEqual({ exitCode: 0, stdout: "" });
+      expect(firePromoteEventsRequest).not.toHaveBeenCalled();
+      const { existsSync } = await import("node:fs");
+      expect(existsSync(join(dir, "test.db"))).toBe(false);
+    } finally {
+      delete process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS;
+    }
+  });
+
   it("exits gracefully on invalid stdin", async () => {
     const result = await handlePostToolUse("not json");
     expect(result.exitCode).toBe(0); // silent fail
