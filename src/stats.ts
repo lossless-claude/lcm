@@ -196,6 +196,15 @@ export function formatNumber(n: number): string {
   return String(n);
 }
 
+/**
+ * Summarizer calls cost fractions of a cent, so two decimals would print a
+ * real charge as "$0.00" — the same "absent reads as free" bug an unreported
+ * cost already guards against. Sub-dollar amounts keep six decimals.
+ */
+export function formatUsd(n: number): string {
+  return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(6)}`;
+}
+
 export function formatRatio(before: number, after: number): string {
   if (before > 0 && after > 0) return (before / after).toFixed(1);
   return "\u2013";
@@ -287,6 +296,37 @@ export function printStats(stats: OverallStats, verbose: boolean): void {
     const empty = barWidth - filled;
     const bar = "█".repeat(filled) + "░".repeat(empty);
     console.log(`    ${" ".repeat(cLabelWidth)}  ${barColor}${bar}${reset}`);
+  }
+
+  // Summarizer section (only once the summarizer has reported a call)
+  if (stats.llmUsage.calls > 0) {
+    const usage = stats.llmUsage;
+    console.log();
+    console.log(sectionHeader("Summarizer"));
+    console.log();
+
+    const usageRows: [string, string][] = [
+      ["Calls", `${usage.calls} (${usage.okCalls} ok, ${usage.failedCalls} failed)`],
+      ["Tokens", formatNumber(usage.tokensSpent)],
+      [
+        "  breakdown",
+        `${formatNumber(usage.tokensInput)} in (${formatNumber(usage.tokensCached)} cached), ` +
+        `${formatNumber(usage.tokensOutput)} out`,
+      ],
+      [
+        "Cost",
+        // No priced call means nobody reported a figure, which is unknown;
+        // printing $0.00 here would claim the summarization was free.
+        usage.callsWithCost > 0 && usage.costUsd !== null
+          ? `${formatUsd(usage.costUsd)} ${dim}(${usage.callsWithCost} of ${usage.calls} calls priced)${reset}`
+          : `unknown ${dim}(0 of ${usage.calls} calls priced)${reset}`,
+      ],
+    ];
+
+    const uLabelWidth = Math.max(...usageRows.map(([l]) => l.length));
+    for (const [label, value] of usageRows) {
+      console.log(`    ${dim}${pad(label, uLabelWidth, "left")}${reset}  ${value}`);
+    }
   }
 
   // Security section (always shown)

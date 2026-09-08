@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { formatNumber, formatRatio, printStats } from "../src/stats.js";
+import { formatNumber, formatRatio, formatUsd, printStats } from "../src/stats.js";
 
 describe("formatNumber", () => {
   it("returns plain digits for numbers below 1000", () => {
@@ -74,6 +74,17 @@ describe("printStats", () => {
     conversationDetails: [],
     redactionCounts: { builtIn: 0, global: 0, project: 0, total: 0 },
     recallStats: { memoriesSurfaced: 0, memoriesActedUpon: 0, recallPrecision: null, topRecalled: [] },
+    llmUsage: {
+      calls: 0, okCalls: 0, failedCalls: 0,
+      tokensSpent: 0, tokensInput: 0, tokensCached: 0, tokensOutput: 0,
+      costUsd: null, callsWithCost: 0,
+    },
+  };
+
+  const priced = {
+    calls: 76, okCalls: 76, failedCalls: 0,
+    tokensSpent: 1019754, tokensInput: 956517, tokensCached: 24512, tokensOutput: 63237,
+    costUsd: 0.08996142, callsWithCost: 76,
   };
 
   it("prints the lossless-claude header", () => {
@@ -234,5 +245,49 @@ describe("printStats", () => {
       },
     }, false));
     expect(out).toContain("Recall");
+  });
+  it("omits the Summarizer section until a call is recorded", () => {
+    const out = captureLog(() => printStats(baseStats, false));
+    expect(out).not.toContain("Summarizer");
+  });
+
+  it("prints calls, tokens and cost once the summarizer has run", () => {
+    const out = captureLog(() => printStats({ ...baseStats, llmUsage: priced }, false));
+    expect(out).toContain("Summarizer");
+    expect(out).toContain("76 (76 ok, 0 failed)");
+    expect(out).toContain("956.5k in (24.5k cached), 63.2k out");
+    expect(out).toContain("$0.089961");
+    expect(out).toContain("76 of 76 calls priced");
+  });
+
+  it("says unknown, never $0.00, when no call reported a price", () => {
+    const out = captureLog(() => printStats({
+      ...baseStats,
+      llmUsage: { ...priced, costUsd: null, callsWithCost: 0 },
+    }, false));
+    expect(out).toContain("unknown");
+    expect(out).toContain("0 of 76 calls priced");
+    expect(out).not.toContain("$");
+  });
+
+  it("flags a partially priced total rather than passing it off as complete", () => {
+    const out = captureLog(() => printStats({
+      ...baseStats,
+      llmUsage: { ...priced, costUsd: 0.0005, callsWithCost: 12 },
+    }, false));
+    expect(out).toContain("12 of 76 calls priced");
+  });
+});
+
+describe("formatUsd", () => {
+  it("keeps six decimals below a dollar so a sub-cent charge stays visible", () => {
+    // Two decimals would render this real GLM Flash charge as "$0.00".
+    expect(formatUsd(0.000082)).toBe("$0.000082");
+    expect(formatUsd(0.08996142)).toBe("$0.089961");
+  });
+
+  it("uses two decimals from a dollar up", () => {
+    expect(formatUsd(1)).toBe("$1.00");
+    expect(formatUsd(12.3456)).toBe("$12.35");
   });
 });
