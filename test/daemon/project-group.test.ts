@@ -102,21 +102,21 @@ describe("backfillProjectIdentities", () => {
     writeFileSync(projectMetaPath(cwd), JSON.stringify({ cwd }, null, 2));
   }
 
-  it("groups projects that were never opened again", () => {
+  it("groups projects that were never opened again", async () => {
     const a = makeRepo("git@github.com:lossless-claude/lcm.git");
     const b = makeRepo("git@github.com:lossless-claude/lcm.git");
     legacyProject(a);
     legacyProject(b);
 
     expect(projectGroup(a).map(m => m.cwd)).toEqual([a]);
-    backfillProjectIdentities();
+    await backfillProjectIdentities();
     expect(projectGroup(a).map(m => m.cwd).sort()).toEqual([a, b].sort());
   });
 
-  it("leaves a project whose folder is gone untouched", () => {
+  it("leaves a project whose folder is gone untouched", async () => {
     const gone = join(base, "no-such-checkout");
     legacyProject(gone);
-    backfillProjectIdentities();
+    await backfillProjectIdentities();
     expect(readMeta(gone).git).toBeUndefined();
   });
 });

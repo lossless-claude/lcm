@@ -154,15 +154,22 @@ export function recordProjectIdentity(cwd: string): ProjectGitMeta {
  * never written to again still joins its group. The daily refresh interval
  * makes every run after the first one nearly free.
  *
+ * Yields to the event loop as it goes: a store of ~9000 projects takes seconds
+ * to walk, and the daemon must keep answering while it does.
+ *
  * Returns how many projects were visited.
  */
-export function backfillProjectIdentities(): number {
+const BACKFILL_YIELD_EVERY = 50;
+
+export async function backfillProjectIdentities(): Promise<number> {
   const projectsDir = join(BASE_DIR, "projects");
   if (!existsSync(projectsDir)) return 0;
 
+  let seen = 0;
   let visited = 0;
   for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
+    if (++seen % BACKFILL_YIELD_EVERY === 0) await new Promise(setImmediate);
     const metaPath = join(projectsDir, entry.name, "meta.json");
     if (!existsSync(metaPath)) continue;
     try {

@@ -172,7 +172,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   // only the first run after an upgrade does real work.
   const IDENTITY_BACKFILL_DELAY_MS = 5_000;
   const identityBackfill = setTimeout(() => {
-    try { backfillProjectIdentities(); } catch { /* non-fatal */ }
+    void backfillProjectIdentities().catch(() => { /* non-fatal */ });
   }, IDENTITY_BACKFILL_DELAY_MS);
   identityBackfill.unref();
 
