@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fuseHistoryBySession, type RankedHistoryHit } from "../../src/search/native-history.js";
+import { fuseHistoryBySession, rankHistoryHits, type RankedHistoryHit } from "../../src/search/native-history.js";
 
 // Summaries are given a far better rank than any message, so a summary that
 // fails to surface has been hidden by the fusion structure, not outscored.
@@ -50,6 +50,14 @@ describe("fuseHistoryBySession", () => {
     const order = fuseHistoryBySession(messages, [], 3, (group) => sizes.get(group));
 
     expect(order.map((hit) => hit.sessionId)).toEqual(["sess-small", "sess-unknown", "sess-big"]);
+  });
+
+  it("never offers a subagent transcript, however well it ranks", () => {
+    // The subagent sits first; only the human session may be returned.
+    const messages = [message("agent-a1f87c09d", 0), message("sess-human", 1)];
+    const order = rankHistoryHits(messages, [], 5);
+
+    expect(order.map((hit) => hit.sessionId)).toEqual(["sess-human"]);
   });
 
   it("spends a single slot on the message, as callers already expect", () => {

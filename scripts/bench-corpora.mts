@@ -80,7 +80,7 @@ const QUESTIONS_PER_CORPUS = positiveInteger("LCM_BENCH_N", 30);
  */
 const SEED = positiveInteger("LCM_BENCH_SEED", 1234);
 /** Below this a project holds too few sessions to rank anything meaningfully. */
-const MIN_DB_BYTES = 8 * 1024 * 1024;
+const MIN_DB_BYTES = 2 * 1024 * 1024;
 
 async function discoverCorpora(): Promise<string[]> {
   const configured = process.env.LCM_BENCH_CORPORA;
