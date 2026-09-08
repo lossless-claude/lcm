@@ -8,6 +8,7 @@
 //   prompt.submit   → POST /prompt-search (memory hits ride as hidden context on the prompt)
 //   prompt.section  → the learning instruction is appended once to the system prompt's
 //                     `memory` section, instead of to every prompt.
+//   prompt.context  → POST /restore (the session's memory, as one named context block)
 //   turn.complete   → POST /ingest (the daemon reads the transcript delta) and
 //                     POST /promote-events, at most once a minute, replacing the Stop hook.
 // The module has no Node and no SQLite, so the daemon does every write.
@@ -341,6 +342,9 @@ function registerSessionStart(on: On, summaryCap: number): void {
     });
     void readHostEnv($).then(({ port }) =>
       $.http.fetch(`http://127.0.0.1:${port}/health`).then(() => undefined, () => startDaemon($)));
+    // The housekeeping the SessionStart command hook awaited. Nothing reads its result,
+    // and the session has no reason to wait for a prune.
+    void $.session.cwd().then((cwd) => postDaemon($, "/session-scavenge", { cwd }));
     if (summaryCap > 0 && !summaryPollerStarted) {
       summaryPollerStarted = true;
       void pollSummaries($, summaryCap).catch((error) => {
@@ -348,6 +352,38 @@ function registerSessionStart(on: On, summaryCap: number): void {
       });
     }
     return next(e);
+  });
+}
+
+type RestoreResponse = {
+  context?: string;
+  insights?: { content: string; confidence: number; tags: string[] }[];
+};
+
+/** The text the SessionStart command hook printed: the daemon's context, plus its insights. */
+function restoreBlockText(body: Record<string, unknown> | null): string {
+  const result = (body ?? {}) as RestoreResponse;
+  const context = result.context ?? "";
+  const insights = result.insights ?? [];
+  if (insights.length === 0) return context;
+  const lines = insights.map((i) => `- ${i.content} (confidence: ${i.confidence})`).join("\n");
+  return `${context}\n<learned-insights source="passive-capture">\n`
+    + `Recent learnings from your previous sessions:\n${lines}\n</learned-insights>`;
+}
+
+/**
+ * `prompt.context` replaces the SessionStart command hook's stdout. It fires once per
+ * conversation and again after compaction and `/clear` — the three moments the command
+ * hook ran — but carries no reason for firing, so the daemon decides which content to
+ * return from the mark `/compact` left for this session.
+ */
+function registerRestoreContext(on: On): void {
+  on("prompt.context", async ($, e, next) => {
+    const { blocks } = await next(e);
+    const [session_id, cwd] = await Promise.all([$.session.id(), $.session.cwd()]);
+    const text = restoreBlockText(await postDaemon($, "/restore", { session_id, cwd }));
+    if (!text.trim()) return { blocks };
+    return { blocks: [...blocks, { name: "lcm", text }] };
   });
 }
 
@@ -438,6 +474,7 @@ export const register: Register = (on, options) => {
   const summaryCap = typeof configuredCap === "number" && Number.isFinite(configuredCap)
     ? Math.max(0, configuredCap) : DEFAULT_SUMMARY_OUTPUT_CAP;
   registerSessionStart(on, summaryCap);
+  registerRestoreContext(on);
   registerLearningInstruction(on);
   registerPromptSearch(on);
   registerTurnIngest(on);

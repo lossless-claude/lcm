@@ -11,7 +11,7 @@ import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { PromotedStore } from "../../db/promoted.js";
-import { justCompactedMap, JUST_COMPACTED_TTL_MS } from "./compact.js";
+import { wasSessionJustCompacted } from "../../db/session-compactions.js";
 import { fenceContent } from "../content-fence.js";
 import { validateCwd } from "../validate-cwd.js";
 
@@ -27,6 +27,24 @@ type CodexContextItemRow = {
   role: "user" | "assistant" | null;
   content: string;
 };
+
+/** Reads the mark `/compact` left for this session, if this project has a DB at all. */
+function wasJustCompacted(cwd: string | undefined, sessionId: string): boolean {
+  if (!cwd) return false;
+  const dbPath = projectDbPath(cwd);
+  if (!existsSync(dbPath)) return false;
+  try {
+    const db = getLcmConnection(dbPath);
+    try {
+      runLcmMigrations(db);
+      return wasSessionJustCompacted(db, sessionId);
+    } finally {
+      closeLcmConnection(dbPath);
+    }
+  } catch {
+    return false; // A restore must never fail over its own hint.
+  }
+}
 
 function fitFencedText(content: string, tag: string, byteBudget: number): string {
   const normalized = content.trim();
@@ -217,10 +235,12 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
       const codexContextBudget = config.restoration.maxInjectedMemoryBytes;
 
       // Explicit session lifecycle sources override the recent-compaction fallback.
+      // `source` is absent whenever the function-hooks module asks: prompt.context carries
+      // no reason for firing, so there the mark is the only thing that distinguishes a
+      // post-compaction restore from a fresh one.
       const isExplicitNonCompact = source === "startup" || source === "resume" || source === "clear";
       const isPostCompact =
-        source === "compact" ||
-        (!isExplicitNonCompact && justCompactedMap.has(session_id) && Date.now() - justCompactedMap.get(session_id)! < JUST_COMPACTED_TTL_MS);
+        source === "compact" || (!isExplicitNonCompact && wasJustCompacted(cwd, session_id));
 
       // Only post-compaction restore consumes the saved instructions.
       let instructionsContext = "";

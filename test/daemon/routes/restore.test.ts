@@ -9,7 +9,7 @@ import { runLcmMigrations } from "../../../src/db/migration.js";
 import { projectDbPath } from "../../../src/daemon/project.js";
 import { PromotedStore } from "../../../src/db/promoted.js";
 import { getLcmConnection, closeLcmConnection, getPoolStats } from "../../../src/db/connection.js";
-import { justCompactedMap } from "../../../src/daemon/routes/compact.js";
+import { markSessionCompacted } from "../../../src/db/session-compactions.js";
 
 vi.mock("node:os", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:os")>();
@@ -166,7 +166,15 @@ describe("POST /restore", () => {
       await seedRes.json();
       writeFileSync(join(tmpDir, "CLAUDE.md"), "Updated instructions.", "utf8");
 
-      justCompactedMap.set(sessionId, Date.now());
+      // The mark /compact leaves for the restore that follows it.
+      const markDbPath = projectDbPath(realpathSync(tmpDir));
+      const markDb = getLcmConnection(markDbPath);
+      try {
+        runLcmMigrations(markDb);
+        markSessionCompacted(markDb, sessionId);
+      } finally {
+        closeLcmConnection(markDbPath);
+      }
       try {
         const res = await fetch(url, {
           method: "POST", headers: { "Content-Type": "application/json" },
@@ -190,7 +198,12 @@ describe("POST /restore", () => {
         const compactBody = await compactRes.json();
         expect(compactBody.context).toContain(source === undefined ? "Saved instructions." : "Updated instructions.");
       } finally {
-        justCompactedMap.delete(sessionId);
+        const cleanupDb = getLcmConnection(markDbPath);
+        try {
+          cleanupDb.prepare("DELETE FROM session_compactions WHERE session_id = ?").run(sessionId);
+        } finally {
+          closeLcmConnection(markDbPath);
+        }
       }
     });
 

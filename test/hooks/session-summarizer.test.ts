@@ -12,7 +12,7 @@ async function start(options: Record<string, number> = {}, jobs: unknown[] = [le
   let finish!: () => void;
   const done = new Promise<void>((resolve) => { finish = resolve; });
   const engine = {
-    session: { id: vi.fn(async () => sessionId) },
+    session: { id: vi.fn(async () => sessionId), cwd: vi.fn(async () => "/proj") },
     process: { run: vi.fn(async () => ({ stdout: "secret\n__CONFIG__\n{}\n__TMPDIR__/tmp", exitCode: 0 })) },
     fs: { writeFile: vi.fn(async () => undefined) },
     model: {
@@ -25,7 +25,8 @@ async function start(options: Record<string, number> = {}, jobs: unknown[] = [le
       fetch: vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
         if (init?.method === "POST") {
           const body = JSON.parse(init.body!);
-          posts.push({ url, body });
+          // session.start also fires /session-scavenge; these tests are about job answers.
+          if (url.includes("/summarize-jobs/")) posts.push({ url, body });
           if (body.error === "spend cap") finish();
           return { ok: true, status: 200, text: "{}" };
         }

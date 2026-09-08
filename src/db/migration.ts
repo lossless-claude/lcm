@@ -589,6 +589,16 @@ function runLcmMigrationsInner(
     );
   `);
 
+  // Compaction marks — one row per session that was just compacted, so the restore that
+  // follows knows to replay the saved instructions instead of the episodic memory. In the
+  // project DB rather than daemon memory because the daemon can restart inside the window.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_compactions (
+      session_id TEXT PRIMARY KEY,
+      compacted_at INTEGER NOT NULL
+    );
+  `);
+
   // Promoted memories (cross-session, agent-stored)
   db.exec(`
     CREATE TABLE IF NOT EXISTS promoted (
