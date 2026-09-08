@@ -163,9 +163,10 @@ const HELP: Record<string, CommandHelp> = {
 
   import: {
     summary: "Import Claude Code or Codex session transcripts into lossless memory.",
-    usage: "lcm import [--provider claude|codex|all] [--all] [--verbose] [--dry-run] [--replay] [--restart]",
+    usage: "lcm import [--provider claude|codex|all | --codex] [--all] [--verbose] [--dry-run] [--replay] [--restart]",
     options: [
-      ["--provider <provider>", "Transcript source: claude (default), codex, all"],
+      ["--provider <provider>", "Transcript source: claude, codex, all (default: claude; with --replay: all)"],
+      ["--codex", "Alias for --provider codex"],
       ["--all", "Import all projects (default: current project only)"],
       ["--verbose", "Show per-session import detail"],
       ["--dry-run", "Preview without importing"],
@@ -175,11 +176,12 @@ const HELP: Record<string, CommandHelp> = {
     examples: [
       ["lcm import", "Import current Claude Code project sessions"],
       ["lcm import --all", "Import all tracked Claude Code projects"],
-      ["lcm import --all --replay", "Import and compact with threaded context"],
+      ["lcm import --replay", "Discover and replay Claude and Codex sessions in the current project"],
+      ["lcm import --all --replay", "Import and compact both providers across all projects"],
       ["lcm import --dry-run", "Preview what would be imported"],
       ["lcm import --provider codex --replay", "Import and compact current project Codex sessions"],
     ],
-    notes: "Claude transcripts come from ~/.claude/projects/; Codex transcripts from ~/.codex/sessions/ and ~/.codex/archived_sessions/. Codex requires session_meta.cwd; unknown projects are skipped. --all includes other projects. Dry-run never starts the daemon. Already-imported sessions are skipped unless replaying.",
+    notes: "Claude transcripts come from ~/.claude/projects/; Codex transcripts from ~/.codex/sessions/ and ~/.codex/archived_sessions/. Codex requires session_meta.cwd; unknown projects are skipped. --replay includes both providers unless --provider or --codex is explicit. --all includes other projects. Dry-run never starts the daemon. Codex import and hooks share incremental ingestion so later transcript growth is captured without duplicating prior messages.",
   },
 
   promote: {
@@ -232,8 +234,8 @@ const HELP: Record<string, CommandHelp> = {
     usage: "lcm connectors <list|install|remove|doctor> [options]",
     options: [
       ["list [--format text|json] [--global]", "List connectors in the current project or your global agent config"],
-      ["install <agent> [--type rules|mcp|skill] [--global]", "Install a connector for an agent"],
-      ["remove <agent> [--type rules|mcp|skill] [--global]", "Remove a connector for an agent"],
+      ["install <agent> [--type rules|mcp|skill|hooks] [--global]", "Install a connector for an agent"],
+      ["remove <agent> [--type rules|mcp|skill|hooks] [--global]", "Remove a connector for an agent"],
       ["doctor [agent] [--global]", "Check connector health in the current project or global agent config"],
     ],
     examples: [
@@ -241,7 +243,7 @@ const HELP: Record<string, CommandHelp> = {
       ["lcm connectors list --global", "Show connectors from your global agent config"],
       ["lcm connectors list --format json", "Machine-readable connector list"],
       ["lcm connectors install github-copilot", "Install the GitHub Copilot workspace skill for VS Code"],
-      ["lcm connectors install codex", "Install default connector for Codex"],
+      ["lcm connectors install codex", "Install native Codex lifecycle hooks"],
       ["lcm connectors install codex --global", "Install Codex into ~/.codex instead of the current project"],
       ["lcm connectors install codex --type rules", "Install rules-based connector for Codex"],
       ["lcm connectors remove codex", "Remove the Codex connector"],
@@ -251,7 +253,7 @@ const HELP: Record<string, CommandHelp> = {
       ["lcm connectors doctor github-copilot", "Check GitHub Copilot connector health"],
       ["lcm connectors doctor codex", "Check Codex connector health"],
     ],
-    notes: "Connector types: 'rules' (agent instruction file), 'mcp' (MCP server), 'skill' (skill file). GitHub Copilot uses a repo-local skill under .github/skills/. Codex can use repo-local or global skills. Codex MCP setup is manual today because .codex/config.toml is not edited automatically.",
+    notes: "Codex defaults to native lifecycle hooks; review their trust in Codex /hooks after installation. Installation alone does not prove activation. Optional types: 'rules' (instructions), 'mcp' (server), 'skill' (guidance). Codex MCP setup remains manual. GitHub Copilot defaults to a repo-local skill.",
   },
 
   sensitive: {
@@ -427,6 +429,7 @@ const GROUPS = [
   {
     label: "Hooks (internal)",
     commands: [
+      { name: "codex-hook", summary: "Native Codex lifecycle — capture, restore, recall, and compact" },
       { name: "restore", summary: "SessionStart hook — restore prior context" },
       { name: "session-end", summary: "Stop hook — finalize and store session memory" },
       { name: "user-prompt", summary: "UserPromptSubmit hook — record user prompt context" },

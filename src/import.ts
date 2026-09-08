@@ -383,9 +383,9 @@ async function ingestSessionList(
       continue;
     }
 
-    // Skip sessions already recorded in session_ingest_log (unless in replay mode,
-    // where compaction must still run to keep the temporal chain intact).
-    if (!options.replay && isSessionAlreadyIngested(cwd, sessionId, options._lcmDir)) {
+    // Skip completed Claude sessions unless replaying. Codex still reaches /ingest:
+    // an import may need to recover a final record deferred by live capture.
+    if (!options.replay && sourceClient !== "codex" && isSessionAlreadyIngested(cwd, sessionId, options._lcmDir)) {
       result.skippedEmpty++;
       if (options.verbose) console.log(`  ↩️ ${sessionId}: already fully ingested`);
       options.onProgress?.({ completed: processedBase + result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
@@ -410,6 +410,7 @@ async function ingestSessionList(
         session_id: sessionId,
         cwd,
         transcript_path: path,
+        source: "import",
         ...(sourceClient === "codex" ? { client: "codex" } : {}),
         // A completed session's transcript may have grown; replay must ingest the tail.
         ...(options.replay ? { replay: true } : {}),
@@ -592,7 +593,7 @@ export async function importSessions(
   client: DaemonClient,
   options: ImportOptions = {}
 ): Promise<ImportResult> {
-  const provider: ImportProvider = options.provider ?? "claude";
+  const provider: ImportProvider = options.provider ?? (options.replay ? "all" : "claude");
   const result: ImportResult = { imported: 0, skippedEmpty: 0, failed: 0, totalMessages: 0, totalTokens: 0, tokensAfter: 0 };
   // One --restart clear per project for the whole import, however many session
   // lists reach that project.

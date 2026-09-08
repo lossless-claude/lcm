@@ -19,6 +19,7 @@ import { readdirSync, readFileSync, existsSync, lstatSync, openSync, readSync, c
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { StringDecoder } from "node:string_decoder";
+import { TextDecoder } from "node:util";
 import { estimateTokens } from "./transcript.js";
 import type { ParsedMessage } from "./transcript.js";
 
@@ -37,7 +38,7 @@ interface CodexResponseItemPayload {
   content?: string | CodexContentBlock[];
 }
 
-interface CodexSessionMetaPayload {
+export interface CodexSessionMeta {
   id?: string;
   cwd?: string;
 }
@@ -45,7 +46,31 @@ interface CodexSessionMetaPayload {
 interface CodexLine {
   type?: string;
   timestamp?: string;
-  payload?: CodexResponseItemPayload | CodexSessionMetaPayload | Record<string, unknown>;
+  payload?: CodexResponseItemPayload | CodexSessionMeta | Record<string, unknown>;
+}
+
+export interface ParsedCodexTranscriptRecord {
+  message?: ParsedMessage;
+  sessionMeta?: CodexSessionMeta;
+}
+
+export interface ParseCodexTranscriptOptions {
+  /** Include a valid final JSONL record even when the file has no trailing newline. */
+  includeTrailingRecord?: boolean;
+  /** Throw on unreadable input or malformed records instead of skipping them. */
+  strict?: boolean;
+}
+
+const STRICT_UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
+
+/** Decode transcript bytes without silently replacing invalid UTF-8. @internal */
+export function decodeCodexTranscriptUtf8(bytes: Uint8Array, byteOffset?: number): string {
+  try {
+    return STRICT_UTF8_DECODER.decode(bytes);
+  } catch {
+    const location = byteOffset === undefined ? "" : ` at byte offset ${byteOffset}`;
+    throw new Error(`Invalid Codex transcript UTF-8${location}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -72,48 +97,102 @@ function extractCodexText(content: string | CodexContentBlock[] | undefined): st
     .trim();
 }
 
+/**
+ * Decode one syntactically complete Codex JSONL record.
+ *
+ * Invalid JSON is intentionally allowed to throw so each caller can apply its
+ * own error policy. Valid non-message events and unsupported message roles
+ * return an empty result.
+ *
+ * @internal
+ */
+export function parseCodexTranscriptRecord(record: string): ParsedCodexTranscriptRecord {
+  const value: unknown = JSON.parse(record);
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+
+  const obj = value as CodexLine;
+  if (obj.type === "session_meta") {
+    const meta = obj.payload as CodexSessionMeta | undefined;
+    return {
+      sessionMeta: {
+        id: typeof meta?.id === "string" && meta.id ? meta.id : undefined,
+        cwd: typeof meta?.cwd === "string" && meta.cwd ? meta.cwd : undefined,
+      },
+    };
+  }
+
+  // Only response_item lines carry canonical user/assistant messages. Codex
+  // also emits UI projection events which must not be ingested as duplicates.
+  if (obj.type !== "response_item") return {};
+
+  const payload = obj.payload as CodexResponseItemPayload | undefined;
+  if (!payload || payload.type !== "message") return {};
+
+  const role = payload.role;
+  if (role !== "user" && role !== "assistant") return {};
+
+  const content = extractCodexText(payload.content);
+  if (!content.trim()) return {};
+
+  return {
+    message: { role, content, tokenCount: estimateTokens(content) },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Exported parser
 // ---------------------------------------------------------------------------
 
 /**
  * Parse a Codex JSONL transcript file into the standard ParsedMessage format.
- * Returns an empty array on any read or parse error.
+ *
+ * The default mode is permissive: unreadable files return an empty array and
+ * malformed JSON records are skipped. Strict mode throws sanitized read errors
+ * and line-numbered JSON syntax errors. In either mode, syntactically valid
+ * non-message events and unsupported message roles are ignored.
+ *
+ * A valid unterminated final record is included by default for historical
+ * imports. Set `includeTrailingRecord: false` for a live file; its final record
+ * is then deferred without validation until a newline makes it complete.
  */
-export function parseCodexTranscript(transcriptPath: string): ParsedMessage[] {
-  let raw: string;
+export function parseCodexTranscript(
+  transcriptPath: string,
+  options: ParseCodexTranscriptOptions = {},
+): ParsedMessage[] {
+  let bytes: Buffer;
   try {
-    raw = readFileSync(transcriptPath, "utf-8");
+    bytes = readFileSync(transcriptPath);
   } catch {
+    if (options.strict) throw new Error("Codex transcript is unreadable");
     return [];
   }
+  const raw = options.strict
+    ? decodeCodexTranscriptUtf8(bytes)
+    : bytes.toString("utf8");
 
   const messages: ParsedMessage[] = [];
+  const lines = raw.split("\n");
+  if (options.includeTrailingRecord === false && !raw.endsWith("\n")) {
+    // Active Codex sessions may be observed while their final JSONL record is
+    // still being written. Defer it until a later capture sees the newline.
+    lines.pop();
+  }
 
-  for (const line of raw.split("\n")) {
+  for (const [index, line] of lines.entries()) {
     const trimmed = line.trim();
     if (!trimmed) continue;
 
-    let obj: CodexLine;
+    let parsed: ParsedCodexTranscriptRecord;
     try {
-      obj = JSON.parse(trimmed) as CodexLine;
+      parsed = parseCodexTranscriptRecord(trimmed);
     } catch {
+      if (options.strict) {
+        throw new Error(`Invalid Codex transcript JSONL at line ${index + 1}`);
+      }
       continue;
     }
 
-    // Only response_item lines carry user/assistant messages
-    if (obj.type !== "response_item") continue;
-
-    const payload = obj.payload as CodexResponseItemPayload | undefined;
-    if (!payload || payload.type !== "message") continue;
-
-    const role = payload.role;
-    if (!role || !["user", "assistant"].includes(role)) continue;
-
-    const content = extractCodexText(payload.content);
-    if (!content.trim()) continue;
-
-    messages.push({ role, content, tokenCount: estimateTokens(content) });
+    if (parsed.message) messages.push(parsed.message);
   }
 
   return messages;
@@ -127,7 +206,7 @@ export function extractCodexSessionCwd(transcriptPath: string): string | undefin
   return extractCodexSessionMeta(transcriptPath)?.cwd;
 }
 
-function extractCodexSessionMeta(transcriptPath: string): CodexSessionMetaPayload | undefined {
+export function extractCodexSessionMeta(transcriptPath: string): CodexSessionMeta | undefined {
   let fd: number | undefined;
   try {
     fd = openSync(transcriptPath, "r");
@@ -143,13 +222,8 @@ function extractCodexSessionMeta(transcriptPath: string): CodexSessionMetaPayloa
       pending = count === 0 ? "" : lines.pop() ?? "";
       for (const line of lines) {
         try {
-          const obj = JSON.parse(line) as CodexLine;
-          if (obj.type !== "session_meta") continue;
-          const meta = obj.payload as CodexSessionMetaPayload | undefined;
-          return {
-            id: typeof meta?.id === "string" && meta.id ? meta.id : undefined,
-            cwd: typeof meta?.cwd === "string" && meta.cwd ? meta.cwd : undefined,
-          };
+          const meta = parseCodexTranscriptRecord(line).sessionMeta;
+          if (meta) return meta;
         } catch { /* skip malformed lines */ }
       }
       if (count === 0) break;
