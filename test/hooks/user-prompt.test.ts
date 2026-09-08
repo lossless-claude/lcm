@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { createHash } from "node:crypto";
 import { handleUserPromptSubmit } from "../../src/hooks/user-prompt.js";
 
 vi.mock("../../src/daemon/lifecycle.js", () => ({
@@ -197,10 +198,10 @@ describe("handleUserPromptSubmit", () => {
 
   it("extracts decision events to sidecar before prompt-search", async () => {
     mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
-    const mockInsertEvent = vi.fn();
+    const mockInsertPromptEvents = vi.fn().mockReturnValue(1);
     const mockClose = vi.fn();
     MockEventsDb.mockImplementation(() => ({
-      insertEvent: mockInsertEvent,
+      insertPromptEvents: mockInsertPromptEvents,
       close: mockClose,
     }) as any);
     mockExtractUserPromptEvents.mockReturnValue([
@@ -218,10 +219,12 @@ describe("handleUserPromptSubmit", () => {
 
     expect(result.exitCode).toBe(0);
     expect(mockExtractUserPromptEvents).toHaveBeenCalledWith("we decided to use SQLite");
-    expect(mockInsertEvent).toHaveBeenCalledWith(
+    // The dedup key is the prompt's own content hash: the only key both paths can compute.
+    const promptHash = createHash("sha256").update("we decided to use SQLite").digest("hex");
+    expect(mockInsertPromptEvents).toHaveBeenCalledWith(
       "s1",
-      { type: "decision", category: "decision", data: "use SQLite", priority: 1 },
-      "UserPromptSubmit",
+      [{ type: "decision", category: "decision", data: "use SQLite", priority: 1 }],
+      promptHash,
     );
     expect(mockClose).toHaveBeenCalled();
     // prompt-search still called
