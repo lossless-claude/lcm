@@ -238,13 +238,16 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
       // `source` is absent whenever the function-hooks module asks: prompt.context carries
       // no reason for firing, so there the mark is the only thing that distinguishes a
       // post-compaction restore from a fresh one.
+      // Every reader of isPostCompact is on the non-Codex path, so the Codex one never
+      // pays for opening the project DB and migrating it just to read the mark.
       const isExplicitNonCompact = source === "startup" || source === "resume" || source === "clear";
-      const isPostCompact =
-        source === "compact" || (!isExplicitNonCompact && wasJustCompacted(cwd, session_id));
+      const isPostCompact = !isCodex && (
+        source === "compact" || (!isExplicitNonCompact && wasJustCompacted(cwd, session_id))
+      );
 
       // Only post-compaction restore consumes the saved instructions.
       let instructionsContext = "";
-      if (!isCodex && isPostCompact && cwd) {
+      if (isPostCompact && cwd) {
         const dbPath = projectDbPath(cwd);
         if (existsSync(dbPath)) {
           try {
@@ -264,7 +267,7 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
         }
       }
 
-      if (!isCodex && isPostCompact) {
+      if (isPostCompact) {
         const context = [orientation, instructionsContext].filter(Boolean).join("\n\n");
         sendJson(res, 200, { context });
         return;
