@@ -99,7 +99,15 @@ async function seedProject(cwd: string): Promise<void> {
   }
 }
 
-/** Adds sessions to an already seeded project; `prompt` may carry several turns. */
+/**
+ * Adds sessions to an already seeded project; `prompt` may carry several turns.
+ *
+ * A fixture that tests a *rejection* needs a capitalized mid-sentence identifier
+ * (e.g. "GitHub", "Stripe"). Without one, `mechanicalQuestion` falls through to a
+ * subjectless question that is rejected for an unrelated reason, so the prompt is
+ * absent from the bench file whether or not the filter under test exists — and the
+ * test passes with the fix removed. This has produced three vacuous tests so far.
+ */
 async function addSessions(cwd: string, entries: Array<{ sessionId: string; prompt: string | string[] }>): Promise<void> {
   const db = new DatabaseSync(projectDbPath(cwd));
   try {
