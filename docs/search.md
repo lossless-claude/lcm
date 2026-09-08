@@ -135,6 +135,23 @@ each project database as `.lcm-bench-validation.json` and the seed is fixed, so 
 the same questions and are comparable. Each row also prints the corpus's session count: a live
 corpus grows between runs, and a delta measured over different content is not a delta.
 
+### Tuning against one half, grading against the other
+
+A parameter chosen on the same questions that report the score is fitted, not measured — the
+score stops being evidence. `LCM_BENCH_GROUP` splits the corpora in two so the two roles stay
+apart:
+
+```bash
+LCM_BENCH_GROUP=tune    npx tsx scripts/bench-corpora.mts run   # sweep a parameter here
+LCM_BENCH_GROUP=holdout npx tsx scripts/bench-corpora.mts run   # grade, once, here
+```
+
+The split is by corpus (`HELD_OUT_CORPORA` in the script), not by question, so no session appears
+on both sides. Build the held-out questions with `LCM_BENCH_SEED` set to something other than the
+default, so they are a different sample from the ones any sweep has already seen; `LCM_BENCH_N`
+raises the count per corpus. Grade the held-out group **once**, after the parameter is fixed — a
+second look at it makes it a tuning set too.
+
 These are mechanically generated questions: diagnostic only, never release evidence. What the
 harness is for is the **direction** of a change and whether one corpus disagrees with another.
 Two ranking changes that read as clean wins on a single 13-question set did not survive it —

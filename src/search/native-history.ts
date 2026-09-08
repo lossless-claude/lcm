@@ -114,17 +114,55 @@ function drawBySession(
 }
 
 /**
+ * Length-normalisation strength, in the role BM25's `b` plays for message
+ * length. 0 leaves scores untouched, 1 divides by the size ratio outright.
+ *
+ * Chosen on five corpora (171 questions) and graded once on four it had never
+ * seen (197): 0.269 to 0.320, +13 questions against -3. The curve is a broad
+ * plateau — every value from 0.25 to 0.75 beats no normalisation at all — so
+ * this sits at its centre rather than on a peak.
+ */
+const SESSION_LENGTH_NORM = 0.4;
+
+/**
+ * Damp a session's score by how large the session is, the way bm25 already
+ * damps a message's score by how long the message is.
+ *
+ * A session scores the reciprocal rank of the *best* position any one of its
+ * rows reached. A long session enters the candidate pool many times, so one of
+ * its rows lands high on almost any query — measured, a single 368 KB session
+ * took 11 of 13 top-5 slots on unrelated questions. Nothing below the row level
+ * corrected for that.
+ *
+ * `sizeOf` returning undefined leaves that session unnormalised, so a session
+ * whose size cannot be established is neither rewarded nor punished for it.
+ */
+function normaliseBySessionSize(score: Map<string, number>, sizeOf: (group: string) => number | undefined): void {
+  const sizes = [...score.keys()].map(sizeOf).filter((size): size is number => size !== undefined && size > 0);
+  if (sizes.length === 0) return;
+  const average = sizes.reduce((sum, size) => sum + size, 0) / sizes.length;
+  if (average <= 0) return;
+  for (const [group, value] of score) {
+    const size = sizeOf(group);
+    if (size === undefined || size <= 0) continue;
+    score.set(group, value / (1 - SESSION_LENGTH_NORM + SESSION_LENGTH_NORM * (size / average)));
+  }
+}
+
+/**
  * Fuse message and summary candidates by session: a session scores the sum of
  * reciprocal ranks of its best message and best summary, so evidence present
- * in both sources rises. Summaries draw first against a reserved share of the
- * limit, messages take the rest, and whichever side underfills hands its
- * leftover to the other. Emission stays round-robin, one hit per session per
- * pass, so a small limit still spans several sessions.
+ * in both sources rises, damped by how large the session is. Summaries draw
+ * first against a reserved share of the limit, messages take the rest, and
+ * whichever side underfills hands its leftover to the other. Emission stays
+ * round-robin, one hit per session per pass, so a small limit still spans
+ * several sessions.
  */
 export function fuseHistoryBySession(
   messages: RankedHistoryHit[],
   summaries: RankedHistoryHit[],
   limit: number,
+  sessionSize?: (group: string) => number | undefined,
 ): RankedHistoryHit[] {
   const groupOf = (hit: RankedHistoryHit) => hit.sessionId ?? `conversation:${hit.conversationId}`;
   const score = new Map<string, number>();
@@ -137,6 +175,8 @@ export function fuseHistoryBySession(
       score.set(group, (score.get(group) ?? 0) + 1 / (FUSION_RANK_OFFSET + position));
     });
   }
+  // Callers that cannot supply sizes keep the unnormalised order.
+  if (sessionSize) normaliseBySessionSize(score, sessionSize);
   const groups = [...score.entries()].sort((a, b) => b[1] - a[1]).map(([group]) => group);
 
   const reserved = limit >= 2 ? Math.ceil(limit * SUMMARY_LIMIT_SHARE) : 0;
@@ -174,7 +214,37 @@ export async function rankNativeHistory(
     }
     return ranked;
   };
-  return fuseHistoryBySession(await attach(result.messages), await attach(result.summaries), input.limit);
+  const rankedMessages = await attach(result.messages);
+  const rankedSummaries = await attach(result.summaries);
+  return fuseHistoryBySession(rankedMessages, rankedSummaries, input.limit, sessionSizes(db, [...rankedMessages, ...rankedSummaries], sessionOf));
+}
+
+/**
+ * How many messages each candidate session holds, for the length normalisation.
+ *
+ * Counting rows in the candidate pool instead would be free, and was tried: it
+ * loses on every question set. That signal is query-dependent — a session about
+ * one subject fills the pool on queries about that subject, exactly when it is
+ * the right answer, so it is damped hardest when it should win. The transcript
+ * count does not move with the query. It costs one grouped count over the
+ * conversations already in hand: 0.1 ms against a 500 ms budget.
+ */
+function sessionSizes(
+  db: DatabaseSync,
+  hits: RankedHistoryHit[],
+  sessionOf: Map<number, string | null>,
+): (group: string) => number | undefined {
+  const conversations = [...new Set(hits.map(hit => hit.conversationId))];
+  if (conversations.length === 0) return () => undefined;
+  const rows = db.prepare(
+    `SELECT conversation_id, COUNT(*) AS n FROM messages WHERE conversation_id IN (${conversations.map(() => "?").join(",")}) GROUP BY conversation_id`,
+  ).all(...conversations) as Array<{ conversation_id: number; n: number }>;
+  const bySession = new Map<string, number>();
+  for (const row of rows) {
+    const group = sessionOf.get(row.conversation_id) ?? `conversation:${row.conversation_id}`;
+    bySession.set(group, (bySession.get(group) ?? 0) + row.n);
+  }
+  return (group: string) => bySession.get(group);
 }
 
 /** Read one request's ranked history and bounded source context inside a savepoint on the caller's connection. */

@@ -31,6 +31,27 @@ describe("fuseHistoryBySession", () => {
     expect(countSummaries(fuseHistoryBySession(messages, summaries, limit))).toBe(expected);
   });
 
+  it("ranks a small session above a large one that reached the same position", () => {
+    // Both sessions' best row sits at the same place; only their sizes differ.
+    const messages = [message("sess-big", 0), message("sess-small", 1)];
+    const sizes = new Map([["sess-big", 400], ["sess-small", 40]]);
+    const order = fuseHistoryBySession(messages, [], 2, (group) => sizes.get(group));
+
+    expect(order.map((hit) => hit.sessionId)).toEqual(["sess-small", "sess-big"]);
+    // Without sizes the raw positions stand, so the large session keeps its lead.
+    expect(fuseHistoryBySession(messages, [], 2).map((hit) => hit.sessionId)).toEqual(["sess-big", "sess-small"]);
+  });
+
+  it("leaves a session of unknown size where its rank put it", () => {
+    // Ranked big, unknown, small. Normalisation demotes big and promotes small
+    // past it; the session with no size is carried by neither move.
+    const messages = [message("sess-big", 0), message("sess-unknown", 1), message("sess-small", 2)];
+    const sizes = new Map([["sess-big", 400], ["sess-small", 40]]);
+    const order = fuseHistoryBySession(messages, [], 3, (group) => sizes.get(group));
+
+    expect(order.map((hit) => hit.sessionId)).toEqual(["sess-small", "sess-unknown", "sess-big"]);
+  });
+
   it("spends a single slot on the message, as callers already expect", () => {
     const { messages, summaries } = oneEach(3);
     const hits = fuseHistoryBySession(messages, summaries, 1);
