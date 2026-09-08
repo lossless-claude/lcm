@@ -15,13 +15,13 @@
  *   npx tsx scripts/bench-corpora.mts build     # (re)generate the question sets
  *   npx tsx scripts/bench-corpora.mts run       # score every corpus, print the pool
  *
- * Corpora come from `LCM_BENCH_CORPORA` (colon-separated project paths), or
+ * Corpora come from `LCM_BENCH_CORPORA` (`:` separated, `;` on Windows), or
  * from every ingested project whose database is large enough to hold one.
  */
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, delimiter, dirname, join } from "node:path";
 import { buildBench, runBench } from "../src/bench.js";
 import { projectDbPath } from "../src/daemon/project.js";
 
@@ -34,7 +34,7 @@ const MIN_DB_BYTES = 8 * 1024 * 1024;
 
 async function discoverCorpora(): Promise<string[]> {
   const configured = process.env.LCM_BENCH_CORPORA;
-  if (configured) return configured.split(":").filter(Boolean);
+  if (configured) return configured.split(delimiter).filter(Boolean);
 
   const root = join(homedir(), ".lossless-claude", "projects");
   if (!existsSync(root)) return [];
@@ -65,7 +65,7 @@ function validationFile(cwd: string): string {
 }
 
 function label(cwd: string): string {
-  return (cwd.split("/").pop() || cwd).slice(0, 22).padEnd(22);
+  return (basename(cwd) || cwd).slice(0, 22).padEnd(22);
 }
 
 async function build(corpora: string[]): Promise<void> {
@@ -113,7 +113,7 @@ async function run(corpora: string[]): Promise<void> {
 const command = process.argv[2] ?? "run";
 const corpora = await discoverCorpora();
 if (corpora.length === 0) {
-  console.log("No corpora found. Set LCM_BENCH_CORPORA to a colon-separated list of project paths.");
+  console.log(`No corpora found. Set LCM_BENCH_CORPORA to a "${delimiter}" separated list of project paths.`);
 } else if (command === "build") {
   await build(corpora);
 } else if (command === "run") {

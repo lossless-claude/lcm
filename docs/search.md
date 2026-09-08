@@ -121,7 +121,7 @@ npx tsx scripts/bench-corpora.mts build   # (re)generate one question set per co
 npx tsx scripts/bench-corpora.mts run     # score them all, print the pooled hit rate
 ```
 
-Corpora come from `LCM_BENCH_CORPORA` (colon-separated project paths) or, unset, from every
+Corpora come from `LCM_BENCH_CORPORA` (the platform path delimiter — `:`, or `;` on Windows) or, unset, from every
 ingested project whose database is large enough to hold one. Question sets are written next to
 each project database as `.lcm-bench-validation.json` and the seed is fixed, so two runs score
 the same questions and are comparable.
