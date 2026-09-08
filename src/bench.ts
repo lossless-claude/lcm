@@ -239,12 +239,16 @@ function isSubjectless(question: string): boolean {
  */
 const MAX_PROMPT_TERM_SHARE = 0.5;
 
-/** Share of the question's content words that also appear in its source prompt. */
+/**
+ * Share of the question's distinct query terms that also appear in its source
+ * prompt. Terms are what the search tokenizer would keep: lowercased, deduped,
+ * stopwords dropped — the same words a caller's query is reduced to.
+ */
 function promptTermShare(question: string, prompt: string): number {
   const questionTerms = extractQueryTerms(question);
   if (questionTerms.length === 0) return 0;
   const promptTerms = new Set(extractQueryTerms(prompt));
-  return questionTerms.filter(term => promptTerms.has(term)).length / questionTerms.length;
+  return questionTerms.filter((term) => promptTerms.has(term)).length / questionTerms.length;
 }
 
 /** Checks only generated questions face; curated ones keep the user's own wording. */
@@ -259,7 +263,7 @@ function generatedQuestionProblem(question: string, prompt: string): string | nu
 /** Records the question in `seen` unless it has a problem. */
 function questionProblem(
   question: unknown,
-  ctx: { prompt: string; seen: Set<string>; generator?: BenchQuery["generator"] },
+  ctx: { prompt: string; seen: Set<string>; generator: BenchQuery["generator"] },
 ): string | null {
   if (typeof question !== "string" || !question.trim()) return "expected nonempty query text";
   const normalized = question.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim() || question.trim();
