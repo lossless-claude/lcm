@@ -132,7 +132,8 @@ npx tsx scripts/bench-corpora.mts run     # score them all, print the pooled hit
 Corpora come from `LCM_BENCH_CORPORA` (the platform path delimiter — `:`, or `;` on Windows) or, unset, from every
 ingested project whose database is large enough to hold one. Question sets are written next to
 each project database as `.lcm-bench-validation.json` and the seed is fixed, so two runs score
-the same questions and are comparable.
+the same questions and are comparable. Each row also prints the corpus's session count: a live
+corpus grows between runs, and a delta measured over different content is not a delta.
 
 These are mechanically generated questions: diagnostic only, never release evidence. What the
 harness is for is the **direction** of a change and whether one corpus disagrees with another.
