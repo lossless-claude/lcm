@@ -586,7 +586,7 @@ export async function buildBench(
     let language = MECHANICAL_LANGUAGE;
     if (opts.generator === "llm") {
       if (!generateQuestion && !detectLanguage && !opts.language) detectLanguage = await configuredLanguageDetector();
-      const resolved = await resolveLanguage(opts, shuffled, ctx, detectLanguage);
+      const resolved = await resolveLanguage(opts, conversations, ctx, detectLanguage);
       if ("error" in resolved) return { out: "", exitCode: 1, stdout: `${resolved.error}\n` };
       language = resolved.language;
       ctx.generateQuestion = generateQuestion ?? await configuredQuestionGenerator(language);
