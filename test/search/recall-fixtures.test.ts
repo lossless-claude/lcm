@@ -6,6 +6,7 @@ import { runLcmMigrations } from "../../src/db/migration.js";
 import { ConversationStore } from "../../src/store/conversation-store.js";
 import { SummaryStore } from "../../src/store/summary-store.js";
 import { RetrievalEngine } from "../../src/retrieval.js";
+import { searchNativeHistory } from "../../src/search/native-history.js";
 import { extractQueryTerms } from "../../src/store/fts5-query.js";
 
 /**
@@ -19,6 +20,11 @@ import { extractQueryTerms } from "../../src/store/fts5-query.js";
  * These fixtures prove no regression. They are NOT a quality score — the
  * corpus is small, clean, and nothing like a real one. Real numbers come
  * from `lcm bench` (Layer 2) against a user's own sessions.
+ *
+ * Recall here is measured at session level, which is deliberately blind to
+ * which kind of hit answered: every fixture summary is the concatenation of
+ * its own messages, so it never carries evidence a message lacks. Properties
+ * about the mix of messages and summaries need their own case.
  */
 
 const FIXTURES_DIR = join(__dirname, "..", "fixtures", "recall");
@@ -184,7 +190,7 @@ describe("recall fixtures", () => {
     }
   });
 
-  describe("recall gate (runs the same /search episodic path as the daemon)", () => {
+  describe("recall gate (runs the daemon's /search episodic path end to end)", () => {
     let db: DatabaseSync;
     let stemmer: DatabaseSync;
     // Seed: one conversation + leaf summary per fixture session.
@@ -229,13 +235,15 @@ describe("recall fixtures", () => {
       stemmer?.close();
     });
 
+    /**
+     * Ranks sessions through the same implementation used by the daemon's `/search` episodic layer, so the
+     * gate measures what a caller receives rather than what the candidate layer produces.
+     * Concatenating the two candidate lists by hand — as this did — skips session fusion,
+     * the result limit, and snippet selection entirely, which is how a fusion bug once
+     * passed the gate green in both directions.
+     */
     async function searchSessionRanking(question: string): Promise<string[]> {
-      const engine = new RetrievalEngine(
-        new ConversationStore(db),
-        new SummaryStore(db),
-      );
-      const result = await engine.grep({ query: question, mode: "full_text", scope: "both" });
-      const all = [...result.messages, ...result.summaries];
+      const all = await searchNativeHistory(db, { query: question, limit: RECALL_K });
       const ranking: string[] = [];
       const seen = new Set<string>();
       for (const match of all) {
@@ -329,6 +337,42 @@ describe("recall fixtures", () => {
         p95,
         `p95 query latency ${p95.toFixed(1)}ms above ${P95_LATENCY_MS}ms`,
       ).toBeLessThanOrEqual(P95_LATENCY_MS);
+    });
+
+    /**
+     * Session-level recall cannot see #353: it asks which sessions came back,
+     * and every fixture summary is the concatenation of its own messages, so a
+     * summary never carries evidence a message lacks. This case supplies the
+     * missing shape — more matching sessions than the limit — and asserts the
+     * result is not all messages. It fails on the pre-#354 fusion.
+     */
+    it("returns summaries when every matching session also has a matching message", async () => {
+      const starved = new DatabaseSync(":memory:");
+      try {
+        runLcmMigrations(starved);
+        const convStore = new ConversationStore(starved);
+        const summStore = new SummaryStore(starved);
+        // One more session than the limit, each with both kinds of evidence.
+        for (let i = 0; i < RECALL_K + 1; i++) {
+          const conv = await convStore.createConversation({ sessionId: `starved-${i}` });
+          await convStore.createMessagesBulk([{
+            conversationId: conv.conversationId, seq: 0, role: "user",
+            content: "The saffron rollout stalled again.", tokenCount: 10,
+          }]);
+          await summStore.insertSummary({
+            summaryId: `sum_starved_${i}`, conversationId: conv.conversationId, kind: "condensed",
+            content: "Decision: the saffron rollout was paused pending a rewrite.", tokenCount: 12,
+          });
+        }
+        const hits = await searchNativeHistory(starved, { query: "saffron", limit: RECALL_K });
+        expect(hits).toHaveLength(RECALL_K);
+        expect(
+          hits.filter((hit) => "summaryId" in hit).length,
+          "every slot went to a message; summaries are starved by the fusion",
+        ).toBeGreaterThan(0);
+      } finally {
+        starved.close();
+      }
     });
 
     it("single-keyword lookups still work (issue's control queries)", async () => {
