@@ -57,17 +57,19 @@ layer errors are logged with `console.warn` and surfaced in the response as
 `{ "episodic": [...], "promoted": [...], "errors": ["episodic: …"] }`. An empty result set with an
 `errors` key means something broke; an empty result set without it means nothing matched.
 
-## Measuring recall: `lcm bench`
+## Measuring retrieval: `lcm bench`
 
 The synthetic fixtures in `test/fixtures/recall/` prove the pipeline works, but they are small and
-clean. Real recall numbers come from your own ingested sessions:
+clean. Real numbers come from your own ingested sessions:
 
 ```bash
 lcm bench build --project /path/to/project --n 20 --generator llm
 lcm bench run   --project /path/to/project
 ```
 
-- **`build`** samples ingested conversations and paraphrases one user prompt per session.
+- **`build`** samples ingested conversations and paraphrases one user prompt per session. Only
+  prompts whose text occurs in exactly one session are sampled; harness boilerplate and repeated
+  prompts are skipped, because neither can anchor a single-label question.
   `--generator llm` calls your configured summarizer (including its local OpenAI-compatible endpoint).
   Disabled or mock summarizers cannot produce an LLM benchmark; provider failures do not silently
   switch to mechanical questions. Review generated questions for a specific subject, correct source
@@ -83,14 +85,15 @@ lcm bench run   --project /path/to/project
 
   | metric | what it tells you |
   |---|---|
-  | `recall@5` (search) | single-source hit@5: fraction whose recorded source session appears in the top 5 |
-  | `recall@5` (grep) | real ripgrep over the same retained messages, summaries and promoted memories, ranked by matched terms then occurrences; falls back to a labelled SQLite LIKE baseline when `rg` is missing. Not raw-JSONL grep |
+  | `hit@5` (search) | fraction of questions whose labelled session appears in the top 5 |
+  | `hit@5` (grep) | real ripgrep over the same retained messages, summaries and promoted memories, ranked by matched terms then occurrences; falls back to a labelled SQLite LIKE baseline when `rg` is missing. Not raw-JSONL grep |
   | empty-result rate | fraction returning zero results — the worst failure mode |
   | p95 latency | a retrieval path slower than reading the file is not worth calling |
 
-  The metric named `recall@5` is a single-source hit rate, not complete relevance recall:
-  another session may also answer the question. Review and record those cases before interpreting
-  misses. Ground truth from one sampled prompt cannot prove that its session is the only valid answer.
+  The reported `searchHitRate` and `grepHitRate` are labelled-session hit rates, not complete
+  relevance recall: a session outside the labels may also answer the question. When review finds
+  such a session, add it to the query's optional `sessionIds` list — every session listed there is
+  scored as a hit alongside `sessionId`. Do not quote a hit rate as a recall figure.
   The grep baseline searches the retained corpus; results from external raw-JSONL grep are a different
   experiment and must not be compared as if the corpus and ranking were identical.
 
@@ -101,7 +104,7 @@ lcm bench run   --project /path/to/project
 Example output:
 
 ```text
-  recall@5  search 17/20 (85%)  vs  grep 12/20 (60%)
+  hit@5  search 17/20 (85%)  vs  grep 12/20 (60%)
   empty results  1/20 (5%)
   p95 latency    3.2ms
 ```
@@ -112,7 +115,8 @@ Real user wording and short lookups are first-class benchmark inputs. In a versi
 file, set each curated query's `generator` to `"manual"` (and the file-level `generator` to
 `"manual"` for an entirely curated set). Keep `id`, `sessionId`, `prompt`, and `question` on each
 entry: `sessionId` identifies the expected source, `prompt` records the source/context, and
-`question` is the exact query to run. The prompt may equal the query.
+`question` is the exact query to run. The prompt may equal the query. Add `sessionIds` when other
+sessions answer the question too; each one counts as a hit.
 
 Manual queries require nonempty text and a nonempty source session; duplicate query text is
 rejected. They may contain actual copied user questions, short keywords, or identifiers such as

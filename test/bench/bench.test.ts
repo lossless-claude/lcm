@@ -99,6 +99,28 @@ async function seedProject(cwd: string): Promise<void> {
   }
 }
 
+/** Adds one-prompt sessions to an already seeded project. */
+async function addSessions(cwd: string, entries: Array<{ sessionId: string; prompt: string }>): Promise<void> {
+  const db = new DatabaseSync(projectDbPath(cwd));
+  try {
+    const convStore = new ConversationStore(db);
+    for (const entry of entries) {
+      const conv = await convStore.createConversation({ sessionId: entry.sessionId });
+      await convStore.createMessagesBulk([
+        {
+          conversationId: conv.conversationId,
+          seq: 0,
+          role: "user" as const,
+          content: entry.prompt,
+          tokenCount: Math.ceil(entry.prompt.length / 4),
+        },
+      ]);
+    }
+  } finally {
+    db.close();
+  }
+}
+
 describe("lcm bench", () => {
   it("accepts manually curated real wording and short identifier lookups", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
@@ -190,7 +212,7 @@ describe("lcm bench", () => {
     expect(result.stdout).toContain("No project database");
   });
 
-  it("run reports recall against the grep baseline", async () => {
+  it("run reports the hit rate against the grep baseline", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
     tempDirs.push(cwd);
     await seedProject(cwd);
@@ -200,7 +222,7 @@ describe("lcm bench", () => {
 
     const run = await runBench({ cwd, k: 5 });
     expect(run.exitCode).toBe(0);
-    expect(run.stdout).toContain("recall@5");
+    expect(run.stdout).toContain("hit@5");
     expect(run.stdout).toContain("grep");
     expect(run.stdout).toContain("empty results");
     expect(run.stdout).toContain("p95 latency");
@@ -217,14 +239,14 @@ describe("lcm bench", () => {
     expect(run.exitCode).toBe(0);
     const report = JSON.parse(run.stdout) as {
       total: number;
-      searchRecall: number;
-      grepRecall: number;
+      searchHitRate: number;
+      grepHitRate: number;
       emptyRate: number;
       p95LatencyMs: number;
     };
     expect(report.total).toBeGreaterThan(0);
-    expect(report.searchRecall).toBeGreaterThanOrEqual(0);
-    expect(report.grepRecall).toBeGreaterThanOrEqual(0);
+    expect(report.searchHitRate).toBeGreaterThanOrEqual(0);
+    expect(report.grepHitRate).toBeGreaterThanOrEqual(0);
     expect(report.emptyRate).toBeGreaterThanOrEqual(0);
   });
 
@@ -263,5 +285,58 @@ describe("lcm bench", () => {
       expect(q.question).not.toBe(q.prompt);
       expect(q.prompt).not.toContain(q.question);
     }
+  });
+
+  it("never samples a prompt that occurs in more than one session", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    const shared = "The Kubernetes ingress controller keeps dropping websocket upgrades after a rolling restart.";
+    await addSessions(cwd, [
+      { sessionId: "sess-dup-a", prompt: shared },
+      { sessionId: "sess-dup-b", prompt: shared },
+    ]);
+
+    const build = await buildBench({ cwd, n: 20, seed: 7 });
+    const bench = JSON.parse(readFileSync(build.out, "utf-8")) as BenchFile;
+    expect(bench.queries.some((q) => q.prompt === shared)).toBe(false);
+    expect(bench.queries.length).toBeGreaterThan(0);
+  });
+
+  it("never samples harness boilerplate as a prompt", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    const boilerplate = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.";
+    await addSessions(cwd, [{ sessionId: "sess-boilerplate", prompt: boilerplate }]);
+
+    const build = await buildBench({ cwd, n: 20, seed: 3 });
+    const bench = JSON.parse(readFileSync(build.out, "utf-8")) as BenchFile;
+    expect(bench.queries.some((q) => q.prompt === boilerplate)).toBe(false);
+  });
+
+  it("counts any labelled session as a hit", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    const file = join(cwd, "manual.json");
+    const query = {
+      id: "multi",
+      sessionId: "sess-never-returned",
+      prompt: "Why did we choose SQLite for the memory daemon?",
+      question: "Why did we choose SQLite for the memory daemon?",
+      generator: "manual",
+    };
+
+    writeFileSync(file, JSON.stringify({ version: 1, queries: [query] }));
+    const single = await runBench({ cwd, benchFile: file, k: 5, json: true });
+    expect(JSON.parse(single.stdout).searchHitRate).toBe(0);
+
+    writeFileSync(file, JSON.stringify({ version: 1, queries: [{ ...query, sessionIds: ["sess-storage"] }] }));
+    const multi = await runBench({ cwd, benchFile: file, k: 5, json: true });
+    expect(JSON.parse(multi.stdout).searchHitRate).toBe(1);
+
+    writeFileSync(file, JSON.stringify({ version: 1, queries: [{ ...query, sessionIds: [" "] }] }));
+    expect((await runBench({ cwd, benchFile: file })).stdout).toContain("sessionIds must be a list");
   });
 });
