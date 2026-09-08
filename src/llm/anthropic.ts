@@ -1,12 +1,11 @@
 import Anthropic from "@anthropic-ai/sdk";
 import {
   LCM_SUMMARIZER_SYSTEM_PROMPT,
-  buildLeafSummaryPrompt,
-  buildCondensedSummaryPrompt,
   resolveTargetTokens,
   resolveMaxOutputTokens,
 } from "../summarize.js";
 import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "./types.js";
+import { buildSummaryPrompt } from "./prompt.js";
 
 export type { LcmSummarizeFn } from "./types.js";
 
@@ -60,9 +59,7 @@ export function createAnthropicSummarizer(opts: SummarizerOptions): LcmSummarize
       condensedTargetTokens: 2000,
     });
 
-    const prompt = ctx.taskPrompt !== undefined ? text : ctx.isCondensed
-      ? buildCondensedSummaryPrompt({ text, targetTokens, depth: ctx.depth ?? 1 })
-      : buildLeafSummaryPrompt({ text, mode: aggressive ? "aggressive" : "normal", targetTokens });
+    const prompt = buildSummaryPrompt(text, aggressive, { ...ctx, targetTokens });
 
     let lastError: Error | undefined;
 

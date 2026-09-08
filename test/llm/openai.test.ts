@@ -33,6 +33,18 @@ describe("createOpenAISummarizer", () => {
     expect(args.messages[0].content).toContain("context-compaction summarization engine");
   });
 
+  it("sends the previous chunk's summary in the prompt it puts on the wire", async () => {
+    const mockClient = makeClient("Summary.");
+    const summarizer = createOpenAISummarizer({
+      model: "m", baseURL: "http://x/v1", _clientOverride: mockClient as any,
+    });
+    await summarizer("Conversation text", false, {
+      previousSummary: "Earlier the user chose SQLite over Postgres.",
+    });
+    const args = mockClient.chat.completions.create.mock.calls[0][0];
+    expect(args.messages[0].content).toContain("Earlier the user chose SQLite over Postgres.");
+  });
+
   it("sends reasoning verbatim when configured and omits the key otherwise", async () => {
     const withReasoning = makeClient("Summary.");
     await createOpenAISummarizer({
