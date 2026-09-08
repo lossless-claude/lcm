@@ -29,8 +29,9 @@ type CodexContextItemRow = {
 };
 
 /** Reads the mark `/compact` left for this session, if this project has a DB at all. */
-function wasJustCompacted(cwd: string | undefined, sessionId: string): boolean {
-  if (!cwd) return false;
+function wasJustCompacted(cwd: string | undefined, sessionId: unknown): boolean {
+  // `/compact` writes the mark under a string session id, so nothing else can match one.
+  if (!cwd || typeof sessionId !== "string" || !sessionId) return false;
   const dbPath = projectDbPath(cwd);
   if (!existsSync(dbPath)) return false;
   try {
@@ -215,12 +216,215 @@ function readClaudeMdFiles(cwd: string): string {
   return parts.join("\n\n");
 }
 
+/** A passive-capture insight, as the response carries it. */
+type Insight = { content: string; confidence: number; tags: string[] };
+
+/** What either client's builder reads from the request. */
+type RestoreRequest = {
+  sessionId: unknown;
+  source: unknown;
+  cwd?: string;
+  orientation: string;
+};
+
+/** A built restore: the context to return, and whether insights ride along with it. */
+type RestoreContext = { context: string; includeInsights: boolean };
+
+/** The project's promoted memories, recent enough to still be worth restoring. */
+function readPromotedMemories(db: DatabaseSync, cwd: string, config: DaemonConfig): string[] {
+  try {
+    const cutoffMs = Date.now() - config.restoration.restoreMaxPromotedAgeDays * 24 * 60 * 60 * 1000;
+    // Fetch more candidates than needed, then filter by age before capping: otherwise old
+    // memories consume the five slots while newer ones exist.
+    return new PromotedStore(db)
+      .search(`project context ${cwd}`, 20)
+      .filter((r) => !r.createdAt || Date.parse(r.createdAt) >= cutoffMs)
+      .slice(0, 5)
+      .map((r) => r.content);
+  } catch {
+    return []; // Non-fatal: a restore without promoted memory is still a restore.
+  }
+}
+
+/** Fences the parts under one tag, or answers empty when there is nothing to fence. */
+function fenceOrEmpty(parts: string[], tag: string): string {
+  return parts.length > 0 ? fenceContent(parts.join("\n\n"), tag) : "";
+}
+
+/** The snapshot a post-compaction restore replays: the CLAUDE.md files as they were. */
+function readInstructionsSnapshot(cwd: string | undefined): string {
+  if (!cwd) return "";
+  const dbPath = projectDbPath(cwd);
+  if (!existsSync(dbPath)) return "";
+  try {
+    const db = getLcmConnection(dbPath);
+    try {
+      runLcmMigrations(db);
+      const row = db
+        .prepare(`SELECT content, content_hash, updated_at FROM session_instructions WHERE id = 1`)
+        .get() as SessionInstructionsRow | undefined;
+      return row ? `<project-instructions>\n${row.content}\n</project-instructions>` : "";
+    } finally {
+      closeLcmConnection(dbPath);
+    }
+  } catch {
+    return ""; // Non-fatal: without a snapshot the restore is thinner, not broken.
+  }
+}
+
+/** Keeps the snapshot current, so the next compaction has something to replay. */
+function refreshInstructionsSnapshot(db: DatabaseSync, cwd: string): void {
+  try {
+    const content = readClaudeMdFiles(cwd);
+    if (!content) return;
+    const hash = createHash("sha256").update(content).digest("hex");
+    const existing = db
+      .prepare(`SELECT content_hash FROM session_instructions WHERE id = 1`)
+      .get() as { content_hash: string } | undefined;
+    if (existing?.content_hash === hash) return;
+    db.prepare(
+      `INSERT INTO session_instructions (id, content, content_hash, updated_at)
+       VALUES (1, ?, ?, datetime('now'))
+       ON CONFLICT(id) DO UPDATE SET
+         content = excluded.content,
+         content_hash = excluded.content_hash,
+         updated_at = excluded.updated_at`,
+    ).run(content, hash);
+  } catch { /* Non-fatal: the snapshot is for the next compaction, not for this restore. */ }
+}
+
+/** The session's own recent summaries, deepest first. */
+function readEpisodicContext(db: DatabaseSync, sessionId: unknown, limit: number): string {
+  const rows = db.prepare(
+    `SELECT s.content FROM summaries s
+     JOIN conversations c ON s.conversation_id = c.conversation_id
+     WHERE c.session_id = ?
+     ORDER BY s.depth DESC, s.created_at DESC
+     LIMIT ?`,
+  ).all(sessionId as string, limit) as Array<{ content: string }>;
+  if (rows.length === 0) return "";
+  return fenceContent(rows.map((r) => r.content).join("\n\n"), "recent-session-context");
+}
+
+/**
+ * Claude's restore.
+ *
+ * After a compaction it replays the saved CLAUDE.md snapshot and nothing else: that is the
+ * one moment the harness's own copy is gone. Every other start returns the session's
+ * episodic memory and the project's promoted knowledge, and refreshes the snapshot for the
+ * next compaction without returning it — the harness injects those files itself, so echoing
+ * them back would duplicate them.
+ */
+function buildClaudeRestore(config: DaemonConfig, req: RestoreRequest): RestoreContext {
+  // `source` is absent whenever the function-hooks module asks: prompt.context carries no
+  // reason for firing, so there the mark `/compact` left is the only thing that
+  // distinguishes a post-compaction restore from a fresh one.
+  const isExplicitNonCompact =
+    req.source === "startup" || req.source === "resume" || req.source === "clear";
+  const isPostCompact = req.source === "compact"
+    || (!isExplicitNonCompact && wasJustCompacted(req.cwd, req.sessionId));
+
+  if (isPostCompact) {
+    const parts = [req.orientation, readInstructionsSnapshot(req.cwd)];
+    return { context: parts.filter(Boolean).join("\n\n"), includeInsights: false };
+  }
+
+  let episodic = "";
+  let promoted = "";
+  if (req.cwd) {
+    const dbPath = projectDbPath(req.cwd);
+    const db = getLcmConnection(dbPath);
+    try {
+      runLcmMigrations(db);
+      episodic = readEpisodicContext(db, req.sessionId, config.restoration.recentSummaries);
+      promoted = fenceOrEmpty(readPromotedMemories(db, req.cwd, config), "project-knowledge");
+      refreshInstructionsSnapshot(db, req.cwd);
+    } catch { /* Non-fatal: return whatever was gathered before the failure. */ } finally {
+      closeLcmConnection(dbPath);
+    }
+  }
+
+  return {
+    context: [req.orientation, episodic, promoted].filter(Boolean).join("\n\n"),
+    includeInsights: true,
+  };
+}
+
+/**
+ * Codex's restore.
+ *
+ * The native host keeps its own instructions, so nothing here reads or writes the CLAUDE.md
+ * snapshot, and the compaction mark is never consulted. What it returns is the conversation's
+ * recent context and the project's promoted knowledge, each trimmed to what is left of the
+ * injection budget.
+ */
+function buildCodexRestore(config: DaemonConfig, req: RestoreRequest): RestoreContext {
+  const parts = req.orientation ? [req.orientation] : [];
+  const answer = () => ({ context: parts.join("\n\n"), includeInsights: true as const });
+  if (!req.cwd) return answer();
+
+  const budget = config.restoration.maxInjectedMemoryBytes;
+  const dbPath = projectDbPath(req.cwd);
+  const db = getLcmConnection(dbPath);
+  try {
+    runLcmMigrations(db);
+    const recent = readCodexContext(
+      db, req.sessionId, req.source,
+      config.restoration.recentSummaries,
+      remainingContextBudget(parts, budget),
+    );
+    if (recent) parts.push(recent);
+
+    const knowledge = fitFencedText(
+      readPromotedMemories(db, req.cwd, config).join("\n\n"),
+      "project-knowledge",
+      remainingContextBudget(parts, budget),
+    );
+    if (knowledge) parts.push(knowledge);
+  } catch { /* Non-fatal: return whatever was gathered before the failure. */ } finally {
+    closeLcmConnection(dbPath);
+  }
+
+  return answer();
+}
+
+/** Passive-capture insights, which both clients receive alongside their context. */
+function readInsights(config: DaemonConfig, cwd: string | undefined): Insight[] {
+  if (!cwd) return [];
+  const dbPath = projectDbPath(cwd);
+  if (!existsSync(dbPath)) return [];
+  try {
+    const db = getLcmConnection(dbPath);
+    try {
+      runLcmMigrations(db);
+      const thresholds = config.compaction.promotionThresholds;
+      const minConfidence = thresholds.eventConfidence?.pattern ?? 0.3;
+      const cutoffMs = Date.now() - (thresholds.insightsMaxAgeDays ?? 90) * 24 * 60 * 60 * 1000;
+      return new PromotedStore(db)
+        .search("source passive capture", 10, ["source:passive-capture"])
+        .filter((r) => r.confidence >= minConfidence
+          && (!r.createdAt || Date.parse(r.createdAt) >= cutoffMs))
+        .slice(0, 5)
+        .map((r) => ({ content: r.content, confidence: r.confidence, tags: r.tags }));
+    } finally {
+      closeLcmConnection(dbPath);
+    }
+  } catch {
+    return []; // Non-fatal: insights are an extra, not the restore.
+  }
+}
+
+/**
+ * POST /restore — the session's memory, assembled the way its client wants it.
+ *
+ * Claude and Codex do not share an assembly: they read different tables, render different
+ * blocks and answer with different bodies. The route validates the request and hands it to
+ * one builder or the other; neither knows the other exists.
+ */
 export function createRestoreHandler(config: DaemonConfig): RouteHandler {
   return async (_req, res, body) => {
     try {
       const input = JSON.parse(body || "{}");
-      const { session_id, source } = input;
-      const isCodex = input.client === "codex";
       let cwd: string | undefined;
       if (input.cwd) {
         try {
@@ -230,181 +434,21 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
           return;
         }
       }
-      const orientation = buildOrientationPrompt();
-      const codexContextParts = orientation ? [orientation] : [];
-      const codexContextBudget = config.restoration.maxInjectedMemoryBytes;
 
-      // Explicit session lifecycle sources override the recent-compaction fallback.
-      // `source` is absent whenever the function-hooks module asks: prompt.context carries
-      // no reason for firing, so there the mark is the only thing that distinguishes a
-      // post-compaction restore from a fresh one.
-      // Every reader of isPostCompact is on the non-Codex path, so the Codex one never
-      // pays for opening the project DB and migrating it just to read the mark.
-      const isExplicitNonCompact = source === "startup" || source === "resume" || source === "clear";
-      const isPostCompact = !isCodex && (
-        source === "compact" || (!isExplicitNonCompact && wasJustCompacted(cwd, session_id))
-      );
+      const request: RestoreRequest = {
+        sessionId: input.session_id,
+        source: input.source,
+        cwd,
+        orientation: buildOrientationPrompt(),
+      };
+      const built = input.client === "codex"
+        ? buildCodexRestore(config, request)
+        : buildClaudeRestore(config, request);
 
-      // Only post-compaction restore consumes the saved instructions.
-      let instructionsContext = "";
-      if (isPostCompact && cwd) {
-        const dbPath = projectDbPath(cwd);
-        if (existsSync(dbPath)) {
-          try {
-            const db = getLcmConnection(dbPath);
-            try {
-              runLcmMigrations(db);
-              const row = db
-                .prepare(`SELECT content, content_hash, updated_at FROM session_instructions WHERE id = 1`)
-                .get() as SessionInstructionsRow | undefined;
-              if (row) {
-                instructionsContext = `<project-instructions>\n${row.content}\n</project-instructions>`;
-              }
-            } finally {
-              closeLcmConnection(dbPath);
-            }
-          } catch { /* non-fatal */ }
-        }
-      }
-
-      if (isPostCompact) {
-        const context = [orientation, instructionsContext].filter(Boolean).join("\n\n");
-        sendJson(res, 200, { context });
-        return;
-      }
-
-      let episodicContext = "";
-      let promotedContext = "";
-
-      // Restore project-scoped episodic context. Claude also refreshes its instruction
-      // snapshot on non-compact starts; Codex leaves native host instructions alone.
-      if (cwd) {
-        const dbPath = projectDbPath(cwd);
-        const db = getLcmConnection(dbPath);
-        try {
-          runLcmMigrations(db);
-
-          if (isCodex) {
-            const context = readCodexContext(
-              db,
-              session_id,
-              source,
-              config.restoration.recentSummaries,
-              remainingContextBudget(codexContextParts, codexContextBudget),
-            );
-            if (context) codexContextParts.push(context);
-          } else {
-            const rows = db.prepare(
-              `SELECT s.content FROM summaries s
-               JOIN conversations c ON s.conversation_id = c.conversation_id
-               WHERE c.session_id = ?
-               ORDER BY s.depth DESC, s.created_at DESC
-               LIMIT ?`,
-            ).all(session_id, config.restoration.recentSummaries) as Array<{ content: string }>;
-
-            if (rows.length > 0) {
-              episodicContext = fenceContent(
-                rows.map((r) => r.content).join("\n\n"),
-                "recent-session-context",
-              );
-            }
-          }
-
-          // Promoted: cross-session knowledge from SQLite
-          try {
-            const promotedStore = new PromotedStore(db);
-            const maxAgeDays = config.restoration.restoreMaxPromotedAgeDays;
-            const cutoffMs = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
-            // Fetch more candidates than needed, then filter by age before capping.
-            // This prevents old memories from consuming the top-5 slots and leaving
-            // fewer results than available when newer memories exist.
-            const results = promotedStore
-              .search(`project context ${cwd}`, 20)
-              .filter((r) => !r.createdAt || Date.parse(r.createdAt) >= cutoffMs)
-              .slice(0, 5);
-            if (results.length > 0) {
-              if (isCodex) {
-                const context = fitFencedText(
-                  results.map((r) => r.content).join("\n\n"),
-                  "project-knowledge",
-                  remainingContextBudget(codexContextParts, codexContextBudget),
-                );
-                if (context) codexContextParts.push(context);
-              } else {
-                promotedContext = fenceContent(
-                  results.map((r) => r.content).join("\n\n"),
-                  "project-knowledge",
-                );
-              }
-            }
-          } catch { /* non-fatal */ }
-
-          // Capture CLAUDE.md files and upsert into session_instructions if changed
-          if (!isCodex) {
-            try {
-              const claudeMdContent = readClaudeMdFiles(cwd);
-              if (claudeMdContent) {
-                const hash = createHash("sha256").update(claudeMdContent).digest("hex");
-                const existing = db
-                  .prepare(`SELECT content_hash FROM session_instructions WHERE id = 1`)
-                  .get() as { content_hash: string } | undefined;
-
-                if (!existing || existing.content_hash !== hash) {
-                  db.prepare(
-                    `INSERT INTO session_instructions (id, content, content_hash, updated_at)
-                     VALUES (1, ?, ?, datetime('now'))
-                     ON CONFLICT(id) DO UPDATE SET
-                       content = excluded.content,
-                       content_hash = excluded.content_hash,
-                       updated_at = excluded.updated_at`,
-                  ).run(claudeMdContent, hash);
-                }
-              }
-            } catch { /* non-fatal */ }
-          }
-
-        } catch { /* non-fatal */ } finally {
-          closeLcmConnection(dbPath);
-        }
-      }
-
-      // Query passive-capture insights from promoted store
-      let insights: Array<{ content: string; confidence: number; tags: string[] }> = [];
-      if (cwd) {
-        try {
-          const dbPath = projectDbPath(cwd);
-          if (existsSync(dbPath)) {
-            const insightsDb = getLcmConnection(dbPath);
-            try {
-              runLcmMigrations(insightsDb);
-              const insightsStore = new PromotedStore(insightsDb);
-              const thresholds = config.compaction.promotionThresholds;
-              const minConfidence = thresholds.eventConfidence?.pattern ?? 0.3;
-              const maxAgeDays = thresholds.insightsMaxAgeDays ?? 90;
-              const cutoffMs = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
-              insights = insightsStore
-                .search("source passive capture", 10, ["source:passive-capture"])
-                .filter((r) => r.confidence >= minConfidence && (!r.createdAt || Date.parse(r.createdAt) >= cutoffMs))
-                .slice(0, 5)
-                .map((r) => ({ content: r.content, confidence: r.confidence, tags: r.tags }));
-            } finally {
-              closeLcmConnection(dbPath);
-            }
-          }
-        } catch { /* non-fatal */ }
-      }
-
-      // `instructionsContext` is deliberately omitted here. On startup/resume/clear the
-      // host harness injects the applicable CLAUDE.md files itself, so echoing the
-      // session_instructions snapshot back would duplicate them in context. The snapshot is
-      // still captured above, and the isPostCompact branch still replays it — a compaction
-      // is the only time the harness's own copy is gone.
-      const context = isCodex
-        ? codexContextParts.join("\n\n")
-        : [orientation, episodicContext, promotedContext].filter(Boolean).join("\n\n");
-      const responseBody: { context: string; insights?: Array<{ content: string; confidence: number; tags: string[] }> } = { context };
-      if (insights.length > 0) {
-        responseBody.insights = insights;
+      const responseBody: { context: string; insights?: Insight[] } = { context: built.context };
+      if (built.includeInsights) {
+        const insights = readInsights(config, cwd);
+        if (insights.length > 0) responseBody.insights = insights;
       }
       sendJson(res, 200, responseBody);
     } catch (err) {
