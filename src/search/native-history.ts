@@ -121,22 +121,57 @@ function drawBySession(
  * leftover to the other. Emission stays round-robin, one hit per session per
  * pass, so a small limit still spans several sessions.
  */
+/**
+ * Length-normalisation strength, in the role BM25's `b` plays for message
+ * length. 0 leaves scores untouched, 1 divides by the size ratio outright.
+ */
+const SESSION_LENGTH_NORM = 0.25;
+
+/**
+ * Damp a session's score by how large the session is, the way bm25 already
+ * damps a message's score by how long the message is.
+ *
+ * A session scores the reciprocal rank of the *best* position any one of its
+ * rows reached. A long session enters the candidate pool many times, so one of
+ * its rows lands high on almost any query — measured, a single 368 KB session
+ * took 11 of 13 top-5 slots on unrelated questions. Nothing below the row level
+ * corrected for that.
+ *
+ * Sizes arrive as a map so the caller decides what "size" means; `sizeOf`
+ * returning undefined leaves that session unnormalised.
+ */
+function normaliseBySessionSize(score: Map<string, number>, sizeOf: (group: string) => number | undefined): void {
+  const sizes = [...score.keys()].map(sizeOf).filter((size): size is number => size !== undefined && size > 0);
+  if (sizes.length === 0) return;
+  const average = sizes.reduce((sum, size) => sum + size, 0) / sizes.length;
+  if (average <= 0) return;
+  for (const [group, value] of score) {
+    const size = sizeOf(group);
+    if (size === undefined || size <= 0) continue;
+    score.set(group, value / (1 - SESSION_LENGTH_NORM + SESSION_LENGTH_NORM * (size / average)));
+  }
+}
+
 export function fuseHistoryBySession(
   messages: RankedHistoryHit[],
   summaries: RankedHistoryHit[],
   limit: number,
+  sessionSize?: (group: string) => number | undefined,
 ): RankedHistoryHit[] {
   const groupOf = (hit: RankedHistoryHit) => hit.sessionId ?? `conversation:${hit.conversationId}`;
   const score = new Map<string, number>();
+  const poolRows = new Map<string, number>();
   for (const list of [messages, summaries]) {
     const seen = new Set<string>();
     list.forEach((hit, position) => {
       const group = groupOf(hit);
+      poolRows.set(group, (poolRows.get(group) ?? 0) + 1);
       if (seen.has(group)) return;
       seen.add(group);
       score.set(group, (score.get(group) ?? 0) + 1 / (FUSION_RANK_OFFSET + position));
     });
   }
+  normaliseBySessionSize(score, sessionSize ?? ((group) => poolRows.get(group)));
   const groups = [...score.entries()].sort((a, b) => b[1] - a[1]).map(([group]) => group);
 
   const reserved = limit >= 2 ? Math.ceil(limit * SUMMARY_LIMIT_SHARE) : 0;
@@ -174,7 +209,36 @@ export async function rankNativeHistory(
     }
     return ranked;
   };
-  return fuseHistoryBySession(await attach(result.messages), await attach(result.summaries), input.limit);
+  const rankedMessages = await attach(result.messages);
+  const rankedSummaries = await attach(result.summaries);
+  return fuseHistoryBySession(rankedMessages, rankedSummaries, input.limit, sizeSignal(db, [...rankedMessages, ...rankedSummaries], sessionOf));
+}
+
+/**
+ * EXPERIMENT ONLY — `LCM_FUSION_SIZE` selects which size signal normalisation
+ * uses, so the two candidates can be scored against each other. Remove once one
+ * is chosen: `off` disables normalisation, `messages` counts the session's whole
+ * transcript, and anything else falls through to rows in the candidate pool.
+ */
+function sizeSignal(
+  db: DatabaseSync,
+  hits: RankedHistoryHit[],
+  sessionOf: Map<number, string | null>,
+): ((group: string) => number | undefined) | undefined {
+  const mode = process.env.LCM_FUSION_SIZE ?? "pool";
+  if (mode === "off") return () => undefined;
+  if (mode !== "messages") return undefined;
+  const conversations = [...new Set(hits.map(hit => hit.conversationId))];
+  if (conversations.length === 0) return undefined;
+  const rows = db.prepare(
+    `SELECT conversation_id, COUNT(*) AS n FROM messages WHERE conversation_id IN (${conversations.map(() => "?").join(",")}) GROUP BY conversation_id`,
+  ).all(...conversations) as Array<{ conversation_id: number; n: number }>;
+  const bySession = new Map<string, number>();
+  for (const row of rows) {
+    const group = sessionOf.get(row.conversation_id) ?? `conversation:${row.conversation_id}`;
+    bySession.set(group, (bySession.get(group) ?? 0) + row.n);
+  }
+  return (group: string) => bySession.get(group);
 }
 
 /** Read one request's ranked history and bounded source context inside a savepoint on the caller's connection. */
