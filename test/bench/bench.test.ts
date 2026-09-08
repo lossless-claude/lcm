@@ -358,4 +358,26 @@ describe("lcm bench", () => {
     writeFileSync(file, JSON.stringify({ version: 1, queries: [{ ...query, sessionIds: [" "] }] }));
     expect((await runBench({ cwd, benchFile: file })).stdout).toContain("sessionIds must be a list");
   });
+
+  it("gives search enough rows to fill every session slot the grep column fills", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    // Six sessions all discussing the same subject, each with two messages, so
+    // ranking rows rather than sessions would spend the budget inside a few.
+    await addSessions(cwd, Array.from({ length: 6 }, (_, i) => ({
+      sessionId: `sess-quota-${i}`,
+      prompt: `The nightly quota reconciliation job overshot its budget again on shard ${i} and paged the on-call engineer.`,
+    })));
+    const file = join(cwd, "manual.json");
+    const question = "quota reconciliation budget shard paged";
+    writeFileSync(file, JSON.stringify({ version: 1, queries: [
+      { id: "wide", sessionId: "sess-quota-0", prompt: question, question, generator: "manual" },
+    ] }));
+
+    const run = await runBench({ cwd, benchFile: file, k: 5 });
+    expect(run.exitCode, run.stdout).toBe(0);
+    const { outcomes } = JSON.parse(readFileSync(run.out, "utf-8")) as { outcomes: Array<{ searchTopK: string[] }> };
+    expect(outcomes[0].searchTopK).toHaveLength(5);
+  });
 });
