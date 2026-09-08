@@ -94,6 +94,24 @@ function mulberry32(seed: number): () => number {
  * tool output, XML-ish system blocks, and harness boilerplate. None of them
  * names a subject, so none can anchor a question.
  */
+/**
+ * Shapes that mark a `role='user'` message as pasted tool output rather than a
+ * human turn. A question generated from a grep listing or a `git push` transcript
+ * asks about the listing, not about anything a person wanted to recall, and it is
+ * usually answerable from several sessions — which a single-label score counts as
+ * a miss. Sampling favours these: unique paths and hashes read as distinctive.
+ */
+const TOOL_OUTPUT_PROMPTS = [
+  /^\s*\d+[:-]\s/,
+  /^[\w./@-]+\.[a-z]{1,5}:\d+:/i,
+  /^remote:\s/m,
+  /^total \d+\s*$/m,
+  /^[bcdlps-][rwxsStT-]{9}[.+@]?\s/m,
+  /^found \d+ files?\s*$/im,
+  /^path does not exist:/i,
+  /\|\s*[\w.-]+\[bot\]\s*\|/,
+];
+
 const REJECTED_PROMPTS = [
   /^[<\/{[]/,
   /caveat: the messages below were generated/i,
@@ -112,6 +130,7 @@ function isDistinctivePrompt(content: string): boolean {
   const trimmed = content.trim();
   if (trimmed.length < MIN_PROMPT_LENGTH || trimmed.length > MAX_PROMPT_LENGTH) return false;
   if (REJECTED_PROMPTS.some((pattern) => pattern.test(trimmed))) return false;
+  if (TOOL_OUTPUT_PROMPTS.some((pattern) => pattern.test(trimmed))) return false;
   return extractQueryTerms(trimmed).length >= 2;
 }
 

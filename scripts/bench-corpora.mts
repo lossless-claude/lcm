@@ -22,6 +22,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { buildBench, runBench } from "../src/bench.js";
 import { projectDbPath } from "../src/daemon/project.js";
 
@@ -64,6 +65,25 @@ function validationFile(cwd: string): string {
   return join(dirname(projectDbPath(cwd)), VALIDATION_FILENAME);
 }
 
+/**
+ * Sessions held at the moment of the run. Two runs compared across a gap are
+ * only comparable if this matches: a live corpus grows between them, and a
+ * ranking delta measured over different content is not a delta at all.
+ */
+function sessionCount(cwd: string): number {
+  try {
+    const db = new DatabaseSync(projectDbPath(cwd), { readOnly: true });
+    try {
+      const row = db.prepare("SELECT COUNT(DISTINCT session_id) AS n FROM conversations WHERE session_id IS NOT NULL AND session_id != ''").get() as { n: number };
+      return row.n;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return -1;
+  }
+}
+
 function label(cwd: string): string {
   return (basename(cwd) || cwd).slice(0, 22).padEnd(22);
 }
@@ -99,8 +119,9 @@ async function run(corpora: string[]): Promise<void> {
     scored++;
     if (report.searchHitRate > report.grepHitRate) beatsGrep++;
     console.log(
-      `${label(cwd)} n=${String(report.total).padStart(3)}  search=${report.searchHitRate.toFixed(3)}` +
-      `  grep=${report.grepHitRate.toFixed(3)}  empty=${report.emptyRate.toFixed(2)}  p95=${report.p95LatencyMs}ms`,
+      `${label(cwd)} n=${String(report.total).padStart(3)}  sessions=${String(sessionCount(cwd)).padStart(4)}` +
+      `  search=${report.searchHitRate.toFixed(3)}  grep=${report.grepHitRate.toFixed(3)}` +
+      `  empty=${report.emptyRate.toFixed(2)}  p95=${report.p95LatencyMs}ms`,
     );
   }
   if (total === 0) {

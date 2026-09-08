@@ -68,15 +68,23 @@ lcm bench run   --project /path/to/project
 ```
 
 - **`build`** samples ingested conversations and paraphrases one user prompt per session. Only
-  prompts whose text occurs in exactly one session are sampled; harness boilerplate and repeated
-  prompts are skipped, because neither can anchor a single-label question.
+  prompts whose text occurs in exactly one session are sampled; harness boilerplate, repeated
+  prompts, and pasted tool output (grep listings, `git push` transcripts, directory listings)
+  are skipped. None of them can anchor a single-label question, and a question built from a
+  listing asks about the listing rather than about anything a person wanted to recall.
   `--generator llm` calls your configured summarizer (including its local OpenAI-compatible endpoint).
   Disabled or mock summarizers cannot produce an LLM benchmark; provider failures do not silently
   switch to mechanical questions. Review generated questions for a specific subject, correct source
   session, realistic wording, and representative coverage before relying on a score.
   The default `--generator mechanical` requires no model and prints a diagnostic-only warning.
   Empty, copied, generic session-only, or duplicate questions are rejected; build reports skipped
-  questions and may produce fewer than `--n`. If none survive, no file is written.
+  questions and may produce fewer than `--n`. An LLM question that reuses more than half of its
+  source prompt's query terms is rejected too — it would measure keyword lookup rather than recall
+  — so the LLM task prompt names the prompt's own words as forbidden. `run` applies the same
+  ceiling when loading, which rejects `generator: "llm"` files built before it existed.
+  The set a generator produces is not interchangeable with a hand-written one: it follows whatever
+  language and provenance the corpus's sampled prompts happen to have, so compare directions
+  across sets rather than absolute scores. If none survive, no file is written.
   Output defaults to `~/.lossless-claude/projects/<hash>/.lcm-bench.json`, local and uncommitted.
   Use `--out <file>` to choose another location. Invalid files are rejected by `run` before scoring.
   Both `build --help` and `run --help` show usage without generating questions or running searches.
@@ -124,7 +132,8 @@ npx tsx scripts/bench-corpora.mts run     # score them all, print the pooled hit
 Corpora come from `LCM_BENCH_CORPORA` (the platform path delimiter — `:`, or `;` on Windows) or, unset, from every
 ingested project whose database is large enough to hold one. Question sets are written next to
 each project database as `.lcm-bench-validation.json` and the seed is fixed, so two runs score
-the same questions and are comparable.
+the same questions and are comparable. Each row also prints the corpus's session count: a live
+corpus grows between runs, and a delta measured over different content is not a delta.
 
 These are mechanically generated questions: diagnostic only, never release evidence. What the
 harness is for is the **direction** of a change and whether one corpus disagrees with another.
