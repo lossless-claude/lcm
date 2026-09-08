@@ -17,6 +17,7 @@ import type { LcmSummarizeFn } from "../../llm/types.js";
 import { ScrubEngine } from "../../scrub.js";
 import { resolveEffectiveProvider, createSummarizer, type EffectiveProvider } from "../summarizer.js";
 import { validateCwd } from "../validate-cwd.js";
+import { scheduleProjectLanguageDetection } from "../project-language.js";
 
 function fmtN(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
@@ -296,6 +297,7 @@ export function createCompactHandler(config: DaemonConfig, jobs?: SummarizeJobSt
                 upsertRedactionCounts(db, pid, ingestCounts);
                 await summaryStore.appendContextMessages(conversation.conversationId, records.map((r) => r.messageId));
               });
+              void scheduleProjectLanguageDetection(cwd, db, config);
             }
           }
 

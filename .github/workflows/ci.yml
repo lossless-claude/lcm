@@ -6,16 +6,43 @@ on:
       - main
       - release
   pull_request:
+  workflow_dispatch:
+    inputs:
+      hosted:
+        description: Use GitHub-hosted Linux when the Mac mini is unavailable
+        type: boolean
+        default: false
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
   ci:
-    runs-on: ubuntu-latest
+    # Fork code stays off the persistent host. Keep one stable required check.
+    runs-on: ${{ fromJSON((inputs.hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","macOS","ARM64","lcm"]') }}
+    timeout-minutes: 30
+    env:
+      LCM_SKIP_CACHE_SYNC: "1"
     steps:
+      - name: Prepare isolated job directories
+        run: |
+          mkdir -p "$RUNNER_TEMP/lcm-home" "$RUNNER_TEMP/lcm-tmp"
+          {
+            printf 'HOME=%s/lcm-home\n' "$RUNNER_TEMP"
+            printf 'TMPDIR=%s/lcm-tmp\n' "$RUNNER_TEMP"
+            printf 'TMP=%s/lcm-tmp\n' "$RUNNER_TEMP"
+            printf 'TEMP=%s/lcm-tmp\n' "$RUNNER_TEMP"
+          } >> "$GITHUB_ENV"
+
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -27,7 +54,11 @@ jobs:
         run: npm ci
 
       - name: Install ripgrep (bench baseline)
+        if: runner.os == 'Linux'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+
+      - name: Verify ripgrep
+        run: rg --version
 
       - name: Type-check
         run: npm run typecheck
