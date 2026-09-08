@@ -86,6 +86,21 @@ describe("recordProjectIdentity", () => {
     expect(recordProjectIdentity(repo).remotes).toEqual(["github.com/lossless-claude/lcm"]);
   });
 
+  it("rebuilds the index from meta.json when the index is gone", () => {
+    const a = makeRepo("git@github.com:lossless-claude/lcm.git");
+    const b = makeRepo("git@github.com:lossless-claude/lcm.git");
+    openProject(a);
+    openProject(b);
+    rmSync(groupIndexPath(), { force: true });
+    expect(projectGroup(a).map(m => m.cwd)).toEqual([a]);
+
+    // Both identities are still fresh, so no discovery runs — the index must
+    // fill back in from what meta.json already records.
+    recordProjectIdentity(a);
+    recordProjectIdentity(b);
+    expect(projectGroup(a).map(m => m.cwd).sort()).toEqual([a, b].sort());
+  });
+
   it("records an empty remote set outside any repository and stays out of the index", () => {
     const plain = realpathSync(mkdtempSync(join(tmpdir(), "lcm-group-plain-")));
     tempDirs.push(plain);

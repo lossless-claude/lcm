@@ -131,7 +131,14 @@ function indexIdentity(cwd: string, git: ProjectGitMeta): void {
  */
 export function recordProjectIdentity(cwd: string): ProjectGitMeta {
   const previous = readGitMeta(cwd);
-  if (previous && isFresh(previous.checkedAt)) return previous;
+  if (previous && isFresh(previous.checkedAt)) {
+    // The index is derived state and `meta.json` is the record. Re-assert the
+    // row even when discovery is skipped, so an index that was deleted, moved
+    // or never built fills back in instead of staying empty until every
+    // project's day is up.
+    try { indexIdentity(cwd, previous); } catch { /* non-fatal, as below */ }
+    return previous;
+  }
 
   let git: ProjectGitMeta;
   try {
