@@ -25,6 +25,8 @@ export interface PostToolPayload {
   tool_input?: Record<string, unknown>;
   tool_response?: unknown;
   tool_output?: { isError?: boolean };
+  /** Claude Code's id for this tool call; both hook paths receive it. */
+  tool_use_id?: string;
   hook_event_name?: string;
   error?: string;
   is_interrupt?: boolean;
@@ -56,13 +58,23 @@ export function recordPostToolEvents(payload: PostToolPayload): RecordedPostTool
   });
   if (events.length === 0) return { recorded: 0, hasPriority1: false, sourceHook };
 
+  // The command hook forwards raw stdin, so the id is only trusted once it is a
+  // non-empty string; both call sites get the same normalization this way.
+  const toolUseId = typeof payload.tool_use_id === "string" && payload.tool_use_id
+    ? payload.tool_use_id
+    : undefined;
+
   const db = new EventsDb(eventsDbPath(payload.cwd));
+  let recorded: number;
   try {
-    for (const event of events) db.insertEvent(payload.session_id, event, sourceHook);
+    // Dedup on the whole call, not each event: one call extracts several events, and a
+    // per-event check would leave a half batch when the paths raced.
+    recorded = db.insertToolCallEvents(payload.session_id, events, sourceHook, toolUseId);
   } finally {
     db.close();
   }
-  return { recorded: events.length, hasPriority1: events.some(e => e.priority === 1), sourceHook };
+  if (recorded === 0) return { recorded: 0, hasPriority1: false, sourceHook };
+  return { recorded, hasPriority1: events.some(e => e.priority === 1), sourceHook };
 }
 
 /**
