@@ -9,7 +9,7 @@ import { runLcmMigrations } from "../../../src/db/migration.js";
 import { projectDbPath } from "../../../src/daemon/project.js";
 import { PromotedStore } from "../../../src/db/promoted.js";
 import { getLcmConnection, closeLcmConnection, getPoolStats } from "../../../src/db/connection.js";
-import { justCompactedMap } from "../../../src/daemon/routes/compact.js";
+import { markSessionCompacted } from "../../../src/db/session-compactions.js";
 
 vi.mock("node:os", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:os")>();
@@ -52,6 +52,35 @@ describe("POST /restore", () => {
       expect(body.context).not.toContain("<recent-session-context>");
       expect(body.context).not.toContain("<project-instructions>");
     } finally {
+      rmSync(isolatedDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps capturing the snapshot when session_id is not a string", async () => {
+    // A non-string id can match no conversation, but binding one used to throw inside the
+    // block that also refreshes the snapshot, dropping all of it without a trace.
+    const isolatedDir = mkdtempSync(join(tmpdir(), "restore-bad-session-id-"));
+    try {
+      writeFileSync(join(isolatedDir, "CLAUDE.md"), "Project rule.", "utf8");
+      daemon = await createDaemon(loadDaemonConfig("/x", { daemon: { port: 0 } }));
+      const res = await fetch(`http://127.0.0.1:${daemon.address().port}/restore`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: { not: "a string" }, cwd: isolatedDir, source: "startup" }),
+      });
+      expect(res.status).toBe(200);
+      await res.json();
+
+      const dbPath = projectDbPath(realpathSync(isolatedDir));
+      const db = getLcmConnection(dbPath);
+      try {
+        const row = db.prepare("SELECT content FROM session_instructions WHERE id = 1")
+          .get() as { content: string } | undefined;
+        expect(row?.content).toContain("Project rule.");
+      } finally {
+        closeLcmConnection(dbPath);
+      }
+    } finally {
+      if (daemon) { await daemon.stop(); daemon = undefined; }
       rmSync(isolatedDir, { recursive: true, force: true });
     }
   });
@@ -166,7 +195,15 @@ describe("POST /restore", () => {
       await seedRes.json();
       writeFileSync(join(tmpDir, "CLAUDE.md"), "Updated instructions.", "utf8");
 
-      justCompactedMap.set(sessionId, Date.now());
+      // The mark /compact leaves for the restore that follows it.
+      const markDbPath = projectDbPath(realpathSync(tmpDir));
+      const markDb = getLcmConnection(markDbPath);
+      try {
+        runLcmMigrations(markDb);
+        markSessionCompacted(markDb, sessionId);
+      } finally {
+        closeLcmConnection(markDbPath);
+      }
       try {
         const res = await fetch(url, {
           method: "POST", headers: { "Content-Type": "application/json" },
@@ -190,7 +227,12 @@ describe("POST /restore", () => {
         const compactBody = await compactRes.json();
         expect(compactBody.context).toContain(source === undefined ? "Saved instructions." : "Updated instructions.");
       } finally {
-        justCompactedMap.delete(sessionId);
+        const cleanupDb = getLcmConnection(markDbPath);
+        try {
+          cleanupDb.prepare("DELETE FROM session_compactions WHERE session_id = ?").run(sessionId);
+        } finally {
+          closeLcmConnection(markDbPath);
+        }
       }
     });
 

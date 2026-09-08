@@ -145,7 +145,7 @@ describe("EventsDb", () => {
       expect(toolUseIndex).toBeDefined();
       expect(columns.map((c) => c.name)).toContain("tool_use_id");
       const versionRow = db.raw().prepare("SELECT version FROM schema_version").get() as { version: number };
-      expect(versionRow.version).toBe(4);
+      expect(versionRow.version).toBe(5);
       db.close();
     });
 
