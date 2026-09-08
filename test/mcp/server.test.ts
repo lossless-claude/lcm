@@ -9,11 +9,11 @@ vi.mock("../../src/daemon/lifecycle.js", () => ({
 vi.mock("../../src/daemon/config.js", () => ({
   loadDaemonConfig: vi.fn().mockReturnValue({ daemon: { port: 9999 } }),
 }));
-vi.mock("@modelcontextprotocol/sdk/server/index.js", () => ({
-  Server: vi.fn().mockReturnValue({ setRequestHandler: vi.fn(), connect: vi.fn().mockResolvedValue(undefined) }),
+vi.mock("@modelcontextprotocol/server", () => ({
+  Server: vi.fn().mockReturnValue({ setRequestHandler: vi.fn() }),
 }));
-vi.mock("@modelcontextprotocol/sdk/server/stdio.js", () => ({
-  StdioServerTransport: vi.fn().mockReturnValue({}),
+vi.mock("@modelcontextprotocol/server/stdio", () => ({
+  serveStdio: vi.fn().mockReturnValue({ close: vi.fn() }),
 }));
 vi.mock("../../src/daemon/client.js", () => ({
   DaemonClient: vi.fn().mockReturnValue({ post: vi.fn() }),

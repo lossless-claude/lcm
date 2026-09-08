@@ -42,7 +42,7 @@
     "version-packages": "changeset version"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@modelcontextprotocol/server": "^2.0.0",
     "@sinclair/typebox": "0.34.48",
     "commander": "^14.0.3",
     "js-yaml": "^4.1.1",
