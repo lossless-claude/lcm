@@ -102,7 +102,6 @@ const REJECTED_PROMPTS = [
   /^\s*(error:\s*)?file does not exist/i,
   /\[request interrupted by/i,
   /^\s*api error/i,
-  /tool use was rejected/i,
 ];
 
 const MIN_PROMPT_LENGTH = 40;
@@ -349,6 +348,8 @@ export async function buildBench(
 
   const db = getLcmConnection(dbPath);
   try {
+    // Migrations may backfill on first open, so this handle is read-write.
+    runLcmMigrations(db);
     const convStore = new ConversationStore(db);
     const conversations = (await convStore.listConversations()).filter(
       (c) => c.sessionId.length > 0,
