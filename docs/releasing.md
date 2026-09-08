@@ -20,6 +20,17 @@ GitHub Actions publisher:
 The environment must match the `environment:` key on the publish job, or the
 registry rejects the token.
 
+**Tick "Allow `npm publish`".** Without it the publisher may only run
+`npm stage publish`, which parks the release until someone approves it on
+npmjs.com; the workflow calls `npm publish` directly and would fail.
+
+Then, under **Publishing access**, select *Require two-factor authentication
+and disallow bypass 2fa tokens*. Trusted publishers work under either option,
+so this only closes the stored-token path, which nothing uses any more. Do it
+after the first successful OIDC publish, so the tightening follows proof that
+the new path works. Interactive publishing with a 2FA code still works, so
+there is no way to lock yourself out.
+
 ## Cutting a release
 
 1. Merge the changesets version PR (opened automatically by `version-pr.yml`),
