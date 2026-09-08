@@ -198,8 +198,14 @@ async function pollSummaries($: EngineInterface, cap: number): Promise<void> {
       );
       if (response.status === 204) continue;
       if (response.status === 404) {
-        $.ui.log("[lcm] daemon has no session summarizer route (older lcm build)");
-        return;
+        // An older build answered, or the daemon was swapped mid-session. A later
+        // respawn may bring the route back, so keep checking, slowly.
+        if (!missingRoutes.has("/summarize-jobs/next")) {
+          missingRoutes.add("/summarize-jobs/next");
+          $.ui.log("[lcm] daemon has no session summarizer route (older lcm build); retrying every minute");
+        }
+        await summaryDelay($, 60_000);
+        continue;
       }
       if (!response.ok) {
         if (response.status === 401) daemon = null;

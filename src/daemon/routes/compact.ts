@@ -437,6 +437,17 @@ export function createCompactHandler(config: DaemonConfig, jobs?: SummarizeJobSt
             latestSummaryContent = allSummaries[allSummaries.length - 1]?.content;
           }
 
+          // Name the provider that actually answered when it was a single one: with the
+          // session provider the fallback may have done the work, and the PreCompact banner
+          // should say so. Several providers in one run keep the configured name.
+          const answeredBy = [...new Set([...usageByProvider.values()].map((usage) => usage.provider))];
+          const answeredProvider = answeredBy.length === 1 ? answeredBy[0] : effectiveProvider;
+          const sessionLabels: Record<string, string> = { "session:haiku": "Live session (haiku)", "session:fork": "Live session (fork)" };
+          const answeredLabel = answeredProvider === effectiveProvider
+            ? providerLabel
+            : (sessionLabels[answeredProvider] ?? providerLabels[answeredProvider as EffectiveProvider] ?? answeredProvider);
+          if (llmUsage.calls > 0) llmUsage.provider = answeredProvider;
+
           return {
             summary: summaryMsg,
             latestSummaryContent,
@@ -445,8 +456,8 @@ export function createCompactHandler(config: DaemonConfig, jobs?: SummarizeJobSt
             replayOutcome: compactResult.actionTaken ? "compacted" : "no_work",
             tokensBefore: compactResult.tokensBefore,
             tokensAfter: compactResult.tokensAfter,
-            providerId: effectiveProvider,
-            providerLabel,
+            providerId: answeredProvider,
+            providerLabel: answeredLabel,
             ...(llmUsage.calls > 0 ? { llmUsage } : {}),
           };
         } catch (error) {

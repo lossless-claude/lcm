@@ -59,6 +59,8 @@ it("compacts through the session queue and persists actual provider and estimate
     const result = await invoke(createCompactHandler(config, jobs), { cwd, session_id: sessionId });
     expect(result.replayOutcome).toBe("compacted");
     expect(served).toBeGreaterThan(1);
+    // Two providers answered in this run, so the response keeps the configured name.
+    expect(result.providerId).toBe("session");
     const db = new DatabaseSync(projectDbPath(cwd));
     try {
       expect(db.prepare("SELECT * FROM llm_usage_stats ORDER BY provider").all()).toEqual([
@@ -70,6 +72,27 @@ it("compacts through the session queue and persists actual provider and estimate
   } finally {
     abort.abort();
     await serve;
+    jobs.close();
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(homedir(), { recursive: true, force: true });
+  }
+});
+
+it("names the fallback provider in the response when no session served a job", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "lcm-session-fallback-"));
+  const jobs = new SummarizeJobStore(50); // nobody polls: every job expires at once
+  const config = loadDaemonConfig("/x", { llm: { provider: "session", fallbackProvider: "openai" } }, {});
+  try {
+    await invoke(createIngestHandler(config), { cwd, session_id: "session-unserved",
+      messages: Array.from({ length: 40 }, (_, i) => ({ role: i % 2 ? "assistant" : "user",
+        content: `message ${i}`, tokenCount: 300 })),
+    });
+    const result = await invoke(createCompactHandler(config, jobs), { cwd, session_id: "session-unserved" });
+    expect(result.replayOutcome).toBe("compacted");
+    expect(result.providerId).toBe("openai");
+    expect(result.providerLabel).toBe("OpenAI API");
+    expect(result.llmUsage).toEqual(expect.objectContaining({ provider: "openai" }));
+  } finally {
     jobs.close();
     rmSync(cwd, { recursive: true, force: true });
     rmSync(homedir(), { recursive: true, force: true });
