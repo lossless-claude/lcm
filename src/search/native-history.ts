@@ -78,10 +78,48 @@ function sourceContext(content: string, anchor: { start: number; length: number 
 }
 
 /**
+ * Share of the limit held for summaries before messages may take a slot.
+ *
+ * Message and summary ranks come from different FTS5 tables, so their bm25
+ * scores are not comparable and the two sources cannot be merged by score.
+ * Without a reserved share the round-robin below emits one message per
+ * matching session and exhausts the limit on its first pass, which makes a
+ * summary unreachable whenever the session count reaches the limit — however
+ * well it scores. Reserving is skipped at limit 1, where a single slot is
+ * better spent on the source the caller already expects.
+ */
+const SUMMARY_LIMIT_SHARE = 1 / 3;
+
+/** Round-robin over sessions in RRF order, one hit per session per pass. */
+function drawBySession(
+  hits: RankedHistoryHit[],
+  groups: string[],
+  groupOf: (hit: RankedHistoryHit) => string,
+  budget: number,
+): RankedHistoryHit[] {
+  const hitsOf = new Map<string, RankedHistoryHit[]>(groups.map(group => [group, []]));
+  for (const hit of hits) hitsOf.get(groupOf(hit))?.push(hit);
+  const drawn: RankedHistoryHit[] = [];
+  for (let pass = 0; drawn.length < budget; pass++) {
+    let emitted = false;
+    for (const group of groups) {
+      const hit = hitsOf.get(group)![pass];
+      if (!hit || drawn.length >= budget) continue;
+      drawn.push(hit);
+      emitted = true;
+    }
+    if (!emitted) break;
+  }
+  return drawn;
+}
+
+/**
  * Fuse message and summary candidates by session: a session scores the sum of
  * reciprocal ranks of its best message and best summary, so evidence present
- * in both sources rises. Emission is round-robin, one hit per session per
- * pass (messages before summaries), so a small limit spans several sessions.
+ * in both sources rises. Summaries draw first against a reserved share of the
+ * limit, messages take the rest, and whichever side underfills hands its
+ * leftover to the other. Emission stays round-robin, one hit per session per
+ * pass, so a small limit still spans several sessions.
  */
 export function fuseHistoryBySession(
   messages: RankedHistoryHit[],
@@ -100,20 +138,20 @@ export function fuseHistoryBySession(
     });
   }
   const groups = [...score.entries()].sort((a, b) => b[1] - a[1]).map(([group]) => group);
-  const hitsOf = new Map<string, RankedHistoryHit[]>(groups.map(group => [group, []]));
-  for (const hit of [...messages, ...summaries]) hitsOf.get(groupOf(hit))!.push(hit);
-  const fused: RankedHistoryHit[] = [];
-  for (let pass = 0; fused.length < limit; pass++) {
-    let emitted = false;
-    for (const group of groups) {
-      const hit = hitsOf.get(group)![pass];
-      if (!hit || fused.length >= limit) continue;
-      fused.push(hit);
-      emitted = true;
-    }
-    if (!emitted) break;
-  }
-  return fused;
+
+  const reserved = limit >= 2 ? Math.ceil(limit * SUMMARY_LIMIT_SHARE) : 0;
+  const drawnSummaries = drawBySession(summaries, groups, groupOf, reserved);
+  const drawnMessages = drawBySession(messages, groups, groupOf, limit - drawnSummaries.length);
+  // Messages that underfill hand the remainder back rather than shrinking the result.
+  const extraSummaries = drawnMessages.length + drawnSummaries.length < limit
+    ? drawBySession(summaries, groups, groupOf, limit - drawnMessages.length).slice(drawnSummaries.length)
+    : [];
+
+  const selected = new Set([...drawnSummaries, ...extraSummaries, ...drawnMessages]);
+  // Re-emit in session order, a session's messages ahead of its summaries, so
+  // the distilled hit sits next to the raw evidence it came from.
+  const ordered = [...messages, ...summaries].filter(hit => selected.has(hit));
+  return drawBySession(ordered, groups, groupOf, limit);
 }
 
 /** Rank one request's history candidates without loading source context. */
