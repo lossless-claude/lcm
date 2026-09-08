@@ -22,8 +22,13 @@ export function buildSummaryPrompt(
   });
 
   return ctx.isCondensed
-    ? buildCondensedSummaryPrompt({ text, targetTokens, depth: ctx.depth ?? 1 })
-    : buildLeafSummaryPrompt({ text, mode: aggressive ? "aggressive" : "normal", targetTokens });
+    ? buildCondensedSummaryPrompt({
+        text, targetTokens, depth: ctx.depth ?? 1, previousSummary: ctx.previousSummary,
+      })
+    : buildLeafSummaryPrompt({
+        text, mode: aggressive ? "aggressive" : "normal", targetTokens,
+        previousSummary: ctx.previousSummary,
+      });
 }
 
 /** The same prompt with the system preamble prepended, for CLIs with no system-prompt flag. */
