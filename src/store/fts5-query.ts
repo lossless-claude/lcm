@@ -1,4 +1,5 @@
 import { buildLikeSearchPlan } from "./full-text-fallback.js";
+import { packStopwordsFor } from "./language-pack.js";
 
 /**
  * Natural-language query preparation for FTS5.
@@ -78,6 +79,12 @@ function dedupe(words: string[]): string[] {
  * Tokenize a free-text query into content terms: split on non-word
  * characters, lowercase, drop stopwords, dedupe in order.
  *
+ * English stopwords are always dropped. Other languages come from language
+ * packs: a pack applies when the query carries its function words, so a
+ * pt-BR question loses "que", "como", "para" the way an English one loses
+ * "what", "how", "for". Without a pack, a question in that language goes
+ * through whole, function words included.
+ *
  * If every word is a stopword, the original words are kept as terms so the
  * query still searches for something rather than nothing.
  */
@@ -89,7 +96,8 @@ export function extractQueryTerms(raw: string): string[] {
       .filter(Boolean),
   );
 
-  const terms = words.filter((word) => !STOPWORDS.has(word));
+  const packStopwords = packStopwordsFor(words);
+  const terms = words.filter((word) => !STOPWORDS.has(word) && !packStopwords.has(word));
   if (terms.length > 0) {
     return terms;
   }
