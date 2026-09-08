@@ -1,4 +1,4 @@
-export const CONNECTOR_TYPES = ['rules', 'hook', 'mcp', 'skill'] as const;
+export const CONNECTOR_TYPES = ['rules', 'hook', 'hooks', 'mcp', 'skill'] as const;
 export type ConnectorType = (typeof CONNECTOR_TYPES)[number];
 
 export type AgentCategory = 'cli' | 'ai-ide' | 'vscode-ext' | 'other';

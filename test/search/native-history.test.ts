@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
-import { beforeEach, afterEach, expect, it } from "vitest";
+import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import { runLcmMigrations } from "../../src/db/migration.js";
 import { ConversationStore } from "../../src/store/conversation-store.js";
 import { SummaryStore } from "../../src/store/summary-store.js";
@@ -95,4 +95,55 @@ it("spreads a small limit across sessions before returning second hits", async (
   await messages.createMessage({ conversationId: 2, seq: 1, role: "assistant", content: "Saffron elsewhere.", tokenCount: 5 });
   const hits = await searchNativeHistory(db, { query: "Saffron", limit: 2 });
   expect(new Set(hits.map((hit) => hit.sessionId))).toEqual(new Set(["native-context", "second"]));
+});
+
+it("keeps concurrent reads on one connection bound to their source snapshot", async () => {
+  const original = "Saffron recovered after bounded retries.";
+  const replacement = "Juniper recovered after a circuit breaker.";
+  const source = await seed(original);
+
+  const first = searchNativeHistory(db, { query: "Saffron", limit: 1 });
+  const second = searchNativeHistory(db, { query: "Saffron", limit: 1 });
+  db.prepare("UPDATE messages SET content = ? WHERE message_id = ?")
+    .run(replacement, source.messageId);
+  db.prepare("UPDATE messages_fts SET content = ? WHERE rowid = ?")
+    .run(replacement, source.messageId);
+
+  for (const [hit] of await Promise.all([first, second])) {
+    expect(hit.snippet).toBe(original.slice(hit.span.start, hit.span.end));
+    expect(hit.sourceHash).toBe(createHash("sha256").update(original).digest("hex"));
+  }
+
+  const [updated] = await searchNativeHistory(db, { query: "Juniper", limit: 1 });
+  expect(updated.snippet).toBe(replacement.slice(updated.span.start, updated.span.end));
+  expect(updated.sourceHash).toBe(createHash("sha256").update(replacement).digest("hex"));
+});
+
+it("filters subagents and normalises session length in the synchronous search path", async () => {
+  const content = "Saffron recovered after a retry.";
+  await seed(`Saffron ${content}`);
+  for (let seq = 2; seq <= 21; seq++) {
+    await messages.createMessage({ conversationId: 1, seq, role: "user", content: "Unrelated maintenance detail.", tokenCount: 5 });
+  }
+  const short = await messages.createConversation({ sessionId: "short-human" });
+  await messages.createMessage({ conversationId: short.conversationId, seq: 1, role: "user", content, tokenCount: 10 });
+  const agent = await messages.createConversation({ sessionId: "agent-panel" });
+  await messages.createMessage({ conversationId: agent.conversationId, seq: 1, role: "assistant", content: "Saffron Saffron Saffron", tokenCount: 10 });
+  await summaries.insertSummary({ summaryId: "agent-summary", conversationId: agent.conversationId, kind: "leaf", content: "Saffron", tokenCount: 5 });
+
+  const raw = await messages.searchMessages({ query: "Saffron", mode: "full_text" });
+  expect(raw.findIndex(hit => hit.conversationId === 1)).toBeLessThan(raw.findIndex(hit => hit.conversationId === short.conversationId));
+  const hits = await searchNativeHistory(db, { query: "Saffron", limit: 5 });
+  expect(hits.map(hit => hit.sessionId)).toEqual(["short-human", "native-context"]);
+});
+
+it("releases the read snapshot and propagates synchronous read failures", async () => {
+  const failure = vi.spyOn(ConversationStore.prototype, "searchMessagesSync")
+    .mockImplementation(() => { throw new Error("native read failed"); });
+
+  await expect(searchNativeHistory(db, { query: "Saffron", limit: 1 }))
+    .rejects.toThrow("native read failed");
+  failure.mockRestore();
+
+  expect(() => db.exec("BEGIN; ROLLBACK")).not.toThrow();
 });

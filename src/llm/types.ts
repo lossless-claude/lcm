@@ -45,6 +45,8 @@ export type SummarizeContext = {
   isCondensed?: boolean;
   targetTokens?: number;
   depth?: number;
+  /** The preceding chunk's summary, rendered into the prompt so chunks read as one thread. */
+  previousSummary?: string;
   onUsage?: (usage: SummarizerUsage) => void;
 };
 
