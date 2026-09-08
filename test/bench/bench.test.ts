@@ -160,6 +160,27 @@ describe("lcm bench", () => {
     expect(result.out).toBe("");
   });
 
+  it("rejects an LLM question that just reuses its prompt's vocabulary", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    // Every content word here is lifted from the storage session's own prompt,
+    // so it tests lexical lookup rather than whether search can be reached for
+    // with different words.
+    const echo = async (prompt: string) =>
+      `Which of these did we handle: ${prompt.split(/\s+/).slice(0, 12).reverse().join(" ")}?`;
+    const result = await buildBench({ cwd, generator: "llm" }, echo);
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain("reuses too much of the source prompt");
+
+    // A question about the same session in the user's own later words survives.
+    const paraphrase = async () => "Why did we settle on the database we did?";
+    const kept = await buildBench({ cwd, generator: "llm" }, paraphrase);
+    expect(kept.exitCode, kept.stdout).toBe(0);
+    const bench = JSON.parse(readFileSync(kept.out, "utf-8")) as BenchFile;
+    expect(bench.queries.length).toBeGreaterThan(0);
+  });
+
   it("rejects duplicate and subjectless generated questions", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
     tempDirs.push(cwd);

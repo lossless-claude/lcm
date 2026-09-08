@@ -215,6 +215,30 @@ function isSubjectless(question: string): boolean {
   return OUTCOME_FALLBACKS.some((fallback) => fallback.question === trimmed.toLowerCase()) || SUBJECTLESS_QUESTION.test(trimmed);
 }
 
+/**
+ * Most of a question's terms may not come from the prompt it was drawn from.
+ *
+ * A recall benchmark asks whether search finds a session from words the user
+ * would reach for later, not from the words already in the transcript. Left
+ * unchecked an LLM told to "paraphrase" returns near-copies: over 59 generated
+ * questions the mean share of question terms also present in their own prompt
+ * was 0.55, and 24 of them were above 0.6 — keyword lookups, which search
+ * answers at 0.75 while the hand-written set sits at 0.39. The ceiling is
+ * calibrated against that hand-written set, whose highest share is 0.27.
+ *
+ * Mechanical questions are exempt: they are built from a focus term lifted out
+ * of the prompt by construction, and already carry a diagnostic-only warning.
+ */
+const MAX_PROMPT_TERM_SHARE = 0.5;
+
+/** Share of the question's content words that also appear in its source prompt. */
+function promptTermShare(question: string, prompt: string): number {
+  const questionTerms = extractQueryTerms(question);
+  if (questionTerms.length === 0) return 0;
+  const promptTerms = new Set(extractQueryTerms(prompt));
+  return questionTerms.filter(term => promptTerms.has(term)).length / questionTerms.length;
+}
+
 /** Checks only generated questions face; curated ones keep the user's own wording. */
 function generatedQuestionProblem(question: string, prompt: string): string | null {
   const trimmed = question.trim();
@@ -225,12 +249,18 @@ function generatedQuestionProblem(question: string, prompt: string): string | nu
 }
 
 /** Records the question in `seen` unless it has a problem. */
-function questionProblem(question: unknown, ctx: { prompt: string; seen: Set<string>; manual?: boolean }): string | null {
+function questionProblem(
+  question: unknown,
+  ctx: { prompt: string; seen: Set<string>; generator?: BenchQuery["generator"] },
+): string | null {
   if (typeof question !== "string" || !question.trim()) return "expected nonempty query text";
   const normalized = question.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim() || question.trim();
   if (ctx.seen.has(normalized)) return "duplicate question";
-  const problem = ctx.manual ? null : generatedQuestionProblem(question, ctx.prompt);
+  const problem = ctx.generator === "manual" ? null : generatedQuestionProblem(question, ctx.prompt);
   if (problem) return problem;
+  if (ctx.generator === "llm" && promptTermShare(question, ctx.prompt) > MAX_PROMPT_TERM_SHARE) {
+    return "question reuses too much of the source prompt's vocabulary";
+  }
   ctx.seen.add(normalized);
   return null;
 }
@@ -324,7 +354,11 @@ async function sampleQuery(conv: SampledConversation, ctx: SampleContext, id: st
     question = mechanicalQuestion(prompt.content, ctx.rand);
   }
 
-  const problem = questionProblem(question, { prompt: prompt.content, seen: ctx.seenQuestions });
+  const problem = questionProblem(question, {
+    prompt: prompt.content,
+    seen: ctx.seenQuestions,
+    generator: usedLlm ? "llm" : "mechanical",
+  });
   if (problem) return { status: "rejected", reason: problem, usedLlm };
   return {
     status: "sampled",
@@ -504,7 +538,7 @@ type BenchLoad = { bench: BenchFile } | { error: string };
 function benchQueryProblem(query: BenchQuery, seen: Set<string>): string | null {
   if (!query || typeof query.sessionId !== "string" || !query.sessionId.trim() || typeof query.prompt !== "string") return "Invalid benchmark: each question needs a source session and prompt.\n";
   if (query.sessionIds !== undefined && (!Array.isArray(query.sessionIds) || query.sessionIds.some((s) => typeof s !== "string" || !s.trim()))) return `Invalid benchmark question ${query.id}: sessionIds must be a list of nonempty session ids.\n`;
-  const problem = questionProblem(query.question, { prompt: query.prompt, seen, manual: query.generator === "manual" });
+  const problem = questionProblem(query.question, { prompt: query.prompt, seen, generator: query.generator });
   return problem ? `Invalid benchmark question ${query.id}: ${problem}.\n` : null;
 }
 
