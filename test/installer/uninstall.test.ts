@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { removeClaudeSettings, teardownDaemonService, uninstall, type TeardownDeps } from "../../installer/uninstall.js";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -205,20 +206,31 @@ describe("uninstall", () => {
 describe("uninstall with DryRunServiceDeps", () => {
   it("prints [dry-run] lines and writes no real files", async () => {
     const { DryRunServiceDeps } = await import("../../installer/dry-run-deps.js");
+    const fixtureHome = mkdtempSync(join(tmpdir(), "lcm-uninstall-dry-run-"));
+    const settingsPath = join(fixtureHome, ".claude", "settings.json");
+    const settings = JSON.stringify({ mcpServers: { lcm: {} } });
+    mkdirSync(join(fixtureHome, ".claude"));
+    writeFileSync(settingsPath, settings);
+    vi.stubEnv("HOME", fixtureHome);
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    await expect(uninstall(new DryRunServiceDeps())).resolves.not.toThrow();
+    try {
+      await expect(uninstall(new DryRunServiceDeps())).resolves.not.toThrow();
 
-    const dryRunLines = logSpy.mock.calls
-      .flatMap((c: any[]) => c)
-      .filter((s: any) => typeof s === "string" && s.includes("[dry-run]"));
+      const dryRunLines = logSpy.mock.calls
+        .flatMap((c: any[]) => c)
+        .filter((s: any) => typeof s === "string" && s.includes("[dry-run]"));
 
-    expect(dryRunLines.length).toBeGreaterThan(0);
-    // uninstall uses unload, not load — no launchctl load should appear
-    expect(dryRunLines.every((l: string) => !l.includes("would run: launchctl load"))).toBe(true);
-
-    logSpy.mockRestore();
-    warnSpy.mockRestore();
+      expect(dryRunLines).toContain(`[dry-run] would write: ${settingsPath}`);
+      expect(readFileSync(settingsPath, "utf-8")).toBe(settings);
+      // uninstall uses unload, not load — no launchctl load should appear
+      expect(dryRunLines.every((l: string) => !l.includes("would run: launchctl load"))).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+      warnSpy.mockRestore();
+      vi.unstubAllEnvs();
+      rmSync(fixtureHome, { recursive: true, force: true });
+    }
   });
 });
