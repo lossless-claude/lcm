@@ -136,12 +136,128 @@ async function postDaemon($: EngineInterface, route: string, body: unknown): Pro
   return second.body;
 }
 
-export const register: Register = (on) => {
+type SummaryJob = {
+  id: string;
+  session_id: string;
+  kind: "leaf" | "condensed";
+  system: string;
+  prompt: string;
+  maxTokens: number;
+};
+type SummaryAnswer = {
+  text: string;
+  providerId: "session:haiku" | "session:fork";
+  usage: { input_tokens: number; output_tokens: number; estimated: boolean };
+};
+const DEFAULT_SUMMARY_OUTPUT_CAP = 50_000;
+let summaryPollerStarted = false;
+
+function summaryDelay($: EngineInterface, ms: number): Promise<void> {
+  return new Promise((resolve) => { $.clock.after(ms, resolve); });
+}
+
+async function completeSummary($: EngineInterface, job: SummaryJob): Promise<SummaryAnswer> {
+  const text = await $.model.complete({
+    model: "haiku", system: job.system, prompt: job.prompt, maxTokens: job.maxTokens,
+  });
+  return {
+    text: text.trim(), providerId: "session:haiku",
+    usage: {
+      input_tokens: Math.ceil((job.system.length + job.prompt.length) / 4),
+      output_tokens: Math.ceil(text.length / 4), estimated: true,
+    },
+  };
+}
+
+async function answerSummary($: EngineInterface, job: SummaryJob): Promise<SummaryAnswer> {
+  if (job.kind === "condensed") {
+    const fork = await $.model.fork({ prompt: `${job.system}\n\n${job.prompt}` }).catch(() => null);
+    if (fork !== null) {
+      return {
+        text: fork.text.trim(), providerId: "session:fork",
+        usage: { input_tokens: fork.usage.input_tokens, output_tokens: fork.usage.output_tokens, estimated: false },
+      };
+    }
+  }
+  return completeSummary($, job);
+}
+
+/** One request at a time also serializes jobs from concurrent daemon compactions. */
+async function pollSummaries($: EngineInterface, cap: number): Promise<void> {
+  const sessionId = await $.session.id();
+  let spent = 0;
+  let shortPoll = false;
+  while (true) {
+    if (shortPoll) await summaryDelay($, 2_000);
+    let job: SummaryJob;
+    try {
+      const { port, token } = await readDaemon($);
+      const response = await $.http.fetch(
+        `http://127.0.0.1:${port}/summarize-jobs/next?session_id=${encodeURIComponent(sessionId)}${shortPoll ? "&wait_ms=0" : ""}`,
+        { headers: token ? { authorization: `Bearer ${token}` } : {} },
+      );
+      if (response.status === 204) continue;
+      if (response.status === 404) {
+        $.ui.log("[lcm] daemon has no session summarizer route (older lcm build)");
+        return;
+      }
+      if (!response.ok) {
+        if (response.status === 401) daemon = null;
+        $.ui.log(`[lcm] /summarize-jobs/next: daemon answered ${response.status}`);
+        await summaryDelay($, 5_000);
+        continue;
+      }
+      job = JSON.parse(response.text).job as SummaryJob;
+      // Do not run a prompt belonging to another session, even on a malformed response.
+      if (!job || job.session_id !== sessionId) {
+        $.ui.log("[lcm] discarded summary job for a different session");
+        await summaryDelay($, 5_000);
+        continue;
+      }
+    } catch {
+      // Some hosts cap HTTP request duration below the daemon's 25-second hold.
+      shortPoll = true;
+      await startDaemon($);
+      daemon = null; // A restarted daemon may have a new bearer token.
+      await summaryDelay($, 5_000);
+      continue;
+    }
+
+    const route = `/summarize-jobs/${encodeURIComponent(job.id)}`;
+    if (spent >= cap) {
+      await postDaemon($, route, { error: "spend cap" });
+      return;
+    }
+    try {
+      const answer = await answerSummary($, job);
+      spent += answer.usage.output_tokens;
+      if (spent > cap) {
+        await postDaemon($, route, { error: "spend cap" });
+        return;
+      }
+      if (!answer.text) throw new Error("empty summary");
+      await postDaemon($, route, answer);
+    } catch (error) {
+      await postDaemon($, route, { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+}
+
+export const register: Register = (on, options) => {
+  const configuredCap = options.sessionSummarizerMaxOutputTokens;
+  const summaryCap = typeof configuredCap === "number" && Number.isFinite(configuredCap)
+    ? Math.max(0, configuredCap) : DEFAULT_SUMMARY_OUTPUT_CAP;
   on("session.start", ($, e, next) => {
     // Warm up: read the daemon's address and make sure it is listening before the first prompt,
     // without depending on the SessionStart command hook having done it.
     void readDaemon($).then(({ port }) =>
       $.http.fetch(`http://127.0.0.1:${port}/health`).then(() => undefined, () => startDaemon($)));
+    if (summaryCap > 0 && !summaryPollerStarted) {
+      summaryPollerStarted = true;
+      void pollSummaries($, summaryCap).catch((error) => {
+        $.ui.log(`[lcm] session summarizer stopped: ${String(error)}`);
+      });
+    }
     return next(e);
   });
 

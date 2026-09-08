@@ -122,7 +122,7 @@ describe("llm_usage_stats persistence", () => {
         .map((c) => c.name);
       expect(columns).toEqual(expect.arrayContaining([
         "tokens_input_total", "tokens_cached_total", "tokens_output_total",
-        "cost_usd_total", "calls_with_cost",
+        "cost_usd_total", "calls_with_cost", "calls_estimated",
       ]));
 
       const [row] = readRow(db);
@@ -133,6 +133,7 @@ describe("llm_usage_stats persistence", () => {
         tokens_input_total: 0,
         tokens_output_total: 0,
         calls_with_cost: 0,
+        calls_estimated: 0,
       });
       // Cost must backfill to NULL, not 0: nobody priced those historical calls.
       expect(row.cost_usd_total).toBeNull();

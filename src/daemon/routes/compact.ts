@@ -1,3 +1,4 @@
+import type { SummarizeJobStore } from "../summarize-jobs.js";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
@@ -110,6 +111,7 @@ export type CompactLlmUsage = {
    */
   costUsd?: number;
   callsWithCost: number;
+  callsEstimated?: number;
 };
 
 function createCompactLlmUsage(provider: string, model: string): CompactLlmUsage {
@@ -143,8 +145,8 @@ export function recordCompactLlmUsage(db: DatabaseSync, usage: CompactLlmUsage):
     INSERT INTO llm_usage_stats (
       provider, model, calls_total, calls_ok, calls_failed,
       tokens_spent_total, tokens_input_total, tokens_cached_total, tokens_output_total,
-      cost_usd_total, calls_with_cost, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      cost_usd_total, calls_with_cost, calls_estimated, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     ON CONFLICT(provider, model) DO UPDATE SET
       calls_total = calls_total + excluded.calls_total,
       calls_ok = calls_ok + excluded.calls_ok,
@@ -159,6 +161,7 @@ export function recordCompactLlmUsage(db: DatabaseSync, usage: CompactLlmUsage):
         ELSE COALESCE(cost_usd_total, 0) + excluded.cost_usd_total
       END,
       calls_with_cost = calls_with_cost + excluded.calls_with_cost,
+      calls_estimated = calls_estimated + excluded.calls_estimated,
       updated_at = datetime('now')
   `).run(
     usage.provider,
@@ -173,17 +176,18 @@ export function recordCompactLlmUsage(db: DatabaseSync, usage: CompactLlmUsage):
     // node:sqlite refuses to bind undefined; absent must reach SQL as NULL.
     usage.costUsd ?? null,
     usage.callsWithCost,
+    usage.callsEstimated ?? 0,
   );
 }
 
 
-export function createCompactHandler(config: DaemonConfig): RouteHandler {
+export function createCompactHandler(config: DaemonConfig, jobs?: SummarizeJobStore): RouteHandler {
   const summarizerCache = new Map<EffectiveProvider, Promise<LcmSummarizeFn | null>>();
 
   const getSummarizer = (provider: EffectiveProvider): Promise<LcmSummarizeFn | null> => {
     let cached = summarizerCache.get(provider);
     if (!cached) {
-      cached = createSummarizer(provider, config);
+      cached = createSummarizer(provider, config, jobs);
       summarizerCache.set(provider, cached);
     }
     return cached;
@@ -230,6 +234,7 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
       "anthropic": "Anthropic API",
       "openai": "OpenAI API",
       "disabled": "Disabled",
+      "session": "Live session",
     };
     const providerLabel = providerLabels[effectiveProvider] ?? effectiveProvider;
 
@@ -249,6 +254,7 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
         const dbPath = projectDbPath(cwd);
         ensureProjectDir(cwd);
         const llmUsage = createCompactLlmUsage(effectiveProvider, config.llm.model);
+        const usageByProvider = new Map<string, CompactLlmUsage>();
 
         const scrubber = await ScrubEngine.forProject(
           config.security?.sensitivePatterns ?? [],
@@ -306,13 +312,38 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
             const callTokensSpent: { tokens: number; input: number; cached: number; output: number; cost?: number } =
               { tokens: 0, input: 0, cached: 0, output: 0 };
             let sawUsage = false;
+            const callUsage = new Map<string, CompactLlmUsage>();
+            const finishUsage = (ok: boolean) => {
+              for (const [key, call] of callUsage) {
+                const bucket = usageByProvider.get(key) ?? createCompactLlmUsage(call.provider, call.model);
+                bucket.calls += 1;
+                bucket.okCalls += ok ? 1 : 0;
+                bucket.failedCalls += ok ? 0 : 1;
+                bucket.callsEstimated = (bucket.callsEstimated ?? 0) + (call.callsEstimated ?? 0);
+                addTokens(bucket, { tokens: call.tokensSpent, input: call.tokensInput,
+                  cached: call.tokensCached, output: call.tokensOutput, cost: call.costUsd });
+                usageByProvider.set(key, bucket);
+              }
+            };
             try {
               const summary = await summarize(text, aggressive, {
                 ...ctx,
+                sessionId: session_id,
+                client,
                 onUsage: (usage) => {
                   // Every provider reports normalized usage; only providers
                   // whose response carries it call onUsage at all.
                   sawUsage = true;
+                  const key = JSON.stringify([usage.provider, usage.model ?? config.llm.model]);
+                  let bucket = callUsage.get(key);
+                  if (!bucket) {
+                    bucket = createCompactLlmUsage(usage.provider, usage.model ?? config.llm.model);
+                    callUsage.set(key, bucket);
+                  }
+                  bucket.callsEstimated = (bucket.callsEstimated ?? 0) || (usage.estimated ? 1 : 0);
+                  addTokens(bucket, { tokens: usage.tokensUsed, input: usage.inputTokens ?? 0,
+                    cached: usage.cachedInputTokens ?? 0, output: usage.outputTokens ?? 0, cost: usage.costUsd });
+
                   callTokensSpent.tokens += usage.tokensUsed;
                   callTokensSpent.input += usage.inputTokens ?? 0;
                   callTokensSpent.cached += usage.cachedInputTokens ?? 0;
@@ -333,6 +364,7 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
                 llmUsage.okCalls += 1;
                 addTokens(llmUsage, callTokensSpent);
               }
+              finishUsage(true);
               return summary;
             } catch (error) {
               if (sawUsage) {
@@ -340,6 +372,7 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
                 llmUsage.failedCalls += 1;
                 addTokens(llmUsage, callTokensSpent);
               }
+              finishUsage(false);
               throw error;
             }
           };
@@ -423,7 +456,7 @@ export function createCompactHandler(config: DaemonConfig): RouteHandler {
           throw error;
         } finally {
           try {
-            recordCompactLlmUsage(db, llmUsage);
+            for (const usage of usageByProvider.values()) recordCompactLlmUsage(db, usage);
           } catch {
             // non-fatal stats accounting
           }

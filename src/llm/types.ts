@@ -3,7 +3,9 @@ export type SummarizerProvider =
   | "codex-process"
   | "copilot-process"
   | "openai"
-  | "anthropic";
+  | "anthropic"
+  | "session:haiku"
+  | "session:fork";
 
 /**
  * Normalized token accounting, shared by every summarizer that reports it.
@@ -20,6 +22,7 @@ export type SummarizerProvider =
 export type SummarizerUsage = {
   provider: SummarizerProvider;
   model?: string;
+  estimated?: boolean;
   inputTokens?: number;
   cachedInputTokens?: number;
   outputTokens?: number;
@@ -37,6 +40,8 @@ export type SummarizerUsage = {
 export type SummarizeContext = {
   /** Internal alternate task: send text verbatim with this system instruction. */
   taskPrompt?: string;
+  sessionId?: string;
+  client?: "claude" | "codex" | "copilot";
   isCondensed?: boolean;
   targetTokens?: number;
   depth?: number;

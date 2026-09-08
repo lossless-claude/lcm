@@ -13,6 +13,8 @@ export interface SecurityConfig {
   notify_on_filter?: boolean;
 }
 
+export type SummaryProvider = "auto" | "claude-process" | "codex-process" | "copilot-process" | "anthropic" | "openai" | "disabled" | "session";
+
 export type DaemonConfig = {
   version: number;
   daemon: { port: number; socketPath: string; logLevel: string; logMaxSizeMB: number; logRetentionDays: number; idleTimeoutMs: number };
@@ -42,7 +44,7 @@ export type DaemonConfig = {
     stalePenalty: number;
     allowStaleOnStrongMatch: boolean;
   };
-  llm: { provider: "auto" | "claude-process" | "codex-process" | "copilot-process" | "anthropic" | "openai" | "disabled"; model: string; apiKey?: string; baseURL: string; reasoning?: Record<string, unknown> };
+  llm: { provider: SummaryProvider; fallbackProvider?: Exclude<SummaryProvider, "session">; model: string; apiKey?: string; baseURL: string; reasoning?: Record<string, unknown> };
   summarizer: { mock: boolean };
   security: SecurityConfig;
   hooks: { snapshotIntervalSec: number; disableAutoCompact: boolean };
@@ -152,7 +154,7 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
   if (merged.llm.apiKey) merged.llm.apiKey = merged.llm.apiKey.replace(/\$\{(\w+)\}/g, (_: string, k: string) => e[k] ?? "");
 
   // Env var override: LCM_SUMMARY_PROVIDER takes precedence over config
-  const VALID_PROVIDERS = new Set(["auto", "claude-process", "codex-process", "copilot-process", "anthropic", "openai", "disabled"]);
+  const VALID_PROVIDERS = new Set(["auto", "claude-process", "codex-process", "copilot-process", "anthropic", "openai", "disabled", "session"]);
   if (e.LCM_SUMMARY_PROVIDER) {
     if (!VALID_PROVIDERS.has(e.LCM_SUMMARY_PROVIDER)) {
       throw new Error(
@@ -161,6 +163,12 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
       );
     }
     merged.llm.provider = e.LCM_SUMMARY_PROVIDER as DaemonConfig["llm"]["provider"];
+  }
+  const fallbackProvider: unknown = merged.llm.fallbackProvider;
+  if (fallbackProvider !== undefined && (
+    typeof fallbackProvider !== "string" || fallbackProvider === "session" || !VALID_PROVIDERS.has(fallbackProvider)
+  )) {
+    throw new Error("[lcm] Invalid llm.fallbackProvider. Expected a summary provider other than 'session'.");
   }
 
   // Migrate old config names to new names for backward compatibility
@@ -181,8 +189,10 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
     }
   }
 
-  // Anthropic API key fallback from env
-  if (!merged.llm.apiKey && merged.llm.provider === "anthropic" && e.ANTHROPIC_API_KEY) {
+  // Session fallbacks use the same credentials as directly selected providers.
+  const usesAnthropic = merged.llm.provider === "anthropic" ||
+    (merged.llm.provider === "session" && merged.llm.fallbackProvider === "anthropic");
+  if (!merged.llm.apiKey && usesAnthropic && e.ANTHROPIC_API_KEY) {
     merged.llm.apiKey = e.ANTHROPIC_API_KEY;
   }
 
@@ -198,7 +208,7 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
   }
 
   // Validate: anthropic provider requires an API key
-  if (merged.llm.provider === "anthropic" && !merged.llm.apiKey) {
+  if (usesAnthropic && !merged.llm.apiKey) {
     throw new Error(
       "[lcm] LCM_SUMMARY_API_KEY is required when using the Anthropic provider. " +
       "Set it in your environment or switch to 'auto', 'claude-process', or another provider."

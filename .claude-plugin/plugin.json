@@ -11,6 +11,14 @@
   "license": "MIT",
   "keywords": ["context", "memory", "compaction", "summarization", "lcm"],
   "commands": "./.claude-plugin/commands/",
+  "userConfig": {
+    "sessionSummarizerMaxOutputTokens": {
+      "type": "number",
+      "title": "Session summarizer output token cap",
+      "description": "Maximum output tokens served by the session summarizer per session; 0 disables it.",
+      "default": 50000
+    }
+  },
   "mcpServers": {
     "lcm": {
       "command": "node",
