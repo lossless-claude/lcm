@@ -8,6 +8,7 @@ import { enqueue } from "../project-queue.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
+import { markSessionCompacted } from "../../db/session-compactions.js";
 import { upsertRedactionCounts } from "../../db/redaction-stats.js";
 import { ConversationStore } from "../../store/conversation-store.js";
 import { SummaryStore } from "../../store/summary-store.js";
@@ -72,9 +73,6 @@ export function buildCompactionMessage(p: {
   ].join("\n");
 }
 
-// In-memory justCompacted map (session_id -> timestamp)
-export const justCompactedMap = new Map<string, number>();
-export const JUST_COMPACTED_TTL_MS = 30_000;
 
 // Guard against concurrent compactions for the same session (session_id → cwd)
 const compactingNow = new Map<string, string>();
@@ -411,8 +409,8 @@ export function createCompactHandler(config: DaemonConfig, jobs?: SummarizeJobSt
             writeFileSync(metaPath, JSON.stringify(meta, null, 2));
           } catch { /* non-fatal */ }
 
-          // Set justCompacted flag
-          justCompactedMap.set(session_id, Date.now());
+          // Tell the restore that follows to replay the saved instructions.
+          markSessionCompacted(db, session_id);
 
           const summaryMsg = compactResult.actionTaken
             ? buildCompactionMessage({
