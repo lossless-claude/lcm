@@ -8,9 +8,9 @@
  * negative and pushed p95 past the latency budget. Neither would have been
  * caught by one corpus, so a change to retrieval ranking is measured here.
  *
- * Scores are diagnostic. Mechanically generated questions are not release
- * evidence; what this harness is for is the *direction* of a change, and
- * whether one corpus disagrees with another.
+ * Scores are diagnostic. Generated questions are not release evidence; what
+ * this harness is for is the *direction* of a change, and whether one corpus
+ * disagrees with another.
  *
  *   npx tsx scripts/bench-corpora.mts build     # (re)generate the question sets
  *   npx tsx scripts/bench-corpora.mts run       # score every corpus, print the pool
@@ -79,6 +79,14 @@ const QUESTIONS_PER_CORPUS = positiveInteger("LCM_BENCH_N", 30);
  * a set has to be unseen, not when comparing two runs.
  */
 const SEED = positiveInteger("LCM_BENCH_SEED", 1234);
+/**
+ * Questions come from the configured summarizer, written in the language each
+ * corpus's author asks in. Mechanical templates are English by construction,
+ * so a mechanical set measures same-language paraphrase recall — a task a
+ * person who writes in another language never performs. `LCM_BENCH_LANGUAGE`
+ * overrides detection for every corpus in the run.
+ */
+const LANGUAGE = process.env.LCM_BENCH_LANGUAGE?.trim() || undefined;
 /** Below this a project holds too few sessions to rank anything meaningfully. */
 const MIN_DB_BYTES = 2 * 1024 * 1024;
 
@@ -139,7 +147,7 @@ function label(cwd: string): string {
 
 async function build(corpora: string[]): Promise<void> {
   for (const cwd of corpora) {
-    const result = await buildBench({ cwd, n: QUESTIONS_PER_CORPUS, seed: SEED, out: validationFile(cwd) });
+    const result = await buildBench({ cwd, n: QUESTIONS_PER_CORPUS, seed: SEED, out: validationFile(cwd), generator: "llm", language: LANGUAGE });
     console.log(`${label(cwd)} ${result.exitCode === 0 ? result.stdout.split("\n")[0] : `skipped: ${result.stdout.split("\n")[0]}`}`);
   }
 }

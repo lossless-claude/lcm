@@ -162,7 +162,7 @@ describe("lcm bench", () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
     tempDirs.push(cwd);
     await seedProject(cwd);
-    const result = await buildBench({ cwd, generator: "llm" }, async () => null);
+    const result = await buildBench({ cwd, generator: "llm", language: "en" }, async () => null);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain("returned no question");
     expect(result.out).toBe("");
@@ -177,13 +177,13 @@ describe("lcm bench", () => {
     // with different words.
     const echo = async (prompt: string) =>
       `Which of these did we handle: ${prompt.split(/\s+/).slice(0, 12).reverse().join(" ")}?`;
-    const result = await buildBench({ cwd, generator: "llm" }, echo);
+    const result = await buildBench({ cwd, generator: "llm", language: "en" }, echo);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain("reuses too much of the source prompt");
 
     // A question about the same session in the user's own later words survives.
     const paraphrase = async () => "Why did we settle on the database we did?";
-    const kept = await buildBench({ cwd, generator: "llm" }, paraphrase);
+    const kept = await buildBench({ cwd, generator: "llm", language: "en" }, paraphrase);
     expect(kept.exitCode, kept.stdout).toBe(0);
     const bench = JSON.parse(readFileSync(kept.out, "utf-8")) as BenchFile;
     expect(bench.queries.length).toBeGreaterThan(0);
@@ -193,14 +193,82 @@ describe("lcm bench", () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
     tempDirs.push(cwd);
     await seedProject(cwd);
-    const bad = await buildBench({ cwd, generator: "llm" }, async () => "what did we work on in that session?");
+    const bad = await buildBench({ cwd, generator: "llm", language: "en" }, async () => "what did we work on in that session?");
     expect(bad.exitCode).toBe(1);
     expect(bad.stdout).toContain("no identifiable subject");
-    const duplicate = await buildBench({ cwd, generator: "llm" }, async () => "How did we recover the customer settings page?");
+    const duplicate = await buildBench({ cwd, generator: "llm", language: "en" }, async () => "How did we recover the customer settings page?");
     const bench = JSON.parse(readFileSync(duplicate.out, "utf8")) as BenchFile;
     expect(bench.queries).toHaveLength(1);
     expect(bench.generator).toBe("llm");
     expect(duplicate.stdout).toContain("duplicate question");
+  });
+
+  it("writes an LLM set in the language read from the corpus's human turns and reports it", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    const detect = vi.fn(async () => "pt-BR");
+    const paraphrase = async () => "Por que escolhemos esse banco de dados?";
+    const built = await buildBench({ cwd, generator: "llm" }, paraphrase, detect);
+    expect(built.exitCode, built.stdout).toBe(0);
+    expect(built.stdout).toContain("(llm, pt-BR)");
+    const sample = detect.mock.calls[0][0] as unknown as string[];
+    expect(sample.length).toBeGreaterThan(0);
+    for (const turn of sample) expect(typeof turn).toBe("string");
+    const bench = JSON.parse(readFileSync(built.out, "utf-8")) as BenchFile;
+    expect(bench.language).toBe("pt-BR");
+    const run = await runBench({ cwd, benchFile: built.out, json: true });
+    expect(JSON.parse(run.stdout).language).toBe("pt-BR");
+  });
+
+  it("keeps pasted tool output out of the turns the language is read from", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    const listing = "src/daemon/routes/compact.ts:12: export async function compactRoute(req: GitHub, res: Stripe) {";
+    await addSessions(cwd, [{ sessionId: "sess-listing", prompt: listing }]);
+    const detect = vi.fn(async () => "pt-BR");
+    const built = await buildBench({ cwd, generator: "llm" }, async () => "Por que escolhemos esse banco de dados?", detect);
+    expect(built.exitCode, built.stdout).toBe(0);
+    const sample = detect.mock.calls[0][0] as unknown as string[];
+    expect(sample.length).toBeGreaterThan(0);
+    expect(sample).not.toContain(listing);
+  });
+
+  it("an explicit language wins over detection", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    const detect = vi.fn(async () => "pt-BR");
+    const built = await buildBench({ cwd, generator: "llm", language: "de" }, async () => "Warum diese Datenbank?", detect);
+    expect(built.exitCode, built.stdout).toBe(0);
+    expect(detect).not.toHaveBeenCalled();
+    expect((JSON.parse(readFileSync(built.out, "utf-8")) as BenchFile).language).toBe("de");
+  });
+
+  it("an LLM build fails without a language instead of defaulting to English", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    const noDetector = await buildBench({ cwd, generator: "llm" }, async () => "Why that database?");
+    expect(noDetector.exitCode).toBe(1);
+    expect(noDetector.out).toBe("");
+    expect(noDetector.stdout).toContain("--language");
+    const unsure = await buildBench({ cwd, generator: "llm" }, async () => "Why that database?", async () => null);
+    expect(unsure.exitCode).toBe(1);
+    expect(unsure.stdout).toContain("Could not tell");
+    const malformed = await buildBench({ cwd, generator: "llm", language: "Portuguese (Brazil)" }, async () => "Why that database?");
+    expect(malformed.exitCode).toBe(1);
+    expect(malformed.stdout).toContain("BCP 47");
+  });
+
+  it("records mechanical sets as English, which their templates are", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    const built = await buildBench({ cwd, n: 5, seed: 7 });
+    expect(built.exitCode, built.stdout).toBe(0);
+    expect((JSON.parse(readFileSync(built.out, "utf-8")) as BenchFile).language).toBe("en");
   });
 
   it("rejects empty or duplicate benchmark input before measuring", async () => {
