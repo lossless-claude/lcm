@@ -136,10 +136,16 @@ describe("EventsDb", () => {
       const indexRow = db.raw().prepare(
         "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_events_pattern_lookup'"
       ).get();
+      const toolUseIndex = db.raw().prepare(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_events_tool_use'"
+      ).get();
+      const columns = db.raw().prepare("PRAGMA table_info(events)").all() as { name: string }[];
       expect(tableRow).toBeDefined();
       expect(indexRow).toBeDefined();
+      expect(toolUseIndex).toBeDefined();
+      expect(columns.map((c) => c.name)).toContain("tool_use_id");
       const versionRow = db.raw().prepare("SELECT version FROM schema_version").get() as { version: number };
-      expect(versionRow.version).toBe(3);
+      expect(versionRow.version).toBe(4);
       db.close();
     });
 
