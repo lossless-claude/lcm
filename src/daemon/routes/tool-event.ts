@@ -40,9 +40,9 @@ export function createToolEventHandler(config: DaemonConfig): RouteHandler {
 
     const outcome = recordPostToolEvents({
       ...input, cwd, session_id: input.session_id, tool_name: input.tool_name,
-      // Dedup key against the command-hook path; a non-string is dropped rather
-      // than written, so it never becomes a row that matches nothing.
-      tool_use_id: typeof input.tool_use_id === "string" ? input.tool_use_id : undefined,
+      // recordPostToolEvents owns the dedup key's validation, so both paths drop a
+      // non-string the same way instead of writing a row that matches nothing.
+      tool_use_id: input.tool_use_id as string | undefined,
     });
     sendJson(res, 200, { recorded: outcome.recorded, promoted: outcome.hasPriority1 });
 

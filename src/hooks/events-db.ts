@@ -100,6 +100,14 @@ export class EventsDb {
     }
   }
 
+  /** Rows written before v4 have no tool_use_id and never dedup against. */
+  private ensureToolUseIdColumn(): void {
+    const columns = this.db.prepare("PRAGMA table_info(events)").all() as { name: string }[];
+    if (!columns.some((c) => c.name === "tool_use_id")) {
+      this.db.exec("ALTER TABLE events ADD COLUMN tool_use_id TEXT");
+    }
+  }
+
   private migrate(): void {
     // Check if schema_version table exists
     const row = this.db.prepare(
@@ -128,8 +136,12 @@ export class EventsDb {
         );
         CREATE INDEX IF NOT EXISTS idx_error_log_created ON error_log(created_at);
         CREATE INDEX IF NOT EXISTS idx_events_pattern_lookup ON events(type, category, data, created_at);
-        CREATE INDEX IF NOT EXISTS idx_events_tool_use ON events(session_id, tool_use_id);
       `);
+      // The events table here may predate v4, so the column has to exist before the index.
+      this.ensureToolUseIdColumn();
+      this.db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_events_tool_use ON events(session_id, tool_use_id)"
+      );
       return;
     }
 
@@ -156,11 +168,7 @@ export class EventsDb {
           );
         }
         if (currentVersion < 4) {
-          // Rows written before this migration have no id and never dedup against.
-          const columns = this.db.prepare("PRAGMA table_info(events)").all() as { name: string }[];
-          if (!columns.some((c) => c.name === "tool_use_id")) {
-            this.db.exec("ALTER TABLE events ADD COLUMN tool_use_id TEXT");
-          }
+          this.ensureToolUseIdColumn();
           this.db.exec(
             "CREATE INDEX IF NOT EXISTS idx_events_tool_use ON events(session_id, tool_use_id)"
           );
@@ -199,6 +207,32 @@ export class EventsDb {
       "SELECT 1 FROM events WHERE session_id = ? AND tool_use_id = ? LIMIT 1"
     ).get(sessionId, toolUseId);
     return row !== undefined;
+  }
+
+  /**
+   * Writes one tool call's events, or none when another path already recorded that call.
+   * The check and the inserts share one write transaction: without it, two paths handling
+   * the same call could both read "not present" and both insert.
+   */
+  insertToolCallEvents(
+    sessionId: string, events: ExtractedEvent[], sourceHook: string, toolUseId?: string,
+  ): number {
+    if (!toolUseId) {
+      for (const event of events) this.insertEvent(sessionId, event, sourceHook);
+      return events.length;
+    }
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const duplicate = this.hasToolCall(sessionId, toolUseId);
+      if (!duplicate) {
+        for (const event of events) this.insertEvent(sessionId, event, sourceHook, toolUseId);
+      }
+      this.db.exec("COMMIT");
+      return duplicate ? 0 : events.length;
+    } catch (e) {
+      try { this.db.exec("ROLLBACK"); } catch { /* the transaction is already gone */ }
+      throw e;
+    }
   }
 
   getUnprocessed(limit = 500): EventRow[] {

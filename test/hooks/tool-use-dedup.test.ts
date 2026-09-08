@@ -10,7 +10,7 @@ vi.mock("../../src/db/events-path.js", () => ({
   eventsDir: () => process.env.TEST_EVENTS_DIR!,
 }));
 
-import { recordPostToolEvents } from "../../src/hooks/post-tool.js";
+import { recordPostToolEvents, type PostToolPayload } from "../../src/hooks/post-tool.js";
 import { EventsDb } from "../../src/hooks/events-db.js";
 
 /**
@@ -21,12 +21,12 @@ import { EventsDb } from "../../src/hooks/events-db.js";
 describe("tool call dedup on (session_id, tool_use_id)", () => {
   let dir: string;
 
-  function call(overrides: Record<string, unknown> = {}) {
+  function call(overrides: Partial<PostToolPayload> = {}) {
     return recordPostToolEvents({
       session_id: "s1", cwd: dir, tool_name: "AskUserQuestion",
       tool_input: { question: "Use SQLite?" }, tool_response: "yes",
       tool_use_id: "toolu_abc", ...overrides,
-    } as never);
+    });
   }
 
   function rows() {
@@ -106,5 +106,28 @@ describe("tool call dedup on (session_id, tool_use_id)", () => {
 
     expect(call().recorded).toBeGreaterThan(0);
     expect(call().recorded).toBe(0);
+  });
+
+  it("opens a pre-migration database whose schema_version table is empty", () => {
+    const path = join(dir, "events.db");
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      CREATE TABLE schema_version (version INTEGER NOT NULL);
+      CREATE TABLE events (
+        event_id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL,
+        seq INTEGER NOT NULL DEFAULT 0, type TEXT NOT NULL, category TEXT NOT NULL,
+        data TEXT NOT NULL, priority INTEGER DEFAULT 3, source_hook TEXT NOT NULL,
+        prev_event_id INTEGER, processed_at TEXT, created_at TEXT DEFAULT (datetime('now'))
+      );
+    `);
+    legacy.close();
+
+    // The version row is missing, so the migration steps are skipped; the column still
+    // has to exist before the index that names it.
+    const db = new EventsDb(path);
+    try {
+      const columns = db.raw().prepare("PRAGMA table_info(events)").all() as { name: string }[];
+      expect(columns.some((c) => c.name === "tool_use_id")).toBe(true);
+    } finally { db.close(); }
   });
 });
