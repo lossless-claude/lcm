@@ -422,6 +422,20 @@ describe("lcm bench", () => {
     expect(bench.queries.some((q) => q.prompt === boilerplate)).toBe(false);
   });
 
+  it("never samples pasted tool output as a prompt", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    // `git push` output: distinctive enough to be sampled, and it carries a
+    // capitalized identifier, so the generator would happily build a question from it.
+    const grepOutput = "remote: Create a pull request for 'release/v0.10.0' on GitHub by visiting:\nremote: https://github.com/lossless-claude/lcm/pull/new/release/v0.10.0";
+    await addSessions(cwd, [{ sessionId: "sess-tool-output", prompt: grepOutput }]);
+
+    const build = await buildBench({ cwd, n: 20, seed: 3 });
+    const bench = JSON.parse(readFileSync(build.out, "utf-8")) as BenchFile;
+    expect(bench.queries.some((q) => q.prompt === grepOutput)).toBe(false);
+  });
+
   it("counts any labelled session as a hit", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
     tempDirs.push(cwd);
