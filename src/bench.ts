@@ -262,30 +262,21 @@ export async function configuredQuestionGenerator(language: string): Promise<Que
   );
 }
 
-const LANGUAGE_TAG = /^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/;
-const MAX_LANGUAGE_TAG_LENGTH = 64;
 const LANGUAGE_SAMPLE_SIZE = 20;
 
 /**
- * Accepts only a bare BCP 47 tag, so a model that answers in prose is treated
- * as unsure. Case and `_` are normalised (`PT_br` → `pt-BR`), since tags are
- * case-insensitive and a locale-style spelling is a common way to type one.
+ * Accepts only a well-formed BCP 47 tag, canonicalised (`PT_br` → `pt-BR`), so
+ * a model that answers in prose — or a mistyped override — is treated as
+ * unsure rather than stamped on the set. `_` is accepted because a locale-style
+ * spelling is a common way to type a tag.
  */
 export function parseLanguageTag(reply: string): string | null {
   const tag = reply.trim().replace(/^[`"']+|[`"'.]+$/g, "").replaceAll("_", "-");
-  if (!tag || tag.length > MAX_LANGUAGE_TAG_LENGTH) return null;
-  if (!LANGUAGE_TAG.test(tag)) return null;
-  return tag
-    .split("-")
-    .map((part, i) => {
-      const lower = part.toLowerCase();
-      if (i === 0) return lower;
-      if (part.length === 4 && /^[A-Za-z]{4}$/.test(part)) return lower[0].toUpperCase() + lower.slice(1);
-      if (part.length === 2 && /^[A-Za-z]{2}$/.test(part)) return part.toUpperCase();
-      if (part.length === 1 && /^[A-Za-z]$/.test(part)) return lower;
-      return lower;
-    })
-    .join("-");
+  try {
+    return Intl.getCanonicalLocales(tag)[0] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export async function configuredLanguageDetector(): Promise<LanguageDetector> {
