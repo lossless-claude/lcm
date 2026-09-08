@@ -125,7 +125,7 @@ function drawBySession(
  * Length-normalisation strength, in the role BM25's `b` plays for message
  * length. 0 leaves scores untouched, 1 divides by the size ratio outright.
  */
-const SESSION_LENGTH_NORM = 0.25;
+const SESSION_LENGTH_NORM = Number(process.env.LCM_FUSION_B ?? 0.25);
 
 /**
  * Damp a session's score by how large the session is, the way bm25 already
