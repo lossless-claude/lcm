@@ -236,11 +236,11 @@ describe("recall fixtures", () => {
     });
 
     /**
-     * Ranks sessions through the daemon's own `/search` entry point, so the
-     * gate measures what a caller receives rather than what the candidate
-     * layer produces. Concatenating the two candidate lists by hand — as this
-     * did — skips session fusion, the limit and selection entirely, which is
-     * how a fusion bug once passed the gate green in both directions.
+     * Ranks sessions through the same implementation used by the daemon's `/search` episodic layer, so the
+     * gate measures what a caller receives rather than what the candidate layer produces.
+     * Concatenating the two candidate lists by hand — as this did — skips session fusion,
+     * the result limit, and snippet selection entirely, which is how a fusion bug once
+     * passed the gate green in both directions.
      */
     async function searchSessionRanking(question: string): Promise<string[]> {
       const all = await searchNativeHistory(db, { query: question, limit: RECALL_K });
