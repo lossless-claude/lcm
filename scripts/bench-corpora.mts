@@ -55,13 +55,30 @@ function inGroup(cwd: string, selected: Group): boolean {
   const held = HELD_OUT_CORPORA.has(basename(cwd));
   return selected === "holdout" ? held : !held;
 }
-const QUESTIONS_PER_CORPUS = Number(process.env.LCM_BENCH_N ?? 30);
+/**
+ * A positive integer from the environment, or the default when unset.
+ *
+ * Anything else stops the run: a silently coerced `NaN` seed would reach the
+ * PRNG and make a "fixed seed" produce a different sample every time, which is
+ * the one failure this harness must never have.
+ */
+function positiveInteger(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer, got "${raw}".`);
+  }
+  return value;
+}
+
+const QUESTIONS_PER_CORPUS = positiveInteger("LCM_BENCH_N", 30);
 /**
  * Fixed so a rerun scores the same questions, and two runs are comparable.
  * `LCM_BENCH_SEED` draws a different sample from the same corpus — use it when
  * a set has to be unseen, not when comparing two runs.
  */
-const SEED = Number(process.env.LCM_BENCH_SEED ?? 1234);
+const SEED = positiveInteger("LCM_BENCH_SEED", 1234);
 /** Below this a project holds too few sessions to rank anything meaningfully. */
 const MIN_DB_BYTES = 8 * 1024 * 1024;
 
