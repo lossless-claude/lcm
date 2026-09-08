@@ -25,6 +25,7 @@ import { createPoolStatsHandler } from "./routes/pool-stats.js";
 import { createReviewStaleHandler } from "./routes/review-stale.js";
 import { createToolEventHandler } from "./routes/tool-event.js";
 import { createSessionScavengeHandler } from "./routes/session-scavenge.js";
+import { backfillProjectIdentities } from "./project-group.js";
 import { PKG_VERSION, BUILD_ID } from "./version.js";
 export { PKG_VERSION };
 
@@ -166,6 +167,15 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   const ingestInterval = setInterval(scanForTranscripts, INGEST_INTERVAL_MS);
   ingestInterval.unref(); // don't prevent process exit
 
+  // Group every project already on disk, shortly after the daemon is serving so
+  // the git calls never delay startup. Refreshes are throttled per project, so
+  // only the first run after an upgrade does real work.
+  const IDENTITY_BACKFILL_DELAY_MS = 5_000;
+  const identityBackfill = setTimeout(() => {
+    try { backfillProjectIdentities(); } catch { /* non-fatal */ }
+  }, IDENTITY_BACKFILL_DELAY_MS);
+  identityBackfill.unref();
+
   const server: Server = createServer(async (req, res) => {
     resetIdleTimer();
     const key = `${req.method} ${req.url?.split("?")[0]}`;
@@ -201,6 +211,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   return new Promise((resolve, reject) => {
     server.once("error", (err) => {
       clearInterval(ingestInterval);
+      clearTimeout(identityBackfill);
       if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
       reject(err);
     });
@@ -217,6 +228,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
         stop: async () => {
           summarizeJobs.close();
           clearInterval(ingestInterval);
+          clearTimeout(identityBackfill);
           if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
           if (proxyManager) {
             try { await proxyManager.stop(); } catch { /* non-fatal */ }

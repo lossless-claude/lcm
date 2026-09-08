@@ -24,7 +24,7 @@ vi.mock("../../src/daemon/project.js", async (importOriginal) => {
   };
 });
 
-const { openProject, projectGroup, recordProjectIdentity, groupIndexPath } =
+const { backfillProjectIdentities, openProject, projectGroup, recordProjectIdentity, groupIndexPath } =
   await import("../../src/daemon/project-group.js");
 const { projectId, projectMetaPath } = await import("../../src/daemon/project.js");
 
@@ -92,6 +92,32 @@ describe("recordProjectIdentity", () => {
     openProject(plain);
     expect(readMeta(plain).git.remotes).toEqual([]);
     expect(projectGroup(plain)).toEqual([{ projectId: projectId(plain), cwd: plain }]);
+  });
+});
+
+describe("backfillProjectIdentities", () => {
+  /** A project recorded before this feature existed: a meta.json with only a cwd. */
+  function legacyProject(cwd: string): void {
+    mkdirSync(join(base, "projects", projectId(cwd)), { recursive: true });
+    writeFileSync(projectMetaPath(cwd), JSON.stringify({ cwd }, null, 2));
+  }
+
+  it("groups projects that were never opened again", () => {
+    const a = makeRepo("git@github.com:lossless-claude/lcm.git");
+    const b = makeRepo("git@github.com:lossless-claude/lcm.git");
+    legacyProject(a);
+    legacyProject(b);
+
+    expect(projectGroup(a).map(m => m.cwd)).toEqual([a]);
+    backfillProjectIdentities();
+    expect(projectGroup(a).map(m => m.cwd).sort()).toEqual([a, b].sort());
+  });
+
+  it("leaves a project whose folder is gone untouched", () => {
+    const gone = join(base, "no-such-checkout");
+    legacyProject(gone);
+    backfillProjectIdentities();
+    expect(readMeta(gone).git).toBeUndefined();
   });
 });
 

@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { BASE_DIR, ensureProjectDir, projectId, projectMetaPath } from "./project.js";
 import { discoverGitIdentity, type GitIdentity } from "./git-identity.js";
@@ -147,6 +147,36 @@ export function recordProjectIdentity(cwd: string): ProjectGitMeta {
     // fail the ingest or compaction that happened to trigger it.
   }
   return git;
+}
+
+/**
+ * Records the identity of every project already on disk, so a checkout that is
+ * never written to again still joins its group. The daily refresh interval
+ * makes every run after the first one nearly free.
+ *
+ * Returns how many projects were visited.
+ */
+export function backfillProjectIdentities(): number {
+  const projectsDir = join(BASE_DIR, "projects");
+  if (!existsSync(projectsDir)) return 0;
+
+  let visited = 0;
+  for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const metaPath = join(projectsDir, entry.name, "meta.json");
+    if (!existsSync(metaPath)) continue;
+    try {
+      const cwd = JSON.parse(readFileSync(metaPath, "utf-8")).cwd;
+      // A project whose folder is gone cannot be asked for its remotes; leave
+      // whatever was recorded before untouched.
+      if (typeof cwd !== "string" || !existsSync(cwd)) continue;
+      recordProjectIdentity(cwd);
+      visited += 1;
+    } catch {
+      // A corrupt meta.json skips that project, never the whole backfill.
+    }
+  }
+  return visited;
 }
 
 /**
