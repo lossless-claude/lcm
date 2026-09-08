@@ -95,6 +95,12 @@ async function readLive(path: string, cursor?: CodexTranscriptCursor) {
   return readCodexTranscriptDelta(path, { cursor, includeTrailingRecord: false });
 }
 
+function fingerprintWindowStarts(offset: number): number[] {
+  const firstLength = Math.min(offset, 4096);
+  const lastLength = Math.min(offset - firstLength, 4096);
+  return lastLength > 0 ? [0, offset - lastLength] : [0];
+}
+
 describe("readCodexTranscriptDelta", () => {
   it("full-scans once and preserves UTF-8 split across read chunks", async () => {
     const dir = makeDir();
@@ -118,6 +124,7 @@ describe("readCodexTranscriptDelta", () => {
       messageCount: 1,
       recordBoundary: true,
     });
+    expect(result.cursor.fingerprint).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it("defers a partial UTF-8 live tail without advancing its cursor", async () => {
@@ -155,7 +162,14 @@ describe("readCodexTranscriptDelta", () => {
     const unchanged = await readLive(path, initial.cursor);
     expect(unchanged.messages).toEqual([]);
     expect(unchanged.cursor).toEqual(initial.cursor);
-    expect(fsMock.readCalls.every(call => call.position === 0 || call.position === initial.cursor.offset - 1)).toBe(true);
+    const oldWindowStarts = fingerprintWindowStarts(initial.cursor.offset);
+    expect(fsMock.readCalls.every(call => (
+      call.position === initial.cursor.offset - 1 ||
+      (call.position !== null && oldWindowStarts.includes(call.position))
+    ))).toBe(true);
+    expect(fsMock.readCalls.reduce((total, call) => total + call.length, 0)).toBeLessThanOrEqual(
+      8192 + 1 + 2 * 8192,
+    );
 
     const suffix = `${messageLine("assistant", "only the suffix")}\n`;
     appendFileSync(path, suffix);
@@ -163,13 +177,15 @@ describe("readCodexTranscriptDelta", () => {
     const appended = await readLive(path, unchanged.cursor);
     expect(appended.messages.map(message => message.content)).toEqual(["only the suffix"]);
     expect(fsMock.readCalls.some(call => call.position === initial.cursor.offset)).toBe(true);
+    const newWindowStarts = fingerprintWindowStarts(appended.cursor.offset);
+    const boundedStarts = new Set([...oldWindowStarts, ...newWindowStarts]);
     expect(fsMock.readCalls.every(call => (
-      call.position === 0 ||
       call.position === initial.cursor.offset - 1 ||
+      (call.position !== null && boundedStarts.has(call.position)) ||
       (call.position !== null && call.position >= initial.cursor.offset)
     ))).toBe(true);
     expect(fsMock.readCalls.reduce((total, call) => total + call.length, 0)).toBeLessThanOrEqual(
-      8192 + 1 + Buffer.byteLength(suffix),
+      8192 + 1 + 4 * 8192 + Buffer.byteLength(suffix),
     );
   });
 
@@ -222,6 +238,32 @@ describe("readCodexTranscriptDelta", () => {
     const truncated = await readLive(path, replacementCursor);
     expect(truncated.resumed).toBe(false);
     expect(truncated.messages.map(message => message.content)).toEqual(["short"]);
+  });
+
+  it("full-scans legacy cursors and same-inode same-length rewrites", async () => {
+    const dir = makeDir();
+    const id = "rewrite-session";
+    const original = messageLine("user", "AAAA");
+    const replacement = messageLine("user", "BBBB");
+    expect(Buffer.byteLength(replacement)).toBe(Buffer.byteLength(original));
+    const path = writeTranscript(dir, id, [original]);
+    const initial = await readLive(path);
+
+    const legacy: CodexTranscriptCursor = { ...initial.cursor };
+    delete legacy.fingerprint;
+    const legacyRecovery = await readLive(path, legacy);
+    expect(legacyRecovery.resumed).toBe(false);
+    expect(legacyRecovery.messages.map(message => message.content)).toEqual(["AAAA"]);
+
+    const inode = statSync(path).ino;
+    writeFileSync(path, `${metaLine(id, dir)}\n${replacement}\n`);
+    expect(statSync(path).ino).toBe(inode);
+    expect(statSync(path).size).toBe(initial.cursor.offset);
+
+    const rewritten = await readLive(path, initial.cursor);
+    expect(rewritten.resumed).toBe(false);
+    expect(rewritten.messages.map(message => message.content)).toEqual(["BBBB"]);
+    expect(rewritten.cursor.fingerprint).not.toBe(initial.cursor.fingerprint);
   });
 
   it("rejects malformed completed records without exposing their contents", async () => {

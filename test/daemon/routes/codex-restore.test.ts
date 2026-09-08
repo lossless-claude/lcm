@@ -16,8 +16,10 @@ type RestoreBody = { context: string };
 async function seedConversation(input: {
   cwd: string;
   sessionId: string;
+  conversationCreatedAt?: string;
   summary?: string;
-  messages?: Array<{ role: "user" | "assistant"; content: string }>;
+  summaryCreatedAt?: string;
+  messages?: Array<{ role: "user" | "assistant"; content: string; createdAt?: string }>;
 }): Promise<void> {
   const dbPath = projectDbPath(input.cwd);
   mkdirSync(dirname(dbPath), { recursive: true });
@@ -27,6 +29,11 @@ async function seedConversation(input: {
     const conversations = new ConversationStore(db, { fts5Available: false });
     const summaries = new SummaryStore(db, { fts5Available: false });
     const conversation = await conversations.createConversation({ sessionId: input.sessionId });
+    if (input.conversationCreatedAt) {
+      db.prepare(
+        `UPDATE conversations SET created_at = ?, updated_at = ? WHERE conversation_id = ?`,
+      ).run(input.conversationCreatedAt, input.conversationCreatedAt, conversation.conversationId);
+    }
 
     if (input.summary) {
       const summaryId = `${input.sessionId}-summary`;
@@ -37,6 +44,10 @@ async function seedConversation(input: {
         content: input.summary,
         tokenCount: 20,
       });
+      if (input.summaryCreatedAt) {
+        db.prepare(`UPDATE summaries SET created_at = ? WHERE summary_id = ?`)
+          .run(input.summaryCreatedAt, summaryId);
+      }
       await summaries.appendContextSummary(conversation.conversationId, summaryId);
     }
 
@@ -48,6 +59,10 @@ async function seedConversation(input: {
         content: message.content,
         tokenCount: 20,
       });
+      if (message.createdAt) {
+        db.prepare(`UPDATE messages SET created_at = ? WHERE message_id = ?`)
+          .run(message.createdAt, record.messageId);
+      }
       await summaries.appendContextMessage(conversation.conversationId, record.messageId);
     }
   } finally {
@@ -146,6 +161,75 @@ describe("POST /restore for Codex", () => {
     expect(body.context).toContain("<recent-project-context>");
     expect(body.context).toContain("Local project uses a resumable manifest.");
     expect(body.context).not.toContain("Foreign project secret");
+  });
+
+  it("falls back to the session with the latest message activity", async () => {
+    const cwd = makeProject();
+    await seedConversation({
+      cwd,
+      sessionId: "older-active-session",
+      conversationCreatedAt: "2026-01-01 00:00:00",
+      messages: [{
+        role: "assistant",
+        content: "The older session contains the newest project work.",
+        createdAt: "2026-03-01 00:00:00",
+      }, {
+        role: "user",
+        content: "A later sequence can carry an older imported timestamp.",
+        createdAt: "2026-01-02 00:00:00",
+      }],
+    });
+    await seedConversation({
+      cwd,
+      sessionId: "newer-stale-session",
+      conversationCreatedAt: "2026-02-01 00:00:00",
+      messages: [{
+        role: "assistant",
+        content: "This newer-created session is stale.",
+        createdAt: "2026-02-01 00:00:00",
+      }],
+    });
+    await seedConversation({
+      cwd,
+      sessionId: "brand-new-empty-shell",
+      conversationCreatedAt: "2026-04-01 00:00:00",
+    });
+    daemon = await createDaemon(loadDaemonConfig(cwd, { daemon: { port: 0 } }));
+
+    const body = await restore(cwd, "brand-new-empty-shell", "startup");
+    expect(body.context).toContain("The older session contains the newest project work.");
+    expect(body.context).not.toContain("This newer-created session is stale.");
+  });
+
+  it("uses later summary activity across SQLite and ISO timestamps", async () => {
+    const cwd = makeProject();
+    await seedConversation({
+      cwd,
+      sessionId: "newer-created-message-session",
+      conversationCreatedAt: "2026-02-01 00:00:00",
+      messages: [{
+        role: "user",
+        content: "This message is earlier after timezone normalization.",
+        createdAt: "2026-03-02T00:30:00+02:00",
+      }],
+    });
+    await seedConversation({
+      cwd,
+      sessionId: "older-created-summary-session",
+      conversationCreatedAt: "2026-01-01 00:00:00",
+      summary: "The later summary is the latest project activity.",
+      summaryCreatedAt: "2026-03-01 23:00:00",
+    });
+    await seedConversation({
+      cwd,
+      sessionId: "brand-new-empty-shell",
+      conversationCreatedAt: "2026-04-01 00:00:00",
+    });
+    daemon = await createDaemon(loadDaemonConfig(cwd, { daemon: { port: 0 } }));
+
+    const body = await restore(cwd, "brand-new-empty-shell", "startup");
+    expect(body.context).toContain("The later summary is the latest project activity.");
+    expect(body.context).not.toContain("This message is earlier after timezone normalization.");
   });
 
   it("never reads, replays, or overwrites the Claude instruction snapshot", async () => {

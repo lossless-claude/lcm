@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import type { DatabaseSync } from "node:sqlite";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
 import { projectDbPath, projectDir, projectId, ensureProjectDir, projectMetaPath, isSafeTranscriptPath, claudeTranscriptPath } from "../project.js";
@@ -17,6 +18,25 @@ import { readCodexTranscriptDelta, type CodexTranscriptCursor } from "../../code
 import { loadCodexCursor, saveCodexCursor } from "../../db/codex-cursor.js";
 
 class TranscriptError extends Error {}
+
+function validateCodexRecovery(
+  db: DatabaseSync,
+  source: { conversationId: number; storedCount: number; messages: ParsedMessage[] },
+  scrubber: ScrubEngine,
+): void {
+  if (source.messages.length < source.storedCount) {
+    throw new Error("Codex transcript is shorter than stored history; restore the full transcript before retrying");
+  }
+  const stored = db.prepare("SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY seq LIMIT ?")
+    .all(source.conversationId, source.storedCount) as Array<{ role: string; content: string }>;
+  if (stored.length !== source.storedCount) throw new Error("Stored Codex history changed during recovery");
+  for (const [index, previous] of stored.entries()) {
+    const message = source.messages[index];
+    if (message.role !== previous.role || scrubber.scrubWithCounts(message.content).text !== scrubber.scrubWithCounts(previous.content).text) {
+      throw new Error("Codex transcript prefix differs from stored history; check the original transcript and redaction settings before retrying");
+    }
+  }
+}
 
 function codexTranscriptPath(path: string, cwd: string): string {
   const safePath = isSafeTranscriptPath(path, cwd, "codex");
@@ -162,12 +182,17 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
           let sourceCount = 0;
           if (codexPath) {
             let prior = existing ? loadCodexCursor(db, existing.conversation_id, codexPath) : undefined;
-            if (prior && prior.messageCount > storedCount) prior = undefined;
+            if (prior && prior.messageCount !== storedCount) prior = undefined;
             try {
               const delta = await readCodexTranscriptDelta(codexPath, {
                 cursor: prior, includeTrailingRecord: input.source === "import",
               });
               validateCodexMetadata(delta.sessionMeta, input, cwd);
+              if (!delta.resumed && existing) {
+                validateCodexRecovery(db, {
+                  conversationId: existing.conversation_id, storedCount, messages: delta.messages,
+                }, scrubber);
+              }
               parsed = delta.messages;
               sourceCount = delta.resumed && prior ? prior.messageCount : 0;
               cursor = delta.cursor;
@@ -176,8 +201,8 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
             }
           }
           const conversation = await conversationStore.getOrCreateConversation(session_id);
-          // Imports can put the database ahead of a live newline-boundary cursor.
-          // Skip that already-stored source prefix without rereading earlier bytes.
+          // A recovery scan may skip only a verified, already-stored prefix.
+          // Valid suffix reads begin exactly at the database's message count.
           const newMessages = parsed.slice(Math.max(0, storedCount - sourceCount));
 
           if (newMessages.length === 0 && !cursor) return { ingested: 0, totalTokens: 0 };

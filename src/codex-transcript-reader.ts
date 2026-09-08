@@ -2,11 +2,13 @@
  * Incremental asynchronous reader for append-only Codex JSONL transcripts.
  *
  * A cursor is valid only for the same file identity and a verified record
- * boundary. The reader assumes bytes before a valid cursor never change. It
- * detects replacement, truncation, and invalid boundaries, but it deliberately
- * does not hash the stable prefix on every hook invocation.
+ * boundary. A bounded fingerprint samples the first and last 4 KiB of the
+ * consumed prefix, detecting common same-inode rewrites without hashing the
+ * whole transcript on every hook. Unsampled in-place edits remain outside the
+ * supported append-only stable-prefix contract.
  */
 
+import { createHash } from "node:crypto";
 import { open, type FileHandle } from "node:fs/promises";
 import type { ParsedMessage } from "./transcript.js";
 import {
@@ -18,6 +20,8 @@ import {
 const READ_CHUNK_BYTES = 64 * 1024;
 const METADATA_LIMIT_BYTES = 1024 * 1024;
 const YIELD_AFTER_BYTES = 1024 * 1024;
+const FINGERPRINT_WINDOW_BYTES = 4096;
+const FINGERPRINT_VERSION = "codex-transcript-prefix-v1";
 
 export interface CodexTranscriptCursor {
   /** Byte immediately after the last consumed complete record. */
@@ -29,6 +33,8 @@ export interface CodexTranscriptCursor {
   inode: string;
   /** Whether `offset` follows a newline; false only for an imported final record. */
   recordBoundary: boolean;
+  /** Versioned SHA-256 sample of the consumed prefix. Absent legacy cursors restart. */
+  fingerprint?: string;
 }
 
 export interface ReadCodexTranscriptDeltaOptions {
@@ -57,7 +63,41 @@ function isNonNegativeInteger(value: number): boolean {
 async function readExactlyOneByte(handle: FileHandle, position: number): Promise<number | undefined> {
   const byte = Buffer.allocUnsafe(1);
   const { bytesRead } = await handle.read(byte, 0, 1, position);
+  if (bytesRead === 0) throw new Error("Codex transcript changed while reading");
   return bytesRead === 1 ? byte[0] : undefined;
+}
+
+async function readWindow(handle: FileHandle, position: number, length: number): Promise<Buffer> {
+  const bytes = Buffer.allocUnsafe(length);
+  let consumed = 0;
+  while (consumed < length) {
+    const { bytesRead } = await handle.read(
+      bytes,
+      consumed,
+      length - consumed,
+      position + consumed,
+    );
+    if (bytesRead === 0) throw new Error("Codex transcript changed while reading");
+    consumed += bytesRead;
+  }
+  return bytes;
+}
+
+async function fingerprintPrefix(handle: FileHandle, offset: number): Promise<string> {
+  const firstLength = Math.min(offset, FINGERPRINT_WINDOW_BYTES);
+  const remaining = offset - firstLength;
+  const lastLength = Math.min(remaining, FINGERPRINT_WINDOW_BYTES);
+  const lastOffset = offset - lastLength;
+  const [first, last] = await Promise.all([
+    readWindow(handle, 0, firstLength),
+    readWindow(handle, lastOffset, lastLength),
+  ]);
+
+  return createHash("sha256")
+    .update(`${FINGERPRINT_VERSION}\0offset:${offset}\0first:${firstLength}\0last:${lastLength}\0`)
+    .update(first)
+    .update(last)
+    .digest("hex");
 }
 
 async function canResume(
@@ -70,16 +110,20 @@ async function canResume(
   if (!cursor) return false;
   if (!isNonNegativeInteger(cursor.offset) || !isNonNegativeInteger(cursor.messageCount)) return false;
   if (cursor.device !== device || cursor.inode !== inode || cursor.offset > size) return false;
+  if (typeof cursor.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(cursor.fingerprint)) {
+    return false;
+  }
 
   if (!cursor.recordBoundary) {
     // Historical imports may consume a valid final record without a newline.
     // It remains resumable only while EOF is unchanged. Growth forces a full
     // scan so bytes appended to that former final record cannot be skipped.
-    return cursor.offset === size;
+    if (cursor.offset !== size) return false;
+  } else if (cursor.offset > 0) {
+    if (await readExactlyOneByte(handle, cursor.offset - 1) !== 0x0a) return false;
   }
 
-  if (cursor.offset === 0) return true;
-  return await readExactlyOneByte(handle, cursor.offset - 1) === 0x0a;
+  return await fingerprintPrefix(handle, cursor.offset) === cursor.fingerprint;
 }
 
 function decodeRecord(parts: Buffer[], length: number, byteOffset: number): string {
@@ -250,9 +294,13 @@ export async function readCodexTranscriptDelta(
     const snapshotSize = Number(stats.size);
     const device = stats.dev.toString();
     const inode = stats.ino.toString();
+    const resumed = await canResume(handle, options.cursor, snapshotSize, device, inode);
+    const guardOffset = resumed ? options.cursor!.offset : snapshotSize;
+    const guardFingerprint = resumed
+      ? options.cursor!.fingerprint!
+      : await fingerprintPrefix(handle, guardOffset);
     const sessionMeta = await readSessionMeta(handle, snapshotSize);
     if (!sessionMeta.cwd) throw new Error("Codex transcript metadata is missing a cwd");
-    const resumed = await canResume(handle, options.cursor, snapshotSize, device, inode);
     const startOffset = resumed ? options.cursor!.offset : 0;
 
     const scan = await scanRecords(
@@ -263,6 +311,19 @@ export async function readCodexTranscriptDelta(
       resumed ? options.cursor!.recordBoundary : startOffset === 0,
     );
     const initialMessageCount = resumed ? options.cursor!.messageCount : 0;
+    const checkpointBefore = await fingerprintPrefix(handle, scan.offset);
+    const guardAfter = scan.offset === guardOffset
+      ? checkpointBefore
+      : await fingerprintPrefix(handle, guardOffset);
+    if (guardAfter !== guardFingerprint) {
+      throw new Error("Codex transcript changed while reading");
+    }
+    const fingerprint = scan.offset === guardOffset
+      ? checkpointBefore
+      : await fingerprintPrefix(handle, scan.offset);
+    if (fingerprint !== checkpointBefore) {
+      throw new Error("Codex transcript changed while reading");
+    }
 
     return {
       messages: scan.messages,
@@ -272,6 +333,7 @@ export async function readCodexTranscriptDelta(
         device,
         inode,
         recordBoundary: scan.recordBoundary,
+        fingerprint,
       },
       resumed,
       sessionMeta,

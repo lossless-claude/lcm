@@ -143,7 +143,17 @@ function readCodexContext(
          ) OR EXISTS (
            SELECT 1 FROM summaries s WHERE s.conversation_id = c.conversation_id
          ))
-       ORDER BY c.updated_at DESC, c.conversation_id DESC
+       ORDER BY MAX(
+         COALESCE((
+           SELECT MAX(julianday(m.created_at)) FROM messages m
+           WHERE m.conversation_id = c.conversation_id
+             AND m.role IN ('user', 'assistant')
+         ), -1),
+         COALESCE((
+           SELECT MAX(julianday(s.created_at)) FROM summaries s
+           WHERE s.conversation_id = c.conversation_id
+         ), -1)
+       ) DESC, c.conversation_id DESC
        LIMIT 1`,
     ).get(typeof sessionId === "string" ? sessionId : "") as { conversation_id: number } | undefined;
     rows = conversation ? readRows(conversation.conversation_id) : [];

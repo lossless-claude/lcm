@@ -1,6 +1,8 @@
 import {
   appendFileSync,
   mkdtempSync,
+  readFileSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -163,6 +165,25 @@ describe("Codex persistent ingest cursor", () => {
     });
   });
 
+  it("upgrades legacy cursors without fingerprints through a verified recovery scan", async () => {
+    const fixture = createTranscript([messageLine("user", "legacy history")]);
+    await startDaemon();
+    await post(fixture);
+    await daemon!.stop();
+    daemon = undefined;
+    const db = new DatabaseSync(projectDbPath(fixture.cwd));
+    try {
+      db.exec("ALTER TABLE codex_ingest_cursors DROP COLUMN prefix_fingerprint");
+    } finally {
+      db.close();
+    }
+    appendFileSync(fixture.path, `${messageLine("assistant", "after upgrade")}\n`);
+    await startDaemon();
+    expect(await post(fixture)).toMatchObject({ status: 200, body: { ingested: 1 } });
+    expect(readState(fixture.cwd, fixture.sessionId).messages.map(message => message.content))
+      .toEqual(["legacy history", "after upgrade"]);
+  });
+
   it("continues from the persisted cursor after a daemon restart", async () => {
     const fixture = createTranscript([messageLine("user", "before restart")]);
     await startDaemon();
@@ -180,6 +201,31 @@ describe("Codex persistent ingest cursor", () => {
     expect(after.cursor.byte_offset).toBeGreaterThan(before.cursor.byte_offset);
     expect(after.cursor.message_count).toBe(2);
     expect(after.messages.map(message => message.content)).toEqual(["before restart", "after restart"]);
+  });
+
+  it("rejects equal-size in-place rewrites without mixing session histories", async () => {
+    const fixture = createTranscript([messageLine("user", "alpha"), messageLine("assistant", "bravo")]);
+    const original = readFileSync(fixture.path, "utf8");
+    const originalStat = statSync(fixture.path);
+    await startDaemon();
+    await post(fixture);
+    const before = readState(fixture.cwd, fixture.sessionId);
+
+    writeFileSync(fixture.path, original.replace("alpha", "delta").replace("bravo", "eagle"));
+    expect(statSync(fixture.path).ino).toBe(originalStat.ino);
+    expect(statSync(fixture.path).size).toBe(originalStat.size);
+    expect(await post(fixture)).toMatchObject({ status: 400 });
+    expect(readState(fixture.cwd, fixture.sessionId)).toEqual(before);
+
+    const tail = `${messageLine("user", "new tail")}\n`;
+    appendFileSync(fixture.path, tail);
+    expect(await post(fixture)).toMatchObject({ status: 400 });
+    expect(readState(fixture.cwd, fixture.sessionId)).toEqual(before);
+
+    writeFileSync(fixture.path, original + tail);
+    expect(await post(fixture)).toMatchObject({ status: 200, body: { ingested: 1 } });
+    expect(readState(fixture.cwd, fixture.sessionId).messages.map(message => message.content))
+      .toEqual(["alpha", "bravo", "new tail"]);
   });
 
   it("serializes concurrent captures of the same appended tail", async () => {
@@ -249,6 +295,91 @@ describe("Codex persistent ingest cursor", () => {
 
     expect((await post(fixture)).status).toBe(400);
     expect(readState(fixture.cwd, fixture.sessionId)).toEqual(before);
+  });
+
+  it.each(["truncate", "replace"])("rejects a shorter %s source and reconciles only the stored prefix", async (operation) => {
+    const fixture = createTranscript(["first", "second", "third"].map(text => messageLine("user", text)));
+    await startDaemon();
+    await post(fixture);
+    const before = readState(fixture.cwd, fixture.sessionId);
+    const original = readFileSync(fixture.path, "utf8");
+    const header = original.slice(0, original.indexOf("\n") + 1);
+    const replacement = `${header}${messageLine("user", "unseen replacement")}\n`;
+    if (operation === "replace") {
+      writeFileSync(`${fixture.path}.new`, replacement);
+      renameSync(`${fixture.path}.new`, fixture.path);
+    } else {
+      writeFileSync(fixture.path, replacement);
+    }
+
+    expect((await post(fixture)).status).toBe(400);
+    expect(readState(fixture.cwd, fixture.sessionId)).toEqual(before);
+    appendFileSync(fixture.path, `${messageLine("user", "fourth")}\n${messageLine("user", "fifth")}\n`);
+    // Matching the old count is insufficient when the source prefix differs.
+    expect((await post(fixture)).status).toBe(400);
+    expect(readState(fixture.cwd, fixture.sessionId)).toEqual(before);
+
+    writeFileSync(fixture.path, `${original}${messageLine("assistant", "recovered tail")}\n`);
+    expect(await post(fixture)).toMatchObject({ status: 200, body: { ingested: 1 } });
+    expect(readState(fixture.cwd, fixture.sessionId).messages.map(message => message.content))
+      .toEqual(["first", "second", "third", "recovered tail"]);
+  });
+
+  it("rejects a stale cursor already advanced by an older truncated-source capture", async () => {
+    const fixture = createTranscript(["first", "second", "third"].map(text => messageLine("user", text)));
+    await startDaemon();
+    await post(fixture);
+    const original = readFileSync(fixture.path, "utf8");
+    const header = original.slice(0, original.indexOf("\n") + 1);
+    writeFileSync(fixture.path, `${header}${messageLine("user", "replacement")}\n`);
+    const db = new DatabaseSync(projectDbPath(fixture.cwd));
+    try {
+      db.prepare("UPDATE codex_ingest_cursors SET byte_offset = ?, message_count = 1")
+        .run(statSync(fixture.path).size);
+    } finally { db.close(); }
+    const before = readState(fixture.cwd, fixture.sessionId);
+    appendFileSync(fixture.path, `${messageLine("assistant", "unseen new turn")}\n`);
+
+    expect((await post(fixture)).status).toBe(400);
+    expect(readState(fixture.cwd, fixture.sessionId)).toEqual(before);
+  });
+
+  it("accepts a recovered prefix after applying the same redaction rules", async () => {
+    const fixture = createTranscript([messageLine("user", "Project value MY_PROJECT_SECRET")]);
+    daemon = await createDaemon(loadDaemonConfig("/nonexistent", {
+      daemon: { port: 0 }, security: { sensitivePatterns: ["MY_PROJECT_SECRET"] },
+    }));
+    await post(fixture);
+    const before = readState(fixture.cwd, fixture.sessionId);
+    expect(before.messages[0].content).not.toContain("MY_PROJECT_SECRET");
+    const original = readFileSync(fixture.path, "utf8");
+    writeFileSync(`${fixture.path}.new`, `${original}${messageLine("assistant", "new tail")}\n`);
+    renameSync(`${fixture.path}.new`, fixture.path);
+
+    expect(await post(fixture)).toMatchObject({ status: 200, body: { ingested: 1 } });
+    expect(readState(fixture.cwd, fixture.sessionId).messages)
+      .toEqual([...before.messages, { role: "assistant", content: "new tail" }]);
+  });
+
+  it("accepts unchanged history when new redaction rules are added", async () => {
+    const fixture = createTranscript([messageLine("user", "Project value NEW_SECRET")]);
+    await startDaemon();
+    await post(fixture);
+    const before = readState(fixture.cwd, fixture.sessionId);
+    expect(before.messages[0].content).toContain("NEW_SECRET");
+    const original = readFileSync(fixture.path, "utf8");
+    await daemon!.stop();
+    daemon = await createDaemon(loadDaemonConfig("/nonexistent", {
+      daemon: { port: 0 }, security: { sensitivePatterns: ["NEW_SECRET"] },
+    }));
+    writeFileSync(`${fixture.path}.new`, `${original}${messageLine("assistant", "Follow-up NEW_SECRET")}\n`);
+    renameSync(`${fixture.path}.new`, fixture.path);
+
+    expect(await post(fixture)).toMatchObject({ status: 200, body: { ingested: 1 } });
+    const after = readState(fixture.cwd, fixture.sessionId);
+    expect(after.messages[0]).toEqual(before.messages[0]);
+    expect(after.messages[1].content).toContain("Follow-up");
+    expect(after.messages[1].content).not.toContain("NEW_SECRET");
   });
 
   it("rolls back appended messages when the cursor update fails and succeeds on retry", async () => {
