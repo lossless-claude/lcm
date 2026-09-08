@@ -15,6 +15,7 @@ const tempDirs: string[] = [];
 vi.mock("../../src/daemon/project.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../src/daemon/project.js")>(),
   projectDbPath: (cwd: string) => join(cwd, "db.sqlite"),
+  projectMetaPath: (cwd: string) => join(cwd, "meta.json"),
 }));
 
 afterEach(() => {
@@ -233,6 +234,18 @@ describe("lcm bench", () => {
     const sample = detect.mock.calls[0][0] as unknown as string[];
     expect(sample.length).toBeGreaterThan(0);
     expect(sample).not.toContain(listing);
+  });
+
+  it("uses the language the daemon recorded for the project before detecting", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    writeFileSync(join(cwd, "meta.json"), JSON.stringify({ cwd, language: "de" }));
+    const detect = vi.fn(async () => "pt-BR");
+    const built = await buildBench({ cwd, generator: "llm" }, async () => "Warum diese Datenbank?", detect);
+    expect(built.exitCode, built.stdout).toBe(0);
+    expect(detect).not.toHaveBeenCalled();
+    expect((JSON.parse(readFileSync(built.out, "utf-8")) as BenchFile).language).toBe("de");
   });
 
   it("an explicit language wins over detection", async () => {
