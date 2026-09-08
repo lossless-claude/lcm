@@ -196,7 +196,7 @@ an array, `null` or a number is rejected at config load, not at request time.
 ### Token cost reporting
 
 Every provider reports its usage in a normalized shape, stored in
-`llm_usage_stats` and shown by `lcm import --replay`:
+`llm_usage_stats` and shown by `lcm import --replay` and `lcm stats`:
 
 | Provider | Input | Cached | Output | Extra |
 |---|---|---|---|---|

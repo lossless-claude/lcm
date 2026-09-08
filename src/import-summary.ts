@@ -1,14 +1,5 @@
 import type { ImportResult } from "./import.js";
-import { formatNumber, formatRatio } from "./stats.js";
-
-/**
- * Summarizer calls cost fractions of a cent, so two decimals would print a real
- * charge as "$0.00" — the same "absent reads as free" bug this figure exists to
- * kill. Sub-dollar amounts keep six decimals.
- */
-function formatUsd(n: number): string {
-  return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(6)}`;
-}
+import { formatNumber, formatRatio, formatUsd } from "./stats.js";
 
 export function printImportSummary(
   result: ImportResult,
