@@ -33,6 +33,23 @@ export interface GroupMember {
   cwd: string;
 }
 
+/** How a project is named on a result that leaves the daemon. */
+export const projectRef = (cwd: string) => ({ id: projectId(cwd), cwd });
+
+/**
+ * The cwd whose database an id from a search result should be read against:
+ * the request's own project when no project is named, otherwise the group
+ * member that owns it. Null when the id names no member of the group.
+ *
+ * Callers must go through here rather than trusting the id. `conversation_id`
+ * and `message_id` are `AUTOINCREMENT` per database, so an id resolved against
+ * the wrong project silently returns a different message.
+ */
+export function resolveSourceCwd(requestCwd: string, id: unknown): string | null {
+  if (typeof id !== "string" || id === "" || id === projectId(requestCwd)) return requestCwd;
+  return projectGroup(requestCwd).find(member => member.projectId === id)?.cwd ?? null;
+}
+
 function openIndex(): DatabaseSync {
   mkdirSync(BASE_DIR, { recursive: true });
   const db = new DatabaseSync(groupIndexPath());

@@ -5,6 +5,7 @@ export const lcmDescribeTool = {
     type: "object" as const,
     properties: {
       nodeId: { type: "string", description: "Node ID to describe" },
+      projectId: { type: "string", description: "The `project.id` of the search result the node came from. Required whenever the node did not come from this project, since node ids are only unique within one project." },
     },
     required: ["nodeId"],
   },

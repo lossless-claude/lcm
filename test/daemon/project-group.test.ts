@@ -24,7 +24,7 @@ vi.mock("../../src/daemon/project.js", async (importOriginal) => {
   };
 });
 
-const { backfillProjectIdentities, openProject, projectGroup, recordProjectIdentity, groupIndexPath } =
+const { backfillProjectIdentities, openProject, projectGroup, recordProjectIdentity, resolveSourceCwd, groupIndexPath } =
   await import("../../src/daemon/project-group.js");
 const { projectId, projectMetaPath } = await import("../../src/daemon/project.js");
 
@@ -133,6 +133,33 @@ describe("backfillProjectIdentities", () => {
     legacyProject(gone);
     await backfillProjectIdentities();
     expect(readMeta(gone).git).toBeUndefined();
+  });
+});
+
+describe("resolveSourceCwd", () => {
+  it("falls back to the request's own project when no project is named", () => {
+    const repo = makeRepo("git@github.com:lossless-claude/lcm.git");
+    openProject(repo);
+    expect(resolveSourceCwd(repo, undefined)).toBe(repo);
+    expect(resolveSourceCwd(repo, "")).toBe(repo);
+    expect(resolveSourceCwd(repo, projectId(repo))).toBe(repo);
+  });
+
+  it("resolves a sibling in the group to that sibling's own directory", () => {
+    const a = makeRepo("git@github.com:lossless-claude/lcm.git");
+    const b = makeRepo("git@github.com:lossless-claude/lcm.git");
+    openProject(a);
+    openProject(b);
+    expect(resolveSourceCwd(a, projectId(b))).toBe(b);
+  });
+
+  it("refuses a project outside the group", () => {
+    const a = makeRepo("git@github.com:lossless-claude/lcm.git");
+    const other = makeRepo("git@github.com:lossless-claude/magi.git");
+    openProject(a);
+    openProject(other);
+    expect(resolveSourceCwd(a, projectId(other))).toBeNull();
+    expect(resolveSourceCwd(a, "0".repeat(64))).toBeNull();
   });
 });
 
