@@ -30,6 +30,19 @@ describe("handleUserPromptSubmit", () => {
     vi.clearAllMocks();
   });
 
+  it("stays silent while the function-hooks module owns the prompt (no double injection)", async () => {
+    process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = "1";
+    try {
+      const client = { post: vi.fn() };
+      const result = await handleUserPromptSubmit(JSON.stringify({ prompt: "hello", session_id: "s1", cwd: "/tmp" }), client as any);
+      expect(result).toEqual({ exitCode: 0, stdout: "" });
+      expect(mockEnsureDaemon).not.toHaveBeenCalled();
+      expect(client.post).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS;
+    }
+  });
+
   it("returns hint when daemon returns matches", async () => {
     mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
     const client = {
