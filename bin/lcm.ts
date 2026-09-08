@@ -221,7 +221,7 @@ async function createDaemonClientOrExit(): Promise<DaemonClient> {
 export function registerBenchCommands(program: Command): void {
   // ─── bench ─────────────────────────────────────────────────────────────────
   const benchCmd = new Command("bench").description(
-    "Build and run a natural-language recall benchmark from this project's ingested sessions",
+    "Build and run a natural-language retrieval benchmark from this project's ingested sessions",
   );
   benchCmd.action(() => { benchCmd.outputHelp(); });
 
@@ -248,7 +248,7 @@ export function registerBenchCommands(program: Command): void {
     .command("run")
     .description("Run the benchmark against search and a grep baseline")
     .option("--project <path>", "Project directory (default: cwd)")
-    .option("--k <n>", "Recall cutoff (default: 5)", "5")
+    .option("--k <n>", "Hit-rate cutoff (default: 5)", "5")
     .option("--bench-file <file>", "Benchmark file path (default: project memory directory)")
     .option("--json", "Output structured JSON")
     .action(async (opts) => {

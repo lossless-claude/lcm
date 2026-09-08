@@ -15,21 +15,27 @@ import { tmpdir } from "node:os";
 import { prepareRgCorpus, searchRg, type GrepDocument, type PreparedRgCorpus } from "./bench/rg-baseline.js";
 
 /**
- * Layer 2 recall benchmark (issue #309): build and run a natural-language
- * recall benchmark from the user's own ingested sessions — the only corpus
- * with realistic noise. Benchmark files are written next to the project DB
+ * Layer 2 retrieval benchmark: build and run a natural-language question set
+ * from the user's own ingested sessions — the only corpus with realistic
+ * noise. Benchmark files are written next to the project DB
  * (under ~/.lossless-claude) and never touch the repository.
  *
- * `build` samples user prompts and records their source sessions. Generated
- * questions need review: that source label does not prove an answer exists
- * or that no other session is relevant. Explicit LLM generation preserves
- * subject details; mechanical generation is diagnostic only. Curated manual
- * queries can retain the user's wording and exact identifiers.
+ * `build` only samples user prompts whose text occurs in exactly one session,
+ * so the recorded source label can anchor a single-label question. Generated
+ * questions still need review: unique evidence does not prove that no other
+ * session also answers the question — when one does, list it in `sessionIds`.
+ * Explicit LLM generation preserves subject details; mechanical generation is
+ * diagnostic only. Curated manual queries can retain the user's wording and
+ * exact identifiers.
+ *
+ * The scored metric is a labelled-session hit rate, not relevance recall.
  */
 
 export type BenchQuery = {
   id: string;
   sessionId: string;
+  /** Further sessions that also answer the question; scored as hits alongside `sessionId`. */
+  sessionIds?: string[];
   prompt: string;
   question: string;
   generator: "mechanical" | "llm" | "manual";
@@ -84,18 +90,28 @@ function mulberry32(seed: number): () => number {
 }
 
 /**
- * True when the prompt looks like a real instruction rather than noise:
- * slash commands, tool output pastes, XML-ish system blocks, and empty
- * shells are excluded.
+ * User turns that are not something the user asked: slash commands, pasted
+ * tool output, XML-ish system blocks, and harness boilerplate. None of them
+ * names a subject, so none can anchor a question.
  */
+const REJECTED_PROMPTS = [
+  /^[<\/{[]/,
+  /caveat: the messages below were generated/i,
+  /^\s*\[?\s*(tool|function)[_\s-]?(call|result|output)/i,
+  /the user (doesn't|does not) want to proceed with this tool use/i,
+  /^\s*(error:\s*)?file does not exist/i,
+  /\[request interrupted by/i,
+  /^\s*api error/i,
+];
+
+const MIN_PROMPT_LENGTH = 40;
+const MAX_PROMPT_LENGTH = 1200;
+
+/** True when the prompt is a real instruction carrying at least two content words. */
 function isDistinctivePrompt(content: string): boolean {
   const trimmed = content.trim();
-  if (trimmed.length < 40 || trimmed.length > 1200) return false;
-  if (trimmed.startsWith("<") || trimmed.startsWith("/")) return false;
-  if (/^\s*[{[]/.test(trimmed)) return false;
-  if (/caveat: the messages below were generated/i.test(trimmed)) return false;
-  if (/^\s*\[?\s*(tool|function)[_\s-]?(call|result|output)/i.test(trimmed)) return false;
-  // Must contain at least one content word that survives stopword removal.
+  if (trimmed.length < MIN_PROMPT_LENGTH || trimmed.length > MAX_PROMPT_LENGTH) return false;
+  if (REJECTED_PROMPTS.some((pattern) => pattern.test(trimmed))) return false;
   return extractQueryTerms(trimmed).length >= 2;
 }
 
@@ -191,25 +207,126 @@ export async function configuredQuestionGenerator(): Promise<QuestionGenerator> 
   );
 }
 
-function questionProblem(question: unknown, prompt: string, seen: Set<string>, manual = false): string | null {
+const SUBJECTLESS_QUESTION = /^(what did we work on in that session|what was (this|that) (session|conversation) about)\??$/i;
+
+/** A question with no subject matches every session equally, so it scores nothing. */
+function isSubjectless(question: string): boolean {
+  const trimmed = question.trim();
+  return OUTCOME_FALLBACKS.some((fallback) => fallback.question === trimmed.toLowerCase()) || SUBJECTLESS_QUESTION.test(trimmed);
+}
+
+/** Checks only generated questions face; curated ones keep the user's own wording. */
+function generatedQuestionProblem(question: string, prompt: string): string | null {
+  const trimmed = question.trim();
+  if (trimmed.length < 15 || question.length > 500 || !trimmed.endsWith("?")) return "expected a single specific question ending in ?";
+  if (question.includes("\n") || prompt.toLowerCase().includes(trimmed.toLowerCase())) return "question must paraphrase the source prompt";
+  if (isSubjectless(question)) return "question has no identifiable subject";
+  return null;
+}
+
+/** Records the question in `seen` unless it has a problem. */
+function questionProblem(question: unknown, ctx: { prompt: string; seen: Set<string>; manual?: boolean }): string | null {
   if (typeof question !== "string" || !question.trim()) return "expected nonempty query text";
   const normalized = question.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim() || question.trim();
-  if (seen.has(normalized)) return "duplicate question";
-  if (manual) {
-    seen.add(normalized);
-    return null;
-  }
-  if (question.trim().length < 15 || question.length > 500 || !question.trim().endsWith("?")) return "expected a single specific question ending in ?";
-  if (question.includes("\n") || prompt.toLowerCase().includes(question.trim().toLowerCase())) return "question must paraphrase the source prompt";
-  if (OUTCOME_FALLBACKS.some((fallback) => fallback.question === question.trim().toLowerCase())) return "question has no identifiable subject";
-  if (/^(what did we work on in that session|what was (this|that) (session|conversation) about)\??$/i.test(question.trim())) return "question has no identifiable subject";
-  seen.add(normalized);
+  if (ctx.seen.has(normalized)) return "duplicate question";
+  const problem = ctx.manual ? null : generatedQuestionProblem(question, ctx.prompt);
+  if (problem) return problem;
+  ctx.seen.add(normalized);
   return null;
 }
 
 /**
+ * User prompt texts that appear in more than one session. A question whose
+ * evidence is not unique cannot be scored against a single source label:
+ * search can return another session that genuinely contains it and still be
+ * counted as a miss.
+ */
+function repeatedPrompts(db: DatabaseSync): Set<string> {
+  const rows = db
+    .prepare(
+      `SELECT m.content AS content
+       FROM messages m
+       JOIN conversations c ON c.conversation_id = m.conversation_id
+       WHERE m.role = 'user'
+       GROUP BY m.content
+       HAVING COUNT(DISTINCT c.session_id) > 1`,
+    )
+    .all() as Array<{ content: string }>;
+  return new Set(rows.map((r) => r.content));
+}
+
+type SampledConversation = { conversationId: number; sessionId: string };
+
+type SampleContext = {
+  convStore: ConversationStore;
+  repeated: Set<string>;
+  seenQuestions: Set<string>;
+  rand: () => number;
+  generateQuestion?: QuestionGenerator;
+  requireLlm: boolean;
+};
+
+/**
+ * One sampling attempt. `aborted` is distinct from `rejected`: an explicit LLM
+ * generator that returns nothing must fail the whole build rather than quietly
+ * fall back to a mechanical question.
+ */
+type SampledQuery =
+  | { status: "sampled"; query: BenchQuery; usedLlm: boolean }
+  | { status: "rejected"; reason: string; usedLlm: boolean }
+  | { status: "skipped" }
+  | { status: "aborted"; stdout: string };
+
+/** Draw one reviewable question from a conversation, or say why none was drawn. */
+async function sampleQuery(conv: SampledConversation, ctx: SampleContext, id: string): Promise<SampledQuery> {
+  const messages = await ctx.convStore.getMessages(conv.conversationId);
+  const candidates = messages.filter(
+    (m) => m.role === "user" && isDistinctivePrompt(m.content) && !ctx.repeated.has(m.content),
+  );
+  if (candidates.length === 0) return { status: "skipped" };
+  const prompt = candidates[Math.floor(ctx.rand() * candidates.length)];
+
+  let question = ctx.generateQuestion ? await ctx.generateQuestion(prompt.content) : null;
+  const usedLlm = Boolean(question);
+  if (!question) {
+    if (ctx.requireLlm) return { status: "aborted", stdout: "LLM generator returned no question; benchmark was not written.\n" };
+    question = mechanicalQuestion(prompt.content, ctx.rand);
+  }
+
+  const problem = questionProblem(question, { prompt: prompt.content, seen: ctx.seenQuestions });
+  if (problem) return { status: "rejected", reason: problem, usedLlm };
+  return {
+    status: "sampled",
+    usedLlm,
+    query: { id, sessionId: conv.sessionId, prompt: prompt.content, question, generator: usedLlm ? "llm" : "mechanical" },
+  };
+}
+
+/** Deterministic Fisher-Yates, so a seed reproduces the same benchmark. */
+function shuffle<T>(items: T[], rand: () => number): T[] {
+  const shuffled = [...items];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
+}
+
+function benchGeneratorLabel(queries: BenchQuery[], usedLlm: boolean): string {
+  if (!usedLlm) return "mechanical";
+  return queries.every((q) => q.generator === "llm") ? "llm" : "llm+mechanical";
+}
+
+function formatBuildReport(bench: BenchFile, out: string, rejected: string[]): string {
+  const lines = [`Wrote ${bench.queries.length} benchmark questions (${bench.generator}) to ${out}`];
+  if (rejected.length > 0) lines.push(`Rejected ${rejected.length} invalid questions: ${rejected.join("; ")}`);
+  if (bench.generator.includes("mechanical")) lines.push("Warning: mechanical questions are diagnostic only; review questions before using scores as release evidence.");
+  return lines.join("\n") + "\n";
+}
+
+/**
  * Build the benchmark file: sample sessions, extract a distinctive user
- * prompt from each, and produce a question for review.
+ * prompt unique to each, and produce a question for review.
  * Pass `generateQuestion` to use the configured summarizer for paraphrasing;
  * without it, the mechanical fallback is used for every prompt.
  */
@@ -231,6 +348,8 @@ export async function buildBench(
 
   const db = getLcmConnection(dbPath);
   try {
+    // Migrations may backfill on first open, so this handle is read-write.
+    runLcmMigrations(db);
     const convStore = new ConversationStore(db);
     const conversations = (await convStore.listConversations()).filter(
       (c) => c.sessionId.length > 0,
@@ -239,52 +358,29 @@ export async function buildBench(
       return { out: "", exitCode: 1, stdout: "No conversations in the project database.\n" };
     }
 
+    if (opts.generator === "llm" && !generateQuestion) generateQuestion = await configuredQuestionGenerator();
     // Deterministic shuffle, then walk until we have n usable prompts.
-    const shuffled = [...conversations];
-    for (let i = shuffled.length - 1; i > 0; i--) {
-      const j = Math.floor(rand() * (i + 1));
-      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-    }
+    const shuffled = shuffle(conversations, rand);
+    const ctx: SampleContext = {
+      convStore,
+      repeated: repeatedPrompts(db),
+      seenQuestions: new Set<string>(),
+      rand,
+      generateQuestion,
+      requireLlm: opts.generator === "llm",
+    };
 
     const queries: BenchQuery[] = [];
-    const seenQuestions = new Set<string>();
     const rejected: string[] = [];
-    if (opts.generator === "llm" && !generateQuestion) generateQuestion = await configuredQuestionGenerator();
     let usedLlm = false;
     for (const conv of shuffled) {
       if (queries.length >= n) break;
-      const messages = await convStore.getMessages(conv.conversationId);
-      const candidates = messages.filter(
-        (m) => m.role === "user" && isDistinctivePrompt(m.content),
-      );
-      if (candidates.length === 0) continue;
-      const prompt = candidates[Math.floor(rand() * candidates.length)];
-
-      let question: string | null = null;
-      let generator: BenchQuery["generator"] = "mechanical";
-      if (generateQuestion) {
-        question = await generateQuestion(prompt.content);
-        if (question) {
-          generator = "llm";
-          usedLlm = true;
-        }
-      }
-      if (!question) {
-        if (opts.generator === "llm") return { out: "", exitCode: 1, stdout: "LLM generator returned no question; benchmark was not written.\n" };
-        question = mechanicalQuestion(prompt.content, rand);
-      }
-      const problem = questionProblem(question, prompt.content, seenQuestions);
-      if (problem) {
-        rejected.push(`${conv.sessionId}: ${problem}`);
-        continue;
-      }
-      queries.push({
-        id: String(queries.length + 1).padStart(3, "0"),
-        sessionId: conv.sessionId,
-        prompt: prompt.content,
-        question,
-        generator,
-      });
+      const sampled = await sampleQuery(conv, ctx, String(queries.length + 1).padStart(3, "0"));
+      if (sampled.status === "aborted") return { out: "", exitCode: 1, stdout: sampled.stdout };
+      if (sampled.status === "skipped") continue;
+      usedLlm ||= sampled.usedLlm;
+      if (sampled.status === "rejected") rejected.push(`${conv.sessionId}: ${sampled.reason}`);
+      else queries.push(sampled.query);
     }
 
     if (queries.length === 0) {
@@ -299,16 +395,12 @@ export async function buildBench(
       version: 1,
       cwd: opts.cwd,
       generatedAt: new Date().toISOString(),
-      generator: usedLlm ? (queries.every((q) => q.generator === "llm") ? "llm" : "llm+mechanical") : "mechanical",
+      generator: benchGeneratorLabel(queries, usedLlm),
       queries,
     };
     const out = benchPath(opts.cwd, opts.out);
     await writeFile(out, JSON.stringify(bench, null, 2));
-    return {
-      out,
-      exitCode: 0,
-      stdout: `Wrote ${queries.length} benchmark questions (${bench.generator}) to ${out}\n${rejected.length ? `Rejected ${rejected.length} invalid questions: ${rejected.join("; ")}\n` : ""}${bench.generator.includes("mechanical") ? "Warning: mechanical questions are diagnostic only; review questions before using scores as release evidence.\n" : ""}`,
-    };
+    return { out, exitCode: 0, stdout: formatBuildReport(bench, out, rejected) };
   } finally {
     closeLcmConnection(dbPath);
   }
@@ -319,7 +411,7 @@ export async function buildBench(
 type QueryOutcome = {
   id: string;
   question: string;
-  expectedSessionId: string;
+  expectedSessionIds: string[];
   searchTopK: string[];
   searchHit: boolean;
   empty: boolean;
@@ -376,28 +468,146 @@ async function rgSessionIds(baseline: RgBaseline, question: string, k: number): 
   return sessionIds;
 }
 
-export async function runBench(opts: BenchOptions): Promise<BenchResult> {
-  const k = opts.k ?? 5;
-  if (!Number.isInteger(k) || k < 1) return { out: "", exitCode: 1, stdout: "Recall cutoff must be a positive integer.\n" };
-  const file = benchPath(opts.cwd, opts.benchFile);
+type BenchLoad = { bench: BenchFile } | { error: string };
+
+function benchQueryProblem(query: BenchQuery, seen: Set<string>): string | null {
+  if (!query || typeof query.sessionId !== "string" || !query.sessionId.trim() || typeof query.prompt !== "string") return "Invalid benchmark: each question needs a source session and prompt.\n";
+  if (query.sessionIds !== undefined && (!Array.isArray(query.sessionIds) || query.sessionIds.some((s) => typeof s !== "string" || !s.trim()))) return `Invalid benchmark question ${query.id}: sessionIds must be a list of nonempty session ids.\n`;
+  const problem = questionProblem(query.question, { prompt: query.prompt, seen, manual: query.generator === "manual" });
+  return problem ? `Invalid benchmark question ${query.id}: ${problem}.\n` : null;
+}
+
+/** Parse and fully validate the benchmark before any search runs. */
+async function loadBenchFile(file: string): Promise<BenchLoad> {
   let bench: BenchFile;
   try {
     bench = JSON.parse(await readFile(file, "utf-8")) as BenchFile;
   } catch {
-    return {
-      out: "",
-      exitCode: 1,
-      stdout: `No benchmark file at ${file}.\nRun \`lcm bench build\` first.\n`,
-    };
+    return { error: `No benchmark file at ${file}.\nRun \`lcm bench build\` first.\n` };
   }
-
-  if (bench?.version !== 1 || !Array.isArray(bench.queries) || bench.queries.length === 0) return { out: "", exitCode: 1, stdout: "Invalid benchmark: expected version 1 with nonempty queries.\n" };
+  if (bench?.version !== 1 || !Array.isArray(bench.queries) || bench.queries.length === 0) return { error: "Invalid benchmark: expected version 1 with nonempty queries.\n" };
   const seenQuestions = new Set<string>();
-  for (const q of bench.queries) {
-    if (!q || typeof q.sessionId !== "string" || !q.sessionId.trim() || typeof q.prompt !== "string") return { out: "", exitCode: 1, stdout: "Invalid benchmark: each question needs a source session and prompt.\n" };
-    const problem = questionProblem(q.question, q.prompt, seenQuestions, q.generator === "manual");
-    if (problem) return { out: "", exitCode: 1, stdout: `Invalid benchmark question ${q.id}: ${problem}.\n` };
+  for (const query of bench.queries) {
+    const problem = benchQueryProblem(query, seenQuestions);
+    if (problem) return { error: problem };
   }
+  return { bench };
+}
+
+/** The ripgrep baseline, or the reason the run falls back to SQLite LIKE. */
+async function prepareRgBaseline(db: DatabaseSync, pid: string, directory: string): Promise<{ baseline?: RgBaseline; warning?: string }> {
+  try {
+    const baseline = await buildRgBaseline(db, pid, directory);
+    await searchRg(baseline.corpus, ["lcm"], 1);
+    return { baseline };
+  } catch (error) {
+    return { warning: `ripgrep baseline unavailable (${error instanceof Error ? error.message : String(error)}); grep column uses the SQLite LIKE fallback.` };
+  }
+}
+
+/** Search ranks rows; the bench scores sessions. Distinct sessions, in rank order. */
+function collectSessionIds(...groups: Array<Array<{ sessionId?: string | null }>>): string[] {
+  const ranked = groups.flat().map((hit) => hit.sessionId).filter((id): id is string => Boolean(id));
+  return [...new Set(ranked)];
+}
+
+type ScoreContext = {
+  db: DatabaseSync;
+  promotedStore: PromotedStore;
+  projectId: string;
+  rgBaseline?: RgBaseline;
+  k: number;
+};
+
+async function scoreQuery(query: BenchQuery, ctx: ScoreContext): Promise<QueryOutcome> {
+  const start = performance.now();
+  // The same ranking explicit search emits, so the bench measures what callers see.
+  const history = await rankNativeHistory(ctx.db, { query: query.question, limit: ctx.k });
+  const promoted = ctx.promotedStore.search(query.question, ctx.k, undefined, ctx.projectId);
+  const latencyMs = performance.now() - start;
+
+  const sessionIds = collectSessionIds(history, promoted);
+  const searchTopK = sessionIds.slice(0, ctx.k);
+  // Every labelled session answers the question, so any of them counts as a hit.
+  const accepted = new Set([query.sessionId, ...(query.sessionIds ?? [])]);
+  const grepTopK = ctx.rgBaseline
+    ? await rgSessionIds(ctx.rgBaseline, query.question, ctx.k)
+    : grepSessionIds(ctx.db, query.question).slice(0, ctx.k);
+
+  return {
+    id: query.id,
+    question: query.question,
+    expectedSessionIds: [...accepted],
+    searchTopK,
+    searchHit: searchTopK.some((s) => accepted.has(s)),
+    empty: sessionIds.length === 0,
+    grepHit: grepTopK.some((s) => accepted.has(s)),
+    latencyMs,
+  };
+}
+
+type ReportInput = {
+  file: string;
+  bench: BenchFile;
+  outcomes: QueryOutcome[];
+  k: number;
+  baseline: string;
+  baselineWarning?: string;
+};
+
+function buildReport({ file, bench, outcomes, k, baseline, baselineWarning }: ReportInput) {
+  const total = outcomes.length;
+  const latencies = outcomes.map((o) => o.latencyMs).sort((a, b) => a - b);
+  const p95 = latencies[Math.min(latencies.length - 1, Math.ceil(latencies.length * 0.95) - 1)] ?? 0;
+  return {
+    file,
+    metric: "labelled-session hit rate",
+    baseline,
+    warnings: [
+      ...(bench.queries.some((q) => q.generator !== "llm" && q.generator !== "manual") ? ["Mechanical or unverified questions: diagnostic score, not release evidence."] : []),
+      ...(baselineWarning ? [baselineWarning] : []),
+    ],
+    total,
+    k,
+    searchHitRate: outcomes.filter((o) => o.searchHit).length / total,
+    grepHitRate: outcomes.filter((o) => o.grepHit).length / total,
+    emptyRate: outcomes.filter((o) => o.empty).length / total,
+    p95LatencyMs: Math.round(p95 * 10) / 10,
+    misses: outcomes
+      .filter((o) => !o.searchHit)
+      .map((o) => ({ id: o.id, question: o.question, expected: o.expectedSessionIds, got: o.searchTopK })),
+  };
+}
+
+type BenchReport = ReturnType<typeof buildReport>;
+
+/** Human-readable summary. Counts come from the outcomes; the report carries only rates. */
+function renderReport(report: BenchReport, outcomes: QueryOutcome[], resultsPath: string): string {
+  const count = (predicate: (outcome: QueryOutcome) => boolean) => outcomes.filter(predicate).length;
+  const percent = (rate: number) => (rate * 100).toFixed(0);
+  const lines = [
+    "",
+    ...report.warnings.map((warning) => `  Warning: ${warning}`),
+    `  hit@${report.k}  search ${count((o) => o.searchHit)}/${report.total} (${percent(report.searchHitRate)}%)  vs  grep ${count((o) => o.grepHit)}/${report.total} (${percent(report.grepHitRate)}%)`,
+    `  empty results  ${count((o) => o.empty)}/${report.total} (${percent(report.emptyRate)}%)`,
+    `  p95 latency    ${report.p95LatencyMs}ms`,
+    "",
+  ];
+  if (report.misses.length > 0) {
+    lines.push("  misses:");
+    lines.push(...report.misses.map((m) => `    ${m.id}  "${m.question}"  (wanted ${m.expected.join(", ")})`));
+    lines.push("");
+  }
+  lines.push(`  full results written to ${resultsPath}`, "");
+  return lines.join("\n");
+}
+
+export async function runBench(opts: BenchOptions): Promise<BenchResult> {
+  const k = opts.k ?? 5;
+  if (!Number.isInteger(k) || k < 1) return { out: "", exitCode: 1, stdout: "Hit-rate cutoff must be a positive integer.\n" };
+  const file = benchPath(opts.cwd, opts.benchFile);
+  const loaded = await loadBenchFile(file);
+  if ("error" in loaded) return { out: "", exitCode: 1, stdout: loaded.error };
 
   const dbPath = projectDbPath(opts.cwd);
   if (!existsSync(dbPath)) {
@@ -410,111 +620,26 @@ export async function runBench(opts: BenchOptions): Promise<BenchResult> {
   const db = getLcmConnection(dbPath);
   try {
     runLcmMigrations(db);
-    const convStore = new ConversationStore(db);
-    const promotedStore = new PromotedStore(db);
     const pid = projectId(opts.cwd);
-
-    let rgBaseline: RgBaseline | undefined;
-    let baselineWarning: string | undefined;
-    try {
-      rgBaseline = await buildRgBaseline(db, pid, rgDir);
-      await searchRg(rgBaseline.corpus, ["lcm"], 1);
-    } catch (error) {
-      rgBaseline = undefined;
-      baselineWarning = `ripgrep baseline unavailable (${error instanceof Error ? error.message : String(error)}); grep column uses the SQLite LIKE fallback.`;
-    }
+    const { baseline, warning } = await prepareRgBaseline(db, pid, rgDir);
+    const ctx: ScoreContext = { db, promotedStore: new PromotedStore(db), projectId: pid, rgBaseline: baseline, k };
 
     const outcomes: QueryOutcome[] = [];
-    for (const q of bench.queries) {
-      const start = performance.now();
-      // The same ranking explicit search emits, so the bench measures what callers see.
-      const history = await rankNativeHistory(db, { query: q.question, limit: k });
-      const promoted = promotedStore.search(q.question, k, undefined, pid);
-      const latencyMs = performance.now() - start;
+    for (const query of loaded.bench.queries) outcomes.push(await scoreQuery(query, ctx));
 
-      const sessionIds: string[] = [];
-      const seen = new Set<string>();
-      for (const hit of history) {
-        if (hit.sessionId && !seen.has(hit.sessionId)) {
-          seen.add(hit.sessionId);
-          sessionIds.push(hit.sessionId);
-        }
-      }
-      for (const mem of promoted) {
-        if (mem.sessionId && !seen.has(mem.sessionId)) {
-          seen.add(mem.sessionId);
-          sessionIds.push(mem.sessionId);
-        }
-      }
-
-      const empty = sessionIds.length === 0;
-      const searchHit = sessionIds.slice(0, k).includes(q.sessionId);
-      const grepTopK = rgBaseline ? await rgSessionIds(rgBaseline, q.question, k) : grepSessionIds(db, q.question).slice(0, k);
-      const grepHit = grepTopK.includes(q.sessionId);
-      outcomes.push({
-        id: q.id,
-        question: q.question,
-        expectedSessionId: q.sessionId,
-        searchTopK: sessionIds.slice(0, k),
-        searchHit,
-        empty,
-        grepHit,
-        latencyMs,
-      });
-    }
-
-    const total = outcomes.length;
-    const searchHits = outcomes.filter((o) => o.searchHit).length;
-    const grepHits = outcomes.filter((o) => o.grepHit).length;
-    const emptyCount = outcomes.filter((o) => o.empty).length;
-    const latencies = outcomes.map((o) => o.latencyMs).sort((a, b) => a - b);
-    const p95 = latencies[Math.min(latencies.length - 1, Math.ceil(latencies.length * 0.95) - 1)] ?? 0;
-    const searchRecall = searchHits / total;
-    const grepRecall = grepHits / total;
-
-    const report = {
+    const report = buildReport({
       file,
-      metric: "single-source hit rate",
-      baseline: rgBaseline ? RG_BASELINE : SQL_BASELINE,
-      warnings: [
-        ...(bench.queries.some((q) => q.generator !== "llm" && q.generator !== "manual") ? ["Mechanical or unverified questions: diagnostic score, not release evidence."] : []),
-        ...(baselineWarning ? [baselineWarning] : []),
-      ],
-      total,
+      bench: loaded.bench,
+      outcomes,
       k,
-      searchRecall,
-      grepRecall,
-      emptyRate: emptyCount / total,
-      p95LatencyMs: Math.round(p95 * 10) / 10,
-      misses: outcomes
-        .filter((o) => !o.searchHit)
-        .map((o) => ({ id: o.id, question: o.question, expected: o.expectedSessionId, got: o.searchTopK })),
-    };
-
+      baseline: baseline ? RG_BASELINE : SQL_BASELINE,
+      baselineWarning: warning,
+    });
     const resultsPath = join(dirname(dbPath), DEFAULT_RESULTS_FILENAME);
     await writeFile(resultsPath, JSON.stringify({ report, outcomes }, null, 2));
 
-    if (opts.json) {
-      return { out: resultsPath, exitCode: 0, stdout: JSON.stringify(report, null, 2) + "\n" };
-    }
-
-    const lines = [
-      "",
-      ...report.warnings.map((warning) => `  Warning: ${warning}`),
-      `  recall@${k}  search ${searchHits}/${total} (${(searchRecall * 100).toFixed(0)}%)  vs  grep ${grepHits}/${total} (${(grepRecall * 100).toFixed(0)}%)`,
-      `  empty results  ${emptyCount}/${total} (${((emptyCount / total) * 100).toFixed(0)}%)`,
-      `  p95 latency    ${report.p95LatencyMs}ms`,
-      "",
-    ];
-    if (report.misses.length > 0) {
-      lines.push("  misses:");
-      for (const m of report.misses) {
-        lines.push(`    ${m.id}  "${m.question}"  (wanted ${m.expected})`);
-      }
-      lines.push("");
-    }
-    lines.push(`  full results written to ${resultsPath}`, "");
-    return { out: resultsPath, exitCode: 0, stdout: lines.join("\n") };
+    if (opts.json) return { out: resultsPath, exitCode: 0, stdout: JSON.stringify(report, null, 2) + "\n" };
+    return { out: resultsPath, exitCode: 0, stdout: renderReport(report, outcomes, resultsPath) };
   } finally {
     closeLcmConnection(dbPath);
     await rm(rgDir, { recursive: true, force: true });
