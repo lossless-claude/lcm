@@ -13,6 +13,7 @@ import { parseTranscript, type ParsedMessage } from "../../transcript.js";
 import { extractCodexSessionMeta, parseCodexTranscript } from "../../codex-transcript.js";
 import { ScrubEngine } from "../../scrub.js";
 import { validateCwd } from "../validate-cwd.js";
+import { scheduleProjectLanguageDetection } from "../project-language.js";
 import { enqueue } from "../project-queue.js";
 import { readCodexTranscriptDelta, type CodexTranscriptCursor } from "../../codex-transcript-reader.js";
 import { loadCodexCursor, saveCodexCursor } from "../../db/codex-cursor.js";
@@ -247,6 +248,8 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
           } catch {
             // non-fatal: meta.json update failure shouldn't fail the ingest
           }
+          // Samples the corpus on this connection now; the model call runs after the response.
+          void scheduleProjectLanguageDetection(cwd, db, config);
 
           const totalTokens = await summaryStore.getContextTokenCount(conversation.conversationId);
           const totalRedacted = totalCounts.gitleaks + totalCounts.builtIn + totalCounts.global + totalCounts.project;
