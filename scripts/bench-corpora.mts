@@ -27,9 +27,58 @@ import { buildBench, runBench } from "../src/bench.js";
 import { projectDbPath } from "../src/daemon/project.js";
 
 const VALIDATION_FILENAME = ".lcm-bench-validation.json";
-const QUESTIONS_PER_CORPUS = 30;
-/** Fixed so a rerun scores the same questions, and two runs are comparable. */
-const SEED = 1234;
+
+/**
+ * Corpora reserved for the held-out grade, named by directory.
+ *
+ * A parameter chosen on the same questions that report the score is fitted, not
+ * measured — the score stops being evidence. So the corpora split in two, once,
+ * and stay split: a candidate is tuned against everything outside this list and
+ * graded exactly once against everything inside it.
+ *
+ * The split is by corpus rather than by question, so no session appears on both
+ * sides. The `lcm` corpus is deliberately on the tuning side: its questions have
+ * already been scored across a parameter sweep and cannot serve as unseen.
+ */
+const HELD_OUT_CORPORA = new Set([".claude", "Inspector", "trilha-probatoria", "xgh"]);
+
+type Group = "tune" | "holdout" | "all";
+
+function group(): Group {
+  const requested = process.env.LCM_BENCH_GROUP ?? "all";
+  if (requested === "tune" || requested === "holdout") return requested;
+  return "all";
+}
+
+function inGroup(cwd: string, selected: Group): boolean {
+  if (selected === "all") return true;
+  const held = HELD_OUT_CORPORA.has(basename(cwd));
+  return selected === "holdout" ? held : !held;
+}
+/**
+ * A positive integer from the environment, or the default when unset.
+ *
+ * Anything else stops the run: a silently coerced `NaN` seed would reach the
+ * PRNG and make a "fixed seed" produce a different sample every time, which is
+ * the one failure this harness must never have.
+ */
+function positiveInteger(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer, got "${raw}".`);
+  }
+  return value;
+}
+
+const QUESTIONS_PER_CORPUS = positiveInteger("LCM_BENCH_N", 30);
+/**
+ * Fixed so a rerun scores the same questions, and two runs are comparable.
+ * `LCM_BENCH_SEED` draws a different sample from the same corpus — use it when
+ * a set has to be unseen, not when comparing two runs.
+ */
+const SEED = positiveInteger("LCM_BENCH_SEED", 1234);
 /** Below this a project holds too few sessions to rank anything meaningfully. */
 const MIN_DB_BYTES = 8 * 1024 * 1024;
 
@@ -132,7 +181,9 @@ async function run(corpora: string[]): Promise<void> {
 }
 
 const command = process.argv[2] ?? "run";
-const corpora = await discoverCorpora();
+const selected = group();
+const corpora = (await discoverCorpora()).filter(cwd => inGroup(cwd, selected));
+if (selected !== "all") console.log(`group: ${selected} (${corpora.length} corpora)\n`);
 if (corpora.length === 0) {
   console.log(`No corpora found. Set LCM_BENCH_CORPORA to a "${delimiter}" separated list of project paths.`);
 } else if (command === "build") {
