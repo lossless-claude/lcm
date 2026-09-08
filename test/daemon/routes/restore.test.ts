@@ -56,6 +56,35 @@ describe("POST /restore", () => {
     }
   });
 
+  it("keeps capturing the snapshot when session_id is not a string", async () => {
+    // A non-string id can match no conversation, but binding one used to throw inside the
+    // block that also refreshes the snapshot, dropping all of it without a trace.
+    const isolatedDir = mkdtempSync(join(tmpdir(), "restore-bad-session-id-"));
+    try {
+      writeFileSync(join(isolatedDir, "CLAUDE.md"), "Project rule.", "utf8");
+      daemon = await createDaemon(loadDaemonConfig("/x", { daemon: { port: 0 } }));
+      const res = await fetch(`http://127.0.0.1:${daemon.address().port}/restore`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: { not: "a string" }, cwd: isolatedDir, source: "startup" }),
+      });
+      expect(res.status).toBe(200);
+      await res.json();
+
+      const dbPath = projectDbPath(realpathSync(isolatedDir));
+      const db = getLcmConnection(dbPath);
+      try {
+        const row = db.prepare("SELECT content FROM session_instructions WHERE id = 1")
+          .get() as { content: string } | undefined;
+        expect(row?.content).toContain("Project rule.");
+      } finally {
+        closeLcmConnection(dbPath);
+      }
+    } finally {
+      if (daemon) { await daemon.stop(); daemon = undefined; }
+      rmSync(isolatedDir, { recursive: true, force: true });
+    }
+  });
+
   describe("session_instructions persistence", () => {
     let tmpDir: string;
 

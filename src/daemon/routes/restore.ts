@@ -295,13 +295,16 @@ function refreshInstructionsSnapshot(db: DatabaseSync, cwd: string): void {
 
 /** The session's own recent summaries, deepest first. */
 function readEpisodicContext(db: DatabaseSync, sessionId: unknown, limit: number): string {
+  // A non-string session id matches no conversation, and binding one throws — which would
+  // take the promoted memory and the snapshot refresh down with it, silently.
+  if (typeof sessionId !== "string" || !sessionId) return "";
   const rows = db.prepare(
     `SELECT s.content FROM summaries s
      JOIN conversations c ON s.conversation_id = c.conversation_id
      WHERE c.session_id = ?
      ORDER BY s.depth DESC, s.created_at DESC
      LIMIT ?`,
-  ).all(sessionId as string, limit) as Array<{ content: string }>;
+  ).all(sessionId, limit) as Array<{ content: string }>;
   if (rows.length === 0) return "";
   return fenceContent(rows.map((r) => r.content).join("\n\n"), "recent-session-context");
 }
