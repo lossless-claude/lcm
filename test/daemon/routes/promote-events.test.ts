@@ -28,7 +28,7 @@ function makeConfig(): DaemonConfig {
     version: 1,
     daemon: { port: 3737, socketPath: "/tmp/test.sock", logLevel: "info", logMaxSizeMB: 10, logRetentionDays: 7, idleTimeoutMs: 1800000 },
     compaction: {
-      leafTokens: 1000, maxDepth: 5, autoCompactMinTokens: 10000,
+      autoCompactMinTokens: 10000,
       promotionThresholds: {
         minDepth: 1,
         compressionRatio: 0.1,
