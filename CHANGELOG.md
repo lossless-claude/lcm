@@ -1,6 +1,6 @@
 # @lossless-claude/lcm
 
-## [0.10.0] - 2026-09-07
+## [0.10.0] - 2026-09-08
 
 ### Added
 - `llm.reasoning` config key: passes a reasoning object (e.g. `{"effort":"minimal"}`) to the `openai` summarizer, so OpenAI-compatible models like GLM Flash stop thinking at length before every summary (#342).
@@ -10,6 +10,7 @@
 - Summarizer evaluation bench under `test/bench/` with OpenRouter, OpenAI-compatible and `claude-process` providers (#338).
 - Resumable replay runs: manifest/ledger tables, resume planner, signal drain, `--restart` (#302, #326, #330, #331).
 - Prompt-time memory injection budget and deduplication (#220), feedback-based reranking of recalled memories (#218), stale-memory review pipeline (#221), auto-promotion of reinforced passive-learning patterns (#217).
+- `lcm stats` reports summarizer usage: calls, the token breakdown and the cost, shown once a call has been recorded.
 
 ### Changed
 - `codex-process` reads its usage from `codex exec --json` instead of the stderr banner, gaining an exact input/cached/output split (the stderr total remains a fallback for older Codex builds).
@@ -18,6 +19,8 @@
 - Summary output cap follows the requested target instead of a fixed constant (#336).
 - `lcm daemon start` is idempotent; `stop`/`restart` added; the daemon carries a content-hash build fingerprint and `lcm doctor` checks the real plugin install (#325, #329).
 - Tag prefix `category:` normalized to `type:` everywhere (#212, #219).
+- Token usage reporting extended to the HTTP summarizer providers. `openai` and `anthropic` now emit the same normalized accounting, so the default path off the Claude CLI no longer records a summarizer that appears to consume nothing; against an OpenRouter base URL the real charged cost is requested and recorded (#345).
+- `llm_usage_stats` stores the reported cost in `cost_usd_total` alongside a `calls_with_cost` counter. An absent cost stays NULL and prints as `unknown`, never `$0.00`, and a partially priced run reports "N of M calls priced" so it cannot pass for a complete total (#351).
 
 ### Fixed
 - Summarizer fails on empty model output instead of echoing the input back as a summary (#341).
@@ -28,6 +31,9 @@
 - Restore no longer echoes CLAUDE.md on startup/resume, captures it once when cwd is `$HOME`, and shares SQLite connections throughout (#271).
 - VS Code and Codex `lcm` workflows restored (#227); plugin hook commands point argv[1] at the CLI so they actually run (#272).
 - Session-end fire-and-forget requests send the daemon auth header.
+- `llm.reasoning` is rejected at config load unless it is a JSON object, instead of failing later as an opaque provider HTTP error inside the unattended `/compact` route (#343).
+- Search no longer hides summaries. Session fusion emitted one message per matching session and exhausted the limit on its first pass, so no summary could surface once the session count reached the limit, however well it scored (#353).
+- The recall gate runs the daemon's `/search` path instead of concatenating candidate lists by hand, and covers the message/summary mix that session-level recall is blind to (#356).
 
 ## [0.8.1] - 2026-03-30
 

@@ -14,10 +14,10 @@ jobs:
   update-patterns:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout develop
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
-          ref: develop
+          ref: main
           # Use bot token so commits can bypass branch protection rules
           token: ${{ secrets.PATTERNS_BOT_TOKEN || github.token }}
           fetch-depth: 0
@@ -67,14 +67,14 @@ jobs:
           echo "new_version=$new_version" >> "$GITHUB_OUTPUT"
           echo "Bumped version: $current -> $new_version"
 
-      - name: Commit and push to develop
+      - name: Commit and push to main
         if: steps.diff.outputs.changed == 'true'
         run: |
           git config user.name "gitleaks-patterns-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/generated-patterns.ts package.json
           git commit -m "chore(security): sync gitleaks patterns → ${{ steps.diff.outputs.rule_count }} rules (v${{ steps.bump.outputs.new_version }})"
-          git push origin develop
+          git push origin main
 
       - name: Summary
         if: steps.diff.outputs.changed == 'true'
@@ -83,9 +83,9 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Rules:** ${{ steps.diff.outputs.rule_count }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Version:** v${{ steps.bump.outputs.new_version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Branch:** develop" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Branch:** main" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "> **Manual step required:** Merge develop → release to publish. Update branch ruleset to add bot bypass actor if not done." >> "$GITHUB_STEP_SUMMARY"
+          echo "> Publishing happens from main via the Publish Package workflow." >> "$GITHUB_STEP_SUMMARY"
 
       - name: No-op summary
         if: steps.diff.outputs.changed == 'false'
