@@ -82,8 +82,15 @@ lcm bench run   --project /path/to/project
   source prompt's query terms is rejected too — it would measure keyword lookup rather than recall
   — so the LLM task prompt names the prompt's own words as forbidden. `run` applies the same
   ceiling when loading, which rejects `generator: "llm"` files built before it existed.
+  LLM questions are written in the language the corpus's author asks in, not the language of the
+  sampled prompt: a prompt is often pasted code or tool output in English while the person writes
+  something else, and a question in the prompt's language would measure same-language paraphrase
+  recall, a task the person never performs. The language is read once per build from a sample of
+  the corpus's human turns and recorded on the file as `language` (a BCP 47 tag); `--language`
+  overrides detection, and a build that cannot tell fails rather than defaulting to English.
+  Mechanical templates are English, so a mechanical set records `en` whatever the corpus.
   The set a generator produces is not interchangeable with a hand-written one: it follows whatever
-  language and provenance the corpus's sampled prompts happen to have, so compare directions
+  provenance the corpus's sampled prompts happen to have, so compare directions
   across sets rather than absolute scores. If none survive, no file is written.
   Output defaults to `~/.lossless-claude/projects/<hash>/.lcm-bench.json`, local and uncommitted.
   Use `--out <file>` to choose another location. Invalid files are rejected by `run` before scoring.
@@ -138,6 +145,10 @@ ingested project whose database is large enough to hold one. Question sets are w
 each project database as `.lcm-bench-validation.json` and the seed is fixed, so two runs score
 the same questions and are comparable. Each row also prints the corpus's session count: a live
 corpus grows between runs, and a delta measured over different content is not a delta.
+`build` uses the configured summarizer and detects each corpus's language as `lcm bench build
+--generator llm` does; `LCM_BENCH_LANGUAGE` overrides detection for every corpus in the run.
+Sets built before the language was recorded measure a different task (English questions over a
+mixed corpus) and are not comparable with sets built after.
 
 ### Tuning against one half, grading against the other
 
@@ -156,7 +167,7 @@ default, so they are a different sample from the ones any sweep has already seen
 raises the count per corpus. Grade the held-out group **once**, after the parameter is fixed — a
 second look at it makes it a tuning set too.
 
-These are mechanically generated questions: diagnostic only, never release evidence. What the
+These are generated questions: diagnostic only, never release evidence. What the
 harness is for is the **direction** of a change and whether one corpus disagrees with another.
 Two ranking changes that read as clean wins on a single 13-question set did not survive it —
 query-term coverage in session fusion was +2 there and +1 pooled over 221 questions, and
