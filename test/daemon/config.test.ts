@@ -213,7 +213,7 @@ describe("loadDaemonConfig", () => {
   it("still loads a config file that sets the removed leafTokens and maxDepth", () => {
     const c = loadDaemonConfig("/nonexistent/config.json", {
       compaction: { leafTokens: 500, maxDepth: 9 },
-    } as never);
+    });
     expect(c.compaction.autoCompactMinTokens).toBe(10000);
   });
 

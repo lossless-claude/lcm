@@ -51,12 +51,6 @@ export type DaemonConfig = {
   hooks: { snapshotIntervalSec: number; disableAutoCompact: boolean };
 };
 
-/**
- * Default target tokens for a leaf summary. Exported because the summarizer
- * bench builds the production engine config without an operator's config.json:
- * it needs this value by name, not as a copied literal that can drift.
- */
-
 const DEFAULTS: DaemonConfig = {
   version: 1,
   daemon: { port: 3737, socketPath: join(homedir(), ".lossless-claude", "daemon.sock"), logLevel: "info", logMaxSizeMB: 10, logRetentionDays: 7, idleTimeoutMs: 1800000 },

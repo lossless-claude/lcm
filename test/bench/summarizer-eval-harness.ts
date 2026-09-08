@@ -326,10 +326,9 @@ export async function runEval(input: {
   await summaryStore.appendContextMessages(cid, records.map((r) => r.messageId));
 
   const { summarize, calls } = instrumentSummarizer(input.summarizer);
-  const engine = new CompactionEngine(conversationStore, summaryStore, compactEngineConfig({
-    // No scrubber: corpus content was already scrubbed at ingest and the export
-    // copies stored content verbatim.
-  }));
+  // No scrubber: corpus content was already scrubbed at ingest and the export
+  // copies stored content verbatim.
+  const engine = new CompactionEngine(conversationStore, summaryStore, compactEngineConfig());
   const tokensBefore = await summaryStore.getContextTokenCount(cid);
   const startedAt = new Date().toISOString();
 

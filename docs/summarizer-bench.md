@@ -64,8 +64,6 @@ Per run, in `totals`:
 
 The bench does not copy the production engine configuration — it calls the same function. `compactEngineConfig()` in `src/compaction.ts` is the single source of truth, used by both the daemon's `/compact` route and the bench, and both compact against the same `COMPACT_TOKEN_BUDGET`. A change to the engine's thresholds, fan-outs, depth limits or round cap reaches the bench automatically; it cannot drift into measuring an engine production does not run.
 
-Only two values are per-caller arguments, and the bench differs on both deliberately:
+`scrubber` is the one per-caller argument, and the bench deliberately passes none: stored messages were already scrubbed at ingest, and the export copies stored content verbatim.
 
-- `scrubber` — none: stored messages were already scrubbed at ingest, and the export copies stored content verbatim.
-
-`test/compaction.test.ts` pins this: it asserts that every field except those two comes out identical for both callers.
+`test/compaction.test.ts` pins this: it asserts that every other field comes out identical for both callers.
