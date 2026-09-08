@@ -8,9 +8,9 @@
  * negative and pushed p95 past the latency budget. Neither would have been
  * caught by one corpus, so a change to retrieval ranking is measured here.
  *
- * Scores are diagnostic. Mechanically generated questions are not release
- * evidence; what this harness is for is the *direction* of a change, and
- * whether one corpus disagrees with another.
+ * Scores are diagnostic. Generated questions are not release evidence; what
+ * this harness is for is the *direction* of a change, and whether one corpus
+ * disagrees with another.
  *
  *   npx tsx scripts/bench-corpora.mts build     # (re)generate the question sets
  *   npx tsx scripts/bench-corpora.mts run       # score every corpus, print the pool

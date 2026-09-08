@@ -221,6 +221,20 @@ describe("lcm bench", () => {
     expect(JSON.parse(run.stdout).language).toBe("pt-BR");
   });
 
+  it("keeps pasted tool output out of the turns the language is read from", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    const listing = "src/daemon/routes/compact.ts:12: export async function compactRoute(req: GitHub, res: Stripe) {";
+    await addSessions(cwd, [{ sessionId: "sess-listing", prompt: listing }]);
+    const detect = vi.fn(async () => "pt-BR");
+    const built = await buildBench({ cwd, generator: "llm" }, async () => "Por que escolhemos esse banco de dados?", detect);
+    expect(built.exitCode, built.stdout).toBe(0);
+    const sample = detect.mock.calls[0][0] as unknown as string[];
+    expect(sample.length).toBeGreaterThan(0);
+    expect(sample).not.toContain(listing);
+  });
+
   it("an explicit language wins over detection", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
     tempDirs.push(cwd);

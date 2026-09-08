@@ -262,16 +262,24 @@ export async function configuredQuestionGenerator(language: string): Promise<Que
 const LANGUAGE_TAG = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/;
 const LANGUAGE_SAMPLE_SIZE = 20;
 
-/** Accepts only a bare BCP 47 tag, so a model that answers in prose is treated as unsure. */
+/**
+ * Accepts only a bare BCP 47 tag, so a model that answers in prose is treated
+ * as unsure. Case and `_` are normalised (`PT_br` → `pt-BR`), since tags are
+ * case-insensitive and a locale-style spelling is a common way to type one.
+ */
 export function parseLanguageTag(reply: string): string | null {
-  const tag = reply.trim().replace(/^[`"']+|[`"'.]+$/g, "");
-  return LANGUAGE_TAG.test(tag) ? tag : null;
+  const tag = reply.trim().replace(/^[`"']+|[`"'.]+$/g, "").replaceAll("_", "-");
+  if (!LANGUAGE_TAG.test(tag.toLowerCase())) return null;
+  return tag
+    .split("-")
+    .map((part, i) => (i === 0 ? part.toLowerCase() : part.length === 2 ? part.toUpperCase() : part))
+    .join("-");
 }
 
 export async function configuredLanguageDetector(): Promise<LanguageDetector> {
   const summarize = await configuredSummarizer();
-  return async (humanTurns) => parseLanguageTag(await summarize(
-    humanTurns.map((turn, i) => `${i + 1}. ${turn}`).join("\n\n"),
+  return async (turns) => parseLanguageTag(await summarize(
+    turns.map((turn, i) => `${i + 1}. ${turn}`).join("\n\n"),
     false,
     {
       targetTokens: 10,

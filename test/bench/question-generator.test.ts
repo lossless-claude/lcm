@@ -54,6 +54,7 @@ it("reads the corpus language from a numbered sample of human turns", async () =
 it("treats a detector reply that is not a bare tag as unsure", async () => {
   expect(parseLanguageTag(" `pt-BR` ")).toBe("pt-BR");
   expect(parseLanguageTag("en.")).toBe("en");
+  expect(parseLanguageTag("PT_br")).toBe("pt-BR");
   expect(parseLanguageTag("The person writes in Portuguese.")).toBeNull();
   expect(parseLanguageTag("")).toBeNull();
   mockProvider("Portuguese, Brazilian variant.");
