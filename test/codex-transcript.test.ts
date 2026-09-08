@@ -87,6 +87,36 @@ describe("parseCodexTranscript", () => {
     expect(msgs[0].content).toBe("Paris is the capital of France.");
   });
 
+  it("defers an unterminated live record while imports accept a valid final record", () => {
+    const dir = makeTmpDir();
+    const file = join(dir, "session.jsonl");
+    const first = makeSessionLine("user", "complete");
+    const trailing = makeSessionLine("assistant", "written but not newline-terminated");
+    writeFileSync(file, `${first}\n${trailing}`);
+
+    expect(parseCodexTranscript(file, { includeTrailingRecord: false }).map(m => m.content)).toEqual([
+      "complete",
+    ]);
+    expect(parseCodexTranscript(file).map(m => m.content)).toEqual([
+      "complete",
+      "written but not newline-terminated",
+    ]);
+  });
+
+  it("keeps permissive parsing by default and rejects malformed records in strict mode", () => {
+    const dir = makeTmpDir();
+    const file = join(dir, "session.jsonl");
+    writeFileSync(file, `not-json\n${makeEventLine("task_started")}\n`);
+
+    expect(parseCodexTranscript(file)).toEqual([]);
+    expect(() => parseCodexTranscript(file, { strict: true })).toThrow(
+      "Invalid Codex transcript JSONL at line 1",
+    );
+    expect(() => parseCodexTranscript(join(dir, "missing.jsonl"), { strict: true })).toThrow(
+      "Codex transcript is unreadable",
+    );
+  });
+
   it("skips session_meta and event_msg lines", () => {
     const dir = makeTmpDir();
     const file = join(dir, "session.jsonl");

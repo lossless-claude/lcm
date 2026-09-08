@@ -57,5 +57,6 @@ export function generateContent(agent: Agent, type: ConnectorType): string {
     case 'mcp': return generateMcpContent(agent);
     case 'skill': return generateSkillContent(agent);
     case 'hook': throw new Error('Hook connectors are managed by the plugin system, not the template service');
+    case 'hooks': throw new Error('Native hook connectors are managed by the connector installer, not the template service');
   }
 }

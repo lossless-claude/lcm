@@ -37,7 +37,7 @@ interface CodexResponseItemPayload {
   content?: string | CodexContentBlock[];
 }
 
-interface CodexSessionMetaPayload {
+export interface CodexSessionMeta {
   id?: string;
   cwd?: string;
 }
@@ -45,7 +45,14 @@ interface CodexSessionMetaPayload {
 interface CodexLine {
   type?: string;
   timestamp?: string;
-  payload?: CodexResponseItemPayload | CodexSessionMetaPayload | Record<string, unknown>;
+  payload?: CodexResponseItemPayload | CodexSessionMeta | Record<string, unknown>;
+}
+
+export interface ParseCodexTranscriptOptions {
+  /** Include a valid final JSONL record even when the file has no trailing newline. */
+  includeTrailingRecord?: boolean;
+  /** Throw on unreadable input or malformed records instead of skipping them. */
+  strict?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -80,17 +87,27 @@ function extractCodexText(content: string | CodexContentBlock[] | undefined): st
  * Parse a Codex JSONL transcript file into the standard ParsedMessage format.
  * Returns an empty array on any read or parse error.
  */
-export function parseCodexTranscript(transcriptPath: string): ParsedMessage[] {
+export function parseCodexTranscript(
+  transcriptPath: string,
+  options: ParseCodexTranscriptOptions = {},
+): ParsedMessage[] {
   let raw: string;
   try {
     raw = readFileSync(transcriptPath, "utf-8");
   } catch {
+    if (options.strict) throw new Error("Codex transcript is unreadable");
     return [];
   }
 
   const messages: ParsedMessage[] = [];
+  const lines = raw.split("\n");
+  if (options.includeTrailingRecord === false && !raw.endsWith("\n")) {
+    // Active Codex sessions may be observed while their final JSONL record is
+    // still being written. Defer it until a later capture sees the newline.
+    lines.pop();
+  }
 
-  for (const line of raw.split("\n")) {
+  for (const [index, line] of lines.entries()) {
     const trimmed = line.trim();
     if (!trimmed) continue;
 
@@ -98,6 +115,9 @@ export function parseCodexTranscript(transcriptPath: string): ParsedMessage[] {
     try {
       obj = JSON.parse(trimmed) as CodexLine;
     } catch {
+      if (options.strict) {
+        throw new Error(`Invalid Codex transcript JSONL at line ${index + 1}`);
+      }
       continue;
     }
 
@@ -127,7 +147,7 @@ export function extractCodexSessionCwd(transcriptPath: string): string | undefin
   return extractCodexSessionMeta(transcriptPath)?.cwd;
 }
 
-function extractCodexSessionMeta(transcriptPath: string): CodexSessionMetaPayload | undefined {
+export function extractCodexSessionMeta(transcriptPath: string): CodexSessionMeta | undefined {
   let fd: number | undefined;
   try {
     fd = openSync(transcriptPath, "r");
@@ -145,7 +165,7 @@ function extractCodexSessionMeta(transcriptPath: string): CodexSessionMetaPayloa
         try {
           const obj = JSON.parse(line) as CodexLine;
           if (obj.type !== "session_meta") continue;
-          const meta = obj.payload as CodexSessionMetaPayload | undefined;
+          const meta = obj.payload as CodexSessionMeta | undefined;
           return {
             id: typeof meta?.id === "string" && meta.id ? meta.id : undefined,
             cwd: typeof meta?.cwd === "string" && meta.cwd ? meta.cwd : undefined,

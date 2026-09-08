@@ -337,6 +337,7 @@ describe("importSessions", () => {
     });
 
     await importSessions(client, {
+      provider: "claude",
       replay: true,
       verbose: false,
       cwd,
@@ -385,6 +386,7 @@ describe("importSessions", () => {
     });
 
     const result = await importSessions(client, {
+      provider: "claude",
       replay: true,
       verbose: false,
       cwd,
@@ -427,6 +429,7 @@ describe("importSessions", () => {
     });
 
     const result = await importSessions(client, {
+      provider: "claude",
       replay: true,
       verbose: false,
       cwd,
@@ -513,6 +516,7 @@ describe("importSessions", () => {
     });
 
     const result = await importSessions(client, {
+      provider: "claude",
       replay: true,
       verbose: false,  // warning must appear even without --verbose
       cwd,
@@ -598,6 +602,7 @@ describe("importSessions", () => {
     });
 
     const result = await importSessions(client, {
+      provider: "claude",
       replay: true,
       verbose: false,
       cwd,
@@ -734,7 +739,7 @@ describe("importSessions replay resume", () => {
     });
     vi.spyOn(console, "error").mockImplementation(() => {});
     const r1 = await importSessions(first, {
-      replay: true, cwd,
+      provider: "claude", replay: true, cwd,
       _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir,
     });
     expect(r1.resumed).toBeUndefined(); // fresh run — nothing to resume
@@ -757,7 +762,7 @@ describe("importSessions replay resume", () => {
       }
     });
     const r2 = await importSessions(second, {
-      replay: true, cwd,
+      provider: "claude", replay: true, cwd,
       _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir,
     });
 
@@ -788,7 +793,7 @@ describe("importSessions replay resume", () => {
       }
       if (path === "/compact") return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: "s", latestSummaryId: "sum" };
     });
-    await importSessions(client, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+    await importSessions(client, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
 
     const db = new DatabaseSync(dbPath);
     try {
@@ -805,7 +810,7 @@ describe("importSessions replay resume", () => {
       if (path === "/ingest") return { ingested: 0, totalTokens: 0 };
       if (path === "/compact") return { summary: "ok", replayOutcome: "compacted" };
     });
-    const r2 = await importSessions(second, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+    const r2 = await importSessions(second, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
     expect(r2.resumed?.doneCount).toBe(2);
   });
 
@@ -826,7 +831,7 @@ describe("importSessions replay resume", () => {
       }
       if (path === "/compact") return { summary: "ok", replayOutcome: "no_work" };
     });
-    await importSessions(client, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+    await importSessions(client, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
 
     const db = new DatabaseSync(dbPath);
     try {
@@ -845,7 +850,7 @@ describe("importSessions replay resume", () => {
       if (path === "/ingest") { ingestBodies.push(body); return { ingested: 1, totalTokens: 100 }; }
       if (path === "/compact") return { summary: "ok", replayOutcome: "compacted" };
     });
-    await importSessions(client, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+    await importSessions(client, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
     expect(ingestBodies[0].replay).toBe(true);
 
     const plain = makeMockClient(async (path: string, body: any) => {
@@ -863,7 +868,7 @@ describe("importSessions replay resume", () => {
       if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
       if (path === "/compact") return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: "s", latestSummaryId: "sum-s1" };
     });
-    await importSessions(first, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+    await importSessions(first, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
 
     const compactCalls: string[] = [];
     const second = makeMockClient(async (path: string, body: any) => {
@@ -874,7 +879,7 @@ describe("importSessions replay resume", () => {
       }
     });
     const r2 = await importSessions(second, {
-      replay: true, restart: true, cwd,
+      provider: "claude", replay: true, restart: true, cwd,
       _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir,
     });
 
@@ -890,7 +895,7 @@ describe("importSessions replay resume", () => {
       if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
       if (path === "/compact") return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: "s", latestSummaryId: "sum-s1" };
     });
-    await importSessions(first, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+    await importSessions(first, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
     persistSummary(lcmDir, cwd, "s1", "sum-s1", "summary-of-s1");
 
     const compactCalls: string[] = [];
@@ -900,7 +905,7 @@ describe("importSessions replay resume", () => {
       if (path === "/compact") { compactCalls.push(body.session_id); return { summary: "ok", replayOutcome: "compacted" }; }
     });
     await expect(importSessions(busy, {
-      replay: true, restart: true, cwd,
+      provider: "claude", replay: true, restart: true, cwd,
       _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir,
     })).rejects.toThrow(/--restart refused.*s1/);
 
@@ -922,7 +927,7 @@ describe("importSessions replay resume", () => {
       if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
       if (path === "/compact") return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: "s", latestSummaryId: "sum-s1" };
     });
-    await importSessions(first, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+    await importSessions(first, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
     persistSummary(lcmDir, cwd, "s1", "sum-s1", "summary-of-s1");
     const dbPath = join(lcmDir, "projects", projectId(cwd), "db.sqlite");
     const countSummaries = () => {
@@ -943,7 +948,7 @@ describe("importSessions replay resume", () => {
       if (path === "/compact") return { summary: "ok", replayOutcome: "compacted" };
     });
     await expect(importSessions(unauthorized, {
-      replay: true, restart: true, cwd,
+      provider: "claude", replay: true, restart: true, cwd,
       _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir,
     })).rejects.toThrow(/--restart refused: could not confirm.*HTTP 401/);
     expect(countSummaries()).toBe(1);
@@ -955,7 +960,7 @@ describe("importSessions replay resume", () => {
       if (path === "/compact") return { summary: "ok", replayOutcome: "compacted" };
     });
     await importSessions(unreachable, {
-      replay: true, restart: true, cwd,
+      provider: "claude", replay: true, restart: true, cwd,
       _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir,
     });
     expect(countSummaries()).toBe(0);
@@ -967,7 +972,7 @@ describe("importSessions replay resume", () => {
 
     const client = makeMockClient(async () => ({ ingested: 0, totalTokens: 0 }));
     await importSessions(client, {
-      replay: true, dryRun: true, cwd,
+      provider: "claude", replay: true, dryRun: true, cwd,
       _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir,
     });
 
@@ -994,7 +999,7 @@ describe("importSessions replay resume", () => {
 
     let calls = 0;
     const result = await importSessions(client, {
-      replay: true, cwd,
+      provider: "claude", replay: true, cwd,
       _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir,
       // Abort after the first session
       onBeforeSession: () => ++calls <= 1,
@@ -1029,7 +1034,7 @@ describe("importSessions replay resume", () => {
         return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: `summary-of-${body.session_id}`, latestSummaryId: `sum-${body.session_id}`, tokensBefore: 100, tokensAfter: 10 };
       }
     });
-    await importSessions(client, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+    await importSessions(client, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
 
     expect(compactBodies.map((b) => b.previous_summary)).toEqual([undefined, "summary-of-s1", "summary-of-s2"]);
     expect(stderrLines.some((l) => l.includes("s2") && l.includes("chain continues"))).toBe(true);
@@ -1055,7 +1060,7 @@ describe("importSessions replay resume", () => {
         return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: `summary-of-${body.session_id}`, latestSummaryId: `sum-${body.session_id}`, tokensBefore: 100, tokensAfter: 10 };
       }
     });
-    await importSessions(client, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+    await importSessions(client, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
 
     expect(compactBodies.map((b) => b.previous_summary)).toEqual([undefined, "summary-of-s1", "summary-of-s1"]);
     expect(stderrLines.some((l) => l.includes("s2") && l.includes("chain skips"))).toBe(true);
@@ -1087,7 +1092,7 @@ describe("importSessions replay resume", () => {
         return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: `summary-of-${body.session_id}`, latestSummaryId: `sum-${body.session_id}`, tokensBefore: 100, tokensAfter: 10 };
       }
     });
-    await importSessions(client, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+    await importSessions(client, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
 
     // s2 is skipped (its stale summary is not recovered), so s1's summary is
     // still threaded and s2 records no ledger row.
@@ -1115,7 +1120,7 @@ describe("importSessions replay resume", () => {
         throw timeoutError();
       }
     });
-    const result = await importSessions(client, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+    const result = await importSessions(client, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
 
     expect(stderrLines.some((l) => l.includes("s1") && l.includes("chain continues"))).toBe(true);
     // Ledger and chain record the compaction, and the run summary counts the
@@ -1139,7 +1144,7 @@ describe("importSessions replay resume", () => {
         throw timeoutError();
       }
     });
-    const result = await importSessions(client, { replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+    const result = await importSessions(client, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
 
     // Without the fallback these tokens would be silently lost (0 added).
     expect(result.totalTokens).toBe(100);
