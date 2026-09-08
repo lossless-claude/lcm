@@ -81,23 +81,51 @@ export async function detectLanguage(turns: string[], summarize: LcmSummarizeFn)
 }
 
 /**
+ * How many of a conversation's user turns are considered before moving on. A
+ * conversation whose opening turns are all pasted output contributes nothing
+ * rather than making the sampler read the whole transcript.
+ */
+const TURNS_PER_CONVERSATION = 20;
+
+/**
  * One human turn from each of the first conversations a person had in this
  * project, oldest first, up to the sample size. Subagent transcripts are
  * skipped: they are written by models, not by the person.
+ *
+ * This runs on the ingest request's own connection, so the query has a fixed
+ * budget rather than reading the corpus: the first `TURNS_PER_CONVERSATION`
+ * candidate turns of a conversation, and at most that many rows per wanted
+ * sample entry. A corpus whose opening conversations are all pasted output can
+ * exhaust the budget and yield a short sample; detection is skipped then and
+ * tried again after the next ingest, which is the right trade against paging
+ * thousands of messages into memory on a request path.
  */
 export function sampleHumanTurns(db: DatabaseSync, limit = LANGUAGE_SAMPLE_SIZE): string[] {
   const rows = db
     .prepare(
-      `SELECT m.conversation_id AS conversationId, m.content AS content
-         FROM messages m
-         JOIN conversations c ON c.conversation_id = m.conversation_id
-        WHERE m.role = 'user'
-          AND c.session_id != ''
-          AND c.session_id NOT LIKE 'agent-%'
-          AND length(m.content) BETWEEN ? AND ?
-        ORDER BY m.conversation_id, m.seq`,
+      `WITH candidates AS (
+         SELECT m.conversation_id AS conversationId,
+                m.content AS content,
+                ROW_NUMBER() OVER (PARTITION BY m.conversation_id ORDER BY m.seq) AS ordinal
+           FROM messages m
+           JOIN conversations c ON c.conversation_id = m.conversation_id
+          WHERE m.role = 'user'
+            AND c.session_id != ''
+            AND c.session_id NOT LIKE 'agent-%'
+            AND length(m.content) BETWEEN ? AND ?
+       )
+       SELECT conversationId, content
+         FROM candidates
+        WHERE ordinal <= ?
+        ORDER BY conversationId, ordinal
+        LIMIT ?`,
     )
-    .all(MIN_PROMPT_LENGTH, MAX_PROMPT_LENGTH) as Array<{ conversationId: number; content: string }>;
+    .all(
+      MIN_PROMPT_LENGTH,
+      MAX_PROMPT_LENGTH,
+      TURNS_PER_CONVERSATION,
+      limit * TURNS_PER_CONVERSATION,
+    ) as Array<{ conversationId: number; content: string }>;
   const sample: string[] = [];
   let lastConversation = -1;
   for (const row of rows) {

@@ -33,6 +33,16 @@ describe("sampleHumanTurns", () => {
     expect(sampleHumanTurns(db)).toEqual([HUMAN + " (1)", HUMAN + " (2)"]);
     expect(sampleHumanTurns(db, 1)).toEqual([HUMAN + " (1)"]);
   });
+
+  it("gives up on a conversation rather than reading past its opening turns", async () => {
+    const db = new DatabaseSync(":memory:");
+    runLcmMigrations(db);
+    await seed(db, [
+      { sessionId: "s1", turns: [...Array<string>(25).fill(LISTING), HUMAN + " (buried)"] },
+      { sessionId: "s2", turns: [HUMAN + " (2)"] },
+    ]);
+    expect(sampleHumanTurns(db)).toEqual([HUMAN + " (2)"]);
+  });
 });
 
 describe("isDistinctivePrompt", () => {

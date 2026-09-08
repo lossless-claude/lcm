@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runLcmMigrations } from "../../src/db/migration.js";
 import { ConversationStore } from "../../src/store/conversation-store.js";
 import { createSummarizer } from "../../src/daemon/summarizer.js";
-import type { DaemonConfig } from "../../src/daemon/config.js";
+import { loadDaemonConfig, type DaemonConfig } from "../../src/daemon/config.js";
 import { resetProjectLanguageState, scheduleProjectLanguageDetection } from "../../src/daemon/project-language.js";
 import { invalidateLanguagePacks, languagePackPath } from "../../src/store/language-pack.js";
 
@@ -20,7 +20,18 @@ vi.mock("../../src/daemon/summarizer.js", async (importOriginal) => ({
   createSummarizer: vi.fn(),
 }));
 
-const config = { llm: { provider: "openai", model: "test-model", baseURL: "http://local.test", apiKey: "k" } } as unknown as DaemonConfig;
+/**
+ * A real DaemonConfig built from the defaults, with no config file and an empty
+ * environment: a change to the config shape breaks these tests instead of
+ * hiding behind a cast, and no developer's own env var can steer them.
+ */
+function testConfig(llm: Partial<DaemonConfig["llm"]> = {}): DaemonConfig {
+  return loadDaemonConfig(
+    join(tmpdir(), "lcm-no-such-config.json"),
+    { llm: { provider: "openai", model: "test-model", baseURL: "http://local.test", apiKey: "k", ...llm } },
+    {},
+  );
+}
 const PACK_REPLY = JSON.stringify(Array.from({ length: 40 }, (_, i) => `p${i}`).concat(["que", "como", "para"]));
 
 async function seededDb(turns: number): Promise<DatabaseSync> {
@@ -57,22 +68,22 @@ describe("scheduleProjectLanguageDetection", () => {
     const summarize = vi.fn().mockResolvedValueOnce("pt-BR").mockResolvedValueOnce(PACK_REPLY);
     vi.mocked(createSummarizer).mockResolvedValue(summarize);
     const db = await seededDb(25);
-    await scheduleProjectLanguageDetection(dir, db, config);
+    await scheduleProjectLanguageDetection(dir, db, testConfig());
     const meta = JSON.parse(readFileSync(join(dir, "meta.json"), "utf-8"));
     expect(meta.language).toBe("pt-BR");
     expect(existsSync(languagePackPath("pt-BR"))).toBe(true);
     expect(summarize).toHaveBeenCalledTimes(2);
     expect(summarize.mock.calls[0][0]).toContain("1. Bora revisar");
-    await scheduleProjectLanguageDetection(dir, db, config);
+    await scheduleProjectLanguageDetection(dir, db, testConfig());
     expect(summarize).toHaveBeenCalledTimes(2);
   });
 
   it("does nothing below the turn threshold, under a mock summarizer, or with a disabled provider", async () => {
     const summarize = vi.fn().mockResolvedValue("pt-BR");
     vi.mocked(createSummarizer).mockResolvedValue(summarize);
-    await scheduleProjectLanguageDetection(dir, await seededDb(5), config);
-    await scheduleProjectLanguageDetection(dir, await seededDb(25), { ...config, summarizer: { mock: true } } as DaemonConfig);
-    await scheduleProjectLanguageDetection(dir, await seededDb(25), { ...config, llm: { ...config.llm, provider: "disabled" } } as DaemonConfig);
+    await scheduleProjectLanguageDetection(dir, await seededDb(5), testConfig());
+    await scheduleProjectLanguageDetection(dir, await seededDb(25), { ...testConfig(), summarizer: { mock: true } });
+    await scheduleProjectLanguageDetection(dir, await seededDb(25), testConfig({ provider: "disabled" }));
     expect(summarize).not.toHaveBeenCalled();
     expect(existsSync(join(dir, "meta.json"))).toBe(false);
   });
@@ -81,7 +92,7 @@ describe("scheduleProjectLanguageDetection", () => {
     writeFileSync(join(dir, "meta.json"), JSON.stringify({ cwd: dir, language: "de" }));
     const summarize = vi.fn().mockResolvedValue("pt-BR");
     vi.mocked(createSummarizer).mockResolvedValue(summarize);
-    await scheduleProjectLanguageDetection(dir, await seededDb(25), config);
+    await scheduleProjectLanguageDetection(dir, await seededDb(25), testConfig());
     expect(summarize).not.toHaveBeenCalled();
     expect(JSON.parse(readFileSync(join(dir, "meta.json"), "utf-8")).language).toBe("de");
   });
@@ -91,8 +102,8 @@ describe("scheduleProjectLanguageDetection", () => {
     const summarize = vi.fn().mockRejectedValue(new Error("API key is invalid"));
     vi.mocked(createSummarizer).mockResolvedValue(summarize);
     const db = await seededDb(25);
-    await scheduleProjectLanguageDetection(dir, db, config);
-    await scheduleProjectLanguageDetection(dir, db, config);
+    await scheduleProjectLanguageDetection(dir, db, testConfig());
+    await scheduleProjectLanguageDetection(dir, db, testConfig());
     expect(summarize).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0][0]).toContain("API key is invalid");
