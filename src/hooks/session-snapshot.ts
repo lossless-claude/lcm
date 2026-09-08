@@ -1,7 +1,7 @@
 import { statSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { functionHooksActive } from "./post-tool.js";
+import { functionHooksOwnSession } from "./session-claim.js";
 
 export interface SnapshotDeps {
   statSync: (path: string) => { mtimeMs: number } | null;
@@ -22,15 +22,16 @@ export async function handleSessionSnapshot(
   stdin: string,
   deps?: Partial<SnapshotDeps>,
 ): Promise<{ exitCode: number; stdout: string }> {
-  // The function-hooks module ingests on turn.complete while it is loaded; a second
-  // ingest per turn from here would only parse the same transcript twice.
-  if (functionHooksActive()) return { exitCode: 0, stdout: "" };
   try {
     const input = JSON.parse(stdin || "{}");
     const { session_id, cwd, transcript_path } = input;
     if (!session_id || !cwd || !transcript_path) {
       return { exitCode: 0, stdout: "" };
     }
+
+    // The module ingests on turn.complete while it holds the session; a second ingest
+    // per turn from here would only parse the same transcript twice.
+    if (functionHooksOwnSession(session_id)) return { exitCode: 0, stdout: "" };
 
     const safeSessionId = session_id.replace(/[^a-zA-Z0-9_-]/g, "_");
     const cursorDir = join(homedir(), ".lossless-claude", "tmp");

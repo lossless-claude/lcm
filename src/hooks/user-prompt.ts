@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { safeLogError } from "./hook-errors.js";
 import { buildMemoryContext } from "./memory-context.js";
 import { LEARNING_INSTRUCTION } from "./learning-instruction.js";
-import { functionHooksActive } from "./post-tool.js";
+import { functionHooksOwnSession } from "./session-claim.js";
 
 type PromptSearchResponse = {
   hints: string[];
@@ -41,10 +41,19 @@ export async function handleUserPromptSubmit(
   client: DaemonClient,
   port?: number,
 ): Promise<{ exitCode: number; stdout: string }> {
-  // The function-hooks module owns this event while it is loaded: prompt.section carries the
-  // instruction and prompt.submit carries the memory context, so anything printed here would
-  // reach the model twice.
-  if (functionHooksActive()) return { exitCode: 0, stdout: "" };
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(stdin || "{}") as Record<string, unknown>;
+  } catch {
+    return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
+  }
+
+  // The module owns this event while it holds the session: prompt.section carries the
+  // instruction and prompt.submit carries the memory context, so anything printed here
+  // would reach the model twice.
+  if (functionHooksOwnSession(parsed.session_id as string | undefined)) {
+    return { exitCode: 0, stdout: "" };
+  }
 
   const daemonPort = port ?? 3737;
   const pidFilePath = join(homedir(), ".lossless-claude", "daemon.pid");
@@ -52,7 +61,7 @@ export async function handleUserPromptSubmit(
   if (!connected) return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
 
   try {
-    const input = JSON.parse(stdin || "{}");
+    const input = parsed as { prompt?: string; session_id?: string; cwd?: string };
     if (!input.prompt || typeof input.prompt !== "string" || !input.prompt.trim()) {
       return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
     }
