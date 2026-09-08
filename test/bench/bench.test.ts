@@ -298,9 +298,28 @@ describe("lcm bench", () => {
     ]);
 
     const build = await buildBench({ cwd, n: 20, seed: 7 });
+    expect(build.exitCode, build.stdout).toBe(0);
     const bench = JSON.parse(readFileSync(build.out, "utf-8")) as BenchFile;
     expect(bench.queries.some((q) => q.prompt === shared)).toBe(false);
     expect(bench.queries.length).toBeGreaterThan(0);
+  });
+
+  it("counts only sessions the sampler can draw from as repeats", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    // Unique among scorable sessions: the second copy lives in a conversation
+    // with no session id, which buildBench never samples.
+    const unique = "The Redis eviction policy is dropping hot keys under memory pressure and the cache hit ratio collapsed overnight.";
+    await addSessions(cwd, [
+      { sessionId: "sess-cache", prompt: unique },
+      { sessionId: "", prompt: unique },
+    ]);
+
+    const build = await buildBench({ cwd, n: 20, seed: 7 });
+    expect(build.exitCode, build.stdout).toBe(0);
+    const bench = JSON.parse(readFileSync(build.out, "utf-8")) as BenchFile;
+    expect(bench.queries.some((q) => q.prompt === unique)).toBe(true);
   });
 
   it("never samples harness boilerplate as a prompt", async () => {

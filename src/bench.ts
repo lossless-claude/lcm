@@ -240,6 +240,11 @@ function questionProblem(question: unknown, ctx: { prompt: string; seen: Set<str
  * evidence is not unique cannot be scored against a single source label:
  * search can return another session that genuinely contains it and still be
  * counted as a miss.
+ *
+ * Only sessions the sampler can draw from count towards the total — the same
+ * nonempty-session filter `buildBench` applies. Counting a session-less
+ * conversation would exclude a prompt that is in fact unique among scorable
+ * sessions.
  */
 function repeatedPrompts(db: DatabaseSync): Set<string> {
   const rows = db
@@ -247,7 +252,7 @@ function repeatedPrompts(db: DatabaseSync): Set<string> {
       `SELECT m.content AS content
        FROM messages m
        JOIN conversations c ON c.conversation_id = m.conversation_id
-       WHERE m.role = 'user'
+       WHERE m.role = 'user' AND c.session_id IS NOT NULL AND c.session_id != ''
        GROUP BY m.content
        HAVING COUNT(DISTINCT c.session_id) > 1`,
     )
