@@ -3,7 +3,8 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
-import { projectId, projectDbPath, projectDir, projectMetaPath, ensureProjectDir, isSafeTranscriptPath } from "../project.js";
+import { projectId, projectDbPath, projectDir, projectMetaPath, isSafeTranscriptPath } from "../project.js";
+import { openProject } from "../project-group.js";
 import { enqueue } from "../project-queue.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
@@ -251,7 +252,7 @@ export function createCompactHandler(config: DaemonConfig, jobs?: SummarizeJobSt
       const pid = projectId(cwd);
       const result = await enqueue(pid, async () => {
         const dbPath = projectDbPath(cwd);
-        ensureProjectDir(cwd);
+        openProject(cwd);
         const llmUsage = createCompactLlmUsage(effectiveProvider, config.llm.model);
         const usageByProvider = new Map<string, CompactLlmUsage>();
 
