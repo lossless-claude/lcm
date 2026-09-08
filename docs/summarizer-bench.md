@@ -66,7 +66,6 @@ The bench does not copy the production engine configuration — it calls the sam
 
 Only two values are per-caller arguments, and the bench differs on both deliberately:
 
-- `leafTargetTokens` — the bench passes the compiled-in `DEFAULT_LEAF_TOKENS`, not the operator's live `config.json`, so a run is reproducible across machines.
 - `scrubber` — none: stored messages were already scrubbed at ingest, and the export copies stored content verbatim.
 
 `test/compaction.test.ts` pins this: it asserts that every field except those two comes out identical for both callers.

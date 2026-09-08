@@ -44,8 +44,6 @@ export interface CompactionConfig {
   incrementalMaxDepth: number;
   /** Max source tokens to compact per leaf/condensed chunk (default 20000) */
   leafChunkTokens?: number;
-  /** Target tokens for leaf summaries (default 600) */
-  leafTargetTokens: number;
   /** Target tokens for condensed summaries (default 900) */
   condensedTargetTokens: number;
   /** Maximum compaction rounds (default 10) */
@@ -64,15 +62,12 @@ export const COMPACT_TOKEN_BUDGET = 200_000;
  *
  * Single source of truth: the summarizer eval bench builds its engine from this
  * same function, so the bench cannot silently drift into measuring a different
- * engine than production runs. Only the two genuinely per-caller values are
- * arguments — the bench passes the compiled-in `DEFAULT_LEAF_TOKENS` (a run must
- * be reproducible across machines, not follow the operator's config.json) and no
- * scrubber (its corpus was scrubbed at ingest).
+ * engine than production runs. The scrubber is the one per-caller value; the
+ * bench passes none, its corpus having been scrubbed at ingest.
  */
 export function compactEngineConfig(opts: {
-  leafTargetTokens: number;
   scrubber?: ScrubEngine;
-}): CompactionConfig {
+} = {}): CompactionConfig {
   return {
     contextThreshold: 0.75,
     freshTailCount: 8,
@@ -80,7 +75,6 @@ export function compactEngineConfig(opts: {
     condensedMinFanout: 2,
     condensedMinFanoutHard: 1,
     incrementalMaxDepth: 0,
-    leafTargetTokens: opts.leafTargetTokens,
     condensedTargetTokens: 900,
     maxRounds: 10,
     scrubber: opts.scrubber,

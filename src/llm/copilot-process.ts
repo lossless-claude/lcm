@@ -193,7 +193,8 @@ function runCopilotSummarizer(
   if (promptBytes > MAX_PROMPT_BYTES) {
     return Promise.reject(new Error(
       `copilot prompt is ${promptBytes} bytes, over the ${MAX_PROMPT_BYTES}-byte limit — ` +
-      "the Copilot CLI only accepts prompts as command-line arguments. Lower compaction.leafTokens.",
+      "the Copilot CLI only accepts prompts as command-line arguments. Use a provider that " +
+      "reads the prompt on stdin (claude, codex, anthropic, openai) for chunks this large.",
     ));
   }
 

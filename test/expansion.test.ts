@@ -13,7 +13,6 @@ const BASE_CONFIG: LcmConfig = {
   condensedMinFanoutHard: 2,
   incrementalMaxDepth: 0,
   leafChunkTokens: 20_000,
-  leafTargetTokens: 600,
   condensedTargetTokens: 900,
   maxExpandTokens: 250,
   largeFileTokenThreshold: 25_000,

@@ -49,7 +49,6 @@ describe("CompactionEngine.compact — previousSummaryContent seeding", () => {
       condensedMinFanout: 10,
       condensedMinFanoutHard: 5,
       incrementalMaxDepth: 0,
-      leafTargetTokens: 600,
       condensedTargetTokens: 900,
       maxRounds: 1,
     });
@@ -68,23 +67,19 @@ describe("CompactionEngine.compact — previousSummaryContent seeding", () => {
 });
 
 describe("compactEngineConfig", () => {
-  it("threads through the only two per-caller values", () => {
+  it("threads through the only per-caller value", () => {
     const scrubber = {} as never;
-    const withScrubber = compactEngineConfig({ leafTargetTokens: 2500, scrubber });
-    expect(withScrubber.leafTargetTokens).toBe(2500);
-    expect(withScrubber.scrubber).toBe(scrubber);
-
-    const without = compactEngineConfig({ leafTargetTokens: 1000 });
-    expect(without.scrubber).toBeUndefined();
+    expect(compactEngineConfig({ scrubber }).scrubber).toBe(scrubber);
+    expect(compactEngineConfig().scrubber).toBeUndefined();
   });
 
   it("is the same engine for every caller, so the bench cannot drift from /compact", () => {
-    // Only leafTargetTokens and scrubber may differ between the daemon route
-    // and the summarizer bench; everything else must come out identical.
-    const route = compactEngineConfig({ leafTargetTokens: 4000, scrubber: {} as never });
-    const bench = compactEngineConfig({ leafTargetTokens: 1000 });
-    const { leafTargetTokens: _a, scrubber: _b, ...routeRest } = route;
-    const { leafTargetTokens: _c, scrubber: _d, ...benchRest } = bench;
+    // Only the scrubber may differ between the daemon route and the summarizer
+    // bench; everything else must come out identical.
+    const route = compactEngineConfig({ scrubber: {} as never });
+    const bench = compactEngineConfig();
+    const { scrubber: _b, ...routeRest } = route;
+    const { scrubber: _d, ...benchRest } = bench;
     expect(benchRest).toEqual(routeRest);
   });
 });
