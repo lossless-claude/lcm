@@ -33,6 +33,7 @@ async function start(options: Record<string, number> = {}, jobs: unknown[] = [le
           const job = jobs.shift();
           if (job instanceof Error) throw job;
           if (job === "unauthorized") return { ok: false, status: 401, text: "" };
+          if (job === "malformed") return { ok: true, status: 200, text: "not json" };
           return { ok: true, status: 200, text: JSON.stringify({ job }) };
         }
         finish();
@@ -141,6 +142,13 @@ describe("function-hook session summarizer", () => {
     expect(engine.http.fetch).toHaveBeenCalledWith(expect.stringContaining("&wait_ms=0"), expect.anything());
     expect(engine.clock.after).toHaveBeenCalledWith(5_000, expect.any(Function));
     expect(engine.clock.after).toHaveBeenCalledWith(2_000, expect.any(Function));
+    expect(engine.model.complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps polling after a 200 whose body is not JSON", async () => {
+    const { trigger, done, engine } = await start({}, ["malformed", leaf]);
+    trigger();
+    await done;
     expect(engine.model.complete).toHaveBeenCalledTimes(1);
   });
 

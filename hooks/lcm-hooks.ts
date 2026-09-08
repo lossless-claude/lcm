@@ -237,18 +237,19 @@ function classifyPollResponse($: EngineInterface, status: number): { wait: numbe
 async function nextSummaryJob(
   $: EngineInterface, sessionId: string, shortPoll: boolean,
 ): Promise<PollOutcome> {
-  let response;
+  let job: SummaryJob | undefined;
   try {
-    response = await fetchNextJob($, sessionId, shortPoll);
+    const response = await fetchNextJob($, sessionId, shortPoll);
+    if (!response.ok || response.status === 204) return classifyPollResponse($, response.status);
+    // The parse stays inside the try: a malformed 200 backs off and respawns the
+    // daemon like any other transport failure, instead of stopping the poller.
+    job = JSON.parse(response.text).job as SummaryJob;
   } catch {
     // Some hosts cap HTTP request duration below the daemon's 25-second hold.
     await startDaemon($);
     daemon = null; // A restarted daemon may have a new bearer token.
     return { wait: POLL_BACKOFF_MS, shortPoll: true };
   }
-  if (!response.ok || response.status === 204) return classifyPollResponse($, response.status);
-
-  const job = JSON.parse(response.text).job as SummaryJob;
   // Do not run a prompt belonging to another session, even on a malformed response.
   if (!job || job.session_id !== sessionId) {
     $.ui.log("[lcm] discarded summary job for a different session");
