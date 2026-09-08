@@ -80,5 +80,8 @@
   "homepage": "https://github.com/lossless-claude/lcm#readme",
   "bugs": {
     "url": "https://github.com/lossless-claude/lcm/issues"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }
