@@ -361,7 +361,7 @@ async function main() {
       const { ensureAuthToken } = await import("../src/daemon/auth.js");
       ensureAuthToken(tokenPath);
       try {
-        const daemon = await createDaemon(config, { tokenPath });
+        const daemon = await createDaemon(config, { tokenPath, backfillIdentities: true });
         console.log(`lcm daemon started on port ${daemon.address().port}`);
       } catch (err) {
         const code = (err as NodeJS.ErrnoException)?.code;
