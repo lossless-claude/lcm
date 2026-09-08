@@ -1,3 +1,5 @@
+import { SummarizeJobStore } from "./summarize-jobs.js";
+import { createNextSummarizeJobHandler, createAnswerSummarizeJobHandler } from "./routes/summarize-jobs.js";
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { DaemonConfig } from "./config.js";
@@ -85,7 +87,10 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
 
   routes.set("GET /health", async (_req, res) =>
     sendJson(res, 200, { status: "ok", version: PKG_VERSION, build: BUILD_ID, pid: process.pid, uptime: Math.floor((Date.now() - startTime) / 1000) }));
-  routes.set("POST /compact", createCompactHandler(config));
+  const summarizeJobs = new SummarizeJobStore();
+  const answerSummarizeJob = createAnswerSummarizeJobHandler(summarizeJobs);
+  routes.set("GET /summarize-jobs/next", createNextSummarizeJobHandler(summarizeJobs));
+  routes.set("POST /compact", createCompactHandler(config, summarizeJobs));
   routes.set("POST /promote", createPromoteHandler(config));
   routes.set("POST /restore", createRestoreHandler(config));
   routes.set("POST /grep", createGrepHandler(config));
@@ -162,7 +167,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   const server: Server = createServer(async (req, res) => {
     resetIdleTimer();
     const key = `${req.method} ${req.url?.split("?")[0]}`;
-    const handler = routes.get(key);
+    const handler = routes.get(key) ?? (req.method === "POST" && /^\/summarize-jobs\/[^/?]+$/.test(req.url?.split("?")[0] ?? "") ? answerSummarizeJob : undefined);
     if (!handler) { sendJson(res, 404, { error: "not found" }); return; }
     // Auth: skip for GET /health, require Bearer token for everything else
     if (serverToken && key !== "GET /health") {
@@ -208,6 +213,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
       resolve({
         address: () => addr,
         stop: async () => {
+          summarizeJobs.close();
           clearInterval(ingestInterval);
           if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
           if (proxyManager) {

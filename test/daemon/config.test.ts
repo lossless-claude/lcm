@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadDaemonConfig, deepMerge } from "../../src/daemon/config.js";
 
 describe("loadDaemonConfig", () => {
@@ -114,6 +117,52 @@ describe("loadDaemonConfig", () => {
   it("accepts LCM_SUMMARY_PROVIDER=auto", () => {
     const c = loadDaemonConfig("/nonexistent", {}, { LCM_SUMMARY_PROVIDER: "auto" });
     expect(c.llm.provider).toBe("auto");
+  });
+
+  it("accepts session and fallbackProvider from a config file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "lcm-session-config-"));
+    try {
+      const path = join(dir, "config.json");
+      writeFileSync(path, JSON.stringify({ llm: { provider: "session", fallbackProvider: "openai" } }));
+      const config = loadDaemonConfig(path, {}, {});
+      expect(config.llm.provider).toBe("session");
+      expect(config.llm.fallbackProvider).toBe("openai");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts LCM_SUMMARY_PROVIDER=session over the configured provider", () => {
+    const config = loadDaemonConfig("/nonexistent", { llm: { provider: "openai" } }, { LCM_SUMMARY_PROVIDER: "session" });
+    expect(config.llm.provider).toBe("session");
+    expect(config.llm.fallbackProvider).toBeUndefined();
+  });
+
+  it.each(["auto", "claude-process", "codex-process", "copilot-process", "anthropic", "openai", "disabled"])(
+    "accepts %s as a session fallback", (fallbackProvider) => {
+      const config = loadDaemonConfig("/nonexistent", { llm: { provider: "session", fallbackProvider, apiKey: "sk-test" } }, {});
+      expect(config.llm.fallbackProvider).toBe(fallbackProvider);
+    },
+  );
+
+  it.each(["session", "ollama", "", null, 3, {}, []])("rejects invalid session fallback %j", (fallbackProvider) => {
+    expect(() => loadDaemonConfig("/nonexistent", { llm: { provider: "session", fallbackProvider } }, {}))
+      .toThrow("Invalid llm.fallbackProvider");
+  });
+
+  it("loads Anthropic credentials for an active session fallback", () => {
+    const config = loadDaemonConfig("/nonexistent", { llm: { provider: "session", fallbackProvider: "anthropic" } }, { ANTHROPIC_API_KEY: "sk-env" });
+    expect(config.llm.apiKey).toBe("sk-env");
+  });
+
+  it("requires credentials for an active Anthropic session fallback", () => {
+    expect(() => loadDaemonConfig("/nonexistent", { llm: { provider: "session", fallbackProvider: "anthropic" } }, {}))
+      .toThrow("LCM_SUMMARY_API_KEY is required");
+  });
+
+  it("does not inject Anthropic credentials for an inactive fallback", () => {
+    const config = loadDaemonConfig("/nonexistent", { llm: { provider: "openai", fallbackProvider: "anthropic" } }, { ANTHROPIC_API_KEY: "sk-env" });
+    expect(config.llm.apiKey).toBe("");
   });
 
   it("accepts copilot-process as a provider from file config", () => {

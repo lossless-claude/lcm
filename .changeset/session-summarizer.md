@@ -1,0 +1,5 @@
+---
+"@lossless-claude/lcm": minor
+---
+
+New summarizer provider `llm.provider: "session"` (Claude Code function hooks, early access). Instead of calling an API, the daemon hands each summarization job to the function-hooks module of the live session that owns the transcript, which answers through the session's own client: `$.model.complete` with `haiku` for leaf chunks, `$.model.fork` for condensed nodes, `complete` again when the fork has no warm cache. The module serves only its own session's jobs, through a long-poll on `GET /summarize-jobs/next` and `POST /summarize-jobs/:id`, and spends at most `sessionSummarizerMaxOutputTokens` output tokens per session (plugin `userConfig`, default 50000, 0 disables). A job unanswered within 20 s, or answered with an error, goes to `llm.fallbackProvider` when set and to today's `auto` resolution otherwise; a provider the user named explicitly is never bypassed. Usage lands in `llm_usage_stats` as `session:haiku` or `session:fork`, with `calls_estimated` counting the `complete` calls whose tokens are estimated. The engine keeps all DAG bookkeeping; triggers (PreCompact, SessionEnd) do not change.

@@ -64,6 +64,7 @@ const LLM_USAGE_ADDED_COLUMNS: ReadonlyArray<readonly [name: string, ddl: string
   ["tokens_output_total", "INTEGER NOT NULL DEFAULT 0"],
   ["cost_usd_total", "REAL"],
   ["calls_with_cost", "INTEGER NOT NULL DEFAULT 0"],
+  ["calls_estimated", "INTEGER NOT NULL DEFAULT 0"],
 ];
 
 function ensureLlmUsageBreakdownColumns(db: DatabaseSync): void {
