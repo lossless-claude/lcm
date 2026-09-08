@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
-import { projectDbPath, projectDir, projectId, ensureProjectDir, projectMetaPath, isSafeTranscriptPath } from "../project.js";
+import { projectDbPath, projectDir, projectId, ensureProjectDir, projectMetaPath, isSafeTranscriptPath, claudeTranscriptPath } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
@@ -25,14 +25,22 @@ function isParsedMessage(value: unknown): value is ParsedMessage {
   );
 }
 
-function resolveMessages(input: { messages?: unknown; transcript_path?: string; client?: string }, cwd: string): ParsedMessage[] {
+function resolveMessages(
+  input: { messages?: unknown; transcript_path?: string; client?: string; session_id?: string },
+  cwd: string,
+): ParsedMessage[] {
   if (Array.isArray(input.messages)) {
     return input.messages.filter(isParsedMessage);
   }
 
-  if (input.transcript_path) {
+  // A caller that knows only the session (the function-hooks module) gets Claude Code's
+  // own transcript location; it still has to pass isSafeTranscriptPath like any other.
+  const transcriptPath = input.transcript_path
+    ?? (input.client !== "codex" && input.session_id ? claudeTranscriptPath(cwd, input.session_id) ?? undefined : undefined);
+
+  if (transcriptPath) {
     const client = input.client === "codex" ? "codex" : "claude";
-    const safePath = isSafeTranscriptPath(input.transcript_path, cwd, client);
+    const safePath = isSafeTranscriptPath(transcriptPath, cwd, client);
     if (safePath && existsSync(safePath)) {
       if (client === "codex") {
         const transcriptCwd = extractCodexSessionCwd(safePath);

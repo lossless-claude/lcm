@@ -7,6 +7,8 @@
 //   prompt.submit   → POST /prompt-search (memory hits ride as hidden context on the prompt)
 //   prompt.section  → the learning instruction is appended once to the system prompt's
 //                     `memory` section, instead of to every prompt.
+//   turn.complete   → POST /ingest (the daemon reads the transcript delta) and
+//                     POST /promote-events, at most once a minute, replacing the Stop hook.
 // The module has no Node and no SQLite, so the daemon does every write.
 //
 // Types: run /plugin-types in a session, then `import type { Register } from "claude-code"`.
@@ -20,6 +22,9 @@ const CAPTURED_TOOLS = new Set([
   "Read", "Edit", "Write", "Glob", "Grep", "TaskCreate", "TaskUpdate", "Skill",
 ]);
 const DEFAULT_PORT = 3737;
+/** Same default as hooks.snapshotIntervalSec for the Stop command hook: one ingest a minute. */
+const INGEST_INTERVAL_MS = 60_000;
+let lastIngestAt = 0;
 
 // Verbatim copy of src/hooks/learning-instruction.ts (the module cannot import from src/);
 // test/hooks/learning-instruction.test.ts fails when the two drift.
@@ -163,6 +168,19 @@ export const register: Register = (on) => {
     const context = typeof search?.context === "string" ? search.context : null;
     if (!context) return result;
     return { ...result, context: [...(result.context ?? []), context] };
+  });
+
+  // The session's transcript is ingested incrementally as turns end, so memory does not wait
+  // for SessionEnd. The daemon derives the transcript path from session id and cwd.
+  on("turn.complete", async ($, e, next) => {
+    const result = await next(e);
+    const now = Date.now();
+    if (now - lastIngestAt < INGEST_INTERVAL_MS) return result;
+    lastIngestAt = now;
+    const [session_id, cwd] = await Promise.all([$.session.id(), $.session.cwd()]);
+    await postDaemon($, "/ingest", { session_id, cwd });
+    await postDaemon($, "/promote-events", { cwd });
+    return result;
   });
 
   on("tool.call", async ($, e, next) => {
