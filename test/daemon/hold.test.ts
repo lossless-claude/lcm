@@ -1,9 +1,24 @@
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_HOLD_MINUTES, clearHold, holdPath, readHold, writeHold } from "../../src/daemon/hold.js";
 import { ensureDaemon } from "../../src/daemon/lifecycle.js";
+
+const interleave = vi.hoisted(() => ({ afterUnlink: undefined as (() => void) | undefined }));
+vi.mock("node:fs", async (original) => {
+  const actual = await original<typeof import("node:fs")>();
+  return {
+    ...actual,
+    existsSync: vi.fn(actual.existsSync),
+    unlinkSync: (path: string) => {
+      actual.unlinkSync(path);
+      const callback = interleave.afterUnlink;
+      interleave.afterUnlink = undefined;
+      callback?.();
+    },
+  };
+});
 
 let dir: string;
 let pidFilePath: string;
@@ -14,6 +29,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  interleave.afterUnlink = undefined;
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -79,6 +95,24 @@ describe("hold marker", () => {
     writeHold(pidFilePath, {});
     expect(clearHold(pidFilePath)).toBe(true);
     expect(readHold(pidFilePath)).toBeNull();
+  });
+
+  it("preserves a hold published immediately after atomic release", () => {
+    writeHold(pidFilePath, { reason: "old" });
+    interleave.afterUnlink = () => {
+      writeHold(pidFilePath, { reason: "new" });
+    };
+    vi.mocked(existsSync).mockClear();
+    expect(clearHold(pidFilePath)).toBe(true);
+    expect(existsSync).not.toHaveBeenCalled();
+    expect(readHold(pidFilePath)?.reason).toBe("new");
+  });
+
+  it("surfaces filesystem failures instead of claiming the hold was absent", () => {
+    // A directory at the marker path cannot be unlinked as a file.
+    mkdirSync(holdPath(pidFilePath));
+    expect(() => clearHold(pidFilePath)).toThrow();
+    expect(existsSync(holdPath(pidFilePath))).toBe(true);
   });
 
   it("a later hold replaces an earlier one", () => {

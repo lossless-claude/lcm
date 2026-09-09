@@ -30,7 +30,7 @@ const cli = (...args: string[]) => execute(process.execPath, [resolve("dist/bin/
 
 it("automatic built CLI preserves the LCM_HOME hold; explicit start releases it", async () => {
   const hold = writeHold(pid);
-  await cli("--automatic", "--detach");
+  await expect(cli("--automatic", "--detach")).rejects.toMatchObject({ code: 75 });
   expect(readHold(pid)).toEqual(hold);
   expect(requests).toBe(0);
   const result = await ensureDaemon({ port: (server.address() as any).port, pidFilePath: pid, spawnTimeoutMs: 100 });
@@ -44,7 +44,7 @@ it("automatic built CLI preserves the LCM_HOME hold; explicit start releases it"
   expect(existsSync(join(home, ".lossless-claude"))).toBe(false);
 });
 
-it("a function-hook tool event cannot release a hold through its actual startup command", async () => {
+it("function hooks preserve a hold and resume immediately after expiry without a restart cooldown", async () => {
   const held = writeHold(pid);
   const handlers = new Map<string, any>();
   register(((event: string, callback: any) => handlers.set(event, callback)) as any, {} as any);
@@ -58,13 +58,22 @@ it("a function-hook tool event cannot release a hold through its actual startup 
       if (command.includes("__CONFIG__")) return { stdout: `\n__CONFIG__\n{}\n__TMPDIR__\n${dir}`, stderr: "", exitCode: 0 };
       commands.push(command);
       const suffix = command.split("exec lcm daemon start ")[1].split(" ");
-      const result = await cli(...suffix);
-      return { ...result, exitCode: 0 };
+      try {
+        const result = await cli(...suffix);
+        return { ...result, exitCode: 0 };
+      } catch (error) {
+        const result = error as { code: number; stdout: string; stderr: string };
+        return { ...result, exitCode: result.code };
+      }
     } },
   };
   await handlers.get("tool.call")(engine, { tool: "Read", tool_use_id: "one" }, async () => ({ result: "ok" }));
   expect(commands).toHaveLength(1);
   expect(readHold(pid)).toEqual(held);
   expect(requests).toBe(0);
+  writeFileSync(join(root, "daemon.hold"), JSON.stringify({ ...held, until: new Date(Date.now() - 1).toISOString() }));
+  await handlers.get("tool.call")(engine, { tool: "Read", tool_use_id: "two" }, async () => ({ result: "ok" }));
+  expect(commands).toHaveLength(2);
+  expect(requests).toBe(1);
   expect(existsSync(join(home, ".lossless-claude"))).toBe(false);
 });
