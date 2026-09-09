@@ -1,6 +1,5 @@
 import { statSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { functionHooksOwnSession } from "./session-claim.js";
 import { lcmPath } from "../lcm-home.js";
 

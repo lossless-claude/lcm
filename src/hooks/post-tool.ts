@@ -14,8 +14,6 @@ export { functionHooksActive, functionHooksOwnSession } from "./session-claim.js
 async function configuredDaemonPort(): Promise<number> {
   try {
     const { loadDaemonConfig } = await import("../daemon/config.js");
-    const { join } = await import("node:path");
-    const { homedir } = await import("node:os");
     return loadDaemonConfig(lcmPath("config.json")).daemon?.port ?? 3737;
   } catch {
     return 3737;

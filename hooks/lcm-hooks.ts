@@ -71,7 +71,10 @@ function parsePort(configJson: string): number {
 // is what lets a sandbox run this module without touching the host's own lcm state.
 function readHostEnv($: EngineInterface): Promise<HostEnv> {
   hostEnv ??= $.process.run(["sh", "-c",
-    'H="${LCM_HOME:-$HOME/.lossless-claude}"; '
+    // Trimmed before the emptiness test, so a blank LCM_HOME falls back here exactly as
+    // it does in lcmHome(); otherwise the two sides disagree about the root.
+    'H=$(printf %s "${LCM_HOME:-}" | sed "s/^[[:space:]]*//; s/[[:space:]]*$//"); '
+    + '[ -n "$H" ] || H="$HOME/.lossless-claude"; '
     + 'cat "$H/daemon.token" 2>/dev/null; echo; echo "__CONFIG__"; '
     + 'cat "$H/config.json" 2>/dev/null; echo; echo "__TMPDIR__"; '
     + 'printf %s "${TMPDIR:-/tmp}"',

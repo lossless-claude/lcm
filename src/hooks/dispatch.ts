@@ -37,7 +37,6 @@ export async function dispatchHook(
   const { DaemonClient } = await import("../daemon/client.js");
   const { loadDaemonConfig } = await import("../daemon/config.js");
   const { join } = await import("node:path");
-  const { homedir } = await import("node:os");
   const config = loadDaemonConfig(lcmPath("config.json"));
   const port = config.daemon?.port ?? 3737;
   const client = new DaemonClient(`http://127.0.0.1:${port}`);
