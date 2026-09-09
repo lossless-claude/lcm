@@ -212,7 +212,14 @@ async function createDaemonClientOrExit(): Promise<DaemonClient> {
   const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 5000 });
 
   if (!connected) {
-    console.error("  Daemon not available. Start it with: lcm daemon start --detach");
+    // A held daemon is down on purpose; saying so keeps it from reading as a fault.
+    const { readHold } = await import("../src/daemon/hold.js");
+    const hold = readHold(pidFilePath);
+    if (hold) {
+      console.error(`  Daemon held down until ${hold.until}${hold.reason ? ` (${hold.reason})` : ""}. Release it with: lcm daemon start`);
+    } else {
+      console.error("  Daemon not available. Start it with: lcm daemon start --detach");
+    }
     exit(1);
   }
 
@@ -273,17 +280,15 @@ export function registerBenchCommands(program: Command): void {
 }
 
 async function main() {
-  const { readFileSync } = await import("node:fs");
-  const { join, dirname } = await import("node:path");
-  const { fileURLToPath } = await import("node:url");
-  const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json");
-  const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+  // PKG_VERSION resolves the package root for both dist/ and source layouts;
+  // a hand-rolled `../../package.json` here only worked from dist/.
+  const { PKG_VERSION } = await import("../src/daemon/version.js");
 
   const program = new Command();
   program
     .name("lcm")
     .description("lossless context management for coding agents")
-    .version(pkg.version, "-V, --version")
+    .version(PKG_VERSION ?? "unknown", "-V, --version")
     .helpCommand(false)
     .addHelpCommand(false)
     .configureOutput({
@@ -324,9 +329,13 @@ async function main() {
       const { ensureDaemon, checkDaemonHealth, isStaleDaemon } = await import("../src/daemon/lifecycle.js");
       const { loadDaemonConfig } = await import("../src/daemon/config.js");
       const { PKG_VERSION, BUILD_ID } = await import("../src/daemon/version.js");
+      const { clearHold } = await import("../src/daemon/hold.js");
       const { lcDir, pidFilePath, tokenPath, configPath } = daemonPaths();
       const config = loadDaemonConfig(configPath);
       const port = config.daemon?.port ?? 3737;
+
+      // Starting is the release gesture: an explicit start always wins over a hold.
+      if (clearHold(pidFilePath)) console.log("released the daemon hold");
 
       const running = await checkDaemonHealth(port);
       if (running?.status === "ok") {
@@ -381,20 +390,37 @@ async function main() {
 
   daemonCmd.command("stop")
     .description("Stop the background daemon")
+    .option("--hold", "Keep it down until `lcm daemon start`, so session hooks cannot respawn it")
+    .option("--minutes <n>", "How long the hold lasts before expiring", (v) => parseInt(v, 10))
+    .option("--reason <text>", "Why the daemon is held down")
     .option("-h, --help", "Show help")
     .action(async (opts) => {
       if (opts.help) { await withCustomHelp(daemonCmd, "daemon"); return; }
       const { stopDaemon, checkDaemonHealth } = await import("../src/daemon/lifecycle.js");
       const { loadDaemonConfig } = await import("../src/daemon/config.js");
+      const { writeHold, DEFAULT_HOLD_MINUTES } = await import("../src/daemon/hold.js");
       const { pidFilePath, configPath } = daemonPaths();
       const port = loadDaemonConfig(configPath).daemon?.port ?? 3737;
+      if (opts.minutes !== undefined && (!Number.isInteger(opts.minutes) || opts.minutes <= 0)) {
+        console.error("--minutes must be a positive integer");
+        exit(1);
+      }
       const before = await checkDaemonHealth(port);
+      // The hold goes down first: between the kill and the marker, a hook that
+      // fires would spawn the daemon straight back.
+      let held: { until: string } | undefined;
+      if (opts.hold) {
+        held = writeHold(pidFilePath, { minutes: opts.minutes, reason: opts.reason });
+      }
       const { stopped, pid } = await stopDaemon({ port, pidFilePath });
       if (!stopped) {
         console.error(`lcm daemon on port ${port} is still up (pid ${pid ?? "?"}) — stop it manually`);
         exit(1);
       }
       console.log(before ? `lcm daemon stopped (pid ${pid ?? before.pid ?? "?"})` : "lcm daemon was not running");
+      if (held) {
+        console.log(`  held down until ${held.until} (${opts.minutes ?? DEFAULT_HOLD_MINUTES} min) — release with: lcm daemon start`);
+      }
     });
 
   daemonCmd.command("restart")
@@ -405,8 +431,11 @@ async function main() {
       const { stopDaemon, ensureDaemon, checkDaemonHealth } = await import("../src/daemon/lifecycle.js");
       const { loadDaemonConfig } = await import("../src/daemon/config.js");
       const { PKG_VERSION, BUILD_ID } = await import("../src/daemon/version.js");
+      const { clearHold } = await import("../src/daemon/hold.js");
       const { lcDir, pidFilePath, configPath } = daemonPaths();
       const port = loadDaemonConfig(configPath).daemon?.port ?? 3737;
+      // A restart ends with the daemon up, so it releases a hold the same way start does.
+      if (clearHold(pidFilePath)) console.log("released the daemon hold");
       const { stopped, pid } = await stopDaemon({ port, pidFilePath });
       if (!stopped) {
         console.error(`lcm daemon on port ${port} is still up (pid ${pid ?? "?"}) — stop it manually`);

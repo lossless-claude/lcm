@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { join, dirname } from "node:path";
 import { ensureAuthToken } from "./auth.js";
+import { readHold } from "./hold.js";
 
 export type EnsureDaemonOptions = {
   port: number;
@@ -87,6 +88,13 @@ export async function checkDaemonHealth(
 
 export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDaemonResult> {
   const fetchFn = opts._fetchOverride ?? globalThis.fetch;
+
+  // Step 0: A hold means someone claimed an offline window. Report not connected
+  // without touching the daemon at all — every caller already degrades to a
+  // no-op when it cannot connect, which is exactly the behaviour a hold wants.
+  if (readHold(opts.pidFilePath)) {
+    return { connected: false, port: opts.port, spawned: false };
+  }
 
   // Step 1: Check if daemon is already running via health check
   const health = await checkDaemonHealth(opts.port, fetchFn);
