@@ -1,53 +1,51 @@
-# Version Roadmap — @lossless-claude/lcm
+# Roadmap — @lossless-claude/lcm
 
-## Unreleased
+The strategic source of truth for this project: the durable themes work is judged
+against. Released versions are recorded in [CHANGELOG.md](./CHANGELOG.md); execution
+state lives in GitHub issues. This file is neither — **it is not a queue**, and an entry
+is not done when an issue closes.
 
-_(no features queued — v0.8.0 shipped 2026-03-28)_
+A theme states what must become true and how we would know. Work derives from it: an
+issue that fits no theme is either out of scope or evidence a theme is missing. Large
+features are admitted here first, as a theme or an amendment to one, before any issue
+is opened.
 
----
+## Themes
 
-## v0.9.0 — Candidates
+### Retrieval quality is measured on real corpora, not synthetic gates
 
-- [ ] Copilot PR review negotiation workflow (round-count metric)
-- [ ] Permissions granularity improvements for agent teammates
+What search returns is what lcm is worth. The synthetic recall gate reports 93% where a
+reviewed real corpus scores 54% (#358), so the gate cannot be the evidence a change is
+good. Every retrieval claim carries a measurement against transcripts someone actually
+wrote.
 
----
+### The record matches what happened
 
-## v0.8.0 — 2026-03-28
+Capture, attribution and structure are separate properties, and a gap in one is not a
+gap in the others (see [CONTEXT.md](./CONTEXT.md)). Sessions must be attributable to
+whoever dispatched them (#419), what a session did must be filterable and not only
+greppable (#421), and no session may end without a durable record (#344).
 
-### Added
-- Connection pooling for sidecar EventsDb (#131)
-- Portable knowledge export/import — `lcm export`, `lcm import-knowledge` (#132)
-- Pool stats observable — `lcm stats --pool` + `GET /stats/pool` daemon endpoint
-- AR coverage gate CI workflow
-- Enriched GitHub Release notes — CHANGELOG extraction + npm badge (#173)
-- Copilot auto-review on all PRs
+### One project, one memory
 
-### Fixed
-- `post-tool` command not registered in CLI dispatcher (#162)
-- Security: upgraded hono, rollup, picomatch (3 high CVEs)
-- Security: CodeQL stack-trace exposure + sanitizeError backslash handling (#175)
-- Atomic meta.json write in `importKnowledge` — prevents crash mid-write corruption (#171)
-- `redaction_stats` migration for v0.7.0 → v0.8.0 upgrades (#171)
+A project's memory is a property of the project, not of the directory it was checked
+out into (#399), and every location lcm owns derives from one injected root rather than
+the ambient environment (#409).
 
----
+### Recall becomes enforcement
 
-## v0.7.0 — 2026-03-26
+Remembering a decision is weaker than making it structurally hard to violate. Critical
+memory should be promoted into contracts, checks and tests that bind future work
+(#198), rather than surfaced as prose an agent may ignore.
 
-_(see CHANGELOG.md)_
+### Parity across hosts and protocols
 
-## v0.6.0 — 2026-03-25
+lcm is a memory layer, not a Claude Code plugin. It holds the same guarantees under
+Codex and under Claude Code, across command hooks and function hooks, and tracks the
+MCP protocol it speaks (#401).
 
-_(see CHANGELOG.md)_
+## Privacy
 
-## v0.5.0 — 2026-03-23
-
-_(see CHANGELOG.md)_
-
-## v0.4.x — 2026-03-23
-
-_(see CHANGELOG.md)_
-
-## v0.1.0
-
-Initial release.
+Memory is captured passively, so redaction and sensitivity classification are part of
+capture, not a feature layered on top. Any theme above that widens what is captured
+must say what it does about sensitive content before it ships.
