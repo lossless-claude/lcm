@@ -348,9 +348,10 @@ async function main() {
       const config = loadDaemonConfig(configPath);
       const port = config.daemon?.port ?? 3737;
 
+      // Automatic starts report an active hold with EX_TEMPFAIL (75), without consuming hook cooldown.
       // Starting is the release gesture: an explicit start always wins over a hold.
       if (opts.automatic) {
-        if (readHold(pidFilePath)) return;
+        if (readHold(pidFilePath)) { process.exitCode = 75; return; }
       } else if (clearHold(pidFilePath)) console.log("released the daemon hold");
 
       const running = await checkDaemonHealth(port);
@@ -377,6 +378,7 @@ async function main() {
         mkdirSync(lcDir, { recursive: true });
         const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 10000 });
         if (!connected) {
+          if (opts.automatic && readHold(pidFilePath)) { process.exitCode = 75; return; }
           console.error(`lcm daemon did not answer on port ${port} within 10s — check ~/.lossless-claude/daemon.log`);
           exit(1);
         }
@@ -387,7 +389,7 @@ async function main() {
 
       const { createDaemon } = await import("../src/daemon/server.js");
       const { ensureAuthToken } = await import("../src/daemon/auth.js");
-      if (opts.automatic && readHold(pidFilePath)) return;
+      if (opts.automatic && readHold(pidFilePath)) { process.exitCode = 75; return; }
       ensureAuthToken(tokenPath);
       try {
         const daemon = await createDaemon(config, { tokenPath, backfillIdentities: true });

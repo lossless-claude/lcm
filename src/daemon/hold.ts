@@ -92,10 +92,12 @@ export function writeHold(
 export function clearHold(pidFilePath: string): boolean {
   const path = holdPath(pidFilePath);
   try {
-    if (!existsSync(path)) return false;
+    // Release the current marker in one atomic operation, ordered against
+    // publication's rename. A hold published after this unlink remains active.
     unlinkSync(path);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
   }
 }
