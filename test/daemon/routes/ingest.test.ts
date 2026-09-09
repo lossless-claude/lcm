@@ -26,7 +26,13 @@ describe("POST /ingest", () => {
   });
 
   it("parses Codex rollout responses server-side and rejects a mismatched project", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "lossless-ingest-codex-"));
+    // The mismatch check needs a cwd that contains the transcript but is not the cwd the
+    // transcript records, so the project is this test's own directory inside a parent of
+    // its own. Posting the shared tmpdir() would work too, but every test that does that
+    // lands on one project database, and two writing it at once answer SQLITE_BUSY.
+    const parentDir = mkdtempSync(join(tmpdir(), "lossless-ingest-parent-"));
+    tempDirs.push(parentDir);
+    const tempDir = mkdtempSync(join(parentDir, "codex-"));
     tempDirs.push(tempDir);
     const path = join(tempDir, "rollout-2026-09-07-different-filename.jsonl");
     writeFileSync(path, [
@@ -40,7 +46,7 @@ describe("POST /ingest", () => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session_id: sessionId, cwd, client: "codex", transcript_path: transcriptPath }),
     });
-    const wrong = await post(tmpdir());
+    const wrong = await post(parentDir);
     // Name the body on failure: a 500 here is otherwise an opaque status with the cause
     // stranded in the daemon's reply.
     expect(wrong.status, await wrong.clone().text()).toBe(400);
