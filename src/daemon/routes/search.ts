@@ -6,7 +6,7 @@ import type { RouteHandler } from "../server.js";
 import { closeLcmConnection, getLcmConnection } from "../../db/connection.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { searchNativeHistory } from "../../search/native-history.js";
-import { PromotedStore } from "../../db/promoted.js";
+import { searchPromotedGroup } from "../../search/group-promoted.js";
 import { validateCwd } from "../validate-cwd.js";
 import { projectRef } from "../project-group.js";
 
@@ -66,12 +66,12 @@ export function createSearchHandler(): RouteHandler {
             }
           }
 
-          // Promoted: FTS5 search across promoted memories
+          // Promoted: FTS5 across every checkout of this repository. Promoted
+          // memory is always unioned; only the episodic union is gated on
+          // measurement.
           if (activeLayers.includes("promoted")) {
             try {
-              const promotedStore = new PromotedStore(db);
-              promoted = promotedStore.search(query, limit, filterTags)
-                .map(result => ({ ...result, project: projectRef(cwd) }));
+              promoted = searchPromotedGroup(cwd, { query, limit, tags: filterTags }).hits;
             } catch (err) {
               console.warn(`[lcm] /search promoted layer failed: ${describeError(err)}`);
               errors.push(`promoted: ${describeError(err)}`);
