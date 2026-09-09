@@ -1,6 +1,10 @@
 import { Command } from "commander";
 import { describe, expect, it } from "vitest";
 import { helpRequested } from "../../bin/lcm.js";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 /**
  * Rebuilds the shape the `daemon` and `connectors` trees have in bin/lcm.ts:
@@ -51,5 +55,42 @@ describe("helpRequested", () => {
   it("is false when neither carries it", () => {
     const parent = new Command("daemon");
     expect(helpRequested(parent, {})).toBe(false);
+  });
+});
+
+describe("built connector CLI without an agent argument", () => {
+  const cli = resolve("dist/bin/lcm.js");
+  function invoke(args: string[]) {
+    const directory = mkdtempSync(join(tmpdir(), "lcm-help-"));
+    try {
+      const result = spawnSync(process.execPath, [cli, "connectors", ...args], {
+        cwd: directory,
+        env: { ...process.env, HOME: directory, LCM_HOME: join(directory, "lcm") },
+        encoding: "utf8",
+        timeout: 10000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(readdirSync(directory)).toEqual([]);
+      return result;
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+
+  it.each([
+    ["install", "--help"], ["install", "-h"],
+    ["remove", "--help"], ["remove", "-h"],
+  ])("connectors %s %s shows help without side effects", (command, flag) => {
+    const result = invoke([command, flag]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("lcm connectors —");
+    expect(result.stderr).toBe("");
+  });
+
+  it.each(["install", "remove"])("connectors %s still requires an agent without help", (command) => {
+    const result = invoke([command]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/agent/);
+    expect(result.stdout).toBe("");
   });
 });

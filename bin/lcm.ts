@@ -994,13 +994,13 @@ async function main() {
     });
 
   connectorsCmd
-    .command("install <agent>")
+    .command("install [agent]")
     .description("Install a connector for an agent")
     .option("--type <type>", "Connector type: rules, mcp, skill, or hooks")
     .option("--global", "Install into the global agent config in your home directory")
     .helpOption(false)
     .option("-h, --help", "Show help")
-    .action(async (agentName: string, opts) => {
+    .action(async (agentName: string | undefined, opts) => {
       if (helpRequested(connectorsCmd, opts)) {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("connectors"); exit(0);
@@ -1026,13 +1026,13 @@ async function main() {
     });
 
   connectorsCmd
-    .command("remove <agent>")
+    .command("remove [agent]")
     .description("Remove a connector for an agent")
     .option("--type <type>", "Connector type: rules, mcp, skill, or hooks")
     .option("--global", "Remove from the global agent config in your home directory")
     .helpOption(false)
     .option("-h, --help", "Show help")
-    .action(async (agentName: string, opts) => {
+    .action(async (agentName: string | undefined, opts) => {
       if (helpRequested(connectorsCmd, opts)) {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("connectors"); exit(0);
