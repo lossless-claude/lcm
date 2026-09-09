@@ -1,7 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { runLcmMigrations } from "./db/migration.js";
 import { collectEventStats } from "./db/events-stats.js";
 import { RecallStore, type RecallStats } from "./db/recall.js";
 import { PromotedStore } from "./db/promoted.js";
@@ -64,11 +63,10 @@ interface OverallStats {
 }
 
 function queryProjectStats(dbPath: string, projectId: string, staleCfg: { staleAfterDays: number; staleSurfacingWithoutUseLimit: number }): Omit<OverallStats, "projects" | "recallStats" | "staleCount"> & { recallStats: RecallStats; staleCount: number } {
-  const db = new DatabaseSync(dbPath);
+  const db = new DatabaseSync(dbPath, { readOnly: true });
   db.exec("PRAGMA busy_timeout = 5000");
 
   try {
-    runLcmMigrations(db);
     const msgStats = db.prepare(
       `SELECT COUNT(*) as count, COALESCE(SUM(token_count), 0) as tokens FROM messages`
     ).get() as { count: number; tokens: number };
