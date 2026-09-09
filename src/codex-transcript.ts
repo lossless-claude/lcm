@@ -36,6 +36,10 @@ interface CodexResponseItemPayload {
   type?: string;
   role?: string;
   content?: string | CodexContentBlock[];
+  /** Tool name on a `function_call` / `custom_tool_call`. */
+  name?: string;
+  /** Tool output on a `*_output` record. */
+  output?: unknown;
 }
 
 export interface CodexSessionMeta {
@@ -97,6 +101,40 @@ function extractCodexText(content: string | CodexContentBlock[] | undefined): st
     .trim();
 }
 
+/** Records a tool call, by name. */
+const TOOL_CALL_TYPES = new Set(["function_call", "custom_tool_call"]);
+/** Records what a tool returned. */
+const TOOL_OUTPUT_TYPES = new Set(["function_call_output", "custom_tool_call_output"]);
+
+/**
+ * Turns a Codex tool record into a `tool` message, or null when the payload is
+ * not one.
+ *
+ * Codex never labels a message with the `tool` role: it emits the call and its
+ * output as their own record types, which the parser used to drop outright —
+ * 120 947 of them in a 300-transcript sample. Dropped, a Codex session arrives
+ * with no tool rows at all, and the ingest would have to be done twice.
+ *
+ * A call keeps only its name. `arguments` and `input` hold whole commands and
+ * scripts, which is the tool's input, not the session's memory.
+ */
+function parseCodexToolRecord(payload: CodexResponseItemPayload): ParsedMessage | null {
+  const type = payload.type;
+  if (typeof type !== "string") return null;
+
+  if (TOOL_CALL_TYPES.has(type)) {
+    const content = typeof payload.name === "string" && payload.name ? payload.name : type;
+    return { role: "tool", content, tokenCount: estimateTokens(content) };
+  }
+
+  if (!TOOL_OUTPUT_TYPES.has(type)) return null;
+  const output = typeof payload.output === "string"
+    ? payload.output
+    : extractCodexText(payload.output as string | CodexContentBlock[] | undefined);
+  if (!output.trim()) return null;
+  return { role: "tool", content: output, tokenCount: estimateTokens(output) };
+}
+
 /**
  * Decode one syntactically complete Codex JSONL record.
  *
@@ -126,10 +164,16 @@ export function parseCodexTranscriptRecord(record: string): ParsedCodexTranscrip
   if (obj.type !== "response_item") return {};
 
   const payload = obj.payload as CodexResponseItemPayload | undefined;
-  if (!payload || payload.type !== "message") return {};
+  if (!payload) return {};
+
+  const tool = parseCodexToolRecord(payload);
+  if (tool) return { message: tool };
+
+  if (payload.type !== "message") return {};
 
   const role = payload.role;
-  if (role !== "user" && role !== "assistant") return {};
+  // `tool` joins the two: a Codex transcript can also state the role outright.
+  if (role !== "user" && role !== "assistant" && role !== "tool") return {};
 
   const content = extractCodexText(payload.content);
   if (!content.trim()) return {};

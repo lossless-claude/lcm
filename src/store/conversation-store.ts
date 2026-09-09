@@ -84,6 +84,8 @@ export type ConversationRecord = {
   bootstrappedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+  /** "tagged" when the rows separate tool output from human text; null when unknown. */
+  roleTagging: "tagged" | null;
 };
 
 export type MessageSearchInput = {
@@ -113,6 +115,7 @@ interface ConversationRow {
   bootstrapped_at: string | null;
   created_at: string;
   updated_at: string;
+  role_tagging: string | null;
 }
 
 interface MessageRow {
@@ -166,6 +169,7 @@ function toConversationRecord(row: ConversationRow): ConversationRecord {
     bootstrappedAt: row.bootstrapped_at ? parseSqliteDate(row.bootstrapped_at) : null,
     createdAt: parseSqliteDate(row.created_at),
     updatedAt: parseSqliteDate(row.updated_at),
+    roleTagging: row.role_tagging === "tagged" ? "tagged" : null,
   };
 }
 
@@ -238,12 +242,15 @@ export class ConversationStore {
 
   async createConversation(input: CreateConversationInput): Promise<ConversationRecord> {
     const result = this.db
-      .prepare(`INSERT INTO conversations (session_id, title) VALUES (?, ?)`)
+      // Every conversation opened from here on is parsed by the tagging
+      // parser. Older ones keep NULL, which reads as unknown; they are never
+      // re-tagged, so the marker states what is known rather than guessing.
+      .prepare(`INSERT INTO conversations (session_id, title, role_tagging) VALUES (?, ?, 'tagged')`)
       .run(input.sessionId, input.title ?? null);
 
     const row = this.db
       .prepare(
-        `SELECT conversation_id, session_id, title, bootstrapped_at, created_at, updated_at
+        `SELECT conversation_id, session_id, title, bootstrapped_at, created_at, updated_at, role_tagging
        FROM conversations WHERE conversation_id = ?`,
       )
       .get(Number(result.lastInsertRowid)) as unknown as ConversationRow;
@@ -258,7 +265,7 @@ export class ConversationStore {
   getConversationSync(conversationId: ConversationId): ConversationRecord | null {
     const row = this.db
       .prepare(
-        `SELECT conversation_id, session_id, title, bootstrapped_at, created_at, updated_at
+        `SELECT conversation_id, session_id, title, bootstrapped_at, created_at, updated_at, role_tagging
        FROM conversations WHERE conversation_id = ?`,
       )
       .get(conversationId) as unknown as ConversationRow | undefined;
@@ -269,7 +276,7 @@ export class ConversationStore {
   async getConversationBySessionId(sessionId: string): Promise<ConversationRecord | null> {
     const row = this.db
       .prepare(
-        `SELECT conversation_id, session_id, title, bootstrapped_at, created_at, updated_at
+        `SELECT conversation_id, session_id, title, bootstrapped_at, created_at, updated_at, role_tagging
        FROM conversations
        WHERE session_id = ?
        ORDER BY created_at DESC
@@ -302,7 +309,7 @@ export class ConversationStore {
   async listConversations(): Promise<ConversationRecord[]> {
     const rows = this.db
       .prepare(
-        `SELECT conversation_id, session_id, title, bootstrapped_at, created_at, updated_at
+        `SELECT conversation_id, session_id, title, bootstrapped_at, created_at, updated_at, role_tagging
        FROM conversations
        ORDER BY created_at`,
       )
