@@ -1,0 +1,17 @@
+{
+  "//": "Type-checks hooks/lcm-hooks.ts, the function-hooks module, which the main tsconfig does not cover: it compiles against `claude-code`, a module that exists only as declarations /plugin-types writes from the running build. Those declarations are early access and deliberately not committed — a stale copy would compile against an API that no longer exists. So this runs on demand (npm run typecheck:hooks), never in CI. Settings come verbatim from the header of the generated claude-code.d.ts: no DOM in `lib` (the environment has none, and the DOM's own Text would shadow the element), and `types: []` because the module has no Node.",
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023"],
+    "types": [],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "jsx": "react",
+    "jsxFactory": "h",
+    "jsxFragmentFactory": "Fragment"
+  },
+  "include": [".claude/types", "hooks"]
+}

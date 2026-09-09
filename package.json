@@ -39,6 +39,7 @@
     "release:verify": "npm test && npm pack --dry-run",
     "test": "vitest run --dir test",
     "typecheck": "tsc --noEmit",
+    "typecheck:hooks": "bash scripts/typecheck-hooks.sh",
     "version-packages": "changeset version"
   },
   "dependencies": {
