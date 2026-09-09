@@ -23,6 +23,19 @@ function readStdin(): Promise<string> {
   });
 }
 
+/**
+ * True when `--help` was asked for on this command or on the parent it hangs from.
+ *
+ * Commander routes a flag declared on both a parent and its subcommand to the
+ * parent's options, so a subcommand that only reads its own would never see it:
+ * `lcm daemon stop --help` ran the action and stopped the daemon. Both command
+ * trees that carry a hand-rolled help option — `daemon` and `connectors` —
+ * declare it on the parent as well, so both need the parent consulted.
+ */
+export function helpRequested(parent: Command, opts: { help?: boolean }): boolean {
+  return Boolean(opts.help || (parent.opts() as { help?: boolean }).help);
+}
+
 async function withCustomHelp(cmd: Command, commandName: string): Promise<void> {
   const { printHelp } = await import("../src/cli-help.js");
   printHelp(commandName);
@@ -200,7 +213,27 @@ function printJson(value: unknown): void {
   stdout.write(JSON.stringify(value, null, 2) + "\n");
 }
 
-async function createDaemonClientOrExit(): Promise<DaemonClient> {
+let cliDaemonActivity: (() => void) | undefined;
+
+async function admitCliDatabaseWork(): Promise<void> {
+  const { registerDaemonActivity } = await import("../src/daemon/lifecycle.js");
+  const { readHold } = await import("../src/daemon/hold.js");
+  const pidFilePath = lcmPath("daemon.pid");
+  // Admission covers the whole CLI operation, including offline migrations and
+  // replay writes. Exit cleanup also covers explicit exits and action failures.
+  if (!cliDaemonActivity) {
+    cliDaemonActivity = registerDaemonActivity(pidFilePath);
+    process.once("exit", cliDaemonActivity);
+  }
+  const hold = readHold(pidFilePath);
+  if (hold) {
+    console.error(`  Daemon held down until ${hold.until}${hold.reason ? ` (${hold.reason})` : ""}. Release it with: lcm daemon start`);
+    exit(1);
+  }
+}
+
+async function createDaemonClientOrExit(spawnTimeoutMs = 5000): Promise<DaemonClient> {
+  await admitCliDatabaseWork();
   const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
   const { loadDaemonConfig } = await import("../src/daemon/config.js");
 
@@ -209,10 +242,17 @@ async function createDaemonClientOrExit(): Promise<DaemonClient> {
   const lcDir = lcmHome();
   const pidFilePath = join(lcDir, "daemon.pid");
   const tokenPath = join(lcDir, "daemon.token");
-  const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 5000 });
+  const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs });
 
   if (!connected) {
-    console.error("  Daemon not available. Start it with: lcm daemon start --detach");
+    // A held daemon is down on purpose; saying so keeps it from reading as a fault.
+    const { readHold } = await import("../src/daemon/hold.js");
+    const hold = readHold(pidFilePath);
+    if (hold) {
+      console.error(`  Daemon held down until ${hold.until}${hold.reason ? ` (${hold.reason})` : ""}. Release it with: lcm daemon start`);
+    } else {
+      console.error("  Daemon not available. Start it with: lcm daemon start --detach");
+    }
     exit(1);
   }
 
@@ -240,6 +280,7 @@ export function registerBenchCommands(program: Command): void {
       const n = parsePositiveInteger(String(opts.n ?? "20"), "--n");
       const seed = parsePositiveInteger(String(opts.seed ?? "42"), "--seed");
       if (!["llm", "mechanical"].includes(opts.generator)) throw new Error("--generator must be llm or mechanical");
+      await admitCliDatabaseWork();
       const { buildBench } = await import("../src/bench.js");
       const result = await buildBench({ cwd, n, seed, out: opts.out, generator: opts.generator, language: opts.language });
       stdout.write(result.stdout);
@@ -257,6 +298,7 @@ export function registerBenchCommands(program: Command): void {
     .action(async (opts) => {
       const cwd = typeof opts.project === "string" ? resolve(opts.project) : process.cwd();
       const k = parsePositiveInteger(String(opts.k ?? "5"), "--k");
+      await admitCliDatabaseWork();
       const { runBench } = await import("../src/bench.js");
       const result = await runBench({
         cwd,
@@ -273,17 +315,15 @@ export function registerBenchCommands(program: Command): void {
 }
 
 async function main() {
-  const { readFileSync } = await import("node:fs");
-  const { join, dirname } = await import("node:path");
-  const { fileURLToPath } = await import("node:url");
-  const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json");
-  const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+  // PKG_VERSION resolves the package root for both dist/ and source layouts;
+  // a hand-rolled `../../package.json` here only worked from dist/.
+  const { PKG_VERSION } = await import("../src/daemon/version.js");
 
   const program = new Command();
   program
     .name("lcm")
     .description("lossless context management for coding agents")
-    .version(pkg.version, "-V, --version")
+    .version(PKG_VERSION ?? "unknown", "-V, --version")
     .helpCommand(false)
     .addHelpCommand(false)
     .configureOutput({
@@ -318,15 +358,23 @@ async function main() {
   daemonCmd.command("start")
     .description("Start the context daemon")
     .option("--detach", "Run in the background")
+    .addOption(new Option("--automatic").hideHelp())
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (opts.help) { await withCustomHelp(daemonCmd, "daemon"); return; }
-      const { ensureDaemon, checkDaemonHealth, isStaleDaemon } = await import("../src/daemon/lifecycle.js");
+      if (helpRequested(daemonCmd, opts)) { await withCustomHelp(daemonCmd, "daemon"); return; }
+      const { ensureDaemon, checkDaemonHealth, isStaleDaemon, registerDaemonActivity } = await import("../src/daemon/lifecycle.js");
       const { loadDaemonConfig } = await import("../src/daemon/config.js");
       const { PKG_VERSION, BUILD_ID } = await import("../src/daemon/version.js");
+      const { clearHold, readHold } = await import("../src/daemon/hold.js");
       const { lcDir, pidFilePath, tokenPath, configPath } = daemonPaths();
       const config = loadDaemonConfig(configPath);
       const port = config.daemon?.port ?? 3737;
+
+      // Automatic starts report an active hold with EX_TEMPFAIL (75), without consuming hook cooldown.
+      // Starting is the release gesture: an explicit start always wins over a hold.
+      if (opts.automatic) {
+        if (readHold(pidFilePath)) { process.exitCode = 75; return; }
+      } else if (clearHold(pidFilePath)) console.log("released the daemon hold");
 
       const running = await checkDaemonHealth(port);
       if (running?.status === "ok") {
@@ -352,6 +400,7 @@ async function main() {
         mkdirSync(lcDir, { recursive: true });
         const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 10000 });
         if (!connected) {
+          if (opts.automatic && readHold(pidFilePath)) { process.exitCode = 75; return; }
           console.error(`lcm daemon did not answer on port ${port} within 10s — check ~/.lossless-claude/daemon.log`);
           exit(1);
         }
@@ -362,9 +411,20 @@ async function main() {
 
       const { createDaemon } = await import("../src/daemon/server.js");
       const { ensureAuthToken } = await import("../src/daemon/auth.js");
-      ensureAuthToken(tokenPath);
+      const { writeFileSync } = await import("node:fs");
+      const unregisterStartup = registerDaemonActivity(pidFilePath);
       try {
+        // Register before checking: a concurrent held stop either sees this
+        // process or has already published the hold that prevents startup.
+        if (readHold(pidFilePath)) { process.exitCode = 75; return; }
+        ensureAuthToken(tokenPath);
         const daemon = await createDaemon(config, { tokenPath, backfillIdentities: true });
+        if (readHold(pidFilePath)) {
+          await daemon.stop();
+          process.exitCode = 75;
+          return;
+        }
+        writeFileSync(pidFilePath, String(process.pid));
         console.log(`lcm daemon started on port ${daemon.address().port}`);
       } catch (err) {
         const code = (err as NodeJS.ErrnoException)?.code;
@@ -374,6 +434,8 @@ async function main() {
           console.error(`lcm daemon failed to start: ${err instanceof Error ? err.message : String(err)}`);
         }
         exit(1);
+      } finally {
+        unregisterStartup();
       }
       process.on("SIGTERM", () => exit(0));
       process.on("SIGINT", () => exit(0));
@@ -381,32 +443,52 @@ async function main() {
 
   daemonCmd.command("stop")
     .description("Stop the background daemon")
+    .option("--hold", "Keep it down until `lcm daemon start`, so session hooks cannot respawn it")
+    .option("--minutes <n>", "How long the hold lasts before expiring", (v) => Number(v))
+    .option("--reason <text>", "Why the daemon is held down")
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (opts.help) { await withCustomHelp(daemonCmd, "daemon"); return; }
+      if (helpRequested(daemonCmd, opts)) { await withCustomHelp(daemonCmd, "daemon"); return; }
       const { stopDaemon, checkDaemonHealth } = await import("../src/daemon/lifecycle.js");
       const { loadDaemonConfig } = await import("../src/daemon/config.js");
+      const { writeHold, DEFAULT_HOLD_MINUTES } = await import("../src/daemon/hold.js");
       const { pidFilePath, configPath } = daemonPaths();
       const port = loadDaemonConfig(configPath).daemon?.port ?? 3737;
+      if (opts.minutes !== undefined && (!Number.isInteger(opts.minutes) || opts.minutes <= 0)) {
+        console.error("--minutes must be a positive integer");
+        exit(1);
+      }
       const before = await checkDaemonHealth(port);
+      // The hold goes down first: between the kill and the marker, a hook that
+      // fires would spawn the daemon straight back.
+      let held: { until: string } | undefined;
+      if (opts.hold) {
+        held = writeHold(pidFilePath, { minutes: opts.minutes, reason: opts.reason });
+      }
       const { stopped, pid } = await stopDaemon({ port, pidFilePath });
       if (!stopped) {
         console.error(`lcm daemon on port ${port} is still up (pid ${pid ?? "?"}) — stop it manually`);
         exit(1);
       }
       console.log(before ? `lcm daemon stopped (pid ${pid ?? before.pid ?? "?"})` : "lcm daemon was not running");
+      if (held) {
+        console.log(`  held down until ${held.until} (${opts.minutes ?? DEFAULT_HOLD_MINUTES} min) — release with: lcm daemon start`);
+      }
     });
 
   daemonCmd.command("restart")
     .description("Restart the background daemon")
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (opts.help) { await withCustomHelp(daemonCmd, "daemon"); return; }
+      if (helpRequested(daemonCmd, opts)) { await withCustomHelp(daemonCmd, "daemon"); return; }
       const { stopDaemon, ensureDaemon, checkDaemonHealth } = await import("../src/daemon/lifecycle.js");
       const { loadDaemonConfig } = await import("../src/daemon/config.js");
       const { PKG_VERSION, BUILD_ID } = await import("../src/daemon/version.js");
+      const { clearHold } = await import("../src/daemon/hold.js");
       const { lcDir, pidFilePath, configPath } = daemonPaths();
       const port = loadDaemonConfig(configPath).daemon?.port ?? 3737;
+      // A restart ends with the daemon up, so it releases a hold the same way start does.
+      if (clearHold(pidFilePath)) console.log("released the daemon hold");
       const { stopped, pid } = await stopDaemon({ port, pidFilePath });
       if (!stopped) {
         console.error(`lcm daemon on port ${port} is still up (pid ${pid ?? "?"}) — stop it manually`);
@@ -424,7 +506,7 @@ async function main() {
     });
 
   daemonCmd.action(async (opts) => {
-    if (opts.help) { await withCustomHelp(daemonCmd, "daemon"); return; }
+    if (helpRequested(daemonCmd, opts)) { await withCustomHelp(daemonCmd, "daemon"); return; }
   });
   program.addCommand(daemonCmd);
 
@@ -458,20 +540,13 @@ async function main() {
         const { loadDaemonConfig } = await import("../src/daemon/config.js");
         const { join } = await import("node:path");
         const { homedir } = await import("node:os");
-        const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
         const config = loadDaemonConfig(lcmPath("config.json"));
         const port = config.daemon?.port ?? 3737;
-        const pidFilePath = lcmPath("daemon.pid");
-        const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 10000 });
-        if (!connected) {
-          console.error("Could not connect to daemon. Start it with: lcm daemon start --detach");
-          exit(1);
-        }
+        const client = await createDaemonClientOrExit(10000);
         const noPromote: boolean = !opts.promote;
         const minTokens = config.compaction.autoCompactMinTokens;
         const cwd = all ? undefined : process.cwd();
         const tokenPath = lcmPath("daemon.token");
-        const client = new DaemonClient(`http://127.0.0.1:${port}`, tokenPath);
 
         const { NinjaRenderer } = await import("../src/cli/pipeline-runner.js");
         const { makeProgressState } = await import("../src/cli/progress-state.js");
@@ -894,7 +969,7 @@ async function main() {
   const connectorsCmd = new Command("connectors").description("Manage connectors for coding agents");
   connectorsCmd.helpOption(false).option("-h, --help", "Show help");
   connectorsCmd.action(async (opts) => {
-    if (opts.help) {
+    if (helpRequested(connectorsCmd, opts)) {
       const { printHelp } = await import("../src/cli-help.js");
       printHelp("connectors"); exit(0);
     }
@@ -910,7 +985,7 @@ async function main() {
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (opts.help) {
+      if (helpRequested(connectorsCmd, opts)) {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("connectors"); exit(0);
       }
@@ -946,14 +1021,14 @@ async function main() {
     });
 
   connectorsCmd
-    .command("install <agent>")
+    .command("install [agent]")
     .description("Install a connector for an agent")
     .option("--type <type>", "Connector type: rules, mcp, skill, or hooks")
     .option("--global", "Install into the global agent config in your home directory")
     .helpOption(false)
     .option("-h, --help", "Show help")
-    .action(async (agentName: string, opts) => {
-      if (opts.help) {
+    .action(async (agentName: string | undefined, opts) => {
+      if (helpRequested(connectorsCmd, opts)) {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("connectors"); exit(0);
       }
@@ -978,14 +1053,14 @@ async function main() {
     });
 
   connectorsCmd
-    .command("remove <agent>")
+    .command("remove [agent]")
     .description("Remove a connector for an agent")
     .option("--type <type>", "Connector type: rules, mcp, skill, or hooks")
     .option("--global", "Remove from the global agent config in your home directory")
     .helpOption(false)
     .option("-h, --help", "Show help")
-    .action(async (agentName: string, opts) => {
-      if (opts.help) {
+    .action(async (agentName: string | undefined, opts) => {
+      if (helpRequested(connectorsCmd, opts)) {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("connectors"); exit(0);
       }
@@ -1012,7 +1087,7 @@ async function main() {
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (agentName: string | undefined, opts) => {
-      if (opts.help) {
+      if (helpRequested(connectorsCmd, opts)) {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("connectors"); exit(0);
       }
@@ -1093,7 +1168,6 @@ async function main() {
       const replay: boolean = opts.replay ?? false;
       const restart: boolean = opts.restart ?? false;
 
-      const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
       const { DaemonClient } = await import("../src/daemon/client.js");
       const { loadDaemonConfig } = await import("../src/daemon/config.js");
       const { NinjaRenderer } = await import("../src/cli/pipeline-runner.js");
@@ -1120,15 +1194,13 @@ async function main() {
 
       const config = loadDaemonConfig(lcmPath("config.json"));
       const port = config.daemon?.port ?? 3737;
-      const client = new DaemonClient(`http://127.0.0.1:${port}`);
-      const preview = await importSessions(client, { all, provider, dryRun: true, verbose: dryRun && verbose, replay });
+      const previewClient = new DaemonClient(`http://127.0.0.1:${port}`);
+      const preview = await importSessions(previewClient, { all, provider, dryRun: true, verbose: dryRun && verbose, replay });
       if (dryRun) {
         console.log(`  [dry-run] ${preview.imported} ${provider} sessions selected (${all ? "all projects" : "current project"})${replay ? "; would compact each session" : ""}. No changes written.`);
         return;
       }
-      const pidFilePath = lcmPath("daemon.pid");
-      const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 5000 });
-      if (!connected) { console.error("  Daemon not available"); exit(1); }
+      const client = await createDaemonClientOrExit();
 
       const isTTY = process.stdout.isTTY ?? false;
       const renderOpts = { isTTY, width: process.stdout.columns ?? 80, color: isTTY, verbose };
@@ -1194,21 +1266,13 @@ async function main() {
       const verbose: boolean = opts.verbose ?? false;
       const dryRun: boolean = opts.dryRun ?? false;
 
-      const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
       const { loadDaemonConfig } = await import("../src/daemon/config.js");
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
 
       const config = loadDaemonConfig(lcmPath("config.json"));
       const port = config.daemon?.port ?? 3737;
-      const pidFilePath = lcmPath("daemon.pid");
-      const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 5000 });
-      if (!connected) {
-        console.error("  Daemon not available. Start it with: lcm daemon start --detach");
-        exit(1);
-      }
-
-      const client = new DaemonClient(`http://127.0.0.1:${port}`);
+      const client = await createDaemonClientOrExit();
       const { readdirSync, existsSync, readFileSync } = await import("node:fs");
 
       if (dryRun) console.log("  [dry-run] No changes will be written.\n");
@@ -1293,6 +1357,7 @@ async function main() {
         printHelp("export"); exit(0);
       }
 
+      await admitCliDatabaseWork();
       const { exportKnowledge } = await import("../src/portable-knowledge.js");
       const { homedir } = await import("node:os");
       const { join } = await import("node:path");
@@ -1362,6 +1427,7 @@ async function main() {
         printHelp("import-knowledge"); exit(0);
       }
 
+      await admitCliDatabaseWork();
       const { importKnowledge } = await import("../src/portable-knowledge.js");
       const { readFileSync } = await import("node:fs");
 

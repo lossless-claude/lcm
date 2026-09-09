@@ -12,6 +12,7 @@ const state = vi.hoisted(() => ({
 
 vi.mock("../../src/daemon/lifecycle.js", () => ({
   ensureDaemon: vi.fn().mockResolvedValue({ connected: true }),
+  registerDaemonActivity: vi.fn(() => vi.fn()),
 }));
 vi.mock("../../src/daemon/config.js", () => ({
   loadDaemonConfig: () => ({ daemon: { port: 9999 } }),

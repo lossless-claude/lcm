@@ -6,6 +6,7 @@ import { buildMemoryContext } from "./memory-context.js";
 import { LEARNING_INSTRUCTION } from "./learning-instruction.js";
 import { functionHooksOwnSession } from "./session-claim.js";
 import { lcmPath } from "../lcm-home.js";
+import { withHookWrite } from "./write-admission.js";
 
 type PromptSearchResponse = {
   hints: string[];
@@ -31,12 +32,14 @@ export async function recordUserPromptEvents(prompt: string, sessionId: string, 
   // The dedup key both paths can compute: the module's prompt.submit sees the text and
   // no prompt id, so the id the command hook's stdin carries is no use here.
   const promptHash = createHash("sha256").update(prompt).digest("hex");
-  const db = new EventsDb(eventsDbPath(cwd));
-  try {
-    return db.insertPromptEvents(sessionId, events, promptHash);
-  } finally {
-    db.close();
-  }
+  return withHookWrite(() => {
+    const db = new EventsDb(eventsDbPath(cwd));
+    try {
+      return db.insertPromptEvents(sessionId, events, promptHash);
+    } finally {
+      db.close();
+    }
+  }, 0);
 }
 
 export async function handleUserPromptSubmit(

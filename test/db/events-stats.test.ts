@@ -1,6 +1,7 @@
 // test/db/events-stats.test.ts
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -9,7 +10,7 @@ vi.mock("../../src/db/events-path.js", () => ({
   eventsDir: () => mockEventsDir,
 }));
 
-import { collectEventStats } from "../../src/db/events-stats.js";
+import { collectEventStats, collectDetailedEventStats } from "../../src/db/events-stats.js";
 import { EventsDb } from "../../src/hooks/events-db.js";
 
 describe("collectEventStats", () => {
@@ -49,6 +50,79 @@ describe("collectEventStats", () => {
     expect(stats.errors).toBe(1);
     expect(stats.scanned).toBe(2);
     expect(stats.total).toBe(2);
+    const detailed = collectDetailedEventStats();
+    expect(detailed).toMatchObject(stats);
+    expect(detailed.projects).toHaveLength(2);
+    expect(detailed.recentErrors).toEqual([expect.objectContaining({ hook: "PostToolUse", error: "err1" })]);
+  });
+
+  it.each([collectEventStats, collectDetailedEventStats])("reads legacy sidecars without changing their schema or bytes (%s)", (collect) => {
+    const path = join(tempDir, "legacy.db");
+    const db = new DatabaseSync(path);
+    db.exec(`
+      PRAGMA user_version = 1;
+      CREATE TABLE events (event_id INTEGER PRIMARY KEY, created_at TEXT, processed_at TEXT);
+      CREATE TABLE error_log (id INTEGER PRIMARY KEY, created_at TEXT, hook TEXT, error TEXT);
+      INSERT INTO events VALUES (1, datetime('now'), NULL);
+      INSERT INTO error_log VALUES (1, datetime('now'), 'PostToolUse', 'legacy error');
+    `);
+    const schema = db.prepare("SELECT sql FROM sqlite_master ORDER BY name").all();
+    db.close();
+    const before = readFileSync(path);
+    expect(collect()).toMatchObject({ captured: 1, unprocessed: 1, errors: 1, scanned: 1, total: 1 });
+    expect(readFileSync(path)).toEqual(before);
+    expect(readdirSync(tempDir)).toEqual(["legacy.db"]);
+    const inspect = new DatabaseSync(path, { readOnly: true });
+    try {
+      expect(inspect.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 1 });
+      expect(inspect.prepare("SELECT sql FROM sqlite_master ORDER BY name").all()).toEqual(schema);
+    } finally { inspect.close(); }
+  });
+
+  it.each([collectEventStats, collectDetailedEventStats])("reads v1 sidecars without error_log or mutations (%s)", (collect) => {
+    const path = join(tempDir, "v1.db");
+    const db = new DatabaseSync(path);
+    db.exec(`
+      CREATE TABLE schema_version (version INTEGER NOT NULL);
+      INSERT INTO schema_version VALUES (1);
+      CREATE TABLE events (
+        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        seq INTEGER NOT NULL DEFAULT 0,
+        type TEXT NOT NULL,
+        category TEXT NOT NULL,
+        data TEXT NOT NULL,
+        priority INTEGER DEFAULT 3,
+        source_hook TEXT NOT NULL,
+        prev_event_id INTEGER,
+        processed_at TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+      INSERT INTO events (session_id, type, category, data, source_hook, created_at)
+        VALUES ('s1', 'file', 'pattern', 'file.ts', 'PostToolUse', '2026-01-02 03:04:05');
+      INSERT INTO events (session_id, type, category, data, source_hook, created_at, processed_at)
+        VALUES ('s1', 'file', 'pattern', 'other.ts', 'PostToolUse', '2026-01-01 03:04:05', '2026-01-02');
+    `);
+    const schema = db.prepare("SELECT sql FROM sqlite_master ORDER BY name").all();
+    db.close();
+    const before = readFileSync(path);
+    const stats = collect();
+    expect(stats).toMatchObject({
+      captured: 2, unprocessed: 1, errors: 0, lastCapture: "2026-01-02 03:04:05", scanned: 1, total: 1,
+    });
+    if ("projects" in stats) {
+      expect(stats.projects).toEqual([{
+        file: "v1.db", captured: 2, unprocessed: 1, lastCapture: "2026-01-02 03:04:05",
+      }]);
+      expect(stats.recentErrors).toEqual([]);
+    }
+    expect(readFileSync(path)).toEqual(before);
+    expect(readdirSync(tempDir)).toEqual(["v1.db"]);
+    const inspect = new DatabaseSync(path, { readOnly: true });
+    try {
+      expect(inspect.prepare("SELECT version FROM schema_version").get()).toMatchObject({ version: 1 });
+      expect(inspect.prepare("SELECT sql FROM sqlite_master ORDER BY name").all()).toEqual(schema);
+    } finally { inspect.close(); }
   });
 
   it("skips non-.db files in events directory", () => {

@@ -4,7 +4,8 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DaemonClient } from "../daemon/client.js";
 import { loadDaemonConfig } from "../daemon/config.js";
-import { ensureDaemon } from "../daemon/lifecycle.js";
+import { ensureDaemon, registerDaemonActivity } from "../daemon/lifecycle.js";
+import { readHold } from "../daemon/hold.js";
 import { PKG_VERSION } from "../daemon/version.js";
 import { lcmGrepTool } from "./tools/lcm-grep.js";
 import { lcmExpandTool } from "./tools/lcm-expand.js";
@@ -25,7 +26,7 @@ const TOOL_ROUTES: Record<string, string> = {
   lcm_store: "/store",
 };
 
-const LOCAL_TOOLS: Record<string, (args: Record<string, unknown>) => Promise<string>> = {
+const LOCAL_TOOLS: Partial<Record<string, (args: Record<string, unknown>) => Promise<string>>> = {
   lcm_stats: async (args) => {
     const { collectStats, formatNumber } = await import("../stats.js");
     const stats = collectStats();
@@ -198,7 +199,7 @@ export async function startMcpServer(): Promise<void> {
     port, pidFilePath, spawnTimeoutMs: 10000,
     expectedVersion: PKG_VERSION,
     spawnCommand: process.execPath,
-    spawnArgs: [lcmBin, "daemon", "start"],
+    spawnArgs: [lcmBin, "daemon", "start", "--automatic"],
   });
 
   const client = new DaemonClient(`http://127.0.0.1:${port}`);
@@ -225,14 +226,24 @@ export async function startMcpServer(): Promise<void> {
     }
 
     const localHandler = LOCAL_TOOLS[req.params.name];
-    if (localHandler) {
-      try {
-        const text = await localHandler(filteredArgs);
-        return { content: [{ type: "text", text }] };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: "text", text: `lcm error: ${msg}` }], isError: true };
+    // Register before admission so a held stop drains work that already began.
+    const unregister = localHandler ? registerDaemonActivity(pidFilePath) : undefined;
+    try {
+      const hold = readHold(pidFilePath);
+      if (hold) {
+        return { content: [{ type: "text", text: `lcm daemon held down until ${hold.until}. Release it with: lcm daemon start` }], isError: true };
       }
+      if (localHandler) {
+        try {
+          const text = await localHandler(filteredArgs);
+          return { content: [{ type: "text", text }] };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return { content: [{ type: "text", text: `lcm error: ${msg}` }], isError: true };
+        }
+      }
+    } finally {
+      unregister?.();
     }
 
     const route = TOOL_ROUTES[req.params.name];
@@ -241,7 +252,7 @@ export async function startMcpServer(): Promise<void> {
     return handleDaemonRequest(client, route, body, {
       port, pidFilePath,
       spawnCommand: process.execPath,
-      spawnArgs: [lcmBin, "daemon", "start"],
+      spawnArgs: [lcmBin, "daemon", "start", "--automatic"],
       expectedVersion: PKG_VERSION,
     });
   });

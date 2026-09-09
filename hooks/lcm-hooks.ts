@@ -113,6 +113,8 @@ const DAEMON_START_COOLDOWN_MS = 60_000;
 const DAEMON_START_TIMEOUT_MS = 15_000;
 /** POSIX exit code for "command not found": no `lcm` binary on PATH. */
 const EXIT_COMMAND_NOT_FOUND = 127;
+/** `daemon start --automatic` reports an active hold with EX_TEMPFAIL. */
+const EXIT_DAEMON_HELD = 75;
 let warnedNoLcmBinary = false;
 
 /**
@@ -126,9 +128,13 @@ async function startDaemon($: EngineInterface): Promise<boolean> {
   if (now - lastDaemonStartAt < DAEMON_START_COOLDOWN_MS) return false;
   lastDaemonStartAt = now;
   const run = await $.process.run(
-    ["sh", "-c", 'command -v lcm >/dev/null 2>&1 || exit 127; exec lcm daemon start --detach'],
+    ["sh", "-c", 'command -v lcm >/dev/null 2>&1 || exit 127; exec lcm daemon start --detach --automatic'],
     { timeoutMs: DAEMON_START_TIMEOUT_MS },
   ).catch(() => null);
+  if (run?.exitCode === EXIT_DAEMON_HELD) {
+    if (lastDaemonStartAt === now) lastDaemonStartAt = 0;
+    return false;
+  }
   if (run?.exitCode === 0) return true;
   if (run?.exitCode === EXIT_COMMAND_NOT_FOUND && !warnedNoLcmBinary) {
     warnedNoLcmBinary = true;

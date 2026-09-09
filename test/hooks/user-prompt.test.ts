@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createHash } from "node:crypto";
 import { handleUserPromptSubmit } from "../../src/hooks/user-prompt.js";
 
-vi.mock("../../src/daemon/lifecycle.js", () => ({
+vi.mock("../../src/daemon/lifecycle.js", async (original) => ({
+  ...await original<typeof import("../../src/daemon/lifecycle.js")>(),
   ensureDaemon: vi.fn(),
 }));
 
