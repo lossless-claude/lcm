@@ -8,7 +8,8 @@ import { recordCompactLlmUsage, type CompactLlmUsage } from "../src/daemon/route
 import { collectStats } from "../src/stats.js";
 import { ConversationStore } from "../src/store/conversation-store.js";
 
-// collectStats() scans every project database under homedir()/.lossless-claude.
+// collectStats() scans every project database under the lcm home, so each fixture
+// points LCM_HOME at its own.
 vi.mock("node:os", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:os")>();
   return { ...actual, homedir: vi.fn(actual.homedir) };
@@ -34,7 +35,7 @@ describe("collectStats cost aggregation", () => {
   let home: string | undefined;
 
   afterEach(() => {
-    vi.mocked(homedir).mockReset();
+    delete process.env.LCM_HOME;
     if (home) rmSync(home, { recursive: true, force: true });
     home = undefined;
   });
@@ -43,7 +44,7 @@ describe("collectStats cost aggregation", () => {
   // needs one before its usage row is counted at all.
   async function withProjects(...usages: CompactLlmUsage[][]): Promise<void> {
     home = mkdtempSync(join(tmpdir(), "lcm-cost-home-"));
-    vi.mocked(homedir).mockReturnValue(home);
+    process.env.LCM_HOME = join(home, ".lossless-claude");
     for (const [i, rows] of usages.entries()) {
       const dir = join(home!, ".lossless-claude", "projects", `p${i}`);
       mkdirSync(dir, { recursive: true });

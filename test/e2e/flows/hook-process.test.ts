@@ -43,7 +43,14 @@ interface HookRun { status: number | null; stdout: string; stderr: string }
 function runHook(args: readonly string[], stdin: string): Promise<HookRun> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [WRAPPER, ...args], {
-      env: { ...process.env, HOME: fakeHome, CLAUDE_PROJECT_DIR: undefined },
+      // LCM_HOME, not just HOME: the suite sets one per test file, and it would otherwise
+      // be inherited here and win over the fake home this flow set up.
+      env: {
+        ...process.env,
+        HOME: fakeHome,
+        LCM_HOME: join(fakeHome, ".lossless-claude"),
+        CLAUDE_PROJECT_DIR: undefined,
+      },
     });
     let stdout = "";
     let stderr = "";

@@ -9,8 +9,8 @@ import { runLcmMigrations } from "../../../src/db/migration.js";
 import { ConversationStore } from "../../../src/store/conversation-store.js";
 import { SummaryStore } from "../../../src/store/summary-store.js";
 
-// collectStats() scans every project database under homedir()/.lossless-claude,
-// opening each one writable and running migrations. Point homedir() at a
+// collectStats() scans every project database under the lcm home, opening each one
+// writable and running migrations. Point LCM_HOME at a
 // temporary tree so the test never touches (or waits on) the user's real data.
 vi.mock("node:os", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:os")>();
@@ -24,7 +24,7 @@ describe("GET /stats", () => {
 
   beforeAll(async () => {
     home = mkdtempSync(join(tmpdir(), "lcm-stats-home-"));
-    vi.mocked(homedir).mockReturnValue(home);
+    process.env.LCM_HOME = join(home, ".lossless-claude");
 
     // One project with two messages and one summary, so the aggregation path
     // runs instead of the empty-tree early return.
@@ -54,7 +54,7 @@ describe("GET /stats", () => {
 
   afterAll(async () => {
     await daemon.stop();
-    vi.mocked(homedir).mockReset();
+    delete process.env.LCM_HOME;
     rmSync(home, { recursive: true, force: true });
   });
 

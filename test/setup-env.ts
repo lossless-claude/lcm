@@ -9,6 +9,17 @@ import { afterAll } from "vitest";
 // suite must not see it.
 delete process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS;
 
+// Everything lcm stores goes to a directory this file owns, so no test can reach the
+// developer's real memory — and, because each test file gets its own, two files cannot
+// contend for one project database. That contention is not hypothetical: it answered
+// SQLITE_BUSY on the CI runner, where the suite runs in parallel, and never here.
+// Set before the test file's imports, since the root is resolved when a module loads.
+const lcmHomeDir = mkdtempSync(join(tmpdir(), "lcm-home-"));
+process.env.LCM_HOME = lcmHomeDir;
+afterAll(() => {
+  rmSync(lcmHomeDir, { recursive: true, force: true });
+});
+
 // Language packs live under ~/.lossless-claude/languages on a developer's machine. A test
 // that goes through query preparation must see the same packs on every machine — none —
 // unless it writes its own. The variable is inherited by the daemons the e2e tests spawn,
