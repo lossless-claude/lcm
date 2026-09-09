@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { join, dirname } from "node:path";
 import { ensureAuthToken } from "./auth.js";
@@ -59,6 +60,28 @@ function cleanStalePid(pidFilePath: string): void {
   try {
     if (existsSync(pidFilePath)) unlinkSync(pidFilePath);
   } catch { /* ignore */ }
+}
+
+/** Register before the last hold check; keep visible until the listening PID is published. */
+export function registerDaemonStartup(pidFilePath: string): () => void {
+  mkdirSync(dirname(pidFilePath), { recursive: true });
+  const path = join(dirname(pidFilePath), `daemon.starting.${process.pid}.${randomUUID()}`);
+  writeFileSync(path, "", { flag: "wx" });
+  return () => { try { unlinkSync(path); } catch { /* already removed by stop */ } };
+}
+
+function startingDaemons(pidFilePath: string): { pid: number; path: string }[] {
+  const directory = dirname(pidFilePath);
+  let names: string[];
+  try { names = readdirSync(directory); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  return names.flatMap((name) => {
+    const match = /^daemon\.starting\.(\d+)\.[0-9a-f-]+$/.exec(name);
+    const pid = Number(match?.[1]);
+    return Number.isSafeInteger(pid) && pid > 0 ? [{ pid, path: join(directory, name) }] : [];
+  });
 }
 
 /** PID of the process listening on 127.0.0.1:port, via lsof (macOS/Linux). Undefined when unknown. */
@@ -156,9 +179,8 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
   }) as ChildProcess;
   child.unref();
 
-  if (child.pid) {
-    writeFileSync(opts.pidFilePath, String(child.pid));
-  }
+  // The child registers itself before checking holds and publishes daemon.pid
+  // only after listening. A late parent write could overwrite the winning PID.
 
   if (opts._skipHealthWait) {
     return { connected: false, port: opts.port, spawned: true };
@@ -193,6 +215,10 @@ export async function stopDaemon(opts: {
   _fetchOverride?: typeof globalThis.fetch;
 }): Promise<{ stopped: boolean; pid?: number }> {
   const fetchFn = opts._fetchOverride ?? globalThis.fetch;
+  // Read startup registrations before daemon.pid: a child hands off by writing
+  // daemon.pid before removing its registration, so neither state can be missed.
+  // A child registering after this snapshot sees the hold published by the caller.
+  const starting = startingDaemons(opts.pidFilePath);
   let pid: number | undefined;
   if (existsSync(opts.pidFilePath)) {
     try {
@@ -206,14 +232,25 @@ export async function stopDaemon(opts: {
     pid = health?.pid ?? (health ? findListenerPid(opts.port) : undefined) ?? pid;
   }
   if (pid !== undefined && isProcessAlive(pid)) {
-    try { process.kill(pid, "SIGTERM"); } catch { /* ignore */ }
+    try { process.kill(pid, "SIGTERM"); } catch { /* checked below */ }
   }
   const deadline = Date.now() + (opts.timeoutMs ?? 5000);
   while (Date.now() < deadline) {
-    const alive = pid !== undefined && isProcessAlive(pid);
-    const health = alive ? await checkDaemonHealth(opts.port, fetchFn) : null;
+    // Startup registrations are only waited on, never signalled: a stale
+    // registration could refer to a PID the OS has since reused.
+    const startingAlive = starting.some((entry) => existsSync(entry.path) && isProcessAlive(entry.pid));
+    const alive = (pid !== undefined && isProcessAlive(pid)) || startingAlive;
+    const health = await checkDaemonHealth(opts.port, fetchFn);
+    // A registered child may have handed off after our initial PID read.
+    if (health?.pid !== undefined && health.pid !== pid) {
+      pid = health.pid;
+      try { process.kill(pid, "SIGTERM"); } catch { /* checked on the next iteration */ }
+    }
     if (!alive && !health) {
       cleanStalePid(opts.pidFilePath);
+      for (const entry of starting) {
+        try { unlinkSync(entry.path); } catch { /* child already removed it */ }
+      }
       return { stopped: true, pid };
     }
     await sleep(200);
