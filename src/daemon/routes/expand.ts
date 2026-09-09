@@ -56,7 +56,7 @@ export function createExpandHandler(_config: DaemonConfig): RouteHandler {
       const summStore = new SummaryStore(db);
       const retrieval = new RetrievalEngine(convStore, summStore);
       const orchestrator = new ExpansionOrchestrator(retrieval);
-      const result = await orchestrator.expand({ summaryIds: [nodeId], maxDepth: depth });
+      const result = await orchestrator.expand({ summaryIds: [nodeId], maxDepth: depth, includeMessages: true });
       db.close();
       sendJson(res, 200, result);
     } catch (err) {
