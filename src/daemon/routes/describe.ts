@@ -10,6 +10,7 @@ import { ConversationStore } from "../../store/conversation-store.js";
 import { SummaryStore } from "../../store/summary-store.js";
 import { RetrievalEngine } from "../../retrieval.js";
 import { validateCwd } from "../validate-cwd.js";
+import { resolveSourceCwd } from "../project-group.js";
 
 export function createDescribeHandler(_config: DaemonConfig): RouteHandler {
   return async (_req, res, body) => {
@@ -36,8 +37,16 @@ export function createDescribeHandler(_config: DaemonConfig): RouteHandler {
       return;
     }
 
+    // Ids are AUTOINCREMENT per database, so a node named by a search result
+    // must be read from the project that result came from.
+    const source = resolveSourceCwd(cwd, input.projectId);
+    if (!source) {
+      sendJson(res, 200, { node: null, error: "project not in group" });
+      return;
+    }
+
     try {
-      const dbPath = projectDbPath(cwd);
+      const dbPath = projectDbPath(source);
       mkdirSync(dirname(dbPath), { recursive: true });
       const db = new DatabaseSync(dbPath);
       runLcmMigrations(db);

@@ -7,6 +7,7 @@ import type { RouteHandler } from "../server.js";
 import { closeLcmConnection, getLcmConnection } from "../../db/connection.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { PromotedStore, type SearchResult } from "../../db/promoted.js";
+import { projectRef } from "../project-group.js";
 import { RecallStore, type RecallFeedback } from "../../db/recall.js";
 import { buildMemoryContext, selectMemoryHintsWithinBudget } from "../../hooks/memory-context.js";
 import { recordUserPromptEvents } from "../../hooks/user-prompt.js";
@@ -310,7 +311,7 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
       // Keep promoted ranking intact, and fill the same bounded hint budget
       // with native episodic matches rather than requiring a manual import.
       const history = input.client === "codex"
-        ? await searchNativeHistory(db, { query, limit: targetHintCount })
+        ? await searchNativeHistory(db, { query, limit: targetHintCount, project: projectRef(cwd) })
         : [];
       const candidates = filtered.map((result) => ({
         id: result.id,

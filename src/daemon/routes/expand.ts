@@ -11,6 +11,7 @@ import { SummaryStore } from "../../store/summary-store.js";
 import { RetrievalEngine } from "../../retrieval.js";
 import { ExpansionOrchestrator } from "../../expansion.js";
 import { validateCwd } from "../validate-cwd.js";
+import { resolveSourceCwd } from "../project-group.js";
 
 export function createExpandHandler(_config: DaemonConfig): RouteHandler {
   return async (_req, res, body) => {
@@ -37,8 +38,17 @@ export function createExpandHandler(_config: DaemonConfig): RouteHandler {
       return;
     }
 
+    // A search result carries the project it was read from. Ids are
+    // AUTOINCREMENT per database, so expanding one against the request's own
+    // project would silently return a different node.
+    const source = resolveSourceCwd(cwd, input.projectId);
+    if (!source) {
+      sendJson(res, 200, { expanded: null, error: "project not in group" });
+      return;
+    }
+
     try {
-      const dbPath = projectDbPath(cwd);
+      const dbPath = projectDbPath(source);
       mkdirSync(dirname(dbPath), { recursive: true });
       const db = new DatabaseSync(dbPath);
       runLcmMigrations(db);

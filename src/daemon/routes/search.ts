@@ -8,6 +8,7 @@ import { runLcmMigrations } from "../../db/migration.js";
 import { searchNativeHistory } from "../../search/native-history.js";
 import { PromotedStore } from "../../db/promoted.js";
 import { validateCwd } from "../validate-cwd.js";
+import { projectRef } from "../project-group.js";
 
 function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -55,7 +56,7 @@ export function createSearchHandler(): RouteHandler {
           if (activeLayers.includes("episodic")) {
             try {
               // History records do not carry promoted-memory tags.
-              episodic = filterTags ? [] : await searchNativeHistory(db, { query, limit });
+              episodic = filterTags ? [] : await searchNativeHistory(db, { query, limit, project: projectRef(cwd) });
             } catch (err) {
               // Non-fatal for the response, but never silent: a real failure
               // (malformed FTS5 syntax, missing table, corrupt index) must be
@@ -69,7 +70,8 @@ export function createSearchHandler(): RouteHandler {
           if (activeLayers.includes("promoted")) {
             try {
               const promotedStore = new PromotedStore(db);
-              promoted = promotedStore.search(query, limit, filterTags);
+              promoted = promotedStore.search(query, limit, filterTags)
+                .map(result => ({ ...result, project: projectRef(cwd) }));
             } catch (err) {
               console.warn(`[lcm] /search promoted layer failed: ${describeError(err)}`);
               errors.push(`promoted: ${describeError(err)}`);
