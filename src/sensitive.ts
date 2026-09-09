@@ -7,6 +7,7 @@ import { GITLEAKS_PATTERNS } from "./generated-patterns.js";
 import { projectDir } from "./daemon/project.js";
 import { loadDaemonConfig } from "./daemon/config.js";
 import { lcmPath } from "./lcm-home.js";
+import { defaultLcmPaths } from "./lcm-paths.js";
 
 function defaultConfigPath(): string {
   return lcmPath("config.json");
@@ -315,10 +316,9 @@ async function sensitivePurge(
   }
 
   const { join: pathJoin } = await import("node:path");
-  const { homedir: hd } = await import("node:os");
 
   if (purgeAll) {
-    const allProjectsDir = pathJoin(hd(), ".lossless-claude", "projects");
+    const allProjectsDir = defaultLcmPaths.projectsDir;
     if (existsSync(allProjectsDir)) {
       rmSync(allProjectsDir, { recursive: true, force: true });
       return {

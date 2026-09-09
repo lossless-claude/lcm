@@ -30,6 +30,7 @@ function depsFor(settings: string, registry: string = INSTALLED_LCM, writeFileSy
     spawnSync: () => ({ status: 0, stdout: "", stderr: "" }),
     fetch: vi.fn().mockResolvedValue({ ok: false }),
     homedir: "/tmp/test-home",
+    lcmHome: "/tmp/test-home/.lossless-claude",
     platform: "darwin",
   };
 }
@@ -144,6 +145,7 @@ describe("doctor hook validation", () => {
       spawnSync: () => ({ status: 0, stdout: "", stderr: "" }),
       fetch: vi.fn().mockResolvedValue({ ok: false }),
       homedir: "/tmp/test-home",
+    lcmHome: "/tmp/test-home/.lossless-claude",
       platform: "darwin",
     });
     const mcpResult = results.find(r => r.name === "mcp-lcm");
@@ -162,6 +164,7 @@ describe("doctor hook validation", () => {
       spawnSync: () => ({ status: 0, stdout: "", stderr: "" }),
       fetch: vi.fn().mockResolvedValue({ ok: false }),
       homedir: "/tmp/test-home",
+    lcmHome: "/tmp/test-home/.lossless-claude",
       platform: "darwin",
     });
     const mcpResult = results.find(r => r.name === "mcp-lcm");
