@@ -1,5 +1,0 @@
----
-"@lossless-claude/lcm": patch
----
-
-Drop a query's function words in the language it is written in, not only in English. Query preparation stripped English stopwords and let every other language's through, so a pt-BR question carried "que", "como", "para" into the OR query and BM25 rewarded the long sessions that contain them everywhere; on the 74 pt-BR bench questions that alone cost 0.419 vs 0.486 hit@5. Instead of a fixed list per language, the daemon now generates a language pack (`~/.lossless-claude/languages/<tag>.json`) the first time a corpus in a new language is seen: after an ingest, a project with no recorded language and enough human turns is sampled, the model names the language, `meta.json` records it, and the pack is written once and reused. A pack applies to a query when two or more of its words are that language's function words. Packs are reviewable JSON; deleting one regenerates it. Mock or disabled summarizers skip the step, and a failing provider is logged once per project.
