@@ -102,43 +102,45 @@ function addCopilotProcessChecks(results: CheckResult[], deps: DoctorDeps): void
 }
 
 
-function testMcpHandshake(): Promise<CheckResult> {
+export function testMcpHandshake(spawnMcp: typeof spawn = spawn): Promise<CheckResult> {
   return new Promise((resolve) => {
-    const initMsg = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "doctor", version: "0.1" } } });
-    const listMsg = JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
-
-    // Resolve the binary relative to this file so it works outside Claude Code's PATH
+    const request = {
+      jsonrpc: "2.0", id: 1, method: "tools/list",
+      params: { _meta: {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientInfo": { name: "doctor", version: "0.1" },
+      } },
+    };
     const binPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "bin", "lcm.js");
-    const child = spawn(process.execPath, [binPath, "mcp"], { stdio: ["pipe", "pipe", "ignore"] });
+    const child = spawnMcp(process.execPath, [binPath, "mcp"], { stdio: ["pipe", "pipe", "ignore"] });
     let stdout = "";
-    const timer = setTimeout(() => { child.kill(); }, 6000);
-
-    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
-    child.on("close", () => {
+    let settled = false;
+    const finish = (count = 0, message = `lcm: ${count}/7 tools`) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
-      const lines = stdout.trim().split("\n");
-      const toolsLine = lines.find((l) => l.includes('"tools/list"') || (l.includes('"tools"') && l.includes('"id":2')));
-      if (toolsLine) {
-        try {
-          const parsed = JSON.parse(toolsLine);
-          const count = parsed.result?.tools?.length ?? 0;
-          resolve({ name: "mcp-handshake-lcm", category: "MCP Servers", status: count === 7 ? "pass" : "warn", message: `lcm: ${count}/7 tools` });
-          return;
-        } catch {}
+      child.kill();
+      resolve({ name: "mcp-handshake-lcm", category: "MCP Servers", status: count === 7 ? "pass" : "warn", message });
+    };
+    const timer = setTimeout(() => finish(), 6000);
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+      const lines = stdout.split("\n");
+      stdout = lines.pop() ?? "";
+      for (const line of lines) {
+        let response;
+        try { response = JSON.parse(line); } catch { continue; }
+        if (response?.id !== 1) continue;
+        const tools = response.result?.tools;
+        finish(response.result?.resultType === "complete" && Array.isArray(tools) ? tools.length : 0);
       }
-      resolve({ name: "mcp-handshake-lcm", category: "MCP Servers", status: "warn", message: `lcm: 0/7 tools` });
     });
-    child.on("error", () => {
-      clearTimeout(timer);
-      resolve({ name: "mcp-handshake-lcm", category: "MCP Servers", status: "warn", message: "Could not spawn MCP process" });
-    });
-
-    // Send initialize, wait 300ms, then send tools/list, then close stdin after 500ms
-    child.stdin.write(initMsg + "\n");
-    setTimeout(() => {
-      child.stdin.write(listMsg + "\n");
-      setTimeout(() => { child.stdin.end(); }, 500);
-    }, 300);
+    child.on("close", () => finish());
+    child.on("error", () => finish(0, "Could not spawn MCP process"));
+    child.stdin.on("error", () => finish(0, "Could not write to MCP process"));
+    // Keep stdin open until the response arrives; closing it can cancel SDK dispatch.
+    child.stdin.write(JSON.stringify(request) + "\n");
   });
 }
 
