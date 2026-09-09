@@ -1068,6 +1068,37 @@ async function main() {
       exit(r.exitCode);
     });
 
+  // ─── retag ────────────────────────────────────────────────────────────────
+  program
+    .command("retag")
+    .description("Re-label rows an older parser stored, using the transcripts still on disk")
+    .option("--project <path>", "Only this project (default: every project)")
+    .option("--dry-run", "Report what would change without writing")
+    .option("--verbose", "Show per-project detail")
+    .action(async (opts) => {
+      const { resolve } = await import("node:path");
+      const { retagAll } = await import("../src/retag-run.js");
+      const cwd = typeof opts.project === "string" ? resolve(opts.project) : undefined;
+      const dryRun: boolean = opts.dryRun ?? false;
+      const verbose: boolean = opts.verbose ?? false;
+
+      const totals = retagAll({
+        cwd,
+        dryRun,
+        onProject: (projectCwd, projectTotals) => {
+          if (verbose && projectTotals.rows > 0) {
+            console.log(`  ${projectTotals.rows} rows in ${projectTotals.retaggedConversations} conversations  ${projectCwd}`);
+          }
+        },
+      });
+
+      const prefix = dryRun ? "  [dry-run]" : " ";
+      console.log(`${prefix} ${totals.rows} rows re-labelled across ${totals.retaggedConversations} conversations (${totals.conversations} examined).`);
+      const skipped = Object.entries(totals.skipped).sort((a, b) => b[1] - a[1]);
+      for (const [reason, n] of skipped) console.log(`  ${String(n).padStart(7)} left alone: ${reason}`);
+      if (dryRun) console.log("  Nothing was written.");
+    });
+
   // ─── import ────────────────────────────────────────────────────────────────
   program
     .command("import")
