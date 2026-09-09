@@ -26,8 +26,10 @@ describe("POST /ingest", () => {
   });
 
   it("parses Codex rollout responses server-side and rejects a mismatched project", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "lossless-ingest-codex-"));
-    tempDirs.push(tempDir);
+    const rootDir = mkdtempSync(join(tmpdir(), "lossless-ingest-codex-"));
+    tempDirs.push(rootDir);
+    const tempDir = join(rootDir, "project");
+    mkdirSync(tempDir);
     const path = join(tempDir, "rollout-2026-09-07-different-filename.jsonl");
     writeFileSync(path, [
       { type: "session_meta", payload: { id: "codex-meta-id", cwd: tempDir } },
@@ -40,9 +42,10 @@ describe("POST /ingest", () => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session_id: sessionId, cwd, client: "codex", transcript_path: transcriptPath }),
     });
-    const wrong = await post(tmpdir());
-    expect(wrong.status).toBe(400);
-    expect(await wrong.json()).toEqual({ error: "Codex transcript cwd does not match requested project" });
+    const wrong = await post(rootDir);
+    const wrongBody = await wrong.json();
+    expect(wrong.status, JSON.stringify(wrongBody)).toBe(400);
+    expect(wrongBody).toEqual({ error: "Codex transcript cwd does not match requested project" });
     const wrongSession = await post(tempDir, "different-session-id");
     expect(wrongSession.status).toBe(400);
     expect(await wrongSession.json()).toEqual({ error: "Codex transcript session id does not match request" });
