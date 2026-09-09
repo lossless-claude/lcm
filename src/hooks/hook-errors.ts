@@ -4,11 +4,11 @@ import { eventsDbPath } from "../db/events-path.js";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { lcmPath } from "../lcm-home.js";
 
 /** Returns the log path — overridable via LCM_LOG_PATH env var for test isolation. */
 export function getLogPath(): string {
-  return process.env.LCM_LOG_PATH ?? join(homedir(), ".lossless-claude", "logs", "events.log");
+  return process.env.LCM_LOG_PATH ?? lcmPath("logs", "events.log");
 }
 
 let dbCircuitOpen = false;

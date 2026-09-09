@@ -65,13 +65,15 @@ function parsePort(configJson: string): number {
   }
 }
 
-// The daemon's port and bearer token live under ~/.lossless-claude, and TMPDIR is an
+// The daemon's port and bearer token live under the lcm home, and TMPDIR is an
 // environment value; neither is reachable through $.fs (project and temp dir only), so
-// one host command reads all three once per module load.
+// one host command reads all three once per module load. LCM_HOME moves that home, which
+// is what lets a sandbox run this module without touching the host's own lcm state.
 function readHostEnv($: EngineInterface): Promise<HostEnv> {
   hostEnv ??= $.process.run(["sh", "-c",
-    'cat "$HOME/.lossless-claude/daemon.token" 2>/dev/null; echo; echo "__CONFIG__"; '
-    + 'cat "$HOME/.lossless-claude/config.json" 2>/dev/null; echo; echo "__TMPDIR__"; '
+    'H="${LCM_HOME:-$HOME/.lossless-claude}"; '
+    + 'cat "$H/daemon.token" 2>/dev/null; echo; echo "__CONFIG__"; '
+    + 'cat "$H/config.json" 2>/dev/null; echo; echo "__TMPDIR__"; '
     + 'printf %s "${TMPDIR:-/tmp}"',
   ]).then(({ stdout }) => {
     const [tokenPart, afterToken = ""] = stdout.split("__CONFIG__");

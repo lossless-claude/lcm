@@ -1,15 +1,15 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { rmSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { homedir } from "node:os";
 
 import { NATIVE_PATTERNS, ScrubEngine, readGitleaksSyncDate } from "./scrub.js";
 import { GITLEAKS_PATTERNS } from "./generated-patterns.js";
 import { projectDir } from "./daemon/project.js";
 import { loadDaemonConfig } from "./daemon/config.js";
+import { lcmPath } from "./lcm-home.js";
 
 function defaultConfigPath(): string {
-  return join(homedir(), ".lossless-claude", "config.json");
+  return lcmPath("config.json");
 }
 
 export async function handleSensitive(

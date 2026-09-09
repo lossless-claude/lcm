@@ -2,8 +2,9 @@ import type { DaemonClient } from "../daemon/client.js";
 import { ensureDaemon } from "../daemon/lifecycle.js";
 import { functionHooksOwnSession } from "./session-claim.js";
 import { join } from "node:path";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { writeFileSync, readFileSync } from "node:fs";
+import { lcmPath } from "../lcm-home.js";
 
 /** Deadline for the /restore call — SessionStart blocks the session until this hook returns. */
 const RESTORE_TIMEOUT_MS = 10_000;
@@ -58,7 +59,7 @@ export async function handleSessionStart(stdin: string, client: DaemonClient, po
   }
 
   const daemonPort = port ?? 3737;
-  const pidFilePath = join(homedir(), ".lossless-claude", "daemon.pid");
+  const pidFilePath = lcmPath("daemon.pid");
   const { connected } = await ensureDaemon({ port: daemonPort, pidFilePath, spawnTimeoutMs: 5000 });
   if (!connected) return { exitCode: 0, stdout: "" };
 

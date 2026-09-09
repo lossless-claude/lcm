@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, realpathSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, normalize, join as pathJoin, dirname, basename } from "node:path";
+import { lcmHome } from "../lcm-home.js";
 
-export const BASE_DIR = join(homedir(), ".lossless-claude");
+export const BASE_DIR = lcmHome();
 
 function canonicalizeCwd(cwd: string): string {
   try { return realpathSync(cwd); } catch { return cwd; }

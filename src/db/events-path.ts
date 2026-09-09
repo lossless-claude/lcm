@@ -1,8 +1,8 @@
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { projectId } from "../daemon/project.js";
+import { lcmHome } from "../lcm-home.js";
 
-const BASE = join(homedir(), ".lossless-claude");
+const BASE = lcmHome();
 
 export function eventsDir(): string {
   return join(BASE, "events");

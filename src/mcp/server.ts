@@ -3,7 +3,6 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { homedir } from "node:os";
 import { DaemonClient } from "../daemon/client.js";
 import { loadDaemonConfig } from "../daemon/config.js";
 import { ensureDaemon } from "../daemon/lifecycle.js";
@@ -15,6 +14,7 @@ import { lcmSearchTool } from "./tools/lcm-search.js";
 import { lcmStoreTool } from "./tools/lcm-store.js";
 import { lcmStatsTool } from "./tools/lcm-stats.js";
 import { lcmDoctorTool } from "./tools/lcm-doctor.js";
+import { lcmPath } from "../lcm-home.js";
 
 const TOOLS = [lcmGrepTool, lcmExpandTool, lcmDescribeTool, lcmSearchTool, lcmStoreTool, lcmStatsTool, lcmDoctorTool];
 
@@ -190,9 +190,9 @@ export async function handleDaemonRequest(
 }
 
 export async function startMcpServer(): Promise<void> {
-  const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
+  const config = loadDaemonConfig(lcmPath("config.json"));
   const port = config.daemon.port;
-  const pidFilePath = join(homedir(), ".lossless-claude", "daemon.pid");
+  const pidFilePath = lcmPath("daemon.pid");
 
   const lcmBin = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "lcm.mjs");
   await ensureDaemon({

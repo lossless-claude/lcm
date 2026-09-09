@@ -5,6 +5,7 @@ import { eventsDbPath } from "../db/events-path.js";
 import { firePromoteEventsRequest } from "./session-end.js";
 import { safeLogError } from "./hook-errors.js";
 import { functionHooksOwnSession } from "./session-claim.js";
+import { lcmPath } from "../lcm-home.js";
 
 // Back-compat re-export: some callers historically imported the function-hooks gate from this module.
 export { functionHooksActive, functionHooksOwnSession } from "./session-claim.js";
@@ -15,7 +16,7 @@ async function configuredDaemonPort(): Promise<number> {
     const { loadDaemonConfig } = await import("../daemon/config.js");
     const { join } = await import("node:path");
     const { homedir } = await import("node:os");
-    return loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json")).daemon?.port ?? 3737;
+    return loadDaemonConfig(lcmPath("config.json")).daemon?.port ?? 3737;
   } catch {
     return 3737;
   }

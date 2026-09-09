@@ -2,6 +2,7 @@ import { statSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { functionHooksOwnSession } from "./session-claim.js";
+import { lcmPath } from "../lcm-home.js";
 
 export interface SnapshotDeps {
   statSync: (path: string) => { mtimeMs: number } | null;
@@ -34,7 +35,7 @@ export async function handleSessionSnapshot(
     if (functionHooksOwnSession(session_id)) return { exitCode: 0, stdout: "" };
 
     const safeSessionId = session_id.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const cursorDir = join(homedir(), ".lossless-claude", "tmp");
+    const cursorDir = lcmPath("tmp");
     mkdirSync(cursorDir, { recursive: true, mode: 0o700 });
     const cursorPath = join(cursorDir, `snap-${safeSessionId}.json`);
     const _statSync = deps?.statSync ?? defaultStatSync;
@@ -42,7 +43,7 @@ export async function handleSessionSnapshot(
     if (intervalSec === undefined) {
       const { loadDaemonConfig } = await import("../daemon/config.js");
       const { homedir } = await import("node:os");
-      const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
+      const config = loadDaemonConfig(lcmPath("config.json"));
       intervalSec = config.hooks?.snapshotIntervalSec ?? 60;
     }
 
@@ -64,15 +65,14 @@ export async function handleSessionSnapshot(
     } else {
       const { loadDaemonConfig } = await import("../daemon/config.js");
       const { readFileSync: _readFileSync } = await import("node:fs");
-      const { homedir: _homedir } = await import("node:os");
-      const config = loadDaemonConfig(join(_homedir(), ".lossless-claude", "config.json"));
+      const config = loadDaemonConfig(lcmPath("config.json"));
       const port = config.daemon?.port ?? 3737;
       const baseUrl = `http://127.0.0.1:${port}`;
 
       // Read token from token file if available (silent fallback if not found)
       let token: string | null = null;
       try {
-        const tokenPath = join(_homedir(), ".lossless-claude", "daemon.token");
+        const tokenPath = lcmPath("daemon.token");
         const raw = _readFileSync(tokenPath, "utf-8").trim();
         token = raw || null;
       } catch {

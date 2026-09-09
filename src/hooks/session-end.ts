@@ -3,9 +3,9 @@ import { ensureDaemon } from "../daemon/lifecycle.js";
 import { loadDaemonConfig } from "../daemon/config.js";
 import { readAuthToken } from "../daemon/auth.js";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { request } from "node:http";
 import { Buffer } from "node:buffer";
+import { lcmPath } from "../lcm-home.js";
 
 /**
  * Build the Authorization header for daemon requests, if a token is available.
@@ -17,7 +17,7 @@ import { Buffer } from "node:buffer";
  * it unconditionally.
  */
 function authHeaders(): Record<string, string> {
-  const token = readAuthToken(join(homedir(), ".lossless-claude", "daemon.token"));
+  const token = readAuthToken(lcmPath("daemon.token"));
   return token ? { Authorization: "Bearer " + token } : {};
 }
 
@@ -129,7 +129,7 @@ export async function handleSessionEnd(
   port?: number,
 ): Promise<{ exitCode: number; stdout: string }> {
   const daemonPort = port ?? 3737;
-  const pidFilePath = join(homedir(), ".lossless-claude", "daemon.pid");
+  const pidFilePath = lcmPath("daemon.pid");
   // Claude Code gives SessionEnd hooks a shared 1.5s budget: never spawn a daemon here,
   // only talk to one that is already up. The Stop hook has been ingesting incrementally.
   const { connected } = await ensureDaemon({
@@ -149,7 +149,7 @@ export async function handleSessionEnd(
       redactedCategories?: string[];
     }>("/ingest", input, { timeoutMs: INGEST_TIMEOUT_MS });
 
-    const configPath = join(homedir(), ".lossless-claude", "config.json");
+    const configPath = lcmPath("config.json");
     const config = loadDaemonConfig(configPath);
     const disableCompact = config.hooks?.disableAutoCompact ?? false;
 
