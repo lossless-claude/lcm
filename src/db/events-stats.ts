@@ -2,7 +2,8 @@
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { eventsDir } from "./events-path.js";
-import { EventsDb } from "../hooks/events-db.js";
+import { DatabaseSync } from "node:sqlite";
+import { readEventHealthStats } from "../hooks/events-db.js";
 
 export interface EventStats {
   captured: number;
@@ -63,11 +64,11 @@ export function collectEventStats(timeoutMs = 2000): EventStats {
   for (const file of files) {
     if (scanned >= MAX_DBS || Date.now() >= deadline) break;
     try {
-      const db = new EventsDb(join(dir, file));
+      const db = new DatabaseSync(join(dir, file), { readOnly: true });
       // Override busy_timeout for scan connections (500ms instead of default 5000ms)
-      db.raw().exec("PRAGMA busy_timeout = 500");
+      db.exec("PRAGMA busy_timeout = 500");
       try {
-        const stats = db.getHealthStats();
+        const stats = readEventHealthStats(db);
         result.captured += stats.totalEvents;
         result.unprocessed += stats.unprocessed;
         result.errors += stats.errors;
@@ -111,10 +112,10 @@ export function collectDetailedEventStats(timeoutMs = 2000): DetailedEventStats 
   for (const file of files) {
     if (scanned >= MAX_DBS || Date.now() >= deadline) break;
     try {
-      const db = new EventsDb(join(dir, file));
-      db.raw().exec("PRAGMA busy_timeout = 500");
+      const db = new DatabaseSync(join(dir, file), { readOnly: true });
+      db.exec("PRAGMA busy_timeout = 500");
       try {
-        const stats = db.getHealthStats();
+        const stats = readEventHealthStats(db);
         result.captured += stats.totalEvents;
         result.unprocessed += stats.unprocessed;
         result.errors += stats.errors;
@@ -128,7 +129,7 @@ export function collectDetailedEventStats(timeoutMs = 2000): DetailedEventStats 
           lastCapture: stats.lastCapture,
         });
         // Collect recent errors for verbose display (exclude maintenance/pruning entries)
-        const errors = db.raw().prepare(
+        const errors = db.prepare(
           "SELECT created_at, hook, error FROM error_log WHERE hook NOT LIKE 'maintenance:%' ORDER BY id DESC LIMIT 5"
         ).all() as Array<{ created_at: string; hook: string; error: string }>;
         result.recentErrors.push(...errors);
