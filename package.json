@@ -39,10 +39,11 @@
     "release:verify": "npm test && npm pack --dry-run",
     "test": "vitest run --dir test",
     "typecheck": "tsc --noEmit",
+    "typecheck:hooks": "bash scripts/typecheck-hooks.sh",
     "version-packages": "changeset version"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@modelcontextprotocol/server": "^2.0.0",
     "@sinclair/typebox": "0.34.48",
     "commander": "^14.0.3",
     "js-yaml": "^4.1.1",
@@ -56,7 +57,7 @@
     "@types/safe-regex": "^1.1.6",
     "openai": "^6.32.0",
     "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "vitest": "^5.0.0"
   },
   "peerDependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
@@ -80,5 +81,8 @@
   "homepage": "https://github.com/lossless-claude/lcm#readme",
   "bugs": {
     "url": "https://github.com/lossless-claude/lcm/issues"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }
