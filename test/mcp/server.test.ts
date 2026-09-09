@@ -1,22 +1,29 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { getMcpToolDefinitions, handleDaemonRequest } from "../../src/mcp/server.js";
 
 const ensureDaemonMcpMock = vi.hoisted(() => vi.fn().mockResolvedValue({ connected: true, port: 9999, spawned: false }));
 
+const holdMock = vi.hoisted(() => vi.fn().mockReturnValue(null));
+const collectStatsMock = vi.hoisted(() => vi.fn(() => { throw new Error("database access during hold"); }));
+vi.mock("../../src/daemon/hold.js", () => ({ readHold: holdMock }));
+vi.mock("../../src/stats.js", () => ({ collectStats: collectStatsMock, formatNumber: String }));
+afterEach(() => { holdMock.mockReturnValue(null); });
+
 vi.mock("../../src/daemon/lifecycle.js", () => ({
   ensureDaemon: ensureDaemonMcpMock,
+  registerDaemonActivity: vi.fn(() => vi.fn()),
 }));
 vi.mock("../../src/daemon/config.js", () => ({
   loadDaemonConfig: vi.fn().mockReturnValue({ daemon: { port: 9999 } }),
 }));
-vi.mock("@modelcontextprotocol/sdk/server/index.js", () => ({
-  Server: vi.fn().mockReturnValue({ setRequestHandler: vi.fn(), connect: vi.fn().mockResolvedValue(undefined) }),
+vi.mock("@modelcontextprotocol/server", () => ({
+  Server: vi.fn().mockImplementation(function () { return { setRequestHandler: vi.fn() }; }),
 }));
-vi.mock("@modelcontextprotocol/sdk/server/stdio.js", () => ({
-  StdioServerTransport: vi.fn().mockReturnValue({}),
+vi.mock("@modelcontextprotocol/server/stdio", () => ({
+  serveStdio: vi.fn().mockReturnValue({ close: vi.fn() }),
 }));
 vi.mock("../../src/daemon/client.js", () => ({
-  DaemonClient: vi.fn().mockReturnValue({ post: vi.fn() }),
+  DaemonClient: vi.fn().mockImplementation(function () { return { post: vi.fn() }; }),
 }));
 vi.mock("../../src/daemon/version.js", () => ({
   PKG_VERSION: "9.9.9-test",
@@ -196,4 +203,18 @@ describe("handleDaemonRequest spawn opts propagation", () => {
     expect(callArgs.spawnCommand).toBeUndefined();
     expect(callArgs.spawnArgs).toBeUndefined();
   });
+});
+
+it("blocks local database tools when a hold begins after MCP startup", async () => {
+  const { Server } = await import("@modelcontextprotocol/server");
+  const { startMcpServer } = await import("../../src/mcp/server.js");
+  await startMcpServer();
+  const server = vi.mocked(Server).mock.results.at(-1)!.value;
+  const handler = server.setRequestHandler.mock.calls.find(([method]: [string]) => method === "tools/call")[1];
+  holdMock.mockReturnValue({ until: "2099-01-01T00:00:00.000Z", pid: 1 });
+  collectStatsMock.mockClear();
+  const result = await handler({ params: { name: "lcm_stats", arguments: {} } });
+  expect(result.isError).toBe(true);
+  expect(result.content[0].text).toContain("held down until");
+  expect(collectStatsMock).not.toHaveBeenCalled();
 });

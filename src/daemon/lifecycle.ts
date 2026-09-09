@@ -1,7 +1,9 @@
-import { existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { join, dirname } from "node:path";
 import { ensureAuthToken } from "./auth.js";
+import { readHold } from "./hold.js";
 
 export type EnsureDaemonOptions = {
   port: number;
@@ -60,6 +62,28 @@ function cleanStalePid(pidFilePath: string): void {
   } catch { /* ignore */ }
 }
 
+/** Register before checking a hold; release only after startup or local database work settles. */
+export function registerDaemonActivity(pidFilePath: string): () => void {
+  mkdirSync(dirname(pidFilePath), { recursive: true });
+  const path = join(dirname(pidFilePath), `daemon.starting.${process.pid}.${randomUUID()}`);
+  writeFileSync(path, "", { flag: "wx" });
+  return () => { try { unlinkSync(path); } catch { /* already removed by stop */ } };
+}
+
+function startingDaemons(pidFilePath: string): { pid: number; path: string }[] {
+  const directory = dirname(pidFilePath);
+  let names: string[];
+  try { names = readdirSync(directory); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  return names.flatMap((name) => {
+    const match = /^daemon\.starting\.(\d+)\.[0-9a-f-]+$/.exec(name);
+    const pid = Number(match?.[1]);
+    return Number.isSafeInteger(pid) && pid > 0 ? [{ pid, path: join(directory, name) }] : [];
+  });
+}
+
 /** PID of the process listening on 127.0.0.1:port, via lsof (macOS/Linux). Undefined when unknown. */
 export function findListenerPid(port: number): number | undefined {
   try {
@@ -87,6 +111,13 @@ export async function checkDaemonHealth(
 
 export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDaemonResult> {
   const fetchFn = opts._fetchOverride ?? globalThis.fetch;
+
+  // Step 0: A hold means someone claimed an offline window. Report not connected
+  // without touching the daemon at all — every caller already degrades to a
+  // no-op when it cannot connect, which is exactly the behaviour a hold wants.
+  if (readHold(opts.pidFilePath)) {
+    return { connected: false, port: opts.port, spawned: false };
+  }
 
   // Step 1: Check if daemon is already running via health check
   const health = await checkDaemonHealth(opts.port, fetchFn);
@@ -130,7 +161,7 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
   }
 
   // Step 3: Spawn daemon (unless skipped for testing)
-  if (opts._skipSpawn || opts.noSpawn) {
+  if (opts._skipSpawn || opts.noSpawn || readHold(opts.pidFilePath)) {
     return { connected: false, port: opts.port, spawned: false };
   }
 
@@ -139,7 +170,21 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
   ensureAuthToken(tokenPath);
 
   const spawnCommand = opts.spawnCommand ?? process.execPath;
-  const spawnArgs = opts.spawnArgs ?? [process.argv[1], "daemon", "start"];
+  const sourceLoaderArgs: string[] = [];
+  if (!opts.spawnArgs && spawnCommand === process.execPath && /\.(?:[cm]?ts|tsx)$/.test(process.argv[1] ?? "")) {
+    // Source entrypoints need the active TS loader, but debugger/eval flags
+    // belong to the caller and must not be inherited by a detached daemon.
+    for (let i = 0; i < process.execArgv.length; i++) {
+      const arg = process.execArgv[i];
+      if (/^(?:--import|--loader|--experimental-loader|--require)=/.test(arg)) {
+        sourceLoaderArgs.push(arg);
+      } else if (["--import", "--loader", "--experimental-loader", "--require", "-r"].includes(arg)
+          && process.execArgv[i + 1] !== undefined) {
+        sourceLoaderArgs.push(arg, process.execArgv[++i]);
+      }
+    }
+  }
+  const spawnArgs = opts.spawnArgs ?? [...sourceLoaderArgs, process.argv[1], "daemon", "start", "--automatic"];
   const spawnImpl = opts._spawnOverride ?? spawn;
   const child = spawnImpl(spawnCommand, spawnArgs, {
     detached: true,
@@ -148,9 +193,8 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
   }) as ChildProcess;
   child.unref();
 
-  if (child.pid) {
-    writeFileSync(opts.pidFilePath, String(child.pid));
-  }
+  // The child registers itself before checking holds and publishes daemon.pid
+  // only after listening. A late parent write could overwrite the winning PID.
 
   if (opts._skipHealthWait) {
     return { connected: false, port: opts.port, spawned: true };
@@ -185,6 +229,10 @@ export async function stopDaemon(opts: {
   _fetchOverride?: typeof globalThis.fetch;
 }): Promise<{ stopped: boolean; pid?: number }> {
   const fetchFn = opts._fetchOverride ?? globalThis.fetch;
+  // Read startup registrations before daemon.pid: a child hands off by writing
+  // daemon.pid before removing its registration, so neither state can be missed.
+  // A child registering after this snapshot sees the hold published by the caller.
+  const starting = startingDaemons(opts.pidFilePath);
   let pid: number | undefined;
   if (existsSync(opts.pidFilePath)) {
     try {
@@ -198,14 +246,25 @@ export async function stopDaemon(opts: {
     pid = health?.pid ?? (health ? findListenerPid(opts.port) : undefined) ?? pid;
   }
   if (pid !== undefined && isProcessAlive(pid)) {
-    try { process.kill(pid, "SIGTERM"); } catch { /* ignore */ }
+    try { process.kill(pid, "SIGTERM"); } catch { /* checked below */ }
   }
   const deadline = Date.now() + (opts.timeoutMs ?? 5000);
   while (Date.now() < deadline) {
-    const alive = pid !== undefined && isProcessAlive(pid);
-    const health = alive ? await checkDaemonHealth(opts.port, fetchFn) : null;
+    // Startup registrations are only waited on, never signalled: a stale
+    // registration could refer to a PID the OS has since reused.
+    const startingAlive = starting.some((entry) => existsSync(entry.path) && isProcessAlive(entry.pid));
+    const alive = (pid !== undefined && isProcessAlive(pid)) || startingAlive;
+    const health = await checkDaemonHealth(opts.port, fetchFn);
+    // A registered child may have handed off after our initial PID read.
+    if (health?.pid !== undefined && health.pid !== pid) {
+      pid = health.pid;
+      try { process.kill(pid, "SIGTERM"); } catch { /* checked on the next iteration */ }
+    }
     if (!alive && !health) {
       cleanStalePid(opts.pidFilePath);
+      for (const entry of starting) {
+        try { unlinkSync(entry.path); } catch { /* child already removed it */ }
+      }
       return { stopped: true, pid };
     }
     await sleep(200);

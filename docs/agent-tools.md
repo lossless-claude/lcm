@@ -2,6 +2,11 @@
 
 LCM provides seven MCP tools for agents to search, inspect, store, and recall information from conversation history.
 
+The MCP server uses the [2026-07-28 protocol](https://modelcontextprotocol.io/specification/2026-07-28)
+over stdio, powered by the TypeScript SDK v2. Clients must support this revision;
+legacy `initialize` connections are rejected. The entrypoints remain `lcm mcp`
+and `node mcp.mjs`. Tool names, arguments, and text results are unchanged.
+
 ## Usage patterns
 
 ### Escalation pattern: grep → describe → expand

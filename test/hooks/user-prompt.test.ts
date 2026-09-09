@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createHash } from "node:crypto";
 import { handleUserPromptSubmit } from "../../src/hooks/user-prompt.js";
 
-vi.mock("../../src/daemon/lifecycle.js", () => ({
+vi.mock("../../src/daemon/lifecycle.js", async (original) => ({
+  ...await original<typeof import("../../src/daemon/lifecycle.js")>(),
   ensureDaemon: vi.fn(),
 }));
 
@@ -200,10 +201,12 @@ describe("handleUserPromptSubmit", () => {
     mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
     const mockInsertPromptEvents = vi.fn().mockReturnValue(1);
     const mockClose = vi.fn();
-    MockEventsDb.mockImplementation(() => ({
-      insertPromptEvents: mockInsertPromptEvents,
-      close: mockClose,
-    }) as any);
+    MockEventsDb.mockImplementation(function () {
+      return {
+        insertPromptEvents: mockInsertPromptEvents,
+        close: mockClose,
+      } as any;
+    });
     mockExtractUserPromptEvents.mockReturnValue([
       { type: "decision", category: "decision", data: "use SQLite", priority: 1 },
     ]);

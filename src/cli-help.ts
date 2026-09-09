@@ -44,17 +44,21 @@ const HELP: Record<string, CommandHelp> = {
 
   daemon: {
     summary: "Start, stop or restart the context daemon that stores and processes memory.",
-    usage: "lcm daemon <start [--detach] | stop | restart>",
+    usage: "lcm daemon <start [--detach] | stop [--hold] | restart>",
     options: [
       ["--detach", "Run in the background; saves PID to ~/.lossless-claude/daemon.pid"],
+      ["--hold", "On stop: keep it down, so session hooks cannot spawn it again"],
+      ["--minutes <n>", "How long a hold lasts before it expires (default 30)"],
+      ["--reason <text>", "Why the daemon is held down; shown to whoever runs into it"],
     ],
     examples: [
       ["lcm daemon start --detach", "Start daemon in background (recommended); no-op if already running"],
       ["lcm daemon start", "Start daemon in foreground (for debugging)"],
       ["lcm daemon restart", "Stop the running daemon and start a fresh one (after an upgrade or rebuild)"],
       ["lcm daemon stop", "Stop the background daemon"],
+      ["lcm daemon stop --hold --reason \"migration\"", "Claim an offline window; release it with lcm daemon start"],
     ],
-    notes: "The daemon runs on port 3737 by default. Configure via ~/.lossless-claude/config.json.",
+    notes: "The daemon runs on port 3737 by default. Configure via ~/.lossless-claude/config.json. Without --hold a stop does not last: every session hook spawns the daemon again within seconds.",
   },
 
   status: {

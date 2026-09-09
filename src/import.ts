@@ -252,7 +252,7 @@ function isSessionAlreadyIngested(cwd: string, sessionId: string, lcmDir?: strin
     if (!existsSync(dbPath)) {
       return false;
     }
-    const db = new DatabaseSync(dbPath);
+    const db = new DatabaseSync(dbPath, { readOnly: true });
     try {
       db.exec("PRAGMA busy_timeout = 5000");
       const row = db.prepare("SELECT 1 FROM session_ingest_log WHERE session_id = ?").get(sessionId);

@@ -38,6 +38,27 @@ export interface HealthStats {
   lastError: string | null;
 }
 
+/** Read health counters without opening, migrating, or mutating the database. */
+export function readEventHealthStats(db: DatabaseSync): HealthStats {
+  const eventTotals = db.prepare(
+    "SELECT COUNT(*) as totalEvents, MAX(created_at) as lastCapture FROM events"
+  ).get() as { totalEvents: number; lastCapture: string | null };
+  const unprocessedRow = db.prepare(
+    "SELECT COUNT(*) as unprocessed FROM events WHERE processed_at IS NULL"
+  ).get() as { unprocessed: number };
+  // Version 1 sidecars predate error logging; inspection must not migrate them.
+  const hasErrorLog = db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'error_log'"
+  ).get();
+  const errorTotals = hasErrorLog
+    ? db.prepare(
+      "SELECT COUNT(*) as errors, MAX(created_at) as lastError FROM error_log WHERE hook NOT LIKE 'maintenance:%' AND created_at >= datetime('now', '-30 days')"
+    ).get() as { errors: number; lastError: string | null }
+    : { errors: 0, lastError: null };
+
+  return { ...eventTotals, unprocessed: unprocessedRow.unprocessed, ...errorTotals };
+}
+
 export interface PatternReinforcementStats {
   totalCount: number;
   distinctSessions: number;
@@ -345,23 +366,7 @@ export class EventsDb {
   }
 
   getHealthStats(): HealthStats {
-    const eventTotals = this.db.prepare(
-      "SELECT COUNT(*) as totalEvents, MAX(created_at) as lastCapture FROM events"
-    ).get() as { totalEvents: number; lastCapture: string | null };
-    const unprocessedRow = this.db.prepare(
-      "SELECT COUNT(*) as unprocessed FROM events WHERE processed_at IS NULL"
-    ).get() as { unprocessed: number };
-    const errorTotals = this.db.prepare(
-      "SELECT COUNT(*) as errors, MAX(created_at) as lastError FROM error_log WHERE hook NOT LIKE 'maintenance:%' AND created_at >= datetime('now', '-30 days')"
-    ).get() as { errors: number; lastError: string | null };
-
-    return {
-      totalEvents: eventTotals.totalEvents,
-      unprocessed: unprocessedRow.unprocessed,
-      errors: errorTotals.errors,
-      lastCapture: eventTotals.lastCapture,
-      lastError: errorTotals.lastError,
-    };
+    return readEventHealthStats(this.db);
   }
 
   pruneUnprocessed(maxRows = 10_000, maxAgeDays = 30): { pruned: number } {

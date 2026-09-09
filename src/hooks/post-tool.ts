@@ -6,6 +6,7 @@ import { firePromoteEventsRequest } from "./session-end.js";
 import { safeLogError } from "./hook-errors.js";
 import { functionHooksOwnSession } from "./session-claim.js";
 import { lcmPath } from "../lcm-home.js";
+import { withHookWrite } from "./write-admission.js";
 
 // Back-compat re-export: some callers historically imported the function-hooks gate from this module.
 export { functionHooksActive, functionHooksOwnSession } from "./session-claim.js";
@@ -67,15 +68,16 @@ export function recordPostToolEvents(payload: PostToolPayload): RecordedPostTool
     ? payload.tool_use_id
     : undefined;
 
-  const db = new EventsDb(eventsDbPath(payload.cwd));
-  let recorded: number;
-  try {
-    // Dedup on the whole call, not each event: one call extracts several events, and a
-    // per-event check would leave a half batch when the paths raced.
-    recorded = db.insertToolCallEvents(payload.session_id, events, sourceHook, toolUseId);
-  } finally {
-    db.close();
-  }
+  const recorded = withHookWrite(() => {
+    const db = new EventsDb(eventsDbPath(payload.cwd));
+    try {
+      // Dedup on the whole call, not each event: one call extracts several events, and a
+      // per-event check would leave a half batch when the paths raced.
+      return db.insertToolCallEvents(payload.session_id, events, sourceHook, toolUseId);
+    } finally {
+      db.close();
+    }
+  }, 0);
   if (recorded === 0) return { recorded: 0, hasPriority1: false, sourceHook };
   return { recorded, hasPriority1: events.some(e => e.priority === 1), sourceHook };
 }
