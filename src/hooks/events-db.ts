@@ -46,9 +46,15 @@ export function readEventHealthStats(db: DatabaseSync): HealthStats {
   const unprocessedRow = db.prepare(
     "SELECT COUNT(*) as unprocessed FROM events WHERE processed_at IS NULL"
   ).get() as { unprocessed: number };
-  const errorTotals = db.prepare(
-    "SELECT COUNT(*) as errors, MAX(created_at) as lastError FROM error_log WHERE hook NOT LIKE 'maintenance:%' AND created_at >= datetime('now', '-30 days')"
-  ).get() as { errors: number; lastError: string | null };
+  // Version 1 sidecars predate error logging; inspection must not migrate them.
+  const hasErrorLog = db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'error_log'"
+  ).get();
+  const errorTotals = hasErrorLog
+    ? db.prepare(
+      "SELECT COUNT(*) as errors, MAX(created_at) as lastError FROM error_log WHERE hook NOT LIKE 'maintenance:%' AND created_at >= datetime('now', '-30 days')"
+    ).get() as { errors: number; lastError: string | null }
+    : { errors: 0, lastError: null };
 
   return { ...eventTotals, unprocessed: unprocessedRow.unprocessed, ...errorTotals };
 }

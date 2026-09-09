@@ -129,10 +129,15 @@ export function collectDetailedEventStats(timeoutMs = 2000): DetailedEventStats 
           lastCapture: stats.lastCapture,
         });
         // Collect recent errors for verbose display (exclude maintenance/pruning entries)
-        const errors = db.prepare(
-          "SELECT created_at, hook, error FROM error_log WHERE hook NOT LIKE 'maintenance:%' ORDER BY id DESC LIMIT 5"
-        ).all() as Array<{ created_at: string; hook: string; error: string }>;
-        result.recentErrors.push(...errors);
+        const hasErrorLog = db.prepare(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'error_log'"
+        ).get();
+        if (hasErrorLog) {
+          const errors = db.prepare(
+            "SELECT created_at, hook, error FROM error_log WHERE hook NOT LIKE 'maintenance:%' ORDER BY id DESC LIMIT 5"
+          ).all() as Array<{ created_at: string; hook: string; error: string }>;
+          result.recentErrors.push(...errors);
+        }
       } finally {
         db.close();
       }

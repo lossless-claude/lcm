@@ -67,21 +67,29 @@ function queryProjectStats(dbPath: string, projectId: string, staleCfg: { staleA
   db.exec("PRAGMA busy_timeout = 5000");
 
   try {
+    const columns = (table: string) => new Set(
+      (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((row) => row.name),
+    );
+    const summaryColumns = columns("summaries");
+    const summaryDepth = summaryColumns.has("depth") ? "depth" : "0";
+    const promotedColumns = columns("promoted");
+    const usageColumns = columns("llm_usage_stats");
+    const usageSum = (column: string, fallback = "0") => usageColumns.has(column) ? `SUM(${column})` : fallback;
     const msgStats = db.prepare(
       `SELECT COUNT(*) as count, COALESCE(SUM(token_count), 0) as tokens FROM messages`
     ).get() as { count: number; tokens: number };
 
     const sumStats = db.prepare(
-      `SELECT COUNT(*) as count, COALESCE(SUM(token_count), 0) as tokens, COALESCE(MAX(depth), 0) as maxDepth FROM summaries`
+      `SELECT COUNT(*) as count, COALESCE(SUM(token_count), 0) as tokens, COALESCE(MAX(${summaryDepth}), 0) as maxDepth FROM summaries`
     ).get() as { count: number; tokens: number; maxDepth: number };
 
-    const promoted = db.prepare(
+    const promoted = promotedColumns.size ? db.prepare(
       `SELECT COUNT(*) as count FROM promoted`
-    ).get() as { count: number };
+    ).get() as { count: number } : { count: 0 };
 
-    const redactionRows = db.prepare(
+    const redactionRows = columns("redaction_stats").size ? db.prepare(
       `SELECT category, COALESCE(SUM(count), 0) as count FROM redaction_stats WHERE project_id = ? GROUP BY category`
-    ).all(projectId) as { category: string; count: number }[];
+    ).all(projectId) as { category: string; count: number }[] : [];
     const redactionMap = Object.fromEntries(redactionRows.map((r) => [r.category, r.count]));
     const redactionCounts: RedactionCounts = {
       builtIn: redactionMap["built_in"] ?? 0,
@@ -91,22 +99,22 @@ function queryProjectStats(dbPath: string, projectId: string, staleCfg: { staleA
     };
     redactionCounts.total = redactionCounts.builtIn + redactionCounts.global + redactionCounts.project;
 
-    const llmUsageRow = db.prepare(
+    const llmUsageRow = usageColumns.size ? db.prepare(
       `SELECT
-         COALESCE(SUM(calls_total), 0) as calls,
-         COALESCE(SUM(calls_ok), 0) as okCalls,
-         COALESCE(SUM(calls_failed), 0) as failedCalls,
-         COALESCE(SUM(tokens_spent_total), 0) as tokensSpent,
-         COALESCE(SUM(tokens_input_total), 0) as tokensInput,
-         COALESCE(SUM(tokens_cached_total), 0) as tokensCached,
-         COALESCE(SUM(tokens_output_total), 0) as tokensOutput,
+         COALESCE(${usageSum("calls_total")}, 0) as calls,
+         COALESCE(${usageSum("calls_ok")}, 0) as okCalls,
+         COALESCE(${usageSum("calls_failed")}, 0) as failedCalls,
+         COALESCE(${usageSum("tokens_spent_total")}, 0) as tokensSpent,
+         COALESCE(${usageSum("tokens_input_total")}, 0) as tokensInput,
+         COALESCE(${usageSum("tokens_cached_total")}, 0) as tokensCached,
+         COALESCE(${usageSum("tokens_output_total")}, 0) as tokensOutput,
          -- Deliberately not COALESCEd: all-NULL must stay NULL, not become 0.
-         SUM(cost_usd_total) as costUsd,
-         COALESCE(SUM(calls_with_cost), 0) as callsWithCost
+         ${usageSum("cost_usd_total", "NULL")} as costUsd,
+         COALESCE(${usageSum("calls_with_cost")}, 0) as callsWithCost
        FROM llm_usage_stats`,
     ).get() as
       | { calls: number; okCalls: number; failedCalls: number; tokensSpent: number; tokensInput: number; tokensCached: number; tokensOutput: number; costUsd: number | null; callsWithCost: number }
-      | undefined;
+      | undefined : undefined;
 
     const convRows = db.prepare(`
       SELECT
@@ -122,7 +130,7 @@ function queryProjectStats(dbPath: string, projectId: string, staleCfg: { staleA
         FROM messages GROUP BY conversation_id
       ) m ON m.conversation_id = c.conversation_id
       LEFT JOIN (
-        SELECT conversation_id, COUNT(*) as sum_count, SUM(token_count) as sum_tokens, MAX(depth) as max_depth
+        SELECT conversation_id, COUNT(*) as sum_count, SUM(token_count) as sum_tokens, MAX(${summaryDepth}) as max_depth
         FROM summaries GROUP BY conversation_id
       ) s ON s.conversation_id = c.conversation_id
       ORDER BY c.conversation_id DESC
@@ -144,7 +152,9 @@ function queryProjectStats(dbPath: string, projectId: string, staleCfg: { staleA
     const compactedRaw = compacted.reduce((s, c) => s + c.rawTokens, 0);
     const compactedSum = compacted.reduce((s, c) => s + c.summaryTokens, 0);
 
-    const recallStats = new RecallStore(db).getStats();
+    const recallStats: RecallStats = columns("recall_surfacing").size && promotedColumns.has("archived_at")
+      ? new RecallStore(db).getStats()
+      : { memoriesSurfaced: 0, memoriesActedUpon: 0, recallPrecision: null, topRecalled: [] };
 
     // Count stale promoted memories (config is passed in to avoid re-reading per project)
     let staleCount = 0;

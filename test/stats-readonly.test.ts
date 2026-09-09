@@ -33,3 +33,27 @@ it.each([false, true])("stats during a hold never migrates or writes project dat
   expect(readFileSync(path)).toEqual(before);
   expect(stats.messages).toBe(current ? 1 : 0);
 });
+
+it.each([false, true])("keeps legacy project counts when optional metrics are absent (partial usage: %s)", (usage) => {
+  root = mkdtempSync(join(tmpdir(), "lcm-legacy-stats-"));
+  vi.stubEnv("LCM_HOME", root);
+  const project = join(root, "projects", "legacy");
+  mkdirSync(project, { recursive: true });
+  const path = join(project, "db.sqlite");
+  const db = new DatabaseSync(path);
+  db.exec(`
+    CREATE TABLE conversations (conversation_id INTEGER);
+    CREATE TABLE messages (conversation_id INTEGER, token_count INTEGER);
+    CREATE TABLE summaries (conversation_id INTEGER, token_count INTEGER);
+    INSERT INTO conversations VALUES (1);
+    INSERT INTO messages VALUES (1, 40);
+    INSERT INTO summaries VALUES (1, 10);
+  `);
+  if (usage) db.exec("CREATE TABLE llm_usage_stats (calls_total INTEGER); INSERT INTO llm_usage_stats VALUES (3)");
+  db.close();
+  const before = readFileSync(path);
+  const stats = collectStats();
+  expect(stats).toMatchObject({ projects: 1, conversations: 1, messages: 1, summaries: 1, rawTokens: 40, summaryTokens: 10, maxDepth: 0 });
+  expect(stats.llmUsage).toMatchObject({ calls: usage ? 3 : 0, costUsd: null });
+  expect(readFileSync(path)).toEqual(before);
+});

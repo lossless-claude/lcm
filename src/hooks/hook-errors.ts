@@ -5,6 +5,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { join } from "node:path";
 import { lcmPath } from "../lcm-home.js";
+import { withHookWrite } from "./write-admission.js";
 
 /** Returns the log path — overridable via LCM_LOG_PATH env var for test isolation. */
 export function getLogPath(): string {
@@ -29,6 +30,12 @@ export function safeLogError(
   error: unknown,
   opts: { cwd?: string; sessionId?: string },
 ): void {
+  try {
+    withHookWrite(() => writeHookError(hook, error, opts), undefined);
+  } catch { /* admission failure must not crash the hook or write outside the fence */ }
+}
+
+function writeHookError(hook: string, error: unknown, opts: { cwd?: string; sessionId?: string }): void {
   // Layer 1: Sidecar DB (skip if cwd missing or circuit open)
   if (opts.cwd && !dbCircuitOpen) {
     try {
