@@ -1,8 +1,8 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { describe, expect, it, afterEach, vi } from "vitest";
+import { describe, expect, it, afterEach } from "vitest";
 import { runLcmMigrations } from "../src/db/migration.js";
 import { recordCompactLlmUsage, type CompactLlmUsage } from "../src/daemon/routes/compact.js";
 import { collectStats } from "../src/stats.js";
@@ -10,11 +10,6 @@ import { ConversationStore } from "../src/store/conversation-store.js";
 
 // collectStats() scans every project database under the lcm home, so each fixture
 // points LCM_HOME at its own.
-vi.mock("node:os", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:os")>();
-  return { ...actual, homedir: vi.fn(actual.homedir) };
-});
-
 function usage(overrides: Partial<CompactLlmUsage> = {}): CompactLlmUsage {
   return {
     provider: "openai",
