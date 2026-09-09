@@ -14,6 +14,8 @@ export interface DoctorDeps {
   spawnSync: (cmd: string, args: string[], opts?: object) => { status: number | null; stdout: string; stderr: string };
   fetch: typeof globalThis.fetch;
   homedir: string;
+  /** Where lcm stores things: `~/.lossless-claude`, or wherever LCM_HOME points. */
+  lcmHome: string;
   platform: string;
   cwd?: string;
 }

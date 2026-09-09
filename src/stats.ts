@@ -1,12 +1,12 @@
 import { DatabaseSync } from "node:sqlite";
 import { readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { runLcmMigrations } from "./db/migration.js";
 import { collectEventStats } from "./db/events-stats.js";
 import { RecallStore, type RecallStats } from "./db/recall.js";
 import { PromotedStore } from "./db/promoted.js";
 import { loadDaemonConfig } from "./daemon/config.js";
+import { lcmPath } from "./lcm-home.js";
 
 export type { RecallStats };
 
@@ -421,7 +421,7 @@ export function printStats(stats: OverallStats, verbose: boolean): void {
 }
 
 export function collectStats(): OverallStats {
-  const baseDir = join(homedir(), ".lossless-claude", "projects");
+  const baseDir = lcmPath("projects");
 
   const emptyRecallStats: RecallStats = {
     memoriesSurfaced: 0, memoriesActedUpon: 0, recallPrecision: null, topRecalled: [],
@@ -460,7 +460,7 @@ export function collectStats(): OverallStats {
   // Load stale config once for all projects
   let staleCfg = { staleAfterDays: 90, staleSurfacingWithoutUseLimit: 5 };
   try {
-    const cfg = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
+    const cfg = loadDaemonConfig(lcmPath("config.json"));
     staleCfg = {
       staleAfterDays: cfg.restoration.staleAfterDays,
       staleSurfacingWithoutUseLimit: cfg.restoration.staleSurfacingWithoutUseLimit,

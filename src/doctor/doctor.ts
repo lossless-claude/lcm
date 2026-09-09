@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir, platform } from "node:os";
+import { lcmHome } from "../lcm-home.js";
 import { join, dirname } from "node:path";
 import { spawnSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -33,6 +34,7 @@ function defaultDeps(): DoctorDeps {
     },
     fetch: globalThis.fetch,
     homedir: homedir(),
+    lcmHome: lcmHome(),
     platform: platform(),
   };
 }
@@ -43,7 +45,7 @@ interface DoctorConfig {
 }
 
 function loadConfig(deps: DoctorDeps): DoctorConfig {
-  const configPath = join(deps.homedir, ".lossless-claude", "config.json");
+  const configPath = join(deps.lcmHome, "config.json");
   let config: Record<string, unknown> = {};
   try {
     config = JSON.parse(deps.readFileSync(configPath, "utf-8"));
@@ -235,7 +237,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
   }
 
   // ── 2. config.json ──
-  const configPath = join(deps.homedir, ".lossless-claude", "config.json");
+  const configPath = join(deps.lcmHome, "config.json");
   if (deps.existsSync(configPath)) {
     results.push({ name: "config", category: "Stack", status: "pass", message: configPath });
   } else {
@@ -257,7 +259,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
   } catch {}
 
   if (daemonHealthy) {
-    const pidFilePath = join(deps.homedir, ".lossless-claude", "daemon.pid");
+    const pidFilePath = join(deps.lcmHome, "daemon.pid");
     const versionMismatch = Boolean(pkgVersion && daemonVersion && daemonVersion !== pkgVersion);
     const buildMismatch = Boolean(BUILD_ID && daemonBuild && daemonBuild !== BUILD_ID);
     if (versionMismatch || buildMismatch) {
@@ -322,7 +324,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
       const { ensureDaemon } = await import("../daemon/lifecycle.js");
       const { connected } = await ensureDaemon({
         port: config.port,
-        pidFilePath: join(deps.homedir, ".lossless-claude", "daemon.pid"),
+        pidFilePath: join(deps.lcmHome, "daemon.pid"),
         spawnTimeoutMs: 10000,
       });
       if (connected) {
@@ -526,7 +528,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
   let globalUserPatternCount = 0;
   try {
     const { loadDaemonConfig } = await import("../daemon/config.js");
-    const globalConfigPath = join(deps.homedir, ".lossless-claude", "config.json");
+    const globalConfigPath = join(deps.lcmHome, "config.json");
     const config = loadDaemonConfig(globalConfigPath);
     globalUserPatternCount = config.security?.sensitivePatterns?.length ?? 0;
   } catch {

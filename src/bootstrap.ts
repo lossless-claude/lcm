@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { mergeClaudeSettings } from "./installer/settings.js";
 import { loadDaemonConfig } from "./daemon/config.js";
+import { lcmPath } from "./lcm-home.js";
 
 export interface EnsureCoreDeps {
   configPath: string;
@@ -17,7 +18,7 @@ export interface EnsureCoreDeps {
 
 function defaultDeps(): EnsureCoreDeps {
   return {
-    configPath: join(homedir(), ".lossless-claude", "config.json"),
+    configPath: lcmPath("config.json"),
     settingsPath: join(homedir(), ".claude", "settings.json"),
     existsSync,
     readFileSync: (p, enc) => readFileSync(p, enc as BufferEncoding),
@@ -82,7 +83,7 @@ export async function ensureBootstrapped(
   deps: BootstrapDeps = defaultBootstrapDeps(),
 ): Promise<void> {
   const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-  const flagDir = join(homedir(), ".lossless-claude", "tmp");
+  const flagDir = lcmPath("tmp");
   mkdirSync(flagDir, { recursive: true });
   const flagPath = join(flagDir, `bootstrapped-${safeId}.flag`);
   try {
