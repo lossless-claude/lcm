@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { DaemonClient } from "../daemon/client.js";
 import { loadDaemonConfig } from "../daemon/config.js";
 import { ensureDaemon } from "../daemon/lifecycle.js";
+import { readHold } from "../daemon/hold.js";
 import { PKG_VERSION } from "../daemon/version.js";
 import { lcmGrepTool } from "./tools/lcm-grep.js";
 import { lcmExpandTool } from "./tools/lcm-expand.js";
@@ -222,6 +223,11 @@ export async function startMcpServer(): Promise<void> {
       // No schema properties defined — default-deny: pass nothing through.
       // This is safer than a denylist-based approach which could miss unknown keys.
       void rawArgs;
+    }
+
+    const hold = readHold(pidFilePath);
+    if (hold) {
+      return { content: [{ type: "text", text: `lcm daemon held down until ${hold.until}. Release it with: lcm daemon start` }], isError: true };
     }
 
     const localHandler = LOCAL_TOOLS[req.params.name];

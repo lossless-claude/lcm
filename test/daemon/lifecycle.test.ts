@@ -202,6 +202,9 @@ describe("ensureDaemon", () => {
 
     expect(result.connected).toBe(false);
     expect(result.spawned).toBe(true);
+    // Only a listening child owns daemon.pid; the spawner must not race its
+    // startup registration or overwrite a concurrently successful child.
+    expect(existsSync(pidFile)).toBe(false);
     expect(spawnMock).toHaveBeenCalledWith(
       "lcm",
       ["daemon", "start"],

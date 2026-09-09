@@ -340,7 +340,7 @@ async function main() {
     .option("-h, --help", "Show help")
     .action(async (opts) => {
       if (helpRequested(daemonCmd, opts)) { await withCustomHelp(daemonCmd, "daemon"); return; }
-      const { ensureDaemon, checkDaemonHealth, isStaleDaemon } = await import("../src/daemon/lifecycle.js");
+      const { ensureDaemon, checkDaemonHealth, isStaleDaemon, registerDaemonStartup } = await import("../src/daemon/lifecycle.js");
       const { loadDaemonConfig } = await import("../src/daemon/config.js");
       const { PKG_VERSION, BUILD_ID } = await import("../src/daemon/version.js");
       const { clearHold, readHold } = await import("../src/daemon/hold.js");
@@ -389,10 +389,20 @@ async function main() {
 
       const { createDaemon } = await import("../src/daemon/server.js");
       const { ensureAuthToken } = await import("../src/daemon/auth.js");
-      if (opts.automatic && readHold(pidFilePath)) { process.exitCode = 75; return; }
-      ensureAuthToken(tokenPath);
+      const { writeFileSync } = await import("node:fs");
+      const unregisterStartup = registerDaemonStartup(pidFilePath);
       try {
+        // Register before checking: a concurrent held stop either sees this
+        // process or has already published the hold that prevents startup.
+        if (readHold(pidFilePath)) { process.exitCode = 75; return; }
+        ensureAuthToken(tokenPath);
         const daemon = await createDaemon(config, { tokenPath, backfillIdentities: true });
+        if (readHold(pidFilePath)) {
+          await daemon.stop();
+          process.exitCode = 75;
+          return;
+        }
+        writeFileSync(pidFilePath, String(process.pid));
         console.log(`lcm daemon started on port ${daemon.address().port}`);
       } catch (err) {
         const code = (err as NodeJS.ErrnoException)?.code;
@@ -402,6 +412,8 @@ async function main() {
           console.error(`lcm daemon failed to start: ${err instanceof Error ? err.message : String(err)}`);
         }
         exit(1);
+      } finally {
+        unregisterStartup();
       }
       process.on("SIGTERM", () => exit(0));
       process.on("SIGINT", () => exit(0));
