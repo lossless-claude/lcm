@@ -57,6 +57,21 @@ export LCM_INCREMENTAL_MAX_DEPTH=-1
 
 Restart Claude Code.
 
+## Where lcm stores things
+
+Everything lcm owns lives under `~/.lossless-claude`: the daemon's port, token and pid, one database per project, the events sidecars, and the logs.
+
+`LCM_HOME` moves all of it:
+
+```bash
+LCM_HOME=/tmp/lcm-sandbox lcm daemon start --detach
+LCM_HOME=/tmp/lcm-sandbox claude   # the function-hooks module reads the same variable
+```
+
+Use it to run lcm against a scratch directory without touching your own memory — trying a build before installing it, or reproducing a bug on a clean slate. Moving `HOME` instead would take the host's own configuration with it, and the session would not start.
+
+Both the daemon and the client must see the same value: a daemon started without it answers on the port from `~/.lossless-claude/config.json` and writes to the real databases.
+
 ## Connector scope
 
 The connector manager can install into either the current project or your global

@@ -1,7 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { homedir } from "node:os";
 import type { DatabaseSync } from "node:sqlite";
 import { projectDbPath, projectId, projectMetaPath } from "./daemon/project.js";
 import { closeLcmConnection, getLcmConnection } from "./db/connection.js";
@@ -20,6 +19,7 @@ export { parseLanguageTag } from "./search/language.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { prepareRgCorpus, searchRg, type GrepDocument, type PreparedRgCorpus } from "./bench/rg-baseline.js";
+import { lcmPath } from "./lcm-home.js";
 
 /**
  * Layer 2 retrieval benchmark: build and run a natural-language question set
@@ -198,7 +198,7 @@ function forbiddenTerms(prompt: string): string[] {
 async function configuredSummarizer(): Promise<LcmSummarizeFn> {
   const { loadDaemonConfig } = await import("./daemon/config.js");
   const { createSummarizer, resolveEffectiveProvider } = await import("./daemon/summarizer.js");
-  const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
+  const config = loadDaemonConfig(lcmPath("config.json"));
   if (config.summarizer?.mock) throw new Error("A mock summarizer cannot generate an LLM benchmark.");
   const summarize = await createSummarizer(resolveEffectiveProvider(config), config);
   if (!summarize) throw new Error("LLM benchmark generation requires an enabled summarizer.");

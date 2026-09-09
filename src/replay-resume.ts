@@ -16,13 +16,13 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import type { DatabaseSync } from "node:sqlite";
 import { projectId } from "./daemon/project.js";
 import { closeLcmConnection, getLcmConnection } from "./db/connection.js";
 import { runLcmMigrations } from "./db/migration.js";
 import { SummaryStore } from "./store/summary-store.js";
 import type { DaemonClient } from "./daemon/client.js";
+import { lcmPath } from "./lcm-home.js";
 
 export type ReplayCommand = "import" | "compact";
 
@@ -150,7 +150,7 @@ function closeDb(opened: ProjectDbOpenResult): void {
 function projectDbPathFor(cwd: string, lcmDir?: string): string {
   return lcmDir
     ? join(lcmDir, "projects", projectId(cwd), "db.sqlite")
-    : join(homedir(), ".lossless-claude", "projects", projectId(cwd), "db.sqlite");
+    : lcmPath("projects", projectId(cwd), "db.sqlite");
 }
 
 function loadLatestRun(db: DatabaseSync, command: ReplayCommand): ReplayRunInfo | null {

@@ -2,8 +2,13 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, realpathSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, normalize, join as pathJoin, dirname, basename } from "node:path";
+import { lcmHome } from "../lcm-home.js";
 
-export const BASE_DIR = join(homedir(), ".lossless-claude");
+/**
+ * Resolved once, at load: `LCM_HOME` has to be set before the process starts, which is how
+ * it is meant to be used. Tests that need another root mock this export.
+ */
+export const BASE_DIR = lcmHome();
 
 function canonicalizeCwd(cwd: string): string {
   try { return realpathSync(cwd); } catch { return cwd; }
