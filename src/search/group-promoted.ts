@@ -1,10 +1,10 @@
 import { existsSync } from "node:fs";
-import { closeLcmConnection, getLcmConnection } from "../db/connection.js";
-import { runLcmMigrations } from "../db/migration.js";
+import { closeLcmConnection } from "../db/connection.js";
 import { PromotedStore, type SearchResult } from "../db/promoted.js";
 import { RecallStore, type RecallFeedback } from "../db/recall.js";
 import { projectDbPath } from "../daemon/project.js";
 import { projectGroup, projectRef } from "../daemon/project-group.js";
+import { openMigrated } from "./migrated-connection.js";
 import type { ProjectRef } from "./native-history.js";
 
 /**
@@ -23,26 +23,6 @@ export type GroupPromotedHit = SearchResult & { project: ProjectRef };
  * not automatically outrank a strong hit further down a large one.
  */
 const FUSION_RANK_OFFSET = 10;
-
-/**
- * Databases this process has already brought up to date.
- *
- * The migration sweep is idempotent DDL with no version marker, so it costs
- * ~80 ms per database however little there is to do. Measured on the lcm group:
- * unioning five checkouts spends 4 ms searching and 394 ms migrating, against a
- * 500 ms budget for the whole prompt hook. Schema is per-file and the daemon
- * holds the only writer, so once per path per process is enough.
- */
-const migrated = new Set<string>();
-
-function openMigrated(dbPath: string) {
-  const db = getLcmConnection(dbPath);
-  if (!migrated.has(dbPath)) {
-    runLcmMigrations(db);
-    migrated.add(dbPath);
-  }
-  return db;
-}
 
 export interface GroupPromotedSearch {
   hits: GroupPromotedHit[];

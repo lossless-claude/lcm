@@ -107,7 +107,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   routes.set("POST /promote", createPromoteHandler(config));
   routes.set("POST /restore", createRestoreHandler(config));
   routes.set("POST /grep", createGrepHandler(config));
-  routes.set("POST /search", createSearchHandler());
+  routes.set("POST /search", createSearchHandler(config));
   routes.set("POST /expand", createExpandHandler(config));
   routes.set("POST /describe", createDescribeHandler(config));
   routes.set("POST /store", createStoreHandler(config));

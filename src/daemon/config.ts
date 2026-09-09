@@ -23,6 +23,16 @@ export type DaemonConfig = {
     autoCompactMinTokens: number;
     promotionThresholds: { minDepth: number; compressionRatio: number; keywords: Record<string, string[]>; architecturePatterns: string[]; dedupBm25Threshold: number; dedupCandidateLimit: number; eventConfidence?: { decision?: number; plan?: number; errorFix?: number; batch?: number; pattern?: number }; reinforcementBoost?: number; maxConfidence?: number; insightsMaxAgeDays?: number };
   };
+  search: {
+    /**
+     * Union episodic history across every checkout of one repository.
+     *
+     * Off until the bench says otherwise: a union multiplies the candidate pool
+     * by the number of checkouts, and history is where the noise is. Promoted
+     * memory is unioned unconditionally and is not covered by this switch.
+     */
+    unionHistoryAcrossGroup: boolean;
+  };
   restoration: {
     recentSummaries: number;
     promptSearchMinScore: number;
@@ -74,6 +84,7 @@ const DEFAULTS: DaemonConfig = {
       insightsMaxAgeDays: 90,
     },
   },
+  search: { unionHistoryAcrossGroup: false },
   restoration: {
     recentSummaries: 3,
     promptSearchMinScore: 2,
