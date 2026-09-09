@@ -940,7 +940,7 @@ async function main() {
   const connectorsCmd = new Command("connectors").description("Manage connectors for coding agents");
   connectorsCmd.helpOption(false).option("-h, --help", "Show help");
   connectorsCmd.action(async (opts) => {
-    if (opts.help) {
+    if (helpRequested(connectorsCmd, opts)) {
       const { printHelp } = await import("../src/cli-help.js");
       printHelp("connectors"); exit(0);
     }
