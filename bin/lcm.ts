@@ -215,8 +215,26 @@ function printJson(value: unknown): void {
 
 let cliDaemonActivity: (() => void) | undefined;
 
+async function admitCliDatabaseWork(): Promise<void> {
+  const { registerDaemonActivity } = await import("../src/daemon/lifecycle.js");
+  const { readHold } = await import("../src/daemon/hold.js");
+  const pidFilePath = lcmPath("daemon.pid");
+  // Admission covers the whole CLI operation, including offline migrations and
+  // replay writes. Exit cleanup also covers explicit exits and action failures.
+  if (!cliDaemonActivity) {
+    cliDaemonActivity = registerDaemonActivity(pidFilePath);
+    process.once("exit", cliDaemonActivity);
+  }
+  const hold = readHold(pidFilePath);
+  if (hold) {
+    console.error(`  Daemon held down until ${hold.until}${hold.reason ? ` (${hold.reason})` : ""}. Release it with: lcm daemon start`);
+    exit(1);
+  }
+}
+
 async function createDaemonClientOrExit(spawnTimeoutMs = 5000): Promise<DaemonClient> {
-  const { ensureDaemon, registerDaemonActivity } = await import("../src/daemon/lifecycle.js");
+  await admitCliDatabaseWork();
+  const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
   const { loadDaemonConfig } = await import("../src/daemon/config.js");
 
   const config = loadDaemonConfig(lcmPath("config.json"));
@@ -224,12 +242,6 @@ async function createDaemonClientOrExit(spawnTimeoutMs = 5000): Promise<DaemonCl
   const lcDir = lcmHome();
   const pidFilePath = join(lcDir, "daemon.pid");
   const tokenPath = join(lcDir, "daemon.token");
-  // Admission covers the whole CLI operation, including local migrations/replay
-  // writes after daemon requests. Exit cleanup also covers action failures.
-  if (!cliDaemonActivity) {
-    cliDaemonActivity = registerDaemonActivity(pidFilePath);
-    process.once("exit", cliDaemonActivity);
-  }
   const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs });
 
   if (!connected) {
@@ -268,6 +280,7 @@ export function registerBenchCommands(program: Command): void {
       const n = parsePositiveInteger(String(opts.n ?? "20"), "--n");
       const seed = parsePositiveInteger(String(opts.seed ?? "42"), "--seed");
       if (!["llm", "mechanical"].includes(opts.generator)) throw new Error("--generator must be llm or mechanical");
+      await admitCliDatabaseWork();
       const { buildBench } = await import("../src/bench.js");
       const result = await buildBench({ cwd, n, seed, out: opts.out, generator: opts.generator, language: opts.language });
       stdout.write(result.stdout);
@@ -285,6 +298,7 @@ export function registerBenchCommands(program: Command): void {
     .action(async (opts) => {
       const cwd = typeof opts.project === "string" ? resolve(opts.project) : process.cwd();
       const k = parsePositiveInteger(String(opts.k ?? "5"), "--k");
+      await admitCliDatabaseWork();
       const { runBench } = await import("../src/bench.js");
       const result = await runBench({
         cwd,
@@ -1343,6 +1357,7 @@ async function main() {
         printHelp("export"); exit(0);
       }
 
+      await admitCliDatabaseWork();
       const { exportKnowledge } = await import("../src/portable-knowledge.js");
       const { homedir } = await import("node:os");
       const { join } = await import("node:path");
@@ -1412,6 +1427,7 @@ async function main() {
         printHelp("import-knowledge"); exit(0);
       }
 
+      await admitCliDatabaseWork();
       const { importKnowledge } = await import("../src/portable-knowledge.js");
       const { readFileSync } = await import("node:fs");
 
