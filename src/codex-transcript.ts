@@ -129,7 +129,9 @@ export function parseCodexTranscriptRecord(record: string): ParsedCodexTranscrip
   if (!payload || payload.type !== "message") return {};
 
   const role = payload.role;
-  if (role !== "user" && role !== "assistant") return {};
+  // `tool` joins the two: Codex sessions are ingested with the same tagging as
+  // Claude's, so a tool log is never stored as something the user said.
+  if (role !== "user" && role !== "assistant" && role !== "tool") return {};
 
   const content = extractCodexText(payload.content);
   if (!content.trim()) return {};
