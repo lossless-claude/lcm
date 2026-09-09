@@ -2,25 +2,13 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDaemon, type DaemonInstance } from "../../../src/daemon/server.js";
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { projectDbPath, projectDir } from "../../../src/daemon/project.js";
 import { runLcmMigrations } from "../../../src/db/migration.js";
 import { ConversationStore } from "../../../src/store/conversation-store.js";
 import { SummaryStore } from "../../../src/store/summary-store.js";
-
-const fixture = vi.hoisted(() => ({ home: "" }));
-vi.mock("node:os", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:os")>();
-  const fs = await import("node:fs");
-  const path = await import("node:path");
-  fixture.home = fs.mkdtempSync(path.join(actual.tmpdir(), "lcm-expand-home-"));
-  return { ...actual, homedir: () => fixture.home };
-});
-afterAll(() => {
-  if (fixture.home) rmSync(fixture.home, { recursive: true, force: true });
-});
 
 describe("POST /expand source messages", () => {
   let cwd: string;

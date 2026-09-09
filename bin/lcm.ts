@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command, Option } from "commander";
 import { DaemonClient } from "../src/daemon/client.js";
+import { lcmHome, lcmPath } from "../src/lcm-home.js";
 
 function readStdin(): Promise<string> {
   return new Promise((resolve) => {
@@ -203,9 +204,9 @@ async function createDaemonClientOrExit(): Promise<DaemonClient> {
   const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
   const { loadDaemonConfig } = await import("../src/daemon/config.js");
 
-  const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
+  const config = loadDaemonConfig(lcmPath("config.json"));
   const port = config.daemon?.port ?? 3737;
-  const lcDir = join(homedir(), ".lossless-claude");
+  const lcDir = lcmHome();
   const pidFilePath = join(lcDir, "daemon.pid");
   const tokenPath = join(lcDir, "daemon.token");
   const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 5000 });
@@ -307,7 +308,7 @@ async function main() {
   const daemonCmd = new Command("daemon").description("Start the context daemon");
   daemonCmd.helpOption(false).option("-h, --help", "Show help");
   const daemonPaths = () => {
-    const lcDir = join(homedir(), ".lossless-claude");
+    const lcDir = lcmHome();
     return { lcDir, pidFilePath: join(lcDir, "daemon.pid"), tokenPath: join(lcDir, "daemon.token"), configPath: join(lcDir, "config.json") };
   };
   const describeRunning = (port: number, h: { pid?: number; version?: string; uptime?: number }) =>
@@ -458,9 +459,9 @@ async function main() {
         const { join } = await import("node:path");
         const { homedir } = await import("node:os");
         const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
-        const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
+        const config = loadDaemonConfig(lcmPath("config.json"));
         const port = config.daemon?.port ?? 3737;
-        const pidFilePath = join(homedir(), ".lossless-claude", "daemon.pid");
+        const pidFilePath = lcmPath("daemon.pid");
         const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 10000 });
         if (!connected) {
           console.error("Could not connect to daemon. Start it with: lcm daemon start --detach");
@@ -469,7 +470,7 @@ async function main() {
         const noPromote: boolean = !opts.promote;
         const minTokens = config.compaction.autoCompactMinTokens;
         const cwd = all ? undefined : process.cwd();
-        const tokenPath = join(homedir(), ".lossless-claude", "daemon.token");
+        const tokenPath = lcmPath("daemon.token");
         const client = new DaemonClient(`http://127.0.0.1:${port}`, tokenPath);
 
         const { NinjaRenderer } = await import("../src/cli/pipeline-runner.js");
@@ -509,7 +510,7 @@ async function main() {
           if (cwd) {
             promoteCwds.push(cwd);
           } else {
-            const projectsDir = join(homedir(), ".lossless-claude", "projects");
+            const projectsDir = lcmPath("projects");
             if (existsSync(projectsDir)) {
               for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
                 if (!entry.isDirectory()) continue;
@@ -721,7 +722,7 @@ async function main() {
       const { loadDaemonConfig } = await import("../src/daemon/config.js");
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
-      const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
+      const config = loadDaemonConfig(lcmPath("config.json"));
       const jsonFlag: boolean = opts.json ?? false;
       const client = await createDaemonClientOrExit();
 
@@ -1062,7 +1063,7 @@ async function main() {
       const { handleSensitive } = await import("../src/sensitive.js");
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
-      const configPath = join(homedir(), ".lossless-claude", "config.json");
+      const configPath = lcmPath("config.json");
       const r = await handleSensitive(args, process.cwd(), configPath);
       if (r.stdout) stdout.write(r.stdout);
       exit(r.exitCode);
@@ -1117,7 +1118,7 @@ async function main() {
         }
       }
 
-      const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
+      const config = loadDaemonConfig(lcmPath("config.json"));
       const port = config.daemon?.port ?? 3737;
       const client = new DaemonClient(`http://127.0.0.1:${port}`);
       const preview = await importSessions(client, { all, provider, dryRun: true, verbose: dryRun && verbose, replay });
@@ -1125,7 +1126,7 @@ async function main() {
         console.log(`  [dry-run] ${preview.imported} ${provider} sessions selected (${all ? "all projects" : "current project"})${replay ? "; would compact each session" : ""}. No changes written.`);
         return;
       }
-      const pidFilePath = join(homedir(), ".lossless-claude", "daemon.pid");
+      const pidFilePath = lcmPath("daemon.pid");
       const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 5000 });
       if (!connected) { console.error("  Daemon not available"); exit(1); }
 
@@ -1198,9 +1199,9 @@ async function main() {
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
 
-      const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
+      const config = loadDaemonConfig(lcmPath("config.json"));
       const port = config.daemon?.port ?? 3737;
-      const pidFilePath = join(homedir(), ".lossless-claude", "daemon.pid");
+      const pidFilePath = lcmPath("daemon.pid");
       const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 5000 });
       if (!connected) {
         console.error("  Daemon not available. Start it with: lcm daemon start --detach");
@@ -1215,7 +1216,7 @@ async function main() {
       // Collect project cwds to promote
       const cwds: string[] = [];
       if (all) {
-        const projectsDir = join(homedir(), ".lossless-claude", "projects");
+        const projectsDir = lcmPath("projects");
         if (existsSync(projectsDir)) {
           for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
             if (!entry.isDirectory()) continue;
@@ -1306,7 +1307,7 @@ async function main() {
 
       const cwds: string[] = [];
       if (all) {
-        const projectsDir = join(homedir(), ".lossless-claude", "projects");
+        const projectsDir = lcmPath("projects");
         if (existsSync(projectsDir)) {
           for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
             if (!entry.isDirectory()) continue;

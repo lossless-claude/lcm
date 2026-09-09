@@ -1,12 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { eventsDbPath, eventsDir } from "../../src/db/events-path.js";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { lcmHome } from "../../src/lcm-home.js";
 
 describe("eventsDbPath", () => {
-  it("returns a path under ~/.lossless-claude/events/", () => {
+  it("returns a path under the lcm home's events directory", () => {
     const result = eventsDbPath("/some/project");
-    expect(result).toMatch(/\.lossless-claude\/events\/.+\.db$/);
+    expect(result.startsWith(join(eventsDir(), ""))).toBe(true);
+    expect(result.endsWith(".db")).toBe(true);
   });
 
   it("produces consistent paths for the same cwd", () => {
@@ -23,7 +24,7 @@ describe("eventsDbPath", () => {
 });
 
 describe("eventsDir", () => {
-  it("returns ~/.lossless-claude/events", () => {
-    expect(eventsDir()).toBe(join(homedir(), ".lossless-claude", "events"));
+  it("sits directly under the lcm home", () => {
+    expect(eventsDir()).toBe(join(lcmHome(), "events"));
   });
 });

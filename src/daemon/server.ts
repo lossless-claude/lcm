@@ -27,6 +27,7 @@ import { createToolEventHandler } from "./routes/tool-event.js";
 import { createSessionScavengeHandler } from "./routes/session-scavenge.js";
 import { backfillProjectIdentities } from "./project-group.js";
 import { PKG_VERSION, BUILD_ID } from "./version.js";
+import { lcmPath } from "../lcm-home.js";
 export { PKG_VERSION };
 
 export type RouteHandler = (req: IncomingMessage, res: ServerResponse, body: string) => Promise<void>;
@@ -133,7 +134,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
 
-      const projectsDir = join(homedir(), ".lossless-claude", "projects");
+      const projectsDir = lcmPath("projects");
       if (!existsSync(projectsDir)) return;
 
       for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {

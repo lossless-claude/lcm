@@ -1,6 +1,5 @@
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { runLcmMigrations } from "./db/migration.js";
 import type { ProgressState } from "./cli/progress-state.js";
@@ -16,6 +15,7 @@ import {
   recordReplayProgress,
   refuseRestartDuringCompaction,
 } from "./replay-resume.js";
+import { lcmPath } from "./lcm-home.js";
 
 export interface UncompactedConversation {
   projectDir: string;
@@ -42,7 +42,7 @@ function readProjectCwd(projDir: string): string {
 
 /** Every tracked project with a database: its directory and cwd. */
 export function findProjects(cwdFilter?: string): { projDir: string; cwd: string }[] {
-  const baseDir = join(homedir(), ".lossless-claude", "projects");
+  const baseDir = lcmPath("projects");
   if (!existsSync(baseDir)) return [];
 
   const projects: { projDir: string; cwd: string }[] = [];
