@@ -62,8 +62,8 @@ function cleanStalePid(pidFilePath: string): void {
   } catch { /* ignore */ }
 }
 
-/** Register before the last hold check; keep visible until the listening PID is published. */
-export function registerDaemonStartup(pidFilePath: string): () => void {
+/** Register before checking a hold; release only after startup or local database work settles. */
+export function registerDaemonActivity(pidFilePath: string): () => void {
   mkdirSync(dirname(pidFilePath), { recursive: true });
   const path = join(dirname(pidFilePath), `daemon.starting.${process.pid}.${randomUUID()}`);
   writeFileSync(path, "", { flag: "wx" });
@@ -170,7 +170,21 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
   ensureAuthToken(tokenPath);
 
   const spawnCommand = opts.spawnCommand ?? process.execPath;
-  const spawnArgs = opts.spawnArgs ?? [process.argv[1], "daemon", "start", "--automatic"];
+  const sourceLoaderArgs: string[] = [];
+  if (!opts.spawnArgs && spawnCommand === process.execPath && /\.(?:[cm]?ts|tsx)$/.test(process.argv[1] ?? "")) {
+    // Source entrypoints need the active TS loader, but debugger/eval flags
+    // belong to the caller and must not be inherited by a detached daemon.
+    for (let i = 0; i < process.execArgv.length; i++) {
+      const arg = process.execArgv[i];
+      if (/^(?:--import|--loader|--experimental-loader|--require)=/.test(arg)) {
+        sourceLoaderArgs.push(arg);
+      } else if (["--import", "--loader", "--experimental-loader", "--require", "-r"].includes(arg)
+          && process.execArgv[i + 1] !== undefined) {
+        sourceLoaderArgs.push(arg, process.execArgv[++i]);
+      }
+    }
+  }
+  const spawnArgs = opts.spawnArgs ?? [...sourceLoaderArgs, process.argv[1], "daemon", "start", "--automatic"];
   const spawnImpl = opts._spawnOverride ?? spawn;
   const child = spawnImpl(spawnCommand, spawnArgs, {
     detached: true,

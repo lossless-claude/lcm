@@ -5,7 +5,7 @@ import { createServer } from "node:net";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { registerDaemonStartup } from "../../src/daemon/lifecycle.js";
+import { registerDaemonActivity } from "../../src/daemon/lifecycle.js";
 
 const execute = promisify(execFile);
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -82,7 +82,7 @@ it.each([1, 2])("held stop waits for %i concurrent startup(s) before claiming an
 
 it("held stop fails instead of claiming maintenance readiness when startup never settles", async () => {
   const root = mkdtempSync(join(tmpdir(), "lcm-startup-timeout-"));
-  const unregister = registerDaemonStartup(join(root, "daemon.pid"));
+  const unregister = registerDaemonActivity(join(root, "daemon.pid"));
   // A registration with a live owner must not be signalled: it could be stale
   // and the OS may have reused that PID for an unrelated process.
   writeFileSync(join(root, "config.json"), JSON.stringify({ daemon: { port: 1 } }));
