@@ -2,8 +2,8 @@ import { describe, it, expect, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { BUILD_ID, fingerprintFile, readBuildIdFile } from "../../src/daemon/version.js";
 
@@ -33,6 +33,23 @@ describe("BUILD_ID", () => {
   it("is a 16-char lowercase hex fingerprint", () => {
     expect(BUILD_ID).toBeDefined();
     expect(BUILD_ID).toMatch(HEX16);
+  });
+});
+
+describe("PKG_VERSION", () => {
+  it.each(["src/daemon", "dist/src/daemon"])("reads LCM's own package in a nested %s layout", (layout) => {
+    const parent = newTempDir();
+    const checkout = join(parent, "lcm");
+    const moduleDir = join(checkout, layout);
+    mkdirSync(moduleDir, { recursive: true });
+    writeFileSync(join(parent, "package.json"), JSON.stringify({ name: "enclosing-project", version: "99.0.0" }));
+    writeFileSync(join(checkout, "package.json"), JSON.stringify({ name: "@lossless-claude/lcm", version: "1.2.3" }));
+    const modulePath = join(moduleDir, "version.mjs");
+    copyFileSync(resolve("dist/src/daemon/version.js"), modulePath);
+    const result = execFileSync(process.execPath, ["--input-type=module", "-e",
+      `import { PKG_VERSION } from ${JSON.stringify(pathToFileURL(modulePath).href)}; console.log(PKG_VERSION);`,
+    ], { encoding: "utf8" });
+    expect(result.trim()).toBe("1.2.3");
   });
 });
 

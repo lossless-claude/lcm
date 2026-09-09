@@ -13,6 +13,30 @@ afterEach(() => {
 });
 
 describe("ensureDaemon", () => {
+  it.each(["/checkout/bin/lcm.ts", "/checkout/dist/bin/lcm.js"])("preserves only source loader flags for %s", async (entrypoint) => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-source-spawn-"));
+    tempDirs.push(tempDir);
+    const spawnMock = vi.fn().mockReturnValue({ pid: 12345, unref: vi.fn() });
+    const originalArgv = process.argv;
+    const originalExecArgv = process.execArgv;
+    process.argv = [process.execPath, entrypoint];
+    process.execArgv = ["--inspect=9229", "--require", "/tsx/preflight.cjs", "--import=file:///tsx/loader.mjs", "--eval", "not child code"];
+    try {
+      await ensureDaemon({
+        port: 1, pidFilePath: join(tempDir, "daemon.pid"), spawnTimeoutMs: 100,
+        _fetchOverride: (async () => { throw new Error("offline"); }) as typeof fetch,
+        _skipHealthWait: true, _spawnOverride: spawnMock as any,
+      });
+      expect(spawnMock.mock.calls[0][1]).toEqual([
+        ...(entrypoint.endsWith(".ts") ? ["--require", "/tsx/preflight.cjs", "--import=file:///tsx/loader.mjs"] : []),
+        entrypoint, "daemon", "start", "--automatic",
+      ]);
+    } finally {
+      process.argv = originalArgv;
+      process.execArgv = originalExecArgv;
+    }
+  });
+
   it("connects to existing healthy daemon", async () => {
     const { createDaemon } = await import("../../src/daemon/server.js");
     const { loadDaemonConfig } = await import("../../src/daemon/config.js");

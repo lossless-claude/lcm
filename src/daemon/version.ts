@@ -23,8 +23,8 @@ export const PKG_VERSION: string | undefined = (() => {
   ];
   for (const p of candidates) {
     try {
-      const pkg = JSON.parse(readFileSync(p, "utf-8")) as { version?: unknown };
-      if (typeof pkg.version === "string" && pkg.version) return pkg.version;
+      const pkg = JSON.parse(readFileSync(p, "utf-8")) as { name?: unknown; version?: unknown };
+      if (pkg.name === "@lossless-claude/lcm" && typeof pkg.version === "string" && pkg.version) return pkg.version;
     } catch { /* try next candidate */ }
   }
   return undefined;

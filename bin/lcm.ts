@@ -327,7 +327,7 @@ async function main() {
     .option("-h, --help", "Show help")
     .action(async (opts) => {
       if (opts.help) { await withCustomHelp(daemonCmd, "daemon"); return; }
-      const { ensureDaemon, checkDaemonHealth, isStaleDaemon, registerDaemonStartup } = await import("../src/daemon/lifecycle.js");
+      const { ensureDaemon, checkDaemonHealth, isStaleDaemon, registerDaemonActivity } = await import("../src/daemon/lifecycle.js");
       const { loadDaemonConfig } = await import("../src/daemon/config.js");
       const { PKG_VERSION, BUILD_ID } = await import("../src/daemon/version.js");
       const { clearHold, readHold } = await import("../src/daemon/hold.js");
@@ -377,7 +377,7 @@ async function main() {
       const { createDaemon } = await import("../src/daemon/server.js");
       const { ensureAuthToken } = await import("../src/daemon/auth.js");
       const { writeFileSync } = await import("node:fs");
-      const unregisterStartup = registerDaemonStartup(pidFilePath);
+      const unregisterStartup = registerDaemonActivity(pidFilePath);
       try {
         // Register before checking: a concurrent held stop either sees this
         // process or has already published the hold that prevents startup.

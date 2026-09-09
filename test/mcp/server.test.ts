@@ -11,6 +11,7 @@ afterEach(() => { holdMock.mockReturnValue(null); });
 
 vi.mock("../../src/daemon/lifecycle.js", () => ({
   ensureDaemon: ensureDaemonMcpMock,
+  registerDaemonActivity: vi.fn(() => vi.fn()),
 }));
 vi.mock("../../src/daemon/config.js", () => ({
   loadDaemonConfig: vi.fn().mockReturnValue({ daemon: { port: 9999 } }),
