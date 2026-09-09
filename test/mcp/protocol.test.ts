@@ -17,7 +17,7 @@ vi.mock("../../src/daemon/config.js", () => ({
   loadDaemonConfig: () => ({ daemon: { port: 9999 } }),
 }));
 vi.mock("../../src/daemon/client.js", () => ({
-  DaemonClient: vi.fn(() => ({ post: state.post })),
+  DaemonClient: vi.fn().mockImplementation(function () { return { post: state.post }; }),
 }));
 vi.mock("../../src/daemon/version.js", () => ({ PKG_VERSION: "9.9.9-test" }));
 vi.mock("../../src/stats.js", () => ({
