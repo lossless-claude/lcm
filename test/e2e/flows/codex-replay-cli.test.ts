@@ -61,6 +61,8 @@ function runImport(args: string[]): Promise<{ code: number | null; stdout: strin
       env: {
         ...process.env,
         HOME: fakeHome,
+        // The suite sets one LCM_HOME per test file; without this it wins over fakeHome.
+        LCM_HOME: join(fakeHome, ".lossless-claude"),
         NO_COLOR: "1",
       },
     });

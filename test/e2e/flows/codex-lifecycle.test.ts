@@ -24,7 +24,13 @@ function runHook(event: string, extra: Record<string, unknown> = {}) {
   return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
     const child = spawn(process.execPath, [cli, "codex-hook"], {
       cwd: harness.tmpDir,
-      env: { ...process.env, HOME: fakeHome, CLAUDE_PROJECT_DIR: undefined },
+      // LCM_HOME as well as HOME: the suite sets one per test file, and it would win here.
+      env: {
+        ...process.env,
+        HOME: fakeHome,
+        LCM_HOME: join(fakeHome, ".lossless-claude"),
+        CLAUDE_PROJECT_DIR: undefined,
+      },
     });
     let stdout = "", stderr = "";
     child.stdout.on("data", chunk => { stdout += chunk; });

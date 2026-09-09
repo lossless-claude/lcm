@@ -10,6 +10,9 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { lcmHome } from "../src/lcm-home.js";
 
 const ROOT_LITERAL = ".lossless-claude";
 
@@ -37,6 +40,15 @@ function sourceFiles(): string[] {
   const out = execFileSync("git", ["ls-files", "src", "bin", "hooks"], { encoding: "utf-8" });
   return out.split("\n").filter((f) => f.endsWith(".ts") || f.endsWith(".mjs"));
 }
+
+describe("the suite never runs against the developer's own memory", () => {
+  it("resolves a root of its own", () => {
+    // test/setup-env.ts gives every test file its own. If that ever stops working, a test
+    // that writes through lcm would reach into ~/.lossless-claude for real — and two files
+    // would share one project database, which is how SQLITE_BUSY reached CI.
+    expect(lcmHome()).not.toBe(join(homedir(), ".lossless-claude"));
+  });
+});
 
 describe("the storage root is resolved in one place", () => {
   it("names ~/.lossless-claude only in the factory", () => {
