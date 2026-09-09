@@ -199,7 +199,7 @@ export async function startMcpServer(): Promise<void> {
     port, pidFilePath, spawnTimeoutMs: 10000,
     expectedVersion: PKG_VERSION,
     spawnCommand: process.execPath,
-    spawnArgs: [lcmBin, "daemon", "start"],
+    spawnArgs: [lcmBin, "daemon", "start", "--automatic"],
   });
 
   const client = new DaemonClient(`http://127.0.0.1:${port}`);
@@ -242,7 +242,7 @@ export async function startMcpServer(): Promise<void> {
     return handleDaemonRequest(client, route, body, {
       port, pidFilePath,
       spawnCommand: process.execPath,
-      spawnArgs: [lcmBin, "daemon", "start"],
+      spawnArgs: [lcmBin, "daemon", "start", "--automatic"],
       expectedVersion: PKG_VERSION,
     });
   });

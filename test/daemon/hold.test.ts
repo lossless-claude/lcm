@@ -36,18 +36,18 @@ describe("hold marker", () => {
     expect(hold.until).toBe(new Date(now.getTime() + DEFAULT_HOLD_MINUTES * 60_000).toISOString());
   });
 
-  it("treats an expired hold as no hold, and removes it", () => {
+  it("treats an expired hold as no hold, without removing it", () => {
     const now = new Date("2026-01-01T00:00:00.000Z");
     writeHold(pidFilePath, { minutes: 10, now });
     const later = new Date(now.getTime() + 11 * 60_000);
     expect(readHold(pidFilePath, later)).toBeNull();
-    expect(existsSync(holdPath(pidFilePath))).toBe(false);
+    expect(existsSync(holdPath(pidFilePath))).toBe(true);
   });
 
-  it("treats a corrupt marker as no hold, and removes it", () => {
+  it("treats a corrupt marker as no hold, without removing it", () => {
     writeFileSync(holdPath(pidFilePath), "not json");
     expect(readHold(pidFilePath)).toBeNull();
-    expect(existsSync(holdPath(pidFilePath))).toBe(false);
+    expect(existsSync(holdPath(pidFilePath))).toBe(true);
   });
 
   it.each([
@@ -59,10 +59,10 @@ describe("hold marker", () => {
     { pid: 42, until: 4102444800000 },
     { pid: 42, until: "invalid" },
     { pid: 42, until: "2099-01-01T00:00:00.000Z", reason: {} },
-  ])("removes a malformed marker: %j", (value) => {
+  ])("ignores a malformed marker: %j", (value) => {
     writeFileSync(holdPath(pidFilePath), JSON.stringify(value));
     expect(readHold(pidFilePath)).toBeNull();
-    expect(existsSync(holdPath(pidFilePath))).toBe(false);
+    expect(existsSync(holdPath(pidFilePath))).toBe(true);
   });
 
   it.each([NaN, Infinity, -Infinity, 0, -1, Number.MAX_VALUE])(
@@ -91,6 +91,14 @@ describe("hold marker", () => {
 });
 
 describe("ensureDaemon under a hold", () => {
+  it("honors a hold established while the health request is in flight", async () => {
+    const result = await ensureDaemon({
+      port: 39999, pidFilePath, spawnTimeoutMs: 100,
+      _fetchOverride: (async () => { writeHold(pidFilePath); throw new Error("down"); }) as typeof fetch,
+      _spawnOverride: (() => { throw new Error("must not spawn after hold"); }) as never,
+    });
+    expect(result).toEqual({ connected: false, port: 39999, spawned: false });
+  });
   it("refuses to spawn, and never asks the daemon anything", async () => {
     writeHold(pidFilePath, { reason: "maintenance" });
     let fetched = 0;

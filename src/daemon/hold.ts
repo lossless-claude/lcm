@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 
 /**
@@ -33,8 +34,8 @@ export function holdPath(pidFilePath: string): string {
 
 /**
  * The hold in force, or null when there is none. An expired or unreadable
- * marker counts as none and is removed, so a corrupt file cannot wedge the
- * daemon down.
+ * marker counts as none. Readers never unlink a marker: a writer may have
+ * replaced the observed snapshot with a new hold in the meantime.
  */
 export function readHold(pidFilePath: string, now: Date = new Date()): Hold | null {
   const path = holdPath(pidFilePath);
@@ -46,17 +47,14 @@ export function readHold(pidFilePath: string, now: Date = new Date()): Hold | nu
       || !("pid" in value) || !Number.isSafeInteger(value.pid) || (value.pid as number) <= 0
       || !("until" in value) || typeof value.until !== "string"
       || ("reason" in value && typeof value.reason !== "string")) {
-      clearHold(pidFilePath);
       return null;
     }
     hold = value as Hold;
   } catch {
-    clearHold(pidFilePath);
     return null;
   }
   const until = Date.parse(hold?.until ?? "");
   if (!Number.isFinite(until) || until <= now.getTime()) {
-    clearHold(pidFilePath);
     return null;
   }
   return hold;
@@ -80,7 +78,13 @@ export function writeHold(
   };
   const path = holdPath(pidFilePath);
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(hold, null, 2));
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, JSON.stringify(hold, null, 2), { flag: "wx" });
+    renameSync(temporary, path);
+  } finally {
+    try { unlinkSync(temporary); } catch { /* already renamed or never created */ }
+  }
   return hold;
 }
 

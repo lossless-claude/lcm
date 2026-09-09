@@ -123,7 +123,7 @@ async function startDaemon($: EngineInterface): Promise<boolean> {
   if (now - lastDaemonStartAt < DAEMON_START_COOLDOWN_MS) return false;
   lastDaemonStartAt = now;
   const run = await $.process.run(
-    ["sh", "-c", 'command -v lcm >/dev/null 2>&1 || exit 127; exec lcm daemon start --detach'],
+    ["sh", "-c", 'command -v lcm >/dev/null 2>&1 || exit 127; exec lcm daemon start --detach --automatic'],
     { timeoutMs: DAEMON_START_TIMEOUT_MS },
   ).catch(() => null);
   if (run?.exitCode === 0) return true;

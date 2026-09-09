@@ -323,19 +323,22 @@ async function main() {
   daemonCmd.command("start")
     .description("Start the context daemon")
     .option("--detach", "Run in the background")
+    .addOption(new Option("--automatic").hideHelp())
     .option("-h, --help", "Show help")
     .action(async (opts) => {
       if (opts.help) { await withCustomHelp(daemonCmd, "daemon"); return; }
       const { ensureDaemon, checkDaemonHealth, isStaleDaemon } = await import("../src/daemon/lifecycle.js");
       const { loadDaemonConfig } = await import("../src/daemon/config.js");
       const { PKG_VERSION, BUILD_ID } = await import("../src/daemon/version.js");
-      const { clearHold } = await import("../src/daemon/hold.js");
+      const { clearHold, readHold } = await import("../src/daemon/hold.js");
       const { lcDir, pidFilePath, tokenPath, configPath } = daemonPaths();
       const config = loadDaemonConfig(configPath);
       const port = config.daemon?.port ?? 3737;
 
       // Starting is the release gesture: an explicit start always wins over a hold.
-      if (clearHold(pidFilePath)) console.log("released the daemon hold");
+      if (opts.automatic) {
+        if (readHold(pidFilePath)) return;
+      } else if (clearHold(pidFilePath)) console.log("released the daemon hold");
 
       const running = await checkDaemonHealth(port);
       if (running?.status === "ok") {
@@ -371,6 +374,7 @@ async function main() {
 
       const { createDaemon } = await import("../src/daemon/server.js");
       const { ensureAuthToken } = await import("../src/daemon/auth.js");
+      if (opts.automatic && readHold(pidFilePath)) return;
       ensureAuthToken(tokenPath);
       try {
         const daemon = await createDaemon(config, { tokenPath, backfillIdentities: true });

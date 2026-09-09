@@ -138,7 +138,7 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
   }
 
   // Step 3: Spawn daemon (unless skipped for testing)
-  if (opts._skipSpawn || opts.noSpawn) {
+  if (opts._skipSpawn || opts.noSpawn || readHold(opts.pidFilePath)) {
     return { connected: false, port: opts.port, spawned: false };
   }
 
@@ -147,7 +147,7 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
   ensureAuthToken(tokenPath);
 
   const spawnCommand = opts.spawnCommand ?? process.execPath;
-  const spawnArgs = opts.spawnArgs ?? [process.argv[1], "daemon", "start"];
+  const spawnArgs = opts.spawnArgs ?? [process.argv[1], "daemon", "start", "--automatic"];
   const spawnImpl = opts._spawnOverride ?? spawn;
   const child = spawnImpl(spawnCommand, spawnArgs, {
     detached: true,
