@@ -49,6 +49,7 @@ function minimalDeps(overrides: Partial<Parameters<typeof runDoctor>[0]> = {}) {
     spawnSync: vi.fn(() => ({ status: 0, stdout: "", stderr: "" })),
     fetch: vi.fn().mockResolvedValue({ ok: false }),
     homedir: "/tmp/test-home",
+    lcmHome: "/tmp/test-home/.lossless-claude",
     platform: "darwin",
     ...overrides,
   };
@@ -189,6 +190,7 @@ describe("runDoctor summarizer modes", () => {
       }),
       fetch: vi.fn().mockResolvedValue({ ok: false }),
       homedir: "/tmp/test-home",
+    lcmHome: "/tmp/test-home/.lossless-claude",
       platform: "darwin",
     });
 

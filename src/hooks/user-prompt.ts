@@ -1,11 +1,11 @@
 import type { DaemonClient } from "../daemon/client.js";
 import { ensureDaemon } from "../daemon/lifecycle.js";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { safeLogError } from "./hook-errors.js";
 import { buildMemoryContext } from "./memory-context.js";
 import { LEARNING_INSTRUCTION } from "./learning-instruction.js";
-import { functionHooksActive } from "./post-tool.js";
+import { functionHooksOwnSession } from "./session-claim.js";
+import { lcmPath } from "../lcm-home.js";
 
 type PromptSearchResponse = {
   hints: string[];
@@ -24,16 +24,19 @@ export async function recordUserPromptEvents(prompt: string, sessionId: string, 
   const { extractUserPromptEvents } = await import("./extractors.js");
   const { EventsDb } = await import("./events-db.js");
   const { eventsDbPath } = await import("../db/events-path.js");
+  const { createHash } = await import("node:crypto");
 
   const events = extractUserPromptEvents(prompt);
   if (events.length === 0) return 0;
+  // The dedup key both paths can compute: the module's prompt.submit sees the text and
+  // no prompt id, so the id the command hook's stdin carries is no use here.
+  const promptHash = createHash("sha256").update(prompt).digest("hex");
   const db = new EventsDb(eventsDbPath(cwd));
   try {
-    for (const event of events) db.insertEvent(sessionId, event, "UserPromptSubmit");
+    return db.insertPromptEvents(sessionId, events, promptHash);
   } finally {
     db.close();
   }
-  return events.length;
 }
 
 export async function handleUserPromptSubmit(
@@ -41,18 +44,27 @@ export async function handleUserPromptSubmit(
   client: DaemonClient,
   port?: number,
 ): Promise<{ exitCode: number; stdout: string }> {
-  // The function-hooks module owns this event while it is loaded: prompt.section carries the
-  // instruction and prompt.submit carries the memory context, so anything printed here would
-  // reach the model twice.
-  if (functionHooksActive()) return { exitCode: 0, stdout: "" };
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(stdin || "{}") as Record<string, unknown>;
+  } catch {
+    return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
+  }
+
+  // The module owns this event while it holds the session: prompt.section carries the
+  // instruction and prompt.submit carries the memory context, so anything printed here
+  // would reach the model twice.
+  if (functionHooksOwnSession(parsed.session_id as string | undefined)) {
+    return { exitCode: 0, stdout: "" };
+  }
 
   const daemonPort = port ?? 3737;
-  const pidFilePath = join(homedir(), ".lossless-claude", "daemon.pid");
+  const pidFilePath = lcmPath("daemon.pid");
   const { connected } = await ensureDaemon({ port: daemonPort, pidFilePath, spawnTimeoutMs: 5000 });
   if (!connected) return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
 
   try {
-    const input = JSON.parse(stdin || "{}");
+    const input = parsed as { prompt?: string; session_id?: string; cwd?: string };
     if (!input.prompt || typeof input.prompt !== "string" || !input.prompt.trim()) {
       return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
     }

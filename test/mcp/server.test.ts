@@ -10,13 +10,13 @@ vi.mock("../../src/daemon/config.js", () => ({
   loadDaemonConfig: vi.fn().mockReturnValue({ daemon: { port: 9999 } }),
 }));
 vi.mock("@modelcontextprotocol/sdk/server/index.js", () => ({
-  Server: vi.fn().mockReturnValue({ setRequestHandler: vi.fn(), connect: vi.fn().mockResolvedValue(undefined) }),
+  Server: vi.fn().mockImplementation(function () { return { setRequestHandler: vi.fn(), connect: vi.fn().mockResolvedValue(undefined) }; }),
 }));
 vi.mock("@modelcontextprotocol/sdk/server/stdio.js", () => ({
-  StdioServerTransport: vi.fn().mockReturnValue({}),
+  StdioServerTransport: vi.fn().mockImplementation(function () { return {}; }),
 }));
 vi.mock("../../src/daemon/client.js", () => ({
-  DaemonClient: vi.fn().mockReturnValue({ post: vi.fn() }),
+  DaemonClient: vi.fn().mockImplementation(function () { return { post: vi.fn() }; }),
 }));
 vi.mock("../../src/daemon/version.js", () => ({
   PKG_VERSION: "9.9.9-test",

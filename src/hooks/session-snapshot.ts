@@ -1,7 +1,7 @@
 import { statSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
-import { functionHooksActive } from "./post-tool.js";
+import { functionHooksOwnSession } from "./session-claim.js";
+import { lcmPath } from "../lcm-home.js";
 
 export interface SnapshotDeps {
   statSync: (path: string) => { mtimeMs: number } | null;
@@ -22,9 +22,6 @@ export async function handleSessionSnapshot(
   stdin: string,
   deps?: Partial<SnapshotDeps>,
 ): Promise<{ exitCode: number; stdout: string }> {
-  // The function-hooks module ingests on turn.complete while it is loaded; a second
-  // ingest per turn from here would only parse the same transcript twice.
-  if (functionHooksActive()) return { exitCode: 0, stdout: "" };
   try {
     const input = JSON.parse(stdin || "{}");
     const { session_id, cwd, transcript_path } = input;
@@ -32,8 +29,12 @@ export async function handleSessionSnapshot(
       return { exitCode: 0, stdout: "" };
     }
 
+    // The module ingests on turn.complete while it holds the session; a second ingest
+    // per turn from here would only parse the same transcript twice.
+    if (functionHooksOwnSession(session_id)) return { exitCode: 0, stdout: "" };
+
     const safeSessionId = session_id.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const cursorDir = join(homedir(), ".lossless-claude", "tmp");
+    const cursorDir = lcmPath("tmp");
     mkdirSync(cursorDir, { recursive: true, mode: 0o700 });
     const cursorPath = join(cursorDir, `snap-${safeSessionId}.json`);
     const _statSync = deps?.statSync ?? defaultStatSync;
@@ -41,7 +42,7 @@ export async function handleSessionSnapshot(
     if (intervalSec === undefined) {
       const { loadDaemonConfig } = await import("../daemon/config.js");
       const { homedir } = await import("node:os");
-      const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
+      const config = loadDaemonConfig(lcmPath("config.json"));
       intervalSec = config.hooks?.snapshotIntervalSec ?? 60;
     }
 
@@ -63,15 +64,14 @@ export async function handleSessionSnapshot(
     } else {
       const { loadDaemonConfig } = await import("../daemon/config.js");
       const { readFileSync: _readFileSync } = await import("node:fs");
-      const { homedir: _homedir } = await import("node:os");
-      const config = loadDaemonConfig(join(_homedir(), ".lossless-claude", "config.json"));
+      const config = loadDaemonConfig(lcmPath("config.json"));
       const port = config.daemon?.port ?? 3737;
       const baseUrl = `http://127.0.0.1:${port}`;
 
       // Read token from token file if available (silent fallback if not found)
       let token: string | null = null;
       try {
-        const tokenPath = join(_homedir(), ".lossless-claude", "daemon.token");
+        const tokenPath = lcmPath("daemon.token");
         const raw = _readFileSync(tokenPath, "utf-8").trim();
         token = raw || null;
       } catch {
@@ -99,8 +99,7 @@ export async function handleSessionSnapshot(
     // Best-effort promote-events flush
     try {
       const { loadDaemonConfig: _loadConfig } = await import("../daemon/config.js");
-      const { homedir: _homedir2 } = await import("node:os");
-      const _config = _loadConfig(join(_homedir2(), ".lossless-claude", "config.json"));
+      const _config = _loadConfig(lcmPath("config.json"));
       const port = _config.daemon?.port ?? 3737;
       const { firePromoteEventsRequest } = await import("./session-end.js");
       firePromoteEventsRequest(port, { cwd: input.cwd });

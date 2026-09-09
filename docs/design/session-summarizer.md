@@ -67,7 +67,7 @@ Why: it removes the `claude` CLI process spawn per chunk that `claude-process` p
 
 ## Out of scope, filed separately
 
-- Dead config keys `compaction.leafTokens`, `compaction.maxDepth`, `compaction.autoCompactMinTokens` (never read by the engine).
+- Dead config keys `compaction.leafTokens` and `compaction.maxDepth`, removed in #379. `compaction.autoCompactMinTokens` turned out to be live: `lcm compact` uses it as the threshold that picks conversations.
 - `previousSummary` is dropped before it reaches any daemon provider (`SummarizeContext` has no such field), so inter-chunk continuity is lost on every provider path.
 - A disk queue for events while the daemon is down; dedup by `(session_id, tool_use_id)`.
 

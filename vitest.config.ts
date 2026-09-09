@@ -1,14 +1,18 @@
 import { defineConfig } from "vitest/config";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
+  root,
   cacheDir: join(tmpdir(), "vitest-lcm-cache"),
   test: {
-    include: ["**/*.test.ts"],
-    exclude: ["node_modules/**", ".claude/**"],
     projects: [
       {
+        extends: false,
+        root,
         test: {
           name: "unit",
           include: ["test/**/*.test.ts"],
@@ -17,6 +21,8 @@ export default defineConfig({
         },
       },
       {
+        extends: false,
+        root,
         test: {
           name: "e2e",
           include: ["test/e2e/**/*.test.ts"],
@@ -24,11 +30,7 @@ export default defineConfig({
           setupFiles: ["./test/setup-env.ts"],
           // E2E tests spin up real daemons backed by SQLite — must run
           // sequentially to avoid concurrent write conflicts.
-          poolOptions: {
-            forks: {
-              singleFork: true,
-            },
-          },
+          fileParallelism: false,
         },
       },
     ],

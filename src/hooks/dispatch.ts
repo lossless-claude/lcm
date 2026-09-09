@@ -1,4 +1,5 @@
 import { validateAndFixHooks } from "./auto-heal.js";
+import { lcmPath } from "../lcm-home.js";
 
 export const HOOK_COMMANDS = ["compact", "post-tool", "restore", "session-end", "session-snapshot", "user-prompt"] as const;
 export type HookCommand = typeof HOOK_COMMANDS[number];
@@ -36,8 +37,7 @@ export async function dispatchHook(
   const { DaemonClient } = await import("../daemon/client.js");
   const { loadDaemonConfig } = await import("../daemon/config.js");
   const { join } = await import("node:path");
-  const { homedir } = await import("node:os");
-  const config = loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json"));
+  const config = loadDaemonConfig(lcmPath("config.json"));
   const port = config.daemon?.port ?? 3737;
   const client = new DaemonClient(`http://127.0.0.1:${port}`);
 

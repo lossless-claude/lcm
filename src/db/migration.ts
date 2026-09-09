@@ -589,6 +589,16 @@ function runLcmMigrationsInner(
     );
   `);
 
+  // Compaction marks — one row per session that was just compacted, so the restore that
+  // follows knows to replay the saved instructions instead of the episodic memory. In the
+  // project DB rather than daemon memory because the daemon can restart inside the window.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_compactions (
+      session_id TEXT PRIMARY KEY,
+      compacted_at INTEGER NOT NULL
+    );
+  `);
+
   // Promoted memories (cross-session, agent-stored)
   db.exec(`
     CREATE TABLE IF NOT EXISTS promoted (
@@ -605,6 +615,16 @@ function runLcmMigrationsInner(
 
     CREATE INDEX IF NOT EXISTS promoted_project_idx ON promoted (project_id, created_at);
   `);
+
+  // Whether a conversation's rows carry the role tagging that separates tool
+  // output from what a person said. NULL means unknown: the rows predate the
+  // tagging parser and cannot be re-tagged, because 75% of the sessions have
+  // no transcript left on disk to re-read. Search must include them and say so
+  // rather than hide 79% of history behind a filter that looks complete.
+  const taggingColumns = db.prepare(`PRAGMA table_info(conversations)`).all() as Array<{ name?: string }>;
+  if (!taggingColumns.some((col) => col.name === "role_tagging")) {
+    db.exec(`ALTER TABLE conversations ADD COLUMN role_tagging TEXT DEFAULT NULL`);
+  }
 
   // Add archived_at to promoted if not present
   const promotedColumns = db.prepare(`PRAGMA table_info(promoted)`).all() as Array<{ name?: string }>;

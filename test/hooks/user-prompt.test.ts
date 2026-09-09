@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { createHash } from "node:crypto";
 import { handleUserPromptSubmit } from "../../src/hooks/user-prompt.js";
 
 vi.mock("../../src/daemon/lifecycle.js", () => ({
@@ -30,14 +31,33 @@ describe("handleUserPromptSubmit", () => {
     vi.clearAllMocks();
   });
 
-  it("stays silent while the function-hooks module owns the prompt (no double injection)", async () => {
+  it("stays silent while the function-hooks module holds the session (no double injection)", async () => {
     process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = "1";
+    const { claimPath } = await import("../../src/hooks/session-claim.js");
+    const { writeFileSync, rmSync } = await import("node:fs");
+    writeFileSync(claimPath("s1"), JSON.stringify({ sessionId: "s1", ts: Date.now() }));
     try {
       const client = { post: vi.fn() };
       const result = await handleUserPromptSubmit(JSON.stringify({ prompt: "hello", session_id: "s1", cwd: "/tmp" }), client as any);
       expect(result).toEqual({ exitCode: 0, stdout: "" });
       expect(mockEnsureDaemon).not.toHaveBeenCalled();
       expect(client.post).not.toHaveBeenCalled();
+    } finally {
+      rmSync(claimPath("s1"), { force: true });
+      delete process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS;
+    }
+  });
+
+  it("keeps working when the gate is open but the module never claimed the session", async () => {
+    process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = "1";
+    try {
+      mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
+      const client = { post: vi.fn().mockResolvedValue({ hints: [], ids: [] }) };
+      const result = await handleUserPromptSubmit(
+        JSON.stringify({ prompt: "hello", session_id: "never-claimed", cwd: "/tmp" }), client as any,
+      );
+      expect(client.post).toHaveBeenCalled();
+      expect(result.stdout).not.toBe("");
     } finally {
       delete process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS;
     }
@@ -178,12 +198,14 @@ describe("handleUserPromptSubmit", () => {
 
   it("extracts decision events to sidecar before prompt-search", async () => {
     mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
-    const mockInsertEvent = vi.fn();
+    const mockInsertPromptEvents = vi.fn().mockReturnValue(1);
     const mockClose = vi.fn();
-    MockEventsDb.mockImplementation(() => ({
-      insertEvent: mockInsertEvent,
-      close: mockClose,
-    }) as any);
+    MockEventsDb.mockImplementation(function () {
+      return {
+        insertPromptEvents: mockInsertPromptEvents,
+        close: mockClose,
+      } as any;
+    });
     mockExtractUserPromptEvents.mockReturnValue([
       { type: "decision", category: "decision", data: "use SQLite", priority: 1 },
     ]);
@@ -199,10 +221,12 @@ describe("handleUserPromptSubmit", () => {
 
     expect(result.exitCode).toBe(0);
     expect(mockExtractUserPromptEvents).toHaveBeenCalledWith("we decided to use SQLite");
-    expect(mockInsertEvent).toHaveBeenCalledWith(
+    // The dedup key is the prompt's own content hash: the only key both paths can compute.
+    const promptHash = createHash("sha256").update("we decided to use SQLite").digest("hex");
+    expect(mockInsertPromptEvents).toHaveBeenCalledWith(
       "s1",
-      { type: "decision", category: "decision", data: "use SQLite", priority: 1 },
-      "UserPromptSubmit",
+      [{ type: "decision", category: "decision", data: "use SQLite", priority: 1 }],
+      promptHash,
     );
     expect(mockClose).toHaveBeenCalled();
     // prompt-search still called

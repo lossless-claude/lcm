@@ -24,12 +24,26 @@ import { createStatsHandler } from "./routes/stats.js";
 import { createPoolStatsHandler } from "./routes/pool-stats.js";
 import { createReviewStaleHandler } from "./routes/review-stale.js";
 import { createToolEventHandler } from "./routes/tool-event.js";
+import { createSessionScavengeHandler } from "./routes/session-scavenge.js";
+import { backfillProjectIdentities } from "./project-group.js";
 import { PKG_VERSION, BUILD_ID } from "./version.js";
+import { lcmPath } from "../lcm-home.js";
 export { PKG_VERSION };
 
 export type RouteHandler = (req: IncomingMessage, res: ServerResponse, body: string) => Promise<void>;
 export type DaemonInstance = { address: () => AddressInfo; stop: () => Promise<void>; registerRoute: (method: string, path: string, handler: RouteHandler) => void; idleTriggered: boolean };
-export type DaemonOptions = { proxyManager?: ProxyManager; onIdle?: () => void; tokenPath?: string };
+export type DaemonOptions = {
+  proxyManager?: ProxyManager;
+  onIdle?: () => void;
+  tokenPath?: string;
+  /**
+   * Walk every project on disk and record its git identity, shortly after the
+   * daemon starts serving. Only the long-lived daemon wants this: it spawns
+   * `git` once per surviving project, which a short-lived instance would pay
+   * for and never use.
+   */
+  backfillIdentities?: boolean;
+};
 
 const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
 
@@ -94,7 +108,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   routes.set("POST /promote", createPromoteHandler(config));
   routes.set("POST /restore", createRestoreHandler(config));
   routes.set("POST /grep", createGrepHandler(config));
-  routes.set("POST /search", createSearchHandler());
+  routes.set("POST /search", createSearchHandler(config));
   routes.set("POST /expand", createExpandHandler(config));
   routes.set("POST /describe", createDescribeHandler(config));
   routes.set("POST /store", createStoreHandler(config));
@@ -104,6 +118,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   routes.set("POST /session-complete", createSessionCompleteHandler());
   routes.set("POST /promote-events", createPromoteEventsHandler(config));
   routes.set("POST /tool-event", createToolEventHandler(config));
+  routes.set("POST /session-scavenge", createSessionScavengeHandler(config));
   routes.set("GET /stats", createStatsHandler());
   routes.set("GET /stats/pool", createPoolStatsHandler());
   routes.set("POST /review-stale", createReviewStaleHandler(config));
@@ -119,7 +134,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
 
-      const projectsDir = join(homedir(), ".lossless-claude", "projects");
+      const projectsDir = lcmPath("projects");
       if (!existsSync(projectsDir)) return;
 
       for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
@@ -164,6 +179,15 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   const ingestInterval = setInterval(scanForTranscripts, INGEST_INTERVAL_MS);
   ingestInterval.unref(); // don't prevent process exit
 
+  // Group every project already on disk, shortly after the daemon is serving so
+  // the git calls never delay startup. Refreshes are throttled per project, so
+  // only the first run after an upgrade does real work.
+  const IDENTITY_BACKFILL_DELAY_MS = 5_000;
+  const identityBackfill = options?.backfillIdentities
+    ? setTimeout(() => { void backfillProjectIdentities().catch(() => { /* non-fatal */ }); }, IDENTITY_BACKFILL_DELAY_MS)
+    : undefined;
+  identityBackfill?.unref();
+
   const server: Server = createServer(async (req, res) => {
     resetIdleTimer();
     const key = `${req.method} ${req.url?.split("?")[0]}`;
@@ -199,6 +223,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   return new Promise((resolve, reject) => {
     server.once("error", (err) => {
       clearInterval(ingestInterval);
+      if (identityBackfill) clearTimeout(identityBackfill);
       if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
       reject(err);
     });
@@ -215,6 +240,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
         stop: async () => {
           summarizeJobs.close();
           clearInterval(ingestInterval);
+          if (identityBackfill) clearTimeout(identityBackfill);
           if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
           if (proxyManager) {
             try { await proxyManager.stop(); } catch { /* non-fatal */ }

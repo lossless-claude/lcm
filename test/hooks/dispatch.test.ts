@@ -27,7 +27,7 @@ vi.mock("../../src/hooks/post-tool.js", () => ({
   handlePostToolUse: vi.fn().mockResolvedValue({ exitCode: 0, stdout: "" }),
 }));
 vi.mock("../../src/daemon/client.js", () => ({
-  DaemonClient: vi.fn().mockImplementation(() => ({})),
+  DaemonClient: vi.fn().mockImplementation(function () { return {}; }),
 }));
 vi.mock("../../src/daemon/config.js", () => ({
   loadDaemonConfig: vi.fn().mockReturnValue({ daemon: { port: 3737 } }),

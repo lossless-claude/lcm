@@ -1,10 +1,10 @@
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { open } from "node:fs/promises";
 import { DaemonClient } from "../daemon/client.js";
 import { loadDaemonConfig } from "../daemon/config.js";
 import { ensureDaemon } from "../daemon/lifecycle.js";
 import { buildMemoryContext } from "./memory-context.js";
+import { lcmHome } from "../lcm-home.js";
 
 const EVENTS = new Set([
   "SessionStart", "UserPromptSubmit", "Stop", "Interrupt", "SessionEnd", "PreCompact",
@@ -44,7 +44,7 @@ function parseInput(stdin: string): CodexInput | null {
 }
 
 function defaultDeps(): CodexHookDeps {
-  const base = join(homedir(), ".lossless-claude");
+  const base = lcmHome();
   const config = loadDaemonConfig(join(base, "config.json"));
   const port = config.daemon?.port ?? 3737;
   return {

@@ -14,7 +14,6 @@
  */
 
 import { existsSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
@@ -24,6 +23,7 @@ import { runLcmMigrations } from "./db/migration.js";
 import { deduplicateAndInsert } from "./promotion/dedup.js";
 import { ScrubEngine } from "./scrub.js";
 import { getLcmConnection, closeLcmConnection } from "./db/connection.js";
+import { lcmHome } from "./lcm-home.js";
 
 export const EXPORT_VERSION = 1;
 
@@ -61,7 +61,7 @@ function resolveProjectDbPath(cwd: string, baseDir: string): string {
 }
 
 function defaultBaseDir(): string {
-  return join(homedir(), ".lossless-claude");
+  return lcmHome();
 }
 
 // ─── Export ──────────────────────────────────────────────────────────────────

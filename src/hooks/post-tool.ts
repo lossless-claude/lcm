@@ -4,14 +4,17 @@ import { EventsDb } from "./events-db.js";
 import { eventsDbPath } from "../db/events-path.js";
 import { firePromoteEventsRequest } from "./session-end.js";
 import { safeLogError } from "./hook-errors.js";
+import { functionHooksOwnSession } from "./session-claim.js";
+import { lcmPath } from "../lcm-home.js";
+
+// Back-compat re-export: some callers historically imported the function-hooks gate from this module.
+export { functionHooksActive, functionHooksOwnSession } from "./session-claim.js";
 
 /** Daemon port from ~/.lossless-claude/config.json — Claude Code does not pass it on stdin. */
 async function configuredDaemonPort(): Promise<number> {
   try {
     const { loadDaemonConfig } = await import("../daemon/config.js");
-    const { join } = await import("node:path");
-    const { homedir } = await import("node:os");
-    return loadDaemonConfig(join(homedir(), ".lossless-claude", "config.json")).daemon?.port ?? 3737;
+    return loadDaemonConfig(lcmPath("config.json")).daemon?.port ?? 3737;
   } catch {
     return 3737;
   }
@@ -25,6 +28,8 @@ export interface PostToolPayload {
   tool_input?: Record<string, unknown>;
   tool_response?: unknown;
   tool_output?: { isError?: boolean };
+  /** Claude Code's id for this tool call; both hook paths receive it. */
+  tool_use_id?: string;
   hook_event_name?: string;
   error?: string;
   is_interrupt?: boolean;
@@ -56,22 +61,23 @@ export function recordPostToolEvents(payload: PostToolPayload): RecordedPostTool
   });
   if (events.length === 0) return { recorded: 0, hasPriority1: false, sourceHook };
 
+  // The command hook forwards raw stdin, so the id is only trusted once it is a
+  // non-empty string; both call sites get the same normalization this way.
+  const toolUseId = typeof payload.tool_use_id === "string" && payload.tool_use_id
+    ? payload.tool_use_id
+    : undefined;
+
   const db = new EventsDb(eventsDbPath(payload.cwd));
+  let recorded: number;
   try {
-    for (const event of events) db.insertEvent(payload.session_id, event, sourceHook);
+    // Dedup on the whole call, not each event: one call extracts several events, and a
+    // per-event check would leave a half batch when the paths raced.
+    recorded = db.insertToolCallEvents(payload.session_id, events, sourceHook, toolUseId);
   } finally {
     db.close();
   }
-  return { recorded: events.length, hasPriority1: events.some(e => e.priority === 1), sourceHook };
-}
-
-/**
- * When the function-hooks module is loaded it records every tool call through the daemon's
- * POST /tool-event route; the command hook must then stay silent or every event lands twice.
- * The env var is the switch that loads the module, so it is also the dedup signal.
- */
-export function functionHooksActive(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS === "1";
+  if (recorded === 0) return { recorded: 0, hasPriority1: false, sourceHook };
+  return { recorded, hasPriority1: events.some(e => e.priority === 1), sourceHook };
 }
 
 export async function handlePostToolUse(
@@ -80,11 +86,13 @@ export async function handlePostToolUse(
   let cwd: string | undefined;
   let sourceHook = "PostToolUse";
   try {
-    if (functionHooksActive()) return { exitCode: 0, stdout: "" };
-
     const input = JSON.parse(stdin);
     const { session_id, tool_name } = input;
     if (!tool_name || !session_id) return { exitCode: 0, stdout: "" };
+
+    // The module records every tool call through POST /tool-event while it owns the
+    // session; recording here too would write the same events a second time.
+    if (functionHooksOwnSession(session_id)) return { exitCode: 0, stdout: "" };
 
     cwd = input.cwd ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
     const outcome = recordPostToolEvents({ ...input, cwd: cwd as string });

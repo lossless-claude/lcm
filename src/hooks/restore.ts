@@ -1,8 +1,10 @@
 import type { DaemonClient } from "../daemon/client.js";
 import { ensureDaemon } from "../daemon/lifecycle.js";
+import { functionHooksOwnSession } from "./session-claim.js";
 import { join } from "node:path";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { writeFileSync, readFileSync } from "node:fs";
+import { lcmPath } from "../lcm-home.js";
 
 /** Deadline for the /restore call — SessionStart blocks the session until this hook returns. */
 const RESTORE_TIMEOUT_MS = 10_000;
@@ -47,39 +49,21 @@ export async function handleSessionStart(stdin: string, client: DaemonClient, po
     return { exitCode: 0, stdout: "" }; // malformed stdin must never block session start
   }
   const sessionId = typeof input.session_id === "string" ? input.session_id : "";
+
+  // The module restores through prompt.context and scavenges through the daemon while it
+  // holds the session; printing the same context here would inject it twice.
+  if (functionHooksOwnSession(sessionId)) return { exitCode: 0, stdout: "" };
+
   if (sessionId && !tryAcquireSessionLock(sessionId)) {
     return { exitCode: 0, stdout: "" };
   }
 
   const daemonPort = port ?? 3737;
-  const pidFilePath = join(homedir(), ".lossless-claude", "daemon.pid");
+  const pidFilePath = lcmPath("daemon.pid");
   const { connected } = await ensureDaemon({ port: daemonPort, pidFilePath, spawnTimeoutMs: 5000 });
   if (!connected) return { exitCode: 0, stdout: "" };
 
   try {
-
-    // SessionStart scavenge: prune old processed events and trigger promotion for unprocessed ones
-    try {
-      const { EventsDb } = await import("./events-db.js");
-      const { eventsDbPath } = await import("../db/events-path.js");
-      const cwd = input.cwd ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
-      const eventsDb = new EventsDb(eventsDbPath(cwd));
-      try {
-        eventsDb.pruneProcessed(7);
-        eventsDb.pruneUnprocessed(10_000, 30);
-        eventsDb.pruneErrorLog(30);
-        const unprocessed = eventsDb.getUnprocessed(1);
-        if (unprocessed.length > 0) {
-          const { firePromoteEventsRequest } = await import("./session-end.js");
-          firePromoteEventsRequest(daemonPort, { cwd });
-        }
-      } finally {
-        eventsDb.close();
-      }
-    } catch {
-      // Silent fail — scavenge is best-effort
-    }
-
     const result = await client.post<{ context: string; insights?: Array<{ content: string; confidence: number; tags: string[] }> }>("/restore", input, { timeoutMs: RESTORE_TIMEOUT_MS });
     let stdout = result.context || "";
 

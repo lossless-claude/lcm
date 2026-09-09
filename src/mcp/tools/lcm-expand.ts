@@ -6,6 +6,7 @@ export const lcmExpandTool = {
     properties: {
       nodeId: { type: "string", description: "Summary node ID to expand" },
       depth: { type: "number", description: "How many levels of the DAG to traverse (default: 1)" },
+      projectId: { type: "string", description: "The `project.id` of the search result the node came from. Required whenever the node did not come from this project, since node ids are only unique within one project." },
     },
     required: ["nodeId"],
   },

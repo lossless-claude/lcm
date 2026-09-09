@@ -9,13 +9,15 @@ vi.mock("../../src/daemon/lifecycle.js", () => ({
 }));
 
 vi.mock("../../src/hooks/events-db.js", () => ({
-  EventsDb: vi.fn().mockImplementation(() => ({
-    pruneProcessed: vi.fn(),
-    pruneUnprocessed: vi.fn().mockReturnValue({ pruned: 0 }),
-    pruneErrorLog: vi.fn().mockReturnValue(0),
-    getUnprocessed: vi.fn().mockReturnValue([]),
-    close: vi.fn(),
-  })),
+  EventsDb: vi.fn().mockImplementation(function () {
+    return {
+      pruneProcessed: vi.fn(),
+      pruneUnprocessed: vi.fn().mockReturnValue({ pruned: 0 }),
+      pruneErrorLog: vi.fn().mockReturnValue(0),
+      getUnprocessed: vi.fn().mockReturnValue([]),
+      close: vi.fn(),
+    };
+  }),
 }));
 
 vi.mock("../../src/db/events-path.js", () => ({
@@ -146,27 +148,38 @@ describe("handleSessionStart", () => {
     expect(mockEnsureDaemon).toHaveBeenCalledTimes(1);
   });
 
-  it("triggers promote-events when unprocessed events exist", async () => {
-    const { EventsDb } = await import("../../src/hooks/events-db.js");
-    const { firePromoteEventsRequest } = await import("../../src/hooks/session-end.js");
-    const mockFirePromote = vi.mocked(firePromoteEventsRequest);
-    mockFirePromote.mockClear();
+  it("stays silent while the function-hooks module holds the session", async () => {
+    process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = "1";
+    const { claimPath } = await import("../../src/hooks/session-claim.js");
+    const { writeFileSync, rmSync } = await import("node:fs");
+    writeFileSync(claimPath("s-owned"), JSON.stringify({ sessionId: "s-owned", ts: Date.now() }));
+    mockEnsureDaemon.mockClear();
+    try {
+      const client = { health: vi.fn(), post: vi.fn() };
+      const result = await handleSessionStart(
+        JSON.stringify({ session_id: "s-owned", cwd: "/proj" }), client as any,
+      );
+      expect(result).toEqual({ exitCode: 0, stdout: "" });
+      expect(client.post).not.toHaveBeenCalled();
+      expect(mockEnsureDaemon).not.toHaveBeenCalled();
+    } finally {
+      rmSync(claimPath("s-owned"), { force: true });
+      delete process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS;
+    }
+  });
 
-    vi.mocked(EventsDb).mockImplementationOnce(() => ({
-      pruneProcessed: vi.fn(),
-      pruneUnprocessed: vi.fn().mockReturnValue({ pruned: 0 }),
-      pruneErrorLog: vi.fn().mockReturnValue(0),
-      getUnprocessed: vi.fn().mockReturnValue([{ event_id: 1 }]),
-      close: vi.fn(),
-    }) as any);
-
-    mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
-    const client = {
-      health: vi.fn(),
-      post: vi.fn().mockResolvedValue({ context: "" }),
-    };
-    await handleSessionStart(JSON.stringify({ session_id: "s4", cwd: "/proj" }), client as any);
-    expect(mockFirePromote).toHaveBeenCalledWith(3737, { cwd: "/proj" });
+  it("restores when the gate is open but the module never claimed the session", async () => {
+    process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = "1";
+    try {
+      mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
+      const client = { health: vi.fn(), post: vi.fn().mockResolvedValue({ context: "ctx" }) };
+      const result = await handleSessionStart(
+        JSON.stringify({ session_id: "s-unclaimed", cwd: "/proj" }), client as any,
+      );
+      expect(result.stdout).toBe("ctx");
+    } finally {
+      delete process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS;
+    }
   });
 
   it("exits 0 with empty output on malformed stdin", async () => {
