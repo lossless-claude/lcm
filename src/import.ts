@@ -7,6 +7,7 @@ import { formatNumber, formatRatio } from "./stats.js";
 import { findAllCodexTranscripts } from "./codex-transcript.js";
 import type { ProgressState } from "./cli/progress-state.js";
 import { projectDbPath, projectId } from "./daemon/project.js";
+import { defaultLcmPaths } from "./lcm-paths.js";
 import {
   appendReplayManifestSessions,
   clearReplayState,
@@ -78,7 +79,7 @@ export function cwdToProjectHash(cwd: string): string {
 }
 
 function buildProjectMap(lcmDir?: string): Map<string, string> {
-  const lcmProjectsDir = join(lcmDir ?? join(homedir(), '.lossless-claude'), 'projects');
+  const lcmProjectsDir = lcmDir ? join(lcmDir, 'projects') : defaultLcmPaths.projectsDir;
   const map = new Map<string, string>();
   if (!existsSync(lcmProjectsDir)) return map;
   for (const entry of readdirSync(lcmProjectsDir, { withFileTypes: true })) {

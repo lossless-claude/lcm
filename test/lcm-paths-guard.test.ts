@@ -13,8 +13,25 @@ import { execFileSync } from "node:child_process";
 
 const ROOT_LITERAL = ".lossless-claude";
 
+/**
+ * The root used to *build a path*, in either language: a quoted segment handed to `join`,
+ * or the shell's own expansion. Prose that mentions `~/.lossless-claude` in an error
+ * message or a comment is left alone — that is documentation, not a second resolution.
+ */
+const BUILDS_A_PATH = [
+  /["'`]\.lossless-claude["'`]/,   // join(x, ".lossless-claude", …)
+  /\$HOME\/\.lossless-claude/,     // "$HOME/.lossless-claude"
+];
+
 /** The only files allowed to name the root: the factory and the object built from it. */
 const FACTORY = ["src/lcm-home.ts", "src/lcm-paths.ts"];
+
+/**
+ * The hooks module is the one exception: it runs with no imports, so it spells the
+ * fallback inside the host command it sends to `sh`. The assertion below fails if that
+ * stops being true, rather than leaving a dead exception behind.
+ */
+const HOST_COMMAND = "hooks/lcm-hooks.ts";
 
 function sourceFiles(): string[] {
   const out = execFileSync("git", ["ls-files", "src", "bin", "hooks"], { encoding: "utf-8" });
@@ -25,9 +42,17 @@ describe("the storage root is resolved in one place", () => {
   it("names ~/.lossless-claude only in the factory", () => {
     const offenders = sourceFiles()
       .filter((file) => !FACTORY.includes(file))
-      .filter((file) => readFileSync(file, "utf-8").includes(`"${ROOT_LITERAL}`));
+      .filter((file) => file !== HOST_COMMAND)
+      .filter((file) => {
+        const source = readFileSync(file, "utf-8");
+        return BUILDS_A_PATH.some((pattern) => pattern.test(source));
+      });
     expect(offenders, `use lcmPath()/defaultLcmPaths instead of naming ${ROOT_LITERAL}`)
       .toEqual([]);
+  });
+
+  it("still needs its one exception, so the allowance is not dead", () => {
+    expect(readFileSync(HOST_COMMAND, "utf-8")).toContain(`$HOME/${ROOT_LITERAL}`);
   });
 
   it("reads LCM_HOME only in the factory", () => {
