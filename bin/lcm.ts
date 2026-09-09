@@ -23,6 +23,19 @@ function readStdin(): Promise<string> {
   });
 }
 
+/**
+ * True when `--help` was asked for on this command or on the parent it hangs from.
+ *
+ * Commander routes a flag declared on both a parent and its subcommand to the
+ * parent's options, so a subcommand that only reads its own would never see it:
+ * `lcm daemon stop --help` ran the action and stopped the daemon. Both command
+ * trees that carry a hand-rolled help option — `daemon` and `connectors` —
+ * declare it on the parent as well, so both need the parent consulted.
+ */
+export function helpRequested(parent: Command, opts: { help?: boolean }): boolean {
+  return Boolean(opts.help || (parent.opts() as { help?: boolean }).help);
+}
+
 async function withCustomHelp(cmd: Command, commandName: string): Promise<void> {
   const { printHelp } = await import("../src/cli-help.js");
   printHelp(commandName);
@@ -326,7 +339,7 @@ async function main() {
     .addOption(new Option("--automatic").hideHelp())
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (opts.help) { await withCustomHelp(daemonCmd, "daemon"); return; }
+      if (helpRequested(daemonCmd, opts)) { await withCustomHelp(daemonCmd, "daemon"); return; }
       const { ensureDaemon, checkDaemonHealth, isStaleDaemon } = await import("../src/daemon/lifecycle.js");
       const { loadDaemonConfig } = await import("../src/daemon/config.js");
       const { PKG_VERSION, BUILD_ID } = await import("../src/daemon/version.js");
@@ -399,7 +412,7 @@ async function main() {
     .option("--reason <text>", "Why the daemon is held down")
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (opts.help) { await withCustomHelp(daemonCmd, "daemon"); return; }
+      if (helpRequested(daemonCmd, opts)) { await withCustomHelp(daemonCmd, "daemon"); return; }
       const { stopDaemon, checkDaemonHealth } = await import("../src/daemon/lifecycle.js");
       const { loadDaemonConfig } = await import("../src/daemon/config.js");
       const { writeHold, DEFAULT_HOLD_MINUTES } = await import("../src/daemon/hold.js");
@@ -431,7 +444,7 @@ async function main() {
     .description("Restart the background daemon")
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (opts.help) { await withCustomHelp(daemonCmd, "daemon"); return; }
+      if (helpRequested(daemonCmd, opts)) { await withCustomHelp(daemonCmd, "daemon"); return; }
       const { stopDaemon, ensureDaemon, checkDaemonHealth } = await import("../src/daemon/lifecycle.js");
       const { loadDaemonConfig } = await import("../src/daemon/config.js");
       const { PKG_VERSION, BUILD_ID } = await import("../src/daemon/version.js");
@@ -457,7 +470,7 @@ async function main() {
     });
 
   daemonCmd.action(async (opts) => {
-    if (opts.help) { await withCustomHelp(daemonCmd, "daemon"); return; }
+    if (helpRequested(daemonCmd, opts)) { await withCustomHelp(daemonCmd, "daemon"); return; }
   });
   program.addCommand(daemonCmd);
 
@@ -943,7 +956,7 @@ async function main() {
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (opts.help) {
+      if (helpRequested(connectorsCmd, opts)) {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("connectors"); exit(0);
       }
@@ -986,7 +999,7 @@ async function main() {
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (agentName: string, opts) => {
-      if (opts.help) {
+      if (helpRequested(connectorsCmd, opts)) {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("connectors"); exit(0);
       }
@@ -1018,7 +1031,7 @@ async function main() {
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (agentName: string, opts) => {
-      if (opts.help) {
+      if (helpRequested(connectorsCmd, opts)) {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("connectors"); exit(0);
       }
@@ -1045,7 +1058,7 @@ async function main() {
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (agentName: string | undefined, opts) => {
-      if (opts.help) {
+      if (helpRequested(connectorsCmd, opts)) {
         const { printHelp } = await import("../src/cli-help.js");
         printHelp("connectors"); exit(0);
       }
