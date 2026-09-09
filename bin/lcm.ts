@@ -391,7 +391,7 @@ async function main() {
   daemonCmd.command("stop")
     .description("Stop the background daemon")
     .option("--hold", "Keep it down until `lcm daemon start`, so session hooks cannot respawn it")
-    .option("--minutes <n>", "How long the hold lasts before expiring", (v) => parseInt(v, 10))
+    .option("--minutes <n>", "How long the hold lasts before expiring", (v) => Number(v))
     .option("--reason <text>", "Why the daemon is held down")
     .option("-h, --help", "Show help")
     .action(async (opts) => {

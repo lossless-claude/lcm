@@ -41,7 +41,15 @@ export function readHold(pidFilePath: string, now: Date = new Date()): Hold | nu
   if (!existsSync(path)) return null;
   let hold: Hold;
   try {
-    hold = JSON.parse(readFileSync(path, "utf-8")) as Hold;
+    const value: unknown = JSON.parse(readFileSync(path, "utf-8"));
+    if (typeof value !== "object" || value === null || Array.isArray(value)
+      || !("pid" in value) || !Number.isSafeInteger(value.pid) || (value.pid as number) <= 0
+      || !("until" in value) || typeof value.until !== "string"
+      || ("reason" in value && typeof value.reason !== "string")) {
+      clearHold(pidFilePath);
+      return null;
+    }
+    hold = value as Hold;
   } catch {
     clearHold(pidFilePath);
     return null;
@@ -61,10 +69,14 @@ export function writeHold(
 ): Hold {
   const now = opts.now ?? new Date();
   const minutes = opts.minutes ?? DEFAULT_HOLD_MINUTES;
+  const expiry = new Date(now.getTime() + minutes * 60_000);
+  if (!Number.isFinite(minutes) || minutes <= 0 || !Number.isFinite(expiry.getTime())) {
+    throw new RangeError("Hold minutes must be positive and finite, with a valid expiry");
+  }
   const hold: Hold = {
     reason: opts.reason,
     pid: process.pid,
-    until: new Date(now.getTime() + minutes * 60_000).toISOString(),
+    until: expiry.toISOString(),
   };
   const path = holdPath(pidFilePath);
   mkdirSync(dirname(path), { recursive: true });

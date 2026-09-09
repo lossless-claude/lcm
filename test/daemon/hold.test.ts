@@ -50,6 +50,30 @@ describe("hold marker", () => {
     expect(existsSync(holdPath(pidFilePath))).toBe(false);
   });
 
+  it.each([
+    null, [], "hold", 42,
+    { until: "2099-01-01T00:00:00.000Z" },
+    { pid: "42", until: "2099-01-01T00:00:00.000Z" },
+    { pid: 0, until: "2099-01-01T00:00:00.000Z" },
+    { pid: 1.5, until: "2099-01-01T00:00:00.000Z" },
+    { pid: 42, until: 4102444800000 },
+    { pid: 42, until: "invalid" },
+    { pid: 42, until: "2099-01-01T00:00:00.000Z", reason: {} },
+  ])("removes a malformed marker: %j", (value) => {
+    writeFileSync(holdPath(pidFilePath), JSON.stringify(value));
+    expect(readHold(pidFilePath)).toBeNull();
+    expect(existsSync(holdPath(pidFilePath))).toBe(false);
+  });
+
+  it.each([NaN, Infinity, -Infinity, 0, -1, Number.MAX_VALUE])(
+    "rejects invalid duration %s without replacing an existing hold",
+    (minutes) => {
+      const existing = writeHold(pidFilePath, { reason: "maintenance" });
+      expect(() => writeHold(pidFilePath, { minutes })).toThrow(/Hold minutes/);
+      expect(readHold(pidFilePath)).toEqual(existing);
+    },
+  );
+
   it("clearHold reports whether a marker was there", () => {
     expect(clearHold(pidFilePath)).toBe(false);
     writeHold(pidFilePath, {});
