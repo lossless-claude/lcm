@@ -41,7 +41,9 @@ describe("POST /ingest", () => {
       body: JSON.stringify({ session_id: sessionId, cwd, client: "codex", transcript_path: transcriptPath }),
     });
     const wrong = await post(tmpdir());
-    expect(wrong.status).toBe(400);
+    // Name the body on failure: a 500 here is otherwise an opaque status with the cause
+    // stranded in the daemon's reply.
+    expect(wrong.status, await wrong.clone().text()).toBe(400);
     expect(await wrong.json()).toEqual({ error: "Codex transcript cwd does not match requested project" });
     const wrongSession = await post(tempDir, "different-session-id");
     expect(wrongSession.status).toBe(400);
