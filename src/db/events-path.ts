@@ -1,11 +1,9 @@
 import { join } from "node:path";
 import { projectId } from "../daemon/project.js";
-import { lcmHome } from "../lcm-home.js";
-
-const BASE = lcmHome();
+import { defaultLcmPaths } from "../lcm-paths.js";
 
 export function eventsDir(): string {
-  return join(BASE, "events");
+  return defaultLcmPaths.eventsDir;
 }
 
 export function eventsDbPath(cwd: string): string {

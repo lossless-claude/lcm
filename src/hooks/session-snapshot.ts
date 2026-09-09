@@ -99,8 +99,7 @@ export async function handleSessionSnapshot(
     // Best-effort promote-events flush
     try {
       const { loadDaemonConfig: _loadConfig } = await import("../daemon/config.js");
-      const { homedir: _homedir2 } = await import("node:os");
-      const _config = _loadConfig(join(_homedir2(), ".lossless-claude", "config.json"));
+      const _config = _loadConfig(lcmPath("config.json"));
       const port = _config.daemon?.port ?? 3737;
       const { firePromoteEventsRequest } = await import("./session-end.js");
       firePromoteEventsRequest(port, { cwd: input.cwd });
