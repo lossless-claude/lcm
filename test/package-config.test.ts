@@ -5,7 +5,7 @@ describe("package.json", () => {
   it("has correct name", () => expect(pkg.name).toBe("@lossless-claude/lcm"));
   it("has bin entry", () => expect(pkg.bin).toHaveProperty("lcm"));
   it("has anthropic sdk as optional peer dep", () => expect(pkg.peerDependencies).toHaveProperty("@anthropic-ai/sdk"));
-  it("has mcp sdk", () => expect(pkg.dependencies).toHaveProperty("@modelcontextprotocol/sdk"));
+  it("has mcp server sdk v2", () => expect(pkg.dependencies).toHaveProperty("@modelcontextprotocol/server", "^2.0.0"));
   it("does not have pi-ai", () => expect(pkg.dependencies).not.toHaveProperty("@mariozechner/pi-ai"));
   it("does not have pi-agent-core", () => expect(pkg.dependencies).not.toHaveProperty("@mariozechner/pi-agent-core"));
 

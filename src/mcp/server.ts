@@ -1,6 +1,5 @@
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { Server } from "@modelcontextprotocol/server";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DaemonClient } from "../daemon/client.js";
@@ -203,11 +202,11 @@ export async function startMcpServer(): Promise<void> {
   });
 
   const client = new DaemonClient(`http://127.0.0.1:${port}`);
-  const server = new Server({ name: "lcm", version: "1.0.0" }, { capabilities: { tools: {} } });
+  const server = new Server({ name: "lcm", version: PKG_VERSION ?? "unknown" }, { capabilities: { tools: {} } });
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+  server.setRequestHandler("tools/list", async () => ({ tools: TOOLS }));
 
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  server.setRequestHandler("tools/call", async (req) => {
     const rawArgs = req.params.arguments ?? {};
     // Guard: ensure rawArgs is a plain object
     if (typeof rawArgs !== "object" || rawArgs === null || Array.isArray(rawArgs)) {
@@ -247,6 +246,5 @@ export async function startMcpServer(): Promise<void> {
     });
   });
 
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  serveStdio(() => server, { legacy: "reject" });
 }

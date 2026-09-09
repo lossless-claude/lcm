@@ -14,6 +14,9 @@
 // The module has no Node and no SQLite, so the daemon does every write.
 //
 // Types: run /plugin-types in a session, then `import type { Register } from "claude-code"`.
+// They are written from the running build and not committed, so the check is on demand:
+// `npm run typecheck:hooks`. Run it after a Claude Code update too — the API is early
+// access, and a green run is the answer to whether the release moved anything under this.
 // `claude plugin validate` reads this file statically: `$` may only be passed to a function
 // declared at the top level, and calls on it must be spelled `$.noun.method(...)`.
 import type { Register, EngineInterface } from "claude-code";
