@@ -200,10 +200,12 @@ describe("handleUserPromptSubmit", () => {
     mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
     const mockInsertPromptEvents = vi.fn().mockReturnValue(1);
     const mockClose = vi.fn();
-    MockEventsDb.mockImplementation(() => ({
-      insertPromptEvents: mockInsertPromptEvents,
-      close: mockClose,
-    }) as any);
+    MockEventsDb.mockImplementation(function () {
+      return {
+        insertPromptEvents: mockInsertPromptEvents,
+        close: mockClose,
+      } as any;
+    });
     mockExtractUserPromptEvents.mockReturnValue([
       { type: "decision", category: "decision", data: "use SQLite", priority: 1 },
     ]);

@@ -9,13 +9,15 @@ vi.mock("../../src/daemon/lifecycle.js", () => ({
 }));
 
 vi.mock("../../src/hooks/events-db.js", () => ({
-  EventsDb: vi.fn().mockImplementation(() => ({
-    pruneProcessed: vi.fn(),
-    pruneUnprocessed: vi.fn().mockReturnValue({ pruned: 0 }),
-    pruneErrorLog: vi.fn().mockReturnValue(0),
-    getUnprocessed: vi.fn().mockReturnValue([]),
-    close: vi.fn(),
-  })),
+  EventsDb: vi.fn().mockImplementation(function () {
+    return {
+      pruneProcessed: vi.fn(),
+      pruneUnprocessed: vi.fn().mockReturnValue({ pruned: 0 }),
+      pruneErrorLog: vi.fn().mockReturnValue(0),
+      getUnprocessed: vi.fn().mockReturnValue([]),
+      close: vi.fn(),
+    };
+  }),
 }));
 
 vi.mock("../../src/db/events-path.js", () => ({
