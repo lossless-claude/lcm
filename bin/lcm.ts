@@ -213,8 +213,10 @@ function printJson(value: unknown): void {
   stdout.write(JSON.stringify(value, null, 2) + "\n");
 }
 
-async function createDaemonClientOrExit(): Promise<DaemonClient> {
-  const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
+let cliDaemonActivity: (() => void) | undefined;
+
+async function createDaemonClientOrExit(spawnTimeoutMs = 5000): Promise<DaemonClient> {
+  const { ensureDaemon, registerDaemonActivity } = await import("../src/daemon/lifecycle.js");
   const { loadDaemonConfig } = await import("../src/daemon/config.js");
 
   const config = loadDaemonConfig(lcmPath("config.json"));
@@ -222,7 +224,13 @@ async function createDaemonClientOrExit(): Promise<DaemonClient> {
   const lcDir = lcmHome();
   const pidFilePath = join(lcDir, "daemon.pid");
   const tokenPath = join(lcDir, "daemon.token");
-  const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 5000 });
+  // Admission covers the whole CLI operation, including local migrations/replay
+  // writes after daemon requests. Exit cleanup also covers action failures.
+  if (!cliDaemonActivity) {
+    cliDaemonActivity = registerDaemonActivity(pidFilePath);
+    process.once("exit", cliDaemonActivity);
+  }
+  const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs });
 
   if (!connected) {
     // A held daemon is down on purpose; saying so keeps it from reading as a fault.
@@ -518,20 +526,13 @@ async function main() {
         const { loadDaemonConfig } = await import("../src/daemon/config.js");
         const { join } = await import("node:path");
         const { homedir } = await import("node:os");
-        const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
         const config = loadDaemonConfig(lcmPath("config.json"));
         const port = config.daemon?.port ?? 3737;
-        const pidFilePath = lcmPath("daemon.pid");
-        const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 10000 });
-        if (!connected) {
-          console.error("Could not connect to daemon. Start it with: lcm daemon start --detach");
-          exit(1);
-        }
+        const client = await createDaemonClientOrExit(10000);
         const noPromote: boolean = !opts.promote;
         const minTokens = config.compaction.autoCompactMinTokens;
         const cwd = all ? undefined : process.cwd();
         const tokenPath = lcmPath("daemon.token");
-        const client = new DaemonClient(`http://127.0.0.1:${port}`, tokenPath);
 
         const { NinjaRenderer } = await import("../src/cli/pipeline-runner.js");
         const { makeProgressState } = await import("../src/cli/progress-state.js");
@@ -1153,7 +1154,6 @@ async function main() {
       const replay: boolean = opts.replay ?? false;
       const restart: boolean = opts.restart ?? false;
 
-      const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
       const { DaemonClient } = await import("../src/daemon/client.js");
       const { loadDaemonConfig } = await import("../src/daemon/config.js");
       const { NinjaRenderer } = await import("../src/cli/pipeline-runner.js");
@@ -1180,15 +1180,13 @@ async function main() {
 
       const config = loadDaemonConfig(lcmPath("config.json"));
       const port = config.daemon?.port ?? 3737;
-      const client = new DaemonClient(`http://127.0.0.1:${port}`);
-      const preview = await importSessions(client, { all, provider, dryRun: true, verbose: dryRun && verbose, replay });
+      const previewClient = new DaemonClient(`http://127.0.0.1:${port}`);
+      const preview = await importSessions(previewClient, { all, provider, dryRun: true, verbose: dryRun && verbose, replay });
       if (dryRun) {
         console.log(`  [dry-run] ${preview.imported} ${provider} sessions selected (${all ? "all projects" : "current project"})${replay ? "; would compact each session" : ""}. No changes written.`);
         return;
       }
-      const pidFilePath = lcmPath("daemon.pid");
-      const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 5000 });
-      if (!connected) { console.error("  Daemon not available"); exit(1); }
+      const client = await createDaemonClientOrExit();
 
       const isTTY = process.stdout.isTTY ?? false;
       const renderOpts = { isTTY, width: process.stdout.columns ?? 80, color: isTTY, verbose };
@@ -1254,21 +1252,13 @@ async function main() {
       const verbose: boolean = opts.verbose ?? false;
       const dryRun: boolean = opts.dryRun ?? false;
 
-      const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
       const { loadDaemonConfig } = await import("../src/daemon/config.js");
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
 
       const config = loadDaemonConfig(lcmPath("config.json"));
       const port = config.daemon?.port ?? 3737;
-      const pidFilePath = lcmPath("daemon.pid");
-      const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 5000 });
-      if (!connected) {
-        console.error("  Daemon not available. Start it with: lcm daemon start --detach");
-        exit(1);
-      }
-
-      const client = new DaemonClient(`http://127.0.0.1:${port}`);
+      const client = await createDaemonClientOrExit();
       const { readdirSync, existsSync, readFileSync } = await import("node:fs");
 
       if (dryRun) console.log("  [dry-run] No changes will be written.\n");
