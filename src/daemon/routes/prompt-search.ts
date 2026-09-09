@@ -6,9 +6,10 @@ import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { closeLcmConnection, getLcmConnection } from "../../db/connection.js";
 import { runLcmMigrations } from "../../db/migration.js";
-import { PromotedStore, type SearchResult } from "../../db/promoted.js";
+import { type SearchResult } from "../../db/promoted.js";
 import { projectRef } from "../project-group.js";
-import { RecallStore, type RecallFeedback } from "../../db/recall.js";
+import { logGroupSurfacing, searchPromotedGroup } from "../../search/group-promoted.js";
+import { type RecallFeedback } from "../../db/recall.js";
 import { buildMemoryContext, selectMemoryHintsWithinBudget } from "../../hooks/memory-context.js";
 import { recordUserPromptEvents } from "../../hooks/user-prompt.js";
 import { safeLogError } from "../../hooks/hook-errors.js";
@@ -260,7 +261,6 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
       openedDbPath = dbPath;
       runLcmMigrations(db);
 
-      const store = new PromotedStore(db);
       const maxResults = config.restoration.promptSearchMaxResults;
       const minScore = config.restoration.promptSearchMinScore;
       const snippetLength = config.restoration.promptSnippetLength;
@@ -282,11 +282,15 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
 
       const targetHintCount = Math.max(maxResults, maxInjectedMemoryItems);
       const candidateLimit = Math.max(targetHintCount * CANDIDATE_LIMIT_MULTIPLIER, MIN_CANDIDATE_LIMIT);
-      const results = store.search(query, candidateLimit);
-      const recallStore = new RecallStore(db);
+      // Promoted memory is unioned across every checkout of this repository,
+      // and each hit's recall feedback is read from the database that holds it.
+      const { hits: results, feedback: feedbackById } = searchPromotedGroup(validatedCwd, {
+        query,
+        limit: candidateLimit,
+        withFeedback: true,
+      });
 
       const now = Date.now();
-      const feedbackById = recallStore.getFeedback(results.map((result) => result.id));
       const ranked = rankResults(results, feedbackById, {
           querySessionId: session_id,
           now,
@@ -366,10 +370,7 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
 
       // Log surfacing events (best-effort, never throws)
       try {
-        if (logSurfacing) {
-          const promotedIds = new Set(results.map(result => result.id));
-          recallStore.logSurfacing(ids.filter(id => promotedIds.has(id)), session_id ?? null);
-        }
+        if (logSurfacing) logGroupSurfacing(results, ids, session_id ?? null);
       } catch { /* non-fatal */ }
 
       const context = format === "context" ? buildMemoryContext(hints, ids) : null;

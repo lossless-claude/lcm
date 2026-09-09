@@ -1,12 +1,14 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import type { DaemonConfig } from "../config.js";
 import { projectDbPath } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { closeLcmConnection, getLcmConnection } from "../../db/connection.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { searchNativeHistory } from "../../search/native-history.js";
-import { PromotedStore } from "../../db/promoted.js";
+import { searchHistoryGroup } from "../../search/group-history.js";
+import { searchPromotedGroup } from "../../search/group-promoted.js";
 import { validateCwd } from "../validate-cwd.js";
 import { projectRef } from "../project-group.js";
 
@@ -14,7 +16,7 @@ function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export function createSearchHandler(): RouteHandler {
+export function createSearchHandler(config: DaemonConfig): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
     const { query, limit = 5, layers, tags } = input;
@@ -56,7 +58,12 @@ export function createSearchHandler(): RouteHandler {
           if (activeLayers.includes("episodic")) {
             try {
               // History records do not carry promoted-memory tags.
-              episodic = filterTags ? [] : await searchNativeHistory(db, { query, limit, project: projectRef(cwd) });
+              // Episodic union is gated: see search.unionHistoryAcrossGroup.
+              episodic = filterTags
+                ? []
+                : config.search.unionHistoryAcrossGroup
+                  ? await searchHistoryGroup(cwd, { query, limit })
+                  : await searchNativeHistory(db, { query, limit, project: projectRef(cwd) });
             } catch (err) {
               // Non-fatal for the response, but never silent: a real failure
               // (malformed FTS5 syntax, missing table, corrupt index) must be
@@ -66,12 +73,12 @@ export function createSearchHandler(): RouteHandler {
             }
           }
 
-          // Promoted: FTS5 search across promoted memories
+          // Promoted: FTS5 across every checkout of this repository. Promoted
+          // memory is always unioned; only the episodic union is gated on
+          // measurement.
           if (activeLayers.includes("promoted")) {
             try {
-              const promotedStore = new PromotedStore(db);
-              promoted = promotedStore.search(query, limit, filterTags)
-                .map(result => ({ ...result, project: projectRef(cwd) }));
+              promoted = searchPromotedGroup(cwd, { query, limit, tags: filterTags }).hits;
             } catch (err) {
               console.warn(`[lcm] /search promoted layer failed: ${describeError(err)}`);
               errors.push(`promoted: ${describeError(err)}`);

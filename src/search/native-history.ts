@@ -27,7 +27,9 @@ export interface ProjectRef {
   cwd: string;
 }
 
-export type NativeHistoryHit = HistoryHit & SourceContext & { project: ProjectRef };
+// The ranked hit, not the bare one: `searchNativeHistory` carries the session
+// id through, and callers group by it.
+export type NativeHistoryHit = RankedHistoryHit & SourceContext & { project: ProjectRef };
 
 function anchorSpan(content: string, hint: string): { start: number; length: number } {
   const fragments = hint.split("...").map(part => part.trim()).filter(Boolean);
