@@ -16,7 +16,20 @@ type SourceContext = {
   sourceHash: string;
   snippetTruncated: boolean;
 };
-export type NativeHistoryHit = HistoryHit & SourceContext;
+/**
+ * Which project a hit was read from. Required, not optional: `conversationId`
+ * and `messageId` are `AUTOINCREMENT` per database, so once results from
+ * several projects share one list, an unlabelled hit resolves against the wrong
+ * database and silently returns a different message.
+ */
+export interface ProjectRef {
+  id: string;
+  cwd: string;
+}
+
+// The ranked hit, not the bare one: `searchNativeHistory` carries the session
+// id through, and callers group by it.
+export type NativeHistoryHit = RankedHistoryHit & SourceContext & { project: ProjectRef };
 
 function anchorSpan(content: string, hint: string): { start: number; length: number } {
   const fragments = hint.split("...").map(part => part.trim()).filter(Boolean);
@@ -296,7 +309,7 @@ function sessionSizes(
 /** Read one request's ranked history and bounded source context inside a savepoint on the caller's connection. */
 export async function searchNativeHistory(
   db: DatabaseSync,
-  input: { query: string; limit: number },
+  input: { query: string; limit: number; project: ProjectRef },
 ): Promise<NativeHistoryHit[]> {
   const messages = new ConversationStore(db);
   const summaries = new SummaryStore(db);
@@ -310,7 +323,13 @@ export async function searchNativeHistory(
       const source = "messageId" in hit
         ? messages.getMessageByIdSync(hit.messageId)
         : summaries.getSummarySync(hit.summaryId);
-      if (source) matches.push({ ...hit, ...sourceContext(source.content, matchedAnchor(db, hit, input.query, source.content)) });
+      if (source) {
+        matches.push({
+          ...hit,
+          ...sourceContext(source.content, matchedAnchor(db, hit, input.query, source.content)),
+          project: input.project,
+        });
+      }
     }
     return matches;
   } finally {

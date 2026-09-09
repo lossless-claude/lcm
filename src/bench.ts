@@ -9,6 +9,8 @@ import { runLcmMigrations } from "./db/migration.js";
 import { ConversationStore } from "./store/conversation-store.js";
 import { PromotedStore } from "./db/promoted.js";
 import { rankNativeHistory } from "./search/native-history.js";
+import { searchHistoryGroup } from "./search/group-history.js";
+import { searchPromotedGroup } from "./search/group-promoted.js";
 import { extractQueryTerms } from "./store/fts5-query.js";
 import { ensureLanguagePack } from "./store/language-pack.js";
 import { detectLanguage, isDistinctivePrompt, LANGUAGE_SAMPLE_SIZE, MAX_PROMPT_LENGTH, parseLanguageTag } from "./search/language.js";
@@ -72,6 +74,13 @@ export type BenchOptions = {
   generator?: "llm" | "mechanical";
   /** Overrides language detection for `--generator llm`. */
   language?: string;
+  /**
+   * Score against the union of every checkout of this repository instead of
+   * this project alone. The question sets label sessions of the project they
+   * were built from, so a union can only add distractors here — this measures
+   * what the union costs, not what it finds.
+   */
+  union?: boolean;
 };
 
 export type BenchResult = {
@@ -710,13 +719,19 @@ type ScoreContext = {
   projectId: string;
   rgBaseline?: RgBaseline;
   k: number;
+  /** Set when scoring the union; the cwd whose group is searched. */
+  unionCwd?: string;
 };
 
 async function scoreQuery(query: BenchQuery, ctx: ScoreContext): Promise<QueryOutcome> {
   const start = performance.now();
   // The same ranking explicit search emits, so the bench measures what callers see.
-  const history = await rankNativeHistory(ctx.db, { query: query.question, limit: ctx.k * SESSION_ROW_BUDGET });
-  const promoted = ctx.promotedStore.search(query.question, ctx.k * SESSION_ROW_BUDGET, undefined, ctx.projectId);
+  const history = ctx.unionCwd
+    ? await searchHistoryGroup(ctx.unionCwd, { query: query.question, limit: ctx.k * SESSION_ROW_BUDGET })
+    : await rankNativeHistory(ctx.db, { query: query.question, limit: ctx.k * SESSION_ROW_BUDGET });
+  const promoted = ctx.unionCwd
+    ? searchPromotedGroup(ctx.unionCwd, { query: query.question, limit: ctx.k * SESSION_ROW_BUDGET }).hits
+    : ctx.promotedStore.search(query.question, ctx.k * SESSION_ROW_BUDGET, undefined, ctx.projectId);
   const latencyMs = performance.now() - start;
 
   const sessionIds = collectSessionIds(history, promoted);
@@ -819,7 +834,10 @@ export async function runBench(opts: BenchOptions): Promise<BenchResult> {
     runLcmMigrations(db);
     const pid = projectId(opts.cwd);
     const { baseline, warning } = await prepareRgBaseline(db, pid, rgDir);
-    const ctx: ScoreContext = { db, promotedStore: new PromotedStore(db), projectId: pid, rgBaseline: baseline, k };
+    const ctx: ScoreContext = {
+      db, promotedStore: new PromotedStore(db), projectId: pid, rgBaseline: baseline, k,
+      unionCwd: opts.union ? opts.cwd : undefined,
+    };
 
     const outcomes: QueryOutcome[] = [];
     for (const query of loaded.bench.queries) outcomes.push(await scoreQuery(query, ctx));

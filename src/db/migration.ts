@@ -616,6 +616,16 @@ function runLcmMigrationsInner(
     CREATE INDEX IF NOT EXISTS promoted_project_idx ON promoted (project_id, created_at);
   `);
 
+  // Whether a conversation's rows carry the role tagging that separates tool
+  // output from what a person said. NULL means unknown: the rows predate the
+  // tagging parser and cannot be re-tagged, because 75% of the sessions have
+  // no transcript left on disk to re-read. Search must include them and say so
+  // rather than hide 79% of history behind a filter that looks complete.
+  const taggingColumns = db.prepare(`PRAGMA table_info(conversations)`).all() as Array<{ name?: string }>;
+  if (!taggingColumns.some((col) => col.name === "role_tagging")) {
+    db.exec(`ALTER TABLE conversations ADD COLUMN role_tagging TEXT DEFAULT NULL`);
+  }
+
   // Add archived_at to promoted if not present
   const promotedColumns = db.prepare(`PRAGMA table_info(promoted)`).all() as Array<{ name?: string }>;
   const hasArchivedAt = promotedColumns.some((col) => col.name === "archived_at");

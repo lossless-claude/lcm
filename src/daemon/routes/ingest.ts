@@ -2,7 +2,8 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
-import { projectDbPath, projectDir, projectId, ensureProjectDir, projectMetaPath, isSafeTranscriptPath, claudeTranscriptPath } from "../project.js";
+import { projectDbPath, projectDir, projectId, projectMetaPath, isSafeTranscriptPath, claudeTranscriptPath } from "../project.js";
+import { openProject } from "../project-group.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
@@ -156,7 +157,7 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
         projectDir(cwd),
       );
       const result = await enqueue(pid, async () => {
-        ensureProjectDir(cwd);
+        openProject(cwd);
         const db = getLcmConnection(dbPath);
         try {
           runLcmMigrations(db);

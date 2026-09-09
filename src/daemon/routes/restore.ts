@@ -181,9 +181,13 @@ function readCodexContext(
 
   if (!conversation || rows.length === 0) return "";
 
+  // A tool log labelled "User" would tell the model the user said it, which
+  // is the confusion the role tag exists to end.
+  const speaker = (role: string | null) =>
+    role === "assistant" ? "Assistant" : role === "tool" ? "Tool" : "User";
   const items = rows.map((row) => row.item_type === "summary"
     ? `Summary:\n${row.content}`
-    : `${row.role === "assistant" ? "Assistant" : "User"}:\n${row.content}`);
+    : `${speaker(row.role)}:\n${row.content}`);
   const tag = isCurrentSession ? "recent-session-context" : "recent-project-context";
   return fitRecentContextItems(items, tag, byteBudget);
 }

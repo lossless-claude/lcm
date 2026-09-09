@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
-import { projectDbPath, ensureProjectDir } from "../project.js";
+import { projectDbPath } from "../project.js";
+import { openProject } from "../project-group.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
@@ -20,7 +21,7 @@ export function createSessionCompleteHandler(): RouteHandler {
       sendJson(res, 400, { error: err instanceof Error ? err.message : "invalid cwd" });
       return;
     }
-    ensureProjectDir(cwd);
+    openProject(cwd);
     const db = new DatabaseSync(projectDbPath(cwd));
     try {
       db.exec("PRAGMA busy_timeout = 5000");

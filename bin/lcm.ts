@@ -252,6 +252,7 @@ export function registerBenchCommands(program: Command): void {
     .option("--k <n>", "Hit-rate cutoff (default: 5)", "5")
     .option("--bench-file <file>", "Benchmark file path (default: project memory directory)")
     .option("--json", "Output structured JSON")
+    .option("--union", "Score against every checkout of this repository, not this project alone")
     .action(async (opts) => {
       const cwd = typeof opts.project === "string" ? resolve(opts.project) : process.cwd();
       const k = parsePositiveInteger(String(opts.k ?? "5"), "--k");
@@ -261,6 +262,7 @@ export function registerBenchCommands(program: Command): void {
         k,
         benchFile: opts.benchFile,
         json: opts.json ?? false,
+        union: opts.union ?? false,
       });
       stdout.write(result.stdout);
       exit(result.exitCode);
@@ -361,7 +363,7 @@ async function main() {
       const { ensureAuthToken } = await import("../src/daemon/auth.js");
       ensureAuthToken(tokenPath);
       try {
-        const daemon = await createDaemon(config, { tokenPath });
+        const daemon = await createDaemon(config, { tokenPath, backfillIdentities: true });
         console.log(`lcm daemon started on port ${daemon.address().port}`);
       } catch (err) {
         const code = (err as NodeJS.ErrnoException)?.code;
