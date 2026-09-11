@@ -14,7 +14,7 @@ async function start(options: Record<string, number> = {}, jobs: unknown[] = [le
   const engine = {
     session: { id: vi.fn(async () => sessionId), cwd: vi.fn(async () => "/proj") },
     process: { run: vi.fn(async () => ({ stdout: "secret\n__CONFIG__\n{}\n__TMPDIR__/tmp", exitCode: 0 })) },
-    fs: { writeFile: vi.fn(async () => undefined) },
+    fs: { write: vi.fn(async () => undefined) },
     model: {
       complete: vi.fn(async () => "  summary  "),
       fork: vi.fn(async (): Promise<any> => null),
@@ -55,7 +55,7 @@ describe("function-hook session summarizer", () => {
   it("claims the session but starts no poller when the summarizer is disabled", async () => {
     const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
     expect(await harness.trigger()).toEqual({});
-    expect(harness.engine.fs.writeFile).toHaveBeenCalledWith(
+    expect(harness.engine.fs.write).toHaveBeenCalledWith(
       `/tmp/lcm-claim-${sessionId.replace("/", "_")}.json`,
       expect.stringContaining(`"sessionId":"${sessionId}"`),
     );
@@ -64,7 +64,7 @@ describe("function-hook session summarizer", () => {
 
   it("lets session.start finish when the claim cannot be written", async () => {
     const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
-    harness.engine.fs.writeFile.mockRejectedValueOnce(new Error("read-only fs"));
+    harness.engine.fs.write.mockRejectedValueOnce(new Error("read-only fs"));
     expect(await harness.trigger()).toEqual({});
     expect(harness.engine.ui.log).toHaveBeenCalledWith(expect.stringContaining("could not claim the session"));
   });

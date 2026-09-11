@@ -104,7 +104,7 @@ async function claimSession($: EngineInterface, sessionId: string): Promise<void
   if (!sessionId) return;
   const { tmpDir } = await readHostEnv($);
   const file = `${tmpDir}/lcm-claim-${sessionId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`;
-  await $.fs.writeFile(file, JSON.stringify({ sessionId, ts: Date.now() }));
+  await $.fs.write(file, JSON.stringify({ sessionId, ts: Date.now() }));
 }
 
 /** Last time this module asked the host to start the daemon; one attempt per cooldown window. */
