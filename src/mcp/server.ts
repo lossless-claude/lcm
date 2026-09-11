@@ -257,5 +257,5 @@ export async function startMcpServer(): Promise<void> {
     });
   });
 
-  serveStdio(() => server, { legacy: "reject" });
+  serveStdio(() => server, { legacy: "serve" });
 }
