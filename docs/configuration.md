@@ -15,6 +15,23 @@ lcm install
 
 `lcm install` is the Claude Code setup path. It writes config, registers hooks, installs slash commands, registers MCP, and verifies the daemon.
 
+#### MCP protocol revision
+
+Claude Code opens a stdio server on the 2025-11-25 revision unless you ask it to
+negotiate, and lcm serves both, so the tools work either way with nothing set. To use
+the 2026-07-28 revision instead, set it in `~/.claude/settings.json`:
+
+```json
+{ "env": { "MCP_PROTOCOL_NEGOTIATION": "auto" } }
+```
+
+The variable is Claude Code's, not lcm's, and it applies to every stdio MCP server you
+run. On the newer revision Claude Code asks the server what it supports before
+connecting, and results carry the envelope described in
+[agent-tools.md](./agent-tools.md); on the earlier one it connects directly. A server on
+the newer revision cannot deliver Claude Code channel messages, so leave the variable
+unset if you use lcm as a channel.
+
 ### VS Code (GitHub Copilot)
 
 Install the repo-local connector:
