@@ -51,6 +51,15 @@ describe("typecheck-hooks staleness guard", () => {
     expect(result.output).not.toContain("stub-tsc");
   });
 
+  // /plugin-types writes what the session it runs in knows. After an update the running
+  // session is still the old build, so regenerating there returns the old version and a
+  // message naming only that command sends the reader round in a circle.
+  it("says to restart before regenerating, since a running session writes its own build", async () => {
+    const result = await run({ header: "// Written by Claude Code 2.1.267.", claudeVersion: "2.1.268" });
+    expect(result.exitCode).toBe(1);
+    expect(result.output).toContain("Restart Claude Code so a session runs 2.1.268");
+  });
+
   it("compiles when the declarations match the installed build", async () => {
     const result = await run({ header: "// Written by Claude Code 2.1.267.", claudeVersion: "2.1.267" });
     expect(result.exitCode).toBe(0);
