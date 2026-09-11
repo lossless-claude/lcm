@@ -133,16 +133,33 @@ describe("MCP 2026-07-28 over stdio", () => {
     });
   });
 
-  it("rejects legacy initialization while allowing a subsequent modern request", async () => {
-    const legacy = await request("initialize", {
+  // Both revisions are served, because which one a client offers is the client's choice
+  // and not ours. Claude Code opens stdio servers on the 2025 revision unless the user
+  // sets MCP_PROTOCOL_NEGOTIATION=auto, so serving only the modern one would answer
+  // nothing at all under the default the documentation describes.
+  it("serves a 2025-era client through initialization, listing and calling", async () => {
+    const initialized = await request("initialize", {
       protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "old", version: "1" },
     }, false);
-    expect(legacy.error).toMatchObject({ code: -32022 });
-    expect((await request("tools/list")).result.tools).toHaveLength(7);
+    expect(initialized.error).toBeUndefined();
+    expect(initialized.result).toMatchObject({ protocolVersion: "2025-11-25" });
+
+    const listed = await request("tools/list", {}, false);
+    expect(listed.error).toBeUndefined();
+    expect(listed.result.tools).toHaveLength(7);
+
+    const called = await request("tools/call", { name: "lcm_search", arguments: { query: "hello" } }, false);
+    expect(called.error).toBeUndefined();
+    expect(called.result.content).toEqual([{ type: "text", text: JSON.stringify({ matches: ["remembered"] }, null, 2) }]);
   });
 
-  it("rejects requests without per-request protocol metadata", async () => {
-    expect((await request("tools/list", {}, false)).error).toMatchObject({ code: -32022 });
-    expect(state.post).not.toHaveBeenCalled();
+  it("serves a 2026-era client, and only that one carries the modern envelope", async () => {
+    const listed = await request("tools/list");
+    expect(listed.error).toBeUndefined();
+    expect(listed.result.tools).toHaveLength(7);
+    expect(listed.result).toMatchObject({ resultType: "complete", ttlMs: 0, cacheScope: "private" });
+    expect(listed.result._meta).toMatchObject({
+      "io.modelcontextprotocol/serverInfo": { name: "lcm", version: "9.9.9-test" },
+    });
   });
 });
