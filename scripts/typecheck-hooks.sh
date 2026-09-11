@@ -38,7 +38,10 @@ elif [ "$declared" != "$running" ]; then
   echo "Declarations are from Claude Code $declared, but $running is installed."
   echo "The plugin API is early access and moves between releases, so this check would"
   echo "hold hooks/ to an API that may no longer exist."
-  echo "Run /plugin-types in a Claude Code session, then run this again."
+  # /plugin-types writes what the session it runs in knows, so a session started before
+  # the update regenerates the same old version however many times it is asked. Saying
+  # "run /plugin-types" alone sends the reader in a circle.
+  echo "Restart Claude Code so a session runs $running, then run /plugin-types in it."
   exit 1
 fi
 
