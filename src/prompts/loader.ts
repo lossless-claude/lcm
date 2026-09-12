@@ -1,10 +1,11 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+const __dirname = dirname(fileURLToPath(import.meta.url));
+// The plugin bundle carries the YAML under assets/prompts next to it; dist/ and src/ keep it beside this module.
+const PROMPTS_DIR = existsSync(join(__dirname, "assets", "prompts")) ? join(__dirname, "assets", "prompts") : __dirname;
 
 export type PromptTemplate = {
   name: string;
@@ -23,7 +24,7 @@ export function loadTemplate(name: string): PromptTemplate {
   const cached = cache.get(name);
   if (cached) return cached;
 
-  const filePath = join(__dirname, `${name}.yaml`);
+  const filePath = join(PROMPTS_DIR, `${name}.yaml`);
   let raw: string;
   try {
     raw = readFileSync(filePath, "utf-8");

@@ -34,16 +34,19 @@ there is no way to lock yourself out.
 ## Cutting a release
 
 1. Run `gh workflow run version-pr.yml --ref main`. It opens or refreshes the
-   changesets version PR from the changesets on `main`. Merge it. (By hand
-   instead: bump `package.json` and `package-lock.json`, run
-   `node scripts/sync-versions.mjs`, and move the CHANGELOG's top section to
-   the release date.)
+   changesets version PR from the changesets on `main`. Its version step is
+   `npm run version-packages`: bump the version, sync the manifests, then build
+   `dist/` and `bundle/`, so the committed bundle carries the new version. The
+   action commits everything, `bundle/` included. CI runs on that commit. Merge
+   it. (By hand instead: bump `package.json` and `package-lock.json`, run
+   `node scripts/sync-versions.mjs`, `npm run build`, `npm run build:bundle`,
+   and move the CHANGELOG's top section to the release date.)
 2. The push to `main` publishes, because the workflow watches `package.json`.
    Run it manually with `gh workflow run publish.yml --ref main` when the
    version file did not change in that push.
 3. The workflow does each step only if it is still missing: tag, npm, GitHub
    release. An ordinary merge is a no-op, and a re-run after a partial failure
-   finishes what is left.
+   finishes what is left. It never builds or commits `bundle/`.
 
 The tag comes first, because the marketplace entry for the same version points
 at it: `sync-versions.mjs` writes `ref: vX.Y.Z` next to the version, so a fresh
@@ -51,11 +54,17 @@ plugin install fetches the released commit rather than the current `main`.
 Between the merge and the tag step there is a window of about a minute in which
 that install fails; the workflow closes it on its own.
 
+`bundle/` is the plugin artifact (`docs/design/self-contained-plugin.md`): a
+marketplace install runs it with only `node` on PATH. It changes only in version
+PRs, so between releases `main` carries the previous release's bundle; `npm run
+build` never touches it, and `.gitattributes` diffs it as binary. `dist/` stays
+the npm artifact.
+
 ## Release channels
 
 | Host | Installs from | Pinned by |
 |---|---|---|
-| Claude Code plugin | this repository, marketplace `source.ref` | the tag `vX.Y.Z` and `version` in `.claude-plugin/marketplace.json` |
+| Claude Code plugin | this repository, marketplace `source.ref`; runs `bundle/` | the tag `vX.Y.Z` and `version` in `.claude-plugin/marketplace.json` |
 | Codex, Copilot, CLI | npm `@lossless-claude/lcm` | the published version |
 
 Codex also reads `.claude-plugin/marketplace.json` as a compatible marketplace; a

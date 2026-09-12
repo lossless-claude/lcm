@@ -23,8 +23,6 @@
   ],
   "files": [
     "dist/",
-    "mcp.mjs",
-    "lcm.mjs",
     ".claude-plugin/",
     "skills/",
     "hooks/",
@@ -41,6 +39,7 @@
   "scripts": {
     "build": "tsc",
     "postbuild": "mkdir -p dist/src/prompts && cp -r src/prompts/*.yaml dist/src/prompts/ && mkdir -p dist/src/connectors/templates && cp -r src/connectors/templates/. dist/src/connectors/templates/ && cp installer/setup.sh dist/installer/setup.sh && node scripts/write-build-id.mjs && sh scripts/sync-plugin-cache.sh",
+    "build:bundle": "node scripts/build-bundle.mjs && sh scripts/sync-plugin-cache.sh",
     "prepublishOnly": "npm run build",
     "changeset": "changeset",
     "release:verify": "npm test && npm pack --dry-run",
@@ -48,7 +47,7 @@
     "typecheck": "tsc --noEmit",
     "typecheck:hooks": "bash scripts/typecheck-hooks.sh",
     "check-manifest": "node scripts/check-manifest.mjs",
-    "version-packages": "changeset version && node scripts/sync-versions.mjs",
+    "version-packages": "changeset version && node scripts/sync-versions.mjs && npm run build && npm run build:bundle",
     "check-docs": "node scripts/check-doc-claims.mjs",
     "check-agents": "python3 tools/self-consistency/checker.pyz --root ."
   },
@@ -65,6 +64,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/node": ">=22",
     "@types/safe-regex": "^1.1.6",
+    "esbuild": "0.28.2",
     "openai": "^6.32.0",
     "typescript": "^5.7.0",
     "vitest": "^5.0.0"

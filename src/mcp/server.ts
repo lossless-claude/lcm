@@ -1,7 +1,6 @@
 import { Server } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { cliEntrypoint } from "../cli-entrypoint.js";
 import { DaemonClient } from "../daemon/client.js";
 import { loadDaemonConfig } from "../daemon/config.js";
 import { ensureDaemon, registerDaemonActivity } from "../daemon/lifecycle.js";
@@ -194,7 +193,7 @@ export async function startMcpServer(): Promise<void> {
   const port = config.daemon.port;
   const pidFilePath = lcmPath("daemon.pid");
 
-  const lcmBin = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "lcm.mjs");
+  const lcmBin = cliEntrypoint();
   await ensureDaemon({
     port, pidFilePath, spawnTimeoutMs: 10000,
     expectedVersion: PKG_VERSION,

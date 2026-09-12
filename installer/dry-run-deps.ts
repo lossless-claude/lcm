@@ -33,6 +33,10 @@ export class DryRunServiceDeps implements ServiceDeps, TeardownDeps {
     console.log(`[dry-run] would remove: ${path}`);
   }
 
+  copyFileSync(src: string, dest: string): void {
+    console.log(`[dry-run] would copy: ${src} -> ${dest}`);
+  }
+
   spawnSync(cmd: string, args: string[], opts?: any): SpawnSyncReturns<string> {
     // Special case 1: setup.sh — actually run it with XGH_DRY_RUN=1 so it prints its own preview.
     // Use stdio:"pipe" (not inherited) so we can capture stdout and forward it ourselves,

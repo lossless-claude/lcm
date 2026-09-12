@@ -5,16 +5,23 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+// Build-time defines injected by esbuild into the plugin bundle (scripts/build-bundle.mjs):
+// from bundle/ neither package.json nor dist/BUILD_ID is reachable, and an undefined
+// version would silently disable the daemon ownership check. Absent under tsc and vitest.
+declare const __PKG_VERSION__: string | undefined;
+declare const __BUILD_ID__: string | undefined;
+
 /**
- * Resolves the package version by trying multiple candidate paths so that
- * PKG_VERSION works correctly in both production (dist/src/daemon/) and
- * dev/test (src/daemon/) environments.
+ * Resolves the package version: the build-time define when bundled, else by trying
+ * multiple candidate paths so that PKG_VERSION works correctly in both production
+ * (dist/src/daemon/) and dev/test (src/daemon/) environments.
  *
  * Returns `undefined` when the version cannot be determined, so that callers
  * like ensureDaemon({ expectedVersion }) skip the version check rather than
  * restarting the daemon based on a stale "0.0.0" fallback.
  */
 export const PKG_VERSION: string | undefined = (() => {
+  if (typeof __PKG_VERSION__ === "string" && __PKG_VERSION__) return __PKG_VERSION__;
   const candidates = [
     // Production / installed: dist/src/daemon → 3 levels up = package root
     join(__dirname, "..", "..", "..", "package.json"),
@@ -72,6 +79,7 @@ export function readBuildIdFile(dirs: string[]): string | undefined {
  * `undefined` when nothing can be read.
  */
 export const BUILD_ID: string | undefined = (() => {
+  if (typeof __BUILD_ID__ === "string" && /^[0-9a-f]{16}$/.test(__BUILD_ID__)) return __BUILD_ID__;
   // Production / installed: dist/src/daemon → 2 levels up = dist root
   const fromFile = readBuildIdFile([join(__dirname, "..", "..")]);
   if (fromFile) return fromFile;

@@ -25,21 +25,7 @@ describe("ensureCore", () => {
     );
   });
 
-  it("skips full config.json recreation when it already exists", async () => {
-    // readFileSync already reports the running process's node path, so recordMcpNodePath
-    // has nothing to patch either — the only way to get zero writes to configPath.
-    const deps = makeDeps({
-      existsSync: vi.fn().mockReturnValue(true),
-      readFileSync: vi.fn().mockReturnValue(JSON.stringify({ version: 1, mcpNodePath: process.execPath })),
-    });
-    const { ensureCore } = await import("../src/bootstrap.js");
-    await ensureCore(deps);
-    const configWrites = (deps.writeFileSync as ReturnType<typeof vi.fn>).mock.calls
-      .filter((args) => args[0] === deps.configPath);
-    expect(configWrites.length).toBe(0);
-  });
-
-  it("records the running node interpreter's absolute path into config.json", async () => {
+  it("leaves an existing config.json alone", async () => {
     const deps = makeDeps({
       existsSync: vi.fn().mockReturnValue(true),
       readFileSync: vi.fn().mockReturnValue(JSON.stringify({ version: 1, other: "kept" })),
@@ -48,22 +34,17 @@ describe("ensureCore", () => {
     await ensureCore(deps);
     const configWrites = (deps.writeFileSync as ReturnType<typeof vi.fn>).mock.calls
       .filter((args) => args[0] === deps.configPath);
-    expect(configWrites.length).toBe(1);
-    const written = JSON.parse(configWrites[0][1]);
-    expect(written.mcpNodePath).toBe(process.execPath);
-    expect(written.other).toBe("kept"); // read-modify-write preserves unrelated keys
+    expect(configWrites.length).toBe(0);
   });
 
-  it("does not touch config.json when it cannot be read (corrupt or unreadable)", async () => {
-    const deps = makeDeps({
-      existsSync: vi.fn().mockReturnValue(true),
-      readFileSync: vi.fn().mockImplementation(() => { throw new Error("EACCES"); }),
-    });
+  it("asks the daemon for its own package version, never a build id", async () => {
+    const deps = makeDeps();
     const { ensureCore } = await import("../src/bootstrap.js");
+    const { PKG_VERSION } = await import("../src/daemon/version.js");
     await ensureCore(deps);
-    const configWrites = (deps.writeFileSync as ReturnType<typeof vi.fn>).mock.calls
-      .filter((args) => args[0] === deps.configPath);
-    expect(configWrites.length).toBe(0);
+    const opts = (deps.ensureDaemon as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(opts.expectedVersion).toBe(PKG_VERSION);
+    expect(opts).not.toHaveProperty("expectedBuild");
   });
 
   it("calls mergeClaudeSettings to clean stale hooks", async () => {
@@ -105,27 +86,65 @@ describe("ensureCore", () => {
 });
 
 describe("ensureBootstrapped", () => {
-  it("skips ensureCore when flag file exists", async () => {
-    const coreDeps = makeDeps();
-    const { ensureBootstrapped } = await import("../src/bootstrap.js");
-    await ensureBootstrapped("test-session", {
-      ...coreDeps,
-      flagExists: vi.fn().mockReturnValue(true),
+  function bootstrapDeps(overrides: Partial<EnsureCoreDeps> = {}, flag: { exists: boolean; content?: string } = { exists: false }) {
+    return {
+      ...makeDeps(overrides),
+      flagExists: vi.fn().mockReturnValue(flag.exists),
+      readFlag: vi.fn().mockReturnValue(flag.content ?? ""),
       writeFlag: vi.fn(),
-    });
-    expect(coreDeps.ensureDaemon).not.toHaveBeenCalled();
+      warn: vi.fn(),
+    };
+  }
+
+  it("skips ensureCore when flag file exists and reads the verdict back", async () => {
+    const deps = bootstrapDeps({}, { exists: true, content: "" });
+    const { ensureBootstrapped } = await import("../src/bootstrap.js");
+    expect(await ensureBootstrapped("test-session", deps)).toEqual({ usable: true });
+    expect(deps.ensureDaemon).not.toHaveBeenCalled();
+    expect(deps.warn).not.toHaveBeenCalled();
+
+    const unusable = bootstrapDeps({}, { exists: true, content: "unusable: lcm: daemon v9.0.0 ..." });
+    expect(await ensureBootstrapped("test-session", unusable)).toEqual({ usable: false });
+    expect(unusable.warn).not.toHaveBeenCalled(); // the line was written by the first hook
   });
 
-  it("runs ensureCore and writes flag when flag file missing", async () => {
-    const writeFlag = vi.fn();
-    const coreDeps = makeDeps();
+  it("runs ensureCore, writes an empty flag and stays quiet when the daemon is current", async () => {
+    const deps = bootstrapDeps();
     const { ensureBootstrapped } = await import("../src/bootstrap.js");
-    await ensureBootstrapped("test-session", {
-      ...coreDeps,
-      flagExists: vi.fn().mockReturnValue(false),
-      writeFlag,
+    expect(await ensureBootstrapped("test-session", deps)).toEqual({ usable: true });
+    expect(deps.ensureDaemon).toHaveBeenCalled();
+    expect(deps.writeFlag).toHaveBeenCalledWith(expect.stringContaining("bootstrapped-test-session.flag"), "");
+    expect(deps.warn).not.toHaveBeenCalled();
+  });
+
+  it("writes one stderr line naming the repair when the daemon did not start, and keeps the session usable", async () => {
+    const deps = bootstrapDeps({ ensureDaemon: vi.fn().mockResolvedValue({ connected: false }) });
+    const { ensureBootstrapped } = await import("../src/bootstrap.js");
+    expect(await ensureBootstrapped("s", deps)).toEqual({ usable: true });
+    expect(deps.warn).toHaveBeenCalledTimes(1);
+    expect(deps.warn.mock.calls[0][0]).toMatch(/^lcm: daemon did not start .*Repair: lcm daemon start$/);
+    expect(deps.writeFlag).toHaveBeenCalledWith(expect.any(String), "");
+  });
+
+  it("marks the session unusable and names the update command when the daemon is newer and incompatible", async () => {
+    const deps = bootstrapDeps({
+      ensureDaemon: vi.fn().mockResolvedValue({ connected: false, ownership: "incompatible", daemonVersion: "9.0.0" }),
     });
-    expect(coreDeps.ensureDaemon).toHaveBeenCalled();
-    expect(writeFlag).toHaveBeenCalled();
+    const { ensureBootstrapped } = await import("../src/bootstrap.js");
+    expect(await ensureBootstrapped("s", deps)).toEqual({ usable: false });
+    expect(deps.warn).toHaveBeenCalledTimes(1);
+    const line: string = deps.warn.mock.calls[0][0];
+    expect(line).toMatch(/^lcm: daemon v9\.0\.0 is newer than this hook .*incompatible.*Repair: npm install -g @lossless-claude\/lcm@latest$/);
+    expect(deps.writeFlag).toHaveBeenCalledWith(expect.any(String), `unusable: ${line}`);
+  });
+
+  it("connects to a newer compatible daemon and says so once", async () => {
+    const deps = bootstrapDeps({
+      ensureDaemon: vi.fn().mockResolvedValue({ connected: true, ownership: "older-caller", daemonVersion: "0.99.1" }),
+    });
+    const { ensureBootstrapped } = await import("../src/bootstrap.js");
+    expect(await ensureBootstrapped("s", deps)).toEqual({ usable: true });
+    expect(deps.warn).toHaveBeenCalledTimes(1);
+    expect(deps.warn.mock.calls[0][0]).toMatch(/is newer than this hook .*connected\. Update with: /);
   });
 });

@@ -23,7 +23,7 @@
 //
 // Coverage comes from `git ls-files`, never from a list written by hand. Excluded on
 // purpose: CHANGELOG.md and .changeset/ (records of the past), docs/design/ (proposals),
-// plans/ (untracked working notes).
+// plans/ (untracked working notes), bundle/ (a build artifact: copies of the templates).
 //
 // Both sides abort when empty: an empty code side would pass every claim, which is the
 // exact failure this script exists to catch.
@@ -52,7 +52,7 @@ const root = process.argv[2] ?? process.cwd();
 const CLI_SOURCES = ["bin/lcm.ts", "src/cli-help.ts"];
 const PRODUCTION_DIRS = ["src", "bin", "hooks", "installer"];
 const CODE_DIRS = [...PRODUCTION_DIRS, "scripts", "test", ".github/workflows"];
-const EXCLUDED_DOCS = /^(CHANGELOG\.md|\.changeset\/|docs\/design\/|plans\/)/;
+const EXCLUDED_DOCS = /^(CHANGELOG\.md|\.changeset\/|docs\/design\/|plans\/|bundle\/)/;
 
 // Flags Commander provides on (almost) every command, whether or not the source explicitly
 // re-declares them: -V/--version is set once on `program`, and every subcommand keeps

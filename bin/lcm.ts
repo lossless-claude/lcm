@@ -748,14 +748,16 @@ async function main() {
       }
       const dryRun: boolean = opts.dryRun ?? false;
       const { install } = await import("../installer/install.js");
+      let outcome;
       if (dryRun) {
         const { DryRunServiceDeps } = await import("../installer/dry-run-deps.js");
         console.log("\n  lcm install --dry-run\n");
-        await install(new DryRunServiceDeps());
+        outcome = await install(new DryRunServiceDeps());
         console.log("\n  No changes written.");
       } else {
-        await install();
+        outcome = await install();
       }
+      if (Object.values(outcome).some((o) => o.status === "failed")) exit(1);
     });
 
   // ─── uninstall ─────────────────────────────────────────────────────────────

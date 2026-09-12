@@ -7,7 +7,7 @@ over stdio, powered by the TypeScript SDK v2, and also serves the earlier 2025-1
 revision. Which one a connection uses is the client's choice; both reach the same seven
 tools with the same arguments and text results. Only the newer revision carries the
 result envelope (`resultType`, `ttlMs`, `cacheScope`, `_meta`). The entrypoints remain
-`lcm mcp` and `node mcp.mjs`.
+`lcm mcp` (npm) and `node bundle/mcp-server.js` (the Claude Code plugin).
 
 ## Usage patterns
 

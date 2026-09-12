@@ -135,7 +135,7 @@ describe("startMcpServer", () => {
     );
   });
 
-  it("passes explicit spawnCommand and spawnArgs pointing to lcm.mjs", async () => {
+  it("passes explicit spawnCommand and spawnArgs pointing to the CLI of this build", async () => {
     ensureDaemonMcpMock.mockClear();
     const { startMcpServer } = await import("../../src/mcp/server.js");
 
@@ -145,7 +145,7 @@ describe("startMcpServer", () => {
       expect.objectContaining({
         spawnCommand: process.execPath,
         spawnArgs: expect.arrayContaining([
-          expect.stringContaining("lcm.mjs"),
+          expect.stringMatching(/[\/]lcm\.js$/),
           "daemon",
           "start",
         ]),
@@ -161,7 +161,7 @@ describe("handleDaemonRequest spawn opts propagation", () => {
       port: 9999,
       pidFilePath: "/tmp/test-daemon.pid",
       spawnCommand: "/usr/local/bin/node",
-      spawnArgs: ["/path/to/lcm.mjs", "daemon", "start"],
+      spawnArgs: ["/path/to/lcm.js", "daemon", "start"],
       expectedVersion: "1.2.3",
       _ensureDaemon: ensureDaemonSpy,
     };
@@ -177,7 +177,7 @@ describe("handleDaemonRequest spawn opts propagation", () => {
     expect(ensureDaemonSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         spawnCommand: "/usr/local/bin/node",
-        spawnArgs: ["/path/to/lcm.mjs", "daemon", "start"],
+        spawnArgs: ["/path/to/lcm.js", "daemon", "start"],
         expectedVersion: "1.2.3",
       }),
     );

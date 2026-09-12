@@ -20,7 +20,7 @@ A change that alters what one of these documents states updates the document in 
 
 The plugin is distributed from this repository's root, so everything the plugin loads must be usable by someone who installed lcm and never opens this repo:
 
-- Plugin: `.claude-plugin/plugin.json`, `skills/`, `hooks/`, `lcm.mjs`, `mcp.mjs`, `dist/`.
+- Plugin: `.claude-plugin/plugin.json`, `skills/`, `hooks/`, `bundle/` (built by `npm run build:bundle`, committed by version PRs).
 - Repository only: `.claude/`, `.agents/`, `.github/`, `scripts/`, `test/`, `tools/`, `plans/`, and every doc about developing lcm rather than using it.
 
 Development skills have two homes and no copies: `.agents/skills/` for what Codex and Copilot load (both read that directory), `.claude/skills/` for what only Claude Code loads.

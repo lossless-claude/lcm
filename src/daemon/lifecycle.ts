@@ -26,6 +26,10 @@ export type EnsureDaemonResult = {
   connected: boolean;
   port: number;
   spawned: boolean;
+  /** How the running daemon's version relates to the caller's; absent when no daemon answered. */
+  ownership?: DaemonOwnership;
+  /** Version the running daemon reported, when one answered. */
+  daemonVersion?: string;
 };
 
 export type HealthResponse = {
@@ -36,11 +40,47 @@ export type HealthResponse = {
   uptime?: number;
 };
 
-/** True when the daemon reports a version or build that differs from what the caller expects. */
+/**
+ * One daemon, newest wins.
+ * - `restart`: the caller is newer than the daemon (or same version, different build); the caller replaces it.
+ * - `older-caller`: the daemon is newer but shares the caller's compatible component; the caller connects and warns once.
+ * - `incompatible`: the daemon is newer and its compatible component differs; the caller must not use it.
+ * - `current`: nothing to do.
+ * The compatible component is the minor while the package is at 0.x and the major from 1.0.
+ */
+export type DaemonOwnership = "current" | "restart" | "older-caller" | "incompatible";
+
+function parseSemver(v: string): [number, number, number] | undefined {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(v);
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : undefined;
+}
+
+function compareSemver(a: [number, number, number], b: [number, number, number]): number {
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] - b[i];
+  return 0;
+}
+
+function compatibleComponent(v: [number, number, number]): string {
+  return v[0] === 0 ? `0.${v[1]}` : `${v[0]}`;
+}
+
+export function daemonOwnership(health: HealthResponse, expected: { version?: string; build?: string }): DaemonOwnership {
+  const mine = expected.version ? parseSemver(expected.version) : undefined;
+  const theirs = health.version ? parseSemver(health.version) : undefined;
+  if (mine && theirs) {
+    const cmp = compareSemver(mine, theirs);
+    if (cmp > 0) return "restart";
+    if (cmp < 0) return compatibleComponent(mine) === compatibleComponent(theirs) ? "older-caller" : "incompatible";
+  } else if (expected.version && health.version && health.version !== expected.version) {
+    return "restart"; // unparseable on one side: fall back to equality
+  }
+  if (expected.build && health.build && health.build !== expected.build) return "restart";
+  return "current";
+}
+
+/** True when the caller should replace the running daemon with its own build. */
 export function isStaleDaemon(health: HealthResponse, expected: { version?: string; build?: string }): boolean {
-  if (expected.version && health.version && health.version !== expected.version) return true;
-  if (expected.build && health.build && health.build !== expected.build) return true;
-  return false;
+  return daemonOwnership(health, expected) === "restart";
 }
 
 function sleep(ms: number): Promise<void> {
@@ -122,8 +162,12 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
   // Step 1: Check if daemon is already running via health check
   const health = await checkDaemonHealth(opts.port, fetchFn);
   if (health?.status === "ok") {
-    // Version/build check — if mismatch, kill and respawn
-    if (isStaleDaemon(health, { version: opts.expectedVersion, build: opts.expectedBuild })) {
+    const ownership = daemonOwnership(health, { version: opts.expectedVersion, build: opts.expectedBuild });
+    if (ownership === "incompatible") {
+      return { connected: false, port: opts.port, spawned: false, ownership, daemonVersion: health.version };
+    }
+    // Version/build check — if the caller is newer, kill and respawn
+    if (ownership === "restart") {
       // Prefer the pid the daemon reports about itself; the PID file may have drifted.
       let pid = health.pid;
       if (pid === undefined && existsSync(opts.pidFilePath)) {
@@ -141,7 +185,7 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
       cleanStalePid(opts.pidFilePath);
       // Fall through to spawn
     } else {
-      return { connected: true, port: opts.port, spawned: false };
+      return { connected: true, port: opts.port, spawned: false, ownership, daemonVersion: health.version };
     }
   }
 

@@ -19,10 +19,10 @@ interface CommandHelp {
 
 const HELP: Record<string, CommandHelp> = {
   install: {
-    summary: "Set up lcm: register Claude Code hooks, configure the daemon, and connect the MCP server.",
+    summary: "Set up lcm for every harness on this machine: Claude Code (settings, MCP server, /memory skill, lcm.md, doctor) and, when `codex` is on PATH, the global Codex hooks. Reports one outcome per harness and exits non-zero on any failure.",
     usage: "lcm install [--dry-run]",
     options: [
-      ["--dry-run", "Preview all changes without writing anything"],
+      ["--dry-run", "Preview all changes without writing anything, the shared core included"],
     ],
     examples: [
       ["lcm install", "Run the full setup wizard"],

@@ -28,7 +28,14 @@ This writes a repo-local skill file at `.agents/skills/lcm-memory/SKILL.md`. Cod
 
 ## Install the Codex connector
 
-For Codex in the current repository:
+`lcm install` sets up every harness on the machine: when `codex` is on PATH it
+installs the LCM hooks globally in `~/.codex/hooks.json`, the same as
+`lcm connectors install codex --global`, and reports one outcome per harness.
+`lcm install --dry-run` previews it without writing anything. Codex keeps the
+npm CLI: the installed hooks name the absolute node and `lcm` paths, so nothing
+depends on PATH at session time.
+
+For Codex in the current repository only:
 
 ```bash
 lcm connectors install codex
@@ -80,7 +87,7 @@ The opt-in native runtime test verifies startup, resume, prompt, stop, automatic
 
 ## Remaining connector gaps
 
-1. `lcm install` is still Claude-Code-specific. It does not set up VS Code or Codex.
+1. `lcm install` sets up Claude Code and Codex. It does not set up VS Code.
 2. GitHub Copilot in VS Code is skill-based today. There is no automatic session restore, turn ingestion, prompt-time search injection, or compaction hook.
 3. The GitHub Copilot connector does not register MCP automatically. The current supported path is instructions/skill guidance plus the `lcm` CLI.
 4. Codex MCP config lives in `.codex/config.toml`, but the connector installer does not edit TOML yet. `lcm connectors install codex --type mcp` only prints manual instructions.
