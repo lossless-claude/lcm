@@ -1,12 +1,12 @@
 ---
 name: lcm-sensitive
-description: Manage sensitive patterns for lossless-claude secret redaction — list, add, remove, test, or purge patterns.
+description: Manage sensitive patterns for lcm secret redaction — list, add, remove, test, or purge patterns.
 user_invocable: true
 ---
 
 # /lcm-sensitive
 
-Manage the sensitive patterns used by lossless-claude to redact secrets before storing conversation messages.
+Manage the sensitive patterns used by lcm to redact secrets before storing conversation messages.
 
 ## Usage
 

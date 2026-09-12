@@ -24,7 +24,7 @@
 
 ## Copilot review focus areas
 
-> This repo is a TypeScript SQLite daemon (lossless-claude / lcm).
+> This repo is a TypeScript SQLite daemon (lcm).
 > Please pay extra attention to:
 
 - **DB connection pattern**: All DB access uses `getLcmConnection()`/`closeLcmConnection()`? No `new DatabaseSync()` directly?

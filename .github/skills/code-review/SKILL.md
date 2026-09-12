@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: Review code changes in the lossless-claude/lcm repository. Use when asked to review a PR, diff, or code change. Encodes project-specific rules for the SQLite daemon, connection lifecycle, type safety, performance gates, test coverage, transactions, migrations, and error handling.
+description: Review code changes in the lcm repository. Use when asked to review a PR, diff, or code change. Encodes project-specific rules for the SQLite daemon, connection lifecycle, type safety, performance gates, test coverage, transactions, migrations, and error handling.
 ---
 
 # lcm Code Review

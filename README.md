@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>lossless-claude</strong><br>
+  <strong>lcm</strong><br>
   Shared memory infrastructure for coding agents
 </p>
 
@@ -24,7 +24,7 @@
 
 ---
 
-`lossless-claude` replaces sliding-window forgetfulness with a persistent memory runtime for both humans and agents.
+`lcm` replaces sliding-window forgetfulness with a persistent memory runtime for both humans and agents.
 
 - Every message is stored in a project SQLite database.
 - Older context is compacted into a DAG of summaries instead of being dropped.
@@ -43,7 +43,7 @@ flowchart LR
     CC["Claude Code<br/>hooks + MCP"]
   end
 
-  CC --> D["lossless-claude daemon"]
+  CC --> D["lcm daemon"]
 
   D --> DB[("project SQLite DAG")]
   D --> PM[("promoted memory FTS5")]
@@ -56,7 +56,7 @@ flowchart LR
 |---|---|---|---|---|---|
 | Claude Code | Yes | Yes | Yes, via transcript/hooks | Yes | Primary hook-based integration |
 | GitHub Copilot (VS Code) | No | Yes, via skill/rules | No | No | Repo-local skill can teach Copilot to call `lcm`, but there is no automatic restore or turn capture yet |
-| Codex | No | Yes, via skill/rules | No | No | Repo-local or global skill plus `lcm import --codex`; MCP config in `.codex/config.toml` is still manual, and first-class runtime support is tracked in issue #232 |
+| Codex | Yes | Yes | Yes, via native lifecycle hooks | LCM memory compacts on `PreCompact`; native compaction continues | `lcm connectors install codex` installs the hooks; see [docs/vscode-codex.md](docs/vscode-codex.md). MCP config in `.codex/config.toml` is still manual |
 
 ## LCM Model
 
@@ -321,7 +321,7 @@ test/
 
 All conversation data is stored locally in `~/.lossless-claude/`. Nothing is sent to any lossless-claude server.
 
-If you configure an external summarizer (`claude-process`, `anthropic`, `openai`, etc.), messages are sent to that provider for summarization — after built-in secret redaction. lossless-claude scrubs common secret patterns (API keys, tokens, passwords) from message content before writing to SQLite and before sending to the summarizer.
+If you configure an external summarizer (`claude-process`, `anthropic`, `openai`, etc.), messages are sent to that provider for summarization — after built-in secret redaction. lcm scrubs common secret patterns (API keys, tokens, passwords) from message content before writing to SQLite and before sending to the summarizer.
 
 Add project-specific patterns with `lcm sensitive add "MY_PATTERN"`. See [docs/privacy.md](docs/privacy.md) for full details.
 
@@ -333,7 +333,7 @@ Add project-specific patterns with `lcm sensitive add "MY_PATTERN"`. See [docs/p
 
 ## Acknowledgments
 
-`lossless-claude` stands on the shoulders of [lossless-claw](https://github.com/Martian-Engineering/lossless-claude), the original implementation by [Martian Engineering](https://martian.engineering). The DAG-based compaction architecture, the LCM memory model, and the foundational design decisions all originate there.
+`lcm` stands on the shoulders of [lossless-claw](https://github.com/Martian-Engineering/lossless-claude), the original implementation by [Martian Engineering](https://martian.engineering). The DAG-based compaction architecture, the LCM memory model, and the foundational design decisions all originate there.
 
 The underlying theory comes from the [LCM paper](https://papers.voltropy.com/LCM) by [Voltropy](https://x.com/Voltropy).
 

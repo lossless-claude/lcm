@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes how lossless-claude works internally — the data model, compaction lifecycle, context assembly, and expansion system.
+This document describes how lcm works internally — the data model, compaction lifecycle, context assembly, and expansion system.
 
 ## Data model
 
@@ -15,7 +15,7 @@ Messages are stored with:
 - **tokenCount** — Estimated token count (~4 chars/token)
 - **createdAt** — Insertion timestamp
 
-Each message also has **message_parts** — structured content blocks that preserve the original shape (text blocks, tool calls, tool results, reasoning, file content, etc.). This allows the assembler to reconstruct rich content when building model context, not just flat text.
+Each message also has **message_parts** — structured content blocks that preserve the original shape. The part types are `text`, `reasoning`, `tool`, `patch`, `file`, `subtask`, `compaction`, `step_start`, `step_finish`, `snapshot`, `agent`, `retry`, `skill` (a skill expansion) and `command` (a slash command invocation); see `MessagePartType` in `src/store/conversation-store.ts`. This allows the assembler to reconstruct rich content when building model context, not just flat text.
 
 ### The summary DAG
 
@@ -58,6 +58,8 @@ When Claude Code processes a turn, it calls the context engine's lifecycle hooks
 2. **ingest** / **ingestBatch** — Persists new messages to the database and appends them to context_items.
 3. **afterTurn** — After the model responds, ingests new messages, then evaluates whether compaction should run.
 
+When `/ingest` processes a session it also looks for that session's subagent transcripts at `<project>/<session_id>/subagents/*.jsonl` (`discoverSubagentSessions` in `src/daemon/subagent-discovery.ts`). The lookup is scoped to that one directory, never a walk of the projects tree. Each subagent transcript is captured as its own session and attributed to the parent session (see CONTEXT.md for the terms).
+
 ### Leaf compaction
 
 The **leaf pass** converts raw messages into leaf summaries:
@@ -68,7 +70,7 @@ The **leaf pass** converts raw messages into leaf summaries:
 4. Resolve the most recent prior summary for continuity (passed as `previous_context` so the LLM avoids repeating known information).
 5. Send to the LLM with the leaf prompt.
 6. Normalize provider response blocks (Anthropic/OpenAI text, output_text, and nested content/summary shapes) into plain text.
-7. If normalization is empty, log provider/model/block-type diagnostics and fall back to deterministic truncation.
+7. If normalization is empty, re-run it against the whole response envelope (some providers put the text in a top-level field), then retry the request once at temperature 0.05, and only then fall back to deterministic truncation, logging provider/model/block-type diagnostics.
 8. If the summary is larger than the input (LLM failure), retry with the aggressive prompt. If still too large, fall back to deterministic truncation.
 9. Persist the summary, link to source messages, and replace the message range in context_items.
 
@@ -150,7 +152,7 @@ Every summarization attempt follows this escalation:
 
 1. **Normal** — Standard prompt, temperature 0.2
 2. **Aggressive** — Tighter prompt requesting only durable facts, temperature 0.1, lower target tokens
-3. **Fallback** — Deterministic truncation to ~512 tokens with `[Truncated for context management]` marker
+3. **Fallback** — Deterministic truncation to ~512 tokens, ending in a `[Truncated from N tokens]` marker (N is the input size)
 
 This ensures compaction always makes progress, even if the LLM produces poor output.
 
@@ -218,8 +220,8 @@ For broader recall, agents can first use `lcm_grep` or `lcm_search` to find rele
 ## Large file handling — planned, not implemented
 
 Nothing below runs today. The storage layer exists — a `large_files` table and
-`insertLargeFile`/`getLargeFile` on the summary store — and `largeFileTokenThreshold` is a
-resolved config key, but no ingestion path reads that threshold or writes such a record.
+`insertLargeFile`/`getLargeFile` on the summary store — but no config key, threshold or
+ingestion path writes such a record.
 Ingestion scrubs and stores messages whole. This section describes the intended design, so
 that the half already built is not mistaken for a working feature.
 
