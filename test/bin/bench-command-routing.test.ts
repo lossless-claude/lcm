@@ -1,13 +1,15 @@
 import { Command } from "commander";
 import { describe, expect, it } from "vitest";
-import { registerBenchCommands } from "../../bin/lcm.js";
+import { registerBenchCommands } from "../../src/cli/bench.js";
+
+const benchDeps = { admitCliDatabaseWork: async () => {} };
 
 describe("benchmark help", () => {
   it.each(["build", "run"])("%s --help stops before its action executes", async (subcommand) => {
     const program = new Command("lcm");
     let output = "";
     program.exitOverride().configureOutput({ writeOut: (text) => { output += text; } });
-    registerBenchCommands(program);
+    registerBenchCommands(program, benchDeps);
     for (const child of program.commands[0].commands) {
       child.exitOverride().configureOutput({ writeOut: (text) => { output += text; } });
     }
