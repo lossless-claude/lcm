@@ -3,8 +3,9 @@ name: Publish Package
 on:
   push:
     # `main` is the release branch: merging the changesets version PR bumps
-    # package.json, which publishes. The guard below skips a version that is
-    # already on npm or already tagged, so ordinary merges are no-ops.
+    # package.json, which runs this. Each step below runs only if its result
+    # is still missing (tag, npm version, GitHub release), so an ordinary merge
+    # is a no-op and a re-run after a partial failure finishes what is left.
     branches: [main]
     paths: [package.json]
   workflow_dispatch:
@@ -36,47 +37,62 @@ jobs:
           registry-url: https://registry.npmjs.org/
           cache: npm
 
-      - name: Check if version already released
+      - name: What is still missing for this version
         id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           version="$(node -p "require('./package.json').version")"
           name="$(node -p "require('./package.json').name")"
           tag="v$version"
-          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
-          if npm view "$name@$version" version >/dev/null 2>&1; then
-            echo "Package $name@$version already published to npm — skipping publish"
-            printf 'skip=true\n' >> "$GITHUB_OUTPUT"
-          elif git rev-parse --verify "refs/tags/$tag" >/dev/null 2>&1; then
-            echo "Git tag $tag already exists (but npm version not found) — skipping publish"
-            printf 'skip=true\n' >> "$GITHUB_OUTPUT"
-          else
-            printf 'skip=false\n' >> "$GITHUB_OUTPUT"
-          fi
+          tag_done=false; npm_done=false; release_done=false
+          git rev-parse --verify "refs/tags/$tag" >/dev/null 2>&1 && tag_done=true
+          npm view "$name@$version" version >/dev/null 2>&1 && npm_done=true
+          gh release view "$tag" >/dev/null 2>&1 && release_done=true
+          echo "$tag: tag=$tag_done npm=$npm_done release=$release_done"
+          {
+            printf 'version=%s\n' "$version"
+            printf 'tag_done=%s\n' "$tag_done"
+            printf 'npm_done=%s\n' "$npm_done"
+            printf 'release_done=%s\n' "$release_done"
+          } >> "$GITHUB_OUTPUT"
+
+      # The tag comes first: the marketplace entry for this version points at
+      # it (sync-versions.mjs writes `ref: vX.Y.Z`), so a fresh plugin install
+      # resolves as soon as this step lands. CI already ran on this commit.
+      - name: Create and push release tag
+        if: steps.check.outputs.tag_done == 'false'
+        run: |
+          tag="v${{ steps.check.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "$tag"
+          git push origin "$tag"
 
       - name: Install dependencies
-        if: steps.check.outputs.skip == 'false'
+        if: steps.check.outputs.npm_done == 'false'
         run: npm ci
 
       # Kept in step with ci.yml: the hook-process e2e tests exec dist/bin/lcm.js
       # and the bench baseline shells out to ripgrep, so both must exist first.
       - name: Install ripgrep (bench baseline)
-        if: steps.check.outputs.skip == 'false'
+        if: steps.check.outputs.npm_done == 'false'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
 
       - name: Type-check
-        if: steps.check.outputs.skip == 'false'
+        if: steps.check.outputs.npm_done == 'false'
         run: npm run typecheck
 
       - name: Build
-        if: steps.check.outputs.skip == 'false'
+        if: steps.check.outputs.npm_done == 'false'
         run: npm run build
 
       - name: Check manifest
-        if: steps.check.outputs.skip == 'false'
+        if: steps.check.outputs.npm_done == 'false'
         run: npm run check-manifest
 
       - name: Run tests
-        if: steps.check.outputs.skip == 'false'
+        if: steps.check.outputs.npm_done == 'false'
         run: npm test
 
       # Trusted publishing (OIDC) needs npm 11.5.1+; Node 22 ships npm 10.x.
@@ -85,27 +101,18 @@ jobs:
       # below 12, whose install defaults (allowScripts off) would change how
       # dependencies install.
       - name: Upgrade npm for trusted publishing
-        if: steps.check.outputs.skip == 'false'
+        if: steps.check.outputs.npm_done == 'false'
         run: npm install -g npm@^11.5.1
 
       # No NODE_AUTH_TOKEN: the registry authenticates the workflow itself
       # through the OIDC token granted by `id-token: write`. 2FA-bypass
       # automation tokens lose direct publish around January 2027.
       - name: Publish to npm via trusted publishing
-        if: steps.check.outputs.skip == 'false'
+        if: steps.check.outputs.npm_done == 'false'
         run: npm publish --access public
 
-      - name: Create and push release tag
-        if: steps.check.outputs.skip == 'false'
-        run: |
-          tag="v${{ steps.check.outputs.version }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$tag" -m "$tag"
-          git push origin "$tag"
-
       - name: Create GitHub release
-        if: steps.check.outputs.skip == 'false'
+        if: steps.check.outputs.release_done == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -113,7 +120,7 @@ jobs:
           gh release create "$tag" --generate-notes --verify-tag
 
       - name: Enrich release notes
-        if: steps.check.outputs.skip == 'false'
+        if: steps.check.outputs.release_done == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
