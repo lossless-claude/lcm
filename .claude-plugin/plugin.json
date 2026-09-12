@@ -1,7 +1,7 @@
 {
   "name": "lcm",
-  "version": "0.11.0",
-  "description": "Lossless context management \u2014 DAG-based summarization that preserves every message",
+  "version": "0.12.0",
+  "description": "Lossless context management — DAG-based summarization that preserves every message",
   "author": {
     "name": "Pedro Almeida",
     "url": "https://github.com/ipedro"
