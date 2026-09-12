@@ -1,6 +1,6 @@
 ---
 name: lcm-context
-description: "You MUST use this before any work to recall project memory, and after implementing to store decisions. Lossless-claude (lcm) provides persistent cross-session memory via CLI commands."
+description: "You MUST use this before any work to recall project memory, and to store durable insights. Lossless-claude (lcm) provides persistent cross-session memory via CLI commands."
 ---
 
 # lcm Memory — Universal Agent Guide
@@ -13,7 +13,7 @@ Memory is stored in SQLite (FTS5) and accessed via CLI commands or MCP tools.
 ## Workflow
 
 1. **Before Thinking:** Run `lcm search` or `lcm grep` to recall past decisions and context.
-2. **After Implementing:** Run `lcm store` to persist new decisions, patterns, or findings.
+2. **After Implementing:** If a durable insight emerged, run `lcm store` with a `type:` tag. One concise insight and its why per store.
 
 ## Commands
 
@@ -84,8 +84,8 @@ Persist knowledge for retrieval in future sessions.
 - It's general knowledge, not project-specific
 
 ```bash
-lcm store "Auth uses JWT with 24h expiry. Tokens stored in httpOnly cookies." --tags decision,auth
-lcm store "SessionEnd hook only fires on graceful /exit, not on crash or terminal close" --tags finding,hooks
+lcm store "Auth uses JWT with 24h expiry instead of server sessions: the API stays stateless across instances." --tag type:decision --tag scope:security
+lcm store "SessionEnd hook only fires on graceful /exit, not on crash or terminal close, so a crashed session loses its tail." --tag type:gotcha --tag scope:lcm
 ```
 
 ### 5. Check System Health

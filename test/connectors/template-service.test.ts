@@ -138,7 +138,10 @@ describe('storing guidance is consistent across surfaces', () => {
 
   for (const [name, render] of surfaces) {
     it(`${name} states the shared storing rule`, () => {
-      expect(render()).toContain(STORE_RULE_PHRASE);
+      const content = render();
+      expect(content).toContain(STORE_RULE_PHRASE);
+      expect(content).toContain(name === 'mcp' ? 'lcm_store' : 'lcm store');
+      expect(content).toContain('type:');
     });
 
     it(`${name} does not make storing mandatory`, () => {
