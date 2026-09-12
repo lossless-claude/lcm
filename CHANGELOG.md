@@ -1,5 +1,105 @@
 # @lossless-claude/lcm
 
+## 0.11.1
+
+### Patch Changes
+
+- 056ed1c: fix: live `/ingest` discovers subagent transcripts, not only `lcm import`
+
+  Previously, a subagent transcript reached the database only when someone ran
+  `lcm import` by hand — `/ingest` parsed only the session's own transcript.
+  `/ingest` now also discovers that session's `subagents/*.jsonl` transcripts
+  and ingests each one with the same attribution `lcm import` already writes,
+  so a session that dispatched agents has their conversations recorded without
+  any command being run. Re-ingesting the same session does not duplicate
+  subagent messages, and a session with no subagents is unaffected.
+
+- 924bada: fix: check-manifest verifies dist/ imports match declared dependencies and versions stay in step
+
+  The published MCP server could import a package the manifest never declared, which failed silently past the bootstrap's `npm install` and only surfaced as `CONNECTION_CLOSED` in a user's session. `npm run check-manifest` now runs in CI and before publish: it fails the build if `dist/` imports anything outside `dependencies` ∪ `peerDependencies` ∪ `optionalDependencies`, or if `package.json`, `.claude-plugin/plugin.json`, and `.claude-plugin/marketplace.json` disagree on version. `version-packages` now also runs `scripts/sync-versions.mjs` to keep the two plugin manifests in step with `package.json` automatically. `mcp.mjs`'s bootstrap no longer swallows a failed `npm install` or `npm run build` silently — the error now reaches stderr, next to the `CONNECTION_CLOSED` symptom in the debug log.
+
+- 9b2513d: fix: the MCP server no longer depends on PATH to resolve node
+
+  The plugin's MCP entry ran bare `node`, and the untracked entry lcm writes into an
+  agent's own config (`~/.claude/settings.json`, `.mcp.json`, …) ran bare `lcm` —
+  which itself depends on PATH resolving `node` via its shebang. Either could fail with
+  `CONNECTION_CLOSED` and no clue why on a session whose PATH doesn't match the shell
+  `lcm` was installed from (nvm, volta, a Homebrew shim, a sandboxed plugin runtime).
+
+  `plugin.json` now points at `.claude-plugin/lcm-mcp.sh`, a static, tracked launcher
+  that reads the node interpreter lcm's own hooks already recorded in
+  `~/.lossless-claude/config.json` (`mcpNodePath`, written by `ensureCore` from
+  `process.execPath`), falling back to `command -v node` when nothing is recorded yet.
+  The entry lcm writes into an agent's own config now carries `process.execPath` and
+  the absolute path to the installed `dist/bin/lcm.js`, both measured at install time —
+  naming neither `lcm` nor `node` by name. See
+  `docs/design/mcp-interpreter-resolution.md`.
+
+- e54b2a5: fix: one storing rule across every guidance surface
+
+  `~/.claude/lcm.md` banned manual storing while the connector skill made `lcm store` mandatory on every code task. Every generated surface now states the same rule: store durable insights (decision, preference, root-cause, pattern, gotcha, solution, workflow) explicitly, tagged with `type:`, one concise insight and its why per store.
+
+- 1dffcc3: fix(plugin): the `lcm-context` skill now loads; two stale files leave the plugin
+
+  The skill lived under `.claude-plugin/skills/`, which Claude Code does not scan, so
+  no plugin user ever saw `/lcm:lcm-context`. It now lives at `skills/lcm-context/`,
+  the location the plugin loader reads by default, and its recovery table names the
+  real command (`lcm daemon start --detach`).
+
+  Removed from the plugin: the `lossless-claude-upgrade` skill (a rebuild-from-source
+  recipe for developing lcm, which also never loaded) and `.claude-plugin/hooks/README.md`
+  (it listed four hooks where the plugin registers seven; `docs/hook-protocol.md` is
+  the reference).
+
+- 081b69a: feat: record skill invocations and slash commands as `message_parts` structure
+
+  A skill's name arrives in the `Skill` tool_use's own `input.skill` field, and a slash
+  command arrives as a `<command-name>` block — both already reach the database, but only
+  as a substring of a message body, so nothing could filter on them. `parseTranscript` now
+  extracts both into `message_parts` rows (`skill` / `command`), used by both CLI import and
+  the daemon's `/ingest`. Existing databases get their `part_type` `CHECK` rebuilt to admit
+  the two new values, then backfilled once, both straight from stored message content, no
+  disk read: slash commands from the `<command-name>` block, and skill names from Claude
+  Code's own "Launching skill: `<name>`" follow-up line, which is stored verbatim.
+
+- f470be1: fix: subagent transcripts keep their parent session, type, and description
+
+  Subagent conversations imported from `~/.claude/projects/<session>/subagents/` now carry
+  `parent_session_id`, `subagent_type`, and `subagent_desc`, read from each transcript's
+  `.meta.json` sidecar. A one-time migration backfills these for subagent conversations
+  already ingested, matching against transcripts still present on disk.
+
+- 0734f70: fix: the four bundled agents now load with their frontmatter, and CI validates the plugin
+
+  `agents/memory-explorer.md`, `agents/compaction-reviewer.md`,
+  `agents/transcript-debugger.md` and `agents/health-investigator.md` each wrote a
+  multi-line `description` as a plain YAML scalar, which does not parse. Every one
+  of them had been loading with its name taken from the filename and every other
+  field — description, model, color, tools — silently dropped, since the first
+  release that shipped them. The descriptions are now literal block scalars, byte
+  for byte the same text, and they parse.
+
+  `ci.yml` runs `claude plugin validate` after `check-manifest`: strictly against
+  `.claude-plugin/marketplace.json`, and, naming `.claude-plugin/plugin.json`, a
+  full walk of the plugin's agents, skills, commands and hooks module. That walk is
+  what found the frontmatter defect above. `.claude-plugin/marketplace.json` also
+  gains the top-level `description` that `--strict` asks for.
+
+  This does not replace `npm run typecheck:hooks`, which stays local-only:
+  `plugin validate` checks structure, not whether a `$` method still exists on the
+  running build. Both reasons are now written down, in `docs/ci-runner.md` and
+  `docs/hook-protocol.md`.
+
+- 9b60300: fix: workflow subagent transcripts are now discovered and imported
+
+  Subagent transcripts dispatched inside a workflow run live one directory deeper,
+  under `subagents/workflows/<run>/`, and discovery only ever looked at files
+  directly inside `subagents/`, so an entire class of subagent conversations was
+  silently skipped. Discovery now walks into subdirectories of `subagents/` to
+  find them, reading the same `.meta.json` sidecar attribution as a flat subagent
+  transcript. Each workflow run also writes its own `journal.jsonl`, which is not
+  a transcript and stays excluded by name.
+
 ## 0.11.0
 
 ### Minor Changes

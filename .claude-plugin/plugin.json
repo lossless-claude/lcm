@@ -1,6 +1,6 @@
 {
   "name": "lcm",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "description": "Lossless context management — DAG-based summarization that preserves every message",
   "author": {
     "name": "Pedro Almeida",
@@ -9,7 +9,13 @@
   "homepage": "https://lossless-claude.com",
   "repository": "https://github.com/lossless-claude/lcm",
   "license": "MIT",
-  "keywords": ["context", "memory", "compaction", "summarization", "lcm"],
+  "keywords": [
+    "context",
+    "memory",
+    "compaction",
+    "summarization",
+    "lcm"
+  ],
   "commands": "./.claude-plugin/commands/",
   "userConfig": {
     "sessionSummarizerMaxOutputTokens": {
@@ -28,43 +34,79 @@
     "PreCompact": [
       {
         "matcher": "",
-        "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" compact --hook", "timeout": 120 }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" compact --hook",
+            "timeout": 120
+          }
+        ]
       }
     ],
     "SessionStart": [
       {
         "matcher": "",
-        "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" restore" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" restore"
+          }
+        ]
       }
     ],
     "SessionEnd": [
       {
         "matcher": "",
-        "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" session-end" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" session-end"
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
       {
         "matcher": "",
-        "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" user-prompt" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" user-prompt"
+          }
+        ]
       }
     ],
     "Stop": [
       {
         "matcher": "",
-        "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" session-snapshot" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" session-snapshot"
+          }
+        ]
       }
     ],
     "PostToolUse": [
       {
         "matcher": "^(Agent|AskUserQuestion|Bash|EnterPlanMode|ExitPlanMode|Read|Edit|Write|Glob|Grep|TaskCreate|TaskUpdate|Skill|mcp__.*)$",
-        "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" post-tool" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" post-tool"
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [
       {
         "matcher": "",
-        "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" post-tool" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" post-tool"
+          }
+        ]
       }
     ]
   }
