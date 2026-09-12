@@ -8,7 +8,7 @@ import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { upsertRedactionCounts } from "../../db/redaction-stats.js";
-import { ConversationStore, type CreateMessagePartInput, type MessageRecord } from "../../store/conversation-store.js";
+import { ConversationStore, type CreateMessageInput, type CreateMessagePartInput, type MessageRecord } from "../../store/conversation-store.js";
 import { SummaryStore } from "../../store/summary-store.js";
 import { parseTranscript, type ParsedMessage, type MessagePart } from "../../transcript.js";
 import { extractCodexSessionMeta, parseCodexTranscript } from "../../codex-transcript.js";
@@ -18,8 +18,11 @@ import { scheduleProjectLanguageDetection } from "../project-language.js";
 import { enqueue } from "../project-queue.js";
 import { readCodexTranscriptDelta, type CodexTranscriptCursor } from "../../codex-transcript-reader.js";
 import { loadCodexCursor, saveCodexCursor } from "../../db/codex-cursor.js";
+import { discoverSubagentSessions, type DiscoveredSubagentSession } from "../subagent-discovery.js";
 
 class TranscriptError extends Error {}
+
+type RedactionCounts = { gitleaks: number; builtIn: number; global: number; project: number };
 
 function validateCodexRecovery(
   db: DatabaseSync,
@@ -106,6 +109,139 @@ async function persistMessageParts(
       parts.map((part, ordinal) => toMessagePartInput(sessionId, part, ordinal)),
     );
   }
+}
+
+/**
+ * The one place that resolves a session's existing conversation and its
+ * current stored message count — shared by the primary session path and
+ * subagent ingestion, so "how storedCount is derived" has one owner.
+ */
+async function getStoredConversation(
+  db: DatabaseSync,
+  conversationStore: ConversationStore,
+  sessionId: string,
+): Promise<{ conversationId: number; storedCount: number } | undefined> {
+  const row = db.prepare("SELECT conversation_id FROM conversations WHERE session_id = ?")
+    .get(sessionId) as { conversation_id: number } | undefined;
+  if (!row) return undefined;
+  return { conversationId: row.conversation_id, storedCount: await conversationStore.getMessageCount(row.conversation_id) };
+}
+
+/** Scrubs new messages and shapes them for `createMessagesBulk`, tallying redaction counts as it goes. */
+function scrubMessagesToInputs(
+  newMessages: ParsedMessage[], scrubber: ScrubEngine, conversationId: number, storedCount: number,
+): { inputs: CreateMessageInput[]; totalCounts: RedactionCounts } {
+  const totalCounts: RedactionCounts = { gitleaks: 0, builtIn: 0, global: 0, project: 0 };
+  const inputs = newMessages.map((m, i) => {
+    const { text: scrubbedContent, gitleaks, builtIn, global: globalCount, project } = scrubber.scrubWithCounts(m.content);
+    totalCounts.gitleaks += gitleaks;
+    totalCounts.builtIn += builtIn;
+    totalCounts.global += globalCount;
+    totalCounts.project += project;
+    return {
+      conversationId, seq: storedCount + i,
+      role: m.role as "user" | "assistant" | "system" | "tool",
+      content: scrubbedContent, tokenCount: m.tokenCount,
+    };
+  });
+  return { inputs, totalCounts };
+}
+
+/**
+ * Scrubs and writes one session's new messages inside a single transaction,
+ * shared by the primary session path and subagent ingestion below — one
+ * mouth writing messages rather than two drifting apart. `onCommitted` runs
+ * inside the same transaction, after messages are created; the primary path
+ * uses it to persist a Codex cursor, subagent ingestion has none.
+ */
+async function writeNewMessages(
+  db: DatabaseSync,
+  conversationStore: ConversationStore,
+  summaryStore: SummaryStore,
+  scrubber: ScrubEngine,
+  pid: string,
+  sessionId: string,
+  conversationId: number,
+  storedCount: number,
+  newMessages: ParsedMessage[],
+  onCommitted?: () => void,
+): Promise<{ records: MessageRecord[]; totalCounts: RedactionCounts }> {
+  const { inputs, totalCounts } = scrubMessagesToInputs(newMessages, scrubber, conversationId, storedCount);
+  const records = await conversationStore.withTransaction(async () => {
+    const created = inputs.length > 0 ? await conversationStore.createMessagesBulk(inputs) : [];
+    if (created.length > 0) {
+      upsertRedactionCounts(db, pid, totalCounts);
+      await summaryStore.appendContextMessages(conversationId, created.map((r) => r.messageId));
+      await persistMessageParts(conversationStore, sessionId, newMessages, created);
+    }
+    onCommitted?.();
+    return created;
+  });
+  return { records, totalCounts };
+}
+
+/**
+ * A subagent transcript grows while its parent session is still running, so
+ * this reads the same storedCount-based delta the primary path uses: safe to
+ * call on every `/ingest` for the parent, never re-inserting what is stored.
+ */
+async function ingestSubagentSession(
+  db: DatabaseSync,
+  conversationStore: ConversationStore,
+  summaryStore: SummaryStore,
+  scrubber: ScrubEngine,
+  pid: string,
+  sub: DiscoveredSubagentSession,
+): Promise<number> {
+  const parsed = parseTranscript(sub.path);
+  const existing = await getStoredConversation(db, conversationStore, sub.sessionId);
+  const storedCount = existing?.storedCount ?? 0;
+  const newMessages = parsed.slice(storedCount);
+  if (newMessages.length === 0) return 0;
+
+  const conversation = await conversationStore.getOrCreateConversation(sub.sessionId, undefined, {
+    parentSessionId: sub.parentSessionId,
+    subagentType: sub.subagentType,
+    subagentDesc: sub.subagentDesc,
+  });
+  const { records } = await writeNewMessages(
+    db, conversationStore, summaryStore, scrubber, pid, sub.sessionId, conversation.conversationId, storedCount, newMessages,
+  );
+  return records.length;
+}
+
+async function ingestAllSubagents(
+  db: DatabaseSync, pid: string, scrubber: ScrubEngine, subagents: DiscoveredSubagentSession[],
+): Promise<void> {
+  runLcmMigrations(db);
+  const conversationStore = new ConversationStore(db);
+  const summaryStore = new SummaryStore(db);
+  for (const sub of subagents) {
+    await ingestSubagentSession(db, conversationStore, summaryStore, scrubber, pid, sub);
+  }
+}
+
+/**
+ * Discovers and ingests the subagent transcripts dispatched by one session —
+ * the only way they reach the database without `lcm import` run by hand
+ * (issue #434). Skipped entirely, before opening any queue or connection,
+ * when the session has no `subagents/` directory.
+ */
+async function ingestSubagentTranscripts(
+  cwd: string, dbPath: string, pid: string, sessionId: string, scrubber: ScrubEngine,
+): Promise<void> {
+  const subagents = discoverSubagentSessions(cwd, sessionId);
+  if (subagents.length === 0) return;
+
+  await enqueue(pid, async () => {
+    openProject(cwd);
+    const db = getLcmConnection(dbPath);
+    try {
+      await ingestAllSubagents(db, pid, scrubber, subagents);
+    } finally {
+      closeLcmConnection(dbPath);
+    }
+  });
 }
 
 export function resolveIngestMessages(input: IngestInput, cwd: string): ParsedMessage[] {
@@ -206,13 +342,12 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
 
           const conversationStore = new ConversationStore(db);
           const summaryStore = new SummaryStore(db);
-          const existing = db.prepare("SELECT conversation_id FROM conversations WHERE session_id = ?")
-            .get(session_id) as { conversation_id: number } | undefined;
-          const storedCount = existing ? await conversationStore.getMessageCount(existing.conversation_id) : 0;
+          const existing = await getStoredConversation(db, conversationStore, session_id);
+          const storedCount = existing?.storedCount ?? 0;
           let cursor: CodexTranscriptCursor | undefined;
           let sourceCount = 0;
           if (codexPath) {
-            let prior = existing ? loadCodexCursor(db, existing.conversation_id, codexPath) : undefined;
+            let prior = existing ? loadCodexCursor(db, existing.conversationId, codexPath) : undefined;
             if (prior && prior.messageCount !== storedCount) prior = undefined;
             try {
               const delta = await readCodexTranscriptDelta(codexPath, {
@@ -221,7 +356,7 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
               validateCodexMetadata(delta.sessionMeta, input, cwd);
               if (!delta.resumed && existing) {
                 validateCodexRecovery(db, {
-                  conversationId: existing.conversation_id, storedCount, messages: delta.messages,
+                  conversationId: existing.conversationId, storedCount, messages: delta.messages,
                 }, scrubber);
               }
               parsed = delta.messages;
@@ -242,33 +377,14 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
 
           if (newMessages.length === 0 && !cursor) return { ingested: 0, totalTokens: 0 };
 
-          const totalCounts = { gitleaks: 0, builtIn: 0, global: 0, project: 0 };
-          const inputs = newMessages.map((m, i) => {
-            const { text: scrubbedContent, gitleaks, builtIn, global: globalCount, project } = scrubber.scrubWithCounts(m.content);
-            totalCounts.gitleaks += gitleaks;
-            totalCounts.builtIn += builtIn;
-            totalCounts.global += globalCount;
-            totalCounts.project += project;
-            return {
-              conversationId: conversation.conversationId,
-              seq: storedCount + i,
-              role: m.role as "user" | "assistant" | "system" | "tool",
-              content: scrubbedContent,
-              tokenCount: m.tokenCount,
-            };
-          });
-          const records = await conversationStore.withTransaction(async () => {
-            const created = inputs.length > 0 ? await conversationStore.createMessagesBulk(inputs) : [];
-            if (created.length > 0) {
-              upsertRedactionCounts(db, pid, totalCounts);
-              await summaryStore.appendContextMessages(conversation.conversationId, created.map((r) => r.messageId));
-              await persistMessageParts(conversationStore, session_id, newMessages, created);
-            }
-            if (cursor && codexPath) saveCodexCursor(db, {
-              conversationId: conversation.conversationId, transcriptPath: codexPath, cursor,
-            });
-            return created;
-          });
+          const { records, totalCounts } = await writeNewMessages(
+            db, conversationStore, summaryStore, scrubber, pid, session_id, conversation.conversationId, storedCount, newMessages,
+            () => {
+              if (cursor && codexPath) saveCodexCursor(db, {
+                conversationId: conversation.conversationId, transcriptPath: codexPath, cursor,
+              });
+            },
+          );
           if (records.length === 0) return { ingested: 0, totalTokens: 0 };
 
           try {
@@ -302,6 +418,17 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
           closeLcmConnection(dbPath);
         }
       });
+      // Subagent transcripts have no dispatcher of their own — this is the only
+      // live path that discovers them (issue #434). Best-effort: a subagent
+      // transcript problem must not turn an otherwise-successful ingest into
+      // an error response for the session that was actually asked for.
+      if (input.client !== "codex") {
+        try {
+          await ingestSubagentTranscripts(cwd, dbPath, pid, session_id, scrubber);
+        } catch (err) {
+          console.error(`ingest: subagent discovery failed for session ${session_id}: ${err instanceof Error ? err.message : err}`);
+        }
+      }
       sendJson(res, 200, result);
     } catch (err) {
       sendJson(res, err instanceof TranscriptError ? 400 : 500, { error: err instanceof Error ? err.message : "ingest failed" });
