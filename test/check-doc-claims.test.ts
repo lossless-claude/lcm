@@ -77,7 +77,28 @@ const MCP_TOOL = `
 export const tool = { name: "lcm_test_tool" };
 `;
 
-function makeFixture() {
+// A command source split out of bin/lcm.ts the way a later PR will do it: the function takes
+// `program` as a parameter — never a local `const program = new Command()` — so this exercises
+// the root-parameter case directly. `standalone` is declared straight on that parameter (root
+// path); `foo`/`bar` mirrors a group command with its own child, nested exactly one file away
+// from bin/lcm.ts's own `program`.
+const CLI_FOO_TS = `
+import { Command } from "commander";
+
+export function registerFooCommands(program) {
+  program
+    .command("standalone")
+    .option("--root-flag", "Declared on the root path");
+
+  const fooCmd = new Command("foo");
+  fooCmd
+    .command("bar")
+    .option("--flag", "Only valid on foo bar");
+  program.addCommand(fooCmd);
+}
+`;
+
+function makeFixture(opts: { cliFiles?: Record<string, string> } = {}) {
   const root = mkdtempSync(join(tmpdir(), "lcm-check-doc-claims-"));
   tempDirs.push(root);
   execFileSync("git", ["init", "-q"], { cwd: root });
@@ -93,6 +114,13 @@ function makeFixture() {
   // Read only under test/: exercises the INTERNAL_ENV case (LCM_SKIP_CACHE_SYNC is listed
   // there as test/script/CI-only), never under a production dir.
   writeFileSync(join(root, "test", "fixture.test.ts"), `const skip = process.env.LCM_SKIP_CACHE_SYNC;\n`);
+
+  if (opts.cliFiles) {
+    mkdirSync(join(root, "src", "cli"), { recursive: true });
+    for (const [name, content] of Object.entries(opts.cliFiles)) {
+      writeFileSync(join(root, "src", "cli", name), content);
+    }
+  }
 
   return root;
 }
@@ -186,5 +214,35 @@ describe("checkDocClaims — per-path CLI options", () => {
 
     const { warnings } = checkDocClaims(root);
     expect(warnings.some((w) => w.includes("LCM_SKIP_CACHE_SYNC"))).toBe(false);
+  });
+});
+
+describe("checkDocClaims — command sources under src/cli/", () => {
+  it("accepts a flag declared in src/cli/foo.ts on the command path it was declared on", () => {
+    const root = makeFixture({ cliFiles: { "foo.ts": CLI_FOO_TS } });
+    writeDoc(root, "README.md", "`lcm foo bar --flag`\n");
+
+    const { errors } = checkDocClaims(root);
+    expect(errors).toEqual([]);
+  });
+
+  it("rejects that same flag claimed on a different command path", () => {
+    const root = makeFixture({ cliFiles: { "foo.ts": CLI_FOO_TS } });
+    // `compact` is a real path (declared in bin/lcm.ts) that does not declare --flag.
+    writeDoc(root, "README.md", "`lcm compact --flag`\n");
+
+    const { errors } = checkDocClaims(root);
+    expect(errors.some((e) => e.includes("--flag") && e.includes("lcm compact"))).toBe(true);
+  });
+
+  it("attributes a src/cli file's root-parameter command to the root path", () => {
+    const root = makeFixture({ cliFiles: { "foo.ts": CLI_FOO_TS } });
+    // `standalone` is declared directly on the `program` parameter passed into
+    // registerFooCommands — never a local `new Command()` in that file — so it must resolve
+    // to the root path (`lcm standalone`), not go unrecognised.
+    writeDoc(root, "README.md", "`lcm standalone --root-flag`\n");
+
+    const { errors } = checkDocClaims(root);
+    expect(errors).toEqual([]);
   });
 });
