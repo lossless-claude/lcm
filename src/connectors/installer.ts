@@ -1,11 +1,11 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync, rmdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import type { ConnectorType } from "./types.js";
 import { requiresRestart } from "./types.js";
 import { LCM_MARKERS } from "./constants.js";
 import { generateContent } from "./template-service.js";
-import { findAgent, AGENTS } from "./registry.js";
+import { findAgent, AGENTS, LEGACY_SKILL_PATHS } from "./registry.js";
 import { mcpServerEntry } from "../installer/mcp-server-entry.js";
 import {
   diagnoseCodexHooks,
@@ -73,6 +73,18 @@ function installMcpJson(filePath: string): void {
   }
   existing.mcpServers.lcm = { type: 'stdio', ...mcpServerEntry() };
   writeFileSync(filePath, JSON.stringify(existing, null, 2) + '\n');
+}
+
+// Removes the skill file (and its now-empty lcm-memory directory) at an
+// agent's previous skill config path, if one still exists there.
+function removeLegacySkill(agentId: string, cwd: string): void {
+  const legacyBase = LEGACY_SKILL_PATHS[agentId];
+  if (!legacyBase) return;
+  const legacyDir = join(resolveConfigPath(legacyBase, cwd), 'lcm-memory');
+  const legacyPath = join(legacyDir, 'SKILL.md');
+  if (!existsSync(legacyPath)) return;
+  unlinkSync(legacyPath);
+  try { rmdirSync(legacyDir); } catch { /* not empty or already gone */ }
 }
 
 function removeMcpJson(filePath: string): boolean {
@@ -145,6 +157,7 @@ export function installConnector(
     const content = generateContent(agent, connectorType);
     const skillPath = join(resolvedPath, 'lcm-memory', 'SKILL.md');
     installMarkdown(content, skillPath, 'overwrite');
+    removeLegacySkill(agent.id, cwd);
     return { success: true, path: skillPath, requiresRestart: requiresRestart(connectorType) };
   }
 
@@ -175,11 +188,12 @@ export function removeConnector(agentIdOrName: string, type?: ConnectorType, cwd
 
   if (connectorType === 'skill') {
     const skillPath = join(resolvedPath, 'lcm-memory', 'SKILL.md');
-    if (existsSync(skillPath)) {
-      unlinkSync(skillPath);
-      return true;
-    }
-    return false;
+    const existed = existsSync(skillPath);
+    if (existed) unlinkSync(skillPath);
+    const legacyBase = LEGACY_SKILL_PATHS[agent.id];
+    const hadLegacy = !!legacyBase && existsSync(join(resolveConfigPath(legacyBase, cwd), 'lcm-memory', 'SKILL.md'));
+    removeLegacySkill(agent.id, cwd);
+    return existed || hadLegacy;
   }
 
   // rules: remove markers from file

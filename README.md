@@ -122,7 +122,7 @@ lcm connectors install github-copilot
 lcm connectors doctor github-copilot
 ```
 
-This creates a workspace skill under `.github/skills/lcm-memory/SKILL.md` so Copilot can search and store memory through the `lcm` CLI.
+This creates a workspace skill under `.agents/skills/lcm-memory/SKILL.md`. Both Codex and Copilot read that directory, so one installed file serves either host.
 
 ### Codex
 
