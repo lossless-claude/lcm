@@ -36,14 +36,16 @@ function registerLifecycleHandlersOnce() {
   lifecycleHandlersRegistered = true;
 
   process.on("exit", killAllLiveChildren);
-  process.on("SIGINT", () => {
-    killAllLiveChildren();
-    process.exit(130);
-  });
-  process.on("SIGTERM", () => {
-    killAllLiveChildren();
-    process.exit(143);
-  });
+  // After cleanup the signal is re-sent to this process with the handler gone,
+  // so the parent observes the real signal, not an exit code standing in for it.
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    const handler = () => {
+      killAllLiveChildren();
+      process.removeListener(signal, handler);
+      process.kill(process.pid, signal);
+    };
+    process.on(signal, handler);
+  }
 }
 
 /**
@@ -98,7 +100,12 @@ export function runCli(argv, stdin, env, cwd) {
     });
 
     child.on("close", (status, signal) => {
-      if (typeof child.pid === "number") liveChildPids.delete(child.pid);
+      // The leader is gone; a descendant with its own stdio could still be
+      // running in the group, so the group is killed before it is forgotten.
+      if (typeof child.pid === "number") {
+        killChildProcessGroup(child.pid);
+        liveChildPids.delete(child.pid);
+      }
       if (settled) return;
       settled = true;
       clearTimeout(timer);
