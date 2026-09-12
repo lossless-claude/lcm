@@ -20,10 +20,10 @@ A change that alters what one of these documents states updates the document in 
 
 The plugin is distributed from this repository's root, so everything the plugin loads must be usable by someone who installed lcm and never opens this repo:
 
-- Plugin: `.claude-plugin/plugin.json` and the `commands/` it declares, `skills/`, `agents/`, `hooks/`, `lcm.mjs`, `mcp.mjs`, `dist/`.
+- Plugin: `.claude-plugin/plugin.json`, `skills/`, `hooks/`, `lcm.mjs`, `mcp.mjs`, `dist/`.
 - Repository only: `.claude/`, `.agents/`, `.github/`, `scripts/`, `test/`, `tools/`, `plans/`, and every doc about developing lcm rather than using it.
 
-A skill, command or agent that exists to work **on** lcm goes under `.claude/` or `.agents/`, never under the plugin.
+A skill that exists to work **on** lcm goes under `.claude/` or `.agents/`, never under the plugin. The plugin's own surface is skills only: a skill that only a person should invoke sets `disable-model-invocation: true`, and it routes to `lcm help <command>` rather than restating options, so the CLI stays the one reference.
 
 ## Invariants
 
@@ -44,4 +44,4 @@ npm run check-agents   # this contract and its declared sources are consistent
 npm run typecheck && npm test
 ```
 
-CI runs the same three. What they do not verify: `check-docs` proves a name exists in the code, not that the code path is reachable or that the prose around it is true; `check-agents` proves the sources exist, are non-empty and are linked from this file, not that a source agrees with the code it names. Those two remain review work. `claude plugin validate .claude-plugin/plugin.json` walks the plugin's own agents, skills and commands; run it after touching any of them.
+CI runs the same three. What they do not verify: `check-docs` proves a name exists in the code, not that the code path is reachable or that the prose around it is true; `check-agents` proves the sources exist, are non-empty and are linked from this file, not that a source agrees with the code it names. Those two remain review work. `claude plugin validate .claude-plugin/plugin.json` walks the plugin's skills; run it after touching one.

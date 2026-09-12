@@ -6,8 +6,7 @@ description: "Use before starting work in this repository to recall project memo
 # lcm memory from the CLI
 
 lcm keeps memory across sessions. This skill is the CLI form for agents whose host does not
-load the plugin. Tool choice and error recovery are in [skills/lcm-context/SKILL.md](../../../skills/lcm-context/SKILL.md);
-MCP parameters are in [docs/agent-tools.md](../../../docs/agent-tools.md); tags are in
+load the plugin. MCP parameters are in [docs/agent-tools.md](../../../docs/agent-tools.md); tags are in
 [docs/tag-schema.md](../../../docs/tag-schema.md). `lcm <command> --help` is the option reference.
 
 ## When to recall
