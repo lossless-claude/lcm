@@ -1,107 +1,86 @@
-# LCM Canonical Tag Schema
+# Tag schema
 
-> **Status:** Canonical — all agents and tools must follow this schema.
-> **Source of truth:** This file. The `lcm_store` MCP tool description references it.
+Tags are what `lcm search --tag` and the `tags` filter of `lcm_search` select on. This file
+defines the shape a tag has and the prefixes the guidance recommends. The `lcm_store`
+description and the learning instruction point here.
 
-## Why a schema?
+## Shape
 
-Without a canonical schema, the same decision gets stored as `decision:X`, `category:decision`, or just `decision` — making `lcm_search` with tag filters unreliable. The canonical schema enforces consistent `<prefix>:<value>` pairs so any agent can construct a precise search filter.
+A tag is `<prefix>:<value>`. A tag without a colon is stored and full-text searchable, but
+no filter can select it by category: `decision`, `category:decision` and `type:decision`
+are three different tags. Use the prefixed form for anything you intend to filter on later.
 
-## Schema
+Values are lower-case, with `-` between words. Nothing enforces this at runtime; the schema
+holds by convention, and a filter only finds what was stored with the exact same tag.
 
-All tags follow the `<prefix>:<value>` format. Free-text tags (no colon) are allowed but are not searchable by category — prefer canonical tags for anything you intend to filter on later.
+## Recommended prefixes
 
-### `type:` — what kind of insight is this?
+### `type:` — what kind of insight this is
 
 | Value | When to use |
 |-------|-------------|
-| `type:decision` | An architectural or process decision with trade-offs evaluated |
-| `type:preference` | A user or team preference ("always do X", "never do Y") |
-| `type:root-cause` | The identified cause of a bug, failure, or incident |
-| `type:pattern` | A recurring pattern worth reusing (code structure, workflow, etc.) |
-| `type:gotcha` | A non-obvious pitfall, footgun, or surprising behavior |
+| `type:decision` | An architectural or process decision, with the trade-off that settled it |
+| `type:preference` | How the user or the team wants things done ("always X", "never Y") |
+| `type:root-cause` | The identified cause of a bug, failure or incident |
+| `type:pattern` | A recurring structure worth reusing: code shape, workflow, convention |
+| `type:gotcha` | A non-obvious pitfall or surprising behaviour |
 | `type:solution` | A specific fix or answer to a concrete problem |
-| `type:workflow` | A step-by-step process or runbook |
-| `type:feat` | A feature addition or enhancement |
-| `type:fix` | A bug fix |
-| `type:chore` | Maintenance, refactoring, or tooling work |
+| `type:workflow` | A step-by-step process that works |
+| `type:feat`, `type:fix`, `type:chore` | The kind of change a piece of work was |
 
-### `scope:` — what domain does this belong to?
+Passive promotion (`docs/passive-learning.md`) also produces `type:user-context` (from role
+and identity statements) and `type:environment` (from install and setup commands). They
+are valid filter values; a hand-written store rarely needs them.
+
+### `scope:` — which domain the insight belongs to
 
 | Value | When to use |
 |-------|-------------|
-| `scope:token-budget` | Token window management, quota, efficiency |
-| `scope:model-selection` | Haiku vs Sonnet vs Opus routing decisions |
 | `scope:architecture` | System design, component structure, data flow |
-| `scope:process` | Team workflow, governance, sprint cadence |
-| `scope:xgh` | Anything in or about the xgh repo |
-| `scope:autoimprove` | Anything in or about the autoimprove repo |
-| `scope:lcm` | Anything in or about lossless-claude itself |
 | `scope:security` | Secret scanning, auth, access control |
 | `scope:testing` | Test strategy, test infrastructure, test failures |
-| `scope:ci` | CI/CD pipelines, GitHub Actions, release automation |
+| `scope:ci` | CI pipelines, release automation |
+| `scope:process` | Team workflow and governance |
+| `scope:token-budget` | Context window management, quota, efficiency |
+| `scope:model-selection` | Which model to route a task to |
+| `scope:<name>` | Any other domain; keep one spelling per domain |
 
-### `priority:` — how urgent or important?
+### `project:` — which repository or project
 
-| Value | When to use |
-|-------|-------------|
-| `priority:P0` | Critical — system broken, data loss, security issue |
-| `priority:P1` | High — blocks a sprint or a release |
-| `priority:P2` | Normal — should be addressed in current or next sprint |
-| `priority:P3` | Low — nice-to-have, no deadline |
+A free identifier that matches the repository or project name, for example `project:lcm`.
+Use it when a memory would be misleading outside that project.
 
-### `owner:` — who is responsible for acting on this?
-
-| Value | When to use |
-|-------|-------------|
-| `owner:CTO` | Technical architecture, code quality, test coverage |
-| `owner:COO` | Process, coordination, sprint management |
-| `owner:team-lead-xgh` | xgh repo work |
-| `owner:team-lead-autoimprove` | autoimprove repo work |
-| `owner:team-lead-lcm` | lcm repo work |
-| `owner:co-ceo` | Governance, strategic decisions, both Co-CEOs needed |
-
-### `project:` — which project/repo?
-
-Freeform identifier matching the repo or project name. Examples:
-- `project:lcm`
-- `project:xgh`
-- `project:autoimprove`
-- `project:claudinho`
-
-### `sprint:` — which sprint?
-
-Format: `sprint:spN` (e.g. `sprint:sp3`). Use the sprint declared in the current triage file header. Fallback: `sprint:YYYY-MM-DD`.
-
-### `source:` — where did this insight come from?
+### `source:` — where the insight came from
 
 | Value | When to use |
 |-------|-------------|
-| `source:adversarial-review` | From an Enthusiast/Adversary/Judge review cycle |
-| `source:session` | From a Co-CEO working session |
+| `source:session` | From a working session with the user |
+| `source:review` | From a code or design review |
 | `source:ci` | From automated CI output |
-| `source:agent` | From a teammate or subagent |
-| `source:retrospective` | From a sprint retrospective |
+| `source:agent` | From a subagent's report |
+
+### `priority:` — how urgent
+
+`priority:P0` (system broken, data loss, security) through `priority:P3` (nice-to-have).
+Most memories carry no priority.
 
 ## Combining tags
 
-A single `lcm_store` entry should use 2–4 canonical tags, covering at minimum `type:` and one of `project:` or `scope:`. Sprint and source tags are recommended for traceability.
+A store carries two to four tags: `type:` plus one of `project:` or `scope:`, and `source:`
+when the origin matters for trust.
 
-**Example — good:**
 ```
-["type:solution", "scope:lcm", "project:lcm", "sprint:sp3", "source:session"]
+["type:solution", "scope:lcm", "project:lcm", "source:session"]
 ```
 
-**Example — bad (avoid):**
-```
-["solution", "lcm", "sp3"]
-```
-The bad form still works for full-text search but cannot be filtered by tag category.
+## Reserved tags
 
-## Migration note
+Two tags carry protocol meaning and are not categories:
 
-Existing entries tagged with legacy formats (e.g. `category:decision`, `decision`, `category:gotcha`) are not retroactively migrated — the schema applies to new stores only. The `promote-events` AUTO_TAGS mapping uses `category:*` as an internal convention; those are separate from the canonical user-facing schema defined here.
+- `signal:memory_used` together with `memory_id:<id>` marks a store as a usage report for
+  the memory `<id>`. The stale memory review (`docs/configuration.md`, section "Stale memory review") counts
+  these reports as uses of that memory. The learning instruction tells the model to emit them when it acts
+  on a surfaced memory.
 
-## Validation
-
-There is no runtime enforcement today — the schema is normative by convention. A future `lcm doctor` check may warn on tag-less entries or non-canonical formats.
+Passive promotion tags an event whose category has no `type:` mapping as
+`category:<category>`. Those are internal; filter on `type:` instead.

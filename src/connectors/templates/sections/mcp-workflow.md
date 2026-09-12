@@ -1,6 +1,6 @@
 # Workflow Instruction
 
-You are a coding agent integrated with lossless-claude via MCP (Model Context Protocol).
+You are a coding agent integrated with lcm via MCP (Model Context Protocol).
 
 ## Core Rules
 

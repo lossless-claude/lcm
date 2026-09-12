@@ -1,12 +1,12 @@
 ---
 name: lcm-doctor
-description: Run lossless-claude diagnostics — checks daemon, hooks, MCP server, and summarizer health.
+description: Run lcm diagnostics — checks daemon, hooks, MCP server, and summarizer health.
 user_invocable: true
 ---
 
 # /lcm-doctor
 
-Run diagnostics on the lossless-claude installation.
+Run diagnostics on the lcm installation.
 
 ## Instructions
 
@@ -17,7 +17,7 @@ The tool returns pre-formatted markdown with status tables per section. Display 
 If any check shows a failure icon, add a **Fix** section listing specific remediation steps for each failure.
 
 End with one of:
-- *All checks passed — lossless-claude is healthy.*
+- *All checks passed — lcm is healthy.*
 - *N check(s) need attention — see Fix section above.*
 
 If `lcm_doctor` is unavailable, run `lcm doctor` via Bash and display the output verbatim. If `lcm` is not on PATH (marketplace install), first try to install it by running `node "${CLAUDE_PLUGIN_ROOT}/lcm.mjs" install`, then retry `lcm doctor`. If `lcm` is still unavailable, run `node "${CLAUDE_PLUGIN_ROOT}/lcm.mjs" doctor` instead.

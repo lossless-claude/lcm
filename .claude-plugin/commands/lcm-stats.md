@@ -1,12 +1,12 @@
 ---
 name: lcm-stats
-description: Show lossless-claude memory inventory, compression ratios, and DAG statistics.
+description: Show lcm memory inventory, compression ratios, and DAG statistics.
 user_invocable: true
 ---
 
 # /lcm-stats
 
-Show memory and compression statistics from lossless-claude.
+Show memory and compression statistics from lcm.
 
 ## Instructions
 

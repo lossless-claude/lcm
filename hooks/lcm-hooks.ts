@@ -45,7 +45,7 @@ When you recognize a durable insight, call lcm_store immediately:
 - solution: non-trivial fix worth remembering
 - workflow: multi-step process that works
 
-Tag prefixes: type: | scope: | project: | sprint: | source: | priority: | owner: | signal:
+Tag prefixes: type: | scope: | project: | source: | priority:
 Usage: lcm_store(text: "concise insight with why", tags: ["type:decision", "project:<repo>"])
 
 When you act on a surfaced memory (use it to inform a decision, avoid a known pitfall, or reference it in your work), emit:

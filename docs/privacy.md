@@ -1,6 +1,6 @@
 # Privacy & Data Handling
 
-lossless-claude stores your conversation history locally to enable memory across sessions. This document explains exactly what is stored, what leaves your machine, and how to control sensitive data.
+lcm stores your conversation history locally to enable memory across sessions. This document explains exactly what is stored, what leaves your machine, and how to control sensitive data.
 
 ## What is stored locally
 
@@ -11,11 +11,11 @@ All storage is on your machine:
 - **`~/.lossless-claude/config.json`** — Global configuration including the optional `security.sensitivePatterns` array.
 - **`~/.lossless-claude/daemon.pid`** — Daemon process ID (transient).
 
-No data is sent to any lossless-claude server. There is no telemetry.
+No data is sent to any lcm server. There is no telemetry.
 
 ## What leaves your machine
 
-lossless-claude is a local runtime. By default, **nothing leaves your machine**.
+lcm is a local runtime. By default, **nothing leaves your machine**.
 
 The exception is the summarizer, which you configure explicitly:
 
@@ -32,21 +32,16 @@ When using an external summarizer, only the text being summarized is sent — no
 
 ## Secret redaction
 
-lossless-claude scrubs secrets from message content **before writing to SQLite** and **before sending to the summarizer**. Redaction happens at both write points to ensure secrets are never persisted or transmitted.
+lcm scrubs secrets from message content **before writing to SQLite** and **before sending to the summarizer**. Redaction happens at both write points to ensure secrets are never persisted or transmitted.
 
 ### Built-in patterns
 
-These patterns are always active, regardless of configuration:
+Two sets are always active, regardless of configuration:
 
-| Pattern | Example match |
-|---------|--------------|
-| OpenAI secret key | `sk-...` |
-| Anthropic API key | `sk-ant-...` |
-| GitHub personal access token | `ghp_...` |
-| AWS access key ID | `AKIA...` |
-| PEM private key | `-----BEGIN ... KEY-----` |
-| Bearer token | `Authorization: Bearer ...` |
-| Password assignment | `password=...`, `PASSWORD: ...` |
+- The **gitleaks** rule set, generated into `src/generated-patterns.ts` (221 patterns at the time of writing; `lcm sensitive list` prints the current count).
+- A **native** set in `src/scrub.ts` that fills the gaps gitleaks covers only with surrounding context: bare OpenAI, Anthropic, GitHub, AWS, npm, Slack, Stripe, Google, SendGrid, Twilio, Shopify, Vault and Doppler tokens, PEM key headers, bearer tokens, password assignments, and database connection strings with embedded credentials.
+
+Patterns are applied in this order: gitleaks, native, global user patterns, then project patterns. `lcm sensitive list` shows every active pattern with its source.
 
 ### Project-specific patterns
 
@@ -77,7 +72,7 @@ Messages and summaries persist until you explicitly remove them:
 # Remove data for the current project
 lcm sensitive purge --yes
 
-# Remove all lossless-claude data
+# Remove all lcm data
 lcm uninstall
 ```
 

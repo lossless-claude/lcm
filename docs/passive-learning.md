@@ -25,6 +25,7 @@ Events are written to a **sidecar SQLite database** (`~/.lossless-claude/events/
 | File access | Read/Edit/Write/Glob/Grep with file paths | 3 (pattern-only) |
 | MCP tools | Which MCP tools are used (tool name only) | 3 (pattern-only) |
 | Skills | Which skills are invoked | 3 (pattern-only) |
+| Subagents | Which subagent was dispatched, with its task description | 3 (pattern-only) |
 
 ### What Is NOT Captured
 

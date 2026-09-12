@@ -40,3 +40,20 @@ _Avoid_: caller, origin session
 The text a skill injects into the model's context when it is invoked. It arrives in
 the transcript as ordinary message text, not as a tool call.
 _Avoid_: skill prompt, skill body
+
+### What lcm keeps
+
+**Episodic memory**:
+The captured messages and the summaries compacted from them, in the order they happened.
+_Avoid_: history, transcript store
+
+**Promoted memory**:
+A statement kept on its own, apart from any session: stored by an agent through
+`lcm store` / `lcm_store`, or promoted from passive capture. Search reports the two
+layers separately.
+_Avoid_: semantic memory, knowledge base
+
+**Tag**:
+A `<prefix>:<value>` label on a promoted memory, the only thing a filter selects on.
+`docs/tag-schema.md` lists the prefixes.
+_Avoid_: category, label

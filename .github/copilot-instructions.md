@@ -1,4 +1,4 @@
-# Copilot Review Instructions — lossless-claude (lcm)
+# Copilot Review Instructions — lcm
 
 This repo is a TypeScript SQLite daemon that persists Claude session memories across context resets. It uses Node.js `DatabaseSync` (synchronous SQLite API) and exposes an HTTP daemon with REST routes.
 

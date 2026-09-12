@@ -99,6 +99,7 @@ Inspect metadata and lineage of a memory node without expanding content. Returns
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `nodeId` | string | ✅ | — | Node ID to describe (e.g. `sum_abc123`) |
+| `projectId` | string | | current project | The `project.id` of the search result the node came from. Required whenever the node did not come from this project, since node ids are only unique within one project |
 
 **Examples:**
 
@@ -117,6 +118,7 @@ Decompress a summary node into its full source content by traversing the DAG. Us
 |-------|------|----------|---------|-------------|
 | `nodeId` | string | ✅ | — | Summary node ID to expand |
 | `depth` | number | | `1` | How many levels of the DAG to traverse |
+| `projectId` | string | | current project | The `project.id` of the search result the node came from. Required whenever the node did not come from this project, since node ids are only unique within one project |
 
 **Examples:**
 
@@ -130,7 +132,7 @@ lcm_expand(nodeId: "sum_def456", depth: 2)
 
 ### lcm_store
 
-Store a memory into lossless-claude's semantic layer. Use to persist decisions, findings, reasoning outcomes, or any knowledge worth retrieving in future sessions.
+Store a memory into the promoted layer. Use to persist decisions, findings, reasoning outcomes, or any knowledge worth retrieving in future sessions.
 
 **Parameters:**
 
@@ -158,7 +160,7 @@ lcm_store(
 
 ### lcm_stats
 
-Show token savings, compression ratios, and usage statistics across all lossless-claude projects.
+Show token savings, compression ratios, and usage statistics across all lcm projects.
 
 **Parameters:**
 
@@ -168,7 +170,7 @@ Show token savings, compression ratios, and usage statistics across all lossless
 
 ### lcm_doctor
 
-Run diagnostics on the lossless-claude installation. Checks daemon, hooks, MCP config, and summarizer health.
+Run diagnostics on the lcm installation. Checks daemon, hooks, MCP config, and summarizer health.
 
 **Parameters:** none.
 
