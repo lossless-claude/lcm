@@ -190,12 +190,15 @@ LCM defaults to `LCM_SUMMARY_PROVIDER=auto`.
 - In Copilot sessions, `auto` resolves to `copilot-process` — no client identifies itself as `copilot` yet, so today you select it with `LCM_SUMMARY_PROVIDER=copilot-process`
 - If you explicitly set `LCM_SUMMARY_PROVIDER`, that override applies to both CLIs
 
-You can pin a specific summarizer provider and model:
+The provider can be pinned from the environment; the model only from `~/.lossless-claude/config.json`:
 
 ```bash
-# Use a specific provider + model for summarization
-export LCM_SUMMARY_MODEL=anthropic/claude-sonnet-4-20250514
 export LCM_SUMMARY_PROVIDER=anthropic
+export LCM_SUMMARY_API_KEY=<key>   # required by the anthropic provider
+```
+
+```json
+{ "llm": { "provider": "anthropic", "model": "claude-sonnet-4-20250514" } }
 ```
 
 Valid provider values are:

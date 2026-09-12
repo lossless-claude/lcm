@@ -80,11 +80,11 @@ These three tools **chain** from broad to deep:
 If `lcm` is not on PATH, first try to install it by running:
 
 ```bash
-LCM_DIR=$(ls -d ~/.claude/plugins/cache/*/lossless-claude/*/ 2>/dev/null | sort -V | tail -1)
-node "${LCM_DIR}lcm.mjs" install
+PLUGIN_DIR=$(ls -d ~/.claude/plugins/cache/lossless-claude/lcm/*/ 2>/dev/null | sort -V | tail -1)
+node "${PLUGIN_DIR}lcm.mjs" install
 ```
 
-If install succeeds, `lcm` should now be available on PATH. If it is still not available, use the bundled binary directly: `node "$(ls -d ~/.claude/plugins/cache/*/lossless-claude/*/ 2>/dev/null | sort -V | tail -1)lcm.mjs"`
+If install succeeds, `lcm` should now be available on PATH. If it is still not available, use the bundled binary directly: `node "$(ls -d ~/.claude/plugins/cache/lossless-claude/lcm/*/ 2>/dev/null | sort -V | tail -1)lcm.mjs"`
 
 ## Error Self-Healing
 
@@ -92,7 +92,7 @@ If install succeeds, `lcm` should now be available on PATH. If it is still not a
 
 | Error | Recovery |
 |---|---|
-| Daemon not running | Run `lcm start` via Bash, then retry |
+| Daemon not running | Run `lcm daemon start --detach` via Bash, then retry |
 | "unauthorized" or version mismatch | Run `lcm daemon restart` via Bash, then retry — the daemon is likely running an older version than the MCP server expects |
 | "No results" from search | Try `lcm_grep` with different keywords, or broaden the query |
 | Node not found on expand | Use `lcm_search` to find the correct nodeId |
