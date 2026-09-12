@@ -66,6 +66,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Check manifest
+        run: npm run check-manifest
+
       - name: Run tests
         run: npm test
 

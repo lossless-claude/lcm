@@ -40,7 +40,8 @@
     "test": "vitest run --dir test",
     "typecheck": "tsc --noEmit",
     "typecheck:hooks": "bash scripts/typecheck-hooks.sh",
-    "version-packages": "changeset version"
+    "check-manifest": "node scripts/check-manifest.mjs",
+    "version-packages": "changeset version && node scripts/sync-versions.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",

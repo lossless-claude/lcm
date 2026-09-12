@@ -71,6 +71,10 @@ jobs:
         if: steps.check.outputs.skip == 'false'
         run: npm run build
 
+      - name: Check manifest
+        if: steps.check.outputs.skip == 'false'
+        run: npm run check-manifest
+
       - name: Run tests
         if: steps.check.outputs.skip == 'false'
         run: npm test
