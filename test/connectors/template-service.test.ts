@@ -146,6 +146,7 @@ describe('storing guidance is consistent across surfaces', () => {
       expect(content).not.toContain('BEFORE done');
       expect(content).not.toContain('Do NOT store manually');
       expect(content).not.toMatch(/\|\s*MUST\s*\|\s*MUST\s*\|/);
+      if (name === 'skill') expect(content).toContain('durable insight?');
     });
   }
 });

@@ -12,7 +12,7 @@ You have access to a persistent memory system that survives across conversations
 
 ## Workflow
 
-Code task received → `lcm search` FIRST → Work → `lcm store` (durable insights only) → Done
+Code task received → `lcm search` FIRST → Work → durable insight? → `lcm store` → Done
 Non-code task → Just respond normally
 
 ## Commands
@@ -44,7 +44,7 @@ lcm expand sum_abc123def456 --depth 2
 ### 5. Store Knowledge
 Store durable insights (decision, preference, root-cause, pattern, gotcha, solution, workflow) explicitly with `lcm store`, tagged with `type:`. One concise insight and its why per store.
 ```bash
-lcm store "Auth middleware uses JWT with 24h expiry. See src/middleware/auth.ts" --tag type:gotcha --tag scope:auth
+lcm store "Auth uses JWT with 24h expiry instead of server sessions: the API stays stateless across instances. See src/middleware/auth.ts" --tag type:decision --tag scope:auth
 ```
 
 ### 6. Stats
