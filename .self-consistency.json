@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "roots": ["AGENTS.md"],
-  "effects": ["hooks", "cli", "mcp", "config", "docs", "release", "ci"],
+  "effects": ["data-model", "hooks", "config", "mcp", "release", "ci"],
   "sources": {
     "context": "CONTEXT.md",
     "architecture": "docs/architecture.md",
@@ -19,9 +19,9 @@
       "budget": { "words": 1000 },
       "references": [
         { "target": "CONTEXT.md" },
-        { "target": "docs/architecture.md", "when": ["hooks", "cli", "mcp", "config"] },
+        { "target": "docs/architecture.md", "when": ["data-model"] },
         { "target": "docs/hook-protocol.md", "when": ["hooks"] },
-        { "target": "docs/configuration.md", "when": ["config", "cli"] },
+        { "target": "docs/configuration.md", "when": ["config"] },
         { "target": "docs/agent-tools.md", "when": ["mcp"] },
         { "target": "docs/releasing.md", "when": ["release"] },
         { "target": "docs/ci-runner.md", "when": ["ci"] }
