@@ -77,6 +77,10 @@ export interface IngestInput {
   client?: "claude" | "codex";
   source?: "live" | "import";
   replay?: boolean;
+  /** Subagent attribution, carried from the transcript's `.meta.json` sidecar. */
+  parent_session_id?: string;
+  subagent_type?: string;
+  subagent_desc?: string;
 }
 
 export function resolveIngestMessages(input: IngestInput, cwd: string): ParsedMessage[] {
@@ -202,7 +206,11 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
               throw new TranscriptError(error instanceof Error ? error.message : "invalid transcript");
             }
           }
-          const conversation = await conversationStore.getOrCreateConversation(session_id);
+          const conversation = await conversationStore.getOrCreateConversation(session_id, undefined, {
+            parentSessionId: input.parent_session_id,
+            subagentType: input.subagent_type,
+            subagentDesc: input.subagent_desc,
+          });
           // A recovery scan may skip only a verified, already-stored prefix.
           // Valid suffix reads begin exactly at the database's message count.
           const newMessages = parsed.slice(Math.max(0, storedCount - sourceCount));

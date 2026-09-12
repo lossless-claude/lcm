@@ -72,10 +72,20 @@ export type MessagePartRecord = {
   metadata: string | null;
 };
 
+/**
+ * Subagent attribution, carried from the transcript's `.meta.json` sidecar
+ * (see src/subagent-attribution.ts). Undefined/null for ordinary sessions.
+ */
+export type SubagentAttributionInput = {
+  parentSessionId?: string | null;
+  subagentType?: string | null;
+  subagentDesc?: string | null;
+};
+
 export type CreateConversationInput = {
   sessionId: string;
   title?: string;
-};
+} & SubagentAttributionInput;
 
 export type ConversationRecord = {
   conversationId: ConversationId;
@@ -86,6 +96,9 @@ export type ConversationRecord = {
   updatedAt: Date;
   /** "tagged" when the rows separate tool output from human text; null when unknown. */
   roleTagging: "tagged" | null;
+  parentSessionId: string | null;
+  subagentType: string | null;
+  subagentDesc: string | null;
 };
 
 export type MessageSearchInput = {
@@ -116,6 +129,9 @@ interface ConversationRow {
   created_at: string;
   updated_at: string;
   role_tagging: string | null;
+  parent_session_id: string | null;
+  subagent_type: string | null;
+  subagent_desc: string | null;
 }
 
 interface MessageRow {
@@ -159,6 +175,9 @@ interface MaxSeqRow {
   max_seq: number;
 }
 
+const CONVERSATION_SELECT_COLUMNS = `SELECT conversation_id, session_id, title, bootstrapped_at, created_at, updated_at,
+       role_tagging, parent_session_id, subagent_type, subagent_desc`;
+
 // ── Row mappers ───────────────────────────────────────────────────────────────
 
 function toConversationRecord(row: ConversationRow): ConversationRecord {
@@ -170,6 +189,9 @@ function toConversationRecord(row: ConversationRow): ConversationRecord {
     createdAt: parseSqliteDate(row.created_at),
     updatedAt: parseSqliteDate(row.updated_at),
     roleTagging: row.role_tagging === "tagged" ? "tagged" : null,
+    parentSessionId: row.parent_session_id,
+    subagentType: row.subagent_type,
+    subagentDesc: row.subagent_desc,
   };
 }
 
@@ -245,14 +267,20 @@ export class ConversationStore {
       // Every conversation opened from here on is parsed by the tagging
       // parser. Older ones keep NULL, which reads as unknown; they are never
       // re-tagged, so the marker states what is known rather than guessing.
-      .prepare(`INSERT INTO conversations (session_id, title, role_tagging) VALUES (?, ?, 'tagged')`)
-      .run(input.sessionId, input.title ?? null);
+      .prepare(
+        `INSERT INTO conversations (session_id, title, role_tagging, parent_session_id, subagent_type, subagent_desc)
+         VALUES (?, ?, 'tagged', ?, ?, ?)`,
+      )
+      .run(
+        input.sessionId,
+        input.title ?? null,
+        input.parentSessionId ?? null,
+        input.subagentType ?? null,
+        input.subagentDesc ?? null,
+      );
 
     const row = this.db
-      .prepare(
-        `SELECT conversation_id, session_id, title, bootstrapped_at, created_at, updated_at, role_tagging
-       FROM conversations WHERE conversation_id = ?`,
-      )
+      .prepare(`${CONVERSATION_SELECT_COLUMNS} FROM conversations WHERE conversation_id = ?`)
       .get(Number(result.lastInsertRowid)) as unknown as ConversationRow;
 
     return toConversationRecord(row);
@@ -264,10 +292,7 @@ export class ConversationStore {
 
   getConversationSync(conversationId: ConversationId): ConversationRecord | null {
     const row = this.db
-      .prepare(
-        `SELECT conversation_id, session_id, title, bootstrapped_at, created_at, updated_at, role_tagging
-       FROM conversations WHERE conversation_id = ?`,
-      )
+      .prepare(`${CONVERSATION_SELECT_COLUMNS} FROM conversations WHERE conversation_id = ?`)
       .get(conversationId) as unknown as ConversationRow | undefined;
 
     return row ? toConversationRecord(row) : null;
@@ -276,7 +301,7 @@ export class ConversationStore {
   async getConversationBySessionId(sessionId: string): Promise<ConversationRecord | null> {
     const row = this.db
       .prepare(
-        `SELECT conversation_id, session_id, title, bootstrapped_at, created_at, updated_at, role_tagging
+        `${CONVERSATION_SELECT_COLUMNS}
        FROM conversations
        WHERE session_id = ?
        ORDER BY created_at DESC
@@ -287,12 +312,16 @@ export class ConversationStore {
     return row ? toConversationRecord(row) : null;
   }
 
-  async getOrCreateConversation(sessionId: string, title?: string): Promise<ConversationRecord> {
+  async getOrCreateConversation(
+    sessionId: string,
+    title?: string,
+    attribution?: SubagentAttributionInput,
+  ): Promise<ConversationRecord> {
     const existing = await this.getConversationBySessionId(sessionId);
     if (existing) {
       return existing;
     }
-    return this.createConversation({ sessionId, title });
+    return this.createConversation({ sessionId, title, ...attribution });
   }
 
   async markConversationBootstrapped(conversationId: ConversationId): Promise<void> {
@@ -309,7 +338,7 @@ export class ConversationStore {
   async listConversations(): Promise<ConversationRecord[]> {
     const rows = this.db
       .prepare(
-        `SELECT conversation_id, session_id, title, bootstrapped_at, created_at, updated_at, role_tagging
+        `${CONVERSATION_SELECT_COLUMNS}
        FROM conversations
        ORDER BY created_at`,
       )

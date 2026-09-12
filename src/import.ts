@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, existsSync, lstatSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync, lstatSync, type Dirent } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
@@ -8,6 +8,7 @@ import { findAllCodexTranscripts } from "./codex-transcript.js";
 import type { ProgressState } from "./cli/progress-state.js";
 import { projectDbPath, projectId } from "./daemon/project.js";
 import { defaultLcmPaths } from "./lcm-paths.js";
+import { readSubagentAttribution } from "./subagent-attribution.js";
 import {
   appendReplayManifestSessions,
   clearReplayState,
@@ -97,8 +98,78 @@ function buildProjectMap(lcmDir?: string): Map<string, string> {
   return map;
 }
 
-export function findSessionFiles(projectDir: string): { path: string; sessionId: string; mtime: number }[] {
-  const files: { path: string; sessionId: string; mtime: number }[] = [];
+export interface DiscoveredSessionFile {
+  path: string;
+  sessionId: string;
+  mtime: number;
+  /** Subagent transcripts only — carried from the `.meta.json` sidecar. Absent for ordinary sessions. */
+  parentSessionId?: string | null;
+  subagentType?: string | null;
+  subagentDesc?: string | null;
+}
+
+function findFlatSessionFile(projectDir: string, entry: Dirent): DiscoveredSessionFile | null {
+  if (!entry.isFile() || entry.isSymbolicLink() || !entry.name.endsWith('.jsonl')) return null;
+  try {
+    const filePath = join(projectDir, entry.name);
+    const st = lstatSync(filePath);
+    if (st.isSymbolicLink()) return null; // skip symlinks
+    return { path: filePath, sessionId: basename(entry.name, '.jsonl'), mtime: st.mtimeMs };
+  } catch {
+    return null; // file deleted or permissions issue
+  }
+}
+
+function findNestedSessionFile(projectDir: string, sessionDirName: string): DiscoveredSessionFile | null {
+  // Layout A (nested): <projectDir>/<session-id>/<session-id>.jsonl
+  const nestedTranscript = join(projectDir, sessionDirName, `${sessionDirName}.jsonl`);
+  if (!existsSync(nestedTranscript)) return null;
+  try {
+    const nestedStat = lstatSync(nestedTranscript);
+    if (nestedStat.isSymbolicLink() || !nestedStat.isFile()) return null;
+    return { path: nestedTranscript, sessionId: sessionDirName, mtime: nestedStat.mtimeMs };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Subagent transcripts: <projectDir>/<session-id>/subagents/<agent-id>.jsonl.
+ * Each one's `.meta.json` sidecar is read here, alongside file discovery, so
+ * the attribution travels with the file — nothing is re-derived from the
+ * path later (see docs/design/subagent-attribution-from-sidecar.md).
+ */
+function findOneSubagentSessionFile(subagentsDir: string, sessionDirName: string, name: string): DiscoveredSessionFile | null {
+  try {
+    const subPath = join(subagentsDir, name);
+    const subSt = lstatSync(subPath);
+    if (subSt.isSymbolicLink()) return null; // skip symlinks
+    return {
+      path: subPath,
+      sessionId: basename(name, '.jsonl'),
+      mtime: subSt.mtimeMs,
+      ...readSubagentAttribution(subPath, sessionDirName),
+    };
+  } catch {
+    return null; // couldn't be stat'd
+  }
+}
+
+function findSubagentSessionFiles(projectDir: string, sessionDirName: string): DiscoveredSessionFile[] {
+  const subagentsDir = join(projectDir, sessionDirName, 'subagents');
+  if (!existsSync(subagentsDir)) return [];
+
+  const files: DiscoveredSessionFile[] = [];
+  for (const sub of readdirSync(subagentsDir, { withFileTypes: true })) {
+    if (!sub.isFile() || sub.isSymbolicLink() || !sub.name.endsWith('.jsonl')) continue;
+    const found = findOneSubagentSessionFile(subagentsDir, sessionDirName, sub.name);
+    if (found) files.push(found);
+  }
+  return files;
+}
+
+export function findSessionFiles(projectDir: string): DiscoveredSessionFile[] {
+  const files: DiscoveredSessionFile[] = [];
   if (!existsSync(projectDir)) return files;
 
   // Track which session IDs have a flat (project-root) transcript so we can
@@ -106,66 +177,17 @@ export function findSessionFiles(projectDir: string): { path: string; sessionId:
   const flatSessionIds = new Set<string>();
 
   for (const entry of readdirSync(projectDir, { withFileTypes: true })) {
-    // Layout B (flat): <projectDir>/<session-id>.jsonl
-    if (entry.isFile() && !entry.isSymbolicLink() && entry.name.endsWith('.jsonl')) {
-      try {
-        const filePath = join(projectDir, entry.name);
-        const st = lstatSync(filePath);
-        if (st.isSymbolicLink()) continue; // skip symlinks
-        const sessionId = basename(entry.name, '.jsonl');
-        files.push({
-          path: filePath,
-          sessionId,
-          mtime: st.mtimeMs,
-        });
-        flatSessionIds.add(sessionId);
-      } catch {
-        // Skip entries that can't be stat'd (file deleted or permissions issue)
-        continue;
-      }
+    const flat = findFlatSessionFile(projectDir, entry);
+    if (flat) {
+      files.push(flat);
+      flatSessionIds.add(flat.sessionId);
+      continue;
     }
-    if (entry.isDirectory() && !entry.isSymbolicLink()) {
-      // Layout A (nested): <projectDir>/<session-id>/<session-id>.jsonl
-      const nestedTranscript = join(projectDir, entry.name, `${entry.name}.jsonl`);
-      if (existsSync(nestedTranscript)) {
-        try {
-          const nestedStat = lstatSync(nestedTranscript);
-          if (nestedStat.isSymbolicLink()) {
-            // skip symlinks
-          } else if (nestedStat.isFile()) {
-            files.push({
-              path: nestedTranscript,
-              sessionId: entry.name,
-              mtime: nestedStat.mtimeMs,
-            });
-          }
-        } catch {
-          // Skip entries that can't be stat'd
-        }
-      }
+    if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
 
-      // Subagent transcripts: <projectDir>/<session-id>/subagents/<agent-id>.jsonl
-      const subagentsDir = join(projectDir, entry.name, 'subagents');
-      if (existsSync(subagentsDir)) {
-        for (const sub of readdirSync(subagentsDir, { withFileTypes: true })) {
-          if (sub.isFile() && !sub.isSymbolicLink() && sub.name.endsWith('.jsonl')) {
-            try {
-              const subPath = join(subagentsDir, sub.name);
-              const subSt = lstatSync(subPath);
-              if (subSt.isSymbolicLink()) continue; // skip symlinks
-              files.push({
-                path: subPath,
-                sessionId: basename(sub.name, '.jsonl'),
-                mtime: subSt.mtimeMs,
-              });
-            } catch {
-              // Skip entries that can't be stat'd
-              continue;
-            }
-          }
-        }
-      }
-    }
+    const nested = findNestedSessionFile(projectDir, entry.name);
+    if (nested) files.push(nested);
+    files.push(...findSubagentSessionFiles(projectDir, entry.name));
   }
 
   // Deduplicate: when a session has both a flat and nested transcript,
@@ -196,6 +218,10 @@ interface SessionEntry {
   sessionId: string;
   cwd: string;
   client?: "claude" | "codex";
+  /** Subagent sessions only — see DiscoveredSessionFile. */
+  parentSessionId?: string | null;
+  subagentType?: string | null;
+  subagentDesc?: string | null;
 }
 
 type CompactLlmUsage = {
@@ -369,7 +395,7 @@ async function ingestSessionList(
   const total = sessions.length + doneCount;
   const processedBase = doneCount;
 
-  for (const { path, sessionId, cwd, client: sourceClient = "claude" } of sessions) {
+  for (const { path, sessionId, cwd, client: sourceClient = "claude", parentSessionId, subagentType, subagentDesc } of sessions) {
     // Stop starting new work after SIGINT/SIGTERM; the renderer waits for the
     // in-flight session to settle before exiting.
     if (options.onBeforeSession && !options.onBeforeSession()) break;
@@ -415,6 +441,10 @@ async function ingestSessionList(
         ...(sourceClient === "codex" ? { client: "codex" } : {}),
         // A completed session's transcript may have grown; replay must ingest the tail.
         ...(options.replay ? { replay: true } : {}),
+        // Subagent attribution, carried from the sidecar findSessionFiles already read.
+        ...(parentSessionId ? { parent_session_id: parentSessionId } : {}),
+        ...(subagentType ? { subagent_type: subagentType } : {}),
+        ...(subagentDesc ? { subagent_desc: subagentDesc } : {}),
       });
       if (res.ingested === 0 && res.totalTokens === 0) {
         result.skippedEmpty++;
