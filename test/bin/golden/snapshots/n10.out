@@ -1,0 +1,7 @@
+
+  Connector health:
+
+  ⚠ Codex: Codex lifecycle hooks are not installed.
+    Path: <TMP>/project/.codex/hooks.json
+  ✓ Codex: skill at <TMP>/project/.agents/skills/lcm-memory/SKILL.md
+

@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "content": "Keep database operations inside the admission boundary.",
+      "tags": ["decision"],
+      "confidence": 0.9,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "sessionId": null
+    },
+    {
+      "content": "The golden guard freezes CLI output before the bin/lcm.ts refactor.",
+      "tags": ["gotcha", "testing"],
+      "confidence": 0.75,
+      "createdAt": "2026-01-02T00:00:00.000Z",
+      "sessionId": null
+    }
+  ]
+}

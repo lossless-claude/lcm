@@ -1,0 +1,12 @@
+
+  lcm status — Show daemon status, version, uptime, and project memory statistics.
+
+  Usage: lcm status [--json]
+
+  Options:
+    --json  Output structured JSON (useful for scripting)
+
+  Examples:
+    lcm status         Show human-readable status
+    lcm status --json  Show machine-readable status
+

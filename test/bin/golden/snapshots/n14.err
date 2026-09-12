@@ -1,0 +1,1 @@
+Usage: lcm connectors remove <agent> [--type rules|mcp|skill|hooks] [--global]

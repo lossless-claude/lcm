@@ -1,0 +1,28 @@
+Built-in patterns:
+  [gitleaks]  220 patterns (synced 2026-03-27)
+  [native]    sk-[A-Za-z0-9]{20,}
+  [native]    sk-ant-[A-Za-z0-9\-]{40,}
+  [native]    ghp_[A-Za-z0-9]{36}
+  [native]    AKIA[0-9A-Z]{16}
+  [native]    -----BEGIN .* KEY-----
+  [native]    Bearer [A-Za-z0-9\-._~+/]+=*
+  [native]    [Pp]assword\s*[:=]\s*\S+
+  [native]    npm_[A-Za-z0-9]{30,}
+  [native]    xox[bpoasre]-[A-Za-z0-9\-]+
+  [native]    xapp-[A-Za-z0-9\-]+
+  [native]    xwfp-[A-Za-z0-9\-]+
+  [native]    [spr]k_live_[A-Za-z0-9]{16,}
+  [native]    AIza[\w-]{35}
+  [native]    SG\.[a-zA-Z0-9=_\-.]{66}
+  [native]    SK[0-9a-fA-F]{32}
+  [native]    shp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}
+  [native]    hvs\.[\w-]{90,120}
+  [native]    dp\.pt\.[a-z0-9]{43}
+  [native]    (postgres|mysql|mongodb|redis|rediss)://\S+:\S+@\S+
+  [native]    eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+
+
+Global patterns (config.json):
+  (none)
+
+Project patterns (<TMP>/lcm/projects/<PROJECT>/sensitive-patterns.txt):
+  (none)

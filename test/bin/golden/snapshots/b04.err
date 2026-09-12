@@ -1,0 +1,11 @@
+Error: --generator must be llm or mechanical
+    at Command.<anonymous> (<FRAME>)
+    at Command.listener [as _actionHandler] (<FRAME>)
+    at <FRAME>
+    at Command._chainOrCall (<FRAME>)
+    at Command._parseCommand (<FRAME>)
+    at <FRAME>
+    at Command._chainOrCall (<FRAME>)
+    at Command._dispatchSubcommand (<FRAME>)
+    at Command._parseCommand (<FRAME>)
+    at <FRAME>

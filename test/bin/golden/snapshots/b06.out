@@ -1,0 +1,12 @@
+Usage: lcm bench run [options]
+
+Run the benchmark against search and a grep baseline
+
+Options:
+  --project <path>     Project directory (default: cwd)
+  --k <n>              Hit-rate cutoff (default: 5) (default: "5")
+  --bench-file <file>  Benchmark file path (default: project memory directory)
+  --json               Output structured JSON
+  --union              Score against every checkout of this repository, not this
+                       project alone
+  -h, --help           display help for command

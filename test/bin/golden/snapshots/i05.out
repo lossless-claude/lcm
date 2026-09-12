@@ -1,0 +1,12 @@
+
+  lcm uninstall — Remove lcm hooks and MCP registration.
+
+  Usage: lcm uninstall [--dry-run]
+
+  Options:
+    --dry-run  Preview removals without writing anything
+
+  Examples:
+    lcm uninstall            Remove all lcm integrations
+    lcm uninstall --dry-run  Preview what uninstall would do
+

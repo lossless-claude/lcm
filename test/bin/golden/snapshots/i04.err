@@ -1,0 +1,12 @@
+Error: ENOENT: no such file or directory, copyfile '<REPO>/skills/memory/SKILL.md' -> '<TMP>/home/.claude/skills/memory/SKILL.md'
+    at copyFileSync (<FRAME>)
+    at install (<FRAME>)
+    at async Command.<anonymous> (<FRAME>)
+    at async Command.parseAsync (<FRAME>)
+    at async main (<FRAME>) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'copyfile',
+  path: '<REPO>/skills/memory/SKILL.md',
+  dest: '<TMP>/home/.claude/skills/memory/SKILL.md'
+}

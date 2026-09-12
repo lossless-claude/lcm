@@ -1,0 +1,10 @@
+
+  lcm post-tool — Dispatch the post-tool hook — records tool invocation events.
+
+  Usage: lcm post-tool
+
+  Examples:
+    lcm post-tool  Record post-tool events (called by PostToolUse hook)
+
+  Note: Invoked automatically by the Claude Code PostToolUse hook. Not intended for direct use.
+

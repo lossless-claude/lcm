@@ -1,0 +1,21 @@
+
+  lcm export — Export promoted knowledge to a portable JSON file (secrets scrubbed).
+
+  Usage: lcm export [--all] [--tags <tags>] [--since <date>] [--output <file>]
+
+  Options:
+    --all              Export all projects (one file per project, auto-named)
+    --tags <tags>      Only export entries that have all these comma-separated tags
+    --since <date>     Only export entries created on or after this ISO date (e.g. 2026-01-01)
+    --output <file>    Write output to file instead of stdout
+    --format <format>  Output format: json (default)
+
+  Examples:
+    lcm export                               Print current project knowledge to stdout
+    lcm export --output knowledge.json       Write to a file
+    lcm export --since 2026-01-01            Only export entries from 2026 onward
+    lcm export --tags decision,architecture  Only export entries tagged with both tags
+    lcm export --all                         Export all projects to auto-named JSON files
+
+  Note: Secrets are automatically scrubbed using the project's sensitive patterns before export. The JSON format is: { version, exportedAt, projectCwd, entries: [{content, tags, confidence, createdAt, sessionId}] }.
+

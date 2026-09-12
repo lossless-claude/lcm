@@ -1,0 +1,10 @@
+
+  lcm doctor — Run diagnostics — checks daemon health, hooks, MCP server, and summarizer.
+
+  Usage: lcm doctor
+
+  Examples:
+    lcm doctor  Run all diagnostic checks
+
+  Note: Exits with code 1 if any check fails. Integrate into CI or shell startup for early detection.
+

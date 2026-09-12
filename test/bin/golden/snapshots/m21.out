@@ -1,0 +1,12 @@
+
+  lcm expand — Expand a summary node back into lower-level source detail.
+
+  Usage: lcm expand <nodeId> [--depth N]
+
+  Options:
+    --depth N  Traversal depth (default: 1)
+
+  Examples:
+    lcm expand sum_abc123def456            Expand a summary one level deep
+    lcm expand sum_abc123def456 --depth 2  Traverse deeper into the DAG
+

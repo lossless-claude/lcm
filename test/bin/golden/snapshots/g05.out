@@ -1,0 +1,12 @@
+
+  lcm stats — Show memory inventory: message counts, compression ratios, and summary statistics.
+
+  Usage: lcm stats [-v]
+
+  Options:
+    -v, --verbose  Show per-conversation breakdown
+
+  Examples:
+    lcm stats     Summary view across all projects
+    lcm stats -v  Per-conversation detail
+

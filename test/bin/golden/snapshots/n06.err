@@ -1,0 +1,1 @@
+Usage: lcm connectors install <agent> [--type rules|mcp|skill|hooks] [--global]

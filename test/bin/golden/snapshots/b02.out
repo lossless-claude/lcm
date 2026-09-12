@@ -1,0 +1,11 @@
+Usage: lcm bench [options] [command]
+
+Build and run a natural-language retrieval benchmark from this project's
+ingested sessions
+
+Options:
+  -h, --help       display help for command
+
+Commands:
+  build [options]  Sample ingested sessions and write a local benchmark file
+  run [options]    Run the benchmark against search and a grep baseline

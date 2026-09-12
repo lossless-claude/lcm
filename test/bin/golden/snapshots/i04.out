@@ -1,0 +1,14 @@
+
+  lcm install --dry-run
+
+[dry-run] would create: <TMP>/home/.lossless-claude
+[dry-run] would create: <TMP>/home/.lossless-claude
+[dry-run] would write: <TMP>/home/.lossless-claude/config.json
+Created <TMP>/home/.lossless-claude/config.json
+[dry-run] would create: <TMP>/home/.lossless-claude
+[dry-run] would write: <TMP>/home/.lossless-claude/config.json
+[dry-run] would start daemon on port 3737
+[dry-run] would create: <TMP>/home/.claude
+[dry-run] would write: <TMP>/home/.claude/settings.json
+Updated <TMP>/home/.claude/settings.json
+[dry-run] would create: <TMP>/home/.claude/skills/memory
