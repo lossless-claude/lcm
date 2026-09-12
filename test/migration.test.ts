@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -370,6 +370,161 @@ describe("session_ingest_log table migration", () => {
     const info = db.prepare("PRAGMA table_info(session_ingest_log)").all() as Array<{ name: string }>;
     expect(info.length).toBeGreaterThan(0);
 
+    db.close();
+  });
+});
+
+describe("subagent attribution backfill", () => {
+  function makeFixtureDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), "lossless-claude-subagent-fixture-"));
+    tempDirs.push(dir);
+    return dir;
+  }
+
+  function makeLegacyDb(): { db: ReturnType<typeof getLcmConnection>; dbPath: string } {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-claude-subagent-backfill-"));
+    tempDirs.push(tempDir);
+    const dbPath = join(tempDir, "legacy.db");
+    const db = getLcmConnection(dbPath);
+    // A conversations table shaped like it was before parent_session_id/subagent_type/subagent_desc existed.
+    db.exec(`
+      CREATE TABLE conversations (
+        conversation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        title TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+    return { db, dbPath };
+  }
+
+  it("adds the three attribution columns to a legacy conversations table", () => {
+    const { db } = makeLegacyDb();
+    runLcmMigrations(db, { fts5Available: false, claudeProjectsDir: makeFixtureDir() });
+
+    const columns = (db.prepare(`PRAGMA table_info(conversations)`).all() as Array<{ name: string }>).map(
+      (c) => c.name,
+    );
+    expect(columns).toContain("parent_session_id");
+    expect(columns).toContain("subagent_type");
+    expect(columns).toContain("subagent_desc");
+    db.close();
+  });
+
+  it("fills attribution for an agent-% conversation from its sidecar, falling back to the owning folder", () => {
+    const { db } = makeLegacyDb();
+    db.prepare(`INSERT INTO conversations (conversation_id, session_id) VALUES (1, 'agent-child')`).run();
+
+    const fixture = makeFixtureDir();
+    const subagentsDir = join(fixture, "proj-hash", "owning-session", "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    writeFileSync(join(subagentsDir, "agent-child.jsonl"), "");
+    writeFileSync(
+      join(subagentsDir, "agent-child.meta.json"),
+      JSON.stringify({ agentType: "idea-explorer", description: "explore" }),
+    );
+
+    runLcmMigrations(db, { fts5Available: false, claudeProjectsDir: fixture });
+
+    const row = db
+      .prepare(`SELECT parent_session_id, subagent_type, subagent_desc FROM conversations WHERE conversation_id = 1`)
+      .get() as { parent_session_id: string | null; subagent_type: string | null; subagent_desc: string | null };
+    expect(row).toEqual({
+      parent_session_id: "owning-session",
+      subagent_type: "idea-explorer",
+      subagent_desc: "explore",
+    });
+    db.close();
+  });
+
+  it("resolves a nested dispatch's parentAgentId to the sibling's session id, not the owning session", () => {
+    const { db } = makeLegacyDb();
+    db.prepare(`INSERT INTO conversations (conversation_id, session_id) VALUES (1, 'agent-nested')`).run();
+
+    const fixture = makeFixtureDir();
+    const subagentsDir = join(fixture, "proj-hash", "owning-session", "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    writeFileSync(join(subagentsDir, "agent-nested.jsonl"), "");
+    writeFileSync(
+      join(subagentsDir, "agent-nested.meta.json"),
+      JSON.stringify({ agentType: "worker", parentAgentId: "dispatcher-id" }),
+    );
+
+    runLcmMigrations(db, { fts5Available: false, claudeProjectsDir: fixture });
+
+    const row = db
+      .prepare(`SELECT parent_session_id FROM conversations WHERE conversation_id = 1`)
+      .get() as { parent_session_id: string | null };
+    expect(row.parent_session_id).toBe("agent-dispatcher-id");
+    db.close();
+  });
+
+  it("leaves an agent-% conversation null and counts it unmatched when its transcript is gone from disk", () => {
+    const { db } = makeLegacyDb();
+    db.prepare(`INSERT INTO conversations (conversation_id, session_id) VALUES (1, 'agent-deleted')`).run();
+
+    runLcmMigrations(db, { fts5Available: false, claudeProjectsDir: makeFixtureDir() });
+
+    const row = db
+      .prepare(`SELECT parent_session_id, subagent_type, subagent_desc FROM conversations WHERE conversation_id = 1`)
+      .get() as { parent_session_id: string | null; subagent_type: string | null; subagent_desc: string | null };
+    expect(row).toEqual({ parent_session_id: null, subagent_type: null, subagent_desc: null });
+
+    const marker = db
+      .prepare(`SELECT unmatched_count FROM subagent_attribution_backfill WHERE id = 1`)
+      .get() as { unmatched_count: number };
+    expect(marker.unmatched_count).toBe(1);
+    db.close();
+  });
+
+  it("never deletes a conversation row (UPDATE only, never DELETE)", () => {
+    const { db } = makeLegacyDb();
+    db.prepare(`INSERT INTO conversations (conversation_id, session_id) VALUES (1, 'agent-a'), (2, 'plain-session')`).run();
+
+    runLcmMigrations(db, { fts5Available: false, claudeProjectsDir: makeFixtureDir() });
+
+    const count = db.prepare(`SELECT COUNT(*) AS n FROM conversations`).get() as { n: number };
+    expect(count.n).toBe(2);
+    db.close();
+  });
+
+  it("runs the disk walk only once: a transcript that appears after the first run is never backfilled", () => {
+    const { db } = makeLegacyDb();
+    db.prepare(`INSERT INTO conversations (conversation_id, session_id) VALUES (1, 'agent-late')`).run();
+
+    const fixture = makeFixtureDir();
+    // First run: no transcript on disk yet — stays null, marker gets written.
+    runLcmMigrations(db, { fts5Available: false, claudeProjectsDir: fixture });
+
+    // Transcript shows up on disk after the fact.
+    const subagentsDir = join(fixture, "proj-hash", "owning-session", "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    writeFileSync(join(subagentsDir, "agent-late.jsonl"), "");
+    writeFileSync(join(subagentsDir, "agent-late.meta.json"), JSON.stringify({ agentType: "late" }));
+
+    runLcmMigrations(db, { fts5Available: false, claudeProjectsDir: fixture }); // second run — should be a no-op
+
+    const row = db
+      .prepare(`SELECT parent_session_id, subagent_type FROM conversations WHERE conversation_id = 1`)
+      .get() as { parent_session_id: string | null; subagent_type: string | null };
+    expect(row).toEqual({ parent_session_id: null, subagent_type: null });
+
+    const markerCount = db.prepare(`SELECT COUNT(*) AS n FROM subagent_attribution_backfill`).get() as { n: number };
+    expect(markerCount.n).toBe(1);
+    db.close();
+  });
+
+  it("does not touch a conversation whose session_id does not start with agent-", () => {
+    const { db } = makeLegacyDb();
+    db.prepare(`INSERT INTO conversations (conversation_id, session_id) VALUES (1, 'plain-session')`).run();
+
+    runLcmMigrations(db, { fts5Available: false, claudeProjectsDir: makeFixtureDir() });
+
+    const row = db
+      .prepare(`SELECT parent_session_id FROM conversations WHERE conversation_id = 1`)
+      .get() as { parent_session_id: string | null };
+    expect(row.parent_session_id).toBeNull();
     db.close();
   });
 });

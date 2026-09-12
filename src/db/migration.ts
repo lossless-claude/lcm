@@ -1,6 +1,13 @@
 import type { DatabaseSync } from "node:sqlite";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { getLcmDbFeatures } from "./features.js";
 import { ensureCodexCursorTable } from "./codex-cursor.js";
+import { walkSubagentTranscripts } from "../subagent-attribution.js";
+
+function defaultClaudeProjectsDir(): string {
+  return join(homedir(), ".claude", "projects");
+}
 
 /** Disable foreign keys around a migration sweep (SQLite forbids toggling inside a transaction). */
 export function withForeignKeysDisabled(db: DatabaseSync, fn: () => void): void {
@@ -110,6 +117,78 @@ function ensureSummaryMetadataColumns(db: DatabaseSync): void {
   if (!hasSourceMessageTokenCount) {
     db.exec(`ALTER TABLE summaries ADD COLUMN source_message_token_count INTEGER NOT NULL DEFAULT 0`);
   }
+}
+
+/** conversations.parent_session_id / subagent_type / subagent_desc — see docs/design/subagent-attribution-from-sidecar.md. */
+function ensureSubagentAttributionColumns(db: DatabaseSync): void {
+  const columns = db.prepare(`PRAGMA table_info(conversations)`).all() as SummaryColumnInfo[];
+  const wanted = ["parent_session_id", "subagent_type", "subagent_desc"];
+  for (const name of wanted) {
+    if (!columns.some((col) => col.name === name)) {
+      db.exec(`ALTER TABLE conversations ADD COLUMN ${name} TEXT DEFAULT NULL`);
+    }
+  }
+}
+
+/**
+ * Marks the one-time subagent-attribution backfill done, so it never re-walks
+ * `~/.claude/projects` again on this database. `unmatched_count` is the
+ * number of `agent-%` conversations whose transcript was no longer on disk
+ * when the sweep ran — those stay NULL forever, which is expected, not a bug.
+ */
+function ensureSubagentBackfillTable(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS subagent_attribution_backfill (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      unmatched_count INTEGER NOT NULL DEFAULT 0,
+      completed_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+}
+
+function hasUnresolvedAgentConversations(db: DatabaseSync): boolean {
+  const row = db
+    .prepare(`SELECT 1 FROM conversations WHERE session_id LIKE 'agent-%' AND parent_session_id IS NULL LIMIT 1`)
+    .get();
+  return row !== undefined;
+}
+
+type UnresolvedAgentConversationRow = { conversation_id: number; session_id: string };
+
+function applySubagentAttributionBackfill(db: DatabaseSync, claudeProjectsDir: string): number {
+  const bySessionId = new Map(walkSubagentTranscripts(claudeProjectsDir).map((e) => [e.sessionId, e.attribution]));
+  const rows = db
+    .prepare(`SELECT conversation_id, session_id FROM conversations WHERE session_id LIKE 'agent-%' AND parent_session_id IS NULL`)
+    .all() as UnresolvedAgentConversationRow[];
+
+  const updateStmt = db.prepare(
+    `UPDATE conversations SET parent_session_id = ?, subagent_type = ?, subagent_desc = ? WHERE conversation_id = ?`,
+  );
+  let unmatched = 0;
+  for (const row of rows) {
+    const attribution = bySessionId.get(row.session_id);
+    if (!attribution) {
+      unmatched++; // transcript no longer on disk — stays NULL
+      continue;
+    }
+    updateStmt.run(attribution.parentSessionId, attribution.subagentType, attribution.subagentDesc, row.conversation_id);
+  }
+  return unmatched;
+}
+
+/**
+ * Runs once per database: re-walks `~/.claude/projects` to fill
+ * `parent_session_id` / `subagent_type` / `subagent_desc` for every
+ * `agent-%` conversation imported before those columns existed. `UPDATE`
+ * only — `summary_messages.message_id` is `ON DELETE RESTRICT`, so a
+ * compacted conversation can never be deleted and re-ingested.
+ */
+function backfillSubagentAttribution(db: DatabaseSync, claudeProjectsDir: string): void {
+  ensureSubagentBackfillTable(db);
+  if (db.prepare(`SELECT 1 FROM subagent_attribution_backfill WHERE id = 1`).get()) return;
+
+  const unmatched = hasUnresolvedAgentConversations(db) ? applySubagentAttributionBackfill(db, claudeProjectsDir) : 0;
+  db.prepare(`INSERT INTO subagent_attribution_backfill (id, unmatched_count) VALUES (1, ?)`).run(unmatched);
 }
 
 function parseTimestamp(value: string | null | undefined): Date | null {
@@ -406,19 +485,19 @@ function backfillSummaryMetadata(db: DatabaseSync): void {
   }
 }
 
-export function runLcmMigrations(
-  db: DatabaseSync,
-  options?: { fts5Available?: boolean },
-): void {
+export interface LcmMigrationOptions {
+  fts5Available?: boolean;
+  /** Override for `~/.claude/projects` — tests only, so the backfill never walks the real disk. */
+  claudeProjectsDir?: string;
+}
+
+export function runLcmMigrations(db: DatabaseSync, options?: LcmMigrationOptions): void {
   // Foreign keys can stall schema changes against legacy rows (e.g. FTS
   // rebuilds that reinsert messages) — disable them for the sweep.
   withForeignKeysDisabled(db, () => runLcmMigrationsInner(db, options));
 }
 
-function runLcmMigrationsInner(
-  db: DatabaseSync,
-  options?: { fts5Available?: boolean },
-): void {
+function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS conversations (
       conversation_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -625,6 +704,9 @@ function runLcmMigrationsInner(
   if (!taggingColumns.some((col) => col.name === "role_tagging")) {
     db.exec(`ALTER TABLE conversations ADD COLUMN role_tagging TEXT DEFAULT NULL`);
   }
+
+  ensureSubagentAttributionColumns(db);
+  backfillSubagentAttribution(db, options?.claudeProjectsDir ?? defaultClaudeProjectsDir());
 
   // Add archived_at to promoted if not present
   const promotedColumns = db.prepare(`PRAGMA table_info(promoted)`).all() as Array<{ name?: string }>;

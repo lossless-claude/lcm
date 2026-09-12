@@ -136,6 +136,70 @@ describe("findSessionFiles", () => {
     expect(sessionIds).toEqual(["agent-1", "session-parent"]);
   });
 
+  it("reads subagent attribution from the .meta.json sidecar", () => {
+    const dir = makeTmpDir();
+    const subDir = join(dir, "session-parent");
+    const subagentsDir = join(subDir, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    writeFileSync(join(subagentsDir, "agent-child.jsonl"), "");
+    writeFileSync(
+      join(subagentsDir, "agent-child.meta.json"),
+      JSON.stringify({ agentType: "explorer", description: "look around" }),
+    );
+
+    const result = findSessionFiles(dir);
+    const child = result.find((f) => f.sessionId === "agent-child");
+    expect(child?.subagentType).toBe("explorer");
+    expect(child?.subagentDesc).toBe("look around");
+    // No parentAgentId in the sidecar: parent is the folder that owns subagents/.
+    expect(child?.parentSessionId).toBe("session-parent");
+  });
+
+  it("prefers the sidecar's parentAgentId over the owning folder, prefixed to match a sibling session id", () => {
+    const dir = makeTmpDir();
+    const subDir = join(dir, "session-parent");
+    const subagentsDir = join(subDir, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    writeFileSync(join(subagentsDir, "agent-nested.jsonl"), "");
+    writeFileSync(
+      join(subagentsDir, "agent-nested.meta.json"),
+      JSON.stringify({ agentType: "worker", parentAgentId: "dispatcher-id" }),
+    );
+
+    const result = findSessionFiles(dir);
+    const nested = result.find((f) => f.sessionId === "agent-nested");
+    expect(nested?.parentSessionId).toBe("agent-dispatcher-id");
+  });
+
+  it("leaves attribution null when the sidecar is missing", () => {
+    const dir = makeTmpDir();
+    const subDir = join(dir, "session-parent");
+    const subagentsDir = join(subDir, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    writeFileSync(join(subagentsDir, "agent-orphan.jsonl"), "");
+
+    const result = findSessionFiles(dir);
+    const orphan = result.find((f) => f.sessionId === "agent-orphan");
+    expect(orphan?.parentSessionId ?? null).toBeNull();
+    expect(orphan?.subagentType ?? null).toBeNull();
+    expect(orphan?.subagentDesc ?? null).toBeNull();
+  });
+
+  it("leaves attribution null when the sidecar has invalid JSON", () => {
+    const dir = makeTmpDir();
+    const subDir = join(dir, "session-parent");
+    const subagentsDir = join(subDir, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    writeFileSync(join(subagentsDir, "agent-bad.jsonl"), "");
+    writeFileSync(join(subagentsDir, "agent-bad.meta.json"), "{not json");
+
+    const result = findSessionFiles(dir);
+    const bad = result.find((f) => f.sessionId === "agent-bad");
+    expect(bad?.parentSessionId ?? null).toBeNull();
+    expect(bad?.subagentType ?? null).toBeNull();
+    expect(bad?.subagentDesc ?? null).toBeNull();
+  });
+
   it("deduplicates when both flat and nested transcripts exist for the same session", () => {
     const dir = makeTmpDir();
     // Flat transcript at project root
