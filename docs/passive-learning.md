@@ -81,7 +81,7 @@ When a pattern crosses the reinforcement threshold, `reinforcementBoost` is adde
   - Per-project SQLite database in WAL mode
   - Processed events pruned after 7 days
   - Unprocessed events capped at 10,000 rows (oldest pruned first)
-  - Schema versioned for future migrations (currently v3)
+  - Schema versioned for future migrations (`SCHEMA_VERSION` in `src/hooks/events-db.ts`)
 
 - **Error log**: `error_log` table in each sidecar DB
   - Records hook errors with timestamp and session ID
