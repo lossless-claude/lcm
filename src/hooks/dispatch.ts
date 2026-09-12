@@ -1,5 +1,6 @@
 import { validateAndFixHooks } from "./auto-heal.js";
 import { lcmPath } from "../lcm-home.js";
+import { resolveLcmConfig } from "../db/config.js";
 
 export const HOOK_COMMANDS = ["compact", "post-tool", "restore", "session-end", "session-snapshot", "user-prompt"] as const;
 export type HookCommand = typeof HOOK_COMMANDS[number];
@@ -12,6 +13,9 @@ export async function dispatchHook(
   command: HookCommand,
   stdinText: string,
 ): Promise<{ exitCode: number; stdout: string }> {
+  // `LCM_ENABLED=false` keeps the plugin registered but makes every hook a no-op.
+  if (!resolveLcmConfig().enabled) return { exitCode: 0, stdout: "" };
+
   // Early return for post-tool — runs on EVERY tool call, must skip bootstrap for performance
   if (command === "post-tool") {
     const { handlePostToolUse } = await import("./post-tool.js");

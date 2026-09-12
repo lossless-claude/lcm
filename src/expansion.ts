@@ -1,5 +1,4 @@
 import { Type } from "@sinclair/typebox";
-import type { LcmConfig } from "./db/config.js";
 import type { RetrievalEngine, ExpandResult, GrepResult } from "./retrieval.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -305,15 +304,15 @@ const LcmExpansionSchema = Type.Object({
  * Build a tool definition object for LCM expansion that can be registered as
  * an agent tool. Follows the pattern used in `src/agents/tools/`.
  *
- * Requires an already-initialised ExpansionOrchestrator and an LcmConfig
- * (for the default tokenCap).
+ * Requires an already-initialised ExpansionOrchestrator and the token cap an
+ * omitted or oversized `tokenCap` falls back to.
  */
 export function buildExpansionToolDefinition(options: {
   orchestrator: ExpansionOrchestrator;
-  config: LcmConfig;
+  maxExpandTokens: number;
   conversationId: number;
 }) {
-  const { orchestrator, config, conversationId } = options;
+  const { orchestrator, maxExpandTokens, conversationId } = options;
 
   return {
     name: "lcm_expand",
@@ -333,10 +332,7 @@ export function buildExpansionToolDefinition(options: {
         typeof params.maxDepth === "number" ? Math.trunc(params.maxDepth) : undefined;
       const requestedTokenCap =
         typeof params.tokenCap === "number" ? Math.trunc(params.tokenCap) : undefined;
-      const tokenCap = resolveExpansionTokenCap({
-        requestedTokenCap,
-        maxExpandTokens: config.maxExpandTokens,
-      });
+      const tokenCap = resolveExpansionTokenCap({ requestedTokenCap, maxExpandTokens });
       const includeMessages =
         typeof params.includeMessages === "boolean" ? params.includeMessages : false;
 

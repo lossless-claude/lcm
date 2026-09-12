@@ -6,7 +6,6 @@ function makeDeps(overrides?: Partial<LcmDependencies>): LcmDependencies {
   return {
     config: {
       enabled: true,
-      databasePath: ":memory:",
       contextThreshold: 0.75,
       freshTailCount: 8,
       leafMinFanout: 8,
@@ -14,14 +13,7 @@ function makeDeps(overrides?: Partial<LcmDependencies>): LcmDependencies {
       condensedMinFanoutHard: 2,
       incrementalMaxDepth: 0,
       leafChunkTokens: 20_000,
-          condensedTargetTokens: 900,
-      maxExpandTokens: 120,
-      largeFileTokenThreshold: 25_000,
-      largeFileSummaryProvider: "",
-      largeFileSummaryModel: "",
-      autocompactDisabled: false,
-      timezone: "UTC",
-      pruneHeartbeatOk: false,
+      condensedTargetTokens: 900,
     },
     complete: vi.fn(async () => ({
       content: [{ type: "text", text: "summary output" }],

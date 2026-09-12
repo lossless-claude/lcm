@@ -79,6 +79,24 @@ describe("dispatchHook", () => {
     expect(callOrder).toEqual(["heal", "handler"]);
   });
 
+  it("does nothing at all when LCM_ENABLED=false", async () => {
+    const before = process.env.LCM_ENABLED;
+    process.env.LCM_ENABLED = "false";
+    try {
+      vi.mocked(handlePreCompact).mockClear();
+      vi.mocked(handlePostToolUse).mockClear();
+      vi.mocked(validateAndFixHooks).mockClear();
+      expect(await dispatchHook("compact", "{}")).toEqual({ exitCode: 0, stdout: "" });
+      expect(await dispatchHook("post-tool", "{}")).toEqual({ exitCode: 0, stdout: "" });
+      expect(handlePreCompact).not.toHaveBeenCalled();
+      expect(handlePostToolUse).not.toHaveBeenCalled();
+      expect(validateAndFixHooks).not.toHaveBeenCalled();
+    } finally {
+      if (before === undefined) delete process.env.LCM_ENABLED;
+      else process.env.LCM_ENABLED = before;
+    }
+  });
+
   it("dispatches each command to its correct handler", async () => {
     const mapping: [typeof HOOK_COMMANDS[number], any][] = [
       ["compact", handlePreCompact],
