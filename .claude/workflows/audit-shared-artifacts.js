@@ -149,9 +149,11 @@ for (const file of [...inventory.files].sort((a, b) => a.path.localeCompare(b.pa
 if (current.files.length > 0) chunks.push(current)
 
 const swept = chunks.slice(0, MAX_CHUNKS)
-if (chunks.length > MAX_CHUNKS) {
-  const dropped = chunks.slice(MAX_CHUNKS).flatMap((c) => c.files)
-  log(`CAP HIT: ${chunks.length} chunks needed, ${MAX_CHUNKS} swept. NOT swept (${dropped.length} files): ${dropped.join(', ')}`)
+// Files past the cap are not audited. They are named in the result, not only in the log,
+// so a capped run cannot be read as a complete one.
+const unswept = chunks.slice(MAX_CHUNKS).flatMap((c) => c.files)
+if (unswept.length > 0) {
+  log(`CAP HIT: ${chunks.length} chunks needed, ${MAX_CHUNKS} swept. NOT swept (${unswept.length} files): ${unswept.join(', ')}`)
 }
 
 log(`${inventory.files.length} tracked text files of ${inventory.totalTracked} tracked, in ${swept.length} chunks. Excluded: ${inventory.excluded}`)
@@ -232,6 +234,8 @@ confirmed.sort((a, b) => (rank[a.severity] - rank[b.severity]) || a.file.localeC
 log(`${judged.length} findings judged, ${confirmed.length} survived, ${refuted.length} refuted`)
 
 return {
+  complete: unswept.length === 0,
+  unswept,
   confirmed,
   counts: {
     trackedTextFiles: inventory.files.length,
