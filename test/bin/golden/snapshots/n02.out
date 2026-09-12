@@ -1,0 +1,28 @@
+
+  lcm connectors — Manage connectors for coding agents (Claude Code, Codex, Gemini, etc.).
+
+  Usage: lcm connectors <list|install|remove|doctor> [options]
+
+  Options:
+    list [--format text|json] [--global]                       List connectors in the current project or your global agent config
+    install <agent> [--type rules|mcp|skill|hooks] [--global]  Install a connector for an agent
+    remove <agent> [--type rules|mcp|skill|hooks] [--global]   Remove a connector for an agent
+    doctor [agent] [--global]                                  Check connector health in the current project or global agent config
+
+  Examples:
+    lcm connectors list                        Show all agents and their connector status
+    lcm connectors list --global               Show connectors from your global agent config
+    lcm connectors list --format json          Machine-readable connector list
+    lcm connectors install github-copilot      Install the GitHub Copilot workspace skill for VS Code
+    lcm connectors install codex               Install native Codex lifecycle hooks
+    lcm connectors install codex --global      Install Codex into ~/.codex instead of the current project
+    lcm connectors install codex --type rules  Install rules-based connector for Codex
+    lcm connectors remove codex                Remove the Codex connector
+    lcm connectors remove codex --global       Remove Codex from your global config
+    lcm connectors doctor                      Check health of all connectors
+    lcm connectors doctor --global             Check the global agent config
+    lcm connectors doctor github-copilot       Check GitHub Copilot connector health
+    lcm connectors doctor codex                Check Codex connector health
+
+  Note: Codex defaults to native lifecycle hooks; review their trust in Codex /hooks after installation. Installation alone does not prove activation. Optional types: 'rules' (instructions), 'mcp' (server), 'skill' (guidance). Codex MCP setup remains manual. GitHub Copilot defaults to a repo-local skill.
+

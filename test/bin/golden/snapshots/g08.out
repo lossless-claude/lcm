@@ -1,0 +1,17 @@
+
+  lcm diagnose — Scan recent sessions for hook failures, MCP disconnects, and stale state.
+
+  Usage: lcm diagnose [--all] [--days N] [--verbose] [--json]
+
+  Options:
+    --all      Scan all tracked projects (default: current project)
+    --days N   Scan the last N days (default: 7)
+    --verbose  Include full event details in output
+    --json     Output structured JSON
+
+  Examples:
+    lcm diagnose                  Scan last 7 days for current project
+    lcm diagnose --days 30        Scan last 30 days
+    lcm diagnose --all --verbose  Full detail across all projects
+    lcm diagnose --json           Machine-readable output
+

@@ -1,0 +1,10 @@
+
+  lcm restore — Dispatch the restore hook — restores prior context at session start.
+
+  Usage: lcm restore
+
+  Examples:
+    lcm restore  Restore context for the current session (called by SessionStart hook)
+
+  Note: Invoked automatically by the Claude Code SessionStart hook. Not intended for direct use.
+

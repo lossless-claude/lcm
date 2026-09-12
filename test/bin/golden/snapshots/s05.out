@@ -1,0 +1,5 @@
+Matched patterns:
+  [gitleaks:aws-access-token]  \b((?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16})\b
+  [native]  AKIA[0-9A-Z]{16}
+Input:    AKIAIOSFODNN7EXAMPLE
+Redacted: [REDACTED]

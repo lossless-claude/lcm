@@ -1,0 +1,12 @@
+
+  lcm install — Set up lcm: register Claude Code hooks, configure the daemon, and connect the MCP server.
+
+  Usage: lcm install [--dry-run]
+
+  Options:
+    --dry-run  Preview all changes without writing anything
+
+  Examples:
+    lcm install            Run the full setup wizard
+    lcm install --dry-run  Preview what install would do
+

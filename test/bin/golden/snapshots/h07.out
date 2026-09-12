@@ -1,0 +1,10 @@
+
+  lcm session-end — Dispatch the session-end hook — finalizes and stores session memory.
+
+  Usage: lcm session-end
+
+  Examples:
+    lcm session-end  Finalize session memory (called by Stop hook)
+
+  Note: Invoked automatically by the Claude Code Stop hook. Not intended for direct use.
+
