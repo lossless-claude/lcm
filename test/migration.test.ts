@@ -528,3 +528,217 @@ describe("subagent attribution backfill", () => {
     db.close();
   });
 });
+
+describe("message_parts skill/command backfill (#421)", () => {
+  function makeFixtureDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), "lossless-claude-parts-fixture-"));
+    tempDirs.push(dir);
+    return dir;
+  }
+
+  /** A recent-legacy DB: every table modern except message_parts, whose CHECK predates 'skill'/'command'. */
+  function makeLegacyMessagePartsDb(): { db: ReturnType<typeof getLcmConnection>; dbPath: string } {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-claude-parts-backfill-"));
+    tempDirs.push(tempDir);
+    const dbPath = join(tempDir, "legacy.db");
+    const db = getLcmConnection(dbPath);
+    db.exec(`
+      CREATE TABLE conversations (
+        conversation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        title TEXT,
+        bootstrapped_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        role_tagging TEXT DEFAULT NULL,
+        parent_session_id TEXT DEFAULT NULL,
+        subagent_type TEXT DEFAULT NULL,
+        subagent_desc TEXT DEFAULT NULL
+      );
+
+      CREATE TABLE messages (
+        message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id INTEGER NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+        seq INTEGER NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('system', 'user', 'assistant', 'tool')),
+        content TEXT NOT NULL,
+        token_count INTEGER NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (conversation_id, seq)
+      );
+
+      CREATE TABLE message_parts (
+        part_id TEXT PRIMARY KEY,
+        message_id INTEGER NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
+        session_id TEXT NOT NULL,
+        part_type TEXT NOT NULL CHECK (part_type IN (
+          'text', 'reasoning', 'tool', 'patch', 'file',
+          'subtask', 'compaction', 'step_start', 'step_finish',
+          'snapshot', 'agent', 'retry'
+        )),
+        ordinal INTEGER NOT NULL,
+        text_content TEXT,
+        is_ignored INTEGER,
+        is_synthetic INTEGER,
+        tool_call_id TEXT,
+        tool_name TEXT,
+        tool_status TEXT,
+        tool_input TEXT,
+        tool_output TEXT,
+        tool_error TEXT,
+        tool_title TEXT,
+        patch_hash TEXT,
+        patch_files TEXT,
+        file_mime TEXT,
+        file_name TEXT,
+        file_url TEXT,
+        subtask_prompt TEXT,
+        subtask_desc TEXT,
+        subtask_agent TEXT,
+        step_reason TEXT,
+        step_cost REAL,
+        step_tokens_in INTEGER,
+        step_tokens_out INTEGER,
+        snapshot_hash TEXT,
+        compaction_auto INTEGER,
+        metadata TEXT,
+        UNIQUE (message_id, ordinal)
+      );
+    `);
+    return { db, dbPath };
+  }
+
+  it("rebuilds the part_type CHECK to admit 'skill' and 'command', keeping the existing row", () => {
+    const { db } = makeLegacyMessagePartsDb();
+    db.prepare(`INSERT INTO conversations (conversation_id, session_id) VALUES (1, 'sess-compact')`).run();
+    db.prepare(
+      `INSERT INTO messages (message_id, conversation_id, seq, role, content, token_count) VALUES (1, 1, 0, 'system', 'compacted', 5)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO message_parts (part_id, message_id, session_id, part_type, ordinal, text_content)
+       VALUES ('p1', 1, 'sess-compact', 'compaction', 0, 'compacted')`,
+    ).run();
+
+    runLcmMigrations(db, { fts5Available: false, claudeProjectsDir: makeFixtureDir() });
+
+    const checkSql = (
+      db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='message_parts'`).get() as { sql: string }
+    ).sql;
+    expect(checkSql).toContain("'skill'");
+    expect(checkSql).toContain("'command'");
+
+    // The pre-existing compaction row must survive the rebuild untouched.
+    const preserved = db.prepare(`SELECT part_type, text_content FROM message_parts WHERE part_id = 'p1'`).get();
+    expect(preserved).toEqual({ part_type: "compaction", text_content: "compacted" });
+
+    // And the new enum values are actually usable now.
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO message_parts (part_id, message_id, session_id, part_type, ordinal, tool_name)
+           VALUES ('p2', 1, 'sess-compact', 'skill', 1, 'grilling')`,
+        )
+        .run(),
+    ).not.toThrow();
+    db.close();
+  });
+
+  it("backfills a command part straight from stored message content — no disk read", () => {
+    const { db } = makeLegacyMessagePartsDb();
+    db.prepare(`INSERT INTO conversations (conversation_id, session_id) VALUES (1, 'sess-cmd')`).run();
+    db.prepare(
+      `INSERT INTO messages (message_id, conversation_id, seq, role, content, token_count)
+       VALUES (1, 1, 0, 'user', '<command-name>/model</command-name>
+            <command-message>model</command-message>
+            <command-args></command-args>', 5)`,
+    ).run();
+
+    // claudeProjectsDir points at an empty directory: nothing on disk to read for this part.
+    runLcmMigrations(db, { fts5Available: false, claudeProjectsDir: makeFixtureDir() });
+
+    const rows = db
+      .prepare(`SELECT part_type, tool_name, tool_input, message_id FROM message_parts WHERE part_type = 'command'`)
+      .all() as Array<{ part_type: string; tool_name: string; tool_input: string | null; message_id: number }>;
+    expect(rows).toEqual([{ part_type: "command", tool_name: "/model", tool_input: null, message_id: 1 }]);
+    db.close();
+  });
+
+  it("backfills a skill part straight from stored message content — no disk read", () => {
+    const { db } = makeLegacyMessagePartsDb();
+    db.prepare(`INSERT INTO conversations (conversation_id, session_id) VALUES (1, 'sess-skill')`).run();
+    // Claude Code's own follow-up turn opens with this line verbatim, stored as a
+    // plain string (not a content-block array), so it survives import untouched.
+    db.prepare(
+      `INSERT INTO messages (message_id, conversation_id, seq, role, content, token_count)
+       VALUES (1, 1, 0, 'user', 'Launching skill: grilling
+Full skill prompt follows...', 5)`,
+    ).run();
+
+    runLcmMigrations(db, { fts5Available: false, claudeProjectsDir: makeFixtureDir() });
+
+    const rows = db
+      .prepare(`SELECT part_type, tool_name, tool_input, message_id FROM message_parts WHERE part_type = 'skill'`)
+      .all() as Array<{ part_type: string; tool_name: string; tool_input: string | null; message_id: number }>;
+    expect(rows).toEqual([{ part_type: "skill", tool_name: "grilling", tool_input: null, message_id: 1 }]);
+    db.close();
+  });
+
+  it("keeps the colon in a plugin:skill name — it is part of the name, not a separator", () => {
+    const { db } = makeLegacyMessagePartsDb();
+    db.prepare(`INSERT INTO conversations (conversation_id, session_id) VALUES (1, 'sess-plugin-skill')`).run();
+    db.prepare(
+      `INSERT INTO messages (message_id, conversation_id, seq, role, content, token_count)
+       VALUES (1, 1, 0, 'user', 'Launching skill: superpowers:writing-plans', 5)`,
+    ).run();
+
+    runLcmMigrations(db, { fts5Available: false, claudeProjectsDir: makeFixtureDir() });
+
+    const rows = db
+      .prepare(`SELECT tool_name FROM message_parts WHERE part_type = 'skill'`)
+      .all() as Array<{ tool_name: string }>;
+    expect(rows).toEqual([{ tool_name: "superpowers:writing-plans" }]);
+    db.close();
+  });
+
+  it("never deletes an existing message_parts row while backfilling", () => {
+    const { db } = makeLegacyMessagePartsDb();
+    db.prepare(`INSERT INTO conversations (conversation_id, session_id) VALUES (1, 'sess-mixed')`).run();
+    db.prepare(
+      `INSERT INTO messages (message_id, conversation_id, seq, role, content, token_count) VALUES (1, 1, 0, 'system', 'compacted', 5)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO message_parts (part_id, message_id, session_id, part_type, ordinal, text_content)
+       VALUES ('p1', 1, 'sess-mixed', 'compaction', 0, 'compacted')`,
+    ).run();
+
+    runLcmMigrations(db, { fts5Available: false, claudeProjectsDir: makeFixtureDir() });
+
+    const count = db.prepare(`SELECT COUNT(*) AS n FROM message_parts`).get() as { n: number };
+    expect(count.n).toBeGreaterThanOrEqual(1);
+    const preserved = db.prepare(`SELECT part_type FROM message_parts WHERE part_id = 'p1'`).get() as { part_type: string } | undefined;
+    expect(preserved?.part_type).toBe("compaction");
+    db.close();
+  });
+
+  it("runs the backfill only once: a command added to disk after the first run is never picked up", () => {
+    const { db } = makeLegacyMessagePartsDb();
+    db.prepare(`INSERT INTO conversations (conversation_id, session_id) VALUES (1, 'sess-once')`).run();
+    db.prepare(
+      `INSERT INTO messages (message_id, conversation_id, seq, role, content, token_count) VALUES (1, 1, 0, 'user', 'plain text', 5)`,
+    ).run();
+
+    runLcmMigrations(db, { fts5Available: false, claudeProjectsDir: makeFixtureDir() });
+
+    // A command message shows up afterward — as if written by a path this backfill doesn't own.
+    db.prepare(
+      `INSERT INTO messages (message_id, conversation_id, seq, role, content, token_count)
+       VALUES (2, 1, 1, 'user', '<command-name>/model</command-name><command-args></command-args>', 5)`,
+    ).run();
+
+    runLcmMigrations(db, { fts5Available: false, claudeProjectsDir: makeFixtureDir() }); // second run — backfill is a no-op
+
+    const rows = db.prepare(`SELECT COUNT(*) AS n FROM message_parts WHERE part_type = 'command'`).get() as { n: number };
+    expect(rows.n).toBe(0);
+    db.close();
+  });
+});

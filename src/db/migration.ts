@@ -1,9 +1,11 @@
 import type { DatabaseSync } from "node:sqlite";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getLcmDbFeatures } from "./features.js";
 import { ensureCodexCursorTable } from "./codex-cursor.js";
 import { walkSubagentTranscripts } from "../subagent-attribution.js";
+import { extractCommandParts, type MessagePart } from "../transcript.js";
 
 function defaultClaudeProjectsDir(): string {
   return join(homedir(), ".claude", "projects");
@@ -485,6 +487,179 @@ function backfillSummaryMetadata(db: DatabaseSync): void {
   }
 }
 
+/**
+ * `message_parts.part_type` gained `'skill'` and `'command'` in #421. A fresh
+ * database is created with both already in its `CHECK`; this rebuilds an
+ * existing table that predates them, preserving every row (compaction events
+ * included) — see docs/design/message-parts-vs-events-db.md.
+ */
+function ensureMessagePartsSkillCommandTypes(db: DatabaseSync): void {
+  const existing = db
+    .prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='message_parts'`)
+    .get() as { sql?: string } | undefined;
+  if (!existing?.sql || existing.sql.includes("'skill'")) return;
+
+  const columns = (db.prepare(`PRAGMA table_info(message_parts)`).all() as Array<{ name: string }>)
+    .map((c) => c.name)
+    .join(", ");
+
+  // A SAVEPOINT, not a bare sequence of statements: CREATE/INSERT/DROP/RENAME
+  // each auto-commit on their own, so a crash between DROP and RENAME would
+  // otherwise strand every row (compaction events included) in an orphaned
+  // `message_parts_new`, invisible to the `'skill'`-in-CHECK guard above.
+  db.exec("SAVEPOINT message_parts_rebuild");
+  try {
+    db.exec(`
+      CREATE TABLE message_parts_new (
+        part_id TEXT PRIMARY KEY,
+        message_id INTEGER NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
+        session_id TEXT NOT NULL,
+        part_type TEXT NOT NULL CHECK (part_type IN (
+          'text', 'reasoning', 'tool', 'patch', 'file',
+          'subtask', 'compaction', 'step_start', 'step_finish',
+          'snapshot', 'agent', 'retry', 'skill', 'command'
+        )),
+        ordinal INTEGER NOT NULL,
+        text_content TEXT,
+        is_ignored INTEGER,
+        is_synthetic INTEGER,
+        tool_call_id TEXT,
+        tool_name TEXT,
+        tool_status TEXT,
+        tool_input TEXT,
+        tool_output TEXT,
+        tool_error TEXT,
+        tool_title TEXT,
+        patch_hash TEXT,
+        patch_files TEXT,
+        file_mime TEXT,
+        file_name TEXT,
+        file_url TEXT,
+        subtask_prompt TEXT,
+        subtask_desc TEXT,
+        subtask_agent TEXT,
+        step_reason TEXT,
+        step_cost REAL,
+        step_tokens_in INTEGER,
+        step_tokens_out INTEGER,
+        snapshot_hash TEXT,
+        compaction_auto INTEGER,
+        metadata TEXT,
+        UNIQUE (message_id, ordinal)
+      );
+    `);
+    db.exec(`INSERT INTO message_parts_new (${columns}) SELECT ${columns} FROM message_parts;`);
+    db.exec("DROP TABLE message_parts;");
+    db.exec("ALTER TABLE message_parts_new RENAME TO message_parts;");
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS message_parts_message_idx ON message_parts (message_id);
+      CREATE INDEX IF NOT EXISTS message_parts_type_idx ON message_parts (part_type);
+    `);
+    db.exec("RELEASE SAVEPOINT message_parts_rebuild");
+  } catch (err) {
+    db.exec("ROLLBACK TO SAVEPOINT message_parts_rebuild");
+    db.exec("RELEASE SAVEPOINT message_parts_rebuild");
+    throw err;
+  }
+}
+
+function ensureMessagePartsBackfillTable(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS message_parts_skill_command_backfill (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      unmatched_skill_count INTEGER NOT NULL DEFAULT 0,
+      completed_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+}
+
+function insertMessagePart(
+  db: DatabaseSync,
+  input: { messageId: number; sessionId: string; ordinal: number; part: MessagePart },
+): void {
+  db.prepare(
+    `INSERT INTO message_parts (part_id, message_id, session_id, part_type, ordinal, tool_name, tool_input)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(randomUUID(), input.messageId, input.sessionId, input.part.type, input.ordinal, input.part.name, input.part.args);
+}
+
+/**
+ * Slash-command parts are fully recoverable from `messages.content`: the
+ * `<command-name>`/`<command-args>` block is stored verbatim, so no disk
+ * read is needed — same extractor `parseTranscript` uses, applied to what is
+ * already in the database.
+ */
+function backfillCommandParts(db: DatabaseSync): void {
+  const rows = db
+    .prepare(
+      `SELECT m.message_id, m.content, c.session_id
+       FROM messages m JOIN conversations c ON c.conversation_id = m.conversation_id
+       WHERE m.content LIKE '%<command-name>%'`,
+    )
+    .all() as Array<{ message_id: number; content: string; session_id: string }>;
+
+  for (const row of rows) {
+    extractCommandParts(row.content).forEach((part, ordinal) =>
+      insertMessagePart(db, { messageId: row.message_id, sessionId: row.session_id, ordinal, part }),
+    );
+  }
+}
+
+const LAUNCHING_SKILL_PREFIX = "Launching skill: ";
+
+/**
+ * The bare tool name ("Skill") that `toolContent` keeps for a tool-only turn
+ * loses the invocation's name, but Claude Code's own follow-up turn does not:
+ * it opens with `Launching skill: <name>` verbatim (measured across every
+ * project database: 1434 such rows, 33 projects, 128 distinct names), stored
+ * as-is because that turn's content is a plain string, not a content-block
+ * array `extractText`/`toolContent` would otherwise process. So this is
+ * recoverable straight from `messages.content`, the same shape as commands —
+ * no disk read needed. The name may itself contain a colon (`plugin:skill`);
+ * only the newline that ends the line is the terminator.
+ */
+function backfillSkillParts(db: DatabaseSync): number {
+  const rows = db
+    .prepare(
+      `SELECT m.message_id, m.content, c.session_id
+       FROM messages m JOIN conversations c ON c.conversation_id = m.conversation_id
+       WHERE m.content LIKE ?`,
+    )
+    .all(`${LAUNCHING_SKILL_PREFIX}%`) as Array<{ message_id: number; content: string; session_id: string }>;
+
+  let unmatched = 0;
+  for (const row of rows) {
+    const name = row.content.slice(LAUNCHING_SKILL_PREFIX.length).split("\n")[0].trim();
+    if (!name) {
+      unmatched++;
+      continue;
+    }
+    insertMessagePart(db, {
+      messageId: row.message_id,
+      sessionId: row.session_id,
+      ordinal: 0,
+      part: { type: "skill", name, args: null },
+    });
+  }
+  return unmatched;
+}
+
+/**
+ * Runs once per database: fills `message_parts` with `skill` and `command`
+ * rows for every message already in the store, both recoverable straight
+ * from `messages.content` — see backfillCommandParts and backfillSkillParts.
+ * Pure `INSERT`: no existing row is ever deleted or rewritten.
+ */
+function backfillMessagePartsSkillCommand(db: DatabaseSync): void {
+  ensureMessagePartsBackfillTable(db);
+  if (db.prepare(`SELECT 1 FROM message_parts_skill_command_backfill WHERE id = 1`).get()) return;
+
+  backfillCommandParts(db);
+  const unmatchedSkillCount = backfillSkillParts(db);
+  db.prepare(`INSERT INTO message_parts_skill_command_backfill (id, unmatched_skill_count) VALUES (1, ?)`)
+    .run(unmatchedSkillCount);
+}
+
 export interface LcmMigrationOptions {
   fts5Available?: boolean;
   /** Override for `~/.claude/projects` — tests only, so the backfill never walks the real disk. */
@@ -542,7 +717,7 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
       part_type TEXT NOT NULL CHECK (part_type IN (
         'text', 'reasoning', 'tool', 'patch', 'file',
         'subtask', 'compaction', 'step_start', 'step_finish',
-        'snapshot', 'agent', 'retry'
+        'snapshot', 'agent', 'retry', 'skill', 'command'
       )),
       ordinal INTEGER NOT NULL,
       text_content TEXT,
@@ -634,6 +809,7 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
   ensureSummaryMetadataColumns(db);
   backfillSummaryDepths(db);
   backfillSummaryMetadata(db);
+  ensureMessagePartsSkillCommandTypes(db);
 
   // Redaction stats (counts of secrets scrubbed per project per category).
   // v0.7.0 created this table with CHECK(category IN ('built_in', 'global', 'project')).
@@ -707,6 +883,7 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
 
   ensureSubagentAttributionColumns(db);
   backfillSubagentAttribution(db, options?.claudeProjectsDir ?? defaultClaudeProjectsDir());
+  backfillMessagePartsSkillCommand(db);
 
   // Add archived_at to promoted if not present
   const promotedColumns = db.prepare(`PRAGMA table_info(promoted)`).all() as Array<{ name?: string }>;
