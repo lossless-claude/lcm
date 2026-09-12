@@ -32,7 +32,6 @@ description: |-
 
 model: inherit
 color: red
-tools: ["Read", "Grep", "Glob", "Bash"]
 ---
 
 You are a transcript debugging agent for lossless-claude. Your job is to diagnose why transcript ingestion failed or produced unexpected results.
