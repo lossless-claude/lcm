@@ -37,3 +37,9 @@ export function readStdin(): Promise<string> {
     });
   });
 }
+
+export async function withCustomHelp(cmd: Command, commandName: string): Promise<void> {
+  const { printHelp } = await import("../cli-help.js");
+  printHelp(commandName);
+  exit(0);
+}
