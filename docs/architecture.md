@@ -210,7 +210,7 @@ When summaries are too compressed for a task, agents use `lcm_expand` to recover
 
 1. Agent calls `lcm_expand` with a `nodeId` (summary ID) and optional `depth`.
 2. lcm traverses the DAG from the given node, following parent links down to source messages.
-3. Source message content is assembled and returned to the agent (capped by `LCM_MAX_EXPAND_TOKENS`).
+3. Source message content is assembled and returned to the agent (bounded by the requested `depth`).
 4. The agent receives the full decompressed content for the requested depth.
 
 For broader recall, agents can first use `lcm_grep` or `lcm_search` to find relevant summary IDs, then call `lcm_expand` on the results that need more detail.

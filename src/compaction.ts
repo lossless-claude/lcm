@@ -3,6 +3,7 @@ import type { ConversationStore, CreateMessagePartInput } from "./store/conversa
 import type { SummaryStore, SummaryRecord, ContextItemRecord } from "./store/summary-store.js";
 import { extractFileIdsFromContent } from "./large-files.js";
 import type { ScrubEngine } from "./scrub.js";
+import { resolveLcmConfig } from "./db/config.js";
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -67,15 +68,19 @@ export const COMPACT_TOKEN_BUDGET = 200_000;
  */
 export function compactEngineConfig(opts: {
   scrubber?: ScrubEngine;
+  /** The environment to read `LCM_*` knobs from; the process's own by default. */
+  env?: NodeJS.ProcessEnv;
 } = {}): CompactionConfig {
+  const knobs = resolveLcmConfig(opts.env ?? process.env);
   return {
-    contextThreshold: 0.75,
-    freshTailCount: 8,
-    leafMinFanout: 3,
-    condensedMinFanout: 2,
-    condensedMinFanoutHard: 1,
-    incrementalMaxDepth: 0,
-    condensedTargetTokens: 900,
+    contextThreshold: knobs.contextThreshold,
+    freshTailCount: knobs.freshTailCount,
+    leafMinFanout: knobs.leafMinFanout,
+    condensedMinFanout: knobs.condensedMinFanout,
+    condensedMinFanoutHard: knobs.condensedMinFanoutHard,
+    incrementalMaxDepth: knobs.incrementalMaxDepth,
+    leafChunkTokens: knobs.leafChunkTokens,
+    condensedTargetTokens: knobs.condensedTargetTokens,
     maxRounds: 10,
     scrubber: opts.scrubber,
   };

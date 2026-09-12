@@ -1,9 +1,9 @@
 name: Version Packages
 
 on:
-  push:
-    branches:
-      - main
+  # Manual: run it when a release is wanted. It opens or refreshes the changesets
+  # version PR from the changesets on main; merging that PR publishes.
+  workflow_dispatch:
 
 permissions:
   contents: write

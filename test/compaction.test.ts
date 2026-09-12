@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { LCM_CONFIG_DEFAULTS } from "../src/db/config.js";
 import { CompactionEngine, compactEngineConfig, type CompactionSummarizeFn } from "../src/compaction.js";
 import type { ConversationStore } from "../src/store/conversation-store.js";
 import type { SummaryStore } from "../src/store/summary-store.js";
@@ -71,6 +72,28 @@ describe("compactEngineConfig", () => {
     const scrubber = {} as never;
     expect(compactEngineConfig({ scrubber }).scrubber).toBe(scrubber);
     expect(compactEngineConfig().scrubber).toBeUndefined();
+  });
+
+  it("reads its knobs from the environment, and its defaults are the engine's own", () => {
+    const untouched = compactEngineConfig({ env: {} });
+    expect(untouched).toMatchObject(LCM_CONFIG_DEFAULTS);
+    // These literals are what the engine was hardcoded to before it read the
+    // environment; an unset environment must keep producing exactly them.
+    expect(LCM_CONFIG_DEFAULTS).toEqual({
+      contextThreshold: 0.75,
+      freshTailCount: 8,
+      leafMinFanout: 3,
+      condensedMinFanout: 2,
+      condensedMinFanoutHard: 1,
+      incrementalMaxDepth: 0,
+      leafChunkTokens: 20000,
+      condensedTargetTokens: 900,
+    });
+
+    const tuned = compactEngineConfig({ env: { LCM_FRESH_TAIL_COUNT: "32", LCM_CONDENSED_TARGET_TOKENS: "not a number" } });
+    expect(tuned.freshTailCount).toBe(32);
+    // An unparsable value falls back to the default rather than poisoning the engine.
+    expect(tuned.condensedTargetTokens).toBe(LCM_CONFIG_DEFAULTS.condensedTargetTokens);
   });
 
   it("is the same engine for every caller, so the bench cannot drift from /compact", () => {

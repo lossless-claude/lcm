@@ -1,0 +1,14 @@
+{
+  "schema": "self-consistency.checker-artifact.v1",
+  "sha256": "a38f13d7c2f87fe0f5187e3421fc04413c1767c396310d356934ad067965cd1d",
+  "sources": {
+    "_agent_profile.py": "5e53329192bd8263db66dc4503cdb0256fa53a442add2ef1e3740b791523bd6f",
+    "_agent_profile_generated.py": "ba618701e44bed9351e4782bcacc8bb04ffca58fe7b8d65ebf36d02ef5f890bd",
+    "_bootstrap.py": "05eac5734af0a4ca669d7f1ecf95ffd19758b27cb1cb579bd010eea5e7866909",
+    "_gh_issues.py": "42641fb555d6d8671071d8dfdddfef1d1f3af52ef290722f39e1780ea889f98a",
+    "_ignore.py": "b50aaa620c33dfce3fc2e826bb0994c996f7d3cf6178a34606dce0e4c85a5385",
+    "_references.py": "fb35e552fe9ae12b1ede1c3f4e176836061975fc80143ce2fe901b6be7a08de0",
+    "check-agentsmd.py": "3e4c84df4aaa795e5acad4eef78033ee5711e9bae76608aa87fc4c1ac9156124"
+  },
+  "version": "0.2.0.dev0"
+}

@@ -20,7 +20,7 @@ Execute each check below **in order** (or just the requested phase). For each ch
 2. Record the result: ✅ PASS, ❌ FAIL, or ⚠️ SKIP (with reason)
 3. On FAIL: capture the error, check daemon logs (`~/.lossless-claude/daemon.log`), and **continue** (do not stop)
 4. At the end, produce the **Scorecard** table
-5. Write failures + debug notes to `.xgh/reviews/dogfood-YYYY-MM-DD.md`
+5. Report failures in the session, and open an issue for each one worth tracking
 
 **Routing:** Use `ctx_execute` (context-mode sandbox) for commands producing large output. Use Bash only for short-output commands. Use MCP tools directly for Phase 8.
 
@@ -316,13 +316,13 @@ After all checks, produce this table:
 ```
 
 For ❌ FAIL items, include: error message, daemon log excerpt, suggested fix.
-For ⚠️ KNOWN items, reference the bug number from `.xgh/plans/2026-03-22-dogfood-findings.md`.
+For ⚠️ KNOWN items, reference the tracking issue.
 
 ---
 
 ## Known Issues (reference)
 
-Track bugs at: `.xgh/plans/2026-03-22-dogfood-findings.md`
+Track bugs as issues in this repository.
 
 | Bug | Summary | Affects |
 |-----|---------|---------|

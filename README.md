@@ -222,14 +222,17 @@ lcm import                 # import Claude Code sessions for the current project
 lcm import --all           # import all projects
 lcm import --replay        # import and compact with threaded context (resumable)
 lcm import --replay --restart # discard recorded progress and start from scratch
-lcm export                 # export promoted knowledge to JSON
+lcm import --provider codex   # import Codex sessions (--codex is the short form)
+lcm export                 # export promoted knowledge to JSON on stdout
+lcm export --all --output <f> # every project, written to files; --tags, --since filter
 lcm import-knowledge <f>   # import a knowledge JSON file
 
 # Connectors (wire lcm into other AI agents)
 lcm connectors list        # list available agents and installed connectors
-lcm connectors install <a> # install a connector for an agent
+lcm connectors install <a> # install a connector for an agent (--type rules|mcp|skill|hooks)
 lcm connectors remove <a>  # remove a connector for an agent
 lcm connectors doctor      # check connector health
+lcm connectors install <a> --global  # in the agent's user-level config, not this repo
 
 # Sensitive data
 lcm sensitive add <pat>    # add a redaction pattern (project-scoped)
@@ -240,6 +243,8 @@ lcm sensitive purge --yes  # remove all stored data for the current project
 
 # Daemon
 lcm daemon start --detach  # start daemon in background
+lcm daemon restart         # pick up changed LCM_* values
+lcm daemon stop --hold     # keep it down so hooks cannot respawn it (--minutes <n>, --reason <text>)
 
 # Hook handlers (internal — called by Claude Code hooks)
 lcm compact --hook         # PreCompact hook
@@ -255,24 +260,22 @@ lcm mcp                    # start MCP server
 
 ## Configuration
 
-All environment variables are optional. The default summarizer mode is `auto`.
+All environment variables are optional. The default summarizer mode is `auto`. The daemon reads the tuning values when it starts: after changing one, run `lcm daemon restart`.
 
 | Variable | Default | Description |
 |---|---|---|
 | `LCM_SUMMARY_PROVIDER` | `auto` | `auto`, `claude-process`, `codex-process`, `copilot-process`, `anthropic`, `openai`, or `disabled` |
-| `LCM_SUMMARY_MODEL` | unset | Optional model override for the selected summarizer provider |
+| `LCM_SUMMARY_API_KEY` | unset | Required by the `anthropic` provider |
+| `LCM_HOME` | `~/.lossless-claude` | Where the daemon, databases, sidecars and logs live |
+| `LCM_ENABLED` | `true` | Set to `false` to make every Claude Code and Codex command hook a no-op while keeping the plugin registered |
 | `LCM_CONTEXT_THRESHOLD` | `0.75` | Context fill ratio that triggers compaction |
-| `LCM_FRESH_TAIL_COUNT` | `32` | Most recent raw messages protected from compaction |
-| `LCM_LEAF_MIN_FANOUT` | `8` | Minimum raw messages per leaf summary |
-| `LCM_CONDENSED_MIN_FANOUT` | `4` | Minimum summaries per condensed node |
-| `LCM_INCREMENTAL_MAX_DEPTH` | `0` | Automatic condensation depth |
+| `LCM_FRESH_TAIL_COUNT` | `8` | Most recent raw messages protected from compaction |
+| `LCM_LEAF_MIN_FANOUT` | `3` | Minimum raw messages outside the fresh tail before a leaf pass runs |
+| `LCM_CONDENSED_MIN_FANOUT` | `2` | Minimum same-depth summaries before they are condensed |
+| `LCM_CONDENSED_MIN_FANOUT_HARD` | `1` | The same minimum during a hard-trigger sweep |
+| `LCM_INCREMENTAL_MAX_DEPTH` | `0` | Condensation depth after each leaf pass; `-1` is unlimited |
 | `LCM_LEAF_CHUNK_TOKENS` | `20000` | Maximum source tokens per leaf compaction pass |
-| `LCM_LEAF_TARGET_TOKENS` | `1200` | Target size for leaf summaries |
-| `LCM_CONDENSED_TARGET_TOKENS` | `2000` | Target size for condensed summaries |
-| `LCM_MAX_EXPAND_TOKENS` | `4000` | Token cap for DAG expansion via `lcm_expand` |
-| `LCM_LARGE_FILE_TOKEN_THRESHOLD` | `25000` | File size (tokens) above which content is extracted to disk |
-| `LCM_AUTOCOMPACT_DISABLED` | `false` | Set to `true` to disable automatic compaction after each turn |
-| `LCM_ENABLED` | `true` | Set to `false` to disable the plugin while keeping it registered |
+| `LCM_CONDENSED_TARGET_TOKENS` | `900` | Target size for condensed summaries |
 
 `auto` resolves per caller:
 
@@ -290,7 +293,7 @@ npx vitest
 npx tsc --noEmit
 ```
 
-To score a candidate summarizer model against the real compaction engine, see [docs/summarizer-bench.md](docs/summarizer-bench.md). The bench is opt-in — it is skipped unless `LCM_EVAL_MODEL` and `LCM_EVAL_CORPUS_DIR` are set, so `npx vitest` never calls a paid API.
+To score a candidate summarizer model against the real compaction engine, see [docs/summarizer-bench.md](https://github.com/lossless-claude/lcm/blob/main/docs/summarizer-bench.md). The bench is opt-in — it is skipped unless `LCM_EVAL_MODEL` and `LCM_EVAL_CORPUS_DIR` are set, so `npx vitest` never calls a paid API.
 
 ### Repository layout
 

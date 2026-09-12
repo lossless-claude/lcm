@@ -204,6 +204,36 @@ describe("syncVersions", () => {
     expect(findings).toEqual([]);
   });
 
+  it("pins a github source to the version tag and an npm source to the exact version", () => {
+    const root = makeFixture();
+    writePackageJson(root, { version: "2.3.4" });
+    writeFileSync(join(root, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "lcm", version: "1.0.0" }, null, 2) + "\n");
+    const marketplacePath = join(root, ".claude-plugin", "marketplace.json");
+    writeFileSync(
+      marketplacePath,
+      JSON.stringify({
+        name: "lossless-claude",
+        plugins: [
+          { name: "lcm", version: "1.0.0", source: { source: "github", repo: "lossless-claude/lcm" } },
+          { name: "lcm-codex", version: "1.0.0", source: { source: "npm", package: "@lossless-claude/lcm", version: "1.0.0" } },
+        ],
+      }, null, 2) + "\n",
+    );
+
+    syncVersions(root, "2.3.4");
+
+    const after = JSON.parse(readFileSync(marketplacePath, "utf8"));
+    expect(after.plugins[0]).toMatchObject({ version: "2.3.4", source: { ref: "v2.3.4" } });
+    expect(after.plugins[1]).toMatchObject({ version: "2.3.4", source: { version: "2.3.4" } });
+
+    // check-manifest reads the same ref back, and objects when it lags.
+    writeDistFile(root, "index.js", `export const x = 1;\n`);
+    expect(checkManifest(root).filter((f) => f.includes("ref mismatch"))).toEqual([]);
+    after.plugins[0].source.ref = "v1.0.0";
+    writeFileSync(marketplacePath, JSON.stringify(after, null, 2) + "\n");
+    expect(checkManifest(root).some((f) => f.includes("ref mismatch"))).toBe(true);
+  });
+
   it("throws a clear error when marketplace.json has no plugins[0]", () => {
     const root = makeFixture();
     writePackageJson(root, { version: "2.3.4" });

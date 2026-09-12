@@ -33,18 +33,35 @@ there is no way to lock yourself out.
 
 ## Cutting a release
 
-1. Merge the changesets version PR (opened automatically by `version-pr.yml`),
-   or bump the version by hand across `package.json`, `package-lock.json`,
-   `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`, and move
-   the CHANGELOG's top section to the release date.
+1. Run `gh workflow run version-pr.yml --ref main`. It opens or refreshes the
+   changesets version PR from the changesets on `main`. Merge it. (By hand
+   instead: bump `package.json` and `package-lock.json`, run
+   `node scripts/sync-versions.mjs`, and move the CHANGELOG's top section to
+   the release date.)
 2. The push to `main` publishes, because the workflow watches `package.json`.
    Run it manually with `gh workflow run publish.yml --ref main` when the
    version file did not change in that push.
-3. The workflow skips a version already on npm or already tagged, so an
-   ordinary merge is a no-op and a re-run after a failure is safe.
+3. The workflow does each step only if it is still missing: tag, npm, GitHub
+   release. An ordinary merge is a no-op, and a re-run after a partial failure
+   finishes what is left.
 
-It publishes, then tags `vX.Y.Z`, then opens the GitHub release with the
-CHANGELOG section. A failure before the publish step leaves no tag behind.
+The tag comes first, because the marketplace entry for the same version points
+at it: `sync-versions.mjs` writes `ref: vX.Y.Z` next to the version, so a fresh
+plugin install fetches the released commit rather than the current `main`.
+Between the merge and the tag step there is a window of about a minute in which
+that install fails; the workflow closes it on its own.
+
+## Release channels
+
+| Host | Installs from | Pinned by |
+|---|---|---|
+| Claude Code plugin | this repository, marketplace `source.ref` | the tag `vX.Y.Z` and `version` in `.claude-plugin/marketplace.json` |
+| Codex, Copilot, CLI | npm `@lossless-claude/lcm` | the published version |
+
+Codex also reads `.claude-plugin/marketplace.json` as a compatible marketplace; a
+Codex entry there would use `source: npm` with the exact version, which
+`sync-versions.mjs` writes when such an entry exists. There is no release branch:
+the tag and the npm version are the release boundary for every host.
 
 ## Why not a token
 

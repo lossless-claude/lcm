@@ -32,8 +32,8 @@ Retrieve relevant context across all past sessions using full-text search.
 
 ```bash
 lcm search "how was auth implemented"
-lcm search "compaction architecture" --tags decision,architecture
-lcm search "JWT token" --layers episodic
+lcm search "compaction architecture" --tag type:decision --tag scope:architecture
+lcm search "JWT token" --layer episodic
 ```
 
 ### 2. Grep Memory (exact match)
@@ -115,7 +115,7 @@ lcm expand <nodeId>      → full decompressed content
 
 | Error | Recovery |
 |---|---|
-| Daemon not running | Run `lcm start`, then retry |
+| Daemon not running | Run `lcm daemon start --detach`, then retry |
 | "No results" from search | Try `lcm grep` with different keywords, or broaden query |
 | Node not found on expand | Use `lcm search` to find correct nodeId |
 

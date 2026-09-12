@@ -4,8 +4,13 @@ node-compile-cache/
 .DS_Store
 .brv/
 .worktrees
-.claude/
-!.claude/skills/
+# Session-local Claude Code state. The glob form matters: git does not descend into an
+# ignored directory, so a negation under a bare `.claude/` can never take effect. What is
+# tracked here is what a second person needs — the reusable workflows, and the commands
+# that are for working ON this repository rather than for its users.
+.claude/*
+!.claude/commands/
+!.claude/workflows/
 data/
 
 # Tools
@@ -25,11 +30,6 @@ sensitive-patterns-test.txt
 # Superpowers local state
 .superpowers/
 .pebbles/
-
-# xgh local state (inbox, cache) — specs and plans are tracked
-.xgh/inbox/
-.xgh/cache/
-.xgh/ship-prs-state.json
 
 # Environment secrets
 .env

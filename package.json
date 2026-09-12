@@ -27,7 +27,13 @@
     "lcm.mjs",
     ".claude-plugin/",
     "hooks/",
-    "docs/",
+    "docs/agent-tools.md",
+    "docs/configuration.md",
+    "docs/hook-protocol.md",
+    "docs/import.md",
+    "docs/privacy.md",
+    "docs/tag-schema.md",
+    "docs/vscode-codex.md",
     "README.md",
     "LICENSE"
   ],
@@ -41,7 +47,9 @@
     "typecheck": "tsc --noEmit",
     "typecheck:hooks": "bash scripts/typecheck-hooks.sh",
     "check-manifest": "node scripts/check-manifest.mjs",
-    "version-packages": "changeset version && node scripts/sync-versions.mjs"
+    "version-packages": "changeset version && node scripts/sync-versions.mjs",
+    "check-docs": "node scripts/check-doc-claims.mjs",
+    "check-agents": "python3 tools/self-consistency/checker.pyz --root ."
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",

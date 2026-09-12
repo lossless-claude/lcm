@@ -1,27 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import type { LcmConfig } from "../src/db/config.js";
 import type { ExpansionOrchestrator } from "../src/expansion.js";
 import { buildExpansionToolDefinition } from "../src/expansion.js";
 
-const BASE_CONFIG: LcmConfig = {
-  enabled: true,
-  databasePath: ":memory:",
-  contextThreshold: 0.75,
-  freshTailCount: 8,
-  leafMinFanout: 8,
-  condensedMinFanout: 4,
-  condensedMinFanoutHard: 2,
-  incrementalMaxDepth: 0,
-  leafChunkTokens: 20_000,
-  condensedTargetTokens: 900,
-  maxExpandTokens: 250,
-  largeFileTokenThreshold: 25_000,
-  largeFileSummaryProvider: "",
-  largeFileSummaryModel: "",
-  autocompactDisabled: false,
-  timezone: "UTC",
-  pruneHeartbeatOk: false,
-};
+const MAX_EXPAND_TOKENS = 250;
 
 function makeExpansionResult() {
   return {
@@ -33,7 +14,7 @@ function makeExpansionResult() {
 }
 
 describe("buildExpansionToolDefinition tokenCap bounds", () => {
-  it("defaults omitted tokenCap for summary expansion to config.maxExpandTokens", async () => {
+  it("defaults omitted tokenCap for summary expansion to maxExpandTokens", async () => {
     const orchestrator = {
       expand: vi.fn().mockResolvedValue(makeExpansionResult()),
       describeAndExpand: vi.fn().mockResolvedValue(makeExpansionResult()),
@@ -41,7 +22,7 @@ describe("buildExpansionToolDefinition tokenCap bounds", () => {
 
     const tool = buildExpansionToolDefinition({
       orchestrator: orchestrator as unknown as ExpansionOrchestrator,
-      config: BASE_CONFIG,
+      maxExpandTokens: MAX_EXPAND_TOKENS,
       conversationId: 12,
     });
 
@@ -57,7 +38,7 @@ describe("buildExpansionToolDefinition tokenCap bounds", () => {
     );
   });
 
-  it("clamps oversized tokenCap for query expansion to config.maxExpandTokens", async () => {
+  it("clamps oversized tokenCap for query expansion to maxExpandTokens", async () => {
     const orchestrator = {
       expand: vi.fn().mockResolvedValue(makeExpansionResult()),
       describeAndExpand: vi.fn().mockResolvedValue(makeExpansionResult()),
@@ -65,7 +46,7 @@ describe("buildExpansionToolDefinition tokenCap bounds", () => {
 
     const tool = buildExpansionToolDefinition({
       orchestrator: orchestrator as unknown as ExpansionOrchestrator,
-      config: BASE_CONFIG,
+      maxExpandTokens: MAX_EXPAND_TOKENS,
       conversationId: 99,
     });
 

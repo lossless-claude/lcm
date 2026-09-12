@@ -23,7 +23,6 @@ description: |-
 
 model: haiku
 color: yellow
-tools: ["Read", "Grep", "Glob"]
 ---
 
 You are a compaction quality reviewer for lossless-claude. Your job is to verify that summaries accurately preserve important information from their source messages.
