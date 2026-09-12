@@ -26,6 +26,8 @@ type CodexInput = {
 export interface CodexHookDeps {
   client: Pick<DaemonClient, "post">;
   connect: () => Promise<boolean>;
+  /** `LCM_ENABLED=false` in the defaults; the hook exits at once when false. */
+  enabled: boolean;
 }
 
 function parseInput(stdin: string): CodexInput | null {
@@ -49,6 +51,7 @@ function defaultDeps(): CodexHookDeps {
   const config = loadDaemonConfig(join(base, "config.json"));
   const port = config.daemon?.port ?? 3737;
   return {
+    enabled: resolveLcmConfig().enabled,
     client: new DaemonClient(`http://127.0.0.1:${port}`),
     // Codex must not run the Claude bootstrap that rewrites Claude settings.
     connect: async () => (await ensureDaemon({
@@ -135,11 +138,11 @@ export async function dispatchCodexHook(
   stdin: string,
   dependencies?: CodexHookDeps,
 ): Promise<{ exitCode: number; stdout: string }> {
-  if (!resolveLcmConfig().enabled) return EMPTY;
+  const { client, connect, enabled } = dependencies ?? defaultDeps();
+  if (!enabled) return EMPTY;
   try {
     const input = parseInput(stdin);
     if (!input) return EMPTY;
-    const { client, connect } = dependencies ?? defaultDeps();
     const shortDeadline = input.hook_event_name === "Interrupt" || input.hook_event_name === "SessionEnd";
     // Codex caps Interrupt and SessionEnd hooks at three seconds. Do not start
     // or probe the daemon; send one short write to an already running daemon.
