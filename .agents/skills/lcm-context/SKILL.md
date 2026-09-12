@@ -1,135 +1,47 @@
 ---
 name: lcm-context
-description: "You MUST use this before any work to recall project memory, and to store durable insights. Lossless-claude (lcm) provides persistent cross-session memory via CLI commands."
+description: "Use before starting work in this repository to recall project memory with the lcm CLI, and when a durable insight should be stored. Covers lcm search, grep, describe, expand and store."
 ---
 
-# lcm Memory — Universal Agent Guide
+# lcm memory from the CLI
 
-Use the `lcm` CLI to retrieve and store project memory across sessions.
-Install: `npm install -g @lossless-claude/lcm`
+lcm keeps memory across sessions. This skill is the CLI form for agents whose host does not
+load the plugin. Tool choice and error recovery are in [skills/lcm-context/SKILL.md](../../../skills/lcm-context/SKILL.md);
+MCP parameters are in [docs/agent-tools.md](../../../docs/agent-tools.md); tags are in
+[docs/tag-schema.md](../../../docs/tag-schema.md). `lcm <command> --help` is the option reference.
 
-Memory is stored in SQLite (FTS5) and accessed via CLI commands or MCP tools.
+## When to recall
 
-## Workflow
+If the host injected memory at session start (the Claude Code plugin and the Codex hooks
+both do), do not query for what was injected. Otherwise, search before the first code
+change, and whenever the context lacks something a past session may hold.
 
-1. **Before Thinking:** Run `lcm search` or `lcm grep` to recall past decisions and context.
-2. **After Implementing:** If a durable insight emerged, run `lcm store` with a `type:` tag. One concise insight and its why per store.
-
-## Commands
-
-### 1. Search Memory (broad recall)
-
-Retrieve relevant context across all past sessions using full-text search.
-
-**Use when:**
-- You need to recall past decisions, patterns, or architectural context
-- Before performing any action, to check for relevant rules or preferences
-- Your context does not contain information you need
-
-**Do NOT use when:**
-- The information is already present in your current context
-- The query is about general knowledge, not project memory
+## Recall
 
 ```bash
-lcm search "how was auth implemented"
-lcm search "compaction architecture" --tag type:decision --tag scope:architecture
-lcm search "JWT token" --layer episodic
+lcm search "how was auth implemented"                       # broad, both layers
+lcm search "compaction" --tag type:decision --layer promoted  # filter by tag and layer
+lcm grep "socket.unref"                                      # exact keyword or regex
+lcm describe <nodeId>                                        # metadata before expanding
+lcm expand <nodeId> --depth 2                                # source content of a summary
 ```
 
-### 2. Grep Memory (exact match)
+`--tag` and `--layer` repeat; layers are `episodic` and `promoted`.
 
-Search raw conversation transcripts by keyword or regex.
+## Store
 
-**Use when:**
-- You need an exact keyword, error message, or function name from past sessions
-- Search returned too many broad results and you need to narrow down
-
-**Do NOT use when:**
-- You need conceptual recall (use `lcm search` instead)
+One concise insight and its why per store, tagged with `type:` and `project:` or `scope:`.
+Do not store what git, the docs or the instruction files already hold.
 
 ```bash
-lcm grep "socket.unref"
-lcm grep "JWT" --scope summaries
-lcm grep "ECONNREFUSED" --since 2026-03-20
+lcm store "SessionEnd only fires on a graceful exit, so a crashed session loses its tail." --tag type:gotcha --tag scope:lcm
 ```
 
-### 3. Expand a Summary Node
+## When something fails
 
-Decompress a summary node from the DAG into its full source content.
-
-**Use when:**
-- A search or grep result references a summary nodeId and you need more detail
-- Check with `lcm describe <nodeId>` first to see if it's worth expanding (saves tokens)
-
-```bash
-lcm describe <nodeId>    # check metadata first
-lcm expand <nodeId>      # decompress if relevant
-lcm expand <nodeId> --depth 2   # deeper traversal
-```
-
-### 4. Store a Decision or Finding
-
-Persist knowledge for retrieval in future sessions.
-
-**Use when:**
-- An architectural decision was made with rationale worth preserving
-- A bug root cause was identified (the "why", not just the fix)
-- User expressed a preference or feedback that affects future work
-- A non-obvious integration pattern was discovered
-
-**Do NOT use when:**
-- The information is already in git (code, commit messages)
-- It's a transient debugging step or ephemeral task detail
-- It's already documented in project instruction files (CLAUDE.md, AGENTS.md, etc.)
-- It's general knowledge, not project-specific
-
-```bash
-lcm store "Auth uses JWT with 24h expiry instead of server sessions: the API stays stateless across instances." --tag type:decision --tag scope:security
-lcm store "SessionEnd hook only fires on graceful /exit, not on crash or terminal close, so a crashed session loses its tail." --tag type:gotcha --tag scope:lcm
-```
-
-### 5. Check System Health
-
-```bash
-lcm doctor    # daemon, hooks, MCP, summarizer status
-lcm stats     # compression ratios and token savings
-```
-
-## Retrieval Chaining Pattern
-
-The retrieval tools compose from broad to deep:
-
-```
-lcm search "topic"       → broad conceptual matches
-    ↓ (find interesting nodeId)
-lcm grep "exact term"    → narrow to specific references
-    ↓ (find nodeId worth expanding)
-lcm describe <nodeId>    → check metadata (depth, tokens, promoted?)
-    ↓ (if worth it)
-lcm expand <nodeId>      → full decompressed content
-```
-
-## Error Handling
-
-**Agent-Fixable (handle automatically):**
-
-| Error | Recovery |
+| Symptom | Do |
 |---|---|
-| Daemon not running | Run `lcm daemon start --detach`, then retry |
-| "No results" from search | Try `lcm grep` with different keywords, or broaden query |
-| Node not found on expand | Use `lcm search` to find correct nodeId |
-
-**User Action Required:**
-
-| Error | What to tell the user |
-|---|---|
-| `lcm` command not found | Run `npm install -g @lossless-claude/lcm` |
-| Daemon won't start | Ask user to check `lcm doctor` output |
-| Database locked or corrupted | Ask user to run `lcm doctor` for diagnostics |
-
-### Quick Diagnosis
-
-```bash
-lcm doctor    # check daemon, hooks, config health
-lcm stats     # verify memory is being captured
-```
+| `lcm` not found | `npm install -g @lossless-claude/lcm` |
+| daemon not running | `lcm daemon start --detach`, retry |
+| no results | `lcm grep` with a different term, or broaden the query |
+| anything else | `lcm doctor` |

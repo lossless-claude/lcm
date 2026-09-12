@@ -5,7 +5,7 @@ description: "Use when deciding which lcm MCP tool to call — lcm_search, lcm_g
 
 # lcm Memory Tool Guide
 
-Lossless-claude provides 7 MCP tools. This skill helps you pick the right one and recover from errors.
+lcm provides 7 MCP tools. This skill helps you pick the right one and recover from errors.
 
 > **Hooks already inject memory at session start.** Do NOT re-query what was already injected. This skill is for active retrieval, storage, and error recovery — not session initialization.
 
@@ -17,8 +17,8 @@ These three tools **chain** from broad to deep:
 
 1. **lcm_search** — Broad concept recall across sessions
    - Use: "how was auth implemented?", "what decisions were made about compaction?"
-   - Returns: ranked results from FTS5 + semantic layers
-   - Options: `tags` to filter, `layers` to scope (episodic/semantic)
+   - Returns: ranked results from the episodic and promoted layers
+   - Options: `tags` to filter, `layers` to scope (`episodic`, `promoted`)
 
 2. **lcm_grep** — Exact keyword/regex in raw transcripts
    - Use: "JWT", "socket.unref", specific error messages
@@ -42,7 +42,7 @@ These three tools **chain** from broad to deep:
 
 5. **lcm_store** — Persist a decision or finding for future sessions
    - Use: architectural decisions, bug root causes, user preferences, integration patterns
-   - Options: `tags` for categorization, `metadata` for project/session context
+   - Options: `tags` following `docs/tag-schema.md` (`type:` plus `project:` or `scope:`), `metadata` for project/session context
 
 ### Operational Tools
 
@@ -109,7 +109,7 @@ If install succeeds, `lcm` should now be available on PATH. If it is still not a
 ## Quick Reference
 
 ```
-lcm_search  → broad concept recall (FTS5 + semantic)
+lcm_search  → broad concept recall (episodic + promoted)
 lcm_grep    → exact keyword/regex match
 lcm_expand  → decompress a summary node
 lcm_describe → inspect node metadata (check before expanding)
