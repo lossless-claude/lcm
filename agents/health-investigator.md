@@ -1,6 +1,7 @@
 ---
 name: health-investigator
-description: Use this agent for deep investigation of lossless-claude health issues — goes beyond the doctor checklist to find root causes. Examples:
+description: |-
+  Use this agent for deep investigation of lossless-claude health issues — goes beyond the doctor checklist to find root causes. Examples:
 
   <example>
   Context: Doctor shows failures but the cause isn't obvious

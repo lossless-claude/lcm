@@ -1,5 +1,6 @@
 {
   "name": "lossless-claude",
+  "description": "Lossless context management — DAG-based summarization that preserves every message",
   "owner": {
     "name": "Pedro",
     "url": "https://github.com/ipedro"

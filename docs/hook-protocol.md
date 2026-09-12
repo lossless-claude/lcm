@@ -145,6 +145,8 @@ Both halves are load-bearing. The claim is what proves the module actually regis
 
 **Types:** run `/plugin-types` in a session with the flag on; it writes `claude-code.d.ts` for the running build. Regenerate after a Claude Code update rather than editing. `claude plugin validate` reads the module statically: `$` may only be passed to a top-level function, and calls must be spelled `$.noun.method(...)`.
 
+**Type-checking `hooks/` (`npm run typecheck:hooks`, not run in CI):** `scripts/typecheck-hooks.sh` compiles `hooks/lcm-hooks.ts` against `.claude/types/claude-code.d.ts`, the declarations written by `/plugin-types`. Those declarations are early access, gitignored, and describe whatever build wrote them — a committed copy would compile clean against an API a later release removed, which is the exact failure this check exists to catch. So it only runs locally, on demand, compared against the Claude Code build installed on the machine running it: before touching `hooks/lcm-hooks.ts`, and again after any Claude Code update. `claude plugin validate` (wired into CI, see `docs/ci-runner.md`) checks the module's structure — declared hooks, `$.noun.method(...)` call shape — but not whether a given `$` method still exists on the running build; it does not catch a renamed or removed method, and does not substitute for `typecheck:hooks`.
+
 ## SessionSnapshot Hook
 
 **Command:** `lcm session-snapshot`
