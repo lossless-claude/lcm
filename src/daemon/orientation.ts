@@ -1,8 +1,12 @@
+// The storing rule's leading phrase. Every guidance surface states it, then names its own tool;
+// tests import it instead of duplicating the wording.
+export const STORE_RULE_PHRASE = "Store durable insights";
+
 // Content written to ~/.claude/lcm.md during install/doctor — loaded via CLAUDE.md @include.
 // Kept here as the single source of truth for the guidance text.
 export const LCM_MD_CONTENT = `# lossless-claude memory — MANDATORY routing rules
 
-Memory is captured automatically by hooks. Do NOT store manually.
+Hooks capture sessions automatically.
 
 ## When to search
 
@@ -28,7 +32,7 @@ lcm_expand <nodeId>       → full decompressed content
 
 ## Storage
 
-Memory is captured automatically by hooks. Do NOT store manually via \`lcm store\` CLI — use the MCP tools (\`lcm_store\`) only when explicitly needed.
+${STORE_RULE_PHRASE} (decision, preference, root-cause, pattern, gotcha, solution, workflow) explicitly with \`lcm_store\` (MCP) or \`lcm store\` (CLI), tagged with \`type:\`. One concise insight and its why per store.
 `;
 
 // Guidance is now delivered via ~/.claude/lcm.md (installed by `lcm install` / `lcm doctor`),

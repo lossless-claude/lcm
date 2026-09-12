@@ -1,6 +1,6 @@
 # Passive Learning
 
-Passive learning captures insights from your Claude Code sessions automatically — no manual `lcm_store()` calls needed. It observes tool usage patterns, user decisions, and session events, then promotes high-signal observations into cross-session memory.
+Passive learning captures your Claude Code sessions automatically; durable insights are still stored explicitly with `lcm_store`. It observes tool usage patterns, user decisions, and session events, then promotes high-signal observations into cross-session memory.
 
 ## How It Works
 
