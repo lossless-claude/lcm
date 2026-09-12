@@ -30,6 +30,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runCli } from "../test/bin/golden/run-cli.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "..");
@@ -99,24 +100,23 @@ function buildEnv(root) {
   };
 }
 
-function runOne(c, root) {
+async function runOne(c, root) {
   const cwd = join(root, "project");
   for (const fixture of c.fixtures ?? []) {
     copyFileSync(join(FIXTURES_DIR, fixture.from), join(cwd, fixture.dest));
   }
   const env = buildEnv(root);
-  const result = spawnSync(process.execPath, [CLI_ENTRY, ...c.argv], {
-    input: c.stdin ?? "",
-    timeout: 10000,
-    killSignal: "SIGKILL",
-    env,
-    cwd,
-    encoding: "utf8",
-  });
+  const result = await runCli([CLI_ENTRY, ...c.argv], c.stdin ?? "", env, cwd);
+  if (result.timedOut || result.signal !== null || result.status === null) {
+    throw new Error(
+      `case ${c.id}: process did not complete cleanly ` +
+        `(status=${result.status}, signal=${result.signal ?? "none"}, timedOut=${result.timedOut})`,
+    );
+  }
   const ctx = { tmpRoots: [root, safeRealpath(root)], projectId: projectIdFor(cwd) };
   return {
-    out: normalize(result.stdout ?? "", ctx),
-    err: normalize(result.stderr ?? "", ctx),
+    out: normalize(result.stdout, ctx),
+    err: normalize(result.stderr, ctx),
     code: String(result.status),
   };
 }
@@ -126,7 +126,7 @@ function snapshotName(c, kind) {
 }
 
 // Cases sharing a group run in order against one root; everything else is independent.
-function runAll() {
+async function runAll() {
   const results = new Map();
   const groups = new Map();
   const standalone = [];
@@ -141,7 +141,7 @@ function runAll() {
   for (const c of standalone) {
     const root = makeRoot();
     try {
-      results.set(c.id, runOne(c, root));
+      results.set(c.id, await runOne(c, root));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -149,7 +149,7 @@ function runAll() {
   for (const cases of groups.values()) {
     const root = makeRoot();
     try {
-      for (const c of cases) results.set(c.id, runOne(c, root));
+      for (const c of cases) results.set(c.id, await runOne(c, root));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -203,6 +203,6 @@ function verify(results) {
   }
 }
 
-const results = runAll();
+const results = await runAll();
 if (VERIFY) verify(results);
 else writeMissing(results);

@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GOLDEN_CASES, type GoldenCase } from "./golden/cases.js";
+import { runCli } from "./golden/run-cli.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = resolve(__dirname, "..", "..");
@@ -120,27 +121,24 @@ function buildEnv(root: string): NodeJS.ProcessEnv {
 
 // ─── filesystem delta guard ───────────────────────────────────────────────────
 
-/** relative path -> content hash (files/symlinks/other); directories are not recorded. */
+/**
+ * relative path -> content hash for files/symlinks/other; a directory is
+ * recorded too, keyed `dir:<rel>`, so a command that creates or removes an
+ * empty directory still shows up in the delta. Traversal errors propagate:
+ * a listing that can't see the whole tree must not report a clean delta.
+ */
 function listing(root: string): Map<string, string> {
   const out = new Map<string, string>();
   const walk = (dir: string, rel: string) => {
-    let entries: import("node:fs").Dirent[];
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
+    const entries = readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
       const abs = join(dir, entry.name);
       const relPath = rel ? `${rel}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
+        out.set(`dir:${relPath}`, "dir");
         walk(abs, relPath);
       } else if (entry.isFile()) {
-        try {
-          out.set(relPath, createHash("sha256").update(readFileSync(abs)).digest("hex"));
-        } catch {
-          out.set(relPath, "unreadable");
-        }
+        out.set(relPath, createHash("sha256").update(readFileSync(abs)).digest("hex"));
       } else {
         out.set(relPath, `other:${entry.name}`);
       }
@@ -157,10 +155,25 @@ function diffListings(before: Map<string, string>, after: Map<string, string>): 
   return [...changed].sort();
 }
 
+/** The `dir:` keys for every ancestor directory of a declared write, so creating a
+ * file's parent directories is not itself flagged as an unexpected change. */
+function ancestorDirKeys(relPath: string): string[] {
+  const parts = relPath.split("/");
+  parts.pop();
+  const keys: string[] = [];
+  let cur = "";
+  for (const part of parts) {
+    cur = cur ? `${cur}/${part}` : part;
+    keys.push(`dir:${cur}`);
+  }
+  return keys;
+}
+
 const FORBIDDEN_BASENAME = /^daemon\.token$|\.(pid|log|sock)$/;
 
 function assertNoForbiddenFiles(after: Map<string, string>, caseId: string): void {
   for (const path of after.keys()) {
+    if (path.startsWith("dir:")) continue;
     const base = path.split("/").pop() ?? path;
     if (FORBIDDEN_BASENAME.test(base)) {
       throw new Error(`case ${caseId}: forbidden file present after run: ${path}`);
@@ -200,7 +213,7 @@ function compareSnapshot(c: GoldenCase, kind: "out" | "err" | "code", actual: st
 
 // ─── one case, against an already-prepared root ──────────────────────────────
 
-function runCase(c: GoldenCase, root: string): void {
+async function runCase(c: GoldenCase, root: string): Promise<void> {
   const cwd = join(root, "project");
   for (const fixture of c.fixtures ?? []) {
     copyFileSync(join(FIXTURES_DIR, fixture.from), join(cwd, fixture.dest));
@@ -209,18 +222,12 @@ function runCase(c: GoldenCase, root: string): void {
   const env = buildEnv(root);
   const before = listing(root);
 
-  const result = spawnSync(process.execPath, [CLI_ENTRY, ...c.argv], {
-    input: c.stdin ?? "",
-    timeout: 10000,
-    killSignal: "SIGKILL",
-    env,
-    cwd,
-    encoding: "utf8",
-  });
+  const result = await runCli([CLI_ENTRY, ...c.argv], c.stdin ?? "", env, cwd);
 
-  if (result.signal || result.error) {
+  if (result.timedOut || result.signal !== null || result.status === null) {
     throw new Error(
-      `case ${c.id}: process did not complete cleanly (signal=${result.signal ?? "none"}, error=${result.error ?? "none"})`,
+      `case ${c.id}: process did not complete cleanly ` +
+        `(status=${result.status}, signal=${result.signal ?? "none"}, timedOut=${result.timedOut})`,
     );
   }
 
@@ -229,8 +236,8 @@ function runCase(c: GoldenCase, root: string): void {
     projectId: projectIdFor(cwd),
   };
 
-  compareSnapshot(c, "out", normalize(result.stdout ?? "", ctx));
-  compareSnapshot(c, "err", normalize(result.stderr ?? "", ctx));
+  compareSnapshot(c, "out", normalize(result.stdout, ctx));
+  compareSnapshot(c, "err", normalize(result.stderr, ctx));
   compareSnapshot(c, "code", String(result.status));
 
   const after = listing(root);
@@ -238,6 +245,7 @@ function runCase(c: GoldenCase, root: string): void {
 
   const delta = diffListings(before, after);
   const expected = new Set(c.writes);
+  for (const write of c.writes) for (const key of ancestorDirKeys(write)) expected.add(key);
   const unexpected = delta.filter((p) => !expected.has(p));
   expect(unexpected, `case ${c.id}: unexpected filesystem changes`).toEqual([]);
   const missing = c.writes.filter((p) => !delta.includes(p));
@@ -268,10 +276,10 @@ describe("golden CLI guard", () => {
       continue;
     }
 
-    it(c.id, () => {
+    it(c.id, async () => {
       const root = makeRoot();
       try {
-        runCase(c, root);
+        await runCase(c, root);
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
@@ -288,10 +296,10 @@ describe("golden CLI guard", () => {
       continue;
     }
 
-    it(`group ${groupName}`, () => {
+    it(`group ${groupName}`, async () => {
       const root = makeRoot();
       try {
-        for (const c of cases) runCase(c, root);
+        for (const c of cases) await runCase(c, root);
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
