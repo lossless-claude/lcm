@@ -148,15 +148,33 @@ function listing(root: string): Map<string, string> {
   return out;
 }
 
-function diffListings(before: Map<string, string>, after: Map<string, string>): string[] {
-  const changed = new Set<string>();
-  for (const [path, hash] of after) if (before.get(path) !== hash) changed.add(path);
-  for (const path of before.keys()) if (!after.has(path)) changed.add(path);
-  return [...changed].sort();
+type ChangeKind = "created" | "removed" | "modified";
+interface Change {
+  path: string;
+  kind: ChangeKind;
 }
 
-/** The `dir:` keys for every ancestor directory of a declared write, so creating a
- * file's parent directories is not itself flagged as an unexpected change. */
+/**
+ * Every path whose presence or content differs between the two listings, tagged
+ * with the direction of the change. Direction matters: `creates` and `removes`
+ * are permitted one-directionally (see `runCase`), so the guard needs to know
+ * which one it is looking at, not just that something changed.
+ */
+function diffListings(before: Map<string, string>, after: Map<string, string>): Change[] {
+  const changes: Change[] = [];
+  for (const [path, hash] of after) {
+    if (!before.has(path)) changes.push({ path, kind: "created" });
+    else if (before.get(path) !== hash) changes.push({ path, kind: "modified" });
+  }
+  for (const path of before.keys()) {
+    if (!after.has(path)) changes.push({ path, kind: "removed" });
+  }
+  return changes.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+/** The `dir:` keys for every ancestor directory of a declared `creates` path, so
+ * creating a file's parent directories is not itself flagged as an unexpected
+ * change. Only ever used for the creation direction — see `runCase`. */
 function ancestorDirKeys(relPath: string): string[] {
   const parts = relPath.split("/");
   parts.pop();
@@ -243,13 +261,32 @@ async function runCase(c: GoldenCase, root: string): Promise<void> {
   const after = listing(root);
   assertNoForbiddenFiles(after, c.id);
 
-  const delta = diffListings(before, after);
-  const expected = new Set(c.writes);
-  for (const write of c.writes) for (const key of ancestorDirKeys(write)) expected.add(key);
-  const unexpected = delta.filter((p) => !expected.has(p));
+  const changes = diffListings(before, after);
+
+  // One-directional: an ancestor directory of a declared `creates` path may
+  // appear, but nothing is ever allowed to disappear except an explicit
+  // `removes` entry — a directory or file that existed before and vanished
+  // needs its own declaration, it is never implied by `creates`.
+  const allowedCreates = new Set(c.creates);
+  for (const create of c.creates) for (const key of ancestorDirKeys(create)) allowedCreates.add(key);
+  const allowedRemoves = new Set(c.removes);
+
+  const unexpected = changes
+    .filter((change) => {
+      if (change.kind === "created") return !allowedCreates.has(change.path);
+      if (change.kind === "removed") return !allowedRemoves.has(change.path);
+      return true; // a modification in place is never permitted
+    })
+    .map((change) => `${change.kind}:${change.path}`);
   expect(unexpected, `case ${c.id}: unexpected filesystem changes`).toEqual([]);
-  const missing = c.writes.filter((p) => !delta.includes(p));
-  expect(missing, `case ${c.id}: expected writes did not happen`).toEqual([]);
+
+  const missingCreates = c.creates.filter(
+    (p) => !changes.some((change) => change.kind === "created" && change.path === p),
+  );
+  const missingRemoves = c.removes.filter(
+    (p) => !changes.some((change) => change.kind === "removed" && change.path === p),
+  );
+  expect([...missingCreates, ...missingRemoves], `case ${c.id}: declared changes did not happen`).toEqual([]);
 
   if (c.id === "k10") {
     expect(after.has("out.json"), "case k10: out.json must not be created").toBe(false);

@@ -13,6 +13,39 @@ import { spawn } from "node:child_process";
 
 const DEFAULT_TIMEOUT_MS = 10000;
 
+// Every child's process-group leader pid still running, so the runner can
+// clean them all up if it dies (or is killed) before a case's own deadline.
+const liveChildPids = new Set();
+let lifecycleHandlersRegistered = false;
+
+function killChildProcessGroup(pid) {
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch (err) {
+    if (err.code !== "ESRCH") throw err;
+  }
+}
+
+function killAllLiveChildren() {
+  for (const pid of liveChildPids) killChildProcessGroup(pid);
+}
+
+/** Registered once regardless of how many times runCli() is called. */
+function registerLifecycleHandlersOnce() {
+  if (lifecycleHandlersRegistered) return;
+  lifecycleHandlersRegistered = true;
+
+  process.on("exit", killAllLiveChildren);
+  process.on("SIGINT", () => {
+    killAllLiveChildren();
+    process.exit(130);
+  });
+  process.on("SIGTERM", () => {
+    killAllLiveChildren();
+    process.exit(143);
+  });
+}
+
 /**
  * @param {string[]} argv - full argv for `process.execPath`, e.g. [CLI_ENTRY, ...caseArgv].
  * @param {string} stdin - input written to the child's stdin, then ended.
@@ -21,6 +54,8 @@ const DEFAULT_TIMEOUT_MS = 10000;
  * @returns {Promise<{stdout: string, stderr: string, status: number|null, signal: string|null, timedOut: boolean}>}
  */
 export function runCli(argv, stdin, env, cwd) {
+  registerLifecycleHandlersOnce();
+
   return new Promise((resolvePromise, reject) => {
     const child = spawn(process.execPath, argv, {
       cwd,
@@ -29,6 +64,14 @@ export function runCli(argv, stdin, env, cwd) {
       stdio: ["pipe", "pipe", "pipe"],
     });
 
+    if (typeof child.pid === "number") liveChildPids.add(child.pid);
+
+    // Decode as whole UTF-8 characters across chunk boundaries; concatenating
+    // raw Buffers with `+=` decodes each chunk separately, so a multi-byte
+    // character split across two chunks would come out as U+FFFD.
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+
     let stdout = "";
     let stderr = "";
     let timedOut = false;
@@ -36,11 +79,7 @@ export function runCli(argv, stdin, env, cwd) {
 
     const timer = setTimeout(() => {
       timedOut = true;
-      try {
-        process.kill(-child.pid, "SIGKILL");
-      } catch {
-        /* process group already gone */
-      }
+      killChildProcessGroup(child.pid);
     }, DEFAULT_TIMEOUT_MS);
 
     child.stdout.on("data", (chunk) => {
@@ -51,6 +90,7 @@ export function runCli(argv, stdin, env, cwd) {
     });
 
     child.on("error", (err) => {
+      if (typeof child.pid === "number") liveChildPids.delete(child.pid);
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -58,6 +98,7 @@ export function runCli(argv, stdin, env, cwd) {
     });
 
     child.on("close", (status, signal) => {
+      if (typeof child.pid === "number") liveChildPids.delete(child.pid);
       if (settled) return;
       settled = true;
       clearTimeout(timer);
