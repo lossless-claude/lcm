@@ -26,6 +26,7 @@
     "mcp.mjs",
     "lcm.mjs",
     ".claude-plugin/",
+    "skills/",
     "hooks/",
     "docs/agent-tools.md",
     "docs/configuration.md",

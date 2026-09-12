@@ -249,17 +249,20 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<void> {
   deps.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
   console.log(`Updated ${settingsPath}`);
 
-  // 4. Install slash commands to ~/.claude/commands/
-  const commandsSrc = join(dirname(fileURLToPath(import.meta.url)), "../..", ".claude-plugin", "commands");
-  const commandsDst = join(homedir(), ".claude", "commands");
-  if (deps.existsSync(commandsSrc)) {
-    deps.mkdirSync(commandsDst, { recursive: true });
-    for (const file of readdirSync(commandsSrc)) {
-      if (file.endsWith(".md")) {
-        copyFileSync(join(commandsSrc, file), join(commandsDst, file));
-      }
+  // 4. Install the /memory skill to ~/.claude/skills/memory/, and drop the per-command files
+  //    earlier versions installed, so /lcm-doctor and friends stop shadowing it.
+  const skillSrc = join(dirname(fileURLToPath(import.meta.url)), "../..", "skills", "memory", "SKILL.md");
+  const skillDst = join(homedir(), ".claude", "skills", "memory");
+  if (deps.existsSync(skillSrc)) {
+    deps.mkdirSync(skillDst, { recursive: true });
+    copyFileSync(skillSrc, join(skillDst, "SKILL.md"));
+    console.log(`Installed the /memory skill to ${skillDst}`);
+  }
+  const legacyCommands = join(homedir(), ".claude", "commands");
+  if (deps.existsSync(legacyCommands)) {
+    for (const file of readdirSync(legacyCommands)) {
+      if (/^(lcm|lossless-claude)-[a-z]+\.md$/.test(file)) rmSync(join(legacyCommands, file), { force: true });
     }
-    console.log(`Installed slash commands to ${commandsDst}`);
   }
 
   // 5. Install lcm.md and @lcm.md reference in CLAUDE.md
