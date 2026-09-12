@@ -45,7 +45,7 @@ The GitHub and Playwright MCP servers are enabled by default; the block above is
 |---|---|---|
 | `.github/workflows/copilot-setup-steps.yml` | this repo | installs the pinned binary at `/home/runner/.local/bin/` and indexes the checkout, so the graph exists before either agent starts |
 | the JSON above | repo settings | registers the binary as a local stdio MCP server and declares which tools Copilot may call |
-| `.github/skills/code-review/SKILL.md` | this repo | tells the **reviewer** to actually use it — per GitHub's docs, it is *more likely* to reach for MCP context when a skill says so explicitly |
+| `.agents/skills/code-review/SKILL.md` | this repo | tells the **reviewer** to actually use it — per GitHub's docs, it is *more likely* to reach for MCP context when a skill says so explicitly |
 | `.github/copilot-instructions.md` | this repo | tells the **cloud agent** the same, plus: verify each review finding against the graph before reporting it fixed |
 
 The tool list is read-only on purpose: `index_repository`, `manage_adr`, `ingest_traces` and `delete_project` are omitted so neither agent can mutate the graph. Indexing is the workflow's job.

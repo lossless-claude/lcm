@@ -12,7 +12,7 @@ if (!fs.existsSync(projectsDir)) {
 }
 
 const dirs = fs.readdirSync(projectsDir).filter((d) => {
-  const dbPath = path.join(projectsDir, d, "lcm.db");
+  const dbPath = path.join(projectsDir, d, "db.sqlite");
   return fs.existsSync(dbPath);
 });
 
@@ -23,7 +23,7 @@ if (dirs.length === 0) {
 
 let allOk = true;
 for (const d of dirs) {
-  const dbPath = path.join(projectsDir, d, "lcm.db");
+  const dbPath = path.join(projectsDir, d, "db.sqlite");
   try {
     const db = new DatabaseSync(dbPath);
     const result = db.prepare("PRAGMA integrity_check").get();
