@@ -155,17 +155,37 @@ function findOneSubagentSessionFile(subagentsDir: string, sessionDirName: string
   }
 }
 
-function findSubagentSessionFiles(projectDir: string, sessionDirName: string): DiscoveredSessionFile[] {
-  const subagentsDir = join(projectDir, sessionDirName, 'subagents');
-  if (!existsSync(subagentsDir)) return [];
+/**
+ * A subagent transcript's `agent-<id>.jsonl` can sit directly under
+ * `subagents/`, or nested arbitrarily deeper — e.g.
+ * `subagents/workflows/wf_<id>/` for a workflow run's own subagents — with
+ * the same format and the same sidecar at every depth. Only `journal.jsonl`
+ * — a workflow run's own log, excluded by name, not by shape — is not a
+ * transcript.
+ */
+function findSubagentTranscriptEntry(dir: string, sessionDirName: string, entry: Dirent): DiscoveredSessionFile | null {
+  if (entry.name === 'journal.jsonl' || !entry.name.endsWith('.jsonl')) return null;
+  return findOneSubagentSessionFile(dir, sessionDirName, entry.name);
+}
 
+function walkSubagentDir(dir: string, sessionDirName: string): DiscoveredSessionFile[] {
   const files: DiscoveredSessionFile[] = [];
-  for (const sub of readdirSync(subagentsDir, { withFileTypes: true })) {
-    if (!sub.isFile() || sub.isSymbolicLink() || !sub.name.endsWith('.jsonl')) continue;
-    const found = findOneSubagentSessionFile(subagentsDir, sessionDirName, sub.name);
+  for (const sub of readdirSync(dir, { withFileTypes: true })) {
+    if (sub.isSymbolicLink()) continue;
+    if (sub.isDirectory()) {
+      files.push(...walkSubagentDir(join(dir, sub.name), sessionDirName));
+      continue;
+    }
+    const found = sub.isFile() ? findSubagentTranscriptEntry(dir, sessionDirName, sub) : null;
     if (found) files.push(found);
   }
   return files;
+}
+
+function findSubagentSessionFiles(projectDir: string, sessionDirName: string): DiscoveredSessionFile[] {
+  const subagentsDir = join(projectDir, sessionDirName, 'subagents');
+  if (!existsSync(subagentsDir)) return [];
+  return walkSubagentDir(subagentsDir, sessionDirName);
 }
 
 export function findSessionFiles(projectDir: string): DiscoveredSessionFile[] {
