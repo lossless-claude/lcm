@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { ensureCore } from "../src/bootstrap.js";
+import { mcpServerEntry } from "../src/installer/mcp-server-entry.js";
 export { REQUIRED_HOOKS, mergeClaudeSettings } from "../src/installer/settings.js";
 
 export interface ServiceDeps {
@@ -241,8 +242,7 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<void> {
     merged = {};
   }
   const mcpServers = (typeof merged.mcpServers === "object" && merged.mcpServers !== null) ? merged.mcpServers : {};
-  const lcmBin = resolveBinaryPath(deps);
-  mcpServers["lcm"] = { command: lcmBin, args: ["mcp"] };
+  mcpServers["lcm"] = mcpServerEntry();
   (merged as any).mcpServers = mcpServers;
 
   deps.mkdirSync(dirname(settingsPath), { recursive: true });

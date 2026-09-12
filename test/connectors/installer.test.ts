@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, isAbsolute } from 'node:path';
 import { tmpdir } from 'node:os';
 import { installConnector, removeConnector, listConnectors } from '../../src/connectors/installer.js';
 import { LCM_MARKERS } from '../../src/connectors/constants.js';
@@ -56,7 +56,14 @@ describe('installConnector — MCP JSON', () => {
     expect(result.success).toBe(true);
     const config = JSON.parse(readFileSync(result.path, 'utf-8'));
     expect(config.mcpServers?.lcm).toBeDefined();
-    expect(config.mcpServers.lcm.command).toBe('lcm');
+    // The entry must not depend on PATH resolving `lcm` or a shim's `node` shebang (#424):
+    // command/args are absolute paths measured from the running installer process.
+    expect(config.mcpServers.lcm.command).not.toBe('lcm');
+    expect(config.mcpServers.lcm.command).not.toBe('node');
+    expect(isAbsolute(config.mcpServers.lcm.command)).toBe(true);
+    expect(config.mcpServers.lcm.args).toHaveLength(2);
+    expect(isAbsolute(config.mcpServers.lcm.args[0])).toBe(true);
+    expect(config.mcpServers.lcm.args[1]).toBe('mcp');
   });
 
   it('merges into existing JSON without overwriting other keys', () => {

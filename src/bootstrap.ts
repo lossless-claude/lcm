@@ -32,6 +32,34 @@ function defaultDeps(): EnsureCoreDeps {
   };
 }
 
+/**
+ * Record the node interpreter this process is running under in config.json, so the
+ * plugin's static `.claude-plugin/lcm-mcp.sh` launcher — which cannot depend on PATH
+ * resolving node either — can read a measured, working path instead of guessing.
+ * Read-modify-write: preserves every other key, and only rewrites when the recorded
+ * path is stale (e.g. after an nvm switch or node upgrade).
+ */
+function recordMcpNodePath(deps: EnsureCoreDeps): void {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(deps.readFileSync(deps.configPath, "utf-8"));
+  } catch {
+    return; // config.json missing or unreadable — nothing to patch
+  }
+  if (typeof raw !== "object" || raw === null) return;
+  const config = raw as Record<string, unknown>;
+  if (config.mcpNodePath === process.execPath) return;
+  try {
+    deps.writeFileSync(deps.configPath, JSON.stringify({ ...config, mcpNodePath: process.execPath }, null, 2));
+  } catch (err) {
+    // Don't throw: a config that cannot be written must not stop the daemon from
+    // starting. But don't swallow either — the launcher then falls back to PATH
+    // for good, which is the failure this whole change exists to remove, and it
+    // would look identical to never having tried.
+    console.error("lcm: could not record mcpNodePath in config.json:", err instanceof Error ? err.message : err);
+  }
+}
+
 export async function ensureCore(deps: EnsureCoreDeps = defaultDeps()): Promise<void> {
   // 1. Create config.json with defaults if missing
   if (!deps.existsSync(deps.configPath)) {
@@ -42,6 +70,7 @@ export async function ensureCore(deps: EnsureCoreDeps = defaultDeps()): Promise<
       deps.chmodSync?.(deps.configPath, 0o600);
     } catch {}
   }
+  recordMcpNodePath(deps);
 
   // 2. Clean stale/duplicate hooks from settings.json (fixes #94)
   // Only rewrite settings.json if mergeClaudeSettings actually changed the data
