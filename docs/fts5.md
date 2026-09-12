@@ -1,18 +1,24 @@
 # Optional: enable FTS5 for fast full-text search
 
-`lcm` works without FTS5 as of the current release. When FTS5 is unavailable in the
-Node runtime that runs the Claude Code gateway, the plugin:
+`lcm` works without FTS5. When FTS5 is unavailable in the Node runtime the daemon runs on, lcm:
 
 - keeps persisting messages and summaries
-- falls back from `"full_text"` search to a slower `LIKE`-based search
+- falls back from FTS5 search to a slower `LIKE`-based search
 - loses FTS ranking/snippet quality
 
-If you want native FTS5 search performance and ranking, the **exact Node runtime that runs the
-gateway** must have SQLite FTS5 compiled in.
+lcm uses Node's built-in `node:sqlite` module (`src/db/features.ts` probes it at startup), not
+`better-sqlite3`. Official Node 22 builds already compile SQLite with FTS5 enabled — most
+installs need nothing further. Run the probe below first; only build a custom Node (last
+section) if it reports `fts5: fail`.
 
-## Probe the gateway runtime
+The daemon always runs on `process.execPath` — the same Node binary that started it, whether
+that is a `lcm daemon start` you ran yourself or the one Claude Code's or Codex's hook command
+resolved from `PATH`. There is no separate runtime to point at; whichever Node is first on
+`PATH` when the daemon is (re)started is the one that must have FTS5.
 
-Run this with the same `node` binary your gateway uses:
+## Probe your Node runtime
+
+Run this with the same `node` binary that starts the daemon:
 
 ```bash
 node --input-type=module - <<'NODE'
@@ -39,11 +45,12 @@ ENABLE_FTS5
 fts5: ok
 ```
 
-If you get `fts5: fail`, build or install an FTS5-capable Node and point the gateway at that runtime.
+If you get `fts5: fail`, either switch to an official Node 22+ build (nodejs.org, Homebrew, or
+nvm all ship FTS5-enabled binaries) or build one yourself.
 
 ## Build an FTS5-capable Node on macOS
 
-This workflow was verified with Node `v22.15.0`.
+Only needed if your runtime lacks FTS5 — for example a distro-packaged Node built without it.
 
 ```bash
 cd ~/Projects
@@ -76,21 +83,10 @@ Build the runtime:
 make -j8 node
 ```
 
-Expose the binary under a Node-compatible basename that Claude Code recognizes:
+Verify the new binary directly:
 
 ```bash
-mkdir -p ~/Projects/node-fts5/bin
-ln -sfn ~/Projects/node-fts5/out/Release/node ~/Projects/node-fts5/bin/node-22.15.0
-```
-
-Use a basename like `node-22.15.0`, `node`, or `nodejs`. Names like
-`node-v22.15.0-fts5` may not be recognized correctly by Claude Code's CLI/runtime parsing.
-
-Verify the new runtime:
-
-```bash
-~/Projects/node-fts5/bin/node-22.15.0 --version
-~/Projects/node-fts5/bin/node-22.15.0 --input-type=module - <<'NODE'
+./out/Release/node --input-type=module - <<'NODE'
 import { DatabaseSync } from 'node:sqlite';
 const db = new DatabaseSync(':memory:');
 db.exec("CREATE VIRTUAL TABLE t USING fts5(content)");
@@ -98,58 +94,27 @@ console.log("fts5: ok");
 NODE
 ```
 
-## Point the Claude Code gateway at that runtime on macOS
+## Point lcm at that runtime
 
-Back up the existing LaunchAgent plist first:
-
-```bash
-cp ~/Library/LaunchAgents/ai.claude.gateway.plist \
-  ~/Library/LaunchAgents/ai.claude.gateway.plist.bak-$(date +%Y%m%d-%H%M%S)
-```
-
-Replace the runtime path, then reload the agent:
+Put the FTS5-capable `node` first on `PATH` for whatever process starts the daemon — your shell
+profile for a manual `lcm daemon start`, or the environment the hook's shell command inherits for
+Claude Code or Codex. Then restart the daemon so it re-spawns under the new binary:
 
 ```bash
-/usr/libexec/PlistBuddy -c 'Set :ProgramArguments:0 /Users/youruser/Projects/node-fts5/bin/node-22.15.0' \
-  ~/Library/LaunchAgents/ai.claude.gateway.plist
-
-launchctl bootout gui/$UID ~/Library/LaunchAgents/ai.claude.gateway.plist 2>/dev/null || true
-launchctl bootstrap gui/$UID ~/Library/LaunchAgents/ai.claude.gateway.plist
-launchctl kickstart -k gui/$UID/ai.claude.gateway
+lcm daemon restart
 ```
 
-Verify the live runtime:
+## Verify
 
 ```bash
-launchctl print gui/$UID/ai.claude.gateway | sed -n '1,80p'
+tail -n 60 ~/.lossless-claude/daemon.log
 ```
 
-You should see:
-
-```text
-program = /Users/youruser/Projects/node-fts5/bin/node-22.15.0
-```
-
-## Verify `lcm`
-
-Check the logs:
+Confirm the daemon is up (`lcm status` reports its version and uptime), then run a search and
+check `~/.lossless-claude/projects/<hash>/db.sqlite` fills as expected:
 
 ```bash
-tail -n 60 ~/.claude/logs/gateway.log
-tail -n 60 ~/.claude/logs/gateway.err.log
-```
-
-You want:
-
-- `[gateway] [lcm] Plugin loaded ...`
-- no new `no such module: fts5`
-
-Then force one turn through the gateway and verify the DB fills:
-
-```bash
-/Users/youruser/Projects/node-fts5/bin/node-22.15.0 \
-  /path/to/claude/dist/index.js \
-  agent --session-id fts5-smoke --message 'Reply with exactly: ok' --timeout 60
+lcm search "some prior conversation"
 
 sqlite3 ~/.lossless-claude/projects/<hash>/db.sqlite '
   select count(*) as conversations from conversations;
@@ -157,5 +122,3 @@ sqlite3 ~/.lossless-claude/projects/<hash>/db.sqlite '
   select count(*) as summaries from summaries;
 '
 ```
-
-Those counts should increase after a real turn.
