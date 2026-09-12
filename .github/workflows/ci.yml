@@ -69,6 +69,9 @@ jobs:
       - name: Check manifest
         run: npm run check-manifest
 
+      - name: Check documentation claims against the code
+        run: npm run check-docs
+
       - name: Validate plugin manifest
         # Two invocations, because they validate different things: the repo root
         # holds both manifests and marketplace.json wins there, so the plugin's

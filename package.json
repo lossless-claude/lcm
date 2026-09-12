@@ -41,7 +41,8 @@
     "typecheck": "tsc --noEmit",
     "typecheck:hooks": "bash scripts/typecheck-hooks.sh",
     "check-manifest": "node scripts/check-manifest.mjs",
-    "version-packages": "changeset version && node scripts/sync-versions.mjs"
+    "version-packages": "changeset version && node scripts/sync-versions.mjs",
+    "check-docs": "node scripts/check-doc-claims.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
