@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { realpathSync } from "node:fs";
-import { argv, exit, stdin, stdout } from "node:process";
+import { argv, exit, stdout } from "node:process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command, Option } from "commander";
@@ -10,22 +10,8 @@ import { registerMemoryCommands } from "../src/cli/memory.js";
 import { registerBenchCommands } from "../src/cli/bench.js";
 import { registerConnectorsCommands } from "../src/cli/connectors.js";
 import { registerDiagnosticsCommands, registerDiagnoseCommand } from "../src/cli/diagnostics.js";
-import { helpRequested } from "../src/cli/support.js";
-
-function readStdin(): Promise<string> {
-  return new Promise((resolve) => {
-    if (stdin.isTTY) { resolve(""); return; }
-    const chunks: Buffer[] = [];
-    let resolved = false;
-    const timer = setTimeout(() => {
-      if (!resolved) { resolved = true; stdin.destroy(); resolve(Buffer.concat(chunks).toString("utf-8")); }
-    }, 5000);
-    stdin.on("data", (chunk: Buffer) => chunks.push(chunk));
-    stdin.on("end", () => {
-      if (!resolved) { resolved = true; clearTimeout(timer); resolve(Buffer.concat(chunks).toString("utf-8")); }
-    });
-  });
-}
+import { registerHookCommands } from "../src/cli/hooks.js";
+import { helpRequested, readStdin } from "../src/cli/support.js";
 
 export { helpRequested } from "../src/cli/support.js";
 
@@ -403,100 +389,7 @@ async function main() {
       exit(r.exitCode);
     });
 
-  program
-    .command("codex-hook")
-    .description("Dispatch a native Codex lifecycle hook")
-    .action(async () => {
-      const { dispatchCodexHook } = await import("../src/hooks/codex.js");
-      const result = await dispatchCodexHook(await readStdin());
-      if (result.stdout) stdout.write(result.stdout + "\n");
-      exit(result.exitCode);
-    });
-
-  // ─── restore (hook) ────────────────────────────────────────────────────────
-  program
-    .command("restore")
-    .description("Dispatch the restore hook")
-    .helpOption(false)
-    .option("-h, --help", "Show help")
-    .action(async (opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../src/cli-help.js");
-        printHelp("restore"); exit(0);
-      }
-      const { dispatchHook } = await import("../src/hooks/dispatch.js");
-      const input = await readStdin();
-      const r = await dispatchHook("restore", input);
-      if (r.stdout) stdout.write(r.stdout);
-      exit(r.exitCode);
-    });
-
-  // ─── session-end (hook) ────────────────────────────────────────────────────
-  program
-    .command("session-end")
-    .description("Dispatch the session-end hook")
-    .helpOption(false)
-    .option("-h, --help", "Show help")
-    .action(async (opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../src/cli-help.js");
-        printHelp("session-end"); exit(0);
-      }
-      const { dispatchHook } = await import("../src/hooks/dispatch.js");
-      const input = await readStdin();
-      const r = await dispatchHook("session-end", input);
-      if (r.stdout) stdout.write(r.stdout);
-      exit(r.exitCode);
-    });
-
-  // ─── user-prompt (hook) ────────────────────────────────────────────────────
-  program
-    .command("user-prompt")
-    .description("Dispatch the user-prompt hook")
-    .helpOption(false)
-    .option("-h, --help", "Show help")
-    .action(async (opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../src/cli-help.js");
-        printHelp("user-prompt"); exit(0);
-      }
-      const { dispatchHook } = await import("../src/hooks/dispatch.js");
-      const input = await readStdin();
-      const r = await dispatchHook("user-prompt", input);
-      if (r.stdout) stdout.write(r.stdout);
-      exit(r.exitCode);
-    });
-
-  // ─── post-tool (hook) ──────────────────────────────────────────────────────
-  program
-    .command("post-tool")
-    .description("Dispatch the post-tool hook (PostToolUse event)")
-    .helpOption(false)
-    .option("-h, --help", "Show help")
-    .action(async (opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../src/cli-help.js");
-        printHelp("post-tool"); exit(0);
-      }
-      const { dispatchHook } = await import("../src/hooks/dispatch.js");
-      const input = await readStdin();
-      const r = await dispatchHook("post-tool", input);
-      if (r.stdout) stdout.write(r.stdout);
-      exit(r.exitCode);
-    });
-
-  // ─── session-snapshot (hook) ─────────────────────────────────────────────
-  program
-    .command("session-snapshot")
-    .description("Rolling ingest snapshot (called by Stop hook)")
-    .helpOption(false)
-    .action(async () => {
-      const { dispatchHook } = await import("../src/hooks/dispatch.js");
-      const input = await readStdin();
-      const r = await dispatchHook("session-snapshot", input);
-      if (r.stdout) stdout.write(r.stdout);
-      exit(r.exitCode);
-    });
+  registerHookCommands(program);
 
   // ─── mcp ───────────────────────────────────────────────────────────────────
   program
