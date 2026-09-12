@@ -3,12 +3,15 @@ import { Command } from "commander";
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerMemoryCommands, shouldRunMain } from "../../bin/lcm.js";
+import { shouldRunMain } from "../../bin/lcm.js";
+import { registerMemoryCommands } from "../../src/cli/memory.js";
+
+const memoryDeps = { createDaemonClientOrExit: async () => { throw new Error("not used in this test"); } };
 
 describe("memory command registration", () => {
   it("registers all daemon-backed memory commands", () => {
     const program = new Command("lcm");
-    registerMemoryCommands(program);
+    registerMemoryCommands(program, memoryDeps);
 
     const commandNames = program.commands.map((command) => command.name());
 
@@ -21,7 +24,7 @@ describe("memory command registration", () => {
 
   it("search keeps the repeatable layer and tag options", () => {
     const program = new Command("lcm");
-    registerMemoryCommands(program);
+    registerMemoryCommands(program, memoryDeps);
 
     const searchCommand = program.commands.find((command) => command.name() === "search");
     expect(searchCommand).toBeDefined();
