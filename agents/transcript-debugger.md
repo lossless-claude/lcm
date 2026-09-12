@@ -1,6 +1,7 @@
 ---
 name: transcript-debugger
-description: Use this agent when transcript ingestion fails, messages are missing after ingest, or JSONL parsing errors occur. Examples:
+description: |-
+  Use this agent when transcript ingestion fails, messages are missing after ingest, or JSONL parsing errors occur. Examples:
 
   <example>
   Context: The compact hook failed during transcript parsing

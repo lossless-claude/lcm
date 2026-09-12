@@ -1,6 +1,7 @@
 ---
 name: memory-explorer
-description: Use this agent when the user wants to search conversation history, find past decisions, or recall what was discussed in previous sessions. Examples:
+description: |-
+  Use this agent when the user wants to search conversation history, find past decisions, or recall what was discussed in previous sessions. Examples:
 
   <example>
   Context: User wants to find a past architectural decision

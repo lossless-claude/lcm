@@ -1,6 +1,7 @@
 ---
 name: compaction-reviewer
-description: Use this agent to review compaction quality — checks whether summaries accurately preserve important information from source messages. Use proactively after compaction completes, or when the user asks about summary quality. Examples:
+description: |-
+  Use this agent to review compaction quality — checks whether summaries accurately preserve important information from source messages. Use proactively after compaction completes, or when the user asks about summary quality. Examples:
 
   <example>
   Context: A compaction just finished and the user wants to verify quality
