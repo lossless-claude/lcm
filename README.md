@@ -246,17 +246,21 @@ lcm daemon start --detach  # start daemon in background
 lcm daemon restart         # pick up changed LCM_* values
 lcm daemon stop --hold     # keep it down so hooks cannot respawn it (--minutes <n>, --reason <text>)
 
-# Hook handlers (internal — called by Claude Code hooks)
-lcm compact --hook         # PreCompact hook
-lcm restore                # SessionStart hook
-lcm session-end            # SessionEnd hook
-lcm user-prompt            # UserPromptSubmit hook
-lcm post-tool              # PostToolUse + PostToolUseFailure hooks (passive learning)
-lcm session-snapshot       # Stop hook (rolling ingest)
+# Hook handlers (internal — called by Claude Code and Codex hooks)
+lcm compact --hook         # PreCompact hook (Claude Code)
+lcm restore                # SessionStart hook (Claude Code)
+lcm session-end            # SessionEnd hook (Claude Code)
+lcm user-prompt            # UserPromptSubmit hook (Claude Code)
+lcm post-tool              # PostToolUse + PostToolUseFailure hooks (Claude Code, passive learning)
+lcm session-snapshot       # Stop hook (Claude Code, rolling ingest)
+lcm codex-hook             # native Codex lifecycle hook — see docs/vscode-codex.md
 
 # MCP server
 lcm mcp                    # start MCP server
 ```
+
+`lcm help [command]` prints this same reference from the CLI. `lcm bench` is a development tool: it
+benchmarks search against a local corpus, which the npm package does not include; see [docs/search.md](docs/search.md).
 
 ## Configuration
 
