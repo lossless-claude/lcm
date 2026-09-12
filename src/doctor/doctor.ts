@@ -5,7 +5,8 @@ import { join, dirname } from "node:path";
 import { spawnSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { CheckResult, DoctorDeps } from "./types.js";
-import { mergeClaudeSettings, REQUIRED_HOOKS, resolveBinaryPath, ensureLcmMd } from "../../installer/install.js";
+import { mergeClaudeSettings, REQUIRED_HOOKS, ensureLcmMd } from "../../installer/install.js";
+import { mcpServerEntry } from "../installer/mcp-server-entry.js";
 import { NATIVE_PATTERNS, ScrubEngine, readGitleaksSyncDate } from "../scrub.js";
 import { GITLEAKS_PATTERNS } from "../generated-patterns.js";
 import { projectDir } from "../daemon/project.js";
@@ -423,9 +424,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
       // mergeClaudeSettings strips lcm hooks from settings.json; only safe when the plugin actually fires them.
       const merged = plugin.installed && plugin.enabled ? mergeClaudeSettings(currentSettings) : { ...currentSettings };
       if (typeof merged.mcpServers !== "object" || merged.mcpServers === null) merged.mcpServers = {};
-      // Use resolveBinaryPath for consistent binary resolution with installer
-      const lcmBinary = resolveBinaryPath(deps);
-      (merged.mcpServers as Record<string, unknown>)["lcm"] = { command: lcmBinary, args: ["mcp"] };
+      (merged.mcpServers as Record<string, unknown>)["lcm"] = mcpServerEntry();
       deps.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
       results.push({ name: "mcp-lcm", category: "Settings", status: "warn", message: "mcpServers.lcm missing from settings.json — re-added automatically", fixApplied: true });
     } catch {

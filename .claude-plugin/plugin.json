@@ -21,8 +21,7 @@
   },
   "mcpServers": {
     "lcm": {
-      "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp.mjs"]
+      "command": "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/lcm-mcp.sh"
     }
   },
   "hooks": {

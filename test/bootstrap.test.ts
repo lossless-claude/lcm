@@ -25,10 +25,39 @@ describe("ensureCore", () => {
     );
   });
 
-  it("skips config.json creation when it already exists", async () => {
+  it("skips full config.json recreation when it already exists", async () => {
+    // readFileSync already reports the running process's node path, so recordMcpNodePath
+    // has nothing to patch either — the only way to get zero writes to configPath.
     const deps = makeDeps({
       existsSync: vi.fn().mockReturnValue(true),
-      readFileSync: vi.fn().mockReturnValue(JSON.stringify({ version: 1 })),
+      readFileSync: vi.fn().mockReturnValue(JSON.stringify({ version: 1, mcpNodePath: process.execPath })),
+    });
+    const { ensureCore } = await import("../src/bootstrap.js");
+    await ensureCore(deps);
+    const configWrites = (deps.writeFileSync as ReturnType<typeof vi.fn>).mock.calls
+      .filter((args) => args[0] === deps.configPath);
+    expect(configWrites.length).toBe(0);
+  });
+
+  it("records the running node interpreter's absolute path into config.json", async () => {
+    const deps = makeDeps({
+      existsSync: vi.fn().mockReturnValue(true),
+      readFileSync: vi.fn().mockReturnValue(JSON.stringify({ version: 1, other: "kept" })),
+    });
+    const { ensureCore } = await import("../src/bootstrap.js");
+    await ensureCore(deps);
+    const configWrites = (deps.writeFileSync as ReturnType<typeof vi.fn>).mock.calls
+      .filter((args) => args[0] === deps.configPath);
+    expect(configWrites.length).toBe(1);
+    const written = JSON.parse(configWrites[0][1]);
+    expect(written.mcpNodePath).toBe(process.execPath);
+    expect(written.other).toBe("kept"); // read-modify-write preserves unrelated keys
+  });
+
+  it("does not touch config.json when it cannot be read (corrupt or unreadable)", async () => {
+    const deps = makeDeps({
+      existsSync: vi.fn().mockReturnValue(true),
+      readFileSync: vi.fn().mockImplementation(() => { throw new Error("EACCES"); }),
     });
     const { ensureCore } = await import("../src/bootstrap.js");
     await ensureCore(deps);

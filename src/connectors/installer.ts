@@ -6,6 +6,7 @@ import { requiresRestart } from "./types.js";
 import { LCM_MARKERS } from "./constants.js";
 import { generateContent } from "./template-service.js";
 import { findAgent, AGENTS } from "./registry.js";
+import { mcpServerEntry } from "../installer/mcp-server-entry.js";
 import {
   diagnoseCodexHooks,
   installCodexHooks,
@@ -70,7 +71,7 @@ function installMcpJson(filePath: string): void {
   if (typeof existing.mcpServers !== 'object' || existing.mcpServers === null || Array.isArray(existing.mcpServers)) {
     existing.mcpServers = {};
   }
-  existing.mcpServers.lcm = { type: 'stdio', command: 'lcm', args: ['mcp'] };
+  existing.mcpServers.lcm = { type: 'stdio', ...mcpServerEntry() };
   writeFileSync(filePath, JSON.stringify(existing, null, 2) + '\n');
 }
 
