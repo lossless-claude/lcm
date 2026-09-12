@@ -267,7 +267,7 @@ All environment variables are optional. The default summarizer mode is `auto`. T
 | `LCM_SUMMARY_PROVIDER` | `auto` | `auto`, `claude-process`, `codex-process`, `copilot-process`, `anthropic`, `openai`, or `disabled` |
 | `LCM_SUMMARY_API_KEY` | unset | Required by the `anthropic` provider |
 | `LCM_HOME` | `~/.lossless-claude` | Where the daemon, databases, sidecars and logs live |
-| `LCM_ENABLED` | `true` | Set to `false` to make every hook a no-op while keeping the plugin registered |
+| `LCM_ENABLED` | `true` | Set to `false` to make every Claude Code and Codex command hook a no-op while keeping the plugin registered |
 | `LCM_CONTEXT_THRESHOLD` | `0.75` | Context fill ratio that triggers compaction |
 | `LCM_FRESH_TAIL_COUNT` | `8` | Most recent raw messages protected from compaction |
 | `LCM_LEAF_MIN_FANOUT` | `3` | Minimum raw messages outside the fresh tail before a leaf pass runs |
@@ -293,7 +293,7 @@ npx vitest
 npx tsc --noEmit
 ```
 
-To score a candidate summarizer model against the real compaction engine, see [docs/summarizer-bench.md](docs/summarizer-bench.md). The bench is opt-in — it is skipped unless `LCM_EVAL_MODEL` and `LCM_EVAL_CORPUS_DIR` are set, so `npx vitest` never calls a paid API.
+To score a candidate summarizer model against the real compaction engine, see [docs/summarizer-bench.md](https://github.com/lossless-claude/lcm/blob/main/docs/summarizer-bench.md). The bench is opt-in — it is skipped unless `LCM_EVAL_MODEL` and `LCM_EVAL_CORPUS_DIR` are set, so `npx vitest` never calls a paid API.
 
 ### Repository layout
 

@@ -139,7 +139,7 @@ For most use cases, 0.75 is a good balance.
 
 ### Condensed fanout
 
-`LCM_CONDENSED_MIN_FANOUT` (default `2`) controls how many same-depth summaries accumulate before they're condensed into a higher-level summary. `LCM_CONDENSED_MIN_FANOUT_HARD` (default `1`) is the same minimum during a hard-trigger sweep, when the context is over budget and condensation must not wait.
+`LCM_CONDENSED_MIN_FANOUT` (default `2`) controls how many same-depth summaries accumulate before they're condensed into a higher-level summary. `LCM_CONDENSED_MIN_FANOUT_HARD` (default `1`) is the relaxed minimum a hard-trigger (full) sweep uses instead.
 
 - Lower values create deeper DAGs with more levels of abstraction.
 - Higher values keep the DAG shallower but with more nodes at each level.
@@ -369,4 +369,12 @@ To fall back to Claude Code's built-in compaction:
 }
 ```
 
-Or set `LCM_ENABLED=false` to disable the plugin while keeping it registered.
+Or set `LCM_ENABLED=false` to make every Claude Code and Codex command hook a no-op while keeping the plugin registered.
+
+To keep capture and recall but stop the automatic compaction at session end, set `hooks.disableAutoCompact` in `~/.lossless-claude/config.json`:
+
+```json
+{
+  "hooks": { "disableAutoCompact": true }
+}
+```

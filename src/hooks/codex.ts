@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { open } from "node:fs/promises";
 import { DaemonClient } from "../daemon/client.js";
+import { resolveLcmConfig } from "../db/config.js";
 import { loadDaemonConfig } from "../daemon/config.js";
 import { ensureDaemon } from "../daemon/lifecycle.js";
 import { buildMemoryContext } from "./memory-context.js";
@@ -134,6 +135,7 @@ export async function dispatchCodexHook(
   stdin: string,
   dependencies?: CodexHookDeps,
 ): Promise<{ exitCode: number; stdout: string }> {
+  if (!resolveLcmConfig().enabled) return EMPTY;
   try {
     const input = parseInput(stdin);
     if (!input) return EMPTY;

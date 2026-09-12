@@ -77,6 +77,18 @@ describe("compactEngineConfig", () => {
   it("reads its knobs from the environment, and its defaults are the engine's own", () => {
     const untouched = compactEngineConfig({ env: {} });
     expect(untouched).toMatchObject(LCM_CONFIG_DEFAULTS);
+    // These literals are what the engine was hardcoded to before it read the
+    // environment; an unset environment must keep producing exactly them.
+    expect(LCM_CONFIG_DEFAULTS).toEqual({
+      contextThreshold: 0.75,
+      freshTailCount: 8,
+      leafMinFanout: 3,
+      condensedMinFanout: 2,
+      condensedMinFanoutHard: 1,
+      incrementalMaxDepth: 0,
+      leafChunkTokens: 20000,
+      condensedTargetTokens: 900,
+    });
 
     const tuned = compactEngineConfig({ env: { LCM_FRESH_TAIL_COUNT: "32", LCM_CONDENSED_TARGET_TOKENS: "not a number" } });
     expect(tuned.freshTailCount).toBe(32);

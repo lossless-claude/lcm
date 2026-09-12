@@ -35,6 +35,21 @@ describe("Codex native lifecycle adapter", () => {
     type: "response_item", payload: { type: "message", role, content: [{ type: "input_text", text }] },
   });
 
+  it("does nothing at all when LCM_ENABLED=false", async () => {
+    const before = process.env.LCM_ENABLED;
+    process.env.LCM_ENABLED = "false";
+    try {
+      const { post, connect, deps } = dependencies({ "/restore": { context: "remember quartz" } });
+      const stdin = JSON.stringify({ hook_event_name: "SessionStart", session_id: "s1", source: "startup" });
+      expect(await dispatchCodexHook(stdin, deps)).toEqual({ exitCode: 0, stdout: "" });
+      expect(connect).not.toHaveBeenCalled();
+      expect(post).not.toHaveBeenCalled();
+    } finally {
+      if (before === undefined) delete process.env.LCM_ENABLED;
+      else process.env.LCM_ENABLED = before;
+    }
+  });
+
   it("does not inject identical compact context already emitted by resume after the last compaction", async () => {
     const file = transcriptWith([{ type: "compacted" }, restoredRecord()]);
     const { post, deps } = dependencies({ "/restore": { context: "remember quartz" } });
