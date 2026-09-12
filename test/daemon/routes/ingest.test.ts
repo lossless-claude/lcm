@@ -252,6 +252,55 @@ describe("POST /ingest", () => {
     }
   });
 
+  it("writes skill and command message_parts for messages carrying them", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-ingest-parts-"));
+    tempDirs.push(tempDir);
+
+    daemon = await createDaemon(loadDaemonConfig("/nonexistent", { daemon: { port: 0 } }));
+    const res = await fetch(`http://127.0.0.1:${daemon.address().port}/ingest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: "parts-test-1",
+        cwd: tempDir,
+        messages: [
+          { role: "user", content: "roda os testes", tokenCount: 3 },
+          {
+            role: "user",
+            content: "<command-name>/model</command-name><command-args>opus</command-args>",
+            tokenCount: 4,
+            parts: [{ type: "command", name: "/model", args: "opus" }],
+          },
+          {
+            role: "tool",
+            content: "Skill",
+            tokenCount: 1,
+            parts: [{ type: "skill", name: "grilling", args: null }],
+          },
+        ],
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ingested: 3, totalTokens: 8 });
+
+    const db = new DatabaseSync(projectDbPath(tempDir));
+    try {
+      const parts = db
+        .prepare(
+          `SELECT part_type, tool_name, tool_input FROM message_parts mp
+           JOIN messages m ON m.message_id = mp.message_id
+           ORDER BY m.seq`,
+        )
+        .all();
+      expect(parts).toEqual([
+        { part_type: "command", tool_name: "/model", tool_input: "opus" },
+        { part_type: "skill", tool_name: "grilling", tool_input: null },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("accepts messages[] as an alternative to transcript_path", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-ingest-"));
     tempDirs.push(tempDir);

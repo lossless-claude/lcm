@@ -8,9 +8,9 @@ import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { upsertRedactionCounts } from "../../db/redaction-stats.js";
-import { ConversationStore } from "../../store/conversation-store.js";
+import { ConversationStore, type CreateMessagePartInput, type MessageRecord } from "../../store/conversation-store.js";
 import { SummaryStore } from "../../store/summary-store.js";
-import { parseTranscript, type ParsedMessage } from "../../transcript.js";
+import { parseTranscript, type ParsedMessage, type MessagePart } from "../../transcript.js";
 import { extractCodexSessionMeta, parseCodexTranscript } from "../../codex-transcript.js";
 import { ScrubEngine } from "../../scrub.js";
 import { validateCwd } from "../validate-cwd.js";
@@ -81,6 +81,31 @@ export interface IngestInput {
   parent_session_id?: string;
   subagent_type?: string;
   subagent_desc?: string;
+}
+
+function toMessagePartInput(sessionId: string, part: MessagePart, ordinal: number): CreateMessagePartInput {
+  return { sessionId, partType: part.type, ordinal, toolName: part.name, toolInput: part.args };
+}
+
+/**
+ * `parseTranscript` is the only place that extracts skill/command structure
+ * (see src/transcript.ts) — this just writes what it found, for whichever
+ * newly-inserted message carried it.
+ */
+async function persistMessageParts(
+  conversationStore: ConversationStore,
+  sessionId: string,
+  sourceMessages: ParsedMessage[],
+  created: MessageRecord[],
+): Promise<void> {
+  for (let i = 0; i < created.length; i++) {
+    const parts = sourceMessages[i]?.parts;
+    if (!parts || parts.length === 0) continue;
+    await conversationStore.createMessageParts(
+      created[i].messageId,
+      parts.map((part, ordinal) => toMessagePartInput(sessionId, part, ordinal)),
+    );
+  }
 }
 
 export function resolveIngestMessages(input: IngestInput, cwd: string): ParsedMessage[] {
@@ -237,6 +262,7 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
             if (created.length > 0) {
               upsertRedactionCounts(db, pid, totalCounts);
               await summaryStore.appendContextMessages(conversation.conversationId, created.map((r) => r.messageId));
+              await persistMessageParts(conversationStore, session_id, newMessages, created);
             }
             if (cursor && codexPath) saveCodexCursor(db, {
               conversationId: conversation.conversationId, transcriptPath: codexPath, cursor,

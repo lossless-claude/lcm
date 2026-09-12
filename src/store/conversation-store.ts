@@ -26,7 +26,9 @@ export type MessagePartType =
   | "step_finish"
   | "snapshot"
   | "agent"
-  | "retry";
+  | "retry"
+  | "skill"
+  | "command";
 
 export type CreateMessageInput = {
   conversationId: ConversationId;
