@@ -180,7 +180,7 @@ flowchart LR
 
 | Tool | Purpose |
 |---|---|
-| `lcm_search` | Hybrid search across episodic memory (SQLite) and semantic memory |
+| `lcm_search` | Search across episodic memory (messages and summaries) and promoted memory |
 | `lcm_grep` | Regex or full-text search across raw messages and summaries |
 | `lcm_expand` | Decompress a summary node into its source content by traversing the DAG |
 | `lcm_describe` | Inspect metadata and lineage of a memory node (depth, token count, parent/child links) |

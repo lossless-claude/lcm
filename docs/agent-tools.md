@@ -130,7 +130,7 @@ lcm_expand(nodeId: "sum_def456", depth: 2)
 
 ### lcm_store
 
-Store a memory into lossless-claude's semantic layer. Use to persist decisions, findings, reasoning outcomes, or any knowledge worth retrieving in future sessions.
+Store a memory into the promoted layer. Use to persist decisions, findings, reasoning outcomes, or any knowledge worth retrieving in future sessions.
 
 **Parameters:**
 
