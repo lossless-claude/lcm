@@ -1,8 +1,14 @@
 #!/usr/bin/env node
 // Writes package.json's version into the two other manifests that
 // check-manifest.mjs's version-parity rule reads: .claude-plugin/plugin.json
-// and .claude-plugin/marketplace.json (plugins[0].version). Reads and writes
-// the same paths that rule reads, so syncing and checking never drift apart.
+// and .claude-plugin/marketplace.json (every plugin entry's version). Reads and
+// writes the same paths that rule reads, so syncing and checking never drift apart.
+//
+// A marketplace entry also carries the selector its host installs from, and that
+// selector names the release: a github source gets `ref: v<version>` (the tag
+// publish.yml creates for that commit), an npm source gets the exact version.
+// Without the pin, a fresh install would fetch the default branch's HEAD under
+// the released version's label.
 //
 // Called from "version-packages" (changeset version && node
 // scripts/sync-versions.mjs), so it runs right after changesets bumps
@@ -40,7 +46,11 @@ function syncVersions(root, version) {
     if (!manifest.plugins?.[0]) {
       throw new Error(`${marketplacePath} has no plugins[0] to write a version onto.`);
     }
-    manifest.plugins[0].version = version;
+    for (const entry of manifest.plugins) {
+      entry.version = version;
+      if (entry.source?.source === "github") entry.source.ref = `v${version}`;
+      if (entry.source?.source === "npm") entry.source.version = version;
+    }
   });
 
   return { pluginPath, marketplacePath };

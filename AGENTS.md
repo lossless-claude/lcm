@@ -32,7 +32,7 @@ A skill, command or agent that exists to work **on** lcm goes under `.claude/` o
 - Design notes go in `docs/design/`. There is no roadmap source; do not invent one.
 - Any PR that changes published behaviour carries a changeset (`npm run changeset`).
 - Bot reviews (Copilot, Codex) only when asked explicitly, one per round.
-- `main` is the only long-lived branch. PRs target it. Every push to `main` refreshes the changesets version PR; merging that PR changes `package.json`, which runs `publish.yml`, which publishes unless the version is already on npm or tagged.
+- `main` is the only long-lived branch; there is no release branch. PRs target it. `version-pr.yml` is run by hand when a release is wanted; merging the version PR it opens changes `package.json`, which runs `publish.yml`: tag, then npm, then GitHub release, each only if still missing. The marketplace entry pins plugin installs to that tag; npm pins every other host.
 
 ## Verification
 

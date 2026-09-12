@@ -141,14 +141,25 @@ function checkVersionParity(root, pkg) {
 
   const pkgVersion = pkg.version;
   const pluginVersion = plugin.version;
-  const inStep = pkgVersion === pluginVersion && pkgVersion === marketplaceVersion;
-  if (inStep) return [];
+  const findings = [];
+  if (!(pkgVersion === pluginVersion && pkgVersion === marketplaceVersion)) {
+    findings.push(
+      `Version mismatch: package.json=${pkgVersion}, .claude-plugin/plugin.json=${pluginVersion}, ` +
+      `.claude-plugin/marketplace.json plugins[0].version=${marketplaceVersion}. ` +
+      `Run "node scripts/sync-versions.mjs" to bring plugin.json and marketplace.json in line with package.json.`,
+    );
+  }
 
-  return [
-    `Version mismatch: package.json=${pkgVersion}, .claude-plugin/plugin.json=${pluginVersion}, ` +
-    `.claude-plugin/marketplace.json plugins[0].version=${marketplaceVersion}. ` +
-    `Run "node scripts/sync-versions.mjs" to bring plugin.json and marketplace.json in line with package.json.`,
-  ];
+  // A github source installs from `ref`; it must name this version's tag, or a
+  // fresh install fetches the default branch under the released version's label.
+  const source = marketplace.plugins[0].source;
+  if (source?.source === "github" && source.ref !== `v${pkgVersion}`) {
+    findings.push(
+      `Marketplace ref mismatch: .claude-plugin/marketplace.json plugins[0].source.ref=${source.ref ?? "(unset)"}, ` +
+      `expected v${pkgVersion}. Run "node scripts/sync-versions.mjs".`,
+    );
+  }
+  return findings;
 }
 
 function checkManifest(root) {

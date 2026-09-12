@@ -10,7 +10,8 @@
       "name": "lcm",
       "source": {
         "source": "github",
-        "repo": "lossless-claude/lcm"
+        "repo": "lossless-claude/lcm",
+        "ref": "v0.11.0"
       },
       "description": "Lossless context management — DAG-based summarization that preserves every message",
       "version": "0.11.0",
