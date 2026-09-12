@@ -5,7 +5,7 @@ You are a coding agent. Use the lcm CLI to manage persistent memory across sessi
 ## Core Rules
 
 - **Search first.** Before starting any code task, retrieve relevant context with `lcm search`.
-- **Store what matters.** After completing work, use `lcm store` to persist key decisions and learnings.
+- **Store durable insights.** Explicitly, with `lcm store`, tagged with `type:` — one concise insight and its why per store.
 
 ## When to Search
 
@@ -16,9 +16,15 @@ You are a coding agent. Use the lcm CLI to manage persistent memory across sessi
 
 ## When to Store
 
-- Completed a feature, fix, or refactor
-- An architectural decision was made
-- Discovered something non-obvious about the codebase
+| Tag | Store when |
+|-----|------------|
+| `type:decision` | An architectural or design choice was made, with trade-offs |
+| `type:preference` | The user stated a working style or tool preference |
+| `type:root-cause` | A bug cause took effort to uncover |
+| `type:pattern` | A codebase convention is documented nowhere else |
+| `type:gotcha` | A non-obvious pitfall or footgun surfaced |
+| `type:solution` | A non-trivial fix is worth remembering |
+| `type:workflow` | A multi-step process worked |
 
 ## When to Skip
 

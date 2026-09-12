@@ -6,13 +6,13 @@ description: Lossless context management — search and store persistent memory 
 # Lossless Context Management
 
 > **Before responding to code tasks, check memory first.**
-> Code task? → `lcm search` FIRST. Completed work? → `lcm store` BEFORE done.
+> Code task? → `lcm search` FIRST. Durable insight? → `lcm store` before done.
 
 You have access to a persistent memory system that survives across conversations.
 
 ## Workflow
 
-Code task received → `lcm search` FIRST → Work → `lcm store` → Done
+Code task received → `lcm search` FIRST → Work → `lcm store` (durable insights only) → Done
 Non-code task → Just respond normally
 
 ## Commands
@@ -42,9 +42,9 @@ lcm expand sum_abc123def456 --depth 2
 ```
 
 ### 5. Store Knowledge
-Persist important knowledge after completing work.
+Store durable insights (decision, preference, root-cause, pattern, gotcha, solution, workflow) explicitly with `lcm store`, tagged with `type:`. One concise insight and its why per store.
 ```bash
-lcm store "Auth middleware uses JWT with 24h expiry. See src/middleware/auth.ts"
+lcm store "Auth middleware uses JWT with 24h expiry. See src/middleware/auth.ts" --tag type:gotcha --tag scope:auth
 ```
 
 ### 6. Stats
@@ -57,11 +57,11 @@ lcm stats
 
 | Task Type | Search? | Store? |
 |-----------|---------|--------|
-| Add/create/implement feature | MUST | MUST |
-| Fix/debug/resolve bug | MUST | MUST |
-| Refactor/optimize/move code | MUST | MUST |
-| Write/add tests | MUST | MUST |
-| "How does X work?" (codebase) | MUST | Only if insights |
+| Add/create/implement feature | MUST | If durable insight |
+| Fix/debug/resolve bug | MUST | If durable insight |
+| Refactor/optimize/move code | MUST | If durable insight |
+| Write/add tests | MUST | If durable insight |
+| "How does X work?" (codebase) | MUST | If durable insight |
 | General concept question | NO | NO |
 | Meta task (run tests, build) | NO | NO |
 | Git task (commit, PR, push) | NO | NO |

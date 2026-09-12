@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { generateRulesContent, generateMcpContent, generateSkillContent, generateContent } from '../../src/connectors/template-service.js';
 import { LCM_MARKERS } from '../../src/connectors/constants.js';
 import type { Agent } from '../../src/connectors/types.js';
+import { STORE_RULE_PHRASE } from '../../src/daemon/orientation.js';
 
 const mockAgent: Agent = {
   id: 'test-agent',
@@ -126,6 +127,27 @@ describe('generateSkillContent', () => {
     const content = generateSkillContent(mockAgent);
     expect(content).toContain('name: lcm-memory');
   });
+});
+
+describe('storing guidance is consistent across surfaces', () => {
+  const surfaces = [
+    ['rules', () => generateRulesContent(mockAgent)],
+    ['mcp', () => generateMcpContent(mockAgent)],
+    ['skill', () => generateSkillContent(mockAgent)],
+  ] as const;
+
+  for (const [name, render] of surfaces) {
+    it(`${name} states the shared storing rule`, () => {
+      expect(render()).toContain(STORE_RULE_PHRASE);
+    });
+
+    it(`${name} does not make storing mandatory`, () => {
+      const content = render();
+      expect(content).not.toContain('BEFORE done');
+      expect(content).not.toContain('Do NOT store manually');
+      expect(content).not.toMatch(/\|\s*MUST\s*\|\s*MUST\s*\|/);
+    });
+  }
 });
 
 describe('generateContent dispatch', () => {
