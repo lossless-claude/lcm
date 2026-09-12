@@ -197,4 +197,4 @@ listing something you need, use `lcm_expand` with that summary's node ID.
 - `lcm_search`, `lcm_grep`, and `lcm_describe` are fast (direct database queries)
 - `lcm_expand` traverses the DAG and reads source messages — cost scales with depth
 - `lcm_stats` performs full-table scans — use sparingly, not in request handlers
-- Token caps (`LCM_MAX_EXPAND_TOKENS`) prevent runaway expansion
+- Expansion is bounded by the requested `depth`; there is no token cap, so keep `depth` small

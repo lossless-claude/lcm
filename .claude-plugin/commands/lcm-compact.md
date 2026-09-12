@@ -25,9 +25,12 @@ node "${CLAUDE_PLUGIN_ROOT}/lcm.mjs" compact
 ### Options
 
 Pass user-specified flags through to the command:
-- `--all` — Compact all projects (default: current project only). Forces batch compaction mode regardless of TTY environment, ensuring reliable behavior in automated tools.
+- `--all` — Compact all tracked projects (default: current project only)
 - `--dry-run` — Preview without writing
-- `--replay` — Re-compact sessions that already have summaries (by default, already-compacted sessions are skipped)
+- `--replay` — Compact sessions sequentially with threaded context; resumes recorded progress
+- `--restart` — Discard recorded replay progress and start from scratch
+- `--no-promote` — Skip the automatic promote step
+- `--verbose` — Show per-session token details
 
 For example:
 - `/lcm-compact --all` → `lcm compact --all`

@@ -8,10 +8,10 @@ const identity = { session_id: "codex-session", cwd: "/repo", transcript_path: "
 function payload(event: string, extra: Record<string, unknown> = {}): string {
   return JSON.stringify({ ...identity, hook_event_name: event, ...extra });
 }
-function dependencies(responses: Record<string, unknown> = {}) {
+function dependencies(responses: Record<string, unknown> = {}, enabled = true) {
   const post = vi.fn(async (path: string) => responses[path] ?? {});
   const connect = vi.fn(async () => true);
-  return { post, connect, deps: { client: { post }, connect } as CodexHookDeps };
+  return { post, connect, deps: { client: { post }, connect, enabled } as CodexHookDeps };
 }
 function outputContext(stdout: string) {
   return JSON.parse(stdout).hookSpecificOutput;
@@ -33,6 +33,14 @@ describe("Codex native lifecycle adapter", () => {
 
   const restoredRecord = (role = "developer", text = "remember quartz") => ({
     type: "response_item", payload: { type: "message", role, content: [{ type: "input_text", text }] },
+  });
+
+  it("does nothing at all when lcm is disabled", async () => {
+    const { post, connect, deps } = dependencies({ "/restore": { context: "remember quartz" } }, false);
+    const stdin = JSON.stringify({ hook_event_name: "SessionStart", session_id: "s1", source: "startup" });
+    expect(await dispatchCodexHook(stdin, deps)).toEqual({ exitCode: 0, stdout: "" });
+    expect(connect).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
   });
 
   it("does not inject identical compact context already emitted by resume after the last compaction", async () => {
