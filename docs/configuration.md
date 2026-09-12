@@ -110,6 +110,10 @@ user-level config rather than a single repository checkout.
 
 ## Tuning guide
 
+The values below are read from the environment by the daemon when it starts,
+and by the compaction engine it runs. After changing one, `lcm daemon restart`.
+The defaults are the engine's own; leaving everything unset changes nothing.
+
 ### Context threshold
 
 `LCM_CONTEXT_THRESHOLD` (default `0.75`) controls when compaction triggers as a fraction of the model's context window.
@@ -121,23 +125,21 @@ For most use cases, 0.75 is a good balance.
 
 ### Fresh tail count
 
-`LCM_FRESH_TAIL_COUNT` (default `32`) is the number of most recent messages that are never compacted. These raw messages give the model immediate conversational continuity.
+`LCM_FRESH_TAIL_COUNT` (default `8`) is the number of most recent messages that are never compacted. These raw messages give the model immediate conversational continuity.
 
-- **Smaller values** (e.g., 8–16) save context space for summaries but may lose recent nuance.
+- **Smaller values** save context space for summaries but may lose recent nuance.
 - **Larger values** (e.g., 32–64) give better continuity at the cost of a larger mandatory context floor.
-
-For coding conversations with tool calls (which generate many messages per logical turn), 32 is recommended.
 
 ### Leaf fanout
 
-`LCM_LEAF_MIN_FANOUT` (default `8`) is the minimum number of raw messages that must be available outside the fresh tail before a leaf pass runs.
+`LCM_LEAF_MIN_FANOUT` (default `3`) is the minimum number of raw messages that must be available outside the fresh tail before a leaf pass runs.
 
 - Lower values create summaries more frequently (more, smaller summaries).
 - Higher values create larger, more comprehensive summaries less often.
 
 ### Condensed fanout
 
-`LCM_CONDENSED_MIN_FANOUT` (default `4`) controls how many same-depth summaries accumulate before they're condensed into a higher-level summary.
+`LCM_CONDENSED_MIN_FANOUT` (default `2`) controls how many same-depth summaries accumulate before they're condensed into a higher-level summary. `LCM_CONDENSED_MIN_FANOUT_HARD` (default `1`) is the same minimum during a hard-trigger sweep, when the context is over budget and condensation must not wait.
 
 - Lower values create deeper DAGs with more levels of abstraction.
 - Higher values keep the DAG shallower but with more nodes at each level.
@@ -153,12 +155,12 @@ For coding conversations with tool calls (which generate many messages per logic
 
 ### Summary target tokens
 
-`LCM_LEAF_TARGET_TOKENS` (default `1200`) and `LCM_CONDENSED_TARGET_TOKENS` (default `2000`) control the target size of generated summaries.
+`LCM_CONDENSED_TARGET_TOKENS` (default `900`) is the target size of a condensed summary.
 
 - Larger targets preserve more detail but consume more context space.
 - Smaller targets are more aggressive, losing detail faster.
 
-The actual summary size depends on the LLM's output; these values are guidelines passed in the prompt's token target instruction.
+The actual summary size depends on the LLM's output; the value is a guideline passed in the prompt's token target instruction.
 
 ### Prompt recall budgeting
 

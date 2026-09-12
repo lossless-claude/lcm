@@ -26,9 +26,11 @@ node "${CLAUDE_PLUGIN_ROOT}/lcm.mjs" import
 
 If the user specifies options, append them to the command:
 - `--all` — Import all projects instead of just the current project
+- `--provider <claude|codex|all>` — Transcript source (`--codex` is short for `--provider codex`)
 - `--verbose` — Show per-session details
 - `--dry-run` — Preview without writing
 - `--replay` — Re-import all sessions in chronological order and compact each one immediately, threading context between sessions to build a temporal summary DAG. Use to rebuild memory from scratch.
+- `--restart` — Discard recorded replay progress and start from scratch
 
 For example:
 - `/lcm-import --all` → `lcm import --all`
