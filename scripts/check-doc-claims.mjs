@@ -2,15 +2,24 @@
 // Checks that what the tracked Markdown tells a reader to type exists in the code.
 //
 // Three claim types, each exact and cheap:
-//   (a) `lcm <subcommand> --flag` inside a code span or fenced block, against bin/lcm.ts
-//       and src/cli-help.ts;
+//   (a) `lcm <subcommand...> --flag` inside a code span or fenced block, checked against the
+//       full command path (e.g. `lcm daemon start`, `lcm connectors install`) built from
+//       bin/lcm.ts and src/cli-help.ts — a flag valid on one path is not assumed valid on
+//       another;
 //   (b) an `LCM_*` environment variable, against every LCM_* token the code, scripts,
 //       tests and workflows read;
 //   (c) an `lcm_*` MCP tool name, against src/mcp/tools/*.ts.
 //
-// A claim the code does not back is an error and fails the run. The reverse direction —
-// a CLI flag or env var the code defines that no document mentions — is a warning, because
-// whether a knob is public is a judgement this script cannot make.
+// A claim the code does not back is an error and fails the run. The reverse direction — a
+// CLI option or public env var the code defines that no document mentions — is a warning,
+// because whether a knob is public is a judgement this script cannot make. CLI warnings are
+// reported per command path (`lcm compact --restart`), since the same flag name can be
+// legitimate on one path and unknown on another.
+//
+// INTERNAL_ENV lists LCM_* variables read only by tests, scripts or CI — deliberately
+// undocumented — so they do not produce the "no document mentions it" warning. This is
+// enforced, not just curated: a variable INTERNAL_ENV lists but production code (src/, bin/,
+// hooks/, installer/) also reads stays a warning candidate regardless.
 //
 // Coverage comes from `git ls-files`, never from a list written by hand. Excluded on
 // purpose: CHANGELOG.md and .changeset/ (records of the past), docs/design/ (proposals),
@@ -18,6 +27,19 @@
 //
 // Both sides abort when empty: an empty code side would pass every claim, which is the
 // exact failure this script exists to catch.
+//
+// CLI extraction (bin/lcm.ts): a small bracket-depth scanner reads the exact statement that
+// follows each recognised chain root — `new Command("name")`, `<ident>.command("name")`,
+// or a bare `<ident>.option(...)` / `.addOption(...)` / `.requiredOption(...)` not part of a
+// `.command()` chain — so options are attributed to the command path they were actually
+// declared on, not to every `lcm` invocation on the line. `src/cli-help.ts` is hand-written
+// help for hand-parsed subcommands (e.g. `sensitive purge --yes`, which Commander never sees
+// as its own command): an option line there whose text starts with a bare word before its
+// `[--flags]` attaches those flags to `lcm <section> <word>`; a line starting directly with
+// a flag attaches to the bare `lcm <section>`, but only when bin/lcm.ts gives that section no
+// subcommands of its own — a group command's (`daemon`, `connectors`) flattened help list is
+// for the reader, not a declaration, and Commander itself accepts none of it on the bare
+// group command.
 //
 // Usage: node scripts/check-doc-claims.mjs [root]
 
@@ -27,16 +49,44 @@ import { join } from "node:path";
 
 const root = process.argv[2] ?? process.cwd();
 
-// bin/lcm.ts declares Commander options; src/cli-help.ts is the CLI's own help text, which is
-// where hand-parsed subcommands (`sensitive purge --yes`) and hidden options (`compact --hook`)
-// state their flags.
 const CLI_SOURCES = ["bin/lcm.ts", "src/cli-help.ts"];
-const CODE_DIRS = ["src", "bin", "hooks", "installer", "scripts", "test", ".github/workflows"];
+const PRODUCTION_DIRS = ["src", "bin", "hooks", "installer"];
+const CODE_DIRS = [...PRODUCTION_DIRS, "scripts", "test", ".github/workflows"];
 const EXCLUDED_DOCS = /^(CHANGELOG\.md|\.changeset\/|docs\/design\/|plans\/)/;
-// Flags Commander provides on every command.
+
+// Flags Commander provides on (almost) every command, whether or not the source explicitly
+// re-declares them: -V/--version is set once on `program`, and every subcommand keeps
+// Commander's automatic -h/--help unless it calls `.helpOption(false)` without replacing it.
+// Modelling that per-path exactly would mean tracking every `.helpOption(false)` call; since
+// that never gains us a real error (nobody hand-types a wrong --help), we treat both as free.
 const FREE_FLAGS = new Set(["--help", "--version"]);
-// Words that follow `lcm` in code spans without naming a subcommand.
-const NOT_SUBCOMMANDS = new Set(["daemon"]); // `lcm daemon` is `new Command("daemon")`, handled below
+
+// LCM_* variables read only by tests, scripts, or CI — not by production code — and
+// deliberately left undocumented. Each is here because it failed the split in the header:
+// it appears under test/, scripts/, or .github/, and nowhere under src/, bin/, hooks/, or
+// installer/. A variable production code reads is never listed here.
+const INTERNAL_ENV = new Set([
+  "LCM_BENCH_CORPORA", // scripts/bench-corpora.mts: which corpora to build a bench from
+  "LCM_BENCH_GROUP", // scripts/bench-corpora.mts: corpus group filter
+  "LCM_BENCH_N", // scripts/bench-corpora.mts: question count for a generated bench
+  "LCM_BENCH_SEED", // scripts/bench-corpora.mts: sampling seed for a generated bench
+  "LCM_BLOCK", // test/doctor/doctor-hooks.test.ts: a local test constant, not an env read
+  "LCM_CODEX_NATIVE_BIN", // test/e2e/flows/codex-native-runtime.test.ts: codex binary override
+  "LCM_CODEX_NATIVE_RUNTIME", // test/e2e/flows/codex-native-runtime.test.ts: opts into that e2e flow
+  "LCM_EVAL_API_KEY", // test/bench summarizer-eval harness: API key for the eval provider
+  "LCM_EVAL_BASE_URL", // test/bench summarizer-eval harness: eval provider base URL
+  "LCM_EVAL_CORPUS_DIR", // test/bench summarizer-eval harness: corpus directory to eval against
+  "LCM_EVAL_DISABLE_THINKING", // test/bench summarizer-eval harness: disables provider thinking mode
+  "LCM_EVAL_MODEL", // test/bench summarizer-eval harness: model under evaluation
+  "LCM_EVAL_PROVIDER", // test/bench summarizer-eval harness: which provider to evaluate
+  "LCM_EVAL_REASONING", // test/bench summarizer-eval harness: reasoning mode toggle
+  "LCM_EVAL_REASONING_EFFORT", // test/bench summarizer-eval harness: reasoning effort level
+  "LCM_EVAL_RUNS", // test/bench summarizer-eval harness: number of eval runs
+  "LCM_EVAL_SESSIONS", // test/bench summarizer-eval harness: session count for the eval
+  "LCM_REAL_BENCH_FILE", // test/bench/real-corpus.test.ts: fixed bench file for the real-corpus test
+  "LCM_REAL_BENCH_PROJECT", // test/bench/real-corpus.test.ts: fixed project for the real-corpus test
+  "LCM_SKIP_CACHE_SYNC", // scripts/sync-plugin-cache.sh + ci.yml: skip the plugin cache sync step
+]);
 
 function walk(dir, out = []) {
   let entries;
@@ -54,13 +104,13 @@ function walk(dir, out = []) {
   return out;
 }
 
-function trackedDocs() {
-  const list = execFileSync("git", ["ls-files", "--", "*.md"], { cwd: root, encoding: "utf8" });
+function trackedDocs(rootDir) {
+  const list = execFileSync("git", ["ls-files", "--", "*.md"], { cwd: rootDir, encoding: "utf8" });
   return list
     .split("\n")
     .filter((f) => f && !EXCLUDED_DOCS.test(f))
     // Deleted in the working tree but not yet staged: no longer a document.
-    .filter((f) => existsSync(join(root, f)));
+    .filter((f) => existsSync(join(rootDir, f)));
 }
 
 // Text a reader is told to type: inline code spans and fenced blocks, with line numbers.
@@ -82,20 +132,208 @@ function codeLines(text) {
   return out;
 }
 
-function cliSurface() {
-  const cli = CLI_SOURCES.map((f) => readFileSync(join(root, f), "utf8")).join("\n");
-  const subs = new Set([
-    ...[...cli.matchAll(/\.command\(\s*["'`]([a-z][a-z0-9-]*)/g)].map((m) => m[1]),
-    ...[...cli.matchAll(/new Command\(\s*["'`]([a-z][a-z0-9-]*)/g)].map((m) => m[1]),
-  ]);
-  const flags = new Set([...cli.matchAll(/--[a-z][a-z0-9-]+/g)].map((m) => m[0]));
-  return { subs, flags };
+// Finds the end of the statement that starts at `startIndex` (which must sit exactly on the
+// first character of a chain root such as `program.command(` or `const x = new Command(`):
+// scans forward tracking bracket depth and string/template state, stopping at the first `;`
+// seen once depth returns to zero. This is a chain root's own statement regardless of what
+// surrounds it in the file — nested arrow-function bodies (`.action(async (opts) => {...})`)
+// stay inside the bracket depth and never trip an early split.
+function statementAt(text, startIndex) {
+  let depth = 0;
+  let inStr = null;
+  for (let i = startIndex; i < text.length; i++) {
+    const c = text[i];
+    if (inStr) {
+      if (c === "\\") { i++; continue; }
+      if (c === inStr) inStr = null;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") { inStr = c; continue; }
+    if (c === "(" || c === "{" || c === "[") depth++;
+    else if (c === ")" || c === "}" || c === "]") depth--;
+    else if (c === ";" && depth === 0) return text.slice(startIndex, i);
+  }
+  return text.slice(startIndex);
 }
 
-function envSurface() {
+// The bracketed region starting at `openIndex` (`{`, `[` or `(`), matching brackets of any
+// kind and skipping over strings, up to and including its own closing bracket — unlike
+// `statementAt`, this stops at balance, not at the next top-level `;` (a `const HELP = {...}`
+// map has no semicolon between entries, so a per-entry statement scan would run past the
+// entry's own closing brace and into every entry that follows it; likewise an `options: [`
+// array whose own entries are themselves arrays needs bracket balance, not "the next `],`").
+function balancedBraceBlock(text, openBraceIndex) {
+  let depth = 0;
+  let inStr = null;
+  for (let i = openBraceIndex; i < text.length; i++) {
+    const c = text[i];
+    if (inStr) {
+      if (c === "\\") { i++; continue; }
+      if (c === inStr) inStr = null;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") { inStr = c; continue; }
+    if (c === "(" || c === "{" || c === "[") depth++;
+    else if (c === ")" || c === "}" || c === "]") {
+      depth--;
+      if (depth === 0) return text.slice(openBraceIndex, i + 1);
+    }
+  }
+  return text.slice(openBraceIndex);
+}
+
+// Long flags (`--foo`, ignoring a leading `-x, ` alias) declared by `.option(...)`,
+// `.requiredOption(...)` or `.addOption(new Option(...))` within one statement's text.
+function flagsInStatement(stmt) {
+  const flags = new Set();
+  const specRe = /\.(?:option|requiredOption)\(\s*["'`]([^"'`]+)["'`]|\.addOption\(\s*new Option\(\s*["'`]([^"'`]+)["'`]/g;
+  for (const m of stmt.matchAll(specRe)) {
+    const spec = m[1] ?? m[2];
+    for (const f of spec.matchAll(/--[a-z][a-z0-9-]+/g)) flags.add(f[0]);
+  }
+  return flags;
+}
+
+// Builds { pathOptions: Map<"daemon start", Set<flag>>, pathSet: Set<path>, globalFlags: Set }
+// from bin/lcm.ts. `pathSet` includes intermediate group paths (`daemon`, `connectors`,
+// `bench`, `sensitive`) as well as leaves, since each is itself a valid thing to type.
+function parseBinLcm(text) {
+  const pathOptions = new Map();
+  const pathSet = new Set();
+  const globalFlags = new Set();
+  const varPath = new Map([["program", []]]);
+
+  const addOptions = (path, flags) => {
+    const key = path.join(" ");
+    pathSet.add(key);
+    if (!pathOptions.has(key)) pathOptions.set(key, new Set());
+    for (const f of flags) pathOptions.get(key).add(f);
+  };
+
+  // Pass 1: every `new Command("name")` (optionally unnamed, i.e. the root `program`)
+  // assigned to a variable, and what its own statement declares directly on it.
+  const newCommandRe = /const\s+(\w+)\s*=\s*new Command\(\s*(?:["'`]([a-z][a-z0-9-]*)["'`])?\s*\)/g;
+  for (const m of text.matchAll(newCommandRe)) {
+    const [varName, cmdName] = [m[1], m[2]];
+    const path = cmdName ? [cmdName] : [];
+    varPath.set(varName, path);
+    if (path.length > 0) addOptions(path, flagsInStatement(statementAt(text, m.index)));
+  }
+
+  // Pass 2: `<ident>.addCommand(<child>)` — re-home a child under its real parent. In this
+  // file every addCommand target is `program`, so this is a safety net for future nesting.
+  for (const m of text.matchAll(/\b(\w+)\.addCommand\(\s*(\w+)\s*\)/g)) {
+    const [parentVar, childVar] = [m[1], m[2]];
+    if (varPath.has(parentVar) && varPath.has(childVar)) {
+      varPath.set(childVar, [...varPath.get(parentVar), ...varPath.get(childVar)]);
+    }
+  }
+
+  // `program`'s own `.version(value, "-V, --version")` — the one Commander-native global
+  // option — wherever it falls in program's declaration chain.
+  const versionMatch = text.match(/\bprogram\b[\s\S]*?\.version\(\s*[^,]+,\s*["'`]([^"'`]+)["'`]/);
+  if (versionMatch) for (const f of versionMatch[1].matchAll(/--[a-z][a-z0-9-]+/g)) globalFlags.add(f[0]);
+
+  // Pass 3: every `<ident>.command("name")` chain root — a leaf reachable as
+  // `varPath[ident] + name` — and every bare `<ident>.option(...)`-style statement not part
+  // of a `.command()` chain, which declares options on the ident's own (parent) path. The
+  // ident and its dot may be separated by the newline this file's chained style always puts
+  // between a chain's root and its first call (`program\n  .command(...)`).
+  const identStmtRe = /\b(\w+)\s*\.\s*(command|option|requiredOption|addOption|helpOption)\(/g;
+  for (const m of text.matchAll(identStmtRe)) {
+    const ident = m[1];
+    const method = m[2];
+    const stmt = statementAt(text, m.index);
+    if (method === "command") {
+      const cm = stmt.match(/^\w+\s*\.\s*command\(\s*["'`]([a-z][a-z0-9-]*)/);
+      if (!cm) continue;
+      const base = varPath.has(ident) ? varPath.get(ident) : [];
+      addOptions([...base, cm[1]], flagsInStatement(stmt));
+    } else if (!/\.command\(/.test(stmt.slice(0, stmt.indexOf(`.${method}(`) + 1))) {
+      // A bare option statement on `ident` (no `.command(` earlier in the same statement):
+      // it belongs to ident's own path, e.g. `daemonCmd.helpOption(false).option("-h",...)`.
+      const base = varPath.has(ident) ? varPath.get(ident) : undefined;
+      if (base !== undefined) addOptions(base, flagsInStatement(stmt));
+    }
+  }
+
+  // A bare `program.option(...)` (declared before any subcommand, on `program` itself, base
+  // path `[]`) is a global option by the same reasoning as `.version()` — Commander applies
+  // it however the CLI is invoked. Fold its key (`""`) out of pathSet/pathOptions and into
+  // globalFlags rather than leaving a phantom empty-string command path.
+  for (const f of pathOptions.get("") ?? []) globalFlags.add(f);
+  pathOptions.delete("");
+  pathSet.delete("");
+
+  return { pathOptions, pathSet, globalFlags };
+}
+
+// Parses src/cli-help.ts's hand-written HELP option lines. Each `[flagText, description]`
+// entry either starts with a bare word naming a hand-parsed subcommand (`"purge [--all]
+// [--yes]"`) — those attach to `lcm <section> <word>` — or starts directly with a flag
+// (`"--dry-run"`) — those attach to the section's own bare path (`lcm <section>`), but only
+// when bin/lcm.ts declares no real `<section> <child>` command: `sensitive` has none (it
+// hand-parses its own args), so its direct flags are real; `daemon`, `connectors` and `bench`
+// all have Commander subcommands of their own, and cli-help.ts's `daemon:` entry lists every
+// subcommand's flags flattened onto one bare list for the reader — Commander itself accepts
+// none of them on bare `lcm daemon`, so those would turn a real "unknown option" into a
+// false pass. This is how `sensitive purge --yes` gets checked even though Commander never
+// sees "purge" as its own command.
+function parseCliHelp(text, binPathSet) {
+  const pathOptions = new Map();
+  const pathSet = new Set();
+  const hasCommanderChildren = (section) => [...binPathSet].some((p) => p.startsWith(`${section} `));
+
+  // Anchored to the start of a line (own indentation only): a HELP entry key always opens
+  // its object right there (`install: {`, `"import-knowledge": {`), which keeps this from
+  // matching a `word: {` substring that only happens to appear inside a description string.
+  const helpBlockRe = /^[ \t]*(?:"([a-z][a-z0-9-]*)"|([a-z][a-z0-9-]*)):\s*\{\s*$/gm;
+  let m;
+  while ((m = helpBlockRe.exec(text))) {
+    const section = m[1] ?? m[2];
+    const block = balancedBraceBlock(text, m.index + m[0].length - 1); // from the opening `{`
+    const optionsKey = block.match(/options:\s*\[/);
+    if (!optionsKey) continue;
+    const optionsArray = balancedBraceBlock(block, optionsKey.index + optionsKey[0].length - 1);
+    // The flag-text string's own delimiter (`'`, `"` or `` ` ``) is captured and reused to
+    // bound its content, so a backtick string containing literal double quotes (`` `add
+    // "<pattern>" [--global]` ``) is read whole rather than truncated at its first `"`.
+    for (const om of optionsArray.matchAll(/\[\s*(['"`])((?:\\.|(?!\1)[\s\S])*?)\1/g)) {
+      const flagText = om[2];
+      const leading = flagText.match(/^([a-z][a-z0-9-]*)\b/);
+      const flags = [...flagText.matchAll(/--[a-z][a-z0-9-]+/g)].map((f) => f[0]);
+      if (flags.length === 0) continue;
+      const isBareFlags = !leading || flagText.startsWith("--");
+      if (isBareFlags && hasCommanderChildren(section)) continue;
+      const path = isBareFlags ? [section] : [section, leading[1]];
+      const key = path.join(" ");
+      pathSet.add(key);
+      if (!pathOptions.has(key)) pathOptions.set(key, new Set());
+      for (const f of flags) pathOptions.get(key).add(f);
+    }
+  }
+  return { pathOptions, pathSet };
+}
+
+function cliSurface(rootDir) {
+  const binText = readFileSync(join(rootDir, "bin/lcm.ts"), "utf8");
+  const helpText = readFileSync(join(rootDir, "src/cli-help.ts"), "utf8");
+  const bin = parseBinLcm(binText);
+  const help = parseCliHelp(helpText, bin.pathSet);
+
+  const pathSet = new Set([...bin.pathSet, ...help.pathSet]);
+  const pathOptions = new Map();
+  for (const key of pathSet) {
+    const merged = new Set([...(bin.pathOptions.get(key) ?? []), ...(help.pathOptions.get(key) ?? [])]);
+    pathOptions.set(key, merged);
+  }
+  return { pathOptions, pathSet, globalFlags: bin.globalFlags };
+}
+
+function tokensUnder(rootDir, dirs) {
   const tokens = new Set();
-  for (const dir of CODE_DIRS) {
-    for (const file of walk(join(root, dir))) {
+  for (const dir of dirs) {
+    for (const file of walk(join(rootDir, dir))) {
       if (statSync(file).size > 2_000_000) continue;
       const text = readFileSync(file, "utf8");
       for (const m of text.matchAll(/\bLCM_[A-Z0-9_]*[A-Z0-9]\b/g)) tokens.add(m[0]);
@@ -104,8 +342,16 @@ function envSurface() {
   return tokens;
 }
 
-function mcpSurface() {
-  const dir = join(root, "src/mcp/tools");
+// `all`: every LCM_* token anywhere under CODE_DIRS (what an undeclared-variable error is
+// checked against). `production`: the same, restricted to PRODUCTION_DIRS — a variable in
+// this set is one production code actually reads, so INTERNAL_ENV can never silence its
+// "no document mentions it" warning for it, no matter what the hand-curated list says.
+function envSurface(rootDir) {
+  return { all: tokensUnder(rootDir, CODE_DIRS), production: tokensUnder(rootDir, PRODUCTION_DIRS) };
+}
+
+function mcpSurface(rootDir) {
+  const dir = join(rootDir, "src/mcp/tools");
   const names = new Set();
   for (const file of walk(dir)) {
     const m = readFileSync(file, "utf8").match(/name:\s*["'`](lcm_[a-z_]+)["'`]/);
@@ -114,38 +360,76 @@ function mcpSurface() {
   return names;
 }
 
+// Splits a document line into one substring per `lcm` invocation, each running up to (but
+// not including) the next `lcm` token, `|`, `;`, `&&`, or end of line — so flags on one
+// invocation are never checked against a different one on the same line.
+function invocationSegments(line) {
+  const starts = [...line.matchAll(/\blcm\b/g)].map((m) => m.index);
+  const segments = [];
+  for (let i = 0; i < starts.length; i++) {
+    const start = starts[i];
+    let end = i + 1 < starts.length ? starts[i + 1] : line.length;
+    const rest = line.slice(start, end);
+    const sep = rest.match(/\||;|&&/);
+    if (sep) end = start + sep.index;
+    segments.push(line.slice(start, end));
+  }
+  return segments;
+}
+
+// Resolves the longest known command path at the start of a segment (after `lcm`), e.g.
+// "daemon start" over "daemon" when both are declared. Returns { path, matched, words }.
+function resolvePath(segment, pathSet) {
+  let rest = segment.replace(/^\s*lcm\b/, "");
+  const words = [];
+  for (let i = 0; i < 4; i++) {
+    const wm = rest.match(/^\s+([a-z][a-z0-9-]*)\b/);
+    if (!wm) break;
+    words.push(wm[1]);
+    rest = rest.slice(wm[0].length);
+  }
+  for (let len = words.length; len >= 1; len--) {
+    const candidate = words.slice(0, len).join(" ");
+    if (pathSet.has(candidate)) return { path: candidate, matched: true, words };
+  }
+  return { path: words[0], matched: false, words };
+}
+
 function checkDocClaims(rootDir) {
   const errors = [];
   const warnings = [];
-  const docs = trackedDocs();
-  const cli = cliSurface();
-  const env = envSurface();
-  const mcp = mcpSurface();
+  const docs = trackedDocs(rootDir);
+  const cli = cliSurface(rootDir);
+  const env = envSurface(rootDir);
+  const mcp = mcpSurface(rootDir);
 
   if (docs.length === 0) errors.push("no tracked Markdown found — the file walk is wrong, not the docs");
-  if (cli.subs.size === 0 || cli.flags.size === 0) errors.push("CLI surface is empty — the extraction is wrong, not the docs");
-  if (env.size === 0) errors.push("no LCM_* token found in the code — the extraction is wrong, not the docs");
+  if (cli.pathSet.size === 0) errors.push("CLI surface is empty — the extraction is wrong, not the docs");
+  if (env.all.size === 0) errors.push("no LCM_* token found in the code — the extraction is wrong, not the docs");
   if (mcp.size === 0) errors.push("no MCP tool found under src/mcp/tools — the extraction is wrong, not the docs");
   if (errors.length) return { errors, warnings };
 
-  const mentionedFlags = new Set();
+  const mentionedFlagsByPath = new Map();
   const mentionedEnv = new Set();
 
   for (const rel of docs) {
     const text = readFileSync(join(rootDir, rel), "utf8");
 
     for (const { n, text: line } of codeLines(text)) {
-      // `lcm <sub>` at the start of a command position: line start, pipe, `;`, `&&`, `$(`, or a space.
-      for (const m of line.matchAll(/(?:^|[\s|;&(])lcm\s+([a-z][a-z0-9-]*)/g)) {
-        const sub = m[1];
-        if (!cli.subs.has(sub) && !NOT_SUBCOMMANDS.has(sub)) {
-          errors.push(`${rel}:${n}: \`lcm ${sub}\` — the CLI defines no subcommand "${sub}"`);
+      for (const segment of invocationSegments(line)) {
+        const { path, matched, words } = resolvePath(segment, cli.pathSet);
+        if (words.length === 0) continue;
+        if (!matched) {
+          errors.push(`${rel}:${n}: \`lcm ${words[0]}\` — the CLI defines no subcommand "${words[0]}"`);
         }
-        for (const f of line.matchAll(/--[a-z][a-z0-9-]+/g)) {
+        const allowed = matched ? cli.pathOptions.get(path) ?? new Set() : new Set();
+        if (matched && !mentionedFlagsByPath.has(path)) mentionedFlagsByPath.set(path, new Set());
+        for (const f of segment.matchAll(/--[a-z][a-z0-9-]+/g)) {
           const flag = f[0];
-          mentionedFlags.add(flag);
-          if (!cli.flags.has(flag) && !FREE_FLAGS.has(flag)) {
-            errors.push(`${rel}:${n}: \`${flag}\` — the CLI defines no such option`);
+          if (matched) mentionedFlagsByPath.get(path).add(flag);
+          if (!allowed.has(flag) && !cli.globalFlags.has(flag) && !FREE_FLAGS.has(flag)) {
+            const where = matched ? `lcm ${path}` : `lcm ${words[0]}`;
+            errors.push(`${rel}:${n}: \`${flag}\` — \`${where}\` defines no such option`);
           }
         }
       }
@@ -153,7 +437,7 @@ function checkDocClaims(rootDir) {
 
     for (const m of text.matchAll(/\bLCM_[A-Z0-9_]*[A-Z0-9]\b(?!\*)/g)) {
       mentionedEnv.add(m[0]);
-      if (!env.has(m[0])) {
+      if (!env.all.has(m[0])) {
         const n = text.slice(0, m.index).split("\n").length;
         errors.push(`${rel}:${n}: ${m[0]} — nothing in ${CODE_DIRS.join(", ")} reads this variable`);
       }
@@ -167,15 +451,28 @@ function checkDocClaims(rootDir) {
     }
   }
 
-  for (const flag of [...cli.flags].sort()) {
-    if (!mentionedFlags.has(flag) && !FREE_FLAGS.has(flag)) warnings.push(`CLI option ${flag} is not mentioned by any tracked document`);
+  for (const path of [...cli.pathSet].sort()) {
+    const flags = cli.pathOptions.get(path) ?? new Set();
+    const mentioned = mentionedFlagsByPath.get(path) ?? new Set();
+    for (const flag of [...flags].sort()) {
+      if (!mentioned.has(flag) && !cli.globalFlags.has(flag) && !FREE_FLAGS.has(flag)) {
+        warnings.push(`lcm ${path} ${flag} is not mentioned by any tracked document`);
+      }
+    }
   }
-  const publicEnv = [...env].filter((v) => /^LCM_[A-Z0-9_]+$/.test(v)).sort();
+  const publicEnv = [...env.all]
+    .filter((v) => /^LCM_[A-Z0-9_]+$/.test(v) && !(INTERNAL_ENV.has(v) && !env.production.has(v)))
+    .sort();
   for (const v of publicEnv) {
     if (!mentionedEnv.has(v)) warnings.push(`${v} is read by the code but no tracked document mentions it`);
   }
 
-  return { errors, warnings, counts: { docs: docs.length, subs: cli.subs.size, flags: cli.flags.size, env: env.size, mcp: mcp.size } };
+  const totalFlags = [...cli.pathOptions.values()].reduce((n, s) => n + s.size, 0);
+  return {
+    errors,
+    warnings,
+    counts: { docs: docs.length, paths: cli.pathSet.size, flags: totalFlags, env: env.all.size, mcp: mcp.size },
+  };
 }
 
 function isMain() {
@@ -191,7 +488,7 @@ if (isMain()) {
     for (const e of errors) console.error(`  - ${e}`);
     process.exit(1);
   }
-  console.log(`check-doc-claims: OK (${counts.docs} documents against ${counts.subs} subcommands, ${counts.flags} options, ${counts.env} env tokens, ${counts.mcp} MCP tools; ${warnings.length} warning(s))`);
+  console.log(`check-doc-claims: OK (${counts.docs} documents against ${counts.paths} command paths, ${counts.flags} options, ${counts.env} env tokens, ${counts.mcp} MCP tools; ${warnings.length} warning(s))`);
 }
 
 export { checkDocClaims };

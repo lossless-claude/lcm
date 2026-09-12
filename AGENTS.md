@@ -39,7 +39,7 @@ A skill, command or agent that exists to work **on** lcm goes under `.claude/` o
 Before claiming a documentation, skill, command or agent change is done:
 
 ```sh
-npm run check-docs     # every `lcm` flag, LCM_* variable and lcm_* tool a document names exists in the code
+npm run check-docs     # every `lcm` flag on the command path it follows, LCM_* variable and lcm_* tool a document names exists in the code
 npm run check-agents   # this contract and its declared sources are consistent
 npm run typecheck && npm test
 ```
