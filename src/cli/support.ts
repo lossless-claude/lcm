@@ -1,4 +1,18 @@
 import { exit } from "node:process";
+import type { Command } from "commander";
+
+/**
+ * True when `--help` was asked for on this command or on the parent it hangs from.
+ *
+ * Commander routes a flag declared on both a parent and its subcommand to the
+ * parent's options, so a subcommand that only reads its own would never see it:
+ * `lcm daemon stop --help` ran the action and stopped the daemon. Both command
+ * trees that carry a hand-rolled help option — `daemon` and `connectors` —
+ * declare it on the parent as well, so both need the parent consulted.
+ */
+export function helpRequested(parent: Command, opts: { help?: boolean }): boolean {
+  return Boolean(opts.help || (parent.opts() as { help?: boolean }).help);
+}
 
 export function parsePositiveInteger(value: string, optionName: string): number {
   const parsed = Number(value);
