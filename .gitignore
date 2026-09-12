@@ -6,10 +6,10 @@ node-compile-cache/
 .worktrees
 # Session-local Claude Code state. The glob form matters: git does not descend into an
 # ignored directory, so a negation under a bare `.claude/` can never take effect. What is
-# tracked here is what a second person needs — the reusable workflows, and the commands
+# tracked here is what a second person needs — the reusable workflows, and the skills
 # that are for working ON this repository rather than for its users.
 .claude/*
-!.claude/commands/
+!.claude/skills/
 !.claude/workflows/
 data/
 

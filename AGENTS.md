@@ -23,6 +23,8 @@ The plugin is distributed from this repository's root, so everything the plugin 
 - Plugin: `.claude-plugin/plugin.json`, `skills/`, `hooks/`, `lcm.mjs`, `mcp.mjs`, `dist/`.
 - Repository only: `.claude/`, `.agents/`, `.github/`, `scripts/`, `test/`, `tools/`, `plans/`, and every doc about developing lcm rather than using it.
 
+Development skills have two homes and no copies: `.agents/skills/` for what Codex and Copilot load (both read that directory), `.claude/skills/` for what only Claude Code loads.
+
 A skill that exists to work **on** lcm goes under `.claude/` or `.agents/`, never under the plugin. The plugin's own surface is skills only: a skill that only a person should invoke sets `disable-model-invocation: true`, and it routes to `lcm help <command>` rather than restating options, so the CLI stays the one reference.
 
 ## Invariants
