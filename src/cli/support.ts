@@ -1,4 +1,4 @@
-import { exit } from "node:process";
+import { exit, stdin } from "node:process";
 import type { Command } from "commander";
 
 /**
@@ -21,4 +21,19 @@ export function parsePositiveInteger(value: string, optionName: string): number 
     exit(1);
   }
   return parsed;
+}
+
+export function readStdin(): Promise<string> {
+  return new Promise((resolve) => {
+    if (stdin.isTTY) { resolve(""); return; }
+    const chunks: Buffer[] = [];
+    let resolved = false;
+    const timer = setTimeout(() => {
+      if (!resolved) { resolved = true; stdin.destroy(); resolve(Buffer.concat(chunks).toString("utf-8")); }
+    }, 5000);
+    stdin.on("data", (chunk: Buffer) => chunks.push(chunk));
+    stdin.on("end", () => {
+      if (!resolved) { resolved = true; clearTimeout(timer); resolve(Buffer.concat(chunks).toString("utf-8")); }
+    });
+  });
 }
