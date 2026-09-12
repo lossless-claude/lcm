@@ -215,9 +215,16 @@ When summaries are too compressed for a task, agents use `lcm_expand` to recover
 
 For broader recall, agents can first use `lcm_grep` or `lcm_search` to find relevant summary IDs, then call `lcm_expand` on the results that need more detail.
 
-## Large file handling
+## Large file handling — planned, not implemented
 
-Files embedded in user messages (typically via `<file>` blocks from tool output) are checked at ingestion:
+Nothing below runs today. The storage layer exists — a `large_files` table and
+`insertLargeFile`/`getLargeFile` on the summary store — and `largeFileTokenThreshold` is a
+resolved config key, but no ingestion path reads that threshold or writes such a record.
+Ingestion scrubs and stores messages whole. This section describes the intended design, so
+that the half already built is not mistaken for a working feature.
+
+The intent: files embedded in user messages (typically via `<file>` blocks from tool output)
+would be checked at ingestion:
 
 1. Parse file blocks from message content.
 2. For each block exceeding `largeFileTokenThreshold` (default 25k tokens):
@@ -228,7 +235,8 @@ Files embedded in user messages (typically via `<file>` blocks from tool output)
    - Replace the file block in the message with a compact reference
 3. The `lcm_describe` tool can retrieve full file content by ID.
 
-This prevents a single large file paste from consuming the entire context window while keeping the content accessible.
+The point of it: one large file paste would stop consuming the whole context window, while
+the content stayed reachable.
 
 ## Session reconciliation
 
