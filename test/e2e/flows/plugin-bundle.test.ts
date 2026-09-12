@@ -65,13 +65,14 @@ function manifestHook(event: string): CommandHook {
 }
 
 /** Exactly what Claude Code does with an exec-form hook: substitute the placeholder, spawn without a shell. */
-function runHook(hook: CommandHook, stdin: string): Promise<{ status: number | null; stdout: string; stderr: string }> {
+function runHook(hook: CommandHook, stdin: string, cwd = pluginRoot): Promise<{ status: number | null; stdout: string; stderr: string }> {
   expect(hook.args, "plugin hooks must be exec form: command + args, no shell").toBeDefined();
   const substitute = (s: string) => s.replaceAll("${CLAUDE_PLUGIN_ROOT}", pluginRoot);
   const command = substitute(hook.command);
   const args = hook.args!.map(substitute);
   return new Promise((resolve, reject) => {
     const child = spawn(command === "node" ? process.execPath : command, args, {
+      cwd,
       env: {
         PATH: dirname(process.execPath),
         HOME: fakeHome,
@@ -111,6 +112,23 @@ describe("Flow 21: the installed plugin runs from bundle/ with no npm cache", { 
     expect(r.stderr).not.toMatch(/Cannot find (module|package)/);
     expect(readdirSync(join(fakeHome, "npm-cache"))).toEqual([]);
     expect(existsSync(join(pluginRoot, "node_modules"))).toBe(false);
+  });
+
+  it("renders a connector template from bundle/assets (the bundle reads its own copies)", async () => {
+    const project = mkdtempSync(join(tmpdir(), "lcm-plugin-project-"));
+    try {
+      const r = await runHook(
+        { type: "command", command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/bundle/lcm.js", "connectors", "install", "codex", "--type", "rules"] },
+        "",
+        project,
+      );
+      expect(r.status, r.stderr).toBe(0);
+      const rules = readFileSync(join(project, "AGENTS.md"), "utf8");
+      expect(rules).toContain("<!-- [LCM_CONNECTOR_START] -->");
+      expect(rules).toContain("# Workflow Instruction"); // from assets/templates/sections/workflow.md
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+    }
   });
 
   it("registers the MCP server in exec form, pointing at the bundle", () => {

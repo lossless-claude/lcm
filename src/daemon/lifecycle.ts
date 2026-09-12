@@ -197,7 +197,11 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
         await sleep(1000);
         const retry = await checkDaemonHealth(opts.port, fetchFn);
         if (retry?.status === "ok") {
-          return { connected: true, port: opts.port, spawned: false };
+          // Same verdict as the first probe: a daemon that was still publishing its PID
+          // must not slip past the ownership check.
+          const ownership = daemonOwnership(retry, { version: opts.expectedVersion, build: opts.expectedBuild });
+          const connected = ownership !== "incompatible" && ownership !== "restart";
+          return { connected, port: opts.port, spawned: false, ownership, daemonVersion: retry.version };
         }
       }
     } catch { /* ignore */ }

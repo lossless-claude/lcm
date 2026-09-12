@@ -31,9 +31,11 @@ export function daemonNotice(
     };
   }
   if (!result.connected) {
+    // A marketplace install has no `lcm` on PATH; name the bundle it does have.
+    const start = runningFromPluginBundle(entry) ? `node "${entry}" daemon start` : "lcm daemon start";
     return {
       usable: true,
-      line: `lcm: daemon did not start on port ${result.port}; memory is off until it does. Repair: lcm daemon start`,
+      line: `lcm: daemon did not start on port ${result.port}; memory is off until it does. Repair: ${start}`,
     };
   }
   if (result.ownership === "older-caller") {

@@ -18,7 +18,7 @@
 
 import { build } from "esbuild";
 import { cpSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -66,7 +66,7 @@ export async function buildBundle({ root = repoRoot, outDir = join(root, "bundle
 }
 
 function isMain() {
-  return process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
+  return Boolean(process.argv[1]) && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 }
 
 if (isMain()) {

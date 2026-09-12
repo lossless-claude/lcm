@@ -19,7 +19,7 @@ sandboxed spawn) may not match the shell where `lcm` was installed.
 |---|---|---|
 | 1 | Write the absolute node/CLI path directly into `plugin.json` | `plugin.json` is tracked. An absolute path is per-machine, per-user data; committing it would work for exactly the machine that last ran `npm run build` and break for everyone else who clones the repo. |
 | 2 | A launcher that guesses via `$NVM_DIR`, volta, or common Homebrew paths | Every guess is a maintenance surface that drifts from whatever version managers actually do next, and it still fails silently (falls through every guess) with no measured fact to fall back to — it's guessing with extra steps, not resolving. |
-| 3 (chosen) | Record the node path lcm's own hooks already ran under, in **per-machine, untracked** config, and read it from a tracked static launcher | The value is measured, not guessed — it's `process.execPath` from a process that just ran successfully — and it lives where per-machine state already lives, never in a tracked file. |
+| 3 (chosen then) | Record the node path lcm's own hooks already ran under, in **per-machine, untracked** config, and read it from a tracked static launcher | The value is measured, not guessed — it's `process.execPath` from a process that just ran successfully — and it lives where per-machine state already lives, never in a tracked file. The launcher and the recorded path are gone since the plugin calls its bundle in exec form (below); the measured-path rule survives in the installer's own writes. |
 
 ## The two entries today
 

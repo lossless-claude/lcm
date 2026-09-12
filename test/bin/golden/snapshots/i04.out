@@ -12,3 +12,20 @@ Created <TMP>/home/.lossless-claude/config.json
 [dry-run] would write: <TMP>/home/.claude/settings.json
 Updated <TMP>/home/.claude/settings.json
 [dry-run] would create: <TMP>/home/.claude/skills/memory
+[dry-run] would copy: <REPO>/skills/memory/SKILL.md -> <TMP>/home/.claude/skills/memory/SKILL.md
+Installed the /memory skill to <TMP>/home/.claude/skills/memory
+[dry-run] would create: <TMP>/home/.claude
+[dry-run] would write: <TMP>/home/.claude/lcm.md
+[dry-run] would write: <TMP>/home/.claude/CLAUDE.md
+Installed ~/.claude/lcm.md
+Added @lcm.md to ~/.claude/CLAUDE.md
+
+Running doctor...
+[dry-run] would run doctor checks
+[dry-run] would create: <TMP>/home/.codex
+[dry-run] would write: <TMP>/home/.codex/hooks.json
+
+  ✓ Claude Code: hooks, MCP server, /memory skill and lcm.md installed; all checks passed
+  ✓ Codex: hooks installed in <TMP>/home/.codex/hooks.json — Codex requires trust review for non-managed hooks. Review this connector with /hooks after restarting Codex.
+
+  No changes written.

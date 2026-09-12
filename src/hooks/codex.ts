@@ -4,6 +4,7 @@ import { DaemonClient } from "../daemon/client.js";
 import { resolveLcmConfig } from "../db/config.js";
 import { loadDaemonConfig } from "../daemon/config.js";
 import { ensureDaemon } from "../daemon/lifecycle.js";
+import { PKG_VERSION } from "../daemon/version.js";
 import { buildMemoryContext } from "./memory-context.js";
 import { lcmHome } from "../lcm-home.js";
 
@@ -55,7 +56,7 @@ function defaultDeps(): CodexHookDeps {
     client: new DaemonClient(`http://127.0.0.1:${port}`),
     // Codex must not run the Claude bootstrap that rewrites Claude settings.
     connect: async () => (await ensureDaemon({
-      port, pidFilePath: join(base, "daemon.pid"), spawnTimeoutMs: 5000,
+      port, pidFilePath: join(base, "daemon.pid"), spawnTimeoutMs: 5000, expectedVersion: PKG_VERSION,
     })).connected,
   };
 }

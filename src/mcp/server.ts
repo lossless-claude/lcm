@@ -1,6 +1,7 @@
 import { Server } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { cliEntrypoint } from "../cli-entrypoint.js";
+import { repairCommand } from "../hooks/fail-open.js";
 import { DaemonClient } from "../daemon/client.js";
 import { loadDaemonConfig } from "../daemon/config.js";
 import { ensureDaemon, registerDaemonActivity } from "../daemon/lifecycle.js";
@@ -194,12 +195,18 @@ export async function startMcpServer(): Promise<void> {
   const pidFilePath = lcmPath("daemon.pid");
 
   const lcmBin = cliEntrypoint();
-  await ensureDaemon({
+  const daemon = await ensureDaemon({
     port, pidFilePath, spawnTimeoutMs: 10000,
     expectedVersion: PKG_VERSION,
     spawnCommand: process.execPath,
     spawnArgs: [lcmBin, "daemon", "start", "--automatic"],
   });
+  // Newest wins: an incompatible newer daemon is never used. The server still answers
+  // tools/list so the client stays connected, but every call reports the repair.
+  const incompatibleNotice = daemon.ownership === "incompatible"
+    ? `lcm daemon v${daemon.daemonVersion} is newer than this MCP server (v${PKG_VERSION ?? "unknown"}) and incompatible. Repair: ${repairCommand()}`
+    : undefined;
+  if (incompatibleNotice) process.stderr.write(`lcm: ${incompatibleNotice}\n`);
 
   const client = new DaemonClient(`http://127.0.0.1:${port}`);
   const server = new Server({ name: "lcm", version: PKG_VERSION ?? "unknown" }, { capabilities: { tools: {} } });
@@ -207,6 +214,7 @@ export async function startMcpServer(): Promise<void> {
   server.setRequestHandler("tools/list", async () => ({ tools: TOOLS }));
 
   server.setRequestHandler("tools/call", async (req) => {
+    if (incompatibleNotice) return { content: [{ type: "text", text: incompatibleNotice }], isError: true };
     const rawArgs = req.params.arguments ?? {};
     // Guard: ensure rawArgs is a plain object
     if (typeof rawArgs !== "object" || rawArgs === null || Array.isArray(rawArgs)) {

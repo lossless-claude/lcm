@@ -6,6 +6,7 @@ import { ensureCore } from "../src/bootstrap.js";
 import { mcpServerEntry } from "../src/installer/mcp-server-entry.js";
 import { packageRoot } from "../src/cli-entrypoint.js";
 import { installConnector } from "../src/connectors/installer.js";
+import { runningFromPluginBundle } from "../src/hooks/fail-open.js";
 import { PKG_VERSION } from "../src/daemon/version.js";
 export { REQUIRED_HOOKS, mergeClaudeSettings } from "../src/installer/settings.js";
 
@@ -208,11 +209,16 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<InstallO
  * Reinstalling reconciles the managed handlers without duplicating them.
  */
 function installCodex(deps: ServiceDeps): HarnessOutcome {
-  const found = deps.spawnSync("sh", ["-c", "command -v codex"], { encoding: "utf-8" });
-  if (found.status !== 0 || typeof found.stdout !== "string" || !found.stdout.trim()) {
-    return { status: "skipped", detail: "codex not on PATH" };
+  // The Codex hooks name an absolute CLI path. From the plugin bundle that path would be a
+  // versioned plugin-cache entry the next plugin update deletes; Codex stays on the npm CLI.
+  if (runningFromPluginBundle()) {
+    return { status: "skipped", detail: "run lcm install from the npm CLI to set up Codex: npm install -g @lossless-claude/lcm && lcm install" };
   }
   try {
+    const found = deps.spawnSync("sh", ["-c", "command -v codex"], { encoding: "utf-8" });
+    if (found.status !== 0 || typeof found.stdout !== "string" || !found.stdout.trim()) {
+      return { status: "skipped", detail: "codex not on PATH" };
+    }
     const result = installConnector("codex", "hooks", homedir(), {
       writeFile: (path, data) => {
         deps.mkdirSync(dirname(path), { recursive: true });

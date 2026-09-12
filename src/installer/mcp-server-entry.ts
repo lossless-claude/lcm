@@ -3,7 +3,7 @@ import { cliEntrypoint } from "../cli-entrypoint.js";
 export interface McpServerEntryOptions {
   /** Override for the node interpreter (tests only); defaults to the running process's own. */
   nodePath?: string;
-  /** Override for the CLI entrypoint (tests only); defaults to the installed dist/bin/lcm.js. */
+  /** Override for the CLI entrypoint (tests only); defaults to the CLI of the running build (`bundle/lcm.js` from the plugin, `dist/bin/lcm.js` from npm). */
   cliPath?: string;
 }
 

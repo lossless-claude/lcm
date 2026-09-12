@@ -145,7 +145,7 @@ describe("startMcpServer", () => {
       expect.objectContaining({
         spawnCommand: process.execPath,
         spawnArgs: expect.arrayContaining([
-          expect.stringMatching(/[\/]lcm\.js$/),
+          expect.stringMatching(/[\\/]lcm\.js$/),
           "daemon",
           "start",
         ]),
