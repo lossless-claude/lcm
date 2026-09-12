@@ -259,8 +259,8 @@ lcm codex-hook             # native Codex lifecycle hook — see docs/vscode-cod
 lcm mcp                    # start MCP server
 ```
 
-`lcm help [command]` prints this same reference from the CLI. `lcm bench` is a development-only
-search benchmarking tool, not shipped to npm; see [docs/search.md](docs/search.md).
+`lcm help [command]` prints this same reference from the CLI. `lcm bench` is a development tool: it
+benchmarks search against a local corpus, which the npm package does not include; see [docs/search.md](docs/search.md).
 
 ## Configuration
 
