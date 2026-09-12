@@ -1,0 +1,24 @@
+
+  lcm import — Import Claude Code or Codex session transcripts into lossless memory.
+
+  Usage: lcm import [--provider claude|codex|all | --codex] [--all] [--verbose] [--dry-run] [--replay] [--restart]
+
+  Options:
+    --provider <provider>  Transcript source: claude, codex, all (default: claude; with --replay: all)
+    --codex                Alias for --provider codex
+    --all                  Import all projects (default: current project only)
+    --verbose              Show per-session import detail
+    --dry-run              Preview without importing
+    --replay               Replay compaction for each imported session (resumes where the last run stopped)
+    --restart              With --replay: discard recorded progress and all summaries in the conversations the run touches, then start from scratch
+
+  Examples:
+    lcm import                            Import current Claude Code project sessions
+    lcm import --all                      Import all tracked Claude Code projects
+    lcm import --replay                   Discover and replay Claude and Codex sessions in the current project
+    lcm import --all --replay             Import and compact both providers across all projects
+    lcm import --dry-run                  Preview what would be imported
+    lcm import --provider codex --replay  Import and compact current project Codex sessions
+
+  Note: Claude transcripts come from ~/.claude/projects/; Codex transcripts from ~/.codex/sessions/ and ~/.codex/archived_sessions/. Codex requires session_meta.cwd; unknown projects are skipped. --replay includes both providers unless --provider or --codex is explicit. --all includes other projects. Dry-run never starts the daemon. Codex import and hooks share incremental ingestion so later transcript growth is captured without duplicating prior messages.
+

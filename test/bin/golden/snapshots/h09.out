@@ -1,0 +1,10 @@
+
+  lcm user-prompt — Dispatch the user-prompt hook — records context on each user message.
+
+  Usage: lcm user-prompt
+
+  Examples:
+    lcm user-prompt  Record user prompt context (called by UserPromptSubmit hook)
+
+  Note: Invoked automatically by the Claude Code UserPromptSubmit hook. Not intended for direct use.
+

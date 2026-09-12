@@ -1,0 +1,61 @@
+
+  lcm — lossless context management for coding agents
+
+  Usage: lcm <command> [options]
+
+  Setup
+    install [--dry-run]    Register hooks, configure daemon, connect MCP
+    uninstall [--dry-run]  Remove hooks and MCP registration
+
+  Runtime
+    daemon start|stop|restart  Manage the context daemon
+    status [--json]            Daemon status and project memory stats
+    doctor                     Diagnostics: daemon, hooks, MCP, summarizer
+    mcp                        Start the MCP server (stdio transport)
+
+  Memory
+    search <query> [--limit N]                                                                   Search episodic and promoted memory
+    grep <query> [--mode ...]                                                                    Search raw messages and summaries
+    describe <nodeId>                                                                            Inspect metadata for a memory node
+    expand <nodeId> [--depth N]                                                                  Expand a summary node into source detail
+    store <text> [--tag ...]                                                                     Store a durable memory entry
+    compact [--all] [--dry-run] [--replay] [--restart] [--no-promote]                            Compact conversations into DAG summaries (auto-promotes after)
+    import [--provider claude|codex|all] [--all] [--verbose] [--dry-run] [--replay] [--restart]  Import Claude Code or Codex session transcripts
+    promote [--all] [--verbose] [--dry-run]                                                      Promote insights to long-term memory
+    stats [-v]                                                                                   Memory inventory and compression ratios
+    diagnose [--all] [--days N] [--verbose] [--json]                                             Scan sessions for hook failures and issues
+
+  Connectors
+    connectors list [--format text|json]                List available agents and installed connectors
+    connectors install <agent> [--type ...] [--global]  Install connector for a coding agent
+    connectors remove <agent> [--type ...] [--global]   Remove connector for a coding agent
+    connectors doctor [agent] [--global]                Check connector health
+
+  Portable Knowledge
+    export [--all] [--output <file>]  Export promoted knowledge to JSON (secrets scrubbed)
+    import-knowledge <file>           Import exported knowledge JSON, deduplicating on merge
+
+  Portable Knowledge
+    export [--all] [--output <file>]  Export promoted knowledge to JSON (secrets scrubbed)
+    import-knowledge <file>           Import exported knowledge JSON, deduplicating on merge
+
+  Sensitive
+    sensitive list                   List active redaction patterns
+    sensitive add <pattern>          Add a redaction pattern
+    sensitive remove <pattern>       Remove a redaction pattern
+    sensitive test <text>            Test text against active patterns
+    sensitive purge [--all] [--yes]  Purge all project data (stored memory and patterns)
+
+  Hooks (internal)
+    codex-hook   Native Codex lifecycle — capture, restore, recall, and compact
+    restore      SessionStart hook — restore prior context
+    session-end  Stop hook — finalize and store session memory
+    user-prompt  UserPromptSubmit hook — record user prompt context
+    post-tool    PostToolUse hook — record tool invocation events
+
+  Flags
+    -V, --version            Show version
+    -h, --help               Show this help
+
+  Run 'lcm <command> --help' for options and examples.
+

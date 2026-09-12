@@ -1,0 +1,1 @@
+  Error: Agent "Codex" does not support connector type "bogus". Supported: rules, hooks, mcp, skill

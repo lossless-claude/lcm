@@ -1,0 +1,16 @@
+
+  lcm promote — Scan summaries and promote durable insights to long-term memory.
+
+  Usage: lcm promote [--all] [--verbose] [--dry-run]
+
+  Options:
+    --all      Promote across all tracked projects (default: current project)
+    --verbose  Show per-project counts
+    --dry-run  Preview promotions without writing
+
+  Examples:
+    lcm promote                  Promote insights for current project
+    lcm promote --all            Promote across all projects
+    lcm promote --all --verbose  Show detail for each project
+    lcm promote --dry-run        Preview what would be promoted
+

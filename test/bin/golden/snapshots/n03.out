@@ -1,0 +1,28 @@
+
+  Available agents:
+
+  %-20s %-15s %-15s Agent Installed Default Supported
+  ──────────────────────────────────────────────────────────────────────
+  %-20s %-15s %-15s Claude Code - skill rules, hook, mcp, skill
+  %-20s %-15s %-15s Codex - hooks rules, hooks, mcp, skill
+  %-20s %-15s %-15s Gemini CLI - skill rules, skill
+  %-20s %-15s %-15s OpenCode - skill rules, skill
+  %-20s %-15s %-15s Qwen Code - mcp rules, mcp
+  %-20s %-15s %-15s Warp - skill rules, skill
+  %-20s %-15s %-15s Auggie CLI - skill rules, skill
+  %-20s %-15s %-15s Cursor - skill rules, mcp, skill
+  %-20s %-15s %-15s Windsurf - skill rules, skill
+  %-20s %-15s %-15s Zed - mcp rules, mcp
+  %-20s %-15s %-15s Trae.ai - skill rules, skill
+  %-20s %-15s %-15s Qoder - skill rules, skill
+  %-20s %-15s %-15s Antigravity - skill rules, skill
+  %-20s %-15s %-15s Cline - mcp rules, mcp
+  %-20s %-15s %-15s GitHub Copilot - skill rules, skill
+  %-20s %-15s %-15s Roo Code - skill rules, skill
+  %-20s %-15s %-15s Kilo Code - skill rules, skill
+  %-20s %-15s %-15s Augment Code - mcp rules, mcp
+  %-20s %-15s %-15s Amp - skill rules, skill
+  %-20s %-15s %-15s Kiro - skill rules, skill
+  %-20s %-15s %-15s Junie - skill rules, skill
+  %-20s %-15s %-15s OpenClaw - skill skill
+

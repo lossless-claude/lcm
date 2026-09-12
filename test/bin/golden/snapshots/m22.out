@@ -1,0 +1,12 @@
+
+  lcm store — Store a durable memory entry for the current project.
+
+  Usage: lcm store <text> [--tag <tag>]
+
+  Options:
+    --tag <tag>  Attach a tag to the stored memory (repeatable)
+
+  Examples:
+    lcm store "Auth uses JWT with 24h expiry"                                                   Store a plain-text memory
+    lcm store "Use ensureDaemon before background promote" --tag type:solution --tag scope:lcm  Store a tagged memory
+

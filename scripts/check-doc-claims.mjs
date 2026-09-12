@@ -28,18 +28,24 @@
 // Both sides abort when empty: an empty code side would pass every claim, which is the
 // exact failure this script exists to catch.
 //
-// CLI extraction (bin/lcm.ts): a small bracket-depth scanner reads the exact statement that
-// follows each recognised chain root — `new Command("name")`, `<ident>.command("name")`,
-// or a bare `<ident>.option(...)` / `.addOption(...)` / `.requiredOption(...)` not part of a
-// `.command()` chain — so options are attributed to the command path they were actually
-// declared on, not to every `lcm` invocation on the line. `src/cli-help.ts` is hand-written
-// help for hand-parsed subcommands (e.g. `sensitive purge --yes`, which Commander never sees
-// as its own command): an option line there whose text starts with a bare word before its
-// `[--flags]` attaches those flags to `lcm <section> <word>`; a line starting directly with
-// a flag attaches to the bare `lcm <section>`, but only when bin/lcm.ts gives that section no
-// subcommands of its own — a group command's (`daemon`, `connectors`) flattened help list is
-// for the reader, not a declaration, and Commander itself accepts none of it on the bare
-// group command.
+// CLI extraction (bin/lcm.ts, plus every src/cli/*.ts): a small bracket-depth scanner reads
+// the exact statement that follows each recognised chain root — `new Command("name")`,
+// `<ident>.command("name")`, or a bare `<ident>.option(...)` / `.addOption(...)` /
+// `.requiredOption(...)` not part of a `.command()` chain — so options are attributed to the
+// command path they were actually declared on, not to every `lcm` invocation on the line. An
+// identifier that receives `.command(...)` but was never declared with `new Command(...)` in
+// that file (e.g. a `register<Group>Commands(program)` function whose `program` is a
+// parameter, not a local `new Command()`) is treated as the root — empty path — so commands
+// registered from a file split out of bin/lcm.ts still attach to the right path. Each command
+// source file is parsed independently and the per-file surfaces (command paths, their
+// options, global flags) are merged by path before `src/cli-help.ts` is read.
+// `src/cli-help.ts` is hand-written help for hand-parsed subcommands (e.g. `sensitive purge
+// --yes`, which Commander never sees as its own command): an option line there whose text
+// starts with a bare word before its `[--flags]` attaches those flags to `lcm <section>
+// <word>`; a line starting directly with a flag attaches to the bare `lcm <section>`, but
+// only when the merged command surface gives that section no subcommands of its own — a
+// group command's (`daemon`, `connectors`) flattened help list is for the reader, not a
+// declaration, and Commander itself accepts none of it on the bare group command.
 //
 // Usage: node scripts/check-doc-claims.mjs [root]
 
@@ -49,7 +55,6 @@ import { join } from "node:path";
 
 const root = process.argv[2] ?? process.cwd();
 
-const CLI_SOURCES = ["bin/lcm.ts", "src/cli-help.ts"];
 const PRODUCTION_DIRS = ["src", "bin", "hooks", "installer"];
 const CODE_DIRS = [...PRODUCTION_DIRS, "scripts", "test", ".github/workflows"];
 const EXCLUDED_DOCS = /^(CHANGELOG\.md|\.changeset\/|docs\/design\/|plans\/|bundle\/)/;
@@ -315,10 +320,52 @@ function parseCliHelp(text, binPathSet) {
   return { pathOptions, pathSet };
 }
 
+// bin/lcm.ts, plus every src/cli/<name>.ts (sorted, only ones that exist) — the files a
+// future PR moves command registrations into. `src/cli-help.ts` is deliberately excluded:
+// it is the hand-written help source, never a command declaration.
+function commandSourceFiles(rootDir) {
+  const files = ["bin/lcm.ts"];
+  let cliDirEntries;
+  try {
+    cliDirEntries = readdirSync(join(rootDir, "src/cli"), { withFileTypes: true });
+  } catch {
+    cliDirEntries = [];
+  }
+  const cliFiles = cliDirEntries
+    .filter((e) => e.isFile() && e.name.endsWith(".ts"))
+    .map((e) => `src/cli/${e.name}`)
+    .sort();
+  files.push(...cliFiles);
+  return files.filter((rel) => existsSync(join(rootDir, rel)));
+}
+
+// Adds `flags` to `pathOptions[path]`, creating that path's option set on first use.
+function addFlagsToPath(pathOptions, path, flags) {
+  if (!pathOptions.has(path)) pathOptions.set(path, new Set());
+  for (const f of flags) pathOptions.get(path).add(f);
+}
+
+// Merges per-file command surfaces (each from `parseBinLcm`) into one: command paths union,
+// each path's options union, global flags union. A path declared in more than one file (not
+// expected today, but not assumed impossible) simply gets the combined option set.
+function mergeCommandSurfaces(surfaces) {
+  const pathOptions = new Map();
+  const pathSet = new Set();
+  const globalFlags = new Set();
+  for (const s of surfaces) {
+    for (const p of s.pathSet) pathSet.add(p);
+    for (const [path, flags] of s.pathOptions) addFlagsToPath(pathOptions, path, flags);
+    for (const f of s.globalFlags) globalFlags.add(f);
+  }
+  return { pathOptions, pathSet, globalFlags };
+}
+
 function cliSurface(rootDir) {
-  const binText = readFileSync(join(rootDir, "bin/lcm.ts"), "utf8");
+  const sourceFiles = commandSourceFiles(rootDir);
+  const perFile = sourceFiles.map((rel) => parseBinLcm(readFileSync(join(rootDir, rel), "utf8")));
+  const bin = mergeCommandSurfaces(perFile);
+
   const helpText = readFileSync(join(rootDir, "src/cli-help.ts"), "utf8");
-  const bin = parseBinLcm(binText);
   const help = parseCliHelp(helpText, bin.pathSet);
 
   const pathSet = new Set([...bin.pathSet, ...help.pathSet]);

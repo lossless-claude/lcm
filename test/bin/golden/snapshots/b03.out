@@ -1,0 +1,14 @@
+Usage: lcm bench build [options]
+
+Sample ingested sessions and write a local benchmark file
+
+Options:
+  --project <path>    Project directory (default: cwd)
+  --n <count>         Number of questions to generate (default: "20")
+  --out <file>        Benchmark file path (default: project memory directory)
+  --generator <mode>  Question generator: llm or mechanical (default:
+                      "mechanical")
+  --seed <n>          Deterministic sampling seed (default: "42")
+  --language <tag>    Language to write LLM questions in (BCP 47, e.g. pt-BR);
+                      default: detected from the corpus
+  -h, --help          display help for command

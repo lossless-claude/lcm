@@ -1,0 +1,10 @@
+
+  lcm mcp — Start the lcm MCP server (used by Claude Code to expose memory tools).
+
+  Usage: lcm mcp
+
+  Examples:
+    lcm mcp  Start the MCP server (stdio transport)
+
+  Note: Normally launched automatically by Claude Code via the mcpServers config. No need to run manually.
+
