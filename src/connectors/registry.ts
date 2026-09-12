@@ -26,7 +26,7 @@ export const AGENTS: Agent[] = [
       rules: 'AGENTS.md',
       hooks: '.codex/hooks.json',
       mcp: '.codex/config.toml',
-      skill: '.codex/skills/',
+      skill: '.agents/skills/',
     },
   },
   {
@@ -176,7 +176,7 @@ export const AGENTS: Agent[] = [
     supportedTypes: ['rules', 'skill'],
     configPaths: {
       rules: '.github/copilot-instructions.md',
-      skill: '.github/skills/',
+      skill: '.agents/skills/',
     },
     writeMode: 'append',
   },
@@ -260,6 +260,13 @@ export const AGENTS: Agent[] = [
     },
   },
 ];
+
+// Agents whose skill config path moved. Installing/removing a skill connector
+// also clears the file at the old location so the two copies do not coexist.
+export const LEGACY_SKILL_PATHS: Record<string, string> = {
+  codex: '.codex/skills/',
+  'github-copilot': '.github/skills/',
+};
 
 export function findAgent(idOrName: string): Agent | undefined {
   const lower = idOrName.toLowerCase();

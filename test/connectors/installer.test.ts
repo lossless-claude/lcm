@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
 import { tmpdir } from 'node:os';
 import { installConnector, removeConnector, listConnectors } from '../../src/connectors/installer.js';
@@ -109,6 +109,70 @@ describe('installConnector — skill', () => {
   it('returns requiresRestart: true for skill', () => {
     const result = installConnector('claude-code', 'skill', tmpDir);
     expect(result.requiresRestart).toBe(true);
+  });
+});
+
+describe('installConnector — skill shared path (codex/github-copilot)', () => {
+  it('writes codex skill to .agents/skills/lcm-memory/SKILL.md', () => {
+    const result = installConnector('codex', 'skill', tmpDir);
+    expect(result.path).toBe(join(tmpDir, '.agents', 'skills', 'lcm-memory', 'SKILL.md'));
+    expect(existsSync(result.path)).toBe(true);
+  });
+
+  it('writes github-copilot skill to .agents/skills/lcm-memory/SKILL.md', () => {
+    const result = installConnector('github-copilot', 'skill', tmpDir);
+    expect(result.path).toBe(join(tmpDir, '.agents', 'skills', 'lcm-memory', 'SKILL.md'));
+    expect(existsSync(result.path)).toBe(true);
+  });
+
+  it('removes a pre-existing legacy codex skill copy on install', () => {
+    const legacyDir = join(tmpDir, '.codex', 'skills', 'lcm-memory');
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(join(legacyDir, 'SKILL.md'), 'stale content');
+
+    installConnector('codex', 'skill', tmpDir);
+
+    expect(existsSync(join(legacyDir, 'SKILL.md'))).toBe(false);
+    expect(existsSync(legacyDir)).toBe(false);
+    expect(existsSync(join(tmpDir, '.agents', 'skills', 'lcm-memory', 'SKILL.md'))).toBe(true);
+  });
+
+  it('removes a pre-existing legacy github-copilot skill copy on install', () => {
+    const legacyDir = join(tmpDir, '.github', 'skills', 'lcm-memory');
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(join(legacyDir, 'SKILL.md'), 'stale content');
+
+    installConnector('github-copilot', 'skill', tmpDir);
+
+    expect(existsSync(join(legacyDir, 'SKILL.md'))).toBe(false);
+    expect(existsSync(legacyDir)).toBe(false);
+    expect(existsSync(join(tmpDir, '.agents', 'skills', 'lcm-memory', 'SKILL.md'))).toBe(true);
+  });
+});
+
+describe('removeConnector — skill shared path (codex/github-copilot)', () => {
+  it('removes both the current and legacy codex skill locations', () => {
+    installConnector('codex', 'skill', tmpDir);
+    const legacyDir = join(tmpDir, '.codex', 'skills', 'lcm-memory');
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(join(legacyDir, 'SKILL.md'), 'stale content');
+
+    const removed = removeConnector('codex', 'skill', tmpDir);
+
+    expect(removed).toBe(true);
+    expect(existsSync(join(tmpDir, '.agents', 'skills', 'lcm-memory', 'SKILL.md'))).toBe(false);
+    expect(existsSync(join(legacyDir, 'SKILL.md'))).toBe(false);
+  });
+
+  it('removes only a lingering legacy github-copilot copy when the new one is absent', () => {
+    const legacyDir = join(tmpDir, '.github', 'skills', 'lcm-memory');
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(join(legacyDir, 'SKILL.md'), 'stale content');
+
+    const removed = removeConnector('github-copilot', 'skill', tmpDir);
+
+    expect(removed).toBe(true);
+    expect(existsSync(join(legacyDir, 'SKILL.md'))).toBe(false);
   });
 });
 

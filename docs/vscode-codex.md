@@ -24,7 +24,7 @@ lcm connectors install github-copilot
 lcm connectors doctor github-copilot
 ```
 
-This writes a repo-local skill file at `.github/skills/lcm-memory/SKILL.md`.
+This writes a repo-local skill file at `.agents/skills/lcm-memory/SKILL.md`. Codex and Copilot both read that directory.
 
 ## Install the Codex connector
 

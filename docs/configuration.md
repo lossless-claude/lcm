@@ -42,7 +42,7 @@ lcm connectors install github-copilot
 lcm connectors doctor github-copilot
 ```
 
-This writes `.github/skills/lcm-memory/SKILL.md` in the current repository.
+This writes `.agents/skills/lcm-memory/SKILL.md` in the current repository. Codex and Copilot both read that directory.
 
 ### Codex
 

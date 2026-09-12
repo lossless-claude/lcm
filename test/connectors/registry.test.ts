@@ -66,4 +66,11 @@ describe("connector registry", () => {
     expect(codex?.supportedTypes).toContain("skill");
     expect(codex?.configPaths.hooks).toBe(".codex/hooks.json");
   });
+
+  it("codex and github-copilot share the same skill config path", () => {
+    const codex = findAgent("codex");
+    const githubCopilot = findAgent("github-copilot");
+    expect(codex?.configPaths.skill).toBe(".agents/skills/");
+    expect(githubCopilot?.configPaths.skill).toBe(".agents/skills/");
+  });
 });
