@@ -50,7 +50,7 @@ feature/docs branches → develop (default, protected) → main (releases only, 
 
 | Question | Default Answer |
 |----------|---------------|
-| Spec location | `.xgh/specs/YYYY-MM-DD-<topic>-design.md` |
+| Spec location | `docs/design/<topic>.md` |
 | Visual companion | No (CLI project, no visual questions) |
 | Implementation approach | Parallel tracks — breaking changes isolated from additive work |
 | Registry/config format | TypeScript (type-safe, compile-time checks) |
@@ -65,9 +65,9 @@ feature/docs branches → develop (default, protected) → main (releases only, 
 2. Ask clarifying questions only for genuinely ambiguous decisions — use defaults above for standard questions
 3. Propose 2-3 approaches with trade-offs, recommend one
 4. Present design sections incrementally, get user approval
-5. Write design spec to `.xgh/specs/`
+5. Write design spec to `docs/design/`
 6. Run spec review loop (code-reviewer agent + user review)
-7. Write implementation plan to `.xgh/specs/`
+7. Write implementation plan to `docs/design/`
 
 ## Phase 2: Spec Review via PR
 

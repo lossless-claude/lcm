@@ -88,7 +88,7 @@ TypeScript SQLite daemon that persists Claude session memories across context re
 
 - Point at **symbols**, not line numbers: `CompactionEngine.persistCompactionEvent`, not `src/compaction.ts:1331`. Line numbers rot on any edit above them, and a stale one still looks plausible; a renamed symbol is greppable.
 - Flag any `path/to/file.ts:NNN` in Markdown, doc comments, or commit messages, unless pinned to an immutable ref (a commit SHA, or a labelled review-finding identifier).
-- Applies to `.xgh/specs/`, `.xgh/plans/`, `docs/`, `AGENTS.md`, and skill files.
+- Applies to `docs/`, `docs/design/`, `AGENTS.md`, and skill files.
 
 ## What to skip
 
