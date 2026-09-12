@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "roots": ["AGENTS.md"],
+  "effects": ["hooks", "cli", "mcp", "config", "docs", "release", "ci"],
+  "sources": {
+    "context": "CONTEXT.md",
+    "architecture": "docs/architecture.md",
+    "hooks": "docs/hook-protocol.md",
+    "configuration": "docs/configuration.md",
+    "tools": "docs/agent-tools.md",
+    "release": "docs/releasing.md",
+    "ci": "docs/ci-runner.md"
+  },
+  "documents": [
+    {
+      "path": "AGENTS.md",
+      "role": "router",
+      "owns": ["."],
+      "budget": { "words": 1000 },
+      "references": [
+        { "target": "CONTEXT.md" },
+        { "target": "docs/architecture.md", "when": ["hooks", "cli", "mcp", "config"] },
+        { "target": "docs/hook-protocol.md", "when": ["hooks"] },
+        { "target": "docs/configuration.md", "when": ["config", "cli"] },
+        { "target": "docs/agent-tools.md", "when": ["mcp"] },
+        { "target": "docs/releasing.md", "when": ["release"] },
+        { "target": "docs/ci-runner.md", "when": ["ci"] }
+      ]
+    },
+    { "path": "CONTEXT.md", "role": "normative-reference", "parent": "AGENTS.md" },
+    { "path": "docs/architecture.md", "role": "normative-reference", "parent": "AGENTS.md" },
+    { "path": "docs/hook-protocol.md", "role": "normative-reference", "parent": "AGENTS.md" },
+    { "path": "docs/configuration.md", "role": "normative-reference", "parent": "AGENTS.md" },
+    { "path": "docs/agent-tools.md", "role": "normative-reference", "parent": "AGENTS.md" },
+    { "path": "docs/releasing.md", "role": "normative-reference", "parent": "AGENTS.md" },
+    { "path": "docs/ci-runner.md", "role": "normative-reference", "parent": "AGENTS.md" }
+  ],
+  "volume_exceptions": []
+}

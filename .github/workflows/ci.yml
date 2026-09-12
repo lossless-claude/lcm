@@ -72,6 +72,11 @@ jobs:
       - name: Check documentation claims against the code
         run: npm run check-docs
 
+      - name: Check the agent contract
+        # tools/self-consistency/checker.pyz is a pinned, stdlib-only artifact; its
+        # lock file records the version and digest. See AGENTS.md.
+        run: npm run check-agents
+
       - name: Validate plugin manifest
         # Two invocations, because they validate different things: the repo root
         # holds both manifests and marketplace.json wins there, so the plugin's

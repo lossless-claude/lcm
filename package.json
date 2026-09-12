@@ -42,7 +42,8 @@
     "typecheck:hooks": "bash scripts/typecheck-hooks.sh",
     "check-manifest": "node scripts/check-manifest.mjs",
     "version-packages": "changeset version && node scripts/sync-versions.mjs",
-    "check-docs": "node scripts/check-doc-claims.mjs"
+    "check-docs": "node scripts/check-doc-claims.mjs",
+    "check-agents": "python3 tools/self-consistency/checker.pyz --root ."
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
