@@ -3,7 +3,7 @@ import { Option } from "commander";
 import type { Command } from "commander";
 import type { DaemonClient } from "../daemon/client.js";
 import { lcmPath } from "../lcm-home.js";
-import { readStdin } from "./support.js";
+import { readStdin, showHelpAndExit } from "./support.js";
 
 export interface CompactCommandDeps {
   createDaemonClientOrExit: (spawnTimeoutMs?: number) => Promise<DaemonClient>;
@@ -26,10 +26,7 @@ export function registerCompactCommand(program: Command, deps: CompactCommandDep
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("compact"); exit(0);
-      }
+      if (opts.help) await showHelpAndExit("compact");
       const all: boolean = opts.all ?? false;
       const dryRun: boolean = opts.dryRun ?? false;
       const verbose: boolean = opts.verbose ?? false;

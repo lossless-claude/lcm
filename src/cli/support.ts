@@ -17,8 +17,7 @@ export function helpRequested(parent: Command, opts: { help?: boolean }): boolea
 export function parsePositiveInteger(value: string, optionName: string): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0 || !Number.isInteger(parsed)) {
-    console.error(`Invalid ${optionName}: ${value}`);
-    exit(1);
+    fail(`Invalid ${optionName}: ${value}`);
   }
   return parsed;
 }
@@ -38,8 +37,13 @@ export function readStdin(): Promise<string> {
   });
 }
 
-export async function withCustomHelp(cmd: Command, commandName: string): Promise<void> {
+export async function showHelpAndExit(commandName: string): Promise<never> {
   const { printHelp } = await import("../cli-help.js");
   printHelp(commandName);
   exit(0);
+}
+
+export function fail(message: string): never {
+  console.error(message);
+  exit(1);
 }

@@ -12,7 +12,7 @@ Created <TMP>/home/.lossless-claude/config.json
 [dry-run] would write: <TMP>/home/.claude/settings.json
 Updated <TMP>/home/.claude/settings.json
 [dry-run] would create: <TMP>/home/.claude/skills/memory
-[dry-run] would copy: <REPO>/skills/memory/SKILL.md -> <TMP>/home/.claude/skills/memory/SKILL.md
+[dry-run] would write: <TMP>/home/.claude/skills/memory/SKILL.md
 Installed the /memory skill to <TMP>/home/.claude/skills/memory
 [dry-run] would create: <TMP>/home/.claude
 [dry-run] would write: <TMP>/home/.claude/lcm.md

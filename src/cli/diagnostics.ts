@@ -2,6 +2,7 @@ import { exit, stdout } from "node:process";
 import type { Command } from "commander";
 import type { DaemonClient } from "../daemon/client.js";
 import { lcmPath } from "../lcm-home.js";
+import { fail, showHelpAndExit } from "./support.js";
 
 export interface DiagnosticsCommandDeps {
   createDaemonClientOrExit: (spawnTimeoutMs?: number) => Promise<DaemonClient>;
@@ -18,10 +19,7 @@ export function registerDiagnosticsCommands(program: Command, deps: DiagnosticsC
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("status"); exit(0);
-      }
+      if (opts.help) await showHelpAndExit("status");
       const { loadDaemonConfig } = await import("../daemon/config.js");
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
@@ -84,10 +82,7 @@ export function registerDiagnosticsCommands(program: Command, deps: DiagnosticsC
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("stats"); exit(0);
-      }
+      if (opts.help) await showHelpAndExit("stats");
 
       if (opts.pool) {
         const jsonFlag: boolean = opts.json ?? false;
@@ -97,8 +92,7 @@ export function registerDiagnosticsCommands(program: Command, deps: DiagnosticsC
         try {
           poolData = await client.get("/stats/pool");
         } catch (err) {
-          console.error(`Error: ${err instanceof Error ? err.message : "could not load pool stats"}`);
-          exit(1);
+          fail(`Error: ${err instanceof Error ? err.message : "could not load pool stats"}`);
         }
 
         if (jsonFlag) {
@@ -145,10 +139,7 @@ export function registerDiagnosticsCommands(program: Command, deps: DiagnosticsC
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("doctor"); exit(0);
-      }
+      if (opts.help) await showHelpAndExit("doctor");
       const { runDoctor, printResults } = await import("../doctor/doctor.js");
       const results = await runDoctor();
       printResults(results);
@@ -169,18 +160,14 @@ export function registerDiagnoseCommand(program: Command): void {
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("diagnose"); exit(0);
-      }
+      if (opts.help) await showHelpAndExit("diagnose");
       const all: boolean = opts.all ?? false;
       const verbose: boolean = opts.verbose ?? false;
       const json: boolean = opts.json ?? false;
       const days = Number(opts.days);
 
       if (!Number.isFinite(days) || days <= 0 || !Number.isInteger(days)) {
-        console.error("Usage: lcm diagnose [--all] [--days N] [--verbose] [--json]");
-        exit(1);
+        fail("Usage: lcm diagnose [--all] [--days N] [--verbose] [--json]");
       }
 
       const { diagnose, formatDiagnoseResult } = await import("../diagnose.js");

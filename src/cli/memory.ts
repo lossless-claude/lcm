@@ -1,7 +1,7 @@
-import { exit, stdout } from "node:process";
+import { stdout } from "node:process";
 import type { Command } from "commander";
 import type { DaemonClient } from "../daemon/client.js";
-import { parsePositiveInteger } from "./support.js";
+import { fail, parsePositiveInteger, showHelpAndExit } from "./support.js";
 
 export interface MemoryCommandDeps {
   createDaemonClientOrExit: (spawnTimeoutMs?: number) => Promise<DaemonClient>;
@@ -19,10 +19,7 @@ export function registerMemoryCommands(program: Command, deps: MemoryCommandDeps
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (query: string, opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("search"); exit(0);
-      }
+      if (opts.help) await showHelpAndExit("search");
 
       const layers = normalizeStringList(opts.layer);
       const tags = normalizeStringList(opts.tag) ?? [];
@@ -48,10 +45,7 @@ export function registerMemoryCommands(program: Command, deps: MemoryCommandDeps
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (query: string, opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("grep"); exit(0);
-      }
+      if (opts.help) await showHelpAndExit("grep");
 
       const mode = ensureAllowedValue(opts.mode, ["full_text", "regex"], "--mode");
       const scope = ensureAllowedValue(opts.scope, ["messages", "summaries", "both"], "--scope");
@@ -73,10 +67,7 @@ export function registerMemoryCommands(program: Command, deps: MemoryCommandDeps
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (nodeId: string, opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("describe"); exit(0);
-      }
+      if (opts.help) await showHelpAndExit("describe");
 
       const client = await createDaemonClientOrExit();
       const result = await client.post("/describe", { cwd: process.cwd(), nodeId });
@@ -90,10 +81,7 @@ export function registerMemoryCommands(program: Command, deps: MemoryCommandDeps
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (nodeId: string, opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("expand"); exit(0);
-      }
+      if (opts.help) await showHelpAndExit("expand");
 
       const client = await createDaemonClientOrExit();
       const result = await client.post("/expand", {
@@ -111,10 +99,7 @@ export function registerMemoryCommands(program: Command, deps: MemoryCommandDeps
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (text: string, opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("store"); exit(0);
-      }
+      if (opts.help) await showHelpAndExit("store");
 
       const client = await createDaemonClientOrExit();
       const result = await client.post("/store", {
@@ -141,16 +126,14 @@ function ensureAllowedValues(values: string[] | undefined, allowed: readonly str
   if (!values) return;
   const invalid = values.filter((value) => !allowed.includes(value));
   if (invalid.length > 0) {
-    console.error(`Invalid ${optionName}: ${invalid.join(", ")}`);
-    exit(1);
+    fail(`Invalid ${optionName}: ${invalid.join(", ")}`);
   }
 }
 
 function ensureAllowedValue(value: unknown, allowed: readonly string[], optionName: string): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string" || !allowed.includes(value)) {
-    console.error(`Invalid ${optionName}: ${String(value)}`);
-    exit(1);
+    fail(`Invalid ${optionName}: ${String(value)}`);
   }
   return value;
 }

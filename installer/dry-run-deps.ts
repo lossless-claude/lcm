@@ -29,12 +29,8 @@ export class DryRunServiceDeps implements ServiceDeps, TeardownDeps {
     }
   }
 
-  rmSync(path: string): void {
+  rmSync(path: string, _opts?: any): void {
     console.log(`[dry-run] would remove: ${path}`);
-  }
-
-  copyFileSync(src: string, dest: string): void {
-    console.log(`[dry-run] would copy: ${src} -> ${dest}`);
   }
 
   spawnSync(cmd: string, args: string[], opts?: any): SpawnSyncReturns<string> {

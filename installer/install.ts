@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, copyFileSync, rmSync, chmodSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, rmSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
@@ -17,9 +17,8 @@ export interface ServiceDeps {
   writeFileSync: (path: string, data: string) => void;
   mkdirSync: (path: string, opts?: any) => void;
   existsSync: (path: string) => boolean;
+  rmSync: (path: string, opts?: any) => void;
   chmodSync?: (path: string, mode: number) => void;
-  copyFileSync: (src: string, dest: string) => void;
-  rmSync: (path: string, opts?: { recursive?: boolean; force?: boolean }) => void;
   promptUser: (question: string) => Promise<string>;
   ensureDaemon?: (opts: { port: number; pidFilePath: string; spawnTimeoutMs: number }) => Promise<{ connected: boolean }>;
   runDoctor?: () => Promise<Array<{ name: string; status: string; category?: string; message?: string }>>;
@@ -37,7 +36,7 @@ async function readlinePrompt(question: string): Promise<string> {
   }
 }
 
-const defaultDeps: ServiceDeps = { spawnSync: spawnSync as any, readFileSync: (path, encoding) => readFileSync(path, encoding as BufferEncoding) as string, writeFileSync, mkdirSync, existsSync, chmodSync: chmodSync, copyFileSync, rmSync, promptUser: readlinePrompt };
+const defaultDeps: ServiceDeps = { spawnSync: spawnSync as any, readFileSync: (path, encoding) => readFileSync(path, encoding as BufferEncoding) as string, writeFileSync, mkdirSync, existsSync, rmSync, chmodSync: chmodSync, promptUser: readlinePrompt };
 
 export interface ResolveBinaryDeps {
   spawnSync: (cmd: string, args: string[], opts?: object) => { status: number | null; stdout: string | Buffer };
@@ -309,11 +308,12 @@ async function installClaudeCode(deps: ServiceDeps): Promise<HarnessOutcome> {
 
   // 4. Install the /memory skill to ~/.claude/skills/memory/, and drop the per-command files
   //    earlier versions installed, so /lcm-doctor and friends stop shadowing it.
+  // packageRoot() resolves the checkout, dist/ and bundle/ layouts alike.
   const skillSrc = join(packageRoot(), "skills", "memory", "SKILL.md");
   const skillDst = join(homedir(), ".claude", "skills", "memory");
-  if (deps.existsSync(skillSrc)) {
+  if (skillSrc) {
     deps.mkdirSync(skillDst, { recursive: true });
-    deps.copyFileSync(skillSrc, join(skillDst, "SKILL.md"));
+    deps.writeFileSync(join(skillDst, "SKILL.md"), deps.readFileSync(skillSrc, "utf8"));
     console.log(`Installed the /memory skill to ${skillDst}`);
   }
   const legacyCommands = join(homedir(), ".claude", "commands");
