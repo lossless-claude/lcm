@@ -2,6 +2,7 @@ import type { DaemonClient } from "../daemon/client.js";
 import { ensureDaemon } from "../daemon/lifecycle.js";
 import { PKG_VERSION } from "../daemon/version.js";
 import { functionHooksOwnSession } from "./session-claim.js";
+import { fireSessionStartCompactRequest } from "./session-end.js";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { writeFileSync, readFileSync } from "node:fs";
@@ -73,6 +74,13 @@ export async function handleSessionStart(stdin: string, client: DaemonClient, po
         .map((i) => `- ${i.content} (confidence: ${i.confidence})`)
         .join("\n");
       stdout += `\n<learned-insights source="passive-capture">\nRecent learnings from your previous sessions:\n${insightsBlock}\n</learned-insights>`;
+    }
+
+    // Fire-and-forget: catch up any conversation of this project left uncompacted
+    // by a session that ended without SessionEnd. Never awaited, so it adds no
+    // latency here; the daemon does the selection and per-conversation compaction.
+    if (input.cwd) {
+      fireSessionStartCompactRequest(daemonPort, { cwd: input.cwd, session_id: sessionId });
     }
 
     return { exitCode: 0, stdout };

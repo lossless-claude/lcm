@@ -121,6 +121,33 @@ export function fireSessionCompleteRequest(port: number, body: Record<string, un
   req.end();
 }
 
+/**
+ * Trigger the daemon's SessionStart catch-up sweep for uncompacted conversations
+ * of the same project. Fired from `restore.ts` after restore returns its context,
+ * so it never adds latency to session start; the daemon does the selection,
+ * cap and per-conversation `/compact` calls on its own.
+ */
+export function fireSessionStartCompactRequest(port: number, body: Record<string, unknown>): void {
+  const json = JSON.stringify(body);
+  const req = request({
+    hostname: "127.0.0.1",
+    port,
+    path: "/session-start-compact",
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(json),
+      ...authHeaders(),
+    },
+  });
+  req.on("socket", (socket) => {
+    req.on("finish", () => (socket as import("node:net").Socket).unref());
+  });
+  req.on("error", () => {}); // non-fatal
+  req.write(json);
+  req.end();
+}
+
 /** Deadline for /ingest at SessionEnd — the host kills the hook long before this anyway. */
 const INGEST_TIMEOUT_MS = 10_000;
 
