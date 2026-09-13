@@ -131,6 +131,24 @@ describe("Flow 21: the installed plugin runs from bundle/ with no npm cache", { 
     }
   });
 
+  it("runs the MCP server from plugin.json's entry and lists the seven tools", async () => {
+    const manifest = JSON.parse(readFileSync(join(pluginRoot, ".claude-plugin", "plugin.json"), "utf8"));
+    const request = {
+      jsonrpc: "2.0", id: 1, method: "tools/list",
+      params: { _meta: {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientInfo": { name: "plugin-bundle-test", version: "0.1" },
+      } },
+    };
+    const r = await runHook({ type: "command", ...manifest.mcpServers.lcm }, JSON.stringify(request) + "\n");
+    const reply = r.stdout.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => JSON.parse(l)).find((m) => m.id === 1);
+    expect(reply, r.stderr).toBeDefined();
+    expect(reply.result.tools.map((t: { name: string }) => t.name).sort()).toEqual([
+      "lcm_describe", "lcm_doctor", "lcm_expand", "lcm_grep", "lcm_search", "lcm_stats", "lcm_store",
+    ]);
+  });
+
   it("registers the MCP server in exec form, pointing at the bundle", () => {
     const manifest = JSON.parse(readFileSync(join(pluginRoot, ".claude-plugin", "plugin.json"), "utf8"));
     expect(manifest.mcpServers.lcm).toEqual({ command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/bundle/mcp-server.js"] });

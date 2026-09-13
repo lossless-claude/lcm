@@ -88,8 +88,13 @@ and is closed by `claude plugin update`.
 ## `lcm install`
 
 - Claude Code: settings, MCP server, `/memory` skill, `lcm.md`, doctor, as before.
+  Run from the plugin bundle it leaves the MCP entry in `settings.json` alone
+  (`plugin.json` registers the server) and clears only plugin-cache versions
+  older than its own: a newer plugin beside an older npm CLI is a supported state.
 - Codex: when `codex` is on PATH, the equivalent of `lcm connectors install codex
-  --global`; project scope stays explicit through `lcm connectors`.
+  --global`; project scope stays explicit through `lcm connectors`. Run from the
+  plugin bundle it skips Codex and names the npm CLI: the hooks would otherwise
+  carry a versioned plugin-cache path the next plugin update deletes.
 - `--dry-run` performs no writes, the shared core included: every write, copy and
   removal goes through the injected service deps.
 - One outcome per harness; the CLI exits non-zero when any harness failed.

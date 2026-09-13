@@ -90,8 +90,18 @@ function readLcmPluginRegistration(deps: DoctorDeps, settings: Record<string, un
  */
 function addPluginBundleCheck(results: CheckResult[], deps: DoctorDeps, plugin: PluginRegistration): void {
   if (!plugin.installed || !plugin.installPath) return;
+  const manifestPath = join(plugin.installPath, ".claude-plugin", "plugin.json");
   let manifest = "";
-  try { manifest = deps.readFileSync(join(plugin.installPath, ".claude-plugin", "plugin.json"), "utf-8"); } catch { return; }
+  try {
+    manifest = deps.readFileSync(manifestPath, "utf-8");
+  } catch {
+    // A registered plugin whose directory lost its manifest is the corrupted install this check exists for.
+    results.push({
+      name: "plugin-bundle", category: "Settings", status: "fail",
+      message: `${manifestPath} unreadable — plugin install is incomplete\n     Fix: claude plugin update lcm@lossless-claude`,
+    });
+    return;
+  }
   if (!manifest.includes("bundle/lcm.js")) return;
   const bundlePath = join(plugin.installPath, "bundle", "lcm.js");
   if (deps.existsSync(bundlePath)) {
@@ -282,7 +292,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
   if (daemonHealthy) {
     const pidFilePath = join(deps.lcmHome, "daemon.pid");
     const ownership = daemonOwnership({ status: "ok", version: daemonVersion, build: daemonBuild }, { version: pkgVersion, build: BUILD_ID });
-    const versionMismatch = daemonVersion !== pkgVersion;
+    const versionMismatch = Boolean(pkgVersion && daemonVersion && daemonVersion !== pkgVersion);
     if (ownership === "incompatible") {
       // Newest wins: a newer, incompatible daemon is never restarted; this install must be updated.
       results.push({

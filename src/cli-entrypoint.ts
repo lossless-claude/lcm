@@ -15,8 +15,8 @@ export function cliEntrypoint(): string {
   return existsSync(bundled) ? bundled : join(here, "..", "bin", "lcm.js");
 }
 
-/** The plugin or package root: the directory holding `.claude-plugin/plugin.json`. */
+/** The plugin or package root: the directory holding `package.json`. */
 export function packageRoot(): string {
   const candidates = [join(here, ".."), join(here, "..", "..")];
-  return candidates.find((dir) => existsSync(join(dir, ".claude-plugin", "plugin.json"))) ?? candidates[0];
+  return candidates.find((dir) => existsSync(join(dir, "package.json"))) ?? candidates[0];
 }

@@ -206,7 +206,7 @@ export async function startMcpServer(): Promise<void> {
   const incompatibleNotice = daemon.ownership === "incompatible"
     ? `lcm daemon v${daemon.daemonVersion} is newer than this MCP server (v${PKG_VERSION ?? "unknown"}) and incompatible. Repair: ${repairCommand()}`
     : undefined;
-  if (incompatibleNotice) process.stderr.write(`lcm: ${incompatibleNotice}\n`);
+  if (incompatibleNotice) process.stderr.write(`${incompatibleNotice}\n`);
 
   const client = new DaemonClient(`http://127.0.0.1:${port}`);
   const server = new Server({ name: "lcm", version: PKG_VERSION ?? "unknown" }, { capabilities: { tools: {} } });

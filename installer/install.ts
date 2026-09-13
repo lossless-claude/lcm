@@ -7,6 +7,7 @@ import { mcpServerEntry } from "../src/installer/mcp-server-entry.js";
 import { packageRoot } from "../src/cli-entrypoint.js";
 import { installConnector } from "../src/connectors/installer.js";
 import { runningFromPluginBundle } from "../src/hooks/fail-open.js";
+import { isOlderVersion } from "../src/daemon/lifecycle.js";
 import { PKG_VERSION } from "../src/daemon/version.js";
 export { REQUIRED_HOOKS, mergeClaudeSettings } from "../src/installer/settings.js";
 
@@ -17,8 +18,8 @@ export interface ServiceDeps {
   mkdirSync: (path: string, opts?: any) => void;
   existsSync: (path: string) => boolean;
   chmodSync?: (path: string, mode: number) => void;
-  copyFileSync?: (src: string, dest: string) => void;
-  rmSync?: (path: string, opts?: { recursive?: boolean; force?: boolean }) => void;
+  copyFileSync: (src: string, dest: string) => void;
+  rmSync: (path: string, opts?: { recursive?: boolean; force?: boolean }) => void;
   promptUser: (question: string) => Promise<string>;
   ensureDaemon?: (opts: { port: number; pidFilePath: string; spawnTimeoutMs: number }) => Promise<{ connected: boolean }>;
   runDoctor?: () => Promise<Array<{ name: string; status: string; category?: string; message?: string }>>;
@@ -234,17 +235,15 @@ function installCodex(deps: ServiceDeps): HarnessOutcome {
 async function installClaudeCode(deps: ServiceDeps): Promise<HarnessOutcome> {
   const lcDir = join(homedir(), ".lossless-claude");
   deps.mkdirSync(lcDir, { recursive: true });
-  const remove = deps.rmSync ?? (() => {});
-  const copy = deps.copyFileSync ?? (() => {});
-
-  // Clear plugin cache entries for previous versions so stale/corrupted installs don't persist.
+  // Clear plugin cache entries for older versions so stale/corrupted installs don't persist.
+  // Only older: a newer plugin next to an older npm CLI is a supported state (newest wins).
   try {
     const cacheDir = join(homedir(), ".claude", "plugins", "cache", "lossless-claude", "lcm");
     if (PKG_VERSION && deps.existsSync(cacheDir)) {
       for (const entry of readdirSync(cacheDir, { withFileTypes: true })) {
-        if (entry.isDirectory() && entry.name !== PKG_VERSION) {
-          remove(join(cacheDir, entry.name), { recursive: true, force: true });
-          console.log(`Cleared plugin cache for v${entry.name}`);
+        if (entry.isDirectory() && isOlderVersion(entry.name, PKG_VERSION)) {
+          console.log(`Clearing plugin cache for v${entry.name}`);
+          deps.rmSync(join(cacheDir, entry.name), { recursive: true, force: true });
         }
       }
     }
@@ -286,23 +285,27 @@ async function installClaudeCode(deps: ServiceDeps): Promise<HarnessOutcome> {
     }),
   });
 
-  // Register MCP server directly in settings.json.
-  // plugin.json mcpServers isn't reliably processed for locally-installed plugins
-  // (installPath in installed_plugins.json points to wrong versioned dir).
-  let merged: any = {};
-  if (deps.existsSync(settingsPath)) {
-    try { merged = JSON.parse(deps.readFileSync(settingsPath, "utf-8")); } catch {}
-  }
-  if (typeof merged !== "object" || merged === null) {
-    merged = {};
-  }
-  const mcpServers = (typeof merged.mcpServers === "object" && merged.mcpServers !== null) ? merged.mcpServers : {};
-  mcpServers["lcm"] = mcpServerEntry();
-  (merged as any).mcpServers = mcpServers;
+  // Register MCP server directly in settings.json when running from the npm CLI.
+  // From the plugin bundle the entry would name a versioned plugin-cache path that the
+  // next plugin update deletes; plugin.json already registers the server there.
+  if (runningFromPluginBundle()) {
+    console.log("MCP server registered by the plugin manifest; settings.json left alone");
+  } else {
+    let merged: any = {};
+    if (deps.existsSync(settingsPath)) {
+      try { merged = JSON.parse(deps.readFileSync(settingsPath, "utf-8")); } catch {}
+    }
+    if (typeof merged !== "object" || merged === null) {
+      merged = {};
+    }
+    const mcpServers = (typeof merged.mcpServers === "object" && merged.mcpServers !== null) ? merged.mcpServers : {};
+    mcpServers["lcm"] = mcpServerEntry();
+    (merged as any).mcpServers = mcpServers;
 
-  deps.mkdirSync(dirname(settingsPath), { recursive: true });
-  deps.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
-  console.log(`Updated ${settingsPath}`);
+    deps.mkdirSync(dirname(settingsPath), { recursive: true });
+    deps.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
+    console.log(`Updated ${settingsPath}`);
+  }
 
   // 4. Install the /memory skill to ~/.claude/skills/memory/, and drop the per-command files
   //    earlier versions installed, so /lcm-doctor and friends stop shadowing it.
@@ -310,13 +313,13 @@ async function installClaudeCode(deps: ServiceDeps): Promise<HarnessOutcome> {
   const skillDst = join(homedir(), ".claude", "skills", "memory");
   if (deps.existsSync(skillSrc)) {
     deps.mkdirSync(skillDst, { recursive: true });
-    copy(skillSrc, join(skillDst, "SKILL.md"));
+    deps.copyFileSync(skillSrc, join(skillDst, "SKILL.md"));
     console.log(`Installed the /memory skill to ${skillDst}`);
   }
   const legacyCommands = join(homedir(), ".claude", "commands");
   if (deps.existsSync(legacyCommands)) {
     for (const file of readdirSync(legacyCommands)) {
-      if (/^(lcm|lossless-claude)-[a-z]+\.md$/.test(file)) remove(join(legacyCommands, file), { force: true });
+      if (/^(lcm|lossless-claude)-[a-z]+\.md$/.test(file)) deps.rmSync(join(legacyCommands, file), { force: true });
     }
   }
 
@@ -337,12 +340,13 @@ async function installClaudeCode(deps: ServiceDeps): Promise<HarnessOutcome> {
   const results = await _runDoctor();
   // Only what install itself set up counts as its failure; an optional summarizer CLI
   // being absent is doctor's advice, not a broken Claude Code install.
+  // A missing plugin bundle is repaired by `claude plugin update`, not by install.
   const owned = new Set(["Stack", "Daemon", "Settings"]);
-  const failures = results.filter((r) => r.status === "fail" && (r.category === undefined || owned.has(r.category)));
+  const failures = results.filter((r) => r.status === "fail" && r.name !== "plugin-bundle" && (r.category === undefined || owned.has(r.category)));
   if (failures.length > 0) {
     return { status: "failed", detail: `${failures.length} doctor check(s) failed (${failures.map((r) => r.name).join(", ")}) — run: lcm doctor` };
   }
-  return { status: "ok", detail: "hooks, MCP server, /memory skill and lcm.md installed; all checks passed" };
+  return { status: "ok", detail: "settings, MCP server, /memory skill and lcm.md installed; all checks passed" };
 }
 
 // Re-export rmSync so uninstall.ts can share the pattern

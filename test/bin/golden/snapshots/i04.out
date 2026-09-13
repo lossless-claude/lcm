@@ -25,7 +25,7 @@ Running doctor...
 [dry-run] would create: <TMP>/home/.codex
 [dry-run] would write: <TMP>/home/.codex/hooks.json
 
-  ✓ Claude Code: hooks, MCP server, /memory skill and lcm.md installed; all checks passed
+  ✓ Claude Code: settings, MCP server, /memory skill and lcm.md installed; all checks passed
   ✓ Codex: hooks installed in <TMP>/home/.codex/hooks.json — Codex requires trust review for non-managed hooks. Review this connector with /hooks after restarting Codex.
 
   No changes written.

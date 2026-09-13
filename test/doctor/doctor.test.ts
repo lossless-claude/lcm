@@ -314,6 +314,18 @@ describe("runDoctor plugin bundle", () => {
     expect(result?.status).toBe("pass");
   });
 
+  it("fails when the registered plugin directory has no readable manifest", async () => {
+    const deps = depsWith(bundleManifest, true);
+    const readFileSync = deps.readFileSync;
+    deps.readFileSync = (path: string) => {
+      if (path.endsWith(".claude-plugin/plugin.json")) throw new Error("ENOENT");
+      return readFileSync(path);
+    };
+    const result = (await runDoctor(deps)).find((r) => r.name === "plugin-bundle");
+    expect(result?.status).toBe("fail");
+    expect(result?.message).toContain("unreadable");
+  });
+
   it("does not hold a launcher-era plugin to the bundle", async () => {
     const results = await runDoctor(depsWith(launcherManifest, false));
     expect(results.find((r) => r.name === "plugin-bundle")).toBeUndefined();

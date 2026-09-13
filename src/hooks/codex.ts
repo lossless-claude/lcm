@@ -5,6 +5,7 @@ import { resolveLcmConfig } from "../db/config.js";
 import { loadDaemonConfig } from "../daemon/config.js";
 import { ensureDaemon } from "../daemon/lifecycle.js";
 import { PKG_VERSION } from "../daemon/version.js";
+import { daemonNotice, warnOncePerSession } from "./fail-open.js";
 import { buildMemoryContext } from "./memory-context.js";
 import { lcmHome } from "../lcm-home.js";
 
@@ -26,7 +27,7 @@ type CodexInput = {
 
 export interface CodexHookDeps {
   client: Pick<DaemonClient, "post">;
-  connect: () => Promise<boolean>;
+  connect: (sessionId?: string) => Promise<boolean>;
   /** `LCM_ENABLED=false` in the defaults; the hook exits at once when false. */
   enabled: boolean;
 }
@@ -54,10 +55,16 @@ function defaultDeps(): CodexHookDeps {
   return {
     enabled: resolveLcmConfig().enabled,
     client: new DaemonClient(`http://127.0.0.1:${port}`),
-    // Codex must not run the Claude bootstrap that rewrites Claude settings.
-    connect: async () => (await ensureDaemon({
-      port, pidFilePath: join(base, "daemon.pid"), spawnTimeoutMs: 5000, expectedVersion: PKG_VERSION,
-    })).connected,
+    // Codex must not run the Claude bootstrap that rewrites Claude settings, so the
+    // fail-open notice is written here, once per session, instead of by ensureBootstrapped.
+    connect: async (sessionId) => {
+      const result = await ensureDaemon({
+        port, pidFilePath: join(base, "daemon.pid"), spawnTimeoutMs: 5000, expectedVersion: PKG_VERSION,
+      });
+      const notice = daemonNotice(result, PKG_VERSION);
+      if (notice && sessionId) warnOncePerSession(sessionId, "daemon", notice.line);
+      return result.connected && notice?.usable !== false;
+    },
   };
 }
 
@@ -147,7 +154,7 @@ export async function dispatchCodexHook(
     const shortDeadline = input.hook_event_name === "Interrupt" || input.hook_event_name === "SessionEnd";
     // Codex caps Interrupt and SessionEnd hooks at three seconds. Do not start
     // or probe the daemon; send one short write to an already running daemon.
-    if (!shortDeadline && !await connect()) {
+    if (!shortDeadline && !await connect(input.session_id)) {
       console.error("[lcm] Codex memory daemon is unavailable; capture and recall deferred.");
       return EMPTY;
     }

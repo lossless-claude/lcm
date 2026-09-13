@@ -24,7 +24,8 @@ version=$(node -p "require('./package.json').version" 2>/dev/null) || exit 0
 target="$HOME/.claude/plugins/cache/lossless-claude/lcm/$version"
 [ -d "$target" ] || exit 0
 
-if [ -d bundle ]; then
+# Only build:bundle sets LCM_SYNC_BUNDLE: a plain build must not mirror a bundle/ it did not produce.
+if [ -d bundle ] && [ "${LCM_SYNC_BUNDLE:-}" = 1 ]; then
   rsync -a --delete bundle/ "$target/bundle/" || { echo "sync-plugin-cache: rsync failed (ignored)" >&2; exit 0; }
   echo "synced bundle/ -> $target/bundle"
 fi

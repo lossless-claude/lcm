@@ -39,7 +39,7 @@
   "scripts": {
     "build": "tsc",
     "postbuild": "mkdir -p dist/src/prompts && cp -r src/prompts/*.yaml dist/src/prompts/ && mkdir -p dist/src/connectors/templates && cp -r src/connectors/templates/. dist/src/connectors/templates/ && cp installer/setup.sh dist/installer/setup.sh && node scripts/write-build-id.mjs && sh scripts/sync-plugin-cache.sh",
-    "build:bundle": "node scripts/build-bundle.mjs && sh scripts/sync-plugin-cache.sh",
+    "build:bundle": "node scripts/build-bundle.mjs && LCM_SYNC_BUNDLE=1 sh scripts/sync-plugin-cache.sh",
     "prepublishOnly": "npm run build",
     "changeset": "changeset",
     "release:verify": "npm test && npm pack --dry-run",

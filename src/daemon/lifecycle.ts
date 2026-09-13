@@ -50,9 +50,17 @@ export type HealthResponse = {
  */
 export type DaemonOwnership = "current" | "restart" | "older-caller" | "incompatible";
 
+/** Releases only: a prerelease or build suffix does not parse, so it falls back to string equality. */
 function parseSemver(v: string): [number, number, number] | undefined {
-  const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(v);
+  const m = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(v);
   return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : undefined;
+}
+
+/** True when `a` is a release version strictly older than `b`; false when either does not parse. */
+export function isOlderVersion(a: string, b: string): boolean {
+  const pa = parseSemver(a);
+  const pb = parseSemver(b);
+  return Boolean(pa && pb) && compareSemver(pa!, pb!) < 0;
 }
 
 function compareSemver(a: [number, number, number], b: [number, number, number]): number {
@@ -198,10 +206,14 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
         const retry = await checkDaemonHealth(opts.port, fetchFn);
         if (retry?.status === "ok") {
           // Same verdict as the first probe: a daemon that was still publishing its PID
-          // must not slip past the ownership check.
+          // must not slip past the ownership check. An older one is replaced below.
           const ownership = daemonOwnership(retry, { version: opts.expectedVersion, build: opts.expectedBuild });
-          const connected = ownership !== "incompatible" && ownership !== "restart";
-          return { connected, port: opts.port, spawned: false, ownership, daemonVersion: retry.version };
+          if (ownership !== "restart") {
+            return { connected: ownership !== "incompatible", port: opts.port, spawned: false, ownership, daemonVersion: retry.version };
+          }
+          if (pid !== process.pid) {
+            try { process.kill(pid, "SIGTERM"); await sleep(500); } catch { /* fall through to spawn */ }
+          }
         }
       }
     } catch { /* ignore */ }

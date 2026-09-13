@@ -21,7 +21,7 @@ declare const __BUILD_ID__: string | undefined;
  * restarting the daemon based on a stale "0.0.0" fallback.
  */
 export const PKG_VERSION: string | undefined = (() => {
-  if (typeof __PKG_VERSION__ === "string" && __PKG_VERSION__) return __PKG_VERSION__;
+  if (typeof __PKG_VERSION__ === "string" && /^\d+\.\d+\.\d+/.test(__PKG_VERSION__)) return __PKG_VERSION__;
   const candidates = [
     // Production / installed: dist/src/daemon → 3 levels up = package root
     join(__dirname, "..", "..", "..", "package.json"),

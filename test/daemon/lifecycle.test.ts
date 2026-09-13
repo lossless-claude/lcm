@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { daemonOwnership, ensureDaemon, isStaleDaemon, stopDaemon } from "../../src/daemon/lifecycle.js";
+import { daemonOwnership, ensureDaemon, isOlderVersion, isStaleDaemon, stopDaemon } from "../../src/daemon/lifecycle.js";
 
 const tempDirs: string[] = [];
 
@@ -172,6 +172,11 @@ describe("ensureDaemon", () => {
     expect(own("1.0.0", "2.0.0")).toBe("restart");
     // A newer daemon is never restarted over a build mismatch.
     expect(daemonOwnership({ status: "ok", version: "0.13.1", build: "b0" }, { version: "0.13.0", build: "b1" })).toBe("older-caller");
+    // A prerelease is not a release: it falls back to string equality, so the release replaces it.
+    expect(own("0.13.0-rc.1", "0.13.0")).toBe("restart");
+    expect(isOlderVersion("0.12.0", "0.13.0")).toBe(true);
+    expect(isOlderVersion("0.13.1", "0.13.0")).toBe(false);
+    expect(isOlderVersion("latest", "0.13.0")).toBe(false);
   });
 
   it("ensureDaemon refuses an incompatible newer daemon without touching it", async () => {

@@ -1,8 +1,30 @@
-import { basename, dirname } from "node:path";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { lcmPath } from "../lcm-home.js";
 
-/** True when this process runs from the plugin bundle (`bundle/lcm.js`) rather than the npm CLI. */
+/**
+ * Writes `line` to stderr the first time it is called for `sessionId`; later calls in
+ * the same session are silent. The mark lives in lcm's tmp dir, like the bootstrap flag.
+ */
+export function warnOncePerSession(sessionId: string, key: string, line: string): void {
+  const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const flag = lcmPath("tmp", `notice-${key}-${safeId}.flag`);
+  try {
+    if (existsSync(flag)) return;
+    mkdirSync(dirname(flag), { recursive: true });
+    writeFileSync(flag, "");
+  } catch { /* a mark that cannot be written just means the line may repeat */ }
+  process.stderr.write(line + "\n");
+}
+
+/** True when this process runs from the plugin bundle (`bundle/lcm.js` or `bundle/mcp-server.js`) rather than the npm CLI. */
 export function runningFromPluginBundle(entry: string | undefined = process.argv[1]): boolean {
-  return Boolean(entry) && basename(entry!) === "lcm.js" && basename(dirname(entry!)) === "bundle";
+  return Boolean(entry) && basename(dirname(entry!)) === "bundle";
+}
+
+/** The bundle's CLI next to whichever bundle entry is running; the npm CLI otherwise. */
+function cliInvocation(entry: string | undefined): string {
+  return runningFromPluginBundle(entry) ? `node "${join(dirname(entry!), "lcm.js")}"` : "lcm";
 }
 
 /** The command that brings this distribution of lcm up to date. */
@@ -32,10 +54,9 @@ export function daemonNotice(
   }
   if (!result.connected) {
     // A marketplace install has no `lcm` on PATH; name the bundle it does have.
-    const start = runningFromPluginBundle(entry) ? `node "${entry}" daemon start` : "lcm daemon start";
     return {
       usable: true,
-      line: `lcm: daemon did not start on port ${result.port}; memory is off until it does. Repair: ${start}`,
+      line: `lcm: daemon did not start on port ${result.port}; memory is off until it does. Repair: ${cliInvocation(entry)} daemon start`,
     };
   }
   if (result.ownership === "older-caller") {

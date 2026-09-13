@@ -24,6 +24,8 @@ function makeDeps(overrides: Partial<ServiceDeps> = {}): ServiceDeps {
     writeFileSync: vi.fn(),
     mkdirSync: vi.fn(),
     existsSync: vi.fn().mockReturnValue(false),
+    copyFileSync: vi.fn(),
+    rmSync: vi.fn(),
     promptUser: vi.fn().mockResolvedValue("1"), // default: option 1
     ensureDaemon: vi.fn().mockResolvedValue({ connected: true }),
     runDoctor: vi.fn().mockResolvedValue([]),

@@ -91,6 +91,7 @@ const INTERNAL_ENV = new Set([
   "LCM_REAL_BENCH_FILE", // test/bench/real-corpus.test.ts: fixed bench file for the real-corpus test
   "LCM_REAL_BENCH_PROJECT", // test/bench/real-corpus.test.ts: fixed project for the real-corpus test
   "LCM_SKIP_CACHE_SYNC", // scripts/sync-plugin-cache.sh + ci.yml: skip the plugin cache sync step
+  "LCM_SYNC_BUNDLE", // scripts/sync-plugin-cache.sh: set by build:bundle so only a freshly built bundle/ is mirrored
 ]);
 
 function walk(dir, out = []) {
