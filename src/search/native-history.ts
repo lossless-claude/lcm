@@ -41,8 +41,10 @@ function anchorSpan(content: string, hint: string): { start: number; length: num
   return { start: 0, length: 0 };
 }
 
-function matchedAnchor(db: DatabaseSync, hit: HistoryHit, query: string, content: string) {
-  const prepared = prepareFts5Query(query);
+function matchedAnchor(db: DatabaseSync, hit: HistoryHit, query: string, content: string, terms?: readonly string[]) {
+  // The same term set that ranked the hit: highlighting a narrower one would point at a
+  // span the ranking never matched on.
+  const prepared = prepareFts5Query(query, terms);
   if (!prepared) return anchorSpan(content, hit.snippet);
   const marker = randomUUID();
   const open = `<${marker}>`;
@@ -326,7 +328,7 @@ export async function searchNativeHistory(
       if (source) {
         matches.push({
           ...hit,
-          ...sourceContext(source.content, matchedAnchor(db, hit, input.query, source.content)),
+          ...sourceContext(source.content, matchedAnchor(db, hit, input.query, source.content, input.terms)),
           project: input.project,
         });
       }
