@@ -5,11 +5,8 @@ import { tmpdir } from "node:os";
 import { EventsDb } from "../../../src/hooks/events-db.js";
 import { createToolEventHandler } from "../../../src/daemon/routes/tool-event.js";
 import type { DaemonConfig } from "../../../src/daemon/config.js";
-
-vi.mock("../../../src/db/events-path.js", () => ({
-  eventsDbPath: () => join(process.env.TEST_EVENTS_DIR!, "events.db"),
-  eventsDir: () => process.env.TEST_EVENTS_DIR!,
-}));
+import { createLcmPaths, type LcmPaths } from "../../../src/lcm-paths.js";
+import { eventsDbPath } from "../../../src/db/events-path.js";
 
 const promoteEvents = vi.fn().mockResolvedValue(undefined);
 vi.mock("../../../src/daemon/routes/promote-events.js", () => ({
@@ -27,17 +24,20 @@ function respond() {
 
 describe("POST /tool-event", () => {
   let dir: string;
-  const handler = createToolEventHandler({} as DaemonConfig);
+  let paths: LcmPaths;
+  let handler: ReturnType<typeof createToolEventHandler>;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "tool-event-"));
-    process.env.TEST_EVENTS_DIR = dir;
+    // The functions read only `paths.eventsDir`; pointing it straight at the temp
+    // dir avoids also creating the sibling `events/` directory a real home would have.
+    paths = { ...createLcmPaths(dir), eventsDir: dir };
+    handler = createToolEventHandler({} as DaemonConfig, paths);
     promoteEvents.mockClear();
   });
 
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
-    delete process.env.TEST_EVENTS_DIR;
   });
 
   it("rejects a body without session_id, tool_name or cwd", async () => {
@@ -72,7 +72,7 @@ describe("POST /tool-event", () => {
     expect(out.status).toBe(200);
     expect(out.body).toEqual({ recorded: 1, promoted: false });
 
-    const db = new EventsDb(join(dir, "events.db"));
+    const db = new EventsDb(eventsDbPath(dir, paths));
     const rows = db.getUnprocessed();
     db.close();
     expect(rows).toHaveLength(1);
@@ -88,7 +88,7 @@ describe("POST /tool-event", () => {
     }));
     expect(out.body).toEqual({ recorded: 1, promoted: true });
 
-    const db = new EventsDb(join(dir, "events.db"));
+    const db = new EventsDb(eventsDbPath(dir, paths));
     const [row] = db.getUnprocessed();
     db.close();
     expect(row).toMatchObject({ type: "error_tool", priority: 1, source_hook: "PostToolUseFailure" });

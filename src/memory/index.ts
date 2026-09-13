@@ -1,4 +1,6 @@
 import { DaemonClient } from "../daemon/client.js";
+import { lcmHome } from "../lcm-home.js";
+import { createLcmPaths } from "../lcm-paths.js";
 
 export type SearchResult = { episodic: any[]; semantic: any[] };
 
@@ -26,6 +28,8 @@ export function createMemoryApi(client: DaemonClient): MemoryApi {
   };
 }
 
-// Convenience singleton with default daemon address
-const defaultClient = new DaemonClient("http://127.0.0.1:3737");
+// Convenience singleton with default daemon address. This module is the package's public
+// entry point, so it is a composition root in its own right: it resolves the storage root
+// once here, the same way the CLI and the daemon do, rather than importing a default.
+const defaultClient = new DaemonClient("http://127.0.0.1:3737", createLcmPaths(lcmHome()).tokenPath);
 export const memory: MemoryApi = createMemoryApi(defaultClient);

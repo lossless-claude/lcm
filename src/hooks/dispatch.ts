@@ -1,5 +1,6 @@
 import { validateAndFixHooks } from "./auto-heal.js";
-import { lcmPath } from "../lcm-home.js";
+import { lcmHome } from "../lcm-home.js";
+import { createLcmPaths } from "../lcm-paths.js";
 import { resolveLcmConfig } from "../db/config.js";
 
 export const HOOK_COMMANDS = ["compact", "post-tool", "restore", "session-end", "session-snapshot", "user-prompt"] as const;
@@ -16,10 +17,13 @@ export async function dispatchHook(
   // `LCM_ENABLED=false` keeps the plugin registered but makes every hook a no-op.
   if (!resolveLcmConfig().enabled) return { exitCode: 0, stdout: "" };
 
+  // The storage root, resolved once here and threaded to every handler below.
+  const paths = createLcmPaths(lcmHome());
+
   // Early return for post-tool — runs on EVERY tool call, must skip bootstrap for performance
   if (command === "post-tool") {
     const { handlePostToolUse } = await import("./post-tool.js");
-    return handlePostToolUse(stdinText);
+    return handlePostToolUse(stdinText, paths);
   }
 
   // Skip bootstrap for compact — the daemon is already running by the time
@@ -42,31 +46,30 @@ export async function dispatchHook(
 
   const { DaemonClient } = await import("../daemon/client.js");
   const { loadDaemonConfig } = await import("../daemon/config.js");
-  const { join } = await import("node:path");
-  const config = loadDaemonConfig(lcmPath("config.json"));
+  const config = loadDaemonConfig(paths.configPath);
   const port = config.daemon?.port ?? 3737;
-  const client = new DaemonClient(`http://127.0.0.1:${port}`);
+  const client = new DaemonClient(`http://127.0.0.1:${port}`, paths.tokenPath);
 
   switch (command) {
     case "compact": {
       const { handlePreCompact } = await import("./compact.js");
-      return handlePreCompact(stdinText, client, port);
+      return handlePreCompact(stdinText, client, paths, port);
     }
     case "restore": {
       const { handleSessionStart } = await import("./restore.js");
-      return handleSessionStart(stdinText, client, port);
+      return handleSessionStart(stdinText, client, paths, port);
     }
     case "session-end": {
       const { handleSessionEnd } = await import("./session-end.js");
-      return handleSessionEnd(stdinText, client, port);
+      return handleSessionEnd(stdinText, client, paths, port);
     }
     case "session-snapshot": {
       const { handleSessionSnapshot } = await import("./session-snapshot.js");
-      return handleSessionSnapshot(stdinText);
+      return handleSessionSnapshot(stdinText, paths);
     }
     case "user-prompt": {
       const { handleUserPromptSubmit } = await import("./user-prompt.js");
-      return handleUserPromptSubmit(stdinText, client, port);
+      return handleUserPromptSubmit(stdinText, client, paths, port);
     }
     default:
       throw new Error(`Unknown hook command: ${command}`);

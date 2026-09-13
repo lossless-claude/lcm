@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { BASE_DIR } from "../daemon/project.js";
+import { lcmHome } from "../lcm-home.js";
+import { createLcmPaths } from "../lcm-paths.js";
 import { renderTemplate } from "../prompts/loader.js";
 import type { LcmSummarizeFn } from "../llm/types.js";
 
@@ -30,7 +31,7 @@ const MIN_PACK_HITS = 2;
 
 /** Where packs live. The env override exists so tests never read a developer's real packs. */
 export function languagePacksDir(): string {
-  return process.env.LCM_LANGUAGES_DIR || join(BASE_DIR, "languages");
+  return process.env.LCM_LANGUAGES_DIR || join(createLcmPaths(lcmHome()).home, "languages");
 }
 
 export function languagePackPath(tag: string): string {

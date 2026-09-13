@@ -108,21 +108,21 @@ describe("dispatchHook", () => {
       vi.mocked(handler).mockClear();
       await dispatchHook(cmd, '{"test":true}');
       expect(handler).toHaveBeenCalledTimes(1);
-      expect(handler).toHaveBeenCalledWith('{"test":true}', expect.anything(), expect.any(Number));
+      expect(handler).toHaveBeenCalledWith('{"test":true}', expect.anything(), expect.anything(), expect.any(Number));
     }
 
-    // session-snapshot takes only (stdinText, deps?) — no client/port
+    // session-snapshot takes (stdinText, paths, deps?) — no client/port
     vi.mocked(handleSessionSnapshot).mockClear();
     await dispatchHook("session-snapshot", '{"test":true}');
     expect(handleSessionSnapshot).toHaveBeenCalledTimes(1);
-    expect(handleSessionSnapshot).toHaveBeenCalledWith('{"test":true}');
+    expect(handleSessionSnapshot).toHaveBeenCalledWith('{"test":true}', expect.anything());
   });
 
   it("passes configured port to handlers", async () => {
     vi.mocked(loadDaemonConfig).mockReturnValue({ daemon: { port: 9999 } } as any);
     vi.mocked(handlePreCompact).mockClear();
     await dispatchHook("compact", "{}");
-    expect(handlePreCompact).toHaveBeenCalledWith("{}", expect.anything(), 9999);
+    expect(handlePreCompact).toHaveBeenCalledWith("{}", expect.anything(), expect.anything(), 9999);
     // Reset to default
     vi.mocked(loadDaemonConfig).mockReturnValue({ daemon: { port: 3737 } } as any);
   });

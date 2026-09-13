@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
+import type { LcmPaths } from "../../lcm-paths.js";
 import { projectDbPath, projectDir, projectId, projectMetaPath, isSafeTranscriptPath, claudeTranscriptPath } from "../project.js";
 import { openProject } from "../project-group.js";
 import { sendJson } from "../server.js";
@@ -230,13 +231,13 @@ async function ingestAllSubagents(
  * when the session has no `subagents/` directory.
  */
 async function ingestSubagentTranscripts(
-  cwd: string, dbPath: string, pid: string, sessionId: string, scrubber: ScrubEngine,
+  cwd: string, dbPath: string, pid: string, sessionId: string, scrubber: ScrubEngine, paths: LcmPaths,
 ): Promise<void> {
   const subagents = discoverSubagentSessions(cwd, sessionId);
   if (subagents.length === 0) return;
 
   await enqueue(pid, async () => {
-    openProject(cwd);
+    openProject(cwd, paths);
     const db = getLcmConnection(dbPath);
     try {
       await ingestAllSubagents(db, pid, scrubber, subagents);
@@ -295,11 +296,11 @@ function resolveClaudeTranscriptPathForBackfill(input: IngestInput, cwd: string)
  * rows still waiting. Never blocks or fails the ingest response — a session
  * with nothing to fill costs one indexed lookup.
  */
-function backfillClaudeToolModels(cwd: string, sessionId: string, transcriptPath: string | undefined): void {
+function backfillClaudeToolModels(cwd: string, sessionId: string, transcriptPath: string | undefined, paths: LcmPaths): void {
   if (!transcriptPath) return;
   // An import-only project has no sidecar: opening one here would create and migrate
   // an empty database on every ingest, for rows that cannot exist.
-  const sidecarPath = eventsDbPath(cwd);
+  const sidecarPath = eventsDbPath(cwd, paths);
   if (!existsSync(sidecarPath)) return;
   const db = new EventsDb(sidecarPath);
   try {
@@ -310,7 +311,7 @@ function backfillClaudeToolModels(cwd: string, sessionId: string, transcriptPath
   }
 }
 
-export function createIngestHandler(config: DaemonConfig): RouteHandler {
+export function createIngestHandler(config: DaemonConfig, paths: LcmPaths): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}") as IngestInput;
     const { session_id } = input;
@@ -328,7 +329,7 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
       return;
     }
 
-    const dbPath = projectDbPath(cwd);
+    const dbPath = projectDbPath(cwd, paths);
 
     let parsed: ParsedMessage[] = [];
     let codexPath: string | undefined;
@@ -351,10 +352,10 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
     try {
       const scrubber = await ScrubEngine.forProject(
         config.security?.sensitivePatterns ?? [],
-        projectDir(cwd),
+        projectDir(cwd, paths),
       );
       const result = await enqueue(pid, async () => {
-        openProject(cwd);
+        openProject(cwd, paths);
         const db = getLcmConnection(dbPath);
         try {
           runLcmMigrations(db);
@@ -420,7 +421,7 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
           if (records.length === 0) return { ingested: 0, totalTokens: 0 };
 
           try {
-            const metaPath = projectMetaPath(cwd);
+            const metaPath = projectMetaPath(cwd, paths);
             let meta: Record<string, unknown> = {};
             if (existsSync(metaPath)) {
               meta = JSON.parse(readFileSync(metaPath, "utf-8"));
@@ -432,7 +433,7 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
             // non-fatal: meta.json update failure shouldn't fail the ingest
           }
           // Samples the corpus on this connection now; the model call runs after the response.
-          void scheduleProjectLanguageDetection(cwd, db, config);
+          void scheduleProjectLanguageDetection(cwd, db, config, paths);
 
           const totalTokens = await summaryStore.getContextTokenCount(conversation.conversationId);
           const totalRedacted = totalCounts.gitleaks + totalCounts.builtIn + totalCounts.global + totalCounts.project;
@@ -456,7 +457,7 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
       // an error response for the session that was actually asked for.
       if (input.client !== "codex") {
         try {
-          await ingestSubagentTranscripts(cwd, dbPath, pid, session_id, scrubber);
+          await ingestSubagentTranscripts(cwd, dbPath, pid, session_id, scrubber, paths);
         } catch (err) {
           console.error(`ingest: subagent discovery failed for session ${session_id}: ${err instanceof Error ? err.message : err}`);
         }
@@ -466,7 +467,7 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
       if (input.client !== "codex") {
         setImmediate(() => {
           try {
-            backfillClaudeToolModels(cwd, session_id, resolveClaudeTranscriptPathForBackfill(input, cwd));
+            backfillClaudeToolModels(cwd, session_id, resolveClaudeTranscriptPathForBackfill(input, cwd), paths);
           } catch (err) {
             console.error(`ingest: model backfill failed for session ${session_id}: ${err instanceof Error ? err.message : err}`);
           }

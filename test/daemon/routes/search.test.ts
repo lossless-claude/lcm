@@ -8,6 +8,10 @@ import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { runLcmMigrations } from "../../../src/db/migration.js";
 import { PromotedStore } from "../../../src/db/promoted.js";
 import { projectDbPath, projectMetaPath } from "../../../src/daemon/project.js";
+import { lcmHome } from "../../../src/lcm-home.js";
+import { createLcmPaths } from "../../../src/lcm-paths.js";
+
+const paths = createLcmPaths(lcmHome());
 
 const tempDirs: string[] = [];
 
@@ -37,7 +41,7 @@ describe("POST /search", () => {
     tempDirs.push(tempDir);
 
     // Pre-populate promoted table
-    const dbPath = projectDbPath(tempDir);
+    const dbPath = projectDbPath(tempDir, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
     const db = new DatabaseSync(dbPath);
     runLcmMigrations(db);
@@ -93,7 +97,7 @@ describe("POST /search", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-search-nl-"));
     tempDirs.push(tempDir);
 
-    const dbPath = projectDbPath(tempDir);
+    const dbPath = projectDbPath(tempDir, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
     const db = new DatabaseSync(dbPath);
     runLcmMigrations(db);
@@ -144,14 +148,14 @@ describe("POST /search", () => {
     async function projectWith(memories: string[]): Promise<string> {
       const tempDir = mkdtempSync(join(tmpdir(), "lossless-search-pivot-"));
       tempDirs.push(tempDir);
-      const dbPath = projectDbPath(tempDir);
+      const dbPath = projectDbPath(tempDir, paths);
       mkdirSync(dirname(dbPath), { recursive: true });
       const db = new DatabaseSync(dbPath);
       runLcmMigrations(db);
       const store = new PromotedStore(db);
       for (const content of memories) store.insert({ content, tags: ["decision"], projectId: "p1" });
       db.close();
-      writeFileSync(projectMetaPath(tempDir), JSON.stringify({ language: "pt-BR" }));
+      writeFileSync(projectMetaPath(tempDir, paths), JSON.stringify({ language: "pt-BR" }));
       return tempDir;
     }
 

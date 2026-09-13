@@ -10,6 +10,10 @@ import { ConversationStore } from "../../../src/store/conversation-store.js";
 import { SummaryStore } from "../../../src/store/summary-store.js";
 import { createPromoteHandler } from "../../../src/daemon/routes/promote.js";
 import type { DaemonConfig } from "../../../src/daemon/config.js";
+import { lcmHome } from "../../../src/lcm-home.js";
+import { createLcmPaths } from "../../../src/lcm-paths.js";
+
+const paths = createLcmPaths(lcmHome());
 
 function makeConfig(): DaemonConfig {
   return {
@@ -44,7 +48,7 @@ function mockRes() {
 }
 
 function setupDb(tempDir: string) {
-  const dbPath = projectDbPath(tempDir);
+  const dbPath = projectDbPath(tempDir, paths);
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
   runLcmMigrations(db);
@@ -69,7 +73,7 @@ describe("createPromoteHandler", () => {
     db.close();
 
     const config = makeConfig();
-    const handler = createPromoteHandler(config);
+    const handler = createPromoteHandler(config, paths);
     const { res, getBody } = mockRes();
 
     await handler({} as any, res, JSON.stringify({ cwd: tempDir }));
@@ -104,7 +108,7 @@ describe("createPromoteHandler", () => {
     db.close();
 
     const config = makeConfig();
-    const handler = createPromoteHandler(config);
+    const handler = createPromoteHandler(config, paths);
     const { res, getBody } = mockRes();
 
     await handler({} as any, res, JSON.stringify({ cwd: tempDir }));
@@ -146,7 +150,7 @@ describe("createPromoteHandler", () => {
     config.compaction.promotionThresholds.keywords = {};
     config.compaction.promotionThresholds.architecturePatterns = [];
 
-    const handler = createPromoteHandler(config);
+    const handler = createPromoteHandler(config, paths);
     const { res, getBody } = mockRes();
 
     await handler({} as any, res, JSON.stringify({ cwd: tempDir }));
@@ -181,7 +185,7 @@ describe("createPromoteHandler", () => {
     db.close();
 
     const config = makeConfig();
-    const handler = createPromoteHandler(config);
+    const handler = createPromoteHandler(config, paths);
     const { res, getBody } = mockRes();
 
     await handler({} as any, res, JSON.stringify({ cwd: tempDir, dry_run: true }));
@@ -191,7 +195,7 @@ describe("createPromoteHandler", () => {
     expect(body).toHaveProperty("processed");
     expect(body).toHaveProperty("promoted");
     // Verify promoted table is empty (nothing was written)
-    const db2 = new DatabaseSync(projectDbPath(tempDir));
+    const db2 = new DatabaseSync(projectDbPath(tempDir, paths));
     runLcmMigrations(db2);
     const rows = db2.prepare("SELECT COUNT(*) as count FROM promoted").get() as { count: number };
     db2.close();
@@ -200,7 +204,7 @@ describe("createPromoteHandler", () => {
 
   it("returns 400 when cwd is missing", async () => {
     const config = makeConfig();
-    const handler = createPromoteHandler(config);
+    const handler = createPromoteHandler(config, paths);
     const { res, getBody } = mockRes();
 
     await handler({} as any, res, JSON.stringify({}));

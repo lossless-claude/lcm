@@ -21,6 +21,10 @@ vi.mock("../../../src/daemon/routes/compact.js", () => ({
 }));
 
 const { createSessionStartCompactHandler } = await import("../../../src/daemon/routes/session-start-compact.js");
+const { createLcmPaths } = await import("../../../src/lcm-paths.js");
+const { lcmHome } = await import("../../../src/lcm-home.js");
+
+const paths = createLcmPaths(lcmHome());
 
 function conv(overrides: Partial<UncompactedConversation>): UncompactedConversation {
   return {
@@ -67,7 +71,7 @@ describe("POST /session-start-compact", () => {
   });
 
   it("answers 400, not 500, on a malformed JSON body", async () => {
-    const handler = createSessionStartCompactHandler(baseConfig(), 4242);
+    const handler = createSessionStartCompactHandler(baseConfig(), 4242, paths);
     const { res, out } = respond();
     await handler({} as never, res, "not json");
     expect(out.status).toBe(400);
@@ -75,7 +79,7 @@ describe("POST /session-start-compact", () => {
   });
 
   it("rejects an empty session_id, which would let the sweep queue the starting conversation", async () => {
-    const handler = createSessionStartCompactHandler(baseConfig(), 4242);
+    const handler = createSessionStartCompactHandler(baseConfig(), 4242, paths);
     const { res, out } = respond();
     await handler({} as never, res, JSON.stringify({ cwd: dir, session_id: "   " }));
     expect(out.status).toBe(400);
@@ -85,7 +89,7 @@ describe("POST /session-start-compact", () => {
   });
 
   it("rejects a missing or invalid cwd", async () => {
-    const handler = createSessionStartCompactHandler(baseConfig(), 4242);
+    const handler = createSessionStartCompactHandler(baseConfig(), 4242, paths);
     const { res, out } = respond();
     await handler({} as never, res, JSON.stringify({ session_id: "s1" }));
     expect(out.status).toBe(400);
@@ -96,7 +100,7 @@ describe("POST /session-start-compact", () => {
     findUncompacted.mockReturnValue([conv({ sessionId: "s2" })]);
     const config = baseConfig();
     config.hooks.disableAutoCompact = true;
-    const handler = createSessionStartCompactHandler(config, 4242);
+    const handler = createSessionStartCompactHandler(config, 4242, paths);
     const { res, out } = respond();
     await handler({} as never, res, JSON.stringify({ cwd: dir, session_id: "s1" }));
     expect(out.body).toEqual({ queued: 0 });
@@ -106,7 +110,7 @@ describe("POST /session-start-compact", () => {
 
   it("fires nothing and reports queued: 0 when the cap is 0", async () => {
     findUncompacted.mockReturnValue([conv({ sessionId: "s2" })]);
-    const handler = createSessionStartCompactHandler(baseConfig({ autoCompactSessionStartMax: 0 }), 4242);
+    const handler = createSessionStartCompactHandler(baseConfig({ autoCompactSessionStartMax: 0 }), 4242, paths);
     const { res, out } = respond();
     await handler({} as never, res, JSON.stringify({ cwd: dir, session_id: "s1" }));
     expect(out.body).toEqual({ queued: 0 });
@@ -119,19 +123,19 @@ describe("POST /session-start-compact", () => {
       conv({ sessionId: "starting-session", updatedAt: "2026-01-01T00:00:00Z" }),
       conv({ sessionId: "s-old", updatedAt: "2025-01-01T00:00:00Z" }),
     ]);
-    const handler = createSessionStartCompactHandler(baseConfig(), 4242);
+    const handler = createSessionStartCompactHandler(baseConfig(), 4242, paths);
     const { res, out } = respond();
     await handler({} as never, res, JSON.stringify({ cwd: dir, session_id: "starting-session" }));
     expect(out.body).toEqual({ queued: "scheduled" });
     await settled();
     expect(fireCompactRequest).toHaveBeenCalledTimes(1);
-    expect(fireCompactRequest).toHaveBeenCalledWith(4242, expect.objectContaining({ session_id: "s-old" }));
+    expect(fireCompactRequest).toHaveBeenCalledWith(4242, expect.objectContaining({ session_id: "s-old" }), paths);
   });
 
   it("skips a conversation already compacting", async () => {
     findUncompacted.mockReturnValue([conv({ sessionId: "in-flight" })]);
     compactingSessionsFor.mockReturnValue(["in-flight"]);
-    const handler = createSessionStartCompactHandler(baseConfig(), 4242);
+    const handler = createSessionStartCompactHandler(baseConfig(), 4242, paths);
     const { res, out } = respond();
     await handler({} as never, res, JSON.stringify({ cwd: dir, session_id: "starting" }));
     expect(out.body).toEqual({ queued: "scheduled" });
@@ -145,14 +149,14 @@ describe("POST /session-start-compact", () => {
       conv({ sessionId: "oldest", updatedAt: "2025-01-01T00:00:00Z" }),
       conv({ sessionId: "middle", updatedAt: "2025-06-01T00:00:00Z" }),
     ]);
-    const handler = createSessionStartCompactHandler(baseConfig({ autoCompactMinTokens: 10000, autoCompactSessionStartMax: 2 }), 4242);
+    const handler = createSessionStartCompactHandler(baseConfig({ autoCompactMinTokens: 10000, autoCompactSessionStartMax: 2 }), 4242, paths);
     const { res, out } = respond();
     await handler({} as never, res, JSON.stringify({ cwd: dir, session_id: "starting" }));
     expect(out.body).toEqual({ queued: "scheduled" });
     await settled();
     expect(fireCompactRequest).toHaveBeenCalledTimes(2);
-    expect(fireCompactRequest).toHaveBeenNthCalledWith(1, 4242, expect.objectContaining({ session_id: "oldest" }));
-    expect(fireCompactRequest).toHaveBeenNthCalledWith(2, 4242, expect.objectContaining({ session_id: "middle" }));
+    expect(fireCompactRequest).toHaveBeenNthCalledWith(1, 4242, expect.objectContaining({ session_id: "oldest" }), paths);
+    expect(fireCompactRequest).toHaveBeenNthCalledWith(2, 4242, expect.objectContaining({ session_id: "middle" }), paths);
   });
 
   afterAll(() => {

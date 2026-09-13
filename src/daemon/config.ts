@@ -1,6 +1,5 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { lcmPath } from "../lcm-home.js";
+import { dirname, join } from "node:path";
 
 export interface SecurityConfig {
   /** User-defined global regex patterns (plain strings, no /.../ delimiters). */
@@ -75,7 +74,10 @@ export type DaemonConfig = {
 
 const DEFAULTS: DaemonConfig = {
   version: 1,
-  daemon: { port: 3737, socketPath: lcmPath("daemon.sock"), logLevel: "info", logMaxSizeMB: 10, logRetentionDays: 7, idleTimeoutMs: 1800000 },
+  // Filled in by loadDaemonConfig from configPath's own directory — this field is otherwise
+  // unused (the daemon serves over the TCP port, not a socket), so it never needs the
+  // storage root directly.
+  daemon: { port: 3737, socketPath: "", logLevel: "info", logMaxSizeMB: 10, logRetentionDays: 7, idleTimeoutMs: 1800000 },
   compaction: {
     autoCompactMinTokens: 10000,
     autoCompactSessionStartMax: 2,
@@ -161,6 +163,7 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
   // Precedence: DEFAULTS < fileConfig < overrides.
   const withFile = deepMerge(structuredClone(DEFAULTS) as Record<string, unknown>, fileConfig);
   const merged = deepMerge(withFile, overrides ?? {}) as DaemonConfig;
+  if (!merged.daemon.socketPath) merged.daemon.socketPath = join(dirname(configPath), "daemon.sock");
   // Migrate legacy provider names from v0.3.0
   if ((merged.llm.provider as string) === "claude-cli") merged.llm.provider = "claude-process";
   // Migrate legacy mergeMaxEntries (renamed to dedupCandidateLimit)

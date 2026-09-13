@@ -12,6 +12,7 @@ vi.mock("../../src/db/events-path.js", () => ({
 
 import { recordPostToolEvents, type PostToolPayload } from "../../src/hooks/post-tool.js";
 import { EventsDb } from "../../src/hooks/events-db.js";
+import { createLcmPaths, type LcmPaths } from "../../src/lcm-paths.js";
 
 /**
  * The command hook and the function-hooks module both receive Claude Code's
@@ -20,13 +21,14 @@ import { EventsDb } from "../../src/hooks/events-db.js";
  */
 describe("tool call dedup on (session_id, tool_use_id)", () => {
   let dir: string;
+  let paths: LcmPaths;
 
   function call(overrides: Partial<PostToolPayload> = {}) {
     return recordPostToolEvents({
       session_id: "s1", cwd: dir, tool_name: "AskUserQuestion",
       tool_input: { question: "Use SQLite?" }, tool_response: "yes",
       tool_use_id: "toolu_abc", ...overrides,
-    });
+    }, paths);
   }
 
   function rows() {
@@ -41,6 +43,7 @@ describe("tool call dedup on (session_id, tool_use_id)", () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "tool-dedup-"));
     process.env.TEST_EVENTS_DIR = dir;
+    paths = createLcmPaths(dir);
   });
 
   afterEach(() => {

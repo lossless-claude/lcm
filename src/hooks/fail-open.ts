@@ -1,14 +1,14 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { lcmPath } from "../lcm-home.js";
+import type { LcmPaths } from "../lcm-paths.js";
 
 /**
  * Writes `line` to stderr the first time it is called for `sessionId`; later calls in
  * the same session are silent. The mark lives in lcm's tmp dir, like the bootstrap flag.
  */
-export function warnOncePerSession(sessionId: string, key: string, line: string): void {
+export function warnOncePerSession(sessionId: string, key: string, line: string, paths: LcmPaths): void {
   const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-  const flag = lcmPath("tmp", `notice-${key}-${safeId}.flag`);
+  const flag = join(paths.tmpDir, `notice-${key}-${safeId}.flag`);
   try {
     if (existsSync(flag)) return;
     mkdirSync(dirname(flag), { recursive: true });

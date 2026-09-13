@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import type { LcmPaths } from "../lcm-paths.js";
 import { projectMetaPath } from "../daemon/project.js";
 
 /**
@@ -18,8 +19,8 @@ function primarySubtag(tag: string): string {
 }
 
 /** The language recorded for this project, or undefined while none has been detected. */
-export function projectAuthorLanguage(cwd: string): string | undefined {
-  const path = projectMetaPath(cwd);
+export function projectAuthorLanguage(cwd: string, paths: LcmPaths): string | undefined {
+  const path = projectMetaPath(cwd, paths);
   if (!existsSync(path)) return undefined;
   try {
     const meta = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
@@ -29,8 +30,8 @@ export function projectAuthorLanguage(cwd: string): string | undefined {
   }
 }
 
-export function pivotLanguagesFor(cwd: string, pivotLanguage: string): PivotLanguages {
-  return { authorLanguage: projectAuthorLanguage(cwd), pivotLanguage };
+export function pivotLanguagesFor(cwd: string, pivotLanguage: string, paths: LcmPaths): PivotLanguages {
+  return { authorLanguage: projectAuthorLanguage(cwd, paths), pivotLanguage };
 }
 
 /** True when a translated query would search in a different language than the author writes. */

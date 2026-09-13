@@ -14,8 +14,3 @@ export function lcmHome(env: NodeJS.ProcessEnv = process.env): string {
   const override = env.LCM_HOME?.trim();
   return override || join(homedir(), ".lossless-claude");
 }
-
-/** A path inside the lcm home, e.g. `lcmPath("daemon.token")`. */
-export function lcmPath(...segments: string[]): string {
-  return join(lcmHome(), ...segments);
-}

@@ -7,6 +7,7 @@ import { openProject, projectGroup } from "../project-group.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import type { DaemonConfig } from "../config.js";
+import type { LcmPaths } from "../../lcm-paths.js";
 import { sanitizeError } from "../safe-error.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { PromotedStore } from "../../db/promoted.js";
@@ -47,9 +48,9 @@ async function getScrubEngine(config: DaemonConfig, projDir: string): Promise<Sc
  * checkout must count against that memory rather than creating an orphaned reference in the
  * voter's own project.
  */
-function resolveVoteTargetCwd(projectPath: string, memoryId: string): string | null {
-  for (const member of projectGroup(projectPath)) {
-    const dbPath = projectDbPath(member.cwd);
+function resolveVoteTargetCwd(projectPath: string, memoryId: string, paths: LcmPaths): string | null {
+  for (const member of projectGroup(projectPath, paths)) {
+    const dbPath = projectDbPath(member.cwd, paths);
     if (!existsSync(dbPath)) continue;
     // The shared pool: a group member can be the database the daemon already serves, and a
     // second handle to it would miss the pool's WAL, foreign-key and busy-timeout setup.
@@ -99,7 +100,7 @@ function reconcileSessionVote(
   return null;
 }
 
-export function createStoreHandler(config: DaemonConfig): RouteHandler {
+export function createStoreHandler(config: DaemonConfig, paths: LcmPaths): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
     const { text, tags = [], metadata = {} } = input;
@@ -134,8 +135,8 @@ export function createStoreHandler(config: DaemonConfig): RouteHandler {
       }
       // Register this checkout first: projectGroup only knows checkouts it has seen, so a
       // first vote from an unregistered one would not find a target held by a sibling.
-      openProject(projectPath);
-      const resolved = resolveVoteTargetCwd(projectPath, parsed.memoryId);
+      openProject(projectPath, paths);
+      const resolved = resolveVoteTargetCwd(projectPath, parsed.memoryId, paths);
       if (!resolved) {
         sendJson(res, 400, { error: `memory_id ${parsed.memoryId} was not found (or is archived) in this project or its group` });
         return;
@@ -146,10 +147,10 @@ export function createStoreHandler(config: DaemonConfig): RouteHandler {
 
     // From targetPath, not projectPath: a vote can land in a sibling checkout, and that
     // checkout's own sensitive-patterns.txt is what governs what may be written there.
-    const scrubber = await getScrubEngine(config, projectDir(targetPath));
+    const scrubber = await getScrubEngine(config, projectDir(targetPath, paths));
     const scrubbedText = scrubber.scrub(text);
 
-    const dbPath = projectDbPath(targetPath);
+    const dbPath = projectDbPath(targetPath, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
     // The shared pool, like the resolver above: targetPath can be a sibling the daemon
     // already serves, and a second handle to it would miss the pool's setup.

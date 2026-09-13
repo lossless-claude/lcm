@@ -2,6 +2,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "../config.js";
+import type { LcmPaths } from "../../lcm-paths.js";
 import { projectDbPath } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
@@ -11,7 +12,7 @@ import { SummaryStore } from "../../store/summary-store.js";
 import { RetrievalEngine } from "../../retrieval.js";
 import { validateCwd } from "../validate-cwd.js";
 
-export function createGrepHandler(_config: DaemonConfig): RouteHandler {
+export function createGrepHandler(_config: DaemonConfig, paths: LcmPaths): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
     const { query, scope, mode, since } = input;
@@ -35,7 +36,7 @@ export function createGrepHandler(_config: DaemonConfig): RouteHandler {
     }
 
     try {
-      const dbPath = projectDbPath(cwd);
+      const dbPath = projectDbPath(cwd, paths);
       if (!existsSync(dbPath)) {
         sendJson(res, 200, { matches: [] });
         return;

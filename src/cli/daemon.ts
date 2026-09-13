@@ -2,6 +2,7 @@ import { exit } from "node:process";
 import { join } from "node:path";
 import { Command, Option } from "commander";
 import { lcmHome } from "../lcm-home.js";
+import { createLcmPaths } from "../lcm-paths.js";
 import { fail, helpRequested, showHelpAndExit } from "./support.js";
 
 export function registerDaemonCommands(program: Command): void {
@@ -9,8 +10,8 @@ export function registerDaemonCommands(program: Command): void {
   const daemonCmd = new Command("daemon").description("Start the context daemon");
   daemonCmd.helpOption(false).option("-h, --help", "Show help");
   const daemonPaths = () => {
-    const lcDir = lcmHome();
-    return { lcDir, pidFilePath: join(lcDir, "daemon.pid"), tokenPath: join(lcDir, "daemon.token"), configPath: join(lcDir, "config.json") };
+    const paths = createLcmPaths(lcmHome());
+    return { lcDir: paths.home, pidFilePath: paths.pidPath, tokenPath: paths.tokenPath, configPath: paths.configPath };
   };
   const describeRunning = (port: number, h: { pid?: number; version?: string; uptime?: number }) =>
     `lcm daemon already running on port ${port}` +

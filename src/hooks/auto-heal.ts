@@ -2,7 +2,8 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync } fr
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { REQUIRED_HOOKS, mergeClaudeSettings } from "../../installer/install.js";
-import { lcmPath } from "../lcm-home.js";
+import { lcmHome } from "../lcm-home.js";
+import { createLcmPaths } from "../lcm-paths.js";
 
 export interface AutoHealDeps {
   readFileSync: (path: string, encoding: string) => string;
@@ -22,7 +23,7 @@ function defaultDeps(): AutoHealDeps {
     mkdirSync,
     appendFileSync,
     settingsPath: join(homedir(), ".claude", "settings.json"),
-    logPath: lcmPath("auto-heal.log"),
+    logPath: join(createLcmPaths(lcmHome()).home, "auto-heal.log"),
   };
 }
 

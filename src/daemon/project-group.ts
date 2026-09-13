@@ -1,7 +1,8 @@
 import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { BASE_DIR, ensureProjectDir, projectId, projectMetaPath } from "./project.js";
+import { ensureProjectDir, projectId, projectMetaPath } from "./project.js";
+import type { LcmPaths } from "../lcm-paths.js";
 import { discoverGitIdentity, type GitIdentity } from "./git-identity.js";
 
 /**
@@ -19,7 +20,7 @@ import { discoverGitIdentity, type GitIdentity } from "./git-identity.js";
 /** Remotes recorded so far are re-checked no more often than this. */
 const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
-export const groupIndexPath = (): string => join(BASE_DIR, "group-index.sqlite");
+export const groupIndexPath = (paths: LcmPaths): string => join(paths.home, "group-index.sqlite");
 
 interface ProjectGitMeta {
   remotes: string[];
@@ -45,14 +46,14 @@ export const projectRef = (cwd: string) => ({ id: projectId(cwd), cwd });
  * and `message_id` are `AUTOINCREMENT` per database, so an id resolved against
  * the wrong project silently returns a different message.
  */
-export function resolveSourceCwd(requestCwd: string, id: unknown): string | null {
+export function resolveSourceCwd(requestCwd: string, id: unknown, paths: LcmPaths): string | null {
   if (typeof id !== "string" || id === "" || id === projectId(requestCwd)) return requestCwd;
-  return projectGroup(requestCwd).find(member => member.projectId === id)?.cwd ?? null;
+  return projectGroup(requestCwd, paths).find(member => member.projectId === id)?.cwd ?? null;
 }
 
-function openIndex(): DatabaseSync {
-  mkdirSync(BASE_DIR, { recursive: true });
-  const db = new DatabaseSync(groupIndexPath());
+function openIndex(paths: LcmPaths): DatabaseSync {
+  mkdirSync(paths.home, { recursive: true });
+  const db = new DatabaseSync(groupIndexPath(paths));
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA busy_timeout = 5000");
   db.exec(`
@@ -72,8 +73,8 @@ function openIndex(): DatabaseSync {
   return db;
 }
 
-function readGitMeta(cwd: string): ProjectGitMeta | null {
-  const path = projectMetaPath(cwd);
+function readGitMeta(cwd: string, paths: LcmPaths): ProjectGitMeta | null {
+  const path = projectMetaPath(cwd, paths);
   if (!existsSync(path)) return null;
   try {
     const git = JSON.parse(readFileSync(path, "utf-8")).git;
@@ -88,8 +89,8 @@ function readGitMeta(cwd: string): ProjectGitMeta | null {
   }
 }
 
-function writeGitMeta(cwd: string, git: ProjectGitMeta): void {
-  const path = projectMetaPath(cwd);
+function writeGitMeta(cwd: string, git: ProjectGitMeta, paths: LcmPaths): void {
+  const path = projectMetaPath(cwd, paths);
   let meta: Record<string, unknown> = { cwd };
   if (existsSync(path)) {
     try { meta = JSON.parse(readFileSync(path, "utf-8")); } catch { /* keep default */ }
@@ -117,11 +118,11 @@ function mergeIdentity(previous: ProjectGitMeta | null, found: GitIdentity | nul
   };
 }
 
-function indexIdentity(cwd: string, git: ProjectGitMeta): void {
+function indexIdentity(cwd: string, git: ProjectGitMeta, paths: LcmPaths): void {
   // A project with no remote can group with nothing; keep it out of the index.
   if (git.remotes.length === 0) return;
   const id = projectId(cwd);
-  const db = openIndex();
+  const db = openIndex(paths);
   try {
     db.prepare(
       `INSERT INTO project_identity (project_id, cwd, rel_path, updated_at)
@@ -146,14 +147,14 @@ function indexIdentity(cwd: string, git: ProjectGitMeta): void {
  * Never throws: a project outside a repository, or a machine without git, keeps
  * working with an empty remote set and simply groups with nothing.
  */
-export function recordProjectIdentity(cwd: string): ProjectGitMeta {
-  const previous = readGitMeta(cwd);
+export function recordProjectIdentity(cwd: string, paths: LcmPaths): ProjectGitMeta {
+  const previous = readGitMeta(cwd, paths);
   if (previous && isFresh(previous.checkedAt)) {
     // The index is derived state and `meta.json` is the record. Re-assert the
     // row even when discovery is skipped, so an index that was deleted, moved
     // or never built fills back in instead of staying empty until every
     // project's day is up.
-    try { indexIdentity(cwd, previous); } catch { /* non-fatal, as below */ }
+    try { indexIdentity(cwd, previous, paths); } catch { /* non-fatal, as below */ }
     return previous;
   }
 
@@ -164,8 +165,8 @@ export function recordProjectIdentity(cwd: string): ProjectGitMeta {
     git = mergeIdentity(previous, null);
   }
   try {
-    writeGitMeta(cwd, git);
-    indexIdentity(cwd, git);
+    writeGitMeta(cwd, git, paths);
+    indexIdentity(cwd, git, paths);
   } catch {
     // Identity is an optimisation for recall; failing to record it must never
     // fail the ingest or compaction that happened to trigger it.
@@ -185,8 +186,8 @@ export function recordProjectIdentity(cwd: string): ProjectGitMeta {
  */
 const BACKFILL_YIELD_EVERY = 50;
 
-export async function backfillProjectIdentities(): Promise<number> {
-  const projectsDir = join(BASE_DIR, "projects");
+export async function backfillProjectIdentities(paths: LcmPaths): Promise<number> {
+  const projectsDir = paths.projectsDir;
   if (!existsSync(projectsDir)) return 0;
 
   let seen = 0;
@@ -201,7 +202,7 @@ export async function backfillProjectIdentities(): Promise<number> {
       // A project whose folder is gone cannot be asked for its remotes; leave
       // whatever was recorded before untouched.
       if (typeof cwd !== "string" || !existsSync(cwd)) continue;
-      recordProjectIdentity(cwd);
+      recordProjectIdentity(cwd, paths);
       visited += 1;
     } catch {
       // A corrupt meta.json skips that project, never the whole backfill.
@@ -215,9 +216,9 @@ export async function backfillProjectIdentities(): Promise<number> {
  * Every route that writes to a project goes through here, so the index tracks
  * whatever the daemon has actually seen.
  */
-export function openProject(cwd: string): string {
-  const dir = ensureProjectDir(cwd);
-  recordProjectIdentity(cwd);
+export function openProject(cwd: string, paths: LcmPaths): string {
+  const dir = ensureProjectDir(cwd, paths);
+  recordProjectIdentity(cwd, paths);
   return dir;
 }
 
@@ -229,14 +230,14 @@ export function openProject(cwd: string): string {
  * A member whose directory no longer exists is dropped here rather than deleted
  * from the index, so a temporarily unmounted checkout comes back on its own.
  */
-export function projectGroup(cwd: string): GroupMember[] {
+export function projectGroup(cwd: string, paths: LcmPaths): GroupMember[] {
   const self: GroupMember = { projectId: projectId(cwd), cwd };
-  const git = readGitMeta(cwd);
+  const git = readGitMeta(cwd, paths);
   if (!git || git.remotes.length === 0) return [self];
 
   let rows: GroupMember[] = [];
   try {
-    const db = openIndex();
+    const db = openIndex(paths);
     try {
       const placeholders = git.remotes.map(() => "?").join(", ");
       rows = db.prepare(

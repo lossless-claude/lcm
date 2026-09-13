@@ -8,6 +8,10 @@ import { createPromoteEventsHandler } from "../../../src/daemon/routes/promote-e
 import { projectDbPath } from "../../../src/daemon/project.js";
 import { runLcmMigrations } from "../../../src/db/migration.js";
 import type { DaemonConfig } from "../../../src/daemon/config.js";
+import { lcmHome } from "../../../src/lcm-home.js";
+import { createLcmPaths } from "../../../src/lcm-paths.js";
+
+const paths = createLcmPaths(lcmHome());
 
 // Mock eventsDbPath to point at our temp dir
 vi.mock("../../../src/db/events-path.js", () => ({
@@ -66,7 +70,7 @@ function mockRes() {
 }
 
 function setupProjectDb(cwd: string): DatabaseSync {
-  const dbPath = projectDbPath(cwd);
+  const dbPath = projectDbPath(cwd, paths);
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
   runLcmMigrations(db);
@@ -99,7 +103,7 @@ describe("promote-events route", () => {
     const db = setupProjectDb(dir);
     db.close();
 
-    const handler = createPromoteEventsHandler(makeConfig());
+    const handler = createPromoteEventsHandler(makeConfig(), paths);
     const { res, getBody } = mockRes();
     await handler({} as any, res, JSON.stringify({ cwd: dir }));
 
@@ -123,7 +127,7 @@ describe("promote-events route", () => {
     const db = setupProjectDb(dir);
     db.close();
 
-    const handler = createPromoteEventsHandler(makeConfig());
+    const handler = createPromoteEventsHandler(makeConfig(), paths);
     const { res, getBody } = mockRes();
     await handler({} as any, res, JSON.stringify({ cwd: dir }));
 
@@ -141,7 +145,7 @@ describe("promote-events route", () => {
     const db = setupProjectDb(dir);
     db.close();
 
-    const handler = createPromoteEventsHandler(makeConfig());
+    const handler = createPromoteEventsHandler(makeConfig(), paths);
     const { res } = mockRes();
     await handler({} as any, res, JSON.stringify({ cwd: dir }));
 
@@ -163,7 +167,7 @@ describe("promote-events route", () => {
     db.close();
 
     const reinforcementSpy = vi.spyOn(EventsDb.prototype, "getPatternReinforcement");
-    const handler = createPromoteEventsHandler(makeConfig());
+    const handler = createPromoteEventsHandler(makeConfig(), paths);
     const { res, getBody } = mockRes();
     await handler({} as any, res, JSON.stringify({ cwd: dir }));
 
@@ -189,7 +193,7 @@ describe("promote-events route", () => {
     const db = setupProjectDb(dir);
     db.close();
 
-    const handler = createPromoteEventsHandler(makeConfig());
+    const handler = createPromoteEventsHandler(makeConfig(), paths);
     const { res, getBody } = mockRes();
     await handler({} as any, res, JSON.stringify({ cwd: dir }));
 
@@ -209,7 +213,7 @@ describe("promote-events route", () => {
     const db = setupProjectDb(dir);
     db.close();
 
-    const handler = createPromoteEventsHandler(makeConfig());
+    const handler = createPromoteEventsHandler(makeConfig(), paths);
     const { res, getBody } = mockRes();
     await handler({} as any, res, JSON.stringify({ cwd: dir }));
 
@@ -220,7 +224,7 @@ describe("promote-events route", () => {
   });
 
   it("returns 400 when cwd is missing", async () => {
-    const handler = createPromoteEventsHandler(makeConfig());
+    const handler = createPromoteEventsHandler(makeConfig(), paths);
     const { res, getBody } = mockRes();
     await handler({} as any, res, JSON.stringify({}));
 

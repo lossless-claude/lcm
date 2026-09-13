@@ -1,7 +1,7 @@
 import { statSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { functionHooksOwnSession } from "./session-claim.js";
-import { lcmPath } from "../lcm-home.js";
+import type { LcmPaths } from "../lcm-paths.js";
 
 export interface SnapshotDeps {
   statSync: (path: string) => { mtimeMs: number } | null;
@@ -20,6 +20,7 @@ function defaultStatSync(path: string): { mtimeMs: number } | null {
 
 export async function handleSessionSnapshot(
   stdin: string,
+  paths: LcmPaths,
   deps?: Partial<SnapshotDeps>,
 ): Promise<{ exitCode: number; stdout: string }> {
   try {
@@ -34,15 +35,14 @@ export async function handleSessionSnapshot(
     if (functionHooksOwnSession(session_id)) return { exitCode: 0, stdout: "" };
 
     const safeSessionId = session_id.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const cursorDir = lcmPath("tmp");
+    const cursorDir = paths.tmpDir;
     mkdirSync(cursorDir, { recursive: true, mode: 0o700 });
     const cursorPath = join(cursorDir, `snap-${safeSessionId}.json`);
     const _statSync = deps?.statSync ?? defaultStatSync;
     let intervalSec = deps?.snapshotIntervalSec;
     if (intervalSec === undefined) {
       const { loadDaemonConfig } = await import("../daemon/config.js");
-      const { homedir } = await import("node:os");
-      const config = loadDaemonConfig(lcmPath("config.json"));
+      const config = loadDaemonConfig(paths.configPath);
       intervalSec = config.hooks?.snapshotIntervalSec ?? 60;
     }
 
@@ -64,15 +64,14 @@ export async function handleSessionSnapshot(
     } else {
       const { loadDaemonConfig } = await import("../daemon/config.js");
       const { readFileSync: _readFileSync } = await import("node:fs");
-      const config = loadDaemonConfig(lcmPath("config.json"));
+      const config = loadDaemonConfig(paths.configPath);
       const port = config.daemon?.port ?? 3737;
       const baseUrl = `http://127.0.0.1:${port}`;
 
       // Read token from token file if available (silent fallback if not found)
       let token: string | null = null;
       try {
-        const tokenPath = lcmPath("daemon.token");
-        const raw = _readFileSync(tokenPath, "utf-8").trim();
+        const raw = _readFileSync(paths.tokenPath, "utf-8").trim();
         token = raw || null;
       } catch {
         // Token file not found — auth not yet set up, proceed without it
@@ -99,10 +98,10 @@ export async function handleSessionSnapshot(
     // Best-effort promote-events flush
     try {
       const { loadDaemonConfig: _loadConfig } = await import("../daemon/config.js");
-      const _config = _loadConfig(lcmPath("config.json"));
+      const _config = _loadConfig(paths.configPath);
       const port = _config.daemon?.port ?? 3737;
       const { firePromoteEventsRequest } = await import("./session-end.js");
-      firePromoteEventsRequest(port, { cwd: input.cwd });
+      firePromoteEventsRequest(port, { cwd: input.cwd }, paths);
     } catch {
       // Best-effort only
     }

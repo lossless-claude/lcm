@@ -2,14 +2,13 @@
 import { EventsDb } from "./events-db.js";
 import { eventsDbPath } from "../db/events-path.js";
 import { appendFileSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
-import { join } from "node:path";
-import { lcmPath } from "../lcm-home.js";
+import { dirname, join } from "node:path";
+import type { LcmPaths } from "../lcm-paths.js";
 import { withHookWrite } from "./write-admission.js";
 
 /** Returns the log path — overridable via LCM_LOG_PATH env var for test isolation. */
-export function getLogPath(): string {
-  return process.env.LCM_LOG_PATH ?? lcmPath("logs", "events.log");
+export function getLogPath(paths: LcmPaths): string {
+  return process.env.LCM_LOG_PATH ?? join(paths.logsDir, "events.log");
 }
 
 let dbCircuitOpen = false;
@@ -22,24 +21,28 @@ export function _resetCircuitBreaker(): void {
 /**
  * Three-layer error fence for hook processes.
  * Layer 1: Sidecar DB error_log table (queryable by doctor/stats)
- * Layer 2: Flat file ~/.lossless-claude/logs/events.log
+ * Layer 2: Flat file <lcm home>/logs/events.log
  * Layer 3: Swallow silently — hooks must never crash
  */
 export function safeLogError(
   hook: string,
   error: unknown,
-  opts: { cwd?: string; sessionId?: string },
+  opts: { cwd?: string; sessionId?: string; paths: LcmPaths },
 ): void {
   try {
-    withHookWrite(() => writeHookError(hook, error, opts), undefined);
+    withHookWrite(opts.paths, () => writeHookError(hook, error, opts), undefined);
   } catch { /* admission failure must not crash the hook or write outside the fence */ }
 }
 
-function writeHookError(hook: string, error: unknown, opts: { cwd?: string; sessionId?: string }): void {
+function writeHookError(
+  hook: string,
+  error: unknown,
+  opts: { cwd?: string; sessionId?: string; paths: LcmPaths },
+): void {
   // Layer 1: Sidecar DB (skip if cwd missing or circuit open)
   if (opts.cwd && !dbCircuitOpen) {
     try {
-      const db = new EventsDb(eventsDbPath(opts.cwd));
+      const db = new EventsDb(eventsDbPath(opts.cwd, opts.paths));
       try {
         db.logHookError(hook, error, opts.sessionId);
       } finally {
@@ -53,7 +56,7 @@ function writeHookError(hook: string, error: unknown, opts: { cwd?: string; sess
 
   // Layer 2: Flat file (include cwd for diagnosing DB-skip cases)
   try {
-    const logPath = getLogPath();
+    const logPath = getLogPath(opts.paths);
     mkdirSync(dirname(logPath), { recursive: true });
     appendFileSync(logPath, JSON.stringify({
       ts: new Date().toISOString(),

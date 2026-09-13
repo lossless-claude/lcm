@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "../config.js";
+import type { LcmPaths } from "../../lcm-paths.js";
 import { projectDbPath, projectMetaPath } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
@@ -9,7 +10,7 @@ import { validateCwd } from "../validate-cwd.js";
 import { sanitizeError } from "../safe-error.js";
 import { compactingSessionsFor } from "./compact.js";
 
-export function createStatusHandler(config: DaemonConfig, startTime: number, actualPort?: number): RouteHandler {
+export function createStatusHandler(config: DaemonConfig, paths: LcmPaths, startTime: number, actualPort?: number): RouteHandler {
   return async (_req, res, body) => {
     try {
       const input = JSON.parse(body || "{}");
@@ -38,7 +39,7 @@ export function createStatusHandler(config: DaemonConfig, startTime: number, act
       let summaryCount = 0;
       let promotedCount = 0;
 
-      const dbPath = projectDbPath(cwd);
+      const dbPath = projectDbPath(cwd, paths);
       if (existsSync(dbPath)) {
         const db = new DatabaseSync(dbPath);
         try {
@@ -70,7 +71,7 @@ export function createStatusHandler(config: DaemonConfig, startTime: number, act
       let lastCompact: string | null = null;
       let lastPromote: string | null = null;
 
-      const metaPath = projectMetaPath(cwd);
+      const metaPath = projectMetaPath(cwd, paths);
       if (existsSync(metaPath)) {
         try {
           const meta = JSON.parse(readFileSync(metaPath, "utf-8"));

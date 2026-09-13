@@ -42,6 +42,10 @@ import { PromotedStore } from "../../src/db/promoted.js";
 import { projectId, projectDbPath } from "../../src/daemon/project.js";
 import { loadDaemonConfig, type DaemonConfig } from "../../src/daemon/config.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { lcmHome } from "../../src/lcm-home.js";
+import { createLcmPaths } from "../../src/lcm-paths.js";
+
+const paths = createLcmPaths(lcmHome());
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -102,12 +106,12 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
       tool_response: "TypeScript please",
     });
 
-    const result = await handlePostToolUse(stdin);
+    const result = await handlePostToolUse(stdin, paths);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("");
 
     // Open the sidecar DB and verify the event
-    const dbPath = eventsDbPath(projectDir);
+    const dbPath = eventsDbPath(projectDir, paths);
     const db = new EventsDb(dbPath);
     try {
       const events = db.getUnprocessed() as unknown as EventRow[];
@@ -137,7 +141,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
       tool_input: { question: "Which database should we use?" },
       tool_response: "SQLite because it is embedded",
     });
-    await handlePostToolUse(decisionStdin);
+    await handlePostToolUse(decisionStdin, paths);
 
     // Step 2: Capture a plan event
     const planStdin = makeStdin({
@@ -145,7 +149,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
       tool_name: "ExitPlanMode",
       tool_response: "Plan approved by user",
     });
-    await handlePostToolUse(planStdin);
+    await handlePostToolUse(planStdin, paths);
 
     // Step 3: Capture a Bash error event
     const errorStdin = makeStdin({
@@ -154,10 +158,10 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
       tool_input: { command: "npm run build" },
       tool_output: { isError: true },
     });
-    await handlePostToolUse(errorStdin);
+    await handlePostToolUse(errorStdin, paths);
 
     // Verify 3 unprocessed events in sidecar
-    const sidecarPath = eventsDbPath(projectDir);
+    const sidecarPath = eventsDbPath(projectDir, paths);
     const sidecarDb = new EventsDb(sidecarPath);
     try {
       const unprocessed = sidecarDb.getUnprocessed() as unknown as EventRow[];
@@ -167,7 +171,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
     }
 
     // Step 4: Set up the main project DB for promotion
-    const mainDbPath = projectDbPath(projectDir);
+    const mainDbPath = projectDbPath(projectDir, paths);
     const mainDb = getLcmConnection(mainDbPath);
     runLcmMigrations(mainDb);
     closeLcmConnection(mainDbPath);
@@ -180,7 +184,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
       ...process.env,
       LCM_SUMMARY_PROVIDER: undefined,
     });
-    const handler = createPromoteEventsHandler(config);
+    const handler = createPromoteEventsHandler(config, paths);
 
     const req = {} as IncomingMessage;
     const res = mockResponse();
@@ -220,7 +224,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
   });
 
   it("promotes repeated file patterns across sessions without a seeded memory", async () => {
-    const sidecarPath = eventsDbPath(projectDir);
+    const sidecarPath = eventsDbPath(projectDir, paths);
     const sidecarDb = new EventsDb(sidecarPath);
     try {
       sidecarDb.insertEvent("pattern-session-a", {
@@ -245,7 +249,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
       sidecarDb.close();
     }
 
-    const mainDbPath = projectDbPath(projectDir);
+    const mainDbPath = projectDbPath(projectDir, paths);
     const mainDb = getLcmConnection(mainDbPath);
     runLcmMigrations(mainDb);
     closeLcmConnection(mainDbPath);
@@ -257,7 +261,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
       ...process.env,
       LCM_SUMMARY_PROVIDER: undefined,
     });
-    const handler = createPromoteEventsHandler(config);
+    const handler = createPromoteEventsHandler(config, paths);
 
     const req = {} as IncomingMessage;
     const res = mockResponse();
@@ -290,7 +294,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
       tool_input: { foo: "bar" },
     });
 
-    const result = await handlePostToolUse(stdin);
+    const result = await handlePostToolUse(stdin, paths);
     expect(result.exitCode).toBe(0);
 
     // The sidecar DB should not even be created for unrecognized tools
@@ -304,7 +308,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
   // ── Test D: Silent failure — bad input returns exitCode 0 ────────────────
 
   it("returns exitCode 0 even with malformed JSON input", async () => {
-    const result = await handlePostToolUse("not valid json {{{");
+    const result = await handlePostToolUse("not valid json {{{", paths);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("");
   });
@@ -313,7 +317,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
     const result = await handlePostToolUse(JSON.stringify({
       session_id: "test-session",
       tool_input: {},
-    }));
+    }), paths);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("");
   });
@@ -322,7 +326,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
     const result = await handlePostToolUse(JSON.stringify({
       tool_name: "AskUserQuestion",
       tool_input: { question: "test" },
-    }));
+    }), paths);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("");
   });
@@ -331,12 +335,12 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
 
   it("promote-events with empty sidecar returns no-events message", async () => {
     // Set up sidecar DB (empty) — just create the DB so it exists
-    const sidecarPath = eventsDbPath(projectDir);
+    const sidecarPath = eventsDbPath(projectDir, paths);
     const sidecarDb = new EventsDb(sidecarPath);
     sidecarDb.close();
 
     // Set up main DB
-    const mainDbPath = projectDbPath(projectDir);
+    const mainDbPath = projectDbPath(projectDir, paths);
     const mainDb = getLcmConnection(mainDbPath);
     runLcmMigrations(mainDb);
     closeLcmConnection(mainDbPath);
@@ -349,7 +353,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
       ...process.env,
       LCM_SUMMARY_PROVIDER: undefined,
     });
-    const handler = createPromoteEventsHandler(config);
+    const handler = createPromoteEventsHandler(config, paths);
     const req = {} as IncomingMessage;
     const res = mockResponse();
 
@@ -389,10 +393,10 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
         tool_input: { question: `Question ${i}` },
         tool_response: `Answer ${i}`,
       });
-      await handlePostToolUse(stdin);
+      await handlePostToolUse(stdin, paths);
     }
 
-    const dbPath = eventsDbPath(projectDir);
+    const dbPath = eventsDbPath(projectDir, paths);
     const db = new EventsDb(dbPath);
     try {
       const events = db.getUnprocessed() as unknown as EventRow[];
@@ -415,9 +419,10 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
     safeLogError("PostToolUse", new Error("test e2e error"), {
       cwd: projectDir,
       sessionId: "e2e-error-test",
+      paths,
     });
 
-    const dbPath = eventsDbPath(projectDir);
+    const dbPath = eventsDbPath(projectDir, paths);
     const db = new EventsDb(dbPath);
     try {
       const stats = db.getHealthStats();
@@ -431,7 +436,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
   // ── Test I: Pruning caps unprocessed events ──────────────────────────
 
   it("pruneUnprocessed caps events at maxRows", async () => {
-    const dbPath = eventsDbPath(projectDir);
+    const dbPath = eventsDbPath(projectDir, paths);
     const db = new EventsDb(dbPath);
     try {
       for (let i = 0; i < 20; i++) {
@@ -462,7 +467,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
 
   it("collectEventStats aggregates across sidecar DBs", async () => {
     // Create events in the project sidecar
-    const dbPath = eventsDbPath(projectDir);
+    const dbPath = eventsDbPath(projectDir, paths);
     const db = new EventsDb(dbPath);
     try {
       db.insertEvent("e2e-stats-test", {
@@ -474,7 +479,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
     }
 
     const { collectEventStats } = await import("../../src/db/events-stats.js");
-    const stats = collectEventStats();
+    const stats = collectEventStats(paths);
     expect(stats.captured).toBeGreaterThanOrEqual(1);
     expect(stats.errors).toBeGreaterThanOrEqual(1);
   });

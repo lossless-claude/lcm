@@ -2,6 +2,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "../config.js";
+import type { LcmPaths } from "../../lcm-paths.js";
 import { projectDbPath } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
@@ -12,7 +13,7 @@ import { RetrievalEngine } from "../../retrieval.js";
 import { validateCwd } from "../validate-cwd.js";
 import { resolveSourceCwd } from "../project-group.js";
 
-export function createDescribeHandler(_config: DaemonConfig): RouteHandler {
+export function createDescribeHandler(_config: DaemonConfig, paths: LcmPaths): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
     const { nodeId } = input;
@@ -32,21 +33,21 @@ export function createDescribeHandler(_config: DaemonConfig): RouteHandler {
       }
     }
 
-    if (!cwd || !existsSync(projectDbPath(cwd))) {
+    if (!cwd || !existsSync(projectDbPath(cwd, paths))) {
       sendJson(res, 200, { node: null });
       return;
     }
 
     // Ids are AUTOINCREMENT per database, so a node named by a search result
     // must be read from the project that result came from.
-    const source = resolveSourceCwd(cwd, input.projectId);
+    const source = resolveSourceCwd(cwd, input.projectId, paths);
     if (!source) {
       sendJson(res, 200, { node: null, error: "project not in group" });
       return;
     }
 
     try {
-      const dbPath = projectDbPath(source);
+      const dbPath = projectDbPath(source, paths);
       mkdirSync(dirname(dbPath), { recursive: true });
       const db = new DatabaseSync(dbPath);
       runLcmMigrations(db);

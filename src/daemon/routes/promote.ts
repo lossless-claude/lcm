@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "../config.js";
+import type { LcmPaths } from "../../lcm-paths.js";
 import { projectId, projectDbPath, projectMetaPath } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
@@ -15,6 +16,7 @@ import { validateCwd } from "../validate-cwd.js";
 
 export function createPromoteHandler(
   config: DaemonConfig,
+  paths: LcmPaths,
 ): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
@@ -33,7 +35,7 @@ export function createPromoteHandler(
       return;
     }
 
-    const dbPath = projectDbPath(cwd);
+    const dbPath = projectDbPath(cwd, paths);
     if (!existsSync(dbPath)) {
       sendJson(res, 200, { processed: 0, promoted: 0 });
       return;
@@ -110,7 +112,7 @@ export function createPromoteHandler(
       // Update meta.json unless dry_run
       if (!dry_run) {
         try {
-          const metaPath = projectMetaPath(cwd);
+          const metaPath = projectMetaPath(cwd, paths);
           let meta: Record<string, unknown> = {};
           if (existsSync(metaPath)) {
             meta = JSON.parse(readFileSync(metaPath, "utf-8"));

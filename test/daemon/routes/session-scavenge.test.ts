@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { createLcmPaths } from "../../../src/lcm-paths.js";
+import { lcmHome } from "../../../src/lcm-home.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -28,9 +30,12 @@ function respond() {
 /** Lets the in-process promote-events call scheduled after the response run. */
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+// events-path and the promote handler are mocked below; the root only has to be a real one.
+const paths = createLcmPaths(lcmHome());
+
 describe("POST /session-scavenge", () => {
   let dir: string;
-  const handler = createSessionScavengeHandler({} as DaemonConfig);
+  const handler = createSessionScavengeHandler({} as DaemonConfig, paths);
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "session-scavenge-"));

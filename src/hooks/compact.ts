@@ -1,8 +1,7 @@
 import type { DaemonClient } from "../daemon/client.js";
 import { ensureDaemon } from "../daemon/lifecycle.js";
 import { PKG_VERSION } from "../daemon/version.js";
-import { join } from "node:path";
-import { lcmPath } from "../lcm-home.js";
+import type { LcmPaths } from "../lcm-paths.js";
 
 /**
  * Deadline for /compact — summarization calls an LLM, so allow minutes, not seconds.
@@ -12,9 +11,9 @@ import { lcmPath } from "../lcm-home.js";
  */
 const COMPACT_TIMEOUT_MS = 120_000;
 
-export async function handlePreCompact(stdin: string, client: DaemonClient, port?: number): Promise<{ exitCode: number; stdout: string }> {
+export async function handlePreCompact(stdin: string, client: DaemonClient, paths: LcmPaths, port?: number): Promise<{ exitCode: number; stdout: string }> {
   const daemonPort = port ?? 3737;
-  const pidFilePath = lcmPath("daemon.pid");
+  const pidFilePath = paths.pidPath;
   const { connected } = await ensureDaemon({ port: daemonPort, pidFilePath, spawnTimeoutMs: 5000, expectedVersion: PKG_VERSION });
   if (!connected) return { exitCode: 0, stdout: "" };
 
@@ -27,7 +26,7 @@ export async function handlePreCompact(stdin: string, client: DaemonClient, port
 
     try {
       const { firePromoteEventsRequest } = await import("./session-end.js");
-      firePromoteEventsRequest(daemonPort, { cwd: input.cwd });
+      firePromoteEventsRequest(daemonPort, { cwd: input.cwd }, paths);
     } catch {
       // Silent fail — PreCompact must not delay session
     }

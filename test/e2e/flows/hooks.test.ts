@@ -9,6 +9,10 @@
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
 import { createHarness, openProjectDb, type HarnessHandle } from "../harness.js";
 import { DaemonClient } from "../../../src/daemon/client.js";
+import { lcmHome } from "../../../src/lcm-home.js";
+import { createLcmPaths } from "../../../src/lcm-paths.js";
+
+const paths = createLcmPaths(lcmHome());
 
 let handle: HarnessHandle | null = null;
 
@@ -34,7 +38,7 @@ describe("Flow 14: SessionEnd hook", { timeout: 60_000 }, () => {
     });
 
     const { handleSessionEnd } = await import("../../../src/hooks/session-end.js");
-    const result = await handleSessionEnd(stdinData, client, h.daemonPort);
+    const result = await handleSessionEnd(stdinData, client, paths, h.daemonPort);
 
     expect(result.exitCode).toBe(0);
 
@@ -79,7 +83,7 @@ describe("Flow 15: PreCompact hook", { timeout: 60_000 }, () => {
     });
 
     const { handlePreCompact } = await import("../../../src/hooks/compact.js");
-    const result = await handlePreCompact(stdinData, client, h.daemonPort);
+    const result = await handlePreCompact(stdinData, client, paths, h.daemonPort);
 
     // PreCompact never blocks native compaction: always exit 0 with the summary on stdout
     expect(result.exitCode).toBe(0);

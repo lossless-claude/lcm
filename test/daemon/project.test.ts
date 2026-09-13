@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { projectId, projectDbPath, projectMetaPath } from "../../src/daemon/project.js";
+import { lcmHome } from "../../src/lcm-home.js";
+import { createLcmPaths } from "../../src/lcm-paths.js";
+
+const paths = createLcmPaths(lcmHome());
 
 describe("projectId", () => {
   it("returns sha256 hex of absolute path", () => expect(projectId("/foo")).toMatch(/^[a-f0-9]{64}$/));
@@ -9,7 +13,7 @@ describe("projectId", () => {
 
 describe("projectDbPath", () => {
   it("returns path under .lossless-claude/projects/<id>/db.sqlite", () => {
-    const p = projectDbPath("/foo/bar");
+    const p = projectDbPath("/foo/bar", paths);
     expect(p).toContain("projects");
     expect(p).toContain("db.sqlite");
   });
@@ -17,6 +21,6 @@ describe("projectDbPath", () => {
 
 describe("projectMetaPath", () => {
   it("returns path ending in meta.json", () => {
-    expect(projectMetaPath("/foo")).toContain("meta.json");
+    expect(projectMetaPath("/foo", paths)).toContain("meta.json");
   });
 });

@@ -24,6 +24,10 @@ import { loadDaemonConfig } from "../../src/daemon/config.js";
 import { projectDbPath } from "../../src/daemon/project.js";
 import { SummarizeJobStore } from "../../src/daemon/summarize-jobs.js";
 import type { RouteHandler } from "../../src/daemon/server.js";
+import { lcmHome } from "../../src/lcm-home.js";
+import { createLcmPaths } from "../../src/lcm-paths.js";
+
+const paths = createLcmPaths(lcmHome());
 
 async function invoke(handler: RouteHandler, body: unknown) {
   let status = 0;
@@ -52,16 +56,16 @@ it("compacts through the session queue and persists actual provider and estimate
     }
   })();
   try {
-    await invoke(createIngestHandler(config), { cwd, session_id: sessionId,
+    await invoke(createIngestHandler(config, paths), { cwd, session_id: sessionId,
       messages: Array.from({ length: 100 }, (_, i) => ({ role: i % 2 ? "assistant" : "user",
         content: `message ${i}`, tokenCount: 300 })),
     });
-    const result = await invoke(createCompactHandler(config, jobs), { cwd, session_id: sessionId });
+    const result = await invoke(createCompactHandler(config, paths, jobs), { cwd, session_id: sessionId });
     expect(result.replayOutcome).toBe("compacted");
     expect(served).toBeGreaterThan(1);
     // Two providers answered in this run, so the response keeps the configured name.
     expect(result.providerId).toBe("session");
-    const db = new DatabaseSync(projectDbPath(cwd));
+    const db = new DatabaseSync(projectDbPath(cwd, paths));
     try {
       expect(db.prepare("SELECT * FROM llm_usage_stats ORDER BY provider").all()).toEqual([
         expect.objectContaining({ provider: "openai", model: "fallback-model", calls_total: 1, calls_estimated: 0 }),
@@ -83,11 +87,11 @@ it("names the fallback provider in the response when no session served a job", a
   const jobs = new SummarizeJobStore(50); // nobody polls: every job expires at once
   const config = loadDaemonConfig("/x", { llm: { provider: "session", fallbackProvider: "openai" } }, {});
   try {
-    await invoke(createIngestHandler(config), { cwd, session_id: "session-unserved",
+    await invoke(createIngestHandler(config, paths), { cwd, session_id: "session-unserved",
       messages: Array.from({ length: 40 }, (_, i) => ({ role: i % 2 ? "assistant" : "user",
         content: `message ${i}`, tokenCount: 300 })),
     });
-    const result = await invoke(createCompactHandler(config, jobs), { cwd, session_id: "session-unserved" });
+    const result = await invoke(createCompactHandler(config, paths, jobs), { cwd, session_id: "session-unserved" });
     expect(result.replayOutcome).toBe("compacted");
     expect(result.providerId).toBe("openai");
     expect(result.providerLabel).toBe("OpenAI API");

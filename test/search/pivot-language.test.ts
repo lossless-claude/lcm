@@ -1,4 +1,8 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { createLcmPaths } from "../../src/lcm-paths.js";
+import { lcmHome } from "../../src/lcm-home.js";
+
+const paths = createLcmPaths(lcmHome());
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -14,7 +18,7 @@ afterEach(() => {
 function projectWithLanguage(language?: string): string {
   const dir = mkdtempSync(join(tmpdir(), "lcm-pivot-lang-"));
   tempDirs.push(dir);
-  const meta = projectMetaPath(dir);
+  const meta = projectMetaPath(dir, paths);
   mkdirSync(dirname(meta), { recursive: true });
   if (language) writeFileSync(meta, JSON.stringify({ language }));
   return dir;
@@ -22,8 +26,8 @@ function projectWithLanguage(language?: string): string {
 
 describe("pivot languages", () => {
   it("reads the author language recorded for the project", () => {
-    expect(pivotLanguagesFor(projectWithLanguage("pt-BR"), "en")).toEqual({ authorLanguage: "pt-BR", pivotLanguage: "en" });
-    expect(pivotLanguagesFor(projectWithLanguage(), "en")).toEqual({ authorLanguage: undefined, pivotLanguage: "en" });
+    expect(pivotLanguagesFor(projectWithLanguage("pt-BR"), "en", paths)).toEqual({ authorLanguage: "pt-BR", pivotLanguage: "en" });
+    expect(pivotLanguagesFor(projectWithLanguage(), "en", paths)).toEqual({ authorLanguage: undefined, pivotLanguage: "en" });
   });
 
   it("applies only when the two languages differ, regardless of region", () => {

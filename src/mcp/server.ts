@@ -15,7 +15,8 @@ import { pivotLanguagesFor } from "../search/pivot-language.js";
 import { lcmStoreTool } from "./tools/lcm-store.js";
 import { lcmStatsTool } from "./tools/lcm-stats.js";
 import { lcmDoctorTool } from "./tools/lcm-doctor.js";
-import { lcmPath } from "../lcm-home.js";
+import { lcmHome } from "../lcm-home.js";
+import { createLcmPaths } from "../lcm-paths.js";
 
 const TOOLS = [lcmGrepTool, lcmExpandTool, lcmDescribeTool, lcmSearchTool, lcmStoreTool, lcmStatsTool, lcmDoctorTool];
 
@@ -224,9 +225,10 @@ export async function handleDaemonRequest(
 }
 
 export async function startMcpServer(): Promise<void> {
-  const config = loadDaemonConfig(lcmPath("config.json"));
+  const paths = createLcmPaths(lcmHome());
+  const config = loadDaemonConfig(paths.configPath);
   const port = config.daemon.port;
-  const pidFilePath = lcmPath("daemon.pid");
+  const pidFilePath = paths.pidPath;
 
   const lcmBin = cliEntrypoint();
   const daemon = await ensureDaemon({
@@ -242,13 +244,13 @@ export async function startMcpServer(): Promise<void> {
   if (notice) process.stderr.write(`${notice.line}\n`);
   const incompatibleNotice = notice && !notice.usable ? notice.line : undefined;
 
-  const client = new DaemonClient(`http://127.0.0.1:${port}`);
+  const client = new DaemonClient(`http://127.0.0.1:${port}`, paths.tokenPath);
   const server = new Server({ name: "lcm", version: PKG_VERSION ?? "unknown" }, { capabilities: { tools: {} } });
 
   // The search tool is described per project: a caller must be told the author
   // and pivot languages before its first search, not after an empty result.
   server.setRequestHandler("tools/list", async () => {
-    const languages = pivotLanguagesFor(process.env.PWD ?? process.cwd(), config.search.pivotLanguage);
+    const languages = pivotLanguagesFor(process.env.PWD ?? process.cwd(), config.search.pivotLanguage, paths);
     const search = lcmSearchToolFor(languages);
     return { tools: TOOLS.map((tool) => (tool.name === search.name ? search : tool)) };
   });

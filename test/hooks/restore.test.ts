@@ -31,6 +31,10 @@ vi.mock("../../src/hooks/session-end.js", () => ({
 
 import { ensureDaemon } from "../../src/daemon/lifecycle.js";
 import { fireSessionStartCompactRequest } from "../../src/hooks/session-end.js";
+import { lcmHome } from "../../src/lcm-home.js";
+import { createLcmPaths } from "../../src/lcm-paths.js";
+
+const paths = createLcmPaths(lcmHome());
 const mockEnsureDaemon = vi.mocked(ensureDaemon);
 const mockFireSessionStartCompact = vi.mocked(fireSessionStartCompactRequest);
 
@@ -49,7 +53,7 @@ describe("handleSessionStart", () => {
       health: vi.fn(),
       post: vi.fn().mockResolvedValue({ context: "<memory-orientation>\nMemory active\n</memory-orientation>" }),
     };
-    const result = await handleSessionStart(JSON.stringify({ session_id: "s1", cwd: "/proj", hook_event_name: "SessionStart" }), client as any);
+    const result = await handleSessionStart(JSON.stringify({ session_id: "s1", cwd: "/proj", hook_event_name: "SessionStart" }), client as any, paths);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("<memory-orientation>");
   });
@@ -60,21 +64,21 @@ describe("handleSessionStart", () => {
       health: vi.fn(),
       post: vi.fn().mockResolvedValue({ context: "ctx" }),
     };
-    await handleSessionStart(JSON.stringify({ session_id: "s4", cwd: "/proj" }), client as any, 4242);
-    expect(mockFireSessionStartCompact).toHaveBeenCalledWith(4242, { cwd: "/proj", session_id: "s4" });
+    await handleSessionStart(JSON.stringify({ session_id: "s4", cwd: "/proj" }), client as any, paths, 4242);
+    expect(mockFireSessionStartCompact).toHaveBeenCalledWith(4242, { cwd: "/proj", session_id: "s4" }, paths);
   });
 
   it("does not fire the session-start compact sweep without a cwd", async () => {
     mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
     const client = { health: vi.fn(), post: vi.fn().mockResolvedValue({ context: "ctx" }) };
-    await handleSessionStart(JSON.stringify({ session_id: "s1" }), client as any);
+    await handleSessionStart(JSON.stringify({ session_id: "s1" }), client as any, paths);
     expect(mockFireSessionStartCompact).not.toHaveBeenCalled();
   });
 
   it("exits 0 with empty output when daemon down", async () => {
     mockEnsureDaemon.mockResolvedValue({ connected: false, port: 3737, spawned: false });
     const client = { health: vi.fn(), post: vi.fn() };
-    const result = await handleSessionStart("{}", client as any);
+    const result = await handleSessionStart("{}", client as any, paths);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("");
   });
@@ -91,7 +95,7 @@ describe("handleSessionStart", () => {
         ],
       }),
     };
-    const result = await handleSessionStart(JSON.stringify({ session_id: "s1", cwd: "/proj" }), client as any);
+    const result = await handleSessionStart(JSON.stringify({ session_id: "s1", cwd: "/proj" }), client as any, paths);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("<memory-orientation>");
     expect(result.stdout).toContain('<learned-insights source="passive-capture">');
@@ -106,7 +110,7 @@ describe("handleSessionStart", () => {
       health: vi.fn(),
       post: vi.fn().mockResolvedValue({ context: "some context" }),
     };
-    const result = await handleSessionStart(JSON.stringify({ session_id: "s2", cwd: "/proj" }), client as any);
+    const result = await handleSessionStart(JSON.stringify({ session_id: "s2", cwd: "/proj" }), client as any, paths);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).not.toContain("<learned-insights");
   });
@@ -117,7 +121,7 @@ describe("handleSessionStart", () => {
       health: vi.fn(),
       post: vi.fn().mockResolvedValue({ context: "some context", insights: [] }),
     };
-    const result = await handleSessionStart(JSON.stringify({ session_id: "s3", cwd: "/proj" }), client as any);
+    const result = await handleSessionStart(JSON.stringify({ session_id: "s3", cwd: "/proj" }), client as any, paths);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).not.toContain("<learned-insights");
   });
@@ -136,11 +140,11 @@ describe("handleSessionStart", () => {
     const stdin = JSON.stringify({ session_id: sessionId, cwd: "/proj" });
 
     // First call proceeds normally
-    await handleSessionStart(stdin, client as any);
+    await handleSessionStart(stdin, client as any, paths);
     expect(mockEnsureDaemon).toHaveBeenCalledTimes(1);
 
     // Second call with same session_id returns empty, daemon not called again
-    const second = await handleSessionStart(stdin, client as any);
+    const second = await handleSessionStart(stdin, client as any, paths);
     expect(second).toEqual({ exitCode: 0, stdout: "" });
     expect(mockEnsureDaemon).toHaveBeenCalledTimes(1); // still 1, not 2
 
@@ -163,7 +167,7 @@ describe("handleSessionStart", () => {
     const stdin = JSON.stringify({ session_id: sessionId, cwd: "/proj" });
 
     // Should NOT be blocked by the stale lock — should proceed and call daemon
-    const result = await handleSessionStart(stdin, client as any);
+    const result = await handleSessionStart(stdin, client as any, paths);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("ctx from dead pid test");
     expect(mockEnsureDaemon).toHaveBeenCalledTimes(1);
@@ -178,7 +182,7 @@ describe("handleSessionStart", () => {
     try {
       const client = { health: vi.fn(), post: vi.fn() };
       const result = await handleSessionStart(
-        JSON.stringify({ session_id: "s-owned", cwd: "/proj" }), client as any,
+        JSON.stringify({ session_id: "s-owned", cwd: "/proj" }), client as any, paths,
       );
       expect(result).toEqual({ exitCode: 0, stdout: "" });
       expect(client.post).not.toHaveBeenCalled();
@@ -195,7 +199,7 @@ describe("handleSessionStart", () => {
       mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
       const client = { health: vi.fn(), post: vi.fn().mockResolvedValue({ context: "ctx" }) };
       const result = await handleSessionStart(
-        JSON.stringify({ session_id: "s-unclaimed", cwd: "/proj" }), client as any,
+        JSON.stringify({ session_id: "s-unclaimed", cwd: "/proj" }), client as any, paths,
       );
       expect(result.stdout).toBe("ctx");
     } finally {
@@ -205,7 +209,7 @@ describe("handleSessionStart", () => {
 
   it("exits 0 with empty output on malformed stdin", async () => {
     mockEnsureDaemon.mockClear();
-    const result = await handleSessionStart("not json", {} as any, 1);
+    const result = await handleSessionStart("not json", {} as any, paths, 1);
     expect(result).toEqual({ exitCode: 0, stdout: "" });
     expect(mockEnsureDaemon).not.toHaveBeenCalled();
   });

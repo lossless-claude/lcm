@@ -6,7 +6,8 @@ import { RecallStore, type RecallStats } from "./db/recall.js";
 import { PromotedStore } from "./db/promoted.js";
 import { isSignalTagged } from "./db/votes.js";
 import { loadDaemonConfig } from "./daemon/config.js";
-import { lcmPath } from "./lcm-home.js";
+import { lcmHome } from "./lcm-home.js";
+import { createLcmPaths } from "./lcm-paths.js";
 
 export type { RecallStats };
 
@@ -531,7 +532,8 @@ export function printStats(stats: OverallStats, verbose: boolean): void {
 }
 
 export function collectStats(): OverallStats {
-  const baseDir = lcmPath("projects");
+  const paths = createLcmPaths(lcmHome());
+  const baseDir = paths.projectsDir;
 
   const emptyRecallStats: RecallStats = {
     memoriesSurfaced: 0, memoriesActedUpon: 0, recallPrecision: null, topRecalled: [],
@@ -574,7 +576,7 @@ export function collectStats(): OverallStats {
   // Load stale + promotion config once for all projects
   let staleCfg = { staleAfterDays: 90, staleSurfacingWithoutUseLimit: 5, enforcementThreshold: 3 };
   try {
-    const cfg = loadDaemonConfig(lcmPath("config.json"));
+    const cfg = loadDaemonConfig(paths.configPath);
     staleCfg = {
       staleAfterDays: cfg.restoration.staleAfterDays,
       staleSurfacingWithoutUseLimit: cfg.restoration.staleSurfacingWithoutUseLimit,
@@ -635,7 +637,7 @@ export function collectStats(): OverallStats {
   let eventsUnprocessed = 0;
   let eventsErrors = 0;
   try {
-    const eventStats = collectEventStats(2000);
+    const eventStats = collectEventStats(paths, 2000);
     eventsCaptured = eventStats.captured;
     eventsUnprocessed = eventStats.unprocessed;
     eventsErrors = eventStats.errors;

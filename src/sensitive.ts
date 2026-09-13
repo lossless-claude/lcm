@@ -6,11 +6,11 @@ import { NATIVE_PATTERNS, ScrubEngine, readGitleaksSyncDate } from "./scrub.js";
 import { GITLEAKS_PATTERNS } from "./generated-patterns.js";
 import { projectDir } from "./daemon/project.js";
 import { loadDaemonConfig } from "./daemon/config.js";
-import { lcmPath } from "./lcm-home.js";
-import { defaultLcmPaths } from "./lcm-paths.js";
+import { lcmHome } from "./lcm-home.js";
+import { createLcmPaths, type LcmPaths } from "./lcm-paths.js";
 
 function defaultConfigPath(): string {
-  return lcmPath("config.json");
+  return createLcmPaths(lcmHome()).configPath;
 }
 
 export async function handleSensitive(
@@ -19,23 +19,26 @@ export async function handleSensitive(
   configPath?: string,
 ): Promise<{ exitCode: number; stdout: string }> {
   const resolvedConfigPath = configPath ?? defaultConfigPath();
+  // Every real caller's configPath sits at the lcm home's root (`<home>/config.json`),
+  // so its directory is the home — without reading it from the ambient environment here.
+  const paths = createLcmPaths(dirname(resolvedConfigPath));
   const sub = argv[0];
 
   switch (sub) {
     case "list": {
-      return sensitiveList(cwd, resolvedConfigPath);
+      return sensitiveList(cwd, resolvedConfigPath, paths);
     }
     case "add": {
-      return sensitiveAdd(argv.slice(1), cwd, resolvedConfigPath);
+      return sensitiveAdd(argv.slice(1), cwd, resolvedConfigPath, paths);
     }
     case "remove": {
-      return sensitiveRemove(argv.slice(1), cwd);
+      return sensitiveRemove(argv.slice(1), cwd, paths);
     }
     case "test": {
-      return sensitiveTest(argv.slice(1), cwd, resolvedConfigPath);
+      return sensitiveTest(argv.slice(1), cwd, resolvedConfigPath, paths);
     }
     case "purge": {
-      return sensitivePurge(argv.slice(1), cwd);
+      return sensitivePurge(argv.slice(1), cwd, paths);
     }
     default: {
       return {
@@ -50,6 +53,7 @@ export async function handleSensitive(
 async function sensitiveList(
   cwd: string,
   configPath: string,
+  paths: LcmPaths,
 ): Promise<{ exitCode: number; stdout: string }> {
   let globalUserPatterns: string[] = [];
   try {
@@ -59,7 +63,7 @@ async function sensitiveList(
     // config may not exist yet
   }
 
-  const patternsFile = join(projectDir(cwd), "sensitive-patterns.txt");
+  const patternsFile = join(projectDir(cwd, paths), "sensitive-patterns.txt");
   const projectPatterns = await ScrubEngine.loadProjectPatterns(patternsFile);
 
   const lines: string[] = [];
@@ -101,6 +105,7 @@ async function sensitiveAdd(
   args: string[],
   cwd: string,
   configPath: string,
+  paths: LcmPaths,
 ): Promise<{ exitCode: number; stdout: string }> {
   const isGlobal = args.includes("--global");
   const pattern = args.find((a) => !a.startsWith("--"));
@@ -154,7 +159,7 @@ async function sensitiveAdd(
   }
 
   // Project-local
-  const pDir = projectDir(cwd);
+  const pDir = projectDir(cwd, paths);
   await mkdir(pDir, { recursive: true });
   const patternsFile = join(pDir, "sensitive-patterns.txt");
 
@@ -180,6 +185,7 @@ async function sensitiveAdd(
 async function sensitiveRemove(
   args: string[],
   cwd: string,
+  paths: LcmPaths,
 ): Promise<{ exitCode: number; stdout: string }> {
   const pattern = args.find((a) => !a.startsWith("--"));
   if (!pattern) {
@@ -189,7 +195,7 @@ async function sensitiveRemove(
     };
   }
 
-  const patternsFile = join(projectDir(cwd), "sensitive-patterns.txt");
+  const patternsFile = join(projectDir(cwd, paths), "sensitive-patterns.txt");
   const existing = await ScrubEngine.loadProjectPatterns(patternsFile);
 
   if (!existing.includes(pattern)) {
@@ -220,6 +226,7 @@ async function sensitiveTest(
   args: string[],
   cwd: string,
   configPath: string,
+  paths: LcmPaths,
 ): Promise<{ exitCode: number; stdout: string }> {
   const input = args.find((a) => !a.startsWith("--"));
   if (input === undefined) {
@@ -236,8 +243,8 @@ async function sensitiveTest(
   } catch {
     // config may not exist yet
   }
-  const patternsFile = join(projectDir(cwd), "sensitive-patterns.txt");
-  const engine = await ScrubEngine.forProject(globalUserPatterns, projectDir(cwd));
+  const patternsFile = join(projectDir(cwd, paths), "sensitive-patterns.txt");
+  const engine = await ScrubEngine.forProject(globalUserPatterns, projectDir(cwd, paths));
 
   const redacted = engine.scrub(input);
 
@@ -301,6 +308,7 @@ async function sensitiveTest(
 async function sensitivePurge(
   args: string[],
   cwd: string,
+  paths: LcmPaths,
 ): Promise<{ exitCode: number; stdout: string }> {
   const hasYes = args.includes("--yes");
   const purgeAll = args.includes("--all");
@@ -318,7 +326,7 @@ async function sensitivePurge(
   const { join: pathJoin } = await import("node:path");
 
   if (purgeAll) {
-    const allProjectsDir = defaultLcmPaths.projectsDir;
+    const allProjectsDir = paths.projectsDir;
     if (existsSync(allProjectsDir)) {
       rmSync(allProjectsDir, { recursive: true, force: true });
       return {
@@ -330,7 +338,7 @@ async function sensitivePurge(
   }
 
   // Current project only
-  const pDir = projectDir(cwd);
+  const pDir = projectDir(cwd, paths);
   if (existsSync(pDir)) {
     rmSync(pDir, { recursive: true, force: true });
     return { exitCode: 0, stdout: `Purged project data: ${pDir}\n` };

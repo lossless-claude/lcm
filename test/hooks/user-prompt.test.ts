@@ -22,7 +22,10 @@ vi.mock("../../src/db/events-path.js", () => ({
 import { ensureDaemon } from "../../src/daemon/lifecycle.js";
 import { extractUserPromptEvents } from "../../src/hooks/extractors.js";
 import { EventsDb } from "../../src/hooks/events-db.js";
+import { lcmHome } from "../../src/lcm-home.js";
+import { createLcmPaths } from "../../src/lcm-paths.js";
 
+const paths = createLcmPaths(lcmHome());
 const mockEnsureDaemon = vi.mocked(ensureDaemon);
 const mockExtractUserPromptEvents = vi.mocked(extractUserPromptEvents);
 const MockEventsDb = vi.mocked(EventsDb);
@@ -39,7 +42,7 @@ describe("handleUserPromptSubmit", () => {
     writeFileSync(claimPath("s1"), JSON.stringify({ sessionId: "s1", ts: Date.now() }));
     try {
       const client = { post: vi.fn() };
-      const result = await handleUserPromptSubmit(JSON.stringify({ prompt: "hello", session_id: "s1", cwd: "/tmp" }), client as any);
+      const result = await handleUserPromptSubmit(JSON.stringify({ prompt: "hello", session_id: "s1", cwd: "/tmp" }), client as any, paths);
       expect(result).toEqual({ exitCode: 0, stdout: "" });
       expect(mockEnsureDaemon).not.toHaveBeenCalled();
       expect(client.post).not.toHaveBeenCalled();
@@ -55,7 +58,7 @@ describe("handleUserPromptSubmit", () => {
       mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
       const client = { post: vi.fn().mockResolvedValue({ hints: [], ids: [] }) };
       const result = await handleUserPromptSubmit(
-        JSON.stringify({ prompt: "hello", session_id: "never-claimed", cwd: "/tmp" }), client as any,
+        JSON.stringify({ prompt: "hello", session_id: "never-claimed", cwd: "/tmp" }), client as any, paths,
       );
       expect(client.post).toHaveBeenCalled();
       expect(result.stdout).not.toBe("");
@@ -75,7 +78,7 @@ describe("handleUserPromptSubmit", () => {
     };
     const result = await handleUserPromptSubmit(
       JSON.stringify({ session_id: "s1", cwd: "/proj", prompt: "what database do we use?" }),
-      client as any,
+      client as any, paths,
     );
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("<memory-context>");
@@ -96,7 +99,7 @@ describe("handleUserPromptSubmit", () => {
     };
     const result = await handleUserPromptSubmit(
       JSON.stringify({ session_id: "s1", cwd: "/proj", prompt: "what framework?" }),
-      client as any,
+      client as any, paths,
     );
     expect(result.stdout).toContain("<!-- surfaced-memory-ids: abc-123 -->");
   });
@@ -113,7 +116,7 @@ describe("handleUserPromptSubmit", () => {
     };
     const result = await handleUserPromptSubmit(
       JSON.stringify({ session_id: "s1", cwd: "/proj", prompt: "what framework?" }),
-      client as any,
+      client as any, paths,
     );
     expect(result.stdout).toContain("<!-- surfaced-memory-ids: abc-123,def-456@sibling-project -->");
   });
@@ -128,7 +131,7 @@ describe("handleUserPromptSubmit", () => {
     };
     const result = await handleUserPromptSubmit(
       JSON.stringify({ session_id: "s1", cwd: "/proj", prompt: "what framework?" }),
-      client as any,
+      client as any, paths,
     );
     expect(result.stdout).not.toContain("surfaced-memory-ids");
   });
@@ -141,7 +144,7 @@ describe("handleUserPromptSubmit", () => {
     };
     const result = await handleUserPromptSubmit(
       JSON.stringify({ session_id: "s1", cwd: "/proj", prompt: "hello" }),
-      client as any,
+      client as any, paths,
     );
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("<learning-instruction>");
@@ -151,7 +154,7 @@ describe("handleUserPromptSubmit", () => {
   it("returns learning-instruction when daemon unreachable", async () => {
     mockEnsureDaemon.mockResolvedValue({ connected: false, port: 3737, spawned: false });
     const client = { health: vi.fn(), post: vi.fn() };
-    const result = await handleUserPromptSubmit("{}", client as any);
+    const result = await handleUserPromptSubmit("{}", client as any, paths);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("<learning-instruction>");
   });
@@ -164,7 +167,7 @@ describe("handleUserPromptSubmit", () => {
     };
     const result = await handleUserPromptSubmit(
       JSON.stringify({ session_id: "s1", cwd: "/proj" }),
-      client as any,
+      client as any, paths,
     );
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("<learning-instruction>");
@@ -178,7 +181,7 @@ describe("handleUserPromptSubmit", () => {
     };
     const result = await handleUserPromptSubmit(
       JSON.stringify({ prompt: "test query", cwd: "/tmp/test", session_id: "s1" }),
-      mockClient as any,
+      mockClient as any, paths,
     );
     expect(result.stdout).toContain("<learning-instruction>");
     expect(result.stdout).toContain("lcm_store");
@@ -194,7 +197,7 @@ describe("handleUserPromptSubmit", () => {
     };
     const result = await handleUserPromptSubmit(
       JSON.stringify({ prompt: "test", cwd: "/tmp/test", session_id: "s1" }),
-      mockClient as any,
+      mockClient as any, paths,
     );
     expect(result.stdout).toContain("signal:memory_used");
     expect(result.stdout).toContain("memory_id:<id>");
@@ -208,7 +211,7 @@ describe("handleUserPromptSubmit", () => {
     };
     const result = await handleUserPromptSubmit(
       JSON.stringify({ prompt: "test query", cwd: "/tmp/test", session_id: "s1" }),
-      mockClient as any,
+      mockClient as any, paths,
     );
     expect(result.stdout).toContain("<learning-instruction>");
     expect(result.stdout).not.toContain("<memory-context>");
@@ -234,7 +237,7 @@ describe("handleUserPromptSubmit", () => {
 
     const result = await handleUserPromptSubmit(
       JSON.stringify({ prompt: "we decided to use SQLite", cwd: "/proj", session_id: "s1" }),
-      mockClient as any,
+      mockClient as any, paths,
     );
 
     expect(result.exitCode).toBe(0);
@@ -263,7 +266,7 @@ describe("handleUserPromptSubmit", () => {
 
     const result = await handleUserPromptSubmit(
       JSON.stringify({ prompt: "hello world", cwd: "/proj", session_id: "s2" }),
-      mockClient as any,
+      mockClient as any, paths,
     );
 
     expect(result.exitCode).toBe(0);
@@ -285,7 +288,7 @@ describe("handleUserPromptSubmit", () => {
 
     const result = await handleUserPromptSubmit(
       JSON.stringify({ prompt: "scripts", cwd: "/tmp/test", session_id: "s1" }),
-      mockClient as any,
+      mockClient as any, paths,
     );
 
     expect(result.stdout).toContain("<!-- surfaced-memory-ids: memory-1 -->");

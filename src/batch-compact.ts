@@ -15,7 +15,8 @@ import {
   recordReplayProgress,
   refuseRestartDuringCompaction,
 } from "./replay-resume.js";
-import { lcmPath } from "./lcm-home.js";
+import { lcmHome } from "./lcm-home.js";
+import { createLcmPaths } from "./lcm-paths.js";
 
 export interface UncompactedConversation {
   projectDir: string;
@@ -44,7 +45,7 @@ function readProjectCwd(projDir: string): string {
 
 /** Every tracked project with a database: its directory and cwd. */
 export function findProjects(cwdFilter?: string): { projDir: string; cwd: string }[] {
-  const baseDir = lcmPath("projects");
+  const baseDir = createLcmPaths(lcmHome()).projectsDir;
   if (!existsSync(baseDir)) return [];
 
   const projects: { projDir: string; cwd: string }[] = [];

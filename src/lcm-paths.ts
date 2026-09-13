@@ -1,5 +1,4 @@
 import { join } from "node:path";
-import { lcmHome } from "./lcm-home.js";
 
 /**
  * Every location lcm owns, derived from one root.
@@ -34,13 +33,3 @@ export function createLcmPaths(home: string): LcmPaths {
     pidPath: join(home, "daemon.pid"),
   };
 }
-
-/**
- * The process-wide instance, for code that has not been given one yet.
- *
- * Resolved once, so every caller agrees on the root even though some read it at load and
- * others per call. It is scaffolding for the migration in #409, not the destination: the
- * last step there deletes it, and after that the type system is what stops a path from
- * being read out of the ambient environment.
- */
-export const defaultLcmPaths: LcmPaths = createLcmPaths(lcmHome());

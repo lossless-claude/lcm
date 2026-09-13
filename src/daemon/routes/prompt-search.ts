@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "../config.js";
+import type { LcmPaths } from "../../lcm-paths.js";
 import { projectDbPath, projectId as computeProjectId } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
@@ -211,7 +212,7 @@ function validatePromptSearchInput(input: unknown): PromptSearchRequest {
   };
 }
 
-export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
+export function createPromptSearchHandler(config: DaemonConfig, paths: LcmPaths): RouteHandler {
   return async (_req, res, body) => {
     let input: PromptSearchRequest;
     try {
@@ -243,13 +244,13 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
     // project has no memory to search yet.
     if (recordEvents && session_id) {
       try {
-        await recordUserPromptEvents(query, session_id, validatedCwd);
+        await recordUserPromptEvents(query, session_id, validatedCwd, paths);
       } catch (err) {
-        safeLogError("UserPromptSubmit", err, { cwd: validatedCwd, sessionId: session_id });
+        safeLogError("UserPromptSubmit", err, { cwd: validatedCwd, sessionId: session_id, paths });
       }
     }
 
-    const dbPath = projectDbPath(validatedCwd);
+    const dbPath = projectDbPath(validatedCwd, paths);
     if (!existsSync(dbPath)) {
       sendJson(res, 200, { hints: [] });
       return;
@@ -289,7 +290,7 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
         query,
         limit: candidateLimit,
         withFeedback: true,
-      });
+      }, paths);
 
       const now = Date.now();
       const ranked = rankResults(results, feedbackById, {
@@ -340,7 +341,7 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
       // selector can choose the best-fitting subset after dedup and truncation.
       // The hint shares the block's byte budget with the hints, so it is
       // reserved before selection rather than appended past the cap.
-      const pivotHint = pivotQueryHint(pivotLanguagesFor(validatedCwd, config.search.pivotLanguage));
+      const pivotHint = pivotQueryHint(pivotLanguagesFor(validatedCwd, config.search.pivotLanguage, paths));
       const pivotHintBytes = pivotHint ? Buffer.byteLength(pivotHint, "utf8") + 1 : 0;
 
       const selection = selectMemoryHintsWithinBudget(
@@ -383,7 +384,7 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
 
       // Log surfacing events (best-effort, never throws)
       try {
-        if (logSurfacing) logGroupSurfacing(results, ids, session_id ?? null);
+        if (logSurfacing) logGroupSurfacing(results, ids, session_id ?? null, paths);
       } catch { /* non-fatal */ }
 
       const context = format === "context" ? buildMemoryContext(hints, ids, projectIds, pivotHint) : null;

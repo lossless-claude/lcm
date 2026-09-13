@@ -28,7 +28,8 @@ import { createSessionScavengeHandler } from "./routes/session-scavenge.js";
 import { createSessionStartCompactHandler } from "./routes/session-start-compact.js";
 import { backfillProjectIdentities } from "./project-group.js";
 import { PKG_VERSION, BUILD_ID } from "./version.js";
-import { lcmPath } from "../lcm-home.js";
+import { lcmHome } from "../lcm-home.js";
+import { createLcmPaths } from "../lcm-paths.js";
 export { PKG_VERSION };
 
 export type RouteHandler = (req: IncomingMessage, res: ServerResponse, body: string) => Promise<void>;
@@ -76,6 +77,9 @@ export function sendJson(res: ServerResponse, status: number, data: unknown): vo
 }
 
 export async function createDaemon(config: DaemonConfig, options?: DaemonOptions): Promise<DaemonInstance> {
+  // The storage root, resolved once here — the daemon is a composition root in its own
+  // right, since it can be spawned as its own process rather than always through the CLI.
+  const paths = createLcmPaths(lcmHome());
   const startTime = Date.now();
   const proxyManager = options?.proxyManager;
   const serverToken = options?.tokenPath ? readAuthToken(options.tokenPath) : null;
@@ -105,29 +109,29 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   const summarizeJobs = new SummarizeJobStore();
   const answerSummarizeJob = createAnswerSummarizeJobHandler(summarizeJobs);
   routes.set("GET /summarize-jobs/next", createNextSummarizeJobHandler(summarizeJobs));
-  routes.set("POST /compact", createCompactHandler(config, summarizeJobs));
-  routes.set("POST /promote", createPromoteHandler(config));
-  routes.set("POST /restore", createRestoreHandler(config));
-  routes.set("POST /grep", createGrepHandler(config));
-  routes.set("POST /search", createSearchHandler(config));
-  routes.set("POST /expand", createExpandHandler(config));
-  routes.set("POST /describe", createDescribeHandler(config));
-  routes.set("POST /store", createStoreHandler(config));
-  routes.set("POST /recent", createRecentHandler(config));
-  routes.set("POST /ingest", createIngestHandler(config));
-  routes.set("POST /prompt-search", createPromptSearchHandler(config));
-  routes.set("POST /session-complete", createSessionCompleteHandler());
-  routes.set("POST /promote-events", createPromoteEventsHandler(config));
-  routes.set("POST /tool-event", createToolEventHandler(config));
-  routes.set("POST /session-scavenge", createSessionScavengeHandler(config));
+  routes.set("POST /compact", createCompactHandler(config, paths, summarizeJobs));
+  routes.set("POST /promote", createPromoteHandler(config, paths));
+  routes.set("POST /restore", createRestoreHandler(config, paths));
+  routes.set("POST /grep", createGrepHandler(config, paths));
+  routes.set("POST /search", createSearchHandler(config, paths));
+  routes.set("POST /expand", createExpandHandler(config, paths));
+  routes.set("POST /describe", createDescribeHandler(config, paths));
+  routes.set("POST /store", createStoreHandler(config, paths));
+  routes.set("POST /recent", createRecentHandler(config, paths));
+  routes.set("POST /ingest", createIngestHandler(config, paths));
+  routes.set("POST /prompt-search", createPromptSearchHandler(config, paths));
+  routes.set("POST /session-complete", createSessionCompleteHandler(paths));
+  routes.set("POST /promote-events", createPromoteEventsHandler(config, paths));
+  routes.set("POST /tool-event", createToolEventHandler(config, paths));
+  routes.set("POST /session-scavenge", createSessionScavengeHandler(config, paths));
   routes.set("GET /stats", createStatsHandler());
   routes.set("GET /stats/pool", createPoolStatsHandler());
-  routes.set("POST /review-stale", createReviewStaleHandler(config));
+  routes.set("POST /review-stale", createReviewStaleHandler(config, paths));
   // Status handler is registered after listen() when we know the actual port
 
   // Periodic transcript ingestion scan
   const INGEST_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
-  const ingestHandler = createIngestHandler(config);
+  const ingestHandler = createIngestHandler(config, paths);
 
   const scanForTranscripts = async () => {
     try {
@@ -135,7 +139,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
 
-      const projectsDir = lcmPath("projects");
+      const projectsDir = paths.projectsDir;
       if (!existsSync(projectsDir)) return;
 
       for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
@@ -185,7 +189,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   // only the first run after an upgrade does real work.
   const IDENTITY_BACKFILL_DELAY_MS = 5_000;
   const identityBackfill = options?.backfillIdentities
-    ? setTimeout(() => { void backfillProjectIdentities().catch(() => { /* non-fatal */ }); }, IDENTITY_BACKFILL_DELAY_MS)
+    ? setTimeout(() => { void backfillProjectIdentities(paths).catch(() => { /* non-fatal */ }); }, IDENTITY_BACKFILL_DELAY_MS)
     : undefined;
   identityBackfill?.unref();
 
@@ -234,9 +238,9 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
       const actualPort = addr.port;
 
       // Now that we know the actual port, register the status handler
-      routes.set("POST /status", createStatusHandler(config, startTime, actualPort));
+      routes.set("POST /status", createStatusHandler(config, paths, startTime, actualPort));
       // Needs its own port to reuse fireCompactRequest's loopback call.
-      routes.set("POST /session-start-compact", createSessionStartCompactHandler(config, actualPort));
+      routes.set("POST /session-start-compact", createSessionStartCompactHandler(config, actualPort, paths));
 
       resolve({
         address: () => addr,

@@ -25,6 +25,12 @@ import { createDaemon } from "../../src/daemon/server.js";
 import { DaemonClient } from "../../src/daemon/client.js";
 import { loadDaemonConfig } from "../../src/daemon/config.js";
 import { projectId, projectDir, projectDbPath } from "../../src/daemon/project.js";
+import { lcmHome } from "../../src/lcm-home.js";
+import { createLcmPaths } from "../../src/lcm-paths.js";
+
+// The daemon under test resolves its own LcmPaths from LCM_HOME internally (it is a
+// composition root); this mirrors that resolution so the harness computes the same paths.
+const testPaths = () => createLcmPaths(lcmHome());
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = join(__dirname, "..", "fixtures", "e2e");
@@ -160,7 +166,7 @@ export async function createHarness(mode: "mock" | "live"): Promise<HarnessHandl
   // 6. Create production DaemonClient pointed at the test daemon
   const client = new DaemonClient(`http://127.0.0.1:${daemonPort}`);
 
-  const dbPath = projectDbPath(tmpDir);
+  const dbPath = projectDbPath(tmpDir, testPaths());
   const fixturePath = join(tmpDir, "session-main.jsonl");
   const fixtureSubagentPath = join(tmpDir, "subagents", "subagent-task-1.jsonl");
   const syntheticFixturePath = join(tmpDir, "synthetic-session.jsonl");
@@ -187,7 +193,7 @@ export async function createHarness(mode: "mock" | "live"): Promise<HarnessHandl
       }
 
       // Remove the test project from ~/.lossless-claude/projects/<hash>/
-      const pDir = projectDir(tmpDir);
+      const pDir = projectDir(tmpDir, testPaths());
       if (existsSync(pDir)) {
         try {
           rmSync(pDir, { recursive: true, force: true });
@@ -227,7 +233,7 @@ export function openProjectDb(cwd: string): {
   db: DatabaseSync;
   close: () => void;
 } {
-  const dbPath = projectDbPath(cwd);
+  const dbPath = projectDbPath(cwd, testPaths());
   const db = new DatabaseSync(dbPath);
   db.exec("PRAGMA busy_timeout = 5000");
   return {

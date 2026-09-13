@@ -3,7 +3,8 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { mergeClaudeSettings } from "./installer/settings.js";
 import { loadDaemonConfig } from "./daemon/config.js";
-import { lcmPath } from "./lcm-home.js";
+import { lcmHome } from "./lcm-home.js";
+import { createLcmPaths } from "./lcm-paths.js";
 import { PKG_VERSION } from "./daemon/version.js";
 import { cliInvocation, daemonNotice, type DaemonNotice } from "./hooks/fail-open.js";
 
@@ -23,8 +24,9 @@ export interface EnsureCoreDeps {
 export type EnsureCoreResult = { port: number; daemon: EnsureDaemonOutcome };
 
 function defaultDeps(): EnsureCoreDeps {
+  const paths = createLcmPaths(lcmHome());
   return {
-    configPath: lcmPath("config.json"),
+    configPath: paths.configPath,
     settingsPath: join(homedir(), ".claude", "settings.json"),
     existsSync,
     readFileSync: (p, enc) => readFileSync(p, enc as BufferEncoding),
@@ -42,7 +44,7 @@ export async function ensureCore(deps: EnsureCoreDeps = defaultDeps()): Promise<
   // 1. Create config.json with defaults if missing
   if (!deps.existsSync(deps.configPath)) {
     deps.mkdirSync(dirname(deps.configPath), { recursive: true });
-    const defaults = loadDaemonConfig("/nonexistent");
+    const defaults = loadDaemonConfig(deps.configPath);
     deps.writeFileSync(deps.configPath, JSON.stringify(defaults, null, 2));
     try {
       deps.chmodSync?.(deps.configPath, 0o600);
@@ -108,7 +110,7 @@ export async function ensureBootstrapped(
   deps: BootstrapDeps = defaultBootstrapDeps(),
 ): Promise<{ usable: boolean }> {
   const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-  const flagDir = lcmPath("tmp");
+  const flagDir = createLcmPaths(lcmHome()).tmpDir;
   mkdirSync(flagDir, { recursive: true });
   const flagPath = join(flagDir, `bootstrapped-${safeId}.flag`);
   try {

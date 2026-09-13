@@ -4,6 +4,7 @@ import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import type { DaemonConfig } from "../config.js";
 import { validateCwd } from "../validate-cwd.js";
+import type { LcmPaths } from "../../lcm-paths.js";
 import { compactingSessionsFor } from "./compact.js";
 
 /**
@@ -16,7 +17,7 @@ import { compactingSessionsFor } from "./compact.js";
  * the selection work below. Requires the daemon's own listening port to reuse
  * `fireCompactRequest` unchanged, exactly as a hook would call it.
  */
-export function createSessionStartCompactHandler(config: DaemonConfig, daemonPort: number): RouteHandler {
+export function createSessionStartCompactHandler(config: DaemonConfig, daemonPort: number, paths: LcmPaths): RouteHandler {
   return async (_req, res, body) => {
     let input: { session_id?: unknown; cwd?: string };
     try {
@@ -77,7 +78,7 @@ export function createSessionStartCompactHandler(config: DaemonConfig, daemonPor
           cwd: conv.cwd,
           skip_ingest: true,
           client: "claude",
-        });
+        }, paths);
       }
     });
   };

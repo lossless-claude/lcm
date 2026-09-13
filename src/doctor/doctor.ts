@@ -10,6 +10,7 @@ import { mcpServerEntry } from "../installer/mcp-server-entry.js";
 import { NATIVE_PATTERNS, ScrubEngine, readGitleaksSyncDate } from "../scrub.js";
 import { GITLEAKS_PATTERNS } from "../generated-patterns.js";
 import { projectDir } from "../daemon/project.js";
+import { createLcmPaths } from "../lcm-paths.js";
 import { collectEventStats, collectDetailedEventStats } from "../db/events-stats.js";
 import { BUILD_ID, PKG_VERSION } from "../daemon/version.js";
 import { cliEntrypoint } from "../cli-entrypoint.js";
@@ -201,10 +202,11 @@ function formatTimeAgo(date: Date): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-function checkPassiveLearning(results: CheckResult[], hooksInstalled: boolean, verbose: boolean): void {
+function checkPassiveLearning(results: CheckResult[], hooksInstalled: boolean, verbose: boolean, deps: DoctorDeps): void {
   if (!hooksInstalled) return;
 
-  const stats = verbose ? collectDetailedEventStats(2000) : collectEventStats(2000);
+  const paths = createLcmPaths(deps.lcmHome);
+  const stats = verbose ? collectDetailedEventStats(paths, 2000) : collectEventStats(paths, 2000);
   const sampled = stats.total > stats.scanned ? ` [sampled ${stats.scanned} of ${stats.total} project DBs, newest first]` : "";
 
   // Capture check
@@ -569,7 +571,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
   }
 
   const cwd = deps.cwd ?? process.cwd();
-  const patternsFile = join(projectDir(cwd), "sensitive-patterns.txt");
+  const patternsFile = join(projectDir(cwd, createLcmPaths(deps.lcmHome)), "sensitive-patterns.txt");
   const projectPatterns = await ScrubEngine.loadProjectPatterns(patternsFile);
 
   // Load global user patterns count for informational display
@@ -617,7 +619,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
   const hooksInstalled = results.some(
     r => r.category === "Settings" && r.name === "hooks" && r.status !== "fail"
   );
-  checkPassiveLearning(results, hooksInstalled, verbose);
+  checkPassiveLearning(results, hooksInstalled, verbose, deps);
 
   return results;
 }

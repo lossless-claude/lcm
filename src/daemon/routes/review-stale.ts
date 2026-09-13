@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import type { DaemonConfig } from "../config.js";
+import type { LcmPaths } from "../../lcm-paths.js";
 import { projectDbPath } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
@@ -20,7 +21,7 @@ export type StaleCandidate = {
   usageCount: number;
 };
 
-export function createReviewStaleHandler(config: DaemonConfig): RouteHandler {
+export function createReviewStaleHandler(config: DaemonConfig, paths: LcmPaths): RouteHandler {
   return async (_req, res, body) => {
     let input: Record<string, unknown>;
     try {
@@ -43,7 +44,7 @@ export function createReviewStaleHandler(config: DaemonConfig): RouteHandler {
       return;
     }
 
-    const dbPath = projectDbPath(cwd);
+    const dbPath = projectDbPath(cwd, paths);
     if (!existsSync(dbPath)) {
       sendJson(res, 200, { stale: [], total: 0 });
       return;

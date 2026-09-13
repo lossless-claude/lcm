@@ -1,7 +1,8 @@
 import { exit } from "node:process";
 import type { Command } from "commander";
 import type { DaemonClient } from "../daemon/client.js";
-import { lcmPath } from "../lcm-home.js";
+import { lcmHome } from "../lcm-home.js";
+import { createLcmPaths } from "../lcm-paths.js";
 import { fail, showHelpAndExit } from "./support.js";
 
 export interface ImportCommandDeps {
@@ -39,6 +40,7 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
       const { importSessions } = await import("../import.js");
+      const paths = createLcmPaths(lcmHome());
       type ImportProvider = import("../import.js").ImportProvider;
 
       let provider: ImportProvider = opts.codex ? "codex" : replay ? "all" : "claude";
@@ -54,9 +56,9 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
         }
       }
 
-      const config = loadDaemonConfig(lcmPath("config.json"));
+      const config = loadDaemonConfig(paths.configPath);
       const port = config.daemon?.port ?? 3737;
-      const previewClient = new DaemonClient(`http://127.0.0.1:${port}`);
+      const previewClient = new DaemonClient(`http://127.0.0.1:${port}`, paths.tokenPath);
       const preview = await importSessions(previewClient, { all, provider, dryRun: true, verbose: dryRun && verbose, replay });
       if (dryRun) {
         console.log(`  [dry-run] ${preview.imported} ${provider} sessions selected (${all ? "all projects" : "current project"})${replay ? "; would compact each session" : ""}. No changes written.`);
@@ -134,9 +136,9 @@ export function registerKnowledgeCommands(program: Command, deps: KnowledgeComma
 
       const { loadDaemonConfig } = await import("../daemon/config.js");
       const { join } = await import("node:path");
-      const { homedir } = await import("node:os");
+      const paths = createLcmPaths(lcmHome());
 
-      const config = loadDaemonConfig(lcmPath("config.json"));
+      const config = loadDaemonConfig(paths.configPath);
       const port = config.daemon?.port ?? 3737;
       const client = await createDaemonClientOrExit();
       const { readdirSync, existsSync, readFileSync } = await import("node:fs");
@@ -146,7 +148,7 @@ export function registerKnowledgeCommands(program: Command, deps: KnowledgeComma
       // Collect project cwds to promote
       const cwds: string[] = [];
       if (all) {
-        const projectsDir = lcmPath("projects");
+        const projectsDir = paths.projectsDir;
         if (existsSync(projectsDir)) {
           for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
             if (!entry.isDirectory()) continue;
@@ -222,9 +224,9 @@ export function registerKnowledgeCommands(program: Command, deps: KnowledgeComma
 
       await admitCliDatabaseWork();
       const { exportKnowledge } = await import("../portable-knowledge.js");
-      const { homedir } = await import("node:os");
       const { join } = await import("node:path");
       const { existsSync, readdirSync, readFileSync } = await import("node:fs");
+      const paths = createLcmPaths(lcmHome());
 
       const tags: string[] | undefined = opts.tags
         ? (opts.tags as string).split(",").map((t: string) => t.trim()).filter(Boolean)
@@ -235,7 +237,7 @@ export function registerKnowledgeCommands(program: Command, deps: KnowledgeComma
 
       const cwds: string[] = [];
       if (all) {
-        const projectsDir = lcmPath("projects");
+        const projectsDir = paths.projectsDir;
         if (existsSync(projectsDir)) {
           for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
             if (!entry.isDirectory()) continue;

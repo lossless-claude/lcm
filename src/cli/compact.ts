@@ -2,7 +2,8 @@ import { exit, stdout } from "node:process";
 import { Option } from "commander";
 import type { Command } from "commander";
 import type { DaemonClient } from "../daemon/client.js";
-import { lcmPath } from "../lcm-home.js";
+import { lcmHome } from "../lcm-home.js";
+import { createLcmPaths } from "../lcm-paths.js";
 import { readStdin, showHelpAndExit } from "./support.js";
 
 export interface CompactCommandDeps {
@@ -38,14 +39,14 @@ export function registerCompactCommand(program: Command, deps: CompactCommandDep
         const { batchCompact } = await import("../batch-compact.js");
         const { loadDaemonConfig } = await import("../daemon/config.js");
         const { join } = await import("node:path");
-        const { homedir } = await import("node:os");
-        const config = loadDaemonConfig(lcmPath("config.json"));
+        const paths = createLcmPaths(lcmHome());
+        const config = loadDaemonConfig(paths.configPath);
         const port = config.daemon?.port ?? 3737;
         const client = await createDaemonClientOrExit(10000);
         const noPromote: boolean = !opts.promote;
         const minTokens = config.compaction.autoCompactMinTokens;
         const cwd = all ? undefined : process.cwd();
-        const tokenPath = lcmPath("daemon.token");
+        const tokenPath = paths.tokenPath;
 
         const { NinjaRenderer } = await import("./pipeline-runner.js");
         const { makeProgressState } = await import("./progress-state.js");
@@ -84,7 +85,7 @@ export function registerCompactCommand(program: Command, deps: CompactCommandDep
           if (cwd) {
             promoteCwds.push(cwd);
           } else {
-            const projectsDir = lcmPath("projects");
+            const projectsDir = paths.projectsDir;
             if (existsSync(projectsDir)) {
               for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
                 if (!entry.isDirectory()) continue;

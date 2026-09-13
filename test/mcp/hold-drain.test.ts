@@ -11,10 +11,8 @@ const state = vi.hoisted(() => {
   return { root: "", accessed: false, handlers: new Map<string, any>(),
     gate: new Promise<void>((resolve) => { release = resolve; }), release: () => release() };
 });
-vi.mock("../../src/lcm-home.js", () => ({
-  lcmPath: (name: string) => `${state.root}/${name}`,
-  lcmHome: () => state.root,
-}));
+// lcmPath is gone from the module this PR leaves behind; only lcmHome is mocked.
+vi.mock("../../src/lcm-home.js", () => ({ lcmHome: () => state.root }));
 vi.mock("../../src/daemon/config.js", () => ({ loadDaemonConfig: () => ({ daemon: { port: 1 }, search: { pivotLanguage: "en" } }) }));
 vi.mock("../../src/daemon/lifecycle.js", async (original) => ({
   ...await original<typeof import("../../src/daemon/lifecycle.js")>(),

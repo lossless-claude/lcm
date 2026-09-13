@@ -20,9 +20,14 @@ vi.mock("../../src/db/events-path.js", () => ({
 import { dispatchCodexHook, type CodexHookDeps } from "../../src/hooks/codex.js";
 import { handlePostToolUse } from "../../src/hooks/post-tool.js";
 import { EventsDb } from "../../src/hooks/events-db.js";
+import { createLcmPaths } from "../../src/lcm-paths.js";
+import { lcmHome } from "../../src/lcm-home.js";
+
+// The events path is mocked above, so the root only has to be a valid one.
+const paths = createLcmPaths(lcmHome());
 
 function enabledDeps(): CodexHookDeps {
-  return { client: { post: vi.fn() }, connect: vi.fn(async () => true), enabled: true };
+  return { client: { post: vi.fn() }, connect: vi.fn(async () => true), enabled: true, paths };
 }
 
 describe("Codex PostToolUse / PostToolUseFailure capture", () => {
@@ -97,7 +102,7 @@ describe("Codex PostToolUse / PostToolUseFailure capture", () => {
     });
 
     await dispatchCodexHook(stdin, deps);
-    expect(firePromoteEventsRequest).toHaveBeenCalledWith(4242, { cwd: "/repo" });
+    expect(firePromoteEventsRequest).toHaveBeenCalledWith(4242, { cwd: "/repo" }, expect.anything());
   });
 
   it("ignores a non-tool hook_event_name and falls through to the lifecycle path", async () => {
@@ -126,7 +131,7 @@ describe("Codex PostToolUse / PostToolUseFailure capture", () => {
       tool_input: { command: "git commit -m 'shared row shape'" },
       tool_use_id: "toolu_shared",
     });
-    await handlePostToolUse(claudeStdin);
+    await handlePostToolUse(claudeStdin, paths);
 
     const db = new EventsDb(join(dir, "test.db"));
     const rows = db.getUnprocessed();

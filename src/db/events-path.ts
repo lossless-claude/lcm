@@ -1,11 +1,11 @@
 import { join } from "node:path";
 import { projectId } from "../daemon/project.js";
-import { defaultLcmPaths } from "../lcm-paths.js";
+import type { LcmPaths } from "../lcm-paths.js";
 
-export function eventsDir(): string {
-  return defaultLcmPaths.eventsDir;
+export function eventsDir(paths: LcmPaths): string {
+  return paths.eventsDir;
 }
 
-export function eventsDbPath(cwd: string): string {
-  return join(eventsDir(), `${projectId(cwd)}.db`);
+export function eventsDbPath(cwd: string, paths: LcmPaths): string {
+  return join(eventsDir(paths), `${projectId(cwd)}.db`);
 }

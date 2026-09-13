@@ -22,7 +22,8 @@ import { closeLcmConnection, getLcmConnection } from "./db/connection.js";
 import { runLcmMigrations } from "./db/migration.js";
 import { SummaryStore } from "./store/summary-store.js";
 import type { DaemonClient } from "./daemon/client.js";
-import { lcmPath } from "./lcm-home.js";
+import { lcmHome } from "./lcm-home.js";
+import { createLcmPaths } from "./lcm-paths.js";
 
 export type ReplayCommand = "import" | "compact";
 
@@ -148,9 +149,7 @@ function closeDb(opened: ProjectDbOpenResult): void {
 }
 
 function projectDbPathFor(cwd: string, lcmDir?: string): string {
-  return lcmDir
-    ? join(lcmDir, "projects", projectId(cwd), "db.sqlite")
-    : lcmPath("projects", projectId(cwd), "db.sqlite");
+  return join(lcmDir ?? createLcmPaths(lcmHome()).home, "projects", projectId(cwd), "db.sqlite");
 }
 
 function loadLatestRun(db: DatabaseSync, command: ReplayCommand): ReplayRunInfo | null {

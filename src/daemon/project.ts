@@ -2,14 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, realpathSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, normalize, join as pathJoin, dirname, basename } from "node:path";
-import { defaultLcmPaths } from "../lcm-paths.js";
-
-/**
- * Resolved once, at load: `LCM_HOME` has to be set before the process starts, which is how
- * it is meant to be used. Tests that need another root mock this export — until #409
- * threads an LcmPaths through and this export goes away.
- */
-export const BASE_DIR = defaultLcmPaths.home;
+import type { LcmPaths } from "../lcm-paths.js";
 
 function canonicalizeCwd(cwd: string): string {
   try { return realpathSync(cwd); } catch { return cwd; }
@@ -18,14 +11,14 @@ function canonicalizeCwd(cwd: string): string {
 export const projectId = (cwd: string): string =>
   createHash("sha256").update(canonicalizeCwd(cwd)).digest("hex");
 
-export const projectDir = (cwd: string): string =>
-  join(BASE_DIR, "projects", projectId(cwd));
+export const projectDir = (cwd: string, paths: LcmPaths): string =>
+  join(paths.projectsDir, projectId(cwd));
 
-export const projectDbPath = (cwd: string): string =>
-  join(projectDir(cwd), "db.sqlite");
+export const projectDbPath = (cwd: string, paths: LcmPaths): string =>
+  join(projectDir(cwd, paths), "db.sqlite");
 
-export const projectMetaPath = (cwd: string): string =>
-  join(projectDir(cwd), "meta.json");
+export const projectMetaPath = (cwd: string, paths: LcmPaths): string =>
+  join(projectDir(cwd, paths), "meta.json");
 
 /**
  * Where Claude Code writes a session's transcript: ~/.claude/projects/<cwd with every
@@ -116,8 +109,8 @@ export function isSafeTranscriptPath(transcriptPath: string, cwd: string, client
 }
 
 /** Ensures the project dir exists and writes cwd to meta.json. */
-export const ensureProjectDir = (cwd: string): string => {
-  const dir = projectDir(cwd);
+export const ensureProjectDir = (cwd: string, paths: LcmPaths): string => {
+  const dir = projectDir(cwd, paths);
   mkdirSync(dir, { recursive: true });
   const metaPath = join(dir, "meta.json");
   let meta: Record<string, unknown> = { cwd };

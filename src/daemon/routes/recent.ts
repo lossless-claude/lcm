@@ -2,6 +2,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "../config.js";
+import type { LcmPaths } from "../../lcm-paths.js";
 import { projectDbPath } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
@@ -10,7 +11,7 @@ import { ConversationStore } from "../../store/conversation-store.js";
 import { SummaryStore } from "../../store/summary-store.js";
 import { validateCwd } from "../validate-cwd.js";
 
-export function createRecentHandler(_config: DaemonConfig): RouteHandler {
+export function createRecentHandler(_config: DaemonConfig, paths: LcmPaths): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
     const { limit = 5 } = input;
@@ -29,7 +30,7 @@ export function createRecentHandler(_config: DaemonConfig): RouteHandler {
     }
 
     try {
-      const dbPath = projectDbPath(cwd);
+      const dbPath = projectDbPath(cwd, paths);
       if (!existsSync(dbPath)) {
         sendJson(res, 200, { summaries: [] });
         return;

@@ -1,15 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { EventsDb } from "../../../src/hooks/events-db.js";
 import { createPromptSearchHandler } from "../../../src/daemon/routes/prompt-search.js";
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
-
-vi.mock("../../../src/db/events-path.js", () => ({
-  eventsDbPath: () => join(process.env.TEST_EVENTS_DIR!, "events.db"),
-  eventsDir: () => process.env.TEST_EVENTS_DIR!,
-}));
+import { createLcmPaths, type LcmPaths } from "../../../src/lcm-paths.js";
+import { eventsDbPath } from "../../../src/db/events-path.js";
 
 function respond() {
   const out = { status: 0, body: {} as Record<string, unknown> };
@@ -22,16 +19,19 @@ function respond() {
 
 describe("POST /prompt-search with recordEvents (function-hooks module path)", () => {
   let dir: string;
-  const handler = createPromptSearchHandler(loadDaemonConfig(join(tmpdir(), "no-such-config.json")));
+  let paths: LcmPaths;
+  let handler: ReturnType<typeof createPromptSearchHandler>;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "prompt-search-events-"));
-    process.env.TEST_EVENTS_DIR = dir;
+    // The functions read only `paths.eventsDir`; pointing it straight at the temp
+    // dir avoids also creating the sibling `events/` directory a real home would have.
+    paths = { ...createLcmPaths(dir), eventsDir: dir };
+    handler = createPromptSearchHandler(loadDaemonConfig(join(tmpdir(), "no-such-config.json")), paths);
   });
 
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
-    delete process.env.TEST_EVENTS_DIR;
   });
 
   it("records the prompt's events even when the project has no memory DB yet", async () => {
@@ -42,7 +42,7 @@ describe("POST /prompt-search with recordEvents (function-hooks module path)", (
     expect(out.status).toBe(200);
     expect(out.body).toEqual({ hints: [] });
 
-    const db = new EventsDb(join(dir, "events.db"));
+    const db = new EventsDb(eventsDbPath(dir, paths));
     const rows = db.getUnprocessed();
     db.close();
     expect(rows.length).toBeGreaterThan(0);
@@ -55,6 +55,6 @@ describe("POST /prompt-search with recordEvents (function-hooks module path)", (
       query: "always use postgres for the migration", cwd: dir, session_id: "s1",
     }));
     const { existsSync } = await import("node:fs");
-    expect(existsSync(join(dir, "events.db"))).toBe(false);
+    expect(existsSync(eventsDbPath(dir, paths))).toBe(false);
   });
 });

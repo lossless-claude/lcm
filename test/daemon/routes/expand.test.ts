@@ -6,6 +6,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDaemon, type DaemonInstance } from "../../../src/daemon/server.js";
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { projectDbPath, projectDir } from "../../../src/daemon/project.js";
+import { lcmHome } from "../../../src/lcm-home.js";
+import { createLcmPaths } from "../../../src/lcm-paths.js";
+
+const paths = createLcmPaths(lcmHome());
 import { runLcmMigrations } from "../../../src/db/migration.js";
 import { ConversationStore } from "../../../src/store/conversation-store.js";
 import { SummaryStore } from "../../../src/store/summary-store.js";
@@ -17,8 +21,8 @@ describe("POST /expand source messages", () => {
 
   beforeEach(async () => {
     cwd = realpathSync(mkdtempSync(join(tmpdir(), "lcm-expand-leaf-")));
-    mkdirSync(projectDir(cwd), { recursive: true });
-    const db = new DatabaseSync(projectDbPath(cwd));
+    mkdirSync(projectDir(cwd, paths), { recursive: true });
+    const db = new DatabaseSync(projectDbPath(cwd, paths));
     try {
       runLcmMigrations(db);
       const conversations = new ConversationStore(db);
@@ -43,7 +47,7 @@ describe("POST /expand source messages", () => {
     await daemon?.stop();
     daemon = undefined;
     if (cwd) {
-      rmSync(projectDir(cwd), { recursive: true, force: true });
+      rmSync(projectDir(cwd, paths), { recursive: true, force: true });
       rmSync(cwd, { recursive: true, force: true });
     }
   });

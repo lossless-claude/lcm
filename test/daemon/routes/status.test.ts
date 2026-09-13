@@ -10,6 +10,10 @@ import { ConversationStore } from "../../../src/store/conversation-store.js";
 import { SummaryStore } from "../../../src/store/summary-store.js";
 import { PromotedStore } from "../../../src/db/promoted.js";
 import { projectDbPath, projectMetaPath, ensureProjectDir } from "../../../src/daemon/project.js";
+import { lcmHome } from "../../../src/lcm-home.js";
+import { createLcmPaths } from "../../../src/lcm-paths.js";
+
+const paths = createLcmPaths(lcmHome());
 import { markCompacting } from "../../../src/daemon/routes/compact.js";
 
 const tempDirs: string[] = [];
@@ -35,8 +39,8 @@ describe("POST /status", () => {
     tempDirs.push(tempDir);
 
     // Pre-populate database with messages, summaries, and promoted
-    const dbPath = projectDbPath(tempDir);
-    ensureProjectDir(tempDir);
+    const dbPath = projectDbPath(tempDir, paths);
+    ensureProjectDir(tempDir, paths);
     const db = new DatabaseSync(dbPath);
     runLcmMigrations(db);
 
@@ -83,7 +87,7 @@ describe("POST /status", () => {
     db.close();
 
     // Write meta.json with timestamps
-    const metaPath = projectMetaPath(tempDir);
+    const metaPath = projectMetaPath(tempDir, paths);
     mkdirSync(dirname(metaPath), { recursive: true });
     writeFileSync(
       metaPath,

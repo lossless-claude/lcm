@@ -8,6 +8,10 @@ import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { runLcmMigrations } from "../../../src/db/migration.js";
 import { PromotedStore } from "../../../src/db/promoted.js";
 import { projectDbPath, projectId } from "../../../src/daemon/project.js";
+import { lcmHome } from "../../../src/lcm-home.js";
+import { createLcmPaths } from "../../../src/lcm-paths.js";
+
+const paths = createLcmPaths(lcmHome());
 
 /**
  * A result that does not say which project it came from cannot be followed up
@@ -26,7 +30,7 @@ afterEach(async () => {
 function makeProject(): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "lcm-scoped-")));
   tempDirs.push(dir);
-  const dbPath = projectDbPath(dir);
+  const dbPath = projectDbPath(dir, paths);
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
   runLcmMigrations(db);

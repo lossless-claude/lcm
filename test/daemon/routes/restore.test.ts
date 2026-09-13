@@ -7,6 +7,10 @@ import { createDaemon, type DaemonInstance } from "../../../src/daemon/server.js
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { runLcmMigrations } from "../../../src/db/migration.js";
 import { projectDbPath } from "../../../src/daemon/project.js";
+import { lcmHome } from "../../../src/lcm-home.js";
+import { createLcmPaths } from "../../../src/lcm-paths.js";
+
+const paths = createLcmPaths(lcmHome());
 import { PromotedStore } from "../../../src/db/promoted.js";
 import { getLcmConnection, closeLcmConnection, getPoolStats } from "../../../src/db/connection.js";
 import { markSessionCompacted } from "../../../src/db/session-compactions.js";
@@ -70,7 +74,7 @@ describe("POST /restore", () => {
       expect(res.status).toBe(200);
       await res.json();
 
-      const dbPath = projectDbPath(realpathSync(isolatedDir));
+      const dbPath = projectDbPath(realpathSync(isolatedDir), paths);
       const db = getLcmConnection(dbPath);
       try {
         const row = db.prepare("SELECT content FROM session_instructions WHERE id = 1")
@@ -98,7 +102,7 @@ describe("POST /restore", () => {
 
     it("injects session_instructions on compact restore", async () => {
       // Pre-populate DB with session_instructions row
-      const dbPath = projectDbPath(tmpDir);
+      const dbPath = projectDbPath(tmpDir, paths);
       mkdirSync(dirname(dbPath), { recursive: true });
       const db = new DatabaseSync(dbPath);
       runLcmMigrations(db);
@@ -135,7 +139,7 @@ describe("POST /restore", () => {
       expect(body.context).not.toContain("<memory-orientation>");
 
       // Verify session_instructions was written to DB
-      const dbPath = projectDbPath(tmpDir);
+      const dbPath = projectDbPath(tmpDir, paths);
       const db = new DatabaseSync(dbPath);
       const row = db.prepare(`SELECT content, content_hash FROM session_instructions WHERE id = 1`).get() as
         | { content: string; content_hash: string }
@@ -196,7 +200,7 @@ describe("POST /restore", () => {
       writeFileSync(join(tmpDir, "CLAUDE.md"), "Updated instructions.", "utf8");
 
       // The mark /compact leaves for the restore that follows it.
-      const markDbPath = projectDbPath(realpathSync(tmpDir));
+      const markDbPath = projectDbPath(realpathSync(tmpDir), paths);
       const markDb = getLcmConnection(markDbPath);
       try {
         runLcmMigrations(markDb);
@@ -237,7 +241,7 @@ describe("POST /restore", () => {
     });
 
     it("releases restore connection references without closing another caller's connection", async () => {
-      const dbPath = projectDbPath(realpathSync(tmpDir));
+      const dbPath = projectDbPath(realpathSync(tmpDir), paths);
       const db = getLcmConnection(dbPath);
       try {
         daemon = await createDaemon(loadDaemonConfig(tmpDir, { daemon: { port: 0 } }));
@@ -273,7 +277,7 @@ describe("POST /restore", () => {
         });
         expect(res.status).toBe(200);
 
-        const dbPath = projectDbPath(realpathSync(tmpDir));
+        const dbPath = projectDbPath(realpathSync(tmpDir), paths);
         const db = getLcmConnection(dbPath);
         try {
           const row = db.prepare(`SELECT content FROM session_instructions WHERE id = 1`).get() as
@@ -303,7 +307,7 @@ describe("POST /restore", () => {
         body: JSON.stringify({ session_id: "s-hash-1", cwd: tmpDir, source: "startup" }),
       });
 
-      const dbPath = projectDbPath(tmpDir);
+      const dbPath = projectDbPath(tmpDir, paths);
       const db1 = new DatabaseSync(dbPath);
       const row1 = db1.prepare(`SELECT updated_at FROM session_instructions WHERE id = 1`).get() as
         | { updated_at: string }
@@ -341,7 +345,7 @@ describe("POST /restore", () => {
 
     it("includes insights array when passive-capture entries exist in promoted store", async () => {
       // Pre-populate DB with promoted entries tagged source:passive-capture
-      const dbPath = projectDbPath(tmpDir);
+      const dbPath = projectDbPath(tmpDir, paths);
       mkdirSync(dirname(dbPath), { recursive: true });
       const db = new DatabaseSync(dbPath);
       runLcmMigrations(db);
@@ -390,7 +394,7 @@ describe("POST /restore", () => {
     });
 
     it("filters out insights below confidence 0.3", async () => {
-      const dbPath = projectDbPath(tmpDir);
+      const dbPath = projectDbPath(tmpDir, paths);
       mkdirSync(dirname(dbPath), { recursive: true });
       const db = new DatabaseSync(dbPath);
       runLcmMigrations(db);
@@ -426,7 +430,7 @@ describe("POST /restore", () => {
     });
 
     it("excludes promoted memories older than restoreMaxPromotedAgeDays", async () => {
-      const dbPath = projectDbPath(tmpDir);
+      const dbPath = projectDbPath(tmpDir, paths);
       mkdirSync(dirname(dbPath), { recursive: true });
       const db = new DatabaseSync(dbPath);
       runLcmMigrations(db);

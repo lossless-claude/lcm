@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import { open } from "node:fs/promises";
 import { DaemonClient } from "../daemon/client.js";
 import { resolveLcmConfig } from "../db/config.js";
@@ -8,6 +7,7 @@ import { PKG_VERSION } from "../daemon/version.js";
 import { daemonNotice, warnOncePerSession } from "./fail-open.js";
 import { buildMemoryContext } from "./memory-context.js";
 import { lcmHome } from "../lcm-home.js";
+import { createLcmPaths, type LcmPaths } from "../lcm-paths.js";
 import { firePromoteEventsRequest } from "./session-end.js";
 
 const EVENTS = new Set([
@@ -79,17 +79,17 @@ function parseToolInput(stdin: string): CodexToolInput | null {
  * no daemon round trip, since PostToolUse can fire 50-200x/session and the
  * events table lives beside the project, not behind the daemon.
  */
-async function dispatchCodexToolHook(stdin: string): Promise<{ exitCode: number; stdout: string }> {
+async function dispatchCodexToolHook(stdin: string, paths: LcmPaths): Promise<{ exitCode: number; stdout: string }> {
   try {
     const input = parseToolInput(stdin);
     if (!input) return EMPTY;
     // Imported here, not at module scope: post-tool.js pulls node:sqlite, whose
     // ExperimentalWarning would then reach stderr on every lifecycle no-op too.
     const { recordPostToolEvents } = await import("./post-tool.js");
-    const outcome = recordPostToolEvents({ ...input, client: "codex" });
+    const outcome = recordPostToolEvents({ ...input, client: "codex" }, paths);
     if (outcome.hasPriority1) {
-      const config = loadDaemonConfig(join(lcmHome(), "config.json"));
-      firePromoteEventsRequest(config.daemon?.port ?? 3737, { cwd: input.cwd });
+      const config = loadDaemonConfig(paths.configPath);
+      firePromoteEventsRequest(config.daemon?.port ?? 3737, { cwd: input.cwd }, paths);
     }
   } catch (error) {
     console.error(`[lcm] Codex tool hook failed: ${error instanceof Error ? error.message : "unknown error"}`);
@@ -103,6 +103,8 @@ export interface CodexHookDeps {
   connect: (sessionId?: string, noSpawn?: boolean) => Promise<boolean>;
   /** `LCM_ENABLED=false` in the defaults; the hook exits at once when false. */
   enabled: boolean;
+  /** The storage root both branches write under, so an injected dependency isolates both. */
+  paths: LcmPaths;
 }
 
 function parseInput(stdin: string): CodexInput | null {
@@ -122,22 +124,23 @@ function parseInput(stdin: string): CodexInput | null {
 }
 
 function defaultDeps(): CodexHookDeps {
-  const base = lcmHome();
-  const config = loadDaemonConfig(join(base, "config.json"));
+  const paths: LcmPaths = createLcmPaths(lcmHome());
+  const config = loadDaemonConfig(paths.configPath);
   const port = config.daemon?.port ?? 3737;
   return {
+    paths,
     enabled: resolveLcmConfig().enabled,
-    client: new DaemonClient(`http://127.0.0.1:${port}`),
+    client: new DaemonClient(`http://127.0.0.1:${port}`, paths.tokenPath),
     // Codex must not run the Claude bootstrap that rewrites Claude settings, so the
     // fail-open notice is written here, once per session, instead of by ensureBootstrapped.
     connect: async (sessionId, noSpawn = false) => {
       const result = await ensureDaemon({
-        port, pidFilePath: join(base, "daemon.pid"), spawnTimeoutMs: noSpawn ? 0 : 5000, noSpawn, expectedVersion: PKG_VERSION,
+        port, pidFilePath: paths.pidPath, spawnTimeoutMs: noSpawn ? 0 : 5000, noSpawn, expectedVersion: PKG_VERSION,
       });
       const notice = daemonNotice(result, PKG_VERSION);
       // A short-deadline event never tried to start a daemon, so an absent one is no news.
       const startWasNotAttempted = noSpawn && !result.ownership;
-      if (notice && sessionId && !startWasNotAttempted) warnOncePerSession(sessionId, "daemon", notice.line);
+      if (notice && sessionId && !startWasNotAttempted) warnOncePerSession(sessionId, "daemon", notice.line, paths);
       return result.connected && notice?.usable !== false;
     },
   };
@@ -221,12 +224,12 @@ export async function dispatchCodexHook(
   stdin: string,
   dependencies?: CodexHookDeps,
 ): Promise<{ exitCode: number; stdout: string }> {
-  const { client, connect, enabled } = dependencies ?? defaultDeps();
+  const { client, connect, enabled, paths } = dependencies ?? defaultDeps();
   if (!enabled) return EMPTY;
   try {
     const peeked: unknown = JSON.parse(stdin || "{}");
     if (isRecord(peeked) && typeof peeked.hook_event_name === "string" && TOOL_EVENTS.has(peeked.hook_event_name)) {
-      return dispatchCodexToolHook(stdin);
+      return dispatchCodexToolHook(stdin, paths);
     }
   } catch {
     // Malformed stdin falls through to the lifecycle parser, which rejects it too.

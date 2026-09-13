@@ -5,17 +5,17 @@ import { eventsDbPath } from "../db/events-path.js";
 import { firePromoteEventsRequest } from "./session-end.js";
 import { safeLogError } from "./hook-errors.js";
 import { functionHooksOwnSession } from "./session-claim.js";
-import { lcmPath } from "../lcm-home.js";
+import type { LcmPaths } from "../lcm-paths.js";
 import { withHookWrite } from "./write-admission.js";
 
 // Back-compat re-export: some callers historically imported the function-hooks gate from this module.
 export { functionHooksActive, functionHooksOwnSession } from "./session-claim.js";
 
-/** Daemon port from ~/.lossless-claude/config.json — Claude Code does not pass it on stdin. */
-async function configuredDaemonPort(): Promise<number> {
+/** Daemon port from config.json — Claude Code does not pass it on stdin. */
+async function configuredDaemonPort(paths: LcmPaths): Promise<number> {
   try {
     const { loadDaemonConfig } = await import("../daemon/config.js");
-    return loadDaemonConfig(lcmPath("config.json")).daemon?.port ?? 3737;
+    return loadDaemonConfig(paths.configPath).daemon?.port ?? 3737;
   } catch {
     return 3737;
   }
@@ -53,7 +53,7 @@ export interface RecordedPostTool {
  * events DB. Shared by the command hook (stdin) and the daemon's POST /tool-event route
  * (function hooks module), so both paths record identical rows.
  */
-export function recordPostToolEvents(payload: PostToolPayload): RecordedPostTool {
+export function recordPostToolEvents(payload: PostToolPayload, paths: LcmPaths): RecordedPostTool {
   const sourceHook = payload.hook_event_name === "PostToolUseFailure" ? "PostToolUseFailure" : "PostToolUse";
   const events = extractPostToolEvents({
     tool_name: payload.tool_name,
@@ -75,8 +75,8 @@ export function recordPostToolEvents(payload: PostToolPayload): RecordedPostTool
   const client = payload.client === "codex" ? "codex" : "claude";
   const model = typeof payload.model === "string" && payload.model ? payload.model : null;
 
-  const recorded = withHookWrite(() => {
-    const db = new EventsDb(eventsDbPath(payload.cwd));
+  const recorded = withHookWrite(paths, () => {
+    const db = new EventsDb(eventsDbPath(payload.cwd, paths));
     try {
       // Dedup on the whole call, not each event: one call extracts several events, and a
       // per-event check would leave a half batch when the paths raced.
@@ -91,6 +91,7 @@ export function recordPostToolEvents(payload: PostToolPayload): RecordedPostTool
 
 export async function handlePostToolUse(
   stdin: string,
+  paths: LcmPaths,
 ): Promise<{ exitCode: number; stdout: string }> {
   let cwd: string | undefined;
   let sourceHook = "PostToolUse";
@@ -104,7 +105,7 @@ export async function handlePostToolUse(
     if (functionHooksOwnSession(session_id)) return { exitCode: 0, stdout: "" };
 
     cwd = input.cwd ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
-    const outcome = recordPostToolEvents({ ...input, cwd: cwd as string });
+    const outcome = recordPostToolEvents({ ...input, cwd: cwd as string }, paths);
     sourceHook = outcome.sourceHook;
 
     // Tier 1: fire-and-forget daemon promotion for high-priority events.
@@ -112,10 +113,10 @@ export async function handlePostToolUse(
     // so events already promoted by this call won't be re-promoted by the batch route
     // at session-end. No additional de-duplication guard needed.
     if (outcome.hasPriority1) {
-      firePromoteEventsRequest(await configuredDaemonPort(), { cwd });
+      firePromoteEventsRequest(await configuredDaemonPort(paths), { cwd }, paths);
     }
   } catch (error) {
-    safeLogError(sourceHook, error, { cwd });
+    safeLogError(sourceHook, error, { cwd, paths });
   }
 
   return { exitCode: 0, stdout: "" };

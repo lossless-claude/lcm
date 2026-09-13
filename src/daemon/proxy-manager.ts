@@ -1,7 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { readFileSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { lcmPath } from "../lcm-home.js";
 
 export interface ProxyManager {
   start(): Promise<void>;
@@ -15,7 +14,7 @@ export type ProxyManagerOptions = {
   port: number;
   startupTimeoutMs: number;
   model: string;
-  pidFilePath?: string;
+  pidFilePath: string;
   healthPollIntervalMs?: number;
   healthMonitorIntervalMs?: number;
   maxHealthMisses?: number;
@@ -41,7 +40,7 @@ function isProcessAlive(pid: number, killCheck?: (pid: number) => boolean): bool
 
 export function createClaudeCliProxyManager(opts: ProxyManagerOptions): ProxyManager {
   const port = opts.port;
-  const pidFilePath = opts.pidFilePath ?? lcmPath("lcm-proxy.pid");
+  const pidFilePath = opts.pidFilePath;
   const healthPollIntervalMs = opts.healthPollIntervalMs ?? 500;
   const healthMonitorIntervalMs = opts.healthMonitorIntervalMs ?? 30_000;
   const maxHealthMisses = opts.maxHealthMisses ?? 3;
