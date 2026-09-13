@@ -8,8 +8,12 @@ Passive learning captures your Claude Code sessions automatically; durable insig
 
 Two hooks capture events during your session:
 
-- **PostToolUse** — fires after every tool call. Extracts structured metadata (tool name, command, file path) from tool inputs. Never captures raw tool output.
+- **PostToolUse** / **PostToolUseFailure** — fire after every tool call, success or failure. Extract structured metadata (tool name, command, file path) from tool inputs. Raw tool input and output are not captured, with one deliberate exception: `AskUserQuestion` stores the truncated question and the answer you chose, because the answer *is* the decision the event records.
 - **UserPromptSubmit** — fires on each user prompt. Detects decisions ("always use X"), role statements ("I'm a data scientist"), and intent patterns.
+
+Both Claude Code and Codex CLI drive the same tool-event extractor: Codex's `PostToolUse` hook — and `PostToolUseFailure` where the host fires it as a distinct event, which is not guaranteed — is mapped onto the same shape Claude Code's payload has, so one extractor, one allowlist, and one truncation rule cover both harnesses. Every event records `client` (`claude` or `codex`, the harness that produced it — `claude` by default) and `model` (the model that issued the tool call). Codex's hook payload carries its model when the host sends one; Claude's never does, so that column stays null until the session's transcript is next ingested, which backfills it by matching each tool call's id.
+
+Two gaps remain for a native Codex host, tracked separately. A tool Codex serializes under its own name rather than Claude Code's — `apply_patch`, `exec_command` — matches no branch of the shared extractor and so produces no event; the Codex-only name normalizer that would close this is not implemented. And there is no per-turn transcript backfill for Codex, so a payload without `model` leaves the column null for good.
 
 Events are written to a **sidecar SQLite database** (`~/.lossless-claude/events/<project-hash>.db`) at <10ms cost. This is separate from the main LCM database — if the daemon is unavailable, events are safely queued.
 

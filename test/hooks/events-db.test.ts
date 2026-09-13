@@ -144,8 +144,93 @@ describe("EventsDb", () => {
       expect(indexRow).toBeDefined();
       expect(toolUseIndex).toBeDefined();
       expect(columns.map((c) => c.name)).toContain("tool_use_id");
+      expect(columns.map((c) => c.name)).toEqual(expect.arrayContaining(["client", "model"]));
       const versionRow = db.raw().prepare("SELECT version FROM schema_version").get() as { version: number };
-      expect(versionRow.version).toBe(5);
+      expect(versionRow.version).toBe(6);
+      db.close();
+    });
+
+    it("migrates a pre-provenance (v5) DB: existing rows read back as client 'claude' with a null model", () => {
+      const { DatabaseSync } = require("node:sqlite");
+      const { mkdirSync } = require("node:fs");
+      const { dirname } = require("node:path");
+      mkdirSync(dirname(dbPath), { recursive: true });
+      const rawDb = new DatabaseSync(dbPath);
+      rawDb.exec(`
+        CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS events (
+          event_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id    TEXT NOT NULL,
+          seq           INTEGER NOT NULL DEFAULT 0,
+          type          TEXT NOT NULL,
+          category      TEXT NOT NULL,
+          data          TEXT NOT NULL,
+          priority      INTEGER DEFAULT 3,
+          source_hook   TEXT NOT NULL,
+          tool_use_id   TEXT,
+          prompt_hash   TEXT,
+          prev_event_id INTEGER,
+          processed_at  TEXT,
+          created_at    TEXT DEFAULT (datetime('now'))
+        );
+      `);
+      rawDb.prepare("INSERT INTO schema_version (version) VALUES (5)").run();
+      rawDb.prepare(`
+        INSERT INTO events (session_id, seq, type, category, data, priority, source_hook, tool_use_id)
+        VALUES ('session-old', 1, 'file_read', 'file', 'a.ts (source)', 3, 'PostToolUse', 'toolu_1')
+      `).run();
+      rawDb.close();
+
+      const db = new EventsDb(dbPath);
+      const row = db.raw().prepare("SELECT client, model FROM events WHERE session_id = 'session-old'")
+        .get() as { client: string; model: string | null };
+      expect(row.client).toBe("claude");
+      expect(row.model).toBeNull();
+      const versionRow = db.raw().prepare("SELECT version FROM schema_version").get() as { version: number };
+      expect(versionRow.version).toBe(6);
+      db.close();
+    });
+
+    it("defaults client to 'claude' and model to null on plain insertEvent", () => {
+      const db = new EventsDb(dbPath);
+      db.insertEvent("s1", { type: "a", category: "file", data: "x", priority: 3 }, "PostToolUse");
+      const row = db.getUnprocessed()[0];
+      expect(row.client).toBe("claude");
+      expect(row.model).toBeNull();
+      db.close();
+    });
+
+    it("records client and model when a caller provides them", () => {
+      const db = new EventsDb(dbPath);
+      db.insertToolCallEvents(
+        "s1", [{ type: "git_commit", category: "git", data: "x", priority: 2 }], "PostToolUse",
+        "call_1", "codex", "gpt-5.6-codex",
+      );
+      const row = db.getUnprocessed()[0];
+      expect(row.client).toBe("codex");
+      expect(row.model).toBe("gpt-5.6-codex");
+      db.close();
+    });
+
+    it("backfillToolCallModels fills only rows still missing a model", () => {
+      const db = new EventsDb(dbPath);
+      db.insertToolCallEvents("s1", [{ type: "a", category: "file", data: "x", priority: 3 }], "PostToolUse", "toolu_1");
+      db.insertToolCallEvents(
+        "s1", [{ type: "b", category: "file", data: "y", priority: 3 }], "PostToolUse", "toolu_2", "claude", "already-set",
+      );
+      expect(db.hasUnfilledModels("s1")).toBe(true);
+
+      const updated = db.backfillToolCallModels("s1", new Map([
+        ["toolu_1", "claude-sonnet-5"],
+        ["toolu_2", "should-not-overwrite"],
+        ["toolu_unrelated", "irrelevant"],
+      ]));
+      expect(updated).toBe(1);
+
+      const rows = db.getUnprocessed();
+      expect(rows.find(r => r.tool_use_id === "toolu_1")?.model).toBe("claude-sonnet-5");
+      expect(rows.find(r => r.tool_use_id === "toolu_2")?.model).toBe("already-set");
+      expect(db.hasUnfilledModels("s1")).toBe(false);
       db.close();
     });
 

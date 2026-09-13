@@ -8,6 +8,8 @@ interface ContentBlock {
   content?: string | ContentBlock[];
   /** `tool_use` input — only read when `name === "Skill"`, for the skill's name and args. */
   input?: { skill?: unknown; args?: unknown };
+  /** `tool_use` id — the same id a PostToolUse hook payload carries as `tool_use_id`. */
+  id?: string;
 }
 
 interface TranscriptLine {
@@ -15,6 +17,8 @@ interface TranscriptLine {
   message?: {
     role?: string;
     content?: string | ContentBlock[];
+    /** The model that produced this assistant turn, including any tool calls in it. */
+    model?: string;
   };
 }
 
@@ -134,6 +138,40 @@ export function extractCommandParts(text: string): MessagePart[] {
   if (!name) return [];
   const args = searchable.match(COMMAND_ARGS_RE)?.[1]?.trim() ?? "";
   return [{ type: "command", name, args: args || null }];
+}
+
+/**
+ * The model that issued each tool call in a Claude transcript, keyed by the
+ * `tool_use` block's id — the same id a PostToolUse hook payload carries as
+ * `tool_use_id`. Claude's hook payload carries no model, so the daemon calls
+ * this at ingest to backfill it on the events already recorded for the call.
+ */
+export function extractToolUseModels(transcriptPath: string): Map<string, string> {
+  let raw: string;
+  try {
+    raw = readFileSync(transcriptPath, "utf-8");
+  } catch {
+    return new Map();
+  }
+
+  const models = new Map<string, string>();
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const obj: TranscriptLine = JSON.parse(trimmed);
+      const model = obj.message?.model;
+      if (obj.message?.role !== "assistant" || typeof model !== "string" || !model) continue;
+      for (const block of blocksOf(obj.message?.content)) {
+        if (block.type === "tool_use" && typeof block.id === "string" && block.id) {
+          models.set(block.id, model);
+        }
+      }
+    } catch {
+      // skip malformed lines
+    }
+  }
+  return models;
 }
 
 export function parseTranscript(transcriptPath: string): ParsedMessage[] {
