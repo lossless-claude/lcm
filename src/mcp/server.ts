@@ -132,9 +132,9 @@ const LOCAL_TOOLS: Partial<Record<string, (args: Record<string, unknown>) => Pro
       lines.push("");
       for (const c of stats.contested) {
         const preview = c.content.length > 80 ? c.content.slice(0, 80) + "…" : c.content;
-        lines.push(`- ${preview}`);
+        lines.push(`- ${cell(preview)}`);
         for (const o of c.objections) {
-          lines.push(`  - -1 (${o.voteId}): ${o.reason}`);
+          lines.push(`  - -1 (${o.voteId}): ${cell(o.reason)}`);
         }
       }
       lines.push("");

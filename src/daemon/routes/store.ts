@@ -3,7 +3,7 @@ import { closeLcmConnection, getLcmConnection } from "../../db/connection.js";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { projectDbPath, projectDir } from "../project.js";
-import { projectGroup } from "../project-group.js";
+import { openProject, projectGroup } from "../project-group.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import type { DaemonConfig } from "../config.js";
@@ -53,7 +53,7 @@ function resolveVoteTargetCwd(projectPath: string, memoryId: string): string | n
     if (!existsSync(dbPath)) continue;
     // The shared pool: a group member can be the database the daemon already serves, and a
     // second handle to it would miss the pool's WAL, foreign-key and busy-timeout setup.
-    let db;
+    let db: DatabaseSync | undefined;
     try {
       db = getLcmConnection(dbPath);
       const row = new PromotedStore(db).getById(memoryId);
@@ -132,6 +132,9 @@ export function createStoreHandler(config: DaemonConfig): RouteHandler {
         sendJson(res, 400, { error: parsed.error });
         return;
       }
+      // Register this checkout first: projectGroup only knows checkouts it has seen, so a
+      // first vote from an unregistered one would not find a target held by a sibling.
+      openProject(projectPath);
       const resolved = resolveVoteTargetCwd(projectPath, parsed.memoryId);
       if (!resolved) {
         sendJson(res, 400, { error: `memory_id ${parsed.memoryId} was not found (or is archived) in this project or its group` });
