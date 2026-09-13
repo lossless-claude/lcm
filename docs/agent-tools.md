@@ -182,7 +182,31 @@ lcm_store(
   text: "Fixed ECONNREFUSED by calling ensureDaemon before the request.",
   tags: ["type:solution", "scope:lcm", "sprint:sp4"]
 )
+
+# Vote that a surfaced memory still holds, naming the evidence
+lcm_store(
+  text: "Verified in bin/lcm.ts: imports still use .js extensions.",
+  tags: ["signal:memory_vote", "vote:+1", "memory_id:<id>"]
+)
+
+# Vote that a surfaced memory is contradicted, naming what contradicts it
+lcm_store(
+  text: "src/cli/help.ts now lives at src/cli/help/index.ts — the path this memory names is gone.",
+  tags: ["signal:memory_vote", "vote:-1", "memory_id:<id>"]
+)
 ```
+
+### Vote validation
+
+A `signal:memory_vote` store is validated, not just recorded: exactly one `memory_id:<id>`
+tag, exactly one `vote:+1` or `vote:-1` tag, and a non-empty `text` naming the evidence
+(required on both `+1` and `-1`). A malformed vote is rejected with a message naming the
+broken rule. The target memory may live in a sibling checkout of the same repository — the
+store resolves it across the group the way `lcm_describe` resolves a `projectId` — and is
+rejected if it can't be found (or is archived) anywhere in the group. A repeated identical
+vote from the same session counts once; an opposite vote from the same session replaces the
+earlier one. See `docs/tag-schema.md` for the full tag shape and `docs/configuration.md`
+for how votes surface in `lcm stats`.
 
 ### lcm_stats
 
@@ -193,6 +217,14 @@ Show token savings, compression ratios, and usage statistics across all lcm proj
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `verbose` | boolean | | `false` | Include per-conversation breakdown |
+
+Also reports, whenever either is non-empty: **Promotion candidates** — memories with
+reported uses at or above `promotion.enforcementThreshold` (default 3), each with its text,
+use count, `+1` count, `-1` count, and any objections — and **Contested** — memories with at
+least one `-1`, with the reason for each. Both sections are always shown when non-empty,
+independent of `verbose`: a human decides what to do with a candidate or an objection, lcm
+only surfaces the counts. See `docs/configuration.md` for the threshold and how a contested
+entry is resolved.
 
 ### lcm_doctor
 

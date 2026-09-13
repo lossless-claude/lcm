@@ -79,6 +79,10 @@ describe("printStats", () => {
       tokensSpent: 0, tokensInput: 0, tokensCached: 0, tokensOutput: 0,
       costUsd: null, callsWithCost: 0,
     },
+    eventsCaptured: 0, eventsUnprocessed: 0, eventsErrors: 0,
+    staleCount: 0,
+    promotionCandidates: [],
+    contested: [],
   };
 
   const priced = {
@@ -246,6 +250,45 @@ describe("printStats", () => {
     }, false));
     expect(out).toContain("Recall");
   });
+  it("omits Promotion Candidates and Contested when both are empty", () => {
+    const out = captureLog(() => printStats(baseStats, false));
+    expect(out).not.toContain("Promotion Candidates");
+    expect(out).not.toContain("Contested");
+  });
+
+  it("prints a promotion candidate with its four counts, non-verbose", () => {
+    const out = captureLog(() => printStats({
+      ...baseStats,
+      promotionCandidates: [
+        { id: "mem-1", content: "lcm reports; a human decides", useCount: 5, plusOne: 2, minusOne: 0, objections: [] },
+      ],
+    }, false));
+    expect(out).toContain("Promotion Candidates");
+    expect(out).toContain("lcm reports; a human decides");
+    expect(out).toContain("uses:");
+    expect(out).toContain("5");
+    expect(out).toContain("+1:");
+    expect(out).toContain("2");
+  });
+
+  it("prints a contested memory with its objection reason and vote id", () => {
+    const out = captureLog(() => printStats({
+      ...baseStats,
+      contested: [
+        {
+          id: "mem-2",
+          content: "the daemon always listens on 3737",
+          objections: [{ voteId: "vote-1", reason: "config now sets a different port" }],
+        },
+      ],
+    }, false));
+    expect(out).toContain("Contested");
+    expect(out).toContain("the daemon always listens on 3737");
+    expect(out).toContain("vote-1");
+    expect(out).toContain("config now sets a different port");
+    expect(out).toContain("review-stale");
+  });
+
   it("omits the Summarizer section until a call is recorded", () => {
     const out = captureLog(() => printStats(baseStats, false));
     expect(out).not.toContain("Summarizer");

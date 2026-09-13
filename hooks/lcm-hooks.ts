@@ -50,6 +50,11 @@ Usage: lcm_store(text: "concise insight with why", tags: ["type:decision", "proj
 
 When you act on a surfaced memory (use it to inform a decision, avoid a known pitfall, or reference it in your work), emit:
 lcm_store(text: "Acted on memory <id> — <one-line how>", tags: ["signal:memory_used", "memory_id:<id>"])
+
+When you check a surfaced memory against current evidence, vote on it (reason is required both ways):
+lcm_store(text: "<what confirmed it, e.g. a file, test, or command output>", tags: ["signal:memory_vote", "vote:+1", "memory_id:<id>"])
+lcm_store(text: "<what contradicts it>", tags: ["signal:memory_vote", "vote:-1", "memory_id:<id>"])
+"Not relevant here" is not a -1 — only a real contradiction is.
 </learning-instruction>`;
 
 /** What the module cannot read for itself: everything outside $.fs's project-and-temp reach. */
