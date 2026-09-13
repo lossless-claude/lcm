@@ -29,7 +29,7 @@ export class DryRunServiceDeps implements ServiceDeps, TeardownDeps {
     }
   }
 
-  rmSync(path: string): void {
+  rmSync(path: string, _opts?: any): void {
     console.log(`[dry-run] would remove: ${path}`);
   }
 
