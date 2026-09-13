@@ -1,19 +1,15 @@
-import { exit, stdout } from "node:process";
+import { stdout } from "node:process";
 import { homedir } from "node:os";
 import { Command } from "commander";
-import { helpRequested } from "./support.js";
+import { fail, helpRequested, showHelpAndExit } from "./support.js";
 
 export function registerConnectorsCommands(program: Command): void {
   // ─── connectors ────────────────────────────────────────────────────────────
   const connectorsCmd = new Command("connectors").description("Manage connectors for coding agents");
   connectorsCmd.helpOption(false).option("-h, --help", "Show help");
   connectorsCmd.action(async (opts) => {
-    if (helpRequested(connectorsCmd, opts)) {
-      const { printHelp } = await import("../cli-help.js");
-      printHelp("connectors"); exit(0);
-    }
-    console.error("Usage: lcm connectors <list|install|remove|doctor> [options]");
-    exit(1);
+    if (helpRequested(connectorsCmd, opts)) await showHelpAndExit("connectors");
+    fail("Usage: lcm connectors <list|install|remove|doctor> [options]");
   });
 
   connectorsCmd
@@ -24,10 +20,7 @@ export function registerConnectorsCommands(program: Command): void {
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (helpRequested(connectorsCmd, opts)) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("connectors"); exit(0);
-      }
+      if (helpRequested(connectorsCmd, opts)) await showHelpAndExit("connectors");
       const format: string = opts.format ?? "text";
       const { listConnectors } = await import("../connectors/installer.js");
       const { AGENTS } = await import("../connectors/registry.js");
@@ -67,11 +60,8 @@ export function registerConnectorsCommands(program: Command): void {
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (agentName: string | undefined, opts) => {
-      if (helpRequested(connectorsCmd, opts)) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("connectors"); exit(0);
-      }
-      if (!agentName) { console.error("Usage: lcm connectors install <agent> [--type rules|mcp|skill|hooks] [--global]"); exit(1); }
+      if (helpRequested(connectorsCmd, opts)) await showHelpAndExit("connectors");
+      if (!agentName) fail("Usage: lcm connectors install <agent> [--type rules|mcp|skill|hooks] [--global]");
       const type: any = opts.type;
       const { installConnector } = await import("../connectors/installer.js");
       try {
@@ -86,8 +76,7 @@ export function registerConnectorsCommands(program: Command): void {
           console.log();
         }
       } catch (err: any) {
-        console.error(`  Error: ${err.message}`);
-        exit(1);
+        fail(`  Error: ${err.message}`);
       }
     });
 
@@ -99,11 +88,8 @@ export function registerConnectorsCommands(program: Command): void {
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (agentName: string | undefined, opts) => {
-      if (helpRequested(connectorsCmd, opts)) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("connectors"); exit(0);
-      }
-      if (!agentName) { console.error("Usage: lcm connectors remove <agent> [--type rules|mcp|skill|hooks] [--global]"); exit(1); }
+      if (helpRequested(connectorsCmd, opts)) await showHelpAndExit("connectors");
+      if (!agentName) fail("Usage: lcm connectors remove <agent> [--type rules|mcp|skill|hooks] [--global]");
       const type: any = opts.type;
       const { removeConnector } = await import("../connectors/installer.js");
       try {
@@ -114,8 +100,7 @@ export function registerConnectorsCommands(program: Command): void {
           console.log(`\n  No connector found for ${agentName}\n`);
         }
       } catch (err: any) {
-        console.error(`  Error: ${err.message}`);
-        exit(1);
+        fail(`  Error: ${err.message}`);
       }
     });
 
@@ -126,17 +111,14 @@ export function registerConnectorsCommands(program: Command): void {
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (agentName: string | undefined, opts) => {
-      if (helpRequested(connectorsCmd, opts)) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("connectors"); exit(0);
-      }
+      if (helpRequested(connectorsCmd, opts)) await showHelpAndExit("connectors");
       const { AGENTS } = await import("../connectors/registry.js");
       const { listConnectors, diagnoseConnector } = await import("../connectors/installer.js");
       const { findAgent } = await import("../connectors/registry.js");
       const found = agentName ? findAgent(agentName) : undefined;
       const agents = found ? [found] : agentName ? [] : AGENTS;
 
-      if (agents.length === 0) { console.error(`  Unknown agent: ${agentName}`); exit(1); }
+      if (agents.length === 0) fail(`  Unknown agent: ${agentName}`);
 
       const installed = listConnectors(opts.global ? homedir() : process.cwd());
       console.log("\n  Connector health:\n");

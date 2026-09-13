@@ -1,6 +1,6 @@
 import { exit, stdout } from "node:process";
 import type { Command } from "commander";
-import { readStdin } from "./support.js";
+import { readStdin, showHelpAndExit } from "./support.js";
 
 export function registerHookCommands(program: Command): void {
   program
@@ -20,10 +20,7 @@ export function registerHookCommands(program: Command): void {
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("restore"); exit(0);
-      }
+      if (opts.help) await showHelpAndExit("restore");
       const { dispatchHook } = await import("../hooks/dispatch.js");
       const input = await readStdin();
       const r = await dispatchHook("restore", input);
@@ -38,10 +35,7 @@ export function registerHookCommands(program: Command): void {
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("session-end"); exit(0);
-      }
+      if (opts.help) await showHelpAndExit("session-end");
       const { dispatchHook } = await import("../hooks/dispatch.js");
       const input = await readStdin();
       const r = await dispatchHook("session-end", input);
@@ -56,10 +50,7 @@ export function registerHookCommands(program: Command): void {
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("user-prompt"); exit(0);
-      }
+      if (opts.help) await showHelpAndExit("user-prompt");
       const { dispatchHook } = await import("../hooks/dispatch.js");
       const input = await readStdin();
       const r = await dispatchHook("user-prompt", input);
@@ -74,10 +65,7 @@ export function registerHookCommands(program: Command): void {
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("post-tool"); exit(0);
-      }
+      if (opts.help) await showHelpAndExit("post-tool");
       const { dispatchHook } = await import("../hooks/dispatch.js");
       const input = await readStdin();
       const r = await dispatchHook("post-tool", input);

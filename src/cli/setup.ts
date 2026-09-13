@@ -1,5 +1,6 @@
 import { exit } from "node:process";
 import type { Command } from "commander";
+import { showHelpAndExit } from "./support.js";
 
 export function registerSetupCommands(program: Command): void {
   // ─── mcp ───────────────────────────────────────────────────────────────────
@@ -9,10 +10,7 @@ export function registerSetupCommands(program: Command): void {
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("mcp"); exit(0);
-      }
+      if (opts.help) await showHelpAndExit("mcp");
       const { startMcpServer } = await import("../mcp/server.js");
       await startMcpServer();
     });
@@ -25,10 +23,7 @@ export function registerSetupCommands(program: Command): void {
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("install"); exit(0);
-      }
+      if (opts.help) await showHelpAndExit("install");
       const dryRun: boolean = opts.dryRun ?? false;
       const { install } = await import("../../installer/install.js");
       if (dryRun) {
@@ -49,10 +44,7 @@ export function registerSetupCommands(program: Command): void {
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("uninstall"); exit(0);
-      }
+      if (opts.help) await showHelpAndExit("uninstall");
       const dryRun: boolean = opts.dryRun ?? false;
       const { uninstall } = await import("../../installer/uninstall.js");
       if (dryRun) {
