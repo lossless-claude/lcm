@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, existsSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +9,7 @@ import { SummaryStore } from "../../src/store/summary-store.js";
 import { projectDbPath, projectId } from "../../src/daemon/project.js";
 import { PromotedStore } from "../../src/db/promoted.js";
 import { buildBench, runBench, type BenchFile } from "../../src/bench.js";
+import { getLcmConnection } from "../../src/db/connection.js";
 
 const tempDirs: string[] = [];
 
@@ -17,6 +18,14 @@ vi.mock("../../src/daemon/project.js", async (importOriginal) => ({
   projectDbPath: (cwd: string) => join(cwd, "db.sqlite"),
   projectMetaPath: (cwd: string) => join(cwd, "meta.json"),
 }));
+
+vi.mock("../../src/db/connection.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/db/connection.js")>();
+  return {
+    getLcmConnection: vi.fn(actual.getLcmConnection),
+    closeLcmConnection: vi.fn(actual.closeLcmConnection),
+  };
+});
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
@@ -574,5 +583,35 @@ describe("lcm bench", () => {
     expect(run.exitCode, run.stdout).toBe(0);
     const { outcomes } = JSON.parse(readFileSync(run.out, "utf-8")) as { outcomes: Array<{ searchTopK: string[] }> };
     expect(outcomes[0].searchTopK).toHaveLength(5);
+  });
+
+  it("cleans up the temp ripgrep directory even when connection acquisition throws", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    const file = join(cwd, "manual.json");
+    writeFileSync(file, JSON.stringify({ version: 1, queries: [
+      { id: "test", sessionId: "sess-storage", prompt: "test", question: "Test question?", generator: "manual" },
+    ] }));
+
+    const testError = new Error("Connection acquisition failed");
+
+    // Captured, not counted: a set diff alone would also pass if the run never created a
+    // directory at all, which is the one thing this regression must not accept.
+    const rgDirsBefore = new Set(readdirSync(tmpdir()).filter((name) => name.startsWith("lcm-bench-rg-")));
+    let created: string | undefined;
+    vi.mocked(getLcmConnection).mockImplementationOnce(() => {
+      created = readdirSync(tmpdir())
+        .filter((name) => name.startsWith("lcm-bench-rg-"))
+        .find((name) => !rgDirsBefore.has(name));
+      throw testError;
+    });
+
+    const run = await runBench({ cwd, benchFile: file });
+
+    expect(run.exitCode).toBe(1);
+    expect(run.stdout).toContain("Connection acquisition failed");
+    expect(created).toBeDefined();
+    expect(existsSync(join(tmpdir(), created!))).toBe(false);
   });
 });
