@@ -8,10 +8,12 @@ import { PKG_VERSION } from "../daemon/version.js";
 import { daemonNotice, warnOncePerSession } from "./fail-open.js";
 import { buildMemoryContext } from "./memory-context.js";
 import { lcmHome } from "../lcm-home.js";
+import { firePromoteEventsRequest } from "./session-end.js";
 
 const EVENTS = new Set([
   "SessionStart", "UserPromptSubmit", "Stop", "Interrupt", "SessionEnd", "PreCompact",
 ]);
+const TOOL_EVENTS = new Set(["PostToolUse", "PostToolUseFailure"]);
 const CONTEXT_BYTES = 16_000;
 const RESTORE_EVIDENCE_BYTES = 256 * 1024;
 const EMPTY = { exitCode: 0, stdout: "" };
@@ -24,6 +26,76 @@ type CodexInput = {
   source?: string;
   prompt?: string;
 };
+
+/**
+ * A Codex `PostToolUse` / `PostToolUseFailure` payload. Codex's hook reference
+ * names these fields the same way Claude Code's tool hooks do — `tool_name`,
+ * `tool_input`, `tool_response`, `tool_use_id`, `error` — with one addition:
+ * `model`, the id of the model that issued the call. Claude's payload has no
+ * such field, which is why that harness's rows are backfilled from the
+ * transcript at ingest instead.
+ */
+type CodexToolInput = {
+  hook_event_name: "PostToolUse" | "PostToolUseFailure";
+  session_id: string;
+  cwd: string;
+  tool_name: string;
+  tool_input?: Record<string, unknown>;
+  tool_response?: unknown;
+  tool_use_id?: string;
+  error?: string;
+  is_interrupt?: boolean;
+  model?: string;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseToolInput(stdin: string): CodexToolInput | null {
+  const input = JSON.parse(stdin || "{}");
+  if (!input || typeof input !== "object" ||
+      !TOOL_EVENTS.has(input.hook_event_name) ||
+      typeof input.session_id !== "string" || !input.session_id.trim() ||
+      typeof input.cwd !== "string" || !input.cwd.trim() ||
+      typeof input.tool_name !== "string" || !input.tool_name.trim()) return null;
+  return {
+    hook_event_name: input.hook_event_name,
+    session_id: input.session_id,
+    cwd: input.cwd,
+    tool_name: input.tool_name,
+    ...(isRecord(input.tool_input) ? { tool_input: input.tool_input } : {}),
+    ...(input.tool_response !== undefined ? { tool_response: input.tool_response } : {}),
+    ...(typeof input.tool_use_id === "string" && input.tool_use_id ? { tool_use_id: input.tool_use_id } : {}),
+    ...(typeof input.error === "string" ? { error: input.error } : {}),
+    ...(typeof input.is_interrupt === "boolean" ? { is_interrupt: input.is_interrupt } : {}),
+    ...(typeof input.model === "string" && input.model ? { model: input.model } : {}),
+  };
+}
+
+/**
+ * Codex `PostToolUse` / `PostToolUseFailure`. This writes straight to the
+ * project's local sidecar, exactly like Claude Code's command hook does —
+ * no daemon round trip, since PostToolUse can fire 50-200x/session and the
+ * events table lives beside the project, not behind the daemon.
+ */
+async function dispatchCodexToolHook(stdin: string): Promise<{ exitCode: number; stdout: string }> {
+  try {
+    const input = parseToolInput(stdin);
+    if (!input) return EMPTY;
+    // Imported here, not at module scope: post-tool.js pulls node:sqlite, whose
+    // ExperimentalWarning would then reach stderr on every lifecycle no-op too.
+    const { recordPostToolEvents } = await import("./post-tool.js");
+    const outcome = recordPostToolEvents({ ...input, client: "codex" });
+    if (outcome.hasPriority1) {
+      const config = loadDaemonConfig(join(lcmHome(), "config.json"));
+      firePromoteEventsRequest(config.daemon?.port ?? 3737, { cwd: input.cwd });
+    }
+  } catch (error) {
+    console.error(`[lcm] Codex tool hook failed: ${error instanceof Error ? error.message : "unknown error"}`);
+  }
+  return EMPTY;
+}
 
 export interface CodexHookDeps {
   client: Pick<DaemonClient, "post">;
@@ -151,6 +223,14 @@ export async function dispatchCodexHook(
 ): Promise<{ exitCode: number; stdout: string }> {
   const { client, connect, enabled } = dependencies ?? defaultDeps();
   if (!enabled) return EMPTY;
+  try {
+    const peeked: unknown = JSON.parse(stdin || "{}");
+    if (isRecord(peeked) && typeof peeked.hook_event_name === "string" && TOOL_EVENTS.has(peeked.hook_event_name)) {
+      return dispatchCodexToolHook(stdin);
+    }
+  } catch {
+    // Malformed stdin falls through to the lifecycle parser, which rejects it too.
+  }
   try {
     const input = parseInput(stdin);
     if (!input) return EMPTY;
