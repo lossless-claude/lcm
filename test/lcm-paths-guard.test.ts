@@ -122,3 +122,69 @@ describe("homedir() outside the factory never builds an lcm storage path", () =>
       .toEqual([]);
   });
 });
+
+/**
+ * The call sites that still resolve a root from the ambient environment via `lcmHome()`.
+ *
+ * Two kinds live here, and only one of them is finished work. A **composition root** is an
+ * entry point — a CLI command, a hook dispatcher, the MCP and daemon servers — and resolving
+ * the root once, there, is exactly what #409 asks for. A **library fallback** is a helper
+ * that resolves its own root when a caller does not hand it one; those are what #409 set out
+ * to remove and has not removed yet. They are listed by name so the set cannot grow quietly,
+ * and so the remaining work is visible rather than implied by the absence of a check.
+ */
+/** A call, not the name in a comment: the hooks module names it in prose only. */
+function callsLcmHome(file: string): boolean {
+  return readFileSync(file, "utf-8")
+    .split("\n")
+    .some((line) => !line.trimStart().startsWith("//") && /\blcmHome\(\)/.test(line));
+}
+
+const LCM_HOME_ALLOWLIST: Record<string, string> = {
+  // Composition roots: one resolution, at an entry point.
+  "bin/lcm.ts": "composition root: the CLI entry point",
+  "src/cli/compact.ts": "composition root: the `lcm compact` command",
+  "src/cli/daemon.ts": "composition root: the `lcm daemon` commands",
+  "src/cli/diagnostics.ts": "composition root: the `lcm doctor`/`lcm diagnose` commands",
+  "src/cli/knowledge.ts": "composition root: the import/promote/export commands",
+  "src/cli/sensitive.ts": "composition root: the `lcm sensitive` commands",
+  "src/daemon/server.ts": "composition root: the daemon process",
+  "src/mcp/server.ts": "composition root: the MCP server process",
+  "src/hooks/dispatch.ts": "composition root: the hook entry point",
+  "src/hooks/codex.ts": "composition root: the Codex hook entry point",
+  "src/hooks/probe-precompact.ts": "composition root: a standalone probe binary",
+  "src/hooks/probe-sessionstart.ts": "composition root: a standalone probe binary",
+  "src/bench.ts": "composition root: the `lcm bench` command",
+  "src/doctor/doctor.ts": "composition root: the doctor run, which also reports the root",
+
+  // Library fallbacks: #409 is not finished until each takes its paths from its caller.
+  "src/batch-compact.ts": "library fallback: findProjects resolves its own projects dir",
+  "src/bootstrap.ts": "library fallback: the bootstrap marker is not taken from dispatchHook's paths",
+  "src/hooks/auto-heal.ts": "library fallback: defaultDeps derives auto-heal.log from the ambient root",
+  "src/import.ts": "library fallback: buildProjectMap resolves its own projects dir",
+  "src/memory/index.ts": "library fallback: the default client's token path is resolved at module load",
+  "src/portable-knowledge.ts": "library fallback: returns the ambient root to its callers",
+  "src/replay-resume.ts": "library fallback: reconstructs the project database path when lcmDir is omitted",
+  "src/sensitive.ts": "library fallback: builds a config path when the caller omits one",
+  "src/stats.ts": "library fallback: collectStats resolves its own root",
+  "src/store/language-pack.ts": "library fallback: language packs are read and written under the ambient root",
+};
+
+describe("lcmHome() outside the factory is named, not incidental", () => {
+  it("names every caller in the allowlist, composition root or remaining fallback", () => {
+    const offenders = sourceFiles()
+      .filter((file) => !FACTORY.includes(file))
+      .filter((file) => file !== HOST_COMMAND) // spells the fallback in a shell command, not a call
+      .filter((file) => !(file in LCM_HOME_ALLOWLIST))
+      .filter(callsLcmHome);
+    expect(offenders, "a new lcmHome() call site must be a composition root, or take its paths from its caller — add it to LCM_HOME_ALLOWLIST with which it is, or thread an LcmPaths through instead")
+      .toEqual([]);
+  });
+
+  it("keeps the allowlist honest: every entry still calls lcmHome()", () => {
+    const stale = Object.keys(LCM_HOME_ALLOWLIST)
+      .filter((file) => !callsLcmHome(file));
+    expect(stale, "these files no longer call lcmHome(); drop them from LCM_HOME_ALLOWLIST")
+      .toEqual([]);
+  });
+});
