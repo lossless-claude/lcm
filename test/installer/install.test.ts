@@ -267,6 +267,31 @@ describe("install with DryRunServiceDeps", () => {
   });
 });
 
+describe("install — plugin cache cleanup", () => {
+  it("removes only older, unregistered cache versions", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const fakeHome = mkdtempSync(join(tmpdir(), "lcm-install-cache-"));
+    const originalHome = process.env.HOME;
+    process.env.HOME = fakeHome;
+    try {
+      const home = join(fakeHome, ".claude", "plugins", "cache", "lossless-claude", "lcm");
+      for (const v of ["0.1.0", "0.2.0", "99.0.0"]) mkdirSync(join(home, v), { recursive: true });
+      const registry = JSON.stringify({ version: 2, plugins: { "lcm@lossless-claude": [{ scope: "user", version: "0.2.0", installPath: join(home, "0.2.0") }] } });
+      const deps = makeDeps({
+        existsSync: vi.fn().mockImplementation((p: string) => p === home),
+        readFileSync: vi.fn().mockImplementation((p: string) => p.endsWith("installed_plugins.json") ? registry : "{}"),
+      });
+      await install(deps);
+      const removed = (deps.rmSync as ReturnType<typeof vi.fn>).mock.calls.map((c: any[]) => c[0]);
+      expect(removed).toEqual([join(home, "0.1.0")]); // 0.2.0 is registered, 99.0.0 is newer
+    } finally {
+      process.env.HOME = originalHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+      vi.mocked(console.log).mockRestore();
+    }
+  });
+});
+
 describe("install — Codex", () => {
   const codexFound = vi.fn().mockImplementation((cmd: string, args: string[]) =>
     ({ status: cmd === "sh" && args[1] === "command -v codex" ? 0 : 1, stdout: "/usr/local/bin/codex", stderr: "", pid: 1, output: [], signal: null }));

@@ -190,16 +190,22 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<InstallO
   try {
     claude = await installClaudeCode(deps);
   } catch (err) {
+    if (err instanceof Error && err.stack) console.error(err.stack);
     claude = { status: "failed", detail: err instanceof Error ? err.message : String(err) };
   }
   const codex = installCodex(deps);
 
-  console.log("");
-  for (const [harness, outcome] of [["Claude Code", claude], ["Codex", codex]] as const) {
-    const mark = outcome.status === "ok" ? "✓" : outcome.status === "skipped" ? "○" : "✗";
-    console.log(`  ${mark} ${harness}: ${outcome.detail}`);
-  }
+  reportInstallOutcomes({ claude, codex });
   return { claude, codex };
+}
+
+const OUTCOME_MARKS: Record<HarnessOutcome["status"], string> = { ok: "✓", skipped: "○", failed: "✗" };
+
+function reportInstallOutcomes(outcome: InstallOutcome): void {
+  console.log("");
+  for (const [harness, result] of [["Claude Code", outcome.claude], ["Codex", outcome.codex]] as const) {
+    console.log(`  ${OUTCOME_MARKS[result.status]} ${harness}: ${result.detail}`);
+  }
 }
 
 /**
@@ -231,15 +237,34 @@ function installCodex(deps: ServiceDeps): HarnessOutcome {
   }
 }
 
+/** Every install directory Claude Code's plugin registry records for lcm, whatever the scope. */
+function registeredPluginPaths(deps: Pick<ServiceDeps, "readFileSync">): Set<string> {
+  const paths = new Set<string>();
+  try {
+    const registry = JSON.parse(deps.readFileSync(join(homedir(), ".claude", "plugins", "installed_plugins.json"), "utf-8")) as { plugins?: Record<string, unknown> };
+    for (const [key, value] of Object.entries(registry.plugins ?? {})) {
+      if (key !== "lcm" && !key.startsWith("lcm@")) continue;
+      for (const entry of Array.isArray(value) ? value : [value]) {
+        const installPath = (entry as { installPath?: unknown } | undefined)?.installPath;
+        if (typeof installPath === "string") paths.add(installPath);
+      }
+    }
+  } catch { /* no registry: nothing is registered */ }
+  return paths;
+}
+
 async function installClaudeCode(deps: ServiceDeps): Promise<HarnessOutcome> {
   const lcDir = join(homedir(), ".lossless-claude");
   deps.mkdirSync(lcDir, { recursive: true });
   // Clear plugin cache entries for older versions so stale/corrupted installs don't persist.
-  // Only older: a newer plugin next to an older npm CLI is a supported state (newest wins).
+  // Only older, and never the install Claude Code's registry points at: a plugin of any
+  // version next to this CLI is a supported state (newest wins), and its directory is live.
   try {
     const cacheDir = join(homedir(), ".claude", "plugins", "cache", "lossless-claude", "lcm");
+    const registered = registeredPluginPaths(deps);
     if (PKG_VERSION && deps.existsSync(cacheDir)) {
       for (const entry of readdirSync(cacheDir, { withFileTypes: true })) {
+        if (registered.has(join(cacheDir, entry.name))) continue;
         if (entry.isDirectory() && isOlderVersion(entry.name, PKG_VERSION)) {
           console.log(`Clearing plugin cache for v${entry.name}`);
           deps.rmSync(join(cacheDir, entry.name), { recursive: true, force: true });
@@ -340,9 +365,11 @@ async function installClaudeCode(deps: ServiceDeps): Promise<HarnessOutcome> {
   const results = await _runDoctor();
   // Only what install itself set up counts as its failure; an optional summarizer CLI
   // being absent is doctor's advice, not a broken Claude Code install.
-  // A missing plugin bundle is repaired by `claude plugin update`, not by install.
+  // A missing plugin bundle or a newer incompatible daemon is repaired by updating this
+  // distribution, not by install.
   const owned = new Set(["Stack", "Daemon", "Settings"]);
-  const failures = results.filter((r) => r.status === "fail" && r.name !== "plugin-bundle" && (r.category === undefined || owned.has(r.category)));
+  const external = new Set(["plugin-bundle", "daemon-version"]);
+  const failures = results.filter((r) => r.status === "fail" && !external.has(r.name) && (r.category === undefined || owned.has(r.category)));
   if (failures.length > 0) {
     return { status: "failed", detail: `${failures.length} doctor check(s) failed (${failures.map((r) => r.name).join(", ")}) — run: lcm doctor` };
   }

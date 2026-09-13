@@ -27,7 +27,8 @@ type CodexInput = {
 
 export interface CodexHookDeps {
   client: Pick<DaemonClient, "post">;
-  connect: (sessionId?: string) => Promise<boolean>;
+  /** `noSpawn`: only check a running daemon (short-deadline events), never start one. */
+  connect: (sessionId?: string, noSpawn?: boolean) => Promise<boolean>;
   /** `LCM_ENABLED=false` in the defaults; the hook exits at once when false. */
   enabled: boolean;
 }
@@ -57,9 +58,9 @@ function defaultDeps(): CodexHookDeps {
     client: new DaemonClient(`http://127.0.0.1:${port}`),
     // Codex must not run the Claude bootstrap that rewrites Claude settings, so the
     // fail-open notice is written here, once per session, instead of by ensureBootstrapped.
-    connect: async (sessionId) => {
+    connect: async (sessionId, noSpawn = false) => {
       const result = await ensureDaemon({
-        port, pidFilePath: join(base, "daemon.pid"), spawnTimeoutMs: 5000, expectedVersion: PKG_VERSION,
+        port, pidFilePath: join(base, "daemon.pid"), spawnTimeoutMs: noSpawn ? 0 : 5000, noSpawn, expectedVersion: PKG_VERSION,
       });
       const notice = daemonNotice(result, PKG_VERSION);
       if (notice && sessionId) warnOncePerSession(sessionId, "daemon", notice.line);
@@ -152,9 +153,9 @@ export async function dispatchCodexHook(
     const input = parseInput(stdin);
     if (!input) return EMPTY;
     const shortDeadline = input.hook_event_name === "Interrupt" || input.hook_event_name === "SessionEnd";
-    // Codex caps Interrupt and SessionEnd hooks at three seconds. Do not start
-    // or probe the daemon; send one short write to an already running daemon.
-    if (!shortDeadline && !await connect(input.session_id)) {
+    // Codex caps Interrupt and SessionEnd hooks at three seconds. Never start a
+    // daemon there; one health probe still keeps an incompatible daemon unused.
+    if (!await connect(input.session_id, shortDeadline)) {
       console.error("[lcm] Codex memory daemon is unavailable; capture and recall deferred.");
       return EMPTY;
     }

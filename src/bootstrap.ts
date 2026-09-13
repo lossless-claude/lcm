@@ -5,7 +5,7 @@ import { mergeClaudeSettings } from "./installer/settings.js";
 import { loadDaemonConfig } from "./daemon/config.js";
 import { lcmPath } from "./lcm-home.js";
 import { PKG_VERSION } from "./daemon/version.js";
-import { daemonNotice } from "./hooks/fail-open.js";
+import { daemonNotice, type DaemonNotice } from "./hooks/fail-open.js";
 
 export type EnsureDaemonOutcome = { connected: boolean; ownership?: string; daemonVersion?: string };
 
@@ -100,7 +100,8 @@ const UNUSABLE_PREFIX = "unusable:";
  * Runs `ensureCore` once per session and returns whether this session's hooks may
  * talk to the daemon. The first hook of a session writes the verdict into the flag
  * file and, when something is wrong, one line on stderr naming the repair; every
- * later hook only reads the flag back. A hook never throws or exits non-zero here.
+ * later hook only reads the flag back. A failing setup is reported the same way and
+ * still writes the flag, so it is attempted once per session, not once per hook.
  */
 export async function ensureBootstrapped(
   sessionId: string,
@@ -118,8 +119,15 @@ export async function ensureBootstrapped(
     }
   } catch {}
 
-  const { port, daemon } = await ensureCore(deps);
-  const notice = daemonNotice({ ...daemon, port }, PKG_VERSION);
+  let notice: DaemonNotice | undefined;
+  try {
+    const { port, daemon } = await ensureCore(deps);
+    notice = daemonNotice({ ...daemon, port }, PKG_VERSION);
+  } catch (err) {
+    // The flag is still written below: a broken environment is reported once, not
+    // re-attempted (with its daemon timeout) by every hook of the session.
+    notice = { usable: true, line: `lcm: setup failed (${err instanceof Error ? err.message : String(err)}); memory is off for this session. Repair: lcm doctor` };
+  }
   if (notice) deps.warn(notice.line);
   const usable = notice?.usable ?? true;
   try { deps.writeFlag(flagPath, usable ? "" : `${UNUSABLE_PREFIX} ${notice!.line}`); } catch {}

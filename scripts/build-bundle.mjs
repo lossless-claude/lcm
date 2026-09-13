@@ -17,8 +17,8 @@
 // Usage: node scripts/build-bundle.mjs [outDir]   (default: ./bundle)
 
 import { build } from "esbuild";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -30,8 +30,18 @@ export async function buildBundle({ root = repoRoot, outDir = join(root, "bundle
     throw new Error(`build-bundle: ${buildIdPath} missing — run \`npm run build\` first`);
   }
   buildId ??= readFileSync(buildIdPath, "utf8").trim();
+  // The runtime accepts exactly this shape (src/daemon/version.ts); anything else would
+  // silently leave the bundle without a build id.
+  if (!/^[0-9a-f]{16}$/.test(buildId)) throw new Error(`build-bundle: malformed build id ${JSON.stringify(buildId)}`);
 
-  rmSync(outDir, { recursive: true, force: true });
+  // Only the three artifacts are replaced, never the directory itself, so no output
+  // directory can delete anything else; the repository root is still refused outright.
+  if (relative(root, outDir) === "") {
+    throw new Error(`build-bundle: output directory must not be the repository root (${root})`);
+  }
+  for (const artifact of ["lcm.js", "mcp-server.js", "assets"]) {
+    rmSync(join(outDir, artifact), { recursive: true, force: true });
+  }
   mkdirSync(outDir, { recursive: true });
 
   const common = {
@@ -62,7 +72,8 @@ export async function buildBundle({ root = repoRoot, outDir = join(root, "bundle
 
   const assets = join(outDir, "assets");
   mkdirSync(join(assets, "prompts"), { recursive: true });
-  cpSync(join(root, "src", "prompts"), join(assets, "prompts"), { recursive: true, filter: (src) => !src.endsWith(".ts") });
+  // The same selection as the npm artifact: the YAML templates, nothing else.
+  cpSync(join(root, "src", "prompts"), join(assets, "prompts"), { recursive: true, filter: (src) => statSync(src).isDirectory() || src.endsWith(".yaml") });
   cpSync(join(root, "src", "connectors", "templates"), join(assets, "templates"), { recursive: true });
   cpSync(join(root, "installer", "setup.sh"), join(assets, "setup.sh"));
 

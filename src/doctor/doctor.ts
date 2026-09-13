@@ -91,7 +91,11 @@ function readLcmPluginRegistration(deps: DoctorDeps, settings: Record<string, un
  * references the bundle is held to this; releases before it ran a launcher.
  */
 function addPluginBundleCheck(results: CheckResult[], deps: DoctorDeps, plugin: PluginRegistration): void {
-  if (!plugin.installed || !plugin.installPath) return;
+  if (!plugin.installed) return;
+  if (!plugin.installPath) {
+    results.push({ name: "plugin-bundle", category: "Settings", status: "warn", message: "plugin registry entry has no installPath; bundle not checked" });
+    return;
+  }
   const manifestPath = join(plugin.installPath, ".claude-plugin", "plugin.json");
   let manifest = "";
   try {
@@ -298,7 +302,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
     if (ownership === "incompatible") {
       // Newest wins: a newer, incompatible daemon is never restarted; this install must be updated.
       results.push({
-        name: "daemon", category: "Daemon", status: "fail",
+        name: "daemon-version", category: "Daemon", status: "fail",
         message: `localhost:${config.port} — daemon v${daemonVersion} is newer than the installed v${pkgVersion} and incompatible; hooks and MCP fail open\n     Fix: ${repairCommand()}`,
       });
       daemonHealthy = false;

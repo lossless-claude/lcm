@@ -14,6 +14,7 @@
 
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
 import { spawn } from "node:child_process";
+import { createServer } from "node:net";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -65,7 +66,18 @@ function manifestHook(event: string): CommandHook {
 }
 
 /** Exactly what Claude Code does with an exec-form hook: substitute the placeholder, spawn without a shell. */
-function runHook(hook: CommandHook, stdin: string, cwd = pluginRoot): Promise<{ status: number | null; stdout: string; stderr: string }> {
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address() as { port: number };
+      server.close(() => resolve(port));
+    });
+    server.on("error", reject);
+  });
+}
+
+function runHook(hook: CommandHook, stdin: string, cwd = pluginRoot, home = fakeHome): Promise<{ status: number | null; stdout: string; stderr: string }> {
   expect(hook.args, "plugin hooks must be exec form: command + args, no shell").toBeDefined();
   const substitute = (s: string) => s.replaceAll("${CLAUDE_PLUGIN_ROOT}", pluginRoot);
   const command = substitute(hook.command);
@@ -75,8 +87,8 @@ function runHook(hook: CommandHook, stdin: string, cwd = pluginRoot): Promise<{ 
       cwd,
       env: {
         PATH: dirname(process.execPath),
-        HOME: fakeHome,
-        LCM_HOME: join(fakeHome, ".lossless-claude"),
+        HOME: home,
+        LCM_HOME: join(home, ".lossless-claude"),
         npm_config_cache: join(fakeHome, "npm-cache"),
         TMPDIR: tmpdir(),
       },
@@ -147,6 +159,25 @@ describe("Flow 21: the installed plugin runs from bundle/ with no npm cache", { 
     expect(reply.result.tools.map((t: { name: string }) => t.name).sort()).toEqual([
       "lcm_describe", "lcm_doctor", "lcm_expand", "lcm_grep", "lcm_search", "lcm_stats", "lcm_store",
     ]);
+  });
+
+  it("starts and stops the daemon from bundle/lcm.js", async () => {
+    // A second home: its config names a free port so this daemon is the bundle's own.
+    const daemonHome = mkdtempSync(join(tmpdir(), "lcm-plugin-daemon-"));
+    const port = await freePort();
+    mkdirSync(join(daemonHome, ".lossless-claude"), { recursive: true });
+    writeFileSync(join(daemonHome, ".lossless-claude", "config.json"), JSON.stringify({ daemon: { port } }));
+    const cli = (args: string[]) => runHook({ type: "command", command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/bundle/lcm.js", ...args] }, "", daemonHome, daemonHome);
+    try {
+      const started = await cli(["daemon", "start", "--detach"]);
+      expect(started.status, started.stderr).toBe(0);
+      const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json() as { status: string; version?: string };
+      expect(health.status).toBe("ok");
+      expect(health.version).toBe(JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")).version);
+    } finally {
+      await cli(["daemon", "stop"]);
+      rmSync(daemonHome, { recursive: true, force: true });
+    }
   });
 
   it("registers the MCP server in exec form, pointing at the bundle", () => {

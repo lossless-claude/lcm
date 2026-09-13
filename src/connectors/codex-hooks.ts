@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { cliEntrypoint } from "../cli-entrypoint.js";
+import { runningFromPluginBundle } from "../hooks/fail-open.js";
 
 const LCM_STATUS_PREFIX = "LCM lifecycle:";
 
@@ -80,6 +81,10 @@ function quoteShellArgument(value: string): string {
 }
 
 export function buildCodexHookCommand(options: CodexHookCommandOptions = {}): string {
+  if (!options.cliPath && runningFromPluginBundle()) {
+    // The hooks would name a versioned plugin-cache path the next plugin update deletes.
+    throw new Error("Codex hooks must name the npm CLI, not the plugin bundle: run this from the npm CLI (npm install -g @lossless-claude/lcm) instead");
+  }
   const nodePath = resolve(options.nodePath ?? process.execPath);
   const argvPath = process.argv[1];
   const argvBase = argvPath ? basename(argvPath) : "";

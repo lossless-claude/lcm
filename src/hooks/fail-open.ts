@@ -58,6 +58,13 @@ export function daemonNotice(
       line: `lcm: daemon v${result.daemonVersion} is newer than this hook (v${mine}) and incompatible; memory is off for this session. Repair: ${repairCommand(entry)}`,
     };
   }
+  if (!result.connected && result.ownership === "restart") {
+    // A caller that may not spawn met an older daemon: it is running, just not replaced yet.
+    return {
+      usable: true,
+      line: `lcm: daemon v${result.daemonVersion} is older than this hook (v${mine}); the next hook that may start one replaces it. Repair: ${cliInvocation(entry)} daemon restart`,
+    };
+  }
   if (!result.connected) {
     // A marketplace install has no `lcm` on PATH; name the bundle it does have.
     return {

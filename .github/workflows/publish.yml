@@ -60,6 +60,12 @@ jobs:
       # The tag comes first: the marketplace entry for this version points at
       # it (sync-versions.mjs writes `ref: vX.Y.Z`), so a fresh plugin install
       # resolves as soon as this step lands. CI already ran on this commit.
+      # The marketplace installs the plugin from this tag and runs bundle/ directly, so a
+      # commit without the bundle must never become a release.
+      - name: Verify the plugin bundle is committed
+        if: steps.check.outputs.tag_done == 'false'
+        run: test -f bundle/lcm.js && test -f bundle/mcp-server.js
+
       - name: Create and push release tag
         if: steps.check.outputs.tag_done == 'false'
         run: |

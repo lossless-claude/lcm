@@ -1,5 +1,6 @@
 import { exit } from "node:process";
 import type { Command } from "commander";
+import type { InstallOutcome } from "../../installer/install.js";
 import { showHelpAndExit } from "./support.js";
 
 export function registerSetupCommands(program: Command): void {
@@ -26,7 +27,7 @@ export function registerSetupCommands(program: Command): void {
       if (opts.help) await showHelpAndExit("install");
       const dryRun: boolean = opts.dryRun ?? false;
       const { install } = await import("../../installer/install.js");
-      let outcome;
+      let outcome: InstallOutcome;
       if (dryRun) {
         const { DryRunServiceDeps } = await import("../../installer/dry-run-deps.js");
         console.log("\n  lcm install --dry-run\n");

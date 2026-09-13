@@ -56,7 +56,8 @@ that install fails; the workflow closes it on its own.
 
 `bundle/` is the plugin artifact (`docs/design/self-contained-plugin.md`): a
 marketplace install runs it with only `node` on PATH. It changes only in version
-PRs, so between releases `main` carries the previous release's bundle; `npm run
+PRs, so between releases `main` carries the previous release's bundle (none until
+the first bundled release ships, and `publish.yml` refuses to tag without one); `npm run
 build` never touches it, and `.gitattributes` diffs it as binary. `dist/` stays
 the npm artifact.
 
