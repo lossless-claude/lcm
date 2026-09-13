@@ -8,7 +8,7 @@ All storage is on your machine:
 
 - **`~/.lossless-claude/projects/{hash}/db.sqlite`** — Conversation messages, summaries, and promoted long-term memory for each project. The hash is a SHA-256 of the project directory path.
 - **`~/.lossless-claude/projects/{hash}/sensitive-patterns.txt`** — Per-project sensitive patterns (if configured).
-- **`~/.lossless-claude/events/{hash}.db`** — The passive-learning sidecar (see [passive-learning.md](passive-learning.md)): structured metadata extracted from tool calls and prompts, never raw tool input or output. One extractor and one truncation rule cover both harnesses; a row also records `client` (`claude` or `codex`, the harness that produced it) and `model` (the model that issued the call, when known). Neither field changes what an extractor is allowed to read.
+- **`~/.lossless-claude/events/{hash}.db`** — The passive-learning sidecar (see [passive-learning.md](passive-learning.md)): structured metadata extracted from tool calls and prompts. Raw tool input and output are not stored, except that an `AskUserQuestion` event keeps the truncated question and the answer you chose, which is the decision it exists to record. One extractor and one truncation rule cover both harnesses; a row also records `client` (`claude` or `codex`, the harness that produced it) and `model` (the model that issued the call, when known). Neither field changes what an extractor is allowed to read.
 - **`~/.lossless-claude/config.json`** — Global configuration including the optional `security.sensitivePatterns` array.
 - **`~/.lossless-claude/daemon.pid`** — Daemon process ID (transient).
 

@@ -297,7 +297,11 @@ function resolveClaudeTranscriptPathForBackfill(input: IngestInput, cwd: string)
  */
 function backfillClaudeToolModels(cwd: string, sessionId: string, transcriptPath: string | undefined): void {
   if (!transcriptPath) return;
-  const db = new EventsDb(eventsDbPath(cwd));
+  // An import-only project has no sidecar: opening one here would create and migrate
+  // an empty database on every ingest, for rows that cannot exist.
+  const sidecarPath = eventsDbPath(cwd);
+  if (!existsSync(sidecarPath)) return;
+  const db = new EventsDb(sidecarPath);
   try {
     if (!db.hasUnfilledModels(sessionId)) return;
     db.backfillToolCallModels(sessionId, extractToolUseModels(transcriptPath));
@@ -456,13 +460,18 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
         } catch (err) {
           console.error(`ingest: subagent discovery failed for session ${session_id}: ${err instanceof Error ? err.message : err}`);
         }
-        try {
-          backfillClaudeToolModels(cwd, session_id, resolveClaudeTranscriptPathForBackfill(input, cwd));
-        } catch (err) {
-          console.error(`ingest: model backfill failed for session ${session_id}: ${err instanceof Error ? err.message : err}`);
-        }
       }
       sendJson(res, 200, result);
+      // After the response: the scan is O(transcript) and the caller is waiting.
+      if (input.client !== "codex") {
+        setImmediate(() => {
+          try {
+            backfillClaudeToolModels(cwd, session_id, resolveClaudeTranscriptPathForBackfill(input, cwd));
+          } catch (err) {
+            console.error(`ingest: model backfill failed for session ${session_id}: ${err instanceof Error ? err.message : err}`);
+          }
+        });
+      }
     } catch (err) {
       sendJson(res, err instanceof TranscriptError ? 400 : 500, { error: err instanceof Error ? err.message : "ingest failed" });
     }

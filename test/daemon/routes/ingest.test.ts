@@ -528,10 +528,15 @@ describe("POST /ingest", () => {
     });
     expect(res.status).toBe(200);
 
-    const after = new EventsDb(eventsDbPath(tempDir));
-    const row = after.getUnprocessed().find(r => r.tool_use_id === "toolu_backfill_1");
+    // The backfill runs after the response, so poll rather than read once.
+    let row;
+    for (let attempt = 0; attempt < 50 && row?.model == null; attempt += 1) {
+      const after = new EventsDb(eventsDbPath(tempDir));
+      row = after.getUnprocessed().find(r => r.tool_use_id === "toolu_backfill_1");
+      after.close();
+      if (row?.model == null) await new Promise(resolve => setTimeout(resolve, 10));
+    }
     expect(row?.client).toBe("claude");
     expect(row?.model).toBe("claude-sonnet-5");
-    after.close();
   });
 });
