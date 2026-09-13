@@ -10,7 +10,7 @@ import { searchNativeHistory } from "../../search/native-history.js";
 import { searchHistoryGroup } from "../../search/group-history.js";
 import { searchPromotedGroup } from "../../search/group-promoted.js";
 import { pivotLanguagesFor } from "../../search/pivot-language.js";
-import { combineWithPivotQuery } from "../../store/fts5-query.js";
+import { combinedQueryTerms, combineWithPivotQuery } from "../../store/fts5-query.js";
 import { validateCwd } from "../validate-cwd.js";
 import { projectRef } from "../project-group.js";
 
@@ -44,9 +44,12 @@ export function createSearchHandler(config: DaemonConfig): RouteHandler {
       }
     }
 
-    // The caller's own translation is combined here, once, so every layer
-    // searches the same additive term set.
-    const searchQuery = combineWithPivotQuery(String(query), typeof pivotQuery === "string" ? pivotQuery : undefined);
+    // The caller's own translation is combined here, once, and the term set travels with
+    // the string: each layer below would otherwise re-tokenise the mixture and pick one
+    // language's stopword pack for both, dropping the terms the pivot just added.
+    const rawPivot = typeof pivotQuery === "string" ? pivotQuery : undefined;
+    const searchQuery = combineWithPivotQuery(String(query), rawPivot);
+    const searchTerms = combinedQueryTerms(String(query), rawPivot) ?? undefined;
 
     let episodic: unknown[] = [];
     let promoted: unknown[] = [];
@@ -68,8 +71,8 @@ export function createSearchHandler(config: DaemonConfig): RouteHandler {
               episodic = filterTags
                 ? []
                 : config.search.unionHistoryAcrossGroup
-                  ? await searchHistoryGroup(cwd, { query: searchQuery, limit })
-                  : await searchNativeHistory(db, { query: searchQuery, limit, project: projectRef(cwd) });
+                  ? await searchHistoryGroup(cwd, { query: searchQuery, limit, terms: searchTerms })
+                  : await searchNativeHistory(db, { query: searchQuery, limit, terms: searchTerms, project: projectRef(cwd) });
             } catch (err) {
               // Non-fatal for the response, but never silent: a real failure
               // (malformed FTS5 syntax, missing table, corrupt index) must be
@@ -84,7 +87,7 @@ export function createSearchHandler(config: DaemonConfig): RouteHandler {
           // measurement.
           if (activeLayers.includes("promoted")) {
             try {
-              promoted = searchPromotedGroup(cwd, { query: searchQuery, limit, tags: filterTags }).hits;
+              promoted = searchPromotedGroup(cwd, { query: searchQuery, limit, tags: filterTags, terms: searchTerms }).hits;
             } catch (err) {
               console.warn(`[lcm] /search promoted layer failed: ${describeError(err)}`);
               errors.push(`promoted: ${describeError(err)}`);

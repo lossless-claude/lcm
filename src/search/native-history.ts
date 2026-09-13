@@ -217,12 +217,12 @@ export async function rankNativeHistory(
 
 function rankNativeHistorySync(
   db: DatabaseSync,
-  input: { query: string; limit: number },
+  input: { query: string; limit: number; terms?: readonly string[] },
 ): RankedHistoryHit[] {
   const messages = new ConversationStore(db);
   const summaries = new SummaryStore(db);
   const engine = new RetrievalEngine(messages, summaries);
-  const result = engine.grepSync({ query: input.query, mode: "full_text", scope: "both" });
+  const result = engine.grepSync({ query: input.query, mode: "full_text", scope: "both", terms: input.terms });
   const sessionOf = new Map<number, string | null>();
   const attach = (hits: HistoryHit[]): RankedHistoryHit[] => {
     const ranked: RankedHistoryHit[] = [];
@@ -309,7 +309,7 @@ function sessionSizes(
 /** Read one request's ranked history and bounded source context inside a savepoint on the caller's connection. */
 export async function searchNativeHistory(
   db: DatabaseSync,
-  input: { query: string; limit: number; project: ProjectRef },
+  input: { query: string; limit: number; project: ProjectRef; terms?: readonly string[] },
 ): Promise<NativeHistoryHit[]> {
   const messages = new ConversationStore(db);
   const summaries = new SummaryStore(db);
