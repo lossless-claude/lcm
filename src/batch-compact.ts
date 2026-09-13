@@ -67,8 +67,11 @@ export function findUncompacted(minTokens: number, readOnly = false, cwdFilter?:
     // The shared pool, not a private handle: this runs on the daemon's own
     // SessionStart sweep, where a second handle to a database the daemon
     // already holds would miss the pool's WAL, foreign-key and busy-timeout setup.
-    const db = getLcmConnection(dbPath);
+    // Acquired inside the try, because the pool issues its first PRAGMA on open:
+    // a corrupt project database must stay skipped, not abort the whole scan.
+    let db: ReturnType<typeof getLcmConnection> | undefined;
     try {
+      db = getLcmConnection(dbPath);
       if (!readOnly) runLcmMigrations(db);
       const rows = db.prepare(`
         SELECT
@@ -131,7 +134,7 @@ export function findUncompacted(minTokens: number, readOnly = false, cwdFilter?:
         });
       }
     } catch { /* skip corrupt databases */ }
-    finally { closeLcmConnection(dbPath); }
+    finally { if (db) closeLcmConnection(dbPath); }
   }
 
   return results;
