@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { utimesSync, statSync, chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -220,6 +220,59 @@ describe("ensureDaemon", () => {
     const unregister = registerDaemonActivity(pidFile); // next registration, another process
     expect(existsSync(crashedMarker)).toBe(false);
     unregister();
+  });
+
+  it("prunes a live process's marker once it outlives the age limit", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-aged-"));
+    tempDirs.push(tempDir);
+    const pidFile = join(tempDir, "daemon.pid");
+    mkdirSync(join(tempDir, "tmp"), { recursive: true });
+    // This process is alive, so only the age rule can remove it.
+    const aged = join(tempDir, "tmp", `daemon.starting.${process.pid}.${randomUUID()}`);
+    writeFileSync(aged, "");
+    const longAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    utimesSync(aged, longAgo, longAgo);
+
+    const unregister = registerDaemonActivity(pidFile); // any scan prunes it
+    expect(existsSync(aged)).toBe(false);
+    unregister();
+  });
+
+  it("keeps an aged marker a pre-upgrade version left behind while its process is alive", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-legacyaged-"));
+    tempDirs.push(tempDir);
+    const pidFile = join(tempDir, "daemon.pid");
+    // Beside daemon.pid, owned by this live process, older than the age limit: pre-upgrade
+    // writers never refresh, so age must not be read as death.
+    const aged = join(tempDir, `daemon.starting.${process.pid}.${randomUUID()}`);
+    writeFileSync(aged, "");
+    const longAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    utimesSync(aged, longAgo, longAgo);
+
+    const unregister = registerDaemonActivity(pidFile);
+    expect(existsSync(aged)).toBe(true);
+    unregister();
+  });
+
+  it("refreshes its own marker so a long registration is not aged out", () => {
+    vi.useFakeTimers();
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-refresh-"));
+    tempDirs.push(tempDir);
+    const pidFile = join(tempDir, "daemon.pid");
+    const unregister = registerDaemonActivity(pidFile);
+    try {
+      const own = readdirSync(join(tempDir, "tmp"))
+        .find((name) => name.startsWith(`daemon.starting.${process.pid}.`))!;
+      const path = join(tempDir, "tmp", own);
+      const longAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      utimesSync(path, longAgo, longAgo);
+
+      vi.advanceTimersByTime(16 * 60 * 1000); // past one refresh interval
+      expect(Date.now() - statSync(path).mtimeMs).toBeLessThan(60 * 60 * 1000);
+    } finally {
+      unregister();
+      vi.useRealTimers();
+    }
   });
 
   it("a registration prunes a marker an older version left beside the PID file", () => {

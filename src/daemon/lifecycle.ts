@@ -134,7 +134,8 @@ function markersDir(pidFilePath: string): string {
 }
 
 /** Where versions before the tmp move wrote their markers. Still swept, never written to, so
- * an upgrade neither leaks the files left there nor loses sight of a live old-version marker. */
+ * an upgrade neither leaks the files left there nor loses sight of a live old-version marker.
+ * Swept without the age rule: those writers never refresh, so age says nothing about them. */
 function legacyMarkersDir(pidFilePath: string): string {
   return dirname(pidFilePath);
 }
@@ -142,16 +143,22 @@ function legacyMarkersDir(pidFilePath: string): string {
 /** Best-effort: delete `path` when its owning `pid` is dead or the marker outlived
  * MARKER_MAX_AGE_MS. Returns true when the marker is kept. Never throws — a marker
  * already removed by another process, or genuinely live and young, is left untouched. */
-function pruneMarker(path: string, pid: number): boolean {
+function pruneMarker(path: string, pid: number, ageOut = true): boolean {
   try {
-    if (isProcessAlive(pid) && Date.now() - statSync(path).mtimeMs <= MARKER_MAX_AGE_MS) return true;
+    if (isProcessAlive(pid) && (!ageOut || Date.now() - statSync(path).mtimeMs <= MARKER_MAX_AGE_MS)) return true;
     unlinkSync(path);
   } catch { /* already gone, or racing another pruner */ }
   return false;
 }
 
-/** List every startup marker in `directory`, pruning dead or aged-out ones along the way. */
-function sweepMarkers(directory: string): { pid: number; path: string }[] {
+/**
+ * List every startup marker in `directory`, pruning dead or aged-out ones along the way.
+ *
+ * `ageOut` false keeps a live pid's marker however old it is. That is what the legacy
+ * directory needs: its writers predate the refresh below and never touch their marker, so
+ * the one-hour rule would unlink a startup that is genuinely still running.
+ */
+function sweepMarkers(directory: string, ageOut = true): { pid: number; path: string }[] {
   let names: string[];
   try { names = readdirSync(directory); } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
@@ -163,7 +170,7 @@ function sweepMarkers(directory: string): { pid: number; path: string }[] {
     const pid = Number(match?.[1]);
     if (!Number.isSafeInteger(pid) || pid <= 0) continue;
     const path = join(directory, name);
-    if (pruneMarker(path, pid)) entries.push({ pid, path });
+    if (pruneMarker(path, pid, ageOut)) entries.push({ pid, path });
   }
   return entries;
 }
@@ -197,7 +204,7 @@ function startingDaemons(pidFilePath: string): { pid: number; path: string }[] {
   const entries: { pid: number; path: string }[] = [];
   for (const directory of [markersDir(pidFilePath), legacyMarkersDir(pidFilePath)]) {
     try {
-      entries.push(...sweepMarkers(directory));
+      entries.push(...sweepMarkers(directory, directory !== legacyMarkersDir(pidFilePath)));
     } catch (error) {
       console.error(`[lcm] could not scan daemon markers in ${directory}: ${error instanceof Error ? error.message : String(error)}`);
     }
