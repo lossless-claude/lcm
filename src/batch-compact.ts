@@ -26,6 +26,8 @@ export interface UncompactedConversation {
   tokens: number;
   sourceMessages: number;
   sourceTokens: number;
+  /** `conversations.updated_at`; lets a caller order candidates oldest-first. */
+  updatedAt: string;
 }
 
 /** Find conversations eligible for compaction, above the token threshold. */
@@ -70,6 +72,7 @@ export function findUncompacted(minTokens: number, readOnly = false, cwdFilter?:
         SELECT
           c.conversation_id,
           c.session_id,
+          c.updated_at,
           COALESCE(m.msg_count, 0) as messages,
           COALESCE(m.raw_tokens, 0) as tokens,
           COALESCE(src.msg_count, 0) as source_messages,
@@ -104,6 +107,7 @@ export function findUncompacted(minTokens: number, readOnly = false, cwdFilter?:
       `).all(replay ? 1 : 0, minTokens) as {
         conversation_id: number;
         session_id: string;
+        updated_at: string;
         messages: number;
         tokens: number;
         source_messages: number;
@@ -121,6 +125,7 @@ export function findUncompacted(minTokens: number, readOnly = false, cwdFilter?:
           tokens: row.tokens,
           sourceMessages: row.source_messages,
           sourceTokens: row.source_tokens,
+          updatedAt: row.updated_at,
         });
       }
     } catch { /* skip corrupt databases */ }

@@ -25,6 +25,7 @@ import { createPoolStatsHandler } from "./routes/pool-stats.js";
 import { createReviewStaleHandler } from "./routes/review-stale.js";
 import { createToolEventHandler } from "./routes/tool-event.js";
 import { createSessionScavengeHandler } from "./routes/session-scavenge.js";
+import { createSessionStartCompactHandler } from "./routes/session-start-compact.js";
 import { backfillProjectIdentities } from "./project-group.js";
 import { PKG_VERSION, BUILD_ID } from "./version.js";
 import { lcmPath } from "../lcm-home.js";
@@ -234,6 +235,8 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
 
       // Now that we know the actual port, register the status handler
       routes.set("POST /status", createStatusHandler(config, startTime, actualPort));
+      // Needs its own port to reuse fireCompactRequest's loopback call.
+      routes.set("POST /session-start-compact", createSessionStartCompactHandler(config, actualPort));
 
       resolve({
         address: () => addr,

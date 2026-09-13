@@ -53,6 +53,8 @@ If `source` is missing or unrecognized, lcm uses a recent compaction mark for th
 
 **Response:** Exit code `0`. Context is injected via stdout (printed as a `<context>` block that Claude Code prepends to the session).
 
+After restore succeeds and `cwd` is present, the hook also fires one non-blocking `POST /session-start-compact` request (`{ cwd, session_id }`) to catch up conversations of the same project a previous session left uncompacted because it ended without `SessionEnd`. The daemon does the selection, exclusion and capping there — see `docs/configuration.md#sessionstart-catch-up-sweep` — so this hook pays no extra latency; the request is never awaited.
+
 ## SessionEnd Hook
 
 **Command:** `lcm session-end`
@@ -125,7 +127,7 @@ One `tool.call` hook replaces both PostToolUse and PostToolUseFailure: it awaits
 
 `prompt.context` replaces the SessionStart hook's stdout: it POSTs `/restore` with `session_id` and `cwd` and appends the answer as one context block named `lcm`, leaving the engine's own blocks untouched. It fires once per conversation and again after compaction and `/clear` — the moments the command hook ran — so the restored memory arrives with the first user message rather than before it. Insights are rendered into the block exactly as the command hook printed them. A daemon that cannot answer leaves the core blocks alone.
 
-The SessionStart hook's other half, pruning the events sidecar and promoting what a previous session left behind, moved to `POST /session-scavenge` (`{ cwd }`). `session.start` fires it and does not wait: the command hook awaited that work with the session blocked behind it.
+The SessionStart hook's other half, pruning the events sidecar and promoting what a previous session left behind, moved to `POST /session-scavenge` (`{ cwd }`). `session.start` fires it and does not wait: the command hook awaited that work with the session blocked behind it. `session.start` also fires the catch-up sweep, `POST /session-start-compact` (`{ cwd, session_id }`), the same request the command hook's `restore.ts` fires after `/restore` returns.
 
 `turn.complete` replaces the Stop hook's `session-snapshot`: at most once a minute it POSTs `/ingest` with `session_id` and `cwd` only, and `/ingest` derives the transcript file from them (`~/.claude/projects/<cwd slug>/<session_id>.jsonl`, still checked by `isSafeTranscriptPath`), then POSTs `/promote-events`. A caller that has `transcript_path` keeps sending it; the derivation is only the fallback.
 
