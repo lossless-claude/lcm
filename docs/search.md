@@ -96,6 +96,11 @@ original's function words still in 0.473, original minus its function words plus
 0.716. Expansion is additive rather than a replacement because the corpus whose own content is in
 the author's language is the one where replacing loses.
 
+Those are the numbers that chose the shape, not a measurement of this implementation: the
+translations came from a model, not from a caller, and the arms were never re-run against what
+shipped here. Read 0.716 as the ceiling the design was aiming at. The pinned pt-BR direction and
+the English non-regression arm are measured in [#493](https://github.com/lossless-claude/lcm/issues/493).
+
 ### Failure visibility
 
 The `/search` daemon route never fails hard on a bad query, but it never fails silently either:
