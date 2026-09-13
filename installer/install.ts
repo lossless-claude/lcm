@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, rmSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { ensureCore } from "../src/bootstrap.js";
 import { mcpServerEntry } from "../src/installer/mcp-server-entry.js";
@@ -8,6 +8,7 @@ import { packageRoot } from "../src/cli-entrypoint.js";
 import { installConnector } from "../src/connectors/installer.js";
 import { runningFromPluginBundle } from "../src/hooks/fail-open.js";
 import { isOlderVersion } from "../src/daemon/lifecycle.js";
+import { blocksInstall } from "../src/doctor/types.js";
 import { PKG_VERSION } from "../src/daemon/version.js";
 export { REQUIRED_HOOKS, mergeClaudeSettings } from "../src/installer/settings.js";
 
@@ -246,7 +247,7 @@ function registeredPluginPaths(deps: Pick<ServiceDeps, "readFileSync">): Set<str
       if (key !== "lcm" && !key.startsWith("lcm@")) continue;
       for (const entry of Array.isArray(value) ? value : [value]) {
         const installPath = (entry as { installPath?: unknown } | undefined)?.installPath;
-        if (typeof installPath === "string") paths.add(installPath);
+        if (typeof installPath === "string") paths.add(resolve(installPath));
       }
     }
   } catch { /* no registry: nothing is registered */ }
@@ -254,6 +255,7 @@ function registeredPluginPaths(deps: Pick<ServiceDeps, "readFileSync">): Set<str
 }
 
 async function installClaudeCode(deps: ServiceDeps): Promise<HarnessOutcome> {
+  const installed = ["settings"];
   const lcDir = join(homedir(), ".lossless-claude");
   deps.mkdirSync(lcDir, { recursive: true });
   // Clear plugin cache entries for older versions so stale/corrupted installs don't persist.
@@ -264,7 +266,7 @@ async function installClaudeCode(deps: ServiceDeps): Promise<HarnessOutcome> {
     const registered = registeredPluginPaths(deps);
     if (PKG_VERSION && deps.existsSync(cacheDir)) {
       for (const entry of readdirSync(cacheDir, { withFileTypes: true })) {
-        if (registered.has(join(cacheDir, entry.name))) continue;
+        if (registered.has(resolve(cacheDir, entry.name))) continue;
         if (entry.isDirectory() && isOlderVersion(entry.name, PKG_VERSION)) {
           console.log(`Clearing plugin cache for v${entry.name}`);
           deps.rmSync(join(cacheDir, entry.name), { recursive: true, force: true });
@@ -314,6 +316,7 @@ async function installClaudeCode(deps: ServiceDeps): Promise<HarnessOutcome> {
   // next plugin update deletes; plugin.json already registers the server there.
   if (runningFromPluginBundle()) {
     console.log("MCP server registered by the plugin manifest; settings.json left alone");
+    installed.push("MCP server (plugin manifest)");
   } else {
     let merged: any = {};
     if (deps.existsSync(settingsPath)) {
@@ -329,6 +332,7 @@ async function installClaudeCode(deps: ServiceDeps): Promise<HarnessOutcome> {
     deps.mkdirSync(dirname(settingsPath), { recursive: true });
     deps.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
     console.log(`Updated ${settingsPath}`);
+    installed.push("MCP server");
   }
 
   // 4. Install the /memory skill to ~/.claude/skills/memory/, and drop the per-command files
@@ -340,6 +344,9 @@ async function installClaudeCode(deps: ServiceDeps): Promise<HarnessOutcome> {
     deps.mkdirSync(skillDst, { recursive: true });
     deps.writeFileSync(join(skillDst, "SKILL.md"), deps.readFileSync(skillSrc, "utf8"));
     console.log(`Installed the /memory skill to ${skillDst}`);
+    installed.push("/memory skill");
+  } else {
+    console.warn(`/memory skill source not found at ${skillSrc}; skipped`);
   }
   const legacyCommands = join(homedir(), ".claude", "commands");
   if (deps.existsSync(legacyCommands)) {
@@ -363,17 +370,13 @@ async function installClaudeCode(deps: ServiceDeps): Promise<HarnessOutcome> {
     return _results;
   });
   const results = await _runDoctor();
-  // Only what install itself set up counts as its failure; an optional summarizer CLI
-  // being absent is doctor's advice, not a broken Claude Code install.
-  // A missing plugin bundle or a newer incompatible daemon is repaired by updating this
-  // distribution, not by install.
-  const owned = new Set(["Stack", "Daemon", "Settings"]);
-  const external = new Set(["plugin-bundle", "daemon-version"]);
-  const failures = results.filter((r) => r.status === "fail" && !external.has(r.name) && (r.category === undefined || owned.has(r.category)));
+  // Only what install itself set up counts as its failure; doctor owns that rule.
+  const failures = results.filter((r) => blocksInstall(r as Parameters<typeof blocksInstall>[0]));
   if (failures.length > 0) {
     return { status: "failed", detail: `${failures.length} doctor check(s) failed (${failures.map((r) => r.name).join(", ")}) — run: lcm doctor` };
   }
-  return { status: "ok", detail: "settings, MCP server, /memory skill and lcm.md installed; all checks passed" };
+  installed.push("lcm.md");
+  return { status: "ok", detail: `${installed.join(", ")} installed; all checks passed` };
 }
 
 // Re-export rmSync so uninstall.ts can share the pattern

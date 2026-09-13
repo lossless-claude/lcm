@@ -64,7 +64,7 @@ jobs:
       # commit without the bundle must never become a release.
       - name: Verify the plugin bundle is committed
         if: steps.check.outputs.tag_done == 'false'
-        run: test -f bundle/lcm.js && test -f bundle/mcp-server.js
+        run: test -f bundle/lcm.js && test -f bundle/mcp-server.js && test -d bundle/assets/prompts && test -d bundle/assets/templates
 
       - name: Create and push release tag
         if: steps.check.outputs.tag_done == 'false'

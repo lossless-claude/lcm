@@ -25,6 +25,7 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 export async function buildBundle({ root = repoRoot, outDir = join(root, "bundle"), version, buildId } = {}) {
   version ??= JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
+  if (!/^\d+\.\d+\.\d+/.test(version ?? "")) throw new Error(`build-bundle: malformed version ${JSON.stringify(version)}`);
   const buildIdPath = join(root, "dist", "BUILD_ID");
   if (buildId === undefined && !existsSync(buildIdPath)) {
     throw new Error(`build-bundle: ${buildIdPath} missing — run \`npm run build\` first`);
@@ -39,7 +40,7 @@ export async function buildBundle({ root = repoRoot, outDir = join(root, "bundle
   if (relative(root, outDir) === "") {
     throw new Error(`build-bundle: output directory must not be the repository root (${root})`);
   }
-  for (const artifact of ["lcm.js", "mcp-server.js", "assets"]) {
+  for (const artifact of ["lcm.js", "mcp-server.js", "assets/prompts", "assets/templates", "assets/setup.sh"]) {
     rmSync(join(outDir, artifact), { recursive: true, force: true });
   }
   mkdirSync(outDir, { recursive: true });

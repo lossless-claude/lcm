@@ -29,7 +29,7 @@ export function runningFromPluginBundle(entry: string | undefined = process.argv
 }
 
 /** The bundle's CLI next to whichever bundle entry is running; the npm CLI otherwise. */
-function cliInvocation(entry: string | undefined): string {
+export function cliInvocation(entry: string | undefined = process.argv[1]): string {
   return runningFromPluginBundle(entry) ? `node "${join(dirname(entry!), "lcm.js")}"` : "lcm";
 }
 

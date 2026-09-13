@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import type { EnsureCoreDeps } from "../src/bootstrap.js";
+import { PKG_VERSION } from "../src/daemon/version.js";
 
 function makeDeps(overrides: Partial<EnsureCoreDeps> = {}): EnsureCoreDeps {
   return {
@@ -103,9 +104,16 @@ describe("ensureBootstrapped", () => {
     expect(deps.ensureDaemon).not.toHaveBeenCalled();
     expect(deps.warn).not.toHaveBeenCalled();
 
-    const unusable = bootstrapDeps({}, { exists: true, content: "unusable: lcm: daemon v9.0.0 ..." });
+    const unusable = bootstrapDeps({}, { exists: true, content: `unusable: v${PKG_VERSION} lcm: daemon v9.0.0 ...` });
     expect(await ensureBootstrapped("test-session", unusable)).toEqual({ usable: false });
     expect(unusable.warn).not.toHaveBeenCalled(); // the line was written by the first hook
+  });
+
+  it("re-checks a session marked unusable by an older hook version", async () => {
+    const deps = bootstrapDeps({}, { exists: true, content: "unusable: v0.0.1 lcm: daemon v9.0.0 ..." });
+    const { ensureBootstrapped } = await import("../src/bootstrap.js");
+    expect(await ensureBootstrapped("test-session", deps)).toEqual({ usable: true });
+    expect(deps.ensureDaemon).toHaveBeenCalled(); // the distribution changed since the verdict
   });
 
   it("runs ensureCore, writes an empty flag and stays quiet when the daemon is current", async () => {
@@ -135,7 +143,7 @@ describe("ensureBootstrapped", () => {
     expect(deps.warn).toHaveBeenCalledTimes(1);
     const line: string = deps.warn.mock.calls[0][0];
     expect(line).toMatch(/^lcm: daemon v9\.0\.0 is newer than this hook .*incompatible.*Repair: npm install -g @lossless-claude\/lcm@latest$/);
-    expect(deps.writeFlag).toHaveBeenCalledWith(expect.any(String), `unusable: ${line}`);
+    expect(deps.writeFlag).toHaveBeenCalledWith(expect.any(String), `unusable: v${PKG_VERSION} ${line}`);
   });
 
   it("connects to a newer compatible daemon and says so once", async () => {

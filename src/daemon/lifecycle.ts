@@ -72,6 +72,13 @@ function compatibleComponent(v: [number, number, number]): string {
   return v[0] === 0 ? `0.${v[1]}` : `${v[0]}`;
 }
 
+/** True when two release versions share the compatible component (minor while 0.x, major from 1.0). */
+export function isCompatibleVersion(a: string | undefined, b: string | undefined): boolean {
+  const pa = a ? parseSemver(a) : undefined;
+  const pb = b ? parseSemver(b) : undefined;
+  return Boolean(pa && pb) && compatibleComponent(pa!) === compatibleComponent(pb!);
+}
+
 export function daemonOwnership(health: HealthResponse, expected: { version?: string; build?: string }): DaemonOwnership {
   const mine = expected.version ? parseSemver(expected.version) : undefined;
   const theirs = health.version ? parseSemver(health.version) : undefined;
@@ -176,9 +183,11 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
       return { connected: false, port: opts.port, spawned: false, ownership, daemonVersion: health.version };
     }
     // Version/build check — if the caller is newer, kill and respawn. A caller that
-    // may not spawn (SessionEnd) must not kill either: it reports and leaves it running.
+    // may not spawn (SessionEnd) must not kill either: it uses an older daemon that is
+    // still compatible, and leaves the replacement to the next hook that may spawn.
     if (ownership === "restart" && (opts.noSpawn || opts._skipSpawn)) {
-      return { connected: false, port: opts.port, spawned: false, ownership, daemonVersion: health.version };
+      const connected = Boolean(opts.noSpawn) && isCompatibleVersion(health.version, opts.expectedVersion);
+      return { connected, port: opts.port, spawned: false, ownership, daemonVersion: health.version };
     }
     if (ownership === "restart") {
       // Prefer the pid the daemon reports about itself; the PID file may have drifted.
@@ -200,6 +209,12 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
     } else {
       return { connected: true, port: opts.port, spawned: false, ownership, daemonVersion: health.version };
     }
+  }
+
+  // A caller that may not spawn wants only a daemon that answers now: no waiting for one
+  // that is still starting (Codex caps its short-deadline hooks at three seconds).
+  if (opts.noSpawn) {
+    return { connected: false, port: opts.port, spawned: false };
   }
 
   // Step 2: Check PID file for stale process

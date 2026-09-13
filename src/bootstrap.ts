@@ -5,7 +5,7 @@ import { mergeClaudeSettings } from "./installer/settings.js";
 import { loadDaemonConfig } from "./daemon/config.js";
 import { lcmPath } from "./lcm-home.js";
 import { PKG_VERSION } from "./daemon/version.js";
-import { daemonNotice, type DaemonNotice } from "./hooks/fail-open.js";
+import { cliInvocation, daemonNotice, type DaemonNotice } from "./hooks/fail-open.js";
 
 export type EnsureDaemonOutcome = { connected: boolean; ownership?: string; daemonVersion?: string };
 
@@ -115,7 +115,11 @@ export async function ensureBootstrapped(
     if (deps.flagExists(flagPath)) {
       let content = "";
       try { content = deps.readFlag(flagPath); } catch {}
-      return { usable: !content.startsWith(UNUSABLE_PREFIX) };
+      // An unusable verdict is tied to the hook version that wrote it: once this
+      // distribution has been updated, the same session is checked again.
+      const writtenBy = content.startsWith(UNUSABLE_PREFIX) ? content.slice(UNUSABLE_PREFIX.length).trim().split(" ")[0] : undefined;
+      if (writtenBy === undefined) return { usable: true };
+      if (writtenBy === `v${PKG_VERSION}`) return { usable: false };
     }
   } catch {}
 
@@ -126,10 +130,10 @@ export async function ensureBootstrapped(
   } catch (err) {
     // The flag is still written below: a broken environment is reported once, not
     // re-attempted (with its daemon timeout) by every hook of the session.
-    notice = { usable: true, line: `lcm: setup failed (${err instanceof Error ? err.message : String(err)}); memory is off for this session. Repair: lcm doctor` };
+    notice = { usable: true, line: `lcm: setup failed (${err instanceof Error ? err.message : String(err)}); memory may be off until it is repaired. Repair: ${cliInvocation()} doctor` };
   }
   if (notice) deps.warn(notice.line);
   const usable = notice?.usable ?? true;
-  try { deps.writeFlag(flagPath, usable ? "" : `${UNUSABLE_PREFIX} ${notice!.line}`); } catch {}
+  try { deps.writeFlag(flagPath, usable ? "" : `${UNUSABLE_PREFIX} v${PKG_VERSION} ${notice!.line}`); } catch {}
   return { usable };
 }

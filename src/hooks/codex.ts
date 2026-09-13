@@ -63,7 +63,9 @@ function defaultDeps(): CodexHookDeps {
         port, pidFilePath: join(base, "daemon.pid"), spawnTimeoutMs: noSpawn ? 0 : 5000, noSpawn, expectedVersion: PKG_VERSION,
       });
       const notice = daemonNotice(result, PKG_VERSION);
-      if (notice && sessionId) warnOncePerSession(sessionId, "daemon", notice.line);
+      // A short-deadline event never tried to start a daemon, so an absent one is no news.
+      const startWasNotAttempted = noSpawn && !result.ownership;
+      if (notice && sessionId && !startWasNotAttempted) warnOncePerSession(sessionId, "daemon", notice.line);
       return result.connected && notice?.usable !== false;
     },
   };
