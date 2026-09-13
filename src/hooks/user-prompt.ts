@@ -1,5 +1,6 @@
 import type { DaemonClient } from "../daemon/client.js";
 import { ensureDaemon } from "../daemon/lifecycle.js";
+import { PKG_VERSION } from "../daemon/version.js";
 import { join } from "node:path";
 import { safeLogError } from "./hook-errors.js";
 import { buildMemoryContext } from "./memory-context.js";
@@ -63,7 +64,7 @@ export async function handleUserPromptSubmit(
 
   const daemonPort = port ?? 3737;
   const pidFilePath = lcmPath("daemon.pid");
-  const { connected } = await ensureDaemon({ port: daemonPort, pidFilePath, spawnTimeoutMs: 5000 });
+  const { connected } = await ensureDaemon({ port: daemonPort, pidFilePath, spawnTimeoutMs: 5000, expectedVersion: PKG_VERSION });
   if (!connected) return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
 
   try {

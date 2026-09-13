@@ -1,0 +1,2 @@
+# bundle/ is a build artifact committed by version PRs (docs/releasing.md); diff it as bytes, not text.
+bundle/** binary

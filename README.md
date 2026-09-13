@@ -105,7 +105,7 @@ claude plugin install lcm@lossless-claude
 lcm install
 ```
 
-`lcm install` writes config, registers hooks, installs slash commands, registers MCP, and verifies the daemon.
+`lcm install` writes config, registers MCP, installs the `/memory` skill and `lcm.md`, verifies the daemon, and, when `codex` is on PATH, installs the Codex hooks globally. It reports one outcome per harness and exits non-zero on any failure; `--dry-run` writes nothing. Run from the Claude Code plugin (`/memory install`) it skips Codex and leaves the MCP entry to the plugin manifest; use the npm CLI for both harnesses.
 
 ### VS Code (GitHub Copilot)
 

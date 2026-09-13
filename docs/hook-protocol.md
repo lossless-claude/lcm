@@ -2,7 +2,7 @@
 
 This document describes the stdin payload fields that Claude Code delivers to each lcm hook command.
 
-All hooks receive a JSON object via stdin. lcm hooks are invoked as shell commands:
+All hooks receive a JSON object via stdin. Each hook is one CLI command:
 
 ```
 lcm <hook-command> < <stdin-json>
@@ -10,9 +10,9 @@ lcm <hook-command> < <stdin-json>
 
 ## Plugin installations
 
-When installed as a Claude Code plugin, hooks run through the plugin's `lcm.mjs` launcher. The launcher starts the same CLI commands described below and forwards their arguments and stdin payloads.
+When installed as a Claude Code plugin, hooks run the prebuilt bundle directly, in exec form: `.claude-plugin/plugin.json` declares `"command": "node"` with `"args": ["${CLAUDE_PLUGIN_ROOT}/bundle/lcm.js", "<hook-command>", ...]`. There is no shell and no launcher: Claude Code resolves `node`, spawns it with those arguments, and pipes the payload on stdin. The commands below are the same whichever way they are started.
 
-The launcher now correctly starts the CLI. Previously, plugin hooks could exit silently without restoring context or recording session activity. Update the installed plugin to receive this fix; no hook configuration changes are required.
+A hook that cannot do its work fails open: it exits 0, prints nothing it would not print without a daemon (UserPromptSubmit still emits its learning instruction), and the first hook of the session writes one line on stderr naming the command that repairs it (the daemon did not start, or a newer daemon is running). A daemon whose version is incompatible with the hook (`docs/design/self-contained-plugin.md`) makes every hook of that session a no-op. `lcm doctor` reports the same conditions.
 
 ## PreCompact Hook
 
@@ -133,7 +133,7 @@ A daemon that answers 404 (an older lcm build without these routes) is logged on
 
 **Summarize jobs:** with `llm.provider: "session"` (see `docs/configuration.md`), the module also serves the daemon's summarization jobs for its own session. From `session.start` it holds one `GET /summarize-jobs/next?session_id=…` open (the daemon answers a job or `204` after 25 s) and answers each job on `POST /summarize-jobs/:id` with `{ text, providerId, usage }` or `{ error }`. Leaf jobs run `$.model.complete` with `haiku`; condensed jobs run `$.model.fork`, then `complete` when the fork has no warm cache. The poller stops for the session once the plugin's `sessionSummarizerMaxOutputTokens` cap is reached. A daemon that answers 404 (an older build, or a daemon swapped mid-session) does not stop it: the module logs that once and keeps polling every minute, so a later respawn with the route is picked up. Design: `docs/design/session-summarizer.md`.
 
-**Daemon lifecycle:** the daemon exits when idle, and the command hooks brought it back through `ensureDaemon`. The module does the same: on a connection failure it runs `lcm daemon start --detach` through the host (at most once per minute) and retries the request once, and `session.start` checks `/health` before the first prompt. This needs an `lcm` binary on PATH; without one the module logs it once and events are lost until a command hook (SessionStart, Stop, SessionEnd) restarts the daemon.
+**Daemon lifecycle:** the daemon exits when idle, and the command hooks bring it back through `ensureDaemon`. The module does the same: on a connection failure it runs `lcm daemon start --detach` through the host (at most once per minute) and retries the request once, and `session.start` checks `/health` before the first prompt. This needs an `lcm` binary on PATH (the npm CLI); without one the module logs it once and events are lost until a command hook (SessionStart, Stop, SessionEnd), which runs from the bundle and needs no binary, restarts the daemon.
 
 **Dedup rule:** the module claims its session. At `session.start` it writes `<tmpdir>/lcm-claim-<safe_session_id>.json` containing `{ sessionId, ts }` (where `<safe_session_id>` is `<session_id>` with any non `[a-zA-Z0-9_-]` replaced by `_`), awaited before the hook returns so the file is there before the first prompt. `lcm post-tool`, `lcm user-prompt`, `lcm session-snapshot` and `lcm restore` then exit without recording or printing anything when `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` **and** that file names their session (`functionHooksOwnSession` in `src/hooks/session-claim.ts`); otherwise every event would land twice and the model would read the memory context twice.
 

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ensureDaemon, isStaleDaemon, stopDaemon } from "../../src/daemon/lifecycle.js";
+import { daemonOwnership, ensureDaemon, isOlderVersion, isStaleDaemon, stopDaemon } from "../../src/daemon/lifecycle.js";
 
 const tempDirs: string[] = [];
 
@@ -159,6 +159,37 @@ describe("ensureDaemon", () => {
     expect(isStaleDaemon({ status: "ok", version: "1.0.0", build: "b0" }, { version: "1.0.0", build: "b1" })).toBe(true);
     expect(isStaleDaemon({ status: "ok", version: "0.9.0", build: "b1" }, { version: "1.0.0", build: "b1" })).toBe(true);
     expect(isStaleDaemon({ status: "ok" }, { version: "1.0.0", build: "b1" })).toBe(false);
+  });
+
+  it("daemonOwnership: newest wins, older callers connect within the compatible component", () => {
+    const own = (daemon: string, caller: string) => daemonOwnership({ status: "ok", version: daemon }, { version: caller });
+    expect(own("0.12.0", "0.12.0")).toBe("current");
+    expect(own("0.12.0", "0.13.0")).toBe("restart");
+    expect(own("0.13.1", "0.13.0")).toBe("older-caller");
+    expect(own("0.13.0", "0.12.9")).toBe("incompatible");
+    expect(own("1.2.0", "1.0.0")).toBe("older-caller");
+    expect(own("2.0.0", "1.9.9")).toBe("incompatible");
+    expect(own("1.0.0", "2.0.0")).toBe("restart");
+    // A newer daemon is never restarted over a build mismatch.
+    expect(daemonOwnership({ status: "ok", version: "0.13.1", build: "b0" }, { version: "0.13.0", build: "b1" })).toBe("older-caller");
+    // A prerelease is not a release: it falls back to string equality, so the release replaces it.
+    expect(own("0.13.0-rc.1", "0.13.0")).toBe("restart");
+    expect(own("0.13.0", "0.12.0-rc.1")).toBe("older-caller"); // a prerelease caller never replaces a release daemon
+    expect(isOlderVersion("0.12.0", "0.13.0")).toBe(true);
+    expect(isOlderVersion("0.13.1", "0.13.0")).toBe(false);
+    expect(isOlderVersion("latest", "0.13.0")).toBe(false);
+  });
+
+  it("ensureDaemon refuses an incompatible newer daemon without touching it", async () => {
+    const health = { status: "ok", version: "0.13.0", pid: process.pid };
+    const fetchFn = (async () => ({ ok: true, json: async () => health })) as unknown as typeof fetch;
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-incompat-"));
+    tempDirs.push(tempDir);
+    const result = await ensureDaemon({
+      port: 1, pidFilePath: join(tempDir, "daemon.pid"), spawnTimeoutMs: 10,
+      expectedVersion: "0.12.0", _skipSpawn: true, _fetchOverride: fetchFn,
+    });
+    expect(result).toMatchObject({ connected: false, spawned: false, ownership: "incompatible", daemonVersion: "0.13.0" });
   });
 
   it("stopDaemon reports not running when nothing listens and no PID file exists", async () => {

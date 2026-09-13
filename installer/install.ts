@@ -1,10 +1,15 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, rmSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { ensureCore } from "../src/bootstrap.js";
 import { mcpServerEntry } from "../src/installer/mcp-server-entry.js";
+import { packageRoot } from "../src/cli-entrypoint.js";
+import { installConnector } from "../src/connectors/installer.js";
+import { runningFromPluginBundle } from "../src/hooks/fail-open.js";
+import { isOlderVersion } from "../src/daemon/lifecycle.js";
+import { blocksInstall } from "../src/doctor/types.js";
+import { PKG_VERSION } from "../src/daemon/version.js";
 export { REQUIRED_HOOKS, mergeClaudeSettings } from "../src/installer/settings.js";
 
 export interface ServiceDeps {
@@ -177,20 +182,94 @@ export function ensureLcmMd(
   return { lcmMdWritten, claudeMdPatched };
 }
 
-export async function install(deps: ServiceDeps = defaultDeps): Promise<void> {
+/** One line per harness: what `lcm install` did for it. */
+export type HarnessOutcome = { status: "ok" | "skipped" | "failed"; detail: string };
+export type InstallOutcome = { claude: HarnessOutcome; codex: HarnessOutcome };
+
+export async function install(deps: ServiceDeps = defaultDeps): Promise<InstallOutcome> {
+  let claude: HarnessOutcome;
+  try {
+    claude = await installClaudeCode(deps);
+  } catch (err) {
+    if (err instanceof Error && err.stack) console.error(err.stack);
+    claude = { status: "failed", detail: err instanceof Error ? err.message : String(err) };
+  }
+  const codex = installCodex(deps);
+
+  reportInstallOutcomes({ claude, codex });
+  return { claude, codex };
+}
+
+const OUTCOME_MARKS: Record<HarnessOutcome["status"], string> = { ok: "✓", skipped: "○", failed: "✗" };
+
+function reportInstallOutcomes(outcome: InstallOutcome): void {
+  console.log("");
+  for (const [harness, result] of [["Claude Code", outcome.claude], ["Codex", outcome.codex]] as const) {
+    console.log(`  ${OUTCOME_MARKS[result.status]} ${harness}: ${result.detail}`);
+  }
+}
+
+/**
+ * Codex keeps the npm CLI: when `codex` is on PATH, install the lifecycle hooks
+ * globally (`~/.codex/hooks.json`), the equivalent of `lcm connectors install
+ * codex --global`. Project scope stays explicit through `lcm connectors`.
+ * Reinstalling reconciles the managed handlers without duplicating them.
+ */
+function installCodex(deps: ServiceDeps): HarnessOutcome {
+  // The Codex hooks name an absolute CLI path. From the plugin bundle that path would be a
+  // versioned plugin-cache entry the next plugin update deletes; Codex stays on the npm CLI.
+  if (runningFromPluginBundle()) {
+    return { status: "skipped", detail: "run lcm install from the npm CLI to set up Codex: npm install -g @lossless-claude/lcm && lcm install" };
+  }
+  try {
+    const found = deps.spawnSync("sh", ["-c", "command -v codex"], { encoding: "utf-8" });
+    if (found.status !== 0 || typeof found.stdout !== "string" || !found.stdout.trim()) {
+      return { status: "skipped", detail: "codex not on PATH" };
+    }
+    const result = installConnector("codex", "hooks", homedir(), {
+      writeFile: (path, data) => {
+        deps.mkdirSync(dirname(path), { recursive: true });
+        deps.writeFileSync(path, data);
+      },
+    });
+    return { status: "ok", detail: `hooks installed in ${result.path}${result.notice ? ` — ${result.notice}` : ""}` };
+  } catch (err) {
+    return { status: "failed", detail: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** Every install directory Claude Code's plugin registry records for lcm, whatever the scope. */
+function registeredPluginPaths(deps: Pick<ServiceDeps, "readFileSync">): Set<string> {
+  const paths = new Set<string>();
+  try {
+    const registry = JSON.parse(deps.readFileSync(join(homedir(), ".claude", "plugins", "installed_plugins.json"), "utf-8")) as { plugins?: Record<string, unknown> };
+    for (const [key, value] of Object.entries(registry.plugins ?? {})) {
+      if (key !== "lcm" && !key.startsWith("lcm@")) continue;
+      for (const entry of Array.isArray(value) ? value : [value]) {
+        const installPath = (entry as { installPath?: unknown } | undefined)?.installPath;
+        if (typeof installPath === "string") paths.add(resolve(installPath));
+      }
+    }
+  } catch { /* no registry: nothing is registered */ }
+  return paths;
+}
+
+async function installClaudeCode(deps: ServiceDeps): Promise<HarnessOutcome> {
+  const installed = ["settings"];
   const lcDir = join(homedir(), ".lossless-claude");
   deps.mkdirSync(lcDir, { recursive: true });
-
-  // Clear plugin cache entries for previous versions so stale/corrupted installs don't persist.
+  // Clear plugin cache entries for older versions so stale/corrupted installs don't persist.
+  // Only older, and never the install Claude Code's registry points at: a plugin of any
+  // version next to this CLI is a supported state (newest wins), and its directory is live.
   try {
-    const pkgJsonPath = join(dirname(fileURLToPath(import.meta.url)), "../..", "package.json");
-    const pkgVersion = (JSON.parse(deps.readFileSync(pkgJsonPath, "utf-8")) as { version: string }).version;
     const cacheDir = join(homedir(), ".claude", "plugins", "cache", "lossless-claude", "lcm");
-    if (deps.existsSync(cacheDir)) {
+    const registered = registeredPluginPaths(deps);
+    if (PKG_VERSION && deps.existsSync(cacheDir)) {
       for (const entry of readdirSync(cacheDir, { withFileTypes: true })) {
-        if (entry.isDirectory() && entry.name !== pkgVersion) {
+        if (registered.has(resolve(cacheDir, entry.name))) continue;
+        if (entry.isDirectory() && isOlderVersion(entry.name, PKG_VERSION)) {
+          console.log(`Clearing plugin cache for v${entry.name}`);
           deps.rmSync(join(cacheDir, entry.name), { recursive: true, force: true });
-          console.log(`Cleared plugin cache for v${entry.name}`);
         }
       }
     }
@@ -232,35 +311,42 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<void> {
     }),
   });
 
-  // Register MCP server directly in settings.json.
-  // plugin.json mcpServers isn't reliably processed for locally-installed plugins
-  // (installPath in installed_plugins.json points to wrong versioned dir).
-  let merged: any = {};
-  if (deps.existsSync(settingsPath)) {
-    try { merged = JSON.parse(deps.readFileSync(settingsPath, "utf-8")); } catch {}
-  }
-  if (typeof merged !== "object" || merged === null) {
-    merged = {};
-  }
-  const mcpServers = (typeof merged.mcpServers === "object" && merged.mcpServers !== null) ? merged.mcpServers : {};
-  mcpServers["lcm"] = mcpServerEntry();
-  (merged as any).mcpServers = mcpServers;
+  // Register MCP server directly in settings.json when running from the npm CLI.
+  // From the plugin bundle the entry would name a versioned plugin-cache path that the
+  // next plugin update deletes; plugin.json already registers the server there.
+  if (runningFromPluginBundle()) {
+    console.log("MCP server registered by the plugin manifest; settings.json left alone");
+    installed.push("MCP server (plugin manifest)");
+  } else {
+    let merged: any = {};
+    if (deps.existsSync(settingsPath)) {
+      try { merged = JSON.parse(deps.readFileSync(settingsPath, "utf-8")); } catch {}
+    }
+    if (typeof merged !== "object" || merged === null) {
+      merged = {};
+    }
+    const mcpServers = (typeof merged.mcpServers === "object" && merged.mcpServers !== null) ? merged.mcpServers : {};
+    mcpServers["lcm"] = mcpServerEntry();
+    (merged as any).mcpServers = mcpServers;
 
-  deps.mkdirSync(dirname(settingsPath), { recursive: true });
-  deps.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
-  console.log(`Updated ${settingsPath}`);
+    deps.mkdirSync(dirname(settingsPath), { recursive: true });
+    deps.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
+    console.log(`Updated ${settingsPath}`);
+    installed.push("MCP server");
+  }
 
   // 4. Install the /memory skill to ~/.claude/skills/memory/, and drop the per-command files
   //    earlier versions installed, so /lcm-doctor and friends stop shadowing it.
-  // dist/installer/ sits two levels below the package root, installer/ one level.
-  const installerDir = dirname(fileURLToPath(import.meta.url));
-  const skillSrc = [join(installerDir, "../..", "skills", "memory", "SKILL.md"), join(installerDir, "..", "skills", "memory", "SKILL.md")]
-    .find((candidate) => deps.existsSync(candidate));
+  // packageRoot() resolves the checkout, dist/ and bundle/ layouts alike.
+  const skillSrc = join(packageRoot(), "skills", "memory", "SKILL.md");
   const skillDst = join(homedir(), ".claude", "skills", "memory");
-  if (skillSrc) {
+  if (deps.existsSync(skillSrc)) {
     deps.mkdirSync(skillDst, { recursive: true });
     deps.writeFileSync(join(skillDst, "SKILL.md"), deps.readFileSync(skillSrc, "utf8"));
     console.log(`Installed the /memory skill to ${skillDst}`);
+    installed.push("/memory skill");
+  } else {
+    console.warn(`/memory skill source not found at ${skillSrc}; skipped`);
   }
   const legacyCommands = join(homedir(), ".claude", "commands");
   if (deps.existsSync(legacyCommands)) {
@@ -284,12 +370,13 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<void> {
     return _results;
   });
   const results = await _runDoctor();
-  const failures = results.filter((r: { status: string }) => r.status === "fail");
+  // Only what install itself set up counts as its failure; doctor owns that rule.
+  const failures = results.filter((r) => blocksInstall(r as Parameters<typeof blocksInstall>[0]));
   if (failures.length > 0) {
-    console.error(`${failures.length} check(s) failed. Run 'lcm doctor' for details.`);
-  } else {
-    console.log("lcm installed successfully! All checks passed.");
+    return { status: "failed", detail: `${failures.length} doctor check(s) failed (${failures.map((r) => r.name).join(", ")}) — run: lcm doctor` };
   }
+  installed.push("lcm.md");
+  return { status: "ok", detail: `${installed.join(", ")} installed; all checks passed` };
 }
 
 // Re-export rmSync so uninstall.ts can share the pattern

@@ -7,8 +7,9 @@ import {
   REQUIRED_HOOKS,
   type ServiceDeps,
 } from "../../installer/install.js";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -238,22 +239,110 @@ describe("install --dry-run in a home that has never seen lcm", () => {
 });
 
 describe("install with DryRunServiceDeps", () => {
-  it("prints [dry-run] lines and writes no real files", async () => {
+  it("prints [dry-run] lines for both harnesses and writes nothing, not even the shared core", async () => {
     const { DryRunServiceDeps } = await import("../../installer/dry-run-deps.js");
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fakeHome = mkdtempSync(join(tmpdir(), "lcm-install-dry-"));
+    const originalHome = process.env.HOME;
+    process.env.HOME = fakeHome;
 
-    await expect(install(new DryRunServiceDeps())).resolves.not.toThrow();
+    try {
+      const outcome = await install(new DryRunServiceDeps());
 
-    const dryRunLines = logSpy.mock.calls
-      .flatMap((c: any[]) => c)
-      .filter((s: any) => typeof s === "string" && s.includes("[dry-run]"));
+      const dryRunLines = logSpy.mock.calls
+        .flatMap((c: any[]) => c)
+        .filter((s: any) => typeof s === "string" && s.includes("[dry-run]"));
+      expect(dryRunLines.some((l: string) => l.includes("would write:") && l.includes("settings.json"))).toBe(true);
+      // The canned `command -v` answer makes Codex look installed, so its hooks file is previewed too.
+      expect(dryRunLines.some((l: string) => l.includes("would write:") && l.endsWith(join(".codex", "hooks.json")))).toBe(true);
+      expect(outcome.codex.status).toBe("ok");
+      expect(readdirSync(fakeHome)).toEqual([]);
+    } finally {
+      process.env.HOME = originalHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+      logSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
+});
 
-    expect(dryRunLines.some((l: string) => l.includes("would write:"))).toBe(true);
-    expect(dryRunLines.some((l: string) => l.includes("settings.json"))).toBe(true);
+describe("install — plugin cache cleanup", () => {
+  it("removes only older, unregistered cache versions", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const fakeHome = mkdtempSync(join(tmpdir(), "lcm-install-cache-"));
+    const originalHome = process.env.HOME;
+    process.env.HOME = fakeHome;
+    try {
+      const home = join(fakeHome, ".claude", "plugins", "cache", "lossless-claude", "lcm");
+      for (const v of ["0.1.0", "0.2.0", "99.0.0"]) mkdirSync(join(home, v), { recursive: true });
+      const registry = JSON.stringify({ version: 2, plugins: { "lcm@lossless-claude": [{ scope: "user", version: "0.2.0", installPath: join(home, "0.2.0") }] } });
+      const deps = makeDeps({
+        existsSync: vi.fn().mockImplementation((p: string) => p === home),
+        readFileSync: vi.fn().mockImplementation((p: string) => p.endsWith("installed_plugins.json") ? registry : "{}"),
+      });
+      await install(deps);
+      const removed = (deps.rmSync as ReturnType<typeof vi.fn>).mock.calls.map((c: any[]) => c[0]);
+      expect(removed).toEqual([join(home, "0.1.0")]); // 0.2.0 is registered, 99.0.0 is newer
+    } finally {
+      process.env.HOME = originalHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+      vi.mocked(console.log).mockRestore();
+    }
+  });
+});
 
+describe("install — Codex", () => {
+  const codexFound = vi.fn().mockImplementation((cmd: string, args: string[]) =>
+    ({ status: cmd === "sh" && args[1] === "command -v codex" ? 0 : 1, stdout: "/usr/local/bin/codex", stderr: "", pid: 1, output: [], signal: null }));
+
+  it("skips Codex, reporting one outcome per harness, when codex is not on PATH", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const deps = makeDeps({ spawnSync: makeSpawn(1, "") });
+    const outcome = await install(deps);
+    expect(outcome.claude.status).toBe("ok");
+    expect(outcome.codex).toEqual({ status: "skipped", detail: "codex not on PATH" });
+    expect(logSpy.mock.calls.flat().some((l) => typeof l === "string" && l.includes("Codex: codex not on PATH"))).toBe(true);
     logSpy.mockRestore();
-    warnSpy.mockRestore();
+  });
+
+  it("installs the Codex hooks globally through the injected writer when codex is on PATH", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const deps = makeDeps({ spawnSync: codexFound });
+    const outcome = await install(deps);
+    const hooksWrite = (deps.writeFileSync as ReturnType<typeof vi.fn>).mock.calls
+      .find((c: any[]) => c[0] === join(homedir(), ".codex", "hooks.json"));
+    expect(hooksWrite).toBeDefined();
+    const written = JSON.parse(hooksWrite![1]);
+    expect(Object.keys(written.hooks)).toEqual(expect.arrayContaining(["SessionStart", "UserPromptSubmit", "Stop", "PreCompact"]));
+    expect(outcome.codex.status).toBe("ok");
+    expect(outcome.codex.detail).toContain(join(".codex", "hooks.json"));
+    vi.mocked(console.log).mockRestore();
+  });
+
+  it("reports a failed harness instead of throwing, so the CLI can exit non-zero", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    // ~/.codex/hooks.json holds invalid JSON; the connector reads it from the real filesystem.
+    const fakeHome = mkdtempSync(join(tmpdir(), "lcm-install-codex-"));
+    mkdirSync(join(fakeHome, ".codex"), { recursive: true });
+    writeFileSync(join(fakeHome, ".codex", "hooks.json"), "{not json");
+    const originalHome = process.env.HOME;
+    process.env.HOME = fakeHome;
+    try {
+      const deps = makeDeps({
+        spawnSync: codexFound,
+        runDoctor: vi.fn().mockResolvedValue([{ name: "config", status: "fail" }]),
+      });
+      const outcome = await install(deps);
+      expect(outcome.claude.status).toBe("failed");
+      expect(outcome.claude.detail).toContain("doctor");
+      expect(outcome.codex.status).toBe("failed");
+      expect(outcome.codex.detail).toContain("not valid JSON");
+    } finally {
+      process.env.HOME = originalHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+      vi.mocked(console.log).mockRestore();
+    }
   });
 });
 

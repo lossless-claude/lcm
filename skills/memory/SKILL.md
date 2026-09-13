@@ -2,14 +2,14 @@
 name: memory
 description: Run one lcm CLI command and show its output verbatim. Usage: /memory <command> [options]
 disable-model-invocation: true
-allowed-tools: Bash(lcm *) Bash(node * lcm.mjs *)
+allowed-tools: Bash(lcm *) Bash(node *bundle/lcm.js*)
 ---
 
 # memory
 
 The CLI documents itself: `lcm help <command>` is the reference for every command and
 option. Resolve the binary once: `lcm` when it is on PATH, otherwise
-`node "${CLAUDE_PLUGIN_ROOT}/lcm.mjs"` (marketplace install).
+`node "${CLAUDE_PLUGIN_ROOT}/bundle/lcm.js"` (marketplace install).
 
 1. Without arguments, or when `$0` is not a command: run `lcm help`, show it verbatim, stop.
 2. Run `lcm help $0`. Done when you can say in one line what `lcm $ARGUMENTS` will do.

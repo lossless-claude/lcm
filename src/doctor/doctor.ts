@@ -11,7 +11,10 @@ import { NATIVE_PATTERNS, ScrubEngine, readGitleaksSyncDate } from "../scrub.js"
 import { GITLEAKS_PATTERNS } from "../generated-patterns.js";
 import { projectDir } from "../daemon/project.js";
 import { collectEventStats, collectDetailedEventStats } from "../db/events-stats.js";
-import { BUILD_ID } from "../daemon/version.js";
+import { BUILD_ID, PKG_VERSION } from "../daemon/version.js";
+import { cliEntrypoint } from "../cli-entrypoint.js";
+import { daemonOwnership } from "../daemon/lifecycle.js";
+import { repairCommand } from "../hooks/fail-open.js";
 
 const COLORS = {
   green: "\x1b[0;32m",
@@ -59,20 +62,62 @@ function loadConfig(deps: DoctorDeps): DoctorConfig {
   };
 }
 
-type PluginRegistration = { installed: boolean; enabled: boolean; key?: string };
+type PluginRegistration = { installed: boolean; enabled: boolean; key?: string; installPath?: string };
 
 /** Look up the lcm plugin in Claude Code's plugin registry and enabledPlugins. */
 function readLcmPluginRegistration(deps: DoctorDeps, settings: Record<string, unknown>): PluginRegistration {
   const registryPath = join(deps.homedir, ".claude", "plugins", "installed_plugins.json");
   let key: string | undefined;
+  let installPath: string | undefined;
   try {
     const registry = JSON.parse(deps.readFileSync(registryPath, "utf-8")) as { plugins?: Record<string, unknown> };
     const plugins = registry?.plugins && typeof registry.plugins === "object" ? registry.plugins : {};
     key = Object.keys(plugins).find(k => k === "lcm" || k.startsWith("lcm@"));
+    const entries = key ? plugins[key] : undefined;
+    // The registry holds one install per scope; the user-scope one is the one whose hooks run here.
+    const list = (Array.isArray(entries) ? entries : [entries]) as Array<{ scope?: unknown; installPath?: unknown } | undefined>;
+    const entry = list.find((e) => e?.scope === "user") ?? list[0];
+    if (typeof entry?.installPath === "string") installPath = entry.installPath;
   } catch { /* no registry — plugin not installed */ }
   if (!key) return { installed: false, enabled: false };
   const enabledPlugins = settings.enabledPlugins as Record<string, unknown> | undefined;
-  return { installed: true, enabled: enabledPlugins?.[key] !== false, key };
+  return { installed: true, enabled: enabledPlugins?.[key] !== false, key, installPath };
+}
+
+/**
+ * The installed plugin must carry its prebuilt bundle: plugin.json calls
+ * `bundle/lcm.js` directly, so without it no hook can run at all (node exits 1
+ * before lcm gets a chance to fail open). Only a plugin whose own manifest
+ * references the bundle is held to this; releases before it ran a launcher.
+ */
+function addPluginBundleCheck(results: CheckResult[], deps: DoctorDeps, plugin: PluginRegistration): void {
+  if (!plugin.installed) return;
+  if (!plugin.installPath) {
+    results.push({ name: "plugin-bundle", category: "Settings", status: "warn", message: "plugin registry entry has no installPath; bundle not checked" });
+    return;
+  }
+  const manifestPath = join(plugin.installPath, ".claude-plugin", "plugin.json");
+  let manifest = "";
+  try {
+    manifest = deps.readFileSync(manifestPath, "utf-8");
+  } catch {
+    // A registered plugin whose directory lost its manifest is the corrupted install this check exists for.
+    results.push({
+      name: "plugin-bundle", category: "Settings", status: "fail",
+      message: `${manifestPath} unreadable — plugin install is incomplete\n     Fix: claude plugin update lcm@lossless-claude`,
+    });
+    return;
+  }
+  if (!manifest.includes("bundle/lcm.js")) return;
+  const bundlePath = join(plugin.installPath, "bundle", "lcm.js");
+  if (deps.existsSync(bundlePath)) {
+    results.push({ name: "plugin-bundle", category: "Settings", status: "pass", message: bundlePath });
+  } else {
+    results.push({
+      name: "plugin-bundle", category: "Settings", status: "fail",
+      message: `${bundlePath} missing — no plugin hook can run\n     Fix: claude plugin update lcm@lossless-claude`,
+    });
+  }
 }
 
 function checkBinary(deps: DoctorDeps, command: string): boolean {
@@ -115,8 +160,7 @@ export function testMcpHandshake(spawnMcp: typeof spawn = spawn): Promise<CheckR
         "io.modelcontextprotocol/clientInfo": { name: "doctor", version: "0.1" },
       } },
     };
-    const binPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "bin", "lcm.js");
-    const child = spawnMcp(process.execPath, [binPath, "mcp"], { stdio: ["pipe", "pipe", "ignore"] });
+    const child = spawnMcp(process.execPath, [cliEntrypoint(), "mcp"], { stdio: ["pipe", "pipe", "ignore"] });
     let stdout = "";
     let settled = false;
     const finish = (count = 0, message = `lcm: ${count}/7 tools`) => {
@@ -226,16 +270,8 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
   });
 
   // ── 1. Binary version ──
-  // dist/src/doctor/doctor.js → ../../.. → project root
-  const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "package.json");
-  let pkgVersion: string | undefined;
-  try {
-    const pkg = JSON.parse(deps.readFileSync(pkgPath, "utf-8")) as { version?: unknown };
-    pkgVersion = typeof pkg.version === "string" ? pkg.version : undefined;
-    results.push({ name: "version", category: "Stack", status: pkgVersion ? "pass" : "warn", message: pkgVersion ? `v${pkgVersion}` : "Could not read version" });
-  } catch {
-    results.push({ name: "version", category: "Stack", status: "warn", message: "Could not read version" });
-  }
+  const pkgVersion = PKG_VERSION;
+  results.push({ name: "version", category: "Stack", status: pkgVersion ? "pass" : "warn", message: pkgVersion ? `v${pkgVersion}` : "Could not read version" });
 
   // ── 2. config.json ──
   const configPath = join(deps.lcmHome, "config.json");
@@ -261,9 +297,21 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
 
   if (daemonHealthy) {
     const pidFilePath = join(deps.lcmHome, "daemon.pid");
+    const ownership = daemonOwnership({ status: "ok", version: daemonVersion, build: daemonBuild }, { version: pkgVersion, build: BUILD_ID });
     const versionMismatch = Boolean(pkgVersion && daemonVersion && daemonVersion !== pkgVersion);
-    const buildMismatch = Boolean(BUILD_ID && daemonBuild && daemonBuild !== BUILD_ID);
-    if (versionMismatch || buildMismatch) {
+    if (ownership === "incompatible") {
+      // Newest wins: a newer, incompatible daemon is never restarted; this install must be updated.
+      results.push({
+        name: "daemon-version", category: "Daemon", status: "fail",
+        message: `localhost:${config.port} — daemon v${daemonVersion} is newer than the installed v${pkgVersion} and incompatible; hooks and MCP fail open\n     Fix: ${repairCommand()}`,
+      });
+      daemonHealthy = false;
+    } else if (ownership === "older-caller") {
+      results.push({
+        name: "daemon", category: "Daemon", status: "warn",
+        message: `localhost:${config.port} (up) — daemon v${daemonVersion} is newer than the installed v${pkgVersion}; compatible\n     Fix: ${repairCommand()}`,
+      });
+    } else if (ownership === "restart") {
       // Stale daemon (older version, or same version from an older build) — restart it
       const runningLabel = versionMismatch ? `v${daemonVersion}` : `build ${daemonBuild}`;
       const installedLabel = versionMismatch ? `v${pkgVersion}` : `build ${BUILD_ID}`;
@@ -348,6 +396,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
   // Hooks are owned by the lcm Claude Code plugin, not settings.json.
   // Verify the plugin is actually registered and enabled; otherwise no hook fires at all.
   const plugin = readLcmPluginRegistration(deps, settingsData);
+  addPluginBundleCheck(results, deps, plugin);
   const hooks = settingsData.hooks as Record<string, unknown[]> | undefined;
   const settingsHookEvents: string[] = [];
   for (const { event, command } of REQUIRED_HOOKS) {

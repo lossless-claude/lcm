@@ -26,7 +26,10 @@
   },
   "mcpServers": {
     "lcm": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/lcm-mcp.sh"
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/bundle/mcp-server.js"
+      ]
     }
   },
   "hooks": {
@@ -36,7 +39,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" compact --hook",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/bundle/lcm.js",
+              "compact",
+              "--hook"
+            ],
             "timeout": 120
           }
         ]
@@ -48,7 +56,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" restore"
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/bundle/lcm.js",
+              "restore"
+            ]
           }
         ]
       }
@@ -59,7 +71,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" session-end"
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/bundle/lcm.js",
+              "session-end"
+            ]
           }
         ]
       }
@@ -70,7 +86,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" user-prompt"
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/bundle/lcm.js",
+              "user-prompt"
+            ]
           }
         ]
       }
@@ -81,7 +101,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" session-snapshot"
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/bundle/lcm.js",
+              "session-snapshot"
+            ]
           }
         ]
       }
@@ -92,7 +116,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" post-tool"
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/bundle/lcm.js",
+              "post-tool"
+            ]
           }
         ]
       }
@@ -103,7 +131,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" post-tool"
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/bundle/lcm.js",
+              "post-tool"
+            ]
           }
         ]
       }

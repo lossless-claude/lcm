@@ -3,8 +3,10 @@ import { runDoctor } from "../../src/doctor/doctor.js";
 import { REQUIRED_HOOKS } from "../../installer/install.js";
 import { LCM_MD_CONTENT } from "../../src/daemon/orientation.js";
 import { ensureDaemon } from "../../src/daemon/lifecycle.js";
+import { PKG_VERSION } from "../../src/daemon/version.js";
 
-vi.mock("../../src/daemon/lifecycle.js", () => ({
+vi.mock("../../src/daemon/lifecycle.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/daemon/lifecycle.js")>()),
   ensureDaemon: vi.fn().mockResolvedValue({ connected: false }),
 }));
 
@@ -99,8 +101,8 @@ describe("runDoctor lcm-md check", () => {
 
 describe("runDoctor daemon version mismatch", () => {
   it("auto-restarts daemon on version mismatch and reports fixApplied when post-restart version matches", async () => {
-    const pkgVersion = "0.6.0";
-    const daemonVersion = "0.5.0";
+    const pkgVersion = PKG_VERSION!;
+    const daemonVersion = "0.0.1";
 
     // ensureDaemon returns connected on restart attempt
     vi.mocked(ensureDaemon).mockResolvedValueOnce({ connected: true, port: 7865, spawned: true });
@@ -135,8 +137,8 @@ describe("runDoctor daemon version mismatch", () => {
   });
 
   it("reports warn with fixApplied:false when restart does not fix version mismatch", async () => {
-    const pkgVersion = "0.6.0";
-    const daemonVersion = "0.5.0";
+    const pkgVersion = PKG_VERSION!;
+    const daemonVersion = "0.0.1";
 
     vi.mocked(ensureDaemon).mockResolvedValueOnce({ connected: true, port: 7865, spawned: true });
 
@@ -276,5 +278,56 @@ describe("Passive Learning checks", () => {
     const staleness = results.find(r => r.name === "events-staleness");
     expect(staleness?.status).toBe("warn");
     expect(staleness?.message).toContain("hooks may not be firing");
+  });
+});
+
+describe("runDoctor plugin bundle", () => {
+  const registry = (installPath: string) =>
+    JSON.stringify({ version: 2, plugins: { "lcm@lossless-claude": [{ scope: "user", version: "0.13.0", installPath }] } });
+  const bundleManifest = JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/bundle/lcm.js", "restore"] }] }] } });
+  const launcherManifest = JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: "node \"${CLAUDE_PLUGIN_ROOT}/lcm.mjs\" restore" }] }] } });
+
+  function depsWith(manifest: string, bundlePresent: boolean) {
+    const installPath = "/tmp/test-home/.claude/plugins/cache/lossless-claude/lcm/0.13.0";
+    return minimalDeps({
+      existsSync: (path: string) => path.endsWith("bundle/lcm.js") ? bundlePresent : true,
+      readFileSync: (path: string) => {
+        if (path.endsWith("installed_plugins.json")) return registry(installPath);
+        if (path.endsWith(".claude-plugin/plugin.json")) return manifest;
+        if (path.endsWith("config.json")) return "{}";
+        if (path.endsWith("settings.json")) return buildCleanSettingsJson();
+        if (path.endsWith("CLAUDE.md")) return "<!-- lcm:start -->\n<!-- Claude Code include: @lcm.md -->\n<!-- lcm:end -->\n";
+        if (path.endsWith("lcm.md")) return LCM_MD_CONTENT;
+        return "{}";
+      },
+    });
+  }
+
+  it("fails when the installed manifest calls bundle/lcm.js and the bundle is missing", async () => {
+    const result = (await runDoctor(depsWith(bundleManifest, false))).find((r) => r.name === "plugin-bundle");
+    expect(result?.status).toBe("fail");
+    expect(result?.message).toContain("claude plugin update lcm@lossless-claude");
+  });
+
+  it("passes when the bundle is present", async () => {
+    const result = (await runDoctor(depsWith(bundleManifest, true))).find((r) => r.name === "plugin-bundle");
+    expect(result?.status).toBe("pass");
+  });
+
+  it("fails when the registered plugin directory has no readable manifest", async () => {
+    const deps = depsWith(bundleManifest, true);
+    const readFileSync = deps.readFileSync;
+    deps.readFileSync = (path: string) => {
+      if (path.endsWith(".claude-plugin/plugin.json")) throw new Error("ENOENT");
+      return readFileSync(path);
+    };
+    const result = (await runDoctor(deps)).find((r) => r.name === "plugin-bundle");
+    expect(result?.status).toBe("fail");
+    expect(result?.message).toContain("unreadable");
+  });
+
+  it("does not hold a launcher-era plugin to the bundle", async () => {
+    const results = await runDoctor(depsWith(launcherManifest, false));
+    expect(results.find((r) => r.name === "plugin-bundle")).toBeUndefined();
   });
 });

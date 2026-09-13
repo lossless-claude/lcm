@@ -4,6 +4,10 @@ import { join, dirname } from "node:path";
 import { mergeClaudeSettings } from "./installer/settings.js";
 import { loadDaemonConfig } from "./daemon/config.js";
 import { lcmPath } from "./lcm-home.js";
+import { PKG_VERSION } from "./daemon/version.js";
+import { cliInvocation, daemonNotice, type DaemonNotice } from "./hooks/fail-open.js";
+
+export type EnsureDaemonOutcome = { connected: boolean; ownership?: string; daemonVersion?: string };
 
 export interface EnsureCoreDeps {
   configPath: string;
@@ -13,8 +17,10 @@ export interface EnsureCoreDeps {
   writeFileSync: (path: string, data: string) => void;
   mkdirSync: (path: string, opts?: { recursive: boolean }) => void;
   chmodSync?: (path: string, mode: number) => void;
-  ensureDaemon: (opts: { port: number; pidFilePath: string; spawnTimeoutMs: number }) => Promise<{ connected: boolean }>;
+  ensureDaemon: (opts: { port: number; pidFilePath: string; spawnTimeoutMs: number; expectedVersion?: string }) => Promise<EnsureDaemonOutcome>;
 }
+
+export type EnsureCoreResult = { port: number; daemon: EnsureDaemonOutcome };
 
 function defaultDeps(): EnsureCoreDeps {
   return {
@@ -32,35 +38,7 @@ function defaultDeps(): EnsureCoreDeps {
   };
 }
 
-/**
- * Record the node interpreter this process is running under in config.json, so the
- * plugin's static `.claude-plugin/lcm-mcp.sh` launcher — which cannot depend on PATH
- * resolving node either — can read a measured, working path instead of guessing.
- * Read-modify-write: preserves every other key, and only rewrites when the recorded
- * path is stale (e.g. after an nvm switch or node upgrade).
- */
-function recordMcpNodePath(deps: EnsureCoreDeps): void {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(deps.readFileSync(deps.configPath, "utf-8"));
-  } catch {
-    return; // config.json missing or unreadable — nothing to patch
-  }
-  if (typeof raw !== "object" || raw === null) return;
-  const config = raw as Record<string, unknown>;
-  if (config.mcpNodePath === process.execPath) return;
-  try {
-    deps.writeFileSync(deps.configPath, JSON.stringify({ ...config, mcpNodePath: process.execPath }, null, 2));
-  } catch (err) {
-    // Don't throw: a config that cannot be written must not stop the daemon from
-    // starting. But don't swallow either — the launcher then falls back to PATH
-    // for good, which is the failure this whole change exists to remove, and it
-    // would look identical to never having tried.
-    console.error("lcm: could not record mcpNodePath in config.json:", err instanceof Error ? err.message : err);
-  }
-}
-
-export async function ensureCore(deps: EnsureCoreDeps = defaultDeps()): Promise<void> {
+export async function ensureCore(deps: EnsureCoreDeps = defaultDeps()): Promise<EnsureCoreResult> {
   // 1. Create config.json with defaults if missing
   if (!deps.existsSync(deps.configPath)) {
     deps.mkdirSync(dirname(deps.configPath), { recursive: true });
@@ -70,7 +48,6 @@ export async function ensureCore(deps: EnsureCoreDeps = defaultDeps()): Promise<
       deps.chmodSync?.(deps.configPath, 0o600);
     } catch {}
   }
-  recordMcpNodePath(deps);
 
   // 2. Clean stale/duplicate hooks from settings.json (fixes #94)
   // Only rewrite settings.json if mergeClaudeSettings actually changed the data
@@ -85,40 +62,78 @@ export async function ensureCore(deps: EnsureCoreDeps = defaultDeps()): Promise<
     } catch {}
   }
 
-  // 3. Start daemon if not running
+  // 3. Start daemon if not running. Only the version is compared, never the build:
+  // the plugin bundle and the npm CLI of one release are built in different CI runs,
+  // and two hooks passing different build ids would restart the daemon at each other.
   const config = loadDaemonConfig(deps.configPath);
-  await deps.ensureDaemon({
-    port: config.daemon?.port ?? 3737,
+  const port = config.daemon?.port ?? 3737;
+  const daemon = await deps.ensureDaemon({
+    port,
     pidFilePath: join(dirname(deps.configPath), "daemon.pid"),
     spawnTimeoutMs: 5000,
+    expectedVersion: PKG_VERSION,
   });
+  return { port, daemon };
 }
 
 export interface BootstrapDeps extends EnsureCoreDeps {
   flagExists: (path: string) => boolean;
-  writeFlag: (path: string) => void;
+  /** The flag's content: empty when the session may use the daemon, else the notice that says why not. */
+  readFlag: (path: string) => string;
+  writeFlag: (path: string, content: string) => void;
+  warn: (line: string) => void;
 }
 
 function defaultBootstrapDeps(): BootstrapDeps {
   return {
     ...defaultDeps(),
     flagExists: existsSync,
-    writeFlag: (p) => writeFileSync(p, ""),
+    readFlag: (p) => readFileSync(p, "utf-8"),
+    writeFlag: (p, content) => writeFileSync(p, content),
+    warn: (line) => process.stderr.write(line + "\n"),
   };
 }
 
+const UNUSABLE_PREFIX = "unusable:";
+
+/**
+ * Runs `ensureCore` once per session and returns whether this session's hooks may
+ * talk to the daemon. The first hook of a session writes the verdict into the flag
+ * file and, when something is wrong, one line on stderr naming the repair; every
+ * later hook only reads the flag back. A failing setup is reported the same way and
+ * still writes the flag, so it is attempted once per session, not once per hook.
+ */
 export async function ensureBootstrapped(
   sessionId: string,
   deps: BootstrapDeps = defaultBootstrapDeps(),
-): Promise<void> {
+): Promise<{ usable: boolean }> {
   const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
   const flagDir = lcmPath("tmp");
   mkdirSync(flagDir, { recursive: true });
   const flagPath = join(flagDir, `bootstrapped-${safeId}.flag`);
   try {
-    if (deps.flagExists(flagPath)) return;
+    if (deps.flagExists(flagPath)) {
+      let content = "";
+      try { content = deps.readFlag(flagPath); } catch {}
+      // An unusable verdict is tied to the hook version that wrote it: once this
+      // distribution has been updated, the same session is checked again.
+      const writtenBy = content.startsWith(UNUSABLE_PREFIX) ? content.slice(UNUSABLE_PREFIX.length).trim().split(" ")[0] : undefined;
+      if (writtenBy === undefined) return { usable: true };
+      if (writtenBy === `v${PKG_VERSION}`) return { usable: false };
+    }
   } catch {}
 
-  await ensureCore(deps);
-  try { deps.writeFlag(flagPath); } catch {}
+  let notice: DaemonNotice | undefined;
+  try {
+    const { port, daemon } = await ensureCore(deps);
+    notice = daemonNotice({ ...daemon, port }, PKG_VERSION);
+  } catch (err) {
+    // The flag is still written below: a broken environment is reported once, not
+    // re-attempted (with its daemon timeout) by every hook of the session.
+    notice = { usable: true, line: `lcm: setup failed (${err instanceof Error ? err.message : String(err)}); memory may be off until it is repaired. Repair: ${cliInvocation()} doctor` };
+  }
+  if (notice) deps.warn(notice.line);
+  const usable = notice?.usable ?? true;
+  try { deps.writeFlag(flagPath, usable ? "" : `${UNUSABLE_PREFIX} v${PKG_VERSION} ${notice!.line}`); } catch {}
+  return { usable };
 }

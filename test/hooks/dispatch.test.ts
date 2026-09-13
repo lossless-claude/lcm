@@ -33,7 +33,7 @@ vi.mock("../../src/daemon/config.js", () => ({
   loadDaemonConfig: vi.fn().mockReturnValue({ daemon: { port: 3737 } }),
 }));
 vi.mock("../../src/bootstrap.js", () => ({
-  ensureBootstrapped: vi.fn().mockResolvedValue(undefined),
+  ensureBootstrapped: vi.fn().mockResolvedValue({ usable: true }),
 }));
 
 import { validateAndFixHooks } from "../../src/hooks/auto-heal.js";
@@ -139,6 +139,14 @@ describe("dispatchHook", () => {
     vi.mocked(ensureBootstrapped).mockClear();
     await dispatchHook("compact", JSON.stringify({ session_id: "test-sess-123" }));
     expect(ensureBootstrapped).not.toHaveBeenCalled();
+  });
+
+  it("fails open when the session's daemon is unusable: exit 0, empty stdout, handler not called", async () => {
+    vi.mocked(ensureBootstrapped).mockResolvedValueOnce({ usable: false });
+    vi.mocked(handleSessionStart).mockClear();
+    const result = await dispatchHook("restore", JSON.stringify({ session_id: "s-incompatible" }));
+    expect(result).toEqual({ exitCode: 0, stdout: "" });
+    expect(handleSessionStart).not.toHaveBeenCalled();
   });
 
   it("does not block hooks if ensureBootstrapped throws", async () => {
