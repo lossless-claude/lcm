@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { runLcmMigrations } from "./db/migration.js";
+import { closeLcmConnection, getLcmConnection } from "./db/connection.js";
 import type { ProgressState } from "./cli/progress-state.js";
 import { DaemonClient } from "./daemon/client.js";
 import {
@@ -64,9 +64,11 @@ export function findUncompacted(minTokens: number, readOnly = false, cwdFilter?:
 
   for (const { projDir, cwd } of findProjects(cwdFilter)) {
     const dbPath = join(projDir, "db.sqlite");
-    const db = new DatabaseSync(dbPath);
+    // The shared pool, not a private handle: this runs on the daemon's own
+    // SessionStart sweep, where a second handle to a database the daemon
+    // already holds would miss the pool's WAL, foreign-key and busy-timeout setup.
+    const db = getLcmConnection(dbPath);
     try {
-      db.exec("PRAGMA busy_timeout = 5000");
       if (!readOnly) runLcmMigrations(db);
       const rows = db.prepare(`
         SELECT
@@ -129,7 +131,7 @@ export function findUncompacted(minTokens: number, readOnly = false, cwdFilter?:
         });
       }
     } catch { /* skip corrupt databases */ }
-    finally { db.close(); }
+    finally { closeLcmConnection(dbPath); }
   }
 
   return results;

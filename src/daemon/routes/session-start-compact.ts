@@ -18,12 +18,18 @@ import { compactingSessionsFor } from "./compact.js";
  */
 export function createSessionStartCompactHandler(config: DaemonConfig, daemonPort: number): RouteHandler {
   return async (_req, res, body) => {
-    const input = JSON.parse(body || "{}");
+    let input: { session_id?: unknown; cwd?: string };
+    try {
+      input = JSON.parse(body || "{}") as { session_id?: unknown; cwd?: string };
+    } catch {
+      sendJson(res, 400, { error: "Invalid JSON body" });
+      return;
+    }
     const sessionId = typeof input.session_id === "string" ? input.session_id : "";
 
     let cwd: string;
     try {
-      cwd = validateCwd(input.cwd);
+      cwd = validateCwd(input.cwd as string);
     } catch (err) {
       sendJson(res, 400, { error: err instanceof Error ? err.message : "invalid cwd" });
       return;

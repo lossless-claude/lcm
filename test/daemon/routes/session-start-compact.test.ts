@@ -63,6 +63,14 @@ describe("POST /session-start-compact", () => {
     compactingSessionsFor.mockReset().mockReturnValue([]);
   });
 
+  it("answers 400, not 500, on a malformed JSON body", async () => {
+    const handler = createSessionStartCompactHandler(baseConfig(), 4242);
+    const { res, out } = respond();
+    await handler({} as never, res, "not json");
+    expect(out.status).toBe(400);
+    expect(fireCompactRequest).not.toHaveBeenCalled();
+  });
+
   it("rejects a missing or invalid cwd", async () => {
     const handler = createSessionStartCompactHandler(baseConfig(), 4242);
     const { res, out } = respond();
