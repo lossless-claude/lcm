@@ -1,8 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { daemonOwnership, ensureDaemon, isOlderVersion, isStaleDaemon, stopDaemon } from "../../src/daemon/lifecycle.js";
+import { daemonOwnership, ensureDaemon, isOlderVersion, isStaleDaemon, registerDaemonActivity, stopDaemon } from "../../src/daemon/lifecycle.js";
 
 const tempDirs: string[] = [];
 
@@ -190,6 +191,35 @@ describe("ensureDaemon", () => {
       expectedVersion: "0.12.0", _skipSpawn: true, _fetchOverride: fetchFn,
     });
     expect(result).toMatchObject({ connected: false, spawned: false, ownership: "incompatible", daemonVersion: "0.13.0" });
+  });
+
+  it("a scan prunes a dead-pid marker but keeps one for a live process", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-markers-"));
+    tempDirs.push(tempDir);
+    const pidFile = join(tempDir, "daemon.pid");
+    const unregister = registerDaemonActivity(pidFile); // live marker for process.pid
+    const deadMarker = join(tempDir, "tmp", `daemon.starting.999999.${randomUUID()}`);
+    writeFileSync(deadMarker, "");
+    const fetchFn = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
+    const stopping = stopDaemon({ port: 1, pidFilePath: pidFile, timeoutMs: 50, _fetchOverride: fetchFn });
+    // stopDaemon scans markers synchronously before its first await.
+    expect(existsSync(deadMarker)).toBe(false);
+    const remaining = readdirSync(join(tempDir, "tmp"));
+    expect(remaining.some((name) => name.startsWith(`daemon.starting.${process.pid}.`))).toBe(true);
+    unregister();
+    await stopping;
+  });
+
+  it("a registration after a simulated crash removes the abandoned marker", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-crash-"));
+    tempDirs.push(tempDir);
+    const pidFile = join(tempDir, "daemon.pid");
+    mkdirSync(join(tempDir, "tmp"), { recursive: true });
+    const crashedMarker = join(tempDir, "tmp", `daemon.starting.999999.${randomUUID()}`);
+    writeFileSync(crashedMarker, ""); // release() never called — simulated crash
+    const unregister = registerDaemonActivity(pidFile); // next registration, another process
+    expect(existsSync(crashedMarker)).toBe(false);
+    unregister();
   });
 
   it("stopDaemon reports not running when nothing listens and no PID file exists", async () => {

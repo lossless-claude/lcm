@@ -38,7 +38,7 @@ it.each(commands)("held offline command %j refuses admission without changing SQ
     cwd: root, env, timeout: 10000,
   })).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining("held down until") });
   expect(readFileSync(dbPath)).toEqual(before);
-  expect(readdirSync(root).some((name) => name.startsWith("daemon.starting."))).toBe(false);
+  expect(existsSync(join(root, "tmp")) && readdirSync(join(root, "tmp")).some((name) => name.startsWith("daemon.starting."))).toBe(false);
 });
 
 it.each(commands)("held offline command %j still provides help", async (...args) => {
@@ -46,7 +46,7 @@ it.each(commands)("held offline command %j still provides help", async (...args)
   const result = await execute(process.execPath, [cli, ...args.map((arg) => arg === "INPUT" ? input : arg), "--help"], { cwd: root, env, timeout: 10000 });
   expect(result.stdout).toMatch(/Usage:|lcm .*—/);
   expect(result.stderr).toBe("");
-  expect(readdirSync(root).some((name) => name.startsWith("daemon.starting."))).toBe(false);
+  expect(existsSync(join(root, "tmp")) && readdirSync(join(root, "tmp")).some((name) => name.startsWith("daemon.starting."))).toBe(false);
 });
 
 it("held stop drains an admitted offline import without requiring a daemon", async () => {
@@ -91,7 +91,7 @@ it("held stop drains an admitted offline import without requiring a daemon", asy
     const inspected = new DatabaseSync(dbPath, { readOnly: true });
     try { expect(inspected.prepare("SELECT COUNT(*) AS count FROM promoted").get()).toMatchObject({ count: 1 }); }
     finally { inspected.close(); }
-    expect(readdirSync(root).some((name) => name.startsWith("daemon.starting."))).toBe(false);
+    expect(existsSync(join(root, "tmp")) && readdirSync(join(root, "tmp")).some((name) => name.startsWith("daemon.starting."))).toBe(false);
   } finally {
     writeFileSync(join(root, "resume"), ""); importing.child.kill();
     await Promise.allSettled([importing, ...(stop ? [stop] : [])]);

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, unlinkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { join, dirname } from "node:path";
@@ -118,26 +118,58 @@ function cleanStalePid(pidFilePath: string): void {
   } catch { /* ignore */ }
 }
 
-/** Register before checking a hold; release only after startup or local database work settles. */
-export function registerDaemonActivity(pidFilePath: string): () => void {
-  mkdirSync(dirname(pidFilePath), { recursive: true });
-  const path = join(dirname(pidFilePath), `daemon.starting.${process.pid}.${randomUUID()}`);
-  writeFileSync(path, "", { flag: "wx" });
-  return () => { try { unlinkSync(path); } catch { /* already removed by stop */ } };
+// A marker older than this is treated as stale even when its pid looks alive: the OS can
+// reuse a pid, and `registerDaemonActivity` markers are released well before an hour on
+// every real path, so nothing legitimate ever needs to survive this long.
+const MARKER_MAX_AGE_MS = 60 * 60 * 1000;
+
+/** Markers live in tmp, not the storage root, so the root holds only durable files and a
+ * sandboxed test home cannot see another root's markers via the shared system /tmp. */
+function markersDir(pidFilePath: string): string {
+  return join(dirname(pidFilePath), "tmp");
 }
 
-function startingDaemons(pidFilePath: string): { pid: number; path: string }[] {
-  const directory = dirname(pidFilePath);
+/** Best-effort: delete `path` when its owning `pid` is dead or the marker outlived
+ * MARKER_MAX_AGE_MS. Returns true when the marker is kept. Never throws — a marker
+ * already removed by another process, or genuinely live and young, is left untouched. */
+function pruneMarker(path: string, pid: number): boolean {
+  try {
+    if (isProcessAlive(pid) && Date.now() - statSync(path).mtimeMs <= MARKER_MAX_AGE_MS) return true;
+    unlinkSync(path);
+  } catch { /* already gone, or racing another pruner */ }
+  return false;
+}
+
+/** List every startup marker in `directory`, pruning dead or aged-out ones along the way. */
+function sweepMarkers(directory: string): { pid: number; path: string }[] {
   let names: string[];
   try { names = readdirSync(directory); } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
-  return names.flatMap((name) => {
+  const entries: { pid: number; path: string }[] = [];
+  for (const name of names) {
     const match = /^daemon\.starting\.(\d+)\.[0-9a-f-]+$/.exec(name);
     const pid = Number(match?.[1]);
-    return Number.isSafeInteger(pid) && pid > 0 ? [{ pid, path: join(directory, name) }] : [];
-  });
+    if (!Number.isSafeInteger(pid) || pid <= 0) continue;
+    const path = join(directory, name);
+    if (pruneMarker(path, pid)) entries.push({ pid, path });
+  }
+  return entries;
+}
+
+/** Register before checking a hold; release only after startup or local database work settles. */
+export function registerDaemonActivity(pidFilePath: string): () => void {
+  const directory = markersDir(pidFilePath);
+  mkdirSync(directory, { recursive: true });
+  sweepMarkers(directory); // prune dead markers left by a crashed process before adding ours
+  const path = join(directory, `daemon.starting.${process.pid}.${randomUUID()}`);
+  writeFileSync(path, "", { flag: "wx" });
+  return () => { try { unlinkSync(path); } catch { /* already removed by stop */ } };
+}
+
+function startingDaemons(pidFilePath: string): { pid: number; path: string }[] {
+  return sweepMarkers(markersDir(pidFilePath));
 }
 
 /** PID of the process listening on 127.0.0.1:port, via lsof (macOS/Linux). Undefined when unknown. */
