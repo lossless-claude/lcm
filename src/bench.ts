@@ -863,6 +863,7 @@ export async function runBench(opts: BenchOptions): Promise<BenchResult> {
     const message = error instanceof Error ? error.message : String(error);
     return { out: "", exitCode: 1, stdout: `${message}\n` };
   } finally {
-    await rm(rgDir, { recursive: true, force: true });
+    // Best-effort: a cleanup rejection must not replace the result or the original error.
+    await rm(rgDir, { recursive: true, force: true }).catch(() => {});
   }
 }
