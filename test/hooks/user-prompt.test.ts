@@ -101,6 +101,23 @@ describe("handleUserPromptSubmit", () => {
     expect(result.stdout).toContain("<!-- surfaced-memory-ids: abc-123 -->");
   });
 
+  it("suffixes a sibling checkout's id with the project the daemon reported", async () => {
+    mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
+    const client = {
+      health: vi.fn(),
+      post: vi.fn().mockResolvedValue({
+        hints: ["Local decision", "Sibling decision"],
+        ids: ["abc-123", "def-456"],
+        projectIds: [null, "sibling-project"],
+      }),
+    };
+    const result = await handleUserPromptSubmit(
+      JSON.stringify({ session_id: "s1", cwd: "/proj", prompt: "what framework?" }),
+      client as any,
+    );
+    expect(result.stdout).toContain("<!-- surfaced-memory-ids: abc-123,def-456@sibling-project -->");
+  });
+
   it("omits surfaced-memory-ids comment when ids are absent", async () => {
     mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
     const client = {

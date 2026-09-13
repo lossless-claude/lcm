@@ -36,6 +36,15 @@ Summaries are lossy by design. The "Expand for details about:" footer at the end
 - Tool call sequences and their outputs
 - Verbatim quotes or specific data points
 
+### The `<memory-context>` block
+
+Every prompt can carry a `<memory-context>` block of memories surfaced for that prompt, ending
+in a trailing comment: `<!-- surfaced-memory-ids: id-1,id-2@projectId -->`. An id on its own came
+from the current project; an id suffixed `@projectId` came from a sibling checkout of the same
+repository (promoted memory is shared across every checkout). Pass that suffix as the `projectId`
+argument to `lcm_describe` or `lcm_expand` — the bare id, read against the current project, would
+resolve to a different node or nothing at all.
+
 ## Tool reference
 
 ### lcm_search

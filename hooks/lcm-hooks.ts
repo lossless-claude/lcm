@@ -361,6 +361,10 @@ function registerSessionStart(on: On, summaryCap: number): void {
     // The housekeeping the SessionStart command hook awaited. Nothing reads its result,
     // and the session has no reason to wait for a prune.
     void $.session.cwd().then((cwd) => postDaemon($, "/session-scavenge", { cwd }));
+    // Catch-up sweep for conversations of the same project a prior session left
+    // uncompacted (it ended without SessionEnd). The daemon selects, caps and
+    // fires the actual compaction requests; this call only triggers it.
+    void $.session.cwd().then((cwd) => postDaemon($, "/session-start-compact", { cwd, session_id: sessionId }));
     if (summaryCap > 0 && !summaryPollerStarted) {
       summaryPollerStarted = true;
       void pollSummaries($, summaryCap).catch((error) => {

@@ -1,18 +1,28 @@
 export type MemoryHintCandidate = {
   id: string;
   hint: string;
+  /** The project this hint was surfaced from, when it differs from the project being served. */
+  projectId?: string;
 };
 
 export type MemoryHintSelection = {
   hints: string[];
   ids: string[];
+  /** Parallel to `ids`: the source project of a hint that did not come from the served project, null otherwise. */
+  projectIds: (string | null)[];
   availableHintBytes: number;
   usedHintBytes: number;
   dedupedCount: number;
   droppedForBudget: number;
 };
 
-const MEMORY_CONTEXT_INTRO = "Relevant context from previous sessions (use lcm_expand for details):";
+const MEMORY_CONTEXT_INTRO =
+  "Relevant context from previous sessions (use lcm_expand for details; an id suffixed @<projectId> came from another project — pass that as projectId to lcm_describe/lcm_expand):";
+
+/** Renders one surfaced id in the form lcm_describe/lcm_expand accept: bare, or `<id>@<projectId>` when it did not come from the project being served. */
+function renderSurfacedId(id: string, projectId: string | null | undefined): string {
+  return projectId ? `${id}@${projectId}` : id;
+}
 
 function normalizeHint(hint: string): string {
   return hint.trim().replace(/\s+/g, " ").toLowerCase();
@@ -33,9 +43,11 @@ function fitHintWithinBudget(
   candidate: MemoryHintCandidate,
   availableHintBytes: number,
 ): string | null {
+  const selectedProjectIds = selected.map((entry) => entry.projectId ?? null);
   const fullBlock = buildMemoryContext(
     [...selected.map((entry) => entry.hint), candidate.hint],
     [...selected.map((entry) => entry.id), candidate.id],
+    [...selectedProjectIds, candidate.projectId ?? null],
   );
   if (fullBlock && Buffer.byteLength(fullBlock, "utf8") <= availableHintBytes) {
     return candidate.hint;
@@ -58,6 +70,7 @@ function fitHintWithinBudget(
     const block = buildMemoryContext(
       [...selected.map((entry) => entry.hint), truncated],
       [...selected.map((entry) => entry.id), candidate.id],
+      [...selectedProjectIds, candidate.projectId ?? null],
     );
     if (block && Buffer.byteLength(block, "utf8") <= availableHintBytes) {
       bestFit = truncated;
@@ -76,12 +89,17 @@ function fitHintWithinBudget(
  * sending with its translation. It rides the block a caller already reads
  * rather than waiting for an empty search to reveal the mismatch.
  */
-export function buildMemoryContext(hints: string[], ids: string[] = [], notice?: string): string | null {
+export function buildMemoryContext(
+  hints: string[],
+  ids: string[] = [],
+  projectIds: (string | null | undefined)[] = [],
+  notice?: string,
+): string | null {
   if (hints.length === 0) return null;
   const snippets = hints.map((hint) => `- ${hint}`).join("\n");
   const noticeLine = notice ? `\n${notice}` : "";
   const idsComment = ids.length > 0
-    ? `\n<!-- surfaced-memory-ids: ${ids.join(",")} -->`
+    ? `\n<!-- surfaced-memory-ids: ${ids.map((id, index) => renderSurfacedId(id, projectIds[index])).join(",")} -->`
     : "";
   return `<memory-context>\n${MEMORY_CONTEXT_INTRO}\n${snippets}${noticeLine}${idsComment}\n</memory-context>`;
 }
@@ -121,7 +139,7 @@ export function selectMemoryHintsWithinBudget(
     }
 
     seen.push(normalized);
-    deduped.push({ id: candidate.id, hint: trimmedHint });
+    deduped.push({ id: candidate.id, hint: trimmedHint, projectId: candidate.projectId });
   }
 
   const emitted: MemoryHintCandidate[] = [];
@@ -139,17 +157,19 @@ export function selectMemoryHintsWithinBudget(
       continue;
     }
 
-    emitted.push({ id: candidate.id, hint: fittedHint });
+    emitted.push({ id: candidate.id, hint: fittedHint, projectId: candidate.projectId });
   }
 
   const hints = emitted.map((candidate) => candidate.hint);
   const ids = emitted.map((candidate) => candidate.id);
-  const block = buildMemoryContext(hints, ids);
+  const projectIds = emitted.map((candidate) => candidate.projectId ?? null);
+  const block = buildMemoryContext(hints, ids, projectIds);
   const usedHintBytes = block ? Buffer.byteLength(block, "utf8") : 0;
 
   return {
     hints,
     ids,
+    projectIds,
     availableHintBytes,
     usedHintBytes,
     dedupedCount,

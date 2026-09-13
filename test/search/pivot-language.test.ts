@@ -39,7 +39,7 @@ describe("pivot languages", () => {
 
   it("carries the hint inside the memory-context block", () => {
     const hint = pivotQueryHint({ authorLanguage: "pt-BR", pivotLanguage: "en" });
-    expect(buildMemoryContext(["a past decision"], ["m1"], hint)).toContain(hint!);
+    expect(buildMemoryContext(["a past decision"], ["m1"], [], hint)).toContain(hint!);
     expect(buildMemoryContext(["a past decision"], ["m1"])).not.toContain("pivotQuery");
   });
 });
