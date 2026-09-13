@@ -37,7 +37,7 @@ it("held stop waits for an admitted local MCP operation, including its error cle
   try {
     await startMcpServer();
     request = state.handlers.get("tools/call")({ params: { name: "lcm_stats", arguments: {} } });
-    expect(readdirSync(state.root).some((name) => name.startsWith("daemon.starting."))).toBe(true);
+    expect(readdirSync(join(state.root, "tmp")).some((name) => name.startsWith("daemon.starting."))).toBe(true);
     writeHold(pidFilePath);
     let stopped = false;
     stopping = stopDaemon({ port: 1, pidFilePath, timeoutMs: 1000,
@@ -52,7 +52,7 @@ it("held stop waits for an admitted local MCP operation, including its error cle
     expect((await request).isError).toBe(true);
     expect(state.accessed).toBe(true);
     await expect(stopping).resolves.toMatchObject({ stopped: true });
-    expect(readdirSync(state.root).some((name) => name.startsWith("daemon.starting."))).toBe(false);
+    expect(readdirSync(join(state.root, "tmp")).some((name) => name.startsWith("daemon.starting."))).toBe(false);
   } finally {
     state.release();
     await Promise.allSettled([request, stopping]);

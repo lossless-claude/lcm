@@ -33,7 +33,7 @@ it("held compact refuses admission without migrating project databases", async (
       cwd: root, env: { ...process.env, HOME: root, LCM_HOME: root }, timeout: 10000,
     })).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining("held down until") });
     expect(readFileSync(dbPath)).toEqual(before);
-    expect(readdirSync(root).some((name) => name.startsWith("daemon.starting."))).toBe(false);
+    expect(existsSync(join(root, "tmp")) && readdirSync(join(root, "tmp")).some((name) => name.startsWith("daemon.starting."))).toBe(false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -83,7 +83,7 @@ it("held stop waits for admitted compact local migrations until the CLI exits", 
     writeFileSync(join(root, "resume"), "");
     await compact;
     await stop;
-    expect(readdirSync(root).some((name) => name.startsWith("daemon.starting."))).toBe(false);
+    expect(existsSync(join(root, "tmp")) && readdirSync(join(root, "tmp")).some((name) => name.startsWith("daemon.starting."))).toBe(false);
     const inspected = new DatabaseSync(dbPath, { readOnly: true });
     try { expect(inspected.prepare("SELECT name FROM sqlite_master WHERE name = 'conversations'").get()).toBeDefined(); }
     finally { inspected.close(); }

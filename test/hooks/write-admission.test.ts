@@ -32,13 +32,13 @@ it("blocks every direct hook sidecar writer and error-log fallback while held", 
   expect(await recordUserPromptEvents("Always use TypeScript", "test", "/project")).toBe(0);
   safeLogError("PostToolUse", new Error("held"), { cwd: "/project" });
   safeLogError("PostToolUse", new Error("held fallback"), {});
-  expect(readdirSync(root)).toEqual(["daemon.hold"]);
+  expect(readdirSync(root).sort()).toEqual(["daemon.hold", "tmp"]);
   clearHold(join(root, "daemon.pid"));
   expect(recordPostToolEvents(payload).recorded).toBeGreaterThan(0);
   expect(await recordUserPromptEvents("Always use TypeScript", "test", "/project")).toBeGreaterThan(0);
   safeLogError("PostToolUse", new Error("resumed fallback"), {});
   expect(existsSync(join(root, "events.log"))).toBe(true);
-  expect(readdirSync(root).some((name) => name.startsWith("daemon.starting."))).toBe(false);
+  expect(readdirSync(join(root, "tmp")).some((name) => name.startsWith("daemon.starting."))).toBe(false);
 });
 
 it("held stop drains a command-hook write already inside SQLite before succeeding", async () => {
@@ -83,7 +83,7 @@ it("held stop drains a command-hook write already inside SQLite before succeedin
     writeFileSync(join(root, "resume"), "");
     expect(Number((await writerDone).stdout.trim())).toBeGreaterThan(0);
     await expect(stop).resolves.toMatchObject({ stderr: "" });
-    expect(readdirSync(root).some((name) => name.startsWith("daemon.starting."))).toBe(false);
+    expect(readdirSync(join(root, "tmp")).some((name) => name.startsWith("daemon.starting."))).toBe(false);
   } finally {
     writeFileSync(join(root, "resume"), "");
     writer.child.kill();
