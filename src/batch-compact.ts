@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { runLcmMigrations } from "./db/migration.js";
+import { closeLcmConnection, getLcmConnection } from "./db/connection.js";
 import type { ProgressState } from "./cli/progress-state.js";
 import { DaemonClient } from "./daemon/client.js";
 import {
@@ -27,6 +27,8 @@ export interface UncompactedConversation {
   tokens: number;
   sourceMessages: number;
   sourceTokens: number;
+  /** `conversations.updated_at`; lets a caller order candidates oldest-first. */
+  updatedAt: string;
 }
 
 /** Find conversations eligible for compaction, above the token threshold. */
@@ -63,14 +65,20 @@ export function findUncompacted(minTokens: number, readOnly = false, cwdFilter?:
 
   for (const { projDir, cwd } of findProjects(cwdFilter)) {
     const dbPath = join(projDir, "db.sqlite");
-    const db = new DatabaseSync(dbPath);
+    // The shared pool, not a private handle: this runs on the daemon's own
+    // SessionStart sweep, where a second handle to a database the daemon
+    // already holds would miss the pool's WAL, foreign-key and busy-timeout setup.
+    // Acquired inside the try, because the pool issues its first PRAGMA on open:
+    // a corrupt project database must stay skipped, not abort the whole scan.
+    let db: ReturnType<typeof getLcmConnection> | undefined;
     try {
-      db.exec("PRAGMA busy_timeout = 5000");
+      db = getLcmConnection(dbPath);
       if (!readOnly) runLcmMigrations(db);
       const rows = db.prepare(`
         SELECT
           c.conversation_id,
           c.session_id,
+          c.updated_at,
           COALESCE(m.msg_count, 0) as messages,
           COALESCE(m.raw_tokens, 0) as tokens,
           COALESCE(src.msg_count, 0) as source_messages,
@@ -105,6 +113,7 @@ export function findUncompacted(minTokens: number, readOnly = false, cwdFilter?:
       `).all(replay ? 1 : 0, minTokens) as {
         conversation_id: number;
         session_id: string;
+        updated_at: string;
         messages: number;
         tokens: number;
         source_messages: number;
@@ -122,10 +131,11 @@ export function findUncompacted(minTokens: number, readOnly = false, cwdFilter?:
           tokens: row.tokens,
           sourceMessages: row.source_messages,
           sourceTokens: row.source_tokens,
+          updatedAt: row.updated_at,
         });
       }
     } catch { /* skip corrupt databases */ }
-    finally { db.close(); }
+    finally { if (db) closeLcmConnection(dbPath); }
   }
 
   return results;

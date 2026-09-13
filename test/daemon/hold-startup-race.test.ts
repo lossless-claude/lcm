@@ -36,7 +36,7 @@ it.each([1, 2])("held stop waits for %i concurrent startup(s) before claiming an
     fs.existsSync = function(path) {
       const result = original(path);
       if (!paused && String(path) === root + '/daemon.hold'
-          && fs.readdirSync(root).some(name => name.startsWith('daemon.starting.' + process.pid + '.'))) {
+          && fs.existsSync(root + '/tmp') && fs.readdirSync(root + '/tmp').some(name => name.startsWith('daemon.starting.' + process.pid + '.'))) {
         paused = true;
         fs.writeFileSync(root + '/ready.' + process.pid, '');
         while (!original(root + '/resume')) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
@@ -71,7 +71,7 @@ it.each([1, 2])("held stop waits for %i concurrent startup(s) before claiming an
     }
     await expect(stop).resolves.toMatchObject({ stderr: "" });
     await expect(fetch(`http://127.0.0.1:${port}/health`)).rejects.toThrow();
-    expect(readdirSync(root).filter((name) => name.startsWith("daemon.starting."))).toEqual([]);
+    expect(readdirSync(join(root, "tmp")).filter((name) => name.startsWith("daemon.starting."))).toEqual([]);
   } finally {
     writeFileSync(join(root, "resume"), "");
     for (const start of starts) start.child.kill();

@@ -20,6 +20,8 @@ export type DaemonConfig = {
   compaction: {
     /** Below this many tokens `lcm compact` leaves a conversation alone; 0 compacts every one. */
     autoCompactMinTokens: number;
+    /** Max conversations of the same project a session start requests compaction for; a larger backlog drains over several starts. */
+    autoCompactSessionStartMax: number;
     promotionThresholds: { minDepth: number; compressionRatio: number; keywords: Record<string, string[]>; architecturePatterns: string[]; dedupBm25Threshold: number; dedupCandidateLimit: number; eventConfidence?: { decision?: number; plan?: number; errorFix?: number; batch?: number; pattern?: number }; reinforcementBoost?: number; maxConfidence?: number; insightsMaxAgeDays?: number };
   };
   search: {
@@ -68,6 +70,7 @@ const DEFAULTS: DaemonConfig = {
   daemon: { port: 3737, socketPath: "", logLevel: "info", logMaxSizeMB: 10, logRetentionDays: 7, idleTimeoutMs: 1800000 },
   compaction: {
     autoCompactMinTokens: 10000,
+    autoCompactSessionStartMax: 2,
     promotionThresholds: {
       minDepth: 2, compressionRatio: 0.3,
       keywords: { decision: ["decided", "agreed", "will use", "going with", "chosen"], fix: ["fixed", "root cause", "workaround", "resolved"] },

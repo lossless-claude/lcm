@@ -26,14 +26,17 @@ vi.mock("../../src/db/events-path.js", () => ({
 
 vi.mock("../../src/hooks/session-end.js", () => ({
   firePromoteEventsRequest: vi.fn(),
+  fireSessionStartCompactRequest: vi.fn(),
 }));
 
 import { ensureDaemon } from "../../src/daemon/lifecycle.js";
+import { fireSessionStartCompactRequest } from "../../src/hooks/session-end.js";
 import { lcmHome } from "../../src/lcm-home.js";
 import { createLcmPaths } from "../../src/lcm-paths.js";
 
 const paths = createLcmPaths(lcmHome());
 const mockEnsureDaemon = vi.mocked(ensureDaemon);
+const mockFireSessionStartCompact = vi.mocked(fireSessionStartCompactRequest);
 
 describe("handleSessionStart", () => {
   beforeEach(() => {
@@ -41,6 +44,7 @@ describe("handleSessionStart", () => {
     for (const id of ["s1", "s2", "s3", "s4", "dedup-guard-test-abc123", "dead-pid-test-session"]) {
       rmSync(join(tmpdir(), `lcm-restore-${id}.lock`), { force: true });
     }
+    mockFireSessionStartCompact.mockClear();
   });
 
   it("outputs context and exits 0 on success", async () => {
@@ -52,6 +56,23 @@ describe("handleSessionStart", () => {
     const result = await handleSessionStart(JSON.stringify({ session_id: "s1", cwd: "/proj", hook_event_name: "SessionStart" }), client as any, paths);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("<memory-orientation>");
+  });
+
+  it("fires the session-start compact sweep after restore succeeds, excluding its own session", async () => {
+    mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
+    const client = {
+      health: vi.fn(),
+      post: vi.fn().mockResolvedValue({ context: "ctx" }),
+    };
+    await handleSessionStart(JSON.stringify({ session_id: "s4", cwd: "/proj" }), client as any, paths, 4242);
+    expect(mockFireSessionStartCompact).toHaveBeenCalledWith(4242, { cwd: "/proj", session_id: "s4" }, paths);
+  });
+
+  it("does not fire the session-start compact sweep without a cwd", async () => {
+    mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
+    const client = { health: vi.fn(), post: vi.fn().mockResolvedValue({ context: "ctx" }) };
+    await handleSessionStart(JSON.stringify({ session_id: "s1" }), client as any, paths);
+    expect(mockFireSessionStartCompact).not.toHaveBeenCalled();
   });
 
   it("exits 0 with empty output when daemon down", async () => {

@@ -34,6 +34,10 @@ export interface PostToolPayload {
   hook_event_name?: string;
   error?: string;
   is_interrupt?: boolean;
+  /** Which harness produced this call. Defaults to "claude" — the Codex normalizer is the only other writer. */
+  client?: "claude" | "codex";
+  /** The model that issued the tool call. Codex's hook payload carries it; Claude's does not, so it stays null until the next ingest backfills it. */
+  model?: string | null;
 }
 
 export interface RecordedPostTool {
@@ -68,12 +72,15 @@ export function recordPostToolEvents(payload: PostToolPayload, paths: LcmPaths):
     ? payload.tool_use_id
     : undefined;
 
+  const client = payload.client === "codex" ? "codex" : "claude";
+  const model = typeof payload.model === "string" && payload.model ? payload.model : null;
+
   const recorded = withHookWrite(paths, () => {
     const db = new EventsDb(eventsDbPath(payload.cwd, paths));
     try {
       // Dedup on the whole call, not each event: one call extracts several events, and a
       // per-event check would leave a half batch when the paths raced.
-      return db.insertToolCallEvents(payload.session_id, events, sourceHook, toolUseId);
+      return db.insertToolCallEvents(payload.session_id, events, sourceHook, toolUseId, client, model);
     } finally {
       db.close();
     }
