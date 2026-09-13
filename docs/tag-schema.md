@@ -75,12 +75,24 @@ when the origin matters for trust.
 
 ## Reserved tags
 
-Two tags carry protocol meaning and are not categories:
+These tags carry protocol meaning and are not categories. A record carrying any `signal:`
+tag is never returned by `lcm_search`, `lcm_grep`, or the prompt hook — it exists only to be
+counted, not to be recalled as a memory in its own right.
 
 - `signal:memory_used` together with `memory_id:<id>` marks a store as a usage report for
   the memory `<id>`. The stale memory review (`docs/configuration.md`, section "Stale memory review") counts
   these reports as uses of that memory. The learning instruction tells the model to emit them when it acts
   on a surfaced memory.
+- `signal:memory_vote` together with `memory_id:<id>` and exactly one of `vote:+1` /
+  `vote:-1` records a vote on the memory `<id>`. `+1` means "checked against current
+  evidence and still correct"; `-1` means a specific piece of evidence contradicts it. A
+  reason is required for both — the store's `text` — naming what confirmed (`+1`) or
+  contradicts (`-1`) the memory; "not relevant here" is not a `-1`. A vote missing
+  `memory_id:`, carrying more than one `memory_id:` or `vote:` tag, an unrecognized vote
+  value, or an empty reason is rejected with a message naming the rule. The target memory
+  may live in a sibling checkout of the same repository; the store resolves it the way
+  `lcm_describe` resolves a `projectId`. `lcm stats` (and `lcm_stats`) surface vote counts
+  under "Promotion candidates" and "Contested"; see `docs/configuration.md`.
 
 Passive promotion tags an event whose category has no `type:` mapping as
 `category:<category>`. Those are internal; filter on `type:` instead.

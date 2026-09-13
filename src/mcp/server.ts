@@ -108,6 +108,39 @@ const LOCAL_TOOLS: Partial<Record<string, (args: Record<string, unknown>) => Pro
       }
     }
 
+    // A memory's content is agent-written: a `|` or a newline in it would otherwise shift
+    // the counts into the wrong column or row of the table below.
+    const cell = (value: string): string => value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+
+    // Promotion candidates (always shown when non-empty: a human decides, not the tool)
+    if (stats.promotionCandidates.length > 0) {
+      lines.push("");
+      lines.push("## Promotion candidates");
+      lines.push("");
+      lines.push("| Memory | Uses | +1 | -1 |");
+      lines.push("|--------|------|----|----|");
+      for (const c of stats.promotionCandidates) {
+        const preview = c.content.length > 80 ? c.content.slice(0, 80) + "…" : c.content;
+        lines.push(`| ${cell(preview)} | ${c.useCount} | ${c.plusOne} | ${c.minusOne} |`);
+      }
+    }
+
+    // Contested memories (at least one -1)
+    if (stats.contested.length > 0) {
+      lines.push("");
+      lines.push("## Contested");
+      lines.push("");
+      for (const c of stats.contested) {
+        const preview = c.content.length > 80 ? c.content.slice(0, 80) + "…" : c.content;
+        lines.push(`- ${cell(preview)}`);
+        for (const o of c.objections) {
+          lines.push(`  - -1 (${o.voteId}): ${cell(o.reason)}`);
+        }
+      }
+      lines.push("");
+      lines.push("Resolve by archiving the memory, superseding it with a corrected `lcm_store`, or dismissing a single objection by archiving its vote id via `POST /review-stale` (`action: \"archive\"`).");
+    }
+
     return lines.join("\n");
   },
   lcm_doctor: async () => {
