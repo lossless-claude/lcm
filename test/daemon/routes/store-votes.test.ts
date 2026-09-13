@@ -3,13 +3,10 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /** An isolated base dir, so these tests never touch the developer's own store. */
 const base = realpathSync(mkdtempSync(join(tmpdir(), "lcm-vote-base-")));
-// The group index is resolved from the storage root, not from the project mock below, and
-// the daemon builds its own LcmPaths — so the root itself has to point here.
-process.env.LCM_HOME = base;
 vi.mock("../../../src/daemon/project.js", async (importOriginal) => {
   const original = await importOriginal<typeof import("../../../src/daemon/project.js")>();
   const dirOf = (cwd: string) => join(base, "projects", original.projectId(cwd));
@@ -34,6 +31,10 @@ const { runLcmMigrations } = await import("../../../src/db/migration.js");
 const { PromotedStore } = await import("../../../src/db/promoted.js");
 
 const tempDirs: string[] = [];
+// Per test, not once at load: the group index and the daemon's own LcmPaths come from the
+// storage root rather than from the project mock, and another suite file points the same
+// variable at its own base — whichever loaded last would otherwise win for both.
+beforeEach(() => { process.env.LCM_HOME = base; });
 afterEach(() => { for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 afterAll(() => rmSync(base, { recursive: true, force: true }));
 
@@ -45,7 +46,7 @@ function checkout(remote: string, contents: string[]): { cwd: string; ids: strin
   execFileSync("git", ["remote", "add", "origin", remote], { cwd, stdio: "ignore" });
   openProject(cwd, paths);
 
-  const dbPath = projectDbPath(cwd);
+  const dbPath = projectDbPath(cwd, paths);
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
   const ids: string[] = [];
@@ -87,7 +88,7 @@ describe("POST /store — votes", () => {
       expect(status).toBe(200);
       expect(data.stored).toBe(true);
 
-      const db = new DatabaseSync(projectDbPath(cwd));
+      const db = new DatabaseSync(projectDbPath(cwd, paths));
       const counts = new PromotedStore(db).getVoteCounts().get(ids[0]);
       db.close();
       expect(counts?.plusOne).toBe(1);
@@ -176,12 +177,12 @@ describe("POST /store — votes", () => {
       expect(data.stored).toBe(true);
 
       // The vote landed in the sibling's own database, not the voter's.
-      const siblingDb = new DatabaseSync(projectDbPath(sibling));
+      const siblingDb = new DatabaseSync(projectDbPath(sibling, paths));
       const counts = new PromotedStore(siblingDb).getVoteCounts().get(siblingIds[0]);
       siblingDb.close();
       expect(counts?.plusOne).toBe(1);
 
-      const hereDb = new DatabaseSync(projectDbPath(here));
+      const hereDb = new DatabaseSync(projectDbPath(here, paths));
       const hereVotes = new PromotedStore(hereDb).getVoteCounts();
       hereDb.close();
       expect(hereVotes.size).toBe(0);
@@ -195,7 +196,7 @@ describe("POST /store — votes", () => {
     const { cwd: here } = checkout(remote, []);
     const { cwd: sibling, ids: siblingIds } = checkout(remote, ["compaction runs lazily"]);
     // Only the sibling declares the pattern; the voter's own checkout knows nothing about it.
-    writeFileSync(join(projectDir(sibling), "sensitive-patterns.txt"), "hunter2-vote-secret\n");
+    writeFileSync(join(projectDir(sibling, paths), "sensitive-patterns.txt"), "hunter2-vote-secret\n");
 
     const { daemon, port } = await startDaemon();
     try {
@@ -206,7 +207,7 @@ describe("POST /store — votes", () => {
       });
       expect(status).toBe(200);
 
-      const siblingDb = new DatabaseSync(projectDbPath(sibling));
+      const siblingDb = new DatabaseSync(projectDbPath(sibling, paths));
       const stored = siblingDb.prepare(
         "SELECT content FROM promoted WHERE session_id IS NOT NULL AND content LIKE '%Verified%'"
       ).all() as Array<{ content: string }>;
@@ -231,7 +232,7 @@ describe("POST /store — votes", () => {
       await postStore(port, body);
       await postStore(port, body);
 
-      const db = new DatabaseSync(projectDbPath(cwd));
+      const db = new DatabaseSync(projectDbPath(cwd, paths));
       const counts = new PromotedStore(db).getVoteCounts().get(ids[0]);
       db.close();
       expect(counts?.plusOne).toBe(1);
@@ -257,7 +258,7 @@ describe("POST /store — votes", () => {
         metadata: { sessionId: "session-1" },
       });
 
-      const db = new DatabaseSync(projectDbPath(cwd));
+      const db = new DatabaseSync(projectDbPath(cwd, paths));
       const counts = new PromotedStore(db).getVoteCounts().get(ids[0]);
       db.close();
       expect(counts?.plusOne).toBe(0);
@@ -279,7 +280,7 @@ describe("POST /store — votes", () => {
       await postStore(port, body);
       await postStore(port, body);
 
-      const db = new DatabaseSync(projectDbPath(cwd));
+      const db = new DatabaseSync(projectDbPath(cwd, paths));
       const counts = new PromotedStore(db).getVoteCounts().get(ids[0]);
       db.close();
       expect(counts?.plusOne).toBe(2);

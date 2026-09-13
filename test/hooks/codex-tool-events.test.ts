@@ -27,7 +27,7 @@ import { lcmHome } from "../../src/lcm-home.js";
 const paths = createLcmPaths(lcmHome());
 
 function enabledDeps(): CodexHookDeps {
-  return { client: { post: vi.fn() }, connect: vi.fn(async () => true), enabled: true };
+  return { client: { post: vi.fn() }, connect: vi.fn(async () => true), enabled: true, paths };
 }
 
 describe("Codex PostToolUse / PostToolUseFailure capture", () => {

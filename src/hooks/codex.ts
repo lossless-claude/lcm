@@ -103,6 +103,8 @@ export interface CodexHookDeps {
   connect: (sessionId?: string, noSpawn?: boolean) => Promise<boolean>;
   /** `LCM_ENABLED=false` in the defaults; the hook exits at once when false. */
   enabled: boolean;
+  /** The storage root both branches write under, so an injected dependency isolates both. */
+  paths: LcmPaths;
 }
 
 function parseInput(stdin: string): CodexInput | null {
@@ -126,6 +128,7 @@ function defaultDeps(): CodexHookDeps {
   const config = loadDaemonConfig(paths.configPath);
   const port = config.daemon?.port ?? 3737;
   return {
+    paths,
     enabled: resolveLcmConfig().enabled,
     client: new DaemonClient(`http://127.0.0.1:${port}`, paths.tokenPath),
     // Codex must not run the Claude bootstrap that rewrites Claude settings, so the
@@ -221,12 +224,12 @@ export async function dispatchCodexHook(
   stdin: string,
   dependencies?: CodexHookDeps,
 ): Promise<{ exitCode: number; stdout: string }> {
-  const { client, connect, enabled } = dependencies ?? defaultDeps();
+  const { client, connect, enabled, paths } = dependencies ?? defaultDeps();
   if (!enabled) return EMPTY;
   try {
     const peeked: unknown = JSON.parse(stdin || "{}");
     if (isRecord(peeked) && typeof peeked.hook_event_name === "string" && TOOL_EVENTS.has(peeked.hook_event_name)) {
-      return dispatchCodexToolHook(stdin, createLcmPaths(lcmHome()));
+      return dispatchCodexToolHook(stdin, paths);
     }
   } catch {
     // Malformed stdin falls through to the lifecycle parser, which rejects it too.

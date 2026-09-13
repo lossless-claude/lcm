@@ -3,6 +3,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dispatchCodexHook, type CodexHookDeps } from "../../src/hooks/codex.js";
+import { createLcmPaths } from "../../src/lcm-paths.js";
+import { lcmHome } from "../../src/lcm-home.js";
+
+const paths = createLcmPaths(lcmHome());
 
 const identity = { session_id: "codex-session", cwd: "/repo", transcript_path: "/repo/session.jsonl" };
 function payload(event: string, extra: Record<string, unknown> = {}): string {
@@ -11,7 +15,7 @@ function payload(event: string, extra: Record<string, unknown> = {}): string {
 function dependencies(responses: Record<string, unknown> = {}, enabled = true) {
   const post = vi.fn(async (path: string) => responses[path] ?? {});
   const connect = vi.fn(async () => true);
-  return { post, connect, deps: { client: { post }, connect, enabled } as CodexHookDeps };
+  return { post, connect, deps: { client: { post }, connect, enabled, paths } as CodexHookDeps };
 }
 function outputContext(stdout: string) {
   return JSON.parse(stdout).hookSpecificOutput;

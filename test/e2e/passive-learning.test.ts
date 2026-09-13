@@ -111,7 +111,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
     expect(result.stdout).toBe("");
 
     // Open the sidecar DB and verify the event
-    const dbPath = eventsDbPath(projectDir);
+    const dbPath = eventsDbPath(projectDir, paths);
     const db = new EventsDb(dbPath);
     try {
       const events = db.getUnprocessed() as unknown as EventRow[];
@@ -161,7 +161,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
     await handlePostToolUse(errorStdin, paths);
 
     // Verify 3 unprocessed events in sidecar
-    const sidecarPath = eventsDbPath(projectDir);
+    const sidecarPath = eventsDbPath(projectDir, paths);
     const sidecarDb = new EventsDb(sidecarPath);
     try {
       const unprocessed = sidecarDb.getUnprocessed() as unknown as EventRow[];
@@ -224,7 +224,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
   });
 
   it("promotes repeated file patterns across sessions without a seeded memory", async () => {
-    const sidecarPath = eventsDbPath(projectDir);
+    const sidecarPath = eventsDbPath(projectDir, paths);
     const sidecarDb = new EventsDb(sidecarPath);
     try {
       sidecarDb.insertEvent("pattern-session-a", {
@@ -317,7 +317,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
     const result = await handlePostToolUse(JSON.stringify({
       session_id: "test-session",
       tool_input: {},
-    }));
+    }), paths);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("");
   });
@@ -326,7 +326,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
     const result = await handlePostToolUse(JSON.stringify({
       tool_name: "AskUserQuestion",
       tool_input: { question: "test" },
-    }));
+    }), paths);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("");
   });
@@ -335,7 +335,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
 
   it("promote-events with empty sidecar returns no-events message", async () => {
     // Set up sidecar DB (empty) — just create the DB so it exists
-    const sidecarPath = eventsDbPath(projectDir);
+    const sidecarPath = eventsDbPath(projectDir, paths);
     const sidecarDb = new EventsDb(sidecarPath);
     sidecarDb.close();
 
@@ -396,7 +396,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
       await handlePostToolUse(stdin, paths);
     }
 
-    const dbPath = eventsDbPath(projectDir);
+    const dbPath = eventsDbPath(projectDir, paths);
     const db = new EventsDb(dbPath);
     try {
       const events = db.getUnprocessed() as unknown as EventRow[];
@@ -422,7 +422,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
       paths,
     });
 
-    const dbPath = eventsDbPath(projectDir);
+    const dbPath = eventsDbPath(projectDir, paths);
     const db = new EventsDb(dbPath);
     try {
       const stats = db.getHealthStats();
@@ -436,7 +436,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
   // ── Test I: Pruning caps unprocessed events ──────────────────────────
 
   it("pruneUnprocessed caps events at maxRows", async () => {
-    const dbPath = eventsDbPath(projectDir);
+    const dbPath = eventsDbPath(projectDir, paths);
     const db = new EventsDb(dbPath);
     try {
       for (let i = 0; i < 20; i++) {
@@ -467,7 +467,7 @@ describe("Passive Learning E2E", { timeout: 30_000 }, () => {
 
   it("collectEventStats aggregates across sidecar DBs", async () => {
     // Create events in the project sidecar
-    const dbPath = eventsDbPath(projectDir);
+    const dbPath = eventsDbPath(projectDir, paths);
     const db = new EventsDb(dbPath);
     try {
       db.insertEvent("e2e-stats-test", {

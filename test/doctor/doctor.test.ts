@@ -317,9 +317,9 @@ describe("runDoctor plugin bundle", () => {
   it("fails when the registered plugin directory has no readable manifest", async () => {
     const deps = depsWith(bundleManifest, true);
     const readFileSync = deps.readFileSync;
-    deps.readFileSync = (path: string) => {
+    deps.readFileSync = (path: string, enc: string) => {
       if (path.endsWith(".claude-plugin/plugin.json")) throw new Error("ENOENT");
-      return readFileSync(path);
+      return readFileSync(path, enc);
     };
     const result = (await runDoctor(deps)).find((r) => r.name === "plugin-bundle");
     expect(result?.status).toBe("fail");

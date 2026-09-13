@@ -95,7 +95,7 @@ describe("handlePostToolUse", () => {
   });
 
   it("exits gracefully on invalid stdin", async () => {
-    const result = await handlePostToolUse("not json");
+    const result = await handlePostToolUse("not json", paths);
     expect(result.exitCode).toBe(0); // silent fail
   });
 

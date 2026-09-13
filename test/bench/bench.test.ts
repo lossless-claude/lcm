@@ -9,6 +9,11 @@ import { SummaryStore } from "../../src/store/summary-store.js";
 import { projectDbPath, projectId } from "../../src/daemon/project.js";
 import { PromotedStore } from "../../src/db/promoted.js";
 import { buildBench, runBench, type BenchFile } from "../../src/bench.js";
+import { createLcmPaths } from "../../src/lcm-paths.js";
+import { lcmHome } from "../../src/lcm-home.js";
+
+// project.js is mocked below; the root only has to be a real one.
+const paths = createLcmPaths(lcmHome());
 import { getLcmConnection } from "../../src/db/connection.js";
 
 const tempDirs: string[] = [];
@@ -34,7 +39,7 @@ afterEach(() => {
 });
 
 async function seedProject(cwd: string): Promise<void> {
-  const dbPath = projectDbPath(cwd);
+  const dbPath = projectDbPath(cwd, paths);
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
   try {
@@ -119,7 +124,7 @@ async function seedProject(cwd: string): Promise<void> {
  * test passes with the fix removed. This has produced three vacuous tests so far.
  */
 async function addSessions(cwd: string, entries: Array<{ sessionId: string; prompt: string | string[] }>): Promise<void> {
-  const db = new DatabaseSync(projectDbPath(cwd));
+  const db = new DatabaseSync(projectDbPath(cwd, paths));
   try {
     const convStore = new ConversationStore(db);
     for (const entry of entries) {
