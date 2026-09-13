@@ -23,6 +23,7 @@ function makeDeps(overrides: Partial<ServiceDeps> = {}): ServiceDeps {
     writeFileSync: vi.fn(),
     mkdirSync: vi.fn(),
     existsSync: vi.fn().mockReturnValue(false),
+    rmSync: vi.fn(),
     promptUser: vi.fn().mockResolvedValue("1"), // default: option 1
     ensureDaemon: vi.fn().mockResolvedValue({ connected: true }),
     runDoctor: vi.fn().mockResolvedValue([]),
@@ -212,6 +213,29 @@ describe("install", () => {
 });
 
 // ─── install dry-run ─────────────────────────────────────────────────────────
+
+describe("install --dry-run in a home that has never seen lcm", () => {
+  it("previews the skill copy and writes nothing", async () => {
+    const { DryRunServiceDeps } = await import("../../installer/dry-run-deps.js");
+    const { mkdtempSync, readdirSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const home = mkdtempSync(join(tmpdir(), "lcm-install-dry-run-"));
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await expect(install(new DryRunServiceDeps())).resolves.not.toThrow();
+      const lines = logSpy.mock.calls.flatMap((c: any[]) => c).filter((s: any) => typeof s === "string");
+      expect(lines.some((s: string) => s.includes("[dry-run] would write:") && s.endsWith(join("skills", "memory", "SKILL.md")))).toBe(true);
+      expect(readdirSync(home)).toEqual([]);
+    } finally {
+      process.env.HOME = previousHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("install with DryRunServiceDeps", () => {
   it("prints [dry-run] lines and writes no real files", async () => {
