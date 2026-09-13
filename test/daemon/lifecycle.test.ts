@@ -1,8 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { utimesSync, statSync, chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { daemonOwnership, ensureDaemon, isOlderVersion, isStaleDaemon, stopDaemon } from "../../src/daemon/lifecycle.js";
+import { daemonOwnership, ensureDaemon, isOlderVersion, isStaleDaemon, registerDaemonActivity, stopDaemon } from "../../src/daemon/lifecycle.js";
 
 const tempDirs: string[] = [];
 
@@ -190,6 +191,148 @@ describe("ensureDaemon", () => {
       expectedVersion: "0.12.0", _skipSpawn: true, _fetchOverride: fetchFn,
     });
     expect(result).toMatchObject({ connected: false, spawned: false, ownership: "incompatible", daemonVersion: "0.13.0" });
+  });
+
+  it("a scan prunes a dead-pid marker but keeps one for a live process", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-markers-"));
+    tempDirs.push(tempDir);
+    const pidFile = join(tempDir, "daemon.pid");
+    const unregister = registerDaemonActivity(pidFile); // live marker for process.pid
+    const deadMarker = join(tempDir, "tmp", `daemon.starting.999999.${randomUUID()}`);
+    writeFileSync(deadMarker, "");
+    const fetchFn = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
+    const stopping = stopDaemon({ port: 1, pidFilePath: pidFile, timeoutMs: 50, _fetchOverride: fetchFn });
+    // stopDaemon scans markers synchronously before its first await.
+    expect(existsSync(deadMarker)).toBe(false);
+    const remaining = readdirSync(join(tempDir, "tmp"));
+    expect(remaining.some((name) => name.startsWith(`daemon.starting.${process.pid}.`))).toBe(true);
+    unregister();
+    await stopping;
+  });
+
+  it("a registration after a simulated crash removes the abandoned marker", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-crash-"));
+    tempDirs.push(tempDir);
+    const pidFile = join(tempDir, "daemon.pid");
+    mkdirSync(join(tempDir, "tmp"), { recursive: true });
+    const crashedMarker = join(tempDir, "tmp", `daemon.starting.999999.${randomUUID()}`);
+    writeFileSync(crashedMarker, ""); // release() never called — simulated crash
+    const unregister = registerDaemonActivity(pidFile); // next registration, another process
+    expect(existsSync(crashedMarker)).toBe(false);
+    unregister();
+  });
+
+  it("prunes a live process's marker once it outlives the age limit", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-aged-"));
+    tempDirs.push(tempDir);
+    const pidFile = join(tempDir, "daemon.pid");
+    mkdirSync(join(tempDir, "tmp"), { recursive: true });
+    // This process is alive, so only the age rule can remove it.
+    const aged = join(tempDir, "tmp", `daemon.starting.${process.pid}.${randomUUID()}`);
+    writeFileSync(aged, "");
+    const longAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    utimesSync(aged, longAgo, longAgo);
+
+    const unregister = registerDaemonActivity(pidFile); // any scan prunes it
+    expect(existsSync(aged)).toBe(false);
+    unregister();
+  });
+
+  it("keeps a marker a pre-upgrade version left beside the PID file while its process is alive", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-legacylive-"));
+    tempDirs.push(tempDir);
+    const pidFile = join(tempDir, "daemon.pid");
+    // Beside daemon.pid, owned by this live process, and never refreshed — which is how
+    // pre-upgrade writers behave. It is within this process's own lifetime, so it is ours.
+    const live = join(tempDir, `daemon.starting.${process.pid}.${randomUUID()}`);
+    writeFileSync(live, "");
+
+    const unregister = registerDaemonActivity(pidFile);
+    expect(existsSync(live)).toBe(true);
+    unregister();
+  });
+
+  it("prunes a marker older than its live owner, which means the pid was recycled", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-reuse-"));
+    tempDirs.push(tempDir);
+    const pidFile = join(tempDir, "daemon.pid");
+    // This process is alive, but the marker predates it: whoever wrote it is gone and the
+    // pid was handed on. Neither a heartbeat nor the age limit is what decides this.
+    const recycled = join(tempDir, `daemon.starting.${process.pid}.${randomUUID()}`);
+    writeFileSync(recycled, "");
+    const beforeThisProcess = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    utimesSync(recycled, beforeThisProcess, beforeThisProcess);
+
+    const unregister = registerDaemonActivity(pidFile);
+    expect(existsSync(recycled)).toBe(false);
+    unregister();
+  });
+
+  it("refreshes its own marker so a long registration is not aged out", () => {
+    vi.useFakeTimers();
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-refresh-"));
+    tempDirs.push(tempDir);
+    const pidFile = join(tempDir, "daemon.pid");
+    const unregister = registerDaemonActivity(pidFile);
+    try {
+      const own = readdirSync(join(tempDir, "tmp"))
+        .find((name) => name.startsWith(`daemon.starting.${process.pid}.`))!;
+      const path = join(tempDir, "tmp", own);
+      const longAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      utimesSync(path, longAgo, longAgo);
+
+      vi.advanceTimersByTime(16 * 60 * 1000); // past one refresh interval
+      expect(Date.now() - statSync(path).mtimeMs).toBeLessThan(60 * 60 * 1000);
+    } finally {
+      unregister();
+      vi.useRealTimers();
+    }
+  });
+
+  it("a registration prunes a marker an older version left beside the PID file", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-legacy-"));
+    tempDirs.push(tempDir);
+    const pidFile = join(tempDir, "daemon.pid");
+    const legacyMarker = join(tempDir, `daemon.starting.999999.${randomUUID()}`);
+    writeFileSync(legacyMarker, ""); // written beside daemon.pid, as versions before the tmp move did
+    const unregister = registerDaemonActivity(pidFile);
+    expect(existsSync(legacyMarker)).toBe(false);
+    unregister();
+  });
+
+  it("stopDaemon fails closed when the markers directory cannot be read", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-stopscan-"));
+    tempDirs.push(tempDir);
+    const pidFile = join(tempDir, "daemon.pid");
+    const markers = join(tempDir, "tmp");
+    mkdirSync(markers, { recursive: true });
+    chmodSync(markers, 0o300); // write+traverse, no list
+    try {
+      const fetchFn = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
+      // An unreadable directory says nothing about what is in flight; answering "nothing is
+      // starting" would let the stop proceed over a live registration.
+      await expect(stopDaemon({ port: 1, pidFilePath: pidFile, timeoutMs: 50, _fetchOverride: fetchFn }))
+        .rejects.toThrow();
+    } finally {
+      chmodSync(markers, 0o700);
+    }
+  });
+
+  it("a registration still writes its own marker when the sweep cannot read the directory", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-unreadable-"));
+    tempDirs.push(tempDir);
+    const pidFile = join(tempDir, "daemon.pid");
+    const markers = join(tempDir, "tmp");
+    mkdirSync(markers, { recursive: true });
+    chmodSync(markers, 0o300); // write+traverse, no list: readdirSync throws EACCES, writeFileSync still works
+    try {
+      const unregister = registerDaemonActivity(pidFile);
+      chmodSync(markers, 0o700);
+      expect(readdirSync(markers).some((name) => name.startsWith(`daemon.starting.${process.pid}.`))).toBe(true);
+      unregister();
+    } finally {
+      chmodSync(markers, 0o700);
+    }
   });
 
   it("stopDaemon reports not running when nothing listens and no PID file exists", async () => {

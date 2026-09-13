@@ -417,3 +417,21 @@ To keep capture and recall but stop the automatic compaction at session end, set
   "hooks": { "disableAutoCompact": true }
 }
 ```
+
+The same flag also disables the SessionStart catch-up sweep below.
+
+## SessionStart catch-up sweep
+
+A session that ends without `SessionEnd` (killed terminal, crash, sleep, daemon
+down at exit) still has its messages captured through the `Stop` snapshots, but
+nothing summarizes them afterwards — only a manual `lcm compact --all` would.
+Every SessionStart now fires a non-blocking request that catches up conversations
+of the same project (`cwd`) with raw messages and no covering summary, excluding
+the session that is starting, conversations already compacting, and conversations
+below `compaction.autoCompactMinTokens`.
+
+`compaction.autoCompactSessionStartMax` (default `2`) caps how many conversations
+one session start requests compaction for, oldest-first; a larger backlog drains
+across successive starts instead of bursting the summarizer. Set `hooks.disableAutoCompact`
+to turn the sweep off entirely. The request is fire-and-forget, so session start's
+latency is unaffected regardless of how large the backlog is.

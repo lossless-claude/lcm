@@ -118,6 +118,15 @@ describe("Codex native lifecycle adapter", () => {
     expect(outputContext(result.stdout).additionalContext).toContain("s-1");
   });
 
+  it("suffixes a sibling checkout's id with the project the daemon reported", async () => {
+    const { deps } = dependencies({
+      "/prompt-search": { hints: ["Local.", "Sibling."], ids: ["s-1", "s-2"], projectIds: [null, "sibling-project"] },
+    });
+    const result = await dispatchCodexHook(payload("UserPromptSubmit", { prompt: "How does quartz store state?" }), deps);
+    expect(outputContext(result.stdout).additionalContext)
+      .toContain("<!-- surfaced-memory-ids: s-1,s-2@sibling-project -->");
+  });
+
   it("emits no context for an unrelated prompt", async () => {
     const { deps } = dependencies({ "/prompt-search": { hints: [] } });
     expect(await dispatchCodexHook(payload("UserPromptSubmit", { prompt: "unrelated" }), deps))

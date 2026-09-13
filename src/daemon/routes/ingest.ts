@@ -10,8 +10,10 @@ import { runLcmMigrations } from "../../db/migration.js";
 import { upsertRedactionCounts } from "../../db/redaction-stats.js";
 import { ConversationStore, type CreateMessageInput, type CreateMessagePartInput, type MessageRecord } from "../../store/conversation-store.js";
 import { SummaryStore } from "../../store/summary-store.js";
-import { parseTranscript, type ParsedMessage, type MessagePart } from "../../transcript.js";
+import { parseTranscript, extractToolUseModels, type ParsedMessage, type MessagePart } from "../../transcript.js";
 import { extractCodexSessionMeta, parseCodexTranscript } from "../../codex-transcript.js";
+import { EventsDb } from "../../hooks/events-db.js";
+import { eventsDbPath } from "../../db/events-path.js";
 import { ScrubEngine } from "../../scrub.js";
 import { validateCwd } from "../validate-cwd.js";
 import { scheduleProjectLanguageDetection } from "../project-language.js";
@@ -278,6 +280,36 @@ export function resolveIngestMessages(input: IngestInput, cwd: string): ParsedMe
   return [];
 }
 
+function resolveClaudeTranscriptPathForBackfill(input: IngestInput, cwd: string): string | undefined {
+  const path = input.transcript_path
+    ?? (input.session_id ? claudeTranscriptPath(cwd, input.session_id) ?? undefined : undefined);
+  if (!path) return undefined;
+  const safe = isSafeTranscriptPath(path, cwd, "claude");
+  return safe && existsSync(safe) ? safe : undefined;
+}
+
+/**
+ * Claude's PostToolUse payload carries no model (see src/hooks/post-tool.ts),
+ * so its events land with `model IS NULL`. Best-effort, on every ingest of the
+ * session: scan the transcript for each tool_use block's model and fill any
+ * rows still waiting. Never blocks or fails the ingest response — a session
+ * with nothing to fill costs one indexed lookup.
+ */
+function backfillClaudeToolModels(cwd: string, sessionId: string, transcriptPath: string | undefined): void {
+  if (!transcriptPath) return;
+  // An import-only project has no sidecar: opening one here would create and migrate
+  // an empty database on every ingest, for rows that cannot exist.
+  const sidecarPath = eventsDbPath(cwd);
+  if (!existsSync(sidecarPath)) return;
+  const db = new EventsDb(sidecarPath);
+  try {
+    if (!db.hasUnfilledModels(sessionId)) return;
+    db.backfillToolCallModels(sessionId, extractToolUseModels(transcriptPath));
+  } finally {
+    db.close();
+  }
+}
+
 export function createIngestHandler(config: DaemonConfig): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}") as IngestInput;
@@ -430,6 +462,16 @@ export function createIngestHandler(config: DaemonConfig): RouteHandler {
         }
       }
       sendJson(res, 200, result);
+      // After the response: the scan is O(transcript) and the caller is waiting.
+      if (input.client !== "codex") {
+        setImmediate(() => {
+          try {
+            backfillClaudeToolModels(cwd, session_id, resolveClaudeTranscriptPathForBackfill(input, cwd));
+          } catch (err) {
+            console.error(`ingest: model backfill failed for session ${session_id}: ${err instanceof Error ? err.message : err}`);
+          }
+        });
+      }
     } catch (err) {
       sendJson(res, err instanceof TranscriptError ? 400 : 500, { error: err instanceof Error ? err.message : "ingest failed" });
     }

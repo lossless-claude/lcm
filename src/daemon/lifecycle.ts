@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync, unlinkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { join, dirname } from "node:path";
@@ -118,26 +118,138 @@ function cleanStalePid(pidFilePath: string): void {
   } catch { /* ignore */ }
 }
 
-/** Register before checking a hold; release only after startup or local database work settles. */
-export function registerDaemonActivity(pidFilePath: string): () => void {
-  mkdirSync(dirname(pidFilePath), { recursive: true });
-  const path = join(dirname(pidFilePath), `daemon.starting.${process.pid}.${randomUUID()}`);
-  writeFileSync(path, "", { flag: "wx" });
-  return () => { try { unlinkSync(path); } catch { /* already removed by stop */ } };
+// A marker older than this is treated as stale even when its pid looks alive: the OS can
+// reuse a pid, and `registerDaemonActivity` markers are released well before an hour on
+// every real path, so nothing legitimate ever needs to survive this long.
+const MARKER_MAX_AGE_MS = 60 * 60 * 1000;
+
+// A registered marker is refreshed well inside MARKER_MAX_AGE_MS, so an operation with no
+// bound of its own — a long batchCompact or importSessions — cannot be aged out while it runs.
+const MARKER_REFRESH_MS = MARKER_MAX_AGE_MS / 4;
+
+/** Markers live in tmp, not the storage root, so the root holds only durable files and a
+ * sandboxed test home cannot see another root's markers via the shared system /tmp. */
+function markersDir(pidFilePath: string): string {
+  return join(dirname(pidFilePath), "tmp");
 }
 
-function startingDaemons(pidFilePath: string): { pid: number; path: string }[] {
-  const directory = dirname(pidFilePath);
+/** Where versions before the tmp move wrote their markers. Still swept, never written to, so
+ * an upgrade neither leaks the files left there nor loses sight of a live old-version marker.
+ * Those writers never refresh, which is why ownership is decided by the owner's lifetime
+ * rather than by the marker's age. */
+function legacyMarkersDir(pidFilePath: string): string {
+  return dirname(pidFilePath);
+}
+
+/** Best-effort: delete `path` when its owning `pid` is dead or the marker outlived
+ * MARKER_MAX_AGE_MS. Returns true when the marker is kept. Never throws — a marker
+ * already removed by another process, or genuinely live and young, is left untouched. */
+/**
+ * Seconds the process has been running, via `ps -o etime=`. Undefined when unknown.
+ *
+ * This is the pid-reuse test that does not need the owner to refresh anything: a marker
+ * older than its owner's own lifetime was written by a different process that happened to
+ * hold the same pid.
+ */
+function processElapsedSeconds(pid: number): number | undefined {
+  try {
+    const out = spawnSync("ps", ["-o", "etime=", "-p", String(pid)], { encoding: "utf-8" });
+    const raw = String(out.stdout ?? "").trim();
+    // [[dd-]hh:]mm:ss
+    const match = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(raw);
+    if (!match) return undefined;
+    const [, days, hours, minutes, seconds] = match;
+    return Number(days ?? 0) * 86_400 + Number(hours ?? 0) * 3_600 + Number(minutes) * 60 + Number(seconds);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * True when this marker's live pid still owns it.
+ *
+ * The question age was standing in for is "did this pid get recycled since the marker was
+ * written", and the process's own elapsed time answers it directly: a marker older than its
+ * owner's lifetime was written by someone else. Where `ps` cannot say, the one-hour cutoff
+ * is the fallback it always was — which is also why a registration refreshes its marker.
+ */
+function markerStillOwned(path: string, pid: number): boolean {
+  const writtenMsAgo = Date.now() - statSync(path).mtimeMs;
+  const elapsed = processElapsedSeconds(pid);
+  if (elapsed === undefined) return writtenMsAgo <= MARKER_MAX_AGE_MS;
+  return writtenMsAgo <= (elapsed + 60) * 1000; // a minute of slack for clock skew
+}
+
+function pruneMarker(path: string, pid: number): boolean {
+  try {
+    if (isProcessAlive(pid) && markerStillOwned(path, pid)) return true;
+    unlinkSync(path);
+  } catch {
+    // Already gone, racing another pruner, or unreadable. Only the first of those means
+    // the marker is not there any more, and this cannot tell them apart: keep a live pid's
+    // entry, so a stop that is waiting on it does not stop waiting on a guess.
+    return isProcessAlive(pid);
+  }
+  return false;
+}
+
+/** List every startup marker in `directory`, pruning the abandoned ones along the way. */
+function sweepMarkers(directory: string): { pid: number; path: string }[] {
   let names: string[];
   try { names = readdirSync(directory); } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
-  return names.flatMap((name) => {
+  const entries: { pid: number; path: string }[] = [];
+  for (const name of names) {
     const match = /^daemon\.starting\.(\d+)\.[0-9a-f-]+$/.exec(name);
     const pid = Number(match?.[1]);
-    return Number.isSafeInteger(pid) && pid > 0 ? [{ pid, path: join(directory, name) }] : [];
-  });
+    if (!Number.isSafeInteger(pid) || pid <= 0) continue;
+    const path = join(directory, name);
+    if (pruneMarker(path, pid)) entries.push({ pid, path });
+  }
+  return entries;
+}
+
+/** Register before checking a hold; release only after startup or local database work settles. */
+export function registerDaemonActivity(pidFilePath: string): () => void {
+  const directory = markersDir(pidFilePath);
+  mkdirSync(directory, { recursive: true });
+  startingDaemons(pidFilePath, true); // prune dead markers left by a crashed process before adding ours
+  const path = join(directory, `daemon.starting.${process.pid}.${randomUUID()}`);
+  writeFileSync(path, "", { flag: "wx" });
+  const refresh = setInterval(() => {
+    try { utimesSync(path, new Date(), new Date()); } catch { /* removed by stop */ }
+  }, MARKER_REFRESH_MS);
+  refresh.unref();
+  return () => {
+    clearInterval(refresh);
+    try { unlinkSync(path); } catch { /* already removed by stop */ }
+  };
+}
+
+/**
+ * Every startup marker across both directories, dead and aged-out ones pruned on the way.
+ *
+ * `failOpen` is the difference between the two callers, and it is not a convenience. The
+ * registration sweep is opportunistic housekeeping: an unreadable directory there must not
+ * stop a caller from writing its own marker, so it is reported and skipped. `stopDaemon`
+ * reads the same markers to decide whether work is in flight, and an unreadable directory
+ * tells it nothing — answering "none" would let it stop a daemon mid-write. That path fails
+ * closed and propagates.
+ */
+function startingDaemons(pidFilePath: string, failOpen = false): { pid: number; path: string }[] {
+  const legacy = legacyMarkersDir(pidFilePath);
+  const entries: { pid: number; path: string }[] = [];
+  for (const directory of [markersDir(pidFilePath), legacy]) {
+    try {
+      entries.push(...sweepMarkers(directory));
+    } catch (error) {
+      if (!failOpen) throw error;
+      console.error(`[lcm] could not scan daemon markers in ${directory}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return entries;
 }
 
 /** PID of the process listening on 127.0.0.1:port, via lsof (macOS/Linux). Undefined when unknown. */
