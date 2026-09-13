@@ -8,7 +8,6 @@ import { PKG_VERSION } from "../daemon/version.js";
 import { daemonNotice, warnOncePerSession } from "./fail-open.js";
 import { buildMemoryContext } from "./memory-context.js";
 import { lcmHome } from "../lcm-home.js";
-import { recordPostToolEvents } from "./post-tool.js";
 import { firePromoteEventsRequest } from "./session-end.js";
 
 const EVENTS = new Set([
@@ -84,6 +83,9 @@ async function dispatchCodexToolHook(stdin: string): Promise<{ exitCode: number;
   try {
     const input = parseToolInput(stdin);
     if (!input) return EMPTY;
+    // Imported here, not at module scope: post-tool.js pulls node:sqlite, whose
+    // ExperimentalWarning would then reach stderr on every lifecycle no-op too.
+    const { recordPostToolEvents } = await import("./post-tool.js");
     const outcome = recordPostToolEvents({ ...input, client: "codex" });
     if (outcome.hasPriority1) {
       const config = loadDaemonConfig(join(lcmHome(), "config.json"));
