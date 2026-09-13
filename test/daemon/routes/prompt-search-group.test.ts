@@ -7,6 +7,9 @@ import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
 /** An isolated base dir, so these tests never touch the developer's own store. */
 const base = realpathSync(mkdtempSync(join(tmpdir(), "lcm-prompt-search-group-base-")));
+// The group index is resolved from the storage root, not from this file's project mock,
+// and `createDaemon` builds its own LcmPaths — so the root itself has to point here.
+process.env.LCM_HOME = base;
 vi.mock("../../../src/daemon/project.js", async (importOriginal) => {
   const original = await importOriginal<typeof import("../../../src/daemon/project.js")>();
   const dirOf = (cwd: string) => join(base, "projects", original.projectId(cwd));
@@ -26,6 +29,9 @@ const { runLcmMigrations } = await import("../../../src/db/migration.js");
 const { PromotedStore } = await import("../../../src/db/promoted.js");
 const { projectDbPath, projectId } = await import("../../../src/daemon/project.js");
 const { openProject, resolveSourceCwd } = await import("../../../src/daemon/project-group.js");
+const { createLcmPaths } = await import("../../../src/lcm-paths.js");
+
+const paths = createLcmPaths(base);
 
 const tempDirs: string[] = [];
 afterEach(() => { for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -37,7 +43,7 @@ function checkout(remote: string, contents: string[]): string {
   tempDirs.push(cwd);
   execFileSync("git", ["init", "-q"], { cwd, stdio: "ignore" });
   execFileSync("git", ["remote", "add", "origin", remote], { cwd, stdio: "ignore" });
-  openProject(cwd);
+  openProject(cwd, paths);
 
   const dbPath = projectDbPath(cwd);
   mkdirSync(dirname(dbPath), { recursive: true });
@@ -95,7 +101,7 @@ describe("POST /prompt-search across a project group", () => {
       expect(data.context).toContain(`<!-- surfaced-memory-ids: `);
       expect(data.context).toContain(`${data.ids[siblingIndex]}@${siblingProjectId}`);
       expect(data.context).not.toMatch(new RegExp(`${data.ids[hereIndex]}@`));
-      expect(resolveSourceCwd(here, siblingProjectId)).toBe(sibling);
+      expect(resolveSourceCwd(here, siblingProjectId, paths)).toBe(sibling);
     } finally {
       await daemon.stop();
     }
