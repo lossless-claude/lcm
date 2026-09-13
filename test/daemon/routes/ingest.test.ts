@@ -7,6 +7,10 @@ import { createDaemon, type DaemonInstance } from "../../../src/daemon/server.js
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { DaemonClient } from "../../../src/daemon/client.js";
 import { projectDbPath, projectId } from "../../../src/daemon/project.js";
+import { lcmHome } from "../../../src/lcm-home.js";
+import { createLcmPaths } from "../../../src/lcm-paths.js";
+
+const paths = createLcmPaths(lcmHome());
 import { enqueue } from "../../../src/daemon/project-queue.js";
 import { importSessions } from "../../../src/import.js";
 
@@ -67,7 +71,7 @@ describe("POST /ingest", () => {
     const response = await post(tempDir);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ingested: 2, totalTokens: 3 });
-    const db = new DatabaseSync(projectDbPath(tempDir));
+    const db = new DatabaseSync(projectDbPath(tempDir, paths));
     try {
       expect(db.prepare("SELECT role, content FROM messages ORDER BY seq").all().map(r => [r.role, r.content])).toEqual([["user", "hello"], ["assistant", "hi"]]);
       expect(db.prepare("SELECT session_id FROM conversations").get()?.session_id).toBe("codex-meta-id");
@@ -132,7 +136,7 @@ describe("POST /ingest", () => {
     // A live capture still defers the valid but non-newline-terminated tail.
     expect(await (await postLive()).json()).toEqual({ ingested: 0, totalTokens: 0 });
 
-    const db = new DatabaseSync(projectDbPath(tempDir));
+    const db = new DatabaseSync(projectDbPath(tempDir, paths));
     db.prepare(
       "INSERT INTO session_ingest_log (session_id, message_count) VALUES (?, ?) " +
       "ON CONFLICT(session_id) DO UPDATE SET message_count = excluded.message_count",
@@ -186,7 +190,7 @@ describe("POST /ingest", () => {
     expect(concurrentBodies.map(body => body.ingested).sort()).toEqual([0, 1]);
     expect(await (await postLive()).json()).toEqual({ ingested: 0, totalTokens: 0 });
 
-    const verifyDb = new DatabaseSync(projectDbPath(tempDir));
+    const verifyDb = new DatabaseSync(projectDbPath(tempDir, paths));
     try {
       expect(verifyDb.prepare("SELECT role, content FROM messages ORDER BY seq").all()).toEqual([
         { role: "user", content: "first complete message" },
@@ -242,7 +246,7 @@ describe("POST /ingest", () => {
     });
     expect(result.totalMessages).toBe(1);
 
-    const db = new DatabaseSync(projectDbPath(tempDir));
+    const db = new DatabaseSync(projectDbPath(tempDir, paths));
     try {
       expect(db.prepare(
         "SELECT c.session_id, m.content FROM conversations c JOIN messages m ON m.conversation_id = c.conversation_id",
@@ -283,7 +287,7 @@ describe("POST /ingest", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ingested: 3, totalTokens: 8 });
 
-    const db = new DatabaseSync(projectDbPath(tempDir));
+    const db = new DatabaseSync(projectDbPath(tempDir, paths));
     try {
       const parts = db
         .prepare(
@@ -395,7 +399,7 @@ describe("POST /ingest", () => {
     expect(res.status).toBe(200);
 
     // Verify the stored content was scrubbed
-    const db = new DatabaseSync(projectDbPath(tempDir));
+    const db = new DatabaseSync(projectDbPath(tempDir, paths));
     let row: { content: string } | undefined;
     try {
       row = db.prepare("SELECT content FROM messages LIMIT 1").get() as { content: string } | undefined;
@@ -436,7 +440,7 @@ describe("POST /ingest", () => {
 
     expect(res.status).toBe(200);
 
-    const db = new DatabaseSync(projectDbPath(tempDir));
+    const db = new DatabaseSync(projectDbPath(tempDir, paths));
     try {
       const rows = db.prepare(
         "SELECT category, count FROM redaction_stats ORDER BY category"
@@ -461,7 +465,7 @@ describe("POST /ingest", () => {
     const grown = [...first, { role: "assistant", content: "hi", tokenCount: 1 }];
 
     await post({ session_id: "done-sess", cwd: tempDir, messages: first });
-    const db = new DatabaseSync(projectDbPath(tempDir));
+    const db = new DatabaseSync(projectDbPath(tempDir, paths));
     db.prepare("INSERT INTO session_ingest_log (session_id, message_count) VALUES ('done-sess', 1)").run();
     db.close();
 

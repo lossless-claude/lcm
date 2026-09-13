@@ -8,6 +8,10 @@ import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { runLcmMigrations } from "../../../src/db/migration.js";
 import { PromotedStore } from "../../../src/db/promoted.js";
 import { projectDbPath } from "../../../src/daemon/project.js";
+import { lcmHome } from "../../../src/lcm-home.js";
+import { createLcmPaths } from "../../../src/lcm-paths.js";
+
+const paths = createLcmPaths(lcmHome());
 
 // ---------------------------------------------------------------------------
 // Base scoring math — mirrors the pre-feedback score in prompt-search.
@@ -162,7 +166,7 @@ describe("POST /prompt-search", () => {
     tempDirs.push(tempDir);
 
     // Pre-populate promoted table
-    const dbPath = projectDbPath(tempDir);
+    const dbPath = projectDbPath(tempDir, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
     const db = new DatabaseSync(dbPath);
     runLcmMigrations(db);
@@ -202,7 +206,7 @@ describe("POST /prompt-search", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-recall-"));
     tempDirs.push(tempDir);
 
-    const dbPath = projectDbPath(tempDir);
+    const dbPath = projectDbPath(tempDir, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
     const db = new DatabaseSync(dbPath);
     runLcmMigrations(db);
@@ -243,7 +247,7 @@ describe("POST /prompt-search", () => {
     tempDirs.push(tempDir);
 
     // Pre-populate with unrelated content
-    const dbPath = projectDbPath(tempDir);
+    const dbPath = projectDbPath(tempDir, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
     const db = new DatabaseSync(dbPath);
     runLcmMigrations(db);
@@ -330,7 +334,7 @@ describe("POST /prompt-search", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-session-"));
     tempDirs.push(tempDir);
 
-    const dbPath = projectDbPath(tempDir);
+    const dbPath = projectDbPath(tempDir, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
     const db = new DatabaseSync(dbPath);
     runLcmMigrations(db);
@@ -365,7 +369,7 @@ describe("POST /prompt-search", () => {
     tempDirs.push(tempDir);
 
     const longContent = "React " + "x".repeat(300);
-    const dbPath = projectDbPath(tempDir);
+    const dbPath = projectDbPath(tempDir, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
     const db = new DatabaseSync(dbPath);
     runLcmMigrations(db);
@@ -400,7 +404,7 @@ describe("POST /prompt-search", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-usage-"));
     tempDirs.push(tempDir);
 
-    const dbPath = projectDbPath(tempDir);
+    const dbPath = projectDbPath(tempDir, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
     const db = new DatabaseSync(dbPath);
     runLcmMigrations(db);
@@ -446,7 +450,7 @@ describe("POST /prompt-search", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-cooldown-"));
     tempDirs.push(tempDir);
 
-    const dbPath = projectDbPath(tempDir);
+    const dbPath = projectDbPath(tempDir, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
     const db = new DatabaseSync(dbPath);
     runLcmMigrations(db);
@@ -497,7 +501,7 @@ describe("POST /prompt-search", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-all-cooled-"));
     tempDirs.push(tempDir);
 
-    const dbPath = projectDbPath(tempDir);
+    const dbPath = projectDbPath(tempDir, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
     const db = new DatabaseSync(dbPath);
     runLcmMigrations(db);
@@ -547,7 +551,7 @@ describe("POST /prompt-search", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-unused-"));
     tempDirs.push(tempDir);
 
-    const dbPath = projectDbPath(tempDir);
+    const dbPath = projectDbPath(tempDir, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
     const db = new DatabaseSync(dbPath);
     runLcmMigrations(db);
@@ -597,7 +601,7 @@ describe("POST /prompt-search", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-fallback-"));
     tempDirs.push(tempDir);
 
-    const dbPath = projectDbPath(tempDir);
+    const dbPath = projectDbPath(tempDir, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
     const db = new DatabaseSync(dbPath);
     runLcmMigrations(db);
@@ -641,7 +645,7 @@ describe("POST /prompt-search", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-invalid-created-at-"));
     tempDirs.push(tempDir);
 
-    const dbPath = projectDbPath(tempDir);
+    const dbPath = projectDbPath(tempDir, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
     const db = new DatabaseSync(dbPath);
     runLcmMigrations(db);
@@ -682,7 +686,7 @@ describe("POST /prompt-search", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-dedupe-"));
     tempDirs.push(tempDir);
 
-    const dbPath = projectDbPath(tempDir);
+    const dbPath = projectDbPath(tempDir, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
     const db = new DatabaseSync(dbPath);
     runLcmMigrations(db);
@@ -731,7 +735,7 @@ describe("POST /prompt-search", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-budget-"));
     tempDirs.push(tempDir);
 
-    const dbPath = projectDbPath(tempDir);
+    const dbPath = projectDbPath(tempDir, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
     const db = new DatabaseSync(dbPath);
     runLcmMigrations(db);
@@ -791,7 +795,7 @@ describe("POST /prompt-search", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-deferred-"));
     tempDirs.push(tempDir);
 
-    const dbPath = projectDbPath(tempDir);
+    const dbPath = projectDbPath(tempDir, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
     const db = new DatabaseSync(dbPath);
     runLcmMigrations(db);
@@ -833,7 +837,7 @@ describe("POST /prompt-search", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-log-enabled-"));
     tempDirs.push(tempDir);
 
-    const dbPath = projectDbPath(tempDir);
+    const dbPath = projectDbPath(tempDir, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
     const db = new DatabaseSync(dbPath);
     runLcmMigrations(db);
@@ -876,7 +880,7 @@ describe("stale memory demotion", () => {
   it("applies stalePenalty to old memories surfaced without use", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lcm-stale-prompt-"));
     tempDirs.push(tempDir);
-    const dbPath = projectDbPath(tempDir);
+    const dbPath = projectDbPath(tempDir, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
 
     const db = new DatabaseSync(dbPath);

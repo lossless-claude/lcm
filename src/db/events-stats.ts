@@ -2,6 +2,7 @@
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { eventsDir } from "./events-path.js";
+import type { LcmPaths } from "../lcm-paths.js";
 import { DatabaseSync } from "node:sqlite";
 import { readEventHealthStats } from "../hooks/events-db.js";
 
@@ -45,9 +46,9 @@ function listEventDbsNewestFirst(dir: string): string[] {
  * Used by both lcm doctor and lcm stats.
  * @param timeoutMs Total time budget for the scan (default 2000ms)
  */
-export function collectEventStats(timeoutMs = 2000): EventStats {
+export function collectEventStats(paths: LcmPaths, timeoutMs = 2000): EventStats {
   const result: EventStats = { captured: 0, unprocessed: 0, errors: 0, lastCapture: null, scanned: 0, total: 0 };
-  const dir = eventsDir();
+  const dir = eventsDir(paths);
   // Listing and sorting the sidecars counts against the budget too.
   const deadline = Date.now() + timeoutMs;
 
@@ -91,12 +92,12 @@ export function collectEventStats(timeoutMs = 2000): EventStats {
 /**
  * Detailed scan for verbose doctor output — returns per-project breakdown + recent errors.
  */
-export function collectDetailedEventStats(timeoutMs = 2000): DetailedEventStats {
+export function collectDetailedEventStats(paths: LcmPaths, timeoutMs = 2000): DetailedEventStats {
   const result: DetailedEventStats = {
     captured: 0, unprocessed: 0, errors: 0, lastCapture: null, scanned: 0, total: 0,
     projects: [], recentErrors: [],
   };
-  const dir = eventsDir();
+  const dir = eventsDir(paths);
   const deadline = Date.now() + timeoutMs;
 
   let files: string[];

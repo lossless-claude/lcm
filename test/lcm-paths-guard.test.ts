@@ -4,9 +4,11 @@
 // read wherever it was needed: lcm could not be sandboxed, the override depended on import
 // order, tests had to mock a constant, and two readers could disagree about the root.
 //
-// This test holds the line while #409 threads an LcmPaths through the call sites. It is a
-// grep, not an analysis: it catches the literal, which is how every one of those sites was
-// written. Delete it once the default instance is gone and the types do the work.
+// #409 threads an LcmPaths through every call site instead: defaultLcmPaths and lcmPath()
+// are gone, so the type system — not convention — is what stops a path from being read out
+// of the ambient environment. This test still holds the line at the literal and at the two
+// remaining escape hatches (homedir(), LCM_HOME): it is a grep, not an analysis, because that
+// is how every violation so far was written.
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -59,7 +61,7 @@ describe("the storage root is resolved in one place", () => {
         const source = readFileSync(file, "utf-8");
         return BUILDS_A_PATH.some((pattern) => pattern.test(source));
       });
-    expect(offenders, `use lcmPath()/defaultLcmPaths instead of naming ${ROOT_LITERAL}`)
+    expect(offenders, `resolve the root through createLcmPaths(lcmHome()) instead of naming ${ROOT_LITERAL}`)
       .toEqual([]);
   });
 
@@ -75,6 +77,48 @@ describe("the storage root is resolved in one place", () => {
       // The hooks module has no imports: it reads the variable in a host command instead.
       .filter((file) => file !== "hooks/lcm-hooks.ts");
     expect(offenders, "resolve the root through lcmHome() instead of reading LCM_HOME")
+      .toEqual([]);
+  });
+});
+
+/**
+ * `homedir()` itself is not banned: plenty of legitimate uses have nothing to do with lcm's
+ * own storage. What each of these files does with it, so the allowance does not quietly grow:
+ *   - expands a `~/` path the user typed themselves (a connector's own config location);
+ *   - locates a host harness's own files — Claude Code's or Codex's settings, transcripts or
+ *     CLAUDE.md — never lcm's.
+ * A file calling `homedir()` for any other reason is exactly the bug #409 fixed: it belongs
+ * in the factory, building an LcmPaths, not here.
+ */
+const HOMEDIR_ALLOWLIST: Record<string, string> = {
+  "src/diagnose.ts": "reads Claude Code's own ~/.claude/projects transcripts",
+  "src/import.ts": "reads Claude Code's own ~/.claude/projects transcripts",
+  "src/codex-transcript.ts": "reads Codex's own ~/.codex transcripts",
+  "src/bootstrap.ts": "locates Claude Code's own ~/.claude/settings.json",
+  "src/hooks/auto-heal.ts": "locates Claude Code's own ~/.claude/settings.json",
+  "src/connectors/installer.ts": "expands a `~/` path the user typed in a connector config",
+  "src/doctor/doctor.ts": "reports the host home directory in a diagnostic, not an lcm path",
+  "src/cli/connectors.ts": "expands --global to the user's home for a connector's own config",
+  "src/daemon/project.ts": "reads Claude Code's/Codex's own transcript directories",
+  "src/daemon/routes/restore.ts": "reads Claude Code's own ~/.claude/CLAUDE.md",
+  "src/daemon/server.ts": "reads Claude Code's own ~/.claude/projects transcripts",
+  "src/db/migration.ts": "reads Claude Code's own ~/.claude/projects transcripts",
+};
+
+describe("homedir() outside the factory never builds an lcm storage path", () => {
+  it("names every remaining caller in the allowlist, with why it is not storage", () => {
+    const offenders = sourceFiles()
+      .filter((file) => !FACTORY.includes(file))
+      .filter((file) => !(file in HOMEDIR_ALLOWLIST))
+      .filter((file) => /\bhomedir\(\)/.test(readFileSync(file, "utf-8")));
+    expect(offenders, "homedir() outside the factory must build a host-harness or user-typed path, not lcm's own storage root — add it to HOMEDIR_ALLOWLIST with why, or route it through createLcmPaths(lcmHome()) instead")
+      .toEqual([]);
+  });
+
+  it("keeps the allowlist honest: every entry still calls homedir()", () => {
+    const stale = Object.keys(HOMEDIR_ALLOWLIST)
+      .filter((file) => !/\bhomedir\(\)/.test(readFileSync(file, "utf-8")));
+    expect(stale, "these files no longer call homedir(); drop them from HOMEDIR_ALLOWLIST")
       .toEqual([]);
   });
 });

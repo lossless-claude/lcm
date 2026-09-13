@@ -8,6 +8,10 @@ import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { runLcmMigrations } from "../../../src/db/migration.js";
 import { PromotedStore } from "../../../src/db/promoted.js";
 import { projectDbPath } from "../../../src/daemon/project.js";
+import { lcmHome } from "../../../src/lcm-home.js";
+import { createLcmPaths } from "../../../src/lcm-paths.js";
+
+const paths = createLcmPaths(lcmHome());
 
 const tempDirs: string[] = [];
 
@@ -37,7 +41,7 @@ describe("POST /search", () => {
     tempDirs.push(tempDir);
 
     // Pre-populate promoted table
-    const dbPath = projectDbPath(tempDir);
+    const dbPath = projectDbPath(tempDir, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
     const db = new DatabaseSync(dbPath);
     runLcmMigrations(db);
@@ -93,7 +97,7 @@ describe("POST /search", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-search-nl-"));
     tempDirs.push(tempDir);
 
-    const dbPath = projectDbPath(tempDir);
+    const dbPath = projectDbPath(tempDir, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
     const db = new DatabaseSync(dbPath);
     runLcmMigrations(db);

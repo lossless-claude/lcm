@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
+import type { LcmPaths } from "../../lcm-paths.js";
 import { projectDbPath } from "../project.js";
 import { buildOrientationPrompt } from "../orientation.js";
 import { sendJson } from "../server.js";
@@ -29,10 +30,10 @@ type CodexContextItemRow = {
 };
 
 /** Reads the mark `/compact` left for this session, if this project has a DB at all. */
-function wasJustCompacted(cwd: string | undefined, sessionId: unknown): boolean {
+function wasJustCompacted(cwd: string | undefined, sessionId: unknown, paths: LcmPaths): boolean {
   // `/compact` writes the mark under a string session id, so nothing else can match one.
   if (!cwd || typeof sessionId !== "string" || !sessionId) return false;
-  const dbPath = projectDbPath(cwd);
+  const dbPath = projectDbPath(cwd, paths);
   if (!existsSync(dbPath)) return false;
   try {
     const db = getLcmConnection(dbPath);
@@ -256,9 +257,9 @@ function fenceOrEmpty(parts: string[], tag: string): string {
 }
 
 /** The snapshot a post-compaction restore replays: the CLAUDE.md files as they were. */
-function readInstructionsSnapshot(cwd: string | undefined): string {
+function readInstructionsSnapshot(cwd: string | undefined, paths: LcmPaths): string {
   if (!cwd) return "";
-  const dbPath = projectDbPath(cwd);
+  const dbPath = projectDbPath(cwd, paths);
   if (!existsSync(dbPath)) return "";
   try {
     const db = getLcmConnection(dbPath);
@@ -322,24 +323,24 @@ function readEpisodicContext(db: DatabaseSync, sessionId: unknown, limit: number
  * next compaction without returning it — the harness injects those files itself, so echoing
  * them back would duplicate them.
  */
-function buildClaudeRestore(config: DaemonConfig, req: RestoreRequest): RestoreContext {
+function buildClaudeRestore(config: DaemonConfig, req: RestoreRequest, paths: LcmPaths): RestoreContext {
   // `source` is absent whenever the function-hooks module asks: prompt.context carries no
   // reason for firing, so there the mark `/compact` left is the only thing that
   // distinguishes a post-compaction restore from a fresh one.
   const isExplicitNonCompact =
     req.source === "startup" || req.source === "resume" || req.source === "clear";
   const isPostCompact = req.source === "compact"
-    || (!isExplicitNonCompact && wasJustCompacted(req.cwd, req.sessionId));
+    || (!isExplicitNonCompact && wasJustCompacted(req.cwd, req.sessionId, paths));
 
   if (isPostCompact) {
-    const parts = [req.orientation, readInstructionsSnapshot(req.cwd)];
+    const parts = [req.orientation, readInstructionsSnapshot(req.cwd, paths)];
     return { context: parts.filter(Boolean).join("\n\n"), includeInsights: false };
   }
 
   let episodic = "";
   let promoted = "";
   if (req.cwd) {
-    const dbPath = projectDbPath(req.cwd);
+    const dbPath = projectDbPath(req.cwd, paths);
     const db = getLcmConnection(dbPath);
     try {
       runLcmMigrations(db);
@@ -365,13 +366,13 @@ function buildClaudeRestore(config: DaemonConfig, req: RestoreRequest): RestoreC
  * recent context and the project's promoted knowledge, each trimmed to what is left of the
  * injection budget.
  */
-function buildCodexRestore(config: DaemonConfig, req: RestoreRequest): RestoreContext {
+function buildCodexRestore(config: DaemonConfig, req: RestoreRequest, paths: LcmPaths): RestoreContext {
   const parts = req.orientation ? [req.orientation] : [];
   const answer = () => ({ context: parts.join("\n\n"), includeInsights: true as const });
   if (!req.cwd) return answer();
 
   const budget = config.restoration.maxInjectedMemoryBytes;
-  const dbPath = projectDbPath(req.cwd);
+  const dbPath = projectDbPath(req.cwd, paths);
   const db = getLcmConnection(dbPath);
   try {
     runLcmMigrations(db);
@@ -396,9 +397,9 @@ function buildCodexRestore(config: DaemonConfig, req: RestoreRequest): RestoreCo
 }
 
 /** Passive-capture insights, which both clients receive alongside their context. */
-function readInsights(config: DaemonConfig, cwd: string | undefined): Insight[] {
+function readInsights(config: DaemonConfig, cwd: string | undefined, paths: LcmPaths): Insight[] {
   if (!cwd) return [];
-  const dbPath = projectDbPath(cwd);
+  const dbPath = projectDbPath(cwd, paths);
   if (!existsSync(dbPath)) return [];
   try {
     const db = getLcmConnection(dbPath);
@@ -428,7 +429,7 @@ function readInsights(config: DaemonConfig, cwd: string | undefined): Insight[] 
  * blocks and answer with different bodies. The route validates the request and hands it to
  * one builder or the other; neither knows the other exists.
  */
-export function createRestoreHandler(config: DaemonConfig): RouteHandler {
+export function createRestoreHandler(config: DaemonConfig, paths: LcmPaths): RouteHandler {
   return async (_req, res, body) => {
     try {
       const input = JSON.parse(body || "{}");
@@ -449,12 +450,12 @@ export function createRestoreHandler(config: DaemonConfig): RouteHandler {
         orientation: buildOrientationPrompt(),
       };
       const built = input.client === "codex"
-        ? buildCodexRestore(config, request)
-        : buildClaudeRestore(config, request);
+        ? buildCodexRestore(config, request, paths)
+        : buildClaudeRestore(config, request, paths);
 
       const responseBody: { context: string; insights?: Insight[] } = { context: built.context };
       if (built.includeInsights) {
-        const insights = readInsights(config, cwd);
+        const insights = readInsights(config, cwd, paths);
         if (insights.length > 0) responseBody.insights = insights;
       }
       sendJson(res, 200, responseBody);

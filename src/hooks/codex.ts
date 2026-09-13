@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import { open } from "node:fs/promises";
 import { DaemonClient } from "../daemon/client.js";
 import { resolveLcmConfig } from "../db/config.js";
@@ -8,6 +7,7 @@ import { PKG_VERSION } from "../daemon/version.js";
 import { daemonNotice, warnOncePerSession } from "./fail-open.js";
 import { buildMemoryContext } from "./memory-context.js";
 import { lcmHome } from "../lcm-home.js";
+import { createLcmPaths, type LcmPaths } from "../lcm-paths.js";
 
 const EVENTS = new Set([
   "SessionStart", "UserPromptSubmit", "Stop", "Interrupt", "SessionEnd", "PreCompact",
@@ -50,22 +50,22 @@ function parseInput(stdin: string): CodexInput | null {
 }
 
 function defaultDeps(): CodexHookDeps {
-  const base = lcmHome();
-  const config = loadDaemonConfig(join(base, "config.json"));
+  const paths: LcmPaths = createLcmPaths(lcmHome());
+  const config = loadDaemonConfig(paths.configPath);
   const port = config.daemon?.port ?? 3737;
   return {
     enabled: resolveLcmConfig().enabled,
-    client: new DaemonClient(`http://127.0.0.1:${port}`),
+    client: new DaemonClient(`http://127.0.0.1:${port}`, paths.tokenPath),
     // Codex must not run the Claude bootstrap that rewrites Claude settings, so the
     // fail-open notice is written here, once per session, instead of by ensureBootstrapped.
     connect: async (sessionId, noSpawn = false) => {
       const result = await ensureDaemon({
-        port, pidFilePath: join(base, "daemon.pid"), spawnTimeoutMs: noSpawn ? 0 : 5000, noSpawn, expectedVersion: PKG_VERSION,
+        port, pidFilePath: paths.pidPath, spawnTimeoutMs: noSpawn ? 0 : 5000, noSpawn, expectedVersion: PKG_VERSION,
       });
       const notice = daemonNotice(result, PKG_VERSION);
       // A short-deadline event never tried to start a daemon, so an absent one is no news.
       const startWasNotAttempted = noSpawn && !result.ownership;
-      if (notice && sessionId && !startWasNotAttempted) warnOncePerSession(sessionId, "daemon", notice.line);
+      if (notice && sessionId && !startWasNotAttempted) warnOncePerSession(sessionId, "daemon", notice.line, paths);
       return result.connected && notice?.usable !== false;
     },
   };

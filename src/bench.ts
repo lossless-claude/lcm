@@ -19,7 +19,8 @@ export { parseLanguageTag } from "./search/language.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { prepareRgCorpus, searchRg, type GrepDocument, type PreparedRgCorpus } from "./bench/rg-baseline.js";
-import { lcmPath } from "./lcm-home.js";
+import { lcmHome } from "./lcm-home.js";
+import { createLcmPaths, type LcmPaths } from "./lcm-paths.js";
 
 /**
  * Layer 2 retrieval benchmark: build and run a natural-language question set
@@ -92,9 +93,9 @@ export type BenchResult = {
 const DEFAULT_BENCH_FILENAME = ".lcm-bench.json";
 const DEFAULT_RESULTS_FILENAME = ".lcm-bench-results.json";
 
-function benchPath(cwd: string, override?: string, fallback = DEFAULT_BENCH_FILENAME): string {
+function benchPath(cwd: string, paths: LcmPaths, override?: string, fallback = DEFAULT_BENCH_FILENAME): string {
   if (override) return override;
-  const dbPath = projectDbPath(cwd);
+  const dbPath = projectDbPath(cwd, paths);
   return join(dirname(dbPath), fallback);
 }
 
@@ -198,7 +199,7 @@ function forbiddenTerms(prompt: string): string[] {
 async function configuredSummarizer(): Promise<LcmSummarizeFn> {
   const { loadDaemonConfig } = await import("./daemon/config.js");
   const { createSummarizer, resolveEffectiveProvider } = await import("./daemon/summarizer.js");
-  const config = loadDaemonConfig(lcmPath("config.json"));
+  const config = loadDaemonConfig(createLcmPaths(lcmHome()).configPath);
   if (config.summarizer?.mock) throw new Error("A mock summarizer cannot generate an LLM benchmark.");
   const summarize = await createSummarizer(resolveEffectiveProvider(config), config);
   if (!summarize) throw new Error("LLM benchmark generation requires an enabled summarizer.");
@@ -455,8 +456,8 @@ function formatBuildReport(bench: BenchFile, out: string, rejected: string[]): s
 const MECHANICAL_LANGUAGE = "en";
 
 /** The language the daemon recorded for this project, if it has run detection. */
-function recordedProjectLanguage(cwd: string): string | null {
-  const metaPath = projectMetaPath(cwd);
+function recordedProjectLanguage(cwd: string, paths: LcmPaths): string | null {
+  const metaPath = projectMetaPath(cwd, paths);
   if (!existsSync(metaPath)) return null;
   try {
     const meta = JSON.parse(readFileSync(metaPath, "utf-8")) as { language?: unknown };
@@ -476,13 +477,14 @@ async function resolveLanguage(
   opts: BenchOptions,
   conversations: SampledConversation[],
   ctx: SampleContext,
+  paths: LcmPaths,
   detect?: LanguageDetector,
 ): Promise<{ language: string } | { error: string }> {
   if (opts.language) {
     const language = parseLanguageTag(opts.language);
     return language ? { language } : { error: `Language must be a BCP 47 tag such as en or pt-BR, got "${opts.language}".` };
   }
-  const recorded = recordedProjectLanguage(opts.cwd);
+  const recorded = recordedProjectLanguage(opts.cwd, paths);
   if (recorded) return { language: recorded };
   const hint = "Pass --language <tag> (LCM_BENCH_LANGUAGE for the corpora harness) to set it.";
   if (!detect) return { error: `No language detector for an LLM benchmark. ${hint}` };
@@ -505,10 +507,11 @@ export async function buildBench(
   generateQuestion?: QuestionGenerator,
   detectLanguage?: LanguageDetector,
 ): Promise<BenchResult> {
+  const paths = createLcmPaths(lcmHome());
   const n = opts.n ?? 20;
   if (!Number.isInteger(n) || n < 1) return { out: "", exitCode: 1, stdout: "Question count must be a positive integer.\n" };
   const rand = mulberry32(opts.seed ?? 42);
-  const dbPath = projectDbPath(opts.cwd);
+  const dbPath = projectDbPath(opts.cwd, paths);
   if (!existsSync(dbPath)) {
     return {
       out: "",
@@ -546,7 +549,7 @@ export async function buildBench(
     let language = MECHANICAL_LANGUAGE;
     if (opts.generator === "llm") {
       if (!generateQuestion && !detectLanguage && !opts.language) detectLanguage = await configuredLanguageDetector();
-      const resolved = await resolveLanguage(opts, conversations, ctx, detectLanguage);
+      const resolved = await resolveLanguage(opts, conversations, ctx, paths, detectLanguage);
       if ("error" in resolved) return { out: "", exitCode: 1, stdout: `${resolved.error}\n` };
       language = resolved.language;
       ctx.generateQuestion = generateQuestion ?? await configuredQuestionGenerator(language);
@@ -581,7 +584,7 @@ export async function buildBench(
       language,
       queries,
     };
-    const out = benchPath(opts.cwd, opts.out);
+    const out = benchPath(opts.cwd, paths, opts.out);
     await writeFile(out, JSON.stringify(bench, null, 2));
     return { out, exitCode: 0, stdout: formatBuildReport(bench, out, rejected) };
   } finally {
@@ -721,16 +724,17 @@ type ScoreContext = {
   k: number;
   /** Set when scoring the union; the cwd whose group is searched. */
   unionCwd?: string;
+  paths: LcmPaths;
 };
 
 async function scoreQuery(query: BenchQuery, ctx: ScoreContext): Promise<QueryOutcome> {
   const start = performance.now();
   // The same ranking explicit search emits, so the bench measures what callers see.
   const history = ctx.unionCwd
-    ? await searchHistoryGroup(ctx.unionCwd, { query: query.question, limit: ctx.k * SESSION_ROW_BUDGET })
+    ? await searchHistoryGroup(ctx.unionCwd, { query: query.question, limit: ctx.k * SESSION_ROW_BUDGET }, ctx.paths)
     : await rankNativeHistory(ctx.db, { query: query.question, limit: ctx.k * SESSION_ROW_BUDGET });
   const promoted = ctx.unionCwd
-    ? searchPromotedGroup(ctx.unionCwd, { query: query.question, limit: ctx.k * SESSION_ROW_BUDGET }).hits
+    ? searchPromotedGroup(ctx.unionCwd, { query: query.question, limit: ctx.k * SESSION_ROW_BUDGET }, ctx.paths).hits
     : ctx.promotedStore.search(query.question, ctx.k * SESSION_ROW_BUDGET, undefined, ctx.projectId);
   const latencyMs = performance.now() - start;
 
@@ -815,13 +819,14 @@ function renderReport(report: BenchReport, outcomes: QueryOutcome[], resultsPath
 }
 
 export async function runBench(opts: BenchOptions): Promise<BenchResult> {
+  const paths = createLcmPaths(lcmHome());
   const k = opts.k ?? 5;
   if (!Number.isInteger(k) || k < 1) return { out: "", exitCode: 1, stdout: "Hit-rate cutoff must be a positive integer.\n" };
-  const file = benchPath(opts.cwd, opts.benchFile);
+  const file = benchPath(opts.cwd, paths, opts.benchFile);
   const loaded = await loadBenchFile(file);
   if ("error" in loaded) return { out: "", exitCode: 1, stdout: loaded.error };
 
-  const dbPath = projectDbPath(opts.cwd);
+  const dbPath = projectDbPath(opts.cwd, paths);
   if (!existsSync(dbPath)) {
     return { out: "", exitCode: 1, stdout: `No project database found for ${opts.cwd}.\n` };
   }
@@ -837,6 +842,7 @@ export async function runBench(opts: BenchOptions): Promise<BenchResult> {
     const ctx: ScoreContext = {
       db, promotedStore: new PromotedStore(db), projectId: pid, rgBaseline: baseline, k,
       unionCwd: opts.union ? opts.cwd : undefined,
+      paths,
     };
 
     const outcomes: QueryOutcome[] = [];

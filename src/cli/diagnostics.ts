@@ -1,7 +1,8 @@
 import { exit, stdout } from "node:process";
 import type { Command } from "commander";
 import type { DaemonClient } from "../daemon/client.js";
-import { lcmPath } from "../lcm-home.js";
+import { lcmHome } from "../lcm-home.js";
+import { createLcmPaths } from "../lcm-paths.js";
 import { fail, showHelpAndExit } from "./support.js";
 
 export interface DiagnosticsCommandDeps {
@@ -21,9 +22,7 @@ export function registerDiagnosticsCommands(program: Command, deps: DiagnosticsC
     .action(async (opts) => {
       if (opts.help) await showHelpAndExit("status");
       const { loadDaemonConfig } = await import("../daemon/config.js");
-      const { join } = await import("node:path");
-      const { homedir } = await import("node:os");
-      const config = loadDaemonConfig(lcmPath("config.json"));
+      const config = loadDaemonConfig(createLcmPaths(lcmHome()).configPath);
       const jsonFlag: boolean = opts.json ?? false;
       const client = await createDaemonClientOrExit();
 

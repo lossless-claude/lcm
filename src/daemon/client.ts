@@ -2,7 +2,6 @@ import { readAuthToken } from "./auth.js";
 import { join } from "node:path";
 import { request } from "node:http";
 import { Buffer } from "node:buffer";
-import { lcmPath } from "../lcm-home.js";
 
 /**
  * Default timeout for short-lived daemon calls (health checks, GETs).
@@ -41,9 +40,7 @@ export class DaemonClient {
 
   private getToken(): string | null {
     if (!this.tokenLoaded) {
-      this.token = readAuthToken(
-        this.tokenPath ?? lcmPath("daemon.token"),
-      );
+      this.token = this.tokenPath ? readAuthToken(this.tokenPath) : null;
       this.tokenLoaded = true;
     }
     return this.token;

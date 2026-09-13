@@ -6,7 +6,7 @@ import { readAuthToken } from "../daemon/auth.js";
 import { join } from "node:path";
 import { request } from "node:http";
 import { Buffer } from "node:buffer";
-import { lcmPath } from "../lcm-home.js";
+import type { LcmPaths } from "../lcm-paths.js";
 
 /**
  * Build the Authorization header for daemon requests, if a token is available.
@@ -17,8 +17,8 @@ import { lcmPath } from "../lcm-home.js";
  * event. Returns an empty object when no token file exists so callers can spread
  * it unconditionally.
  */
-function authHeaders(): Record<string, string> {
-  const token = readAuthToken(lcmPath("daemon.token"));
+function authHeaders(paths: LcmPaths): Record<string, string> {
+  const token = readAuthToken(paths.tokenPath);
   return token ? { Authorization: "Bearer " + token } : {};
 }
 
@@ -35,6 +35,7 @@ function authHeaders(): Record<string, string> {
 export function fireCompactRequest(
   port: number,
   body: Record<string, unknown>,
+  paths: LcmPaths,
 ): void {
   const json = JSON.stringify(body);
   const req = request({
@@ -45,7 +46,7 @@ export function fireCompactRequest(
     headers: {
       "Content-Type": "application/json",
       "Content-Length": Buffer.byteLength(json),
-      ...authHeaders(),
+      ...authHeaders(paths),
     },
   });
   req.on("socket", (socket) => {
@@ -58,7 +59,7 @@ export function fireCompactRequest(
   req.end();
 }
 
-export function firePromoteRequest(port: number, body: Record<string, unknown>): void {
+export function firePromoteRequest(port: number, body: Record<string, unknown>, paths: LcmPaths): void {
   const json = JSON.stringify(body);
   const req = request({
     hostname: "127.0.0.1",
@@ -68,7 +69,7 @@ export function firePromoteRequest(port: number, body: Record<string, unknown>):
     headers: {
       "Content-Type": "application/json",
       "Content-Length": Buffer.byteLength(json),
-      ...authHeaders(),
+      ...authHeaders(paths),
     },
   });
   req.on("socket", (socket) => {
@@ -79,7 +80,7 @@ export function firePromoteRequest(port: number, body: Record<string, unknown>):
   req.end();
 }
 
-export function firePromoteEventsRequest(port: number, body: Record<string, unknown>): void {
+export function firePromoteEventsRequest(port: number, body: Record<string, unknown>, paths: LcmPaths): void {
   const json = JSON.stringify(body);
   const req = request({
     hostname: "127.0.0.1",
@@ -89,7 +90,7 @@ export function firePromoteEventsRequest(port: number, body: Record<string, unkn
     headers: {
       "Content-Type": "application/json",
       "Content-Length": Buffer.byteLength(json),
-      ...authHeaders(),
+      ...authHeaders(paths),
     },
   });
   req.on("socket", (socket) => {
@@ -100,7 +101,7 @@ export function firePromoteEventsRequest(port: number, body: Record<string, unkn
   req.end();
 }
 
-export function fireSessionCompleteRequest(port: number, body: Record<string, unknown>): void {
+export function fireSessionCompleteRequest(port: number, body: Record<string, unknown>, paths: LcmPaths): void {
   const json = JSON.stringify(body);
   const req = request({
     hostname: "127.0.0.1",
@@ -110,7 +111,7 @@ export function fireSessionCompleteRequest(port: number, body: Record<string, un
     headers: {
       "Content-Type": "application/json",
       "Content-Length": Buffer.byteLength(json),
-      ...authHeaders(),
+      ...authHeaders(paths),
     },
   });
   req.on("socket", (socket) => {
@@ -127,10 +128,11 @@ const INGEST_TIMEOUT_MS = 10_000;
 export async function handleSessionEnd(
   stdin: string,
   client: DaemonClient,
+  paths: LcmPaths,
   port?: number,
 ): Promise<{ exitCode: number; stdout: string }> {
   const daemonPort = port ?? 3737;
-  const pidFilePath = lcmPath("daemon.pid");
+  const pidFilePath = paths.pidPath;
   // Claude Code gives SessionEnd hooks a shared 1.5s budget: never spawn a daemon here,
   // only talk to one that is already up. The Stop hook has been ingesting incrementally.
   const { connected } = await ensureDaemon({
@@ -151,8 +153,7 @@ export async function handleSessionEnd(
       redactedCategories?: string[];
     }>("/ingest", input, { timeoutMs: INGEST_TIMEOUT_MS });
 
-    const configPath = lcmPath("config.json");
-    const config = loadDaemonConfig(configPath);
+    const config = loadDaemonConfig(paths.configPath);
     const disableCompact = config.hooks?.disableAutoCompact ?? false;
 
     // Notify user when sensitive data was filtered (default: on)
@@ -172,14 +173,14 @@ export async function handleSessionEnd(
         cwd: input.cwd,
         skip_ingest: true,
         client: "claude",
-      });
+      }, paths);
     }
 
     // Always promote
-    firePromoteRequest(daemonPort, { cwd: input.cwd });
+    firePromoteRequest(daemonPort, { cwd: input.cwd }, paths);
 
     // Promote events for passive learning
-    firePromoteEventsRequest(daemonPort, { cwd: input.cwd });
+    firePromoteEventsRequest(daemonPort, { cwd: input.cwd }, paths);
 
     // Record session completion in manifest.
     // Note: ingestResult.ingested is the delta (new messages this call), not the total.
@@ -188,7 +189,7 @@ export async function handleSessionEnd(
       session_id: input.session_id,
       cwd: input.cwd,
       message_count: ingestResult.ingested ?? 0,
-    });
+    }, paths);
 
     return { exitCode: 0, stdout: "" };
   } catch {

@@ -5,6 +5,7 @@ import { eventsDbPath } from "../../db/events-path.js";
 import { createPromoteEventsHandler } from "./promote-events.js";
 import { safeLogError } from "../../hooks/hook-errors.js";
 import type { DaemonConfig } from "../config.js";
+import type { LcmPaths } from "../../lcm-paths.js";
 
 /** Rows kept for events already promoted, and for ones still waiting. */
 const PROCESSED_MAX_AGE_DAYS = 7;
@@ -20,8 +21,8 @@ const ERROR_LOG_MAX_AGE_DAYS = 30;
  * up the session: the module fires this and moves on, where the command hook awaited it.
  * Body: `{ cwd }`.
  */
-export function createSessionScavengeHandler(config: DaemonConfig): RouteHandler {
-  const promoteEvents = createPromoteEventsHandler(config);
+export function createSessionScavengeHandler(config: DaemonConfig, paths: LcmPaths): RouteHandler {
+  const promoteEvents = createPromoteEventsHandler(config, paths);
 
   return async (_req, res, body) => {
     let input: { cwd?: unknown };
@@ -45,7 +46,7 @@ export function createSessionScavengeHandler(config: DaemonConfig): RouteHandler
 
     let pending = false;
     try {
-      const db = new EventsDb(eventsDbPath(cwd));
+      const db = new EventsDb(eventsDbPath(cwd, paths));
       try {
         db.pruneProcessed(PROCESSED_MAX_AGE_DAYS);
         db.pruneUnprocessed(UNPROCESSED_MAX_ROWS, UNPROCESSED_MAX_AGE_DAYS);
@@ -56,7 +57,7 @@ export function createSessionScavengeHandler(config: DaemonConfig): RouteHandler
       }
     } catch (err) {
       // Housekeeping is best-effort; a scavenge that fails must not fail the session.
-      safeLogError("session-scavenge", err, { cwd });
+      safeLogError("session-scavenge", err, { cwd, paths });
       sendJson(res, 200, { pruned: false, promoted: false });
       return;
     }
@@ -67,7 +68,7 @@ export function createSessionScavengeHandler(config: DaemonConfig): RouteHandler
     if (pending) {
       const sink = { writeHead: () => {}, end: () => {} } as unknown as Parameters<RouteHandler>[1];
       promoteEvents({} as Parameters<RouteHandler>[0], sink, JSON.stringify({ cwd }))
-        .catch(err => safeLogError("session-scavenge", err, { cwd }));
+        .catch(err => safeLogError("session-scavenge", err, { cwd, paths }));
     }
   };
 }

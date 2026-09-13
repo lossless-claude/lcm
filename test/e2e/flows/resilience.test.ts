@@ -9,6 +9,10 @@
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
 import { createHarness, openProjectDb, type HarnessHandle } from "../harness.js";
 import { DaemonClient } from "../../../src/daemon/client.js";
+import { lcmHome } from "../../../src/lcm-home.js";
+import { createLcmPaths } from "../../../src/lcm-paths.js";
+
+const paths = createLcmPaths(lcmHome());
 
 let handle: HarnessHandle | null = null;
 
@@ -84,16 +88,16 @@ describe("Flow 18: Daemon-down resilience", { timeout: 60_000 }, () => {
     const { handleSessionEnd } = await import("../../../src/hooks/session-end.js");
     const { handleUserPromptSubmit } = await import("../../../src/hooks/user-prompt.js");
 
-    const r1 = await handlePreCompact("{}", badClient, 1);
+    const r1 = await handlePreCompact("{}", badClient, paths, 1);
     expect(r1.exitCode).toBe(0);
 
-    const r2 = await handleSessionStart("{}", badClient, 1);
+    const r2 = await handleSessionStart("{}", badClient, paths, 1);
     expect(r2.exitCode).toBe(0);
 
-    const r3 = await handleSessionEnd("{}", badClient, 1);
+    const r3 = await handleSessionEnd("{}", badClient, paths, 1);
     expect(r3.exitCode).toBe(0);
 
-    const r4 = await handleUserPromptSubmit("{}", badClient, 1);
+    const r4 = await handleUserPromptSubmit("{}", badClient, paths, 1);
     expect(r4.exitCode).toBe(0);
   });
 });

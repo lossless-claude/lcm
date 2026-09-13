@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { DaemonConfig } from "../config.js";
+import type { LcmPaths } from "../../lcm-paths.js";
 import { projectDbPath } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
@@ -16,7 +17,7 @@ function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export function createSearchHandler(config: DaemonConfig): RouteHandler {
+export function createSearchHandler(config: DaemonConfig, paths: LcmPaths): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
     const { query, limit = 5, layers, tags } = input;
@@ -47,7 +48,7 @@ export function createSearchHandler(config: DaemonConfig): RouteHandler {
     const errors: string[] = [];
 
     if (cwd) {
-      const dbPath = projectDbPath(cwd);
+      const dbPath = projectDbPath(cwd, paths);
       if (existsSync(dbPath)) {
         mkdirSync(dirname(dbPath), { recursive: true });
         const db = getLcmConnection(dbPath);
@@ -62,7 +63,7 @@ export function createSearchHandler(config: DaemonConfig): RouteHandler {
               episodic = filterTags
                 ? []
                 : config.search.unionHistoryAcrossGroup
-                  ? await searchHistoryGroup(cwd, { query, limit })
+                  ? await searchHistoryGroup(cwd, { query, limit }, paths)
                   : await searchNativeHistory(db, { query, limit, project: projectRef(cwd) });
             } catch (err) {
               // Non-fatal for the response, but never silent: a real failure
@@ -78,7 +79,7 @@ export function createSearchHandler(config: DaemonConfig): RouteHandler {
           // measurement.
           if (activeLayers.includes("promoted")) {
             try {
-              promoted = searchPromotedGroup(cwd, { query, limit, tags: filterTags }).hits;
+              promoted = searchPromotedGroup(cwd, { query, limit, tags: filterTags }, paths).hits;
             } catch (err) {
               console.warn(`[lcm] /search promoted layer failed: ${describeError(err)}`);
               errors.push(`promoted: ${describeError(err)}`);

@@ -1,12 +1,11 @@
 import type { DaemonClient } from "../daemon/client.js";
 import { ensureDaemon } from "../daemon/lifecycle.js";
 import { PKG_VERSION } from "../daemon/version.js";
-import { join } from "node:path";
 import { safeLogError } from "./hook-errors.js";
 import { buildMemoryContext } from "./memory-context.js";
 import { LEARNING_INSTRUCTION } from "./learning-instruction.js";
 import { functionHooksOwnSession } from "./session-claim.js";
-import { lcmPath } from "../lcm-home.js";
+import type { LcmPaths } from "../lcm-paths.js";
 import { withHookWrite } from "./write-admission.js";
 
 type PromptSearchResponse = {
@@ -22,7 +21,7 @@ const PROMPT_SEARCH_TIMEOUT_MS = 5_000;
  * events DB. Shared by the command hook and the daemon's /prompt-search route
  * (`recordEvents: true`, the function-hooks module's path). Returns the rows written.
  */
-export async function recordUserPromptEvents(prompt: string, sessionId: string, cwd: string): Promise<number> {
+export async function recordUserPromptEvents(prompt: string, sessionId: string, cwd: string, paths: LcmPaths): Promise<number> {
   const { extractUserPromptEvents } = await import("./extractors.js");
   const { EventsDb } = await import("./events-db.js");
   const { eventsDbPath } = await import("../db/events-path.js");
@@ -33,8 +32,8 @@ export async function recordUserPromptEvents(prompt: string, sessionId: string, 
   // The dedup key both paths can compute: the module's prompt.submit sees the text and
   // no prompt id, so the id the command hook's stdin carries is no use here.
   const promptHash = createHash("sha256").update(prompt).digest("hex");
-  return withHookWrite(() => {
-    const db = new EventsDb(eventsDbPath(cwd));
+  return withHookWrite(paths, () => {
+    const db = new EventsDb(eventsDbPath(cwd, paths));
     try {
       return db.insertPromptEvents(sessionId, events, promptHash);
     } finally {
@@ -46,6 +45,7 @@ export async function recordUserPromptEvents(prompt: string, sessionId: string, 
 export async function handleUserPromptSubmit(
   stdin: string,
   client: DaemonClient,
+  paths: LcmPaths,
   port?: number,
 ): Promise<{ exitCode: number; stdout: string }> {
   let parsed: Record<string, unknown>;
@@ -63,7 +63,7 @@ export async function handleUserPromptSubmit(
   }
 
   const daemonPort = port ?? 3737;
-  const pidFilePath = lcmPath("daemon.pid");
+  const pidFilePath = paths.pidPath;
   const { connected } = await ensureDaemon({ port: daemonPort, pidFilePath, spawnTimeoutMs: 5000, expectedVersion: PKG_VERSION });
   if (!connected) return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
 
@@ -77,12 +77,13 @@ export async function handleUserPromptSubmit(
     try {
       if (input.session_id && typeof input.session_id === "string") {
         const cwd = input.cwd ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
-        await recordUserPromptEvents(String(input.prompt), input.session_id, cwd);
+        await recordUserPromptEvents(String(input.prompt), input.session_id, cwd, paths);
       }
     } catch (e) {
       safeLogError("UserPromptSubmit", e, {
         cwd: input.cwd ?? process.env.CLAUDE_PROJECT_DIR,
         sessionId: input.session_id,
+        paths,
       });
     }
 

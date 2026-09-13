@@ -14,6 +14,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { projectDbPath } from "../../../src/daemon/project.js";
 import { createDaemon, type DaemonInstance } from "../../../src/daemon/server.js";
+import { lcmHome } from "../../../src/lcm-home.js";
+import { createLcmPaths } from "../../../src/lcm-paths.js";
+
+const paths = createLcmPaths(lcmHome());
 
 interface CursorRow {
   byte_offset: number;
@@ -51,12 +55,12 @@ function createTranscript(
   const trailingNewline = options.trailingNewline ?? true;
   writeFileSync(path, [meta, ...records].join("\n") + (trailingNewline ? "\n" : ""));
   tempDirs.push(cwd);
-  projectDirs.push(dirname(projectDbPath(cwd)));
+  projectDirs.push(dirname(projectDbPath(cwd, paths)));
   return { cwd, path, sessionId };
 }
 
 function readState(cwd: string, sessionId: string): StoredState {
-  const db = new DatabaseSync(projectDbPath(cwd));
+  const db = new DatabaseSync(projectDbPath(cwd, paths));
   try {
     const cursor = db.prepare(`
       SELECT ci.byte_offset, ci.message_count, ci.record_boundary
@@ -171,7 +175,7 @@ describe("Codex persistent ingest cursor", () => {
     await post(fixture);
     await daemon!.stop();
     daemon = undefined;
-    const db = new DatabaseSync(projectDbPath(fixture.cwd));
+    const db = new DatabaseSync(projectDbPath(fixture.cwd, paths));
     try {
       db.exec("ALTER TABLE codex_ingest_cursors DROP COLUMN prefix_fingerprint");
     } finally {
@@ -332,7 +336,7 @@ describe("Codex persistent ingest cursor", () => {
     const original = readFileSync(fixture.path, "utf8");
     const header = original.slice(0, original.indexOf("\n") + 1);
     writeFileSync(fixture.path, `${header}${messageLine("user", "replacement")}\n`);
-    const db = new DatabaseSync(projectDbPath(fixture.cwd));
+    const db = new DatabaseSync(projectDbPath(fixture.cwd, paths));
     try {
       db.prepare("UPDATE codex_ingest_cursors SET byte_offset = ?, message_count = 1")
         .run(statSync(fixture.path).size);
@@ -388,7 +392,7 @@ describe("Codex persistent ingest cursor", () => {
     await post(fixture);
     const before = readState(fixture.cwd, fixture.sessionId);
 
-    const dbPath = projectDbPath(fixture.cwd);
+    const dbPath = projectDbPath(fixture.cwd, paths);
     const triggerDb = new DatabaseSync(dbPath);
     try {
       triggerDb.exec(`

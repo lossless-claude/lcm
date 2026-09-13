@@ -5,7 +5,7 @@ import { functionHooksOwnSession } from "./session-claim.js";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { writeFileSync, readFileSync } from "node:fs";
-import { lcmPath } from "../lcm-home.js";
+import type { LcmPaths } from "../lcm-paths.js";
 
 /** Deadline for the /restore call — SessionStart blocks the session until this hook returns. */
 const RESTORE_TIMEOUT_MS = 10_000;
@@ -42,7 +42,7 @@ type SessionStartInput = {
   [key: string]: unknown;
 };
 
-export async function handleSessionStart(stdin: string, client: DaemonClient, port?: number): Promise<{ exitCode: number; stdout: string }> {
+export async function handleSessionStart(stdin: string, client: DaemonClient, paths: LcmPaths, port?: number): Promise<{ exitCode: number; stdout: string }> {
   let input: SessionStartInput;
   try {
     input = (JSON.parse(stdin || "{}") ?? {}) as SessionStartInput;
@@ -60,7 +60,7 @@ export async function handleSessionStart(stdin: string, client: DaemonClient, po
   }
 
   const daemonPort = port ?? 3737;
-  const pidFilePath = lcmPath("daemon.pid");
+  const pidFilePath = paths.pidPath;
   const { connected } = await ensureDaemon({ port: daemonPort, pidFilePath, spawnTimeoutMs: 5000, expectedVersion: PKG_VERSION });
   if (!connected) return { exitCode: 0, stdout: "" };
 

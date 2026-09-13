@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { createLcmPaths, type LcmPaths } from "../../src/lcm-paths.js";
 
 // Mock eventsDbPath to use temp dir.
 // Paths under /dev/null/... are kept as-is so DB creation fails and triggers the circuit breaker.
@@ -25,11 +26,13 @@ import { eventsDbPath } from "../../src/db/events-path.js";
 
 describe("safeLogError", () => {
   let tempDir: string;
+  let paths: LcmPaths;
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), "hook-errors-test-"));
     mockEventsDir = join(tempDir, "events");
     process.env.LCM_LOG_PATH = join(tempDir, "events.log");
+    paths = createLcmPaths(tempDir);
     _resetCircuitBreaker();
   });
 
@@ -40,9 +43,9 @@ describe("safeLogError", () => {
 
   it("Layer 1: writes to sidecar DB when cwd is valid", () => {
     const cwd = join(tempDir, "project");
-    safeLogError("PostToolUse", new Error("test error"), { cwd, sessionId: "s1" });
+    safeLogError("PostToolUse", new Error("test error"), { cwd, sessionId: "s1", paths });
 
-    const db = new EventsDb(eventsDbPath(cwd));
+    const db = new EventsDb(eventsDbPath(cwd, paths));
     const rows = db.raw().prepare("SELECT * FROM error_log").all() as Array<{
       hook: string; error: string; session_id: string;
     }>;
@@ -53,7 +56,7 @@ describe("safeLogError", () => {
   });
 
   it("Layer 1: skips DB when cwd is undefined, falls to Layer 2", () => {
-    safeLogError("PostToolUse", new Error("no cwd"), {});
+    safeLogError("PostToolUse", new Error("no cwd"), { paths });
     const logPath = join(tempDir, "events.log");
     expect(existsSync(logPath)).toBe(true);
     const content = readFileSync(logPath, "utf-8");
@@ -62,7 +65,7 @@ describe("safeLogError", () => {
 
   it("Layer 2: writes to flat file when DB fails", () => {
     const cwd = "/dev/null/impossible";
-    safeLogError("PostToolUse", new Error("db fail"), { cwd, sessionId: "s1" });
+    safeLogError("PostToolUse", new Error("db fail"), { cwd, sessionId: "s1", paths });
 
     const testLogPath = join(tempDir, "events.log");
     expect(existsSync(testLogPath)).toBe(true);
@@ -74,13 +77,13 @@ describe("safeLogError", () => {
 
   it("circuit breaker: skips DB after first failure", () => {
     const badCwd = "/dev/null/impossible";
-    safeLogError("PostToolUse", new Error("first"), { cwd: badCwd });
+    safeLogError("PostToolUse", new Error("first"), { cwd: badCwd, paths });
 
     const goodCwd = join(tempDir, "project2");
-    safeLogError("PostToolUse", new Error("second"), { cwd: goodCwd });
+    safeLogError("PostToolUse", new Error("second"), { cwd: goodCwd, paths });
 
     // Good CWD should NOT have a DB entry because circuit is open
-    const dbPath = eventsDbPath(goodCwd);
+    const dbPath = eventsDbPath(goodCwd, paths);
     expect(existsSync(dbPath)).toBe(false);
   });
 
@@ -88,10 +91,10 @@ describe("safeLogError", () => {
     // Make file writes fail by setting LCM_LOG_PATH to an unwritable location
     const oldLogPath = process.env.LCM_LOG_PATH;
     process.env.LCM_LOG_PATH = "/dev/null/impossible/events.log";
-    
+
     try {
       expect(() => {
-        safeLogError("PostToolUse", new Error("total fail"), {});
+        safeLogError("PostToolUse", new Error("total fail"), { paths });
       }).not.toThrow();
     } finally {
       process.env.LCM_LOG_PATH = oldLogPath;

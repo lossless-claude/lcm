@@ -7,6 +7,10 @@ import { createDaemon, type DaemonInstance } from "../../../src/daemon/server.js
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { runLcmMigrations } from "../../../src/db/migration.js";
 import { projectDbPath } from "../../../src/daemon/project.js";
+import { lcmHome } from "../../../src/lcm-home.js";
+import { createLcmPaths } from "../../../src/lcm-paths.js";
+
+const paths = createLcmPaths(lcmHome());
 import { PromotedStore } from "../../../src/db/promoted.js";
 
 describe("POST /review-stale", () => {
@@ -23,7 +27,7 @@ describe("POST /review-stale", () => {
   });
 
   function seedStaleMemory(dir: string, content: string, daysOld: number): string {
-    const dbPath = projectDbPath(dir);
+    const dbPath = projectDbPath(dir, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
     const db = new DatabaseSync(dbPath);
     runLcmMigrations(db);

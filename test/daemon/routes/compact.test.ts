@@ -8,6 +8,10 @@ import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { projectDbPath, projectId } from "../../../src/daemon/project.js";
 import { runLcmMigrations } from "../../../src/db/migration.js";
 import { ConversationStore } from "../../../src/store/conversation-store.js";
+import { lcmHome } from "../../../src/lcm-home.js";
+import { createLcmPaths } from "../../../src/lcm-paths.js";
+
+const paths = createLcmPaths(lcmHome());
 
 // --- Summarizer branching unit tests ---
 
@@ -66,7 +70,7 @@ function makeConfig(provider: DaemonConfig["llm"]["provider"]): DaemonConfig {
 }
 
 async function readMessageCount(cwd: string, sessionId: string): Promise<number> {
-  const db = new DatabaseSync(projectDbPath(cwd));
+  const db = new DatabaseSync(projectDbPath(cwd, paths));
 
   try {
     const conversationStore = new ConversationStore(db);
@@ -78,7 +82,7 @@ async function readMessageCount(cwd: string, sessionId: string): Promise<number>
 }
 
 async function readMessageContents(cwd: string, sessionId: string): Promise<string[]> {
-  const db = new DatabaseSync(projectDbPath(cwd));
+  const db = new DatabaseSync(projectDbPath(cwd, paths));
 
   try {
     const conversationStore = new ConversationStore(db);
@@ -167,7 +171,7 @@ describe("createCompactHandler — summarizer branching", () => {
 
   it("uses createClaudeProcessSummarizer when provider is claude-process", async () => {
     vi.clearAllMocks();
-    const handler = createCompactHandler(makeConfig("claude-process"));
+    const handler = createCompactHandler(makeConfig("claude-process"), paths);
     const { res } = mockRes();
     await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd }));
     expect(createClaudeProcessSummarizer).toHaveBeenCalled();
@@ -176,7 +180,7 @@ describe("createCompactHandler — summarizer branching", () => {
 
   it("uses createCodexProcessSummarizer when provider is codex-process", async () => {
     vi.clearAllMocks();
-    const handler = createCompactHandler(makeConfig("codex-process"));
+    const handler = createCompactHandler(makeConfig("codex-process"), paths);
     const { res } = mockRes();
     await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd }));
     expect(createCodexProcessSummarizer).toHaveBeenCalledWith(expect.objectContaining({ model: "test-model" }));
@@ -185,7 +189,7 @@ describe("createCompactHandler — summarizer branching", () => {
 
   it("uses createAnthropicSummarizer when provider is anthropic", async () => {
     vi.clearAllMocks();
-    const handler = createCompactHandler(makeConfig("anthropic"));
+    const handler = createCompactHandler(makeConfig("anthropic"), paths);
     // Trigger the handler to resolve the lazy import
     const { res } = mockRes();
     await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd }));
@@ -195,7 +199,7 @@ describe("createCompactHandler — summarizer branching", () => {
 
   it("uses createOpenAISummarizer when provider is openai", async () => {
     vi.clearAllMocks();
-    const handler = createCompactHandler(makeConfig("openai"));
+    const handler = createCompactHandler(makeConfig("openai"), paths);
     const { res } = mockRes();
     await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd }));
     expect(createOpenAISummarizer).toHaveBeenCalledWith(
@@ -208,7 +212,7 @@ describe("createCompactHandler — summarizer branching", () => {
     vi.clearAllMocks();
     const config = makeConfig("openai");
     config.llm.reasoning = { effort: "minimal" };
-    const handler = createCompactHandler(config);
+    const handler = createCompactHandler(config, paths);
     const { res } = mockRes();
     await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd }));
     expect(createOpenAISummarizer).toHaveBeenCalledWith(
@@ -218,7 +222,7 @@ describe("createCompactHandler — summarizer branching", () => {
 
   it("returns no-op when provider is 'disabled' — no summarizer created", async () => {
     vi.clearAllMocks();
-    const handler = createCompactHandler(makeConfig("disabled"));
+    const handler = createCompactHandler(makeConfig("disabled"), paths);
     const { res, getBody } = mockRes();
     await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd }));
     expect(createClaudeProcessSummarizer).not.toHaveBeenCalled();
@@ -230,7 +234,7 @@ describe("createCompactHandler — summarizer branching", () => {
 
   it("auto + client=claude resolves to claude-process", async () => {
     vi.clearAllMocks();
-    const handler = createCompactHandler(makeConfig("auto"));
+    const handler = createCompactHandler(makeConfig("auto"), paths);
     const { res } = mockRes();
     await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd, client: "claude" }));
     expect(createClaudeProcessSummarizer).toHaveBeenCalled();
@@ -239,7 +243,7 @@ describe("createCompactHandler — summarizer branching", () => {
 
   it("auto + client=codex resolves to codex-process", async () => {
     vi.clearAllMocks();
-    const handler = createCompactHandler(makeConfig("auto"));
+    const handler = createCompactHandler(makeConfig("auto"), paths);
     const { res } = mockRes();
     await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd, client: "codex" }));
     expect(createCodexProcessSummarizer).toHaveBeenCalled();
@@ -248,7 +252,7 @@ describe("createCompactHandler — summarizer branching", () => {
 
   it("uses createCopilotProcessSummarizer when provider is copilot-process", async () => {
     vi.clearAllMocks();
-    const handler = createCompactHandler(makeConfig("copilot-process"));
+    const handler = createCompactHandler(makeConfig("copilot-process"), paths);
     const { res } = mockRes();
     await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd }));
 
@@ -258,7 +262,7 @@ describe("createCompactHandler — summarizer branching", () => {
 
   it("auto + client=copilot resolves to copilot-process", async () => {
     vi.clearAllMocks();
-    const handler = createCompactHandler(makeConfig("auto"));
+    const handler = createCompactHandler(makeConfig("auto"), paths);
     const { res } = mockRes();
     await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd, client: "copilot" }));
 
@@ -268,7 +272,7 @@ describe("createCompactHandler — summarizer branching", () => {
 
   it("auto + no client falls back to claude-process", async () => {
     vi.clearAllMocks();
-    const handler = createCompactHandler(makeConfig("auto"));
+    const handler = createCompactHandler(makeConfig("auto"), paths);
     const { res } = mockRes();
     await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd }));
     expect(createClaudeProcessSummarizer).toHaveBeenCalled();
@@ -277,7 +281,7 @@ describe("createCompactHandler — summarizer branching", () => {
 
   it("explicit provider ignores client override", async () => {
     vi.clearAllMocks();
-    const handler = createCompactHandler(makeConfig("openai"));
+    const handler = createCompactHandler(makeConfig("openai"), paths);
     const { res } = mockRes();
     await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd, client: "codex" }));
     expect(createOpenAISummarizer).toHaveBeenCalled();
@@ -287,7 +291,7 @@ describe("createCompactHandler — summarizer branching", () => {
 
   it("memoizes concrete providers across requests", async () => {
     vi.clearAllMocks();
-    const handler = createCompactHandler(makeConfig("auto"));
+    const handler = createCompactHandler(makeConfig("auto"), paths);
     const { res: res1 } = mockRes();
     const { res: res2 } = mockRes();
 
@@ -522,7 +526,7 @@ describe("POST /compact", () => {
 
     expect(res.status).toBe(200);
 
-    const db = new DatabaseSync(projectDbPath(tempDir));
+    const db = new DatabaseSync(projectDbPath(tempDir, paths));
     try {
       const rows = db.prepare(
         "SELECT category, count FROM redaction_stats ORDER BY category"
@@ -621,7 +625,7 @@ describe("POST /compact — scrub redaction during transcript ingestion", () => 
     expect(userMsg).not.toContain(secret);
 
     // Verify redaction_stats table was updated
-    const db = new DatabaseSync(projectDbPath(tempDir));
+    const db = new DatabaseSync(projectDbPath(tempDir, paths));
     try {
       runLcmMigrations(db);
       const pid = projectId(tempDir);

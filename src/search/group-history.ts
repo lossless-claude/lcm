@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { closeLcmConnection } from "../db/connection.js";
 import { projectDbPath } from "../daemon/project.js";
 import { projectGroup, projectRef } from "../daemon/project-group.js";
+import type { LcmPaths } from "../lcm-paths.js";
 import { openMigrated } from "./migrated-connection.js";
 import { searchNativeHistory, type NativeHistoryHit } from "./native-history.js";
 
@@ -44,11 +45,12 @@ function fuseByReciprocalRank(lists: NativeHistoryHit[][], limit: number): Nativ
 export async function searchHistoryGroup(
   cwd: string,
   input: { query: string; limit: number },
+  paths: LcmPaths,
 ): Promise<NativeHistoryHit[]> {
   const lists: NativeHistoryHit[][] = [];
 
-  for (const member of projectGroup(cwd)) {
-    const dbPath = projectDbPath(member.cwd);
+  for (const member of projectGroup(cwd, paths)) {
+    const dbPath = projectDbPath(member.cwd, paths);
     if (!existsSync(dbPath)) continue;
     const db = openMigrated(dbPath);
     try {

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "../config.js";
+import type { LcmPaths } from "../../lcm-paths.js";
 import { projectDbPath } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
@@ -13,7 +14,7 @@ import { ExpansionOrchestrator } from "../../expansion.js";
 import { validateCwd } from "../validate-cwd.js";
 import { resolveSourceCwd } from "../project-group.js";
 
-export function createExpandHandler(_config: DaemonConfig): RouteHandler {
+export function createExpandHandler(_config: DaemonConfig, paths: LcmPaths): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
     const { nodeId, depth = 1 } = input;
@@ -33,7 +34,7 @@ export function createExpandHandler(_config: DaemonConfig): RouteHandler {
       }
     }
 
-    if (!cwd || !existsSync(projectDbPath(cwd))) {
+    if (!cwd || !existsSync(projectDbPath(cwd, paths))) {
       sendJson(res, 200, { expanded: null, error: "project not found" });
       return;
     }
@@ -41,14 +42,14 @@ export function createExpandHandler(_config: DaemonConfig): RouteHandler {
     // A search result carries the project it was read from. Ids are
     // AUTOINCREMENT per database, so expanding one against the request's own
     // project would silently return a different node.
-    const source = resolveSourceCwd(cwd, input.projectId);
+    const source = resolveSourceCwd(cwd, input.projectId, paths);
     if (!source) {
       sendJson(res, 200, { expanded: null, error: "project not in group" });
       return;
     }
 
     try {
-      const dbPath = projectDbPath(source);
+      const dbPath = projectDbPath(source, paths);
       mkdirSync(dirname(dbPath), { recursive: true });
       const db = new DatabaseSync(dbPath);
       runLcmMigrations(db);

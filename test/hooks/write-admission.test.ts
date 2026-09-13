@@ -9,16 +9,19 @@ import { clearHold, writeHold } from "../../src/daemon/hold.js";
 import { recordPostToolEvents } from "../../src/hooks/post-tool.js";
 import { recordUserPromptEvents } from "../../src/hooks/user-prompt.js";
 import { safeLogError, _resetCircuitBreaker } from "../../src/hooks/hook-errors.js";
+import { createLcmPaths, type LcmPaths } from "../../src/lcm-paths.js";
 
 vi.mock("../../src/db/events-path.js", () => ({
   eventsDbPath: () => join(process.env.LCM_HOME!, "events", "test.db"),
 }));
 
 let root: string;
+let paths: LcmPaths;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "lcm-hook-admission-"));
   vi.stubEnv("LCM_HOME", root);
   vi.stubEnv("LCM_LOG_PATH", join(root, "events.log"));
+  paths = createLcmPaths(root);
   _resetCircuitBreaker();
 });
 afterEach(() => { vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); });
@@ -28,15 +31,15 @@ const payload = { session_id: "test", cwd: "/project", tool_name: "AskUserQuesti
 
 it("blocks every direct hook sidecar writer and error-log fallback while held", async () => {
   writeHold(join(root, "daemon.pid"));
-  expect(recordPostToolEvents(payload).recorded).toBe(0);
-  expect(await recordUserPromptEvents("Always use TypeScript", "test", "/project")).toBe(0);
-  safeLogError("PostToolUse", new Error("held"), { cwd: "/project" });
-  safeLogError("PostToolUse", new Error("held fallback"), {});
+  expect(recordPostToolEvents(payload, paths).recorded).toBe(0);
+  expect(await recordUserPromptEvents("Always use TypeScript", "test", "/project", paths)).toBe(0);
+  safeLogError("PostToolUse", new Error("held"), { cwd: "/project", paths });
+  safeLogError("PostToolUse", new Error("held fallback"), { paths });
   expect(readdirSync(root)).toEqual(["daemon.hold"]);
   clearHold(join(root, "daemon.pid"));
-  expect(recordPostToolEvents(payload).recorded).toBeGreaterThan(0);
-  expect(await recordUserPromptEvents("Always use TypeScript", "test", "/project")).toBeGreaterThan(0);
-  safeLogError("PostToolUse", new Error("resumed fallback"), {});
+  expect(recordPostToolEvents(payload, paths).recorded).toBeGreaterThan(0);
+  expect(await recordUserPromptEvents("Always use TypeScript", "test", "/project", paths)).toBeGreaterThan(0);
+  safeLogError("PostToolUse", new Error("resumed fallback"), { paths });
   expect(existsSync(join(root, "events.log"))).toBe(true);
   expect(readdirSync(root).some((name) => name.startsWith("daemon.starting."))).toBe(false);
 });
@@ -54,18 +57,22 @@ it("held stop drains a command-hook write already inside SQLite before succeedin
   writeFileSync(join(root, "config.json"), JSON.stringify({ daemon: { port: 1 } }));
   const script = join(root, "writer.mjs");
   const moduleUrl = (file: string) => JSON.stringify(pathToFileURL(resolve("dist/src/hooks", file)).href);
+  const rootModuleUrl = (file: string) => JSON.stringify(pathToFileURL(resolve("dist/src", file)).href);
   writeFileSync(script, `
     import fs from 'node:fs';
     import { EventsDb } from ${moduleUrl("events-db.js")};
     import { recordPostToolEvents } from ${moduleUrl("post-tool.js")};
+    import { lcmHome } from ${rootModuleUrl("lcm-home.js")};
+    import { createLcmPaths } from ${rootModuleUrl("lcm-paths.js")};
     const root = process.env.LCM_HOME;
+    const paths = createLcmPaths(lcmHome());
     const insert = EventsDb.prototype.insertToolCallEvents;
     EventsDb.prototype.insertToolCallEvents = function(...args) {
       fs.writeFileSync(root + '/ready', '');
       while (!fs.existsSync(root + '/resume')) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
       return insert.apply(this, args);
     };
-    console.log(recordPostToolEvents(${JSON.stringify(payload)}).recorded);
+    console.log(recordPostToolEvents(${JSON.stringify(payload)}, paths).recorded);
   `);
   const env = { ...process.env, HOME: root, LCM_HOME: root };
   const writer = execute(process.execPath, [script], { env, timeout: 15000 });

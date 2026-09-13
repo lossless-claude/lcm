@@ -2,7 +2,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { lcmHome, lcmPath } from "../src/lcm-home.js";
+import { lcmHome } from "../src/lcm-home.js";
 
 const DEFAULT = join(homedir(), ".lossless-claude");
 
@@ -28,22 +28,5 @@ describe("lcmHome", () => {
     expect(lcmHome()).toBe("/tmp/sandbox");
     delete process.env.LCM_HOME;
     expect(lcmHome()).toBe(DEFAULT);
-  });
-});
-
-describe("lcmPath", () => {
-  it("joins segments onto the lcm home", () => {
-    expect(lcmPath("daemon.token")).toBe(join(DEFAULT, "daemon.token"));
-    expect(lcmPath("projects", "abc", "db.sqlite"))
-      .toBe(join(DEFAULT, "projects", "abc", "db.sqlite"));
-  });
-
-  it("follows the override", () => {
-    process.env.LCM_HOME = "/tmp/sandbox";
-    expect(lcmPath("config.json")).toBe("/tmp/sandbox/config.json");
-  });
-
-  it("returns the home itself with no segments", () => {
-    expect(lcmPath()).toBe(DEFAULT);
   });
 });

@@ -1,24 +1,23 @@
 // test/db/events-stats.test.ts
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-
-let mockEventsDir: string;
-vi.mock("../../src/db/events-path.js", () => ({
-  eventsDir: () => mockEventsDir,
-}));
+import { createLcmPaths, type LcmPaths } from "../../src/lcm-paths.js";
 
 import { collectEventStats, collectDetailedEventStats } from "../../src/db/events-stats.js";
 import { EventsDb } from "../../src/hooks/events-db.js";
 
 describe("collectEventStats", () => {
   let tempDir: string;
+  let paths: LcmPaths;
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), "events-stats-test-"));
-    mockEventsDir = tempDir;
+    // The functions read only `paths.eventsDir`; pointing it straight at the temp
+    // dir avoids also creating the sibling `events/` directory a real home would have.
+    paths = { ...createLcmPaths(tempDir), eventsDir: tempDir };
   });
 
   afterEach(() => {
@@ -26,7 +25,7 @@ describe("collectEventStats", () => {
   });
 
   it("returns zeros when no sidecar DBs exist", () => {
-    const stats = collectEventStats();
+    const stats = collectEventStats(paths);
     expect(stats.captured).toBe(0);
     expect(stats.unprocessed).toBe(0);
     expect(stats.errors).toBe(0);
@@ -44,13 +43,13 @@ describe("collectEventStats", () => {
     db2.insertEvent("s2", { type: "git", category: "workflow", data: "g1", priority: 2 }, "PostToolUse");
     db2.close();
 
-    const stats = collectEventStats();
+    const stats = collectEventStats(paths);
     expect(stats.captured).toBe(3);
     expect(stats.unprocessed).toBe(3);
     expect(stats.errors).toBe(1);
     expect(stats.scanned).toBe(2);
     expect(stats.total).toBe(2);
-    const detailed = collectDetailedEventStats();
+    const detailed = collectDetailedEventStats(paths);
     expect(detailed).toMatchObject(stats);
     expect(detailed.projects).toHaveLength(2);
     expect(detailed.recentErrors).toEqual([expect.objectContaining({ hook: "PostToolUse", error: "err1" })]);
@@ -69,7 +68,7 @@ describe("collectEventStats", () => {
     const schema = db.prepare("SELECT sql FROM sqlite_master ORDER BY name").all();
     db.close();
     const before = readFileSync(path);
-    expect(collect()).toMatchObject({ captured: 1, unprocessed: 1, errors: 1, scanned: 1, total: 1 });
+    expect(collect(paths)).toMatchObject({ captured: 1, unprocessed: 1, errors: 1, scanned: 1, total: 1 });
     expect(readFileSync(path)).toEqual(before);
     expect(readdirSync(tempDir)).toEqual(["legacy.db"]);
     const inspect = new DatabaseSync(path, { readOnly: true });
@@ -106,7 +105,7 @@ describe("collectEventStats", () => {
     const schema = db.prepare("SELECT sql FROM sqlite_master ORDER BY name").all();
     db.close();
     const before = readFileSync(path);
-    const stats = collect();
+    const stats = collect(paths);
     expect(stats).toMatchObject({
       captured: 2, unprocessed: 1, errors: 0, lastCapture: "2026-01-02 03:04:05", scanned: 1, total: 1,
     });
@@ -129,7 +128,7 @@ describe("collectEventStats", () => {
     const { writeFileSync } = require("node:fs");
     writeFileSync(join(tempDir, "not-a-db.txt"), "hello");
 
-    const stats = collectEventStats();
+    const stats = collectEventStats(paths);
     expect(stats.captured).toBe(0);
   });
 
@@ -137,12 +136,12 @@ describe("collectEventStats", () => {
     const { writeFileSync } = require("node:fs");
     writeFileSync(join(tempDir, "corrupt.db"), "not a sqlite database");
 
-    const stats = collectEventStats();
+    const stats = collectEventStats(paths);
     expect(stats.captured).toBe(0);
   });
 
   it("respects timeout budget", () => {
-    const stats = collectEventStats(0);
+    const stats = collectEventStats(paths, 0);
     expect(stats.captured).toBe(0);
   });
 });

@@ -5,8 +5,9 @@ import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { validateCwd } from "../validate-cwd.js";
+import type { LcmPaths } from "../../lcm-paths.js";
 
-export function createSessionCompleteHandler(): RouteHandler {
+export function createSessionCompleteHandler(paths: LcmPaths): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
     const { session_id, message_count } = input;
@@ -21,8 +22,8 @@ export function createSessionCompleteHandler(): RouteHandler {
       sendJson(res, 400, { error: err instanceof Error ? err.message : "invalid cwd" });
       return;
     }
-    openProject(cwd);
-    const db = new DatabaseSync(projectDbPath(cwd));
+    openProject(cwd, paths);
+    const db = new DatabaseSync(projectDbPath(cwd, paths));
     try {
       db.exec("PRAGMA busy_timeout = 5000");
       runLcmMigrations(db);

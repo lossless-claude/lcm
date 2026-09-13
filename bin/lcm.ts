@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import { realpathSync } from "node:fs";
 import { argv, exit, stdout } from "node:process";
-import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { DaemonClient } from "../src/daemon/client.js";
-import { lcmHome, lcmPath } from "../src/lcm-home.js";
+import { lcmHome } from "../src/lcm-home.js";
+import { createLcmPaths } from "../src/lcm-paths.js";
 import { registerMemoryCommands } from "../src/cli/memory.js";
 import { registerBenchCommands } from "../src/cli/bench.js";
 import { registerConnectorsCommands } from "../src/cli/connectors.js";
@@ -37,7 +37,7 @@ let cliDaemonActivity: (() => void) | undefined;
 async function admitCliDatabaseWork(): Promise<void> {
   const { registerDaemonActivity } = await import("../src/daemon/lifecycle.js");
   const { readHold } = await import("../src/daemon/hold.js");
-  const pidFilePath = lcmPath("daemon.pid");
+  const pidFilePath = createLcmPaths(lcmHome()).pidPath;
   // Admission covers the whole CLI operation, including offline migrations and
   // replay writes. Exit cleanup also covers explicit exits and action failures.
   if (!cliDaemonActivity) {
@@ -56,11 +56,11 @@ async function createDaemonClientOrExit(spawnTimeoutMs = 5000): Promise<DaemonCl
   const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
   const { loadDaemonConfig } = await import("../src/daemon/config.js");
 
-  const config = loadDaemonConfig(lcmPath("config.json"));
+  const paths = createLcmPaths(lcmHome());
+  const config = loadDaemonConfig(paths.configPath);
   const port = config.daemon?.port ?? 3737;
-  const lcDir = lcmHome();
-  const pidFilePath = join(lcDir, "daemon.pid");
-  const tokenPath = join(lcDir, "daemon.token");
+  const pidFilePath = paths.pidPath;
+  const tokenPath = paths.tokenPath;
   const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs });
 
   if (!connected) {

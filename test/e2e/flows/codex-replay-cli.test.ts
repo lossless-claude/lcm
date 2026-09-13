@@ -18,6 +18,10 @@ import {
 } from "../harness.js";
 import { findUncompacted } from "../../../src/batch-compact.js";
 import { projectDir, projectId } from "../../../src/daemon/project.js";
+import { lcmHome } from "../../../src/lcm-home.js";
+import { createLcmPaths } from "../../../src/lcm-paths.js";
+
+const paths = createLcmPaths(lcmHome());
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const cli = join(root, "dist/bin/lcm.js");
@@ -101,7 +105,7 @@ beforeAll(async () => {
     JSON.stringify({ daemon: { port: harness.daemonPort } }),
   );
   const fakeProjects = join(configDir, "projects");
-  const daemonProject = projectDir(projectCwd);
+  const daemonProject = projectDir(projectCwd, paths);
   mkdirSync(fakeProjects, { recursive: true });
   mkdirSync(daemonProject, { recursive: true });
   symlinkSync(daemonProject, join(fakeProjects, projectId(projectCwd)), "dir");

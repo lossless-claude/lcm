@@ -5,6 +5,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDaemon, type DaemonInstance } from "../../../src/daemon/server.js";
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { claudeTranscriptPath, projectDbPath } from "../../../src/daemon/project.js";
+import { lcmHome } from "../../../src/lcm-home.js";
+import { createLcmPaths } from "../../../src/lcm-paths.js";
+
+const paths = createLcmPaths(lcmHome());
 import { DatabaseSync } from "node:sqlite";
 
 const tempDirs: string[] = [];
@@ -72,7 +76,7 @@ describe("POST /ingest discovers subagent transcripts (#434)", () => {
     daemon = await createDaemon(loadDaemonConfig("/nonexistent", { daemon: { port: 0 } }));
     await ingest(sessionId);
 
-    const db = new DatabaseSync(projectDbPath(cwd), { readOnly: true });
+    const db = new DatabaseSync(projectDbPath(cwd, paths), { readOnly: true });
     try {
       const conversations = db.prepare(
         "SELECT session_id, parent_session_id, subagent_type, subagent_desc FROM conversations ORDER BY session_id",
@@ -99,7 +103,7 @@ describe("POST /ingest discovers subagent transcripts (#434)", () => {
     await ingest(sessionId);
     await ingest(sessionId);
 
-    const db = new DatabaseSync(projectDbPath(cwd), { readOnly: true });
+    const db = new DatabaseSync(projectDbPath(cwd, paths), { readOnly: true });
     try {
       const count = db.prepare(
         "SELECT COUNT(*) as n FROM messages m JOIN conversations c ON c.conversation_id = m.conversation_id WHERE c.session_id = 'agent-sub1'",
@@ -120,7 +124,7 @@ describe("POST /ingest discovers subagent transcripts (#434)", () => {
     writeTranscript(subagentPath, [entry("user", "do the task"), entry("assistant", "done")]);
     await ingest(sessionId);
 
-    const db = new DatabaseSync(projectDbPath(cwd), { readOnly: true });
+    const db = new DatabaseSync(projectDbPath(cwd, paths), { readOnly: true });
     try {
       const rows = db.prepare(
         "SELECT role, content FROM messages m JOIN conversations c ON c.conversation_id = m.conversation_id WHERE c.session_id = 'agent-sub1' ORDER BY seq",
@@ -138,7 +142,7 @@ describe("POST /ingest discovers subagent transcripts (#434)", () => {
     const result = await ingest(sessionId);
     expect(result.ingested).toBe(2);
 
-    const db = new DatabaseSync(projectDbPath(cwd), { readOnly: true });
+    const db = new DatabaseSync(projectDbPath(cwd, paths), { readOnly: true });
     try {
       const conversations = db.prepare("SELECT session_id FROM conversations").all();
       expect(conversations).toEqual([{ session_id: sessionId }]);
@@ -156,7 +160,7 @@ describe("POST /ingest discovers subagent transcripts (#434)", () => {
     daemon = await createDaemon(loadDaemonConfig("/nonexistent", { daemon: { port: 0 } }));
     await ingest(sessionId);
 
-    const db = new DatabaseSync(projectDbPath(cwd), { readOnly: true });
+    const db = new DatabaseSync(projectDbPath(cwd, paths), { readOnly: true });
     try {
       const row = db.prepare(
         "SELECT parent_session_id, subagent_type, subagent_desc FROM conversations WHERE session_id = 'agent-sub1'",

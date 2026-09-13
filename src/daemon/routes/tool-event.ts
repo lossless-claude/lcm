@@ -4,6 +4,7 @@ import { recordPostToolEvents } from "../../hooks/post-tool.js";
 import { createPromoteEventsHandler } from "./promote-events.js";
 import { safeLogError } from "../../hooks/hook-errors.js";
 import type { DaemonConfig } from "../config.js";
+import type { LcmPaths } from "../../lcm-paths.js";
 
 /**
  * POST /tool-event — the function-hooks module's replacement for the PostToolUse and
@@ -11,8 +12,8 @@ import type { DaemonConfig } from "../config.js";
  * the tool call to the daemon and this route writes the events the command hook would
  * have written itself. Body: the PostToolUse payload plus `cwd`.
  */
-export function createToolEventHandler(config: DaemonConfig): RouteHandler {
-  const promoteEvents = createPromoteEventsHandler(config);
+export function createToolEventHandler(config: DaemonConfig, paths: LcmPaths): RouteHandler {
+  const promoteEvents = createPromoteEventsHandler(config, paths);
 
   return async (_req, res, body) => {
     let input: Record<string, unknown>;
@@ -43,7 +44,7 @@ export function createToolEventHandler(config: DaemonConfig): RouteHandler {
       // recordPostToolEvents owns the dedup key's validation, so both paths drop a
       // non-string the same way instead of writing a row that matches nothing.
       tool_use_id: input.tool_use_id as string | undefined,
-    });
+    }, paths);
     sendJson(res, 200, { recorded: outcome.recorded, promoted: outcome.hasPriority1 });
 
     // Same tier-1 rule as the command hook: a priority-1 event is promoted now, not at
@@ -51,7 +52,7 @@ export function createToolEventHandler(config: DaemonConfig): RouteHandler {
     if (outcome.hasPriority1) {
       const sink = { writeHead: () => {}, end: () => {} } as unknown as Parameters<RouteHandler>[1];
       promoteEvents({} as Parameters<RouteHandler>[0], sink, JSON.stringify({ cwd }))
-        .catch(err => safeLogError("tool-event", err, { cwd }));
+        .catch(err => safeLogError("tool-event", err, { cwd, paths }));
     }
   };
 }

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "./config.js";
+import type { LcmPaths } from "../lcm-paths.js";
 import { projectMetaPath } from "./project.js";
 import { createSummarizer, resolveEffectiveProvider } from "./summarizer.js";
 import { detectLanguage, sampleHumanTurns, LANGUAGE_SAMPLE_SIZE } from "../search/language.js";
@@ -41,9 +42,9 @@ function summarizerUnavailable(config: DaemonConfig): boolean {
  * schedule detection for after the response. Returns the pending work so a
  * test can await it; production callers drop the promise.
  */
-export function scheduleProjectLanguageDetection(cwd: string, db: DatabaseSync, config: DaemonConfig): Promise<void> {
+export function scheduleProjectLanguageDetection(cwd: string, db: DatabaseSync, config: DaemonConfig, paths: LcmPaths): Promise<void> {
   if (summarizerUnavailable(config)) return Promise.resolve();
-  const metaPath = projectMetaPath(cwd);
+  const metaPath = projectMetaPath(cwd, paths);
   if (inFlight.has(metaPath) || failed.has(metaPath)) return Promise.resolve();
   if (typeof readMeta(metaPath).language === "string") return Promise.resolve();
   const turns = sampleHumanTurns(db);

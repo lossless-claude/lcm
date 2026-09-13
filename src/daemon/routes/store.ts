@@ -5,6 +5,7 @@ import { projectDbPath, projectDir } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import type { DaemonConfig } from "../config.js";
+import type { LcmPaths } from "../../lcm-paths.js";
 import { sanitizeError } from "../safe-error.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { PromotedStore } from "../../db/promoted.js";
@@ -38,7 +39,7 @@ async function getScrubEngine(config: DaemonConfig, projDir: string): Promise<Sc
   return engine;
 }
 
-export function createStoreHandler(config: DaemonConfig): RouteHandler {
+export function createStoreHandler(config: DaemonConfig, paths: LcmPaths): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
     const { text, tags = [], metadata = {} } = input;
@@ -62,10 +63,10 @@ export function createStoreHandler(config: DaemonConfig): RouteHandler {
       return;
     }
 
-    const scrubber = await getScrubEngine(config, projectDir(projectPath));
+    const scrubber = await getScrubEngine(config, projectDir(projectPath, paths));
     const scrubbedText = scrubber.scrub(text);
 
-    const dbPath = projectDbPath(projectPath);
+    const dbPath = projectDbPath(projectPath, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
     const db = new DatabaseSync(dbPath);
     try {

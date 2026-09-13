@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { createLcmPaths, type LcmPaths } from "../../src/lcm-paths.js";
+import { lcmHome } from "../../src/lcm-home.js";
 import type { SnapshotDeps } from "../../src/hooks/session-snapshot.js";
+
+const paths: LcmPaths = createLcmPaths(lcmHome());
 
 function makeDeps(overrides: Partial<SnapshotDeps> = {}): SnapshotDeps {
   return {
@@ -22,7 +26,7 @@ describe("handleSessionSnapshot", () => {
       const { handleSessionSnapshot } = await import("../../src/hooks/session-snapshot.js");
       const result = await handleSessionSnapshot(
         JSON.stringify({ session_id: "abc-123", cwd: "/tmp/test", transcript_path: "/tmp/session.jsonl" }),
-        deps,
+        paths, deps,
       );
       expect(result).toEqual({ exitCode: 0, stdout: "" });
       expect(deps.post).not.toHaveBeenCalled();
@@ -40,7 +44,7 @@ describe("handleSessionSnapshot", () => {
       const { handleSessionSnapshot } = await import("../../src/hooks/session-snapshot.js");
       await handleSessionSnapshot(
         JSON.stringify({ session_id: "unclaimed-1", cwd: "/tmp/test", transcript_path: "/tmp/session.jsonl" }),
-        deps,
+        paths, deps,
       );
       expect(deps.post).toHaveBeenCalled();
     } finally {
@@ -55,7 +59,7 @@ describe("handleSessionSnapshot", () => {
     const { handleSessionSnapshot } = await import("../../src/hooks/session-snapshot.js");
     const result = await handleSessionSnapshot(
       JSON.stringify({ session_id: "abc-123", cwd: "/tmp/test", transcript_path: "/tmp/session.jsonl" }),
-      deps,
+      paths, deps,
     );
     expect(result.exitCode).toBe(0);
     expect(deps.post).toHaveBeenCalledWith("/ingest", {
@@ -73,7 +77,7 @@ describe("handleSessionSnapshot", () => {
     const { handleSessionSnapshot } = await import("../../src/hooks/session-snapshot.js");
     const result = await handleSessionSnapshot(
       JSON.stringify({ session_id: "abc-123", cwd: "/tmp/test", transcript_path: "/tmp/session.jsonl" }),
-      deps,
+      paths, deps,
     );
     expect(result.exitCode).toBe(0);
     expect(deps.post).not.toHaveBeenCalled();
@@ -86,7 +90,7 @@ describe("handleSessionSnapshot", () => {
     const { handleSessionSnapshot } = await import("../../src/hooks/session-snapshot.js");
     const result = await handleSessionSnapshot(
       JSON.stringify({ session_id: "abc-123", cwd: "/tmp/test", transcript_path: "/tmp/session.jsonl" }),
-      deps,
+      paths, deps,
     );
     expect(result.exitCode).toBe(0);
     expect(deps.post).toHaveBeenCalled();
@@ -100,7 +104,7 @@ describe("handleSessionSnapshot", () => {
     const { handleSessionSnapshot } = await import("../../src/hooks/session-snapshot.js");
     const result = await handleSessionSnapshot(
       JSON.stringify({ session_id: "abc-123", cwd: "/tmp/test", transcript_path: "/tmp/session.jsonl" }),
-      deps,
+      paths, deps,
     );
     expect(result.exitCode).toBe(0);
   });

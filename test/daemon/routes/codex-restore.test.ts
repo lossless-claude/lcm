@@ -6,6 +6,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { projectDbPath } from "../../../src/daemon/project.js";
 import { createDaemon, type DaemonInstance } from "../../../src/daemon/server.js";
+import { lcmHome } from "../../../src/lcm-home.js";
+import { createLcmPaths } from "../../../src/lcm-paths.js";
+
+const paths = createLcmPaths(lcmHome());
 import { runLcmMigrations } from "../../../src/db/migration.js";
 import { PromotedStore } from "../../../src/db/promoted.js";
 import { ConversationStore } from "../../../src/store/conversation-store.js";
@@ -21,7 +25,7 @@ async function seedConversation(input: {
   summaryCreatedAt?: string;
   messages?: Array<{ role: "user" | "assistant"; content: string; createdAt?: string }>;
 }): Promise<void> {
-  const dbPath = projectDbPath(input.cwd);
+  const dbPath = projectDbPath(input.cwd, paths);
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
   try {
@@ -76,7 +80,7 @@ describe("POST /restore for Codex", () => {
 
   function makeProject(): string {
     const cwd = mkdtempSync(join(tmpdir(), "codex-restore-test-"));
-    tempProjects.push({ cwd, dbDir: dirname(projectDbPath(cwd)) });
+    tempProjects.push({ cwd, dbDir: dirname(projectDbPath(cwd, paths)) });
     return cwd;
   }
 
@@ -240,7 +244,7 @@ describe("POST /restore for Codex", () => {
       sessionId: "codex-no-claude",
       messages: [{ role: "user", content: "Codex-owned context remains available." }],
     });
-    const dbPath = projectDbPath(cwd);
+    const dbPath = projectDbPath(cwd, paths);
     const db = new DatabaseSync(dbPath);
     db.prepare(
       `INSERT INTO session_instructions (id, content, content_hash, updated_at)
@@ -294,7 +298,7 @@ describe("POST /restore for Codex", () => {
       summary: "RECENT SUMMARY SHOULD STAY DISABLED",
       messages: [{ role: "user", content: "RECENT MESSAGE SHOULD STAY DISABLED" }],
     });
-    const db = new DatabaseSync(projectDbPath(cwd));
+    const db = new DatabaseSync(projectDbPath(cwd, paths));
     try {
       new PromotedStore(db).insert({
         content: "Project context: durable project knowledge remains enabled.",

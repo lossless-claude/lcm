@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
+import type { LcmPaths } from "../../lcm-paths.js";
 import { projectId, projectDbPath, projectDir, projectMetaPath, isSafeTranscriptPath } from "../project.js";
 import { openProject } from "../project-group.js";
 import { enqueue } from "../project-queue.js";
@@ -181,7 +182,7 @@ export function recordCompactLlmUsage(db: DatabaseSync, usage: CompactLlmUsage):
 }
 
 
-export function createCompactHandler(config: DaemonConfig, jobs?: SummarizeJobStore): RouteHandler {
+export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs?: SummarizeJobStore): RouteHandler {
   const summarizerCache = new Map<EffectiveProvider, Promise<LcmSummarizeFn | null>>();
 
   const getSummarizer = (provider: EffectiveProvider): Promise<LcmSummarizeFn | null> => {
@@ -251,14 +252,14 @@ export function createCompactHandler(config: DaemonConfig, jobs?: SummarizeJobSt
       }
       const pid = projectId(cwd);
       const result = await enqueue(pid, async () => {
-        const dbPath = projectDbPath(cwd);
-        openProject(cwd);
+        const dbPath = projectDbPath(cwd, paths);
+        openProject(cwd, paths);
         const llmUsage = createCompactLlmUsage(effectiveProvider, config.llm.model);
         const usageByProvider = new Map<string, CompactLlmUsage>();
 
         const scrubber = await ScrubEngine.forProject(
           config.security?.sensitivePatterns ?? [],
-          projectDir(cwd),
+          projectDir(cwd, paths),
         );
 
         const db = getLcmConnection(dbPath);
@@ -296,7 +297,7 @@ export function createCompactHandler(config: DaemonConfig, jobs?: SummarizeJobSt
                 upsertRedactionCounts(db, pid, ingestCounts);
                 await summaryStore.appendContextMessages(conversation.conversationId, records.map((r) => r.messageId));
               });
-              void scheduleProjectLanguageDetection(cwd, db, config);
+              void scheduleProjectLanguageDetection(cwd, db, config, paths);
             }
           }
 
@@ -400,7 +401,7 @@ export function createCompactHandler(config: DaemonConfig, jobs?: SummarizeJobSt
 
           // Update meta.json
           try {
-            const metaPath = projectMetaPath(cwd);
+            const metaPath = projectMetaPath(cwd, paths);
             let meta: Record<string, unknown> = {};
             if (existsSync(metaPath)) {
               meta = JSON.parse(readFileSync(metaPath, "utf-8"));

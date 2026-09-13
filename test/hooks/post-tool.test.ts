@@ -4,6 +4,7 @@ import { handlePostToolUse } from "../../src/hooks/post-tool.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { createLcmPaths, type LcmPaths } from "../../src/lcm-paths.js";
 
 // Mock eventsDbPath to use temp directory
 vi.mock("../../src/daemon/config.js", () => ({
@@ -21,10 +22,12 @@ vi.mock("../../src/db/events-path.js", () => ({
 
 describe("handlePostToolUse", () => {
   let dir: string;
+  let paths: LcmPaths;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "post-tool-test-"));
     process.env.TEST_EVENTS_DIR = dir;
+    paths = createLcmPaths(dir);
   });
 
   afterEach(() => {
@@ -39,7 +42,7 @@ describe("handlePostToolUse", () => {
       tool_input: { question: "Use SQLite?" },
       tool_response: "yes",
     });
-    const result = await handlePostToolUse(stdin);
+    const result = await handlePostToolUse(stdin, paths);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("");
   });
@@ -50,7 +53,7 @@ describe("handlePostToolUse", () => {
       tool_name: "Read",
       tool_input: { file_path: "/some/file.ts" },
     });
-    const result = await handlePostToolUse(stdin);
+    const result = await handlePostToolUse(stdin, paths);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("");
   });
@@ -66,7 +69,7 @@ describe("handlePostToolUse", () => {
         session_id: "test-session", tool_name: "Bash", tool_input: { command: "npm test" },
         hook_event_name: "PostToolUseFailure", error: "Exit code 1",
       });
-      expect(await handlePostToolUse(stdin)).toEqual({ exitCode: 0, stdout: "" });
+      expect(await handlePostToolUse(stdin, paths)).toEqual({ exitCode: 0, stdout: "" });
       expect(firePromoteEventsRequest).not.toHaveBeenCalled();
       const { existsSync } = await import("node:fs");
       expect(existsSync(join(dir, "test.db"))).toBe(false);
@@ -83,7 +86,7 @@ describe("handlePostToolUse", () => {
         session_id: "unclaimed-session", tool_name: "Bash", tool_input: { command: "npm test" },
         hook_event_name: "PostToolUseFailure", error: "Exit code 1",
       });
-      expect(await handlePostToolUse(stdin)).toEqual({ exitCode: 0, stdout: "" });
+      expect(await handlePostToolUse(stdin, paths)).toEqual({ exitCode: 0, stdout: "" });
       const { existsSync } = await import("node:fs");
       expect(existsSync(join(dir, "test.db"))).toBe(true);
     } finally {
@@ -102,7 +105,7 @@ describe("handlePostToolUse", () => {
       tool_name: "Read",
       tool_input: { file_path: "/project/.env" },
     });
-    const result = await handlePostToolUse(stdin);
+    const result = await handlePostToolUse(stdin, paths);
     expect(result.exitCode).toBe(0);
   });
 
@@ -113,8 +116,8 @@ describe("handlePostToolUse", () => {
       tool_name: "AskUserQuestion",
       tool_input: { questions: [{ question: "Which db?" }] },
       tool_response: "postgres",
-    }));
-    expect(firePromoteEventsRequest).toHaveBeenCalledWith(4242, expect.objectContaining({ cwd: expect.any(String) }));
+    }), paths);
+    expect(firePromoteEventsRequest).toHaveBeenCalledWith(4242, expect.objectContaining({ cwd: expect.any(String) }), expect.anything());
   });
 
   it("labels PostToolUseFailure events with their real source hook", async () => {
@@ -124,7 +127,7 @@ describe("handlePostToolUse", () => {
       tool_name: "Bash",
       tool_input: { command: "npm test" },
       error: "Exit code 1\nboom",
-    }));
+    }), paths);
     const { EventsDb } = await import("../../src/hooks/events-db.js");
     const db = new EventsDb(join(dir, "test.db"));
     try {

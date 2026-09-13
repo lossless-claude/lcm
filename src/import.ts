@@ -7,7 +7,8 @@ import { formatNumber, formatRatio } from "./stats.js";
 import { findAllCodexTranscripts } from "./codex-transcript.js";
 import type { ProgressState } from "./cli/progress-state.js";
 import { projectDbPath, projectId } from "./daemon/project.js";
-import { defaultLcmPaths } from "./lcm-paths.js";
+import { lcmHome } from "./lcm-home.js";
+import { createLcmPaths } from "./lcm-paths.js";
 import { readSubagentAttribution } from "./subagent-attribution.js";
 import {
   appendReplayManifestSessions,
@@ -80,7 +81,7 @@ export function cwdToProjectHash(cwd: string): string {
 }
 
 function buildProjectMap(lcmDir?: string): Map<string, string> {
-  const lcmProjectsDir = lcmDir ? join(lcmDir, 'projects') : defaultLcmPaths.projectsDir;
+  const lcmProjectsDir = lcmDir ? join(lcmDir, 'projects') : createLcmPaths(lcmHome()).projectsDir;
   const map = new Map<string, string>();
   if (!existsSync(lcmProjectsDir)) return map;
   for (const entry of readdirSync(lcmProjectsDir, { withFileTypes: true })) {
@@ -294,7 +295,7 @@ function isSessionAlreadyIngested(cwd: string, sessionId: string, lcmDir?: strin
   try {
     const dbPath = lcmDir
       ? join(lcmDir, "projects", projectId(cwd), "db.sqlite")
-      : projectDbPath(cwd);
+      : projectDbPath(cwd, createLcmPaths(lcmHome()));
     if (!existsSync(dbPath)) {
       return false;
     }

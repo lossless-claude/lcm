@@ -6,6 +6,7 @@ import { projectDbPath } from "../daemon/project.js";
 import { projectGroup, projectRef } from "../daemon/project-group.js";
 import { openMigrated } from "./migrated-connection.js";
 import type { ProjectRef } from "./native-history.js";
+import type { LcmPaths } from "../lcm-paths.js";
 
 /**
  * Promoted memory read across every checkout of one repository.
@@ -69,13 +70,13 @@ interface GroupSearchInput {
  * A group of one takes the single-database path unchanged, so a project that
  * shares its repository with nothing keeps exactly the ranking it had.
  */
-export function searchPromotedGroup(cwd: string, input: GroupSearchInput): GroupPromotedSearch {
-  const members = projectGroup(cwd);
+export function searchPromotedGroup(cwd: string, input: GroupSearchInput, paths: LcmPaths): GroupPromotedSearch {
+  const members = projectGroup(cwd, paths);
   const lists: GroupPromotedHit[][] = [];
   const feedback = new Map<string, RecallFeedback>();
 
   for (const member of members) {
-    const dbPath = projectDbPath(member.cwd);
+    const dbPath = projectDbPath(member.cwd, paths);
     if (!existsSync(dbPath)) continue;
     const db = openMigrated(dbPath);
     try {
@@ -109,6 +110,7 @@ export function logGroupSurfacing(
   hits: GroupPromotedHit[],
   surfacedIds: string[],
   sessionId: string | null,
+  paths: LcmPaths,
 ): void {
   const surfaced = new Set(surfacedIds);
   const byProject = new Map<string, string[]>();
@@ -120,7 +122,7 @@ export function logGroupSurfacing(
   }
 
   for (const [memberCwd, ids] of byProject) {
-    const dbPath = projectDbPath(memberCwd);
+    const dbPath = projectDbPath(memberCwd, paths);
     if (!existsSync(dbPath)) continue;
     const db = openMigrated(dbPath);
     try {

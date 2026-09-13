@@ -6,6 +6,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createDaemon } from "../../../src/daemon/server.js";
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { projectDbPath } from "../../../src/daemon/project.js";
+import { lcmHome } from "../../../src/lcm-home.js";
+import { createLcmPaths } from "../../../src/lcm-paths.js";
+
+const paths = createLcmPaths(lcmHome());
 
 const tempDirs: string[] = [];
 
@@ -101,7 +105,7 @@ describe("POST /store", () => {
       expect(res.status).toBe(200);
 
       // Read back directly from the SQLite promoted table
-      const dbPath = projectDbPath(tempDir);
+      const dbPath = projectDbPath(tempDir, paths);
       const db = new DatabaseSync(dbPath);
       db.exec("PRAGMA busy_timeout = 5000");
       try {

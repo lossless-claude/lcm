@@ -8,6 +8,7 @@ import { projectId, projectDbPath } from "../project.js";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import type { DaemonConfig } from "../config.js";
+import type { LcmPaths } from "../../lcm-paths.js";
 import { safeLogError } from "../../hooks/hook-errors.js";
 
 const AUTO_TAGS: Record<string, string> = {
@@ -78,7 +79,7 @@ function correlateErrors(events: EventRow[]): void {
   }
 }
 
-export function createPromoteEventsHandler(config: DaemonConfig): RouteHandler {
+export function createPromoteEventsHandler(config: DaemonConfig, paths: LcmPaths): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
 
@@ -92,7 +93,7 @@ export function createPromoteEventsHandler(config: DaemonConfig): RouteHandler {
       cwd = validateCwd(input.cwd);
     } catch (err) {
       // Log the detailed error server-side and return a generic message to the client
-      safeLogError("promote-events", err, {});
+      safeLogError("promote-events", err, { paths });
       sendJson(res, 400, { error: "cwd is invalid" });
       return;
     }
@@ -100,7 +101,7 @@ export function createPromoteEventsHandler(config: DaemonConfig): RouteHandler {
     const result: PromoteResult = { promoted: 0, skipped: 0, correlated: 0, errors: 0 };
 
     try {
-      const sidecarPath = eventsDbPath(cwd);
+      const sidecarPath = eventsDbPath(cwd, paths);
       const edb = new EventsDb(sidecarPath);
 
       try {
@@ -115,7 +116,7 @@ export function createPromoteEventsHandler(config: DaemonConfig): RouteHandler {
 
         // Open main project DB for promotion
         const pid = projectId(cwd);
-        const dbPath = projectDbPath(cwd);
+        const dbPath = projectDbPath(cwd, paths);
         const db = getLcmConnection(dbPath);
         try {
           runLcmMigrations(db);
@@ -225,7 +226,7 @@ export function createPromoteEventsHandler(config: DaemonConfig): RouteHandler {
               result.promoted++;
             } catch (error) {
               result.errors++;
-              safeLogError("promote-events", error, { cwd, sessionId: event.session_id });
+              safeLogError("promote-events", error, { cwd, sessionId: event.session_id, paths });
               // Do not add to processedIds — transient errors (DB busy, dedup failure) should
               // allow the event to be retried on next promotion pass rather than being silently dropped.
             }
@@ -240,7 +241,7 @@ export function createPromoteEventsHandler(config: DaemonConfig): RouteHandler {
       }
     } catch (error) {
       // Log detailed failure but avoid exposing internal error/stack info to the client
-      safeLogError("promote-events", error, { cwd });
+      safeLogError("promote-events", error, { cwd, paths });
       sendJson(res, 500, { error: "failed to promote events" });
       return;
     }
