@@ -233,6 +233,22 @@ describe("ensureDaemon", () => {
     unregister();
   });
 
+  it("stopDaemon proceeds when the markers directory cannot be read", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-stopscan-"));
+    tempDirs.push(tempDir);
+    const pidFile = join(tempDir, "daemon.pid");
+    const markers = join(tempDir, "tmp");
+    mkdirSync(markers, { recursive: true });
+    chmodSync(markers, 0o300); // write+traverse, no list
+    try {
+      const fetchFn = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
+      const result = await stopDaemon({ port: 1, pidFilePath: pidFile, timeoutMs: 50, _fetchOverride: fetchFn });
+      expect(result.stopped).toBe(true);
+    } finally {
+      chmodSync(markers, 0o700);
+    }
+  });
+
   it("a registration still writes its own marker when the sweep cannot read the directory", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-unreadable-"));
     tempDirs.push(tempDir);

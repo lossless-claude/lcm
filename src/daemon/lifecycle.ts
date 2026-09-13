@@ -172,9 +172,7 @@ function sweepMarkers(directory: string): { pid: number; path: string }[] {
 export function registerDaemonActivity(pidFilePath: string): () => void {
   const directory = markersDir(pidFilePath);
   mkdirSync(directory, { recursive: true });
-  // Best-effort, as promised: an unreadable or racing markers directory must not stop this
-  // caller from registering its own marker.
-  try { startingDaemons(pidFilePath); } catch { /* prune what we can, register regardless */ }
+  startingDaemons(pidFilePath); // prune dead markers left by a crashed process before adding ours
   const path = join(directory, `daemon.starting.${process.pid}.${randomUUID()}`);
   writeFileSync(path, "", { flag: "wx" });
   const refresh = setInterval(() => {
@@ -187,11 +185,24 @@ export function registerDaemonActivity(pidFilePath: string): () => void {
   };
 }
 
+/**
+ * Every startup marker across both directories, dead and aged-out ones pruned on the way.
+ *
+ * A directory that cannot be read is reported and treated as holding no markers. That is a
+ * deliberate policy, not an oversight: this is a lifecycle boundary — `registerDaemonActivity`
+ * and `stopDaemon` — and neither registering activity nor stopping the daemon may fail because
+ * a `tmp` directory is momentarily unreadable. The marker scan is best-effort by contract.
+ */
 function startingDaemons(pidFilePath: string): { pid: number; path: string }[] {
-  return [
-    ...sweepMarkers(markersDir(pidFilePath)),
-    ...sweepMarkers(legacyMarkersDir(pidFilePath)),
-  ];
+  const entries: { pid: number; path: string }[] = [];
+  for (const directory of [markersDir(pidFilePath), legacyMarkersDir(pidFilePath)]) {
+    try {
+      entries.push(...sweepMarkers(directory));
+    } catch (error) {
+      console.error(`[lcm] could not scan daemon markers in ${directory}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return entries;
 }
 
 /** PID of the process listening on 127.0.0.1:port, via lsof (macOS/Linux). Undefined when unknown. */
