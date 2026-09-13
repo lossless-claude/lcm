@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync, unlinkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { join, dirname } from "node:path";
@@ -123,10 +123,20 @@ function cleanStalePid(pidFilePath: string): void {
 // every real path, so nothing legitimate ever needs to survive this long.
 const MARKER_MAX_AGE_MS = 60 * 60 * 1000;
 
+// A registered marker is refreshed well inside MARKER_MAX_AGE_MS, so an operation with no
+// bound of its own — a long batchCompact or importSessions — cannot be aged out while it runs.
+const MARKER_REFRESH_MS = MARKER_MAX_AGE_MS / 4;
+
 /** Markers live in tmp, not the storage root, so the root holds only durable files and a
  * sandboxed test home cannot see another root's markers via the shared system /tmp. */
 function markersDir(pidFilePath: string): string {
   return join(dirname(pidFilePath), "tmp");
+}
+
+/** Where versions before the tmp move wrote their markers. Still swept, never written to, so
+ * an upgrade neither leaks the files left there nor loses sight of a live old-version marker. */
+function legacyMarkersDir(pidFilePath: string): string {
+  return dirname(pidFilePath);
 }
 
 /** Best-effort: delete `path` when its owning `pid` is dead or the marker outlived
@@ -162,14 +172,26 @@ function sweepMarkers(directory: string): { pid: number; path: string }[] {
 export function registerDaemonActivity(pidFilePath: string): () => void {
   const directory = markersDir(pidFilePath);
   mkdirSync(directory, { recursive: true });
-  sweepMarkers(directory); // prune dead markers left by a crashed process before adding ours
+  // Best-effort, as promised: an unreadable or racing markers directory must not stop this
+  // caller from registering its own marker.
+  try { startingDaemons(pidFilePath); } catch { /* prune what we can, register regardless */ }
   const path = join(directory, `daemon.starting.${process.pid}.${randomUUID()}`);
   writeFileSync(path, "", { flag: "wx" });
-  return () => { try { unlinkSync(path); } catch { /* already removed by stop */ } };
+  const refresh = setInterval(() => {
+    try { utimesSync(path, new Date(), new Date()); } catch { /* removed by stop */ }
+  }, MARKER_REFRESH_MS);
+  refresh.unref();
+  return () => {
+    clearInterval(refresh);
+    try { unlinkSync(path); } catch { /* already removed by stop */ }
+  };
 }
 
 function startingDaemons(pidFilePath: string): { pid: number; path: string }[] {
-  return sweepMarkers(markersDir(pidFilePath));
+  return [
+    ...sweepMarkers(markersDir(pidFilePath)),
+    ...sweepMarkers(legacyMarkersDir(pidFilePath)),
+  ];
 }
 
 /** PID of the process listening on 127.0.0.1:port, via lsof (macOS/Linux). Undefined when unknown. */

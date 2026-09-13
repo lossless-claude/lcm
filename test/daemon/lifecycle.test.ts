@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -220,6 +220,34 @@ describe("ensureDaemon", () => {
     const unregister = registerDaemonActivity(pidFile); // next registration, another process
     expect(existsSync(crashedMarker)).toBe(false);
     unregister();
+  });
+
+  it("a registration prunes a marker an older version left beside the PID file", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-legacy-"));
+    tempDirs.push(tempDir);
+    const pidFile = join(tempDir, "daemon.pid");
+    const legacyMarker = join(tempDir, `daemon.starting.999999.${randomUUID()}`);
+    writeFileSync(legacyMarker, ""); // written beside daemon.pid, as versions before the tmp move did
+    const unregister = registerDaemonActivity(pidFile);
+    expect(existsSync(legacyMarker)).toBe(false);
+    unregister();
+  });
+
+  it("a registration still writes its own marker when the sweep cannot read the directory", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-unreadable-"));
+    tempDirs.push(tempDir);
+    const pidFile = join(tempDir, "daemon.pid");
+    const markers = join(tempDir, "tmp");
+    mkdirSync(markers, { recursive: true });
+    chmodSync(markers, 0o300); // write+traverse, no list: readdirSync throws EACCES, writeFileSync still works
+    try {
+      const unregister = registerDaemonActivity(pidFile);
+      chmodSync(markers, 0o700);
+      expect(readdirSync(markers).some((name) => name.startsWith(`daemon.starting.${process.pid}.`))).toBe(true);
+      unregister();
+    } finally {
+      chmodSync(markers, 0o700);
+    }
   });
 
   it("stopDaemon reports not running when nothing listens and no PID file exists", async () => {
