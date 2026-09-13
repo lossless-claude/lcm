@@ -238,19 +238,33 @@ describe("ensureDaemon", () => {
     unregister();
   });
 
-  it("keeps an aged marker a pre-upgrade version left behind while its process is alive", () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-legacyaged-"));
+  it("keeps a marker a pre-upgrade version left beside the PID file while its process is alive", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-legacylive-"));
     tempDirs.push(tempDir);
     const pidFile = join(tempDir, "daemon.pid");
-    // Beside daemon.pid, owned by this live process, older than the age limit: pre-upgrade
-    // writers never refresh, so age must not be read as death.
-    const aged = join(tempDir, `daemon.starting.${process.pid}.${randomUUID()}`);
-    writeFileSync(aged, "");
-    const longAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
-    utimesSync(aged, longAgo, longAgo);
+    // Beside daemon.pid, owned by this live process, and never refreshed — which is how
+    // pre-upgrade writers behave. It is within this process's own lifetime, so it is ours.
+    const live = join(tempDir, `daemon.starting.${process.pid}.${randomUUID()}`);
+    writeFileSync(live, "");
 
     const unregister = registerDaemonActivity(pidFile);
-    expect(existsSync(aged)).toBe(true);
+    expect(existsSync(live)).toBe(true);
+    unregister();
+  });
+
+  it("prunes a marker older than its live owner, which means the pid was recycled", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-reuse-"));
+    tempDirs.push(tempDir);
+    const pidFile = join(tempDir, "daemon.pid");
+    // This process is alive, but the marker predates it: whoever wrote it is gone and the
+    // pid was handed on. Neither a heartbeat nor the age limit is what decides this.
+    const recycled = join(tempDir, `daemon.starting.${process.pid}.${randomUUID()}`);
+    writeFileSync(recycled, "");
+    const beforeThisProcess = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    utimesSync(recycled, beforeThisProcess, beforeThisProcess);
+
+    const unregister = registerDaemonActivity(pidFile);
+    expect(existsSync(recycled)).toBe(false);
     unregister();
   });
 

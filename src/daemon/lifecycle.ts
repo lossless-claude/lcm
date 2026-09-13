@@ -135,7 +135,8 @@ function markersDir(pidFilePath: string): string {
 
 /** Where versions before the tmp move wrote their markers. Still swept, never written to, so
  * an upgrade neither leaks the files left there nor loses sight of a live old-version marker.
- * Swept without the age rule: those writers never refresh, so age says nothing about them. */
+ * Those writers never refresh, which is why ownership is decided by the owner's lifetime
+ * rather than by the marker's age. */
 function legacyMarkersDir(pidFilePath: string): string {
   return dirname(pidFilePath);
 }
@@ -143,9 +144,45 @@ function legacyMarkersDir(pidFilePath: string): string {
 /** Best-effort: delete `path` when its owning `pid` is dead or the marker outlived
  * MARKER_MAX_AGE_MS. Returns true when the marker is kept. Never throws — a marker
  * already removed by another process, or genuinely live and young, is left untouched. */
-function pruneMarker(path: string, pid: number, ageOut = true): boolean {
+/**
+ * Seconds the process has been running, via `ps -o etime=`. Undefined when unknown.
+ *
+ * This is the pid-reuse test that does not need the owner to refresh anything: a marker
+ * older than its owner's own lifetime was written by a different process that happened to
+ * hold the same pid.
+ */
+function processElapsedSeconds(pid: number): number | undefined {
   try {
-    if (isProcessAlive(pid) && (!ageOut || Date.now() - statSync(path).mtimeMs <= MARKER_MAX_AGE_MS)) return true;
+    const out = spawnSync("ps", ["-o", "etime=", "-p", String(pid)], { encoding: "utf-8" });
+    const raw = String(out.stdout ?? "").trim();
+    // [[dd-]hh:]mm:ss
+    const match = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(raw);
+    if (!match) return undefined;
+    const [, days, hours, minutes, seconds] = match;
+    return Number(days ?? 0) * 86_400 + Number(hours ?? 0) * 3_600 + Number(minutes) * 60 + Number(seconds);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * True when this marker's live pid still owns it.
+ *
+ * The question age was standing in for is "did this pid get recycled since the marker was
+ * written", and the process's own elapsed time answers it directly: a marker older than its
+ * owner's lifetime was written by someone else. Where `ps` cannot say, the one-hour cutoff
+ * is the fallback it always was — which is also why a registration refreshes its marker.
+ */
+function markerStillOwned(path: string, pid: number): boolean {
+  const writtenMsAgo = Date.now() - statSync(path).mtimeMs;
+  const elapsed = processElapsedSeconds(pid);
+  if (elapsed === undefined) return writtenMsAgo <= MARKER_MAX_AGE_MS;
+  return writtenMsAgo <= (elapsed + 60) * 1000; // a minute of slack for clock skew
+}
+
+function pruneMarker(path: string, pid: number): boolean {
+  try {
+    if (isProcessAlive(pid) && markerStillOwned(path, pid)) return true;
     unlinkSync(path);
   } catch {
     // Already gone, racing another pruner, or unreadable. Only the first of those means
@@ -156,14 +193,8 @@ function pruneMarker(path: string, pid: number, ageOut = true): boolean {
   return false;
 }
 
-/**
- * List every startup marker in `directory`, pruning dead or aged-out ones along the way.
- *
- * `ageOut` false keeps a live pid's marker however old it is. That is what the legacy
- * directory needs: its writers predate the refresh below and never touch their marker, so
- * the one-hour rule would unlink a startup that is genuinely still running.
- */
-function sweepMarkers(directory: string, ageOut = true): { pid: number; path: string }[] {
+/** List every startup marker in `directory`, pruning the abandoned ones along the way. */
+function sweepMarkers(directory: string): { pid: number; path: string }[] {
   let names: string[];
   try { names = readdirSync(directory); } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
@@ -175,7 +206,7 @@ function sweepMarkers(directory: string, ageOut = true): { pid: number; path: st
     const pid = Number(match?.[1]);
     if (!Number.isSafeInteger(pid) || pid <= 0) continue;
     const path = join(directory, name);
-    if (pruneMarker(path, pid, ageOut)) entries.push({ pid, path });
+    if (pruneMarker(path, pid)) entries.push({ pid, path });
   }
   return entries;
 }
@@ -212,7 +243,7 @@ function startingDaemons(pidFilePath: string, failOpen = false): { pid: number; 
   const entries: { pid: number; path: string }[] = [];
   for (const directory of [markersDir(pidFilePath), legacy]) {
     try {
-      entries.push(...sweepMarkers(directory, directory !== legacy));
+      entries.push(...sweepMarkers(directory));
     } catch (error) {
       if (!failOpen) throw error;
       console.error(`[lcm] could not scan daemon markers in ${directory}: ${error instanceof Error ? error.message : String(error)}`);
