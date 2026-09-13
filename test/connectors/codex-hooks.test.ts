@@ -59,6 +59,8 @@ describe("Codex hooks connector installation", () => {
       "Interrupt",
       "SessionEnd",
       "PreCompact",
+      "PostToolUse",
+      "PostToolUseFailure",
     ]));
     expect(config.hooks.SessionStart.at(-1).matcher).toBe("startup|resume|clear|compact");
     expect(config.hooks.SessionEnd.at(-1).matcher).toBe("other");
@@ -69,6 +71,8 @@ describe("Codex hooks connector installation", () => {
     expect(managedHandlers(config, "Interrupt")[0].timeout).toBe(3);
     expect(managedHandlers(config, "SessionEnd")[0].timeout).toBe(3);
     expect(managedHandlers(config, "PreCompact")[0].timeout).toBe(130);
+    expect(managedHandlers(config, "PostToolUse")[0].timeout).toBe(5);
+    expect(managedHandlers(config, "PostToolUseFailure")[0].timeout).toBe(5);
   });
 
   it("writes a shell-safe absolute command for runtime paths containing spaces", () => {
@@ -111,9 +115,12 @@ describe("Codex hooks connector installation", () => {
 
     expect(config.description).toBe("Keep this");
     expect(config.custom).toEqual({ keep: true });
-    expect(config.hooks.PostToolUse).toEqual([unrelatedPostTool]);
+    expect(config.hooks.PostToolUse[0]).toEqual(unrelatedPostTool);
     expect(config.hooks.SessionStart[0]).toEqual(unrelatedSessionStart);
-    for (const event of ["SessionStart", "UserPromptSubmit", "Stop", "Interrupt", "SessionEnd", "PreCompact"]) {
+    for (const event of [
+      "SessionStart", "UserPromptSubmit", "Stop", "Interrupt", "SessionEnd", "PreCompact",
+      "PostToolUse", "PostToolUseFailure",
+    ]) {
       expect(managedHandlers(config, event)).toHaveLength(1);
       expect(managedHandlers(config, event)[0].command).toBe(buildCodexHookCommand(commandOptions));
     }

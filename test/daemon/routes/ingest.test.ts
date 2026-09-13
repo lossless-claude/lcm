@@ -9,6 +9,8 @@ import { DaemonClient } from "../../../src/daemon/client.js";
 import { projectDbPath, projectId } from "../../../src/daemon/project.js";
 import { enqueue } from "../../../src/daemon/project-queue.js";
 import { importSessions } from "../../../src/import.js";
+import { EventsDb } from "../../../src/hooks/events-db.js";
+import { eventsDbPath } from "../../../src/db/events-path.js";
 
 const tempDirs: string[] = [];
 
@@ -490,5 +492,51 @@ describe("POST /ingest", () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ingested: 0, totalTokens: 0 });
+  });
+
+  it("backfills the model on a Claude tool-call event whose hook payload could not carry one", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-ingest-model-backfill-"));
+    tempDirs.push(tempDir);
+    const transcriptPath = join(tempDir, "session.jsonl");
+    writeFileSync(transcriptPath, [
+      { message: { role: "user", content: "commit this" } },
+      {
+        message: {
+          role: "assistant", model: "claude-sonnet-5",
+          content: [
+            { type: "text", text: "On it." },
+            { type: "tool_use", id: "toolu_backfill_1", name: "Bash", input: { command: "git commit -m x" } },
+          ],
+        },
+      },
+    ].map(line => JSON.stringify(line)).join("\n") + "\n");
+
+    const sidecar = new EventsDb(eventsDbPath(tempDir));
+    sidecar.insertToolCallEvents(
+      "backfill-session",
+      [{ type: "git_commit", category: "git", data: "git commit: x", priority: 2 }],
+      "PostToolUse",
+      "toolu_backfill_1",
+    );
+    sidecar.close();
+
+    daemon = await createDaemon(loadDaemonConfig("/nonexistent", { daemon: { port: 0 } }));
+    const res = await fetch(`http://127.0.0.1:${daemon.address().port}/ingest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: "backfill-session", cwd: tempDir, transcript_path: transcriptPath }),
+    });
+    expect(res.status).toBe(200);
+
+    // The backfill runs after the response, so poll rather than read once.
+    let row;
+    for (let attempt = 0; attempt < 50 && row?.model == null; attempt += 1) {
+      const after = new EventsDb(eventsDbPath(tempDir));
+      row = after.getUnprocessed().find(r => r.tool_use_id === "toolu_backfill_1");
+      after.close();
+      if (row?.model == null) await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(row?.client).toBe("claude");
+    expect(row?.model).toBe("claude-sonnet-5");
   });
 });
