@@ -272,10 +272,14 @@ export async function dispatchCodexHook(
       return contextOutput("SessionStart", restored.context ?? "");
     }
     if (input.hook_event_name === "UserPromptSubmit" && input.prompt?.trim()) {
-      const recalled = await client.post<{ hints?: string[]; ids?: string[]; projectIds?: (string | null)[] }>("/prompt-search", {
+      const recalled = await client.post<{
+        hints?: string[]; ids?: string[]; projectIds?: (string | null)[]; pivotHint?: string;
+      }>("/prompt-search", {
         ...identity, query: input.prompt, learningInstructionBytes: 0,
       }, { timeoutMs: 5000, signal });
-      return contextOutput("UserPromptSubmit", buildMemoryContext(recalled.hints ?? [], recalled.ids ?? [], recalled.projectIds ?? []) ?? "");
+      return contextOutput("UserPromptSubmit", buildMemoryContext(
+        recalled.hints ?? [], recalled.ids ?? [], recalled.projectIds ?? [], recalled.pivotHint,
+      ) ?? "");
     }
     if (compacting) {
       await client.post("/compact", {

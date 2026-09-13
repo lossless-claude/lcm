@@ -83,17 +83,25 @@ function fitHintWithinBudget(
   return bestFit;
 }
 
+/**
+ * `notice` is a single line about how to search this project — today, that the
+ * author's language differs from the search pivot language, so a query is worth
+ * sending with its translation. It rides the block a caller already reads
+ * rather than waiting for an empty search to reveal the mismatch.
+ */
 export function buildMemoryContext(
   hints: string[],
   ids: string[] = [],
   projectIds: (string | null | undefined)[] = [],
+  notice?: string,
 ): string | null {
   if (hints.length === 0) return null;
   const snippets = hints.map((hint) => `- ${hint}`).join("\n");
+  const noticeLine = notice ? `\n${notice}` : "";
   const idsComment = ids.length > 0
     ? `\n<!-- surfaced-memory-ids: ${ids.map((id, index) => renderSurfacedId(id, projectIds[index])).join(",")} -->`
     : "";
-  return `<memory-context>\n${MEMORY_CONTEXT_INTRO}\n${snippets}${idsComment}\n</memory-context>`;
+  return `<memory-context>\n${MEMORY_CONTEXT_INTRO}\n${snippets}${noticeLine}${idsComment}\n</memory-context>`;
 }
 
 export function selectMemoryHintsWithinBudget(

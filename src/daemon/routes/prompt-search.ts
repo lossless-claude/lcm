@@ -16,6 +16,7 @@ import { recordUserPromptEvents } from "../../hooks/user-prompt.js";
 import { safeLogError } from "../../hooks/hook-errors.js";
 import { validateCwd } from "../validate-cwd.js";
 import { searchNativeHistory } from "../../search/native-history.js";
+import { pivotLanguagesFor, pivotQueryHint } from "../../search/pivot-language.js";
 
 const CANDIDATE_LIMIT_MULTIPLIER = 5;
 const MIN_CANDIDATE_LIMIT = 10;
@@ -338,10 +339,15 @@ export function createPromptSearchHandler(config: DaemonConfig, paths: LcmPaths)
 
       // Pass the full filtered list (not sliced to maxResults) so the budget
       // selector can choose the best-fitting subset after dedup and truncation.
+      // The hint shares the block's byte budget with the hints, so it is
+      // reserved before selection rather than appended past the cap.
+      const pivotHint = pivotQueryHint(pivotLanguagesFor(validatedCwd, config.search.pivotLanguage, paths));
+      const pivotHintBytes = pivotHint ? Buffer.byteLength(pivotHint, "utf8") + 1 : 0;
+
       const selection = selectMemoryHintsWithinBudget(
         candidates,
         {
-          totalByteBudget: maxInjectedMemoryBytes,
+          totalByteBudget: Math.max(0, maxInjectedMemoryBytes - pivotHintBytes),
           reservedForLearningInstruction,
           learningInstructionBytes: learningInstructionBytes ?? 0,
           maxEmitted: maxInjectedMemoryItems,
@@ -381,11 +387,12 @@ export function createPromptSearchHandler(config: DaemonConfig, paths: LcmPaths)
         if (logSurfacing) logGroupSurfacing(results, ids, session_id ?? null, paths);
       } catch { /* non-fatal */ }
 
-      const context = format === "context" ? buildMemoryContext(hints, ids, projectIds) : null;
+      const context = format === "context" ? buildMemoryContext(hints, ids, projectIds, pivotHint) : null;
       sendJson(res, 200, {
         hints,
         ids,
         projectIds,
+        ...(pivotHint ? { pivotHint } : {}),
         ...(context ? { context } : {}),
         ...(debugResponse ? { debug: debugResponse } : {}),
       });

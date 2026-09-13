@@ -110,6 +110,8 @@ export type MessageSearchInput = {
   since?: Date;
   before?: Date;
   limit?: number;
+  /** Terms a caller already extracted (a pivot-query union); re-extracting the string would lose them. */
+  terms?: readonly string[];
 };
 
 export type MessageSearchResult = {
@@ -632,6 +634,7 @@ export class ConversationStore {
             input.conversationId,
             input.since,
             input.before,
+            input.terms,
           );
         } catch {
           return this.searchLike(
@@ -678,13 +681,14 @@ export class ConversationStore {
     conversationId?: ConversationId,
     since?: Date,
     before?: Date,
+    terms?: readonly string[],
   ): MessageSearchResult[] {
     // Natural-language questions ANDed term-by-term almost never match, so
     // prepare the query first: drop stopwords, then take AND matches (precise),
     // fill the remaining candidate slots with OR matches ranked by BM25 (the
     // grep baseline behavior), then fall back to a substring LIKE scan when
     // the question's vocabulary does not overlap the corpus at all.
-    const prepared = prepareFts5Query(query);
+    const prepared = prepareFts5Query(query, terms);
     if (!prepared) {
       return [];
     }

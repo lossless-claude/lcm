@@ -10,6 +10,8 @@ import { runLcmMigrations } from "../../db/migration.js";
 import { searchNativeHistory } from "../../search/native-history.js";
 import { searchHistoryGroup } from "../../search/group-history.js";
 import { searchPromotedGroup } from "../../search/group-promoted.js";
+import { pivotLanguagesFor } from "../../search/pivot-language.js";
+import { combinedQueryTerms, combineWithPivotQuery } from "../../store/fts5-query.js";
 import { validateCwd } from "../validate-cwd.js";
 import { projectRef } from "../project-group.js";
 
@@ -20,7 +22,7 @@ function describeError(err: unknown): string {
 export function createSearchHandler(config: DaemonConfig, paths: LcmPaths): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
-    const { query, limit = 5, layers, tags } = input;
+    const { query, pivotQuery, limit = 5, layers, tags } = input;
     const activeLayers: string[] = layers ?? ["episodic", "promoted"];
     const filterTags: string[] | undefined = Array.isArray(tags) && tags.length > 0 ? tags : undefined;
 
@@ -43,6 +45,13 @@ export function createSearchHandler(config: DaemonConfig, paths: LcmPaths): Rout
       }
     }
 
+    // The caller's own translation is combined here, once, and the term set travels with
+    // the string: each layer below would otherwise re-tokenise the mixture and pick one
+    // language's stopword pack for both, dropping the terms the pivot just added.
+    const rawPivot = typeof pivotQuery === "string" ? pivotQuery : undefined;
+    const searchQuery = combineWithPivotQuery(String(query), rawPivot);
+    const searchTerms = combinedQueryTerms(String(query), rawPivot) ?? undefined;
+
     let episodic: unknown[] = [];
     let promoted: unknown[] = [];
     const errors: string[] = [];
@@ -63,8 +72,8 @@ export function createSearchHandler(config: DaemonConfig, paths: LcmPaths): Rout
               episodic = filterTags
                 ? []
                 : config.search.unionHistoryAcrossGroup
-                  ? await searchHistoryGroup(cwd, { query, limit }, paths)
-                  : await searchNativeHistory(db, { query, limit, project: projectRef(cwd) });
+                  ? await searchHistoryGroup(cwd, { query: searchQuery, limit, terms: searchTerms }, paths)
+                  : await searchNativeHistory(db, { query: searchQuery, limit, terms: searchTerms, project: projectRef(cwd) });
             } catch (err) {
               // Non-fatal for the response, but never silent: a real failure
               // (malformed FTS5 syntax, missing table, corrupt index) must be
@@ -79,7 +88,7 @@ export function createSearchHandler(config: DaemonConfig, paths: LcmPaths): Rout
           // measurement.
           if (activeLayers.includes("promoted")) {
             try {
-              promoted = searchPromotedGroup(cwd, { query, limit, tags: filterTags }, paths).hits;
+              promoted = searchPromotedGroup(cwd, { query: searchQuery, limit, tags: filterTags, terms: searchTerms }, paths).hits;
             } catch (err) {
               console.warn(`[lcm] /search promoted layer failed: ${describeError(err)}`);
               errors.push(`promoted: ${describeError(err)}`);
@@ -94,6 +103,14 @@ export function createSearchHandler(config: DaemonConfig, paths: LcmPaths): Rout
       }
     }
 
-    sendJson(res, 200, errors.length > 0 ? { episodic, promoted, errors } : { episodic, promoted });
+    // The two languages travel with every result: a caller that searched
+    // without a pivotQuery can see from the response that one applies and retry.
+    const languages = cwd ? pivotLanguagesFor(cwd, config.search.pivotLanguage, paths) : undefined;
+    sendJson(res, 200, {
+      episodic,
+      promoted,
+      ...(languages?.authorLanguage ? { authorLanguage: languages.authorLanguage, pivotLanguage: languages.pivotLanguage } : {}),
+      ...(errors.length > 0 ? { errors } : {}),
+    });
   };
 }

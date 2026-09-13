@@ -7,6 +7,10 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 
 /** An isolated base dir, so these tests never touch the developer's own store. */
 const base = realpathSync(mkdtempSync(join(tmpdir(), "lcm-prompt-search-group-base-")));
+// Not only the project mock: anything resolved from the storage root rather than from
+// `daemon/project.js` would otherwise read the host's real store, where another checkout
+// of the same remote may already be registered and a local hit resolves to a foreign id.
+process.env.LCM_HOME = base;
 vi.mock("../../../src/daemon/project.js", async (importOriginal) => {
   const original = await importOriginal<typeof import("../../../src/daemon/project.js")>();
   const dirOf = (cwd: string) => join(base, "projects", original.projectId(cwd));

@@ -60,6 +60,8 @@ interface GroupSearchInput {
   query: string;
   limit: number;
   tags?: string[];
+  /** Terms a caller already extracted (a pivot-query union); re-extracting `query` would lose them. */
+  terms?: readonly string[];
   /** Read recall feedback alongside the hits. Only the prompt hook needs it. */
   withFeedback?: boolean;
 }
@@ -80,7 +82,7 @@ export function searchPromotedGroup(cwd: string, input: GroupSearchInput, paths:
     if (!existsSync(dbPath)) continue;
     const db = openMigrated(dbPath);
     try {
-      const found = new PromotedStore(db).search(input.query, input.limit, input.tags);
+      const found = new PromotedStore(db).search(input.query, input.limit, input.tags, undefined, input.terms);
       if (found.length === 0) continue;
       lists.push(found.map(result => ({ ...result, project: projectRef(member.cwd) })));
       if (input.withFeedback) {
