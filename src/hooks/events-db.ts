@@ -158,6 +158,10 @@ export class EventsDb {
 
     // Handle empty schema_version table (table exists but has no rows)
     if (!versionRow) {
+      // One transaction: the version row and the repair below must land together, or a crash
+      // between them leaves a database that claims v6 without the columns v6 means.
+      this.db.exec("BEGIN EXCLUSIVE");
+      try {
       this.db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(SCHEMA_VERSION);
       // Ensure latest tables and indexes exist even in this edge case.
       this.db.exec(`
@@ -179,6 +183,11 @@ export class EventsDb {
         CREATE INDEX IF NOT EXISTS idx_events_tool_use ON events(session_id, tool_use_id);
         CREATE INDEX IF NOT EXISTS idx_events_prompt ON events(session_id, prompt_hash);
       `);
+        this.db.exec("COMMIT");
+      } catch (e) {
+        try { this.db.exec("ROLLBACK"); } catch { /* the transaction is already gone */ }
+        throw e;
+      }
       return;
     }
 
@@ -310,11 +319,15 @@ export class EventsDb {
   /**
    * Fills `model` on tool-call events the hook payload could not carry it on,
    * joined by `tool_use_id`. Never overwrites a model already recorded.
+   *
+   * Claude rows only. The model comes from a Claude transcript, and a Codex event whose
+   * payload carried no model would otherwise be stamped with it on an id collision —
+   * a wrong provenance is worse than the null this column is allowed to hold.
    */
   backfillToolCallModels(sessionId: string, pairs: ReadonlyMap<string, string>): number {
     if (pairs.size === 0) return 0;
     const stmt = this.db.prepare(
-      "UPDATE events SET model = ? WHERE session_id = ? AND tool_use_id = ? AND model IS NULL"
+      "UPDATE events SET model = ? WHERE session_id = ? AND tool_use_id = ? AND model IS NULL AND client = 'claude'"
     );
     let updated = 0;
     this.db.exec("BEGIN IMMEDIATE");
