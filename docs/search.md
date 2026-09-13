@@ -72,6 +72,28 @@ it. On the 74 pt-BR bench questions built at `ea10a75`, dropping pt-BR function 
 hit@5 from 0.419 to 0.486 (+7 / −2) with no model call at search time. `LCM_LANGUAGES_DIR` points
 the loader elsewhere; the test suite uses it so no test reads a developer's real packs.
 
+### Cross-language queries: `pivotQuery`
+
+Dropping the author language's function words is not the whole gap. When the author writes in one
+language and the text that answers is mostly in another, the query has to reach both vocabularies.
+`lcm_search` takes an optional `pivotQuery` for that: the caller's own translation of `query` into
+`search.pivotLanguage` (default `en`). The daemon prepares each string separately — each loses its
+own language's function words — and searches the union of the two term sets, so a hit through either
+side counts. A missing, empty or term-equivalent `pivotQuery` leaves the single-language path
+untouched, and `lcm grep` / `lcm_grep` are not affected at all.
+
+The translation is the caller's because the caller is already a model: no model call is added inside
+the daemon at query time. So the caller has to be told when one is worth making. The recorded author
+language and the pivot language travel in three places: the `lcm_search` tool description (when they
+differ), every `/search` response (`authorLanguage`, `pivotLanguage`), and the `<memory-context>`
+block the prompt hook emits.
+
+The ceiling experiment behind the design translated 74 pt-BR questions over three corpora with a
+model instead of a caller: original alone 0.486 hit@5, translation alone 0.649, both ORed with the
+original's function words still in 0.473, original minus its function words plus the translation
+0.716. Expansion is additive rather than a replacement because the corpus whose own content is in
+the author's language is the one where replacing loses.
+
 ### Failure visibility
 
 The `/search` daemon route never fails hard on a bad query, but it never fails silently either:

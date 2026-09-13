@@ -175,6 +175,17 @@ Prompt-time recall now has a second budget layer after `/prompt-search` ranking.
 
 In practice, the hook asks the daemon for ranked candidates, the daemon dedupes and trims them against the final byte budget, and only the emitted hints get surfaced back to the hook. That means increasing `promptSearchMaxResults` without adjusting `maxInjectedMemoryBytes` just gives the reranker more candidates to choose from; it does not guarantee more emitted context.
 
+### Search pivot language
+
+`search.pivotLanguage` (default `"en"`) names the language a caller translates its query into when
+the project's recorded author language is a different one — the target of `lcm_search`'s optional
+`pivotQuery`, not a language detected in the corpus. Change it when the text that answers queries in
+your projects is predominantly in another language.
+
+lcm never translates: the terms of `query` and of the `pivotQuery` the caller supplies are combined
+additively. See [search.md](./search.md) for how the pair is prepared and where the two language
+names are surfaced.
+
 ### Leaf chunk tokens
 
 `LCM_LEAF_CHUNK_TOKENS` (default `20000`) caps the amount of source material per leaf compaction pass.

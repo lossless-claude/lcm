@@ -12,6 +12,8 @@ import { withHookWrite } from "./write-admission.js";
 type PromptSearchResponse = {
   hints: string[];
   ids?: string[];
+  /** One line on how to search this project, when the daemon has one to give. */
+  pivotHint?: string;
 };
 
 /** Deadline for /prompt-search — the user is waiting on every prompt; fall back to the bare instruction. */
@@ -97,7 +99,7 @@ export async function handleUserPromptSubmit(
       return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
     }
 
-    const hint = buildMemoryContext(result.hints, result.ids ?? []);
+    const hint = buildMemoryContext(result.hints, result.ids ?? [], result.pivotHint);
     if (!hint) {
       return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
     }

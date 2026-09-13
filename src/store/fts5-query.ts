@@ -121,6 +121,34 @@ export function prepareFts5Query(raw: string): Fts5PreparedQuery | null {
 }
 
 /**
+ * The caller's query and the caller's own translation of it, combined into one
+ * additive term set.
+ *
+ * Each side is tokenised on its own, so each loses its own language's function
+ * words and neither side's leak into the other: a pt-BR question keeps its
+ * content words while `que`/`como`/`para` go, and the English translation keeps
+ * its own. The union then searches as one query — a hit through either side
+ * counts, which is what an additive expansion means.
+ *
+ * Why additive rather than a replacement: the ceiling experiment behind this
+ * (74 pt-BR questions, three corpora, translations from a model rather than
+ * from the caller) scored the original alone at 0.486 hit@5, the translation
+ * alone at 0.649, both ORed with the original's function words still in at
+ * 0.473, and this combination at 0.716 — and the corpus whose own content is in
+ * the author's language is the one where translating instead of adding loses.
+ *
+ * No pivot query, or one whose terms add nothing, returns `query` untouched, so
+ * the single-language path is unchanged.
+ */
+export function combineWithPivotQuery(query: string, pivotQuery?: string): string {
+  if (!pivotQuery || pivotQuery.trim().length === 0) return query;
+  const terms = extractQueryTerms(query);
+  const pivotTerms = extractQueryTerms(pivotQuery).filter((term) => !terms.includes(term));
+  if (pivotTerms.length === 0) return query;
+  return [...terms, ...pivotTerms].join(" ");
+}
+
+/**
  * True when an FTS5 "no rows" outcome should be retried as a substring
  * LIKE scan: the query has at least two content terms. Single-term queries
  * keep strict semantics — if FTS found nothing for one term, a LIKE scan

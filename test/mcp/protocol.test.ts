@@ -15,7 +15,7 @@ vi.mock("../../src/daemon/lifecycle.js", () => ({
   registerDaemonActivity: vi.fn(() => vi.fn()),
 }));
 vi.mock("../../src/daemon/config.js", () => ({
-  loadDaemonConfig: () => ({ daemon: { port: 9999 } }),
+  loadDaemonConfig: () => ({ daemon: { port: 9999 }, search: { pivotLanguage: "en" } }),
 }));
 vi.mock("../../src/daemon/client.js", () => ({
   DaemonClient: vi.fn().mockImplementation(function () { return { post: state.post }; }),

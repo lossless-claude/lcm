@@ -10,7 +10,8 @@ import { PKG_VERSION } from "../daemon/version.js";
 import { lcmGrepTool } from "./tools/lcm-grep.js";
 import { lcmExpandTool } from "./tools/lcm-expand.js";
 import { lcmDescribeTool } from "./tools/lcm-describe.js";
-import { lcmSearchTool } from "./tools/lcm-search.js";
+import { lcmSearchTool, lcmSearchToolFor } from "./tools/lcm-search.js";
+import { pivotLanguagesFor } from "../search/pivot-language.js";
 import { lcmStoreTool } from "./tools/lcm-store.js";
 import { lcmStatsTool } from "./tools/lcm-stats.js";
 import { lcmDoctorTool } from "./tools/lcm-doctor.js";
@@ -211,7 +212,13 @@ export async function startMcpServer(): Promise<void> {
   const client = new DaemonClient(`http://127.0.0.1:${port}`);
   const server = new Server({ name: "lcm", version: PKG_VERSION ?? "unknown" }, { capabilities: { tools: {} } });
 
-  server.setRequestHandler("tools/list", async () => ({ tools: TOOLS }));
+  // The search tool is described per project: a caller must be told the author
+  // and pivot languages before its first search, not after an empty result.
+  server.setRequestHandler("tools/list", async () => {
+    const languages = pivotLanguagesFor(process.env.PWD ?? process.cwd(), config.search.pivotLanguage);
+    const search = lcmSearchToolFor(languages);
+    return { tools: TOOLS.map((tool) => (tool.name === search.name ? search : tool)) };
+  });
 
   server.setRequestHandler("tools/call", async (req) => {
     if (incompatibleNotice) return { content: [{ type: "text", text: incompatibleNotice }], isError: true };

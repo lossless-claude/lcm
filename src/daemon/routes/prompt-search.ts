@@ -15,6 +15,7 @@ import { recordUserPromptEvents } from "../../hooks/user-prompt.js";
 import { safeLogError } from "../../hooks/hook-errors.js";
 import { validateCwd } from "../validate-cwd.js";
 import { searchNativeHistory } from "../../search/native-history.js";
+import { pivotLanguagesFor, pivotQueryHint } from "../../search/pivot-language.js";
 
 const CANDIDATE_LIMIT_MULTIPLIER = 5;
 const MIN_CANDIDATE_LIMIT = 10;
@@ -373,10 +374,12 @@ export function createPromptSearchHandler(config: DaemonConfig): RouteHandler {
         if (logSurfacing) logGroupSurfacing(results, ids, session_id ?? null);
       } catch { /* non-fatal */ }
 
-      const context = format === "context" ? buildMemoryContext(hints, ids) : null;
+      const pivotHint = pivotQueryHint(pivotLanguagesFor(validatedCwd, config.search.pivotLanguage));
+      const context = format === "context" ? buildMemoryContext(hints, ids, pivotHint) : null;
       sendJson(res, 200, {
         hints,
         ids,
+        ...(pivotHint ? { pivotHint } : {}),
         ...(context ? { context } : {}),
         ...(debugResponse ? { debug: debugResponse } : {}),
       });
