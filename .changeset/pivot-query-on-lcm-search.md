@@ -13,8 +13,8 @@ searched together — a hit through either side counts. Without a `pivotQuery`, 
 with one that adds no term, search behaves exactly as before.
 
 The caller is told when to supply one: the `lcm_search` description names the
-project's author language and the pivot language when they differ, every search
-response carries both so a search can be retried with a translation, and the
+project's author language and the pivot language when they differ, a search
+response carries both once a language has been recorded for the project, and the
 `<memory-context>` block the prompt hook emits carries the same one-line hint.
 No model call is added inside the daemon at query time, and `lcm_grep` keeps its
 literal semantics.
