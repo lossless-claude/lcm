@@ -20,7 +20,10 @@ export function createSessionStartCompactHandler(config: DaemonConfig, daemonPor
   return async (_req, res, body) => {
     let input: { session_id?: unknown; cwd?: string };
     try {
-      input = JSON.parse(body || "{}") as { session_id?: unknown; cwd?: string };
+      const parsed: unknown = JSON.parse(body || "{}");
+      // `null` and `[1]` are valid JSON and would reach the reads below as a 500.
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+      input = parsed as { session_id?: unknown; cwd?: string };
     } catch {
       sendJson(res, 400, { error: "Invalid JSON body" });
       return;
@@ -48,8 +51,9 @@ export function createSessionStartCompactHandler(config: DaemonConfig, daemonPor
     }
 
     // The caller is a fire-and-forget hook, and `findUncompacted` aggregates over every
-    // message and summary of the project: answer first, scan off the event loop's turn, so
-    // a large project cannot delay /restore, /ingest or /compact for other sessions.
+    // message and summary of the project: answer first, scan on a later turn. That takes the
+    // scan off this request's latency, not off the event loop — it is synchronous, so while
+    // it runs the daemon still serves nothing else. Moving it to a worker is issue #491.
     sendJson(res, 202, { queued: "scheduled" });
 
     setImmediate(() => {
