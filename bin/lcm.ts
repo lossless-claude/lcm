@@ -14,6 +14,9 @@ import { registerHookCommands } from "../src/cli/hooks.js";
 import { registerDaemonCommands } from "../src/cli/daemon.js";
 import { registerCompactCommand } from "../src/cli/compact.js";
 import { registerImportCommand, registerKnowledgeCommands } from "../src/cli/knowledge.js";
+import { registerHelpCommand, registerUnknownCommandFallback } from "../src/cli/root.js";
+import { registerSetupCommands } from "../src/cli/setup.js";
+import { registerSensitiveCommand } from "../src/cli/sensitive.js";
 
 export { helpRequested } from "../src/cli/support.js";
 
@@ -95,15 +98,7 @@ async function main() {
   // Disable Commander's built-in help entirely — we handle it manually below
   program.helpOption(false);
 
-  // ─── help command ──────────────────────────────────────────────────────────
-  program
-    .command("help [command]")
-    .description("Show help for a command")
-    .action(async (subcommand?: string) => {
-      const { printHelp } = await import("../src/cli-help.js");
-      printHelp(subcommand);
-      exit(0);
-    });
+  registerHelpCommand(program);
 
   registerDaemonCommands(program);
 
@@ -111,68 +106,7 @@ async function main() {
 
   registerHookCommands(program);
 
-  // ─── mcp ───────────────────────────────────────────────────────────────────
-  program
-    .command("mcp")
-    .description("Start the lcm MCP server")
-    .helpOption(false)
-    .option("-h, --help", "Show help")
-    .action(async (opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../src/cli-help.js");
-        printHelp("mcp"); exit(0);
-      }
-      const { startMcpServer } = await import("../src/mcp/server.js");
-      await startMcpServer();
-    });
-
-  // ─── install ───────────────────────────────────────────────────────────────
-  program
-    .command("install")
-    .description("Set up lcm: register hooks, configure daemon, connect MCP")
-    .option("--dry-run", "Preview all changes without writing anything")
-    .helpOption(false)
-    .option("-h, --help", "Show help")
-    .action(async (opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../src/cli-help.js");
-        printHelp("install"); exit(0);
-      }
-      const dryRun: boolean = opts.dryRun ?? false;
-      const { install } = await import("../installer/install.js");
-      if (dryRun) {
-        const { DryRunServiceDeps } = await import("../installer/dry-run-deps.js");
-        console.log("\n  lcm install --dry-run\n");
-        await install(new DryRunServiceDeps());
-        console.log("\n  No changes written.");
-      } else {
-        await install();
-      }
-    });
-
-  // ─── uninstall ─────────────────────────────────────────────────────────────
-  program
-    .command("uninstall")
-    .description("Remove lcm hooks and MCP registration")
-    .option("--dry-run", "Preview removals without writing anything")
-    .helpOption(false)
-    .option("-h, --help", "Show help")
-    .action(async (opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../src/cli-help.js");
-        printHelp("uninstall"); exit(0);
-      }
-      const dryRun: boolean = opts.dryRun ?? false;
-      const { uninstall } = await import("../installer/uninstall.js");
-      if (dryRun) {
-        const { DryRunServiceDeps } = await import("../installer/dry-run-deps.js");
-        console.log("\n  lcm uninstall --dry-run\n");
-        await uninstall(new DryRunServiceDeps());
-        console.log("\n  No changes written.");
-      } else {
-        await uninstall();
-      }
-    });
+  registerSetupCommands(program);
 
   registerDiagnosticsCommands(program, { createDaemonClientOrExit });
 
@@ -182,26 +116,7 @@ async function main() {
 
   registerConnectorsCommands(program);
 
-  // ─── sensitive ─────────────────────────────────────────────────────────────
-  program
-    .command("sensitive [args...]")
-    .description("Manage sensitive patterns for automatic redaction")
-    .helpOption(false)
-    .option("-h, --help", "Show help")
-    .allowUnknownOption(true)
-    .action(async (args: string[], opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../src/cli-help.js");
-        printHelp("sensitive"); exit(0);
-      }
-      const { handleSensitive } = await import("../src/sensitive.js");
-      const { join } = await import("node:path");
-      const { homedir } = await import("node:os");
-      const configPath = lcmPath("config.json");
-      const r = await handleSensitive(args, process.cwd(), configPath);
-      if (r.stdout) stdout.write(r.stdout);
-      exit(r.exitCode);
-    });
+  registerSensitiveCommand(program);
 
   registerImportCommand(program, { createDaemonClientOrExit });
 
@@ -209,13 +124,7 @@ async function main() {
 
   registerKnowledgeCommands(program, { admitCliDatabaseWork, createDaemonClientOrExit });
 
-  // ─── Unknown command fallback ──────────────────────────────────────────────
-  program.on("command:*", async (operands: string[]) => {
-    process.stderr.write(`lcm: unknown command '${operands[0]}'\n\n`);
-    const { printHelp } = await import("../src/cli-help.js");
-    printHelp();
-    exit(1);
-  });
+  registerUnknownCommandFallback(program);
 
   // Handle root-level help and no-args before Commander parses — this prevents
   // Commander from seeing --help at the root level and intercepting it before
