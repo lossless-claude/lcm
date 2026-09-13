@@ -60,6 +60,10 @@ export type DaemonConfig = {
   summarizer: { mock: boolean };
   security: SecurityConfig;
   hooks: { snapshotIntervalSec: number; disableAutoCompact: boolean };
+  promotion: {
+    /** Uses at or above this count make a memory a promotion candidate in `lcm stats`. */
+    enforcementThreshold: number;
+  };
 };
 
 const DEFAULTS: DaemonConfig = {
@@ -118,6 +122,7 @@ const DEFAULTS: DaemonConfig = {
     sensitivePatterns: [],
   },
   hooks: { snapshotIntervalSec: 60, disableAutoCompact: false },
+  promotion: { enforcementThreshold: 3 },
 };
 
 const DENIED_KEYS = new Set(["__proto__", "constructor", "prototype"]);
