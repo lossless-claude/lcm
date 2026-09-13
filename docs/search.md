@@ -85,8 +85,10 @@ untouched, and `lcm grep` / `lcm_grep` are not affected at all.
 The translation is the caller's because the caller is already a model: no model call is added inside
 the daemon at query time. So the caller has to be told when one is worth making. The recorded author
 language and the pivot language travel in three places: the `lcm_search` tool description (when they
-differ), every `/search` response (`authorLanguage`, `pivotLanguage`), and the `<memory-context>`
-block the prompt hook emits.
+differ), a `/search` response (`authorLanguage`, `pivotLanguage`, once a language has been detected
+for the project), and the `<memory-context>` block the prompt hook emits (when they differ). The
+hint is reserved out of `restoration.maxInjectedMemoryBytes` before hints are selected, so the block
+does not grow past its budget.
 
 The ceiling experiment behind the design translated 74 pt-BR questions over three corpora with a
 model instead of a caller: original alone 0.486 hit@5, translation alone 0.649, both ORed with the

@@ -76,9 +76,9 @@ not a language detected in the corpus), pass `pivotQuery`. lcm never translates:
 already a model, so no query-time model call happens inside the daemon.
 
 Both languages reach the caller before and after a search: the `lcm_search` description names them
-when they differ, every search response carries `authorLanguage` and `pivotLanguage` so a search made
-without a translation can be retried with one, and the `<memory-context>` block the prompt hook
-emits carries the same one-line hint. Each side of the pair is tokenised on its own, so neither
+when they differ, a search response carries `authorLanguage` and `pivotLanguage` whenever the project
+has a recorded author language, so a search made without a translation can be retried with one, and
+the `<memory-context>` block the prompt hook emits carries the same one-line hint. Each side of the pair is tokenised on its own, so neither
 language's function words leak into the other's terms, and the two term sets are then searched as
 one — a hit through either side counts. `lcm_grep` is unaffected: its semantics are literal.
 
