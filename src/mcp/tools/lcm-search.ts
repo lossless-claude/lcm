@@ -5,7 +5,7 @@ const BASE_DESCRIPTION =
   "Search native project memory across episodic messages/summaries and promoted memories. Returns separate ranked layer lists. Episodic matches include bounded source context, exact spans and source hashes.";
 
 const PIVOT_QUERY_DESCRIPTION =
-  "Your own translation of `query` into the project's pivot language. Supply it when the author's language differs from the pivot language (both are named in this tool's description and in every search response); the daemon adds its terms to the original query's rather than replacing them. Omit it when the two languages are the same.";
+  "Your own translation of `query` into the project's pivot language. Supply it when the author's language differs from the pivot language (both are named in this tool's description and in every search response); the daemon adds its terms to the original query rather than replacing it. Omit it when the two languages are the same.";
 
 /**
  * The tool as a caller sees it for one project: the base description plus, when
