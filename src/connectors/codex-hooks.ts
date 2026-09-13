@@ -68,6 +68,16 @@ const CODEX_HOOK_SPECS: readonly CodexHookSpec[] = [
     statusMessage: `${LCM_STATUS_PREFIX} preserving context`,
     timeout: 130,
   },
+  {
+    event: "PostToolUse",
+    statusMessage: `${LCM_STATUS_PREFIX} recording tool call`,
+    timeout: 5,
+  },
+  {
+    event: "PostToolUseFailure",
+    statusMessage: `${LCM_STATUS_PREFIX} recording tool failure`,
+    timeout: 5,
+  },
 ] as const;
 
 const MANAGED_STATUS_MESSAGES = new Set(CODEX_HOOK_SPECS.map(spec => spec.statusMessage));

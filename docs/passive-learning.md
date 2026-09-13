@@ -8,8 +8,10 @@ Passive learning captures your Claude Code sessions automatically; durable insig
 
 Two hooks capture events during your session:
 
-- **PostToolUse** — fires after every tool call. Extracts structured metadata (tool name, command, file path) from tool inputs. Never captures raw tool output.
+- **PostToolUse** / **PostToolUseFailure** — fire after every tool call, success or failure. Extract structured metadata (tool name, command, file path) from tool inputs. Never capture raw tool input or output.
 - **UserPromptSubmit** — fires on each user prompt. Detects decisions ("always use X"), role statements ("I'm a data scientist"), and intent patterns.
+
+Both Claude Code and Codex CLI drive the same tool-event extractor: Codex's `PostToolUse` / `PostToolUseFailure` hooks are mapped onto the same shape Claude Code's payload has, so one extractor, one allowlist, and one truncation rule cover both harnesses. Every event records `client` (`claude` or `codex`, the harness that produced it — `claude` by default) and `model` (the model that issued the tool call). Codex's hook payload carries its model directly; Claude's does not, so that column stays null until the session's transcript is next ingested, which backfills it by matching each tool call's id.
 
 Events are written to a **sidecar SQLite database** (`~/.lossless-claude/events/<project-hash>.db`) at <10ms cost. This is separate from the main LCM database — if the daemon is unavailable, events are safely queued.
 
