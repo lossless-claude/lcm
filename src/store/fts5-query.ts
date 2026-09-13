@@ -111,13 +111,57 @@ export function extractQueryTerms(raw: string): string[] {
  * Returns quoted AND and OR expressions over the content terms, or null
  * when the query has no usable terms at all (e.g. empty or punctuation-only).
  */
-export function prepareFts5Query(raw: string): Fts5PreparedQuery | null {
-  const terms = extractQueryTerms(raw);
+export function prepareFts5Query(raw: string, preExtracted?: readonly string[]): Fts5PreparedQuery | null {
+  // `preExtracted` is the term set a caller already derived, and it is not the same thing as
+  // extracting from `raw` again: a pivot query's union is two languages in one string, and a
+  // second pass picks its stopword pack from the mixture, dropping terms one side had kept.
+  const terms = preExtracted ? [...preExtracted] : extractQueryTerms(raw);
   if (terms.length === 0) {
     return null;
   }
   const quoted = terms.map(quote);
   return { terms, and: quoted.join(" "), or: quoted.join(" OR ") };
+}
+
+/**
+ * The caller's query and the caller's own translation of it, combined into one
+ * additive term set.
+ *
+ * Each side is tokenised on its own, so each loses its own language's function
+ * words and neither side's leak into the other: a pt-BR question keeps its
+ * content words while `que`/`como`/`para` go, and the English translation keeps
+ * its own. The union then searches as one query — a hit through either side
+ * counts, which is what an additive expansion means.
+ *
+ * Why additive rather than a replacement: the ceiling experiment behind this
+ * (74 pt-BR questions, three corpora, translations from a model rather than
+ * from the caller) scored the original alone at 0.486 hit@5, the translation
+ * alone at 0.649, both ORed with the original's function words still in at
+ * 0.473, and this combination at 0.716 — and the corpus whose own content is in
+ * the author's language is the one where translating instead of adding loses.
+ *
+ * No pivot query, or one whose terms add nothing, returns `query` untouched, so
+ * the single-language path is unchanged.
+ */
+export function combineWithPivotQuery(query: string, pivotQuery?: string): string {
+  const terms = combinedQueryTerms(query, pivotQuery);
+  return terms ? terms.join(" ") : query;
+}
+
+/**
+ * The final term set for `query` plus `pivotQuery`, or null when the pivot adds nothing and
+ * the single-language path applies.
+ *
+ * Callers pass this to `prepareFts5Query` alongside the combined string. Handing the string
+ * alone to a layer that re-extracts would undo the whole point: each side is tokenised here
+ * against its own language's stopwords, and re-tokenising the mixture picks one pack for both.
+ */
+export function combinedQueryTerms(query: string, pivotQuery?: string): string[] | null {
+  if (!pivotQuery || pivotQuery.trim().length === 0) return null;
+  const terms = extractQueryTerms(query);
+  const pivotTerms = extractQueryTerms(pivotQuery).filter((term) => !terms.includes(term));
+  if (pivotTerms.length === 0) return null;
+  return [...terms, ...pivotTerms];
 }
 
 /**

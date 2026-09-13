@@ -34,6 +34,12 @@ export type DaemonConfig = {
      * memory is unioned unconditionally and is not covered by this switch.
      */
     unionHistoryAcrossGroup: boolean;
+    /**
+     * The language a caller translates its query into when the project's author
+     * writes in another one — the target of `lcm_search`'s `pivotQuery`, not a
+     * detected property of the corpus.
+     */
+    pivotLanguage: string;
   };
   restoration: {
     recentSummaries: number;
@@ -91,7 +97,7 @@ const DEFAULTS: DaemonConfig = {
       insightsMaxAgeDays: 90,
     },
   },
-  search: { unionHistoryAcrossGroup: false },
+  search: { unionHistoryAcrossGroup: false, pivotLanguage: "en" },
   restoration: {
     recentSummaries: 3,
     promptSearchMinScore: 2,

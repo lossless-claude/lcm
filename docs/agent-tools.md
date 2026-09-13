@@ -60,6 +60,7 @@ they do not assert that the excerpt answers the question. Promoted memory output
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `query` | string | ✅ | — | Natural language search query |
+| `pivotQuery` | string | | — | Your own translation of `query` into the pivot language; its terms are added to the original's |
 | `limit` | number | | `5` | Max results per layer |
 | `layers` | string[] | | both | `"episodic"`, `"promoted"`, or both |
 | `tags` | string[] | | — | Filter to entries that include all specified tags |
@@ -72,7 +73,23 @@ lcm_search(query: "authentication decision")
 
 # Search only promoted memories, filtered by tag
 lcm_search(query: "database migration", layers: ["promoted"], tags: ["type:decision"])
+
+# Author language differs from the pivot language: send both forms
+lcm_search(query: "por que trocamos de runner?", pivotQuery: "why did we change the runner?")
 ```
+
+**Cross-language search.** A project's author may write in one language while most of the text that
+answers a query — tool output, code, summaries — is in another. When the author language recorded
+for the project differs from `search.pivotLanguage` (default `en`, the language to translate *into*,
+not a language detected in the corpus), pass `pivotQuery`. lcm never translates: the caller is
+already a model, so no query-time model call happens inside the daemon.
+
+Both languages reach the caller before and after a search: the `lcm_search` description names them
+when they differ, a search response carries `authorLanguage` and `pivotLanguage` whenever the project
+has a recorded author language, so a search made without a translation can be retried with one, and
+the `<memory-context>` block the prompt hook emits carries the same one-line hint. Each side of the pair is tokenised on its own, so neither
+language's function words leak into the other's terms, and the two term sets are then searched as
+one — a hit through either side counts. `lcm_grep` is unaffected: its semantics are literal.
 
 ### lcm_grep
 

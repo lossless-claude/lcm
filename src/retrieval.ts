@@ -68,6 +68,8 @@ export interface GrepInput {
   since?: Date;
   before?: Date;
   limit?: number;
+  /** Terms a caller already extracted (a pivot-query union); re-extracting `query` would lose them. */
+  terms?: readonly string[];
 }
 
 export interface GrepResult {
@@ -226,9 +228,9 @@ export class RetrievalEngine {
   }
 
   grepSync(input: GrepInput): GrepResult {
-    const { query, mode, scope, conversationId, since, before, limit } = input;
+    const { query, mode, scope, conversationId, since, before, limit, terms } = input;
 
-    const searchInput = { query, mode, conversationId, since, before, limit };
+    const searchInput = { query, mode, conversationId, since, before, limit, terms };
 
     let messages: MessageSearchResult[] = [];
     let summaries: SummarySearchResult[] = [];

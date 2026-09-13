@@ -78,8 +78,8 @@ export class PromotedStore {
     return (this.db.prepare("SELECT * FROM promoted WHERE id = ?").get(id) as PromotedRow) ?? null;
   }
 
-  search(query: string, limit: number, filterTags?: string[], projectId?: string): SearchResult[] {
-    const prepared = prepareFts5Query(query);
+  search(query: string, limit: number, filterTags?: string[], projectId?: string, terms?: readonly string[]): SearchResult[] {
+    const prepared = prepareFts5Query(query, terms);
     if (!prepared) return [];
 
     // OR (not AND): natural-language questions almost never co-occur in a

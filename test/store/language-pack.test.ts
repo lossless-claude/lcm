@@ -10,7 +10,12 @@ import {
   packStopwordsFor,
   parseLanguagePackReply,
 } from "../../src/store/language-pack.js";
-import { extractQueryTerms } from "../../src/store/fts5-query.js";
+import {
+  combineWithPivotQuery,
+  combinedQueryTerms,
+  extractQueryTerms,
+  prepareFts5Query,
+} from "../../src/store/fts5-query.js";
 
 const PT_WORDS = ["a", "o", "que", "como", "para", "foi", "não", "você", "isso", "de", "do", "da", "em", "um", "uma", "os", "as", "com", "por", "se", "mas", "ou", "já", "ainda", "também", "está", "são", "tem", "era", "sobre", "onde", "quando", "qual"];
 
@@ -119,5 +124,40 @@ describe("ensureLanguagePack", () => {
     expect(await ensureLanguagePack("pt-BR", thrower)).toBe("failed");
     expect(await ensureLanguagePack("../etc", summarize)).toBe("failed");
     warn.mockRestore();
+  });
+});
+
+describe("a pivot union survives the layers below it", () => {
+  // A pack reaches MIN_PACK_HITS only on the mixture: it holds one content word from each
+  // side, so neither side alone activates it and the union does. Every word it lists is then
+  // dropped — including the two the pivot exists to contribute.
+  const SPLIT = ["compactação", "keep"];
+
+  const query = "como a compactação decide o que manter";
+  const pivot = "how does compaction decide what to keep";
+
+  it("re-extracting the combined string drops terms the union had kept", () => {
+    writePack("pt", PT_WORDS);
+    writePack("split", SPLIT);
+
+    const union = combinedQueryTerms(query, pivot)!;
+    expect(union).toEqual(expect.arrayContaining(["compactação", "keep"]));
+
+    // The bug this guards: the same string, tokenised once more, is not the same term set.
+    const reparsed = extractQueryTerms(combineWithPivotQuery(query, pivot));
+    expect(reparsed).not.toContain("compactação");
+    expect(reparsed).not.toContain("keep");
+  });
+
+  it("prepareFts5Query keeps the union when it is handed the terms", () => {
+    writePack("pt", PT_WORDS);
+    writePack("split", SPLIT);
+
+    const combined = combineWithPivotQuery(query, pivot);
+    const union = combinedQueryTerms(query, pivot)!;
+
+    expect(prepareFts5Query(combined, union)!.terms).toEqual(union);
+    // Without them, the layer below silently searches a smaller set.
+    expect(prepareFts5Query(combined)!.terms).not.toEqual(union);
   });
 });

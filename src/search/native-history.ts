@@ -41,8 +41,10 @@ function anchorSpan(content: string, hint: string): { start: number; length: num
   return { start: 0, length: 0 };
 }
 
-function matchedAnchor(db: DatabaseSync, hit: HistoryHit, query: string, content: string) {
-  const prepared = prepareFts5Query(query);
+function matchedAnchor(db: DatabaseSync, hit: HistoryHit, query: string, content: string, terms?: readonly string[]) {
+  // The same term set that ranked the hit: highlighting a narrower one would point at a
+  // span the ranking never matched on.
+  const prepared = prepareFts5Query(query, terms);
   if (!prepared) return anchorSpan(content, hit.snippet);
   const marker = randomUUID();
   const open = `<${marker}>`;
@@ -217,12 +219,12 @@ export async function rankNativeHistory(
 
 function rankNativeHistorySync(
   db: DatabaseSync,
-  input: { query: string; limit: number },
+  input: { query: string; limit: number; terms?: readonly string[] },
 ): RankedHistoryHit[] {
   const messages = new ConversationStore(db);
   const summaries = new SummaryStore(db);
   const engine = new RetrievalEngine(messages, summaries);
-  const result = engine.grepSync({ query: input.query, mode: "full_text", scope: "both" });
+  const result = engine.grepSync({ query: input.query, mode: "full_text", scope: "both", terms: input.terms });
   const sessionOf = new Map<number, string | null>();
   const attach = (hits: HistoryHit[]): RankedHistoryHit[] => {
     const ranked: RankedHistoryHit[] = [];
@@ -309,7 +311,7 @@ function sessionSizes(
 /** Read one request's ranked history and bounded source context inside a savepoint on the caller's connection. */
 export async function searchNativeHistory(
   db: DatabaseSync,
-  input: { query: string; limit: number; project: ProjectRef },
+  input: { query: string; limit: number; project: ProjectRef; terms?: readonly string[] },
 ): Promise<NativeHistoryHit[]> {
   const messages = new ConversationStore(db);
   const summaries = new SummaryStore(db);
@@ -326,7 +328,7 @@ export async function searchNativeHistory(
       if (source) {
         matches.push({
           ...hit,
-          ...sourceContext(source.content, matchedAnchor(db, hit, input.query, source.content)),
+          ...sourceContext(source.content, matchedAnchor(db, hit, input.query, source.content, input.terms)),
           project: input.project,
         });
       }

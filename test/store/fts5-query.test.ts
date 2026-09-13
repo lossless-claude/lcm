@@ -1,10 +1,15 @@
-import { describe, it, expect } from "vitest";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import {
+  combineWithPivotQuery,
   extractQueryTerms,
   prepareFts5Query,
   shouldRetryWithLike,
   likePlanForPreparedQuery,
 } from "../../src/store/fts5-query.js";
+import { invalidateLanguagePacks } from "../../src/store/language-pack.js";
 
 describe("extractQueryTerms", () => {
   it("drops stopwords and keeps content words", () => {
@@ -100,5 +105,40 @@ describe("likePlanForPreparedQuery", () => {
       "LOWER(content) LIKE ? ESCAPE '\\'",
     ]);
     expect(plan.args).toEqual(["%undo%", "%broken%", "%release%"]);
+  });
+});
+
+describe("combineWithPivotQuery", () => {
+  const packDir = mkdtempSync(join(tmpdir(), "lcm-pivot-pack-"));
+  const packWords = ["o", "e", "os", "as", "um", "de", "do", "da", "em", "na", "se", "ao",
+    "que", "como", "para", "foi", "não", "por", "isso", "com", "uma", "quando", "onde", "qual",
+    "desse", "nesse", "pelo", "pela", "assim", "então", "porque", "sobre", "entre", "desde", "ainda", "também",
+    "aquele", "aquilo", "cada", "todos", "muito", "pouco", "sempre", "nunca", "talvez"];
+
+  beforeEach(() => {
+    process.env.LCM_LANGUAGES_DIR = packDir;
+    writeFileSync(join(packDir, "pt-BR.json"), JSON.stringify({ version: 1, tag: "pt-BR", stopwords: packWords, generatedAt: "" }));
+    invalidateLanguagePacks();
+  });
+  afterEach(() => {
+    delete process.env.LCM_LANGUAGES_DIR;
+    invalidateLanguagePacks();
+  });
+
+  it("leaves the query untouched when no pivot query is supplied", () => {
+    expect(combineWithPivotQuery("como revertemos o release quebrado?")).toBe("como revertemos o release quebrado?");
+    expect(combineWithPivotQuery("como foi isso?", "   ")).toBe("como foi isso?");
+  });
+
+  it("leaves the query untouched when the pivot query adds no term", () => {
+    expect(combineWithPivotQuery("broken release", "the broken release")).toBe("broken release");
+  });
+
+  it("adds the pivot terms and drops each side's own function words", () => {
+    const combined = combineWithPivotQuery(
+      "como foi que revertemos o release quebrado?",
+      "how did we roll back the broken release?",
+    );
+    expect(combined.split(" ")).toEqual(["revertemos", "release", "quebrado", "roll", "back", "broken"]);
   });
 });
