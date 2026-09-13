@@ -147,7 +147,12 @@ function pruneMarker(path: string, pid: number, ageOut = true): boolean {
   try {
     if (isProcessAlive(pid) && (!ageOut || Date.now() - statSync(path).mtimeMs <= MARKER_MAX_AGE_MS)) return true;
     unlinkSync(path);
-  } catch { /* already gone, or racing another pruner */ }
+  } catch {
+    // Already gone, racing another pruner, or unreadable. Only the first of those means
+    // the marker is not there any more, and this cannot tell them apart: keep a live pid's
+    // entry, so a stop that is waiting on it does not stop waiting on a guess.
+    return isProcessAlive(pid);
+  }
   return false;
 }
 
@@ -179,7 +184,7 @@ function sweepMarkers(directory: string, ageOut = true): { pid: number; path: st
 export function registerDaemonActivity(pidFilePath: string): () => void {
   const directory = markersDir(pidFilePath);
   mkdirSync(directory, { recursive: true });
-  startingDaemons(pidFilePath); // prune dead markers left by a crashed process before adding ours
+  startingDaemons(pidFilePath, true); // prune dead markers left by a crashed process before adding ours
   const path = join(directory, `daemon.starting.${process.pid}.${randomUUID()}`);
   writeFileSync(path, "", { flag: "wx" });
   const refresh = setInterval(() => {
@@ -195,17 +200,21 @@ export function registerDaemonActivity(pidFilePath: string): () => void {
 /**
  * Every startup marker across both directories, dead and aged-out ones pruned on the way.
  *
- * A directory that cannot be read is reported and treated as holding no markers. That is a
- * deliberate policy, not an oversight: this is a lifecycle boundary — `registerDaemonActivity`
- * and `stopDaemon` — and neither registering activity nor stopping the daemon may fail because
- * a `tmp` directory is momentarily unreadable. The marker scan is best-effort by contract.
+ * `failOpen` is the difference between the two callers, and it is not a convenience. The
+ * registration sweep is opportunistic housekeeping: an unreadable directory there must not
+ * stop a caller from writing its own marker, so it is reported and skipped. `stopDaemon`
+ * reads the same markers to decide whether work is in flight, and an unreadable directory
+ * tells it nothing — answering "none" would let it stop a daemon mid-write. That path fails
+ * closed and propagates.
  */
-function startingDaemons(pidFilePath: string): { pid: number; path: string }[] {
+function startingDaemons(pidFilePath: string, failOpen = false): { pid: number; path: string }[] {
+  const legacy = legacyMarkersDir(pidFilePath);
   const entries: { pid: number; path: string }[] = [];
-  for (const directory of [markersDir(pidFilePath), legacyMarkersDir(pidFilePath)]) {
+  for (const directory of [markersDir(pidFilePath), legacy]) {
     try {
-      entries.push(...sweepMarkers(directory, directory !== legacyMarkersDir(pidFilePath)));
+      entries.push(...sweepMarkers(directory, directory !== legacy));
     } catch (error) {
+      if (!failOpen) throw error;
       console.error(`[lcm] could not scan daemon markers in ${directory}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }

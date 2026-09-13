@@ -286,7 +286,7 @@ describe("ensureDaemon", () => {
     unregister();
   });
 
-  it("stopDaemon proceeds when the markers directory cannot be read", async () => {
+  it("stopDaemon fails closed when the markers directory cannot be read", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-lifecycle-stopscan-"));
     tempDirs.push(tempDir);
     const pidFile = join(tempDir, "daemon.pid");
@@ -295,8 +295,10 @@ describe("ensureDaemon", () => {
     chmodSync(markers, 0o300); // write+traverse, no list
     try {
       const fetchFn = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
-      const result = await stopDaemon({ port: 1, pidFilePath: pidFile, timeoutMs: 50, _fetchOverride: fetchFn });
-      expect(result.stopped).toBe(true);
+      // An unreadable directory says nothing about what is in flight; answering "nothing is
+      // starting" would let the stop proceed over a live registration.
+      await expect(stopDaemon({ port: 1, pidFilePath: pidFile, timeoutMs: 50, _fetchOverride: fetchFn }))
+        .rejects.toThrow();
     } finally {
       chmodSync(markers, 0o700);
     }
