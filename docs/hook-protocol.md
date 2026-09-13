@@ -12,7 +12,7 @@ lcm <hook-command> < <stdin-json>
 
 When installed as a Claude Code plugin, hooks run the prebuilt bundle directly, in exec form: `.claude-plugin/plugin.json` declares `"command": "node"` with `"args": ["${CLAUDE_PLUGIN_ROOT}/bundle/lcm.js", "<hook-command>", ...]`. There is no shell and no launcher: Claude Code resolves `node`, spawns it with those arguments, and pipes the payload on stdin. The commands below are the same whichever way they are started.
 
-A hook that cannot do its work fails open: it exits 0, prints nothing, and the first hook of the session writes one line on stderr naming the command that repairs it (the daemon did not start, or a newer daemon is running). A daemon whose version is incompatible with the hook (`docs/design/self-contained-plugin.md`) makes every hook of that session a no-op. `lcm doctor` reports the same conditions.
+A hook that cannot do its work fails open: it exits 0, prints nothing it would not print without a daemon (UserPromptSubmit still emits its learning instruction), and the first hook of the session writes one line on stderr naming the command that repairs it (the daemon did not start, or a newer daemon is running). A daemon whose version is incompatible with the hook (`docs/design/self-contained-plugin.md`) makes every hook of that session a no-op. `lcm doctor` reports the same conditions.
 
 ## PreCompact Hook
 

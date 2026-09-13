@@ -74,7 +74,9 @@ function readLcmPluginRegistration(deps: DoctorDeps, settings: Record<string, un
     const plugins = registry?.plugins && typeof registry.plugins === "object" ? registry.plugins : {};
     key = Object.keys(plugins).find(k => k === "lcm" || k.startsWith("lcm@"));
     const entries = key ? plugins[key] : undefined;
-    const entry = (Array.isArray(entries) ? entries[0] : entries) as { installPath?: unknown } | undefined;
+    // The registry holds one install per scope; the user-scope one is the one whose hooks run here.
+    const list = (Array.isArray(entries) ? entries : [entries]) as Array<{ scope?: unknown; installPath?: unknown } | undefined>;
+    const entry = list.find((e) => e?.scope === "user") ?? list[0];
     if (typeof entry?.installPath === "string") installPath = entry.installPath;
   } catch { /* no registry — plugin not installed */ }
   if (!key) return { installed: false, enabled: false };

@@ -174,6 +174,7 @@ describe("ensureDaemon", () => {
     expect(daemonOwnership({ status: "ok", version: "0.13.1", build: "b0" }, { version: "0.13.0", build: "b1" })).toBe("older-caller");
     // A prerelease is not a release: it falls back to string equality, so the release replaces it.
     expect(own("0.13.0-rc.1", "0.13.0")).toBe("restart");
+    expect(own("0.13.0", "0.12.0-rc.1")).toBe("older-caller"); // a prerelease caller never replaces a release daemon
     expect(isOlderVersion("0.12.0", "0.13.0")).toBe(true);
     expect(isOlderVersion("0.13.1", "0.13.0")).toBe(false);
     expect(isOlderVersion("latest", "0.13.0")).toBe(false);

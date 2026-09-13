@@ -2,7 +2,7 @@
 name: memory
 description: Run one lcm CLI command and show its output verbatim. Usage: /memory <command> [options]
 disable-model-invocation: true
-allowed-tools: Bash(lcm *) Bash(node * bundle/lcm.js *)
+allowed-tools: Bash(lcm *) Bash(node *bundle/lcm.js*)
 ---
 
 # memory

@@ -17,9 +17,15 @@ export function warnOncePerSession(sessionId: string, key: string, line: string)
   process.stderr.write(line + "\n");
 }
 
-/** True when this process runs from the plugin bundle (`bundle/lcm.js` or `bundle/mcp-server.js`) rather than the npm CLI. */
+/**
+ * True when this process runs from the plugin bundle (`bundle/lcm.js` or
+ * `bundle/mcp-server.js`) rather than the npm CLI: the directory is named `bundle`
+ * and carries both entries, so a stray directory of that name does not qualify.
+ */
 export function runningFromPluginBundle(entry: string | undefined = process.argv[1]): boolean {
-  return Boolean(entry) && basename(dirname(entry!)) === "bundle";
+  if (!entry) return false;
+  const dir = dirname(entry);
+  return basename(dir) === "bundle" && existsSync(join(dir, "lcm.js")) && existsSync(join(dir, "mcp-server.js"));
 }
 
 /** The bundle's CLI next to whichever bundle entry is running; the npm CLI otherwise. */

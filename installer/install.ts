@@ -311,7 +311,7 @@ async function installClaudeCode(deps: ServiceDeps): Promise<HarnessOutcome> {
   // packageRoot() resolves the checkout, dist/ and bundle/ layouts alike.
   const skillSrc = join(packageRoot(), "skills", "memory", "SKILL.md");
   const skillDst = join(homedir(), ".claude", "skills", "memory");
-  if (skillSrc) {
+  if (deps.existsSync(skillSrc)) {
     deps.mkdirSync(skillDst, { recursive: true });
     deps.writeFileSync(join(skillDst, "SKILL.md"), deps.readFileSync(skillSrc, "utf8"));
     console.log(`Installed the /memory skill to ${skillDst}`);

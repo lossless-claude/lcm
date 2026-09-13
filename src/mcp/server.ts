@@ -1,7 +1,7 @@
 import { Server } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { cliEntrypoint } from "../cli-entrypoint.js";
-import { repairCommand } from "../hooks/fail-open.js";
+import { daemonNotice } from "../hooks/fail-open.js";
 import { DaemonClient } from "../daemon/client.js";
 import { loadDaemonConfig } from "../daemon/config.js";
 import { ensureDaemon, registerDaemonActivity } from "../daemon/lifecycle.js";
@@ -202,11 +202,11 @@ export async function startMcpServer(): Promise<void> {
     spawnArgs: [lcmBin, "daemon", "start", "--automatic"],
   });
   // Newest wins: an incompatible newer daemon is never used. The server still answers
-  // tools/list so the client stays connected, but every call reports the repair.
-  const incompatibleNotice = daemon.ownership === "incompatible"
-    ? `lcm daemon v${daemon.daemonVersion} is newer than this MCP server (v${PKG_VERSION ?? "unknown"}) and incompatible. Repair: ${repairCommand()}`
-    : undefined;
-  if (incompatibleNotice) process.stderr.write(`${incompatibleNotice}\n`);
+  // tools/list so the client stays connected, but every call reports the repair. One
+  // helper interprets every ownership verdict for hooks and this server alike.
+  const notice = daemonNotice(daemon, PKG_VERSION);
+  if (notice) process.stderr.write(`${notice.line}\n`);
+  const incompatibleNotice = notice && !notice.usable ? notice.line : undefined;
 
   const client = new DaemonClient(`http://127.0.0.1:${port}`);
   const server = new Server({ name: "lcm", version: PKG_VERSION ?? "unknown" }, { capabilities: { tools: {} } });

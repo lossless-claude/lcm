@@ -17,7 +17,7 @@
 // Usage: node scripts/build-bundle.mjs [outDir]   (default: ./bundle)
 
 import { build } from "esbuild";
-import { cpSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,7 +25,11 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 export async function buildBundle({ root = repoRoot, outDir = join(root, "bundle"), version, buildId } = {}) {
   version ??= JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
-  buildId ??= readFileSync(join(root, "dist", "BUILD_ID"), "utf8").trim();
+  const buildIdPath = join(root, "dist", "BUILD_ID");
+  if (buildId === undefined && !existsSync(buildIdPath)) {
+    throw new Error(`build-bundle: ${buildIdPath} missing — run \`npm run build\` first`);
+  }
+  buildId ??= readFileSync(buildIdPath, "utf8").trim();
 
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
@@ -70,7 +74,8 @@ function isMain() {
 }
 
 if (isMain()) {
-  const outDir = process.argv[2];
+  // Resolved against the repository, like esbuild's own outfile, never against cwd.
+  const outDir = process.argv[2] ? resolve(repoRoot, process.argv[2]) : undefined;
   const result = await buildBundle(outDir ? { outDir } : {});
   console.log(`build-bundle: ${result.outDir} (v${result.version}, build ${result.buildId})`);
 }

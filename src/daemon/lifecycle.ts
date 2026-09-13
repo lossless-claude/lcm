@@ -80,7 +80,8 @@ export function daemonOwnership(health: HealthResponse, expected: { version?: st
     if (cmp > 0) return "restart";
     if (cmp < 0) return compatibleComponent(mine) === compatibleComponent(theirs) ? "older-caller" : "incompatible";
   } else if (expected.version && health.version && health.version !== expected.version) {
-    return "restart"; // unparseable on one side: fall back to equality
+    // Unparseable on one side (a prerelease): a release daemon is never replaced by it.
+    return theirs ? "older-caller" : "restart";
   }
   if (expected.build && health.build && health.build !== expected.build) return "restart";
   return "current";
@@ -174,7 +175,11 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
     if (ownership === "incompatible") {
       return { connected: false, port: opts.port, spawned: false, ownership, daemonVersion: health.version };
     }
-    // Version/build check — if the caller is newer, kill and respawn
+    // Version/build check — if the caller is newer, kill and respawn. A caller that
+    // may not spawn (SessionEnd) must not kill either: it reports and leaves it running.
+    if (ownership === "restart" && (opts.noSpawn || opts._skipSpawn)) {
+      return { connected: false, port: opts.port, spawned: false, ownership, daemonVersion: health.version };
+    }
     if (ownership === "restart") {
       // Prefer the pid the daemon reports about itself; the PID file may have drifted.
       let pid = health.pid;
@@ -208,12 +213,16 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
           // Same verdict as the first probe: a daemon that was still publishing its PID
           // must not slip past the ownership check. An older one is replaced below.
           const ownership = daemonOwnership(retry, { version: opts.expectedVersion, build: opts.expectedBuild });
-          if (ownership !== "restart") {
-            return { connected: ownership !== "incompatible", port: opts.port, spawned: false, ownership, daemonVersion: retry.version };
+          if (ownership !== "restart" || opts.noSpawn || opts._skipSpawn) {
+            const connected = ownership !== "incompatible" && ownership !== "restart";
+            return { connected, port: opts.port, spawned: false, ownership, daemonVersion: retry.version };
           }
-          if (pid !== process.pid) {
-            try { process.kill(pid, "SIGTERM"); await sleep(500); } catch { /* fall through to spawn */ }
+          // Signal the pid the daemon reports about itself, not the one read before the wait.
+          const running = retry.pid ?? pid;
+          if (running !== process.pid) {
+            try { process.kill(running, "SIGTERM"); await sleep(500); } catch { /* fall through to spawn */ }
           }
+          cleanStalePid(opts.pidFilePath);
         }
       }
     } catch { /* ignore */ }
