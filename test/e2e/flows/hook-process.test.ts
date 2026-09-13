@@ -2,13 +2,13 @@
  * E2E Flow Tests: Hook process path (Flow 20)
  *
  * Every other hook test imports the handler directly. This one runs the real
- * entry point Claude Code uses — `node lcm.mjs <cmd>` with JSON on stdin — so
+ * entry point Claude Code uses — `node dist/bin/lcm.js <cmd>` with JSON on stdin — so
  * readStdin, dispatchHook, bootstrap and auto-heal are exercised together.
  *
  * Isolation: the child gets a throwaway HOME whose config.json points at the
  * harness daemon, so nothing touches ~/.lossless-claude or ~/.claude.
  *
- * Requires a fresh `npm run build` — the wrapper runs dist/.
+ * Requires a fresh `npm run build`. The plugin runs the same code from bundle/lcm.js; plugin-bundle.test.ts covers that entry.
  */
 
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
@@ -21,7 +21,6 @@ import { createHarness, type HarnessHandle } from "../harness.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..", "..");
-const WRAPPER = join(REPO_ROOT, "lcm.mjs");
 const DIST_CLI = join(REPO_ROOT, "dist", "bin", "lcm.js");
 
 const HOOK_COMMANDS = [
@@ -42,7 +41,7 @@ interface HookRun { status: number | null; stdout: string; stderr: string }
 // blocking spawnSync would deadlock every hook that talks to it.
 function runHook(args: readonly string[], stdin: string): Promise<HookRun> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [WRAPPER, ...args], {
+    const child = spawn(process.execPath, [DIST_CLI, ...args], {
       // LCM_HOME, not just HOME: the suite sets one per test file, and it would otherwise
       // be inherited here and win over the fake home this flow set up.
       env: {
@@ -96,7 +95,7 @@ afterAll(async () => {
   }
 });
 
-describe("Flow 20: hooks via `node lcm.mjs` with piped stdin", { timeout: 120_000 }, () => {
+describe("Flow 20: hooks via `node dist/bin/lcm.js` with piped stdin", { timeout: 120_000 }, () => {
   it("compact --hook prints the summary and exits 0", async () => {
     const h = handle!;
     const session_id = "e2e-proc-compact";

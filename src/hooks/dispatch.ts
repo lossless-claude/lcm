@@ -26,12 +26,14 @@ export async function dispatchHook(
   // PreCompact fires (SessionStart ensures it). Skipping saves ~5s of
   // ensureDaemon timeout budget under the hook runner's tight deadline.
   if (command !== "compact") {
-    // Lazy bootstrap: create config + start daemon on first hook fire per session
+    // Lazy bootstrap: create config + start daemon on first hook fire per session.
+    // A session whose daemon is incompatible fails open: exit 0, nothing on stdout.
     try {
       const { session_id } = JSON.parse(stdinText || "{}");
       if (session_id) {
         const { ensureBootstrapped } = await import("../bootstrap.js");
-        await ensureBootstrapped(session_id);
+        const { usable } = await ensureBootstrapped(session_id);
+        if (!usable) return { exitCode: 0, stdout: "" };
       }
     } catch {} // bootstrap failure must not block hooks
   }

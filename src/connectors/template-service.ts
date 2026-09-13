@@ -1,11 +1,14 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Agent, ConnectorType } from "./types.js";
 import { LCM_MARKERS, LCM_TAG } from "./constants.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const TEMPLATES_DIR = join(__dirname, "templates");
+// The plugin bundle carries the templates under assets/templates next to it; dist/ and src/ keep them beside this module.
+const TEMPLATES_DIR = existsSync(join(__dirname, "assets", "templates"))
+  ? join(__dirname, "assets", "templates")
+  : join(__dirname, "templates");
 
 function loadFile(path: string): string {
   return readFileSync(join(TEMPLATES_DIR, path), "utf-8");

@@ -17,7 +17,10 @@ describe("package.json", () => {
     expect(pkg.scripts).toHaveProperty("prepublishOnly", "npm run build");
   });
 
-  it("ships mcp.mjs as a fallback MCP entrypoint", () => {
-    expect(pkg.files).toContain("mcp.mjs");
+  it("ships no launcher shims: the plugin runs bundle/, npm runs dist/", () => {
+    expect(pkg.files).not.toContain("mcp.mjs");
+    expect(pkg.files).not.toContain("lcm.mjs");
+    expect(pkg.files).not.toContain("bundle/");
+    expect(pkg.files).toContain("dist/");
   });
 });

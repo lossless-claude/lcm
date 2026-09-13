@@ -1,5 +1,6 @@
 import type { DaemonClient } from "../daemon/client.js";
 import { ensureDaemon } from "../daemon/lifecycle.js";
+import { PKG_VERSION } from "../daemon/version.js";
 import { loadDaemonConfig } from "../daemon/config.js";
 import { readAuthToken } from "../daemon/auth.js";
 import { join } from "node:path";
@@ -137,6 +138,7 @@ export async function handleSessionEnd(
     pidFilePath,
     spawnTimeoutMs: 0,
     noSpawn: true,
+    expectedVersion: PKG_VERSION,
   });
   if (!connected) return { exitCode: 0, stdout: "" };
 

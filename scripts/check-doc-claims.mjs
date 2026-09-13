@@ -23,7 +23,7 @@
 //
 // Coverage comes from `git ls-files`, never from a list written by hand. Excluded on
 // purpose: CHANGELOG.md and .changeset/ (records of the past), docs/design/ (proposals),
-// plans/ (untracked working notes).
+// plans/ (untracked working notes), bundle/ (a build artifact: copies of the templates).
 //
 // Both sides abort when empty: an empty code side would pass every claim, which is the
 // exact failure this script exists to catch.
@@ -57,7 +57,7 @@ const root = process.argv[2] ?? process.cwd();
 
 const PRODUCTION_DIRS = ["src", "bin", "hooks", "installer"];
 const CODE_DIRS = [...PRODUCTION_DIRS, "scripts", "test", ".github/workflows"];
-const EXCLUDED_DOCS = /^(CHANGELOG\.md|\.changeset\/|docs\/design\/|plans\/)/;
+const EXCLUDED_DOCS = /^(CHANGELOG\.md|\.changeset\/|docs\/design\/|plans\/|bundle\/)/;
 
 // Flags Commander provides on (almost) every command, whether or not the source explicitly
 // re-declares them: -V/--version is set once on `program`, and every subcommand keeps
@@ -91,6 +91,7 @@ const INTERNAL_ENV = new Set([
   "LCM_REAL_BENCH_FILE", // test/bench/real-corpus.test.ts: fixed bench file for the real-corpus test
   "LCM_REAL_BENCH_PROJECT", // test/bench/real-corpus.test.ts: fixed project for the real-corpus test
   "LCM_SKIP_CACHE_SYNC", // scripts/sync-plugin-cache.sh + ci.yml: skip the plugin cache sync step
+  "LCM_SYNC_BUNDLE", // scripts/sync-plugin-cache.sh: set by build:bundle so only a freshly built bundle/ is mirrored
 ]);
 
 function walk(dir, out = []) {

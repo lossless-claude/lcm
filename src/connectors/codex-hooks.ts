@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { cliEntrypoint } from "../cli-entrypoint.js";
+import { runningFromPluginBundle } from "../hooks/fail-open.js";
 
 const LCM_STATUS_PREFIX = "LCM lifecycle:";
 
@@ -16,6 +17,8 @@ interface CodexHookSpec {
 export interface CodexHookCommandOptions {
   nodePath?: string;
   cliPath?: string;
+  /** Override for the write (dry runs); defaults to the real filesystem. */
+  writeFile?: (path: string, data: string) => void;
 }
 
 export type ConnectorInstallStatus = "not-installed" | "partial" | "installed";
@@ -78,12 +81,15 @@ function quoteShellArgument(value: string): string {
 }
 
 export function buildCodexHookCommand(options: CodexHookCommandOptions = {}): string {
+  if (!options.cliPath && runningFromPluginBundle()) {
+    // The hooks would name a versioned plugin-cache path the next plugin update deletes.
+    throw new Error("Codex hooks must name the npm CLI, not the plugin bundle: run this from the npm CLI (npm install -g @lossless-claude/lcm) instead");
+  }
   const nodePath = resolve(options.nodePath ?? process.execPath);
   const argvPath = process.argv[1];
   const argvBase = argvPath ? basename(argvPath) : "";
   const invokedThroughLcm = argvBase === "lcm" || /^lcm\.(?:js|mjs)$/.test(argvBase);
-  const installedEntrypoint = fileURLToPath(new URL("../../bin/lcm.js", import.meta.url));
-  const cliPath = options.cliPath ?? (invokedThroughLcm ? argvPath : installedEntrypoint);
+  const cliPath = options.cliPath ?? (invokedThroughLcm ? argvPath : cliEntrypoint());
   return `${quoteShellArgument(nodePath)} ${quoteShellArgument(resolve(cliPath))} codex-hook`;
 }
 
@@ -166,8 +172,11 @@ export function installCodexHooks(
     hooks[spec.event] = [...retained, managedGroup(spec, command)];
   }
 
-  mkdirSync(dirname(filePath), { recursive: true });
-  writeFileSync(filePath, JSON.stringify({ ...config, hooks }, null, 2) + "\n");
+  const writeFile = options.writeFile ?? ((path, data) => {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, data);
+  });
+  writeFile(filePath, JSON.stringify({ ...config, hooks }, null, 2) + "\n");
 }
 
 export function removeCodexHooks(filePath: string): boolean {

@@ -129,7 +129,8 @@ describe("Codex native lifecycle adapter", () => {
     expect(await dispatchCodexHook(payload(event, { stop_hook_active: true }), deps)).toEqual({ exitCode: 0, stdout: "" });
     const shortDeadline = event === "Interrupt" || event === "SessionEnd";
     expect(post).toHaveBeenCalledExactlyOnceWith("/ingest", { ...identity, client: "codex" }, expect.objectContaining({ timeoutMs: shortDeadline ? 1500 : 5000 }));
-    if (shortDeadline) expect(connect).not.toHaveBeenCalled();
+    // Short-deadline events only probe a running daemon (noSpawn); they never start one.
+    expect(connect).toHaveBeenCalledExactlyOnceWith(identity.session_id, shortDeadline);
   });
 
   it("ingests before compacting and leaves restore to the compact SessionStart", async () => {
