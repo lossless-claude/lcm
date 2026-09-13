@@ -4,10 +4,67 @@ import { join } from "node:path";
 import { collectEventStats } from "./db/events-stats.js";
 import { RecallStore, type RecallStats } from "./db/recall.js";
 import { PromotedStore } from "./db/promoted.js";
+import { isSignalTagged } from "./db/votes.js";
 import { loadDaemonConfig } from "./daemon/config.js";
 import { lcmPath } from "./lcm-home.js";
 
 export type { RecallStats };
+
+export interface VoteObjection {
+  voteId: string;
+  reason: string;
+}
+
+export interface PromotionCandidate {
+  id: string;
+  content: string;
+  useCount: number;
+  plusOne: number;
+  minusOne: number;
+  objections: VoteObjection[];
+}
+
+export interface ContestedMemory {
+  id: string;
+  content: string;
+  objections: VoteObjection[];
+}
+
+/**
+ * Promotion candidates (heavily used, for a human to consider enforcing structurally) and
+ * contested memories (at least one `-1`), read from votes and usage reports already stored
+ * on this database's own promoted rows. Votes are always written into the database that
+ * holds their target, so no cross-project join is needed here.
+ */
+function computePromotionSections(
+  db: DatabaseSync,
+  enforcementThreshold: number,
+): { promotionCandidates: PromotionCandidate[]; contested: ContestedMemory[] } {
+  const promotedStore = new PromotedStore(db);
+  const active = promotedStore.getAll().filter((r) => !isSignalTagged(JSON.parse(r.tags) as string[]));
+  if (active.length === 0) return { promotionCandidates: [], contested: [] };
+
+  const feedback = new RecallStore(db).getFeedback(active.map((r) => r.id));
+  const voteCounts = promotedStore.getVoteCounts();
+
+  const promotionCandidates: PromotionCandidate[] = [];
+  const contested: ContestedMemory[] = [];
+
+  for (const row of active) {
+    const useCount = feedback.get(row.id)?.usageCount ?? 0;
+    const votes = voteCounts.get(row.id) ?? { plusOne: 0, minusOne: 0, objections: [] };
+    const objections: VoteObjection[] = votes.objections.map((o) => ({ voteId: o.voteId, reason: o.reason }));
+
+    if (useCount >= enforcementThreshold) {
+      promotionCandidates.push({ id: row.id, content: row.content, useCount, plusOne: votes.plusOne, minusOne: votes.minusOne, objections });
+    }
+    if (votes.minusOne > 0) {
+      contested.push({ id: row.id, content: row.content, objections });
+    }
+  }
+
+  return { promotionCandidates, contested };
+}
 
 interface ConversationStats {
   conversationId: number;
@@ -60,9 +117,15 @@ interface OverallStats {
   recallStats: RecallStats;
   staleCount: number;
   llmUsage: LlmUsageStats;
+  promotionCandidates: PromotionCandidate[];
+  contested: ContestedMemory[];
 }
 
-function queryProjectStats(dbPath: string, projectId: string, staleCfg: { staleAfterDays: number; staleSurfacingWithoutUseLimit: number }): Omit<OverallStats, "projects" | "recallStats" | "staleCount"> & { recallStats: RecallStats; staleCount: number } {
+function queryProjectStats(
+  dbPath: string,
+  projectId: string,
+  staleCfg: { staleAfterDays: number; staleSurfacingWithoutUseLimit: number; enforcementThreshold: number },
+): Omit<OverallStats, "projects" | "recallStats" | "staleCount"> & { recallStats: RecallStats; staleCount: number } {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   db.exec("PRAGMA busy_timeout = 5000");
 
@@ -166,6 +229,12 @@ function queryProjectStats(dbPath: string, projectId: string, staleCfg: { staleA
       }).length;
     } catch { /* non-fatal */ }
 
+    let promotionCandidates: PromotionCandidate[] = [];
+    let contested: ContestedMemory[] = [];
+    try {
+      ({ promotionCandidates, contested } = computePromotionSections(db, staleCfg.enforcementThreshold));
+    } catch { /* non-fatal */ }
+
     return {
       conversations: convRows.length,
       compactedConversations: compacted.length,
@@ -192,6 +261,8 @@ function queryProjectStats(dbPath: string, projectId: string, staleCfg: { staleA
         costUsd: llmUsageRow?.costUsd ?? null,
         callsWithCost: llmUsageRow?.callsWithCost ?? 0,
       },
+      promotionCandidates,
+      contested,
     };
   } finally {
     db.close();
@@ -383,6 +454,37 @@ export function printStats(stats: OverallStats, verbose: boolean): void {
     }
   }
 
+  // Promotion candidates (always shown when non-empty: a human decides, not a hook)
+  if (stats.promotionCandidates.length > 0) {
+    console.log();
+    console.log(sectionHeader("Promotion Candidates"));
+    console.log();
+    for (const c of stats.promotionCandidates) {
+      const preview = c.content.length > 70 ? c.content.slice(0, 70) + "…" : c.content;
+      console.log(`    ${dim}${preview}${reset}`);
+      const objectionNote = c.minusOne > 0 ? `${dim} (contested — see below)${reset}` : "";
+      console.log(`    ${dim}uses:${reset} ${c.useCount}  ${dim}+1:${reset} ${c.plusOne}  ${dim}-1:${reset} ${c.minusOne}${objectionNote}`);
+      console.log();
+    }
+  }
+
+  // Contested memories (at least one -1)
+  if (stats.contested.length > 0) {
+    const yellow = "\x1b[33m";
+    console.log(sectionHeader("Contested"));
+    console.log();
+    for (const c of stats.contested) {
+      const preview = c.content.length > 70 ? c.content.slice(0, 70) + "…" : c.content;
+      console.log(`    ${yellow}${preview}${reset}`);
+      for (const o of c.objections) {
+        console.log(`    ${dim}-1 (${o.voteId}):${reset} ${o.reason}`);
+      }
+      console.log();
+    }
+    console.log(`    ${dim}Resolve: archive the memory, supersede it with a corrected lcm_store, or dismiss${reset}`);
+    console.log(`    ${dim}a single objection by archiving its vote id via POST /review-stale (action: "archive").${reset}`);
+  }
+
   // Per Conversation (verbose only, compacted only)
   if (verbose) {
     // Stale memories section (verbose only)
@@ -445,6 +547,8 @@ export function collectStats(): OverallStats {
       recallStats: emptyRecallStats,
       staleCount: 0,
       llmUsage: { calls: 0, okCalls: 0, failedCalls: 0, tokensSpent: 0, tokensInput: 0, tokensCached: 0, tokensOutput: 0, costUsd: null, callsWithCost: 0 },
+      promotionCandidates: [],
+      contested: [],
     };
   }
 
@@ -464,14 +568,17 @@ export function collectStats(): OverallStats {
   let totalMemoriesActedUpon = 0;
   const allTopRecalled: Array<{ id: string; content: string; actCount: number }> = [];
   const totalLlmUsage: LlmUsageStats = { calls: 0, okCalls: 0, failedCalls: 0, tokensSpent: 0, tokensInput: 0, tokensCached: 0, tokensOutput: 0, costUsd: null, callsWithCost: 0 };
+  const allPromotionCandidates: PromotionCandidate[] = [];
+  const allContested: ContestedMemory[] = [];
 
-  // Load stale config once for all projects
-  let staleCfg = { staleAfterDays: 90, staleSurfacingWithoutUseLimit: 5 };
+  // Load stale + promotion config once for all projects
+  let staleCfg = { staleAfterDays: 90, staleSurfacingWithoutUseLimit: 5, enforcementThreshold: 3 };
   try {
     const cfg = loadDaemonConfig(lcmPath("config.json"));
     staleCfg = {
       staleAfterDays: cfg.restoration.staleAfterDays,
       staleSurfacingWithoutUseLimit: cfg.restoration.staleSurfacingWithoutUseLimit,
+      enforcementThreshold: cfg.promotion.enforcementThreshold,
     };
   } catch { /* use defaults */ }
 
@@ -484,6 +591,8 @@ export function collectStats(): OverallStats {
       const projStats = queryProjectStats(dbPath, entry.name, staleCfg);
       // Only count projects with stored messages
       if (projStats.messages === 0) continue;
+      allPromotionCandidates.push(...projStats.promotionCandidates);
+      allContested.push(...projStats.contested);
       totalProjects++;
       totalConversations += projStats.conversations;
       totalCompacted += projStats.compactedConversations;
@@ -560,5 +669,7 @@ export function collectStats(): OverallStats {
     },
     staleCount: totalStale,
     llmUsage: totalLlmUsage,
+    promotionCandidates: allPromotionCandidates,
+    contested: allContested,
   };
 }

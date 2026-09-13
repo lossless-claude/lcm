@@ -18,6 +18,7 @@ describe("loadDaemonConfig", () => {
     expect(c.restoration.reservedForLearningInstruction).toBe(1024);
     expect(c.restoration.maxInjectedMemoryItems).toBe(3);
     expect(c.restoration.dedupMinPrefix).toBe(64);
+    expect(c.promotion.enforcementThreshold).toBe(3);
     expect(c.version).toBe(1);
   });
 

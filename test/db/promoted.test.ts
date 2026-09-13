@@ -133,4 +133,57 @@ describe("PromotedStore", () => {
     expect(results.length).toBe(1);
     expect(results[0].content).toContain("Active");
   });
+
+  it("search() excludes signal-tagged records (use and vote reports)", () => {
+    const db = makeDb();
+    const store = new PromotedStore(db);
+    const memoryId = store.insert({ content: "React is the chosen framework", tags: ["decision"], projectId: "p1" });
+    store.insert({
+      content: "Acted on memory — used it to pick React",
+      tags: ["signal:memory_used", `memory_id:${memoryId}`],
+      projectId: "p1",
+    });
+    store.insert({
+      content: "Verified React is still the framework",
+      tags: ["signal:memory_vote", "vote:+1", `memory_id:${memoryId}`],
+      projectId: "p1",
+    });
+
+    const results = store.search("React", 10);
+    expect(results).toHaveLength(1);
+    expect(results[0].content).toBe("React is the chosen framework");
+  });
+
+  it("getVoteCounts() tallies +1/-1 per memory and lists -1 reasons", () => {
+    const db = makeDb();
+    const store = new PromotedStore(db);
+    const memoryId = store.insert({ content: "React is the chosen framework", tags: ["decision"], projectId: "p1" });
+    store.insert({ content: "still true", tags: ["signal:memory_vote", "vote:+1", `memory_id:${memoryId}`], projectId: "p1" });
+    store.insert({ content: "still true again", tags: ["signal:memory_vote", "vote:+1", `memory_id:${memoryId}`], projectId: "p1" });
+    const objectionId = store.insert({
+      content: "no longer true: we moved to Vue",
+      tags: ["signal:memory_vote", "vote:-1", `memory_id:${memoryId}`],
+      projectId: "p1",
+    });
+
+    const counts = store.getVoteCounts().get(memoryId);
+    expect(counts).toBeTruthy();
+    expect(counts!.plusOne).toBe(2);
+    expect(counts!.minusOne).toBe(1);
+    expect(counts!.objections).toEqual([{ voteId: objectionId, reason: "no longer true: we moved to Vue", sessionId: null }]);
+  });
+
+  it("getVoteCounts() excludes archived vote rows (the dismissal mechanism)", () => {
+    const db = makeDb();
+    const store = new PromotedStore(db);
+    const memoryId = store.insert({ content: "React is the chosen framework", tags: ["decision"], projectId: "p1" });
+    const objectionId = store.insert({
+      content: "no longer true",
+      tags: ["signal:memory_vote", "vote:-1", `memory_id:${memoryId}`],
+      projectId: "p1",
+    });
+    store.archive(objectionId);
+
+    expect(store.getVoteCounts().get(memoryId)).toBeUndefined();
+  });
 });

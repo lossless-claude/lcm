@@ -310,6 +310,45 @@ The `/review-stale` endpoint accepts `action: "archive"` or `action: "revive"` w
 
 Run `lcm stats --verbose` to see a summary of stale memory candidates across all projects.
 
+## Votes and promotion candidates
+
+lcm reports which memories look like rules worth enforcing structurally (a hook, a gate
+check, a skill step); it never opens issues, installs hooks, or changes recall on its own —
+a human reads the report and decides.
+
+An agent reports a use of a surfaced memory with `signal:memory_used` (see
+`docs/tag-schema.md`); a vote — `signal:memory_vote`, `vote:+1` or `vote:-1`, with a required
+reason — adds an explicit "checked and still correct" or "checked and contradicted" signal,
+distinct from mere use. See `docs/agent-tools.md` for the `lcm_store` shape and validation
+rules a vote is checked against.
+
+- **Enforcement threshold** (`promotion.enforcementThreshold`, default 3): a memory with at
+  least this many reported uses appears under "Promotion candidates" in `lcm stats` /
+  `lcm_stats`, shown with its text, use count, `+1` count, `-1` count, and any objections.
+  lcm does not classify what kind of enforcement fits; a human reads the text.
+- **Contested**: any memory with at least one `-1` appears under "Contested", with every
+  objection's reason and vote id, regardless of its use count.
+
+Both sections are always shown when non-empty — not gated behind `--verbose` — since the
+point is a human sees them.
+
+Votes and use records never appear in `lcm_search` results, `lcm_grep`, or the prompt hook's
+`<memory-context>` block: they exist to be counted, not recalled. Voting never changes
+search ranking or which memories get injected at prompt time.
+
+### Resolving a contested memory
+
+A contested entry clears when the underlying question is settled, through the existing
+stale-review mechanism (`/review-stale`, above) — no separate tool:
+
+- **Archive the memory.** `POST /review-stale` with `action: "archive"` and the memory's own
+  id removes it (and its votes) from every promoted-memory view.
+- **Supersede it.** Store a corrected memory with `lcm_store`, then archive the old one.
+- **Dismiss a single objection without touching the memory.** A `-1` vote is itself a
+  promoted row with its own id, printed alongside its reason in the "Contested" section.
+  `POST /review-stale` with `action: "archive"` and that vote's id archives just the
+  objection; the memory stays active and the objection stops counting.
+
 
 ## Database management
 

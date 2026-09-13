@@ -6,6 +6,7 @@ import {
   likePlanForPreparedQuery,
   type Fts5PreparedQuery,
 } from "../store/fts5-query.js";
+import { voteTagsOf } from "./votes.js";
 
 export type PromotedRow = {
   id: string;
@@ -126,6 +127,7 @@ export class PromotedStore {
        JOIN promoted p ON p.rowid = fts.rowid
        WHERE promoted_fts MATCH ?
          AND p.archived_at IS NULL
+         AND p.tags NOT LIKE '%"signal:%'
          ${projectFilter}
        ORDER BY rank, p.confidence DESC, p.created_at ASC
        LIMIT ?`
@@ -140,7 +142,7 @@ export class PromotedStore {
     const plan = likePlanForPreparedQuery("content", prepared);
     if (plan.terms.length === 0) return [];
 
-    const where: string[] = [`(${plan.where.join(" OR ")})`, "archived_at IS NULL"];
+    const where: string[] = [`(${plan.where.join(" OR ")})`, "archived_at IS NULL", `tags NOT LIKE '%"signal:%'`];
     const args: Array<string | number> = [...plan.args];
     if (projectId) {
       where.push("project_id = ?");
@@ -322,6 +324,38 @@ export class PromotedStore {
     }
 
     return result;
+  }
+
+  /**
+   * Vote tallies per target memory, read from this database's own `signal:memory_vote`
+   * records. A vote is always written into the database that holds its target (the store
+   * route resolves that across the project's group before inserting), so no cross-database
+   * join is needed here. Archived vote rows — the dismissal mechanism for a contested entry
+   * — are excluded, same as any other archived row.
+   */
+  getVoteCounts(): Map<string, { plusOne: number; minusOne: number; objections: Array<{ voteId: string; reason: string; sessionId: string | null }> }> {
+    const rows = this.db.prepare(
+      `SELECT id, tags, content, session_id FROM promoted
+       WHERE archived_at IS NULL
+       AND tags LIKE '%"signal:memory_vote"%'`
+    ).all() as Array<{ id: string; tags: string; content: string; session_id: string | null }>;
+
+    const counts = new Map<string, { plusOne: number; minusOne: number; objections: Array<{ voteId: string; reason: string; sessionId: string | null }> }>();
+    for (const row of rows) {
+      const tags = JSON.parse(row.tags) as string[];
+      const vote = voteTagsOf(tags);
+      if (!vote) continue;
+
+      const entry = counts.get(vote.memoryId) ?? { plusOne: 0, minusOne: 0, objections: [] };
+      if (vote.direction === "+1") {
+        entry.plusOne += 1;
+      } else {
+        entry.minusOne += 1;
+        entry.objections.push({ voteId: row.id, reason: row.content, sessionId: row.session_id });
+      }
+      counts.set(vote.memoryId, entry);
+    }
+    return counts;
   }
 
   /** Revive a previously archived memory back to active status. */
