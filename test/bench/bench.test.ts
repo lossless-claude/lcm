@@ -9,7 +9,7 @@ import { SummaryStore } from "../../src/store/summary-store.js";
 import { projectDbPath, projectId } from "../../src/daemon/project.js";
 import { PromotedStore } from "../../src/db/promoted.js";
 import { buildBench, runBench, type BenchFile } from "../../src/bench.js";
-import { getLcmConnection, closeLcmConnection } from "../../src/db/connection.js";
+import { getLcmConnection } from "../../src/db/connection.js";
 
 const tempDirs: string[] = [];
 
@@ -599,12 +599,12 @@ describe("lcm bench", () => {
       throw testError;
     });
 
-    const tmpDirBefore = readdirSync(tmpdir()).filter((name) => name.startsWith("lcm-bench-rg-"));
+    const rgDirsBefore = new Set(readdirSync(tmpdir()).filter((name) => name.startsWith("lcm-bench-rg-")));
     const run = await runBench({ cwd, benchFile: file });
-    const tmpDirAfter = readdirSync(tmpdir()).filter((name) => name.startsWith("lcm-bench-rg-"));
+    const rgDirsAfter = readdirSync(tmpdir()).filter((name) => name.startsWith("lcm-bench-rg-"));
 
     expect(run.exitCode).toBe(1);
     expect(run.stdout).toContain("Connection acquisition failed");
-    expect(tmpDirAfter.length).toBe(tmpDirBefore.length);
+    expect(rgDirsAfter.filter((name) => !rgDirsBefore.has(name))).toEqual([]);
   });
 });
