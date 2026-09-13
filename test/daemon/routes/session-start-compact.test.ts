@@ -53,6 +53,9 @@ function baseConfig(overrides?: Partial<DaemonConfig["compaction"]>): DaemonConf
   } as unknown as DaemonConfig;
 }
 
+/** The sweep runs after the response, on the next macrotask. */
+const settled = () => new Promise((resolve) => setImmediate(resolve));
+
 describe("POST /session-start-compact", () => {
   let dir: string;
 
@@ -68,6 +71,16 @@ describe("POST /session-start-compact", () => {
     const { res, out } = respond();
     await handler({} as never, res, "not json");
     expect(out.status).toBe(400);
+    expect(fireCompactRequest).not.toHaveBeenCalled();
+  });
+
+  it("rejects an empty session_id, which would let the sweep queue the starting conversation", async () => {
+    const handler = createSessionStartCompactHandler(baseConfig(), 4242);
+    const { res, out } = respond();
+    await handler({} as never, res, JSON.stringify({ cwd: dir, session_id: "   " }));
+    expect(out.status).toBe(400);
+    await settled();
+    expect(findUncompacted).not.toHaveBeenCalled();
     expect(fireCompactRequest).not.toHaveBeenCalled();
   });
 
@@ -109,7 +122,8 @@ describe("POST /session-start-compact", () => {
     const handler = createSessionStartCompactHandler(baseConfig(), 4242);
     const { res, out } = respond();
     await handler({} as never, res, JSON.stringify({ cwd: dir, session_id: "starting-session" }));
-    expect(out.body).toEqual({ queued: 1 });
+    expect(out.body).toEqual({ queued: "scheduled" });
+    await settled();
     expect(fireCompactRequest).toHaveBeenCalledTimes(1);
     expect(fireCompactRequest).toHaveBeenCalledWith(4242, expect.objectContaining({ session_id: "s-old" }));
   });
@@ -120,7 +134,8 @@ describe("POST /session-start-compact", () => {
     const handler = createSessionStartCompactHandler(baseConfig(), 4242);
     const { res, out } = respond();
     await handler({} as never, res, JSON.stringify({ cwd: dir, session_id: "starting" }));
-    expect(out.body).toEqual({ queued: 0 });
+    expect(out.body).toEqual({ queued: "scheduled" });
+    await settled();
     expect(fireCompactRequest).not.toHaveBeenCalled();
   });
 
@@ -133,7 +148,8 @@ describe("POST /session-start-compact", () => {
     const handler = createSessionStartCompactHandler(baseConfig({ autoCompactMinTokens: 10000, autoCompactSessionStartMax: 2 }), 4242);
     const { res, out } = respond();
     await handler({} as never, res, JSON.stringify({ cwd: dir, session_id: "starting" }));
-    expect(out.body).toEqual({ queued: 2 });
+    expect(out.body).toEqual({ queued: "scheduled" });
+    await settled();
     expect(fireCompactRequest).toHaveBeenCalledTimes(2);
     expect(fireCompactRequest).toHaveBeenNthCalledWith(1, 4242, expect.objectContaining({ session_id: "oldest" }));
     expect(fireCompactRequest).toHaveBeenNthCalledWith(2, 4242, expect.objectContaining({ session_id: "middle" }));

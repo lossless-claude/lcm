@@ -25,7 +25,13 @@ export function createSessionStartCompactHandler(config: DaemonConfig, daemonPor
       sendJson(res, 400, { error: "Invalid JSON body" });
       return;
     }
-    const sessionId = typeof input.session_id === "string" ? input.session_id : "";
+    const sessionId = typeof input.session_id === "string" ? input.session_id.trim() : "";
+    if (!sessionId) {
+      // Without it the filter below excludes nothing and the sweep can queue the very
+      // conversation that is starting.
+      sendJson(res, 400, { error: "session_id required" });
+      return;
+    }
 
     let cwd: string;
     try {
@@ -41,29 +47,34 @@ export function createSessionStartCompactHandler(config: DaemonConfig, daemonPor
       return;
     }
 
-    let candidates;
-    try {
-      candidates = findUncompacted(config.compaction.autoCompactMinTokens, false, cwd);
-    } catch (err) {
-      sendJson(res, 500, { error: err instanceof Error ? err.message : "selection failed" });
-      return;
-    }
+    // The caller is a fire-and-forget hook, and `findUncompacted` aggregates over every
+    // message and summary of the project: answer first, scan off the event loop's turn, so
+    // a large project cannot delay /restore, /ingest or /compact for other sessions.
+    sendJson(res, 202, { queued: "scheduled" });
 
-    const inFlight = new Set(compactingSessionsFor(cwd));
-    const eligible = candidates
-      .filter((c) => c.sessionId !== sessionId && !inFlight.has(c.sessionId))
-      .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)) // oldest first: drain a backlog over several starts
-      .slice(0, cap);
+    setImmediate(() => {
+      let candidates;
+      try {
+        candidates = findUncompacted(config.compaction.autoCompactMinTokens, false, cwd);
+      } catch (err) {
+        console.error(`session-start-compact: selection failed for ${cwd}: ${err instanceof Error ? err.message : err}`);
+        return;
+      }
 
-    for (const conv of eligible) {
-      fireCompactRequest(daemonPort, {
-        session_id: conv.sessionId,
-        cwd: conv.cwd,
-        skip_ingest: true,
-        client: "claude",
-      });
-    }
+      const inFlight = new Set(compactingSessionsFor(cwd));
+      const eligible = candidates
+        .filter((c) => c.sessionId !== sessionId && !inFlight.has(c.sessionId))
+        .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)) // oldest first: drain a backlog over several starts
+        .slice(0, cap);
 
-    sendJson(res, 200, { queued: eligible.length });
+      for (const conv of eligible) {
+        fireCompactRequest(daemonPort, {
+          session_id: conv.sessionId,
+          cwd: conv.cwd,
+          skip_ingest: true,
+          client: "claude",
+        });
+      }
+    });
   };
 }

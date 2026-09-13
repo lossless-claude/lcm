@@ -53,7 +53,7 @@ If `source` is missing or unrecognized, lcm uses a recent compaction mark for th
 
 **Response:** Exit code `0`. Context is injected via stdout (printed as a `<context>` block that Claude Code prepends to the session).
 
-After restore succeeds and `cwd` is present, the hook also fires one non-blocking `POST /session-start-compact` request (`{ cwd, session_id }`) to catch up conversations of the same project a previous session left uncompacted because it ended without `SessionEnd`. The daemon does the selection, exclusion and capping there — see `docs/configuration.md#sessionstart-catch-up-sweep` — so this hook pays no extra latency; the request is never awaited.
+After restore succeeds and `cwd` is present, the hook also fires one non-blocking `POST /session-start-compact` request (`{ cwd, session_id }`) to catch up conversations of the same project a previous session left uncompacted because it ended without `SessionEnd`. The daemon answers `202` at once and does the selection, exclusion and capping after the response — see `docs/configuration.md#sessionstart-catch-up-sweep` — so neither the hook nor another session's request waits on the scan; the request is never awaited.
 
 ## SessionEnd Hook
 
