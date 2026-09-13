@@ -151,10 +151,11 @@ export function createStoreHandler(config: DaemonConfig): RouteHandler {
 
     const dbPath = projectDbPath(targetPath);
     mkdirSync(dirname(dbPath), { recursive: true });
-    const db = new DatabaseSync(dbPath);
+    // The shared pool, like the resolver above: targetPath can be a sibling the daemon
+    // already serves, and a second handle to it would miss the pool's setup.
+    const db = getLcmConnection(dbPath);
     try {
       // Core: write to SQLite promoted table
-      db.exec("PRAGMA busy_timeout = 5000");
       runLcmMigrations(db);
       const store = new PromotedStore(db);
 
@@ -178,6 +179,14 @@ export function createStoreHandler(config: DaemonConfig): RouteHandler {
       db.exec("BEGIN IMMEDIATE");
       let id: string;
       try {
+        // Rechecked here, not only before the scrub: /review-stale may have archived the
+        // target in between, and a vote against an archived memory is counted by nothing.
+        const target = store.getById(vote.memoryId);
+        if (!target || target.archived_at) {
+          db.exec("ROLLBACK");
+          sendJson(res, 400, { error: `memory_id ${vote.memoryId} was not found (or is archived) in this project or its group` });
+          return;
+        }
         const coalesced = reconcileSessionVote(store, db, metadata.sessionId, vote.memoryId, vote.direction);
         if (coalesced) {
           db.exec("COMMIT");
@@ -195,7 +204,7 @@ export function createStoreHandler(config: DaemonConfig): RouteHandler {
     } catch (err) {
       sendJson(res, 500, { error: sanitizeError(err instanceof Error ? err.message : "store failed") });
     } finally {
-      db.close();
+      closeLcmConnection(dbPath);
     }
   };
 }
