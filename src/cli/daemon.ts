@@ -2,7 +2,7 @@ import { exit } from "node:process";
 import { join } from "node:path";
 import { Command, Option } from "commander";
 import { lcmHome } from "../lcm-home.js";
-import { helpRequested, withCustomHelp } from "./support.js";
+import { fail, helpRequested, showHelpAndExit } from "./support.js";
 
 export function registerDaemonCommands(program: Command): void {
   // ─── daemon ────────────────────────────────────────────────────────────────
@@ -22,7 +22,7 @@ export function registerDaemonCommands(program: Command): void {
     .addOption(new Option("--automatic").hideHelp())
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (helpRequested(daemonCmd, opts)) { await withCustomHelp(daemonCmd, "daemon"); return; }
+      if (helpRequested(daemonCmd, opts)) await showHelpAndExit("daemon");
       const { ensureDaemon, checkDaemonHealth, isStaleDaemon, registerDaemonActivity } = await import("../daemon/lifecycle.js");
       const { loadDaemonConfig } = await import("../daemon/config.js");
       const { PKG_VERSION, BUILD_ID } = await import("../daemon/version.js");
@@ -62,8 +62,7 @@ export function registerDaemonCommands(program: Command): void {
         const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 10000 });
         if (!connected) {
           if (opts.automatic && readHold(pidFilePath)) { process.exitCode = 75; return; }
-          console.error(`lcm daemon did not answer on port ${port} within 10s — check ~/.lossless-claude/daemon.log`);
-          exit(1);
+          fail(`lcm daemon did not answer on port ${port} within 10s — check ~/.lossless-claude/daemon.log`);
         }
         const h = await checkDaemonHealth(port);
         console.log(`lcm daemon started in background on port ${port} (pid ${h?.pid ?? "?"})`);
@@ -109,15 +108,14 @@ export function registerDaemonCommands(program: Command): void {
     .option("--reason <text>", "Why the daemon is held down")
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (helpRequested(daemonCmd, opts)) { await withCustomHelp(daemonCmd, "daemon"); return; }
+      if (helpRequested(daemonCmd, opts)) await showHelpAndExit("daemon");
       const { stopDaemon, checkDaemonHealth } = await import("../daemon/lifecycle.js");
       const { loadDaemonConfig } = await import("../daemon/config.js");
       const { writeHold, DEFAULT_HOLD_MINUTES } = await import("../daemon/hold.js");
       const { pidFilePath, configPath } = daemonPaths();
       const port = loadDaemonConfig(configPath).daemon?.port ?? 3737;
       if (opts.minutes !== undefined && (!Number.isInteger(opts.minutes) || opts.minutes <= 0)) {
-        console.error("--minutes must be a positive integer");
-        exit(1);
+        fail("--minutes must be a positive integer");
       }
       const before = await checkDaemonHealth(port);
       // The hold goes down first: between the kill and the marker, a hook that
@@ -128,8 +126,7 @@ export function registerDaemonCommands(program: Command): void {
       }
       const { stopped, pid } = await stopDaemon({ port, pidFilePath });
       if (!stopped) {
-        console.error(`lcm daemon on port ${port} is still up (pid ${pid ?? "?"}) — stop it manually`);
-        exit(1);
+        fail(`lcm daemon on port ${port} is still up (pid ${pid ?? "?"}) — stop it manually`);
       }
       console.log(before ? `lcm daemon stopped (pid ${pid ?? before.pid ?? "?"})` : "lcm daemon was not running");
       if (held) {
@@ -141,7 +138,7 @@ export function registerDaemonCommands(program: Command): void {
     .description("Restart the background daemon")
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (helpRequested(daemonCmd, opts)) { await withCustomHelp(daemonCmd, "daemon"); return; }
+      if (helpRequested(daemonCmd, opts)) await showHelpAndExit("daemon");
       const { stopDaemon, ensureDaemon, checkDaemonHealth } = await import("../daemon/lifecycle.js");
       const { loadDaemonConfig } = await import("../daemon/config.js");
       const { PKG_VERSION, BUILD_ID } = await import("../daemon/version.js");
@@ -152,22 +149,20 @@ export function registerDaemonCommands(program: Command): void {
       if (clearHold(pidFilePath)) console.log("released the daemon hold");
       const { stopped, pid } = await stopDaemon({ port, pidFilePath });
       if (!stopped) {
-        console.error(`lcm daemon on port ${port} is still up (pid ${pid ?? "?"}) — stop it manually`);
-        exit(1);
+        fail(`lcm daemon on port ${port} is still up (pid ${pid ?? "?"}) — stop it manually`);
       }
       const { mkdirSync } = await import("node:fs");
       mkdirSync(lcDir, { recursive: true });
       const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 10000, expectedVersion: PKG_VERSION, expectedBuild: BUILD_ID });
       if (!connected) {
-        console.error(`lcm daemon did not answer on port ${port} within 10s — check ~/.lossless-claude/daemon.log`);
-        exit(1);
+        fail(`lcm daemon did not answer on port ${port} within 10s — check ~/.lossless-claude/daemon.log`);
       }
       const h = await checkDaemonHealth(port);
       console.log(`lcm daemon restarted on port ${port} (pid ${h?.pid ?? "?"}, v${h?.version ?? "?"})`);
     });
 
   daemonCmd.action(async (opts) => {
-    if (helpRequested(daemonCmd, opts)) { await withCustomHelp(daemonCmd, "daemon"); return; }
+    if (helpRequested(daemonCmd, opts)) await showHelpAndExit("daemon");
   });
   program.addCommand(daemonCmd);
 }

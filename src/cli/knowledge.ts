@@ -2,6 +2,7 @@ import { exit } from "node:process";
 import type { Command } from "commander";
 import type { DaemonClient } from "../daemon/client.js";
 import { lcmPath } from "../lcm-home.js";
+import { fail, showHelpAndExit } from "./support.js";
 
 export interface ImportCommandDeps {
   createDaemonClientOrExit: (spawnTimeoutMs?: number) => Promise<DaemonClient>;
@@ -24,10 +25,7 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("import"); exit(0);
-      }
+      if (opts.help) await showHelpAndExit("import");
       const all: boolean = opts.all ?? false;
       const verbose: boolean = opts.verbose ?? false;
       const dryRun: boolean = opts.dryRun ?? false;
@@ -45,16 +43,14 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
 
       let provider: ImportProvider = opts.codex ? "codex" : replay ? "all" : "claude";
       if (opts.codex && opts.provider && opts.provider !== "codex") {
-        console.error("  --codex cannot be combined with a different --provider");
-        exit(1);
+        fail("  --codex cannot be combined with a different --provider");
       }
       if (opts.provider) {
         const provVal = opts.provider as string;
         if (provVal === "claude" || provVal === "codex" || provVal === "all") {
           provider = provVal as ImportProvider;
         } else {
-          console.error(`  Unknown provider "${provVal}". Use: claude, codex, all`);
-          exit(1);
+          fail(`  Unknown provider "${provVal}". Use: claude, codex, all`);
         }
       }
 
@@ -131,10 +127,7 @@ export function registerKnowledgeCommands(program: Command, deps: KnowledgeComma
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("promote"); exit(0);
-      }
+      if (opts.help) await showHelpAndExit("promote");
       const all: boolean = opts.all ?? false;
       const verbose: boolean = opts.verbose ?? false;
       const dryRun: boolean = opts.dryRun ?? false;
@@ -225,10 +218,7 @@ export function registerKnowledgeCommands(program: Command, deps: KnowledgeComma
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("export"); exit(0);
-      }
+      if (opts.help) await showHelpAndExit("export");
 
       await admitCliDatabaseWork();
       const { exportKnowledge } = await import("../portable-knowledge.js");
@@ -295,10 +285,7 @@ export function registerKnowledgeCommands(program: Command, deps: KnowledgeComma
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (file: string, opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("import-knowledge"); exit(0);
-      }
+      if (opts.help) await showHelpAndExit("import-knowledge");
 
       await admitCliDatabaseWork();
       const { importKnowledge } = await import("../portable-knowledge.js");
@@ -310,29 +297,25 @@ export function registerKnowledgeCommands(program: Command, deps: KnowledgeComma
         : undefined;
 
       if (confidence !== undefined && (isNaN(confidence) || confidence < 0 || confidence > 1)) {
-        console.error("  --confidence must be a number between 0.0 and 1.0");
-        exit(1);
+        fail("  --confidence must be a number between 0.0 and 1.0");
       }
 
       let raw: string;
       try {
         raw = readFileSync(file, "utf-8");
       } catch (err: any) {
-        console.error(`  Cannot read file: ${err.message}`);
-        exit(1);
+        fail(`  Cannot read file: ${err.message}`);
       }
 
       let doc: any;
       try {
         doc = JSON.parse(raw);
       } catch {
-        console.error("  Invalid JSON in export file");
-        exit(1);
+        fail("  Invalid JSON in export file");
       }
 
       if (!doc || typeof doc.version !== "number" || !Array.isArray(doc.entries)) {
-        console.error("  File does not look like an lcm export (missing version or entries)");
-        exit(1);
+        fail("  File does not look like an lcm export (missing version or entries)");
       }
 
       const cwd = process.cwd();
@@ -351,8 +334,7 @@ export function registerKnowledgeCommands(program: Command, deps: KnowledgeComma
           console.log(`\n  Imported ${result.imported} entries (${result.skipped} skipped) into ${cwd}\n`);
         }
       } catch (err: any) {
-        console.error(`  Import failed: ${err.message}`);
-        exit(1);
+        fail(`  Import failed: ${err.message}`);
       }
     });
 }

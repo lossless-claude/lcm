@@ -1,6 +1,7 @@
 import { exit, stdout } from "node:process";
 import type { Command } from "commander";
 import { lcmPath } from "../lcm-home.js";
+import { showHelpAndExit } from "./support.js";
 
 export function registerSensitiveCommand(program: Command): void {
   // ─── sensitive ─────────────────────────────────────────────────────────────
@@ -11,10 +12,7 @@ export function registerSensitiveCommand(program: Command): void {
     .option("-h, --help", "Show help")
     .allowUnknownOption(true)
     .action(async (args: string[], opts) => {
-      if (opts.help) {
-        const { printHelp } = await import("../cli-help.js");
-        printHelp("sensitive"); exit(0);
-      }
+      if (opts.help) await showHelpAndExit("sensitive");
       const { handleSensitive } = await import("../sensitive.js");
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
