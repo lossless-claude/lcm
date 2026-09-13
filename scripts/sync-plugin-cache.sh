@@ -3,8 +3,9 @@
 #
 # The cache is a copy of the repository made at install time and is never refreshed
 # on rebuild, so the installed copy silently drifts from the checkout. The plugin
-# runs from bundle/ (built by `npm run build:bundle`) and hooks/, so those are what
-# is mirrored; dist/ is the npm artifact and the plugin never loads it.
+# runs from bundle/ (built by `npm run build:bundle`), hooks/, .claude-plugin/plugin.json
+# and skills/, so those are what is mirrored; dist/ is the npm artifact and the plugin
+# never loads it.
 #
 # Never fails the build: a missing cache directory or bundle is a no-op.
 # Set LCM_SKIP_CACHE_SYNC=1 to skip.
@@ -35,4 +36,19 @@ if [ -d hooks ]; then
   rsync -a --delete hooks/ "$target/hooks/" \
     || { echo "sync-plugin-cache: hooks rsync failed (ignored)" >&2; exit 0; }
   echo "synced hooks/ -> $target/hooks"
+fi
+
+# The manifest and skills are tracked, not built; mirror them so a checkout edit
+# doesn't stay inert in the cache until reinstall.
+if [ -f .claude-plugin/plugin.json ]; then
+  mkdir -p "$target/.claude-plugin" || exit 0
+  rsync -a .claude-plugin/plugin.json "$target/.claude-plugin/plugin.json" \
+    || { echo "sync-plugin-cache: plugin.json rsync failed (ignored)" >&2; exit 0; }
+  echo "synced .claude-plugin/plugin.json -> $target/.claude-plugin/plugin.json"
+fi
+
+if [ -d skills ]; then
+  rsync -a --delete skills/ "$target/skills/" \
+    || { echo "sync-plugin-cache: skills rsync failed (ignored)" >&2; exit 0; }
+  echo "synced skills/ -> $target/skills"
 fi

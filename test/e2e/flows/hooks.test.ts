@@ -7,7 +7,7 @@
  */
 
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
-import { createHarness, type HarnessHandle } from "../harness.js";
+import { createHarness, openProjectDb, type HarnessHandle } from "../harness.js";
 import { DaemonClient } from "../../../src/daemon/client.js";
 
 let handle: HarnessHandle | null = null;
@@ -37,6 +37,21 @@ describe("Flow 14: SessionEnd hook", { timeout: 60_000 }, () => {
     const result = await handleSessionEnd(stdinData, client, h.daemonPort);
 
     expect(result.exitCode).toBe(0);
+
+    const { db, close } = openProjectDb(h.tmpDir);
+    try {
+      const rows = db
+        .prepare(
+          `SELECT m.content FROM messages m
+           JOIN conversations c ON c.conversation_id = m.conversation_id
+           WHERE c.session_id = ?`,
+        )
+        .all("e2e-session-end-test") as { content: string }[];
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.some((r) => r.content.includes("storing conversation messages"))).toBe(true);
+    } finally {
+      close();
+    }
   });
 });
 
