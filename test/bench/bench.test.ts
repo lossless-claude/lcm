@@ -595,16 +595,23 @@ describe("lcm bench", () => {
     ] }));
 
     const testError = new Error("Connection acquisition failed");
+
+    // Captured, not counted: a set diff alone would also pass if the run never created a
+    // directory at all, which is the one thing this regression must not accept.
+    const rgDirsBefore = new Set(readdirSync(tmpdir()).filter((name) => name.startsWith("lcm-bench-rg-")));
+    let created: string | undefined;
     vi.mocked(getLcmConnection).mockImplementationOnce(() => {
+      created = readdirSync(tmpdir())
+        .filter((name) => name.startsWith("lcm-bench-rg-"))
+        .find((name) => !rgDirsBefore.has(name));
       throw testError;
     });
 
-    const rgDirsBefore = new Set(readdirSync(tmpdir()).filter((name) => name.startsWith("lcm-bench-rg-")));
     const run = await runBench({ cwd, benchFile: file });
-    const rgDirsAfter = readdirSync(tmpdir()).filter((name) => name.startsWith("lcm-bench-rg-"));
 
     expect(run.exitCode).toBe(1);
     expect(run.stdout).toContain("Connection acquisition failed");
-    expect(rgDirsAfter.filter((name) => !rgDirsBefore.has(name))).toEqual([]);
+    expect(created).toBeDefined();
+    expect(existsSync(join(tmpdir(), created!))).toBe(false);
   });
 });
