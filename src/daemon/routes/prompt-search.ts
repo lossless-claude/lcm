@@ -2,14 +2,14 @@ import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "../config.js";
 import type { LcmPaths } from "../../lcm-paths.js";
-import { projectDbPath } from "../project.js";
+import { projectDbPath, projectId as computeProjectId } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { closeLcmConnection, getLcmConnection } from "../../db/connection.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { type SearchResult } from "../../db/promoted.js";
 import { projectRef } from "../project-group.js";
-import { logGroupSurfacing, searchPromotedGroup } from "../../search/group-promoted.js";
+import { logGroupSurfacing, searchPromotedGroup, type GroupPromotedHit } from "../../search/group-promoted.js";
 import { type RecallFeedback } from "../../db/recall.js";
 import { buildMemoryContext, selectMemoryHintsWithinBudget } from "../../hooks/memory-context.js";
 import { recordUserPromptEvents } from "../../hooks/user-prompt.js";
@@ -20,7 +20,7 @@ import { searchNativeHistory } from "../../search/native-history.js";
 const CANDIDATE_LIMIT_MULTIPLIER = 5;
 const MIN_CANDIDATE_LIMIT = 10;
 
-type RankedPromptSearchResult = SearchResult & {
+type RankedPromptSearchResult = GroupPromotedHit & {
   baseScore: number;
   finalScore: number;
   usageBoost: number;
@@ -78,7 +78,7 @@ function isWithinCooldown(lastSurfacedAt: string | null, now: number, cooldownWi
 }
 
 function rankResults(
-  results: SearchResult[],
+  results: GroupPromotedHit[],
   feedbackById: Map<string, RecallFeedback>,
   options: {
     querySessionId: string | null | undefined;
@@ -318,14 +318,21 @@ export function createPromptSearchHandler(config: DaemonConfig, paths: LcmPaths)
       const history = input.client === "codex"
         ? await searchNativeHistory(db, { query, limit: targetHintCount, project: projectRef(cwd) })
         : [];
+      // A hit surfaced from a sibling checkout carries its own project id, so the
+      // agent can pass it back to lcm_describe/lcm_expand; a hit from this project
+      // renders bare, exactly as before.
+      const currentProjectId = computeProjectId(validatedCwd);
       const candidates = filtered.map((result) => ({
         id: result.id,
+        projectId: result.project.id === currentProjectId ? undefined : result.project.id,
         hint: result.content.length > snippetLength
           ? result.content.slice(0, snippetLength) + "..."
           : result.content,
       }));
       candidates.push(...history.map(hit => ({
         id: "messageId" in hit ? `message:${hit.messageId}` : hit.summaryId,
+        // Native history is always searched against the current project (see above).
+        projectId: undefined,
         hint: hit.snippet.length > snippetLength ? hit.snippet.slice(0, snippetLength) + "..." : hit.snippet,
       })));
 
@@ -342,7 +349,7 @@ export function createPromptSearchHandler(config: DaemonConfig, paths: LcmPaths)
         },
       );
 
-      const { hints, ids } = selection;
+      const { hints, ids, projectIds } = selection;
       const debugResponse = isDebug
         ? {
             candidates: ranked.map((result) => ({
@@ -374,10 +381,11 @@ export function createPromptSearchHandler(config: DaemonConfig, paths: LcmPaths)
         if (logSurfacing) logGroupSurfacing(results, ids, session_id ?? null, paths);
       } catch { /* non-fatal */ }
 
-      const context = format === "context" ? buildMemoryContext(hints, ids) : null;
+      const context = format === "context" ? buildMemoryContext(hints, ids, projectIds) : null;
       sendJson(res, 200, {
         hints,
         ids,
+        projectIds,
         ...(context ? { context } : {}),
         ...(debugResponse ? { debug: debugResponse } : {}),
       });

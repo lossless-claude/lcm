@@ -833,36 +833,43 @@ export async function runBench(opts: BenchOptions): Promise<BenchResult> {
 
   // Conversation text is copied here only for the duration of the run.
   const rgDir = await mkdtemp(join(tmpdir(), "lcm-bench-rg-"));
-  // Migrations may backfill on first open, so this handle is read-write.
-  const db = getLcmConnection(dbPath);
   try {
-    runLcmMigrations(db);
-    const pid = projectId(opts.cwd);
-    const { baseline, warning } = await prepareRgBaseline(db, pid, rgDir);
-    const ctx: ScoreContext = {
-      db, promotedStore: new PromotedStore(db), projectId: pid, rgBaseline: baseline, k,
-      unionCwd: opts.union ? opts.cwd : undefined,
-      paths,
-    };
+    // Migrations may backfill on first open, so this handle is read-write.
+    const db = getLcmConnection(dbPath);
+    try {
+      runLcmMigrations(db);
+      const pid = projectId(opts.cwd);
+      const { baseline, warning } = await prepareRgBaseline(db, pid, rgDir);
+      const ctx: ScoreContext = {
+        db, promotedStore: new PromotedStore(db), projectId: pid, rgBaseline: baseline, k,
+        unionCwd: opts.union ? opts.cwd : undefined,
+        paths,
+      };
 
-    const outcomes: QueryOutcome[] = [];
-    for (const query of loaded.bench.queries) outcomes.push(await scoreQuery(query, ctx));
+      const outcomes: QueryOutcome[] = [];
+      for (const query of loaded.bench.queries) outcomes.push(await scoreQuery(query, ctx));
 
-    const report = buildReport({
-      file,
-      bench: loaded.bench,
-      outcomes,
-      k,
-      baseline: baseline ? RG_BASELINE : SQL_BASELINE,
-      baselineWarning: warning,
-    });
-    const resultsPath = join(dirname(dbPath), DEFAULT_RESULTS_FILENAME);
-    await writeFile(resultsPath, JSON.stringify({ report, outcomes }, null, 2));
+      const report = buildReport({
+        file,
+        bench: loaded.bench,
+        outcomes,
+        k,
+        baseline: baseline ? RG_BASELINE : SQL_BASELINE,
+        baselineWarning: warning,
+      });
+      const resultsPath = join(dirname(dbPath), DEFAULT_RESULTS_FILENAME);
+      await writeFile(resultsPath, JSON.stringify({ report, outcomes }, null, 2));
 
-    if (opts.json) return { out: resultsPath, exitCode: 0, stdout: JSON.stringify(report, null, 2) + "\n" };
-    return { out: resultsPath, exitCode: 0, stdout: renderReport(report, outcomes, resultsPath) };
+      if (opts.json) return { out: resultsPath, exitCode: 0, stdout: JSON.stringify(report, null, 2) + "\n" };
+      return { out: resultsPath, exitCode: 0, stdout: renderReport(report, outcomes, resultsPath) };
+    } finally {
+      closeLcmConnection(dbPath);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { out: "", exitCode: 1, stdout: `${message}\n` };
   } finally {
-    closeLcmConnection(dbPath);
-    await rm(rgDir, { recursive: true, force: true });
+    // Best-effort: a cleanup rejection must not replace the result or the original error.
+    await rm(rgDir, { recursive: true, force: true }).catch(() => {});
   }
 }
