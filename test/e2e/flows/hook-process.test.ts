@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHarness, type HarnessHandle } from "../harness.js";
+import { createHarness, openProjectDb, type HarnessHandle } from "../harness.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..", "..");
@@ -150,9 +150,28 @@ describe("Flow 20: hooks via `node dist/bin/lcm.js` with piped stdin", { timeout
 
   it("session-end exits 0 with a real transcript", async () => {
     const h = handle!;
-    const r = await runHook(["session-end"], payload({ transcript_path: h.syntheticFixturePath, reason: "exit" }));
+    const session_id = "e2e-proc-session-end";
+    const r = await runHook(
+      ["session-end"],
+      payload({ session_id, transcript_path: h.syntheticFixturePath, reason: "exit" }),
+    );
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).toBe("");
+
+    const { db, close } = openProjectDb(h.tmpDir);
+    try {
+      const rows = db
+        .prepare(
+          `SELECT m.content FROM messages m
+           JOIN conversations c ON c.conversation_id = m.conversation_id
+           WHERE c.session_id = ?`,
+        )
+        .all(session_id) as { content: string }[];
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.some((row) => row.content.includes("good morning"))).toBe(true);
+    } finally {
+      close();
+    }
   });
 
   it.each(HOOK_COMMANDS)("%s exits 0 on empty stdin", async (...args) => {
