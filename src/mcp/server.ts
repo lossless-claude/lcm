@@ -108,6 +108,10 @@ const LOCAL_TOOLS: Partial<Record<string, (args: Record<string, unknown>) => Pro
       }
     }
 
+    // A memory's content is agent-written: a `|` or a newline in it would otherwise shift
+    // the counts into the wrong column or row of the table below.
+    const cell = (value: string): string => value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+
     // Promotion candidates (always shown when non-empty: a human decides, not the tool)
     if (stats.promotionCandidates.length > 0) {
       lines.push("");
@@ -117,7 +121,7 @@ const LOCAL_TOOLS: Partial<Record<string, (args: Record<string, unknown>) => Pro
       lines.push("|--------|------|----|----|");
       for (const c of stats.promotionCandidates) {
         const preview = c.content.length > 80 ? c.content.slice(0, 80) + "…" : c.content;
-        lines.push(`| ${preview} | ${c.useCount} | ${c.plusOne} | ${c.minusOne} |`);
+        lines.push(`| ${cell(preview)} | ${c.useCount} | ${c.plusOne} | ${c.minusOne} |`);
       }
     }
 

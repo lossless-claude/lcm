@@ -589,10 +589,12 @@ export function collectStats(): OverallStats {
 
     try {
       const projStats = queryProjectStats(dbPath, entry.name, staleCfg);
-      // Only count projects with stored messages
-      if (projStats.messages === 0) continue;
+      // Before the messages gate: a project can hold promoted memories and their use and
+      // vote records without any conversation of its own — a fresh checkout using lcm_store.
       allPromotionCandidates.push(...projStats.promotionCandidates);
       allContested.push(...projStats.contested);
+      // Only count projects with stored messages
+      if (projStats.messages === 0) continue;
       totalProjects++;
       totalConversations += projStats.conversations;
       totalCompacted += projStats.compactedConversations;

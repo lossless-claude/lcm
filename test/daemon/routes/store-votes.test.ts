@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -23,7 +23,7 @@ vi.mock("../../../src/daemon/project.js", async (importOriginal) => {
 const { createDaemon } = await import("../../../src/daemon/server.js");
 const { loadDaemonConfig } = await import("../../../src/daemon/config.js");
 const { openProject } = await import("../../../src/daemon/project-group.js");
-const { projectDbPath } = await import("../../../src/daemon/project.js");
+const { projectDbPath, projectDir } = await import("../../../src/daemon/project.js");
 const { runLcmMigrations } = await import("../../../src/db/migration.js");
 const { PromotedStore } = await import("../../../src/db/promoted.js");
 
@@ -179,6 +179,34 @@ describe("POST /store — votes", () => {
       const hereVotes = new PromotedStore(hereDb).getVoteCounts();
       hereDb.close();
       expect(hereVotes.size).toBe(0);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it("scrubs a sibling-bound vote with the sibling's own patterns, not the voter's", async () => {
+    const remote = "git@github.com:lcm-vote-tests/scrub-repo.git";
+    const { cwd: here } = checkout(remote, []);
+    const { cwd: sibling, ids: siblingIds } = checkout(remote, ["compaction runs lazily"]);
+    // Only the sibling declares the pattern; the voter's own checkout knows nothing about it.
+    writeFileSync(join(projectDir(sibling), "sensitive-patterns.txt"), "hunter2-vote-secret\n");
+
+    const { daemon, port } = await startDaemon();
+    try {
+      const { status } = await postStore(port, {
+        text: "Verified, the token hunter2-vote-secret still works",
+        tags: ["signal:memory_vote", "vote:+1", `memory_id:${siblingIds[0]}`],
+        cwd: here,
+      });
+      expect(status).toBe(200);
+
+      const siblingDb = new DatabaseSync(projectDbPath(sibling));
+      const stored = siblingDb.prepare(
+        "SELECT content FROM promoted WHERE session_id IS NOT NULL AND content LIKE '%Verified%'"
+      ).all() as Array<{ content: string }>;
+      siblingDb.close();
+      expect(stored).toHaveLength(1);
+      expect(stored[0].content).not.toContain("hunter2-vote-secret");
     } finally {
       await daemon.stop();
     }

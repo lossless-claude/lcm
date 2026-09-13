@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, statSync } from "node:fs";
+import { closeLcmConnection, getLcmConnection } from "../../db/connection.js";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { projectDbPath, projectDir } from "../project.js";
@@ -50,14 +51,17 @@ function resolveVoteTargetCwd(projectPath: string, memoryId: string): string | n
   for (const member of projectGroup(projectPath)) {
     const dbPath = projectDbPath(member.cwd);
     if (!existsSync(dbPath)) continue;
-    const db = new DatabaseSync(dbPath, { readOnly: true });
+    // The shared pool: a group member can be the database the daemon already serves, and a
+    // second handle to it would miss the pool's WAL, foreign-key and busy-timeout setup.
+    let db;
     try {
+      db = getLcmConnection(dbPath);
       const row = new PromotedStore(db).getById(memoryId);
       if (row && !row.archived_at) return member.cwd;
     } catch {
       continue;
     } finally {
-      db.close();
+      if (db) closeLcmConnection(dbPath);
     }
   }
   return null;
@@ -137,7 +141,9 @@ export function createStoreHandler(config: DaemonConfig): RouteHandler {
       vote = { memoryId: parsed.memoryId, direction: parsed.direction };
     }
 
-    const scrubber = await getScrubEngine(config, projectDir(projectPath));
+    // From targetPath, not projectPath: a vote can land in a sibling checkout, and that
+    // checkout's own sensitive-patterns.txt is what governs what may be written there.
+    const scrubber = await getScrubEngine(config, projectDir(targetPath));
     const scrubbedText = scrubber.scrub(text);
 
     const dbPath = projectDbPath(targetPath);
@@ -149,15 +155,7 @@ export function createStoreHandler(config: DaemonConfig): RouteHandler {
       runLcmMigrations(db);
       const store = new PromotedStore(db);
 
-      if (vote) {
-        const coalesced = reconcileSessionVote(store, db, metadata.sessionId, vote.memoryId, vote.direction);
-        if (coalesced) {
-          sendJson(res, 200, { stored: true, id: coalesced.existingId });
-          return;
-        }
-      }
-
-      const id = store.insert({
+      const insert = () => store.insert({
         content: scrubbedText,
         tags,
         projectId: metadata.projectId ?? "manual",
@@ -165,6 +163,30 @@ export function createStoreHandler(config: DaemonConfig): RouteHandler {
         depth: metadata.depth ?? 0,
         confidence: 1.0,
       });
+
+      if (!vote) {
+        sendJson(res, 200, { stored: true, id: insert() });
+        return;
+      }
+
+      // One transaction: archiving the superseded vote and writing its replacement touch
+      // promoted and promoted_fts, and a failure between them would leave the session with
+      // no active vote or the two tables disagreeing.
+      db.exec("BEGIN IMMEDIATE");
+      let id: string;
+      try {
+        const coalesced = reconcileSessionVote(store, db, metadata.sessionId, vote.memoryId, vote.direction);
+        if (coalesced) {
+          db.exec("COMMIT");
+          sendJson(res, 200, { stored: true, id: coalesced.existingId });
+          return;
+        }
+        id = insert();
+        db.exec("COMMIT");
+      } catch (e) {
+        try { db.exec("ROLLBACK"); } catch { /* the transaction is already gone */ }
+        throw e;
+      }
 
       sendJson(res, 200, { stored: true, id });
     } catch (err) {
