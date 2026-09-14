@@ -79,6 +79,14 @@ describe("lcm sensitive", () => {
     expect(r.stdout).toContain("[user]      CORP_TOKEN_.*");
   });
 
+  it("list: preserves an explicitly named compatibility config path", async () => {
+    const namedConfigPath = join(tempBase, "custom-sensitive.json");
+    writeFileSync(namedConfigPath, JSON.stringify({ security: { sensitivePatterns: ["NAMED_TOKEN_.*"] } }));
+    const r = await handleSensitive(["list"], cwd, namedConfigPath);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("[user]      NAMED_TOKEN_.*");
+  });
+
   // --- add ---
 
   it("add: appends pattern to project file", async () => {

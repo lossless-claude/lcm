@@ -16,7 +16,9 @@ export async function handleSensitive(
   const paths = typeof pathsOrConfigPath === "string"
     ? createLcmPaths(dirname(pathsOrConfigPath))
     : pathsOrConfigPath;
-  const resolvedConfigPath = paths.configPath;
+  const resolvedConfigPath = typeof pathsOrConfigPath === "string"
+    ? pathsOrConfigPath
+    : paths.configPath;
   const sub = argv[0];
 
   switch (sub) {

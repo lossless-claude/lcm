@@ -38,6 +38,21 @@ function writePack(tag: string, stopwords: string[]): void {
 }
 
 describe("query terms with language packs", () => {
+  it("prefers an explicit storage root over the compatibility environment override", () => {
+    const root = mkdtempSync(join(tmpdir(), "lcm-lang-explicit-"));
+    try {
+      const paths = createLcmPaths(root);
+      const languagesDir = join(root, "languages");
+      mkdirSync(languagesDir, { recursive: true });
+      writeFileSync(join(languagesDir, "pt-BR.json"), JSON.stringify({ version: 1, tag: "pt-BR", stopwords: PT_WORDS, generatedAt: "2026-09-08T00:00:00Z" }));
+      invalidateLanguagePacks();
+      expect(languagePackPath(paths, "pt-BR")).toBe(join(languagesDir, "pt-BR.json"));
+      expect(extractQueryTerms("como foi o deploy que quebrou a busca?", paths)).toEqual(["deploy", "quebrou", "busca"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("reads packs from the caller's storage root without an environment override", () => {
     const root = mkdtempSync(join(tmpdir(), "lcm-lang-root-"));
     delete process.env.LCM_LANGUAGES_DIR;

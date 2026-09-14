@@ -1,5 +1,5 @@
 ---
-"@lossless-claude/lcm": patch
+"@lossless-claude/lcm": minor
 ---
 
 chore: the storage root is constructed at each composition root instead of imported

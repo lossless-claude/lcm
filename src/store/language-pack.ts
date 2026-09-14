@@ -30,10 +30,10 @@ const MIN_PACK_HITS = 2;
 
 /** Where packs live. The env override exists so tests never read a developer's real packs. */
 export function languagePacksDir(paths?: LcmPaths): string {
+  if (paths) return join(paths.home, "languages");
   const override = process.env.LCM_LANGUAGES_DIR;
-  if (override) return override;
-  if (!paths) throw new Error("language packs require an LcmPaths storage root");
-  return join(paths.home, "languages");
+  if (!override) throw new Error("language packs require an LcmPaths storage root");
+  return override;
 }
 
 export function languagePackPath(pathsOrTag: LcmPaths | string, suppliedTag?: string): string {
