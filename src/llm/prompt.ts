@@ -24,10 +24,11 @@ export function buildSummaryPrompt(
   return ctx.isCondensed
     ? buildCondensedSummaryPrompt({
         text, targetTokens, depth: ctx.depth ?? 1, previousSummary: ctx.previousSummary,
+        language: ctx.language,
       })
     : buildLeafSummaryPrompt({
         text, mode: aggressive ? "aggressive" : "normal", targetTokens,
-        previousSummary: ctx.previousSummary,
+        previousSummary: ctx.previousSummary, language: ctx.language,
       });
 }
 

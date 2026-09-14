@@ -18,7 +18,12 @@ import { CompactionEngine, compactEngineConfig, COMPACT_TOKEN_BUDGET } from "../
 import { parseTranscript } from "../../transcript.js";
 import type { LcmSummarizeFn } from "../../llm/types.js";
 import { ScrubEngine } from "../../scrub.js";
-import { resolveEffectiveProvider, createSummarizer, type EffectiveProvider } from "../summarizer.js";
+import {
+  resolveEffectiveProvider,
+  resolveSummarizerLanguage,
+  createSummarizer,
+  type EffectiveProvider,
+} from "../summarizer.js";
 import { validateCwd } from "../validate-cwd.js";
 import { scheduleProjectLanguageDetection } from "../project-language.js";
 
@@ -269,6 +274,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           const conversationStore = new ConversationStore(db);
           const summaryStore = new SummaryStore(db);
           const conversation = await conversationStore.getOrCreateConversation(session_id);
+          const language = resolveSummarizerLanguage(config, cwd, paths);
 
           // Ingest new messages from the transcript into the DB.
           const safeTranscriptPath = transcript_path ? isSafeTranscriptPath(transcript_path, cwd) : false;
@@ -381,7 +387,11 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             }
           };
 
-          const engine = new CompactionEngine(conversationStore, summaryStore, compactEngineConfig({ scrubber }));
+          const engine = new CompactionEngine(
+            conversationStore,
+            summaryStore,
+            compactEngineConfig({ scrubber, language }),
+          );
 
           const compactResult = await engine.compact({
             conversationId: conversation.conversationId,

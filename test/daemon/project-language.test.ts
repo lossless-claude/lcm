@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runLcmMigrations } from "../../src/db/migration.js";
 import { ConversationStore } from "../../src/store/conversation-store.js";
-import { createSummarizer } from "../../src/daemon/summarizer.js";
+import { createSummarizer, resolveSummarizerLanguage } from "../../src/daemon/summarizer.js";
 import { loadDaemonConfig, type DaemonConfig } from "../../src/daemon/config.js";
 import { resetProjectLanguageState, scheduleProjectLanguageDetection } from "../../src/daemon/project-language.js";
 import { invalidateLanguagePacks, languagePackPath } from "../../src/store/language-pack.js";
@@ -112,5 +112,21 @@ describe("scheduleProjectLanguageDetection", () => {
     expect(warn.mock.calls[0][0]).toContain("API key is invalid");
     expect(existsSync(join(dir, "meta.json"))).toBe(false);
     warn.mockRestore();
+  });
+});
+
+describe("resolveSummarizerLanguage", () => {
+  it("prefers explicit configuration over the recorded project language", () => {
+    writeFileSync(join(dir, "meta.json"), JSON.stringify({ cwd: dir, language: "pt-BR" }));
+
+    expect(resolveSummarizerLanguage(testConfig(), dir, paths)).toBe("pt-BR");
+    expect(resolveSummarizerLanguage({
+      ...testConfig(),
+      summarizer: { mock: false, language: "en" },
+    }, dir, paths)).toBe("en");
+  });
+
+  it("returns no language when the project has not recorded one", () => {
+    expect(resolveSummarizerLanguage(testConfig(), dir, paths)).toBeUndefined();
   });
 });

@@ -32,6 +32,20 @@ describe("buildSummaryPrompt carries the previous chunk's summary", () => {
     expect(previousContextBlock(prompt)).toBe("(none)");
   });
 
+  it("renders the configured output language for leaf and condensed summaries", () => {
+    const leaf = buildSummaryPrompt("some conversation", false, { language: "pt-BR" });
+    const condensed = buildSummaryPrompt("some summaries", false, {
+      isCondensed: true, depth: 2, language: "pt-BR",
+    });
+    expect(leaf).toContain("- Write the summary in pt-BR.");
+    expect(condensed).toContain("- Write the summary in pt-BR.");
+  });
+
+  it("does not add a language instruction when no language is configured", () => {
+    expect(buildSummaryPrompt("some conversation", false, {}))
+      .not.toContain("Write the summary in");
+  });
+
   it("reaches the CLI providers that prepend the system prompt", () => {
     const prompt = buildSummaryPromptWithSystem("some conversation", false, {
       previousSummary: PREVIOUS,

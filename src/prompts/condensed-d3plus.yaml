@@ -4,11 +4,13 @@ variables:
   - targetTokens
   - text
   - instructionBlock
+  - language
 template: |-
   You are creating a high-level memory node from multiple phase-level summaries.
   This may persist for the rest of the conversation. Keep only durable context.
 
   {{instructionBlock}}
+  {{language}}
 
   Preserve:
   - Key decisions and rationale.

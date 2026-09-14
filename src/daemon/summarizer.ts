@@ -2,6 +2,8 @@ import { SummarizeJobStore } from "./summarize-jobs.js";
 import { buildSummaryPrompt } from "../llm/prompt.js";
 import { LCM_SUMMARIZER_SYSTEM_PROMPT, resolveTargetTokens, resolveMaxOutputTokens } from "../summarize.js";
 import type { DaemonConfig } from "./config.js";
+import type { LcmPaths } from "../lcm-paths.js";
+import { projectAuthorLanguage } from "../search/pivot-language.js";
 import { createClaudeProcessSummarizer } from "../llm/claude-process.js";
 import { createCodexProcessSummarizer } from "../llm/codex-process.js";
 import { createCopilotProcessSummarizer } from "../llm/copilot-process.js";
@@ -10,6 +12,20 @@ import type { LcmSummarizeFn } from "../llm/types.js";
 
 export type CompactClient = "claude" | "codex" | "copilot";
 export type EffectiveProvider = Exclude<DaemonConfig["llm"]["provider"], "auto">;
+
+function configuredSummarizerLanguage(config: DaemonConfig): string | undefined {
+  const language = config.summarizer?.language;
+  return typeof language === "string" && language.trim() ? language.trim() : undefined;
+}
+
+/** Resolve the language used for newly generated summaries. */
+export function resolveSummarizerLanguage(
+  config: DaemonConfig,
+  cwd: string,
+  paths: LcmPaths,
+): string | undefined {
+  return configuredSummarizerLanguage(config) ?? projectAuthorLanguage(cwd, paths);
+}
 
 export function resolveEffectiveProvider(config: DaemonConfig, client?: CompactClient): EffectiveProvider {
   if (config.llm.provider === "auto") {
@@ -25,11 +41,18 @@ export async function createSummarizer(
   config: DaemonConfig,
   jobs?: SummarizeJobStore,
 ): Promise<LcmSummarizeFn | null> {
+  const configuredLanguage = configuredSummarizerLanguage(config);
+  const withConfiguredLanguage = (summarizer: LcmSummarizeFn): LcmSummarizeFn => {
+    if (!configuredLanguage) return summarizer;
+    return async (text, aggressive, ctx = {}) =>
+      summarizer(text, aggressive, { ...ctx, language: configuredLanguage });
+  };
+
   // Mock summarizer for E2E testing — deterministic, no LLM calls
-  if (config.summarizer?.mock) return createMockSummarizer();
+  if (config.summarizer?.mock) return withConfiguredLanguage(createMockSummarizer());
   if (provider === "disabled") return null;
   if (provider === "session") {
-    return async (text, aggressive, ctx = {}) => {
+    return withConfiguredLanguage(async (text, aggressive, ctx = {}) => {
       if (jobs && ctx.sessionId) {
         const targetTokens = ctx.targetTokens ?? resolveTargetTokens({
           inputTokens: Math.ceil(text.length / 4), mode: aggressive ? "aggressive" : "normal",
@@ -55,32 +78,32 @@ export async function createSummarizer(
       const fallback = await createSummarizer(resolveEffectiveProvider(fallbackConfig, ctx.client), fallbackConfig);
       if (!fallback) throw new Error("Session summarizer unavailable and fallback disabled");
       return fallback(text, aggressive, ctx);
-    };
+    });
   }
   // No model passed on purpose: config.llm.model is shared across providers, so
   // a model pinned for codex/openai must not leak into the claude CLI.
-  if (provider === "claude-process") return createClaudeProcessSummarizer();
+  if (provider === "claude-process") return withConfiguredLanguage(createClaudeProcessSummarizer());
   if (provider === "codex-process") {
-    return createCodexProcessSummarizer({ model: config.llm.model });
+    return withConfiguredLanguage(createCodexProcessSummarizer({ model: config.llm.model }));
   }
   if (provider === "copilot-process") {
-    return createCopilotProcessSummarizer({ model: config.llm.model });
+    return withConfiguredLanguage(createCopilotProcessSummarizer({ model: config.llm.model }));
   }
   if (provider === "openai") {
     const { createOpenAISummarizer } = await import("../llm/openai.js");
-    return createOpenAISummarizer({
+    return withConfiguredLanguage(createOpenAISummarizer({
       model: config.llm.model,
       baseURL: config.llm.baseURL,
       apiKey: config.llm.apiKey,
       reasoning: config.llm.reasoning,
-    });
+    }));
   }
   // anthropic
   const { createAnthropicSummarizer } = await import("../llm/anthropic.js");
-  return createAnthropicSummarizer({
+  return withConfiguredLanguage(createAnthropicSummarizer({
     model: config.llm.model,
     apiKey: config.llm.apiKey!,
-  });
+  }));
 }
 
 /**
