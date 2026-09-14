@@ -131,7 +131,7 @@ describe("dispatchHook", () => {
     vi.mocked(handleSessionStart).mockResolvedValue({ exitCode: 0, stdout: "" });
     vi.mocked(ensureBootstrapped).mockClear();
     await dispatchHook("restore", JSON.stringify({ session_id: "test-sess-123" }));
-    expect(ensureBootstrapped).toHaveBeenCalledWith("test-sess-123");
+    expect(ensureBootstrapped).toHaveBeenCalledWith("test-sess-123", expect.objectContaining({ home: process.env.LCM_HOME }));
   });
 
   it("skips ensureBootstrapped for compact (daemon already running at PreCompact time)", async () => {

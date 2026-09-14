@@ -124,7 +124,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   routes.set("POST /promote-events", createPromoteEventsHandler(config, paths));
   routes.set("POST /tool-event", createToolEventHandler(config, paths));
   routes.set("POST /session-scavenge", createSessionScavengeHandler(config, paths));
-  routes.set("GET /stats", createStatsHandler());
+  routes.set("GET /stats", createStatsHandler(paths));
   routes.set("GET /stats/pool", createPoolStatsHandler());
   routes.set("POST /review-stale", createReviewStaleHandler(config, paths));
   // Status handler is registered after listen() when we know the actual port

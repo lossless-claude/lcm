@@ -15,8 +15,7 @@ import {
   recordReplayProgress,
   refuseRestartDuringCompaction,
 } from "./replay-resume.js";
-import { lcmHome } from "./lcm-home.js";
-import { createLcmPaths } from "./lcm-paths.js";
+import type { LcmPaths } from "./lcm-paths.js";
 
 export interface UncompactedConversation {
   projectDir: string;
@@ -44,8 +43,8 @@ function readProjectCwd(projDir: string): string {
 }
 
 /** Every tracked project with a database: its directory and cwd. */
-export function findProjects(cwdFilter?: string): { projDir: string; cwd: string }[] {
-  const baseDir = createLcmPaths(lcmHome()).projectsDir;
+export function findProjects(paths: LcmPaths, cwdFilter?: string): { projDir: string; cwd: string }[] {
+  const baseDir = paths.projectsDir;
   if (!existsSync(baseDir)) return [];
 
   const projects: { projDir: string; cwd: string }[] = [];
@@ -60,10 +59,10 @@ export function findProjects(cwdFilter?: string): { projDir: string; cwd: string
   return projects;
 }
 
-export function findUncompacted(minTokens: number, readOnly = false, cwdFilter?: string, replay = false): UncompactedConversation[] {
+export function findUncompacted(paths: LcmPaths, minTokens: number, readOnly = false, cwdFilter?: string, replay = false): UncompactedConversation[] {
   const results: UncompactedConversation[] = [];
 
-  for (const { projDir, cwd } of findProjects(cwdFilter)) {
+  for (const { projDir, cwd } of findProjects(paths, cwdFilter)) {
     const dbPath = join(projDir, "db.sqlite");
     // The shared pool, not a private handle: this runs on the daemon's own
     // SessionStart sweep, where a second handle to a database the daemon
@@ -143,6 +142,7 @@ export function findUncompacted(minTokens: number, readOnly = false, cwdFilter?:
 
 /** Compact all uncompacted conversations above threshold via the daemon. */
 export async function batchCompact(opts: {
+  paths: LcmPaths;
   minTokens: number;
   dryRun: boolean;
   port: number;
@@ -166,12 +166,13 @@ export async function batchCompact(opts: {
   // the token threshold.
   const client = new DaemonClient(`http://127.0.0.1:${opts.port}`, opts.tokenPath);
   if (opts.replay && !opts.dryRun && opts.restart) {
-    const projects = findProjects(opts.cwd);
+    const projects = findProjects(opts.paths, opts.cwd);
     await refuseRestartDuringCompaction(client, projects.map((p) => p.cwd));
     let clearFailed = false;
     for (const { cwd } of projects) {
       const ok = await clearReplayState({
         cwd,
+        paths: opts.paths,
         command: "compact",
         onSummaryCount: (count) => {
           if (count > 0) {
@@ -186,7 +187,7 @@ export async function batchCompact(opts: {
     }
   }
 
-  let conversations = findUncompacted(opts.minTokens, opts.dryRun, opts.cwd, opts.replay);
+  let conversations = findUncompacted(opts.paths, opts.minTokens, opts.dryRun, opts.cwd, opts.replay);
   const onProgress = opts.onProgress;
 
   // Replay runs are resumable: a per-project manifest freezes the ordering and
@@ -198,6 +199,7 @@ export async function batchCompact(opts: {
     replayRuns = new Map();
     const plan = planReplayResume({
       sessions: conversations,
+      paths: opts.paths,
       command: "compact",
       fingerprint: (c) => fingerprintStats(c.sourceMessages, c.sourceTokens),
       restart: opts.restart,
@@ -207,6 +209,7 @@ export async function batchCompact(opts: {
       if (plan.freshCwds.has(cwd)) {
         createReplayRun({
           cwd,
+          paths: opts.paths,
           command: "compact",
           runId: plan.runIds.get(cwd)!,
           sessions: order.map((sessionId) => ({ sessionId })),
@@ -219,6 +222,7 @@ export async function batchCompact(opts: {
         if (appends.length > 0) {
           appendReplayManifestSessions({
             cwd,
+            paths: opts.paths,
             command: "compact",
             runId: plan.runIds.get(cwd)!,
             sessions: appends.map((sessionId) => ({
@@ -317,6 +321,7 @@ export async function batchCompact(opts: {
       if (run && outcome) {
         recordReplayProgress({
           cwd: conv.cwd,
+          paths: opts.paths,
           runId: run.runId,
           sessionId: conv.sessionId,
           position: run.positions.get(conv.sessionId) ?? 0,
@@ -377,7 +382,7 @@ export async function batchCompact(opts: {
         // daemon failure breaks the chain at this link.
         const gaveUp = isClientGaveUpError(err);
         const recovered = gaveUp
-          ? await loadLatestSessionSummary({ cwd: conv.cwd, sessionId: conv.sessionId, notBefore: compactStartedAt })
+          ? await loadLatestSessionSummary({ cwd: conv.cwd, paths: opts.paths, sessionId: conv.sessionId, notBefore: compactStartedAt })
           : null;
         if (recovered) {
           previousSummaryByCwd.set(conv.cwd, recovered.content);
@@ -385,6 +390,7 @@ export async function batchCompact(opts: {
           if (run) {
             recordReplayProgress({
               cwd: conv.cwd,
+              paths: opts.paths,
               runId: run.runId,
               sessionId: conv.sessionId,
               position: run.positions.get(conv.sessionId) ?? 0,

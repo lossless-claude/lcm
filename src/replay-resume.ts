@@ -22,8 +22,7 @@ import { closeLcmConnection, getLcmConnection } from "./db/connection.js";
 import { runLcmMigrations } from "./db/migration.js";
 import { SummaryStore } from "./store/summary-store.js";
 import type { DaemonClient } from "./daemon/client.js";
-import { lcmHome } from "./lcm-home.js";
-import { createLcmPaths } from "./lcm-paths.js";
+import { createLcmPaths, type LcmPaths } from "./lcm-paths.js";
 
 export type ReplayCommand = "import" | "compact";
 
@@ -148,8 +147,16 @@ function closeDb(opened: ProjectDbOpenResult): void {
   try { closeLcmConnection(opened.dbPath); } catch { /* already closed */ }
 }
 
-function projectDbPathFor(cwd: string, lcmDir?: string): string {
-  return join(lcmDir ?? createLcmPaths(lcmHome()).home, "projects", projectId(cwd), "db.sqlite");
+function projectDbPathFor(cwd: string, paths: LcmPaths): string {
+  return join(paths.projectsDir, projectId(cwd), "db.sqlite");
+}
+
+type ReplayPaths = { paths?: LcmPaths; lcmDir?: string };
+
+function replayPaths(opts: ReplayPaths): LcmPaths {
+  if (opts.paths) return opts.paths;
+  if (opts.lcmDir) return createLcmPaths(opts.lcmDir);
+  throw new Error("replay state requires an LcmPaths storage root");
 }
 
 function loadLatestRun(db: DatabaseSync, command: ReplayCommand): ReplayRunInfo | null {
@@ -208,13 +215,14 @@ function fetchSummaryContent(db: DatabaseSync, summaryId: string): string | unde
  */
 export function createReplayRun(opts: {
   cwd: string;
+  paths?: LcmPaths;
   lcmDir?: string;
   command: ReplayCommand;
   runId: string;
   sessions: { sessionId: string }[];
   model?: string | null;
 }): boolean {
-  const opened = openProjectDb(projectDbPathFor(opts.cwd, opts.lcmDir));
+  const opened = openProjectDb(projectDbPathFor(opts.cwd, replayPaths(opts)));
   if (opened.kind !== "ready") return false;
   const { db } = opened;
   try {
@@ -242,6 +250,7 @@ export function createReplayRun(opts: {
  */
 export function appendReplayManifestSessions(opts: {
   cwd: string;
+  paths?: LcmPaths;
   lcmDir?: string;
   command: ReplayCommand;
   runId: string;
@@ -249,7 +258,7 @@ export function appendReplayManifestSessions(opts: {
   model?: string | null;
 }): void {
   if (opts.sessions.length === 0) return;
-  const opened = openProjectDb(projectDbPathFor(opts.cwd, opts.lcmDir));
+  const opened = openProjectDb(projectDbPathFor(opts.cwd, replayPaths(opts)));
   if (opened.kind !== "ready") return;
   const { db } = opened;
   try {
@@ -273,6 +282,7 @@ export function appendReplayManifestSessions(opts: {
 /** Plan one project against its own database. Returns null when the DB is unusable. */
 function planProject<T extends { sessionId: string }>(opts: {
   cwd: string;
+  paths?: LcmPaths;
   lcmDir?: string;
   command: ReplayCommand;
   sessions: T[];
@@ -293,7 +303,7 @@ function planProject<T extends { sessionId: string }>(opts: {
     manifestAppends: [],
   };
 
-  const opened = openProjectDb(projectDbPathFor(opts.cwd, opts.lcmDir));
+  const opened = openProjectDb(projectDbPathFor(opts.cwd, replayPaths(opts)));
   if (opened.kind !== "ready") return null;
   const { db } = opened;
   try {
@@ -397,6 +407,7 @@ function planProject<T extends { sessionId: string }>(opts: {
  */
 export function planReplayResume<T extends { sessionId: string; cwd: string }>(opts: {
   sessions: T[];
+  paths?: LcmPaths;
   lcmDir?: string;
   command: ReplayCommand;
   fingerprint: (session: T) => string | null;
@@ -434,7 +445,7 @@ export function planReplayResume<T extends { sessionId: string; cwd: string }>(o
   for (const [cwd, sessions] of byCwd) {
     const project: ProjectPlan<T> = planProject({
       cwd,
-      lcmDir: opts.lcmDir,
+      paths: replayPaths(opts),
       command: opts.command,
       sessions,
       fingerprint: opts.fingerprint,
@@ -542,6 +553,7 @@ export function isClientGaveUpError(err: unknown): boolean {
  */
 export async function loadLatestSessionSummary(opts: {
   cwd: string;
+  paths?: LcmPaths;
   lcmDir?: string;
   sessionId: string;
   /** Epoch ms; only summaries persisted at or after this time are returned. */
@@ -553,7 +565,7 @@ export async function loadLatestSessionSummary(opts: {
   sourceMessageTokenCount: number;
   contextTokenCount: number;
 } | null> {
-  const opened = openProjectDb(projectDbPathFor(opts.cwd, opts.lcmDir));
+  const opened = openProjectDb(projectDbPathFor(opts.cwd, replayPaths(opts)));
   if (opened.kind !== "ready") {
     if (opened.kind === "error") {
       console.error(`  ⚠️ [replay] could not read latest summary for session ${opts.sessionId}: project database failed to open`);
@@ -602,6 +614,7 @@ export async function loadLatestSessionSummary(opts: {
  */
 export function recordReplayProgress(opts: {
   cwd: string;
+  paths?: LcmPaths;
   lcmDir?: string;
   runId: string;
   sessionId: string;
@@ -611,7 +624,7 @@ export function recordReplayProgress(opts: {
   summaryId?: string | null;
   model?: string | null;
 }): void {
-  const opened = openProjectDb(projectDbPathFor(opts.cwd, opts.lcmDir));
+  const opened = openProjectDb(projectDbPathFor(opts.cwd, replayPaths(opts)));
   if (opened.kind !== "ready") return;
   const { db } = opened;
   try {
@@ -692,12 +705,13 @@ export async function refuseRestartDuringCompaction(
  */
 export async function clearReplayState(opts: {
   cwd: string;
+  paths?: LcmPaths;
   lcmDir?: string;
   command: ReplayCommand;
   /** Called with the number of summaries about to be discarded, before any are. */
   onSummaryCount?: (count: number) => void;
 }): Promise<boolean> {
-  const opened = openProjectDb(projectDbPathFor(opts.cwd, opts.lcmDir));
+  const opened = openProjectDb(projectDbPathFor(opts.cwd, replayPaths(opts)));
   if (opened.kind === "missing") return true; // nothing to clear
   if (opened.kind === "error") return false; // existing DB could not be opened
   const { db } = opened;

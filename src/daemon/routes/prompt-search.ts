@@ -17,6 +17,7 @@ import { safeLogError } from "../../hooks/hook-errors.js";
 import { validateCwd } from "../validate-cwd.js";
 import { searchNativeHistory } from "../../search/native-history.js";
 import { pivotLanguagesFor, pivotQueryHint } from "../../search/pivot-language.js";
+import { extractQueryTerms } from "../../store/fts5-query.js";
 
 const CANDIDATE_LIMIT_MULTIPLIER = 5;
 const MIN_CANDIDATE_LIMIT = 10;
@@ -284,11 +285,13 @@ export function createPromptSearchHandler(config: DaemonConfig, paths: LcmPaths)
 
       const targetHintCount = Math.max(maxResults, maxInjectedMemoryItems);
       const candidateLimit = Math.max(targetHintCount * CANDIDATE_LIMIT_MULTIPLIER, MIN_CANDIDATE_LIMIT);
+      const queryTerms = extractQueryTerms(query, paths);
       // Promoted memory is unioned across every checkout of this repository,
       // and each hit's recall feedback is read from the database that holds it.
       const { hits: results, feedback: feedbackById } = searchPromotedGroup(validatedCwd, {
         query,
         limit: candidateLimit,
+        terms: queryTerms,
         withFeedback: true,
       }, paths);
 
@@ -317,7 +320,7 @@ export function createPromptSearchHandler(config: DaemonConfig, paths: LcmPaths)
       // Keep promoted ranking intact, and fill the same bounded hint budget
       // with native episodic matches rather than requiring a manual import.
       const history = input.client === "codex"
-        ? await searchNativeHistory(db, { query, limit: targetHintCount, project: projectRef(cwd) })
+        ? await searchNativeHistory(db, { query, limit: targetHintCount, terms: queryTerms, project: projectRef(cwd) })
         : [];
       // A hit surfaced from a sibling checkout carries its own project id, so the
       // agent can pass it back to lcm_describe/lcm_expand; a hit from this project

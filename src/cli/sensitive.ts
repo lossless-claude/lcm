@@ -15,8 +15,8 @@ export function registerSensitiveCommand(program: Command): void {
     .action(async (args: string[], opts) => {
       if (opts.help) await showHelpAndExit("sensitive");
       const { handleSensitive } = await import("../sensitive.js");
-      const configPath = createLcmPaths(lcmHome()).configPath;
-      const r = await handleSensitive(args, process.cwd(), configPath);
+      const paths = createLcmPaths(lcmHome());
+      const r = await handleSensitive(args, process.cwd(), paths);
       if (r.stdout) stdout.write(r.stdout);
       exit(r.exitCode);
     });

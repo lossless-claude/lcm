@@ -3,8 +3,7 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { mergeClaudeSettings } from "./installer/settings.js";
 import { loadDaemonConfig } from "./daemon/config.js";
-import { lcmHome } from "./lcm-home.js";
-import { createLcmPaths } from "./lcm-paths.js";
+import { createLcmPaths, type LcmPaths } from "./lcm-paths.js";
 import { PKG_VERSION } from "./daemon/version.js";
 import { cliInvocation, daemonNotice, type DaemonNotice } from "./hooks/fail-open.js";
 
@@ -23,8 +22,7 @@ export interface EnsureCoreDeps {
 
 export type EnsureCoreResult = { port: number; daemon: EnsureDaemonOutcome };
 
-function defaultDeps(): EnsureCoreDeps {
-  const paths = createLcmPaths(lcmHome());
+function defaultDeps(paths: LcmPaths): EnsureCoreDeps {
   return {
     configPath: paths.configPath,
     settingsPath: join(homedir(), ".claude", "settings.json"),
@@ -40,7 +38,9 @@ function defaultDeps(): EnsureCoreDeps {
   };
 }
 
-export async function ensureCore(deps: EnsureCoreDeps = defaultDeps()): Promise<EnsureCoreResult> {
+export async function ensureCore(pathsOrDeps: LcmPaths | EnsureCoreDeps, injectedDeps?: EnsureCoreDeps): Promise<EnsureCoreResult> {
+  const paths = "home" in pathsOrDeps ? pathsOrDeps : createLcmPaths(dirname(pathsOrDeps.configPath));
+  const deps = "home" in pathsOrDeps ? (injectedDeps ?? defaultDeps(paths)) : pathsOrDeps;
   // 1. Create config.json with defaults if missing
   if (!deps.existsSync(deps.configPath)) {
     deps.mkdirSync(dirname(deps.configPath), { recursive: true });
@@ -86,9 +86,9 @@ export interface BootstrapDeps extends EnsureCoreDeps {
   warn: (line: string) => void;
 }
 
-function defaultBootstrapDeps(): BootstrapDeps {
+function defaultBootstrapDeps(paths: LcmPaths): BootstrapDeps {
   return {
-    ...defaultDeps(),
+    ...defaultDeps(paths),
     flagExists: existsSync,
     readFlag: (p) => readFileSync(p, "utf-8"),
     writeFlag: (p, content) => writeFileSync(p, content),
@@ -107,10 +107,13 @@ const UNUSABLE_PREFIX = "unusable:";
  */
 export async function ensureBootstrapped(
   sessionId: string,
-  deps: BootstrapDeps = defaultBootstrapDeps(),
+  pathsOrDeps: LcmPaths | BootstrapDeps,
+  injectedDeps?: BootstrapDeps,
 ): Promise<{ usable: boolean }> {
+  const paths = "home" in pathsOrDeps ? pathsOrDeps : createLcmPaths(dirname(pathsOrDeps.configPath));
+  const deps = "home" in pathsOrDeps ? (injectedDeps ?? defaultBootstrapDeps(paths)) : pathsOrDeps;
   const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-  const flagDir = createLcmPaths(lcmHome()).tmpDir;
+  const flagDir = paths.tmpDir;
   mkdirSync(flagDir, { recursive: true });
   const flagPath = join(flagDir, `bootstrapped-${safeId}.flag`);
   try {
@@ -127,7 +130,7 @@ export async function ensureBootstrapped(
 
   let notice: DaemonNotice | undefined;
   try {
-    const { port, daemon } = await ensureCore(deps);
+    const { port, daemon } = await ensureCore(paths, deps);
     notice = daemonNotice({ ...daemon, port }, PKG_VERSION);
   } catch (err) {
     // The flag is still written below: a broken environment is reported once, not

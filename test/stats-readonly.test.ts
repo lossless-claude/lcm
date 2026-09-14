@@ -7,6 +7,7 @@ import { collectStats } from "../src/stats.js";
 import { runLcmMigrations } from "../src/db/migration.js";
 import { ConversationStore } from "../src/store/conversation-store.js";
 import { writeHold } from "../src/daemon/hold.js";
+import { createLcmPaths } from "../src/lcm-paths.js";
 
 let root: string | undefined;
 afterEach(() => { vi.unstubAllEnvs(); if (root) rmSync(root, { recursive: true, force: true }); });
@@ -29,7 +30,7 @@ it.each([false, true])("stats during a hold never migrates or writes project dat
   db.close();
   writeHold(join(root, "daemon.pid"));
   const before = readFileSync(path);
-  const stats = collectStats();
+  const stats = collectStats(createLcmPaths(root));
   expect(readFileSync(path)).toEqual(before);
   expect(stats.messages).toBe(current ? 1 : 0);
 });
@@ -52,7 +53,7 @@ it.each([false, true])("keeps legacy project counts when optional metrics are ab
   if (usage) db.exec("CREATE TABLE llm_usage_stats (calls_total INTEGER); INSERT INTO llm_usage_stats VALUES (3)");
   db.close();
   const before = readFileSync(path);
-  const stats = collectStats();
+  const stats = collectStats(createLcmPaths(root));
   expect(stats).toMatchObject({ projects: 1, conversations: 1, messages: 1, summaries: 1, rawTokens: 40, summaryTokens: 10, maxDepth: 0 });
   expect(stats.llmUsage).toMatchObject({ calls: usage ? 3 : 0, costUsd: null });
   expect(readFileSync(path)).toEqual(before);

@@ -59,7 +59,7 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
       const config = loadDaemonConfig(paths.configPath);
       const port = config.daemon?.port ?? 3737;
       const previewClient = new DaemonClient(`http://127.0.0.1:${port}`, paths.tokenPath);
-      const preview = await importSessions(previewClient, { all, provider, dryRun: true, verbose: dryRun && verbose, replay });
+      const preview = await importSessions(previewClient, { paths, all, provider, dryRun: true, verbose: dryRun && verbose, replay });
       if (dryRun) {
         console.log(`  [dry-run] ${preview.imported} ${provider} sessions selected (${all ? "all projects" : "current project"})${replay ? "; would compact each session" : ""}. No changes written.`);
         return;
@@ -83,7 +83,7 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
       renderer.start();
 
       const result = await importSessions(client, {
-        all, verbose, dryRun, replay, restart, provider,
+        paths, all, verbose, dryRun, replay, restart, provider,
         replayModel: config.llm.model || undefined,
         onBeforeSession: () => !renderer.shouldStop,
         trackInFlight: () => renderer.trackInFlight(),
@@ -262,7 +262,7 @@ export function registerKnowledgeCommands(program: Command, deps: KnowledgeComma
           outFile = join(process.cwd(), `lcm-export-${slug}.json`);
         }
         try {
-          const result = await exportKnowledge(cwd, { tags, since, output: outFile });
+          const result = await exportKnowledge(cwd, paths, { tags, since, output: outFile });
           total += result.exported;
           if (all) {
             console.log(`  ${cwd}: ${result.exported} entries → ${outFile}`);
@@ -292,6 +292,7 @@ export function registerKnowledgeCommands(program: Command, deps: KnowledgeComma
       await admitCliDatabaseWork();
       const { importKnowledge } = await import("../portable-knowledge.js");
       const { readFileSync } = await import("node:fs");
+      const paths = createLcmPaths(lcmHome());
 
       const dryRun: boolean = opts.dryRun ?? false;
       const confidence: number | undefined = opts.confidence !== undefined
@@ -329,7 +330,7 @@ export function registerKnowledgeCommands(program: Command, deps: KnowledgeComma
       }
 
       try {
-        const result = await importKnowledge(cwd, doc, { merge: true, dryRun, confidence });
+        const result = await importKnowledge(cwd, paths, doc, { merge: true, dryRun, confidence });
         if (result.dryRun) {
           console.log(`\n  [dry-run] Would import ${result.total} entries. No changes written.\n`);
         } else {

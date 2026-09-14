@@ -16,6 +16,7 @@ import {
   extractQueryTerms,
   prepareFts5Query,
 } from "../../src/store/fts5-query.js";
+import { createLcmPaths } from "../../src/lcm-paths.js";
 
 const PT_WORDS = ["a", "o", "que", "como", "para", "foi", "não", "você", "isso", "de", "do", "da", "em", "um", "uma", "os", "as", "com", "por", "se", "mas", "ou", "já", "ainda", "também", "está", "são", "tem", "era", "sobre", "onde", "quando", "qual"];
 
@@ -37,6 +38,22 @@ function writePack(tag: string, stopwords: string[]): void {
 }
 
 describe("query terms with language packs", () => {
+  it("reads packs from the caller's storage root without an environment override", () => {
+    const root = mkdtempSync(join(tmpdir(), "lcm-lang-root-"));
+    delete process.env.LCM_LANGUAGES_DIR;
+    try {
+      const paths = createLcmPaths(root);
+      const languagesDir = join(root, "languages");
+      mkdirSync(languagesDir, { recursive: true });
+      writeFileSync(join(languagesDir, "pt-BR.json"), JSON.stringify({ version: 1, tag: "pt-BR", stopwords: PT_WORDS, generatedAt: "2026-09-08T00:00:00Z" }));
+      invalidateLanguagePacks();
+      expect(extractQueryTerms("como foi o deploy que quebrou a busca?", paths)).toEqual(["deploy", "quebrou", "busca"]);
+    } finally {
+      process.env.LCM_LANGUAGES_DIR = dir;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("strips a pack's function words from a question in that language", () => {
     writePack("pt-BR", PT_WORDS);
     expect(extractQueryTerms("como foi o deploy que quebrou a busca?")).toEqual(["deploy", "quebrou", "busca"]);

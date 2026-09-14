@@ -2,8 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync } fr
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { REQUIRED_HOOKS, mergeClaudeSettings } from "../../installer/install.js";
-import { lcmHome } from "../lcm-home.js";
-import { createLcmPaths } from "../lcm-paths.js";
+import type { LcmPaths } from "../lcm-paths.js";
 
 export interface AutoHealDeps {
   readFileSync: (path: string, encoding: string) => string;
@@ -15,7 +14,7 @@ export interface AutoHealDeps {
   logPath: string;
 }
 
-function defaultDeps(): AutoHealDeps {
+function defaultDeps(paths: LcmPaths): AutoHealDeps {
   return {
     readFileSync: (p, enc) => readFileSync(p, enc as BufferEncoding),
     writeFileSync,
@@ -23,7 +22,7 @@ function defaultDeps(): AutoHealDeps {
     mkdirSync,
     appendFileSync,
     settingsPath: join(homedir(), ".claude", "settings.json"),
-    logPath: join(createLcmPaths(lcmHome()).home, "auto-heal.log"),
+    logPath: join(paths.home, "auto-heal.log"),
   };
 }
 
@@ -33,7 +32,9 @@ function hasHookCommand(entries: any[], command: string): boolean {
   );
 }
 
-export function validateAndFixHooks(deps: AutoHealDeps = defaultDeps()): void {
+export function validateAndFixHooks(pathsOrDeps: LcmPaths | AutoHealDeps, injectedDeps?: AutoHealDeps): void {
+  const paths = "home" in pathsOrDeps ? pathsOrDeps : { home: dirname(pathsOrDeps.logPath) } as LcmPaths;
+  const deps = "home" in pathsOrDeps ? (injectedDeps ?? defaultDeps(paths)) : pathsOrDeps;
   try {
     if (!deps.existsSync(deps.settingsPath)) return;
 

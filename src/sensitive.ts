@@ -6,22 +6,17 @@ import { NATIVE_PATTERNS, ScrubEngine, readGitleaksSyncDate } from "./scrub.js";
 import { GITLEAKS_PATTERNS } from "./generated-patterns.js";
 import { projectDir } from "./daemon/project.js";
 import { loadDaemonConfig } from "./daemon/config.js";
-import { lcmHome } from "./lcm-home.js";
 import { createLcmPaths, type LcmPaths } from "./lcm-paths.js";
-
-function defaultConfigPath(): string {
-  return createLcmPaths(lcmHome()).configPath;
-}
 
 export async function handleSensitive(
   argv: string[],
   cwd: string,
-  configPath?: string,
+  pathsOrConfigPath: LcmPaths | string,
 ): Promise<{ exitCode: number; stdout: string }> {
-  const resolvedConfigPath = configPath ?? defaultConfigPath();
-  // Every real caller's configPath sits at the lcm home's root (`<home>/config.json`),
-  // so its directory is the home — without reading it from the ambient environment here.
-  const paths = createLcmPaths(dirname(resolvedConfigPath));
+  const paths = typeof pathsOrConfigPath === "string"
+    ? createLcmPaths(dirname(pathsOrConfigPath))
+    : pathsOrConfigPath;
+  const resolvedConfigPath = paths.configPath;
   const sub = argv[0];
 
   switch (sub) {

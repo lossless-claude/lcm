@@ -158,16 +158,6 @@ const LCM_HOME_ALLOWLIST: Record<string, string> = {
   "src/doctor/doctor.ts": "composition root: the doctor run, which also reports the root",
 
   // Library fallbacks: #409 is not finished until each takes its paths from its caller.
-  "src/batch-compact.ts": "library fallback: findProjects resolves its own projects dir",
-  "src/bootstrap.ts": "library fallback: the bootstrap marker is not taken from dispatchHook's paths",
-  "src/hooks/auto-heal.ts": "library fallback: defaultDeps derives auto-heal.log from the ambient root",
-  "src/import.ts": "library fallback: buildProjectMap resolves its own projects dir",
-  "src/memory/index.ts": "library fallback: the default client's token path is resolved at module load",
-  "src/portable-knowledge.ts": "library fallback: returns the ambient root to its callers",
-  "src/replay-resume.ts": "library fallback: reconstructs the project database path when lcmDir is omitted",
-  "src/sensitive.ts": "library fallback: builds a config path when the caller omits one",
-  "src/stats.ts": "library fallback: collectStats resolves its own root",
-  "src/store/language-pack.ts": "library fallback: language packs are read and written under the ambient root",
 };
 
 describe("lcmHome() outside the factory is named, not incidental", () => {

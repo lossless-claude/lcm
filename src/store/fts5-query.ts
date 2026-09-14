@@ -1,5 +1,6 @@
 import { buildLikeSearchPlan } from "./full-text-fallback.js";
 import { packStopwordsFor } from "./language-pack.js";
+import type { LcmPaths } from "../lcm-paths.js";
 
 /**
  * Natural-language query preparation for FTS5.
@@ -88,7 +89,7 @@ function dedupe(words: string[]): string[] {
  * If every word is a stopword, the original words are kept as terms so the
  * query still searches for something rather than nothing.
  */
-export function extractQueryTerms(raw: string): string[] {
+export function extractQueryTerms(raw: string, paths?: LcmPaths): string[] {
   const words = dedupe(
     raw
       .toLowerCase()
@@ -96,7 +97,8 @@ export function extractQueryTerms(raw: string): string[] {
       .filter(Boolean),
   );
 
-  const packStopwords = packStopwordsFor(words);
+  let packStopwords: ReadonlySet<string> = new Set();
+  try { packStopwords = paths ? packStopwordsFor(paths, words) : packStopwordsFor(words); } catch { /* no configured pack root */ }
   const terms = words.filter((word) => !STOPWORDS.has(word) && !packStopwords.has(word));
   if (terms.length > 0) {
     return terms;
@@ -111,11 +113,11 @@ export function extractQueryTerms(raw: string): string[] {
  * Returns quoted AND and OR expressions over the content terms, or null
  * when the query has no usable terms at all (e.g. empty or punctuation-only).
  */
-export function prepareFts5Query(raw: string, preExtracted?: readonly string[]): Fts5PreparedQuery | null {
+export function prepareFts5Query(raw: string, preExtracted?: readonly string[], paths?: LcmPaths): Fts5PreparedQuery | null {
   // `preExtracted` is the term set a caller already derived, and it is not the same thing as
   // extracting from `raw` again: a pivot query's union is two languages in one string, and a
   // second pass picks its stopword pack from the mixture, dropping terms one side had kept.
-  const terms = preExtracted ? [...preExtracted] : extractQueryTerms(raw);
+  const terms = preExtracted ? [...preExtracted] : extractQueryTerms(raw, paths);
   if (terms.length === 0) {
     return null;
   }
@@ -143,8 +145,10 @@ export function prepareFts5Query(raw: string, preExtracted?: readonly string[]):
  * No pivot query, or one whose terms add nothing, returns `query` untouched, so
  * the single-language path is unchanged.
  */
-export function combineWithPivotQuery(query: string, pivotQuery?: string): string {
-  const terms = combinedQueryTerms(query, pivotQuery);
+export function combineWithPivotQuery(query: string, pathsOrPivot?: LcmPaths | string, suppliedPivot?: string): string {
+  const paths = typeof pathsOrPivot === "string" ? undefined : pathsOrPivot;
+  const pivotQuery = typeof pathsOrPivot === "string" ? pathsOrPivot : suppliedPivot;
+  const terms = combinedQueryTerms(query, paths, pivotQuery);
   return terms ? terms.join(" ") : query;
 }
 
@@ -156,10 +160,12 @@ export function combineWithPivotQuery(query: string, pivotQuery?: string): strin
  * alone to a layer that re-extracts would undo the whole point: each side is tokenised here
  * against its own language's stopwords, and re-tokenising the mixture picks one pack for both.
  */
-export function combinedQueryTerms(query: string, pivotQuery?: string): string[] | null {
+export function combinedQueryTerms(query: string, pathsOrPivot?: LcmPaths | string, suppliedPivot?: string): string[] | null {
+  const paths = typeof pathsOrPivot === "string" ? undefined : pathsOrPivot;
+  const pivotQuery = typeof pathsOrPivot === "string" ? pathsOrPivot : suppliedPivot;
   if (!pivotQuery || pivotQuery.trim().length === 0) return null;
-  const terms = extractQueryTerms(query);
-  const pivotTerms = extractQueryTerms(pivotQuery).filter((term) => !terms.includes(term));
+  const terms = extractQueryTerms(query, paths);
+  const pivotTerms = extractQueryTerms(pivotQuery, paths).filter((term) => !terms.includes(term));
   if (pivotTerms.length === 0) return null;
   return [...terms, ...pivotTerms];
 }
