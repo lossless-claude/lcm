@@ -1,5 +1,5 @@
 Built-in patterns:
-  [gitleaks]  220 patterns (synced 2026-03-27)
+  [gitleaks]  204 patterns (synced 2026-09-14)
   [native]    sk-[A-Za-z0-9]{20,}
   [native]    sk-ant-[A-Za-z0-9\-]{40,}
   [native]    ghp_[A-Za-z0-9]{36}
