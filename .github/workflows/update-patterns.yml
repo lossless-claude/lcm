@@ -6,9 +6,15 @@ on:
     - cron: "0 6 * * 1"
   workflow_dispatch:
 
+concurrency:
+  group: update-gitleaks-patterns
+  cancel-in-progress: false
+
 permissions:
+  actions: write
   contents: write
   pull-requests: write
+  statuses: write
 
 jobs:
   update-patterns:
@@ -18,8 +24,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: main
-          # Use bot token so commits can bypass branch protection rules
-          token: ${{ secrets.PATTERNS_BOT_TOKEN || github.token }}
           fetch-depth: 0
 
       - name: Setup Node
@@ -37,9 +41,9 @@ jobs:
       - name: Check for changes
         id: diff
         run: |
-          if git diff --quiet src/generated-patterns.ts; then
+          if git diff --quiet --ignore-matching-lines='^// Updated:' -- src/generated-patterns.ts; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No changes to generated-patterns.ts — skipping commit"
+            echo "No pattern changes — skipping commit"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
             # Extract new rule count from updated file
@@ -47,34 +51,101 @@ jobs:
             echo "rule_count=$count" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Bump patch version
+      - name: Update pattern-count snapshot
         if: steps.diff.outputs.changed == 'true'
-        id: bump
         run: |
-          # Read current version and bump patch
-          current=$(node -p "require('./package.json').version")
-          # Increment patch: 0.7.0 -> 0.7.1
-          IFS='.' read -r major minor patch <<< "$current"
-          new_patch=$((patch + 1))
-          new_version="$major.$minor.$new_patch"
-          # Update package.json
-          node -e "
-            const fs = require('fs');
-            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
-            pkg.version = '$new_version';
-            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
-          "
-          echo "new_version=$new_version" >> "$GITHUB_OUTPUT"
-          echo "Bumped version: $current -> $new_version"
+          count=$(grep -oP '(?<=// Rules: )\d+' src/generated-patterns.ts)
+          updated=$(grep -oP '(?<=// Updated: )\d{4}-\d{2}-\d{2}' src/generated-patterns.ts)
+          node - "$count" "$updated" <<'NODE'
+          const fs = require("node:fs");
+          const path = "test/bin/golden/snapshots/s03.out";
+          const [count, updated] = process.argv.slice(2);
+          const snapshot = fs.readFileSync(path, "utf8").replace(
+            /\[gitleaks\]\s+\d+ patterns \(synced \d{4}-\d{2}-\d{2}\)/,
+            `[gitleaks]  ${count} patterns (synced ${updated})`,
+          );
+          fs.writeFileSync(path, snapshot);
+          NODE
 
-      - name: Commit and push to main
+      - name: Add changeset
         if: steps.diff.outputs.changed == 'true'
         run: |
+          printf '%s\n' \
+            '---' \
+            '"@lossless-claude/lcm": patch' \
+            '---' \
+            '' \
+            'Update the bundled secret-detection patterns from gitleaks.' \
+            > .changeset/update-gitleaks-patterns.md
+
+      - name: Commit, push, and open pull request
+        if: steps.diff.outputs.changed == 'true'
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="automation/update-gitleaks-patterns"
           git config user.name "gitleaks-patterns-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/generated-patterns.ts package.json
-          git commit -m "chore(security): sync gitleaks patterns → ${{ steps.diff.outputs.rule_count }} rules (v${{ steps.bump.outputs.new_version }})"
-          git push origin main
+          git switch -C "$branch"
+          git add src/generated-patterns.ts test/bin/golden/snapshots/s03.out .changeset/update-gitleaks-patterns.md
+          git commit -m "chore(security): sync gitleaks patterns → ${{ steps.diff.outputs.rule_count }} rules"
+          git push --force-with-lease origin "$branch"
+
+          body=$(cat <<'EOF'
+          ## Changes
+          - Refresh the bundled secret-detection patterns from upstream gitleaks.
+          - Add a patch changeset for the published pattern update.
+
+          ## Test evidence
+          - Generated and JavaScript-validated by `scripts/update-gitleaks-patterns.ts`.
+          - Full repository checks run on this pull request.
+
+          _Created automatically by the Update Gitleaks Patterns workflow._
+          EOF
+          )
+          pr_number=$(gh pr list --head "$branch" --base main --state open --json number --jq '.[0].number')
+          if [ -n "$pr_number" ]; then
+            gh pr edit "$pr_number" \
+              --title "chore(security): sync gitleaks patterns" \
+              --body "$body"
+            pr_url=$(gh pr view "$pr_number" --json url --jq .url)
+          else
+            pr_url=$(gh pr create \
+              --base main \
+              --head "$branch" \
+              --title "chore(security): sync gitleaks patterns" \
+              --body "$body")
+          fi
+          # Pull requests created by github.token do not emit a usable required
+          # check. Run CI explicitly, then mirror its result to the PR head.
+          sha=$(git rev-parse HEAD)
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$sha" \
+            -f state=pending \
+            -f context=ci \
+            -f description="Dispatched repository CI is running"
+          if ! ci_url=$(gh workflow run ci.yml --ref "$branch" -f hosted=true); then
+            gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$sha" \
+              -f state=failure \
+              -f context=ci \
+              -f description="Failed to dispatch repository CI"
+            exit 1
+          fi
+          ci_run_id=${ci_url##*/}
+          if gh run watch "$ci_run_id" --exit-status; then
+            ci_state=success
+            ci_description="Dispatched repository CI passed"
+          else
+            ci_state=failure
+            ci_description="Dispatched repository CI failed"
+          fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$sha" \
+            -f state="$ci_state" \
+            -f context=ci \
+            -f description="$ci_description" \
+            -f target_url="$ci_url"
+          [ "$ci_state" = success ]
+          echo "url=$pr_url" >> "$GITHUB_OUTPUT"
 
       - name: Summary
         if: steps.diff.outputs.changed == 'true'
@@ -82,10 +153,9 @@ jobs:
           echo "### Gitleaks Patterns Updated" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Rules:** ${{ steps.diff.outputs.rule_count }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Version:** v${{ steps.bump.outputs.new_version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Branch:** main" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Pull request:** ${{ steps.pr.outputs.url }}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "> Publishing happens from main via the Publish Package workflow." >> "$GITHUB_STEP_SUMMARY"
+          echo "> Merge after the required checks pass." >> "$GITHUB_STEP_SUMMARY"
 
       - name: No-op summary
         if: steps.diff.outputs.changed == 'false'
