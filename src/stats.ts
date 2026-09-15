@@ -258,6 +258,7 @@ function queryProjectStats(
         staleAfterDays: staleCfg.staleAfterDays,
         staleSurfacingWithoutUseLimit: staleCfg.staleSurfacingWithoutUseLimit,
         projectId,
+        legacyUsageCounts,
       }).length;
     } catch { /* non-fatal */ }
 

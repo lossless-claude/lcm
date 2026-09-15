@@ -43,6 +43,7 @@ const { runLcmMigrations } = await import("../../../src/db/migration.js");
 const { PromotedStore } = await import("../../../src/db/promoted.js");
 const { collectStats } = await import("../../../src/stats.js");
 const { getPoolStats } = await import("../../../src/db/connection.js");
+const { ConversationStore } = await import("../../../src/store/conversation-store.js");
 
 const tempDirs: string[] = [];
 // Per test, not once at load: the group index and the daemon's own LcmPaths come from the
@@ -382,6 +383,23 @@ describe("POST /store — votes", () => {
     } finally {
       await daemon.stop();
     }
+  });
+
+  it("excludes a legacy-used sibling memory from collectStats staleCount", async () => {
+    const remote = "git@github.com:lcm-vote-tests/legacy-stats-stale.git";
+    const { cwd: requester } = checkout(remote, []);
+    const { cwd: owner, ids } = checkout(remote, ["old owner memory"]);
+    const ownerDb = new DatabaseSync(projectDbPath(owner, paths));
+    ownerDb.prepare("UPDATE promoted SET created_at = datetime('now', '-120 days') WHERE id = ?").run(ids[0]);
+    const conversations = new ConversationStore(ownerDb);
+    const conversation = await conversations.getOrCreateConversation("stale-owner-session");
+    await conversations.createMessagesBulk([{ conversationId: conversation.conversationId, seq: 0, role: "user", content: "owner activity", tokenCount: 1 }]);
+    ownerDb.close();
+    const requesterDb = new DatabaseSync(projectDbPath(requester, paths));
+    new PromotedStore(requesterDb).insert({ content: "legacy use", tags: ["signal:memory_used", `memory_id:${ids[0]}`], projectId: "p1" });
+    requesterDb.close();
+
+    expect(collectStats(paths).staleCount).toBe(0);
   });
 
   it("lists valid stale memories when a sibling database is partial and closes group handles", async () => {
