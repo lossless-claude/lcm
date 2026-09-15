@@ -69,29 +69,51 @@ describe("Codex PostToolUse / PostToolUseFailure capture", () => {
     db.close();
   });
 
-  it("normalizes a native apply_patch payload to the same file edit event as Claude", async () => {
+  it("normalizes every native apply_patch file marker to a file edit event", async () => {
     await dispatchCodexHook(JSON.stringify({
       hook_event_name: "PostToolUse",
       session_id: "codex-session",
       cwd: "/repo",
       tool_name: "apply_patch",
-      tool_input: { command: "*** Begin Patch\n*** Update File: src/example.ts\n*** End Patch" },
+      tool_input: { command: [
+        "*** Begin Patch",
+        "*** Update File: src/example.ts",
+        "*** Add File: src/new.ts",
+        "*** Delete File: src/old.ts",
+        "*** End Patch",
+      ].join("\n") },
       tool_use_id: "call_patch",
     }), enabledDeps());
 
     const db = new EventsDb(join(dir, "test.db"));
-    expect(db.getUnprocessed()).toEqual([expect.objectContaining({
-      type: "file_edit", category: "file", data: "src/example.ts (source)", client: "codex",
-    })]);
+    expect(db.getUnprocessed()).toEqual([
+      expect.objectContaining({ type: "file_edit", category: "file", data: "src/example.ts (source)", client: "codex" }),
+      expect.objectContaining({ type: "file_edit", category: "file", data: "src/new.ts (source)", client: "codex" }),
+      expect.objectContaining({ type: "file_edit", category: "file", data: "src/old.ts (source)", client: "codex" }),
+    ]);
     db.close();
   });
 
-  it("does not classify an unknown Codex tool as Bash", async () => {
+  it("does not classify an apply_patch payload without file markers as an edit", async () => {
     await dispatchCodexHook(JSON.stringify({
       hook_event_name: "PostToolUse",
       session_id: "codex-session",
       cwd: "/repo",
-      tool_name: "unrecognized_command",
+      tool_name: "apply_patch",
+      tool_input: { command: "not a recognized patch envelope" },
+    }), enabledDeps());
+
+    const db = new EventsDb(join(dir, "test.db"));
+    expect(db.getUnprocessed()).toEqual([]);
+    db.close();
+  });
+
+  it("does not classify the unsupported exec spelling as Bash", async () => {
+    await dispatchCodexHook(JSON.stringify({
+      hook_event_name: "PostToolUse",
+      session_id: "codex-session",
+      cwd: "/repo",
+      tool_name: "exec",
       tool_input: { command: "git commit -m 'must not be captured'" },
     }), enabledDeps());
 

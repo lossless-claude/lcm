@@ -191,6 +191,35 @@ describe("EventsDb", () => {
       db.close();
     });
 
+    it("migrates a v6 DB to v7 without changing existing rows", () => {
+      const { DatabaseSync } = require("node:sqlite");
+      const { mkdirSync } = require("node:fs");
+      const { dirname } = require("node:path");
+      mkdirSync(dirname(dbPath), { recursive: true });
+      const rawDb = new DatabaseSync(dbPath);
+      rawDb.exec(`
+        CREATE TABLE schema_version (version INTEGER NOT NULL);
+        CREATE TABLE events (
+          event_id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, seq INTEGER NOT NULL DEFAULT 0,
+          type TEXT NOT NULL, category TEXT NOT NULL, data TEXT NOT NULL, priority INTEGER DEFAULT 3,
+          source_hook TEXT NOT NULL, tool_use_id TEXT, prompt_hash TEXT, prev_event_id INTEGER,
+          processed_at TEXT, created_at TEXT DEFAULT (datetime('now')), client TEXT NOT NULL DEFAULT 'claude', model TEXT
+        );
+      `);
+      rawDb.prepare("INSERT INTO schema_version (version) VALUES (6)").run();
+      rawDb.prepare(
+        "INSERT INTO events (session_id, seq, type, category, data, priority, source_hook, tool_use_id, client, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run("v6-session", 1, "file_edit", "file", "src/old.ts (source)", 3, "PostToolUse", "call_v6", "codex", "model-v6");
+      rawDb.close();
+
+      const db = new EventsDb(dbPath);
+      expect(db.raw().prepare("SELECT session_id, tool_use_id, client, model, turn_id FROM events").get()).toEqual({
+        session_id: "v6-session", tool_use_id: "call_v6", client: "codex", model: "model-v6", turn_id: null,
+      });
+      expect(db.raw().prepare("SELECT version FROM schema_version").get()).toEqual({ version: 7 });
+      db.close();
+    });
+
     it("defaults client to 'claude' and model to null on plain insertEvent", () => {
       const db = new EventsDb(dbPath);
       db.insertEvent("s1", { type: "a", category: "file", data: "x", priority: 3 }, "PostToolUse");

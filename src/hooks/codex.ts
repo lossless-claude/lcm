@@ -75,23 +75,27 @@ function parseToolInput(stdin: string): CodexToolInput | null {
   };
 }
 
-function codexPatchPath(command: unknown): string | undefined {
-  if (typeof command !== "string") return undefined;
-  const match = command.match(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/m);
-  return match?.[1]?.trim() || undefined;
+function codexPatchPaths(command: unknown): string[] {
+  if (typeof command !== "string") return [];
+  return [...command.matchAll(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm)]
+    .map(match => match[1].trim())
+    .filter(Boolean);
 }
 
 /** Maps only Codex-local names to the equivalent extractor input. */
 function normalizeCodexTool(input: CodexToolInput): CodexToolInput {
-  if (input.tool_name === "exec_command" || input.tool_name === "exec") {
+  // Compatibility for hosts that serialize unified command execution by its
+  // local function name; Codex's hook reference matches this path as Bash.
+  if (input.tool_name === "exec_command") {
     return { ...input, tool_name: "Bash" };
   }
   if (input.tool_name === "apply_patch") {
-    const filePath = codexPatchPath(input.tool_input?.command);
+    const filePaths = codexPatchPaths(input.tool_input?.command);
+    if (filePaths.length === 0) return input;
     return {
       ...input,
       tool_name: "Edit",
-      ...(filePath ? { tool_input: { ...input.tool_input, file_path: filePath } } : {}),
+      tool_input: { ...input.tool_input, file_paths: filePaths },
     };
   }
   return input;

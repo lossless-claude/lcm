@@ -544,7 +544,7 @@ describe("POST /ingest", () => {
     expect(row?.model).toBe("claude-sonnet-5");
   });
 
-  it("backfills a model-less Codex tool event by its transcript turn", async () => {
+  it("backfills model-less Codex events by their transcript turns", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-ingest-codex-model-backfill-"));
     tempDirs.push(tempDir);
     const transcriptPath = join(tempDir, "rollout.jsonl");
@@ -554,10 +554,15 @@ describe("POST /ingest", () => {
       { type: "turn_context", payload: { turn_id: "turn-1", model: "gpt-5.6-codex" } },
       { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "edit it" }] } },
       { type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "done" }] } },
+      { type: "turn_context", payload: { turn_id: "turn-2", model: "gpt-5.6-codex-mini" } },
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "edit it again" }] } },
+      { type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "done again" }] } },
     ].map(line => JSON.stringify(line)).join("\n") + "\n");
 
     const sidecar = new EventsDb(eventsDbPath(tempDir, paths));
     sidecar.insertToolCallEvents(sessionId, [{ type: "file_edit", category: "file", data: "src/example.ts (source)", priority: 3 }], "PostToolUse", "call_patch", "codex", null, "turn-1");
+    sidecar.insertToolCallEvents(sessionId, [{ type: "file_edit", category: "file", data: "src/second.ts (source)", priority: 3 }], "PostToolUse", "call_patch_2", "codex", null, "turn-1");
+    sidecar.insertToolCallEvents(sessionId, [{ type: "file_edit", category: "file", data: "src/third.ts (source)", priority: 3 }], "PostToolUse", "call_patch_3", "codex", null, "turn-2");
     sidecar.close();
 
     daemon = await createDaemon(loadDaemonConfig("/nonexistent", { daemon: { port: 0 } }));
@@ -567,19 +572,25 @@ describe("POST /ingest", () => {
     });
     expect((await post()).status).toBe(200);
 
-    let row;
-    for (let attempt = 0; attempt < 50 && row?.model == null; attempt += 1) {
+    let rows = [] as ReturnType<EventsDb["getUnprocessed"]>;
+    for (let attempt = 0; attempt < 50 && (rows.length === 0 || rows.some(row => row.model == null)); attempt += 1) {
       const after = new EventsDb(eventsDbPath(tempDir, paths));
-      row = after.getUnprocessed().find(event => event.tool_use_id === "call_patch");
+      rows = after.getUnprocessed().filter(event => event.session_id === sessionId);
       after.close();
-      if (row?.model == null) await new Promise(resolve => setTimeout(resolve, 10));
+      if (rows.some(row => row.model == null)) await new Promise(resolve => setTimeout(resolve, 10));
     }
-    expect(row).toMatchObject({ client: "codex", turn_id: "turn-1", model: "gpt-5.6-codex" });
+    expect(rows.map(row => [row.tool_use_id, row.turn_id, row.model])).toEqual([
+      ["call_patch", "turn-1", "gpt-5.6-codex"],
+      ["call_patch_2", "turn-1", "gpt-5.6-codex"],
+      ["call_patch_3", "turn-2", "gpt-5.6-codex-mini"],
+    ]);
     const repeated = await post();
     expect(repeated.status).toBe(200);
     expect(await repeated.json()).toEqual({ ingested: 0, totalTokens: 0 });
     const afterRepeat = new EventsDb(eventsDbPath(tempDir, paths));
-    expect(afterRepeat.getUnprocessed().find(event => event.tool_use_id === "call_patch")?.model).toBe("gpt-5.6-codex");
+    expect(afterRepeat.getUnprocessed().filter(event => event.session_id === sessionId).map(event => event.model)).toEqual([
+      "gpt-5.6-codex", "gpt-5.6-codex", "gpt-5.6-codex-mini",
+    ]);
     afterRepeat.close();
   });
 });
