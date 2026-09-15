@@ -437,9 +437,10 @@ A session that ends without `SessionEnd` (killed terminal, crash, sleep, daemon
 down at exit) still has its messages captured through the `Stop` snapshots, but
 nothing summarizes them afterwards — only a manual `lcm compact --all` would.
 Every SessionStart now fires a non-blocking request that catches up conversations
-of the same project (`cwd`) with raw messages and no covering summary, excluding
-the session that is starting, conversations already compacting, and conversations
-below `compaction.autoCompactMinTokens`.
+of the same project (`cwd`) with enough uncovered raw context to meet
+`compaction.autoCompactMinTokens`, including conversations with prior summaries
+and an uncovered raw tail. It excludes the session that is starting and
+conversations already compacting.
 
 `compaction.autoCompactSessionStartMax` (default `2`) caps how many conversations
 one session start requests compaction for, oldest-first; a larger backlog drains

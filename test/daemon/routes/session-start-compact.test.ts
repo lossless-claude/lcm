@@ -27,6 +27,7 @@ vi.mock("../../../src/daemon/routes/compact.js", () => ({
 const { createSessionStartCompactHandler } = await import("../../../src/daemon/routes/session-start-compact.js");
 const { createLcmPaths } = await import("../../../src/lcm-paths.js");
 const { lcmHome } = await import("../../../src/lcm-home.js");
+const { validateCwd } = await import("../../../src/daemon/validate-cwd.js");
 
 const paths = createLcmPaths(lcmHome());
 
@@ -170,7 +171,7 @@ describe("POST /session-start-compact", () => {
     await handler({} as never, res, JSON.stringify({ cwd: dir, session_id: "starting" }));
 
     expect(out.body).toEqual({ queued: "scheduled" });
-    expect(scan).toHaveBeenCalledWith(paths, 10000, dir);
+    expect(scan).toHaveBeenCalledWith(paths, 10000, validateCwd(dir));
     expect(fireCompactRequest).not.toHaveBeenCalled();
 
     resolveScan([]);
