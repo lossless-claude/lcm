@@ -16,7 +16,10 @@ export type EffectiveProvider = Exclude<DaemonConfig["llm"]["provider"], "auto">
 
 function configuredSummarizerLanguage(config: DaemonConfig): string | undefined {
   const language = config.summarizer?.language;
-  if (typeof language !== "string" || !language.trim()) return undefined;
+  if (language === undefined) return undefined;
+  if (typeof language !== "string" || !language.trim()) {
+    throw new Error("Invalid summarizer.language: expected a non-empty BCP 47 language tag");
+  }
   const parsed = parseLanguageTag(language);
   if (!parsed) throw new Error(`Invalid summarizer.language: "${language}" is not a BCP 47 language tag`);
   return parsed;

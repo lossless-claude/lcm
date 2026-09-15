@@ -160,5 +160,10 @@ describe("resolveSummarizerLanguage", () => {
       ...testConfig(),
       summarizer: { mock: false, language: "i-am-not-a-tag" },
     }, dir, paths)).toThrow(/Invalid summarizer\.language.*BCP 47/);
+
+    expect(() => resolveSummarizerLanguage({
+      ...testConfig(),
+      summarizer: { mock: false, language: 123 as unknown as string },
+    }, dir, paths)).toThrow(/Invalid summarizer\.language.*BCP 47/);
   });
 });

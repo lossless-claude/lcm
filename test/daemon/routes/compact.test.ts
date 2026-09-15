@@ -8,6 +8,7 @@ import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { projectDbPath, projectId, projectMetaPath } from "../../../src/daemon/project.js";
 import { runLcmMigrations } from "../../../src/db/migration.js";
 import { ConversationStore } from "../../../src/store/conversation-store.js";
+import { SummaryStore } from "../../../src/store/summary-store.js";
 import { lcmHome } from "../../../src/lcm-home.js";
 import { createLcmPaths } from "../../../src/lcm-paths.js";
 
@@ -340,6 +341,46 @@ describe("createCompactHandler — summarizer branching", () => {
         expect.any(String),
         expect.any(Boolean),
         expect.objectContaining({ language: "pt-BR" }),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not await detection when an explicit language already determines the summary", async () => {
+    const root = mkdtempSync(join(tmpdir(), "lcm-compact-explicit-language-"));
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-compact-explicit-project-"));
+    const scopedPaths = createLcmPaths(root);
+    const dbPath = projectDbPath(cwd, scopedPaths);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    runLcmMigrations(db);
+    const store = new ConversationStore(db);
+    const conversation = await store.getOrCreateConversation("explicit-language");
+    const messages = await store.createMessagesBulk(Array.from({ length: 20 }, (_, seq) => ({
+      conversationId: conversation.conversationId,
+      seq,
+      role: (seq % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
+      content: `mensagem ${seq} ${"conteúdo ".repeat(500)}`,
+      tokenCount: 1_000,
+    })));
+    await new SummaryStore(db).appendContextMessages(conversation.conversationId, messages.map((message) => message.messageId));
+    db.close();
+
+    vi.mocked(scheduleProjectLanguageDetection).mockReturnValueOnce(new Promise(() => {}));
+    const summarize = vi.fn().mockResolvedValue("summary");
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(summarize);
+    const config = { ...makeConfig("openai"), summarizer: { mock: false, language: "en" } };
+
+    try {
+      const handler = createCompactHandler(config, scopedPaths);
+      const { res } = mockRes();
+      await handler({} as any, res, JSON.stringify({ session_id: "explicit-language", cwd, skip_ingest: true }));
+      expect(summarize).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(Boolean),
+        expect.objectContaining({ language: "en" }),
       );
     } finally {
       rmSync(root, { recursive: true, force: true });

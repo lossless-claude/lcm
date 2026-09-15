@@ -305,15 +305,20 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             }
           }
 
-          await scheduleProjectLanguageDetection(cwd, db, config, paths);
-          const language = resolveSummarizerLanguage(config, cwd, paths);
-
           // Check if there's anything to compact
           const tokenCount = await summaryStore.getContextTokenCount(conversation.conversationId);
 
           if (tokenCount === 0) {
             // A replay ledgers this as done; otherwise every later run sees a gap here.
             return { summary: "No messages to compact.", replayOutcome: "no_work", providerId: effectiveProvider, providerLabel };
+          }
+
+          let language = resolveSummarizerLanguage(config, cwd, paths);
+          if (language === undefined) {
+            await scheduleProjectLanguageDetection(cwd, db, config, paths);
+            language = resolveSummarizerLanguage(config, cwd, paths);
+          } else {
+            void scheduleProjectLanguageDetection(cwd, db, config, paths);
           }
 
           let sawReportedUsageModel = false;
