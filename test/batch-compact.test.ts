@@ -125,5 +125,13 @@ describe("findUncompacted", () => {
       sourceMessages: 2,
       sourceTokens: 12,
     });
+
+    const replayCandidates = findUncompacted(paths, 10, true, cwd, true);
+    expect(replayCandidates.map((candidate) => candidate.sessionId)).toEqual([
+      "partial",
+      "small-tail",
+      "covered",
+      "raw",
+    ]);
   });
 });

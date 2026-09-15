@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Builds the plugin artifact: `bundle/lcm.js` (the CLI, hooks and daemon entry),
-// `bundle/mcp-server.js` (the MCP server) and `bundle/assets/` (prompt YAML,
-// connector templates, setup.sh). A marketplace install runs from these with only
-// a `node` on PATH: no npm install, no compile step, no `lcm` binary.
+// `bundle/mcp-server.js` (the MCP server), `bundle/session-start-compact-worker.js`
+// (the daemon's catch-up scanner) and `bundle/assets/` (prompt YAML, connector
+// templates, setup.sh). A marketplace install runs from these with only a `node`
+// on PATH: no npm install, no compile step, no `lcm` binary.
 //
 // `dist/` stays the npm artifact and is built by `npm run build`; this script is
 // separate so an ordinary build never touches the tracked `bundle/`, which only
@@ -35,12 +36,12 @@ export async function buildBundle({ root = repoRoot, outDir = join(root, "bundle
   // silently leave the bundle without a build id.
   if (!/^[0-9a-f]{16}$/.test(buildId)) throw new Error(`build-bundle: malformed build id ${JSON.stringify(buildId)}`);
 
-  // Only the three artifacts are replaced, never the directory itself, so no output
+  // Only the listed artifacts are replaced, never the directory itself, so no output
   // directory can delete anything else; the repository root is still refused outright.
   if (relative(root, outDir) === "") {
     throw new Error(`build-bundle: output directory must not be the repository root (${root})`);
   }
-  for (const artifact of ["lcm.js", "mcp-server.js", "assets/prompts", "assets/templates", "assets/setup.sh"]) {
+  for (const artifact of ["lcm.js", "mcp-server.js", "session-start-compact-worker.js", "assets/prompts", "assets/templates", "assets/setup.sh"]) {
     rmSync(join(outDir, artifact), { recursive: true, force: true });
   }
   mkdirSync(outDir, { recursive: true });
@@ -69,6 +70,11 @@ export async function buildBundle({ root = repoRoot, outDir = join(root, "bundle
       loader: "ts",
     },
     outfile: join(outDir, "mcp-server.js"),
+  });
+  await build({
+    ...common,
+    entryPoints: [join(root, "src", "daemon", "session-start-compact-worker.ts")],
+    outfile: join(outDir, "session-start-compact-worker.js"),
   });
 
   const assets = join(outDir, "assets");

@@ -8,7 +8,7 @@ A session killed by a crashed terminal, a sleeping machine, or a daemon that
 was down at exit kept its raw messages captured but never summarized — only a
 manual `lcm compact --all` revisited it. Every SessionStart now fires one
 non-blocking `POST /session-start-compact` request; the daemon selects
-conversations of the same project with raw messages and no covering summary,
+conversations of the same project with enough raw messages not covered by summaries,
 excludes the session that is starting, conversations already compacting, and
 conversations below `compaction.autoCompactMinTokens`, and requests
 compaction for at most `compaction.autoCompactSessionStartMax` of them
