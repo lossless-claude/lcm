@@ -69,36 +69,50 @@ export function createReviewStaleHandler(config: DaemonConfig, paths: LcmPaths):
         const members = ownerCwd
           ? projectGroup(cwd, paths).filter((member) => member.cwd === ownerCwd)
           : projectGroup(cwd, paths);
-        for (const member of members) {
+        const matches = members.filter((member) => {
           const dbPath = projectDbPath(member.cwd, paths);
-          if (!existsSync(dbPath)) continue;
+          if (!existsSync(dbPath)) return false;
           const db = getLcmConnection(dbPath);
           try {
             runLcmMigrations(db);
-            const store = new PromotedStore(db);
-            const exists = db.prepare("SELECT 1 FROM promoted WHERE id = ?").get(targetId);
-            if (!exists) continue;
-            if (action === "archive") {
-              db.exec("BEGIN IMMEDIATE");
-              try {
-                store.archive(targetId);
-                db.exec("COMMIT");
-              } catch (err) {
-                try { db.exec("ROLLBACK"); } catch { /* transaction already closed */ }
-                throw err;
-              }
-            } else {
-              // PromotedStore.revive owns the transaction that keeps promoted and FTS in sync.
-              store.revive(targetId);
-            }
-            sendJson(res, 200, { action: action === "archive" ? "archived" : "revived", id: targetId, ownerProjectId: member.projectId });
-            return;
+            return Boolean(db.prepare("SELECT 1 FROM promoted WHERE id = ?").get(targetId));
           } finally {
             closeLcmConnection(dbPath);
           }
+        });
+        if (matches.length === 0) {
+          sendJson(res, 404, { error: `Memory ${targetId} not found` });
+          return;
         }
-        sendJson(res, 404, { error: `Memory ${targetId} not found` });
-        return;
+        if (!ownerCwd && matches.length > 1) {
+          sendJson(res, 409, { error: `Memory ${targetId} is ambiguous across this project group; provide owner_project_id` });
+          return;
+        }
+
+        const member = matches[0];
+        const dbPath = projectDbPath(member.cwd, paths);
+        const db = getLcmConnection(dbPath);
+        try {
+          runLcmMigrations(db);
+          const store = new PromotedStore(db);
+          if (action === "archive") {
+            db.exec("BEGIN IMMEDIATE");
+            try {
+              store.archive(targetId);
+              db.exec("COMMIT");
+            } catch (err) {
+              try { db.exec("ROLLBACK"); } catch { /* transaction already closed */ }
+              throw err;
+            }
+          } else {
+            // PromotedStore.revive owns the transaction that keeps promoted and FTS in sync.
+            store.revive(targetId);
+          }
+          sendJson(res, 200, { action: action === "archive" ? "archived" : "revived", id: targetId, ownerProjectId: member.projectId });
+          return;
+        } finally {
+          closeLcmConnection(dbPath);
+        }
       }
 
       openProject(cwd, paths);

@@ -262,6 +262,18 @@ describe("POST /store — votes", () => {
       expect(collectStats(paths).promotionCandidates.filter((entry) => entry.id === "colliding-id").map((entry) => entry.ownerProjectId).sort())
         .toEqual([projectId(here), projectId(sibling)].sort());
 
+      const ambiguous = await postReviewStale(port, {
+        cwd: here, action: "archive", target_id: "colliding-id",
+      });
+      expect(ambiguous.status).toBe(409);
+      expect(String(ambiguous.data.error)).toContain("owner_project_id");
+      for (const cwd of [here, sibling]) {
+        const db = new DatabaseSync(projectDbPath(cwd, paths));
+        const archived = db.prepare("SELECT archived_at FROM promoted WHERE id = 'colliding-id'").get() as { archived_at: string | null };
+        db.close();
+        expect(archived.archived_at).toBeNull();
+      }
+
       const archive = await postReviewStale(port, {
         cwd: here, action: "archive", target_id: "colliding-id", owner_project_id: projectId(sibling),
       });

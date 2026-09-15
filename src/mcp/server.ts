@@ -137,7 +137,7 @@ function localTools(paths: LcmPaths): Partial<Record<string, (args: Record<strin
         const preview = c.content.length > 80 ? c.content.slice(0, 80) + "…" : c.content;
         lines.push(`- ${cell(preview)} (owner: ${c.ownerProjectId})`);
         for (const o of c.objections) {
-          lines.push(`  - -1 (${o.voteId}): ${cell(o.reason)}`);
+          lines.push(`  - -1 (${o.voteId}, owner: ${o.ownerProjectId}): ${cell(o.reason)}`);
         }
       }
       lines.push("");

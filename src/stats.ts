@@ -483,7 +483,7 @@ export function printStats(stats: OverallStats, verbose: boolean): void {
       console.log(`    ${yellow}${preview}${reset}`);
       console.log(`    ${dim}id:${reset} ${c.id}  ${dim}owner:${reset} ${c.ownerProjectId}`);
       for (const o of c.objections) {
-        console.log(`    ${dim}-1 (${o.voteId}):${reset} ${o.reason}`);
+        console.log(`    ${dim}-1 (${o.voteId}, owner: ${o.ownerProjectId}):${reset} ${o.reason}`);
       }
       console.log();
     }

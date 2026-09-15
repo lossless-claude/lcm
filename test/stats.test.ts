@@ -290,6 +290,7 @@ describe("printStats", () => {
     expect(out).toContain("config now sets a different port");
     expect(out).toContain("review-stale");
     expect(out).toContain("owner-2");
+    expect(out).toContain("vote-1, owner: owner-2");
   });
 
   it("omits the Summarizer section until a call is recorded", () => {

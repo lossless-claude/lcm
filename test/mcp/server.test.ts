@@ -218,3 +218,24 @@ it("blocks local database tools when a hold begins after MCP startup", async () 
   expect(result.content[0].text).toContain("held down until");
   expect(collectStatsMock).not.toHaveBeenCalled();
 });
+
+it("renders objection owners in local lcm_stats output", async () => {
+  collectStatsMock.mockReturnValue({
+    projects: 0, conversations: 0, compactedConversations: 0, messages: 0, summaries: 0,
+    maxDepth: 0, rawTokens: 0, summaryTokens: 0, ratio: 0, promotedCount: 0,
+    conversationDetails: [], redactionCounts: { builtIn: 0, global: 0, project: 0, total: 0 },
+    eventsCaptured: 0, eventsUnprocessed: 0, eventsErrors: 0,
+    recallStats: { memoriesSurfaced: 0, memoriesActedUpon: 0, recallPrecision: null, topRecalled: [] },
+    staleCount: 0,
+    llmUsage: { calls: 0, okCalls: 0, failedCalls: 0, tokensSpent: 0, tokensInput: 0, tokensCached: 0, tokensOutput: 0, costUsd: null, callsWithCost: 0 },
+    promotionCandidates: [],
+    contested: [{ id: "memory-1", ownerProjectId: "memory-owner", content: "old rule", objections: [{ voteId: "vote-1", ownerProjectId: "vote-owner", reason: "contradicted" }] }],
+  });
+  const { Server } = await import("@modelcontextprotocol/server");
+  const { startMcpServer } = await import("../../src/mcp/server.js");
+  await startMcpServer();
+  const server = vi.mocked(Server).mock.results.at(-1)!.value;
+  const handler = server.setRequestHandler.mock.calls.find(([method]: [string]) => method === "tools/call")[1];
+  const result = await handler({ params: { name: "lcm_stats", arguments: {} } });
+  expect(result.content[0].text).toContain("vote-1, owner: vote-owner");
+});

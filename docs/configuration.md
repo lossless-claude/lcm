@@ -333,7 +333,7 @@ Call the `/review-stale` daemon endpoint with `{ "cwd": "/path/to/project" }` to
 
 Stale candidates can be archived non-destructively. Archived memories are excluded from search and recall but remain in the database and can be revived later.
 
-The `/review-stale` endpoint accepts `action: "archive"` or `action: "revive"` with a `target_id` to manage individual memories. It searches the caller's project group when no owner is supplied; provide `owner_project_id` from a stats or stale result when IDs could collide between checkouts.
+The `/review-stale` endpoint accepts `action: "archive"` or `action: "revive"` with a `target_id` to manage individual memories. It searches the caller's project group when no owner is supplied; if that ID occurs in more than one checkout, it refuses without changing either and asks for `owner_project_id` from a stats or stale result.
 
 ### Stats integration
 
