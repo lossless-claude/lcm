@@ -101,6 +101,15 @@ describe("scheduleProjectLanguageDetection", () => {
     expect(summarize).toHaveBeenCalledTimes(2);
   });
 
+  it("uses the request client to resolve an automatic provider", async () => {
+    const summarize = vi.fn().mockResolvedValueOnce("pt-BR").mockResolvedValueOnce(PACK_REPLY);
+    vi.mocked(createSummarizer).mockResolvedValue(summarize);
+
+    await scheduleProjectLanguageDetection(dir, await seededDb(25), testConfig({ provider: "auto" }), paths, "codex");
+
+    expect(createSummarizer).toHaveBeenCalledWith("codex-process", expect.anything());
+  });
+
   it("does nothing below the turn threshold, under a mock summarizer, or with a disabled provider", async () => {
     const summarize = vi.fn().mockResolvedValue("pt-BR");
     vi.mocked(createSummarizer).mockResolvedValue(summarize);

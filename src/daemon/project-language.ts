@@ -3,7 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "./config.js";
 import type { LcmPaths } from "../lcm-paths.js";
 import { projectMetaPath } from "./project.js";
-import { createSummarizer, resolveEffectiveProvider } from "./summarizer.js";
+import { createSummarizer, resolveEffectiveProvider, type CompactClient } from "./summarizer.js";
 import { detectLanguage, sampleHumanTurns, LANGUAGE_SAMPLE_SIZE } from "../search/language.js";
 import { ensureLanguagePack } from "../store/language-pack.js";
 
@@ -33,8 +33,8 @@ function readMeta(path: string): Record<string, unknown> {
   }
 }
 
-function summarizerUnavailable(config: DaemonConfig): boolean {
-  return Boolean(config.summarizer?.mock) || resolveEffectiveProvider(config) === "disabled";
+function summarizerUnavailable(config: DaemonConfig, client?: CompactClient): boolean {
+  return Boolean(config.summarizer?.mock) || resolveEffectiveProvider(config, client) === "disabled";
 }
 
 /**
@@ -42,8 +42,10 @@ function summarizerUnavailable(config: DaemonConfig): boolean {
  * schedule detection for after the response. Returns the pending work so a
  * test can await it; production callers drop the promise.
  */
-export function scheduleProjectLanguageDetection(cwd: string, db: DatabaseSync, config: DaemonConfig, paths: LcmPaths): Promise<void> {
-  if (summarizerUnavailable(config)) return Promise.resolve();
+export function scheduleProjectLanguageDetection(
+  cwd: string, db: DatabaseSync, config: DaemonConfig, paths: LcmPaths, client?: CompactClient,
+): Promise<void> {
+  if (summarizerUnavailable(config, client)) return Promise.resolve();
   const metaPath = projectMetaPath(cwd, paths);
   const pending = inFlight.get(metaPath);
   if (pending) return pending;
@@ -51,14 +53,16 @@ export function scheduleProjectLanguageDetection(cwd: string, db: DatabaseSync, 
   if (typeof readMeta(metaPath).language === "string") return Promise.resolve();
   const turns = sampleHumanTurns(db, paths);
   if (turns.length < MIN_TURNS_FOR_DETECTION) return Promise.resolve();
-  const detection = detectAndRecord(metaPath, turns, config, paths).finally(() => inFlight.delete(metaPath));
+  const detection = detectAndRecord(metaPath, turns, config, paths, client).finally(() => inFlight.delete(metaPath));
   inFlight.set(metaPath, detection);
   return detection;
 }
 
-async function detectAndRecord(metaPath: string, turns: string[], config: DaemonConfig, paths: LcmPaths): Promise<void> {
+async function detectAndRecord(
+  metaPath: string, turns: string[], config: DaemonConfig, paths: LcmPaths, client?: CompactClient,
+): Promise<void> {
   try {
-    const provider = resolveEffectiveProvider(config);
+    const provider = resolveEffectiveProvider(config, client);
     const summarize = await createSummarizer(provider, config);
     if (!summarize) return;
     const language = await detectLanguage(turns, summarize);

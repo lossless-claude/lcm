@@ -315,10 +315,10 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
 
           let language = resolveSummarizerLanguage(config, cwd, paths);
           if (language === undefined) {
-            await scheduleProjectLanguageDetection(cwd, db, config, paths);
+            await scheduleProjectLanguageDetection(cwd, db, config, paths, client);
             language = resolveSummarizerLanguage(config, cwd, paths);
           } else {
-            void scheduleProjectLanguageDetection(cwd, db, config, paths);
+            void scheduleProjectLanguageDetection(cwd, db, config, paths, client);
           }
 
           let sawReportedUsageModel = false;

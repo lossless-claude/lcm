@@ -433,7 +433,7 @@ export function createIngestHandler(config: DaemonConfig, paths: LcmPaths): Rout
             // non-fatal: meta.json update failure shouldn't fail the ingest
           }
           // Samples the corpus on this connection now; the model call runs after the response.
-          void scheduleProjectLanguageDetection(cwd, db, config, paths);
+          void scheduleProjectLanguageDetection(cwd, db, config, paths, input.client);
 
           const totalTokens = await summaryStore.getContextTokenCount(conversation.conversationId);
           const totalRedacted = totalCounts.gitleaks + totalCounts.builtIn + totalCounts.global + totalCounts.project;
