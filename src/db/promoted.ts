@@ -6,7 +6,7 @@ import {
   likePlanForPreparedQuery,
   type Fts5PreparedQuery,
 } from "../store/fts5-query.js";
-import { voteTagsOf } from "./votes.js";
+import { parseStoredTags, voteTagsOf } from "./votes.js";
 
 export type PromotedRow = {
   id: string;
@@ -86,16 +86,13 @@ export class PromotedStore {
     // single memory, and a grep baseline that ORs terms must not win.
     const rows = this.searchFullText(prepared.or, limit, projectId);
 
-    let results = rows.map((r) => ({
-      id: r.id,
-      content: r.content,
-      tags: JSON.parse(r.tags) as string[],
-      projectId: r.project_id,
-      sessionId: r.session_id,
-      confidence: r.confidence,
-      createdAt: r.created_at,
-      rank: r.rank,
-    }));
+    let results = rows.flatMap((r) => {
+      const tags = parseStoredTags(r.tags);
+      return tags ? [{
+        id: r.id, content: r.content, tags, projectId: r.project_id,
+        sessionId: r.session_id, confidence: r.confidence, createdAt: r.created_at, rank: r.rank,
+      }] : [];
+    });
 
     // Vocabulary-mismatch fallback: when the question's words don't overlap
     // the corpus at all (porter stems diverge), retry as a substring scan so
@@ -158,16 +155,13 @@ export class PromotedStore {
        LIMIT ?`
     ).all(...args) as PromotedRow[];
 
-    return rows.map((r) => ({
-      id: r.id,
-      content: r.content,
-      tags: JSON.parse(r.tags) as string[],
-      projectId: r.project_id,
-      sessionId: r.session_id,
-      confidence: r.confidence,
-      createdAt: r.created_at,
-      rank: 0,
-    }));
+    return rows.flatMap((r) => {
+      const tags = parseStoredTags(r.tags);
+      return tags ? [{
+        id: r.id, content: r.content, tags, projectId: r.project_id,
+        sessionId: r.session_id, confidence: r.confidence, createdAt: r.created_at, rank: 0,
+      }] : [];
+    });
   }
 
   getAll(opts?: { projectId?: string; since?: string; tags?: string[] }): PromotedRow[] {
@@ -188,8 +182,8 @@ export class PromotedStore {
 
     if (opts?.tags && opts.tags.length > 0) {
       rows = rows.filter((r) => {
-        const rowTags = JSON.parse(r.tags) as string[];
-        return opts.tags!.every((t) => rowTags.includes(t));
+        const rowTags = parseStoredTags(r.tags);
+        return rowTags !== null && opts.tags!.every((t) => rowTags.includes(t));
       });
     }
 
@@ -303,8 +297,10 @@ export class PromotedStore {
     ).all() as Array<{ tags: string }>;
     const usageMap = new Map<string, number>();
     for (const row of usageRows) {
+      const tags = parseStoredTags(row.tags);
+      if (!tags || !tags.includes("signal:memory_used")) continue;
       for (const id of ids) {
-        if (row.tags.includes(`"memory_id:${id}"`)) {
+        if (tags.includes(`memory_id:${id}`)) {
           usageMap.set(id, (usageMap.get(id) ?? 0) + 1);
         }
       }
@@ -344,7 +340,8 @@ export class PromotedStore {
 
     const counts = new Map<string, { plusOne: number; minusOne: number; objections: Array<{ voteId: string; reason: string; sessionId: string | null }> }>();
     for (const row of rows) {
-      const tags = JSON.parse(row.tags) as string[];
+      const tags = parseStoredTags(row.tags);
+      if (!tags) continue;
       const vote = voteTagsOf(tags);
       if (!vote) continue;
 

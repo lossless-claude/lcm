@@ -69,6 +69,28 @@ it("skips a member whose legacy query fails while retaining healthy counts and a
   }
 });
 
+it("skips malformed historical tags while retaining healthy legacy usage", () => {
+  root = mkdtempSync(join(tmpdir(), "lcm-malformed-tags-"));
+  const owner = new DatabaseSync(join(root, "owner.sqlite"));
+  const requester = new DatabaseSync(join(root, "requester.sqlite"));
+  try {
+    runLcmMigrations(owner);
+    runLcmMigrations(requester);
+    const memoryId = new PromotedStore(owner).insert({ content: "owner", tags: [], projectId: "p" });
+    new PromotedStore(requester).insert({ content: "use", tags: ["signal:memory_used", `memory_id:${memoryId}`], projectId: "p" });
+    requester.prepare("INSERT INTO promoted (id, content, tags, project_id, depth, confidence) VALUES (?, ?, ?, ?, 0, 1)")
+      .run("bad-json", "bad", "not-json", "p");
+    requester.prepare("INSERT INTO promoted (id, content, tags, project_id, depth, confidence) VALUES (?, ?, ?, ?, 0, 1)")
+      .run("mixed-tags", "mixed", '["signal:memory_used", 1]', "p");
+
+    const result = collectLegacyUsageCounts([["owner", owner], ["requester", requester]]);
+    expect(result.byOwner.get("owner")?.get(memoryId)).toBe(1);
+  } finally {
+    owner.close();
+    requester.close();
+  }
+});
+
 it("collectStats keeps legacy use counts from healthy group siblings when one sibling is partial", () => {
   root = mkdtempSync(join(tmpdir(), "lcm-legacy-stats-group-"));
   const paths = createLcmPaths(root);
@@ -178,4 +200,26 @@ it.each([false, true])("keeps legacy project counts when optional metrics are ab
   expect(stats).toMatchObject({ projects: 1, conversations: 1, messages: 1, summaries: 1, rawTokens: 40, summaryTokens: 10, maxDepth: 0 });
   expect(stats.llmUsage).toMatchObject({ calls: usage ? 3 : 0, costUsd: null });
   expect(readFileSync(path)).toEqual(before);
+});
+
+it("collectStats keeps project totals when promoted tags are malformed", async () => {
+  root = mkdtempSync(join(tmpdir(), "lcm-malformed-stats-"));
+  const paths = createLcmPaths(root);
+  const project = join(root, "checkout");
+  mkdirSync(project, { recursive: true });
+  execFileSync("git", ["init", "-q"], { cwd: project, stdio: "ignore" });
+  openProject(project, paths);
+  const db = new DatabaseSync(projectDbPath(project, paths));
+  try {
+    runLcmMigrations(db);
+    // A real conversation keeps the aggregate assertion independent of promoted parsing.
+    const conversation = await new ConversationStore(db).getOrCreateConversation("stats-session");
+    await new ConversationStore(db).createMessagesBulk([{ conversationId: conversation.conversationId, seq: 0, role: "user", content: "hello", tokenCount: 3 }]);
+    db.prepare("INSERT INTO promoted (id, content, tags, project_id, depth, confidence) VALUES (?, ?, ?, ?, 0, 1)")
+      .run("bad-json", "bad", "not-json", project);
+    db.prepare("INSERT INTO promoted (id, content, tags, project_id, depth, confidence) VALUES (?, ?, ?, ?, 0, 1)")
+      .run("mixed-tags", "mixed", '["signal:memory_used", 1]', project);
+  } finally { db.close(); }
+
+  expect(collectStats(paths)).toMatchObject({ projects: 1, conversations: 1, messages: 1 });
 });

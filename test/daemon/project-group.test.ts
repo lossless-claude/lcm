@@ -152,6 +152,23 @@ describe("resolveSourceCwd", () => {
 });
 
 describe("projectGroup", () => {
+  it("uses a targeted identity lookup for one cwd", () => {
+    const a = makeRepo("git@github.com:lossless-claude/lcm.git");
+    const b = makeRepo("git@github.com:lossless-claude/lcm.git");
+    openProject(a, paths);
+    openProject(b, paths);
+    let reads = 0;
+    const group = projectGroup(a, paths, (_paths, relPath, remotes) => {
+      reads++;
+      expect(relPath).toBe("");
+      expect(remotes).toEqual(["github.com/lossless-claude/lcm"]);
+      return [{ projectId: projectId(b), cwd: b, relPath, remote: remotes[0] }];
+    });
+
+    expect(reads).toBe(1);
+    expect(group.map(member => member.cwd)).toEqual([a, b]);
+  });
+
   it("resolves requested groups from one index read while preserving each request's self-first order", () => {
     const a = makeRepo("git@github.com:lossless-claude/lcm.git");
     const b = makeRepo("git@github.com:lossless-claude/lcm.git");

@@ -9,6 +9,7 @@ import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { PromotedStore } from "../../db/promoted.js";
 import { collectLegacyUsageCounts } from "../../db/recall.js";
+import { parseStoredTags } from "../../db/votes.js";
 import { validateCwd } from "../validate-cwd.js";
 
 export type StaleCandidate = {
@@ -152,12 +153,15 @@ export function createReviewStaleHandler(config: DaemonConfig, paths: LcmPaths):
             legacyUsageCounts: legacyUsageByOwner.get(member.projectId),
             ambiguousIds: legacyUsage.ambiguousIds,
           });
-          stale.push(...staleRows.map((row) => ({
-            id: row.id, content: row.content, tags: JSON.parse(row.tags) as string[],
-            projectId: row.project_id, ownerProjectId: member.projectId,
-            confidence: row.confidence, createdAt: row.created_at, daysSinceCreated: row.daysSinceCreated,
-            surfacingCount: row.surfacingCount, usageCount: row.usageCount,
-          })));
+          stale.push(...staleRows.flatMap((row) => {
+            const tags = parseStoredTags(row.tags);
+            return tags ? [{
+              id: row.id, content: row.content, tags,
+              projectId: row.project_id, ownerProjectId: member.projectId,
+              confidence: row.confidence, createdAt: row.created_at, daysSinceCreated: row.daysSinceCreated,
+              surfacingCount: row.surfacingCount, usageCount: row.usageCount,
+            }] : [];
+          }));
         }
       } finally {
         for (const member of members) {

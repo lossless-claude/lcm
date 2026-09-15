@@ -5,7 +5,7 @@ import { collectEventStats } from "./db/events-stats.js";
 import { closeLcmConnection, getLcmConnection } from "./db/connection.js";
 import { collectLegacyUsageCounts, RecallStore, type RecallStats } from "./db/recall.js";
 import { PromotedStore } from "./db/promoted.js";
-import { isSignalTagged } from "./db/votes.js";
+import { isSignalTagged, parseStoredTags } from "./db/votes.js";
 import { loadDaemonConfig } from "./daemon/config.js";
 import { projectGroups } from "./daemon/project-group.js";
 import type { LcmPaths } from "./lcm-paths.js";
@@ -79,7 +79,10 @@ function computePromotionSections(
   ambiguousIds: ReadonlySet<string> = new Set(),
 ): { promotionCandidates: PromotionCandidate[]; contested: ContestedMemory[] } {
   const promotedStore = new PromotedStore(db);
-  const active = promotedStore.getAll().filter((r) => !isSignalTagged(JSON.parse(r.tags) as string[]));
+  const active = promotedStore.getAll().filter((r) => {
+    const tags = parseStoredTags(r.tags);
+    return tags !== null && !isSignalTagged(tags);
+  });
   if (active.length === 0) return { promotionCandidates: [], contested: [] };
 
   const feedback = new RecallStore(db).getFeedback(active.map((r) => r.id), legacyUsageCounts, ambiguousIds);
@@ -257,7 +260,10 @@ function queryProjectStats(
 
     const activeMemoryIds = promotedColumns.has("archived_at")
       ? new Set(new PromotedStore(db).getAll()
-        .filter((row) => !isSignalTagged(JSON.parse(row.tags) as string[]))
+        .filter((row) => {
+          const tags = parseStoredTags(row.tags);
+          return tags !== null && !isSignalTagged(tags);
+        })
         .map((row) => row.id))
       : undefined;
     const recallStats: RecallStats = columns("recall_surfacing").size && promotedColumns.has("archived_at")

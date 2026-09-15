@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import { isSignalTagged } from "./votes.js";
+import { isSignalTagged, parseStoredTags } from "./votes.js";
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
@@ -38,8 +38,8 @@ export function collectLegacyUsageCounts(databases: Iterable<[string, DatabaseSy
       continue;
     }
     for (const row of rows) {
-      let tags: string[];
-      try { tags = JSON.parse(row.tags) as string[]; } catch { continue; }
+      const tags = parseStoredTags(row.tags);
+      if (!tags) continue;
       if (!isSignalTagged(tags)) {
         owners.set(row.id, owners.has(row.id) ? null : key);
         continue;
@@ -194,7 +194,8 @@ export class RecallStore {
 
     const memoryIdCounts = new Map<string, number>();
     for (const row of actedRows) {
-      const tags = JSON.parse(row.tags) as string[];
+      const tags = parseStoredTags(row.tags);
+      if (!tags) continue;
       const memIdTag = tags.find((tag) => tag.startsWith("memory_id:"));
       if (!memIdTag) continue;
 
