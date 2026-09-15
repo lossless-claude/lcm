@@ -51,11 +51,8 @@ export function getLcmConnection(dbPath: string, options: { readOnly?: boolean }
   if (!options.readOnly) mkdirSync(dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath, options.readOnly ? { readOnly: true } : {});
   if (!options.readOnly) {
-    // Enable WAL mode for better concurrent read performance
     db.exec("PRAGMA journal_mode = WAL");
-    // Wait up to 5 seconds on busy instead of failing immediately
     db.exec("PRAGMA busy_timeout = 5000");
-    // Enable foreign key enforcement
     db.exec("PRAGMA foreign_keys = ON");
   } else {
     db.exec("PRAGMA busy_timeout = 5000");

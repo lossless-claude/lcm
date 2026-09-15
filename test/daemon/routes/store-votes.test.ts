@@ -304,6 +304,26 @@ describe("POST /store — votes", () => {
     }
   });
 
+  it("attributes legacy uses within their project group despite an identical id elsewhere", () => {
+    const { cwd: here } = checkout("git@github.com:lcm-vote-tests/legacy-group-a.git", []);
+    const { cwd: owner, ids } = checkout("git@github.com:lcm-vote-tests/legacy-group-a.git", ["group A memory"]);
+    const { cwd: other, ids: otherIds } = checkout("git@github.com:lcm-vote-tests/legacy-group-b.git", ["group B memory"]);
+    for (const [cwd, id] of [[owner, ids[0]], [other, otherIds[0]]] as const) {
+      const db = new DatabaseSync(projectDbPath(cwd, paths));
+      db.prepare("UPDATE promoted SET id = 'shared-legacy-id' WHERE id = ?").run(id);
+      db.close();
+    }
+    const hereDb = new DatabaseSync(projectDbPath(here, paths));
+    const store = new PromotedStore(hereDb);
+    for (let i = 0; i < 3; i++) {
+      store.insert({ content: `legacy use ${i}`, tags: ["signal:memory_used", "memory_id:shared-legacy-id"], projectId: "p1" });
+    }
+    hereDb.close();
+
+    expect(collectStats(paths).promotionCandidates.filter((candidate) => candidate.id === "shared-legacy-id"))
+      .toEqual([expect.objectContaining({ ownerProjectId: projectId(owner), useCount: 3 })]);
+  });
+
   it.each([
     ["signal:memory_used", "used the colliding memory"],
     ["signal:memory_vote", "verified the colliding memory", "vote:+1"],

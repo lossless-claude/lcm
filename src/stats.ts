@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { readdirSync, existsSync } from "node:fs";
+import { readdirSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { collectEventStats } from "./db/events-stats.js";
 import { closeLcmConnection, getLcmConnection } from "./db/connection.js";
@@ -7,6 +7,7 @@ import { collectLegacyUsageCounts, RecallStore, type RecallStats } from "./db/re
 import { PromotedStore } from "./db/promoted.js";
 import { isSignalTagged } from "./db/votes.js";
 import { loadDaemonConfig } from "./daemon/config.js";
+import { projectGroup } from "./daemon/project-group.js";
 import type { LcmPaths } from "./lcm-paths.js";
 
 export type { RecallStats };
@@ -604,8 +605,26 @@ export function collectStats(paths: LcmPaths): OverallStats {
       if (existsSync(dbPath)) projectDatabases.set(entry.name, getLcmConnection(dbPath, { readOnly: true }));
     }
   } catch { /* a malformed project is skipped below as well */ }
-  let legacyUsageByOwner = new Map<string, Map<string, number>>();
-  try { legacyUsageByOwner = collectLegacyUsageCounts(projectDatabases); } catch { /* non-fatal */ }
+  const legacyUsageByOwner = new Map<string, Map<string, number>>();
+  try {
+    const seen = new Set<string>();
+    for (const [projectId] of projectDatabases) {
+      if (seen.has(projectId)) continue;
+      let groupIds = [projectId];
+      try {
+        const meta = JSON.parse(readFileSync(join(baseDir, projectId, "meta.json"), "utf8")) as { cwd?: unknown };
+        if (typeof meta.cwd === "string") {
+          groupIds = projectGroup(meta.cwd, paths).map((member) => member.projectId).filter((id) => projectDatabases.has(id));
+        }
+      } catch { /* a legacy project has no group identity */ }
+      for (const id of groupIds) seen.add(id);
+      for (const [owner, counts] of collectLegacyUsageCounts(
+        groupIds.flatMap((id) => projectDatabases.has(id) ? [[id, projectDatabases.get(id)!] as [string, DatabaseSync]] : []),
+      )) {
+        legacyUsageByOwner.set(owner, counts);
+      }
+    }
+  } catch { /* non-fatal */ }
   finally {
     for (const [projectId] of projectDatabases) {
       closeLcmConnection(join(baseDir, projectId, "db.sqlite"), { readOnly: true });
