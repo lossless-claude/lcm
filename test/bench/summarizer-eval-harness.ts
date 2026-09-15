@@ -302,8 +302,10 @@ export async function runEval(input: {
   provider: string;
   variant?: string;
   run: number;
+  /** Effective configured or detected corpus language used by production. */
+  language?: string;
 }): Promise<EvalRunResult> {
-  const { session, model, provider, variant, run } = input;
+  const { session, model, provider, variant, run, language } = input;
   const db = new DatabaseSync(":memory:");
   runLcmMigrations(db);
   const conversationStore = new ConversationStore(db);
@@ -328,7 +330,7 @@ export async function runEval(input: {
   const { summarize, calls } = instrumentSummarizer(input.summarizer);
   // No scrubber: corpus content was already scrubbed at ingest and the export
   // copies stored content verbatim.
-  const engine = new CompactionEngine(conversationStore, summaryStore, compactEngineConfig());
+  const engine = new CompactionEngine(conversationStore, summaryStore, compactEngineConfig({ language }));
   const tokensBefore = await summaryStore.getContextTokenCount(cid);
   const startedAt = new Date().toISOString();
 

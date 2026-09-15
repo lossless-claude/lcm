@@ -21,7 +21,7 @@ import { ensureLanguagePack } from "../store/language-pack.js";
 /** Fewer human turns than this and a corpus is too young to tell. */
 const MIN_TURNS_FOR_DETECTION = LANGUAGE_SAMPLE_SIZE;
 
-const inFlight = new Set<string>();
+const inFlight = new Map<string, Promise<void>>();
 const failed = new Set<string>();
 
 function readMeta(path: string): Record<string, unknown> {
@@ -45,12 +45,15 @@ function summarizerUnavailable(config: DaemonConfig): boolean {
 export function scheduleProjectLanguageDetection(cwd: string, db: DatabaseSync, config: DaemonConfig, paths: LcmPaths): Promise<void> {
   if (summarizerUnavailable(config)) return Promise.resolve();
   const metaPath = projectMetaPath(cwd, paths);
-  if (inFlight.has(metaPath) || failed.has(metaPath)) return Promise.resolve();
+  const pending = inFlight.get(metaPath);
+  if (pending) return pending;
+  if (failed.has(metaPath)) return Promise.resolve();
   if (typeof readMeta(metaPath).language === "string") return Promise.resolve();
   const turns = sampleHumanTurns(db, paths);
   if (turns.length < MIN_TURNS_FOR_DETECTION) return Promise.resolve();
-  inFlight.add(metaPath);
-  return detectAndRecord(metaPath, turns, config, paths).finally(() => inFlight.delete(metaPath));
+  const detection = detectAndRecord(metaPath, turns, config, paths).finally(() => inFlight.delete(metaPath));
+  inFlight.set(metaPath, detection);
+  return detection;
 }
 
 async function detectAndRecord(metaPath: string, turns: string[], config: DaemonConfig, paths: LcmPaths): Promise<void> {

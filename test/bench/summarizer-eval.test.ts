@@ -11,6 +11,7 @@ import {
   type CorpusSession,
 } from "./summarizer-eval-harness.js";
 import { createEvalSummarizer, type EvalProvider } from "./summarizer-eval-providers.js";
+import { parseLanguageTag } from "../../src/search/language.js";
 
 const RESULTS_DIR = join(import.meta.dirname, "results");
 
@@ -34,6 +35,19 @@ describe("summarizer eval harness (offline)", () => {
     expect(result.totals.formatPass).toBe(result.totals.formatTotal);
     expect(result.plantedFacts?.map((f) => f.name)).toHaveLength(5);
     expect(result.tokensAfter).toBeLessThan(result.tokensBefore);
+  }, 30_000);
+
+  it("passes the corpus language through the production engine configuration", async () => {
+    const languages: Array<string | undefined> = [];
+    const summarizer: LcmSummarizeFn = async (_text, _aggressive, ctx) => {
+      languages.push(ctx.language);
+      return "Files: none\nSummary\nExpand for details about: language";
+    };
+    await runEval({
+      session: buildSyntheticSession(), summarizer, model: "fake", provider: "fake", run: 1, language: "pt-BR",
+    });
+    expect(languages.length).toBeGreaterThan(0);
+    expect(languages.every((language) => language === "pt-BR")).toBe(true);
   }, 30_000);
 
   it("scores format per pass type", () => {
@@ -77,6 +91,7 @@ describe("summarizer eval harness (offline)", () => {
 //   LCM_EVAL_REASONING         http providers: JSON sent as `reasoning`, e.g. {"enabled":false} (default none)
 //   LCM_EVAL_REASONING_EFFORT  shorthand for LCM_EVAL_REASONING={"effort":"<value>"}
 //   LCM_EVAL_DISABLE_THINKING  http providers: "1" sends chat_template_kwargs.enable_thinking=false (Qwen-style servers)
+//   LCM_EVAL_LANGUAGE          configured or detected BCP 47 language for the corpus
 
 const EVAL_PROVIDERS: readonly EvalProvider[] = ["openrouter", "openai", "claude-process"];
 
@@ -100,6 +115,12 @@ const corpusDir = process.env.LCM_EVAL_CORPUS_DIR;
 const provider = parseProvider(process.env.LCM_EVAL_PROVIDER);
 const runs = parseRuns(process.env.LCM_EVAL_RUNS);
 const only = process.env.LCM_EVAL_SESSIONS?.split(",").map((s) => s.trim()).filter(Boolean);
+const language = process.env.LCM_EVAL_LANGUAGE
+  ? parseLanguageTag(process.env.LCM_EVAL_LANGUAGE)
+  : undefined;
+if (process.env.LCM_EVAL_LANGUAGE && !language) {
+  throw new Error(`LCM_EVAL_LANGUAGE must be a valid BCP 47 language tag, got: ${process.env.LCM_EVAL_LANGUAGE}`);
+}
 
 const reasoning =
   (process.env.LCM_EVAL_REASONING ? ` reasoning=${process.env.LCM_EVAL_REASONING}` : "") +
@@ -126,7 +147,7 @@ describe.skipIf(!model || !corpusDir)(`summarizer eval: ${model} via ${provider}
     for (let run = 1; run <= runs; run++) {
       it(`${session.label} run ${run}`, async () => {
         const summarizer = createEvalSummarizer(provider, model!);
-        const result = await runEval({ session, summarizer, model: model!, provider, variant, run });
+        const result = await runEval({ session, summarizer, model: model!, provider, variant, run, language });
         const file = writeResult(RESULTS_DIR, result);
         const facts = result.plantedFacts
           ? ` facts=${result.plantedFacts.filter((f) => f.survived).length}/${result.plantedFacts.length}`

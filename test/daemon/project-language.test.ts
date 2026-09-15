@@ -67,6 +67,26 @@ afterEach(() => {
 });
 
 describe("scheduleProjectLanguageDetection", () => {
+  it("returns the existing detection promise to concurrent callers", async () => {
+    let finishDetection: ((language: string) => void) | undefined;
+    const summarize = vi.fn()
+      .mockImplementationOnce(() => new Promise<string>((resolve) => { finishDetection = resolve; }))
+      .mockResolvedValueOnce(PACK_REPLY);
+    vi.mocked(createSummarizer).mockResolvedValue(summarize);
+    const db = await seededDb(25);
+
+    const detection = scheduleProjectLanguageDetection(dir, db, testConfig(), paths);
+    const waiter = scheduleProjectLanguageDetection(dir, db, testConfig(), paths);
+    expect(waiter).toBe(detection);
+    expect(existsSync(join(dir, "meta.json"))).toBe(false);
+
+    await vi.waitFor(() => expect(finishDetection).toBeTypeOf("function"));
+    finishDetection?.("pt-BR");
+    await Promise.all([detection, waiter]);
+    expect(JSON.parse(readFileSync(join(dir, "meta.json"), "utf-8")).language).toBe("pt-BR");
+    expect(createSummarizer).toHaveBeenCalledOnce();
+  });
+
   it("records the language in meta.json and generates the pack, once", async () => {
     const summarize = vi.fn().mockResolvedValueOnce("pt-BR").mockResolvedValueOnce(PACK_REPLY);
     vi.mocked(createSummarizer).mockResolvedValue(summarize);
