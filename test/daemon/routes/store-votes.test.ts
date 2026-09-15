@@ -564,7 +564,13 @@ describe("POST /store — votes", () => {
         db.close();
       }
       expect(collectStats(paths).promotionCandidates.filter((entry) => entry.id === "colliding-id").map((entry) => entry.ownerProjectId).sort())
-        .toEqual([projectId(here), projectId(sibling)].sort());
+        .toEqual([]);
+      const afterUses = await postReviewStale(port, { cwd: here });
+      expect(afterUses.status).toBe(200);
+      const ambiguousStale = (afterUses.data.stale as Array<{ id: string; ownerProjectId: string; usageCount: number }>)
+        .filter((entry) => entry.id === "colliding-id");
+      expect(ambiguousStale.map((entry) => entry.ownerProjectId).sort()).toEqual([projectId(here), projectId(sibling)].sort());
+      expect(ambiguousStale.every((entry) => entry.usageCount === 0)).toBe(true);
 
       const ambiguous = await postReviewStale(port, {
         cwd: here, action: "archive", target_id: "colliding-id",

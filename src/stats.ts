@@ -16,19 +16,22 @@ export function collectLegacyUsageByGroups(
   groups: readonly string[][],
   open: (id: string) => DatabaseSync,
   close: (id: string) => void,
-): Map<string, Map<string, number>> {
-  const result = new Map<string, Map<string, number>>();
+): { byOwner: Map<string, Map<string, number>>; ambiguousByOwner: Map<string, Set<string>> } {
+  const byOwner = new Map<string, Map<string, number>>();
+  const ambiguousByOwner = new Map<string, Set<string>>();
   for (const group of groups) {
     const databases = new Map<string, DatabaseSync>();
     try {
       for (const id of group) {
         try { databases.set(id, open(id)); } catch { /* skip one unreadable member */ }
       }
-      for (const [owner, counts] of collectLegacyUsageCounts(databases)) result.set(owner, counts);
+      const legacy = collectLegacyUsageCounts(databases);
+      for (const [owner, counts] of legacy.byOwner) byOwner.set(owner, counts);
+      for (const owner of group) ambiguousByOwner.set(owner, legacy.ambiguousIds);
     } catch { /* a malformed group does not suppress later groups */ }
     finally { for (const id of databases.keys()) close(id); }
   }
-  return result;
+  return { byOwner, ambiguousByOwner };
 }
 
 export interface VoteObjection {
@@ -65,12 +68,13 @@ function computePromotionSections(
   enforcementThreshold: number,
   ownerProjectId: string,
   legacyUsageCounts: ReadonlyMap<string, number> = new Map(),
+  ambiguousIds: ReadonlySet<string> = new Set(),
 ): { promotionCandidates: PromotionCandidate[]; contested: ContestedMemory[] } {
   const promotedStore = new PromotedStore(db);
   const active = promotedStore.getAll().filter((r) => !isSignalTagged(JSON.parse(r.tags) as string[]));
   if (active.length === 0) return { promotionCandidates: [], contested: [] };
 
-  const feedback = new RecallStore(db).getFeedback(active.map((r) => r.id), legacyUsageCounts);
+  const feedback = new RecallStore(db).getFeedback(active.map((r) => r.id), legacyUsageCounts, ambiguousIds);
   const voteCounts = promotedStore.getVoteCounts();
 
   const promotionCandidates: PromotionCandidate[] = [];
@@ -152,6 +156,7 @@ function queryProjectStats(
   projectId: string,
   staleCfg: { staleAfterDays: number; staleSurfacingWithoutUseLimit: number; enforcementThreshold: number },
   legacyUsageCounts: ReadonlyMap<string, number> = new Map(),
+  ambiguousIds: ReadonlySet<string> = new Set(),
 ): Omit<OverallStats, "projects" | "recallStats" | "staleCount"> & { recallStats: RecallStats; staleCount: number } {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   db.exec("PRAGMA busy_timeout = 5000");
@@ -248,7 +253,7 @@ function queryProjectStats(
         .map((row) => row.id))
       : undefined;
     const recallStats: RecallStats = columns("recall_surfacing").size && promotedColumns.has("archived_at")
-      ? new RecallStore(db).getStats(legacyUsageCounts, activeMemoryIds)
+      ? new RecallStore(db).getStats(legacyUsageCounts, activeMemoryIds, ambiguousIds)
       : { memoriesSurfaced: 0, memoriesActedUpon: 0, recallPrecision: null, topRecalled: [] };
 
     // Count stale promoted memories (config is passed in to avoid re-reading per project)
@@ -259,13 +264,14 @@ function queryProjectStats(
         staleSurfacingWithoutUseLimit: staleCfg.staleSurfacingWithoutUseLimit,
         projectId,
         legacyUsageCounts,
+        ambiguousIds,
       }).length;
     } catch { /* non-fatal */ }
 
     let promotionCandidates: PromotionCandidate[] = [];
     let contested: ContestedMemory[] = [];
     try {
-      ({ promotionCandidates, contested } = computePromotionSections(db, staleCfg.enforcementThreshold, projectId, legacyUsageCounts));
+      ({ promotionCandidates, contested } = computePromotionSections(db, staleCfg.enforcementThreshold, projectId, legacyUsageCounts, ambiguousIds));
     } catch { /* non-fatal */ }
 
     return {
@@ -623,6 +629,7 @@ export function collectStats(paths: LcmPaths): OverallStats {
       .map((entry) => entry.name),
   );
   const legacyUsageByOwner = new Map<string, Map<string, number>>();
+  const ambiguousByOwner = new Map<string, Set<string>>();
   const seen = new Set<string>();
   for (const projectId of projectIds) {
       if (seen.has(projectId)) continue;
@@ -634,13 +641,15 @@ export function collectStats(paths: LcmPaths): OverallStats {
         }
       } catch { /* a legacy project has no group identity */ }
       for (const id of groupIds) seen.add(id);
-      for (const [owner, counts] of collectLegacyUsageByGroups(
+      const legacy = collectLegacyUsageByGroups(
         [groupIds],
         (id) => getLcmConnection(join(baseDir, id, "db.sqlite"), { readOnly: true }),
         (id) => closeLcmConnection(join(baseDir, id, "db.sqlite"), { readOnly: true }),
-      )) {
+      );
+      for (const [owner, counts] of legacy.byOwner) {
         legacyUsageByOwner.set(owner, counts);
       }
+      for (const [owner, ids] of legacy.ambiguousByOwner) ambiguousByOwner.set(owner, ids);
     }
 
   for (const entry of readdirSync(baseDir, { withFileTypes: true })) {
@@ -649,7 +658,7 @@ export function collectStats(paths: LcmPaths): OverallStats {
     if (!existsSync(dbPath)) continue;
 
     try {
-      const projStats = queryProjectStats(dbPath, entry.name, staleCfg, legacyUsageByOwner.get(entry.name));
+      const projStats = queryProjectStats(dbPath, entry.name, staleCfg, legacyUsageByOwner.get(entry.name), ambiguousByOwner.get(entry.name));
       // Before the messages gate: a project can hold promoted memories and their use and
       // vote records without any conversation of its own — a fresh checkout using lcm_store.
       allPromotionCandidates.push(...projStats.promotionCandidates);

@@ -264,6 +264,7 @@ export class PromotedStore {
     staleSurfacingWithoutUseLimit: number;
     projectId?: string;
     legacyUsageCounts?: ReadonlyMap<string, number>;
+    ambiguousIds?: ReadonlySet<string>;
   }): Array<PromotedRow & { surfacingCount: number; usageCount: number; daysSinceCreated: number }> {
     const cutoffMs = Date.now() - opts.staleAfterDays * 24 * 60 * 60 * 1000;
     // Use SQLite datetime format (YYYY-MM-DD HH:MM:SS) to match created_at,
@@ -313,7 +314,7 @@ export class PromotedStore {
 
     for (const row of rows) {
       const surfacingCount = surfacingMap.get(row.id) ?? 0;
-      const usageCount = (usageMap.get(row.id) ?? 0) + (opts.legacyUsageCounts?.get(row.id) ?? 0);
+      const usageCount = opts.ambiguousIds?.has(row.id) ? 0 : (usageMap.get(row.id) ?? 0) + (opts.legacyUsageCounts?.get(row.id) ?? 0);
       const daysSinceCreated = Math.floor((Date.now() - Date.parse(row.created_at)) / (24 * 60 * 60 * 1000));
 
       const surfacedWithoutUse = surfacingCount >= opts.staleSurfacingWithoutUseLimit && usageCount === 0;

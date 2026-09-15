@@ -140,7 +140,8 @@ export function createReviewStaleHandler(config: DaemonConfig, paths: LcmPaths):
             try { closeLcmConnection(dbPath); } catch { /* no ref was acquired */ }
           }
         }
-        const legacyUsageByOwner = collectLegacyUsageCounts(groupDatabases);
+        const legacyUsage = collectLegacyUsageCounts(groupDatabases);
+        const legacyUsageByOwner = legacyUsage.byOwner;
         for (const member of members) {
           const db = groupDatabases.get(member.projectId);
           if (!db) continue;
@@ -149,6 +150,7 @@ export function createReviewStaleHandler(config: DaemonConfig, paths: LcmPaths):
             staleSurfacingWithoutUseLimit: config.restoration.staleSurfacingWithoutUseLimit,
             projectId: input.project_id as string | undefined,
             legacyUsageCounts: legacyUsageByOwner.get(member.projectId),
+            ambiguousIds: legacyUsage.ambiguousIds,
           });
           stale.push(...staleRows.map((row) => ({
             id: row.id, content: row.content, tags: JSON.parse(row.tags) as string[],

@@ -23,7 +23,8 @@ export interface RecallFeedback {
  * home. A legacy signal is attributed only when its id has one active owner across the
  * supplied databases; colliding ids remain uncounted rather than being guessed.
  */
-export function collectLegacyUsageCounts(databases: Iterable<[string, DatabaseSync]>): Map<string, Map<string, number>> {
+export interface LegacyUsageCounts { byOwner: Map<string, Map<string, number>>; ambiguousIds: Set<string>; }
+export function collectLegacyUsageCounts(databases: Iterable<[string, DatabaseSync]>): LegacyUsageCounts {
   const entries = [...databases];
   const owners = new Map<string, string | null>();
   const signals: Array<{ source: string; memoryId: string }> = [];
@@ -51,7 +52,7 @@ export function collectLegacyUsageCounts(databases: Iterable<[string, DatabaseSy
     ownerCounts.set(memoryId, (ownerCounts.get(memoryId) ?? 0) + 1);
     counts.set(owner, ownerCounts);
   }
-  return counts;
+  return { byOwner: counts, ambiguousIds: new Set([...owners].filter(([, owner]) => owner === null).map(([id]) => id)) };
 }
 
 export class RecallStore {
@@ -68,7 +69,7 @@ export class RecallStore {
     }
   }
 
-  getFeedback(memoryIds: string[], legacyUsageCounts: ReadonlyMap<string, number> = new Map()): Map<string, RecallFeedback> {
+  getFeedback(memoryIds: string[], legacyUsageCounts: ReadonlyMap<string, number> = new Map(), ambiguousIds: ReadonlySet<string> = new Set()): Map<string, RecallFeedback> {
     const feedback = new Map<string, RecallFeedback>();
     for (const id of memoryIds) {
       feedback.set(id, {
@@ -101,6 +102,7 @@ export class RecallStore {
     }
 
     for (const [memoryId, usageCount] of this.collectUsageCounts(memoryIds)) {
+      if (ambiguousIds.has(memoryId)) continue;
       const current = feedback.get(memoryId);
       if (!current) continue;
       feedback.set(memoryId, {
@@ -110,6 +112,7 @@ export class RecallStore {
     }
 
     for (const [memoryId, usageCount] of legacyUsageCounts) {
+      if (ambiguousIds.has(memoryId)) continue;
       const current = feedback.get(memoryId);
       if (!current) continue;
       feedback.set(memoryId, { ...current, usageCount: current.usageCount + usageCount });
@@ -118,7 +121,7 @@ export class RecallStore {
     return feedback;
   }
 
-  getStats(legacyUsageCounts: ReadonlyMap<string, number> = new Map(), ownedMemoryIds?: ReadonlySet<string>): RecallStats {
+  getStats(legacyUsageCounts: ReadonlyMap<string, number> = new Map(), ownedMemoryIds?: ReadonlySet<string>, ambiguousIds: ReadonlySet<string> = new Set()): RecallStats {
     // Distinct memories that have ever been surfaced
     const surfacedRow = this.db.prepare(
       `SELECT COUNT(DISTINCT memory_id) as count FROM recall_surfacing`
@@ -132,6 +135,7 @@ export class RecallStore {
         if (!ownedMemoryIds.has(id)) memoryIdCounts.delete(id);
       }
     }
+    for (const id of ambiguousIds) memoryIdCounts.delete(id);
     for (const [id, count] of legacyUsageCounts) {
       if (!ownedMemoryIds || ownedMemoryIds.has(id)) {
         memoryIdCounts.set(id, (memoryIdCounts.get(id) ?? 0) + count);

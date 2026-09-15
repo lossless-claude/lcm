@@ -33,7 +33,7 @@ it("bounds legacy prepass handles to one group and continues after an open failu
       return dbs.get(id)!;
     }, () => { open--; });
     expect(peak).toBe(2);
-    expect(counts.get("owner")?.get(memoryId)).toBe(1);
+    expect(counts.byOwner.get("owner")?.get(memoryId)).toBe(1);
   } finally {
     for (const db of dbs.values()) db.close();
   }
