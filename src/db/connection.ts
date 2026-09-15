@@ -5,9 +5,14 @@ import { dirname } from "path";
 type ConnectionEntry = {
   db: DatabaseSync;
   refs: number;
+  path: string;
 };
 
 const _connections = new Map<string, ConnectionEntry>();
+
+function connectionKey(dbPath: string, readOnly = false): string {
+  return readOnly ? `${dbPath}\0read-only` : dbPath;
+}
 
 function isConnectionHealthy(db: DatabaseSync): boolean {
   try {
@@ -32,14 +37,15 @@ export function getLcmConnection(dbPath: string, options: { readOnly?: boolean }
   // refs increment, so no other caller can interleave and close the connection
   // in between. The sequence (check => increment => return) is atomic w.r.t.
   // the JavaScript event loop.
-  const existing = _connections.get(dbPath);
+  const key = connectionKey(dbPath, options.readOnly);
+  const existing = _connections.get(key);
   if (existing) {
     if (isConnectionHealthy(existing.db)) {
       existing.refs += 1;
       return existing.db;
     }
     forceCloseConnection(existing);
-    _connections.delete(dbPath);
+    _connections.delete(key);
   }
 
   if (!options.readOnly) mkdirSync(dirname(dbPath), { recursive: true });
@@ -55,7 +61,7 @@ export function getLcmConnection(dbPath: string, options: { readOnly?: boolean }
     db.exec("PRAGMA busy_timeout = 5000");
   }
 
-  _connections.set(dbPath, { db, refs: 1 });
+  _connections.set(key, { db, refs: 1, path: dbPath });
   return db;
 }
 
@@ -71,8 +77,8 @@ export interface PoolStats {
 }
 
 export function getPoolStats(): PoolStats {
-  const connections = Array.from(_connections.entries()).map(([path, entry]) => ({
-    path,
+  const connections = Array.from(_connections.values()).map((entry) => ({
+    path: entry.path,
     refs: entry.refs,
     status: (entry.refs > 0 ? "active" : "idle") as "active" | "idle",
   }));
@@ -94,16 +100,17 @@ export function isLcmConnectionOpen(dbPath: string): boolean {
   return _connections.has(dbPath);
 }
 
-export function closeLcmConnection(dbPath?: string): void {
+export function closeLcmConnection(dbPath?: string, options: { readOnly?: boolean } = {}): void {
   if (typeof dbPath === "string" && dbPath.trim()) {
-    const entry = _connections.get(dbPath);
+    const key = connectionKey(dbPath, options.readOnly);
+    const entry = _connections.get(key);
     if (!entry) {
       return;
     }
     entry.refs = Math.max(0, entry.refs - 1);
     if (entry.refs === 0) {
       forceCloseConnection(entry);
-      _connections.delete(dbPath);
+      _connections.delete(key);
     }
     return;
   }

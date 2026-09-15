@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { closeLcmConnection } from "../db/connection.js";
 import { PromotedStore, type SearchResult } from "../db/promoted.js";
-import { collectLegacyUsageCounts, RecallStore, type RecallFeedback } from "../db/recall.js";
+import { RecallStore, type RecallFeedback } from "../db/recall.js";
 import { projectDbPath } from "../daemon/project.js";
 import { projectGroup, projectRef } from "../daemon/project-group.js";
 import { openMigrated } from "./migrated-connection.js";
@@ -76,46 +76,27 @@ export function searchPromotedGroup(cwd: string, input: GroupSearchInput, paths:
   const members = projectGroup(cwd, paths);
   const lists: GroupPromotedHit[][] = [];
   const feedback = new Map<string, RecallFeedback>();
-  const opened: Array<{ cwd: string; dbPath: string; db: ReturnType<typeof openMigrated> }> = [];
-
-  try {
-    for (const member of members) {
-      const dbPath = projectDbPath(member.cwd, paths);
-      if (!existsSync(dbPath)) continue;
-      opened.push({ cwd: member.cwd, dbPath, db: openMigrated(dbPath) });
-    }
-    for (const { cwd: memberCwd, db } of opened) {
+  for (const member of members) {
+    const dbPath = projectDbPath(member.cwd, paths);
+    if (!existsSync(dbPath)) continue;
+    const db = openMigrated(dbPath);
+    try {
       const found = new PromotedStore(db).search(input.query, input.limit, input.tags, undefined, input.terms);
       if (found.length === 0) continue;
-      lists.push(found.map(result => ({ ...result, project: projectRef(memberCwd) })));
-    }
-
-    const hits = lists.length <= 1
-      ? (lists[0] ?? []).slice(0, input.limit)
-      : fuseByReciprocalRank(lists, input.limit);
-    if (input.withFeedback) {
-      const idsByOwner = new Map<string, string[]>();
-      for (const hit of hits) {
-        const ids = idsByOwner.get(hit.project.cwd) ?? [];
-        ids.push(hit.id);
-        idsByOwner.set(hit.project.cwd, ids);
-      }
-      const legacyUsageCounts = collectLegacyUsageCounts(
-        opened.map(({ cwd, db }) => [cwd, db]),
-        idsByOwner,
-      );
-      for (const { cwd: memberCwd, db } of opened) {
-        const ids = idsByOwner.get(memberCwd);
-        if (!ids) continue;
-        for (const [id, entry] of new RecallStore(db).getFeedback(ids, legacyUsageCounts.get(memberCwd))) {
+      lists.push(found.map(result => ({ ...result, project: projectRef(member.cwd) })));
+      if (input.withFeedback) {
+        for (const [id, entry] of new RecallStore(db).getFeedback(found.map(r => r.id))) {
           feedback.set(id, entry);
         }
       }
+    } finally {
+      closeLcmConnection(dbPath);
     }
-    return { hits, feedback };
-  } finally {
-    for (const { dbPath } of opened) closeLcmConnection(dbPath);
   }
+  const hits = lists.length <= 1
+    ? (lists[0] ?? []).slice(0, input.limit)
+    : fuseByReciprocalRank(lists, input.limit);
+  return { hits, feedback };
 }
 
 /**

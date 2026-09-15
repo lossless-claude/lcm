@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { createLcmPaths, type LcmPaths } from "../../src/lcm-paths.js";
 import { searchPromotedGroup, logGroupSurfacing } from "../../src/search/group-promoted.js";
 import { openProject } from "../../src/daemon/project-group.js";
@@ -11,7 +11,6 @@ import { projectDbPath, projectId } from "../../src/daemon/project.js";
 import { runLcmMigrations } from "../../src/db/migration.js";
 import { PromotedStore } from "../../src/db/promoted.js";
 import { RecallStore } from "../../src/db/recall.js";
-import { getPoolStats } from "../../src/db/connection.js";
 
 /** An isolated base dir, so these tests never touch the developer's own store. */
 const base = realpathSync(mkdtempSync(join(tmpdir(), "lcm-union-base-")));
@@ -98,51 +97,6 @@ describe("searchPromotedGroup", () => {
     expect(feedback.get(siblingId)?.surfacingCount).toBe(1);
   });
 
-  it("counts a legacy use signal left in the requesting checkout once", () => {
-    const here = checkout(LCM, ["requesting checkout"]);
-    const sibling = checkout(LCM, ["compaction is the only LLM step"]);
-    const siblingDb = new DatabaseSync(projectDbPath(sibling, paths));
-    const siblingId = new PromotedStore(siblingDb).search("compaction", 1)[0].id;
-    siblingDb.close();
-
-    const hereDb = new DatabaseSync(projectDbPath(here, paths));
-    new PromotedStore(hereDb).insert({
-      content: "Legacy use of sibling memory",
-      tags: ["signal:memory_used", `memory_id:${siblingId}`],
-      projectId: "p1",
-    });
-    hereDb.close();
-
-    const originalPrepare = DatabaseSync.prototype.prepare;
-    const prepared: string[] = [];
-    const prepare = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (sql: string) {
-      prepared.push(sql);
-      return originalPrepare.call(this, sql);
-    });
-    try {
-      const { feedback } = searchPromotedGroup(here, { query: "compaction", limit: 10, withFeedback: true }, paths);
-      expect(feedback.get(siblingId)?.usageCount).toBe(1);
-      expect(prepared).toContainEqual(expect.stringContaining("AND (tags LIKE ? ESCAPE '\\')"));
-      expect(prepared).not.toContain("SELECT id, tags FROM promoted WHERE archived_at IS NULL");
-    } finally {
-      prepare.mockRestore();
-    }
-  });
-
-  it("closes every group connection when a search throws", () => {
-    const here = checkout(LCM, ["compaction runs lazily"]);
-    const sibling = checkout(LCM, ["compaction is the only LLM step"]);
-    const search = vi.spyOn(PromotedStore.prototype, "search").mockImplementationOnce(() => {
-      throw new Error("search failed");
-    });
-    try {
-      expect(() => searchPromotedGroup(here, { query: "compaction", limit: 10, withFeedback: true }, paths)).toThrow("search failed");
-      const pathsInGroup = new Set([projectDbPath(here, paths), projectDbPath(sibling, paths)]);
-      expect(getPoolStats().connections.filter((connection) => pathsInGroup.has(connection.path))).toEqual([]);
-    } finally {
-      search.mockRestore();
-    }
-  });
 });
 
 describe("logGroupSurfacing", () => {

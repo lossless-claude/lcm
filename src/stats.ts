@@ -608,7 +608,7 @@ export function collectStats(paths: LcmPaths): OverallStats {
   try { legacyUsageByOwner = collectLegacyUsageCounts(projectDatabases); } catch { /* non-fatal */ }
   finally {
     for (const [projectId] of projectDatabases) {
-      closeLcmConnection(join(baseDir, projectId, "db.sqlite"));
+      closeLcmConnection(join(baseDir, projectId, "db.sqlite"), { readOnly: true });
     }
   }
 
