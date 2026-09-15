@@ -71,6 +71,11 @@ describe("extractPostToolEvents", () => {
     expect(events).toHaveLength(0);
   });
 
+  it.each(["Read", "Edit", "Write"])("does not emit a file event for %s without a path", (tool_name) => {
+    expect(extractPostToolEvents({ tool_name, tool_input: {} })).toEqual([]);
+    expect(extractPostToolEvents({ tool_name, tool_input: { file_paths: ["", "  "] } })).toEqual([]);
+  });
+
   it("skips lcm_store calls", () => {
     const events = extractPostToolEvents({
       tool_name: "mcp__plugin_lcm_lcm__lcm_store",

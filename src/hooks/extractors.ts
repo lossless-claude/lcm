@@ -104,7 +104,7 @@ function extractFileEvents(toolName: string, input: PostToolInput): ExtractedEve
     Glob: "file_glob", Grep: "file_grep",
   };
 
-  return filePaths.filter(path => !isSensitivePath(path)).map(filePath => ({
+  return filePaths.filter(path => path.trim() !== "" && !isSensitivePath(path)).map(filePath => ({
     type: typeMap[toolName] ?? "file_access",
     category: "file",
     data: truncate(`${filePath} (${classifyFile(filePath)})`),
