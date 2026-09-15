@@ -26,7 +26,7 @@ function forceCloseConnection(entry: ConnectionEntry): void {
   }
 }
 
-export function getLcmConnection(dbPath: string): DatabaseSync {
+export function getLcmConnection(dbPath: string, options: { readOnly?: boolean } = {}): DatabaseSync {
   // No TOCTOU race here: Node.js is single-threaded and this function is
   // synchronous. There is no await/yield between the health check and the
   // refs increment, so no other caller can interleave and close the connection
@@ -42,17 +42,18 @@ export function getLcmConnection(dbPath: string): DatabaseSync {
     _connections.delete(dbPath);
   }
 
-  // Ensure parent directory exists
-  mkdirSync(dirname(dbPath), { recursive: true });
-
-  const db = new DatabaseSync(dbPath);
-
-  // Enable WAL mode for better concurrent read performance
-  db.exec("PRAGMA journal_mode = WAL");
-  // Wait up to 5 seconds on busy instead of failing immediately
-  db.exec("PRAGMA busy_timeout = 5000");
-  // Enable foreign key enforcement
-  db.exec("PRAGMA foreign_keys = ON");
+  if (!options.readOnly) mkdirSync(dirname(dbPath), { recursive: true });
+  const db = new DatabaseSync(dbPath, options.readOnly ? { readOnly: true } : {});
+  if (!options.readOnly) {
+    // Enable WAL mode for better concurrent read performance
+    db.exec("PRAGMA journal_mode = WAL");
+    // Wait up to 5 seconds on busy instead of failing immediately
+    db.exec("PRAGMA busy_timeout = 5000");
+    // Enable foreign key enforcement
+    db.exec("PRAGMA foreign_keys = ON");
+  } else {
+    db.exec("PRAGMA busy_timeout = 5000");
+  }
 
   _connections.set(dbPath, { db, refs: 1 });
   return db;

@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { collectEventStats } from "./db/events-stats.js";
+import { closeLcmConnection, getLcmConnection } from "./db/connection.js";
 import { collectLegacyUsageCounts, RecallStore, type RecallStats } from "./db/recall.js";
 import { PromotedStore } from "./db/promoted.js";
 import { isSignalTagged } from "./db/votes.js";
@@ -600,12 +601,16 @@ export function collectStats(paths: LcmPaths): OverallStats {
     for (const entry of readdirSync(baseDir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       const dbPath = join(baseDir, entry.name, "db.sqlite");
-      if (existsSync(dbPath)) projectDatabases.set(entry.name, new DatabaseSync(dbPath, { readOnly: true }));
+      if (existsSync(dbPath)) projectDatabases.set(entry.name, getLcmConnection(dbPath, { readOnly: true }));
     }
   } catch { /* a malformed project is skipped below as well */ }
   let legacyUsageByOwner = new Map<string, Map<string, number>>();
   try { legacyUsageByOwner = collectLegacyUsageCounts(projectDatabases); } catch { /* non-fatal */ }
-  finally { for (const db of projectDatabases.values()) db.close(); }
+  finally {
+    for (const [projectId] of projectDatabases) {
+      closeLcmConnection(join(baseDir, projectId, "db.sqlite"));
+    }
+  }
 
   for (const entry of readdirSync(baseDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;

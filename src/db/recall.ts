@@ -23,10 +23,35 @@ export interface RecallFeedback {
  * home. A legacy signal is attributed only when its id has one active owner across the
  * supplied databases; colliding ids remain uncounted rather than being guessed.
  */
-export function collectLegacyUsageCounts(databases: Iterable<[string, DatabaseSync]>): Map<string, Map<string, number>> {
+export function collectLegacyUsageCounts(
+  databases: Iterable<[string, DatabaseSync]>,
+  targetOwners?: ReadonlyMap<string, readonly string[]>,
+): Map<string, Map<string, number>> {
   const entries = [...databases];
   const owners = new Map<string, string | null>();
   const signals: Array<{ source: string; memoryId: string }> = [];
+  if (targetOwners) {
+    for (const [owner, ids] of targetOwners) {
+      for (const id of ids) owners.set(id, owners.has(id) ? null : owner);
+    }
+    const ids = [...owners.keys()];
+    if (ids.length === 0) return new Map();
+    const filters = ids.map(() => "tags LIKE ? ESCAPE '\\'").join(" OR ");
+    const params = ids.map((id) => `%"memory_id:${escapeLikePattern(id)}"%`);
+    for (const [source, db] of entries) {
+      const rows = db.prepare(
+        `SELECT tags FROM promoted WHERE archived_at IS NULL
+         AND tags LIKE '%"signal:memory_used"%'
+         AND (${filters})`,
+      ).all(...params) as Array<{ tags: string }>;
+      for (const row of rows) {
+        let tags: string[];
+        try { tags = JSON.parse(row.tags) as string[]; } catch { continue; }
+        const memoryId = tags.find(tag => tag.startsWith("memory_id:"))?.slice("memory_id:".length);
+        if (memoryId && owners.has(memoryId)) signals.push({ source, memoryId });
+      }
+    }
+  } else {
   for (const [key, db] of entries) {
     const rows = db.prepare("SELECT id, tags FROM promoted WHERE archived_at IS NULL").all() as Array<{ id: string; tags: string }>;
     for (const row of rows) {
@@ -40,6 +65,7 @@ export function collectLegacyUsageCounts(databases: Iterable<[string, DatabaseSy
       const memoryId = tags.find(tag => tag.startsWith("memory_id:"))?.slice("memory_id:".length);
       if (memoryId) signals.push({ source: key, memoryId });
     }
+  }
   }
 
   const counts = new Map<string, Map<string, number>>();
