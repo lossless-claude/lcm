@@ -15,6 +15,7 @@ import { enqueue } from "../../../src/daemon/project-queue.js";
 import { importSessions } from "../../../src/import.js";
 import { EventsDb } from "../../../src/hooks/events-db.js";
 import { eventsDbPath } from "../../../src/db/events-path.js";
+import { dispatchCodexHook, type CodexHookDeps } from "../../../src/hooks/codex.js";
 
 const tempDirs: string[] = [];
 
@@ -542,5 +543,64 @@ describe("POST /ingest", () => {
     }
     expect(row?.client).toBe("claude");
     expect(row?.model).toBe("claude-sonnet-5");
+  });
+
+  it("backfills model-less Codex events by their transcript turns", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-ingest-codex-model-backfill-"));
+    tempDirs.push(tempDir);
+    const transcriptPath = join(tempDir, "rollout.jsonl");
+    const sessionId = "codex-backfill-session";
+    writeFileSync(transcriptPath, [
+      { type: "session_meta", payload: { id: sessionId, cwd: tempDir } },
+      { type: "turn_context", payload: { turn_id: "turn-1", model: "gpt-5.6-codex" } },
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "edit it" }] } },
+      { type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "done" }] } },
+      { type: "turn_context", payload: { turn_id: "turn-2", model: "gpt-5.6-codex-mini" } },
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "edit it again" }] } },
+      { type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "done again" }] } },
+    ].map(line => JSON.stringify(line)).join("\n") + "\n");
+
+    const hookDeps: CodexHookDeps = {
+      client: { post: async () => ({}) }, connect: async () => true, enabled: true, paths,
+    };
+    for (const [tool_use_id, turn_id, file] of [
+      ["call_patch", "turn-1", "src/example.ts"],
+      ["call_patch_2", "turn-1", "src/second.ts"],
+      ["call_patch_3", "turn-2", "src/third.ts"],
+    ]) {
+      await dispatchCodexHook(JSON.stringify({
+        hook_event_name: "PostToolUse", session_id: sessionId, cwd: tempDir,
+        tool_name: "apply_patch", tool_use_id, turn_id,
+        tool_input: { command: `*** Begin Patch\n*** Update File: ${file}\n*** End Patch` },
+      }), hookDeps);
+    }
+
+    daemon = await createDaemon(loadDaemonConfig("/nonexistent", { daemon: { port: 0 } }));
+    const post = () => fetch(`http://127.0.0.1:${daemon!.address().port}/ingest`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, cwd: tempDir, client: "codex", transcript_path: transcriptPath }),
+    });
+    expect((await post()).status).toBe(200);
+
+    let rows = [] as ReturnType<EventsDb["getUnprocessed"]>;
+    for (let attempt = 0; attempt < 50 && (rows.length === 0 || rows.some(row => row.model == null)); attempt += 1) {
+      const after = new EventsDb(eventsDbPath(tempDir, paths));
+      rows = after.getUnprocessed().filter(event => event.session_id === sessionId);
+      after.close();
+      if (rows.some(row => row.model == null)) await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(rows.map(row => [row.tool_use_id, row.turn_id, row.model])).toEqual([
+      ["call_patch", "turn-1", "gpt-5.6-codex"],
+      ["call_patch_2", "turn-1", "gpt-5.6-codex"],
+      ["call_patch_3", "turn-2", "gpt-5.6-codex-mini"],
+    ]);
+    const repeated = await post();
+    expect(repeated.status).toBe(200);
+    expect(await repeated.json()).toEqual({ ingested: 0, totalTokens: 0 });
+    const afterRepeat = new EventsDb(eventsDbPath(tempDir, paths));
+    expect(afterRepeat.getUnprocessed().filter(event => event.session_id === sessionId).map(event => event.model)).toEqual([
+      "gpt-5.6-codex", "gpt-5.6-codex", "gpt-5.6-codex-mini",
+    ]);
+    afterRepeat.close();
   });
 });

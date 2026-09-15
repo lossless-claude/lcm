@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   parseCodexTranscript,
+  extractCodexTurnModels,
   extractCodexSessionCwd,
   findCodexSessionFiles,
   findAllCodexTranscripts,
@@ -221,6 +222,22 @@ describe("parseCodexTranscript", () => {
     const msgs = parseCodexTranscript(file);
     expect(msgs).toHaveLength(4);
     expect(msgs.map(m => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
+  });
+});
+
+describe("extractCodexTurnModels", () => {
+  it("maps each turn_context id to its model", () => {
+    const dir = makeTmpDir();
+    const file = join(dir, "session.jsonl");
+    writeFileSync(file, [
+      JSON.stringify({ type: "turn_context", payload: { turn_id: "turn-1", model: "gpt-5.6-codex" } }),
+      JSON.stringify({ type: "turn_context", payload: { turn_id: "turn-2", model: "gpt-5.6-codex-mini" } }),
+    ].join("\n") + "\n");
+
+    expect(extractCodexTurnModels(file)).toEqual(new Map([
+      ["turn-1", "gpt-5.6-codex"],
+      ["turn-2", "gpt-5.6-codex-mini"],
+    ]));
   });
 });
 
