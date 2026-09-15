@@ -77,12 +77,16 @@ export function createReviewStaleHandler(config: DaemonConfig, paths: LcmPaths):
         const matches = members.filter((member) => {
           const dbPath = projectDbPath(member.cwd, paths);
           if (!existsSync(dbPath)) return false;
-          const db = getLcmConnection(dbPath);
           try {
-            runLcmMigrations(db);
-            return Boolean(db.prepare("SELECT 1 FROM promoted WHERE id = ?").get(targetId));
-          } finally {
-            closeLcmConnection(dbPath);
+            const db = getLcmConnection(dbPath);
+            try {
+              runLcmMigrations(db);
+              return Boolean(db.prepare("SELECT 1 FROM promoted WHERE id = ?").get(targetId));
+            } finally {
+              closeLcmConnection(dbPath);
+            }
+          } catch {
+            return false;
           }
         });
         if (matches.length === 0) {
@@ -128,12 +132,12 @@ export function createReviewStaleHandler(config: DaemonConfig, paths: LcmPaths):
         for (const member of members) {
           const dbPath = projectDbPath(member.cwd, paths);
           if (!existsSync(dbPath)) continue;
-          const db = getLcmConnection(dbPath);
           try {
+            const db = getLcmConnection(dbPath);
             runLcmMigrations(db);
             groupDatabases.set(member.projectId, db);
           } catch {
-            closeLcmConnection(dbPath);
+            try { closeLcmConnection(dbPath); } catch { /* no ref was acquired */ }
           }
         }
         const legacyUsageByOwner = collectLegacyUsageCounts(groupDatabases);

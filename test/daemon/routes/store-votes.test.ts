@@ -426,6 +426,43 @@ describe("POST /store — votes", () => {
     }
   });
 
+  it("archives and revives a valid memory despite a sibling whose database path is unreadable", async () => {
+    const remote = "git@github.com:lcm-vote-tests/unreadable-action-group.git";
+    const unreadable = unregisteredCheckout(remote);
+    openProject(unreadable, paths);
+    const unreadablePath = projectDbPath(unreadable, paths);
+    mkdirSync(unreadablePath, { recursive: true });
+    const { cwd: valid, ids } = checkout(remote, ["valid target"]);
+    const { daemon, port } = await startDaemon();
+    try {
+      for (const [action, expected] of [["archive", "archived"], ["revive", "revived"]] as const) {
+        const { status, data } = await postReviewStale(port, { cwd: valid, action, target_id: ids[0] });
+        expect(status).toBe(200);
+        expect(data.action).toBe(expected);
+      }
+      expect(getPoolStats().connections.filter((entry) => [unreadablePath, projectDbPath(valid, paths)].includes(entry.path))).toEqual([]);
+    } finally { await daemon.stop(); }
+  });
+
+  it("lists valid stale memory despite a sibling whose database path is unreadable", async () => {
+    const remote = "git@github.com:lcm-vote-tests/unreadable-list-group.git";
+    const unreadable = unregisteredCheckout(remote);
+    openProject(unreadable, paths);
+    const unreadablePath = projectDbPath(unreadable, paths);
+    mkdirSync(unreadablePath, { recursive: true });
+    const { cwd: valid, ids } = checkout(remote, ["valid stale"]);
+    const db = new DatabaseSync(projectDbPath(valid, paths));
+    db.prepare("UPDATE promoted SET created_at = datetime('now', '-120 days') WHERE id = ?").run(ids[0]);
+    db.close();
+    const { daemon, port } = await startDaemon();
+    try {
+      const { status, data } = await postReviewStale(port, { cwd: valid });
+      expect(status).toBe(200);
+      expect((data.stale as Array<{ id: string }>).map((entry) => entry.id)).toContain(ids[0]);
+      expect(getPoolStats().connections.filter((entry) => [unreadablePath, projectDbPath(valid, paths)].includes(entry.path))).toEqual([]);
+    } finally { await daemon.stop(); }
+  });
+
   it("attributes legacy uses within their project group despite an identical id elsewhere", () => {
     const { cwd: here } = checkout("git@github.com:lcm-vote-tests/legacy-group-a.git", []);
     const { cwd: owner, ids } = checkout("git@github.com:lcm-vote-tests/legacy-group-a.git", ["group A memory"]);
