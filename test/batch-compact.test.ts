@@ -134,4 +134,33 @@ describe("findUncompacted", () => {
       "raw",
     ]);
   });
+
+  it("counts only raw messages outside SessionStart's configured fresh tail", () => {
+    const { paths, cwd, db } = makeProject();
+
+    const tailOnly = createConversation(db, "tail-only", "2026-01-01");
+    const covered = insertMessage(db, tailOnly, 0, 100);
+    const tailA = insertMessage(db, tailOnly, 1, 8);
+    const tailB = insertMessage(db, tailOnly, 2, 8);
+    insertSummary(db, tailOnly, "sum-tail-only", [covered]);
+    insertContextItem(db, tailOnly, 0, "summary", "sum-tail-only");
+    insertContextItem(db, tailOnly, 1, "message", tailA);
+    insertContextItem(db, tailOnly, 2, "message", tailB);
+
+    const eligible = createConversation(db, "eligible", "2026-01-02");
+    const eligibleCovered = insertMessage(db, eligible, 0, 100);
+    const compactable = insertMessage(db, eligible, 1, 10);
+    const eligibleTailA = insertMessage(db, eligible, 2, 8);
+    const eligibleTailB = insertMessage(db, eligible, 3, 8);
+    insertSummary(db, eligible, "sum-eligible", [eligibleCovered]);
+    insertContextItem(db, eligible, 0, "summary", "sum-eligible");
+    insertContextItem(db, eligible, 1, "message", compactable);
+    insertContextItem(db, eligible, 2, "message", eligibleTailA);
+    insertContextItem(db, eligible, 3, "message", eligibleTailB);
+
+    const candidates = findUncompacted(paths, 10, false, cwd, false, 2);
+
+    expect(candidates.map((candidate) => candidate.sessionId)).toEqual(["eligible"]);
+    expect(candidates[0]).toMatchObject({ messages: 1, tokens: 10 });
+  });
 });

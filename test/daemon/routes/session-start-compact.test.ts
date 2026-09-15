@@ -6,7 +6,7 @@ import type { DaemonConfig } from "../../../src/daemon/config.js";
 import type { UncompactedConversation } from "../../../src/batch-compact.js";
 import type { LcmPaths } from "../../../src/lcm-paths.js";
 
-type Scan = (paths: LcmPaths, minTokens: number, cwd: string) => Promise<UncompactedConversation[]>;
+type Scan = (paths: LcmPaths, minTokens: number, cwd: string, freshTailCount: number) => Promise<UncompactedConversation[]>;
 const scan = vi.fn<Scan>();
 vi.mock("../../../src/daemon/session-start-compact-worker.js", () => ({
   createSessionStartCompactScanner: () => ({
@@ -171,11 +171,25 @@ describe("POST /session-start-compact", () => {
     await handler({} as never, res, JSON.stringify({ cwd: dir, session_id: "starting" }));
 
     expect(out.body).toEqual({ queued: "scheduled" });
-    expect(scan).toHaveBeenCalledWith(paths, 10000, validateCwd(dir));
+    expect(scan).toHaveBeenCalledWith(paths, 10000, validateCwd(dir), 8);
     expect(fireCompactRequest).not.toHaveBeenCalled();
 
     resolveScan([]);
     await settled();
+  });
+
+  it("propagates the configured fresh tail count to the scanner", async () => {
+    vi.stubEnv("LCM_FRESH_TAIL_COUNT", "3");
+    try {
+      const handler = createSessionStartCompactHandler(baseConfig(), 4242, paths);
+      const { res } = respond();
+
+      await handler({} as never, res, JSON.stringify({ cwd: dir, session_id: "starting" }));
+
+      expect(scan).toHaveBeenCalledWith(paths, 10000, validateCwd(dir), 3);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   afterAll(() => {

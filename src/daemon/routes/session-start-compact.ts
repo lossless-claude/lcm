@@ -6,6 +6,7 @@ import { validateCwd } from "../validate-cwd.js";
 import type { LcmPaths } from "../../lcm-paths.js";
 import { compactingSessionsFor } from "./compact.js";
 import { createSessionStartCompactScanner } from "../session-start-compact-worker.js";
+import { resolveLcmConfig } from "../../db/config.js";
 
 /**
  * SessionStart's catch-up sweep: a conversation of the same project that ended
@@ -58,7 +59,12 @@ export function createSessionStartCompactHandler(config: DaemonConfig, daemonPor
     // waits for candidate selection.
     sendJson(res, 202, { queued: "scheduled" });
 
-    void scanner.scan(paths, config.compaction.autoCompactMinTokens, cwd).then((candidates) => {
+    void scanner.scan(
+      paths,
+      config.compaction.autoCompactMinTokens,
+      cwd,
+      resolveLcmConfig().freshTailCount,
+    ).then((candidates) => {
       const inFlight = new Set(compactingSessionsFor(cwd));
       const eligible = candidates
         .filter((c) => c.sessionId !== sessionId && !inFlight.has(c.sessionId))

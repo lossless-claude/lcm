@@ -59,25 +59,53 @@ export function findProjects(paths: LcmPaths, cwdFilter?: string): { projDir: st
   return projects;
 }
 
-export function findUncompacted(paths: LcmPaths, minTokens: number, readOnly = false, cwdFilter?: string, replay = false): UncompactedConversation[] {
+/** Normalize the protected tail exactly as CompactionEngine does. */
+function resolveFreshTailCount(freshTailCount: number): number {
+  return Number.isFinite(freshTailCount) && freshTailCount > 0
+    ? Math.floor(freshTailCount)
+    : 0;
+}
+
+export function findUncompacted(
+  paths: LcmPaths,
+  minTokens: number,
+  readOnly = false,
+  cwdFilter?: string,
+  replay = false,
+  freshTailCount = 0,
+): UncompactedConversation[] {
   const results: UncompactedConversation[] = [];
   const metricsAlias = replay ? "m" : "raw";
   const sourceAlias = replay ? "src" : "raw";
+  const protectedTailCount = resolveFreshTailCount(freshTailCount);
   const rawContextJoin = replay ? "" : `
         -- A summary replaces its source messages in context_items. What remains
-        -- as a message item is the conversation's uncovered raw tail.
+        -- as a message item is uncovered raw context. The newest configured
+        -- messages remain protected, just as they do in CompactionEngine.
         LEFT JOIN (
-          SELECT ci.conversation_id, COUNT(*) as msg_count, SUM(m.token_count) as raw_tokens
-          FROM context_items ci
-          JOIN messages m ON m.message_id = ci.message_id
-          WHERE ci.item_type = 'message'
-            AND NOT EXISTS (
-              SELECT 1 FROM message_parts p
-              WHERE p.message_id = m.message_id AND p.part_type = 'compaction'
-            )
+          SELECT ci.conversation_id, COUNT(*) as msg_count, SUM(ci.token_count) as raw_tokens
+          FROM (
+            SELECT
+              ci.conversation_id,
+              m.token_count,
+              ROW_NUMBER() OVER (
+                PARTITION BY ci.conversation_id ORDER BY ci.ordinal
+              ) as raw_ordinal,
+              COUNT(*) OVER (
+                PARTITION BY ci.conversation_id
+              ) as raw_count
+            FROM context_items ci
+            JOIN messages m ON m.message_id = ci.message_id
+            WHERE ci.item_type = 'message'
+              AND NOT EXISTS (
+                SELECT 1 FROM message_parts p
+                WHERE p.message_id = m.message_id AND p.part_type = 'compaction'
+              )
+          ) ci
+          WHERE ci.raw_ordinal <= ci.raw_count - ?
           GROUP BY ci.conversation_id
         ) raw ON raw.conversation_id = c.conversation_id`;
-  const rawContextPredicate = replay ? "? = 1" : "? = 1 OR COALESCE(raw.msg_count, 0) > 0";
+  const rawContextPredicate = replay ? "1 = 1" : "COALESCE(raw.msg_count, 0) > 0";
 
   for (const { projDir, cwd } of findProjects(paths, cwdFilter)) {
     const dbPath = join(projDir, "db.sqlite");
@@ -121,7 +149,7 @@ export function findUncompacted(paths: LcmPaths, minTokens: number, readOnly = f
           AND (${rawContextPredicate})
           AND COALESCE(${metricsAlias}.raw_tokens, 0) >= ?
         ORDER BY COALESCE(${metricsAlias}.raw_tokens, 0) DESC
-      `).all(replay ? 1 : 0, minTokens) as {
+      `).all(...(replay ? [minTokens] : [protectedTailCount, minTokens])) as {
         conversation_id: number;
         session_id: string;
         updated_at: string;
