@@ -212,7 +212,7 @@ export function fuseHistoryBySession(
 /** Rank one request's history candidates without loading source context. */
 export async function rankNativeHistory(
   db: DatabaseSync,
-  input: { query: string; limit: number },
+  input: { query: string; limit: number; terms?: readonly string[] },
 ): Promise<RankedHistoryHit[]> {
   return rankNativeHistorySync(db, input);
 }

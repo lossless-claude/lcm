@@ -60,7 +60,7 @@ export function createSessionStartCompactHandler(config: DaemonConfig, daemonPor
     setImmediate(() => {
       let candidates;
       try {
-        candidates = findUncompacted(config.compaction.autoCompactMinTokens, false, cwd);
+        candidates = findUncompacted(paths, config.compaction.autoCompactMinTokens, false, cwd);
       } catch (err) {
         console.error(`session-start-compact: selection failed for ${cwd}: ${err instanceof Error ? err.message : err}`);
         return;

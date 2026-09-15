@@ -17,6 +17,7 @@ import { lcmStatsTool } from "./tools/lcm-stats.js";
 import { lcmDoctorTool } from "./tools/lcm-doctor.js";
 import { lcmHome } from "../lcm-home.js";
 import { createLcmPaths } from "../lcm-paths.js";
+import type { LcmPaths } from "../lcm-paths.js";
 
 const TOOLS = [lcmGrepTool, lcmExpandTool, lcmDescribeTool, lcmSearchTool, lcmStoreTool, lcmStatsTool, lcmDoctorTool];
 
@@ -28,10 +29,10 @@ const TOOL_ROUTES: Record<string, string> = {
   lcm_store: "/store",
 };
 
-const LOCAL_TOOLS: Partial<Record<string, (args: Record<string, unknown>) => Promise<string>>> = {
+function localTools(paths: LcmPaths): Partial<Record<string, (args: Record<string, unknown>) => Promise<string>>> { return {
   lcm_stats: async (args) => {
     const { collectStats, formatNumber } = await import("../stats.js");
-    const stats = collectStats();
+    const stats = collectStats(paths);
     const verbose = args.verbose === true;
     const lines: string[] = [];
 
@@ -150,7 +151,7 @@ const LOCAL_TOOLS: Partial<Record<string, (args: Record<string, unknown>) => Pro
     const results = await runDoctor();
     return formatResultsPlain(results);
   },
-};
+}; }
 
 // Build per-tool allowlist from tool definitions (keyed by tool name)
 const TOOL_ALLOWED_KEYS: Record<string, Set<string>> = {};
@@ -226,6 +227,7 @@ export async function handleDaemonRequest(
 
 export async function startMcpServer(): Promise<void> {
   const paths = createLcmPaths(lcmHome());
+  const LOCAL_TOOLS = localTools(paths);
   const config = loadDaemonConfig(paths.configPath);
   const port = config.daemon.port;
   const pidFilePath = paths.pidPath;

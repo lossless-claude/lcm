@@ -36,13 +36,13 @@ export async function dispatchHook(
       const { session_id } = JSON.parse(stdinText || "{}");
       if (session_id) {
         const { ensureBootstrapped } = await import("../bootstrap.js");
-        const { usable } = await ensureBootstrapped(session_id);
+        const { usable } = await ensureBootstrapped(session_id, paths);
         if (!usable) return { exitCode: 0, stdout: "" };
       }
     } catch {} // bootstrap failure must not block hooks
   }
 
-  validateAndFixHooks();
+  validateAndFixHooks(paths);
 
   const { DaemonClient } = await import("../daemon/client.js");
   const { loadDaemonConfig } = await import("../daemon/config.js");

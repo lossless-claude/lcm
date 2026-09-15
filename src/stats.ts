@@ -6,8 +6,7 @@ import { RecallStore, type RecallStats } from "./db/recall.js";
 import { PromotedStore } from "./db/promoted.js";
 import { isSignalTagged } from "./db/votes.js";
 import { loadDaemonConfig } from "./daemon/config.js";
-import { lcmHome } from "./lcm-home.js";
-import { createLcmPaths } from "./lcm-paths.js";
+import type { LcmPaths } from "./lcm-paths.js";
 
 export type { RecallStats };
 
@@ -531,8 +530,7 @@ export function printStats(stats: OverallStats, verbose: boolean): void {
   console.log();
 }
 
-export function collectStats(): OverallStats {
-  const paths = createLcmPaths(lcmHome());
+export function collectStats(paths: LcmPaths): OverallStats {
   const baseDir = paths.projectsDir;
 
   const emptyRecallStats: RecallStats = {

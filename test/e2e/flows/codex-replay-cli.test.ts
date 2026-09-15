@@ -199,7 +199,7 @@ describe("Codex replay through the built CLI", { timeout: 120_000 }, () => {
       close();
     }
 
-    const batchReplaySessions = findUncompacted(0, true, projectCwd, true)
+    const batchReplaySessions = findUncompacted(paths, 0, true, projectCwd, true)
       .map((conversation) => conversation.sessionId)
       .sort();
     expect(batchReplaySessions).toEqual([

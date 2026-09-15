@@ -47,13 +47,13 @@ export function scheduleProjectLanguageDetection(cwd: string, db: DatabaseSync, 
   const metaPath = projectMetaPath(cwd, paths);
   if (inFlight.has(metaPath) || failed.has(metaPath)) return Promise.resolve();
   if (typeof readMeta(metaPath).language === "string") return Promise.resolve();
-  const turns = sampleHumanTurns(db);
+  const turns = sampleHumanTurns(db, paths);
   if (turns.length < MIN_TURNS_FOR_DETECTION) return Promise.resolve();
   inFlight.add(metaPath);
-  return detectAndRecord(metaPath, turns, config).finally(() => inFlight.delete(metaPath));
+  return detectAndRecord(metaPath, turns, config, paths).finally(() => inFlight.delete(metaPath));
 }
 
-async function detectAndRecord(metaPath: string, turns: string[], config: DaemonConfig): Promise<void> {
+async function detectAndRecord(metaPath: string, turns: string[], config: DaemonConfig, paths: LcmPaths): Promise<void> {
   try {
     const provider = resolveEffectiveProvider(config);
     const summarize = await createSummarizer(provider, config);
@@ -63,7 +63,7 @@ async function detectAndRecord(metaPath: string, turns: string[], config: Daemon
     const meta = readMeta(metaPath);
     if (typeof meta.language === "string") return;
     writeFileSync(metaPath, JSON.stringify({ ...meta, language, languageDetectedAt: new Date().toISOString() }, null, 2));
-    await ensureLanguagePack(language, summarize, `${provider}:${config.llm.model}`);
+    await ensureLanguagePack(paths, language, summarize, `${provider}:${config.llm.model}`);
   } catch (err) {
     // Once per daemon lifetime per project: a broken provider must not turn every ingest into a warning.
     failed.add(metaPath);

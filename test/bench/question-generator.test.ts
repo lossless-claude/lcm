@@ -1,12 +1,24 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { configuredLanguageDetector, configuredQuestionGenerator, parseLanguageTag } from "../../src/bench.js";
 import { loadDaemonConfig } from "../../src/daemon/config.js";
 import { createSummarizer, resolveEffectiveProvider } from "../../src/daemon/summarizer.js";
+import { createLcmPaths, type LcmPaths } from "../../src/lcm-paths.js";
 
 vi.mock("../../src/daemon/config.js", () => ({ loadDaemonConfig: vi.fn() }));
 vi.mock("../../src/daemon/summarizer.js", () => ({ createSummarizer: vi.fn(), resolveEffectiveProvider: vi.fn() }));
 
-beforeEach(() => { vi.resetAllMocks(); });
+let root: string;
+let paths: LcmPaths;
+
+beforeEach(() => {
+  vi.resetAllMocks();
+  root = mkdtempSync(join(tmpdir(), "lcm-question-generator-"));
+  paths = createLcmPaths(root);
+});
+afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 function mockProvider(reply: string) {
   const config = { llm: { provider: "openai", baseURL: "http://local.test/v1", model: "configured-model" } };
@@ -19,7 +31,7 @@ function mockProvider(reply: string) {
 
 it("uses the configured provider and endpoint for generation", async () => {
   const { config, summarize } = mockProvider("Why did the daemon use a local database?");
-  const generate = await configuredQuestionGenerator("en");
+  const generate = await configuredQuestionGenerator("en", paths);
   expect(await generate("We chose SQLite for the daemon.")).toBe("Why did the daemon use a local database?");
   expect(createSummarizer).toHaveBeenCalledWith("openai", config);
   expect(summarize.mock.calls[0][0]).toContain("We chose SQLite for the daemon.");
@@ -28,7 +40,7 @@ it("uses the configured provider and endpoint for generation", async () => {
 
 it("tells the generator which language to write in, whatever the prompt's language", async () => {
   const { summarize } = mockProvider("Por que o daemon usou um banco local?");
-  const generate = await configuredQuestionGenerator("pt-BR");
+  const generate = await configuredQuestionGenerator("pt-BR", paths);
   await generate("We chose SQLite for the daemon.");
   const taskPrompt = summarize.mock.calls[0][2].taskPrompt as string;
   expect(taskPrompt).toContain('language tagged "pt-BR"');
@@ -39,12 +51,12 @@ it("rejects a disabled provider instead of switching generators", async () => {
   vi.mocked(loadDaemonConfig).mockReturnValue({ llm: { provider: "disabled" } } as ReturnType<typeof loadDaemonConfig>);
   vi.mocked(resolveEffectiveProvider).mockReturnValue("disabled");
   vi.mocked(createSummarizer).mockResolvedValue(null);
-  await expect(configuredQuestionGenerator("en")).rejects.toThrow("enabled summarizer");
+  await expect(configuredQuestionGenerator("en", paths)).rejects.toThrow("enabled summarizer");
 });
 
 it("reads the corpus language from a numbered sample of human turns", async () => {
   const { summarize } = mockProvider("pt-BR\n");
-  const detect = await configuredLanguageDetector();
+  const detect = await configuredLanguageDetector(paths);
   expect(await detect(["Bora revisar o daemon?", "O teste quebrou de novo."])).toBe("pt-BR");
   expect(summarize.mock.calls[0][0]).toContain("1. Bora revisar o daemon?");
   expect(summarize.mock.calls[0][0]).toContain("2. O teste quebrou de novo.");
@@ -60,6 +72,6 @@ it("treats a detector reply that is not a bare tag as unsure", async () => {
   expect(parseLanguageTag("The person writes in Portuguese.")).toBeNull();
   expect(parseLanguageTag("")).toBeNull();
   mockProvider("Portuguese, Brazilian variant.");
-  const detect = await configuredLanguageDetector();
+  const detect = await configuredLanguageDetector(paths);
   expect(await detect(["Bora revisar o daemon?"])).toBeNull();
 });

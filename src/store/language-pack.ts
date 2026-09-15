@@ -1,7 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { lcmHome } from "../lcm-home.js";
-import { createLcmPaths } from "../lcm-paths.js";
+import type { LcmPaths } from "../lcm-paths.js";
 import { renderTemplate } from "../prompts/loader.js";
 import type { LcmSummarizeFn } from "../llm/types.js";
 
@@ -30,13 +29,18 @@ const RESCAN_INTERVAL_MS = 30_000;
 const MIN_PACK_HITS = 2;
 
 /** Where packs live. The env override exists so tests never read a developer's real packs. */
-export function languagePacksDir(): string {
-  return process.env.LCM_LANGUAGES_DIR || join(createLcmPaths(lcmHome()).home, "languages");
+export function languagePacksDir(paths?: LcmPaths): string {
+  if (paths) return join(paths.home, "languages");
+  const override = process.env.LCM_LANGUAGES_DIR;
+  if (!override) throw new Error("language packs require an LcmPaths storage root");
+  return override;
 }
 
-export function languagePackPath(tag: string): string {
+export function languagePackPath(pathsOrTag: LcmPaths | string, suppliedTag?: string): string {
+  const paths = typeof pathsOrTag === "string" ? undefined : pathsOrTag;
+  const tag = typeof pathsOrTag === "string" ? pathsOrTag : suppliedTag!;
   if (!SAFE_TAG.test(tag)) throw new Error(`Not a language tag: "${tag}"`);
-  return join(languagePacksDir(), `${tag}.json`);
+  return join(languagePacksDir(paths), `${tag}.json`);
 }
 
 type Loaded = { dir: string; scannedAt: number; dirMtimeMs: number; packs: Map<string, ReadonlySet<string>> };
@@ -65,8 +69,8 @@ export function invalidateLanguagePacks(): void {
  * Every pack on disk, by tag. Synchronous because `extractQueryTerms` is, and
  * cached: the directory is re-listed at most every 30 s or when its mtime moves.
  */
-export function loadLanguagePacks(): ReadonlyMap<string, ReadonlySet<string>> {
-  const dir = languagePacksDir();
+export function loadLanguagePacks(paths?: LcmPaths): ReadonlyMap<string, ReadonlySet<string>> {
+  const dir = languagePacksDir(paths);
   const now = Date.now();
   let dirMtimeMs = -1;
   try {
@@ -101,8 +105,10 @@ export function loadLanguagePacks(): ReadonlyMap<string, ReadonlySet<string>> {
  * stray collision ("a", "no") in another language changes nothing. Several
  * packs may apply to one query.
  */
-export function packStopwordsFor(words: readonly string[]): ReadonlySet<string> {
-  const packs = loadLanguagePacks();
+export function packStopwordsFor(pathsOrWords: LcmPaths | readonly string[], suppliedWords?: readonly string[]): ReadonlySet<string> {
+  const paths = Array.isArray(pathsOrWords) ? undefined : pathsOrWords as LcmPaths;
+  const words = Array.isArray(pathsOrWords) ? pathsOrWords : suppliedWords!;
+  const packs = loadLanguagePacks(paths);
   if (packs.size === 0) return EMPTY;
   const chosen = new Set<string>();
   for (const stopwords of packs.values()) {
@@ -149,25 +155,32 @@ const inFlight = new Map<string, Promise<"exists" | "generated" | "failed">>();
  * a failed generation is reported, logged once, and tried again next time.
  */
 export function ensureLanguagePack(
-  tag: string,
-  summarize: LcmSummarizeFn,
-  generatedBy?: string,
+  pathsOrTag: LcmPaths | string,
+  tagOrSummarize: string | LcmSummarizeFn,
+  summarizeOrGeneratedBy?: LcmSummarizeFn | string,
+  suppliedGeneratedBy?: string,
 ): Promise<"exists" | "generated" | "failed"> {
+  const paths = typeof pathsOrTag === "string" ? undefined : pathsOrTag;
+  const tag = typeof pathsOrTag === "string" ? pathsOrTag : tagOrSummarize as string;
+  const summarize = (typeof pathsOrTag === "string" ? tagOrSummarize : summarizeOrGeneratedBy) as LcmSummarizeFn;
+  const generatedBy = (typeof pathsOrTag === "string" ? summarizeOrGeneratedBy : suppliedGeneratedBy) as string | undefined;
   let path: string;
   try {
-    path = languagePackPath(tag);
+    path = paths ? languagePackPath(paths, tag) : languagePackPath(tag);
   } catch {
     return Promise.resolve("failed");
   }
   if (existsSync(path)) return Promise.resolve("exists");
-  const pending = inFlight.get(tag);
-  if (pending) return pending;
-  const task = generateLanguagePack(tag, path, summarize, generatedBy).finally(() => inFlight.delete(tag));
-  inFlight.set(tag, task);
+  const key = `${languagePacksDir(paths)}\0${tag}`;
+  const existing = inFlight.get(key);
+  if (existing) return existing;
+  const task = generateLanguagePack(paths, tag, path, summarize, generatedBy).finally(() => inFlight.delete(key));
+  inFlight.set(key, task);
   return task;
 }
 
 async function generateLanguagePack(
+  paths: LcmPaths | undefined,
   tag: string,
   path: string,
   summarize: LcmSummarizeFn,
@@ -184,7 +197,7 @@ async function generateLanguagePack(
       return "failed";
     }
     const pack: LanguagePack = { version: 1, tag, stopwords, generatedBy, generatedAt: new Date().toISOString() };
-    mkdirSync(languagePacksDir(), { recursive: true });
+    mkdirSync(languagePacksDir(paths), { recursive: true });
     const tmp = `${path}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(pack, null, 2));
     renameSync(tmp, path);
