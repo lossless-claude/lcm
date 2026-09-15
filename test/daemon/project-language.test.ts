@@ -129,4 +129,16 @@ describe("resolveSummarizerLanguage", () => {
   it("returns no language when the project has not recorded one", () => {
     expect(resolveSummarizerLanguage(testConfig(), dir, paths)).toBeUndefined();
   });
+
+  it("canonicalizes configured language tags and rejects invalid values", () => {
+    expect(resolveSummarizerLanguage({
+      ...testConfig(),
+      summarizer: { mock: false, language: "PT_br" },
+    }, dir, paths)).toBe("pt-BR");
+
+    expect(() => resolveSummarizerLanguage({
+      ...testConfig(),
+      summarizer: { mock: false, language: "i-am-not-a-tag" },
+    }, dir, paths)).toThrow(/Invalid summarizer\.language.*BCP 47/);
+  });
 });

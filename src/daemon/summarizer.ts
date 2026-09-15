@@ -4,6 +4,7 @@ import { LCM_SUMMARIZER_SYSTEM_PROMPT, resolveTargetTokens, resolveMaxOutputToke
 import type { DaemonConfig } from "./config.js";
 import type { LcmPaths } from "../lcm-paths.js";
 import { projectAuthorLanguage } from "../search/pivot-language.js";
+import { parseLanguageTag } from "../search/language.js";
 import { createClaudeProcessSummarizer } from "../llm/claude-process.js";
 import { createCodexProcessSummarizer } from "../llm/codex-process.js";
 import { createCopilotProcessSummarizer } from "../llm/copilot-process.js";
@@ -15,7 +16,10 @@ export type EffectiveProvider = Exclude<DaemonConfig["llm"]["provider"], "auto">
 
 function configuredSummarizerLanguage(config: DaemonConfig): string | undefined {
   const language = config.summarizer?.language;
-  return typeof language === "string" && language.trim() ? language.trim() : undefined;
+  if (typeof language !== "string" || !language.trim()) return undefined;
+  const parsed = parseLanguageTag(language);
+  if (!parsed) throw new Error(`Invalid summarizer.language: "${language}" is not a BCP 47 language tag`);
+  return parsed;
 }
 
 /** Resolve the language used for newly generated summaries. */
