@@ -302,10 +302,10 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                 upsertRedactionCounts(db, pid, ingestCounts);
                 await summaryStore.appendContextMessages(conversation.conversationId, records.map((r) => r.messageId));
               });
-              await scheduleProjectLanguageDetection(cwd, db, config, paths);
             }
           }
 
+          await scheduleProjectLanguageDetection(cwd, db, config, paths);
           const language = resolveSummarizerLanguage(config, cwd, paths);
 
           // Check if there's anything to compact

@@ -266,6 +266,8 @@ export type EvalRunResult = {
   provider: string;
   /** Reasoning/thinking knobs in effect, if any; part of the result identity. */
   variant?: string;
+  /** Effective corpus language, if known; part of the result identity. */
+  language?: string;
   run: number;
   startedAt: string;
   incomplete: boolean;
@@ -361,6 +363,7 @@ export async function runEval(input: {
     label: session.label,
     provider,
     variant,
+    language,
     model,
     run,
     startedAt,
@@ -396,11 +399,11 @@ export async function runEval(input: {
 export function writeResult(dir: string, result: EvalRunResult): string {
   mkdirSync(dir, { recursive: true });
   const safe = (v: string) => v.replace(/[^a-z0-9.-]+/gi, "_");
-  // provider and variant are part of the run's identity: the same model scores
-  // differently under a different provider or reasoning setting, and leaving
-  // them out of the path made those runs overwrite each other.
+  // Provider, variant, and language are part of the run's identity: each changes
+  // the model request, so omitting one would let unlike runs overwrite each other.
   const variant = result.variant ? `__${safe(result.variant)}` : "";
-  const file = join(dir, `${safe(result.model)}__${safe(result.provider)}${variant}__${result.label}__run${result.run}.json`);
+  const language = result.language ? `__lang-${safe(result.language)}` : "";
+  const file = join(dir, `${safe(result.model)}__${safe(result.provider)}${variant}${language}__${result.label}__run${result.run}.json`);
   writeFileSync(file, JSON.stringify(result, null, 2));
   return file;
 }

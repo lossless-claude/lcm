@@ -66,7 +66,7 @@ async function detectAndRecord(metaPath: string, turns: string[], config: Daemon
     const meta = readMeta(metaPath);
     if (typeof meta.language === "string") return;
     writeFileSync(metaPath, JSON.stringify({ ...meta, language, languageDetectedAt: new Date().toISOString() }, null, 2));
-    await ensureLanguagePack(paths, language, summarize, `${provider}:${config.llm.model}`);
+    void ensureLanguagePack(paths, language, summarize, `${provider}:${config.llm.model}`);
   } catch (err) {
     // Once per daemon lifetime per project: a broken provider must not turn every ingest into a warning.
     failed.add(metaPath);

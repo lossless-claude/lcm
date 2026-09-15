@@ -94,7 +94,7 @@ describe("scheduleProjectLanguageDetection", () => {
     await scheduleProjectLanguageDetection(dir, db, testConfig(), paths);
     const meta = JSON.parse(readFileSync(join(dir, "meta.json"), "utf-8"));
     expect(meta.language).toBe("pt-BR");
-    expect(existsSync(languagePackPath("pt-BR"))).toBe(true);
+    await vi.waitFor(() => expect(existsSync(languagePackPath("pt-BR"))).toBe(true));
     expect(summarize).toHaveBeenCalledTimes(2);
     expect(summarize.mock.calls[0][0]).toContain("1. Bora revisar");
     await scheduleProjectLanguageDetection(dir, db, testConfig(), paths);

@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { LcmSummarizeFn } from "../../src/llm/types.js";
@@ -43,11 +44,22 @@ describe("summarizer eval harness (offline)", () => {
       languages.push(ctx.language);
       return "Files: none\nSummary\nExpand for details about: language";
     };
-    await runEval({
+    const result = await runEval({
       session: buildSyntheticSession(), summarizer, model: "fake", provider: "fake", run: 1, language: "pt-BR",
     });
     expect(languages.length).toBeGreaterThan(0);
     expect(languages.every((language) => language === "pt-BR")).toBe(true);
+    expect(result.language).toBe("pt-BR");
+
+    const dir = mkdtempSync(join(tmpdir(), "lcm-eval-language-"));
+    try {
+      const ptPath = writeResult(dir, result);
+      const enPath = writeResult(dir, { ...result, language: "en" });
+      expect(ptPath).not.toBe(enPath);
+      expect(ptPath).toContain("__lang-pt-BR__");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }, 30_000);
 
   it("scores format per pass type", () => {

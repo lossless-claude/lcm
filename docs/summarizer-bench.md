@@ -30,7 +30,9 @@ Results land in `test/bench/results/` as one JSON per model, provider, variant, 
 | `LCM_EVAL_REASONING_EFFORT` | Shorthand for `LCM_EVAL_REASONING={"effort":"<value>"}`. |
 | `LCM_EVAL_DISABLE_THINKING` | HTTP providers: `1` sends `chat_template_kwargs.enable_thinking=false`, for Qwen-style servers. |
 
-`openrouter` needs `OPENROUTER_API_KEY`. The provider and the reasoning knobs are part of a run's identity and appear in the result filename, so the same model measured under different settings does not overwrite itself.
+`openrouter` needs `OPENROUTER_API_KEY`. The provider, effective language, and
+reasoning knobs are part of a run's identity and appear in the result filename,
+so the same model measured under different settings does not overwrite itself.
 
 ## Building a corpus
 
