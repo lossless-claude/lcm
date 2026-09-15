@@ -30,7 +30,13 @@ export function collectLegacyUsageCounts(databases: Iterable<[string, DatabaseSy
   const signals: Array<{ source: string; memoryId: string }> = [];
   // Legacy accounting is a stats-only full scan; prompt search never calls this.
   for (const [key, db] of entries) {
-    const rows = db.prepare("SELECT id, tags FROM promoted WHERE archived_at IS NULL").all() as Array<{ id: string; tags: string }>;
+    let rows: Array<{ id: string; tags: string }>;
+    try {
+      rows = db.prepare("SELECT id, tags FROM promoted WHERE archived_at IS NULL").all() as Array<{ id: string; tags: string }>;
+    } catch {
+      // A partial or unreadable sibling must not hide feedback from healthy members.
+      continue;
+    }
     for (const row of rows) {
       let tags: string[];
       try { tags = JSON.parse(row.tags) as string[]; } catch { continue; }

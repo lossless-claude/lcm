@@ -116,6 +116,11 @@ export function createStoreHandler(config: DaemonConfig, paths: LcmPaths): Route
       return;
     }
 
+    if (!Array.isArray(tags) || !tags.every((tag): tag is string => typeof tag === "string")) {
+      sendJson(res, 400, { error: "tags must be an array of strings" });
+      return;
+    }
+
     const rawProjectPath = input.cwd || metadata.projectPath || "";
     if (!rawProjectPath) {
       sendJson(res, 400, { error: "cwd or metadata.projectPath is required" });

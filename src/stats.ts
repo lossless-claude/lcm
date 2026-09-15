@@ -7,7 +7,7 @@ import { collectLegacyUsageCounts, RecallStore, type RecallStats } from "./db/re
 import { PromotedStore } from "./db/promoted.js";
 import { isSignalTagged } from "./db/votes.js";
 import { loadDaemonConfig } from "./daemon/config.js";
-import { projectGroup } from "./daemon/project-group.js";
+import { projectGroups } from "./daemon/project-group.js";
 import type { LcmPaths } from "./lcm-paths.js";
 
 export type { RecallStats };
@@ -636,19 +636,23 @@ export function collectStats(paths: LcmPaths): OverallStats {
       .filter((entry) => entry.isDirectory() && existsSync(join(baseDir, entry.name, "db.sqlite")))
       .map((entry) => entry.name),
   );
+  const cwdByProjectId = new Map<string, string>();
+  for (const projectId of projectIds) {
+    try {
+      const meta = JSON.parse(readFileSync(join(baseDir, projectId, "meta.json"), "utf8")) as { cwd?: unknown };
+      if (typeof meta.cwd === "string") cwdByProjectId.set(projectId, meta.cwd);
+    } catch { /* a legacy project has no group identity */ }
+  }
+  const groupsByCwd = projectGroups(cwdByProjectId.values(), paths);
   const groupsByOwner = new Map<string, string[]>();
   for (const projectId of projectIds) {
     let groupIds = [projectId];
-    try {
-      const meta = JSON.parse(readFileSync(join(baseDir, projectId, "meta.json"), "utf8")) as { cwd?: unknown };
-      if (typeof meta.cwd === "string") {
-        groupIds = [...new Set([projectId, ...projectGroup(meta.cwd, paths)
-          .map((member) => member.projectId)
-          .filter((id) => projectIds.has(id))])];
-      }
-    } catch { /* a legacy project has no group identity */ }
+    const cwd = cwdByProjectId.get(projectId);
+    if (cwd) groupIds = [...new Set([projectId, ...(groupsByCwd.get(cwd) ?? [])
+      .map((member) => member.projectId)
+      .filter((id) => projectIds.has(id))])];
     groupsByOwner.set(projectId, groupIds);
-    }
+  }
   const { byOwner: legacyUsageByOwner, ambiguousByOwner } = collectLegacyUsageByGroups(
     groupsByOwner,
     (id) => getLcmConnection(join(baseDir, id, "db.sqlite"), { readOnly: true }),

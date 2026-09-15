@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { createLcmPaths, type LcmPaths } from "../../src/lcm-paths.js";
 import {
-  backfillProjectIdentities, openProject, projectGroup, recordProjectIdentity, resolveSourceCwd, groupIndexPath,
+  backfillProjectIdentities, openProject, projectGroup, projectGroups, recordProjectIdentity, resolveSourceCwd, groupIndexPath,
 } from "../../src/daemon/project-group.js";
 import { projectId, projectMetaPath } from "../../src/daemon/project.js";
 
@@ -152,6 +152,29 @@ describe("resolveSourceCwd", () => {
 });
 
 describe("projectGroup", () => {
+  it("resolves requested groups from one index read while preserving each request's self-first order", () => {
+    const a = makeRepo("git@github.com:lossless-claude/lcm.git");
+    const b = makeRepo("git@github.com:lossless-claude/lcm.git");
+    const other = makeRepo("git@github.com:lossless-claude/magi.git");
+    openProject(a, paths);
+    openProject(b, paths);
+    openProject(other, paths);
+    let reads = 0;
+    const groups = projectGroups([a, b, other], paths, () => {
+      reads++;
+      return [
+        { projectId: projectId(a), cwd: a, relPath: "", remote: "github.com/lossless-claude/lcm" },
+        { projectId: projectId(b), cwd: b, relPath: "", remote: "github.com/lossless-claude/lcm" },
+        { projectId: projectId(other), cwd: other, relPath: "", remote: "github.com/lossless-claude/magi" },
+      ];
+    });
+
+    expect(reads).toBe(1);
+    expect(groups.get(a)?.map(member => member.cwd)).toEqual([a, b]);
+    expect(groups.get(b)?.map(member => member.cwd)).toEqual([b, a]);
+    expect(groups.get(other)?.map(member => member.cwd)).toEqual([other]);
+  });
+
   it("groups two checkouts of the same repository", () => {
     const a = makeRepo("git@github.com:lossless-claude/lcm.git");
     const b = makeRepo("https://github.com/lossless-claude/lcm.git");

@@ -1,14 +1,18 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { collectLegacyUsageByGroups, collectStats } from "../src/stats.js";
+import { collectLegacyUsageCounts } from "../src/db/recall.js";
 import { runLcmMigrations } from "../src/db/migration.js";
 import { ConversationStore } from "../src/store/conversation-store.js";
 import { writeHold } from "../src/daemon/hold.js";
 import { createLcmPaths } from "../src/lcm-paths.js";
 import { PromotedStore } from "../src/db/promoted.js";
+import { openProject } from "../src/daemon/project-group.js";
+import { projectDbPath } from "../src/daemon/project.js";
 
 let root: string | undefined;
 afterEach(() => { vi.unstubAllEnvs(); if (root) rmSync(root, { recursive: true, force: true }); });
@@ -39,6 +43,64 @@ it("bounds legacy prepass handles to one group and continues after an open failu
   } finally {
     for (const db of dbs.values()) db.close();
   }
+});
+
+it("skips a member whose legacy query fails while retaining healthy counts and ambiguity", () => {
+  root = mkdtempSync(join(tmpdir(), "lcm-legacy-member-query-"));
+  const dbs = new Map<string, DatabaseSync>();
+  for (const id of ["owner", "requester", "collision", "broken"]) {
+    const db = new DatabaseSync(join(root, `${id}.sqlite`));
+    if (id !== "broken") runLcmMigrations(db);
+    dbs.set(id, db);
+  }
+  const uniqueId = new PromotedStore(dbs.get("owner")!).insert({ content: "owner", tags: [], projectId: "p" });
+  const collidingId = new PromotedStore(dbs.get("owner")!).insert({ content: "collision", tags: [], projectId: "p" });
+  new PromotedStore(dbs.get("collision")!).insert({ content: "other collision", tags: [], projectId: "p" });
+  dbs.get("collision")!.prepare("UPDATE promoted SET id = ?").run(collidingId);
+  const requester = new PromotedStore(dbs.get("requester")!);
+  requester.insert({ content: "use", tags: ["signal:memory_used", `memory_id:${uniqueId}`], projectId: "p" });
+  requester.insert({ content: "ambiguous use", tags: ["signal:memory_used", `memory_id:${collidingId}`], projectId: "p" });
+  try {
+    const result = collectLegacyUsageCounts(dbs);
+    expect(result.byOwner.get("owner")?.get(uniqueId)).toBe(1);
+    expect(result.ambiguousIds).toContain(collidingId);
+  } finally {
+    for (const db of dbs.values()) db.close();
+  }
+});
+
+it("collectStats keeps legacy use counts from healthy group siblings when one sibling is partial", () => {
+  root = mkdtempSync(join(tmpdir(), "lcm-legacy-stats-group-"));
+  const paths = createLcmPaths(root);
+  const remote = "git@github.com:lcm-tests/partial-group.git";
+  const checkout = (name: string) => {
+    const cwd = join(root!, "checkouts", name);
+    mkdirSync(cwd, { recursive: true });
+    execFileSync("git", ["init", "-q"], { cwd, stdio: "ignore" });
+    execFileSync("git", ["remote", "add", "origin", remote], { cwd, stdio: "ignore" });
+    openProject(cwd, paths);
+    return cwd;
+  };
+  const owner = checkout("owner");
+  const requester = checkout("requester");
+  const broken = checkout("broken");
+  const ownerDb = new DatabaseSync(projectDbPath(owner, paths));
+  const requesterDb = new DatabaseSync(projectDbPath(requester, paths));
+  const brokenDb = new DatabaseSync(projectDbPath(broken, paths));
+  try {
+    runLcmMigrations(ownerDb);
+    runLcmMigrations(requesterDb);
+    const memoryId = new PromotedStore(ownerDb).insert({ content: "owner", tags: [], projectId: "p" });
+    const store = new PromotedStore(requesterDb);
+    for (let i = 0; i < 3; i++) store.insert({ content: `use ${i}`, tags: ["signal:memory_used", `memory_id:${memoryId}`], projectId: "p" });
+    brokenDb.exec("CREATE TABLE partial_schema (id INTEGER)");
+  } finally {
+    ownerDb.close();
+    requesterDb.close();
+    brokenDb.close();
+  }
+  const candidate = collectStats(paths).promotionCandidates.find(entry => entry.content === "owner");
+  expect(candidate?.useCount).toBe(3);
 });
 
 it("uses each owner's exact overlap group for legacy usage", () => {
