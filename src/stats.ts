@@ -12,6 +12,25 @@ import type { LcmPaths } from "./lcm-paths.js";
 
 export type { RecallStats };
 
+export function collectLegacyUsageByGroups(
+  groups: readonly string[][],
+  open: (id: string) => DatabaseSync,
+  close: (id: string) => void,
+): Map<string, Map<string, number>> {
+  const result = new Map<string, Map<string, number>>();
+  for (const group of groups) {
+    const databases = new Map<string, DatabaseSync>();
+    try {
+      for (const id of group) {
+        try { databases.set(id, open(id)); } catch { /* skip one unreadable member */ }
+      }
+      for (const [owner, counts] of collectLegacyUsageCounts(databases)) result.set(owner, counts);
+    } catch { /* a malformed group does not suppress later groups */ }
+    finally { for (const id of databases.keys()) close(id); }
+  }
+  return result;
+}
+
 export interface VoteObjection {
   voteId: string;
   reason: string;
@@ -597,41 +616,31 @@ export function collectStats(paths: LcmPaths): OverallStats {
     };
   } catch { /* use defaults */ }
 
-  const projectDatabases = new Map<string, DatabaseSync>();
-  try {
-    for (const entry of readdirSync(baseDir, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const dbPath = join(baseDir, entry.name, "db.sqlite");
-      if (existsSync(dbPath)) projectDatabases.set(entry.name, getLcmConnection(dbPath, { readOnly: true }));
-    }
-  } catch { /* a malformed project is skipped below as well */ }
+  const projectIds = new Set(
+    readdirSync(baseDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && existsSync(join(baseDir, entry.name, "db.sqlite")))
+      .map((entry) => entry.name),
+  );
   const legacyUsageByOwner = new Map<string, Map<string, number>>();
-  try {
-    const seen = new Set<string>();
-    for (const [projectId] of projectDatabases) {
+  const seen = new Set<string>();
+  for (const projectId of projectIds) {
       if (seen.has(projectId)) continue;
       let groupIds = [projectId];
       try {
         const meta = JSON.parse(readFileSync(join(baseDir, projectId, "meta.json"), "utf8")) as { cwd?: unknown };
         if (typeof meta.cwd === "string") {
-          groupIds = projectGroup(meta.cwd, paths).map((member) => member.projectId).filter((id) => projectDatabases.has(id));
+          groupIds = projectGroup(meta.cwd, paths).map((member) => member.projectId).filter((id) => projectIds.has(id));
         }
       } catch { /* a legacy project has no group identity */ }
       for (const id of groupIds) seen.add(id);
-      try {
-        for (const [owner, counts] of collectLegacyUsageCounts(
-          groupIds.flatMap((id) => projectDatabases.has(id) ? [[id, projectDatabases.get(id)!] as [string, DatabaseSync]] : []),
-        )) {
-          legacyUsageByOwner.set(owner, counts);
-        }
-      } catch { /* a malformed group does not suppress later groups */ }
+      for (const [owner, counts] of collectLegacyUsageByGroups(
+        [groupIds],
+        (id) => getLcmConnection(join(baseDir, id, "db.sqlite"), { readOnly: true }),
+        (id) => closeLcmConnection(join(baseDir, id, "db.sqlite"), { readOnly: true }),
+      )) {
+        legacyUsageByOwner.set(owner, counts);
+      }
     }
-  }
-  finally {
-    for (const [projectId] of projectDatabases) {
-      closeLcmConnection(join(baseDir, projectId, "db.sqlite"), { readOnly: true });
-    }
-  }
 
   for (const entry of readdirSync(baseDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
