@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it, expect } from "vitest";
-import { getLcmConnection, closeLcmConnection, getPoolStats } from "../../src/db/connection.js";
+import { getLcmConnection, closeLcmConnection, getPoolStats, isLcmConnectionOpen } from "../../src/db/connection.js";
 
 const tempDirs: string[] = [];
 
@@ -25,6 +25,7 @@ describe("getPoolStats", () => {
     const before = readFileSync(dbPath);
 
     expect(getLcmConnection(dbPath, { readOnly: true }).prepare("SELECT n FROM value").get()).toEqual({ n: 1 });
+    expect(isLcmConnectionOpen(dbPath)).toBe(false);
     closeLcmConnection(dbPath, { readOnly: true });
     expect(readFileSync(dbPath)).toEqual(before);
   });
@@ -44,8 +45,12 @@ describe("getPoolStats", () => {
     expect(writable.prepare("SELECT n FROM value").get()).toEqual({ n: 2 });
     expect(() => readonly.prepare("SELECT 1").get()).toThrow();
 
+    const readonlyForAll = getLcmConnection(dbPath, { readOnly: true });
+    expect(getPoolStats()).toMatchObject({ totalConnections: 2, activeConnections: 2 });
     closeLcmConnection();
     expect(getPoolStats()).toMatchObject({ totalConnections: 0, activeConnections: 0, idleConnections: 0 });
+    expect(() => writable.prepare("SELECT 1").get()).toThrow();
+    expect(() => readonlyForAll.prepare("SELECT 1").get()).toThrow();
   });
 
   it("returns empty pool when no connections are open", () => {
