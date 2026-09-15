@@ -1,4 +1,3 @@
-import { findUncompacted } from "../../batch-compact.js";
 import { fireCompactRequest } from "../../hooks/session-end.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
@@ -6,6 +5,8 @@ import type { DaemonConfig } from "../config.js";
 import { validateCwd } from "../validate-cwd.js";
 import type { LcmPaths } from "../../lcm-paths.js";
 import { compactingSessionsFor } from "./compact.js";
+import { createSessionStartCompactScanner } from "../session-start-compact-worker.js";
+import { resolveLcmConfig } from "../../db/config.js";
 
 /**
  * SessionStart's catch-up sweep: a conversation of the same project that ended
@@ -18,6 +19,8 @@ import { compactingSessionsFor } from "./compact.js";
  * `fireCompactRequest` unchanged, exactly as a hook would call it.
  */
 export function createSessionStartCompactHandler(config: DaemonConfig, daemonPort: number, paths: LcmPaths): RouteHandler {
+  const scanner = createSessionStartCompactScanner();
+
   return async (_req, res, body) => {
     let input: { session_id?: unknown; cwd?: string };
     try {
@@ -51,21 +54,17 @@ export function createSessionStartCompactHandler(config: DaemonConfig, daemonPor
       return;
     }
 
-    // The caller is a fire-and-forget hook, and `findUncompacted` aggregates over every
-    // message and summary of the project: answer first, scan on a later turn. That takes the
-    // scan off this request's latency, not off the event loop — it is synchronous, so while
-    // it runs the daemon still serves nothing else. Moving it to a worker is issue #491.
+    // The caller is a fire-and-forget hook. Answer before asking the worker to scan the
+    // project's messages and summaries so neither the request nor the daemon's event loop
+    // waits for candidate selection.
     sendJson(res, 202, { queued: "scheduled" });
 
-    setImmediate(() => {
-      let candidates;
-      try {
-        candidates = findUncompacted(paths, config.compaction.autoCompactMinTokens, false, cwd);
-      } catch (err) {
-        console.error(`session-start-compact: selection failed for ${cwd}: ${err instanceof Error ? err.message : err}`);
-        return;
-      }
-
+    void scanner.scan(
+      paths,
+      config.compaction.autoCompactMinTokens,
+      cwd,
+      { freshTailCount: resolveLcmConfig().freshTailCount },
+    ).then((candidates) => {
       const inFlight = new Set(compactingSessionsFor(cwd));
       const eligible = candidates
         .filter((c) => c.sessionId !== sessionId && !inFlight.has(c.sessionId))
@@ -80,6 +79,8 @@ export function createSessionStartCompactHandler(config: DaemonConfig, daemonPor
           client: "claude",
         }, paths);
       }
+    }).catch((err: unknown) => {
+      console.error(`session-start-compact: selection failed for ${cwd}: ${err instanceof Error ? err.message : err}`);
     });
   };
 }

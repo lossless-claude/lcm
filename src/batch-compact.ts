@@ -59,14 +59,82 @@ export function findProjects(paths: LcmPaths, cwdFilter?: string): { projDir: st
   return projects;
 }
 
-export function findUncompacted(paths: LcmPaths, minTokens: number, readOnly = false, cwdFilter?: string, replay = false): UncompactedConversation[] {
+/** SessionStart's distinct eligibility rule for crashed-session catch-up. */
+export type SessionStartUncompactedScan = {
+  freshTailCount: number;
+};
+
+/** Normalize the protected tail exactly as CompactionEngine does. */
+function resolveFreshTailCount(freshTailCount: number): number {
+  return Number.isFinite(freshTailCount) && freshTailCount > 0
+    ? Math.floor(freshTailCount)
+    : 0;
+}
+
+export function findUncompacted(
+  paths: LcmPaths,
+  minTokens: number,
+  readOnly = false,
+  cwdFilter?: string,
+  replay = false,
+  sessionStart?: SessionStartUncompactedScan,
+): UncompactedConversation[] {
   const results: UncompactedConversation[] = [];
+  const metricsAlias = replay ? "m" : "raw";
+  const sourceAlias = replay ? "src" : "raw";
+  const protectedTailCount = resolveFreshTailCount(sessionStart?.freshTailCount ?? 0);
+  const rawContextAggregate = sessionStart ? `
+          SELECT ci.conversation_id, COUNT(*) as msg_count, SUM(ci.token_count) as raw_tokens
+          FROM (
+            SELECT
+              ci.conversation_id,
+              m.token_count,
+              ROW_NUMBER() OVER (
+                PARTITION BY ci.conversation_id ORDER BY ci.ordinal
+              ) as raw_ordinal,
+              COUNT(*) OVER (
+                PARTITION BY ci.conversation_id
+              ) as raw_count
+            FROM context_items ci
+            JOIN messages m ON m.message_id = ci.message_id
+            WHERE ci.item_type = 'message'
+              AND NOT EXISTS (
+                SELECT 1 FROM message_parts p
+                WHERE p.message_id = m.message_id AND p.part_type = 'compaction'
+              )
+          ) ci
+          WHERE ci.raw_ordinal <= ci.raw_count - ?
+          GROUP BY ci.conversation_id` : `
+          SELECT ci.conversation_id, COUNT(*) as msg_count, SUM(m.token_count) as raw_tokens
+          FROM context_items ci
+          JOIN messages m ON m.message_id = ci.message_id
+          WHERE ci.item_type = 'message'
+            AND NOT EXISTS (
+              SELECT 1 FROM message_parts p
+              WHERE p.message_id = m.message_id AND p.part_type = 'compaction'
+            )
+          GROUP BY ci.conversation_id`;
+  const rawContextJoin = replay ? "" : `
+        -- A summary replaces its source messages in context_items. What remains
+        -- as a message item is the conversation's uncovered raw tail.
+        LEFT JOIN (
+          ${rawContextAggregate}
+        ) raw ON raw.conversation_id = c.conversation_id`;
+  const rawContextPredicate = replay
+    ? "1 = 1"
+    : sessionStart
+      ? "COALESCE(raw.msg_count, 0) > 0"
+      : "COALESCE(s.sum_count, 0) = 0";
+  const summaryCountJoin = !replay && !sessionStart ? `
+        LEFT JOIN (
+          SELECT conversation_id, COUNT(*) as sum_count
+          FROM summaries GROUP BY conversation_id
+        ) s ON s.conversation_id = c.conversation_id` : "";
 
   for (const { projDir, cwd } of findProjects(paths, cwdFilter)) {
     const dbPath = join(projDir, "db.sqlite");
-    // The shared pool, not a private handle: this runs on the daemon's own
-    // SessionStart sweep, where a second handle to a database the daemon
-    // already holds would miss the pool's WAL, foreign-key and busy-timeout setup.
+    // Use the shared pool helper so this scan gets the WAL, foreign-key and
+    // busy-timeout setup used by other LCM database access in this thread.
     // Acquired inside the try, because the pool issues its first PRAGMA on open:
     // a corrupt project database must stay skipped, not abort the whole scan.
     let db: ReturnType<typeof getLcmConnection> | undefined;
@@ -78,11 +146,10 @@ export function findUncompacted(paths: LcmPaths, minTokens: number, readOnly = f
           c.conversation_id,
           c.session_id,
           c.updated_at,
-          COALESCE(m.msg_count, 0) as messages,
-          COALESCE(m.raw_tokens, 0) as tokens,
-          COALESCE(src.msg_count, 0) as source_messages,
-          COALESCE(src.raw_tokens, 0) as source_tokens,
-          COALESCE(s.sum_count, 0) as summaries
+          COALESCE(${metricsAlias}.msg_count, 0) as messages,
+          COALESCE(${metricsAlias}.raw_tokens, 0) as tokens,
+          COALESCE(${sourceAlias}.msg_count, 0) as source_messages,
+          COALESCE(${sourceAlias}.raw_tokens, 0) as source_tokens
         FROM conversations c
         LEFT JOIN (
           SELECT conversation_id, COUNT(*) as msg_count, SUM(token_count) as raw_tokens
@@ -101,15 +168,13 @@ export function findUncompacted(paths: LcmPaths, minTokens: number, readOnly = f
           )
           GROUP BY conversation_id
         ) src ON src.conversation_id = c.conversation_id
-        LEFT JOIN (
-          SELECT conversation_id, COUNT(*) as sum_count
-          FROM summaries GROUP BY conversation_id
-        ) s ON s.conversation_id = c.conversation_id
-        WHERE COALESCE(m.msg_count, 0) > 0
-          AND (? OR COALESCE(s.sum_count, 0) = 0)
-          AND COALESCE(m.raw_tokens, 0) >= ?
-        ORDER BY COALESCE(m.raw_tokens, 0) DESC
-      `).all(replay ? 1 : 0, minTokens) as {
+        ${rawContextJoin}
+        ${summaryCountJoin}
+        WHERE COALESCE(${metricsAlias}.msg_count, 0) > 0
+          AND (${rawContextPredicate})
+          AND COALESCE(${metricsAlias}.raw_tokens, 0) >= ?
+        ORDER BY COALESCE(${metricsAlias}.raw_tokens, 0) DESC
+      `).all(...(sessionStart && !replay ? [protectedTailCount, minTokens] : [minTokens])) as {
         conversation_id: number;
         session_id: string;
         updated_at: string;
@@ -117,7 +182,6 @@ export function findUncompacted(paths: LcmPaths, minTokens: number, readOnly = f
         tokens: number;
         source_messages: number;
         source_tokens: number;
-        summaries: number;
       }[];
 
       for (const row of rows) {

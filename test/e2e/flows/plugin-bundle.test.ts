@@ -110,6 +110,7 @@ describe("Flow 21: the installed plugin runs from bundle/ with no npm cache", { 
     expect(readdirSync(join(fakeHome, "npm-cache"))).toEqual([]);
     expect(existsSync(join(pluginRoot, "bundle", "lcm.js"))).toBe(true);
     expect(existsSync(join(pluginRoot, "bundle", "mcp-server.js"))).toBe(true);
+    expect(existsSync(join(pluginRoot, "bundle", "session-start-compact-worker.js"))).toBe(true);
     expect(existsSync(join(pluginRoot, "bundle", "assets", "prompts", "system.yaml"))).toBe(true);
     expect(existsSync(join(pluginRoot, "bundle", "assets", "templates", "base.md"))).toBe(true);
   });

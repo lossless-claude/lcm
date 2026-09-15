@@ -16,6 +16,7 @@ artifact:
 |---|---|
 | `bundle/lcm.js` | the CLI: every hook command, `daemon start`, `doctor`, `install` |
 | `bundle/mcp-server.js` | the MCP server |
+| `bundle/session-start-compact-worker.js` | the daemon's off-loop SessionStart catch-up scanner |
 | `bundle/assets/` | prompt YAML, connector templates, `setup.sh` |
 
 `.claude-plugin/plugin.json` calls the bundle in exec form: `"command": "node",
@@ -41,7 +42,7 @@ it runs: `src/cli-entrypoint.ts` prefers a sibling `lcm.js` (bundle) and falls b
 to `../bin/lcm.js` (dist); the prompt loader and template service prefer `assets/`
 next to the module. The daemon is spawned as `process.execPath` +
 `process.argv[1] daemon start --automatic`, so `bundle/lcm.js` is the daemon entry
-with no extra file.
+and its sibling worker asset handles the SessionStart catch-up scan.
 
 `dist/` remains the npm artifact and `npm run build` never touches `bundle/`:
 otherwise every developer PR would dirty it. `bundle/` changes only in version PRs
