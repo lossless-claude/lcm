@@ -61,6 +61,8 @@ export function findProjects(paths: LcmPaths, cwdFilter?: string): { projDir: st
 
 export function findUncompacted(paths: LcmPaths, minTokens: number, readOnly = false, cwdFilter?: string, replay = false): UncompactedConversation[] {
   const results: UncompactedConversation[] = [];
+  const metricsAlias = replay ? "m" : "raw";
+  const sourceAlias = replay ? "src" : "raw";
 
   for (const { projDir, cwd } of findProjects(paths, cwdFilter)) {
     const dbPath = join(projDir, "db.sqlite");
@@ -78,10 +80,10 @@ export function findUncompacted(paths: LcmPaths, minTokens: number, readOnly = f
           c.conversation_id,
           c.session_id,
           c.updated_at,
-          COALESCE(m.msg_count, 0) as messages,
-          COALESCE(m.raw_tokens, 0) as tokens,
-          COALESCE(src.msg_count, 0) as source_messages,
-          COALESCE(src.raw_tokens, 0) as source_tokens,
+          COALESCE(${metricsAlias}.msg_count, 0) as messages,
+          COALESCE(${metricsAlias}.raw_tokens, 0) as tokens,
+          COALESCE(${sourceAlias}.msg_count, 0) as source_messages,
+          COALESCE(${sourceAlias}.raw_tokens, 0) as source_tokens,
           COALESCE(s.sum_count, 0) as summaries
         FROM conversations c
         LEFT JOIN (
@@ -101,14 +103,27 @@ export function findUncompacted(paths: LcmPaths, minTokens: number, readOnly = f
           )
           GROUP BY conversation_id
         ) src ON src.conversation_id = c.conversation_id
+        -- A summary replaces its source messages in context_items. What remains
+        -- as a message item is the conversation's uncovered raw tail.
+        LEFT JOIN (
+          SELECT ci.conversation_id, COUNT(*) as msg_count, SUM(m.token_count) as raw_tokens
+          FROM context_items ci
+          JOIN messages m ON m.message_id = ci.message_id
+          WHERE ci.item_type = 'message'
+            AND NOT EXISTS (
+              SELECT 1 FROM message_parts p
+              WHERE p.message_id = m.message_id AND p.part_type = 'compaction'
+            )
+          GROUP BY ci.conversation_id
+        ) raw ON raw.conversation_id = c.conversation_id
         LEFT JOIN (
           SELECT conversation_id, COUNT(*) as sum_count
           FROM summaries GROUP BY conversation_id
         ) s ON s.conversation_id = c.conversation_id
-        WHERE COALESCE(m.msg_count, 0) > 0
+        WHERE COALESCE(${metricsAlias}.msg_count, 0) > 0
           AND (? OR COALESCE(s.sum_count, 0) = 0)
-          AND COALESCE(m.raw_tokens, 0) >= ?
-        ORDER BY COALESCE(m.raw_tokens, 0) DESC
+          AND COALESCE(${metricsAlias}.raw_tokens, 0) >= ?
+        ORDER BY COALESCE(${metricsAlias}.raw_tokens, 0) DESC
       `).all(replay ? 1 : 0, minTokens) as {
         conversation_id: number;
         session_id: string;

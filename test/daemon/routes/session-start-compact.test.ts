@@ -4,10 +4,14 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { DaemonConfig } from "../../../src/daemon/config.js";
 import type { UncompactedConversation } from "../../../src/batch-compact.js";
+import type { LcmPaths } from "../../../src/lcm-paths.js";
 
-const findUncompacted = vi.fn<[], UncompactedConversation[]>();
-vi.mock("../../../src/batch-compact.js", () => ({
-  findUncompacted: (...args: unknown[]) => findUncompacted(...(args as [])),
+type Scan = (paths: LcmPaths, minTokens: number, cwd: string) => Promise<UncompactedConversation[]>;
+const scan = vi.fn<Scan>();
+vi.mock("../../../src/daemon/session-start-compact-worker.js", () => ({
+  createSessionStartCompactScanner: () => ({
+    scan: (...args: Parameters<Scan>) => scan(...args),
+  }),
 }));
 
 const fireCompactRequest = vi.fn();
@@ -65,7 +69,7 @@ describe("POST /session-start-compact", () => {
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "session-start-compact-"));
-    findUncompacted.mockReset();
+    scan.mockReset().mockResolvedValue([]);
     fireCompactRequest.mockClear();
     compactingSessionsFor.mockReset().mockReturnValue([]);
   });
@@ -84,7 +88,7 @@ describe("POST /session-start-compact", () => {
     await handler({} as never, res, JSON.stringify({ cwd: dir, session_id: "   " }));
     expect(out.status).toBe(400);
     await settled();
-    expect(findUncompacted).not.toHaveBeenCalled();
+    expect(scan).not.toHaveBeenCalled();
     expect(fireCompactRequest).not.toHaveBeenCalled();
   });
 
@@ -97,29 +101,27 @@ describe("POST /session-start-compact", () => {
   });
 
   it("fires nothing and reports queued: 0 when disableAutoCompact is set", async () => {
-    findUncompacted.mockReturnValue([conv({ sessionId: "s2" })]);
     const config = baseConfig();
     config.hooks.disableAutoCompact = true;
     const handler = createSessionStartCompactHandler(config, 4242, paths);
     const { res, out } = respond();
     await handler({} as never, res, JSON.stringify({ cwd: dir, session_id: "s1" }));
     expect(out.body).toEqual({ queued: 0 });
-    expect(findUncompacted).not.toHaveBeenCalled();
+    expect(scan).not.toHaveBeenCalled();
     expect(fireCompactRequest).not.toHaveBeenCalled();
   });
 
   it("fires nothing and reports queued: 0 when the cap is 0", async () => {
-    findUncompacted.mockReturnValue([conv({ sessionId: "s2" })]);
     const handler = createSessionStartCompactHandler(baseConfig({ autoCompactSessionStartMax: 0 }), 4242, paths);
     const { res, out } = respond();
     await handler({} as never, res, JSON.stringify({ cwd: dir, session_id: "s1" }));
     expect(out.body).toEqual({ queued: 0 });
-    expect(findUncompacted).not.toHaveBeenCalled();
+    expect(scan).not.toHaveBeenCalled();
     expect(fireCompactRequest).not.toHaveBeenCalled();
   });
 
   it("excludes the starting session and fires the rest", async () => {
-    findUncompacted.mockReturnValue([
+    scan.mockResolvedValue([
       conv({ sessionId: "starting-session", updatedAt: "2026-01-01T00:00:00Z" }),
       conv({ sessionId: "s-old", updatedAt: "2025-01-01T00:00:00Z" }),
     ]);
@@ -133,7 +135,7 @@ describe("POST /session-start-compact", () => {
   });
 
   it("skips a conversation already compacting", async () => {
-    findUncompacted.mockReturnValue([conv({ sessionId: "in-flight" })]);
+    scan.mockResolvedValue([conv({ sessionId: "in-flight" })]);
     compactingSessionsFor.mockReturnValue(["in-flight"]);
     const handler = createSessionStartCompactHandler(baseConfig(), 4242, paths);
     const { res, out } = respond();
@@ -144,7 +146,7 @@ describe("POST /session-start-compact", () => {
   });
 
   it("caps the number fired and orders oldest first", async () => {
-    findUncompacted.mockReturnValue([
+    scan.mockResolvedValue([
       conv({ sessionId: "newest", updatedAt: "2026-03-01T00:00:00Z" }),
       conv({ sessionId: "oldest", updatedAt: "2025-01-01T00:00:00Z" }),
       conv({ sessionId: "middle", updatedAt: "2025-06-01T00:00:00Z" }),
@@ -157,6 +159,22 @@ describe("POST /session-start-compact", () => {
     expect(fireCompactRequest).toHaveBeenCalledTimes(2);
     expect(fireCompactRequest).toHaveBeenNthCalledWith(1, 4242, expect.objectContaining({ session_id: "oldest" }), paths);
     expect(fireCompactRequest).toHaveBeenNthCalledWith(2, 4242, expect.objectContaining({ session_id: "middle" }), paths);
+  });
+
+  it("answers before the worker scan completes", async () => {
+    let resolveScan!: (candidates: UncompactedConversation[]) => void;
+    scan.mockReturnValue(new Promise((resolve) => { resolveScan = resolve; }));
+    const handler = createSessionStartCompactHandler(baseConfig(), 4242, paths);
+    const { res, out } = respond();
+
+    await handler({} as never, res, JSON.stringify({ cwd: dir, session_id: "starting" }));
+
+    expect(out.body).toEqual({ queued: "scheduled" });
+    expect(scan).toHaveBeenCalledWith(paths, 10000, dir);
+    expect(fireCompactRequest).not.toHaveBeenCalled();
+
+    resolveScan([]);
+    await settled();
   });
 
   afterAll(() => {
