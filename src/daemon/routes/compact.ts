@@ -274,7 +274,6 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           const conversationStore = new ConversationStore(db);
           const summaryStore = new SummaryStore(db);
           const conversation = await conversationStore.getOrCreateConversation(session_id);
-          const language = resolveSummarizerLanguage(config, cwd, paths);
 
           // Ingest new messages from the transcript into the DB.
           const safeTranscriptPath = transcript_path ? isSafeTranscriptPath(transcript_path, cwd) : false;
@@ -303,9 +302,11 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                 upsertRedactionCounts(db, pid, ingestCounts);
                 await summaryStore.appendContextMessages(conversation.conversationId, records.map((r) => r.messageId));
               });
-              void scheduleProjectLanguageDetection(cwd, db, config, paths);
+              await scheduleProjectLanguageDetection(cwd, db, config, paths);
             }
           }
+
+          const language = resolveSummarizerLanguage(config, cwd, paths);
 
           // Check if there's anything to compact
           const tokenCount = await summaryStore.getContextTokenCount(conversation.conversationId);

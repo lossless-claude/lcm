@@ -1,11 +1,11 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { createDaemon, type DaemonInstance } from "../../../src/daemon/server.js";
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
-import { projectDbPath, projectId } from "../../../src/daemon/project.js";
+import { projectDbPath, projectId, projectMetaPath } from "../../../src/daemon/project.js";
 import { runLcmMigrations } from "../../../src/db/migration.js";
 import { ConversationStore } from "../../../src/store/conversation-store.js";
 import { lcmHome } from "../../../src/lcm-home.js";
@@ -35,11 +35,16 @@ vi.mock("../../../src/llm/copilot-process.js", () => ({
   createCopilotProcessSummarizer: vi.fn().mockReturnValue(async () => "copilot-process-summary"),
 }));
 
+vi.mock("../../../src/daemon/project-language.js", () => ({
+  scheduleProjectLanguageDetection: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { createClaudeProcessSummarizer } from "../../../src/llm/claude-process.js";
 import { createCopilotProcessSummarizer } from "../../../src/llm/copilot-process.js";
 import { createCodexProcessSummarizer } from "../../../src/llm/codex-process.js";
 import { createAnthropicSummarizer } from "../../../src/llm/anthropic.js";
 import { createOpenAISummarizer } from "../../../src/llm/openai.js";
+import { scheduleProjectLanguageDetection } from "../../../src/daemon/project-language.js";
 import { createCompactHandler, buildCompactionMessage } from "../../../src/daemon/routes/compact.js";
 import type { DaemonConfig } from "../../../src/daemon/config.js";
 
@@ -299,6 +304,47 @@ describe("createCompactHandler — summarizer branching", () => {
     await handler({} as any, res2, JSON.stringify({ session_id: "s2", cwd: testCwd, client: "codex" }));
 
     expect(createCodexProcessSummarizer).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for project-language detection before choosing the first summary language", async () => {
+    const root = mkdtempSync(join(tmpdir(), "lcm-compact-language-root-"));
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-compact-language-project-"));
+    const scopedPaths = createLcmPaths(root);
+    const transcriptPath = join(cwd, "session.jsonl");
+    writeFileSync(
+      transcriptPath,
+      Array.from({ length: 20 }, (_, index) => JSON.stringify({
+        message: {
+          role: index % 2 === 0 ? "user" : "assistant",
+          content: `Mensagem ${index}: ${"conteúdo suficiente para exigir compactação ".repeat(80)}`,
+        },
+      })).join("\n"),
+    );
+
+    vi.mocked(scheduleProjectLanguageDetection).mockImplementationOnce(async (detectedCwd, _db, _config, detectedPaths) => {
+      await Promise.resolve();
+      const metaPath = projectMetaPath(detectedCwd, detectedPaths);
+      mkdirSync(dirname(metaPath), { recursive: true });
+      writeFileSync(metaPath, JSON.stringify({ cwd: detectedCwd, language: "pt-BR" }));
+    });
+    const summarize = vi.fn().mockResolvedValue("resumo curto");
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(summarize);
+
+    try {
+      const handler = createCompactHandler(makeConfig("openai"), scopedPaths);
+      const { res } = mockRes();
+      await handler({} as any, res, JSON.stringify({ session_id: "first-summary-language", cwd, transcript_path: transcriptPath }));
+
+      expect(scheduleProjectLanguageDetection).toHaveBeenCalledOnce();
+      expect(summarize).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(Boolean),
+        expect.objectContaining({ language: "pt-BR" }),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 });
 
