@@ -543,4 +543,43 @@ describe("POST /ingest", () => {
     expect(row?.client).toBe("claude");
     expect(row?.model).toBe("claude-sonnet-5");
   });
+
+  it("backfills a model-less Codex tool event by its transcript turn", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-ingest-codex-model-backfill-"));
+    tempDirs.push(tempDir);
+    const transcriptPath = join(tempDir, "rollout.jsonl");
+    const sessionId = "codex-backfill-session";
+    writeFileSync(transcriptPath, [
+      { type: "session_meta", payload: { id: sessionId, cwd: tempDir } },
+      { type: "turn_context", payload: { turn_id: "turn-1", model: "gpt-5.6-codex" } },
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "edit it" }] } },
+      { type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "done" }] } },
+    ].map(line => JSON.stringify(line)).join("\n") + "\n");
+
+    const sidecar = new EventsDb(eventsDbPath(tempDir, paths));
+    sidecar.insertToolCallEvents(sessionId, [{ type: "file_edit", category: "file", data: "src/example.ts (source)", priority: 3 }], "PostToolUse", "call_patch", "codex", null, "turn-1");
+    sidecar.close();
+
+    daemon = await createDaemon(loadDaemonConfig("/nonexistent", { daemon: { port: 0 } }));
+    const post = () => fetch(`http://127.0.0.1:${daemon!.address().port}/ingest`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, cwd: tempDir, client: "codex", transcript_path: transcriptPath }),
+    });
+    expect((await post()).status).toBe(200);
+
+    let row;
+    for (let attempt = 0; attempt < 50 && row?.model == null; attempt += 1) {
+      const after = new EventsDb(eventsDbPath(tempDir, paths));
+      row = after.getUnprocessed().find(event => event.tool_use_id === "call_patch");
+      after.close();
+      if (row?.model == null) await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(row).toMatchObject({ client: "codex", turn_id: "turn-1", model: "gpt-5.6-codex" });
+    const repeated = await post();
+    expect(repeated.status).toBe(200);
+    expect(await repeated.json()).toEqual({ ingested: 0, totalTokens: 0 });
+    const afterRepeat = new EventsDb(eventsDbPath(tempDir, paths));
+    expect(afterRepeat.getUnprocessed().find(event => event.tool_use_id === "call_patch")?.model).toBe("gpt-5.6-codex");
+    afterRepeat.close();
+  });
 });

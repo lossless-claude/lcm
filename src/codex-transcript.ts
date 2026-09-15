@@ -53,6 +53,11 @@ interface CodexLine {
   payload?: CodexResponseItemPayload | CodexSessionMeta | Record<string, unknown>;
 }
 
+interface CodexTurnContext {
+  turn_id?: string;
+  model?: string;
+}
+
 export interface ParsedCodexTranscriptRecord {
   message?: ParsedMessage;
   sessionMeta?: CodexSessionMeta;
@@ -240,6 +245,28 @@ export function parseCodexTranscript(
   }
 
   return messages;
+}
+
+/** Maps each Codex turn id to the model recorded in its `turn_context` entry. */
+export function extractCodexTurnModels(transcriptPath: string): Map<string, string> {
+  let raw: string;
+  try {
+    raw = readFileSync(transcriptPath, "utf-8");
+  } catch {
+    return new Map();
+  }
+  const models = new Map<string, string>();
+  for (const line of raw.split("\n")) {
+    try {
+      const entry = JSON.parse(line) as { type?: unknown; payload?: CodexTurnContext };
+      const turnId = entry.payload?.turn_id;
+      const model = entry.payload?.model;
+      if (entry.type === "turn_context" && typeof turnId === "string" && turnId && typeof model === "string" && model) {
+        models.set(turnId, model);
+      }
+    } catch { /* skip malformed lines */ }
+  }
+  return models;
 }
 
 /**

@@ -146,7 +146,7 @@ describe("EventsDb", () => {
       expect(columns.map((c) => c.name)).toContain("tool_use_id");
       expect(columns.map((c) => c.name)).toEqual(expect.arrayContaining(["client", "model"]));
       const versionRow = db.raw().prepare("SELECT version FROM schema_version").get() as { version: number };
-      expect(versionRow.version).toBe(6);
+      expect(versionRow.version).toBe(7);
       db.close();
     });
 
@@ -187,7 +187,7 @@ describe("EventsDb", () => {
       expect(row.client).toBe("claude");
       expect(row.model).toBeNull();
       const versionRow = db.raw().prepare("SELECT version FROM schema_version").get() as { version: number };
-      expect(versionRow.version).toBe(6);
+      expect(versionRow.version).toBe(7);
       db.close();
     });
 
@@ -231,6 +231,23 @@ describe("EventsDb", () => {
       expect(rows.find(r => r.tool_use_id === "toolu_1")?.model).toBe("claude-sonnet-5");
       expect(rows.find(r => r.tool_use_id === "toolu_2")?.model).toBe("already-set");
       expect(db.hasUnfilledModels("s1")).toBe(false);
+      db.close();
+    });
+
+    it("backfills Codex models only for matching turns that are still empty", () => {
+      const db = new EventsDb(dbPath);
+      db.insertToolCallEvents("s1", [{ type: "a", category: "file", data: "x", priority: 3 }], "PostToolUse", "call_1", "codex", null, "turn-1");
+      db.insertToolCallEvents("s1", [{ type: "b", category: "file", data: "y", priority: 3 }], "PostToolUse", "call_2", "codex", "set", "turn-2");
+      db.insertToolCallEvents("s1", [{ type: "c", category: "file", data: "z", priority: 3 }], "PostToolUse", "call_3", "claude", null, "turn-1");
+
+      expect(db.backfillCodexTurnModels("s1", new Map([
+        ["turn-1", "gpt-5.6-codex"],
+        ["turn-2", "must-not-overwrite"],
+      ]))).toBe(1);
+      const rows = db.getUnprocessed();
+      expect(rows.find(row => row.tool_use_id === "call_1")?.model).toBe("gpt-5.6-codex");
+      expect(rows.find(row => row.tool_use_id === "call_2")?.model).toBe("set");
+      expect(rows.find(row => row.tool_use_id === "call_3")?.model).toBeNull();
       db.close();
     });
 

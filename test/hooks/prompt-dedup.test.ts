@@ -101,7 +101,7 @@ describe("prompt event dedup", () => {
 
     const db = new EventsDb(dbPath);
     const version = db.raw().prepare("SELECT version FROM schema_version").get() as { version: number };
-    expect(version.version).toBe(6);
+    expect(version.version).toBe(7);
 
     // The pre-migration row has no hash, so it never dedups against anything.
     const hash = hashOf("we decided to use SQLite");

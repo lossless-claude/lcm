@@ -69,6 +69,37 @@ describe("Codex PostToolUse / PostToolUseFailure capture", () => {
     db.close();
   });
 
+  it("normalizes a native apply_patch payload to the same file edit event as Claude", async () => {
+    await dispatchCodexHook(JSON.stringify({
+      hook_event_name: "PostToolUse",
+      session_id: "codex-session",
+      cwd: "/repo",
+      tool_name: "apply_patch",
+      tool_input: { command: "*** Begin Patch\n*** Update File: src/example.ts\n*** End Patch" },
+      tool_use_id: "call_patch",
+    }), enabledDeps());
+
+    const db = new EventsDb(join(dir, "test.db"));
+    expect(db.getUnprocessed()).toEqual([expect.objectContaining({
+      type: "file_edit", category: "file", data: "src/example.ts (source)", client: "codex",
+    })]);
+    db.close();
+  });
+
+  it("does not classify an unknown Codex tool as Bash", async () => {
+    await dispatchCodexHook(JSON.stringify({
+      hook_event_name: "PostToolUse",
+      session_id: "codex-session",
+      cwd: "/repo",
+      tool_name: "unrecognized_command",
+      tool_input: { command: "git commit -m 'must not be captured'" },
+    }), enabledDeps());
+
+    const db = new EventsDb(join(dir, "test.db"));
+    expect(db.getUnprocessed()).toEqual([]);
+    db.close();
+  });
+
   it("records a PostToolUseFailure event the same way error_tool events are recorded for Claude", async () => {
     const deps = enabledDeps();
     const stdin = JSON.stringify({
