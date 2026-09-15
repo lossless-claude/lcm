@@ -96,6 +96,25 @@ describe("searchPromotedGroup", () => {
     const { feedback } = searchPromotedGroup(here, { query: "compaction", limit: 10, withFeedback: true }, paths);
     expect(feedback.get(siblingId)?.surfacingCount).toBe(1);
   });
+
+  it("counts a legacy use signal left in the requesting checkout once", () => {
+    const here = checkout(LCM, ["requesting checkout"]);
+    const sibling = checkout(LCM, ["compaction is the only LLM step"]);
+    const siblingDb = new DatabaseSync(projectDbPath(sibling, paths));
+    const siblingId = new PromotedStore(siblingDb).search("compaction", 1)[0].id;
+    siblingDb.close();
+
+    const hereDb = new DatabaseSync(projectDbPath(here, paths));
+    new PromotedStore(hereDb).insert({
+      content: "Legacy use of sibling memory",
+      tags: ["signal:memory_used", `memory_id:${siblingId}`],
+      projectId: "p1",
+    });
+    hereDb.close();
+
+    const { feedback } = searchPromotedGroup(here, { query: "compaction", limit: 10, withFeedback: true }, paths);
+    expect(feedback.get(siblingId)?.usageCount).toBe(1);
+  });
 });
 
 describe("logGroupSurfacing", () => {

@@ -351,7 +351,7 @@ reason — adds an explicit "checked and still correct" or "checked and contradi
 distinct from mere use. See `docs/agent-tools.md` for the `lcm_store` shape and validation
 rules a vote is checked against.
 
-Use and vote signals follow their target memory to its owning checkout, so the feedback counts for a memory always come from one database. Multi-project stats identify that owner as `ownerProjectId`.
+Use and vote signals follow their target memory to its owning checkout, so new feedback counts for a memory always come from one database. On upgrade, a historical `signal:memory_used` left in another checkout is counted once only when its target ID has exactly one active owner in the project group; an ambiguous legacy ID is not attributed. Multi-project stats identify that owner as `ownerProjectId`.
 
 - **Enforcement threshold** (`promotion.enforcementThreshold`, default 3): a memory with at
   least this many reported uses appears under "Promotion candidates" in `lcm stats` /

@@ -60,6 +60,14 @@ function checkout(remote: string, contents: string[]): { cwd: string; ids: strin
   return { cwd, ids };
 }
 
+function unregisteredCheckout(remote: string): string {
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "lcm-vote-repo-")));
+  tempDirs.push(cwd);
+  execFileSync("git", ["init", "-q"], { cwd, stdio: "ignore" });
+  execFileSync("git", ["remote", "add", "origin", remote], { cwd, stdio: "ignore" });
+  return cwd;
+}
+
 async function startDaemon() {
   const config = loadDaemonConfig("/nonexistent");
   config.daemon.port = 0;
@@ -87,6 +95,25 @@ async function postReviewStale(port: number, body: Record<string, unknown>) {
 }
 
 describe("POST /store — votes", () => {
+  it.each([null, 42, ""])("rejects an invalid owner_project_id without treating it as local", async (owner_project_id) => {
+    const { cwd, ids } = checkout("git@github.com:lcm-vote-tests/invalid-owner.git", ["local memory"]);
+    const { daemon, port } = await startDaemon();
+    try {
+      const { status, data } = await postReviewStale(port, {
+        cwd, action: "archive", target_id: ids[0], owner_project_id,
+      });
+      expect(status).toBe(400);
+      expect(String(data.error)).toContain("owner_project_id");
+
+      const db = new DatabaseSync(projectDbPath(cwd, paths));
+      const row = db.prepare("SELECT archived_at FROM promoted WHERE id = ?").get(ids[0]) as { archived_at: string | null };
+      db.close();
+      expect(row.archived_at).toBeNull();
+    } finally {
+      await daemon.stop();
+    }
+  });
+
   it("stores a well-formed +1 and counts it", async () => {
     const { cwd, ids } = checkout("git@github.com:lcm-vote-tests/repo-a.git", ["React is the chosen framework"]);
     const { daemon, port } = await startDaemon();
@@ -229,6 +256,82 @@ describe("POST /store — votes", () => {
 
       const candidate = collectStats(paths).promotionCandidates.find((entry) => entry.id === ids[0]);
       expect(candidate).toMatchObject({ useCount: 3, ownerProjectId: projectId(sibling) });
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it("discovers a sibling memory created by an ordinary store request", async () => {
+    const remote = "git@github.com:lcm-vote-tests/ordinary-store-registration.git";
+    const here = unregisteredCheckout(remote);
+    const sibling = unregisteredCheckout(remote);
+    const { daemon, port } = await startDaemon();
+    try {
+      const stored = await postStore(port, { cwd: sibling, text: "stored in a sibling", tags: ["decision"] });
+      expect(stored.status).toBe(200);
+      const used = await postStore(port, {
+        cwd: here,
+        text: "used the sibling memory",
+        tags: ["signal:memory_used", `memory_id:${String(stored.data.id)}`],
+      });
+      expect(used.status).toBe(200);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it("counts a legacy requester-side use once with later owner-side uses", async () => {
+    const remote = "git@github.com:lcm-vote-tests/legacy-use-upgrade.git";
+    const { cwd: here } = checkout(remote, []);
+    const { cwd: sibling, ids } = checkout(remote, ["sibling memory"]);
+    const hereDb = new DatabaseSync(projectDbPath(here, paths));
+    new PromotedStore(hereDb).insert({
+      content: "legacy use", tags: ["signal:memory_used", `memory_id:${ids[0]}`], projectId: "p1",
+    });
+    hereDb.close();
+
+    const { daemon, port } = await startDaemon();
+    try {
+      for (let i = 0; i < 2; i++) {
+        expect((await postStore(port, {
+          cwd: here, text: `new use ${i}`, tags: ["signal:memory_used", `memory_id:${ids[0]}`],
+        })).status).toBe(200);
+      }
+      const candidates = collectStats(paths).promotionCandidates.filter((candidate) => candidate.id === ids[0]);
+      expect(candidates).toEqual([expect.objectContaining({ ownerProjectId: projectId(sibling), useCount: 3 })]);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it.each([
+    ["signal:memory_used", "used the colliding memory"],
+    ["signal:memory_vote", "verified the colliding memory", "vote:+1"],
+  ])("rejects an ambiguous %s target without writing a signal", async (signal, text, voteTag?) => {
+    const remote = "git@github.com:lcm-vote-tests/ambiguous-signal.git";
+    const { cwd: here, ids: hereIds } = checkout(remote, ["here"]);
+    const { cwd: sibling, ids: siblingIds } = checkout(remote, ["sibling"]);
+    for (const [cwd, id] of [[here, hereIds[0]], [sibling, siblingIds[0]]] as const) {
+      const db = new DatabaseSync(projectDbPath(cwd, paths));
+      db.prepare("UPDATE promoted SET id = 'colliding-id' WHERE id = ?").run(id);
+      db.close();
+    }
+
+    const { daemon, port } = await startDaemon();
+    try {
+      const { status, data } = await postStore(port, {
+        cwd: here,
+        text,
+        tags: [signal, ...(voteTag ? [voteTag] : []), "memory_id:colliding-id"],
+      });
+      expect(status).toBe(409);
+      expect(String(data.error)).toContain("ambiguous");
+      for (const cwd of [here, sibling]) {
+        const db = new DatabaseSync(projectDbPath(cwd, paths));
+        const signals = db.prepare("SELECT COUNT(*) AS count FROM promoted WHERE tags LIKE '%signal:memory_%'").get() as { count: number };
+        db.close();
+        expect(signals.count).toBe(0);
+      }
     } finally {
       await daemon.stop();
     }

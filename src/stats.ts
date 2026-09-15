@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { collectEventStats } from "./db/events-stats.js";
-import { RecallStore, type RecallStats } from "./db/recall.js";
+import { collectLegacyUsageCounts, RecallStore, type RecallStats } from "./db/recall.js";
 import { PromotedStore } from "./db/promoted.js";
 import { isSignalTagged } from "./db/votes.js";
 import { loadDaemonConfig } from "./daemon/config.js";
@@ -43,12 +43,13 @@ function computePromotionSections(
   db: DatabaseSync,
   enforcementThreshold: number,
   ownerProjectId: string,
+  legacyUsageCounts: ReadonlyMap<string, number> = new Map(),
 ): { promotionCandidates: PromotionCandidate[]; contested: ContestedMemory[] } {
   const promotedStore = new PromotedStore(db);
   const active = promotedStore.getAll().filter((r) => !isSignalTagged(JSON.parse(r.tags) as string[]));
   if (active.length === 0) return { promotionCandidates: [], contested: [] };
 
-  const feedback = new RecallStore(db).getFeedback(active.map((r) => r.id));
+  const feedback = new RecallStore(db).getFeedback(active.map((r) => r.id), legacyUsageCounts);
   const voteCounts = promotedStore.getVoteCounts();
 
   const promotionCandidates: PromotionCandidate[] = [];
@@ -129,6 +130,7 @@ function queryProjectStats(
   dbPath: string,
   projectId: string,
   staleCfg: { staleAfterDays: number; staleSurfacingWithoutUseLimit: number; enforcementThreshold: number },
+  legacyUsageCounts: ReadonlyMap<string, number> = new Map(),
 ): Omit<OverallStats, "projects" | "recallStats" | "staleCount"> & { recallStats: RecallStats; staleCount: number } {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   db.exec("PRAGMA busy_timeout = 5000");
@@ -219,8 +221,13 @@ function queryProjectStats(
     const compactedRaw = compacted.reduce((s, c) => s + c.rawTokens, 0);
     const compactedSum = compacted.reduce((s, c) => s + c.summaryTokens, 0);
 
+    const activeMemoryIds = promotedColumns.has("archived_at")
+      ? new Set(new PromotedStore(db).getAll()
+        .filter((row) => !isSignalTagged(JSON.parse(row.tags) as string[]))
+        .map((row) => row.id))
+      : undefined;
     const recallStats: RecallStats = columns("recall_surfacing").size && promotedColumns.has("archived_at")
-      ? new RecallStore(db).getStats()
+      ? new RecallStore(db).getStats(legacyUsageCounts, activeMemoryIds)
       : { memoriesSurfaced: 0, memoriesActedUpon: 0, recallPrecision: null, topRecalled: [] };
 
     // Count stale promoted memories (config is passed in to avoid re-reading per project)
@@ -236,7 +243,7 @@ function queryProjectStats(
     let promotionCandidates: PromotionCandidate[] = [];
     let contested: ContestedMemory[] = [];
     try {
-      ({ promotionCandidates, contested } = computePromotionSections(db, staleCfg.enforcementThreshold, projectId));
+      ({ promotionCandidates, contested } = computePromotionSections(db, staleCfg.enforcementThreshold, projectId, legacyUsageCounts));
     } catch { /* non-fatal */ }
 
     return {
@@ -588,13 +595,25 @@ export function collectStats(paths: LcmPaths): OverallStats {
     };
   } catch { /* use defaults */ }
 
+  const projectDatabases = new Map<string, DatabaseSync>();
+  try {
+    for (const entry of readdirSync(baseDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const dbPath = join(baseDir, entry.name, "db.sqlite");
+      if (existsSync(dbPath)) projectDatabases.set(entry.name, new DatabaseSync(dbPath, { readOnly: true }));
+    }
+  } catch { /* a malformed project is skipped below as well */ }
+  let legacyUsageByOwner = new Map<string, Map<string, number>>();
+  try { legacyUsageByOwner = collectLegacyUsageCounts(projectDatabases); } catch { /* non-fatal */ }
+  finally { for (const db of projectDatabases.values()) db.close(); }
+
   for (const entry of readdirSync(baseDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const dbPath = join(baseDir, entry.name, "db.sqlite");
     if (!existsSync(dbPath)) continue;
 
     try {
-      const projStats = queryProjectStats(dbPath, entry.name, staleCfg);
+      const projStats = queryProjectStats(dbPath, entry.name, staleCfg, legacyUsageByOwner.get(entry.name));
       // Before the messages gate: a project can hold promoted memories and their use and
       // vote records without any conversation of its own — a fresh checkout using lcm_store.
       allPromotionCandidates.push(...projStats.promotionCandidates);

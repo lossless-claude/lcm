@@ -48,7 +48,10 @@ async function getScrubEngine(config: DaemonConfig, projDir: string): Promise<Sc
  * checkout must count against that memory rather than creating an orphaned reference in the
  * voter's own project.
  */
-function resolveMemoryTargetCwd(projectPath: string, memoryId: string, paths: LcmPaths): string | null {
+type MemoryTarget = { cwd: string } | { ambiguous: true } | null;
+
+function resolveMemoryTargetCwd(projectPath: string, memoryId: string, paths: LcmPaths): MemoryTarget {
+  let target: string | null = null;
   for (const member of projectGroup(projectPath, paths)) {
     const dbPath = projectDbPath(member.cwd, paths);
     if (!existsSync(dbPath)) continue;
@@ -58,14 +61,17 @@ function resolveMemoryTargetCwd(projectPath: string, memoryId: string, paths: Lc
     try {
       db = getLcmConnection(dbPath);
       const row = new PromotedStore(db).getById(memoryId);
-      if (row && !row.archived_at) return member.cwd;
+      if (row && !row.archived_at) {
+        if (target) return { ambiguous: true };
+        target = member.cwd;
+      }
     } catch {
       continue;
     } finally {
       if (db) closeLcmConnection(dbPath);
     }
   }
-  return null;
+  return target ? { cwd: target } : null;
 }
 
 /**
@@ -124,6 +130,10 @@ export function createStoreHandler(config: DaemonConfig, paths: LcmPaths): Route
       return;
     }
 
+    // Every store request creates or updates a project database. Record its identity even
+    // for ordinary memories so a later feedback signal from a sibling can discover it.
+    openProject(projectPath, paths);
+
     let targetPath = projectPath;
     let vote: { memoryId: string; direction: "+1" | "-1" } | null = null;
     const usageMemoryId = tags.includes("signal:memory_used")
@@ -131,18 +141,18 @@ export function createStoreHandler(config: DaemonConfig, paths: LcmPaths): Route
       : undefined;
 
     if (isVoteRecord(tags) || usageMemoryId) {
-      // Register this checkout first: projectGroup only knows checkouts it has seen, so a
-      // first feedback signal from an unregistered one would not find a sibling target.
-      openProject(projectPath, paths);
-
       const memoryId = isVoteRecord(tags) ? undefined : usageMemoryId;
       if (memoryId) {
         const resolved = resolveMemoryTargetCwd(projectPath, memoryId, paths);
+        if (resolved && "ambiguous" in resolved) {
+          sendJson(res, 409, { error: `memory_id ${memoryId} is ambiguous across this project group` });
+          return;
+        }
         if (!resolved) {
           sendJson(res, 400, { error: `memory_id ${memoryId} was not found (or is archived) in this project or its group` });
           return;
         }
-        targetPath = resolved;
+        targetPath = resolved.cwd;
       }
     }
 
@@ -153,11 +163,15 @@ export function createStoreHandler(config: DaemonConfig, paths: LcmPaths): Route
         return;
       }
       const resolved = resolveMemoryTargetCwd(projectPath, parsed.memoryId, paths);
+      if (resolved && "ambiguous" in resolved) {
+        sendJson(res, 409, { error: `memory_id ${parsed.memoryId} is ambiguous across this project group` });
+        return;
+      }
       if (!resolved) {
         sendJson(res, 400, { error: `memory_id ${parsed.memoryId} was not found (or is archived) in this project or its group` });
         return;
       }
-      targetPath = resolved;
+      targetPath = resolved.cwd;
       vote = { memoryId: parsed.memoryId, direction: parsed.direction };
     }
 

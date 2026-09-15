@@ -59,6 +59,10 @@ export function createReviewStaleHandler(config: DaemonConfig, paths: LcmPaths):
 
         openProject(cwd, paths);
         const requestedOwner = input.owner_project_id;
+        if (requestedOwner !== undefined && (typeof requestedOwner !== "string" || requestedOwner.trim() === "")) {
+          sendJson(res, 400, { error: "owner_project_id must be a non-empty string" });
+          return;
+        }
         const ownerCwd = requestedOwner === undefined
           ? null
           : resolveSourceCwd(cwd, requestedOwner, paths);

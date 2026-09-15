@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { closeLcmConnection } from "../db/connection.js";
 import { PromotedStore, type SearchResult } from "../db/promoted.js";
-import { RecallStore, type RecallFeedback } from "../db/recall.js";
+import { collectLegacyUsageCounts, RecallStore, type RecallFeedback } from "../db/recall.js";
 import { projectDbPath } from "../daemon/project.js";
 import { projectGroup, projectRef } from "../daemon/project-group.js";
 import { openMigrated } from "./migrated-connection.js";
@@ -76,17 +76,24 @@ export function searchPromotedGroup(cwd: string, input: GroupSearchInput, paths:
   const members = projectGroup(cwd, paths);
   const lists: GroupPromotedHit[][] = [];
   const feedback = new Map<string, RecallFeedback>();
+  const databases = new Map<string, ReturnType<typeof openMigrated>>();
 
   for (const member of members) {
     const dbPath = projectDbPath(member.cwd, paths);
-    if (!existsSync(dbPath)) continue;
-    const db = openMigrated(dbPath);
+    if (existsSync(dbPath)) databases.set(member.cwd, openMigrated(dbPath));
+  }
+  const legacyUsageCounts = input.withFeedback ? collectLegacyUsageCounts(databases) : new Map<string, Map<string, number>>();
+
+  for (const member of members) {
+    const dbPath = projectDbPath(member.cwd, paths);
+    const db = databases.get(member.cwd);
+    if (!db) continue;
     try {
       const found = new PromotedStore(db).search(input.query, input.limit, input.tags, undefined, input.terms);
       if (found.length === 0) continue;
       lists.push(found.map(result => ({ ...result, project: projectRef(member.cwd) })));
       if (input.withFeedback) {
-        for (const [id, entry] of new RecallStore(db).getFeedback(found.map(r => r.id))) {
+        for (const [id, entry] of new RecallStore(db).getFeedback(found.map(r => r.id), legacyUsageCounts.get(member.cwd))) {
           feedback.set(id, entry);
         }
       }

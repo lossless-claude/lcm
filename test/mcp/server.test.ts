@@ -228,7 +228,7 @@ it("renders objection owners in local lcm_stats output", async () => {
     recallStats: { memoriesSurfaced: 0, memoriesActedUpon: 0, recallPrecision: null, topRecalled: [] },
     staleCount: 0,
     llmUsage: { calls: 0, okCalls: 0, failedCalls: 0, tokensSpent: 0, tokensInput: 0, tokensCached: 0, tokensOutput: 0, costUsd: null, callsWithCost: 0 },
-    promotionCandidates: [],
+    promotionCandidates: [{ id: "memory-2", ownerProjectId: "candidate-owner", content: "new rule", useCount: 3, plusOne: 1, minusOne: 0, objections: [] }],
     contested: [{ id: "memory-1", ownerProjectId: "memory-owner", content: "old rule", objections: [{ voteId: "vote-1", ownerProjectId: "vote-owner", reason: "contradicted" }] }],
   });
   const { Server } = await import("@modelcontextprotocol/server");
@@ -237,5 +237,7 @@ it("renders objection owners in local lcm_stats output", async () => {
   const server = vi.mocked(Server).mock.results.at(-1)!.value;
   const handler = server.setRequestHandler.mock.calls.find(([method]: [string]) => method === "tools/call")[1];
   const result = await handler({ params: { name: "lcm_stats", arguments: {} } });
+  expect(result.content[0].text).toContain("memory-2");
+  expect(result.content[0].text).toContain("memory-1");
   expect(result.content[0].text).toContain("vote-1, owner: vote-owner");
 });

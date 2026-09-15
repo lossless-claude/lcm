@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { isSignalTagged } from "./votes.js";
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
@@ -17,6 +18,41 @@ export interface RecallFeedback {
   lastSurfacedAt: string | null;
 }
 
+/**
+ * Counts use signals written before cross-checkout feedback followed the target memory
+ * home. A legacy signal is attributed only when its id has one active owner across the
+ * supplied databases; colliding ids remain uncounted rather than being guessed.
+ */
+export function collectLegacyUsageCounts(databases: Iterable<[string, DatabaseSync]>): Map<string, Map<string, number>> {
+  const entries = [...databases];
+  const owners = new Map<string, string | null>();
+  const signals: Array<{ source: string; memoryId: string }> = [];
+  for (const [key, db] of entries) {
+    const rows = db.prepare("SELECT id, tags FROM promoted WHERE archived_at IS NULL").all() as Array<{ id: string; tags: string }>;
+    for (const row of rows) {
+      let tags: string[];
+      try { tags = JSON.parse(row.tags) as string[]; } catch { continue; }
+      if (!isSignalTagged(tags)) {
+        owners.set(row.id, owners.has(row.id) ? null : key);
+        continue;
+      }
+      if (!tags.includes("signal:memory_used")) continue;
+      const memoryId = tags.find(tag => tag.startsWith("memory_id:"))?.slice("memory_id:".length);
+      if (memoryId) signals.push({ source: key, memoryId });
+    }
+  }
+
+  const counts = new Map<string, Map<string, number>>();
+  for (const { source, memoryId } of signals) {
+    const owner = owners.get(memoryId);
+    if (!owner || owner === source) continue;
+    const ownerCounts = counts.get(owner) ?? new Map<string, number>();
+    ownerCounts.set(memoryId, (ownerCounts.get(memoryId) ?? 0) + 1);
+    counts.set(owner, ownerCounts);
+  }
+  return counts;
+}
+
 export class RecallStore {
   constructor(private db: DatabaseSync) {}
 
@@ -31,7 +67,7 @@ export class RecallStore {
     }
   }
 
-  getFeedback(memoryIds: string[]): Map<string, RecallFeedback> {
+  getFeedback(memoryIds: string[], legacyUsageCounts: ReadonlyMap<string, number> = new Map()): Map<string, RecallFeedback> {
     const feedback = new Map<string, RecallFeedback>();
     for (const id of memoryIds) {
       feedback.set(id, {
@@ -72,10 +108,16 @@ export class RecallStore {
       });
     }
 
+    for (const [memoryId, usageCount] of legacyUsageCounts) {
+      const current = feedback.get(memoryId);
+      if (!current) continue;
+      feedback.set(memoryId, { ...current, usageCount: current.usageCount + usageCount });
+    }
+
     return feedback;
   }
 
-  getStats(): RecallStats {
+  getStats(legacyUsageCounts: ReadonlyMap<string, number> = new Map(), ownedMemoryIds?: ReadonlySet<string>): RecallStats {
     // Distinct memories that have ever been surfaced
     const surfacedRow = this.db.prepare(
       `SELECT COUNT(DISTINCT memory_id) as count FROM recall_surfacing`
@@ -84,6 +126,16 @@ export class RecallStore {
 
     // Find all signal:memory_used entries in promoted, extract the referenced memory_id:<uuid> tag
     const memoryIdCounts = this.collectUsageCounts();
+    if (ownedMemoryIds) {
+      for (const id of memoryIdCounts.keys()) {
+        if (!ownedMemoryIds.has(id)) memoryIdCounts.delete(id);
+      }
+    }
+    for (const [id, count] of legacyUsageCounts) {
+      if (!ownedMemoryIds || ownedMemoryIds.has(id)) {
+        memoryIdCounts.set(id, (memoryIdCounts.get(id) ?? 0) + count);
+      }
+    }
 
     const memoriesActedUpon = memoryIdCounts.size;
     const recallPrecision =
