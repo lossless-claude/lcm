@@ -27,13 +27,45 @@ it("bounds legacy prepass handles to one group and continues after an open failu
   let open = 0;
   let peak = 0;
   try {
-    const counts = collectLegacyUsageByGroups([["bad"], ["owner", "requester"], ["later"]], (id) => {
+    const counts = collectLegacyUsageByGroups(new Map([
+      ["bad", ["bad"]], ["owner", ["owner", "requester"]], ["later", ["later"]],
+    ]), (id) => {
       if (id === "bad") throw new Error("open failed");
       open++; peak = Math.max(peak, open);
       return dbs.get(id)!;
     }, () => { open--; });
     expect(peak).toBe(2);
     expect(counts.byOwner.get("owner")?.get(memoryId)).toBe(1);
+  } finally {
+    for (const db of dbs.values()) db.close();
+  }
+});
+
+it("uses each owner's exact overlap group for legacy usage", () => {
+  root = mkdtempSync(join(tmpdir(), "lcm-legacy-overlaps-"));
+  const dbs = new Map<string, DatabaseSync>();
+  for (const id of ["A", "B", "C"]) {
+    const db = new DatabaseSync(join(root, `${id}.sqlite`));
+    runLcmMigrations(db);
+    dbs.set(id, db);
+  }
+  const targetId = new PromotedStore(dbs.get("B")!).insert({ content: "B", tags: [], projectId: "p" });
+  new PromotedStore(dbs.get("C")!).insert({ content: "C", tags: [], projectId: "p" });
+  dbs.get("C")!.prepare("UPDATE promoted SET id = ?").run(targetId);
+  new PromotedStore(dbs.get("A")!).insert({ content: "use", tags: ["signal:memory_used", `memory_id:${targetId}`], projectId: "p" });
+  try {
+    const result = collectLegacyUsageByGroups(new Map([
+      ["A", ["A", "B", "C"]],
+      ["B", ["A", "B"]],
+      ["C", ["A", "C"]],
+    ]), (id) => dbs.get(id)!, () => {});
+
+    expect(result.byOwner.get("A")).toEqual(new Map());
+    expect(result.ambiguousByOwner.get("A")).toEqual(new Set([targetId]));
+    expect(result.byOwner.get("B")?.get(targetId)).toBe(1);
+    expect(result.byOwner.get("C")?.get(targetId)).toBe(1);
+    expect(result.ambiguousByOwner.get("B")).toEqual(new Set());
+    expect(result.ambiguousByOwner.get("C")).toEqual(new Set());
   } finally {
     for (const db of dbs.values()) db.close();
   }

@@ -13,23 +13,31 @@ import type { LcmPaths } from "./lcm-paths.js";
 export type { RecallStats };
 
 export function collectLegacyUsageByGroups(
-  groups: readonly string[][],
+  groupsByOwner: ReadonlyMap<string, readonly string[]>,
   open: (id: string) => DatabaseSync,
   close: (id: string) => void,
 ): { byOwner: Map<string, Map<string, number>>; ambiguousByOwner: Map<string, Set<string>> } {
   const byOwner = new Map<string, Map<string, number>>();
   const ambiguousByOwner = new Map<string, Set<string>>();
-  for (const group of groups) {
-    const databases = new Map<string, DatabaseSync>();
-    try {
-      for (const id of group) {
-        try { databases.set(id, open(id)); } catch { /* skip one unreadable member */ }
-      }
-      const legacy = collectLegacyUsageCounts(databases);
-      for (const [owner, counts] of legacy.byOwner) byOwner.set(owner, counts);
-      for (const owner of group) ambiguousByOwner.set(owner, legacy.ambiguousIds);
-    } catch { /* a malformed group does not suppress later groups */ }
-    finally { for (const id of databases.keys()) close(id); }
+  const cached = new Map<string, ReturnType<typeof collectLegacyUsageCounts>>();
+  for (const [owner, members] of groupsByOwner) {
+    const group = [...new Set(members)].sort();
+    const cacheKey = group.join("\0");
+    let legacy = cached.get(cacheKey);
+    if (!legacy) {
+      const databases = new Map<string, DatabaseSync>();
+      try {
+        for (const id of group) {
+          try { databases.set(id, open(id)); } catch { /* skip one unreadable member */ }
+        }
+        legacy = collectLegacyUsageCounts(databases);
+      } catch { /* a malformed group does not suppress later groups */ }
+      finally { for (const id of databases.keys()) close(id); }
+      legacy ??= { byOwner: new Map(), ambiguousIds: new Set() };
+      cached.set(cacheKey, legacy);
+    }
+    byOwner.set(owner, legacy.byOwner.get(owner) ?? new Map());
+    ambiguousByOwner.set(owner, legacy.ambiguousIds);
   }
   return { byOwner, ambiguousByOwner };
 }
@@ -628,29 +636,24 @@ export function collectStats(paths: LcmPaths): OverallStats {
       .filter((entry) => entry.isDirectory() && existsSync(join(baseDir, entry.name, "db.sqlite")))
       .map((entry) => entry.name),
   );
-  const legacyUsageByOwner = new Map<string, Map<string, number>>();
-  const ambiguousByOwner = new Map<string, Set<string>>();
-  const seen = new Set<string>();
+  const groupsByOwner = new Map<string, string[]>();
   for (const projectId of projectIds) {
-      if (seen.has(projectId)) continue;
-      let groupIds = [projectId];
-      try {
-        const meta = JSON.parse(readFileSync(join(baseDir, projectId, "meta.json"), "utf8")) as { cwd?: unknown };
-        if (typeof meta.cwd === "string") {
-          groupIds = projectGroup(meta.cwd, paths).map((member) => member.projectId).filter((id) => projectIds.has(id));
-        }
-      } catch { /* a legacy project has no group identity */ }
-      for (const id of groupIds) seen.add(id);
-      const legacy = collectLegacyUsageByGroups(
-        [groupIds],
-        (id) => getLcmConnection(join(baseDir, id, "db.sqlite"), { readOnly: true }),
-        (id) => closeLcmConnection(join(baseDir, id, "db.sqlite"), { readOnly: true }),
-      );
-      for (const [owner, counts] of legacy.byOwner) {
-        legacyUsageByOwner.set(owner, counts);
+    let groupIds = [projectId];
+    try {
+      const meta = JSON.parse(readFileSync(join(baseDir, projectId, "meta.json"), "utf8")) as { cwd?: unknown };
+      if (typeof meta.cwd === "string") {
+        groupIds = [...new Set([projectId, ...projectGroup(meta.cwd, paths)
+          .map((member) => member.projectId)
+          .filter((id) => projectIds.has(id))])];
       }
-      for (const [owner, ids] of legacy.ambiguousByOwner) ambiguousByOwner.set(owner, ids);
+    } catch { /* a legacy project has no group identity */ }
+    groupsByOwner.set(projectId, groupIds);
     }
+  const { byOwner: legacyUsageByOwner, ambiguousByOwner } = collectLegacyUsageByGroups(
+    groupsByOwner,
+    (id) => getLcmConnection(join(baseDir, id, "db.sqlite"), { readOnly: true }),
+    (id) => closeLcmConnection(join(baseDir, id, "db.sqlite"), { readOnly: true }),
+  );
 
   for (const entry of readdirSync(baseDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;

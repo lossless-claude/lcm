@@ -322,6 +322,35 @@ describe("POST /store — votes", () => {
     }
   });
 
+  it.each([
+    ["signal:memory_used", []],
+    ["signal:memory_vote", ["vote:+1"]],
+  ])("rejects an ambiguous %s target created during scrubber initialization", async (signal, extraTags) => {
+    const remote = "git@github.com:lcm-vote-tests/feedback-race-ambiguity.git";
+    const { cwd: here } = checkout(remote, []);
+    const { cwd: owner, ids } = checkout(remote, ["owner"]);
+    const { cwd: second, ids: secondIds } = checkout(remote, ["second"]);
+    const secondDb = new DatabaseSync(projectDbPath(second, paths));
+    secondDb.prepare("UPDATE promoted SET id = ?, archived_at = datetime('now') WHERE id = ?").run(ids[0], secondIds[0]);
+    secondDb.close();
+    let resume!: () => void; let paused!: () => void;
+    const pause = new Promise<void>((resolve) => { paused = resolve; });
+    const release = new Promise<void>((resolve) => { resume = resolve; });
+    scrubGate.wait = async () => { paused(); await release; return { scrub: (text: string) => text }; };
+    const { daemon, port } = await startDaemon();
+    try {
+      const pending = postStore(port, { cwd: here, text: "feedback", tags: [signal, ...extraTags, `memory_id:${ids[0]}`] });
+      await pause;
+      const db = new DatabaseSync(projectDbPath(second, paths));
+      new PromotedStore(db).revive(ids[0]);
+      db.close(); resume();
+      expect((await pending).status).toBe(409);
+      const ownerDb = new DatabaseSync(projectDbPath(owner, paths));
+      const signals = ownerDb.prepare("SELECT COUNT(*) AS count FROM promoted WHERE tags LIKE '%signal:memory_%'").get() as { count: number };
+      ownerDb.close(); expect(signals.count).toBe(0);
+    } finally { await daemon.stop(); }
+  });
+
   it("discovers a sibling memory created by an ordinary store request", async () => {
     const remote = "git@github.com:lcm-vote-tests/ordinary-store-registration.git";
     const here = unregisteredCheckout(remote);

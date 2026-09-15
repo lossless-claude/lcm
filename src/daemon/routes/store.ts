@@ -185,6 +185,23 @@ export function createStoreHandler(config: DaemonConfig, paths: LcmPaths): Route
     const scrubber = await getScrubEngine(config, projectDir(targetPath, paths));
     const scrubbedText = scrubber.scrub(text);
 
+    const targetMemoryId = vote?.memoryId ?? usageMemoryId;
+    if (targetMemoryId) {
+      const resolved = resolveMemoryTargetCwd(projectPath, targetMemoryId, paths);
+      if (resolved && "ambiguous" in resolved) {
+        sendJson(res, 409, { error: `memory_id ${targetMemoryId} is ambiguous across this project group` });
+        return;
+      }
+      if (!resolved) {
+        sendJson(res, 400, { error: `memory_id ${targetMemoryId} was not found (or is archived) in this project or its group` });
+        return;
+      }
+      if (resolved.cwd !== targetPath) {
+        sendJson(res, 400, { error: `memory_id ${targetMemoryId} owner changed while storing feedback` });
+        return;
+      }
+    }
+
     const dbPath = projectDbPath(targetPath, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
     // The shared pool, like the resolver above: targetPath can be a sibling the daemon
