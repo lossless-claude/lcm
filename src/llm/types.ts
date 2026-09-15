@@ -40,6 +40,8 @@ export type SummarizerUsage = {
 export type SummarizeContext = {
   /** Internal alternate task: send text verbatim with this system instruction. */
   taskPrompt?: string;
+  /** BCP 47 language tag for generated summary text, when configured or detected. */
+  language?: string;
   sessionId?: string;
   client?: "claude" | "codex" | "copilot";
   isCondensed?: boolean;

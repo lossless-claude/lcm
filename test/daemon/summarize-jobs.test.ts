@@ -66,8 +66,12 @@ describe("session summarize jobs", () => {
     await expect(store.next("one")).resolves.toMatchObject(input);
   });
 
-  async function sessionSummarizer(): Promise<LcmSummarizeFn> {
-    const config = loadDaemonConfig("/nonexistent", { llm: { provider: "session", fallbackProvider: "openai" } }, {});
+  async function sessionSummarizer(language?: string): Promise<LcmSummarizeFn> {
+    const overrides: Record<string, unknown> = {
+      llm: { provider: "session", fallbackProvider: "openai" },
+    };
+    if (language) overrides.summarizer = { language };
+    const config = loadDaemonConfig("/nonexistent", overrides, {});
     return (await createSummarizer("session", config, store))!;
   }
 
@@ -85,6 +89,15 @@ describe("session summarize jobs", () => {
     expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({ provider: isCondensed ? "session:fork" : "session:haiku",
       inputTokens: 123, outputTokens: 12, estimated: !isCondensed, tokensUsed: 135 }));
     expect(fallback).not.toHaveBeenCalled();
+  });
+
+  it("applies the configured language to session summarization jobs", async () => {
+    const summarize = await sessionSummarizer("pt-BR");
+    const pending = summarize("conversation", false, { sessionId: "one" });
+    const job = await store.next("one");
+    expect(job?.prompt).toContain("- Write the summary in pt-BR.");
+    store.answer(job!.id, { text: "summary" });
+    await expect(pending).resolves.toBe("summary");
   });
 
   it.each(["timeout", "error"])("uses configured fallback and its usage on %s, discarding late answers", async (outcome) => {

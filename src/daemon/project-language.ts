@@ -3,7 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "./config.js";
 import type { LcmPaths } from "../lcm-paths.js";
 import { projectMetaPath } from "./project.js";
-import { createSummarizer, resolveEffectiveProvider } from "./summarizer.js";
+import { createSummarizer, resolveEffectiveProvider, type CompactClient } from "./summarizer.js";
 import { detectLanguage, sampleHumanTurns, LANGUAGE_SAMPLE_SIZE } from "../search/language.js";
 import { ensureLanguagePack } from "../store/language-pack.js";
 
@@ -21,7 +21,7 @@ import { ensureLanguagePack } from "../store/language-pack.js";
 /** Fewer human turns than this and a corpus is too young to tell. */
 const MIN_TURNS_FOR_DETECTION = LANGUAGE_SAMPLE_SIZE;
 
-const inFlight = new Set<string>();
+const inFlight = new Map<string, Promise<void>>();
 const failed = new Set<string>();
 
 function readMeta(path: string): Record<string, unknown> {
@@ -33,8 +33,8 @@ function readMeta(path: string): Record<string, unknown> {
   }
 }
 
-function summarizerUnavailable(config: DaemonConfig): boolean {
-  return Boolean(config.summarizer?.mock) || resolveEffectiveProvider(config) === "disabled";
+function summarizerUnavailable(config: DaemonConfig, client?: CompactClient): boolean {
+  return Boolean(config.summarizer?.mock) || resolveEffectiveProvider(config, client) === "disabled";
 }
 
 /**
@@ -42,20 +42,27 @@ function summarizerUnavailable(config: DaemonConfig): boolean {
  * schedule detection for after the response. Returns the pending work so a
  * test can await it; production callers drop the promise.
  */
-export function scheduleProjectLanguageDetection(cwd: string, db: DatabaseSync, config: DaemonConfig, paths: LcmPaths): Promise<void> {
-  if (summarizerUnavailable(config)) return Promise.resolve();
+export function scheduleProjectLanguageDetection(
+  cwd: string, db: DatabaseSync, config: DaemonConfig, paths: LcmPaths, client?: CompactClient,
+): Promise<void> {
+  if (summarizerUnavailable(config, client)) return Promise.resolve();
   const metaPath = projectMetaPath(cwd, paths);
-  if (inFlight.has(metaPath) || failed.has(metaPath)) return Promise.resolve();
+  const pending = inFlight.get(metaPath);
+  if (pending) return pending;
+  if (failed.has(metaPath)) return Promise.resolve();
   if (typeof readMeta(metaPath).language === "string") return Promise.resolve();
   const turns = sampleHumanTurns(db, paths);
   if (turns.length < MIN_TURNS_FOR_DETECTION) return Promise.resolve();
-  inFlight.add(metaPath);
-  return detectAndRecord(metaPath, turns, config, paths).finally(() => inFlight.delete(metaPath));
+  const detection = detectAndRecord(metaPath, turns, config, paths, client).finally(() => inFlight.delete(metaPath));
+  inFlight.set(metaPath, detection);
+  return detection;
 }
 
-async function detectAndRecord(metaPath: string, turns: string[], config: DaemonConfig, paths: LcmPaths): Promise<void> {
+async function detectAndRecord(
+  metaPath: string, turns: string[], config: DaemonConfig, paths: LcmPaths, client?: CompactClient,
+): Promise<void> {
   try {
-    const provider = resolveEffectiveProvider(config);
+    const provider = resolveEffectiveProvider(config, client);
     const summarize = await createSummarizer(provider, config);
     if (!summarize) return;
     const language = await detectLanguage(turns, summarize);
@@ -63,7 +70,7 @@ async function detectAndRecord(metaPath: string, turns: string[], config: Daemon
     const meta = readMeta(metaPath);
     if (typeof meta.language === "string") return;
     writeFileSync(metaPath, JSON.stringify({ ...meta, language, languageDetectedAt: new Date().toISOString() }, null, 2));
-    await ensureLanguagePack(paths, language, summarize, `${provider}:${config.llm.model}`);
+    void ensureLanguagePack(paths, language, summarize, `${provider}:${config.llm.model}`);
   } catch (err) {
     // Once per daemon lifetime per project: a broken provider must not turn every ingest into a warning.
     failed.add(metaPath);

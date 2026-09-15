@@ -5,11 +5,13 @@ variables:
   - text
   - previousContextBlock
   - instructionBlock
+  - language
 template: |-
   You are compacting leaf-level conversation summaries into a single condensed memory node.
   You are preparing context for a fresh model instance that will continue this conversation.
 
   {{instructionBlock}}
+  {{language}}
 
   {{previousContextBlock}}
 

@@ -11,6 +11,7 @@ describe("loadDaemonConfig", () => {
     expect(c.daemon.socketPath).toContain("daemon.sock");
     expect(c.llm.provider).toBe("auto");
     expect(c.llm.model).toBe("");
+    expect(c.summarizer.language).toBeUndefined();
     expect(c.restoration.recentSummaries).toBe(3);
     expect(c.restoration.recallUsageBoost).toBe(0.75);
     expect(c.restoration.surfacingCooldownWindow).toBe(2);
@@ -26,6 +27,13 @@ describe("loadDaemonConfig", () => {
     const c = loadDaemonConfig("/nonexistent/config.json", { daemon: { port: 4000 } });
     expect(c.daemon.port).toBe(4000);
     expect(c.daemon.socketPath).toContain("daemon.sock");
+  });
+
+  it("loads an explicit summarizer language", () => {
+    const c = loadDaemonConfig("/nonexistent/config.json", {
+      summarizer: { language: "pt-BR" },
+    });
+    expect(c.summarizer.language).toBe("pt-BR");
   });
 
   it("interpolates ${ANTHROPIC_API_KEY} from env", () => {

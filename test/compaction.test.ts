@@ -35,10 +35,17 @@ describe("CompactionEngine.compact — previousSummaryContent seeding", () => {
   it("passes previousSummaryContent to summarize on the first leaf call", async () => {
     const { conversationStore, summaryStore } = makeMinimalStores();
 
-    const summarizeCalls: { previousSummary?: string }[] = [];
+    const summarizeCalls: { previousSummary?: string; language?: string }[] = [];
     const summarize: CompactionSummarizeFn = vi.fn().mockImplementation(
-      async (_text: string, _aggressive?: boolean, options?: { previousSummary?: string }) => {
-        summarizeCalls.push({ previousSummary: options?.previousSummary });
+      async (
+        _text: string,
+        _aggressive?: boolean,
+        options?: { previousSummary?: string; language?: string },
+      ) => {
+        summarizeCalls.push({
+          previousSummary: options?.previousSummary,
+          language: options?.language,
+        });
         return "summary content";
       }
     );
@@ -52,6 +59,7 @@ describe("CompactionEngine.compact — previousSummaryContent seeding", () => {
       incrementalMaxDepth: 0,
       condensedTargetTokens: 900,
       maxRounds: 1,
+      language: "pt-BR",
     });
 
     await engine.compact({
@@ -64,13 +72,16 @@ describe("CompactionEngine.compact — previousSummaryContent seeding", () => {
 
     expect(summarizeCalls.length).toBeGreaterThan(0);
     expect(summarizeCalls[0].previousSummary).toBe("prior context");
+    expect(summarizeCalls[0].language).toBe("pt-BR");
   });
 });
 
 describe("compactEngineConfig", () => {
   it("threads through the only per-caller value", () => {
     const scrubber = {} as never;
-    expect(compactEngineConfig({ scrubber }).scrubber).toBe(scrubber);
+    const config = compactEngineConfig({ scrubber, language: "pt-BR" });
+    expect(config.scrubber).toBe(scrubber);
+    expect(config.language).toBe("pt-BR");
     expect(compactEngineConfig().scrubber).toBeUndefined();
   });
 

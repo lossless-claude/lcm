@@ -5,6 +5,7 @@ variables:
   - text
   - previousContext
   - instructionBlock
+  - language
 template: |-
   You summarize a SEGMENT of a Claude Code conversation for future model turns.
   Treat this as incremental memory compaction input, not a full-conversation summary.
@@ -15,6 +16,7 @@ template: |-
   - Preserve explicit TODOs, blockers, decisions, and constraints.
 
   {{instructionBlock}}
+  {{language}}
 
   Output requirements:
   - Plain text only.

@@ -18,7 +18,12 @@ import { CompactionEngine, compactEngineConfig, COMPACT_TOKEN_BUDGET } from "../
 import { parseTranscript } from "../../transcript.js";
 import type { LcmSummarizeFn } from "../../llm/types.js";
 import { ScrubEngine } from "../../scrub.js";
-import { resolveEffectiveProvider, createSummarizer, type EffectiveProvider } from "../summarizer.js";
+import {
+  resolveEffectiveProvider,
+  resolveSummarizerLanguage,
+  createSummarizer,
+  type EffectiveProvider,
+} from "../summarizer.js";
 import { validateCwd } from "../validate-cwd.js";
 import { scheduleProjectLanguageDetection } from "../project-language.js";
 
@@ -297,7 +302,6 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                 upsertRedactionCounts(db, pid, ingestCounts);
                 await summaryStore.appendContextMessages(conversation.conversationId, records.map((r) => r.messageId));
               });
-              void scheduleProjectLanguageDetection(cwd, db, config, paths);
             }
           }
 
@@ -307,6 +311,14 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           if (tokenCount === 0) {
             // A replay ledgers this as done; otherwise every later run sees a gap here.
             return { summary: "No messages to compact.", replayOutcome: "no_work", providerId: effectiveProvider, providerLabel };
+          }
+
+          let language = resolveSummarizerLanguage(config, cwd, paths);
+          if (language === undefined) {
+            await scheduleProjectLanguageDetection(cwd, db, config, paths, client);
+            language = resolveSummarizerLanguage(config, cwd, paths);
+          } else {
+            void scheduleProjectLanguageDetection(cwd, db, config, paths, client);
           }
 
           let sawReportedUsageModel = false;
@@ -381,7 +393,11 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             }
           };
 
-          const engine = new CompactionEngine(conversationStore, summaryStore, compactEngineConfig({ scrubber }));
+          const engine = new CompactionEngine(
+            conversationStore,
+            summaryStore,
+            compactEngineConfig({ scrubber, language }),
+          );
 
           const compactResult = await engine.compact({
             conversationId: conversation.conversationId,

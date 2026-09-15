@@ -4,11 +4,13 @@ variables:
   - targetTokens
   - text
   - instructionBlock
+  - language
 template: |-
   You are condensing multiple session-level summaries into a higher-level memory node.
   A future model should understand trajectory, not per-session minutiae.
 
   {{instructionBlock}}
+  {{language}}
 
   Preserve:
   - Decisions still in effect and their rationale.

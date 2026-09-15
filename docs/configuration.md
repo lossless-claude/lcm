@@ -194,6 +194,24 @@ names are surfaced.
 - Smaller chunks create summaries more frequently from less material.
 - This also affects the condensed minimum input threshold (10% of this value).
 
+### Summary language
+
+`summarizer.language` controls the language of newly generated summaries:
+
+```json
+{ "summarizer": { "language": "pt-BR" } }
+```
+
+When it is unset, lcm uses the project's recorded author language when one has
+been detected. If neither value is available, lcm does not add a language
+instruction and the model chooses as before. An explicit setting takes
+precedence over the recorded project language. Values must be valid BCP 47
+language tags; lcm canonicalizes common locale spellings such as `PT_br` and
+rejects invalid tags.
+
+This applies only to summaries generated after the setting takes effect.
+Captured messages and existing summaries are never rewritten or regenerated.
+
 ## Model selection
 
 LCM defaults to `LCM_SUMMARY_PROVIDER=auto`.
