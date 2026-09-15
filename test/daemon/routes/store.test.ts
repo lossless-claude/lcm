@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -80,6 +80,28 @@ describe("POST /store", () => {
         body: JSON.stringify({ text: "hello" }),
       });
       expect(res.status).toBe(400);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it.each([null, 42, "decision", ["decision", 42]])("returns 400 without creating a database when tags are not string arrays", async (tags) => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-store-tags-"));
+    tempDirs.push(tempDir);
+    const config = loadDaemonConfig("/nonexistent");
+    config.daemon.port = 0;
+    const daemon = await createDaemon(config);
+    const port = daemon.address().port;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/store`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "hello", tags, cwd: tempDir }),
+      });
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toMatchObject({ error: "tags must be an array of strings" });
+      expect(existsSync(projectDbPath(tempDir, paths))).toBe(false);
     } finally {
       await daemon.stop();
     }

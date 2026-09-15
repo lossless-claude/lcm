@@ -260,7 +260,7 @@ describe("printStats", () => {
     const out = captureLog(() => printStats({
       ...baseStats,
       promotionCandidates: [
-        { id: "mem-1", content: "lcm reports; a human decides", useCount: 5, plusOne: 2, minusOne: 0, objections: [] },
+        { id: "mem-1", ownerProjectId: "owner-1", content: "lcm reports; a human decides", useCount: 5, plusOne: 2, minusOne: 0, objections: [] },
       ],
     }, false));
     expect(out).toContain("Promotion Candidates");
@@ -269,6 +269,7 @@ describe("printStats", () => {
     expect(out).toContain("5");
     expect(out).toContain("+1:");
     expect(out).toContain("2");
+    expect(out).toContain("owner-1");
   });
 
   it("prints a contested memory with its objection reason and vote id", () => {
@@ -277,8 +278,9 @@ describe("printStats", () => {
       contested: [
         {
           id: "mem-2",
+          ownerProjectId: "owner-2",
           content: "the daemon always listens on 3737",
-          objections: [{ voteId: "vote-1", reason: "config now sets a different port" }],
+          objections: [{ voteId: "vote-1", ownerProjectId: "owner-2", reason: "config now sets a different port" }],
         },
       ],
     }, false));
@@ -287,6 +289,8 @@ describe("printStats", () => {
     expect(out).toContain("vote-1");
     expect(out).toContain("config now sets a different port");
     expect(out).toContain("review-stale");
+    expect(out).toContain("owner-2");
+    expect(out).toContain("vote-1, owner: owner-2");
   });
 
   it("omits the Summarizer section until a call is recorded", () => {

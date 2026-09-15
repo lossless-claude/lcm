@@ -1,22 +1,56 @@
 import { DatabaseSync } from "node:sqlite";
-import { readdirSync, existsSync } from "node:fs";
+import { readdirSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { collectEventStats } from "./db/events-stats.js";
-import { RecallStore, type RecallStats } from "./db/recall.js";
+import { closeLcmConnection, getLcmConnection } from "./db/connection.js";
+import { collectLegacyUsageCounts, RecallStore, type RecallStats } from "./db/recall.js";
 import { PromotedStore } from "./db/promoted.js";
-import { isSignalTagged } from "./db/votes.js";
+import { isSignalTagged, parseStoredTags } from "./db/votes.js";
 import { loadDaemonConfig } from "./daemon/config.js";
+import { projectGroups } from "./daemon/project-group.js";
 import type { LcmPaths } from "./lcm-paths.js";
 
 export type { RecallStats };
 
+export function collectLegacyUsageByGroups(
+  groupsByOwner: ReadonlyMap<string, readonly string[]>,
+  open: (id: string) => DatabaseSync,
+  close: (id: string) => void,
+): { byOwner: Map<string, Map<string, number>>; ambiguousByOwner: Map<string, Set<string>> } {
+  const byOwner = new Map<string, Map<string, number>>();
+  const ambiguousByOwner = new Map<string, Set<string>>();
+  const cached = new Map<string, ReturnType<typeof collectLegacyUsageCounts>>();
+  for (const [owner, members] of groupsByOwner) {
+    const group = [...new Set(members)].sort();
+    const cacheKey = group.join("\0");
+    let legacy = cached.get(cacheKey);
+    if (!legacy) {
+      const databases = new Map<string, DatabaseSync>();
+      try {
+        for (const id of group) {
+          try { databases.set(id, open(id)); } catch { /* skip one unreadable member */ }
+        }
+        legacy = collectLegacyUsageCounts(databases);
+      } catch { /* a malformed group does not suppress later groups */ }
+      finally { for (const id of databases.keys()) close(id); }
+      legacy ??= { byOwner: new Map(), ambiguousIds: new Set() };
+      cached.set(cacheKey, legacy);
+    }
+    byOwner.set(owner, legacy.byOwner.get(owner) ?? new Map());
+    ambiguousByOwner.set(owner, legacy.ambiguousIds);
+  }
+  return { byOwner, ambiguousByOwner };
+}
+
 export interface VoteObjection {
   voteId: string;
   reason: string;
+  ownerProjectId: string;
 }
 
 export interface PromotionCandidate {
   id: string;
+  ownerProjectId: string;
   content: string;
   useCount: number;
   plusOne: number;
@@ -26,6 +60,7 @@ export interface PromotionCandidate {
 
 export interface ContestedMemory {
   id: string;
+  ownerProjectId: string;
   content: string;
   objections: VoteObjection[];
 }
@@ -39,12 +74,18 @@ export interface ContestedMemory {
 function computePromotionSections(
   db: DatabaseSync,
   enforcementThreshold: number,
+  ownerProjectId: string,
+  legacyUsageCounts: ReadonlyMap<string, number> = new Map(),
+  ambiguousIds: ReadonlySet<string> = new Set(),
 ): { promotionCandidates: PromotionCandidate[]; contested: ContestedMemory[] } {
   const promotedStore = new PromotedStore(db);
-  const active = promotedStore.getAll().filter((r) => !isSignalTagged(JSON.parse(r.tags) as string[]));
+  const active = promotedStore.getAll().filter((r) => {
+    const tags = parseStoredTags(r.tags);
+    return tags !== null && !isSignalTagged(tags);
+  });
   if (active.length === 0) return { promotionCandidates: [], contested: [] };
 
-  const feedback = new RecallStore(db).getFeedback(active.map((r) => r.id));
+  const feedback = new RecallStore(db).getFeedback(active.map((r) => r.id), legacyUsageCounts, ambiguousIds);
   const voteCounts = promotedStore.getVoteCounts();
 
   const promotionCandidates: PromotionCandidate[] = [];
@@ -53,13 +94,13 @@ function computePromotionSections(
   for (const row of active) {
     const useCount = feedback.get(row.id)?.usageCount ?? 0;
     const votes = voteCounts.get(row.id) ?? { plusOne: 0, minusOne: 0, objections: [] };
-    const objections: VoteObjection[] = votes.objections.map((o) => ({ voteId: o.voteId, reason: o.reason }));
+    const objections: VoteObjection[] = votes.objections.map((o) => ({ voteId: o.voteId, reason: o.reason, ownerProjectId }));
 
     if (useCount >= enforcementThreshold) {
-      promotionCandidates.push({ id: row.id, content: row.content, useCount, plusOne: votes.plusOne, minusOne: votes.minusOne, objections });
+      promotionCandidates.push({ id: row.id, ownerProjectId, content: row.content, useCount, plusOne: votes.plusOne, minusOne: votes.minusOne, objections });
     }
     if (votes.minusOne > 0) {
-      contested.push({ id: row.id, content: row.content, objections });
+      contested.push({ id: row.id, ownerProjectId, content: row.content, objections });
     }
   }
 
@@ -125,6 +166,8 @@ function queryProjectStats(
   dbPath: string,
   projectId: string,
   staleCfg: { staleAfterDays: number; staleSurfacingWithoutUseLimit: number; enforcementThreshold: number },
+  legacyUsageCounts: ReadonlyMap<string, number> = new Map(),
+  ambiguousIds: ReadonlySet<string> = new Set(),
 ): Omit<OverallStats, "projects" | "recallStats" | "staleCount"> & { recallStats: RecallStats; staleCount: number } {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   db.exec("PRAGMA busy_timeout = 5000");
@@ -215,8 +258,16 @@ function queryProjectStats(
     const compactedRaw = compacted.reduce((s, c) => s + c.rawTokens, 0);
     const compactedSum = compacted.reduce((s, c) => s + c.summaryTokens, 0);
 
+    const activeMemoryIds = promotedColumns.has("archived_at")
+      ? new Set(new PromotedStore(db).getAll()
+        .filter((row) => {
+          const tags = parseStoredTags(row.tags);
+          return tags !== null && !isSignalTagged(tags);
+        })
+        .map((row) => row.id))
+      : undefined;
     const recallStats: RecallStats = columns("recall_surfacing").size && promotedColumns.has("archived_at")
-      ? new RecallStore(db).getStats()
+      ? new RecallStore(db).getStats(legacyUsageCounts, activeMemoryIds, ambiguousIds)
       : { memoriesSurfaced: 0, memoriesActedUpon: 0, recallPrecision: null, topRecalled: [] };
 
     // Count stale promoted memories (config is passed in to avoid re-reading per project)
@@ -226,13 +277,15 @@ function queryProjectStats(
         staleAfterDays: staleCfg.staleAfterDays,
         staleSurfacingWithoutUseLimit: staleCfg.staleSurfacingWithoutUseLimit,
         projectId,
+        legacyUsageCounts,
+        ambiguousIds,
       }).length;
     } catch { /* non-fatal */ }
 
     let promotionCandidates: PromotionCandidate[] = [];
     let contested: ContestedMemory[] = [];
     try {
-      ({ promotionCandidates, contested } = computePromotionSections(db, staleCfg.enforcementThreshold));
+      ({ promotionCandidates, contested } = computePromotionSections(db, staleCfg.enforcementThreshold, projectId, legacyUsageCounts, ambiguousIds));
     } catch { /* non-fatal */ }
 
     return {
@@ -462,6 +515,7 @@ export function printStats(stats: OverallStats, verbose: boolean): void {
     for (const c of stats.promotionCandidates) {
       const preview = c.content.length > 70 ? c.content.slice(0, 70) + "…" : c.content;
       console.log(`    ${dim}${preview}${reset}`);
+      console.log(`    ${dim}id:${reset} ${c.id}  ${dim}owner:${reset} ${c.ownerProjectId}`);
       const objectionNote = c.minusOne > 0 ? `${dim} (contested — see below)${reset}` : "";
       console.log(`    ${dim}uses:${reset} ${c.useCount}  ${dim}+1:${reset} ${c.plusOne}  ${dim}-1:${reset} ${c.minusOne}${objectionNote}`);
       console.log();
@@ -476,8 +530,9 @@ export function printStats(stats: OverallStats, verbose: boolean): void {
     for (const c of stats.contested) {
       const preview = c.content.length > 70 ? c.content.slice(0, 70) + "…" : c.content;
       console.log(`    ${yellow}${preview}${reset}`);
+      console.log(`    ${dim}id:${reset} ${c.id}  ${dim}owner:${reset} ${c.ownerProjectId}`);
       for (const o of c.objections) {
-        console.log(`    ${dim}-1 (${o.voteId}):${reset} ${o.reason}`);
+        console.log(`    ${dim}-1 (${o.voteId}, owner: ${o.ownerProjectId}):${reset} ${o.reason}`);
       }
       console.log();
     }
@@ -582,13 +637,41 @@ export function collectStats(paths: LcmPaths): OverallStats {
     };
   } catch { /* use defaults */ }
 
+  const projectIds = new Set(
+    readdirSync(baseDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && existsSync(join(baseDir, entry.name, "db.sqlite")))
+      .map((entry) => entry.name),
+  );
+  const cwdByProjectId = new Map<string, string>();
+  for (const projectId of projectIds) {
+    try {
+      const meta = JSON.parse(readFileSync(join(baseDir, projectId, "meta.json"), "utf8")) as { cwd?: unknown };
+      if (typeof meta.cwd === "string") cwdByProjectId.set(projectId, meta.cwd);
+    } catch { /* a legacy project has no group identity */ }
+  }
+  const groupsByCwd = projectGroups(cwdByProjectId.values(), paths);
+  const groupsByOwner = new Map<string, string[]>();
+  for (const projectId of projectIds) {
+    let groupIds = [projectId];
+    const cwd = cwdByProjectId.get(projectId);
+    if (cwd) groupIds = [...new Set([projectId, ...(groupsByCwd.get(cwd) ?? [])
+      .map((member) => member.projectId)
+      .filter((id) => projectIds.has(id))])];
+    groupsByOwner.set(projectId, groupIds);
+  }
+  const { byOwner: legacyUsageByOwner, ambiguousByOwner } = collectLegacyUsageByGroups(
+    groupsByOwner,
+    (id) => getLcmConnection(join(baseDir, id, "db.sqlite"), { readOnly: true }),
+    (id) => closeLcmConnection(join(baseDir, id, "db.sqlite"), { readOnly: true }),
+  );
+
   for (const entry of readdirSync(baseDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const dbPath = join(baseDir, entry.name, "db.sqlite");
     if (!existsSync(dbPath)) continue;
 
     try {
-      const projStats = queryProjectStats(dbPath, entry.name, staleCfg);
+      const projStats = queryProjectStats(dbPath, entry.name, staleCfg, legacyUsageByOwner.get(entry.name), ambiguousByOwner.get(entry.name));
       // Before the messages gate: a project can hold promoted memories and their use and
       // vote records without any conversation of its own — a fresh checkout using lcm_store.
       allPromotionCandidates.push(...projStats.promotionCandidates);

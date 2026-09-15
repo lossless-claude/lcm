@@ -9,6 +9,16 @@ export type VoteDirection = "+1" | "-1";
 
 export const VOTE_SIGNAL_TAG = "signal:memory_vote";
 
+/** Parses tags persisted by older versions without trusting their JSON shape. */
+export function parseStoredTags(raw: string): string[] | null {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.every((tag): tag is string => typeof tag === "string") ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Any reserved protocol tag (`signal:memory_used`, `signal:memory_vote`, ...). */
 export function isSignalTagged(tags: string[]): boolean {
   return tags.some((t) => t.startsWith("signal:"));

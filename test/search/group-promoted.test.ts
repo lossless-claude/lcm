@@ -96,6 +96,7 @@ describe("searchPromotedGroup", () => {
     const { feedback } = searchPromotedGroup(here, { query: "compaction", limit: 10, withFeedback: true }, paths);
     expect(feedback.get(siblingId)?.surfacingCount).toBe(1);
   });
+
 });
 
 describe("logGroupSurfacing", () => {

@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "../config.js";
 import type { LcmPaths } from "../../lcm-paths.js";
-import { projectDbPath, projectId as computeProjectId } from "../project.js";
+import { projectDbPath } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { closeLcmConnection, getLcmConnection } from "../../db/connection.js";
@@ -325,10 +325,9 @@ export function createPromptSearchHandler(config: DaemonConfig, paths: LcmPaths)
       // A hit surfaced from a sibling checkout carries its own project id, so the
       // agent can pass it back to lcm_describe/lcm_expand; a hit from this project
       // renders bare, exactly as before.
-      const currentProjectId = computeProjectId(validatedCwd);
       const candidates = filtered.map((result) => ({
         id: result.id,
-        projectId: result.project.id === currentProjectId ? undefined : result.project.id,
+        projectId: result.project.cwd === validatedCwd ? undefined : result.project.id,
         hint: result.content.length > snippetLength
           ? result.content.slice(0, snippetLength) + "..."
           : result.content,

@@ -94,6 +94,21 @@ describe("POST /review-stale", () => {
     expect(body.stale[0].daysSinceCreated).toBeGreaterThanOrEqual(119);
   });
 
+  it("returns structured success when historical tags are malformed", async () => {
+    const id = seedStaleMemory(tmpDir, "Malformed tags", 120);
+    const db = new DatabaseSync(projectDbPath(tmpDir, paths));
+    try {
+      db.prepare("UPDATE promoted SET tags = ? WHERE id = ?").run('["type:knowledge", 1]', id);
+    } finally { db.close(); }
+
+    daemon = await createDaemon(loadDaemonConfig(tmpDir, { daemon: { port: 0 } }));
+    const res = await fetch(`http://127.0.0.1:${daemon.address().port}/review-stale`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cwd: tmpDir }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ stale: [], total: 0 });
+  });
+
   it("archives a stale candidate", async () => {
     const id = seedStaleMemory(tmpDir, "Archive me", 120);
 

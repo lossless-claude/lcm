@@ -120,11 +120,11 @@ function localTools(paths: LcmPaths): Partial<Record<string, (args: Record<strin
       lines.push("");
       lines.push("## Promotion candidates");
       lines.push("");
-      lines.push("| Memory | Uses | +1 | -1 |");
-      lines.push("|--------|------|----|----|");
+      lines.push("| Memory ID | Memory | Owner | Uses | +1 | -1 |");
+      lines.push("|-----------|--------|-------|------|----|----|");
       for (const c of stats.promotionCandidates) {
         const preview = c.content.length > 80 ? c.content.slice(0, 80) + "…" : c.content;
-        lines.push(`| ${cell(preview)} | ${c.useCount} | ${c.plusOne} | ${c.minusOne} |`);
+        lines.push(`| ${c.id} | ${cell(preview)} | ${c.ownerProjectId} | ${c.useCount} | ${c.plusOne} | ${c.minusOne} |`);
       }
     }
 
@@ -135,9 +135,9 @@ function localTools(paths: LcmPaths): Partial<Record<string, (args: Record<strin
       lines.push("");
       for (const c of stats.contested) {
         const preview = c.content.length > 80 ? c.content.slice(0, 80) + "…" : c.content;
-        lines.push(`- ${cell(preview)}`);
+        lines.push(`- ${c.id}: ${cell(preview)} (owner: ${c.ownerProjectId})`);
         for (const o of c.objections) {
-          lines.push(`  - -1 (${o.voteId}): ${cell(o.reason)}`);
+          lines.push(`  - -1 (${o.voteId}, owner: ${o.ownerProjectId}): ${cell(o.reason)}`);
         }
       }
       lines.push("");
