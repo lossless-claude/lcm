@@ -15,6 +15,7 @@ import { enqueue } from "../../../src/daemon/project-queue.js";
 import { importSessions } from "../../../src/import.js";
 import { EventsDb } from "../../../src/hooks/events-db.js";
 import { eventsDbPath } from "../../../src/db/events-path.js";
+import { dispatchCodexHook, type CodexHookDeps } from "../../../src/hooks/codex.js";
 
 const tempDirs: string[] = [];
 
@@ -559,11 +560,20 @@ describe("POST /ingest", () => {
       { type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "done again" }] } },
     ].map(line => JSON.stringify(line)).join("\n") + "\n");
 
-    const sidecar = new EventsDb(eventsDbPath(tempDir, paths));
-    sidecar.insertToolCallEvents(sessionId, [{ type: "file_edit", category: "file", data: "src/example.ts (source)", priority: 3 }], "PostToolUse", "call_patch", "codex", null, "turn-1");
-    sidecar.insertToolCallEvents(sessionId, [{ type: "file_edit", category: "file", data: "src/second.ts (source)", priority: 3 }], "PostToolUse", "call_patch_2", "codex", null, "turn-1");
-    sidecar.insertToolCallEvents(sessionId, [{ type: "file_edit", category: "file", data: "src/third.ts (source)", priority: 3 }], "PostToolUse", "call_patch_3", "codex", null, "turn-2");
-    sidecar.close();
+    const hookDeps: CodexHookDeps = {
+      client: { post: async () => ({}) }, connect: async () => true, enabled: true, paths,
+    };
+    for (const [tool_use_id, turn_id, file] of [
+      ["call_patch", "turn-1", "src/example.ts"],
+      ["call_patch_2", "turn-1", "src/second.ts"],
+      ["call_patch_3", "turn-2", "src/third.ts"],
+    ]) {
+      await dispatchCodexHook(JSON.stringify({
+        hook_event_name: "PostToolUse", session_id: sessionId, cwd: tempDir,
+        tool_name: "apply_patch", tool_use_id, turn_id,
+        tool_input: { command: `*** Begin Patch\n*** Update File: ${file}\n*** End Patch` },
+      }), hookDeps);
+    }
 
     daemon = await createDaemon(loadDaemonConfig("/nonexistent", { daemon: { port: 0 } }));
     const post = () => fetch(`http://127.0.0.1:${daemon!.address().port}/ingest`, {

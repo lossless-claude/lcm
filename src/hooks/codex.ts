@@ -77,9 +77,11 @@ function parseToolInput(stdin: string): CodexToolInput | null {
 
 function codexPatchPaths(command: unknown): string[] {
   if (typeof command !== "string") return [];
-  return [...command.matchAll(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm)]
-    .map(match => match[1].trim())
-    .filter(Boolean);
+  return [...new Set(
+    [...command.matchAll(/^\*\*\* (?:(?:Update|Add|Delete) File: (.+)|Move to: (.+))$/gm)]
+      .map(match => (match[1] ?? match[2]).trim())
+      .filter(Boolean),
+  )];
 }
 
 /** Maps only Codex-local names to the equivalent extractor input. */

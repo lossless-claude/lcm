@@ -53,6 +53,7 @@ describe("Codex PostToolUse / PostToolUseFailure capture", () => {
       tool_name: "Bash",
       tool_input: { command: "git commit -m 'fix bug'" },
       tool_use_id: "call_1",
+      turn_id: "turn-1",
       model: "gpt-5.6-codex",
     });
 
@@ -64,7 +65,7 @@ describe("Codex PostToolUse / PostToolUseFailure capture", () => {
     const [row] = db.getUnprocessed();
     expect(row).toMatchObject({
       session_id: "codex-session", type: "git_commit", category: "git",
-      client: "codex", model: "gpt-5.6-codex", tool_use_id: "call_1",
+      client: "codex", model: "gpt-5.6-codex", tool_use_id: "call_1", turn_id: "turn-1",
     });
     db.close();
   });
@@ -80,6 +81,8 @@ describe("Codex PostToolUse / PostToolUseFailure capture", () => {
         "*** Update File: src/example.ts",
         "*** Add File: src/new.ts",
         "*** Delete File: src/old.ts",
+        "*** Move to: src/renamed.ts",
+        "*** Move to: src/renamed.ts",
         "*** End Patch",
       ].join("\n") },
       tool_use_id: "call_patch",
@@ -90,6 +93,7 @@ describe("Codex PostToolUse / PostToolUseFailure capture", () => {
       expect.objectContaining({ type: "file_edit", category: "file", data: "src/example.ts (source)", client: "codex" }),
       expect.objectContaining({ type: "file_edit", category: "file", data: "src/new.ts (source)", client: "codex" }),
       expect.objectContaining({ type: "file_edit", category: "file", data: "src/old.ts (source)", client: "codex" }),
+      expect.objectContaining({ type: "file_edit", category: "file", data: "src/renamed.ts (source)", client: "codex" }),
     ]);
     db.close();
   });
@@ -119,6 +123,20 @@ describe("Codex PostToolUse / PostToolUseFailure capture", () => {
 
     const db = new EventsDb(join(dir, "test.db"));
     expect(db.getUnprocessed()).toEqual([]);
+    db.close();
+  });
+
+  it("normalizes exec_command to the Bash event shape", async () => {
+    await dispatchCodexHook(JSON.stringify({
+      hook_event_name: "PostToolUse",
+      session_id: "codex-session",
+      cwd: "/repo",
+      tool_name: "exec_command",
+      tool_input: { command: "git commit -m 'native command'" },
+    }), enabledDeps());
+
+    const db = new EventsDb(join(dir, "test.db"));
+    expect(db.getUnprocessed()).toEqual([expect.objectContaining({ type: "git_commit", data: "git commit: native command" })]);
     db.close();
   });
 
