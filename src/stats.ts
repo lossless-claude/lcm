@@ -618,13 +618,15 @@ export function collectStats(paths: LcmPaths): OverallStats {
         }
       } catch { /* a legacy project has no group identity */ }
       for (const id of groupIds) seen.add(id);
-      for (const [owner, counts] of collectLegacyUsageCounts(
-        groupIds.flatMap((id) => projectDatabases.has(id) ? [[id, projectDatabases.get(id)!] as [string, DatabaseSync]] : []),
-      )) {
-        legacyUsageByOwner.set(owner, counts);
-      }
+      try {
+        for (const [owner, counts] of collectLegacyUsageCounts(
+          groupIds.flatMap((id) => projectDatabases.has(id) ? [[id, projectDatabases.get(id)!] as [string, DatabaseSync]] : []),
+        )) {
+          legacyUsageByOwner.set(owner, counts);
+        }
+      } catch { /* a malformed group does not suppress later groups */ }
     }
-  } catch { /* non-fatal */ }
+  }
   finally {
     for (const [projectId] of projectDatabases) {
       closeLcmConnection(join(baseDir, projectId, "db.sqlite"), { readOnly: true });

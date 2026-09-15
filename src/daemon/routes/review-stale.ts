@@ -8,6 +8,7 @@ import type { RouteHandler } from "../server.js";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { PromotedStore } from "../../db/promoted.js";
+import { collectLegacyUsageCounts } from "../../db/recall.js";
 import { validateCwd } from "../validate-cwd.js";
 
 export type StaleCandidate = {
@@ -121,16 +122,29 @@ export function createReviewStaleHandler(config: DaemonConfig, paths: LcmPaths):
 
       openProject(cwd, paths);
       const stale: StaleCandidate[] = [];
-      for (const member of projectGroup(cwd, paths)) {
-        const dbPath = projectDbPath(member.cwd, paths);
-        if (!existsSync(dbPath)) continue;
-        const db = getLcmConnection(dbPath);
-        try {
-          runLcmMigrations(db);
+      const members = projectGroup(cwd, paths);
+      const groupDatabases = new Map<string, ReturnType<typeof getLcmConnection>>();
+      try {
+        for (const member of members) {
+          const dbPath = projectDbPath(member.cwd, paths);
+          if (!existsSync(dbPath)) continue;
+          const db = getLcmConnection(dbPath);
+          try {
+            runLcmMigrations(db);
+            groupDatabases.set(member.projectId, db);
+          } catch {
+            closeLcmConnection(dbPath);
+          }
+        }
+        const legacyUsageByOwner = collectLegacyUsageCounts(groupDatabases);
+        for (const member of members) {
+          const db = groupDatabases.get(member.projectId);
+          if (!db) continue;
           const staleRows = new PromotedStore(db).findStale({
             staleAfterDays: config.restoration.staleAfterDays,
             staleSurfacingWithoutUseLimit: config.restoration.staleSurfacingWithoutUseLimit,
             projectId: input.project_id as string | undefined,
+            legacyUsageCounts: legacyUsageByOwner.get(member.projectId),
           });
           stale.push(...staleRows.map((row) => ({
             id: row.id, content: row.content, tags: JSON.parse(row.tags) as string[],
@@ -138,8 +152,10 @@ export function createReviewStaleHandler(config: DaemonConfig, paths: LcmPaths):
             confidence: row.confidence, createdAt: row.created_at, daysSinceCreated: row.daysSinceCreated,
             surfacingCount: row.surfacingCount, usageCount: row.usageCount,
           })));
-        } finally {
-          closeLcmConnection(dbPath);
+        }
+      } finally {
+        for (const member of members) {
+          if (groupDatabases.has(member.projectId)) closeLcmConnection(projectDbPath(member.cwd, paths));
         }
       }
 

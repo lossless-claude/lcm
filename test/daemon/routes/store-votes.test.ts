@@ -7,6 +7,17 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 
 /** An isolated base dir, so these tests never touch the developer's own store. */
 const base = realpathSync(mkdtempSync(join(tmpdir(), "lcm-vote-base-")));
+const scrubGate = vi.hoisted(() => ({ wait: null as null | (() => Promise<unknown>) }));
+vi.mock("../../../src/scrub.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../../../src/scrub.js")>();
+  return {
+    ...original,
+    ScrubEngine: {
+      ...original.ScrubEngine,
+      forProject: (...args: Parameters<typeof original.ScrubEngine.forProject>) => scrubGate.wait ? scrubGate.wait() : original.ScrubEngine.forProject(...args),
+    },
+  };
+});
 vi.mock("../../../src/daemon/project.js", async (importOriginal) => {
   const original = await importOriginal<typeof import("../../../src/daemon/project.js")>();
   const dirOf = (cwd: string) => join(base, "projects", original.projectId(cwd));
@@ -31,13 +42,14 @@ const { projectId } = await import("../../../src/daemon/project.js");
 const { runLcmMigrations } = await import("../../../src/db/migration.js");
 const { PromotedStore } = await import("../../../src/db/promoted.js");
 const { collectStats } = await import("../../../src/stats.js");
+const { getPoolStats } = await import("../../../src/db/connection.js");
 
 const tempDirs: string[] = [];
 // Per test, not once at load: the group index and the daemon's own LcmPaths come from the
 // storage root rather than from the project mock, and another suite file points the same
 // variable at its own base — whichever loaded last would otherwise win for both.
 beforeEach(() => { process.env.LCM_HOME = base; });
-afterEach(() => { for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => { scrubGate.wait = null; for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 afterAll(() => rmSync(base, { recursive: true, force: true }));
 
 /** A checkout of `remote` whose promoted memory holds `contents`. Returns the checkout's cwd and stored id(s). */
@@ -95,6 +107,26 @@ async function postReviewStale(port: number, body: Record<string, unknown>) {
 }
 
 describe("POST /store — votes", () => {
+  it.each([
+    ["missing target", ["signal:memory_used"]],
+    ["empty target", ["signal:memory_used", "memory_id:"]],
+    ["duplicate targets", ["signal:memory_used", "memory_id:first", "memory_id:second"]],
+  ])("rejects a use signal with %s without storing it", async (_label, tags) => {
+    const { cwd } = checkout("git@github.com:lcm-vote-tests/invalid-use.git", []);
+    const { daemon, port } = await startDaemon();
+    try {
+      const { status, data } = await postStore(port, { cwd, text: "used a memory", tags });
+      expect(status).toBe(400);
+      expect(String(data.error)).toContain("exactly one non-empty memory_id");
+      const db = new DatabaseSync(projectDbPath(cwd, paths));
+      const signals = db.prepare("SELECT COUNT(*) AS count FROM promoted WHERE tags LIKE '%memory_used%'").get() as { count: number };
+      db.close();
+      expect(signals.count).toBe(0);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
   it.each([null, 42, ""])("rejects an invalid owner_project_id without treating it as local", async (owner_project_id) => {
     const { cwd, ids } = checkout("git@github.com:lcm-vote-tests/invalid-owner.git", ["local memory"]);
     const { daemon, port } = await startDaemon();
@@ -261,6 +293,34 @@ describe("POST /store — votes", () => {
     }
   });
 
+  it("rejects a use when its target is archived while scrubber initialization is paused", async () => {
+    const remote = "git@github.com:lcm-vote-tests/use-race.git";
+    const { cwd: here } = checkout(remote, []);
+    const { cwd: sibling, ids } = checkout(remote, ["target"]);
+    let resume!: () => void;
+    let paused!: () => void;
+    const pause = new Promise<void>((resolve) => { paused = resolve; });
+    const release = new Promise<void>((resolve) => { resume = resolve; });
+    scrubGate.wait = async () => { paused(); await release; return { scrub: (text: string) => text }; };
+    const { daemon, port } = await startDaemon();
+    try {
+      const pending = postStore(port, { cwd: here, text: "used target", tags: ["signal:memory_used", `memory_id:${ids[0]}`] });
+      await pause;
+      const db = new DatabaseSync(projectDbPath(sibling, paths));
+      new PromotedStore(db).archive(ids[0]);
+      db.close();
+      resume();
+      const { status } = await pending;
+      expect(status).toBe(400);
+      const after = new DatabaseSync(projectDbPath(sibling, paths));
+      const signals = after.prepare("SELECT COUNT(*) AS count FROM promoted WHERE tags LIKE '%memory_used%'").get() as { count: number };
+      after.close();
+      expect(signals.count).toBe(0);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
   it("discovers a sibling memory created by an ordinary store request", async () => {
     const remote = "git@github.com:lcm-vote-tests/ordinary-store-registration.git";
     const here = unregisteredCheckout(remote);
@@ -304,6 +364,50 @@ describe("POST /store — votes", () => {
     }
   });
 
+  it("does not list a sibling-owned memory as stale when a legacy use exists in this checkout", async () => {
+    const remote = "git@github.com:lcm-vote-tests/legacy-stale.git";
+    const { cwd: here } = checkout(remote, []);
+    const { cwd: sibling, ids } = checkout(remote, ["old sibling memory"]);
+    const siblingDb = new DatabaseSync(projectDbPath(sibling, paths));
+    siblingDb.prepare("UPDATE promoted SET created_at = datetime('now', '-120 days') WHERE id = ?").run(ids[0]);
+    siblingDb.close();
+    const hereDb = new DatabaseSync(projectDbPath(here, paths));
+    new PromotedStore(hereDb).insert({ content: "legacy use", tags: ["signal:memory_used", `memory_id:${ids[0]}`], projectId: "p1" });
+    hereDb.close();
+    const { daemon, port } = await startDaemon();
+    try {
+      const { status, data } = await postReviewStale(port, { cwd: here });
+      expect(status).toBe(200);
+      expect((data.stale as Array<{ id: string }>).some((entry) => entry.id === ids[0])).toBe(false);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it("lists valid stale memories when a sibling database is partial and closes group handles", async () => {
+    const remote = "git@github.com:lcm-vote-tests/partial-stale-group.git";
+    const partial = unregisteredCheckout(remote);
+    openProject(partial, paths);
+    const partialPath = projectDbPath(partial, paths);
+    mkdirSync(dirname(partialPath), { recursive: true });
+    const partialDb = new DatabaseSync(partialPath);
+    partialDb.exec("CREATE TABLE partial (value TEXT)");
+    partialDb.close();
+    const { cwd: valid, ids } = checkout(remote, ["valid stale memory"]);
+    const validDb = new DatabaseSync(projectDbPath(valid, paths));
+    validDb.prepare("UPDATE promoted SET created_at = datetime('now', '-120 days') WHERE id = ?").run(ids[0]);
+    validDb.close();
+    const { daemon, port } = await startDaemon();
+    try {
+      const { status, data } = await postReviewStale(port, { cwd: valid });
+      expect(status).toBe(200);
+      expect((data.stale as Array<{ id: string }>).map((entry) => entry.id)).toContain(ids[0]);
+      expect(getPoolStats().connections.filter((entry) => [partialPath, projectDbPath(valid, paths)].includes(entry.path))).toEqual([]);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
   it("attributes legacy uses within their project group despite an identical id elsewhere", () => {
     const { cwd: here } = checkout("git@github.com:lcm-vote-tests/legacy-group-a.git", []);
     const { cwd: owner, ids } = checkout("git@github.com:lcm-vote-tests/legacy-group-a.git", ["group A memory"]);
@@ -322,6 +426,28 @@ describe("POST /store — votes", () => {
 
     expect(collectStats(paths).promotionCandidates.filter((candidate) => candidate.id === "shared-legacy-id"))
       .toEqual([expect.objectContaining({ ownerProjectId: projectId(owner), useCount: 3 })]);
+  });
+
+  it("continues legacy attribution for a later valid group after a malformed project database", () => {
+    const malformedDir = join(base, "projects", "000-malformed");
+    mkdirSync(malformedDir, { recursive: true });
+    const malformedDb = new DatabaseSync(join(malformedDir, "db.sqlite"));
+    malformedDb.exec("CREATE TABLE malformed (value TEXT)");
+    malformedDb.close();
+
+    const remote = "git@github.com:lcm-vote-tests/later-valid-group.git";
+    const { cwd: requester } = checkout(remote, []);
+    const { cwd: owner, ids } = checkout(remote, ["valid owner memory"]);
+    const requesterDb = new DatabaseSync(projectDbPath(requester, paths));
+    const store = new PromotedStore(requesterDb);
+    for (let i = 0; i < 3; i++) {
+      store.insert({ content: `legacy use ${i}`, tags: ["signal:memory_used", `memory_id:${ids[0]}`], projectId: "p1" });
+    }
+    requesterDb.close();
+
+    expect(collectStats(paths).promotionCandidates).toContainEqual(
+      expect.objectContaining({ id: ids[0], ownerProjectId: projectId(owner), useCount: 3 }),
+    );
   });
 
   it.each([

@@ -136,9 +136,14 @@ export function createStoreHandler(config: DaemonConfig, paths: LcmPaths): Route
 
     let targetPath = projectPath;
     let vote: { memoryId: string; direction: "+1" | "-1" } | null = null;
-    const usageMemoryId = tags.includes("signal:memory_used")
-      ? tags.find((tag: string) => tag.startsWith("memory_id:"))?.slice("memory_id:".length)
-      : undefined;
+    const usageMemoryIds = tags.includes("signal:memory_used")
+      ? tags.filter((tag: string) => tag.startsWith("memory_id:")).map((tag: string) => tag.slice("memory_id:".length))
+      : [];
+    if (tags.includes("signal:memory_used") && (usageMemoryIds.length !== 1 || usageMemoryIds[0].trim() === "")) {
+      sendJson(res, 400, { error: "signal:memory_used requires exactly one non-empty memory_id tag" });
+      return;
+    }
+    const usageMemoryId = usageMemoryIds[0];
 
     if (isVoteRecord(tags) || usageMemoryId) {
       const memoryId = isVoteRecord(tags) ? undefined : usageMemoryId;
@@ -189,6 +194,16 @@ export function createStoreHandler(config: DaemonConfig, paths: LcmPaths): Route
       // Core: write to SQLite promoted table
       runLcmMigrations(db);
       const store = new PromotedStore(db);
+
+      // A use resolves before scrubber initialization, which awaits I/O. Recheck its
+      // target here so an archive during that await cannot leave an orphaned signal.
+      if (usageMemoryId) {
+        const target = store.getById(usageMemoryId);
+        if (!target || target.archived_at) {
+          sendJson(res, 400, { error: `memory_id ${usageMemoryId} was not found (or is archived) in this project or its group` });
+          return;
+        }
+      }
 
       const insert = () => store.insert({
         content: scrubbedText,
