@@ -13,10 +13,12 @@ export type { RecallStats };
 export interface VoteObjection {
   voteId: string;
   reason: string;
+  ownerProjectId: string;
 }
 
 export interface PromotionCandidate {
   id: string;
+  ownerProjectId: string;
   content: string;
   useCount: number;
   plusOne: number;
@@ -26,6 +28,7 @@ export interface PromotionCandidate {
 
 export interface ContestedMemory {
   id: string;
+  ownerProjectId: string;
   content: string;
   objections: VoteObjection[];
 }
@@ -39,6 +42,7 @@ export interface ContestedMemory {
 function computePromotionSections(
   db: DatabaseSync,
   enforcementThreshold: number,
+  ownerProjectId: string,
 ): { promotionCandidates: PromotionCandidate[]; contested: ContestedMemory[] } {
   const promotedStore = new PromotedStore(db);
   const active = promotedStore.getAll().filter((r) => !isSignalTagged(JSON.parse(r.tags) as string[]));
@@ -53,13 +57,13 @@ function computePromotionSections(
   for (const row of active) {
     const useCount = feedback.get(row.id)?.usageCount ?? 0;
     const votes = voteCounts.get(row.id) ?? { plusOne: 0, minusOne: 0, objections: [] };
-    const objections: VoteObjection[] = votes.objections.map((o) => ({ voteId: o.voteId, reason: o.reason }));
+    const objections: VoteObjection[] = votes.objections.map((o) => ({ voteId: o.voteId, reason: o.reason, ownerProjectId }));
 
     if (useCount >= enforcementThreshold) {
-      promotionCandidates.push({ id: row.id, content: row.content, useCount, plusOne: votes.plusOne, minusOne: votes.minusOne, objections });
+      promotionCandidates.push({ id: row.id, ownerProjectId, content: row.content, useCount, plusOne: votes.plusOne, minusOne: votes.minusOne, objections });
     }
     if (votes.minusOne > 0) {
-      contested.push({ id: row.id, content: row.content, objections });
+      contested.push({ id: row.id, ownerProjectId, content: row.content, objections });
     }
   }
 
@@ -232,7 +236,7 @@ function queryProjectStats(
     let promotionCandidates: PromotionCandidate[] = [];
     let contested: ContestedMemory[] = [];
     try {
-      ({ promotionCandidates, contested } = computePromotionSections(db, staleCfg.enforcementThreshold));
+      ({ promotionCandidates, contested } = computePromotionSections(db, staleCfg.enforcementThreshold, projectId));
     } catch { /* non-fatal */ }
 
     return {
@@ -462,6 +466,7 @@ export function printStats(stats: OverallStats, verbose: boolean): void {
     for (const c of stats.promotionCandidates) {
       const preview = c.content.length > 70 ? c.content.slice(0, 70) + "…" : c.content;
       console.log(`    ${dim}${preview}${reset}`);
+      console.log(`    ${dim}id:${reset} ${c.id}  ${dim}owner:${reset} ${c.ownerProjectId}`);
       const objectionNote = c.minusOne > 0 ? `${dim} (contested — see below)${reset}` : "";
       console.log(`    ${dim}uses:${reset} ${c.useCount}  ${dim}+1:${reset} ${c.plusOne}  ${dim}-1:${reset} ${c.minusOne}${objectionNote}`);
       console.log();
@@ -476,6 +481,7 @@ export function printStats(stats: OverallStats, verbose: boolean): void {
     for (const c of stats.contested) {
       const preview = c.content.length > 70 ? c.content.slice(0, 70) + "…" : c.content;
       console.log(`    ${yellow}${preview}${reset}`);
+      console.log(`    ${dim}id:${reset} ${c.id}  ${dim}owner:${reset} ${c.ownerProjectId}`);
       for (const o of c.objections) {
         console.log(`    ${dim}-1 (${o.voteId}):${reset} ${o.reason}`);
       }

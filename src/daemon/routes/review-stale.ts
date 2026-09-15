@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import type { DaemonConfig } from "../config.js";
 import type { LcmPaths } from "../../lcm-paths.js";
 import { projectDbPath } from "../project.js";
+import { openProject, projectGroup, resolveSourceCwd } from "../project-group.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
@@ -14,6 +15,7 @@ export type StaleCandidate = {
   content: string;
   tags: string[];
   projectId: string;
+  ownerProjectId: string;
   confidence: number;
   createdAt: string;
   daysSinceCreated: number;
@@ -44,19 +46,7 @@ export function createReviewStaleHandler(config: DaemonConfig, paths: LcmPaths):
       return;
     }
 
-    const dbPath = projectDbPath(cwd, paths);
-    if (!existsSync(dbPath)) {
-      sendJson(res, 200, { stale: [], total: 0 });
-      return;
-    }
-
-    let openedDbPath: string | null = null;
     try {
-      const db = getLcmConnection(dbPath);
-      openedDbPath = dbPath;
-      runLcmMigrations(db);
-      const store = new PromotedStore(db);
-
       // Handle archive/revive actions
       const action = input.action as string | undefined;
       const targetId = input.target_id as string | undefined;
@@ -67,46 +57,77 @@ export function createReviewStaleHandler(config: DaemonConfig, paths: LcmPaths):
           return;
         }
 
-        // Verify target exists before acting
-        const exists = db.prepare("SELECT 1 FROM promoted WHERE id = ?").get(targetId);
-        if (!exists) {
-          sendJson(res, 404, { error: `Memory ${targetId} not found` });
+        openProject(cwd, paths);
+        const requestedOwner = input.owner_project_id;
+        const ownerCwd = requestedOwner === undefined
+          ? null
+          : resolveSourceCwd(cwd, requestedOwner, paths);
+        if (requestedOwner !== undefined && !ownerCwd) {
+          sendJson(res, 404, { error: "Memory owner was not found in this project group" });
           return;
         }
-
-        if (action === "archive") {
-          store.archive(targetId);
-          sendJson(res, 200, { action: "archived", id: targetId });
-        } else {
-          store.revive(targetId);
-          sendJson(res, 200, { action: "revived", id: targetId });
+        const members = ownerCwd
+          ? projectGroup(cwd, paths).filter((member) => member.cwd === ownerCwd)
+          : projectGroup(cwd, paths);
+        for (const member of members) {
+          const dbPath = projectDbPath(member.cwd, paths);
+          if (!existsSync(dbPath)) continue;
+          const db = getLcmConnection(dbPath);
+          try {
+            runLcmMigrations(db);
+            const store = new PromotedStore(db);
+            const exists = db.prepare("SELECT 1 FROM promoted WHERE id = ?").get(targetId);
+            if (!exists) continue;
+            if (action === "archive") {
+              db.exec("BEGIN IMMEDIATE");
+              try {
+                store.archive(targetId);
+                db.exec("COMMIT");
+              } catch (err) {
+                try { db.exec("ROLLBACK"); } catch { /* transaction already closed */ }
+                throw err;
+              }
+            } else {
+              // PromotedStore.revive owns the transaction that keeps promoted and FTS in sync.
+              store.revive(targetId);
+            }
+            sendJson(res, 200, { action: action === "archive" ? "archived" : "revived", id: targetId, ownerProjectId: member.projectId });
+            return;
+          } finally {
+            closeLcmConnection(dbPath);
+          }
         }
+        sendJson(res, 404, { error: `Memory ${targetId} not found` });
         return;
       }
 
-      const staleRows = store.findStale({
-        staleAfterDays: config.restoration.staleAfterDays,
-        staleSurfacingWithoutUseLimit: config.restoration.staleSurfacingWithoutUseLimit,
-        projectId: input.project_id as string | undefined,
-      });
-
-      const stale: StaleCandidate[] = staleRows.map((row) => ({
-        id: row.id,
-        content: row.content,
-        tags: JSON.parse(row.tags) as string[],
-        projectId: row.project_id,
-        confidence: row.confidence,
-        createdAt: row.created_at,
-        daysSinceCreated: row.daysSinceCreated,
-        surfacingCount: row.surfacingCount,
-        usageCount: row.usageCount,
-      }));
+      openProject(cwd, paths);
+      const stale: StaleCandidate[] = [];
+      for (const member of projectGroup(cwd, paths)) {
+        const dbPath = projectDbPath(member.cwd, paths);
+        if (!existsSync(dbPath)) continue;
+        const db = getLcmConnection(dbPath);
+        try {
+          runLcmMigrations(db);
+          const staleRows = new PromotedStore(db).findStale({
+            staleAfterDays: config.restoration.staleAfterDays,
+            staleSurfacingWithoutUseLimit: config.restoration.staleSurfacingWithoutUseLimit,
+            projectId: input.project_id as string | undefined,
+          });
+          stale.push(...staleRows.map((row) => ({
+            id: row.id, content: row.content, tags: JSON.parse(row.tags) as string[],
+            projectId: row.project_id, ownerProjectId: member.projectId,
+            confidence: row.confidence, createdAt: row.created_at, daysSinceCreated: row.daysSinceCreated,
+            surfacingCount: row.surfacingCount, usageCount: row.usageCount,
+          })));
+        } finally {
+          closeLcmConnection(dbPath);
+        }
+      }
 
       sendJson(res, 200, { stale, total: stale.length });
     } catch (err) {
       sendJson(res, 500, { error: err instanceof Error ? err.message : "review-stale failed" });
-    } finally {
-      if (openedDbPath) closeLcmConnection(openedDbPath);
     }
   };
 }

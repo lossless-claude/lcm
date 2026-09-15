@@ -27,8 +27,10 @@ const { createLcmPaths } = await import("../../../src/lcm-paths.js");
 
 const paths = createLcmPaths(base);
 const { projectDbPath, projectDir } = await import("../../../src/daemon/project.js");
+const { projectId } = await import("../../../src/daemon/project.js");
 const { runLcmMigrations } = await import("../../../src/db/migration.js");
 const { PromotedStore } = await import("../../../src/db/promoted.js");
+const { collectStats } = await import("../../../src/stats.js");
 
 const tempDirs: string[] = [];
 // Per test, not once at load: the group index and the daemon's own LcmPaths come from the
@@ -68,6 +70,15 @@ async function startDaemon() {
 
 async function postStore(port: number, body: Record<string, unknown>) {
   const res = await fetch(`http://127.0.0.1:${port}/store`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return { status: res.status, data: await res.json() as Record<string, unknown> };
+}
+
+async function postReviewStale(port: number, body: Record<string, unknown>) {
+  const res = await fetch(`http://127.0.0.1:${port}/review-stale`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -186,6 +197,94 @@ describe("POST /store — votes", () => {
       const hereVotes = new PromotedStore(hereDb).getVoteCounts();
       hereDb.close();
       expect(hereVotes.size).toBe(0);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it("stores uses with their sibling-owned memory so promotion feedback has one owner", async () => {
+    const remote = "git@github.com:lcm-vote-tests/uses-repo.git";
+    const { cwd: here } = checkout(remote, []);
+    const { cwd: sibling, ids } = checkout(remote, ["compaction runs lazily"]);
+    const { daemon, port } = await startDaemon();
+    try {
+      for (let i = 0; i < 3; i++) {
+        const { status } = await postStore(port, {
+          text: `Used sibling memory ${i}`,
+          tags: ["signal:memory_used", `memory_id:${ids[0]}`],
+          cwd: here,
+        });
+        expect(status).toBe(200);
+      }
+
+      const siblingDb = new DatabaseSync(projectDbPath(sibling, paths));
+      const siblingUses = siblingDb.prepare("SELECT COUNT(*) AS count FROM promoted WHERE tags LIKE '%memory_used%'").get() as { count: number };
+      siblingDb.close();
+      expect(siblingUses.count).toBe(3);
+
+      const hereDb = new DatabaseSync(projectDbPath(here, paths));
+      const hereUses = hereDb.prepare("SELECT COUNT(*) AS count FROM promoted WHERE tags LIKE '%memory_used%'").get() as { count: number };
+      hereDb.close();
+      expect(hereUses.count).toBe(0);
+
+      const candidate = collectStats(paths).promotionCandidates.find((entry) => entry.id === ids[0]);
+      expect(candidate).toMatchObject({ useCount: 3, ownerProjectId: projectId(sibling) });
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it("reviews an explicitly owned colliding id in its sibling database", async () => {
+    const remote = "git@github.com:lcm-vote-tests/review-repo.git";
+    const { cwd: here, ids: hereIds } = checkout(remote, ["local memory"]);
+    const { cwd: sibling, ids: siblingIds } = checkout(remote, ["sibling memory"]);
+    for (const [cwd, id] of [[here, hereIds[0]], [sibling, siblingIds[0]]] as const) {
+      const db = new DatabaseSync(projectDbPath(cwd, paths));
+      db.prepare("UPDATE promoted SET id = 'colliding-id', created_at = datetime('now', '-120 days') WHERE id = ?").run(id);
+      db.close();
+    }
+
+    const { daemon, port } = await startDaemon();
+    try {
+      const list = await postReviewStale(port, { cwd: here });
+      expect(list.status).toBe(200);
+      const stale = list.data.stale as Array<{ id: string; ownerProjectId: string }>;
+      expect(stale.filter((entry) => entry.id === "colliding-id").map((entry) => entry.ownerProjectId).sort())
+        .toEqual([projectId(here), projectId(sibling)].sort());
+      for (const cwd of [here, sibling]) {
+        const db = new DatabaseSync(projectDbPath(cwd, paths));
+        const store = new PromotedStore(db);
+        for (let i = 0; i < 3; i++) {
+          store.insert({ content: `Used colliding memory ${i}`, tags: ["signal:memory_used", "memory_id:colliding-id"], projectId: "p1" });
+        }
+        db.close();
+      }
+      expect(collectStats(paths).promotionCandidates.filter((entry) => entry.id === "colliding-id").map((entry) => entry.ownerProjectId).sort())
+        .toEqual([projectId(here), projectId(sibling)].sort());
+
+      const archive = await postReviewStale(port, {
+        cwd: here, action: "archive", target_id: "colliding-id", owner_project_id: projectId(sibling),
+      });
+      expect(archive.status).toBe(200);
+      expect(archive.data.ownerProjectId).toBe(projectId(sibling));
+
+      const siblingDb = new DatabaseSync(projectDbPath(sibling, paths));
+      const siblingArchived = siblingDb.prepare("SELECT archived_at FROM promoted WHERE id = 'colliding-id'").get() as { archived_at: string | null };
+      siblingDb.close();
+      expect(siblingArchived.archived_at).not.toBeNull();
+      const hereDb = new DatabaseSync(projectDbPath(here, paths));
+      const hereArchived = hereDb.prepare("SELECT archived_at FROM promoted WHERE id = 'colliding-id'").get() as { archived_at: string | null };
+      hereDb.close();
+      expect(hereArchived.archived_at).toBeNull();
+
+      const revive = await postReviewStale(port, {
+        cwd: here, action: "revive", target_id: "colliding-id", owner_project_id: projectId(sibling),
+      });
+      expect(revive.status).toBe(200);
+      const revivedDb = new DatabaseSync(projectDbPath(sibling, paths));
+      const revived = revivedDb.prepare("SELECT archived_at FROM promoted WHERE id = 'colliding-id'").get() as { archived_at: string | null };
+      revivedDb.close();
+      expect(revived.archived_at).toBeNull();
     } finally {
       await daemon.stop();
     }
