@@ -43,6 +43,7 @@ type CodexToolInput = {
   tool_input?: Record<string, unknown>;
   tool_response?: unknown;
   tool_use_id?: string;
+  turn_id?: string;
   error?: string;
   is_interrupt?: boolean;
   model?: string;
@@ -67,10 +68,39 @@ function parseToolInput(stdin: string): CodexToolInput | null {
     ...(isRecord(input.tool_input) ? { tool_input: input.tool_input } : {}),
     ...(input.tool_response !== undefined ? { tool_response: input.tool_response } : {}),
     ...(typeof input.tool_use_id === "string" && input.tool_use_id ? { tool_use_id: input.tool_use_id } : {}),
+    ...(typeof input.turn_id === "string" && input.turn_id ? { turn_id: input.turn_id } : {}),
     ...(typeof input.error === "string" ? { error: input.error } : {}),
     ...(typeof input.is_interrupt === "boolean" ? { is_interrupt: input.is_interrupt } : {}),
     ...(typeof input.model === "string" && input.model ? { model: input.model } : {}),
   };
+}
+
+function codexPatchPaths(command: unknown): string[] {
+  if (typeof command !== "string") return [];
+  return [...new Set(
+    [...command.matchAll(/^\*\*\* (?:(?:Update|Add|Delete) File: (.+)|Move to: (.+))$/gm)]
+      .map(match => (match[1] ?? match[2]).trim())
+      .filter(Boolean),
+  )];
+}
+
+/** Maps only Codex-local names to the equivalent extractor input. */
+function normalizeCodexTool(input: CodexToolInput): CodexToolInput {
+  // Compatibility for hosts that serialize unified command execution by its
+  // local function name; Codex's hook reference matches this path as Bash.
+  if (input.tool_name === "exec_command") {
+    return { ...input, tool_name: "Bash" };
+  }
+  if (input.tool_name === "apply_patch") {
+    const filePaths = codexPatchPaths(input.tool_input?.command);
+    if (filePaths.length === 0) return input;
+    return {
+      ...input,
+      tool_name: "Edit",
+      tool_input: { ...input.tool_input, file_paths: filePaths },
+    };
+  }
+  return input;
 }
 
 /**
@@ -86,7 +116,7 @@ async function dispatchCodexToolHook(stdin: string, paths: LcmPaths): Promise<{ 
     // Imported here, not at module scope: post-tool.js pulls node:sqlite, whose
     // ExperimentalWarning would then reach stderr on every lifecycle no-op too.
     const { recordPostToolEvents } = await import("./post-tool.js");
-    const outcome = recordPostToolEvents({ ...input, client: "codex" }, paths);
+    const outcome = recordPostToolEvents({ ...normalizeCodexTool(input), client: "codex" }, paths);
     if (outcome.hasPriority1) {
       const config = loadDaemonConfig(paths.configPath);
       firePromoteEventsRequest(config.daemon?.port ?? 3737, { cwd: input.cwd }, paths);

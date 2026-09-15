@@ -12,7 +12,7 @@ import { upsertRedactionCounts } from "../../db/redaction-stats.js";
 import { ConversationStore, type CreateMessageInput, type CreateMessagePartInput, type MessageRecord } from "../../store/conversation-store.js";
 import { SummaryStore } from "../../store/summary-store.js";
 import { parseTranscript, extractToolUseModels, type ParsedMessage, type MessagePart } from "../../transcript.js";
-import { extractCodexSessionMeta, parseCodexTranscript } from "../../codex-transcript.js";
+import { extractCodexSessionMeta, extractCodexTurnModels, parseCodexTranscript } from "../../codex-transcript.js";
 import { EventsDb } from "../../hooks/events-db.js";
 import { eventsDbPath } from "../../db/events-path.js";
 import { ScrubEngine } from "../../scrub.js";
@@ -311,6 +311,19 @@ function backfillClaudeToolModels(cwd: string, sessionId: string, transcriptPath
   }
 }
 
+function backfillCodexToolModels(cwd: string, sessionId: string, transcriptPath: string | undefined, paths: LcmPaths): void {
+  if (!transcriptPath) return;
+  const sidecarPath = eventsDbPath(cwd, paths);
+  if (!existsSync(sidecarPath)) return;
+  const db = new EventsDb(sidecarPath);
+  try {
+    if (!db.hasUnfilledCodexModels(sessionId)) return;
+    db.backfillCodexTurnModels(sessionId, extractCodexTurnModels(transcriptPath));
+  } finally {
+    db.close();
+  }
+}
+
 export function createIngestHandler(config: DaemonConfig, paths: LcmPaths): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}") as IngestInput;
@@ -470,6 +483,14 @@ export function createIngestHandler(config: DaemonConfig, paths: LcmPaths): Rout
             backfillClaudeToolModels(cwd, session_id, resolveClaudeTranscriptPathForBackfill(input, cwd), paths);
           } catch (err) {
             console.error(`ingest: model backfill failed for session ${session_id}: ${err instanceof Error ? err.message : err}`);
+          }
+        });
+      } else {
+        setImmediate(() => {
+          try {
+            backfillCodexToolModels(cwd, session_id, codexPath, paths);
+          } catch (err) {
+            console.error(`ingest: Codex model backfill failed for session ${session_id}: ${err instanceof Error ? err.message : err}`);
           }
         });
       }

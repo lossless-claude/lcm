@@ -31,6 +31,8 @@ export interface PostToolPayload {
   tool_output?: { isError?: boolean };
   /** Claude Code's id for this tool call; both hook paths receive it. */
   tool_use_id?: string;
+  /** Codex turn id, used only to backfill a missing Codex model from its transcript. */
+  turn_id?: string;
   hook_event_name?: string;
   error?: string;
   is_interrupt?: boolean;
@@ -71,6 +73,7 @@ export function recordPostToolEvents(payload: PostToolPayload, paths: LcmPaths):
   const toolUseId = typeof payload.tool_use_id === "string" && payload.tool_use_id
     ? payload.tool_use_id
     : undefined;
+  const turnId = typeof payload.turn_id === "string" ? payload.turn_id.trim() || undefined : undefined;
 
   const client = payload.client === "codex" ? "codex" : "claude";
   const model = typeof payload.model === "string" && payload.model ? payload.model : null;
@@ -80,7 +83,7 @@ export function recordPostToolEvents(payload: PostToolPayload, paths: LcmPaths):
     try {
       // Dedup on the whole call, not each event: one call extracts several events, and a
       // per-event check would leave a half batch when the paths raced.
-      return db.insertToolCallEvents(payload.session_id, events, sourceHook, toolUseId, client, model);
+      return db.insertToolCallEvents(payload.session_id, events, sourceHook, toolUseId, client, model, turnId);
     } finally {
       db.close();
     }

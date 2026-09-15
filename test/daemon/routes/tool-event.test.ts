@@ -80,6 +80,36 @@ describe("POST /tool-event", () => {
     expect(promoteEvents).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["object", { id: "turn-1" }],
+    ["empty", ""],
+  ])("drops a %s turn_id while preserving the structured response", async (_kind, turn_id) => {
+    const { res, out } = respond();
+    await handler({} as never, res, JSON.stringify({
+      session_id: `s-${_kind}`, cwd: dir, tool_name: "Read", tool_input: { file_path: "/repo/src/a.ts" }, turn_id,
+    }));
+    expect(out.status).toBe(200);
+    expect(out.body).toEqual({ recorded: 1, promoted: false });
+
+    const db = new EventsDb(eventsDbPath(dir, paths));
+    const [row] = db.getUnprocessed();
+    db.close();
+    expect(row).toMatchObject({ session_id: `s-${_kind}`, turn_id: null });
+  });
+
+  it("persists a non-empty turn_id from the shared route payload", async () => {
+    const { res, out } = respond();
+    await handler({} as never, res, JSON.stringify({
+      session_id: "s-turn", cwd: dir, tool_name: "Read", tool_input: { file_path: "/repo/src/a.ts" }, turn_id: "turn-1",
+    }));
+    expect(out.body).toEqual({ recorded: 1, promoted: false });
+
+    const db = new EventsDb(eventsDbPath(dir, paths));
+    const [row] = db.getUnprocessed();
+    db.close();
+    expect(row).toMatchObject({ session_id: "s-turn", turn_id: "turn-1" });
+  });
+
   it("labels a failed call PostToolUseFailure and promotes it at once", async () => {
     const { res, out } = respond();
     await handler({} as never, res, JSON.stringify({

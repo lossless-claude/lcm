@@ -24,6 +24,7 @@ export interface EventRow {
   priority: number;
   source_hook: string;
   tool_use_id: string | null;
+  turn_id: string | null;
   prompt_hash: string | null;
   prev_event_id: number | null;
   processed_at: string | null;
@@ -66,7 +67,7 @@ export interface PatternReinforcementStats {
   distinctSessions: number;
 }
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -80,6 +81,7 @@ CREATE TABLE IF NOT EXISTS events (
   priority      INTEGER DEFAULT 3,
   source_hook   TEXT NOT NULL,
   tool_use_id   TEXT,
+  turn_id       TEXT,
   prompt_hash   TEXT,
   prev_event_id INTEGER,
   processed_at  TEXT,
@@ -91,6 +93,7 @@ CREATE INDEX IF NOT EXISTS idx_events_unprocessed ON events(processed_at) WHERE 
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_pattern_lookup ON events(type, category, data, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_tool_use ON events(session_id, tool_use_id);
+CREATE INDEX IF NOT EXISTS idx_events_turn ON events(session_id, turn_id);
 CREATE INDEX IF NOT EXISTS idx_events_prompt ON events(session_id, prompt_hash);
 CREATE TABLE IF NOT EXISTS error_log (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -129,7 +132,7 @@ export class EventsDb {
   }
 
   /** Rows written before the column existed have no key and never dedup against. */
-  private ensureColumn(name: "tool_use_id" | "prompt_hash" | "client" | "model", ddl?: string): void {
+  private ensureColumn(name: "tool_use_id" | "turn_id" | "prompt_hash" | "client" | "model", ddl?: string): void {
     const columns = this.db.prepare("PRAGMA table_info(events)").all() as { name: string }[];
     if (!columns.some((c) => c.name === name)) {
       this.db.exec(`ALTER TABLE events ADD COLUMN ${ddl ?? `${name} TEXT`}`);
@@ -177,10 +180,12 @@ export class EventsDb {
       `);
       // The events table here may predate v4, so the columns have to exist before the indexes.
       this.ensureColumn("tool_use_id");
+      this.ensureColumn("turn_id");
       this.ensureColumn("prompt_hash");
       this.ensureProvenanceColumns();
       this.db.exec(`
         CREATE INDEX IF NOT EXISTS idx_events_tool_use ON events(session_id, tool_use_id);
+        CREATE INDEX IF NOT EXISTS idx_events_turn ON events(session_id, turn_id);
         CREATE INDEX IF NOT EXISTS idx_events_prompt ON events(session_id, prompt_hash);
       `);
         this.db.exec("COMMIT");
@@ -228,6 +233,10 @@ export class EventsDb {
         if (currentVersion < 6) {
           this.ensureProvenanceColumns();
         }
+        if (currentVersion < 7) {
+          this.ensureColumn("turn_id");
+          this.db.exec("CREATE INDEX IF NOT EXISTS idx_events_turn ON events(session_id, turn_id)");
+        }
         this.db.prepare("UPDATE schema_version SET version = ?").run(SCHEMA_VERSION);
         this.db.exec("COMMIT");
       } catch (e) {
@@ -241,17 +250,17 @@ export class EventsDb {
   /** The key a row dedups on: which one it is depends on what produced the event. */
   private insertRow(
     sessionId: string, event: ExtractedEvent, sourceHook: string,
-    keys: { toolUseId?: string; promptHash?: string; client?: "claude" | "codex"; model?: string | null } = {},
+    keys: { toolUseId?: string; turnId?: string; promptHash?: string; client?: "claude" | "codex"; model?: string | null } = {},
   ): number {
     const stmt = this.db.prepare(`
-      INSERT INTO events (session_id, seq, type, category, data, priority, source_hook, tool_use_id, prompt_hash, client, model)
+      INSERT INTO events (session_id, seq, type, category, data, priority, source_hook, tool_use_id, turn_id, prompt_hash, client, model)
       VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE session_id = ?),
-              ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const result = stmt.run(
       sessionId, sessionId,
       event.type, event.category, event.data, event.priority, sourceHook,
-      keys.toolUseId ?? null, keys.promptHash ?? null,
+      keys.toolUseId ?? null, keys.turnId ?? null, keys.promptHash ?? null,
       keys.client ?? "claude", keys.model ?? null,
     );
     return Number(result.lastInsertRowid);
@@ -259,9 +268,9 @@ export class EventsDb {
 
   insertEvent(
     sessionId: string, event: ExtractedEvent, sourceHook: string, toolUseId?: string,
-    client?: "claude" | "codex", model?: string | null,
+    client?: "claude" | "codex", model?: string | null, turnId?: string,
   ): number {
-    return this.insertRow(sessionId, event, sourceHook, { toolUseId, client, model });
+    return this.insertRow(sessionId, event, sourceHook, { toolUseId, client, model, turnId });
   }
 
   /**
@@ -284,17 +293,17 @@ export class EventsDb {
    */
   insertToolCallEvents(
     sessionId: string, events: ExtractedEvent[], sourceHook: string, toolUseId?: string,
-    client?: "claude" | "codex", model?: string | null,
+    client?: "claude" | "codex", model?: string | null, turnId?: string,
   ): number {
     if (!toolUseId) {
-      for (const event of events) this.insertEvent(sessionId, event, sourceHook, undefined, client, model);
+      for (const event of events) this.insertEvent(sessionId, event, sourceHook, undefined, client, model, turnId);
       return events.length;
     }
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const duplicate = this.hasToolCall(sessionId, toolUseId);
       if (!duplicate) {
-        for (const event of events) this.insertEvent(sessionId, event, sourceHook, toolUseId, client, model);
+        for (const event of events) this.insertEvent(sessionId, event, sourceHook, toolUseId, client, model, turnId);
       }
       this.db.exec("COMMIT");
       return duplicate ? 0 : events.length;
@@ -312,6 +321,13 @@ export class EventsDb {
   hasUnfilledModels(sessionId: string): boolean {
     const row = this.db.prepare(
       "SELECT 1 FROM events WHERE session_id = ? AND model IS NULL AND tool_use_id IS NOT NULL LIMIT 1"
+    ).get(sessionId);
+    return row !== undefined;
+  }
+
+  hasUnfilledCodexModels(sessionId: string): boolean {
+    const row = this.db.prepare(
+      "SELECT 1 FROM events WHERE session_id = ? AND model IS NULL AND turn_id IS NOT NULL AND client = 'codex' LIMIT 1",
     ).get(sessionId);
     return row !== undefined;
   }
@@ -335,6 +351,24 @@ export class EventsDb {
       for (const [toolUseId, model] of pairs) {
         updated += Number(stmt.run(model, sessionId, toolUseId).changes);
       }
+      this.db.exec("COMMIT");
+    } catch (e) {
+      try { this.db.exec("ROLLBACK"); } catch { /* the transaction is already gone */ }
+      throw e;
+    }
+    return updated;
+  }
+
+  /** Fills missing Codex models from `turn_context`, without crossing turns or clients. */
+  backfillCodexTurnModels(sessionId: string, pairs: ReadonlyMap<string, string>): number {
+    if (pairs.size === 0) return 0;
+    const stmt = this.db.prepare(
+      "UPDATE events SET model = ? WHERE session_id = ? AND turn_id = ? AND model IS NULL AND client = 'codex'",
+    );
+    let updated = 0;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const [turnId, model] of pairs) updated += Number(stmt.run(model, sessionId, turnId).changes);
       this.db.exec("COMMIT");
     } catch (e) {
       try { this.db.exec("ROLLBACK"); } catch { /* the transaction is already gone */ }

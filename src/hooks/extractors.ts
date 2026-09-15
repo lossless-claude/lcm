@@ -95,22 +95,21 @@ function extractBashEvents(input: PostToolInput): ExtractedEvent[] {
 }
 
 function extractFileEvents(toolName: string, input: PostToolInput): ExtractedEvent[] {
-  const filePath = String(
-    input.tool_input.file_path ?? input.tool_input.path ?? input.tool_input.pattern ?? ""
-  );
-  if (!filePath || isSensitivePath(filePath)) return [];
+  const filePaths = Array.isArray(input.tool_input.file_paths)
+    ? input.tool_input.file_paths.filter((path): path is string => typeof path === "string" && path.trim() !== "")
+    : [String(input.tool_input.file_path ?? input.tool_input.path ?? input.tool_input.pattern ?? "")];
 
   const typeMap: Record<string, string> = {
     Read: "file_read", Edit: "file_edit", Write: "file_write",
     Glob: "file_glob", Grep: "file_grep",
   };
 
-  return [{
+  return filePaths.filter(path => path.trim() !== "" && !isSensitivePath(path)).map(filePath => ({
     type: typeMap[toolName] ?? "file_access",
     category: "file",
     data: truncate(`${filePath} (${classifyFile(filePath)})`),
     priority: 3,
-  }];
+  }));
 }
 
 export function extractPostToolEvents(input: PostToolInput): ExtractedEvent[] {
