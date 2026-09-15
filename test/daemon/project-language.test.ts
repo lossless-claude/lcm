@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runLcmMigrations } from "../../src/db/migration.js";
 import { ConversationStore } from "../../src/store/conversation-store.js";
-import { createSummarizer } from "../../src/daemon/summarizer.js";
+import { createSummarizer, resolveSummarizerLanguage } from "../../src/daemon/summarizer.js";
 import { loadDaemonConfig, type DaemonConfig } from "../../src/daemon/config.js";
 import { resetProjectLanguageState, scheduleProjectLanguageDetection } from "../../src/daemon/project-language.js";
 import { invalidateLanguagePacks, languagePackPath } from "../../src/store/language-pack.js";
@@ -67,6 +67,26 @@ afterEach(() => {
 });
 
 describe("scheduleProjectLanguageDetection", () => {
+  it("returns the existing detection promise to concurrent callers", async () => {
+    let finishDetection: ((language: string) => void) | undefined;
+    const summarize = vi.fn()
+      .mockImplementationOnce(() => new Promise<string>((resolve) => { finishDetection = resolve; }))
+      .mockResolvedValueOnce(PACK_REPLY);
+    vi.mocked(createSummarizer).mockResolvedValue(summarize);
+    const db = await seededDb(25);
+
+    const detection = scheduleProjectLanguageDetection(dir, db, testConfig(), paths);
+    const waiter = scheduleProjectLanguageDetection(dir, db, testConfig(), paths);
+    expect(waiter).toBe(detection);
+    expect(existsSync(join(dir, "meta.json"))).toBe(false);
+
+    await vi.waitFor(() => expect(finishDetection).toBeTypeOf("function"));
+    finishDetection?.("pt-BR");
+    await Promise.all([detection, waiter]);
+    expect(JSON.parse(readFileSync(join(dir, "meta.json"), "utf-8")).language).toBe("pt-BR");
+    expect(createSummarizer).toHaveBeenCalledOnce();
+  });
+
   it("records the language in meta.json and generates the pack, once", async () => {
     const summarize = vi.fn().mockResolvedValueOnce("pt-BR").mockResolvedValueOnce(PACK_REPLY);
     vi.mocked(createSummarizer).mockResolvedValue(summarize);
@@ -74,11 +94,20 @@ describe("scheduleProjectLanguageDetection", () => {
     await scheduleProjectLanguageDetection(dir, db, testConfig(), paths);
     const meta = JSON.parse(readFileSync(join(dir, "meta.json"), "utf-8"));
     expect(meta.language).toBe("pt-BR");
-    expect(existsSync(languagePackPath("pt-BR"))).toBe(true);
+    await vi.waitFor(() => expect(existsSync(languagePackPath("pt-BR"))).toBe(true));
     expect(summarize).toHaveBeenCalledTimes(2);
     expect(summarize.mock.calls[0][0]).toContain("1. Bora revisar");
     await scheduleProjectLanguageDetection(dir, db, testConfig(), paths);
     expect(summarize).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the request client to resolve an automatic provider", async () => {
+    const summarize = vi.fn().mockResolvedValueOnce("pt-BR").mockResolvedValueOnce(PACK_REPLY);
+    vi.mocked(createSummarizer).mockResolvedValue(summarize);
+
+    await scheduleProjectLanguageDetection(dir, await seededDb(25), testConfig({ provider: "auto" }), paths, "codex");
+
+    expect(createSummarizer).toHaveBeenCalledWith("codex-process", expect.anything());
   });
 
   it("does nothing below the turn threshold, under a mock summarizer, or with a disabled provider", async () => {
@@ -112,5 +141,38 @@ describe("scheduleProjectLanguageDetection", () => {
     expect(warn.mock.calls[0][0]).toContain("API key is invalid");
     expect(existsSync(join(dir, "meta.json"))).toBe(false);
     warn.mockRestore();
+  });
+});
+
+describe("resolveSummarizerLanguage", () => {
+  it("prefers explicit configuration over the recorded project language", () => {
+    writeFileSync(join(dir, "meta.json"), JSON.stringify({ cwd: dir, language: "pt-BR" }));
+
+    expect(resolveSummarizerLanguage(testConfig(), dir, paths)).toBe("pt-BR");
+    expect(resolveSummarizerLanguage({
+      ...testConfig(),
+      summarizer: { mock: false, language: "en" },
+    }, dir, paths)).toBe("en");
+  });
+
+  it("returns no language when the project has not recorded one", () => {
+    expect(resolveSummarizerLanguage(testConfig(), dir, paths)).toBeUndefined();
+  });
+
+  it("canonicalizes configured language tags and rejects invalid values", () => {
+    expect(resolveSummarizerLanguage({
+      ...testConfig(),
+      summarizer: { mock: false, language: "PT_br" },
+    }, dir, paths)).toBe("pt-BR");
+
+    expect(() => resolveSummarizerLanguage({
+      ...testConfig(),
+      summarizer: { mock: false, language: "i-am-not-a-tag" },
+    }, dir, paths)).toThrow(/Invalid summarizer\.language.*BCP 47/);
+
+    expect(() => resolveSummarizerLanguage({
+      ...testConfig(),
+      summarizer: { mock: false, language: 123 as unknown as string },
+    }, dir, paths)).toThrow(/Invalid summarizer\.language.*BCP 47/);
   });
 });

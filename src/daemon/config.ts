@@ -63,7 +63,7 @@ export type DaemonConfig = {
     allowStaleOnStrongMatch: boolean;
   };
   llm: { provider: SummaryProvider; fallbackProvider?: Exclude<SummaryProvider, "session">; model: string; apiKey?: string; baseURL: string; reasoning?: Record<string, unknown> };
-  summarizer: { mock: boolean };
+  summarizer: { mock: boolean; language?: string };
   security: SecurityConfig;
   hooks: { snapshotIntervalSec: number; disableAutoCompact: boolean };
   promotion: {

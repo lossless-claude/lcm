@@ -51,6 +51,8 @@ export interface CompactionConfig {
   maxRounds: number;
   /** IANA timezone for timestamps in summaries (default: UTC) */
   timezone?: string;
+  /** BCP 47 language tag for generated summaries, when configured or detected. */
+  language?: string;
   /** Optional scrubber to redact secrets before sending chunk text to LLM */
   scrubber?: ScrubEngine;
 }
@@ -68,6 +70,8 @@ export const COMPACT_TOKEN_BUDGET = 200_000;
  */
 export function compactEngineConfig(opts: {
   scrubber?: ScrubEngine;
+  /** Language for generated summaries, when configured or detected. */
+  language?: string;
   /** The environment to read `LCM_*` knobs from; the process's own by default. */
   env?: NodeJS.ProcessEnv;
 } = {}): CompactionConfig {
@@ -82,6 +86,7 @@ export function compactEngineConfig(opts: {
     leafChunkTokens: knobs.leafChunkTokens,
     condensedTargetTokens: knobs.condensedTargetTokens,
     maxRounds: 10,
+    language: opts.language,
     scrubber: opts.scrubber,
   };
 }
@@ -92,6 +97,7 @@ type CompactionSummarizeOptions = {
   previousSummary?: string;
   isCondensed?: boolean;
   depth?: number;
+  language?: string;
 };
 export type CompactionSummarizeFn = (
   text: string,
@@ -1030,12 +1036,15 @@ export class CompactionEngine {
       };
     }
     const inputTokens = Math.max(1, estimateTokens(sourceText));
+    const summarizeOptions = this.config.language?.trim()
+      ? { ...params.options, language: this.config.language.trim() }
+      : params.options;
 
-    let summaryText = await params.summarize(sourceText, false, params.options);
+    let summaryText = await params.summarize(sourceText, false, summarizeOptions);
     let level: CompactionLevel = "normal";
 
     if (estimateTokens(summaryText) >= inputTokens) {
-      summaryText = await params.summarize(sourceText, true, params.options);
+      summaryText = await params.summarize(sourceText, true, summarizeOptions);
       level = "aggressive";
 
       if (estimateTokens(summaryText) >= inputTokens) {

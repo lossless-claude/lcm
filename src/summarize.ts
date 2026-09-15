@@ -5,6 +5,7 @@ export type LcmSummarizeOptions = {
   previousSummary?: string;
   isCondensed?: boolean;
   depth?: number;
+  language?: string;
 };
 
 export type LcmSummarizeFn = (
@@ -439,8 +440,9 @@ export function buildLeafSummaryPrompt(params: {
   targetTokens: number;
   previousSummary?: string;
   customInstructions?: string;
+  language?: string;
 }): string {
-  const { text, mode, targetTokens, previousSummary, customInstructions } = params;
+  const { text, mode, targetTokens, previousSummary, customInstructions, language } = params;
   const previousContext = previousSummary?.trim() || "(none)";
   const instructionBlock = customInstructions?.trim()
     ? `Operator instructions:\n${customInstructions.trim()}`
@@ -451,6 +453,7 @@ export function buildLeafSummaryPrompt(params: {
     text,
     previousContext,
     instructionBlock,
+    language: languageInstruction(language),
   });
 }
 
@@ -459,8 +462,9 @@ function buildD1Prompt(params: {
   targetTokens: number;
   previousSummary?: string;
   customInstructions?: string;
+  language?: string;
 }): string {
-  const { text, targetTokens, previousSummary, customInstructions } = params;
+  const { text, targetTokens, previousSummary, customInstructions, language } = params;
   const instructionBlock = customInstructions?.trim()
     ? `Operator instructions:\n${customInstructions.trim()}`
     : "Operator instructions: (none)";
@@ -478,6 +482,7 @@ function buildD1Prompt(params: {
     text,
     previousContextBlock,
     instructionBlock,
+    language: languageInstruction(language),
   });
 }
 
@@ -485,8 +490,9 @@ function buildD2Prompt(params: {
   text: string;
   targetTokens: number;
   customInstructions?: string;
+  language?: string;
 }): string {
-  const { text, targetTokens, customInstructions } = params;
+  const { text, targetTokens, customInstructions, language } = params;
   const instructionBlock = customInstructions?.trim()
     ? `Operator instructions:\n${customInstructions.trim()}`
     : "Operator instructions: (none)";
@@ -494,6 +500,7 @@ function buildD2Prompt(params: {
     targetTokens: String(targetTokens),
     text,
     instructionBlock,
+    language: languageInstruction(language),
   });
 }
 
@@ -501,8 +508,9 @@ function buildD3PlusPrompt(params: {
   text: string;
   targetTokens: number;
   customInstructions?: string;
+  language?: string;
 }): string {
-  const { text, targetTokens, customInstructions } = params;
+  const { text, targetTokens, customInstructions, language } = params;
   const instructionBlock = customInstructions?.trim()
     ? `Operator instructions:\n${customInstructions.trim()}`
     : "Operator instructions: (none)";
@@ -510,7 +518,13 @@ function buildD3PlusPrompt(params: {
     targetTokens: String(targetTokens),
     text,
     instructionBlock,
+    language: languageInstruction(language),
   });
+}
+
+function languageInstruction(language?: string): string {
+  const normalized = language?.trim().replace(/\s+/g, " ");
+  return normalized ? `- Write the summary in ${normalized}.` : "";
 }
 
 /** Build a condensed prompt variant based on the output node depth. */
@@ -520,6 +534,7 @@ export function buildCondensedSummaryPrompt(params: {
   depth: number;
   previousSummary?: string;
   customInstructions?: string;
+  language?: string;
 }): string {
   if (params.depth <= 1) {
     return buildD1Prompt(params);
@@ -627,6 +642,7 @@ export async function createLcmSummarizeFromLegacyParams(params: {
               : 1,
           previousSummary: options?.previousSummary,
           customInstructions: params.customInstructions,
+          language: options?.language,
         })
       : buildLeafSummaryPrompt({
           text,
@@ -634,6 +650,7 @@ export async function createLcmSummarizeFromLegacyParams(params: {
           targetTokens,
           previousSummary: options?.previousSummary,
           customInstructions: params.customInstructions,
+          language: options?.language,
         });
 
     const result = await params.deps.complete({

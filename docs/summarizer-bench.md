@@ -9,6 +9,7 @@ It is opt-in. With no `LCM_EVAL_*` variables set, only the offline tests run and
 ```bash
 LCM_EVAL_MODEL=openai/gpt-oss-120b \
 LCM_EVAL_CORPUS_DIR=test/bench/corpus \
+LCM_EVAL_LANGUAGE=pt-BR \
 npx vitest run --dir test test/bench/summarizer-eval.test.ts
 ```
 
@@ -24,11 +25,14 @@ Results land in `test/bench/results/` as one JSON per model, provider, variant, 
 | `LCM_EVAL_BASE_URL` | `openai` provider only: the OpenAI-compatible endpoint. `LCM_EVAL_API_KEY` is optional. |
 | `LCM_EVAL_RUNS` | Runs per session, default `1`. Must be a positive integer. |
 | `LCM_EVAL_SESSIONS` | Comma-separated labels to run; default is every session in the corpus. |
+| `LCM_EVAL_LANGUAGE` | Effective configured or detected BCP 47 language for the corpus. Omit only when production would have no known language. |
 | `LCM_EVAL_REASONING` | HTTP providers: the JSON sent as `reasoning`, e.g. `{"enabled":false}`. |
 | `LCM_EVAL_REASONING_EFFORT` | Shorthand for `LCM_EVAL_REASONING={"effort":"<value>"}`. |
 | `LCM_EVAL_DISABLE_THINKING` | HTTP providers: `1` sends `chat_template_kwargs.enable_thinking=false`, for Qwen-style servers. |
 
-`openrouter` needs `OPENROUTER_API_KEY`. The provider and the reasoning knobs are part of a run's identity and appear in the result filename, so the same model measured under different settings does not overwrite itself.
+`openrouter` needs `OPENROUTER_API_KEY`. The provider, effective language, and
+reasoning knobs are part of a run's identity and appear in the result filename,
+so the same model measured under different settings does not overwrite itself.
 
 ## Building a corpus
 
@@ -64,6 +68,8 @@ Per run, in `totals`:
 
 The bench does not copy the production engine configuration — it calls the same function. `compactEngineConfig()` in `src/compaction.ts` is the single source of truth, used by both the daemon's `/compact` route and the bench, and both compact against the same `COMPACT_TOKEN_BUDGET`. A change to the engine's thresholds, fan-outs, depth limits or round cap reaches the bench automatically; it cannot drift into measuring an engine production does not run.
 
-`scrubber` is the one per-caller argument, and the bench deliberately passes none: stored messages were already scrubbed at ingest, and the export copies stored content verbatim.
+The bench passes the corpus's effective language through `LCM_EVAL_LANGUAGE`.
+It deliberately passes no `scrubber`: stored messages were already scrubbed at
+ingest, and the export copies stored content verbatim.
 
 `test/compaction.test.ts` pins this: it asserts that every other field comes out identical for both callers.
