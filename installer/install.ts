@@ -10,6 +10,7 @@ import { runningFromPluginBundle } from "../src/hooks/fail-open.js";
 import { isOlderVersion } from "../src/daemon/lifecycle.js";
 import { blocksInstall } from "../src/doctor/types.js";
 import { PKG_VERSION } from "../src/daemon/version.js";
+import { createLcmPaths } from "../src/lcm-paths.js";
 export { REQUIRED_HOOKS, mergeClaudeSettings } from "../src/installer/settings.js";
 
 export interface ServiceDeps {
@@ -298,7 +299,7 @@ async function installClaudeCode(deps: ServiceDeps): Promise<HarnessOutcome> {
   // - Skip config creation (already exists or just created above)
   // - Merge settings.json hooks (remove duplicates, clean old commands)
   // - Start the daemon
-  await ensureCore({
+  await ensureCore(createLcmPaths(lcDir), {
     configPath,
     settingsPath,
     existsSync: deps.existsSync,

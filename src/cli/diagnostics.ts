@@ -128,7 +128,7 @@ export function registerDiagnosticsCommands(program: Command, deps: DiagnosticsC
 
       const verbose: boolean = opts.verbose ?? false;
       const { collectStats, printStats } = await import("../stats.js");
-      printStats(collectStats(), verbose);
+      printStats(collectStats(createLcmPaths(lcmHome())), verbose);
     });
 
   // ─── doctor ────────────────────────────────────────────────────────────────

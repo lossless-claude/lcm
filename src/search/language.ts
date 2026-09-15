@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { extractQueryTerms } from "../store/fts5-query.js";
 import type { LcmSummarizeFn } from "../llm/types.js";
+import type { LcmPaths } from "../lcm-paths.js";
 
 /**
  * The language a corpus's author writes in, read from the turns a person
@@ -40,12 +41,12 @@ const MIN_PROMPT_LENGTH = 40;
 export const MAX_PROMPT_LENGTH = 1200;
 
 /** True when the text is a real instruction a person typed, carrying at least two content words. */
-export function isDistinctivePrompt(content: string): boolean {
+export function isDistinctivePrompt(content: string, paths?: LcmPaths): boolean {
   const trimmed = content.trim();
   if (trimmed.length < MIN_PROMPT_LENGTH || trimmed.length > MAX_PROMPT_LENGTH) return false;
   if (REJECTED_PROMPTS.some((pattern) => pattern.test(trimmed))) return false;
   if (TOOL_OUTPUT_PROMPTS.some((pattern) => pattern.test(trimmed))) return false;
-  return extractQueryTerms(trimmed).length >= 2;
+  return extractQueryTerms(trimmed, paths).length >= 2;
 }
 
 /** How many human turns a detector reads. Enough for a majority; small enough for one call. */
@@ -100,7 +101,13 @@ const TURNS_PER_CONVERSATION = 20;
  * tried again after the next ingest, which is the right trade against paging
  * thousands of messages into memory on a request path.
  */
-export function sampleHumanTurns(db: DatabaseSync, limit = LANGUAGE_SAMPLE_SIZE): string[] {
+export function sampleHumanTurns(
+  db: DatabaseSync,
+  pathsOrLimit?: LcmPaths | number,
+  suppliedLimit = LANGUAGE_SAMPLE_SIZE,
+): string[] {
+  const paths = typeof pathsOrLimit === "number" ? undefined : pathsOrLimit;
+  const limit = typeof pathsOrLimit === "number" ? pathsOrLimit : suppliedLimit;
   const rows = db
     .prepare(
       `WITH candidates AS (
@@ -131,7 +138,7 @@ export function sampleHumanTurns(db: DatabaseSync, limit = LANGUAGE_SAMPLE_SIZE)
   for (const row of rows) {
     if (sample.length >= limit) break;
     if (row.conversationId === lastConversation) continue;
-    if (!isDistinctivePrompt(row.content)) continue;
+    if (!isDistinctivePrompt(row.content, paths)) continue;
     sample.push(row.content);
     lastConversation = row.conversationId;
   }

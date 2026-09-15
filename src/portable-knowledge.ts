@@ -23,7 +23,7 @@ import { runLcmMigrations } from "./db/migration.js";
 import { deduplicateAndInsert } from "./promotion/dedup.js";
 import { ScrubEngine } from "./scrub.js";
 import { getLcmConnection, closeLcmConnection } from "./db/connection.js";
-import { lcmHome } from "./lcm-home.js";
+import type { LcmPaths } from "./lcm-paths.js";
 
 export const EXPORT_VERSION = 1;
 
@@ -60,10 +60,6 @@ function resolveProjectDbPath(cwd: string, baseDir: string): string {
   return join(resolveProjectDir(cwd, baseDir), "db.sqlite");
 }
 
-function defaultBaseDir(): string {
-  return lcmHome();
-}
-
 // ─── Export ──────────────────────────────────────────────────────────────────
 
 export interface ExportOptions {
@@ -77,7 +73,7 @@ export interface ExportOptions {
   format?: "json";
   /** Skip scrubbing secrets (not recommended; useful for tests) */
   skipScrub?: boolean;
-  /** Override the ~/.lossless-claude base directory (for testing) */
+  /** Explicit storage root used by older library callers. */
   _lcmBaseDir?: string;
 }
 
@@ -88,9 +84,12 @@ export interface ExportResult {
 
 export async function exportKnowledge(
   cwd: string,
-  opts: ExportOptions = {},
+  pathsOrOptions: LcmPaths | ExportOptions,
+  injectedOptions: ExportOptions = {},
 ): Promise<ExportResult> {
-  const baseDir = opts._lcmBaseDir ?? defaultBaseDir();
+  const opts = "home" in pathsOrOptions ? injectedOptions : pathsOrOptions;
+  const baseDir = "home" in pathsOrOptions ? pathsOrOptions.home : opts._lcmBaseDir;
+  if (!baseDir) throw new Error("exportKnowledge requires an LcmPaths storage root");
   const dbPath = resolveProjectDbPath(cwd, baseDir);
 
   if (!existsSync(dbPath)) {
@@ -165,7 +164,7 @@ export interface ImportOptions {
   dryRun?: boolean;
   /** Override confidence for all imported entries */
   confidence?: number;
-  /** Override the ~/.lossless-claude base directory (for testing) */
+  /** Explicit storage root used by older library callers. */
   _lcmBaseDir?: string;
 }
 
@@ -185,9 +184,13 @@ const DEFAULT_DEDUP_THRESHOLDS = {
 
 export async function importKnowledge(
   cwd: string,
-  doc: ExportDocument,
-  opts: ImportOptions = {},
+  pathsOrDoc: LcmPaths | ExportDocument,
+  docOrOptions: ExportDocument | ImportOptions = {},
+  injectedOptions: ImportOptions = {},
 ): Promise<ImportResult> {
+  const paths = "home" in pathsOrDoc ? pathsOrDoc : undefined;
+  const doc = (paths ? docOrOptions : pathsOrDoc) as ExportDocument;
+  const opts = (paths ? injectedOptions : docOrOptions) as ImportOptions;
   if (doc.version !== EXPORT_VERSION) {
     throw new Error(`Unsupported export version: ${doc.version} (expected ${EXPORT_VERSION})`);
   }
@@ -201,7 +204,8 @@ export async function importKnowledge(
     };
   }
 
-  const baseDir = opts._lcmBaseDir ?? defaultBaseDir();
+  const baseDir = paths?.home ?? opts._lcmBaseDir;
+  if (!baseDir) throw new Error("importKnowledge requires an LcmPaths storage root");
   const projDir = resolveProjectDir(cwd, baseDir);
   const dbPath = resolveProjectDbPath(cwd, baseDir);
 

@@ -7,8 +7,7 @@ import { formatNumber, formatRatio } from "./stats.js";
 import { findAllCodexTranscripts } from "./codex-transcript.js";
 import type { ProgressState } from "./cli/progress-state.js";
 import { projectDbPath, projectId } from "./daemon/project.js";
-import { lcmHome } from "./lcm-home.js";
-import { createLcmPaths } from "./lcm-paths.js";
+import { createLcmPaths, type LcmPaths } from "./lcm-paths.js";
 import { readSubagentAttribution } from "./subagent-attribution.js";
 import {
   appendReplayManifestSessions,
@@ -25,6 +24,7 @@ import {
 export type ImportProvider = "claude" | "codex" | "all";
 
 interface ImportOptions {
+  paths?: LcmPaths;
   all?: boolean;
   verbose?: boolean;
   dryRun?: boolean;
@@ -44,7 +44,7 @@ interface ImportOptions {
   trackInFlight?: () => () => void;
   /** Override ~/.claude/projects path — used in tests only */
   _claudeProjectsDir?: string;
-  /** Override ~/.lossless-claude path — used in tests only */
+  /** Explicit storage root used by older library callers. */
   _lcmDir?: string;
   /** Override ~/.codex path — used in tests only */
   _codexDir?: string;
@@ -80,8 +80,8 @@ export function cwdToProjectHash(cwd: string): string {
   return cwd.replace(/\//g, '-');
 }
 
-function buildProjectMap(lcmDir?: string): Map<string, string> {
-  const lcmProjectsDir = lcmDir ? join(lcmDir, 'projects') : createLcmPaths(lcmHome()).projectsDir;
+function buildProjectMap(paths: LcmPaths): Map<string, string> {
+  const lcmProjectsDir = paths.projectsDir;
   const map = new Map<string, string>();
   if (!existsSync(lcmProjectsDir)) return map;
   for (const entry of readdirSync(lcmProjectsDir, { withFileTypes: true })) {
@@ -291,11 +291,9 @@ function accumulateReplayUsage(result: ImportResult, usage: CompactLlmUsage | un
  * Checks if a session has already been recorded in session_ingest_log,
  * indicating it was fully ingested in a previous run.
  */
-function isSessionAlreadyIngested(cwd: string, sessionId: string, lcmDir?: string): boolean {
+function isSessionAlreadyIngested(cwd: string, sessionId: string, paths: LcmPaths): boolean {
   try {
-    const dbPath = lcmDir
-      ? join(lcmDir, "projects", projectId(cwd), "db.sqlite")
-      : projectDbPath(cwd, createLcmPaths(lcmHome()));
+    const dbPath = projectDbPath(cwd, paths);
     if (!existsSync(dbPath)) {
       return false;
     }
@@ -348,7 +346,7 @@ async function ingestSessionList(
         clearedCwds.add(cwd);
         const ok = await clearReplayState({
           cwd,
-          lcmDir: options._lcmDir,
+          paths: options.paths,
           command: "import",
           onSummaryCount: (count) => {
             if (count > 0) {
@@ -364,7 +362,7 @@ async function ingestSessionList(
     }
     const plan = planReplayResume({
       sessions,
-      lcmDir: options._lcmDir,
+      paths: options.paths,
       command: "import",
       fingerprint: (s) => fingerprintFile(s.path),
       restart: options.restart,
@@ -382,7 +380,7 @@ async function ingestSessionList(
         if (appends.length > 0) {
           appendReplayManifestSessions({
             cwd,
-            lcmDir: options._lcmDir,
+            paths: options.paths,
             command: "import",
             runId: plan.runIds.get(cwd)!,
             sessions: appends.map((sessionId) => ({
@@ -433,7 +431,7 @@ async function ingestSessionList(
 
     // Skip completed Claude sessions unless replaying. Codex still reaches /ingest:
     // an import may need to recover a final record deferred by live capture.
-    if (!options.replay && sourceClient !== "codex" && isSessionAlreadyIngested(cwd, sessionId, options._lcmDir)) {
+    if (!options.replay && sourceClient !== "codex" && options.paths && isSessionAlreadyIngested(cwd, sessionId, options.paths)) {
       result.skippedEmpty++;
       if (options.verbose) console.log(`  ↩️ ${sessionId}: already fully ingested`);
       options.onProgress?.({ completed: processedBase + result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
@@ -493,7 +491,7 @@ async function ingestSessionList(
           const runId = replayRuns.get(cwd)!;
           const written = createReplayRun({
             cwd,
-            lcmDir: options._lcmDir,
+            paths: options.paths,
             command: "import",
             runId,
             sessions: pendingManifest,
@@ -543,7 +541,7 @@ async function ingestSessionList(
           if (runId !== undefined && outcome) {
             recordReplayProgress({
               cwd,
-              lcmDir: options._lcmDir,
+              paths: options.paths,
               runId,
               sessionId,
               position: ledgerPositions.get(cwd)?.get(sessionId) ?? 0,
@@ -580,7 +578,7 @@ async function ingestSessionList(
           // Warnings print regardless of --verbose so users know the DAG state.
           const gaveUp = isClientGaveUpError(err);
           const recovered = gaveUp
-            ? await loadLatestSessionSummary({ cwd, lcmDir: options._lcmDir, sessionId, notBefore: compactStartedAt })
+            ? await loadLatestSessionSummary({ cwd, paths: options.paths, sessionId, notBefore: compactStartedAt })
             : null;
           if (recovered) {
             previousSummaryByCwd.set(cwd, recovered.content);
@@ -588,7 +586,7 @@ async function ingestSessionList(
             if (runId !== undefined) {
               recordReplayProgress({
                 cwd,
-                lcmDir: options._lcmDir,
+                paths: options.paths,
                 runId,
                 sessionId,
                 position: ledgerPositions.get(cwd)?.get(sessionId) ?? 0,
@@ -643,8 +641,10 @@ async function ingestSessionList(
 
 export async function importSessions(
   client: DaemonClient,
-  options: ImportOptions = {}
+  options: ImportOptions,
 ): Promise<ImportResult> {
+  const paths = options.paths ?? (options._lcmDir ? createLcmPaths(options._lcmDir) : undefined);
+  if (paths) options.paths = paths;
   const provider: ImportProvider = options.provider ?? (options.replay ? "all" : "claude");
   const result: ImportResult = { imported: 0, skippedEmpty: 0, failed: 0, totalMessages: 0, totalTokens: 0, tokensAfter: 0 };
   // One --restart clear per project for the whole import, however many session
@@ -661,7 +661,8 @@ export async function importSessions(
 
     if (options.all) {
       if (existsSync(claudeProjectsDir)) {
-        const projectMap = buildProjectMap(options._lcmDir);
+        if (!paths) throw new Error("importSessions --all requires an LcmPaths storage root");
+        const projectMap = buildProjectMap(paths);
         for (const entry of readdirSync(claudeProjectsDir, { withFileTypes: true })) {
           if (!entry.isDirectory()) continue;
           const cwd = projectMap.get(entry.name);

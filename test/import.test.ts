@@ -357,6 +357,7 @@ describe("importSessions", () => {
       dryRun: true,
       cwd,
       _claudeProjectsDir: claudeProjectsDir,
+      _lcmDir: makeTmpDir(),
     });
 
     expect(client.post).not.toHaveBeenCalled();
@@ -382,6 +383,7 @@ describe("importSessions", () => {
     const result = await importSessions(client, {
       cwd,
       _claudeProjectsDir: claudeProjectsDir,
+      _lcmDir: makeTmpDir(),
     });
 
     expect(calls).toHaveLength(1);
@@ -410,6 +412,7 @@ describe("importSessions", () => {
     const result = await importSessions(client, {
       cwd,
       _claudeProjectsDir: claudeProjectsDir,
+      _lcmDir: makeTmpDir(),
     });
 
     expect(result.skippedEmpty).toBe(1);
@@ -433,6 +436,7 @@ describe("importSessions", () => {
     const result = await importSessions(client, {
       cwd,
       _claudeProjectsDir: claudeProjectsDir,
+      _lcmDir: makeTmpDir(),
     });
 
     expect(result.failed).toBe(1);
@@ -468,6 +472,7 @@ describe("importSessions", () => {
       verbose: false,
       cwd,
       _claudeProjectsDir: claudeProjectsDir,
+      _lcmDir: makeTmpDir(),
     });
 
     // Both sessions were compacted, in mtime order
@@ -517,6 +522,7 @@ describe("importSessions", () => {
       verbose: false,
       cwd,
       _claudeProjectsDir: claudeProjectsDir,
+      _lcmDir: makeTmpDir(),
     });
 
     expect(result.totalTokens).toBe(10000);  // 5000 * 2 sessions
@@ -560,6 +566,7 @@ describe("importSessions", () => {
       verbose: false,
       cwd,
       _claudeProjectsDir: claudeProjectsDir,
+      _lcmDir: makeTmpDir(),
     });
 
     // ingest returned 0 tokens (already ingested), but compact supplies the real counts
@@ -647,6 +654,7 @@ describe("importSessions", () => {
       verbose: false,  // warning must appear even without --verbose
       cwd,
       _claudeProjectsDir: claudeProjectsDir,
+      _lcmDir: makeTmpDir(),
     });
 
     // Both sessions were attempted for compact
@@ -733,6 +741,7 @@ describe("importSessions", () => {
       verbose: false,
       cwd,
       _claudeProjectsDir: claudeProjectsDir,
+      _lcmDir: makeTmpDir(),
     });
 
     // session-1 succeeds and compacts with no prior context
@@ -1373,7 +1382,7 @@ describe("importSessions — provider: codex", () => {
     expect(scoped.imported).toBe(2);
     expect(calls.map(c => c.body.session_id).sort()).toEqual(["a", "c"]);
     calls.length = 0;
-    await importSessions(client, { provider: "codex", all: true, replay: true, _codexDir: codexDir });
+    await importSessions(client, { provider: "codex", all: true, replay: true, _codexDir: codexDir, _lcmDir: makeTmpDir() });
     const compacts = calls.filter(c => c.path === "/compact").map(c => c.body);
     expect(compacts).toHaveLength(3);
     expect(compacts.every(c => c.client === "codex")).toBe(true);

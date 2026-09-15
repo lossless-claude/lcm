@@ -11,7 +11,7 @@ import { searchNativeHistory } from "../../search/native-history.js";
 import { searchHistoryGroup } from "../../search/group-history.js";
 import { searchPromotedGroup } from "../../search/group-promoted.js";
 import { pivotLanguagesFor } from "../../search/pivot-language.js";
-import { combinedQueryTerms, combineWithPivotQuery } from "../../store/fts5-query.js";
+import { combinedQueryTerms, combineWithPivotQuery, extractQueryTerms } from "../../store/fts5-query.js";
 import { validateCwd } from "../validate-cwd.js";
 import { projectRef } from "../project-group.js";
 
@@ -49,8 +49,8 @@ export function createSearchHandler(config: DaemonConfig, paths: LcmPaths): Rout
     // the string: each layer below would otherwise re-tokenise the mixture and pick one
     // language's stopword pack for both, dropping the terms the pivot just added.
     const rawPivot = typeof pivotQuery === "string" ? pivotQuery : undefined;
-    const searchQuery = combineWithPivotQuery(String(query), rawPivot);
-    const searchTerms = combinedQueryTerms(String(query), rawPivot) ?? undefined;
+    const searchQuery = combineWithPivotQuery(String(query), paths, rawPivot);
+    const searchTerms = combinedQueryTerms(String(query), paths, rawPivot) ?? extractQueryTerms(String(query), paths);
 
     let episodic: unknown[] = [];
     let promoted: unknown[] = [];

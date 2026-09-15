@@ -7,6 +7,7 @@ import { runLcmMigrations } from "../src/db/migration.js";
 import { recordCompactLlmUsage, type CompactLlmUsage } from "../src/daemon/routes/compact.js";
 import { collectStats } from "../src/stats.js";
 import { ConversationStore } from "../src/store/conversation-store.js";
+import { createLcmPaths } from "../src/lcm-paths.js";
 
 // collectStats() scans every project database under the lcm home, so each fixture
 // points LCM_HOME at its own.
@@ -60,7 +61,7 @@ describe("collectStats cost aggregation", () => {
       [usage({ costUsd: 0.0004, callsWithCost: 1 })],
       [usage({ provider: "anthropic", model: "claude-haiku-4-5-20251001" })],
     );
-    const stats = collectStats();
+    const stats = collectStats(createLcmPaths(process.env.LCM_HOME!));
     // The unpriced project must not drag the known total down to 0.
     expect(stats.llmUsage.costUsd).toBeCloseTo(0.0004, 9);
     expect(stats.llmUsage.callsWithCost).toBe(1);
@@ -69,7 +70,7 @@ describe("collectStats cost aggregation", () => {
 
   it("keeps the total null when no project priced anything", async () => {
     await withProjects([usage()], [usage({ model: "other" })]);
-    const stats = collectStats();
+    const stats = collectStats(createLcmPaths(process.env.LCM_HOME!));
     // null, not 0: those calls were charged, nothing reported how much.
     expect(stats.llmUsage.costUsd).toBeNull();
     expect(stats.llmUsage.callsWithCost).toBe(0);
@@ -81,7 +82,7 @@ describe("collectStats cost aggregation", () => {
       [usage({ costUsd: 0.0004, callsWithCost: 1 })],
       [usage({ costUsd: 0.0006, callsWithCost: 1 })],
     );
-    const stats = collectStats();
+    const stats = collectStats(createLcmPaths(process.env.LCM_HOME!));
     expect(stats.llmUsage.costUsd).toBeCloseTo(0.001, 9);
     expect(stats.llmUsage.callsWithCost).toBe(2);
   });

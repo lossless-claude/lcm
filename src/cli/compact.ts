@@ -58,7 +58,7 @@ export function registerCompactCommand(program: Command, deps: CompactCommandDep
 
         const replayModel = config.llm.model || undefined;
         const { compacted } = await batchCompact({
-          minTokens, dryRun, port, cwd, replay, restart, verbose, tokenPath,
+          paths, minTokens, dryRun, port, cwd, replay, restart, verbose, tokenPath,
           replayModel,
           onBeforeSession: () => !compactRenderer.shouldStop,
           trackInFlight: () => compactRenderer.trackInFlight(),
