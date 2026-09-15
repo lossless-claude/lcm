@@ -86,7 +86,7 @@ function insertContextItem(
 }
 
 describe("findUncompacted", () => {
-  it("selects only conversations with enough uncovered raw context", () => {
+  it("keeps ordinary batch compaction to wholly raw conversations", () => {
     const { paths, cwd, db } = makeProject();
 
     const partial = createConversation(db, "partial", "2026-01-02");
@@ -118,12 +118,12 @@ describe("findUncompacted", () => {
 
     const candidates = findUncompacted(paths, 10, false, cwd);
 
-    expect(candidates.map((candidate) => candidate.sessionId)).toEqual(["raw", "partial"]);
-    expect(candidates[1]).toMatchObject({
+    expect(candidates.map((candidate) => candidate.sessionId)).toEqual(["raw"]);
+    expect(candidates[0]).toMatchObject({
       messages: 2,
-      tokens: 12,
+      tokens: 15,
       sourceMessages: 2,
-      sourceTokens: 12,
+      sourceTokens: 15,
     });
 
     const replayCandidates = findUncompacted(paths, 10, true, cwd, true);
@@ -158,9 +158,12 @@ describe("findUncompacted", () => {
     insertContextItem(db, eligible, 2, "message", eligibleTailA);
     insertContextItem(db, eligible, 3, "message", eligibleTailB);
 
-    const candidates = findUncompacted(paths, 10, false, cwd, false, 2);
+    const candidates = findUncompacted(paths, 10, false, cwd, false, { freshTailCount: 2 });
 
     expect(candidates.map((candidate) => candidate.sessionId)).toEqual(["eligible"]);
     expect(candidates[0]).toMatchObject({ messages: 1, tokens: 10 });
+
+    const noProtectedTail = findUncompacted(paths, 10, false, cwd, false, { freshTailCount: 0 });
+    expect(noProtectedTail.map((candidate) => candidate.sessionId)).toEqual(["eligible", "tail-only"]);
   });
 });

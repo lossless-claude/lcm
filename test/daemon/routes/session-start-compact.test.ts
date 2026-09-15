@@ -6,7 +6,7 @@ import type { DaemonConfig } from "../../../src/daemon/config.js";
 import type { UncompactedConversation } from "../../../src/batch-compact.js";
 import type { LcmPaths } from "../../../src/lcm-paths.js";
 
-type Scan = (paths: LcmPaths, minTokens: number, cwd: string, freshTailCount: number) => Promise<UncompactedConversation[]>;
+type Scan = (paths: LcmPaths, minTokens: number, cwd: string, sessionStart: { freshTailCount: number }) => Promise<UncompactedConversation[]>;
 const scan = vi.fn<Scan>();
 vi.mock("../../../src/daemon/session-start-compact-worker.js", () => ({
   createSessionStartCompactScanner: () => ({
@@ -171,7 +171,7 @@ describe("POST /session-start-compact", () => {
     await handler({} as never, res, JSON.stringify({ cwd: dir, session_id: "starting" }));
 
     expect(out.body).toEqual({ queued: "scheduled" });
-    expect(scan).toHaveBeenCalledWith(paths, 10000, validateCwd(dir), 8);
+    expect(scan).toHaveBeenCalledWith(paths, 10000, validateCwd(dir), { freshTailCount: 8 });
     expect(fireCompactRequest).not.toHaveBeenCalled();
 
     resolveScan([]);
@@ -186,7 +186,7 @@ describe("POST /session-start-compact", () => {
 
       await handler({} as never, res, JSON.stringify({ cwd: dir, session_id: "starting" }));
 
-      expect(scan).toHaveBeenCalledWith(paths, 10000, validateCwd(dir), 3);
+      expect(scan).toHaveBeenCalledWith(paths, 10000, validateCwd(dir), { freshTailCount: 3 });
     } finally {
       vi.unstubAllEnvs();
     }

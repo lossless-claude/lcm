@@ -63,7 +63,7 @@ export function createSessionStartCompactHandler(config: DaemonConfig, daemonPor
       paths,
       config.compaction.autoCompactMinTokens,
       cwd,
-      resolveLcmConfig().freshTailCount,
+      { freshTailCount: resolveLcmConfig().freshTailCount },
     ).then((candidates) => {
       const inFlight = new Set(compactingSessionsFor(cwd));
       const eligible = candidates

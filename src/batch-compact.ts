@@ -59,6 +59,11 @@ export function findProjects(paths: LcmPaths, cwdFilter?: string): { projDir: st
   return projects;
 }
 
+/** SessionStart's distinct eligibility rule for crashed-session catch-up. */
+export type SessionStartUncompactedScan = {
+  freshTailCount: number;
+};
+
 /** Normalize the protected tail exactly as CompactionEngine does. */
 function resolveFreshTailCount(freshTailCount: number): number {
   return Number.isFinite(freshTailCount) && freshTailCount > 0
@@ -72,17 +77,13 @@ export function findUncompacted(
   readOnly = false,
   cwdFilter?: string,
   replay = false,
-  freshTailCount = 0,
+  sessionStart?: SessionStartUncompactedScan,
 ): UncompactedConversation[] {
   const results: UncompactedConversation[] = [];
   const metricsAlias = replay ? "m" : "raw";
   const sourceAlias = replay ? "src" : "raw";
-  const protectedTailCount = resolveFreshTailCount(freshTailCount);
-  const rawContextJoin = replay ? "" : `
-        -- A summary replaces its source messages in context_items. What remains
-        -- as a message item is uncovered raw context. The newest configured
-        -- messages remain protected, just as they do in CompactionEngine.
-        LEFT JOIN (
+  const protectedTailCount = resolveFreshTailCount(sessionStart?.freshTailCount ?? 0);
+  const rawContextAggregate = sessionStart ? `
           SELECT ci.conversation_id, COUNT(*) as msg_count, SUM(ci.token_count) as raw_tokens
           FROM (
             SELECT
@@ -103,9 +104,32 @@ export function findUncompacted(
               )
           ) ci
           WHERE ci.raw_ordinal <= ci.raw_count - ?
-          GROUP BY ci.conversation_id
+          GROUP BY ci.conversation_id` : `
+          SELECT ci.conversation_id, COUNT(*) as msg_count, SUM(m.token_count) as raw_tokens
+          FROM context_items ci
+          JOIN messages m ON m.message_id = ci.message_id
+          WHERE ci.item_type = 'message'
+            AND NOT EXISTS (
+              SELECT 1 FROM message_parts p
+              WHERE p.message_id = m.message_id AND p.part_type = 'compaction'
+            )
+          GROUP BY ci.conversation_id`;
+  const rawContextJoin = replay ? "" : `
+        -- A summary replaces its source messages in context_items. What remains
+        -- as a message item is the conversation's uncovered raw tail.
+        LEFT JOIN (
+          ${rawContextAggregate}
         ) raw ON raw.conversation_id = c.conversation_id`;
-  const rawContextPredicate = replay ? "1 = 1" : "COALESCE(raw.msg_count, 0) > 0";
+  const rawContextPredicate = replay
+    ? "1 = 1"
+    : sessionStart
+      ? "COALESCE(raw.msg_count, 0) > 0"
+      : "COALESCE(s.sum_count, 0) = 0";
+  const summaryCountJoin = !replay && !sessionStart ? `
+        LEFT JOIN (
+          SELECT conversation_id, COUNT(*) as sum_count
+          FROM summaries GROUP BY conversation_id
+        ) s ON s.conversation_id = c.conversation_id` : "";
 
   for (const { projDir, cwd } of findProjects(paths, cwdFilter)) {
     const dbPath = join(projDir, "db.sqlite");
@@ -145,11 +169,12 @@ export function findUncompacted(
           GROUP BY conversation_id
         ) src ON src.conversation_id = c.conversation_id
         ${rawContextJoin}
+        ${summaryCountJoin}
         WHERE COALESCE(${metricsAlias}.msg_count, 0) > 0
           AND (${rawContextPredicate})
           AND COALESCE(${metricsAlias}.raw_tokens, 0) >= ?
         ORDER BY COALESCE(${metricsAlias}.raw_tokens, 0) DESC
-      `).all(...(replay ? [minTokens] : [protectedTailCount, minTokens])) as {
+      `).all(...(sessionStart && !replay ? [protectedTailCount, minTokens] : [minTokens])) as {
         conversation_id: number;
         session_id: string;
         updated_at: string;

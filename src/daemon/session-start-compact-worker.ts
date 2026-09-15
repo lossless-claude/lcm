@@ -1,5 +1,5 @@
 import { isMainThread, parentPort, Worker } from "node:worker_threads";
-import type { UncompactedConversation } from "../batch-compact.js";
+import type { SessionStartUncompactedScan, UncompactedConversation } from "../batch-compact.js";
 import type { LcmPaths } from "../lcm-paths.js";
 
 type ScanRequest = {
@@ -7,7 +7,7 @@ type ScanRequest = {
   paths: LcmPaths;
   minTokens: number;
   cwd: string;
-  freshTailCount: number;
+  sessionStart: SessionStartUncompactedScan;
 };
 
 type ScanResponse =
@@ -15,7 +15,7 @@ type ScanResponse =
   | { id: number; error: string };
 
 export type SessionStartCompactScanner = {
-  scan(paths: LcmPaths, minTokens: number, cwd: string, freshTailCount: number): Promise<UncompactedConversation[]>;
+  scan(paths: LcmPaths, minTokens: number, cwd: string, sessionStart: SessionStartUncompactedScan): Promise<UncompactedConversation[]>;
 };
 
 function toError(value: unknown): Error {
@@ -35,7 +35,7 @@ if (!isMainThread) {
       findUncompacted = scan;
       port.postMessage({
         id: request.id,
-        candidates: scan(request.paths, request.minTokens, false, request.cwd, false, request.freshTailCount),
+        candidates: scan(request.paths, request.minTokens, false, request.cwd, false, request.sessionStart),
       } satisfies ScanResponse);
     } catch (error) {
       port.postMessage({ id: request.id, error: toError(error).message } satisfies ScanResponse);
@@ -84,7 +84,7 @@ export function createSessionStartCompactScanner(): SessionStartCompactScanner {
   };
 
   return {
-    scan(paths, minTokens, cwd, freshTailCount) {
+    scan(paths, minTokens, cwd, sessionStart) {
       if (workerError) return Promise.reject(workerError);
 
       const id = nextId++;
@@ -93,7 +93,7 @@ export function createSessionStartCompactScanner(): SessionStartCompactScanner {
         try {
           const activeWorker = ensureWorker();
           activeWorker.ref();
-          activeWorker.postMessage({ id, paths, minTokens, cwd, freshTailCount } satisfies ScanRequest);
+          activeWorker.postMessage({ id, paths, minTokens, cwd, sessionStart } satisfies ScanRequest);
         } catch (error) {
           pending.delete(id);
           if (pending.size === 0) worker?.unref();
