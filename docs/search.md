@@ -55,17 +55,22 @@ runtime lacks FTS5 (search then falls back to LIKE over the same prepared terms)
 Query preparation always drops English function words. Every other language gets a **language
 pack**: a JSON file at `~/.lossless-claude/languages/<tag>.json` holding that language's function
 words, generated once by the configured summarizer the first time a corpus in that language is
-seen, and reused from then on. A pack applies to a query when at least two of the query's words are
-its function words, so a pt-BR question loses "que", "como", "para" the way an English one loses
-"what", "how", "for", and a single accidental collision in another language changes nothing.
+seen, and reused from then on. A pack applies to a query when its language is one the search is
+configured for — the project's recorded author language for `query`, `search.pivotLanguage` for a
+`pivotQuery` — matched on the primary subtag (`pt` and `pt-BR` are one language). So a pt-BR
+question loses "que", "como", "para" the way an English one loses "what", "how", "for", and the
+words that happen to appear in the query never choose a pack: a collision with another language's
+function words changes nothing, and two languages in one string cannot activate a pack neither
+activates alone. A project with no recorded language loses English function words only.
 
 Packs are created by the daemon: after an ingest, a project with no recorded language and at least
 20 human turns (tool output pasted into a user turn does not count) is sampled, the model names the
 language, the tag is written to the project's `meta.json` as `language`, and the pack is generated if
-this machine has none. `lcm bench build --generator llm` does the same on a corpus it detects. A
-mock or disabled summarizer skips the step; a provider failure is logged once per project per daemon
-lifetime and not retried until restart. Without a pack, a question in that language goes through
-whole, function words included — today's behaviour.
+this machine has none. The same step generates the pack for `search.pivotLanguage` when it is
+neither English (which ships in code) nor the author's language. `lcm bench build --generator llm`
+does the same on a corpus it detects. A mock or disabled summarizer skips the step; a provider
+failure is logged once per project per daemon lifetime and not retried until restart. Without a
+pack, a question in that language goes through whole, function words included.
 
 Packs are plain JSON, reviewable and hand-editable; deleting one makes the next detection regenerate
 it. On the 74 pt-BR bench questions built at `ea10a75`, dropping pt-BR function words alone moved
@@ -77,10 +82,10 @@ the loader elsewhere; the test suite uses it so no test reads a developer's real
 Dropping the author language's function words is not the whole gap. When the author writes in one
 language and the text that answers is mostly in another, the query has to reach both vocabularies.
 `lcm_search` takes an optional `pivotQuery` for that: the caller's own translation of `query` into
-`search.pivotLanguage` (default `en`). The daemon prepares each string separately — each loses its
-own language's function words — and searches the union of the two term sets, so a hit through either
-side counts. A missing, empty or term-equivalent `pivotQuery` leaves the single-language path
-untouched, and `lcm grep` / `lcm_grep` are not affected at all.
+`search.pivotLanguage` (default `en`). The daemon prepares each string separately — `query` under
+the author language's pack, `pivotQuery` under the pivot language's — and searches the union of the
+two term sets, so a hit through either side counts. A missing, empty or term-equivalent `pivotQuery`
+leaves the single-language path untouched, and `lcm grep` / `lcm_grep` are not affected at all.
 
 The translation is the caller's because the caller is already a model: no model call is added inside
 the daemon at query time. So the caller has to be told when one is worth making. The recorded author
@@ -97,9 +102,28 @@ original's function words still in 0.473, original minus its function words plus
 the author's language is the one where replacing loses.
 
 Those are the numbers that chose the shape, not a measurement of this implementation: the
-translations came from a model, not from a caller, and the arms were never re-run against what
-shipped here. Read 0.716 as the ceiling the design was aiming at. The pinned pt-BR direction and
-the English non-regression arm are measured in [#493](https://github.com/lossless-claude/lcm/issues/493).
+translations came from a model, not from a caller, and the store has changed since. Read 0.716 as
+the ceiling the design was aiming at.
+
+The implementation itself, at `f41c636` (packs chosen by configured language), measured with the
+translations written by the calling agent from the tool description — the same path a real
+`lcm_search` call takes — through `lcm bench run` with a `pivotQuery` on each question:
+
+| arm | corpus (sessions) | questions | `query` alone | with `pivotQuery` | Δ |
+|---|---|---|---|---|---|
+| tune | `lcm` (284) | 30, seed 1234 | 8/30 = 0.267 | 14/30 = 0.467 | +6 / −0 |
+| tune | `dwigt` (1773) | 30, seed 1234 | 13/30 = 0.433 | 13/30 = 0.433 | +3 / −3 |
+| holdout | `trilha-probatoria` (383) | 18 reviewed of 30, seed 20260916 | 15/18 = 0.833 | 14/18 = 0.778 | +0 / −1 |
+
+Pooled over the tune group: 21/60 → 27/60. The holdout was built fresh (a seed no sweep had used,
+12 generated questions dropped on review as unanswerable from memory) and graded once. Its one loss
+is a labelled session moving from rank 5 to rank 6; it is also the corpus whose own content is
+pt-BR, where the ceiling experiment had already found the least to gain. A `pivotQuery` averaged
+123–215 bytes per corpus, on the call the agent was making anyway.
+
+English non-regression, same commit against `main` before it: six `en` sets (`xgh`, `.claude`,
+`lossless-claude`, `Inspector`, `autoimprove`, `xavier-school`; 112 questions) returned the same
+top-5 for every question. The by-language selection changes nothing for a single-language project.
 
 ### Failure visibility
 
@@ -169,6 +193,8 @@ return them either, so a question labelled with one could never be answered.
   The grep baseline searches the retained corpus; results from external raw-JSONL grep are a different
   experiment and must not be compared as if the corpus and ranking were identical.
 
+  A question may carry a `pivotQuery`, the caller's translation into `search.pivotLanguage`; `run`
+  combines it with the question exactly as `lcm_search` does, and the grep column ignores it.
   Full per-question outcomes land in `.lcm-bench-results.json` in the project memory directory,
   even when `--bench-file` points elsewhere.
   `--json` prints the machine-readable report to stdout.

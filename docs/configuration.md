@@ -183,8 +183,9 @@ the project's recorded author language is a different one — the target of `lcm
 your projects is predominantly in another language.
 
 lcm never translates: the terms of `query` and of the `pivotQuery` the caller supplies are combined
-additively. See [search.md](./search.md) for how the pair is prepared and where the two language
-names are surfaced.
+additively, each under its own language's stopword pack. A pivot language other than English gets
+its pack generated when the project's language is detected. See [search.md](./search.md) for how
+the pair is prepared and where the two language names are surfaced.
 
 ### Leaf chunk tokens
 
