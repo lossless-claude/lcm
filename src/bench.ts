@@ -127,6 +127,9 @@ function mulberry32(seed: number): () => number {
   };
 }
 
+/** Mechanical templates are English, so a mechanical set measures English whatever the corpus. */
+const MECHANICAL_LANGUAGE = "en";
+
 const MECHANICAL_TEMPLATES: Array<(focus: string) => string> = [
   (focus) => `what did we work on around ${focus}?`,
   (focus) => `what did we decide about ${focus}?`,
@@ -164,8 +167,10 @@ function capitalizedIdentifiers(prompt: string, paths: LcmPaths): string[] {
       const before = prompt.slice(0, m.index).trimEnd();
       // Exclude sentence-initial words (start of text or after . ! ?).
       if (before.length === 0 || /[.!?]\s*$/.test(before)) return false;
-      // Exclude anything the query tokenizer would treat as a stopword.
-      if (extractQueryTerms(word.toLowerCase(), paths).length === 0) return false;
+      // Exclude anything the query tokenizer would treat as a stopword. Mechanical
+      // questions are English (see MECHANICAL_LANGUAGE), so the English pack applies
+      // whatever language the corpus is in.
+      if (extractQueryTerms(word.toLowerCase(), paths, [MECHANICAL_LANGUAGE]).length === 0) return false;
       return true;
     })
     .map((m) => m[0]);
@@ -184,7 +189,7 @@ function mechanicalQuestion(prompt: string, rand: () => number, paths: LcmPaths)
     pick(capitalizedIdentifiers(prompt, paths), rand) ??
     pick(
       (prompt.match(/\b[A-Z][A-Z0-9]{1,}\b/g) ?? []).filter(
-        (w) => extractQueryTerms(w.toLowerCase(), paths).length > 0,
+        (w) => extractQueryTerms(w.toLowerCase(), paths, [MECHANICAL_LANGUAGE]).length > 0,
       ),
       rand,
     );
@@ -475,9 +480,6 @@ function formatBuildReport(bench: BenchFile, out: string, rejected: string[]): s
   if (bench.generator.includes("mechanical")) lines.push("Warning: mechanical questions are diagnostic only; review questions before using scores as release evidence.");
   return lines.join("\n") + "\n";
 }
-
-/** Mechanical templates are English, so a mechanical set measures English whatever the corpus. */
-const MECHANICAL_LANGUAGE = "en";
 
 /** The language the daemon recorded for this project, if it has run detection. */
 function recordedProjectLanguage(cwd: string, paths: LcmPaths): string | null {

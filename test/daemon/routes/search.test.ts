@@ -1,13 +1,14 @@
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { createDaemon } from "../../../src/daemon/server.js";
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { runLcmMigrations } from "../../../src/db/migration.js";
 import { PromotedStore } from "../../../src/db/promoted.js";
 import { projectDbPath, projectMetaPath } from "../../../src/daemon/project.js";
+import { invalidateLanguagePacks } from "../../../src/store/language-pack.js";
 import { lcmHome } from "../../../src/lcm-home.js";
 import { createLcmPaths } from "../../../src/lcm-paths.js";
 
@@ -145,6 +146,21 @@ describe("POST /search", () => {
   });
 
   describe("pivotQuery", () => {
+    // A pt-BR pack, the same as a project's own detection would generate — with
+    // no pack installed, extractQueryTerms drops nothing for pt-BR (issue #509),
+    // and these tests need the author language's function words gone to isolate
+    // what the pivot terms alone contribute.
+    const PT_BR_STOPWORDS = ["a", "o", "os", "as", "de", "do", "da", "em", "um", "uma",
+      "que", "não", "com", "por", "se", "mas", "ou", "como", "onde", "quando", "qual", "no", "na"];
+    beforeAll(() => {
+      const languagesDir = join(paths.home, "languages");
+      mkdirSync(languagesDir, { recursive: true });
+      writeFileSync(join(languagesDir, "pt-BR.json"), JSON.stringify({
+        version: 1, tag: "pt-BR", stopwords: PT_BR_STOPWORDS, generatedAt: "2026-09-16T00:00:00Z",
+      }));
+      invalidateLanguagePacks();
+    });
+
     async function projectWith(memories: string[]): Promise<string> {
       const tempDir = mkdtempSync(join(tmpdir(), "lossless-search-pivot-"));
       tempDirs.push(tempDir);

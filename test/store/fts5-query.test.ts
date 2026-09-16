@@ -12,8 +12,14 @@ import {
 import { invalidateLanguagePacks } from "../../src/store/language-pack.js";
 
 describe("extractQueryTerms", () => {
-  it("drops stopwords and keeps content words", () => {
+  it("drops nothing when no language is given", () => {
     expect(extractQueryTerms("how did we undo that broken release?")).toEqual([
+      "how", "did", "we", "undo", "that", "broken", "release",
+    ]);
+  });
+
+  it("drops the English pack's function words and keeps content words when 'en' is given", () => {
+    expect(extractQueryTerms("how did we undo that broken release?", undefined, ["en"])).toEqual([
       "undo",
       "broken",
       "release",
@@ -21,7 +27,7 @@ describe("extractQueryTerms", () => {
   });
 
   it("lowercases and splits on punctuation", () => {
-    expect(extractQueryTerms("Why is CI red??")).toEqual(["ci", "red"]);
+    expect(extractQueryTerms("Why is CI red??", undefined, ["en"])).toEqual(["ci", "red"]);
   });
 
   it("dedupes repeated terms", () => {
@@ -33,7 +39,7 @@ describe("extractQueryTerms", () => {
   });
 
   it("keeps raw words when every word is a stopword", () => {
-    expect(extractQueryTerms("how do we do it")).toEqual(["how", "do", "we", "it"]);
+    expect(extractQueryTerms("how do we do it", undefined, ["en"])).toEqual(["how", "do", "we", "it"]);
   });
 
   it("returns an empty list for punctuation-only input", () => {
@@ -45,8 +51,8 @@ describe("extractQueryTerms", () => {
   });
 
   it("keeps accented words whole, like the unicode61 tokenizer", () => {
-    // Note: the stopword list is English-only; "el" survives as a term and
-    // is handled by the OR fallback like any other non-matching term.
+    // Note: no language is given, so nothing is dropped — this exercises
+    // tokenization only, independent of any pack.
     expect(extractQueryTerms("¿cómo revertimos el despliegue fallido?")).toEqual([
       "cómo",
       "revertimos",
@@ -59,7 +65,8 @@ describe("extractQueryTerms", () => {
 
 describe("prepareFts5Query", () => {
   it("builds quoted AND and OR expressions", () => {
-    const prepared = prepareFts5Query("how did we undo that broken release?");
+    const raw = "how did we undo that broken release?";
+    const prepared = prepareFts5Query(raw, extractQueryTerms(raw, undefined, ["en"]));
     expect(prepared).not.toBeNull();
     expect(prepared!.terms).toEqual(["undo", "broken", "release"]);
     expect(prepared!.and).toBe('"undo" "broken" "release"');
@@ -96,7 +103,8 @@ describe("shouldRetryWithLike", () => {
 
 describe("likePlanForPreparedQuery", () => {
   it("builds LIKE clauses for the content terms", () => {
-    const prepared = prepareFts5Query("how did we undo that broken release?")!;
+    const raw = "how did we undo that broken release?";
+    const prepared = prepareFts5Query(raw, extractQueryTerms(raw, undefined, ["en"]))!;
     const plan = likePlanForPreparedQuery("content", prepared);
     expect(plan.terms).toEqual(["undo", "broken", "release"]);
     expect(plan.where).toEqual([
@@ -131,7 +139,9 @@ describe("combineWithPivotQuery", () => {
   });
 
   it("leaves the query untouched when the pivot query adds no term", () => {
-    expect(combineWithPivotQuery("broken release", undefined, "the broken release")).toBe("broken release");
+    expect(combineWithPivotQuery(
+      "broken release", undefined, "the broken release", { authorLanguage: "en", pivotLanguage: "en" },
+    )).toBe("broken release");
   });
 
   it("adds the pivot terms and drops each side's own function words", () => {

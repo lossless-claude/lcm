@@ -119,6 +119,13 @@ describe("scheduleProjectLanguageDetection", () => {
     expect(summarize).toHaveBeenCalledTimes(2);
   });
 
+  it("never asks for a provider to reconcile a default 'en' pivot: the built-in pack already satisfies it", async () => {
+    writeFileSync(join(dir, "meta.json"), JSON.stringify({ cwd: dir, language: "pt-BR" }));
+    await scheduleProjectLanguageDetection(dir, await seededDb(25), testConfig(), paths);
+    expect(createSummarizer).not.toHaveBeenCalled();
+    expect(existsSync(languagePackPath("en"))).toBe(false);
+  });
+
   it("uses the request client to resolve an automatic provider", async () => {
     const summarize = vi.fn().mockResolvedValueOnce("pt-BR").mockResolvedValueOnce(PACK_REPLY);
     vi.mocked(createSummarizer).mockResolvedValue(summarize);

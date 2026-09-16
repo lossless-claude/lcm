@@ -5,7 +5,7 @@ import type { LcmPaths } from "../lcm-paths.js";
 import { projectMetaPath } from "./project.js";
 import { createSummarizer, resolveEffectiveProvider, type CompactClient } from "./summarizer.js";
 import { detectLanguage, sampleHumanTurns, LANGUAGE_SAMPLE_SIZE } from "../search/language.js";
-import { ensureLanguagePack, ensurePivotLanguagePack, languagePackPath, primarySubtag } from "../store/language-pack.js";
+import { ensureLanguagePack, ensurePivotLanguagePack, hasLanguagePack, primarySubtag } from "../store/language-pack.js";
 
 /**
  * A project's language is read once, from the turns its author typed, and
@@ -13,7 +13,6 @@ import { ensureLanguagePack, ensurePivotLanguagePack, languagePackPath, primaryS
  * language is seen on this machine its language pack is generated too, so
  * search can drop that language's function words from queries — and so is
  * the pivot language's, since a `pivotQuery` is tokenised under that one.
- * English ships in code and needs no pack.
  *
  * Detection runs after an ingest has been answered: the human turns are
  * sampled while the request still holds the database, the model call and
@@ -109,11 +108,11 @@ async function ensureExistingProjectPivotPack(
   metaPath: string, language: string, config: DaemonConfig, paths: LcmPaths, client?: CompactClient,
 ): Promise<void> {
   const pivot = config.search.pivotLanguage;
-  if (primarySubtag(pivot) === "en" || primarySubtag(pivot) === primarySubtag(language)) return;
+  if (primarySubtag(pivot) === primarySubtag(language)) return;
   try {
-    // Steady state is a file check, not a provider client: the pack exists.
-    // Inside the try: a malformed tag throws here, and the caller drops the promise.
-    if (existsSync(languagePackPath(paths, pivot))) return;
+    // Steady state is a file check, not a provider client: the pack exists
+    // (or is built in).
+    if (hasLanguagePack(paths, pivot)) return;
     const provider = resolveEffectiveProvider(config, client);
     const summarize = await createSummarizer(provider, config);
     if (!summarize) return;

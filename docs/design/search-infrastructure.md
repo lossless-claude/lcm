@@ -33,7 +33,7 @@ Current implementation anchors:
 | [retrieval](../../src/retrieval.ts) | Provides grep, describe and summary expansion; preserves within-source relevance after the recent fix. |
 | [conversation store](../../src/store/conversation-store.ts), [summary store](../../src/store/summary-store.ts) | Duplicate FTS preparation, filtering and fallback policies. |
 | [benchmark](../../src/bench.ts) | Independently builds a session ranking; its labelled-session hit metric is not full evidence recall. |
-| [query preparation](../../src/store/fts5-query.ts) | English stopwords and AND→OR fallback; no semantic understanding. |
+| [query preparation](../../src/store/fts5-query.ts) | Language-pack stopword dropping and AND→OR fallback; no semantic understanding. |
 | [import](../../src/import.ts), [Codex parser](../../src/codex-transcript.ts) | Coverage depends on explicit runtime selection and retained event types. |
 
 ## Three Interface designs considered

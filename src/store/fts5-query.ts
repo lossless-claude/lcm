@@ -12,8 +12,8 @@ import type { LcmPaths } from "../lcm-paths.js";
  * that ORs its terms beats that on real corpora.
  *
  * Strategy (per issue #309):
- *  1. Tokenize the query and drop English stopwords (they carry no
- *     discriminative power but participate in the AND).
+ *  1. Tokenize the query and drop the configured languages' function words
+ *     (they carry no discriminative power but participate in the AND).
  *  2. Try the remaining content terms as an AND (most precise).
  *  3. If AND matches nothing, fall back to OR ranked by BM25 (matches the
  *     grep baseline's behavior of OR-ing terms, but with ranking).
@@ -31,27 +31,6 @@ export type Fts5PreparedQuery = {
   /** FTS5 MATCH expression ORing the quoted terms. */
   or: string;
 };
-
-/** Common English stopwords — no discriminative power in an AND query. */
-const STOPWORDS: ReadonlySet<string> = new Set([
-  "a", "an", "the", "and", "or", "but", "if", "then", "else", "when", "while",
-  "at", "by", "for", "with", "about", "into", "through", "during", "before",
-  "after", "above", "below", "between", "to", "from", "up", "down", "in",
-  "out", "on", "off", "over", "under", "again", "further", "once", "of",
-  "here", "there", "all", "any", "both", "each", "few", "more", "most",
-  "other", "some", "such", "no", "nor", "not", "only", "own", "same", "so",
-  "than", "too", "very", "just", "as", "is", "am", "are", "was", "were",
-  "be", "been", "being", "have", "has", "had", "having", "do", "does", "did",
-  "doing", "would", "should", "could", "ought", "i", "you", "he", "she",
-  "it", "we", "they", "them", "his", "her", "their", "our", "your", "my",
-  "its", "me", "him", "us", "this", "that", "these", "those", "what",
-  "which", "who", "whom", "how", "why", "where", "can", "will", "shall",
-  "may", "might", "must", "let", "make", "made", "get", "got", "go", "went",
-  "say", "said", "tell", "told", "know", "knew", "think", "thought", "want",
-  "wanted", "use", "used", "using", "way", "thing", "things", "something",
-  "anything", "everything", "nothing", "someone", "anyone", "everyone",
-  "somewhere", "anywhere", "everywhere", "s", "t", "d", "ll", "re", "ve",
-]);
 
 /**
  * Split on anything that is not a Unicode letter or number — mirrors the
@@ -80,12 +59,12 @@ function dedupe(words: string[]): string[] {
  * Tokenize a free-text query into content terms: split on non-word
  * characters, lowercase, drop stopwords, dedupe in order.
  *
- * English stopwords are always dropped. Other languages come from language
- * packs, chosen by `languages` — the languages the search is configured for,
- * not the words in the query — so a pt-BR question loses "que", "como", "para"
- * the way an English one loses "what", "how", "for". With no language named,
- * or none that has a pack, a question goes through whole, function words
- * included.
+ * Stopwords come only from the language packs named by `languages` — the
+ * languages the search is configured for, not the words in the query — so a
+ * pt-BR question loses "que", "como", "para" the way an English one loses
+ * "what", "how", "for" (English's pack ships in code; see
+ * `store/language-pack.ts`). With no language named, or none that has a
+ * pack, a question goes through whole, function words included.
  *
  * If every word is a stopword, the original words are kept as terms so the
  * query still searches for something rather than nothing.
@@ -100,7 +79,7 @@ export function extractQueryTerms(raw: string, paths?: LcmPaths, languages: read
 
   let packStopwords: ReadonlySet<string> = new Set();
   try { packStopwords = packStopwordsFor(languages, paths); } catch { /* no configured pack root */ }
-  const terms = words.filter((word) => !STOPWORDS.has(word) && !packStopwords.has(word));
+  const terms = words.filter((word) => !packStopwords.has(word));
   if (terms.length > 0) {
     return terms;
   }
