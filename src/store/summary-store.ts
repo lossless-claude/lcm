@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { parseSqliteDate } from "../db/sqlite-date.js";
 import {
+  byRankThenNewest,
   prepareFts5Query,
   shouldRetryWithLike,
   likePlanForPreparedQuery,
@@ -923,10 +924,10 @@ export class SummaryStore {
        FROM summaries_fts
        JOIN summaries s ON s.summary_id = summaries_fts.summary_id
        WHERE ${where.join(" AND ")}
-       ORDER BY rank, s.created_at DESC
+       ORDER BY rank
        LIMIT ?`;
     const rows = this.db.prepare(sql).all(...args) as unknown as SummarySearchRow[];
-    return rows.map(toSearchResult);
+    return byRankThenNewest(rows.map(toSearchResult));
   }
 
   /** Substring scan OR-ing the prepared terms (vocabulary-mismatch fallback). */
