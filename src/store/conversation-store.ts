@@ -323,9 +323,31 @@ export class ConversationStore {
   ): Promise<ConversationRecord> {
     const existing = await this.getConversationBySessionId(sessionId);
     if (existing) {
-      return existing;
+      return this.backfillAttribution(existing, attribution);
     }
     return this.createConversation({ sessionId, title, ...attribution });
+  }
+
+  /**
+   * Fills a still-null attribution on an already-created row — the row was
+   * captured before its `.meta.json` sidecar existed, or before whichever
+   * caller passed attribution ran. Guarded by `parent_session_id IS NULL` so
+   * a later read of an all-null sidecar can never clobber a row already
+   * correctly attributed.
+   */
+  private backfillAttribution(existing: ConversationRecord, attribution?: SubagentAttributionInput): ConversationRecord {
+    if (!attribution?.parentSessionId || existing.parentSessionId !== null) {
+      return existing;
+    }
+    this.db
+      .prepare(
+        `UPDATE conversations
+       SET parent_session_id = ?, subagent_type = ?, subagent_desc = ?
+       WHERE conversation_id = ? AND parent_session_id IS NULL`,
+      )
+      .run(attribution.parentSessionId, attribution.subagentType ?? null, attribution.subagentDesc ?? null, existing.conversationId);
+
+    return this.getConversationSync(existing.conversationId) ?? existing;
   }
 
   async markConversationBootstrapped(conversationId: ConversationId): Promise<void> {
