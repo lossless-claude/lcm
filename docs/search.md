@@ -85,6 +85,19 @@ it. On the 74 pt-BR bench questions built at `ea10a75`, dropping pt-BR function 
 hit@5 from 0.419 to 0.486 (+7 / −2) with no model call at search time. `LCM_LANGUAGES_DIR` points
 the loader elsewhere; the test suite uses it so no test reads a developer's real packs.
 
+English becoming a pack like any other (issue #509) changes the single-language English path: it
+used to be a fixed list unioned with any disk `en.json`; now it is the disk file alone when one
+exists, or the built-in list when it does not. Measured with `scripts/bench-corpora.mts` on 15 real
+corpora (14 en, 1 pt-BR, same list and seed both sides), `128a8eb` (`main` before) against `02fef82`
+(this branch): 111 of 150 questions returned the same top-5. The pt-BR set was untouched, 8/30 both
+sides, as expected since its pack was never English's. The pooled en hit rate moved from 58/120 to
+57/120 — one question lost its top-5 hit, on a machine whose disk `en.json` predates this change and
+does not carry the contraction remnants (`s`, `t`, `d`, `ll`, `re`, `ve`) the built-in list does: the
+query's "hasn't" tokenizes to "hasn", "t", and with the disk file now replacing the built-in list
+outright rather than adding to it, that bare "t" survives into the query and shifts the ranking. This
+is the migration risk the changeset states, observed once rather than merely predicted; a disk `en.json`
+that already carries those six entries sees no change at all.
+
 ### Cross-language queries: `pivotQuery`
 
 Dropping the author language's function words is not the whole gap. When the author writes in one
