@@ -5,7 +5,7 @@ import type { LcmPaths } from "../lcm-paths.js";
 import { projectMetaPath } from "./project.js";
 import { createSummarizer, resolveEffectiveProvider, type CompactClient } from "./summarizer.js";
 import { detectLanguage, sampleHumanTurns, LANGUAGE_SAMPLE_SIZE } from "../search/language.js";
-import { ensureLanguagePack, primarySubtag } from "../store/language-pack.js";
+import { ensureLanguagePack, ensurePivotLanguagePack, primarySubtag } from "../store/language-pack.js";
 
 /**
  * A project's language is read once, from the turns its author typed, and
@@ -37,6 +37,21 @@ function readMeta(path: string): Record<string, unknown> {
 
 function summarizerUnavailable(config: DaemonConfig, client?: CompactClient): boolean {
   return Boolean(config.summarizer?.mock) || resolveEffectiveProvider(config, client) === "disabled";
+}
+
+/**
+ * Fire a pack generation without awaiting it, but still apply the same
+ * once-per-daemon suppression as the catch blocks below when it fails.
+ * `ensureLanguagePack` never throws — a failed generation resolves to
+ * "failed" — so a fire-and-forget caller that ignores the result would
+ * retry the generation on every later ingest for this project.
+ */
+function trackPackGeneration(metaPath: string, generating: Promise<"exists" | "generated" | "failed" | "skipped">): void {
+  void generating.then((status) => {
+    if (status !== "failed") return;
+    failed.add(metaPath);
+    console.warn(`[lcm] language pack generation failed for ${metaPath}; not retried until restart`);
+  });
 }
 
 /**
@@ -74,11 +89,8 @@ async function detectAndRecord(
     if (typeof meta.language === "string") return;
     writeFileSync(metaPath, JSON.stringify({ ...meta, language, languageDetectedAt: new Date().toISOString() }, null, 2));
     const generatedBy = `${provider}:${config.llm.model}`;
-    void ensureLanguagePack(paths, language, summarize, generatedBy);
-    const pivot = config.search.pivotLanguage;
-    if (primarySubtag(pivot) !== "en" && primarySubtag(pivot) !== primarySubtag(language)) {
-      void ensureLanguagePack(paths, pivot, summarize, generatedBy);
-    }
+    trackPackGeneration(metaPath, ensureLanguagePack(paths, language, summarize, generatedBy));
+    trackPackGeneration(metaPath, ensurePivotLanguagePack(paths, language, config.search.pivotLanguage, summarize, generatedBy));
   } catch (err) {
     // Once per daemon lifetime per project: a broken provider must not turn every ingest into a warning.
     failed.add(metaPath);
@@ -102,7 +114,12 @@ async function ensureExistingProjectPivotPack(
     const provider = resolveEffectiveProvider(config, client);
     const summarize = await createSummarizer(provider, config);
     if (!summarize) return;
-    await ensureLanguagePack(paths, pivot, summarize, `${provider}:${config.llm.model}`);
+    const status = await ensurePivotLanguagePack(paths, language, pivot, summarize, `${provider}:${config.llm.model}`);
+    if (status === "failed") {
+      // Once per daemon lifetime per project: a broken provider must not turn every ingest into a warning.
+      failed.add(metaPath);
+      console.warn(`[lcm] pivot language pack generation skipped for ${metaPath}: the model did not return a usable word list`);
+    }
   } catch (err) {
     // Once per daemon lifetime per project: a broken provider must not turn every ingest into a warning.
     failed.add(metaPath);

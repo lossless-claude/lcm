@@ -157,6 +157,25 @@ describe("scheduleProjectLanguageDetection", () => {
     expect(JSON.parse(readFileSync(join(dir, "meta.json"), "utf-8")).language).toBe("pt-BR");
   });
 
+  it("stops retrying a pivot pack that fails to generate without throwing", async () => {
+    writeFileSync(join(dir, "meta.json"), JSON.stringify({ cwd: dir, language: "pt-BR" }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // ensureLanguagePack resolves "failed" rather than throwing when the model's
+    // reply cannot be parsed as a stopword list — this must be caught the same
+    // way a thrown error is.
+    const summarize = vi.fn().mockResolvedValue("not a stopword list");
+    vi.mocked(createSummarizer).mockResolvedValue(summarize);
+    const db = await seededDb(25);
+
+    await scheduleProjectLanguageDetection(dir, db, testConfig({}, { pivotLanguage: "es" }), paths);
+    expect(summarize).toHaveBeenCalledTimes(1);
+
+    await scheduleProjectLanguageDetection(dir, db, testConfig({}, { pivotLanguage: "es" }), paths);
+    expect(summarize).toHaveBeenCalledTimes(1);
+    expect(existsSync(languagePackPath("es"))).toBe(false);
+    warn.mockRestore();
+  });
+
   it("warns once and stops retrying when the provider fails", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const summarize = vi.fn().mockRejectedValue(new Error("API key is invalid"));

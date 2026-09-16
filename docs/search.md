@@ -67,10 +67,12 @@ Packs are created by the daemon: after an ingest, a project with no recorded lan
 20 human turns (tool output pasted into a user turn does not count) is sampled, the model names the
 language, the tag is written to the project's `meta.json` as `language`, and the pack is generated if
 this machine has none. The same step generates the pack for `search.pivotLanguage` when it is
-neither English (which ships in code) nor the author's language. `lcm bench build --generator llm`
-does the same on a corpus it detects. A mock or disabled summarizer skips the step; a provider
-failure is logged once per project per daemon lifetime and not retried until restart. Without a
-pack, a question in that language goes through whole, function words included.
+neither English (which ships in code) nor the author's language, and does so again on every later
+ingest for a project whose language was already recorded, so a pivot configured after detection
+still gets a pack. `lcm bench build --generator llm` ensures both packs the same way on the corpus
+it detects. A mock or disabled summarizer skips the step; a provider failure is logged once per
+project per daemon lifetime and not retried until restart. Without a pack, a question in that
+language goes through whole, function words included.
 
 Packs are plain JSON, reviewable and hand-editable; deleting one makes the next detection regenerate
 it. On the 74 pt-BR bench questions built at `ea10a75`, dropping pt-BR function words alone moved
@@ -109,11 +111,11 @@ The implementation itself, at `f41c636` (packs chosen by configured language), m
 translations written by the calling agent from the tool description — the same path a real
 `lcm_search` call takes — through `lcm bench run` with a `pivotQuery` on each question:
 
-| arm | corpus (sessions) | questions | `query` alone | with `pivotQuery` | Δ |
+| arm | corpus | questions | `query` alone | with `pivotQuery` | Δ |
 |---|---|---|---|---|---|
-| tune | `lcm` (284) | 30, built at `ea10a75` | 8/30 = 0.267 | 14/30 = 0.467 | +6 / −0 |
-| tune | `dwigt` (1773) | 30, built at `ea10a75` | 13/30 = 0.433 | 13/30 = 0.433 | +3 / −3 |
-| holdout | `trilha-probatoria` (383) | 18 reviewed of 30, seed 20260916 | 15/18 = 0.833 | 14/18 = 0.778 | +0 / −1 |
+| tune | `lcm` (this repository, en, 284 sessions) | 30, built at `ea10a75` | 8/30 = 0.267 | 14/30 = 0.467 | +6 / −0 |
+| tune | an en corpus of 1773 sessions | 30, built at `ea10a75` | 13/30 = 0.433 | 13/30 = 0.433 | +3 / −3 |
+| holdout | a pt-BR corpus of 383 sessions | 18 reviewed of 30, seed 20260916 | 15/18 = 0.833 | 14/18 = 0.778 | +0 / −1 |
 
 Pooled over the tune group: 21/60 → 27/60. The holdout was built fresh (a seed no sweep had used,
 12 generated questions dropped on review as unanswerable from memory) and graded once. Its one loss
@@ -122,10 +124,9 @@ pt-BR, where the ceiling experiment had already found the least to gain. A `pivo
 123–215 bytes per corpus, on the call the agent was making anyway.
 
 English non-regression, `d733f1f` (the `main` before) against `f41c636`, same store, no
-`pivotQuery`: six `en` sets (`xgh`, `.claude`, `lossless-claude`, `Inspector`, `autoimprove`,
-`xavier-school`; 112 questions) returned the same top-5 for every question, and so did the `lcm`
-and `dwigt` sets above and the 14-question `trilha-probatoria` set built at `ea10a75`. The
-by-language selection changes nothing for a single-language project.
+`pivotQuery`: six further en corpora (112 questions total) returned the same top-5 for every
+question, and so did the two en tune-group corpora above and the 14-question pt-BR holdout set
+built at `ea10a75`. The by-language selection changes nothing for a single-language project.
 
 ### Failure visibility
 
@@ -195,8 +196,11 @@ return them either, so a question labelled with one could never be answered.
   The grep baseline searches the retained corpus; results from external raw-JSONL grep are a different
   experiment and must not be compared as if the corpus and ranking were identical.
 
-  A question may carry a `pivotQuery`, the caller's translation into `search.pivotLanguage`; `run`
-  combines it with the question exactly as `lcm_search` does, and the grep column ignores it.
+  A question may carry a `pivotQuery`, the caller's translation into a pivot language; `run`
+  combines it with the question exactly as `lcm_search` does, and the grep column ignores it. The
+  pivot language is read from the file's own `pivotLanguage` (a BCP 47 tag, one value for the whole
+  file — every `pivotQuery` in a set is written in the same language the way every `question` is),
+  falling back to the configured `search.pivotLanguage` for files written before that field existed.
   Full per-question outcomes land in `.lcm-bench-results.json` in the project memory directory,
   even when `--bench-file` points elsewhere.
   `--json` prints the machine-readable report to stdout.

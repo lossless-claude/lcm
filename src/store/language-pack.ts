@@ -184,6 +184,23 @@ export function ensureLanguagePack(
   return task;
 }
 
+/**
+ * Ensure the pivot language's pack too, skipping generation when the pivot
+ * is English (which ships in code) or the same language as `language` on
+ * its primary subtag — the check every pivot-pack caller must apply before
+ * generating one, factored out so it is applied consistently.
+ */
+export function ensurePivotLanguagePack(
+  paths: LcmPaths,
+  language: string,
+  pivot: string,
+  summarize: LcmSummarizeFn,
+  generatedBy?: string,
+): Promise<"exists" | "generated" | "failed" | "skipped"> {
+  if (primarySubtag(pivot) === "en" || primarySubtag(pivot) === primarySubtag(language)) return Promise.resolve("skipped");
+  return ensureLanguagePack(paths, pivot, summarize, generatedBy);
+}
+
 async function generateLanguagePack(
   paths: LcmPaths | undefined,
   tag: string,

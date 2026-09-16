@@ -11,7 +11,7 @@ import { rankNativeHistory } from "./search/native-history.js";
 import { searchHistoryGroup } from "./search/group-history.js";
 import { searchPromotedGroup } from "./search/group-promoted.js";
 import { combinedQueryTerms, extractQueryTerms, languageList, type QueryLanguages } from "./store/fts5-query.js";
-import { ensureLanguagePack } from "./store/language-pack.js";
+import { ensureLanguagePack, ensurePivotLanguagePack } from "./store/language-pack.js";
 import { detectLanguage, isDistinctivePrompt, LANGUAGE_SAMPLE_SIZE, MAX_PROMPT_LENGTH, parseLanguageTag } from "./search/language.js";
 import type { LcmSummarizeFn } from "./llm/types.js";
 
@@ -67,6 +67,14 @@ export type BenchFile = {
    * written before the field existed and on curated manual sets.
    */
   language?: string;
+  /**
+   * BCP 47 tag of the language every `pivotQuery` in `queries` is written in.
+   * One value for the whole file, like `language`: a set's pivot queries
+   * share a language the way its questions do. Absent on files written
+   * before the field existed; `run` then falls back to the configured
+   * `search.pivotLanguage`.
+   */
+  pivotLanguage?: string;
   queries: BenchQuery[];
 };
 
@@ -245,9 +253,14 @@ export async function configuredQuestionGenerator(language: string, paths: LcmPa
  */
 export async function configuredLanguageDetector(paths: LcmPaths): Promise<LanguageDetector> {
   const summarize = await configuredSummarizer();
+  const { loadDaemonConfig } = await import("./daemon/config.js");
+  const pivot = loadDaemonConfig(paths.configPath).search?.pivotLanguage ?? "en";
   return async (turns) => {
     const language = await detectLanguage(turns, summarize);
-    if (language) await ensureLanguagePack(paths, language, summarize);
+    if (language) {
+      await ensureLanguagePack(paths, language, summarize);
+      await ensurePivotLanguagePack(paths, language, pivot, summarize);
+    }
     return language;
   };
 }
@@ -865,7 +878,7 @@ export async function runBench(opts: BenchOptions): Promise<BenchResult> {
         db, promotedStore: new PromotedStore(db), projectId: pid, rgBaseline: baseline, k,
         unionCwd: opts.union ? opts.cwd : undefined,
         paths,
-        languages: { authorLanguage: loaded.bench.language, pivotLanguage: loadDaemonConfig(paths.configPath).search.pivotLanguage },
+        languages: { authorLanguage: loaded.bench.language, pivotLanguage: loaded.bench.pivotLanguage ?? loadDaemonConfig(paths.configPath).search.pivotLanguage },
       };
 
       const outcomes: QueryOutcome[] = [];
