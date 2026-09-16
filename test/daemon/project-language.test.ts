@@ -27,10 +27,10 @@ vi.mock("../../src/daemon/summarizer.js", async (importOriginal) => ({
  * environment: a change to the config shape breaks these tests instead of
  * hiding behind a cast, and no developer's own env var can steer them.
  */
-function testConfig(llm: Partial<DaemonConfig["llm"]> = {}): DaemonConfig {
+function testConfig(llm: Partial<DaemonConfig["llm"]> = {}, search: Partial<DaemonConfig["search"]> = {}): DaemonConfig {
   return loadDaemonConfig(
     join(tmpdir(), "lcm-no-such-config.json"),
-    { llm: { provider: "openai", model: "test-model", baseURL: "http://local.test", apiKey: "k", ...llm } },
+    { llm: { provider: "openai", model: "test-model", baseURL: "http://local.test", apiKey: "k", ...llm }, search },
     {},
   );
 }
@@ -101,6 +101,24 @@ describe("scheduleProjectLanguageDetection", () => {
     expect(summarize).toHaveBeenCalledTimes(2);
   });
 
+  it("generates the pivot language's pack too when it is neither English nor the author's", async () => {
+    const summarize = vi.fn().mockResolvedValueOnce("pt-BR").mockResolvedValue(PACK_REPLY);
+    vi.mocked(createSummarizer).mockResolvedValue(summarize);
+    await scheduleProjectLanguageDetection(dir, await seededDb(25), testConfig({}, { pivotLanguage: "es" }), paths);
+    await vi.waitFor(() => expect(existsSync(languagePackPath("es"))).toBe(true));
+    await vi.waitFor(() => expect(existsSync(languagePackPath("pt-BR"))).toBe(true));
+    expect(summarize).toHaveBeenCalledTimes(3);
+  });
+
+  it("generates no pivot pack for English or for the author's own language", async () => {
+    const summarize = vi.fn().mockResolvedValueOnce("pt-BR").mockResolvedValue(PACK_REPLY);
+    vi.mocked(createSummarizer).mockResolvedValue(summarize);
+    await scheduleProjectLanguageDetection(dir, await seededDb(25), testConfig({}, { pivotLanguage: "pt" }), paths);
+    await vi.waitFor(() => expect(existsSync(languagePackPath("pt-BR"))).toBe(true));
+    expect(existsSync(languagePackPath("pt"))).toBe(false);
+    expect(summarize).toHaveBeenCalledTimes(2);
+  });
+
   it("uses the request client to resolve an automatic provider", async () => {
     const summarize = vi.fn().mockResolvedValueOnce("pt-BR").mockResolvedValueOnce(PACK_REPLY);
     vi.mocked(createSummarizer).mockResolvedValue(summarize);
@@ -127,6 +145,35 @@ describe("scheduleProjectLanguageDetection", () => {
     await scheduleProjectLanguageDetection(dir, await seededDb(25), testConfig(), paths);
     expect(summarize).not.toHaveBeenCalled();
     expect(JSON.parse(readFileSync(join(dir, "meta.json"), "utf-8")).language).toBe("de");
+  });
+
+  it("ensures the pivot pack for an already-detected project without re-detecting", async () => {
+    writeFileSync(join(dir, "meta.json"), JSON.stringify({ cwd: dir, language: "pt-BR" }));
+    const summarize = vi.fn().mockResolvedValue(PACK_REPLY);
+    vi.mocked(createSummarizer).mockResolvedValue(summarize);
+    await scheduleProjectLanguageDetection(dir, await seededDb(25), testConfig({}, { pivotLanguage: "es" }), paths);
+    await vi.waitFor(() => expect(existsSync(languagePackPath("es"))).toBe(true));
+    expect(summarize).toHaveBeenCalledOnce();
+    expect(JSON.parse(readFileSync(join(dir, "meta.json"), "utf-8")).language).toBe("pt-BR");
+  });
+
+  it("stops retrying a pivot pack that fails to generate without throwing", async () => {
+    writeFileSync(join(dir, "meta.json"), JSON.stringify({ cwd: dir, language: "pt-BR" }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // ensureLanguagePack resolves "failed" rather than throwing when the model's
+    // reply cannot be parsed as a stopword list — this must be caught the same
+    // way a thrown error is.
+    const summarize = vi.fn().mockResolvedValue("not a stopword list");
+    vi.mocked(createSummarizer).mockResolvedValue(summarize);
+    const db = await seededDb(25);
+
+    await scheduleProjectLanguageDetection(dir, db, testConfig({}, { pivotLanguage: "es" }), paths);
+    expect(summarize).toHaveBeenCalledTimes(1);
+
+    await scheduleProjectLanguageDetection(dir, db, testConfig({}, { pivotLanguage: "es" }), paths);
+    expect(summarize).toHaveBeenCalledTimes(1);
+    expect(existsSync(languagePackPath("es"))).toBe(false);
+    warn.mockRestore();
   });
 
   it("warns once and stops retrying when the provider fails", async () => {

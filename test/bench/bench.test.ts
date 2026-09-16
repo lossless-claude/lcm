@@ -11,6 +11,7 @@ import { PromotedStore } from "../../src/db/promoted.js";
 import { buildBench, runBench, type BenchFile } from "../../src/bench.js";
 import { createLcmPaths } from "../../src/lcm-paths.js";
 import { lcmHome } from "../../src/lcm-home.js";
+import { invalidateLanguagePacks, languagePackPath } from "../../src/store/language-pack.js";
 
 // project.js is mocked below; the root only has to be a real one.
 const paths = createLcmPaths(lcmHome());
@@ -562,6 +563,63 @@ describe("lcm bench", () => {
 
     writeFileSync(file, JSON.stringify({ version: 1, queries: [{ ...query, sessionIds: [" "] }] }));
     expect((await runBench({ cwd, benchFile: file })).stdout).toContain("sessionIds must be a list");
+  });
+
+  it("scores a question's pivotQuery the way lcm_search does: added to the question", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    const file = join(cwd, "manual.json");
+    const query = {
+      id: "pivot",
+      sessionId: "sess-rollback",
+      prompt: "revertemos a publicação",
+      question: "revertemos a publicação desta manhã?",
+      generator: "manual",
+    };
+
+    writeFileSync(file, JSON.stringify({ version: 1, language: "pt-BR", queries: [query] }));
+    const alone = JSON.parse((await runBench({ cwd, benchFile: file, k: 5, json: true })).stdout);
+    expect(alone.searchHitRate).toBe(0);
+
+    writeFileSync(file, JSON.stringify({ version: 1, language: "pt-BR", queries: [{ ...query, pivotQuery: "why did we roll back this morning's release?" }] }));
+    const withPivot = JSON.parse((await runBench({ cwd, benchFile: file, k: 5, json: true })).stdout);
+    expect(withPivot.searchHitRate).toBe(1);
+
+    writeFileSync(file, JSON.stringify({ version: 1, queries: [{ ...query, pivotQuery: 42 }] }));
+    expect((await runBench({ cwd, benchFile: file })).stdout).toContain("pivotQuery must be a string");
+  });
+
+  it("prepares pivotQuery under the benchmark's own pivotLanguage instead of the configured default", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    const file = join(cwd, "manual.json");
+    const query = {
+      id: "pivot-lang",
+      sessionId: "sess-rollback",
+      prompt: "revertemos a publicação",
+      question: "revertemos a publicação desta manhã?",
+      // "release" is in sess-rollback's content; "quux" is nowhere in the corpus.
+      pivotQuery: "release quux",
+      generator: "manual",
+    };
+
+    // No pivotLanguage recorded: falls back to the configured default ("en"),
+    // which has no pack, so "release" is searched and finds sess-rollback.
+    writeFileSync(file, JSON.stringify({ version: 1, language: "pt-BR", queries: [query] }));
+    const withDefault = JSON.parse((await runBench({ cwd, benchFile: file, k: 5, json: true })).stdout);
+    expect(withDefault.searchHitRate).toBe(1);
+
+    // A pack only the file's own pivotLanguage ("xx") would apply: it treats
+    // "release" as a function word, leaving only the nonsense "quux".
+    mkdirSync(dirname(languagePackPath(paths, "xx")), { recursive: true });
+    writeFileSync(languagePackPath(paths, "xx"), JSON.stringify({ version: 1, tag: "xx", stopwords: ["release"], generatedAt: new Date().toISOString() }));
+    invalidateLanguagePacks();
+
+    writeFileSync(file, JSON.stringify({ version: 1, language: "pt-BR", pivotLanguage: "xx", queries: [query] }));
+    const withStored = JSON.parse((await runBench({ cwd, benchFile: file, k: 5, json: true })).stdout);
+    expect(withStored.searchHitRate).toBe(0);
   });
 
   it("gives search enough rows to fill every session slot the grep column fills", async () => {

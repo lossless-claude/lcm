@@ -17,7 +17,7 @@ import { safeLogError } from "../../hooks/hook-errors.js";
 import { validateCwd } from "../validate-cwd.js";
 import { searchNativeHistory } from "../../search/native-history.js";
 import { pivotLanguagesFor, pivotQueryHint } from "../../search/pivot-language.js";
-import { extractQueryTerms } from "../../store/fts5-query.js";
+import { extractQueryTerms, languageList } from "../../store/fts5-query.js";
 
 const CANDIDATE_LIMIT_MULTIPLIER = 5;
 const MIN_CANDIDATE_LIMIT = 10;
@@ -285,7 +285,8 @@ export function createPromptSearchHandler(config: DaemonConfig, paths: LcmPaths)
 
       const targetHintCount = Math.max(maxResults, maxInjectedMemoryItems);
       const candidateLimit = Math.max(targetHintCount * CANDIDATE_LIMIT_MULTIPLIER, MIN_CANDIDATE_LIMIT);
-      const queryTerms = extractQueryTerms(query, paths);
+      const languages = pivotLanguagesFor(validatedCwd, config.search.pivotLanguage, paths);
+      const queryTerms = extractQueryTerms(query, paths, languageList(languages.authorLanguage));
       // Promoted memory is unioned across every checkout of this repository,
       // and each hit's recall feedback is read from the database that holds it.
       const { hits: results, feedback: feedbackById } = searchPromotedGroup(validatedCwd, {
@@ -343,7 +344,7 @@ export function createPromptSearchHandler(config: DaemonConfig, paths: LcmPaths)
       // selector can choose the best-fitting subset after dedup and truncation.
       // The hint shares the block's byte budget with the hints, so it is
       // reserved before selection rather than appended past the cap.
-      const pivotHint = pivotQueryHint(pivotLanguagesFor(validatedCwd, config.search.pivotLanguage, paths));
+      const pivotHint = pivotQueryHint(languages);
       const pivotHintBytes = pivotHint ? Buffer.byteLength(pivotHint, "utf8") + 1 : 0;
 
       const selection = selectMemoryHintsWithinBudget(
