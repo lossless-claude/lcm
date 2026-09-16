@@ -4,7 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
 import type { LcmPaths } from "../../lcm-paths.js";
-import { projectId, projectDbPath, projectDir, projectMetaPath, isSafeTranscriptPath } from "../project.js";
+import { projectId, projectDbPath, projectDir, projectMetaPath } from "../project.js";
 import { openProject } from "../project-group.js";
 import { enqueue } from "../project-queue.js";
 import { sendJson } from "../server.js";
@@ -13,7 +13,7 @@ import { runLcmMigrations } from "../../db/migration.js";
 import { markSessionCompacted } from "../../db/session-compactions.js";
 import { SessionCapture } from "../../capture.js";
 import { CompactionEngine, compactEngineConfig, COMPACT_TOKEN_BUDGET } from "../../compaction.js";
-import { parseTranscript } from "../../transcript.js";
+import { TranscriptSourceError } from "../../transcript-source.js";
 import type { LcmSummarizeFn } from "../../llm/types.js";
 import { ScrubEngine } from "../../scrub.js";
 import {
@@ -270,16 +270,14 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           runLcmMigrations(db);
 
           // Capture what the transcript holds past the stored count, through the same
-          // module `/ingest` writes with; the conversation exists after this either way.
+          // module `/ingest` reads and writes with; the conversation exists after this
+          // either way, since compaction needs the row even when nothing was read.
           const capture = new SessionCapture(db, pid, scrubber);
           const { conversationStore, summaryStore } = capture;
-          const safeTranscriptPath = transcript_path ? isSafeTranscriptPath(transcript_path, cwd) : false;
-          const captureFrom = !skip_ingest && safeTranscriptPath && existsSync(safeTranscriptPath) ? safeTranscriptPath : undefined;
-          const conversation = await capture.write({
-            sessionId: session_id,
-            transcriptPath: captureFrom,
-            messages: captureFrom ? parseTranscript(captureFrom) : [],
-          });
+          const captured = skip_ingest
+            ? undefined
+            : await capture.captureTranscript({ sessionId: session_id, client, cwd, transcriptPath: transcript_path });
+          const conversation = captured ?? await capture.write({ sessionId: session_id, messages: [] });
 
           // Check if there's anything to compact
           const tokenCount = await summaryStore.getContextTokenCount(conversation.conversationId);
@@ -474,7 +472,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         err instanceof Error
           ? (err as Error & { llmUsage?: CompactLlmUsage }).llmUsage
           : undefined;
-      sendJson(res, 500, {
+      sendJson(res, err instanceof TranscriptSourceError ? 400 : 500, {
         error: err instanceof Error ? err.message : "compact failed",
         ...(llmUsage ? { llmUsage } : {}),
       });
