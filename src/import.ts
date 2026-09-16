@@ -9,6 +9,7 @@ import type { ProgressState } from "./cli/progress-state.js";
 import { projectDbPath, projectId } from "./daemon/project.js";
 import { createLcmPaths, type LcmPaths } from "./lcm-paths.js";
 import { discoverSubagentTranscripts, type SubagentAttribution } from "./subagent-attribution.js";
+import { isSessionComplete } from "./capture.js";
 import {
   appendReplayManifestSessions,
   clearReplayState,
@@ -251,8 +252,7 @@ function isSessionAlreadyIngested(cwd: string, sessionId: string, paths: LcmPath
     const db = new DatabaseSync(dbPath, { readOnly: true });
     try {
       db.exec("PRAGMA busy_timeout = 5000");
-      const row = db.prepare("SELECT 1 FROM session_ingest_log WHERE session_id = ?").get(sessionId);
-      return !!row;
+      return isSessionComplete(db, sessionId);
     } finally {
       db.close();
     }

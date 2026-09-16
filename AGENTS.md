@@ -7,7 +7,7 @@ This file routes; it does not repeat what the sources say. Read [CONTEXT.md](CON
 | Working on | Read | The code it must agree with |
 |---|---|---|
 | anything | [CONTEXT.md](CONTEXT.md) | `src/transcript.ts`, `src/subagent-attribution.ts` |
-| the data model, compaction, ingestion | [docs/architecture.md](docs/architecture.md) | `src/store/`, `src/compaction.ts`, `src/daemon/` |
+| the data model, compaction, ingestion | [docs/architecture.md](docs/architecture.md) | `src/store/`, `src/capture.ts`, `src/compaction.ts`, `src/daemon/` |
 | hooks, the function-hooks module | [docs/hook-protocol.md](docs/hook-protocol.md) | `.claude-plugin/plugin.json`, `src/hooks/`, `hooks/lcm-hooks.ts` |
 | env vars, `config.json`, the summarizer | [docs/configuration.md](docs/configuration.md) | `src/db/config.ts`, `src/daemon/config.ts` |
 | MCP tools and their parameters | [docs/agent-tools.md](docs/agent-tools.md) | `src/mcp/tools/*.ts` |
