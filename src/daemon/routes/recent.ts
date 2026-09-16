@@ -7,7 +7,6 @@ import { projectDbPath } from "../project.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
-import { ConversationStore } from "../../store/conversation-store.js";
 import { SummaryStore } from "../../store/summary-store.js";
 import { validateCwd } from "../validate-cwd.js";
 
@@ -38,14 +37,13 @@ export function createRecentHandler(_config: DaemonConfig, paths: LcmPaths): Rou
       mkdirSync(dirname(dbPath), { recursive: true });
       const db = new DatabaseSync(dbPath);
       runLcmMigrations(db);
-      const convStore = new ConversationStore(db);
-      const rows = db.prepare(
-        `SELECT s.summary_id, s.content, s.depth, s.token_count, s.created_at
-         FROM summaries s
-         ORDER BY s.created_at DESC LIMIT ?`
-      ).all(limit) as Array<Record<string, unknown>>;
-      db.close();
-      sendJson(res, 200, { summaries: rows });
+      let summaries;
+      try {
+        summaries = await new SummaryStore(db).listRecent(limit);
+      } finally {
+        db.close();
+      }
+      sendJson(res, 200, { summaries });
     } catch {
       sendJson(res, 200, { summaries: [] });
     }

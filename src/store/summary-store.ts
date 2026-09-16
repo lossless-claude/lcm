@@ -60,6 +60,14 @@ export type ContextItemRecord = {
   createdAt: Date;
 };
 
+/** One item of the context as a restore reads it: the text, and who said it when it is a message. */
+export type ContextWindowItem = {
+  ordinal: number;
+  itemType: ContextItemType;
+  role: "user" | "assistant" | null;
+  content: string;
+};
+
 export type SummarySearchInput = {
   conversationId?: number;
   query: string;
@@ -78,16 +86,6 @@ export type SummarySearchResult = {
   snippet: string;
   createdAt: Date;
   rank?: number;
-};
-
-export type CreateLargeFileInput = {
-  fileId: string;
-  conversationId: number;
-  fileName?: string;
-  mimeType?: string;
-  byteSize?: number;
-  storageUri: string;
-  explorationSummary?: string;
 };
 
 export type LargeFileRecord = {
@@ -133,6 +131,13 @@ interface ContextItemRow {
   message_id: number | null;
   summary_id: string | null;
   created_at: string;
+}
+
+interface ContextWindowRow {
+  ordinal: number;
+  item_type: ContextItemType;
+  role: "user" | "assistant" | null;
+  content: string;
 }
 
 interface SummarySearchRow {
@@ -221,6 +226,10 @@ function toContextItemRecord(row: ContextItemRow): ContextItemRecord {
     summaryId: row.summary_id,
     createdAt: parseSqliteDate(row.created_at),
   };
+}
+
+function toContextWindowItem(row: ContextWindowRow): ContextWindowItem {
+  return { ordinal: row.ordinal, itemType: row.item_type, role: row.role, content: row.content };
 }
 
 function toSearchResult(row: SummarySearchRow): SummarySearchResult {
@@ -380,6 +389,37 @@ export class SummaryStore {
     return rows.map(toSummaryRecord);
   }
 
+  /** A conversation's summaries, the most condensed and then the newest first. */
+  async summariesDeepestFirst(conversationId: number, limit: number): Promise<SummaryRecord[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT summary_id, conversation_id, kind, depth, content, token_count, file_ids,
+                earliest_at, latest_at, descendant_count, created_at
+                , descendant_token_count, source_message_token_count
+       FROM summaries
+       WHERE conversation_id = ?
+       ORDER BY depth DESC, created_at DESC
+       LIMIT ?`,
+      )
+      .all(conversationId, limit) as unknown as SummaryRow[];
+    return rows.map(toSummaryRecord);
+  }
+
+  /** The newest summaries across every conversation. */
+  async listRecent(limit: number): Promise<SummaryRecord[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT summary_id, conversation_id, kind, depth, content, token_count, file_ids,
+                earliest_at, latest_at, descendant_count, created_at
+                , descendant_token_count, source_message_token_count
+       FROM summaries
+       ORDER BY created_at DESC
+       LIMIT ?`,
+      )
+      .all(limit) as unknown as SummaryRow[];
+    return rows.map(toSummaryRecord);
+  }
+
   // ── Lineage ───────────────────────────────────────────────────────────────
 
   async linkSummaryToMessages(summaryId: string, messageIds: number[]): Promise<void> {
@@ -534,6 +574,46 @@ export class SummaryStore {
     return rows.map(toContextItemRecord);
   }
 
+  /**
+   * The end of the context as a restore replays it: the last `limit`
+   * summaries and the last `limit` user/assistant messages among the context
+   * items, in context order. A conversation captured before context items
+   * were materialised has none; its last `limit` user/assistant messages
+   * stand in, in seq order.
+   */
+  async readContextWindow(conversationId: number, limit: number): Promise<ContextWindowItem[]> {
+    const contextRows = this.db
+      .prepare(
+        `WITH ranked AS (
+           SELECT ci.ordinal, ci.item_type, m.role, COALESCE(m.content, s.content) AS content,
+                  ROW_NUMBER() OVER (PARTITION BY ci.item_type ORDER BY ci.ordinal DESC) AS item_rank
+           FROM context_items ci
+           LEFT JOIN messages m ON ci.item_type = 'message' AND m.message_id = ci.message_id
+           LEFT JOIN summaries s ON ci.item_type = 'summary' AND s.summary_id = ci.summary_id
+           WHERE ci.conversation_id = ?
+             AND ((ci.item_type = 'summary' AND s.content IS NOT NULL)
+               OR (ci.item_type = 'message' AND m.role IN ('user', 'assistant') AND m.content IS NOT NULL))
+         )
+         SELECT ordinal, item_type, role, content
+         FROM ranked
+         WHERE item_rank <= ?
+         ORDER BY ordinal`,
+      )
+      .all(conversationId, limit) as unknown as ContextWindowRow[];
+    if (contextRows.length > 0) return contextRows.map(toContextWindowItem);
+
+    const messageRows = this.db
+      .prepare(
+        `SELECT seq AS ordinal, 'message' AS item_type, role, content
+         FROM messages
+         WHERE conversation_id = ? AND role IN ('user', 'assistant')
+         ORDER BY seq DESC
+         LIMIT ?`,
+      )
+      .all(conversationId, limit) as unknown as ContextWindowRow[];
+    return messageRows.reverse().map(toContextWindowItem);
+  }
+
   async getDistinctDepthsInContext(
     conversationId: number,
     options?: { maxOrdinalExclusive?: number },
@@ -568,11 +648,13 @@ export class SummaryStore {
     return rows.map((row) => row.depth);
   }
 
-  /** How many summaries a conversation currently holds. */
-  async countSummaries(conversationId: number): Promise<number> {
-    const row = this.db
-      .prepare(`SELECT COUNT(*) AS n FROM summaries WHERE conversation_id = ?`)
-      .get(conversationId) as unknown as { n: number };
+  /** How many summaries a conversation holds, or every conversation when none is named. */
+  async countSummaries(conversationId?: number): Promise<number> {
+    const row = (
+      conversationId == null
+        ? this.db.prepare(`SELECT COUNT(*) AS n FROM summaries`).get()
+        : this.db.prepare(`SELECT COUNT(*) AS n FROM summaries WHERE conversation_id = ?`).get(conversationId)
+    ) as unknown as { n: number };
     return row.n;
   }
 
@@ -685,22 +767,6 @@ export class SummaryStore {
     }
   }
 
-  async appendContextMessage(conversationId: number, messageId: number): Promise<void> {
-    const row = this.db
-      .prepare(
-        `SELECT COALESCE(MAX(ordinal), -1) AS max_ordinal
-       FROM context_items WHERE conversation_id = ?`,
-      )
-      .get(conversationId) as unknown as MaxOrdinalRow;
-
-    this.db
-      .prepare(
-        `INSERT INTO context_items (conversation_id, ordinal, item_type, message_id)
-       VALUES (?, ?, 'message', ?)`,
-      )
-      .run(conversationId, row.max_ordinal + 1, messageId);
-  }
-
   async appendContextMessages(conversationId: number, messageIds: number[]): Promise<void> {
     if (messageIds.length === 0) {
       return;
@@ -721,22 +787,6 @@ export class SummaryStore {
     for (let idx = 0; idx < messageIds.length; idx++) {
       stmt.run(conversationId, baseOrdinal + idx, messageIds[idx]);
     }
-  }
-
-  async appendContextSummary(conversationId: number, summaryId: string): Promise<void> {
-    const row = this.db
-      .prepare(
-        `SELECT COALESCE(MAX(ordinal), -1) AS max_ordinal
-       FROM context_items WHERE conversation_id = ?`,
-      )
-      .get(conversationId) as unknown as MaxOrdinalRow;
-
-    this.db
-      .prepare(
-        `INSERT INTO context_items (conversation_id, ordinal, item_type, summary_id)
-       VALUES (?, ?, 'summary', ?)`,
-      )
-      .run(conversationId, row.max_ordinal + 1, summaryId);
   }
 
   async replaceContextRangeWithSummary(input: {
@@ -823,10 +873,6 @@ export class SummaryStore {
   }
 
   // ── Search ────────────────────────────────────────────────────────────────
-
-  async searchSummaries(input: SummarySearchInput): Promise<SummarySearchResult[]> {
-    return this.searchSummariesSync(input);
-  }
 
   searchSummariesSync(input: SummarySearchInput): SummarySearchResult[] {
     const limit = input.limit ?? 50;
@@ -1089,32 +1135,6 @@ export class SummaryStore {
 
   // ── Large files ───────────────────────────────────────────────────────────
 
-  async insertLargeFile(input: CreateLargeFileInput): Promise<LargeFileRecord> {
-    this.db
-      .prepare(
-        `INSERT INTO large_files (file_id, conversation_id, file_name, mime_type, byte_size, storage_uri, exploration_summary)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        input.fileId,
-        input.conversationId,
-        input.fileName ?? null,
-        input.mimeType ?? null,
-        input.byteSize ?? null,
-        input.storageUri,
-        input.explorationSummary ?? null,
-      );
-
-    const row = this.db
-      .prepare(
-        `SELECT file_id, conversation_id, file_name, mime_type, byte_size, storage_uri, exploration_summary, created_at
-       FROM large_files WHERE file_id = ?`,
-      )
-      .get(input.fileId) as unknown as LargeFileRow;
-
-    return toLargeFileRecord(row);
-  }
-
   async getLargeFile(fileId: string): Promise<LargeFileRecord | null> {
     const row = this.db
       .prepare(
@@ -1123,17 +1143,5 @@ export class SummaryStore {
       )
       .get(fileId) as unknown as LargeFileRow | undefined;
     return row ? toLargeFileRecord(row) : null;
-  }
-
-  async getLargeFilesByConversation(conversationId: number): Promise<LargeFileRecord[]> {
-    const rows = this.db
-      .prepare(
-        `SELECT file_id, conversation_id, file_name, mime_type, byte_size, storage_uri, exploration_summary, created_at
-       FROM large_files
-       WHERE conversation_id = ?
-       ORDER BY created_at`,
-      )
-      .all(conversationId) as unknown as LargeFileRow[];
-    return rows.map(toLargeFileRecord);
   }
 }

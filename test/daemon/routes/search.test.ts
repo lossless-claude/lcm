@@ -105,7 +105,7 @@ describe("POST /search", () => {
     const { SummaryStore } = await import("../../../src/store/summary-store.js");
     const convStore = new ConversationStore(db);
     const summStore = new SummaryStore(db);
-    const conv = await convStore.createConversation({ sessionId: "sess-1" });
+    const conv = await convStore.getOrCreateConversation("sess-1");
     await convStore.createMessage({
       conversationId: conv.conversationId,
       seq: 0,

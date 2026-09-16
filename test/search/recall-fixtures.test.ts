@@ -203,7 +203,7 @@ describe("recall fixtures", () => {
       const summStore = new SummaryStore(db);
 
       for (const [sessionId, messages] of corpus) {
-        const conv = await convStore.createConversation({ sessionId });
+        const conv = await convStore.getOrCreateConversation(sessionId);
         sessionIdByConversationId.set(conv.conversationId, sessionId);
         const inputs = messages.map((m, i) => ({
           conversationId: conv.conversationId,
@@ -354,7 +354,7 @@ describe("recall fixtures", () => {
         const summStore = new SummaryStore(starved);
         // One more session than the limit, each with both kinds of evidence.
         for (let i = 0; i < RECALL_K + 1; i++) {
-          const conv = await convStore.createConversation({ sessionId: `starved-${i}` });
+          const conv = await convStore.getOrCreateConversation(`starved-${i}`);
           await convStore.createMessagesBulk([{
             conversationId: conv.conversationId, seq: 0, role: "user",
             content: "The saffron rollout stalled again.", tokenCount: 10,

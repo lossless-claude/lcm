@@ -6,7 +6,7 @@ import {
   likePlanForPreparedQuery,
   type Fts5PreparedQuery,
 } from "../store/fts5-query.js";
-import { parseStoredTags, singleMemoryIdTag, voteTagsOf } from "./votes.js";
+import { parseStoredTags, singleMemoryIdTag, voteTagsOf, type VoteDirection } from "./votes.js";
 
 export type PromotedRow = {
   id: string;
@@ -76,6 +76,12 @@ export class PromotedStore {
 
   getById(id: string): PromotedRow | null {
     return (this.db.prepare("SELECT * FROM promoted WHERE id = ?").get(id) as PromotedRow) ?? null;
+  }
+
+  /** Every row, archived and signal rows included. */
+  count(): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS count FROM promoted").get() as { count: number } | undefined;
+    return row?.count ?? 0;
   }
 
   search(query: string, limit: number, filterTags?: string[], projectId?: string, terms?: readonly string[]): SearchResult[] {
@@ -205,14 +211,6 @@ export class PromotedStore {
     }
   }
 
-  deleteById(id: string): void {
-    const row = this.db.prepare("SELECT rowid FROM promoted WHERE id = ?").get(id) as { rowid: number } | undefined;
-    if (row) {
-      this.db.prepare("DELETE FROM promoted_fts WHERE rowid = ?").run(row.rowid);
-    }
-    this.db.prepare("DELETE FROM promoted WHERE id = ?").run(id);
-  }
-
   update(id: string, fields: { content?: string; confidence?: number; tags?: string[] }): void {
     const row = this.db.prepare("SELECT rowid, content, tags FROM promoted WHERE id = ?").get(id) as
       | { rowid: number; content: string; tags: string }
@@ -329,29 +327,40 @@ export class PromotedStore {
    * — are excluded, same as any other archived row.
    */
   getVoteCounts(): Map<string, { plusOne: number; minusOne: number; objections: Array<{ voteId: string; reason: string; sessionId: string | null }> }> {
-    const rows = this.db.prepare(
-      `SELECT id, tags, content, session_id FROM promoted
-       WHERE archived_at IS NULL
-       AND tags LIKE '%"signal:memory_vote"%'`
-    ).all() as Array<{ id: string; tags: string; content: string; session_id: string | null }>;
-
     const counts = new Map<string, { plusOne: number; minusOne: number; objections: Array<{ voteId: string; reason: string; sessionId: string | null }> }>();
-    for (const row of rows) {
-      const tags = parseStoredTags(row.tags);
-      if (!tags) continue;
-      const vote = voteTagsOf(tags);
-      if (!vote) continue;
-
+    for (const vote of this.activeVotes()) {
       const entry = counts.get(vote.memoryId) ?? { plusOne: 0, minusOne: 0, objections: [] };
       if (vote.direction === "+1") {
         entry.plusOne += 1;
       } else {
         entry.minusOne += 1;
-        entry.objections.push({ voteId: row.id, reason: row.content, sessionId: row.session_id });
+        entry.objections.push({ voteId: vote.id, reason: vote.reason, sessionId: vote.sessionId });
       }
       counts.set(vote.memoryId, entry);
     }
     return counts;
+  }
+
+  /** One session's active votes: what a later vote from the same session on the same memory reconciles against. */
+  activeVotesBySession(sessionId: string): Array<{ id: string; memoryId: string; direction: VoteDirection }> {
+    return this.activeVotes(sessionId).map(({ id, memoryId, direction }) => ({ id, memoryId, direction }));
+  }
+
+  /** The one reader of `signal:memory_vote` rows; how a vote is encoded in tags is decided here and in `votes.ts`. */
+  private activeVotes(sessionId?: string): Array<{ id: string; memoryId: string; direction: VoteDirection; reason: string; sessionId: string | null }> {
+    const sessionFilter = sessionId === undefined ? "" : "AND session_id = ?";
+    const rows = this.db.prepare(
+      `SELECT id, tags, content, session_id FROM promoted
+       WHERE archived_at IS NULL
+       AND tags LIKE '%"signal:memory_vote"%'
+       ${sessionFilter}`
+    ).all(...(sessionId === undefined ? [] : [sessionId])) as Array<{ id: string; tags: string; content: string; session_id: string | null }>;
+
+    return rows.flatMap((row) => {
+      const tags = parseStoredTags(row.tags);
+      const vote = tags && voteTagsOf(tags);
+      return vote ? [{ id: row.id, ...vote, reason: row.content, sessionId: row.session_id }] : [];
+    });
   }
 
   /** Revive a previously archived memory back to active status. */

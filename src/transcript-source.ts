@@ -30,7 +30,7 @@ export interface TranscriptLocator {
 export interface StoredTranscript {
   storedCount: number;
   /** The stored prefix in order, for an adapter that must verify it before trusting a full re-read. */
-  storedMessages(): Array<{ role: string; content: string }>;
+  storedMessages(): Promise<Array<{ role: string; content: string }>>;
   /** The Codex cursor persisted with the last write, unverified. */
   codexCursor?: CodexTranscriptCursor;
 }
@@ -96,11 +96,11 @@ function validateCodexMetadata(meta: CodexSessionMeta, ctx: ReadContext): void {
 }
 
 /** A full re-read is trusted only while its prefix, under the current redaction rules, is what was stored. */
-function validateCodexRecovery(stored: StoredTranscript, messages: ParsedMessage[], ctx: ReadContext): void {
+async function validateCodexRecovery(stored: StoredTranscript, messages: ParsedMessage[], ctx: ReadContext): Promise<void> {
   if (messages.length < stored.storedCount) {
     throw new TranscriptSourceError("Codex transcript is shorter than stored history; restore the full transcript before retrying");
   }
-  const previous = stored.storedMessages();
+  const previous = await stored.storedMessages();
   if (previous.length !== stored.storedCount) throw new TranscriptSourceError("Stored Codex history changed during recovery");
   for (const [index, prior] of previous.entries()) {
     const message = messages[index];
@@ -129,7 +129,7 @@ const codexSource: TranscriptSource = {
       throw new TranscriptSourceError(error instanceof Error ? error.message : "invalid transcript");
     }
     validateCodexMetadata(delta.sessionMeta, ctx);
-    if (!delta.resumed && stored) validateCodexRecovery(stored, delta.messages, ctx);
+    if (!delta.resumed && stored) await validateCodexRecovery(stored, delta.messages, ctx);
     return {
       messages: delta.messages,
       sourceOffset: delta.resumed && prior ? prior.messageCount : 0,

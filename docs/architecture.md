@@ -48,6 +48,19 @@ The **context_items** table maintains the ordered list of what the model sees fo
 
 When compaction creates a summary from a range of messages (or summaries), the source items are replaced by a single summary item. This keeps the context list compact while preserving ordering.
 
+### The store surface
+
+Episodic memory is reached through two stores, and only through them: `ConversationStore` (`src/store/conversation-store.ts`) owns `conversations`, `messages` and `message_parts`; `SummaryStore` (`src/store/summary-store.ts`) owns `summaries`, their lineage tables, `context_items` and `large_files`. Promoted memory is reached through `PromotedStore` (`src/db/promoted.ts`), which owns `promoted` and is the one reader of how a vote is encoded in its tags. No daemon route, the importer or the capture module prepares its own statement against those tables; `test/store/store-surface.test.ts` pins that, and every public store method has a caller in `src/`. Callers with their own SQL for other reasons — replay, stats, native history search, the bench — stay outside the stores.
+
+The operations are shaped by what Episodic memory is asked to do:
+
+- **Find the conversation of a session** — `getOrCreateConversation` opens it on first capture and fills attribution in once a sidecar names a parent; `getConversationBySessionId` answers it afterwards; `latestActiveConversation` is what a session that captured nothing yet is shown instead.
+- **Append a delta** — `createMessagesBulk` writes the messages past the stored count, `appendContextMessages` puts them at the end of the context, `createMessageParts` keeps their structure; `getMessageCount`, `getMaxSeq` and `getMessages` describe what is stored so the next delta starts after it.
+- **Read the context window** — `getContextItems` for compaction's view of the whole list, `readContextWindow` for a restore's view of its end (the last N summaries and the last N user/assistant messages, with a plain-messages fallback for a conversation captured before context items were materialised), `getContextTokenCount` and `getDistinctDepthsInContext` for the compaction triggers.
+- **Replace a range with a summary** — `insertSummary`, `linkSummaryToMessages` / `linkSummaryToParents` for its lineage, then `replaceContextRangeWithSummary`; `resetConversationContext` undoes every summary of a conversation and rebuilds the context from its messages.
+- **Read summaries** — by id, by conversation, deepest-first for a session's restore, newest-first across the project, or as a subtree under `lcm_expand`.
+- **Search** — `searchMessagesSync` / `searchSummariesSync`, full-text with a LIKE fallback, or regex.
+
 ## Compaction lifecycle
 
 ### Ingestion
@@ -213,9 +226,9 @@ For broader recall, agents can first use `lcm_grep` or `lcm_search` to find rele
 
 ## Large file handling — planned, not implemented
 
-Nothing below runs today. The storage layer exists — a `large_files` table and
-`insertLargeFile`/`getLargeFile` on the summary store — but no config key, threshold or
-ingestion path writes such a record.
+Nothing below runs today. The storage layer exists — a `large_files` table, read by
+`getLargeFile` on the summary store — but no config key, threshold or ingestion path
+writes such a record.
 Ingestion scrubs and stores messages whole. This section describes the intended design, so
 that the half already built is not mistaken for a working feature.
 

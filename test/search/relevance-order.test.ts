@@ -20,7 +20,7 @@ describe("full-text relevance survives retrieval and candidate limits", () => {
       "The quasar indexing regression was fixed.",
       `A quasar was mentioned once. ${"Routine unrelated maintenance. ".repeat(100)}`,
     ].entries()) {
-      const conversation = await conversations.createConversation({ sessionId: `session-${index}` });
+      const conversation = await conversations.getOrCreateConversation(`session-${index}`);
       await conversations.createMessage({
         conversationId: conversation.conversationId, seq: 0, role: "user", content, tokenCount: 20,
       });
@@ -70,7 +70,7 @@ describe("full-text candidate fill", () => {
       "Both the lantern and the compass appear here.",
       "Only the compass is mentioned here.",
     ].entries()) {
-      const conversation = await conversations.createConversation({ sessionId: `session-${index}` });
+      const conversation = await conversations.getOrCreateConversation(`session-${index}`);
       await conversations.createMessage({ conversationId: conversation.conversationId, seq: 0, role: "user", content, tokenCount: 10 });
       await summaries.insertSummary({ summaryId: `summary-${index}`, conversationId: conversation.conversationId, kind: "leaf", content, tokenCount: 10 });
     }

@@ -93,15 +93,6 @@ describe("PromotedStore", () => {
     expect(results.find((r) => r.id === id)).toBeUndefined();
   });
 
-  it("deleteById() removes entry and FTS5 row", () => {
-    const db = makeDb();
-    const store = new PromotedStore(db);
-    const id = store.insert({ content: "Delete me", tags: [], projectId: "p1" });
-
-    store.deleteById(id);
-    expect(store.getById(id)).toBeNull();
-  });
-
   it("update() changes content and re-syncs FTS5", () => {
     const db = makeDb();
     const store = new PromotedStore(db);

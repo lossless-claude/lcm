@@ -74,7 +74,7 @@ async function seedProject(cwd: string): Promise<void> {
     ];
 
     for (const s of sessions) {
-      const conv = await convStore.createConversation({ sessionId: s.sessionId });
+      const conv = await convStore.getOrCreateConversation(s.sessionId);
       const inputs = s.prompts.flatMap((prompt, i) => [
         {
           conversationId: conv.conversationId,
@@ -129,7 +129,7 @@ async function addSessions(cwd: string, entries: Array<{ sessionId: string; prom
   try {
     const convStore = new ConversationStore(db);
     for (const entry of entries) {
-      const conv = await convStore.createConversation({ sessionId: entry.sessionId });
+      const conv = await convStore.getOrCreateConversation(entry.sessionId);
       const prompts = Array.isArray(entry.prompt) ? entry.prompt : [entry.prompt];
       await convStore.createMessagesBulk(prompts.map((content, seq) => ({
         conversationId: conv.conversationId,

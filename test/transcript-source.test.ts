@@ -29,7 +29,7 @@ function tempDir(prefix: string): string {
 
 /** A stored state that mirrors what the adapter's own earlier answer would have written. */
 function stored(messages: Array<{ role: string; content: string }>, codexCursor?: CodexTranscriptCursor): StoredTranscript {
-  return { storedCount: messages.length, storedMessages: () => messages, codexCursor };
+  return { storedCount: messages.length, storedMessages: async () => messages, codexCursor };
 }
 
 describe("Claude transcript source", () => {

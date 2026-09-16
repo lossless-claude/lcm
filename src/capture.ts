@@ -112,10 +112,10 @@ export class SessionCapture {
 
   /** The session's conversation and how many of its messages are stored, or undefined before its first write. */
   async stored(sessionId: string): Promise<StoredSession | undefined> {
-    const row = this.db.prepare("SELECT conversation_id FROM conversations WHERE session_id = ?")
-      .get(sessionId) as { conversation_id: number } | undefined;
-    if (!row) return undefined;
-    return { conversationId: row.conversation_id, storedCount: await this.conversationStore.getMessageCount(row.conversation_id) };
+    const conversation = await this.conversationStore.getConversationBySessionId(sessionId);
+    if (!conversation) return undefined;
+    const { conversationId } = conversation;
+    return { conversationId, storedCount: await this.conversationStore.getMessageCount(conversationId) };
   }
 
   /**
@@ -149,8 +149,7 @@ export class SessionCapture {
   private storedTranscript(stored: StoredSession, transcriptPath: string): StoredTranscript {
     return {
       storedCount: stored.storedCount,
-      storedMessages: () => this.db.prepare("SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY seq LIMIT ?")
-        .all(stored.conversationId, stored.storedCount) as Array<{ role: string; content: string }>,
+      storedMessages: () => this.conversationStore.getMessages(stored.conversationId, { limit: stored.storedCount }),
       codexCursor: loadCodexCursor(this.db, stored.conversationId, transcriptPath),
     };
   }
