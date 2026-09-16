@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync, utimesSync, symlinkSync 
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
+import { discoverSubagentTranscripts } from "../src/subagent-attribution.js";
 import { cwdToProjectHash, findSessionFiles, importSessions } from "../src/import.js";
 import type { DaemonClient } from "../src/daemon/client.js";
 import { runLcmMigrations } from "../src/db/migration.js";
@@ -136,130 +137,26 @@ describe("findSessionFiles", () => {
     expect(sessionIds).toEqual(["agent-1", "session-parent"]);
   });
 
-  it("reads subagent attribution from the .meta.json sidecar", () => {
+  it("discovers subagent transcripts exactly as the shared walker does, attribution included", () => {
+    // The walker's rules (recursion, journal.jsonl, sidecar resolution) are
+    // asserted once in test/subagent-attribution.test.ts; this only guards the seam.
     const dir = makeTmpDir();
-    const subDir = join(dir, "session-parent");
-    const subagentsDir = join(subDir, "subagents");
-    mkdirSync(subagentsDir, { recursive: true });
-    writeFileSync(join(subagentsDir, "agent-child.jsonl"), "");
-    writeFileSync(
-      join(subagentsDir, "agent-child.meta.json"),
-      JSON.stringify({ agentType: "explorer", description: "look around" }),
-    );
-
-    const result = findSessionFiles(dir);
-    const child = result.find((f) => f.sessionId === "agent-child");
-    expect(child?.subagentType).toBe("explorer");
-    expect(child?.subagentDesc).toBe("look around");
-    // No parentAgentId in the sidecar: parent is the folder that owns subagents/.
-    expect(child?.parentSessionId).toBe("session-parent");
-  });
-
-  it("prefers the sidecar's parentAgentId over the owning folder, prefixed to match a sibling session id", () => {
-    const dir = makeTmpDir();
-    const subDir = join(dir, "session-parent");
-    const subagentsDir = join(subDir, "subagents");
-    mkdirSync(subagentsDir, { recursive: true });
-    writeFileSync(join(subagentsDir, "agent-nested.jsonl"), "");
-    writeFileSync(
-      join(subagentsDir, "agent-nested.meta.json"),
-      JSON.stringify({ agentType: "worker", parentAgentId: "dispatcher-id" }),
-    );
-
-    const result = findSessionFiles(dir);
-    const nested = result.find((f) => f.sessionId === "agent-nested");
-    expect(nested?.parentSessionId).toBe("agent-dispatcher-id");
-  });
-
-  it("leaves attribution null when the sidecar is missing", () => {
-    const dir = makeTmpDir();
-    const subDir = join(dir, "session-parent");
-    const subagentsDir = join(subDir, "subagents");
-    mkdirSync(subagentsDir, { recursive: true });
-    writeFileSync(join(subagentsDir, "agent-orphan.jsonl"), "");
-
-    const result = findSessionFiles(dir);
-    const orphan = result.find((f) => f.sessionId === "agent-orphan");
-    expect(orphan?.parentSessionId ?? null).toBeNull();
-    expect(orphan?.subagentType ?? null).toBeNull();
-    expect(orphan?.subagentDesc ?? null).toBeNull();
-  });
-
-  it("leaves attribution null when the sidecar has invalid JSON", () => {
-    const dir = makeTmpDir();
-    const subDir = join(dir, "session-parent");
-    const subagentsDir = join(subDir, "subagents");
-    mkdirSync(subagentsDir, { recursive: true });
-    writeFileSync(join(subagentsDir, "agent-bad.jsonl"), "");
-    writeFileSync(join(subagentsDir, "agent-bad.meta.json"), "{not json");
-
-    const result = findSessionFiles(dir);
-    const bad = result.find((f) => f.sessionId === "agent-bad");
-    expect(bad?.parentSessionId ?? null).toBeNull();
-    expect(bad?.subagentType ?? null).toBeNull();
-    expect(bad?.subagentDesc ?? null).toBeNull();
-  });
-
-  it("discovers subagent transcripts nested under a workflow run directory", () => {
-    const dir = makeTmpDir();
-    const subDir = join(dir, "session-parent");
-    const subagentsDir = join(subDir, "subagents");
-    const workflowRunDir = join(subagentsDir, "workflows", "wf_123");
-    mkdirSync(workflowRunDir, { recursive: true });
-    writeFileSync(join(workflowRunDir, "agent-wf-child.jsonl"), "");
-    writeFileSync(
-      join(workflowRunDir, "agent-wf-child.meta.json"),
-      JSON.stringify({ agentType: "workflow-subagent" }),
-    );
-
-    const result = findSessionFiles(dir);
-    const child = result.find((f) => f.sessionId === "agent-wf-child");
-    expect(child).toBeDefined();
-    expect(child?.subagentType).toBe("workflow-subagent");
-    // Parent is the session that owns subagents/, not the wf_* run directory.
-    expect(child?.parentSessionId).toBe("session-parent");
-  });
-
-  it("does not discover journal.jsonl inside a workflow run directory", () => {
-    const dir = makeTmpDir();
-    const subDir = join(dir, "session-parent");
-    const workflowRunDir = join(subDir, "subagents", "workflows", "wf_123");
-    mkdirSync(workflowRunDir, { recursive: true });
-    writeFileSync(join(workflowRunDir, "agent-wf-child.jsonl"), "");
-    writeFileSync(join(workflowRunDir, "journal.jsonl"), "");
-
-    const result = findSessionFiles(dir);
-    const sessionIds = result.map((f) => f.sessionId).sort();
-    expect(sessionIds).toEqual(["agent-wf-child"]);
-  });
-
-  it("still discovers a flat subagent transcript, without duplicating it, alongside a workflow run", () => {
-    const dir = makeTmpDir();
-    const subDir = join(dir, "session-parent");
-    const subagentsDir = join(subDir, "subagents");
+    const sessionDir = join(dir, "session-parent");
+    const subagentsDir = join(sessionDir, "subagents");
     const workflowRunDir = join(subagentsDir, "workflows", "wf_123");
     mkdirSync(workflowRunDir, { recursive: true });
     writeFileSync(join(subagentsDir, "agent-flat.jsonl"), "");
+    writeFileSync(join(subagentsDir, "agent-flat.meta.json"), JSON.stringify({ agentType: "explorer", description: "look" }));
     writeFileSync(join(workflowRunDir, "agent-wf-child.jsonl"), "");
+    writeFileSync(join(workflowRunDir, "journal.jsonl"), "");
 
-    const result = findSessionFiles(dir);
-    const sessionIds = result.map((f) => f.sessionId).sort();
-    expect(sessionIds).toEqual(["agent-flat", "agent-wf-child"]);
-    // Each discovered exactly once.
-    expect(result.filter((f) => f.sessionId === "agent-flat")).toHaveLength(1);
-  });
-
-  it("leaves attribution null for a workflow subagent transcript with no sidecar", () => {
-    const dir = makeTmpDir();
-    const workflowRunDir = join(dir, "session-parent", "subagents", "workflows", "wf_123");
-    mkdirSync(workflowRunDir, { recursive: true });
-    writeFileSync(join(workflowRunDir, "agent-orphan.jsonl"), "");
-
-    const result = findSessionFiles(dir);
-    const orphan = result.find((f) => f.sessionId === "agent-orphan");
-    expect(orphan?.parentSessionId ?? null).toBeNull();
-    expect(orphan?.subagentType ?? null).toBeNull();
-    expect(orphan?.subagentDesc ?? null).toBeNull();
+    const fromImport = findSessionFiles(dir)
+      .filter((f) => f.attribution !== undefined)
+      .sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+    const fromWalker = discoverSubagentTranscripts(sessionDir)
+      .sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+    expect(fromImport.map((f) => f.sessionId)).toEqual(["agent-flat", "agent-wf-child"]);
+    expect(fromImport).toEqual(fromWalker);
   });
 
   it("deduplicates when both flat and nested transcripts exist for the same session", () => {
