@@ -260,7 +260,8 @@ export function rankHistoryHits(
  * filename. That naming is an external convention: if it ever changes, this
  * filter silently stops matching and search quietly gets noisier again.
  */
-const SUBAGENT_SESSION = /^agent-/;
+export const SUBAGENT_SESSION_PREFIX = "agent-";
+const SUBAGENT_SESSION = new RegExp(`^${SUBAGENT_SESSION_PREFIX}`);
 
 /**
  * Drop subagent transcripts from the ranked candidates.
