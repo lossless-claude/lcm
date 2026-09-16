@@ -1,11 +1,11 @@
-import { existsSync, readdirSync, readFileSync, type Dirent } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, type Dirent } from "node:fs";
 import { basename, join } from "node:path";
 
 /**
  * What a subagent transcript's `.meta.json` sidecar can tell us about the
- * dispatch that created it. All three are null together: either the sidecar
- * is missing/unreadable, or the transcript is not a subagent transcript at
- * all (findSessionFiles never calls this for flat/nested session files).
+ * dispatch that created it. All three are null when the sidecar is missing,
+ * unreadable or not a JSON object; a readable sidecar always yields
+ * `parentSessionId`, the other two only when it carries them.
  */
 export interface SubagentAttribution {
   parentSessionId: string | null;
@@ -25,26 +25,29 @@ const EMPTY_ATTRIBUTION: SubagentAttribution = {
  * `folderSessionId` is the session that owns the `subagents/` directory the
  * transcript lives in — the parent for the common case (no `parentAgentId`
  * in the sidecar). When the sidecar does carry `parentAgentId` (a nested
- * dispatch), the immediate dispatcher is a sibling `agent-<id>.jsonl` in the
- * same directory, not the owning session, so the id is prefixed with
- * `agent-` to match that sibling's own `session_id`.
+ * dispatch), the immediate dispatcher is another `agent-<id>.jsonl` under the
+ * same session's `subagents/` tree, not the owning session, so the id is
+ * prefixed with `agent-` to match that transcript's own `session_id`.
  *
- * A missing, unreadable, or invalid sidecar yields all three fields null —
- * not an error, and no fallback to the folder name.
+ * A missing, unreadable, or invalid sidecar — including one that parses to
+ * something other than an object — yields all three fields null: not an
+ * error, and no fallback to the folder name.
  */
-export function readSubagentAttribution(
+function readSubagentAttribution(
   transcriptPath: string,
   folderSessionId: string,
 ): SubagentAttribution {
   const metaPath = transcriptPath.replace(/\.jsonl$/, ".meta.json");
   if (!existsSync(metaPath)) return EMPTY_ATTRIBUTION;
 
-  let meta: Record<string, unknown>;
+  let parsed: unknown;
   try {
-    meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+    parsed = JSON.parse(readFileSync(metaPath, "utf-8"));
   } catch {
     return EMPTY_ATTRIBUTION;
   }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return EMPTY_ATTRIBUTION;
+  const meta = parsed as Record<string, unknown>;
 
   const parentAgentId = typeof meta.parentAgentId === "string" && meta.parentAgentId ? meta.parentAgentId : null;
   return {
@@ -54,20 +57,91 @@ export function readSubagentAttribution(
   };
 }
 
-export interface SubagentTranscriptEntry {
+export interface DiscoveredSubagentTranscript {
+  path: string;
   /** Matches a `conversations.session_id` value (e.g. `agent-<id>`). */
   sessionId: string;
+  mtime: number;
   attribution: SubagentAttribution;
 }
 
 /**
- * Walks every `<project>/<session>/subagents/*.jsonl` transcript under a
- * `~/.claude/projects`-shaped directory, reading each one's sidecar. Used by
- * the one-time migration backfill — `findSessionFiles` in `import.ts` reads
- * sidecars inline during its own walk instead of calling this.
+ * Every subagent transcript one session dispatched, with its attribution:
+ * the only walker of `<sessionDir>/subagents/`, shared by `lcm import`, live
+ * `/ingest` and the migration backfill so all three apply one rule.
+ *
+ * An `agent-<id>.jsonl` can sit directly under `subagents/` or nested
+ * arbitrarily deeper — e.g. `subagents/workflows/wf_<id>/` for a workflow
+ * run's own subagents — with the same format and the same sidecar at every
+ * depth. Only `journal.jsonl` — a workflow run's own log, excluded by name,
+ * not by shape — is not a transcript. `subagents/` itself and every entry
+ * under it are skipped when symlinked; a directory that cannot be read is
+ * skipped without losing what was found before it. The owning session is
+ * `basename(sessionDir)` for every transcript found, however deep; the
+ * directories in between are never a parent.
  */
-export function walkSubagentTranscripts(claudeProjectsDir: string): SubagentTranscriptEntry[] {
-  const entries: SubagentTranscriptEntry[] = [];
+export function discoverSubagentTranscripts(sessionDir: string): DiscoveredSubagentTranscript[] {
+  const subagentsDir = join(sessionDir, "subagents");
+  if (!isRealDirectory(subagentsDir)) return [];
+  const found: DiscoveredSubagentTranscript[] = [];
+  walkSubagentDir(subagentsDir, basename(sessionDir), found);
+  return found;
+}
+
+function isRealDirectory(path: string): boolean {
+  try {
+    return lstatSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function listEntries(dir: string): Dirent[] {
+  try {
+    return readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return []; // unreadable, or removed between the parent's readdir and this one
+  }
+}
+
+function walkSubagentDir(dir: string, folderSessionId: string, out: DiscoveredSubagentTranscript[]): void {
+  for (const entry of listEntries(dir)) {
+    if (entry.isSymbolicLink()) continue;
+    if (entry.isDirectory()) {
+      walkSubagentDir(join(dir, entry.name), folderSessionId, out);
+      continue;
+    }
+    const found = isSubagentTranscriptFile(entry) ? discoveredTranscript(join(dir, entry.name), folderSessionId) : null;
+    if (found) out.push(found);
+  }
+}
+
+function isSubagentTranscriptFile(entry: Dirent): boolean {
+  return entry.isFile() && entry.name !== "journal.jsonl" && entry.name.endsWith(".jsonl");
+}
+
+function discoveredTranscript(path: string, folderSessionId: string): DiscoveredSubagentTranscript | null {
+  try {
+    const st = lstatSync(path);
+    if (st.isSymbolicLink()) return null;
+    return {
+      path,
+      sessionId: basename(path, ".jsonl"),
+      mtime: st.mtimeMs,
+      attribution: readSubagentAttribution(path, folderSessionId),
+    };
+  } catch {
+    return null; // deleted between readdir and stat, or unreadable
+  }
+}
+
+/**
+ * `discoverSubagentTranscripts` over every `<project>/<session>/` directory
+ * under a `~/.claude/projects`-shaped tree. Used by the one-time migration
+ * backfill.
+ */
+export function walkSubagentTranscripts(claudeProjectsDir: string): DiscoveredSubagentTranscript[] {
+  const entries: DiscoveredSubagentTranscript[] = [];
   if (!existsSync(claudeProjectsDir)) return entries;
 
   for (const projectEntry of readdirSync(claudeProjectsDir, { withFileTypes: true })) {
@@ -78,31 +152,9 @@ export function walkSubagentTranscripts(claudeProjectsDir: string): SubagentTran
   return entries;
 }
 
-function collectProjectSubagentTranscripts(projectDir: string, out: SubagentTranscriptEntry[]): void {
+function collectProjectSubagentTranscripts(projectDir: string, out: DiscoveredSubagentTranscript[]): void {
   for (const sessionEntry of readdirSync(projectDir, { withFileTypes: true })) {
     if (!sessionEntry.isDirectory()) continue;
-    collectSubagentTranscripts(projectDir, sessionEntry.name, out);
+    out.push(...discoverSubagentTranscripts(join(projectDir, sessionEntry.name)));
   }
-}
-
-function collectSubagentTranscripts(
-  projectDir: string,
-  folderSessionId: string,
-  out: SubagentTranscriptEntry[],
-): void {
-  const subagentsDir = join(projectDir, folderSessionId, "subagents");
-  if (!existsSync(subagentsDir)) return;
-
-  for (const sub of readdirSync(subagentsDir, { withFileTypes: true })) {
-    if (!isSubagentTranscriptFile(sub)) continue;
-    const transcriptPath = join(subagentsDir, sub.name);
-    out.push({
-      sessionId: basename(sub.name, ".jsonl"),
-      attribution: readSubagentAttribution(transcriptPath, folderSessionId),
-    });
-  }
-}
-
-function isSubagentTranscriptFile(entry: Dirent): boolean {
-  return entry.isFile() && !entry.isSymbolicLink() && entry.name.endsWith(".jsonl");
 }

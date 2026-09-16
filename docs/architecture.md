@@ -58,7 +58,7 @@ When Claude Code processes a turn, it calls the context engine's lifecycle hooks
 2. **ingest** / **ingestBatch** — Persists new messages to the database and appends them to context_items.
 3. **afterTurn** — After the model responds, ingests new messages, then evaluates whether compaction should run.
 
-When `/ingest` processes a session it also looks for that session's subagent transcripts at `<project>/<session_id>/subagents/*.jsonl` (`discoverSubagentSessions` in `src/daemon/subagent-discovery.ts`). The lookup is scoped to that one directory, never a walk of the projects tree. Each subagent transcript is captured as its own session and attributed to the parent session (see CONTEXT.md for the terms).
+When `/ingest` processes a session it also looks for that session's subagent transcripts under `<project>/<session_id>/subagents/`, recursively (a workflow run writes its own subagents under `subagents/workflows/wf_<id>/`); `journal.jsonl` is not a transcript and is skipped. `discoverSubagentTranscripts` in `src/subagent-attribution.ts` is the one walker of that directory, shared with `lcm import` and the migration backfill, so every path captures the same set with the same attribution. The lookup is scoped to that one session directory, never a walk of the projects tree. Each subagent transcript is captured as its own session and attributed to the parent session (see CONTEXT.md for the terms).
 
 ### Leaf compaction
 

@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
@@ -21,7 +22,7 @@ import { scheduleProjectLanguageDetection } from "../project-language.js";
 import { enqueue } from "../project-queue.js";
 import { readCodexTranscriptDelta, type CodexTranscriptCursor } from "../../codex-transcript-reader.js";
 import { loadCodexCursor, saveCodexCursor } from "../../db/codex-cursor.js";
-import { discoverSubagentSessions, type DiscoveredSubagentSession } from "../subagent-discovery.js";
+import { discoverSubagentTranscripts, type DiscoveredSubagentTranscript } from "../../subagent-attribution.js";
 
 class TranscriptError extends Error {}
 
@@ -194,7 +195,7 @@ async function ingestSubagentSession(
   summaryStore: SummaryStore,
   scrubber: ScrubEngine,
   pid: string,
-  sub: DiscoveredSubagentSession,
+  sub: DiscoveredSubagentTranscript,
 ): Promise<number> {
   const parsed = parseTranscript(sub.path);
   const existing = await getStoredConversation(db, conversationStore, sub.sessionId);
@@ -202,11 +203,7 @@ async function ingestSubagentSession(
   const newMessages = parsed.slice(storedCount);
   if (newMessages.length === 0) return 0;
 
-  const conversation = await conversationStore.getOrCreateConversation(sub.sessionId, undefined, {
-    parentSessionId: sub.parentSessionId,
-    subagentType: sub.subagentType,
-    subagentDesc: sub.subagentDesc,
-  });
+  const conversation = await conversationStore.getOrCreateConversation(sub.sessionId, undefined, sub.attribution);
   const { records } = await writeNewMessages(
     db, conversationStore, summaryStore, scrubber, pid, sub.sessionId, conversation.conversationId, storedCount, newMessages,
   );
@@ -214,7 +211,7 @@ async function ingestSubagentSession(
 }
 
 async function ingestAllSubagents(
-  db: DatabaseSync, pid: string, scrubber: ScrubEngine, subagents: DiscoveredSubagentSession[],
+  db: DatabaseSync, pid: string, scrubber: ScrubEngine, subagents: DiscoveredSubagentTranscript[],
 ): Promise<void> {
   runLcmMigrations(db);
   const conversationStore = new ConversationStore(db);
@@ -222,6 +219,18 @@ async function ingestAllSubagents(
   for (const sub of subagents) {
     await ingestSubagentSession(db, conversationStore, summaryStore, scrubber, pid, sub);
   }
+}
+
+/**
+ * The subagent transcripts of one already-known session, at
+ * `<project>/<session_id>/subagents/`. Scoped to that one session directory:
+ * `/ingest` already knows which session it is processing, so this never
+ * walks the whole projects tree.
+ */
+function discoverSubagentSessionTranscripts(cwd: string, sessionId: string): DiscoveredSubagentTranscript[] {
+  const transcriptPath = claudeTranscriptPath(cwd, sessionId);
+  if (!transcriptPath) return [];
+  return discoverSubagentTranscripts(join(dirname(transcriptPath), sessionId));
 }
 
 /**
@@ -233,7 +242,7 @@ async function ingestAllSubagents(
 async function ingestSubagentTranscripts(
   cwd: string, dbPath: string, pid: string, sessionId: string, scrubber: ScrubEngine, paths: LcmPaths,
 ): Promise<void> {
-  const subagents = discoverSubagentSessions(cwd, sessionId);
+  const subagents = discoverSubagentSessionTranscripts(cwd, sessionId);
   if (subagents.length === 0) return;
 
   await enqueue(pid, async () => {

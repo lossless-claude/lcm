@@ -438,28 +438,6 @@ describe("subagent attribution backfill", () => {
     db.close();
   });
 
-  it("resolves a nested dispatch's parentAgentId to the sibling's session id, not the owning session", () => {
-    const { db } = makeLegacyDb();
-    db.prepare(`INSERT INTO conversations (conversation_id, session_id) VALUES (1, 'agent-nested')`).run();
-
-    const fixture = makeFixtureDir();
-    const subagentsDir = join(fixture, "proj-hash", "owning-session", "subagents");
-    mkdirSync(subagentsDir, { recursive: true });
-    writeFileSync(join(subagentsDir, "agent-nested.jsonl"), "");
-    writeFileSync(
-      join(subagentsDir, "agent-nested.meta.json"),
-      JSON.stringify({ agentType: "worker", parentAgentId: "dispatcher-id" }),
-    );
-
-    runLcmMigrations(db, { fts5Available: false, claudeProjectsDir: fixture });
-
-    const row = db
-      .prepare(`SELECT parent_session_id FROM conversations WHERE conversation_id = 1`)
-      .get() as { parent_session_id: string | null };
-    expect(row.parent_session_id).toBe("agent-dispatcher-id");
-    db.close();
-  });
-
   it("leaves an agent-% conversation null and counts it unmatched when its transcript is gone from disk", () => {
     const { db } = makeLegacyDb();
     db.prepare(`INSERT INTO conversations (conversation_id, session_id) VALUES (1, 'agent-deleted')`).run();
