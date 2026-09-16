@@ -6,7 +6,7 @@ import {
   likePlanForPreparedQuery,
   type Fts5PreparedQuery,
 } from "../store/fts5-query.js";
-import { parseStoredTags, voteTagsOf } from "./votes.js";
+import { parseStoredTags, singleMemoryIdTag, voteTagsOf } from "./votes.js";
 
 export type PromotedRow = {
   id: string;
@@ -299,11 +299,8 @@ export class PromotedStore {
     for (const row of usageRows) {
       const tags = parseStoredTags(row.tags);
       if (!tags || !tags.includes("signal:memory_used")) continue;
-      for (const id of ids) {
-        if (tags.includes(`memory_id:${id}`)) {
-          usageMap.set(id, (usageMap.get(id) ?? 0) + 1);
-        }
-      }
+      const memoryId = singleMemoryIdTag(tags);
+      if (memoryId && ids.includes(memoryId)) usageMap.set(memoryId, (usageMap.get(memoryId) ?? 0) + 1);
     }
 
     const result: Array<PromotedRow & { surfacingCount: number; usageCount: number; daysSinceCreated: number }> = [];

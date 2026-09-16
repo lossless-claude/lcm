@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import { isSignalTagged, parseStoredTags } from "./votes.js";
+import { isSignalTagged, parseStoredTags, singleMemoryIdTag } from "./votes.js";
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
@@ -45,7 +45,7 @@ export function collectLegacyUsageCounts(databases: Iterable<[string, DatabaseSy
         continue;
       }
       if (!tags.includes("signal:memory_used")) continue;
-      const memoryId = tags.find(tag => tag.startsWith("memory_id:"))?.slice("memory_id:".length);
+      const memoryId = singleMemoryIdTag(tags);
       if (memoryId) signals.push({ source: key, memoryId });
     }
   }
@@ -196,10 +196,8 @@ export class RecallStore {
     for (const row of actedRows) {
       const tags = parseStoredTags(row.tags);
       if (!tags) continue;
-      const memIdTag = tags.find((tag) => tag.startsWith("memory_id:"));
-      if (!memIdTag) continue;
-
-      const memId = memIdTag.slice("memory_id:".length);
+      const memId = singleMemoryIdTag(tags);
+      if (!memId) continue;
       if (memoryIdSet && !memoryIdSet.has(memId)) continue;
       memoryIdCounts.set(memId, (memoryIdCounts.get(memId) ?? 0) + 1);
     }

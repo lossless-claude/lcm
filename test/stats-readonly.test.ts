@@ -115,6 +115,11 @@ it("collectStats keeps legacy use counts from healthy group siblings when one si
     const memoryId = new PromotedStore(ownerDb).insert({ content: "owner", tags: [], projectId: "p" });
     const store = new PromotedStore(requesterDb);
     for (let i = 0; i < 3; i++) store.insert({ content: `use ${i}`, tags: ["signal:memory_used", `memory_id:${memoryId}`], projectId: "p" });
+    for (const tags of [
+      ["signal:memory_used"],
+      ["signal:memory_used", "memory_id:"],
+      ["signal:memory_used", `memory_id:${memoryId}`, "memory_id:other"],
+    ]) store.insert({ content: "malformed historical use", tags, projectId: "p" });
     brokenDb.exec("CREATE TABLE partial_schema (id INTEGER)");
   } finally {
     ownerDb.close();

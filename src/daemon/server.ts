@@ -29,12 +29,14 @@ import { createSessionStartCompactHandler } from "./routes/session-start-compact
 import { backfillProjectIdentities } from "./project-group.js";
 import { PKG_VERSION, BUILD_ID } from "./version.js";
 import { lcmHome } from "../lcm-home.js";
-import { createLcmPaths } from "../lcm-paths.js";
+import { createLcmPaths, type LcmPaths } from "../lcm-paths.js";
 export { PKG_VERSION };
 
 export type RouteHandler = (req: IncomingMessage, res: ServerResponse, body: string) => Promise<void>;
 export type DaemonInstance = { address: () => AddressInfo; stop: () => Promise<void>; registerRoute: (method: string, path: string, handler: RouteHandler) => void; idleTriggered: boolean };
 export type DaemonOptions = {
+  /** Storage locations for this daemon instance. Defaults to the process LCM_HOME. */
+  paths?: LcmPaths;
   proxyManager?: ProxyManager;
   onIdle?: () => void;
   tokenPath?: string;
@@ -79,7 +81,7 @@ export function sendJson(res: ServerResponse, status: number, data: unknown): vo
 export async function createDaemon(config: DaemonConfig, options?: DaemonOptions): Promise<DaemonInstance> {
   // The storage root, resolved once here — the daemon is a composition root in its own
   // right, since it can be spawned as its own process rather than always through the CLI.
-  const paths = createLcmPaths(lcmHome());
+  const paths = options?.paths ?? createLcmPaths(lcmHome());
   const startTime = Date.now();
   const proxyManager = options?.proxyManager;
   const serverToken = options?.tokenPath ? readAuthToken(options.tokenPath) : null;

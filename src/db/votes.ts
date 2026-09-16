@@ -19,6 +19,14 @@ export function parseStoredTags(raw: string): string[] | null {
   }
 }
 
+/** Returns a stored signal's sole non-empty target, never an arbitrary one. */
+export function singleMemoryIdTag(tags: string[]): string | null {
+  const targets = tags.filter((tag) => tag.startsWith("memory_id:"));
+  if (targets.length !== 1) return null;
+  const memoryId = targets[0].slice("memory_id:".length);
+  return memoryId || null;
+}
+
 /** Any reserved protocol tag (`signal:memory_used`, `signal:memory_vote`, ...). */
 export function isSignalTagged(tags: string[]): boolean {
   return tags.some((t) => t.startsWith("signal:"));
