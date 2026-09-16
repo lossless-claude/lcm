@@ -58,7 +58,7 @@ When Claude Code processes a turn, it calls the context engine's lifecycle hooks
 2. **ingest** / **ingestBatch** — Persists new messages to the database and appends them to context_items.
 3. **afterTurn** — After the model responds, ingests new messages, then evaluates whether compaction should run.
 
-When `/ingest` processes a session it also looks for that session's subagent transcripts at `<project>/<session_id>/subagents/*.jsonl` (`discoverSubagentSessions` in `src/daemon/subagent-discovery.ts`). The lookup is scoped to that one directory, never a walk of the projects tree. Each subagent transcript is captured as its own session and attributed to the parent session (see CONTEXT.md for the terms).
+When `/ingest` processes a session it also looks for that session's subagent transcripts under `<project>/<session_id>/subagents/`, recursively (a workflow run writes its own subagents under `subagents/workflows/wf_<id>/`); `journal.jsonl` is not a transcript and is skipped. `discoverSubagentTranscripts` in `src/subagent-attribution.ts` is the one walker of that directory, shared with `lcm import` and the migration backfill, so every path captures the same set with the same attribution. The lookup is scoped to that one session directory, never a walk of the projects tree. Each subagent transcript is captured as its own session and attributed to the parent session (see CONTEXT.md for the terms).
 
 ### Leaf compaction
 
@@ -84,23 +84,13 @@ The **condensed pass** merges summaries at the same depth into a higher-level su
 4. Apply the same escalation strategy (normal → aggressive → truncation fallback).
 5. Persist with depth = targetDepth + 1, link to parent summaries, replace the range in context_items.
 
-### Compaction modes
+### Compaction sweep
 
-**Incremental (after each turn):**
-- Checks if raw tokens outside the fresh tail exceed `leafChunkTokens`
-- If so, runs one leaf pass
-- If `incrementalMaxDepth != 0`, follows with condensation passes up to that depth (`-1` for unlimited)
-- Best-effort: failures don't break the conversation
+`CompactionEngine.compact` is the one entry point; `/compact` calls it once per session.
 
-**Full sweep (manual `/compact` or overflow):**
 - Phase 1: Repeatedly runs leaf passes until no more eligible chunks
 - Phase 2: Repeatedly runs condensation passes starting from the shallowest eligible depth
 - Each pass checks for progress; stops if no tokens were saved
-
-**Budget-targeted (`compactUntilUnder`):**
-- Runs up to `maxRounds` (default 10) of full sweeps
-- Stops when context is under the target token count
-- Used by the overflow recovery path
 
 ### Resumable replay runs
 

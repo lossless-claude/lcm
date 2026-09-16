@@ -24,7 +24,7 @@ vi.mock("@modelcontextprotocol/server", () => ({
 vi.mock("@modelcontextprotocol/server/stdio", () => ({ serveStdio: vi.fn() }));
 vi.mock("../../src/stats.js", async () => {
   await state.gate;
-  return { formatNumber: String, collectStats: () => {
+  return { formatNumber: String, formatSubagentShare: String, collectStats: () => {
     state.accessed = true;
     throw new Error("simulated database failure");
   } };

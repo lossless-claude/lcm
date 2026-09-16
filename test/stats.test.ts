@@ -63,6 +63,7 @@ describe("printStats", () => {
   const baseStats = {
     projects: 2,
     conversations: 5,
+    subagent: { byName: 0, attributedNotByName: 0 },
     compactedConversations: 3,
     messages: 150,
     summaries: 0,
@@ -188,6 +189,17 @@ describe("printStats", () => {
     expect(out).toContain("42");
     expect(out).toContain("3 unprocessed");
     expect(out).toContain("1 errors");
+  });
+
+  it("prints the subagent share of conversations, and the drift count when non-zero", () => {
+    const out = captureLog(() => printStats({ ...baseStats, subagent: { byName: 4, attributedNotByName: 0 } }, false));
+    expect(out).toContain("Subagent");
+    expect(out).toContain("4 of 5 conversations (80.0%) excluded from search");
+    expect(out).not.toContain("not excluded");
+
+    const drifted = captureLog(() => printStats({ ...baseStats, subagent: { byName: 0, attributedNotByName: 2 } }, false));
+    expect(drifted).toContain("0 of 5 conversations (0.0%) excluded from search");
+    expect(drifted).toContain("2 attributed to a parent but not excluded");
   });
 
   it("omits Events row when eventsCaptured is 0", () => {
