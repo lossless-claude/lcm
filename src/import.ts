@@ -139,8 +139,7 @@ function findNestedSessionFile(projectDir: string, sessionDirName: string): Disc
  * the file — nothing is re-derived from the path later.
  */
 function findSubagentSessionFiles(projectDir: string, sessionDirName: string): DiscoveredSessionFile[] {
-  return discoverSubagentTranscripts(join(projectDir, sessionDirName))
-    .map(({ path, sessionId, mtime, attribution }) => ({ path, sessionId, mtime, attribution }));
+  return discoverSubagentTranscripts(join(projectDir, sessionDirName));
 }
 
 export function findSessionFiles(projectDir: string): DiscoveredSessionFile[] {

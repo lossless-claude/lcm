@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { discoverSubagentTranscripts, walkSubagentTranscripts } from "../src/subagent-attribution.js";
@@ -91,6 +91,44 @@ describe("discoverSubagentTranscripts", () => {
     expect(found.attribution).toEqual({ parentSessionId: null, subagentType: null, subagentDesc: null });
   });
 
+  it("leaves attribution all-null when the sidecar parses to a non-object, without dropping the transcript", () => {
+    const sessionDir = makeSessionDir();
+    writeFileSync(join(sessionDir, "subagents", "agent-null.jsonl"), "");
+    writeFileSync(join(sessionDir, "subagents", "agent-null.meta.json"), "null");
+
+    const found = discoverSubagentTranscripts(sessionDir);
+    expect(found.map((f) => f.sessionId)).toEqual(["agent-null"]);
+    expect(found[0].attribution).toEqual({ parentSessionId: null, subagentType: null, subagentDesc: null });
+  });
+
+  it("skips a symlinked subagents/ directory itself", () => {
+    const root = mkdtempSync(join(tmpdir(), "lcm-subagent-discover-test-"));
+    dirs.push(root);
+    const sessionDir = join(root, "session-parent");
+    const outside = join(root, "elsewhere");
+    mkdirSync(sessionDir, { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, "agent-linked.jsonl"), "");
+    symlinkSync(outside, join(sessionDir, "subagents"));
+
+    expect(discoverSubagentTranscripts(sessionDir)).toEqual([]);
+  });
+
+  it("keeps the transcripts already found when a nested directory cannot be read", () => {
+    const sessionDir = makeSessionDir();
+    const subagentsDir = join(sessionDir, "subagents");
+    writeFileSync(join(subagentsDir, "agent-a.jsonl"), "");
+    const locked = join(subagentsDir, "workflows", "wf_locked");
+    mkdirSync(locked, { recursive: true });
+    writeFileSync(join(locked, "agent-b.jsonl"), "");
+    chmodSync(locked, 0o000);
+    try {
+      expect(discoverSubagentTranscripts(sessionDir).map((f) => f.sessionId)).toEqual(["agent-a"]);
+    } finally {
+      chmodSync(locked, 0o755);
+    }
+  });
+
   it("skips symlinked transcripts and symlinked directories", () => {
     const sessionDir = makeSessionDir();
     const subagentsDir = join(sessionDir, "subagents");
@@ -125,13 +163,17 @@ describe("walkSubagentTranscripts", () => {
     const root = makeTmpDir();
     const subagentsDir = join(root, "project-a", "session-1", "subagents");
     mkdirSync(subagentsDir, { recursive: true });
+    const workflowRunDir = join(subagentsDir, "workflows", "wf_x");
+    mkdirSync(workflowRunDir, { recursive: true });
     writeFileSync(join(subagentsDir, "agent-x.jsonl"), "");
     writeFileSync(join(subagentsDir, "agent-x.meta.json"), JSON.stringify({ agentType: "worker" }));
+    writeFileSync(join(workflowRunDir, "agent-y.jsonl"), "");
+    writeFileSync(join(workflowRunDir, "agent-y.meta.json"), JSON.stringify({ agentType: "workflow-subagent" }));
+    writeFileSync(join(workflowRunDir, "journal.jsonl"), "");
 
-    const entries = walkSubagentTranscripts(root);
-    expect(entries).toHaveLength(1);
-    expect(entries[0].sessionId).toBe("agent-x");
+    const entries = walkSubagentTranscripts(root).sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+    expect(entries.map((e) => e.sessionId)).toEqual(["agent-x", "agent-y"]);
     expect(entries[0].attribution.subagentType).toBe("worker");
-    expect(entries[0].attribution.parentSessionId).toBe("session-1");
+    expect(entries.map((e) => e.attribution.parentSessionId)).toEqual(["session-1", "session-1"]);
   });
 });
