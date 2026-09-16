@@ -5,7 +5,7 @@ import type { LcmPaths } from "../lcm-paths.js";
 import { projectMetaPath } from "./project.js";
 import { createSummarizer, resolveEffectiveProvider, type CompactClient } from "./summarizer.js";
 import { detectLanguage, sampleHumanTurns, LANGUAGE_SAMPLE_SIZE } from "../search/language.js";
-import { ensureLanguagePack, ensurePivotLanguagePack, primarySubtag } from "../store/language-pack.js";
+import { ensureLanguagePack, ensurePivotLanguagePack, languagePackPath, primarySubtag } from "../store/language-pack.js";
 
 /**
  * A project's language is read once, from the turns its author typed, and
@@ -110,6 +110,8 @@ async function ensureExistingProjectPivotPack(
 ): Promise<void> {
   const pivot = config.search.pivotLanguage;
   if (primarySubtag(pivot) === "en" || primarySubtag(pivot) === primarySubtag(language)) return;
+  // Steady state is a file check, not a provider client: the pack exists.
+  if (existsSync(languagePackPath(paths, pivot))) return;
   try {
     const provider = resolveEffectiveProvider(config, client);
     const summarize = await createSummarizer(provider, config);

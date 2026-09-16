@@ -10,7 +10,7 @@ import { PromotedStore } from "./db/promoted.js";
 import { rankNativeHistory } from "./search/native-history.js";
 import { searchHistoryGroup } from "./search/group-history.js";
 import { searchPromotedGroup } from "./search/group-promoted.js";
-import { combinedQueryTerms, extractQueryTerms, languageList, type QueryLanguages } from "./store/fts5-query.js";
+import { combineWithPivotQuery, combinedQueryTerms, extractQueryTerms, languageList, type QueryLanguages } from "./store/fts5-query.js";
 import { ensureLanguagePack, ensurePivotLanguagePack } from "./store/language-pack.js";
 import { detectLanguage, isDistinctivePrompt, LANGUAGE_SAMPLE_SIZE, MAX_PROMPT_LENGTH, parseLanguageTag } from "./search/language.js";
 import type { LcmSummarizeFn } from "./llm/types.js";
@@ -704,6 +704,9 @@ async function loadBenchFile(file: string, paths: LcmPaths): Promise<BenchLoad> 
     return { error: `Could not read the benchmark at ${file}: ${error instanceof Error ? error.message : String(error)}\n` };
   }
   if (bench?.version !== 1 || !Array.isArray(bench.queries) || bench.queries.length === 0) return { error: "Invalid benchmark: expected version 1 with nonempty queries.\n" };
+  if (bench.pivotLanguage !== undefined && (typeof bench.pivotLanguage !== "string" || !parseLanguageTag(bench.pivotLanguage))) {
+    return { error: `Invalid benchmark: pivotLanguage must be a BCP 47 tag such as en or pt-BR, got ${JSON.stringify(bench.pivotLanguage)}.\n` };
+  }
   const seenQuestions = new Set<string>();
   const languages = languageList(bench.language);
   for (const query of bench.queries) {
@@ -762,13 +765,15 @@ async function scoreQuery(query: BenchQuery, ctx: ScoreContext): Promise<QueryOu
   const questionLanguages = languageList(ctx.languages.authorLanguage);
   // The same term set the /search route derives, pivot included, so the bench measures what callers see.
   const terms = combinedQueryTerms(query.question, ctx.paths, query.pivotQuery, ctx.languages) ?? extractQueryTerms(query.question, ctx.paths, questionLanguages);
+  // The combined string too: the stores' LIKE fallback matches on it, not on `terms`.
+  const searchQuery = combineWithPivotQuery(query.question, ctx.paths, query.pivotQuery, ctx.languages);
   // The same ranking explicit search emits, so the bench measures what callers see.
   const history = ctx.unionCwd
-    ? await searchHistoryGroup(ctx.unionCwd, { query: query.question, limit: ctx.k * SESSION_ROW_BUDGET, terms }, ctx.paths)
-    : await rankNativeHistory(ctx.db, { query: query.question, limit: ctx.k * SESSION_ROW_BUDGET, terms });
+    ? await searchHistoryGroup(ctx.unionCwd, { query: searchQuery, limit: ctx.k * SESSION_ROW_BUDGET, terms }, ctx.paths)
+    : await rankNativeHistory(ctx.db, { query: searchQuery, limit: ctx.k * SESSION_ROW_BUDGET, terms });
   const promoted = ctx.unionCwd
-    ? searchPromotedGroup(ctx.unionCwd, { query: query.question, limit: ctx.k * SESSION_ROW_BUDGET, terms }, ctx.paths).hits
-    : ctx.promotedStore.search(query.question, ctx.k * SESSION_ROW_BUDGET, undefined, ctx.projectId, terms);
+    ? searchPromotedGroup(ctx.unionCwd, { query: searchQuery, limit: ctx.k * SESSION_ROW_BUDGET, terms }, ctx.paths).hits
+    : ctx.promotedStore.search(searchQuery, ctx.k * SESSION_ROW_BUDGET, undefined, ctx.projectId, terms);
   const latencyMs = performance.now() - start;
 
   const sessionIds = collectSessionIds(history, promoted);
