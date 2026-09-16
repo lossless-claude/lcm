@@ -8,7 +8,8 @@ import { findAllCodexTranscripts } from "./codex-transcript.js";
 import type { ProgressState } from "./cli/progress-state.js";
 import { projectDbPath, projectId } from "./daemon/project.js";
 import { createLcmPaths, type LcmPaths } from "./lcm-paths.js";
-import { readSubagentAttribution } from "./subagent-attribution.js";
+import { discoverSubagentTranscripts, type SubagentAttribution } from "./subagent-attribution.js";
+import { isSessionComplete } from "./capture.js";
 import {
   appendReplayManifestSessions,
   clearReplayState,
@@ -104,9 +105,7 @@ export interface DiscoveredSessionFile {
   sessionId: string;
   mtime: number;
   /** Subagent transcripts only — carried from the `.meta.json` sidecar. Absent for ordinary sessions. */
-  parentSessionId?: string | null;
-  subagentType?: string | null;
-  subagentDesc?: string | null;
+  attribution?: SubagentAttribution;
 }
 
 function findFlatSessionFile(projectDir: string, entry: Dirent): DiscoveredSessionFile | null {
@@ -135,58 +134,13 @@ function findNestedSessionFile(projectDir: string, sessionDirName: string): Disc
 }
 
 /**
- * Subagent transcripts: <projectDir>/<session-id>/subagents/<agent-id>.jsonl.
- * Each one's `.meta.json` sidecar is read here, alongside file discovery, so
- * the attribution travels with the file — nothing is re-derived from the
- * path later (see docs/design/subagent-attribution-from-sidecar.md).
+ * Subagent transcripts: <projectDir>/<session-id>/subagents/<...>/<agent-id>.jsonl,
+ * found by the one walker in src/subagent-attribution.ts so `lcm import`
+ * discovers exactly what live `/ingest` does. The attribution travels with
+ * the file — nothing is re-derived from the path later.
  */
-function findOneSubagentSessionFile(subagentsDir: string, sessionDirName: string, name: string): DiscoveredSessionFile | null {
-  try {
-    const subPath = join(subagentsDir, name);
-    const subSt = lstatSync(subPath);
-    if (subSt.isSymbolicLink()) return null; // skip symlinks
-    return {
-      path: subPath,
-      sessionId: basename(name, '.jsonl'),
-      mtime: subSt.mtimeMs,
-      ...readSubagentAttribution(subPath, sessionDirName),
-    };
-  } catch {
-    return null; // couldn't be stat'd
-  }
-}
-
-/**
- * A subagent transcript's `agent-<id>.jsonl` can sit directly under
- * `subagents/`, or nested arbitrarily deeper — e.g.
- * `subagents/workflows/wf_<id>/` for a workflow run's own subagents — with
- * the same format and the same sidecar at every depth. Only `journal.jsonl`
- * — a workflow run's own log, excluded by name, not by shape — is not a
- * transcript.
- */
-function findSubagentTranscriptEntry(dir: string, sessionDirName: string, entry: Dirent): DiscoveredSessionFile | null {
-  if (entry.name === 'journal.jsonl' || !entry.name.endsWith('.jsonl')) return null;
-  return findOneSubagentSessionFile(dir, sessionDirName, entry.name);
-}
-
-function walkSubagentDir(dir: string, sessionDirName: string): DiscoveredSessionFile[] {
-  const files: DiscoveredSessionFile[] = [];
-  for (const sub of readdirSync(dir, { withFileTypes: true })) {
-    if (sub.isSymbolicLink()) continue;
-    if (sub.isDirectory()) {
-      files.push(...walkSubagentDir(join(dir, sub.name), sessionDirName));
-      continue;
-    }
-    const found = sub.isFile() ? findSubagentTranscriptEntry(dir, sessionDirName, sub) : null;
-    if (found) files.push(found);
-  }
-  return files;
-}
-
 function findSubagentSessionFiles(projectDir: string, sessionDirName: string): DiscoveredSessionFile[] {
-  const subagentsDir = join(projectDir, sessionDirName, 'subagents');
-  if (!existsSync(subagentsDir)) return [];
-  return walkSubagentDir(subagentsDir, sessionDirName);
+  return discoverSubagentTranscripts(join(projectDir, sessionDirName));
 }
 
 export function findSessionFiles(projectDir: string): DiscoveredSessionFile[] {
@@ -240,9 +194,7 @@ interface SessionEntry {
   cwd: string;
   client?: "claude" | "codex";
   /** Subagent sessions only — see DiscoveredSessionFile. */
-  parentSessionId?: string | null;
-  subagentType?: string | null;
-  subagentDesc?: string | null;
+  attribution?: SubagentAttribution;
 }
 
 type CompactLlmUsage = {
@@ -300,8 +252,7 @@ function isSessionAlreadyIngested(cwd: string, sessionId: string, paths: LcmPath
     const db = new DatabaseSync(dbPath, { readOnly: true });
     try {
       db.exec("PRAGMA busy_timeout = 5000");
-      const row = db.prepare("SELECT 1 FROM session_ingest_log WHERE session_id = ?").get(sessionId);
-      return !!row;
+      return isSessionComplete(db, sessionId);
     } finally {
       db.close();
     }
@@ -414,7 +365,7 @@ async function ingestSessionList(
   const total = sessions.length + doneCount;
   const processedBase = doneCount;
 
-  for (const { path, sessionId, cwd, client: sourceClient = "claude", parentSessionId, subagentType, subagentDesc } of sessions) {
+  for (const { path, sessionId, cwd, client: sourceClient = "claude", attribution } of sessions) {
     // Stop starting new work after SIGINT/SIGTERM; the renderer waits for the
     // in-flight session to settle before exiting.
     if (options.onBeforeSession && !options.onBeforeSession()) break;
@@ -461,9 +412,9 @@ async function ingestSessionList(
         // A completed session's transcript may have grown; replay must ingest the tail.
         ...(options.replay ? { replay: true } : {}),
         // Subagent attribution, carried from the sidecar findSessionFiles already read.
-        ...(parentSessionId ? { parent_session_id: parentSessionId } : {}),
-        ...(subagentType ? { subagent_type: subagentType } : {}),
-        ...(subagentDesc ? { subagent_desc: subagentDesc } : {}),
+        ...(attribution?.parentSessionId ? { parent_session_id: attribution.parentSessionId } : {}),
+        ...(attribution?.subagentType ? { subagent_type: attribution.subagentType } : {}),
+        ...(attribution?.subagentDesc ? { subagent_desc: attribution.subagentDesc } : {}),
       });
       if (res.ingested === 0 && res.totalTokens === 0) {
         result.skippedEmpty++;
