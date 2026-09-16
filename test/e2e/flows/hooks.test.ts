@@ -16,6 +16,46 @@ const paths = createLcmPaths(lcmHome());
 
 let handle: HarnessHandle | null = null;
 
+async function pollUntil(check: () => boolean): Promise<boolean> {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    if (check()) return true;
+    if (Date.now() > deadline) return false;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
+async function pollRows(cwd: string, sessionId: string): Promise<{ content: string }[]> {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    let opened: ReturnType<typeof openProjectDb> | null = null;
+    try {
+      opened = openProjectDb(cwd);
+    } catch {
+      // the project DB appears once the daemon starts ingesting
+    }
+    if (!opened) {
+      if (Date.now() > deadline) return [];
+      await new Promise((r) => setTimeout(r, 100));
+      continue;
+    }
+    const { db, close } = opened;
+    try {
+      const rows = db
+        .prepare(
+          `SELECT m.content FROM messages m
+           JOIN conversations c ON c.conversation_id = m.conversation_id
+           WHERE c.session_id = ?`,
+        )
+        .all(sessionId) as { content: string }[];
+      if (rows.length > 0 || Date.now() > deadline) return rows;
+    } finally {
+      close();
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
 beforeAll(async () => {
   handle = await createHarness("mock");
 }, 60_000);
@@ -42,20 +82,21 @@ describe("Flow 14: SessionEnd hook", { timeout: 60_000 }, () => {
 
     expect(result.exitCode).toBe(0);
 
-    const { db, close } = openProjectDb(h.tmpDir);
-    try {
-      const rows = db
-        .prepare(
-          `SELECT m.content FROM messages m
-           JOIN conversations c ON c.conversation_id = m.conversation_id
-           WHERE c.session_id = ?`,
-        )
-        .all("e2e-session-end-test") as { content: string }[];
-      expect(rows.length).toBeGreaterThan(0);
-      expect(rows.some((r) => r.content.includes("storing conversation messages"))).toBe(true);
-    } finally {
-      close();
-    }
+    // The hook gets a 202; the daemon ingests after answering.
+    const rows = await pollRows(h.tmpDir, "e2e-session-end-test");
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.some((r) => r.content.includes("storing conversation messages"))).toBe(true);
+
+    // The daemon-owned follow-ups ran too: session-complete recorded the session.
+    const completed = await pollUntil(() => {
+      const { db, close } = openProjectDb(h.tmpDir);
+      try {
+        return db.prepare("SELECT 1 FROM session_ingest_log WHERE session_id = ?").get("e2e-session-end-test") !== undefined;
+      } finally {
+        close();
+      }
+    });
+    expect(completed).toBe(true);
   });
 });
 

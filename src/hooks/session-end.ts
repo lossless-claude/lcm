@@ -23,25 +23,21 @@ function authHeaders(paths: LcmPaths): Record<string, string> {
 }
 
 /**
- * Fire a compact request to the daemon without blocking the hook process.
+ * Fire a request to the daemon without waiting for the response.
  *
- * Uses a raw http.request with socket.unref() so the Node.js event loop
- * does not wait for a response — the process exits as soon as the request
- * is sent. The daemon receives and processes the request independently.
+ * Called from hook processes and from the daemon itself. Uses a raw http.request
+ * with socket.unref(), deferred until the body is flushed, so a hook process can
+ * exit as soon as the request is on the wire; inside the daemon unref is inert.
  *
- * This is intentionally separate from DaemonClient.post() (which uses fetch
- * and keeps the event loop alive until a response is received).
+ * This is intentionally separate from DaemonClient.post() (which uses fetch and
+ * keeps the event loop alive until a response is received).
  */
-export function fireCompactRequest(
-  port: number,
-  body: Record<string, unknown>,
-  paths: LcmPaths,
-): void {
+export function fireDaemonRequest(port: number, path: string, body: Record<string, unknown>, paths: LcmPaths): void {
   const json = JSON.stringify(body);
   const req = request({
     hostname: "127.0.0.1",
     port,
-    path: "/compact",
+    path,
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -50,76 +46,27 @@ export function fireCompactRequest(
     },
   });
   req.on("socket", (socket) => {
-    // Defer unref until after the request body is flushed so the /compact
-    // request reliably reaches the daemon before the process is allowed to exit.
     req.on("finish", () => (socket as import("node:net").Socket).unref());
   });
   req.on("error", () => {}); // non-fatal
   req.write(json);
   req.end();
+}
+
+export function fireCompactRequest(port: number, body: Record<string, unknown>, paths: LcmPaths): void {
+  fireDaemonRequest(port, "/compact", body, paths);
 }
 
 export function firePromoteRequest(port: number, body: Record<string, unknown>, paths: LcmPaths): void {
-  const json = JSON.stringify(body);
-  const req = request({
-    hostname: "127.0.0.1",
-    port,
-    path: "/promote",
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Content-Length": Buffer.byteLength(json),
-      ...authHeaders(paths),
-    },
-  });
-  req.on("socket", (socket) => {
-    req.on("finish", () => (socket as import("node:net").Socket).unref());
-  });
-  req.on("error", () => {});
-  req.write(json);
-  req.end();
+  fireDaemonRequest(port, "/promote", body, paths);
 }
 
 export function firePromoteEventsRequest(port: number, body: Record<string, unknown>, paths: LcmPaths): void {
-  const json = JSON.stringify(body);
-  const req = request({
-    hostname: "127.0.0.1",
-    port,
-    path: "/promote-events",
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Content-Length": Buffer.byteLength(json),
-      ...authHeaders(paths),
-    },
-  });
-  req.on("socket", (socket) => {
-    req.on("finish", () => (socket as import("node:net").Socket).unref());
-  });
-  req.on("error", () => {}); // non-fatal
-  req.write(json);
-  req.end();
+  fireDaemonRequest(port, "/promote-events", body, paths);
 }
 
 export function fireSessionCompleteRequest(port: number, body: Record<string, unknown>, paths: LcmPaths): void {
-  const json = JSON.stringify(body);
-  const req = request({
-    hostname: "127.0.0.1",
-    port,
-    path: "/session-complete",
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Content-Length": Buffer.byteLength(json),
-      ...authHeaders(paths),
-    },
-  });
-  req.on("socket", (socket) => {
-    req.on("finish", () => (socket as import("node:net").Socket).unref());
-  });
-  req.on("error", () => {});
-  req.write(json);
-  req.end();
+  fireDaemonRequest(port, "/session-complete", body, paths);
 }
 
 /**
@@ -129,28 +76,57 @@ export function fireSessionCompleteRequest(port: number, body: Record<string, un
  * cap and per-conversation `/compact` calls on its own.
  */
 export function fireSessionStartCompactRequest(port: number, body: Record<string, unknown>, paths: LcmPaths): void {
-  const json = JSON.stringify(body);
-  const req = request({
-    hostname: "127.0.0.1",
-    port,
-    path: "/session-start-compact",
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Content-Length": Buffer.byteLength(json),
-      ...authHeaders(paths),
-    },
-  });
-  req.on("socket", (socket) => {
-    req.on("finish", () => (socket as import("node:net").Socket).unref());
-  });
-  req.on("error", () => {}); // non-fatal
-  req.write(json);
-  req.end();
+  fireDaemonRequest(port, "/session-start-compact", body, paths);
 }
 
-/** Deadline for /ingest at SessionEnd — the host kills the hook long before this anyway. */
-const INGEST_TIMEOUT_MS = 10_000;
+/**
+ * Deadline for the `202` from `/session-end`, and — on a 404 fallback — for the
+ * `/ingest` it runs itself. The host gives SessionEnd hooks a shared budget of
+ * about 1.5s, so the daemon must acknowledge, not finish.
+ */
+const SESSION_END_TIMEOUT_MS = 1_000;
+/** Floor for the wait after the health probe (and, on fallback, the first POST) has eaten into the budget. */
+const MIN_ACK_TIMEOUT_MS = 100;
+
+/**
+ * Runs the sequence a hook process ran before `/session-end` existed, for a
+ * compatible daemon of an earlier patch that answers `404` to it: awaits
+ * `/ingest` within what is left of the budget, then fires compact, promote,
+ * promote-events and session-complete the same unref'd, unobserved way the
+ * daemon's own post-ingest sequence does (`src/daemon/routes/session-end.ts`).
+ * If `/ingest` does not return in time the four are not sent; the failure is
+ * logged, not thrown, so the hook still exits 0.
+ */
+async function runLegacyFallback(
+  client: DaemonClient,
+  input: Record<string, unknown>,
+  paths: LcmPaths,
+  daemonPort: number,
+  remainingMs: number,
+): Promise<void> {
+  const cwd = input.cwd as string | undefined;
+  const sessionId = input.session_id as string | undefined;
+  const { safeLogError } = await import("./hook-errors.js");
+  try {
+    const ingested = await client.post<{ ingested?: number; redacted?: number; redactedCategories?: string[] }>(
+      "/ingest", input, { timeoutMs: remainingMs },
+    );
+    const config = loadDaemonConfig(paths.configPath);
+    if (config.security?.notify_on_filter !== false && ingested.redacted) {
+      const categories = (ingested.redactedCategories ?? []).join(", ");
+      safeLogError("session-end:redaction-notice", `filtered sensitive data from history (pattern: ${categories})`, { cwd, sessionId, paths });
+    }
+    if (!config.hooks?.disableAutoCompact) {
+      fireCompactRequest(daemonPort, { session_id: sessionId, cwd, skip_ingest: true, client: "claude" }, paths);
+    }
+    firePromoteRequest(daemonPort, { cwd }, paths);
+    firePromoteEventsRequest(daemonPort, { cwd }, paths);
+    // `ingested` is this call's delta, not the session total.
+    fireSessionCompleteRequest(daemonPort, { session_id: sessionId, cwd, message_count: ingested.ingested ?? 0 }, paths);
+  } catch (fallbackErr) {
+    safeLogError("session-end", fallbackErr, { cwd, sessionId, paths });
+  }
+}
 
 export async function handleSessionEnd(
   stdin: string,
@@ -160,8 +136,10 @@ export async function handleSessionEnd(
 ): Promise<{ exitCode: number; stdout: string }> {
   const daemonPort = port ?? 3737;
   const pidFilePath = paths.pidPath;
-  // Claude Code gives SessionEnd hooks a shared 1.5s budget: never spawn a daemon here,
-  // only talk to one that is already up. The Stop hook has been ingesting incrementally.
+  const started = Date.now();
+  // Never spawn a daemon here, only talk to one that is already up. The Stop hook's
+  // session-snapshot has been ingesting incrementally, and SessionStart sweeps what
+  // this misses.
   const { connected } = await ensureDaemon({
     port: daemonPort,
     pidFilePath,
@@ -171,55 +149,30 @@ export async function handleSessionEnd(
   });
   if (!connected) return { exitCode: 0, stdout: "" };
 
+  // One request; the daemon runs ingest → compact → promote → promote-events →
+  // session-complete on its own (`src/daemon/routes/session-end.ts`), so a hook
+  // killed by the host loses nothing. The health probe above shares the budget.
+  let input: Record<string, unknown> = {};
   try {
-    const input = JSON.parse(stdin || "{}");
-    const ingestResult = await client.post<{
-      ingested: number;
-      totalTokens?: number;
-      redacted?: number;
-      redactedCategories?: string[];
-    }>("/ingest", input, { timeoutMs: INGEST_TIMEOUT_MS });
-
-    const config = loadDaemonConfig(paths.configPath);
-    const disableCompact = config.hooks?.disableAutoCompact ?? false;
-
-    // Notify user when sensitive data was filtered (default: on)
-    const notifyOnFilter = config.security?.notify_on_filter !== false;
-    if (notifyOnFilter && ingestResult.redacted && ingestResult.redacted > 0) {
-      const categories = (ingestResult.redactedCategories ?? []).join(", ");
-      process.stderr.write(
-        `⚠️  lcm: filtered sensitive data from history (pattern: ${categories})\n`,
-      );
+    const parsed: unknown = JSON.parse(stdin || "{}");
+    // Valid JSON that is not an object (`null`, a list) must still fail open below.
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) input = parsed as Record<string, unknown>;
+    const remainingMs = Math.max(MIN_ACK_TIMEOUT_MS, SESSION_END_TIMEOUT_MS - (Date.now() - started));
+    await client.post("/session-end", input, { timeoutMs: remainingMs });
+  } catch (err) {
+    if ((err as { status?: number }).status === 404) {
+      // A compatible daemon of an earlier patch has no /session-end: run the
+      // sequence the hook ran before it was handed to the daemon, within what
+      // is left of the same budget.
+      const remainingMs = Math.max(MIN_ACK_TIMEOUT_MS, SESSION_END_TIMEOUT_MS - (Date.now() - started));
+      await runLegacyFallback(client, input, paths, daemonPort, remainingMs);
+    } else {
+      // Loaded here, not at module top: hook-errors pulls in node:sqlite, whose
+      // experimental warning would otherwise reach stderr on every hook start.
+      // Anything else must not block exit, but leaves a trace — the terminal is gone by now.
+      const { safeLogError } = await import("./hook-errors.js");
+      safeLogError("session-end", err, { cwd: input.cwd as string | undefined, sessionId: input.session_id as string | undefined, paths });
     }
-
-    if (!disableCompact) {
-      // Fire-and-forget via unreffed http.request — does not block the event loop.
-      // The daemon receives and compacts independently after the hook process exits.
-      fireCompactRequest(daemonPort, {
-        session_id: input.session_id,
-        cwd: input.cwd,
-        skip_ingest: true,
-        client: "claude",
-      }, paths);
-    }
-
-    // Always promote
-    firePromoteRequest(daemonPort, { cwd: input.cwd }, paths);
-
-    // Promote events for passive learning
-    firePromoteEventsRequest(daemonPort, { cwd: input.cwd }, paths);
-
-    // Record session completion in manifest.
-    // Note: ingestResult.ingested is the delta (new messages this call), not the total.
-    // We pass it as-is since we don't have the total without an extra DB query.
-    fireSessionCompleteRequest(daemonPort, {
-      session_id: input.session_id,
-      cwd: input.cwd,
-      message_count: ingestResult.ingested ?? 0,
-    }, paths);
-
-    return { exitCode: 0, stdout: "" };
-  } catch {
-    return { exitCode: 0, stdout: "" };
   }
+  return { exitCode: 0, stdout: "" };
 }
