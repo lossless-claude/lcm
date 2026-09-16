@@ -68,8 +68,9 @@ describe("POST /prompt-search across a project group", () => {
       expect(res.status).toBe(200);
       expect(data.ids).toHaveLength(2);
 
-      const hereIndex = data.hints.findIndex((hint) => hint.includes("here"));
-      const siblingIndex = data.hints.findIndex((hint) => hint.includes("there"));
+      // "there" contains "here": match the whole hint tail, not a substring.
+      const hereIndex = data.hints.findIndex((hint) => hint.endsWith("lazily here"));
+      const siblingIndex = data.hints.findIndex((hint) => hint.endsWith("over there"));
       expect(hereIndex).toBeGreaterThanOrEqual(0);
       expect(siblingIndex).toBeGreaterThanOrEqual(0);
 
