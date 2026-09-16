@@ -139,9 +139,22 @@ export interface LlmUsageStats {
   callsWithCost: number;
 }
 
+/**
+ * How many stored conversations the search filter treats as subagent transcripts.
+ * `byName` is what `SUBAGENT_SESSION` in src/search/native-history.ts matches: a session id
+ * starting with `agent-`, a naming convention owned by the host harness. `attributedNotByName`
+ * are conversations the `.meta.json` sidecar attributed to a parent session but whose id the
+ * name filter misses — non-zero means the convention drifted and search got noisier.
+ */
+export interface SubagentStats {
+  byName: number;
+  attributedNotByName: number;
+}
+
 interface OverallStats {
   projects: number;
   conversations: number;
+  subagent: SubagentStats;
   compactedConversations: number;
   messages: number;
   summaries: number;
@@ -242,6 +255,19 @@ function queryProjectStats(
       ORDER BY c.conversation_id DESC
     `).all() as { conversation_id: number; messages: number; summaries: number; max_depth: number; raw_tokens: number; summary_tokens: number }[];
 
+    // Older schemas lack `session_id`, and `parent_session_id` arrived after `agent-%`
+    // rows already existed on some databases; a missing column counts as 0.
+    const conversationColumns = columns("conversations");
+    const byName = conversationColumns.has("session_id") ? "SUM(session_id LIKE 'agent-%')" : "0";
+    const attributedNotByName = conversationColumns.has("parent_session_id")
+      ? "SUM(parent_session_id IS NOT NULL AND session_id NOT LIKE 'agent-%')"
+      : "0";
+    const subagentRow = db.prepare(
+      `SELECT COALESCE(${byName}, 0) as byName,
+              COALESCE(${attributedNotByName}, 0) as attributedNotByName
+         FROM conversations`,
+    ).get() as { byName: number; attributedNotByName: number };
+
     const conversationDetails: ConversationStats[] = convRows.map((r) => ({
       conversationId: r.conversation_id,
       messages: r.messages,
@@ -290,6 +316,7 @@ function queryProjectStats(
 
     return {
       conversations: convRows.length,
+      subagent: { byName: subagentRow.byName, attributedNotByName: subagentRow.attributedNotByName },
       compactedConversations: compacted.length,
       messages: msgStats.count,
       summaries: sumStats.count,
@@ -357,6 +384,16 @@ function sectionHeader(name: string): string {
   return `    ${cyan}${prefix}${dashes}${reset}`;
 }
 
+/** One line: the share of conversations excluded from search as subagent, plus the drift count when non-zero. */
+export function formatSubagentShare(stats: Pick<OverallStats, "conversations" | "subagent">): string {
+  const { byName, attributedNotByName } = stats.subagent;
+  const pct = stats.conversations > 0 ? ((byName / stats.conversations) * 100).toFixed(1) : "0.0";
+  const share = `${byName} of ${stats.conversations} conversations (${pct}%) excluded from search`;
+  return attributedNotByName > 0
+    ? `${share}; ${attributedNotByName} attributed to a parent but not excluded`
+    : share;
+}
+
 export function printStats(stats: OverallStats, verbose: boolean): void {
   const dim = "\x1b[2m";
   const cyan = "\x1b[36m";
@@ -378,6 +415,7 @@ export function printStats(stats: OverallStats, verbose: boolean): void {
     ["Summaries", formatNumber(stats.summaries)],
     ["DAG depth", String(stats.maxDepth)],
     ["Promoted memories", String(stats.promotedCount)],
+    ["Subagent", formatSubagentShare(stats)],
   ];
 
   if (stats.eventsCaptured > 0) {
@@ -594,7 +632,8 @@ export function collectStats(paths: LcmPaths): OverallStats {
 
   if (!existsSync(baseDir)) {
     return {
-      projects: 0, conversations: 0, compactedConversations: 0, messages: 0, summaries: 0,
+      projects: 0, conversations: 0, subagent: { byName: 0, attributedNotByName: 0 },
+      compactedConversations: 0, messages: 0, summaries: 0,
       maxDepth: 0, rawTokens: 0, summaryTokens: 0, ratio: 0,
       promotedCount: 0, conversationDetails: [],
       redactionCounts: { builtIn: 0, global: 0, project: 0, total: 0 },
@@ -609,6 +648,7 @@ export function collectStats(paths: LcmPaths): OverallStats {
 
   let totalProjects = 0;
   let totalConversations = 0;
+  const totalSubagent: SubagentStats = { byName: 0, attributedNotByName: 0 };
   let totalCompacted = 0;
   let totalMessages = 0;
   let totalSummaries = 0;
@@ -680,6 +720,8 @@ export function collectStats(paths: LcmPaths): OverallStats {
       if (projStats.messages === 0) continue;
       totalProjects++;
       totalConversations += projStats.conversations;
+      totalSubagent.byName += projStats.subagent.byName;
+      totalSubagent.attributedNotByName += projStats.subagent.attributedNotByName;
       totalCompacted += projStats.compactedConversations;
       totalMessages += projStats.messages;
       totalSummaries += projStats.summaries;
@@ -735,6 +777,7 @@ export function collectStats(paths: LcmPaths): OverallStats {
   return {
     projects: totalProjects,
     conversations: totalConversations,
+    subagent: totalSubagent,
     compactedConversations: totalCompacted,
     messages: totalMessages,
     summaries: totalSummaries,
