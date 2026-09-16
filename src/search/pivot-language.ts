@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { LcmPaths } from "../lcm-paths.js";
 import { projectMetaPath } from "../daemon/project.js";
+import { primarySubtag } from "../store/language-pack.js";
 
 /**
  * The two languages a caller needs to know before it searches: the one the
@@ -12,11 +13,6 @@ import { projectMetaPath } from "../daemon/project.js";
  * is expected to be written in, not a language detected in the corpus.
  */
 export type PivotLanguages = { authorLanguage?: string; pivotLanguage: string };
-
-/** The BCP 47 primary subtag, lowercased: `pt-BR` and `pt` are one language here. */
-function primarySubtag(tag: string): string {
-  return tag.trim().toLowerCase().split("-")[0];
-}
 
 /** The language recorded for this project, or undefined while none has been detected. */
 export function projectAuthorLanguage(cwd: string, paths: LcmPaths): string | undefined {

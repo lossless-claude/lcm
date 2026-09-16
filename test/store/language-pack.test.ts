@@ -47,7 +47,7 @@ describe("query terms with language packs", () => {
       writeFileSync(join(languagesDir, "pt-BR.json"), JSON.stringify({ version: 1, tag: "pt-BR", stopwords: PT_WORDS, generatedAt: "2026-09-08T00:00:00Z" }));
       invalidateLanguagePacks();
       expect(languagePackPath(paths, "pt-BR")).toBe(join(languagesDir, "pt-BR.json"));
-      expect(extractQueryTerms("como foi o deploy que quebrou a busca?", paths)).toEqual(["deploy", "quebrou", "busca"]);
+      expect(extractQueryTerms("como foi o deploy que quebrou a busca?", paths, ["pt-BR"])).toEqual(["deploy", "quebrou", "busca"]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -62,7 +62,7 @@ describe("query terms with language packs", () => {
       mkdirSync(languagesDir, { recursive: true });
       writeFileSync(join(languagesDir, "pt-BR.json"), JSON.stringify({ version: 1, tag: "pt-BR", stopwords: PT_WORDS, generatedAt: "2026-09-08T00:00:00Z" }));
       invalidateLanguagePacks();
-      expect(extractQueryTerms("como foi o deploy que quebrou a busca?", paths)).toEqual(["deploy", "quebrou", "busca"]);
+      expect(extractQueryTerms("como foi o deploy que quebrou a busca?", paths, ["pt-BR"])).toEqual(["deploy", "quebrou", "busca"]);
     } finally {
       process.env.LCM_LANGUAGES_DIR = dir;
       rmSync(root, { recursive: true, force: true });
@@ -71,22 +71,32 @@ describe("query terms with language packs", () => {
 
   it("strips a pack's function words from a question in that language", () => {
     writePack("pt-BR", PT_WORDS);
-    expect(extractQueryTerms("como foi o deploy que quebrou a busca?")).toEqual(["deploy", "quebrou", "busca"]);
+    expect(extractQueryTerms("como foi o deploy que quebrou a busca?", undefined, ["pt-BR"])).toEqual(["deploy", "quebrou", "busca"]);
+  });
+
+  it("matches a pack on the primary subtag, either way round", () => {
+    writePack("pt-BR", PT_WORDS);
+    expect(extractQueryTerms("como foi o deploy que quebrou a busca?", undefined, ["pt"])).toEqual(["deploy", "quebrou", "busca"]);
+    writePack("es", ["el", "la", "de", "que"]);
+    expect(extractQueryTerms("que hizo el deploy", undefined, ["es-MX"])).toEqual(["hizo", "deploy"]);
   });
 
   it("changes nothing when no pack is installed", () => {
-    expect(extractQueryTerms("como foi o deploy que quebrou a busca?")).toEqual(["como", "foi", "o", "deploy", "que", "quebrou", "busca"]);
+    expect(extractQueryTerms("como foi o deploy que quebrou a busca?", undefined, ["pt-BR"])).toEqual(["como", "foi", "o", "deploy", "que", "quebrou", "busca"]);
   });
 
-  it("ignores a single accidental hit in another language", () => {
+  it("applies no pack the configured languages do not name, whatever the query's words", () => {
     writePack("pt-BR", PT_WORDS);
-    // "era" is a pt-BR function word and an English noun; one hit does not select the pack.
-    expect(extractQueryTerms("which era introduced the daemon?")).toEqual(["era", "introduced", "daemon"]);
+    const question = "como foi o deploy que quebrou a busca?";
+    expect(extractQueryTerms(question)).toEqual(["como", "foi", "o", "deploy", "que", "quebrou", "busca"]);
+    expect(extractQueryTerms(question, undefined, ["en"])).toEqual(["como", "foi", "o", "deploy", "que", "quebrou", "busca"]);
+    // "era" is a pt-BR function word and an English noun; an English project keeps it.
+    expect(extractQueryTerms("which era introduced the daemon?", undefined, ["en"])).toEqual(["era", "introduced", "daemon"]);
   });
 
   it("still keeps the raw words when everything is a function word", () => {
     writePack("pt-BR", PT_WORDS);
-    expect(extractQueryTerms("o que foi isso?")).toEqual(["o", "que", "foi", "isso"]);
+    expect(extractQueryTerms("o que foi isso?", undefined, ["pt-BR"])).toEqual(["o", "que", "foi", "isso"]);
   });
 
   it("skips a malformed pack and keeps the others", () => {
@@ -96,7 +106,8 @@ describe("query terms with language packs", () => {
     invalidateLanguagePacks();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     expect([...loadLanguagePacks().keys()]).toEqual(["pt-BR"]);
-    expect(packStopwordsFor(["como", "foi"]).has("que")).toBe(true);
+    expect(packStopwordsFor(["pt-BR"]).has("que")).toBe(true);
+    expect(packStopwordsFor(["fr"]).size).toBe(0);
     warn.mockRestore();
   });
 });
@@ -137,7 +148,7 @@ describe("ensureLanguagePack", () => {
     const pack = JSON.parse(readFileSync(languagePackPath("pt-BR"), "utf-8"));
     expect(pack).toMatchObject({ version: 1, tag: "pt-BR", generatedBy: "openai:test" });
     expect(pack.stopwords).toContain("que");
-    expect(extractQueryTerms("como foi o deploy que quebrou a busca?")).toEqual(["deploy", "quebrou", "busca"]);
+    expect(extractQueryTerms("como foi o deploy que quebrou a busca?", undefined, ["pt-BR"])).toEqual(["deploy", "quebrou", "busca"]);
   });
 
   it("shares one generation between concurrent callers", async () => {
@@ -160,36 +171,40 @@ describe("ensureLanguagePack", () => {
 });
 
 describe("a pivot union survives the layers below it", () => {
-  // A pack reaches MIN_PACK_HITS only on the mixture: it holds one content word from each
-  // side, so neither side alone activates it and the union does. Every word it lists is then
-  // dropped — including the two the pivot exists to contribute.
+  // Each side is tokenised under its own language. A pack that lists a content word from
+  // each side — and would once have activated on the mixture — is never consulted, because
+  // no configured language names it.
   const SPLIT = ["compactação", "keep"];
+  const languages = { authorLanguage: "pt-BR", pivotLanguage: "en" };
 
   const query = "como a compactação decide o que manter";
   const pivot = "how does compaction decide what to keep";
 
-  it("re-extracting the combined string drops terms the union had kept", () => {
+  it("tokenises each side under its own language and ignores packs neither names", () => {
     writePack("pt", PT_WORDS);
-    writePack("split", SPLIT);
+    writePack("xx", SPLIT);
 
-    const union = combinedQueryTerms(query, pivot)!;
-    expect(union).toEqual(expect.arrayContaining(["compactação", "keep"]));
-
-    // The bug this guards: the same string, tokenised once more, is not the same term set.
-    const reparsed = extractQueryTerms(combineWithPivotQuery(query, pivot));
-    expect(reparsed).not.toContain("compactação");
-    expect(reparsed).not.toContain("keep");
+    const union = combinedQueryTerms(query, undefined, pivot, languages)!;
+    expect(union).toEqual(["compactação", "decide", "manter", "compaction", "keep"]);
+    // Under the pivot language alone, the pt-BR side keeps its function words.
+    expect(combinedQueryTerms(query, undefined, pivot, { pivotLanguage: "en" })).toEqual(
+      ["como", "compactação", "decide", "o", "que", "manter", "compaction", "keep"],
+    );
   });
 
   it("prepareFts5Query keeps the union when it is handed the terms", () => {
     writePack("pt", PT_WORDS);
-    writePack("split", SPLIT);
+    // "era" is a pivot-side content word and a pt-BR function word: re-tokenising the
+    // union under the author's language would drop it.
+    const query = "qual versão introduziu o daemon";
+    const pivot = "which era introduced the daemon";
 
-    const combined = combineWithPivotQuery(query, pivot);
-    const union = combinedQueryTerms(query, pivot)!;
+    const combined = combineWithPivotQuery(query, undefined, pivot, languages);
+    const union = combinedQueryTerms(query, undefined, pivot, languages)!;
+    expect(union).toContain("era");
 
     expect(prepareFts5Query(combined, union)!.terms).toEqual(union);
-    // Without them, the layer below silently searches a smaller set.
-    expect(prepareFts5Query(combined)!.terms).not.toEqual(union);
+    // Without them, a layer below that tokenises under the author's language searches a smaller set.
+    expect(extractQueryTerms(combined, undefined, ["pt-BR"])).not.toContain("era");
   });
 });

@@ -45,12 +45,18 @@ export function createSearchHandler(config: DaemonConfig, paths: LcmPaths): Rout
       }
     }
 
+    // The two languages decide which stopword packs apply: the author's to `query`, the
+    // pivot's to `pivotQuery`. They also travel with every result, so a caller that
+    // searched without a pivotQuery can see from the response that one applies and retry.
+    const languages = cwd ? pivotLanguagesFor(cwd, config.search.pivotLanguage, paths) : undefined;
+    const queryLanguages = languages?.authorLanguage ? [languages.authorLanguage] : [];
+
     // The caller's own translation is combined here, once, and the term set travels with
-    // the string: each layer below would otherwise re-tokenise the mixture and pick one
-    // language's stopword pack for both, dropping the terms the pivot just added.
+    // the string: each layer below would otherwise re-tokenise the mixture without knowing
+    // which side each word came from, keeping function words the pivot side had dropped.
     const rawPivot = typeof pivotQuery === "string" ? pivotQuery : undefined;
-    const searchQuery = combineWithPivotQuery(String(query), paths, rawPivot);
-    const searchTerms = combinedQueryTerms(String(query), paths, rawPivot) ?? extractQueryTerms(String(query), paths);
+    const searchQuery = combineWithPivotQuery(String(query), paths, rawPivot, languages);
+    const searchTerms = combinedQueryTerms(String(query), paths, rawPivot, languages) ?? extractQueryTerms(String(query), paths, queryLanguages);
 
     let episodic: unknown[] = [];
     let promoted: unknown[] = [];
@@ -103,9 +109,6 @@ export function createSearchHandler(config: DaemonConfig, paths: LcmPaths): Rout
       }
     }
 
-    // The two languages travel with every result: a caller that searched
-    // without a pivotQuery can see from the response that one applies and retry.
-    const languages = cwd ? pivotLanguagesFor(cwd, config.search.pivotLanguage, paths) : undefined;
     sendJson(res, 200, {
       episodic,
       promoted,

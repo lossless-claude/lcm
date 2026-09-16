@@ -27,10 +27,10 @@ vi.mock("../../src/daemon/summarizer.js", async (importOriginal) => ({
  * environment: a change to the config shape breaks these tests instead of
  * hiding behind a cast, and no developer's own env var can steer them.
  */
-function testConfig(llm: Partial<DaemonConfig["llm"]> = {}): DaemonConfig {
+function testConfig(llm: Partial<DaemonConfig["llm"]> = {}, search: Partial<DaemonConfig["search"]> = {}): DaemonConfig {
   return loadDaemonConfig(
     join(tmpdir(), "lcm-no-such-config.json"),
-    { llm: { provider: "openai", model: "test-model", baseURL: "http://local.test", apiKey: "k", ...llm } },
+    { llm: { provider: "openai", model: "test-model", baseURL: "http://local.test", apiKey: "k", ...llm }, search },
     {},
   );
 }
@@ -98,6 +98,24 @@ describe("scheduleProjectLanguageDetection", () => {
     expect(summarize).toHaveBeenCalledTimes(2);
     expect(summarize.mock.calls[0][0]).toContain("1. Bora revisar");
     await scheduleProjectLanguageDetection(dir, db, testConfig(), paths);
+    expect(summarize).toHaveBeenCalledTimes(2);
+  });
+
+  it("generates the pivot language's pack too when it is neither English nor the author's", async () => {
+    const summarize = vi.fn().mockResolvedValueOnce("pt-BR").mockResolvedValue(PACK_REPLY);
+    vi.mocked(createSummarizer).mockResolvedValue(summarize);
+    await scheduleProjectLanguageDetection(dir, await seededDb(25), testConfig({}, { pivotLanguage: "es" }), paths);
+    await vi.waitFor(() => expect(existsSync(languagePackPath("es"))).toBe(true));
+    await vi.waitFor(() => expect(existsSync(languagePackPath("pt-BR"))).toBe(true));
+    expect(summarize).toHaveBeenCalledTimes(3);
+  });
+
+  it("generates no pivot pack for English or for the author's own language", async () => {
+    const summarize = vi.fn().mockResolvedValueOnce("pt-BR").mockResolvedValue(PACK_REPLY);
+    vi.mocked(createSummarizer).mockResolvedValue(summarize);
+    await scheduleProjectLanguageDetection(dir, await seededDb(25), testConfig({}, { pivotLanguage: "pt" }), paths);
+    await vi.waitFor(() => expect(existsSync(languagePackPath("pt-BR"))).toBe(true));
+    expect(existsSync(languagePackPath("pt"))).toBe(false);
     expect(summarize).toHaveBeenCalledTimes(2);
   });
 

@@ -564,6 +564,31 @@ describe("lcm bench", () => {
     expect((await runBench({ cwd, benchFile: file })).stdout).toContain("sessionIds must be a list");
   });
 
+  it("scores a question's pivotQuery the way lcm_search does: added to the question", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
+    tempDirs.push(cwd);
+    await seedProject(cwd);
+    const file = join(cwd, "manual.json");
+    const query = {
+      id: "pivot",
+      sessionId: "sess-rollback",
+      prompt: "revertemos a publicação",
+      question: "revertemos a publicação desta manhã?",
+      generator: "manual",
+    };
+
+    writeFileSync(file, JSON.stringify({ version: 1, language: "pt-BR", queries: [query] }));
+    const alone = JSON.parse((await runBench({ cwd, benchFile: file, k: 5, json: true })).stdout);
+    expect(alone.searchHitRate).toBe(0);
+
+    writeFileSync(file, JSON.stringify({ version: 1, language: "pt-BR", queries: [{ ...query, pivotQuery: "why did we roll back this morning's release?" }] }));
+    const withPivot = JSON.parse((await runBench({ cwd, benchFile: file, k: 5, json: true })).stdout);
+    expect(withPivot.searchHitRate).toBe(1);
+
+    writeFileSync(file, JSON.stringify({ version: 1, queries: [{ ...query, pivotQuery: 42 }] }));
+    expect((await runBench({ cwd, benchFile: file })).stdout).toContain("pivotQuery must be a string");
+  });
+
   it("gives search enough rows to fill every session slot the grep column fills", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-bench-"));
     tempDirs.push(cwd);

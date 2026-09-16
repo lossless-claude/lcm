@@ -5,13 +5,15 @@ import type { LcmPaths } from "../lcm-paths.js";
 import { projectMetaPath } from "./project.js";
 import { createSummarizer, resolveEffectiveProvider, type CompactClient } from "./summarizer.js";
 import { detectLanguage, sampleHumanTurns, LANGUAGE_SAMPLE_SIZE } from "../search/language.js";
-import { ensureLanguagePack } from "../store/language-pack.js";
+import { ensureLanguagePack, primarySubtag } from "../store/language-pack.js";
 
 /**
  * A project's language is read once, from the turns its author typed, and
  * recorded in the project's meta.json as `language`. The first time a
  * language is seen on this machine its language pack is generated too, so
- * search can drop that language's function words from queries.
+ * search can drop that language's function words from queries — and so is
+ * the pivot language's, since a `pivotQuery` is tokenised under that one.
+ * English ships in code and needs no pack.
  *
  * Detection runs after an ingest has been answered: the human turns are
  * sampled while the request still holds the database, the model call and
@@ -70,7 +72,12 @@ async function detectAndRecord(
     const meta = readMeta(metaPath);
     if (typeof meta.language === "string") return;
     writeFileSync(metaPath, JSON.stringify({ ...meta, language, languageDetectedAt: new Date().toISOString() }, null, 2));
-    void ensureLanguagePack(paths, language, summarize, `${provider}:${config.llm.model}`);
+    const generatedBy = `${provider}:${config.llm.model}`;
+    void ensureLanguagePack(paths, language, summarize, generatedBy);
+    const pivot = config.search.pivotLanguage;
+    if (primarySubtag(pivot) !== "en" && primarySubtag(pivot) !== primarySubtag(language)) {
+      void ensureLanguagePack(paths, pivot, summarize, generatedBy);
+    }
   } catch (err) {
     // Once per daemon lifetime per project: a broken provider must not turn every ingest into a warning.
     failed.add(metaPath);

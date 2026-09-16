@@ -127,17 +127,19 @@ describe("combineWithPivotQuery", () => {
 
   it("leaves the query untouched when no pivot query is supplied", () => {
     expect(combineWithPivotQuery("como revertemos o release quebrado?")).toBe("como revertemos o release quebrado?");
-    expect(combineWithPivotQuery("como foi isso?", "   ")).toBe("como foi isso?");
+    expect(combineWithPivotQuery("como foi isso?", undefined, "   ")).toBe("como foi isso?");
   });
 
   it("leaves the query untouched when the pivot query adds no term", () => {
-    expect(combineWithPivotQuery("broken release", "the broken release")).toBe("broken release");
+    expect(combineWithPivotQuery("broken release", undefined, "the broken release")).toBe("broken release");
   });
 
   it("adds the pivot terms and drops each side's own function words", () => {
     const combined = combineWithPivotQuery(
       "como foi que revertemos o release quebrado?",
+      undefined,
       "how did we roll back the broken release?",
+      { authorLanguage: "pt-BR", pivotLanguage: "en" },
     );
     expect(combined.split(" ")).toEqual(["revertemos", "release", "quebrado", "roll", "back", "broken"]);
   });

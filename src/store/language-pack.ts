@@ -25,8 +25,11 @@ const MIN_STOPWORDS = 30;
 const MAX_STOPWORDS = 400;
 const SAFE_TAG = /^[A-Za-z0-9-]{2,35}$/;
 const RESCAN_INTERVAL_MS = 30_000;
-/** A query counts as being in a pack's language once this many of its words are that pack's function words. */
-const MIN_PACK_HITS = 2;
+
+/** The BCP 47 primary subtag, lowercased: `pt-BR` and `pt` are one language here. */
+export function primarySubtag(tag: string): string {
+  return tag.trim().toLowerCase().split("-")[0];
+}
 
 /** Where packs live. The env override exists so tests never read a developer's real packs. */
 export function languagePacksDir(paths?: LcmPaths): string {
@@ -100,21 +103,23 @@ export function loadLanguagePacks(paths?: LcmPaths): ReadonlyMap<string, Readonl
 }
 
 /**
- * The function words to drop from a query, chosen by the query itself: a pack
- * applies when at least two of the query's words are its function words, so a
- * stray collision ("a", "no") in another language changes nothing. Several
- * packs may apply to one query.
+ * The function words to drop from a query written in one of `languages`: the
+ * union of the packs whose tag names the same language, matched on the primary
+ * subtag. The languages are the ones configured for the search — the project's
+ * recorded author language, the pivot language — never the words that happen
+ * to appear in the query, so a collision with another language's function
+ * words changes nothing and two languages in one string cannot activate a pack
+ * that neither activates alone.
  */
-export function packStopwordsFor(pathsOrWords: LcmPaths | readonly string[], suppliedWords?: readonly string[]): ReadonlySet<string> {
-  const paths = Array.isArray(pathsOrWords) ? undefined : pathsOrWords as LcmPaths;
-  const words = Array.isArray(pathsOrWords) ? pathsOrWords : suppliedWords!;
+export function packStopwordsFor(languages: readonly string[], paths?: LcmPaths): ReadonlySet<string> {
+  if (languages.length === 0) return EMPTY;
   const packs = loadLanguagePacks(paths);
   if (packs.size === 0) return EMPTY;
+  const wanted = new Set(languages.map(primarySubtag));
   const chosen = new Set<string>();
-  for (const stopwords of packs.values()) {
-    let hits = 0;
-    for (const word of words) if (stopwords.has(word) && ++hits >= MIN_PACK_HITS) break;
-    if (hits >= MIN_PACK_HITS) for (const word of stopwords) chosen.add(word);
+  for (const [tag, stopwords] of packs) {
+    if (!wanted.has(primarySubtag(tag))) continue;
+    for (const word of stopwords) chosen.add(word);
   }
   return chosen;
 }
