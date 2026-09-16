@@ -66,7 +66,7 @@ Per run, in `totals`:
 
 ## Parity with production
 
-The bench does not copy the production engine configuration — it calls the same function. `compactEngineConfig()` in `src/compaction.ts` is the single source of truth, used by both the daemon's `/compact` route and the bench, and both compact against the same `COMPACT_TOKEN_BUDGET`. A change to the engine's thresholds, fan-outs, depth limits or round cap reaches the bench automatically; it cannot drift into measuring an engine production does not run.
+The bench does not copy the production engine configuration — it calls the same function. `compactEngineConfig()` in `src/compaction.ts` is the single source of truth, used by both the daemon's `/compact` route and the bench, and both compact against the same `COMPACT_TOKEN_BUDGET`. A change to the engine's thresholds, fan-outs or depth limits reaches the bench automatically; it cannot drift into measuring an engine production does not run.
 
 The bench passes the corpus's effective language through `LCM_EVAL_LANGUAGE`.
 It deliberately passes no `scrubber`: stored messages were already scrubbed at
