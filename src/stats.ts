@@ -176,6 +176,21 @@ interface OverallStats {
   contested: ContestedMemory[];
 }
 
+/** Like every other optional metric here, a column the database lacks counts as 0. */
+function querySubagentStats(db: DatabaseSync, conversationColumns: Set<string>): SubagentStats {
+  const subagentLike = `'${SUBAGENT_SESSION_PREFIX}%'`;
+  const byName = conversationColumns.has("session_id") ? `SUM(session_id LIKE ${subagentLike})` : "0";
+  const attributedNotByName = conversationColumns.has("parent_session_id")
+    ? `SUM(parent_session_id IS NOT NULL AND session_id NOT LIKE ${subagentLike})`
+    : "0";
+  const row = db.prepare(
+    `SELECT COALESCE(${byName}, 0) as byName,
+            COALESCE(${attributedNotByName}, 0) as attributedNotByName
+       FROM conversations`,
+  ).get() as { byName: number; attributedNotByName: number };
+  return { byName: row.byName, attributedNotByName: row.attributedNotByName };
+}
+
 function queryProjectStats(
   dbPath: string,
   projectId: string,
@@ -256,18 +271,7 @@ function queryProjectStats(
       ORDER BY c.conversation_id DESC
     `).all() as { conversation_id: number; messages: number; summaries: number; max_depth: number; raw_tokens: number; summary_tokens: number }[];
 
-    // Like every other optional metric here, a column the database lacks counts as 0.
-    const conversationColumns = columns("conversations");
-    const subagentLike = `'${SUBAGENT_SESSION_PREFIX}%'`;
-    const byName = conversationColumns.has("session_id") ? `SUM(session_id LIKE ${subagentLike})` : "0";
-    const attributedNotByName = conversationColumns.has("parent_session_id")
-      ? `SUM(parent_session_id IS NOT NULL AND session_id NOT LIKE ${subagentLike})`
-      : "0";
-    const subagentRow = db.prepare(
-      `SELECT COALESCE(${byName}, 0) as byName,
-              COALESCE(${attributedNotByName}, 0) as attributedNotByName
-         FROM conversations`,
-    ).get() as { byName: number; attributedNotByName: number };
+    const subagent = querySubagentStats(db, columns("conversations"));
 
     const conversationDetails: ConversationStats[] = convRows.map((r) => ({
       conversationId: r.conversation_id,
@@ -317,7 +321,7 @@ function queryProjectStats(
 
     return {
       conversations: convRows.length,
-      subagent: { byName: subagentRow.byName, attributedNotByName: subagentRow.attributedNotByName },
+      subagent,
       compactedConversations: compacted.length,
       messages: msgStats.count,
       summaries: sumStats.count,
