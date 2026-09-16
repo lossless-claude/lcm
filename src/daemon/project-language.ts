@@ -110,9 +110,10 @@ async function ensureExistingProjectPivotPack(
 ): Promise<void> {
   const pivot = config.search.pivotLanguage;
   if (primarySubtag(pivot) === "en" || primarySubtag(pivot) === primarySubtag(language)) return;
-  // Steady state is a file check, not a provider client: the pack exists.
-  if (existsSync(languagePackPath(paths, pivot))) return;
   try {
+    // Steady state is a file check, not a provider client: the pack exists.
+    // Inside the try: a malformed tag throws here, and the caller drops the promise.
+    if (existsSync(languagePackPath(paths, pivot))) return;
     const provider = resolveEffectiveProvider(config, client);
     const summarize = await createSummarizer(provider, config);
     if (!summarize) return;
