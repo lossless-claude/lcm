@@ -22,6 +22,7 @@ vi.mock("../../src/daemon/client.js", () => ({
 }));
 vi.mock("../../src/daemon/version.js", () => ({ PKG_VERSION: "9.9.9-test" }));
 vi.mock("../../src/stats.js", () => ({
+  formatSubagentShare: String,
   collectStats: () => { throw new Error("stats unavailable"); },
   formatNumber: String,
 }));

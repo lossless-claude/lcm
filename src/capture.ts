@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import { basename, dirname } from "node:path";
+import { sep } from "node:path";
 import type { CodexTranscriptCursor } from "./codex-transcript-reader.js";
 import { loadCodexCursor, saveCodexCursor } from "./db/codex-cursor.js";
 import { upsertRedactionCounts } from "./db/redaction-stats.js";
@@ -39,6 +39,7 @@ export interface CaptureInput {
   sourceOffset?: number;
   /** Transcript path; when `attribution` is absent and this is a subagent transcript, its sidecar supplies it. */
   transcriptPath?: string;
+  /** The `/ingest` subagent path always passes the walker's; `/compact` and a direct `/ingest` of a subagent transcript may pass none. */
   attribution?: SubagentAttributionInput;
   /** Persisted in the same transaction as the messages it accounts for. */
   codexCursor?: { transcriptPath: string; cursor: CodexTranscriptCursor };
@@ -51,14 +52,16 @@ export interface CaptureResult {
 }
 
 /**
- * A subagent transcript lives at `<parent>/subagents/<agent>.jsonl`; the
- * directory names the parent and the sidecar the dispatch. Any other path is
- * not a subagent transcript and carries no attribution.
+ * A subagent transcript lives under `<parent>/subagents/`, possibly nested
+ * (`subagents/workflows/wf_<id>/`); the directory names the parent and the
+ * sidecar the dispatch, as the walker in src/subagent-attribution.ts reads
+ * them. Any other path is not a subagent transcript and carries no attribution.
  */
 export function attributionFromTranscriptPath(transcriptPath: string): SubagentAttributionInput | undefined {
-  const subagentsDir = dirname(transcriptPath);
-  if (basename(subagentsDir) !== "subagents") return undefined;
-  return readSubagentAttribution(transcriptPath, basename(dirname(subagentsDir)));
+  const segments = transcriptPath.split(sep);
+  const subagentsIndex = segments.lastIndexOf("subagents");
+  if (subagentsIndex < 1) return undefined;
+  return readSubagentAttribution(transcriptPath, segments[subagentsIndex - 1]);
 }
 
 export function isSessionComplete(db: DatabaseSync, sessionId: string): boolean {

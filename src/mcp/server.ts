@@ -31,7 +31,7 @@ const TOOL_ROUTES: Record<string, string> = {
 
 function localTools(paths: LcmPaths): Partial<Record<string, (args: Record<string, unknown>) => Promise<string>>> { return {
   lcm_stats: async (args) => {
-    const { collectStats, formatNumber } = await import("../stats.js");
+    const { collectStats, formatNumber, formatSubagentShare } = await import("../stats.js");
     const stats = collectStats(paths);
     const verbose = args.verbose === true;
     const lines: string[] = [];
@@ -47,6 +47,7 @@ function localTools(paths: LcmPaths): Partial<Record<string, (args: Record<strin
     lines.push(`| Summaries | ${formatNumber(stats.summaries)} |`);
     lines.push(`| DAG depth | ${stats.maxDepth} |`);
     lines.push(`| Promoted memories | ${stats.promotedCount} |`);
+    lines.push(`| Subagent | ${formatSubagentShare(stats)} |`);
     if (stats.eventsCaptured > 0) {
       lines.push(`| Events | ${formatNumber(stats.eventsCaptured)} captured (${stats.eventsUnprocessed} unprocessed, ${stats.eventsErrors} errors (30d)) |`);
     }

@@ -218,6 +218,14 @@ Show token savings, compression ratios, and usage statistics across all lcm proj
 |-------|------|----------|---------|-------------|
 | `verbose` | boolean | | `false` | Include per-conversation breakdown |
 
+The Memory table carries a **Subagent** row: how many stored conversations search excludes as
+subagent transcripts, over all conversations, as a count and a share. Search recognises a
+subagent transcript by its session id starting with `agent-`, a naming convention owned by the
+host harness. Every conversation is either excluded by that rule or searchable, so the two
+sum to the conversation total. When a conversation's `.meta.json` sidecar attributed it to a
+parent session but its id does not start with `agent-`, the row also reports that count: a
+non-zero value means the convention drifted and those transcripts are no longer excluded.
+
 Also reports, whenever either is non-empty: **Promotion candidates** — memories with
 reported uses at or above `promotion.enforcementThreshold` (default 3), each with its memory
 ID, text, use count, `+1` count, `-1` count, and any objections — and **Contested** — memories with at

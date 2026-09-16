@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
@@ -18,8 +19,8 @@ import { validateCwd } from "../validate-cwd.js";
 import { scheduleProjectLanguageDetection } from "../project-language.js";
 import { enqueue } from "../project-queue.js";
 import { readCodexTranscriptDelta, type CodexTranscriptCursor } from "../../codex-transcript-reader.js";
-import { discoverSubagentSessions, type DiscoveredSubagentSession } from "../subagent-discovery.js";
 import { SessionCapture, isSessionComplete } from "../../capture.js";
+import { discoverSubagentTranscripts, type DiscoveredSubagentTranscript } from "../../subagent-attribution.js";
 
 class TranscriptError extends Error {}
 
@@ -97,7 +98,7 @@ function requestAttribution(input: IngestInput): SubagentAttributionInput | unde
  * have added since; the capture module never re-inserts what is stored.
  */
 async function ingestAllSubagents(
-  db: DatabaseSync, pid: string, scrubber: ScrubEngine, subagents: DiscoveredSubagentSession[],
+  db: DatabaseSync, pid: string, scrubber: ScrubEngine, subagents: DiscoveredSubagentTranscript[],
 ): Promise<void> {
   runLcmMigrations(db);
   const capture = new SessionCapture(db, pid, scrubber);
@@ -108,9 +109,21 @@ async function ingestAllSubagents(
     await capture.write({
       sessionId: sub.sessionId,
       messages,
-      attribution: { parentSessionId: sub.parentSessionId, subagentType: sub.subagentType, subagentDesc: sub.subagentDesc },
+      attribution: sub.attribution,
     });
   }
+}
+
+/**
+ * The subagent transcripts of one already-known session, at
+ * `<project>/<session_id>/subagents/`. Scoped to that one session directory:
+ * `/ingest` already knows which session it is processing, so this never
+ * walks the whole projects tree.
+ */
+function discoverSubagentSessionTranscripts(cwd: string, sessionId: string): DiscoveredSubagentTranscript[] {
+  const transcriptPath = claudeTranscriptPath(cwd, sessionId);
+  if (!transcriptPath) return [];
+  return discoverSubagentTranscripts(join(dirname(transcriptPath), sessionId));
 }
 
 /**
@@ -122,7 +135,7 @@ async function ingestAllSubagents(
 async function ingestSubagentTranscripts(
   cwd: string, dbPath: string, pid: string, sessionId: string, scrubber: ScrubEngine, paths: LcmPaths,
 ): Promise<void> {
-  const subagents = discoverSubagentSessions(cwd, sessionId);
+  const subagents = discoverSubagentSessionTranscripts(cwd, sessionId);
   if (subagents.length === 0) return;
 
   await enqueue(pid, async () => {

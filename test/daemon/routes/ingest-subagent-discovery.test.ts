@@ -94,6 +94,33 @@ describe("POST /ingest discovers subagent transcripts (#434)", () => {
     }
   });
 
+  it("captures a subagent nested under a workflow run, attributed to the owning session, and skips journal.jsonl", async () => {
+    const { sessionId, subagentsDir } = setUp();
+    writeTranscript(join(subagentsDir, "agent-sub1.jsonl"), [entry("user", "top-level task")]);
+    writeFileSync(join(subagentsDir, "agent-sub1.meta.json"), JSON.stringify({ agentType: "general-purpose" }));
+    const workflowRunDir = join(subagentsDir, "workflows", "wf_x");
+    writeTranscript(join(workflowRunDir, "agent-wf1.jsonl"), [entry("user", "workflow task")]);
+    writeFileSync(join(workflowRunDir, "agent-wf1.meta.json"), JSON.stringify({ agentType: "workflow-subagent" }));
+    writeTranscript(join(workflowRunDir, "journal.jsonl"), [entry("user", "not a transcript")]);
+
+    daemon = await createDaemon(loadDaemonConfig("/nonexistent", { daemon: { port: 0 } }));
+    await ingest(sessionId);
+
+    const db = new DatabaseSync(projectDbPath(cwd, paths), { readOnly: true });
+    try {
+      const conversations = db.prepare(
+        "SELECT session_id, parent_session_id, subagent_type FROM conversations ORDER BY session_id",
+      ).all();
+      expect(conversations).toEqual([
+        { session_id: "agent-sub1", parent_session_id: sessionId, subagent_type: "general-purpose" },
+        { session_id: "agent-wf1", parent_session_id: sessionId, subagent_type: "workflow-subagent" },
+        { session_id: sessionId, parent_session_id: null, subagent_type: null },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("does not duplicate subagent messages when the parent session is re-ingested", async () => {
     const { sessionId, subagentsDir } = setUp();
     const subagentPath = join(subagentsDir, "agent-sub1.jsonl");

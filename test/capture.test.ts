@@ -95,6 +95,11 @@ describe("SessionCapture", () => {
 
       expect(attributionFromTranscriptPath(path)).toEqual({ parentSessionId: "parent-session", subagentType: "Plan", subagentDesc: "plan it" });
       expect(attributionFromTranscriptPath(join(dir, "parent-session.jsonl"))).toBeUndefined();
+      const nested = join(subagents, "workflows", "wf_1", "agent-3.jsonl");
+      mkdirSync(join(subagents, "workflows", "wf_1"), { recursive: true });
+      writeFileSync(nested, "");
+      writeFileSync(join(subagents, "workflows", "wf_1", "agent-3.meta.json"), "{}");
+      expect(attributionFromTranscriptPath(nested)).toEqual({ parentSessionId: "parent-session", subagentType: null, subagentDesc: null });
 
       await capture.write({ sessionId: "agent-2", transcriptPath: path, messages: conversation.slice(0, 1) });
       const row = db.prepare("SELECT parent_session_id, subagent_type FROM conversations WHERE session_id = ?").get("agent-2");
