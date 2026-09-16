@@ -625,6 +625,58 @@ describe("POST /compact", () => {
       db.close();
     }
   });
+
+  it("a session first written by /compact matches one first written by /ingest (#503)", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-compact-first-"));
+    tempDirs.push(tempDir);
+    daemon = await createDaemon(loadDaemonConfig("/x", {
+      daemon: { port: 0 },
+      llm: { provider: "anthropic", apiKey: "sk-test" },
+    }));
+    const port = daemon.address().port;
+
+    // A subagent-shaped transcript: the sidecar carries the attribution, the
+    // messages carry Structure. Neither route is told either one explicitly.
+    const subagentsDir = join(tempDir, "parent-session", "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    const transcriptFor = (sessionId: string) => {
+      const path = join(subagentsDir, `${sessionId}.jsonl`);
+      writeFileSync(path, [
+        JSON.stringify({ message: { role: "user", content: "<command-name>/model</command-name><command-args>opus</command-args>" } }),
+        JSON.stringify({ message: { role: "assistant", content: [{ type: "tool_use", name: "Skill", input: { skill: "grilling" } }] } }),
+      ].join("\n"));
+      writeFileSync(join(subagentsDir, `${sessionId}.meta.json`), JSON.stringify({ agentType: "Explore", description: "look around" }));
+      return path;
+    };
+    const post = (route: string, body: Record<string, unknown>) => fetch(`http://127.0.0.1:${port}${route}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+
+    expect((await post("/compact", { session_id: "agent-compact-first", cwd: tempDir, transcript_path: transcriptFor("agent-compact-first") })).status).toBe(200);
+    expect((await post("/ingest", { session_id: "agent-ingest-first", cwd: tempDir, transcript_path: transcriptFor("agent-ingest-first") })).status).toBe(200);
+
+    const db = new DatabaseSync(projectDbPath(tempDir, paths));
+    try {
+      const snapshot = (sessionId: string) => ({
+        attribution: db.prepare("SELECT parent_session_id, subagent_type, subagent_desc FROM conversations WHERE session_id = ?").get(sessionId),
+        parts: db.prepare(
+          `SELECT m.seq, part_type, tool_name, tool_input FROM message_parts mp
+           JOIN messages m ON m.message_id = mp.message_id
+           JOIN conversations c ON c.conversation_id = m.conversation_id
+           WHERE c.session_id = ? ORDER BY m.seq, ordinal`,
+        ).all(sessionId),
+      });
+      const viaCompact = snapshot("agent-compact-first");
+      expect(viaCompact.attribution).toEqual({ parent_session_id: "parent-session", subagent_type: "Explore", subagent_desc: "look around" });
+      expect(viaCompact.parts).toEqual([
+        { seq: 0, part_type: "command", tool_name: "/model", tool_input: "opus" },
+        { seq: 1, part_type: "skill", tool_name: "grilling", tool_input: null },
+      ]);
+      expect(snapshot("agent-ingest-first")).toEqual(viaCompact);
+    } finally {
+      db.close();
+    }
+  });
 });
 
 describe("POST /compact with disabled provider", () => {

@@ -8,10 +8,8 @@ import { openProject } from "../project-group.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
-import { upsertRedactionCounts } from "../../db/redaction-stats.js";
-import { ConversationStore, type CreateMessageInput, type CreateMessagePartInput, type MessageRecord } from "../../store/conversation-store.js";
-import { SummaryStore } from "../../store/summary-store.js";
-import { parseTranscript, extractToolUseModels, type ParsedMessage, type MessagePart } from "../../transcript.js";
+import type { SubagentAttributionInput } from "../../store/conversation-store.js";
+import { parseTranscript, extractToolUseModels, type ParsedMessage } from "../../transcript.js";
 import { extractCodexSessionMeta, extractCodexTurnModels, parseCodexTranscript } from "../../codex-transcript.js";
 import { EventsDb } from "../../hooks/events-db.js";
 import { eventsDbPath } from "../../db/events-path.js";
@@ -20,12 +18,10 @@ import { validateCwd } from "../validate-cwd.js";
 import { scheduleProjectLanguageDetection } from "../project-language.js";
 import { enqueue } from "../project-queue.js";
 import { readCodexTranscriptDelta, type CodexTranscriptCursor } from "../../codex-transcript-reader.js";
-import { loadCodexCursor, saveCodexCursor } from "../../db/codex-cursor.js";
 import { discoverSubagentSessions, type DiscoveredSubagentSession } from "../subagent-discovery.js";
+import { SessionCapture, isSessionComplete } from "../../capture.js";
 
 class TranscriptError extends Error {}
-
-type RedactionCounts = { gitleaks: number; builtIn: number; global: number; project: number };
 
 function validateCodexRecovery(
   db: DatabaseSync,
@@ -89,138 +85,28 @@ export interface IngestInput {
   subagent_desc?: string;
 }
 
-function toMessagePartInput(sessionId: string, part: MessagePart, ordinal: number): CreateMessagePartInput {
-  return { sessionId, partType: part.type, ordinal, toolName: part.name, toolInput: part.args };
-}
-
-/**
- * `parseTranscript` is the only place that extracts skill/command structure
- * (see src/transcript.ts) — this just writes what it found, for whichever
- * newly-inserted message carried it.
- */
-async function persistMessageParts(
-  conversationStore: ConversationStore,
-  sessionId: string,
-  sourceMessages: ParsedMessage[],
-  created: MessageRecord[],
-): Promise<void> {
-  for (let i = 0; i < created.length; i++) {
-    const parts = sourceMessages[i]?.parts;
-    if (!parts || parts.length === 0) continue;
-    await conversationStore.createMessageParts(
-      created[i].messageId,
-      parts.map((part, ordinal) => toMessagePartInput(sessionId, part, ordinal)),
-    );
-  }
-}
-
-/**
- * The one place that resolves a session's existing conversation and its
- * current stored message count — shared by the primary session path and
- * subagent ingestion, so "how storedCount is derived" has one owner.
- */
-async function getStoredConversation(
-  db: DatabaseSync,
-  conversationStore: ConversationStore,
-  sessionId: string,
-): Promise<{ conversationId: number; storedCount: number } | undefined> {
-  const row = db.prepare("SELECT conversation_id FROM conversations WHERE session_id = ?")
-    .get(sessionId) as { conversation_id: number } | undefined;
-  if (!row) return undefined;
-  return { conversationId: row.conversation_id, storedCount: await conversationStore.getMessageCount(row.conversation_id) };
-}
-
-/** Scrubs new messages and shapes them for `createMessagesBulk`, tallying redaction counts as it goes. */
-function scrubMessagesToInputs(
-  newMessages: ParsedMessage[], scrubber: ScrubEngine, conversationId: number, storedCount: number,
-): { inputs: CreateMessageInput[]; totalCounts: RedactionCounts } {
-  const totalCounts: RedactionCounts = { gitleaks: 0, builtIn: 0, global: 0, project: 0 };
-  const inputs = newMessages.map((m, i) => {
-    const { text: scrubbedContent, gitleaks, builtIn, global: globalCount, project } = scrubber.scrubWithCounts(m.content);
-    totalCounts.gitleaks += gitleaks;
-    totalCounts.builtIn += builtIn;
-    totalCounts.global += globalCount;
-    totalCounts.project += project;
-    return {
-      conversationId, seq: storedCount + i,
-      role: m.role as "user" | "assistant" | "system" | "tool",
-      content: scrubbedContent, tokenCount: m.tokenCount,
-    };
-  });
-  return { inputs, totalCounts };
-}
-
-/**
- * Scrubs and writes one session's new messages inside a single transaction,
- * shared by the primary session path and subagent ingestion below — one
- * mouth writing messages rather than two drifting apart. `onCommitted` runs
- * inside the same transaction, after messages are created; the primary path
- * uses it to persist a Codex cursor, subagent ingestion has none.
- */
-async function writeNewMessages(
-  db: DatabaseSync,
-  conversationStore: ConversationStore,
-  summaryStore: SummaryStore,
-  scrubber: ScrubEngine,
-  pid: string,
-  sessionId: string,
-  conversationId: number,
-  storedCount: number,
-  newMessages: ParsedMessage[],
-  onCommitted?: () => void,
-): Promise<{ records: MessageRecord[]; totalCounts: RedactionCounts }> {
-  const { inputs, totalCounts } = scrubMessagesToInputs(newMessages, scrubber, conversationId, storedCount);
-  const records = await conversationStore.withTransaction(async () => {
-    const created = inputs.length > 0 ? await conversationStore.createMessagesBulk(inputs) : [];
-    if (created.length > 0) {
-      upsertRedactionCounts(db, pid, totalCounts);
-      await summaryStore.appendContextMessages(conversationId, created.map((r) => r.messageId));
-      await persistMessageParts(conversationStore, sessionId, newMessages, created);
-    }
-    onCommitted?.();
-    return created;
-  });
-  return { records, totalCounts };
+/** Attribution the request carries, or none — so the capture module may read the sidecar instead. */
+function requestAttribution(input: IngestInput): SubagentAttributionInput | undefined {
+  if (!input.parent_session_id && !input.subagent_type && !input.subagent_desc) return undefined;
+  return { parentSessionId: input.parent_session_id, subagentType: input.subagent_type, subagentDesc: input.subagent_desc };
 }
 
 /**
  * A subagent transcript grows while its parent session is still running, so
- * this reads the same storedCount-based delta the primary path uses: safe to
- * call on every `/ingest` for the parent, never re-inserting what is stored.
+ * every `/ingest` for the parent captures whatever the subagent transcripts
+ * have added since; the capture module never re-inserts what is stored.
  */
-async function ingestSubagentSession(
-  db: DatabaseSync,
-  conversationStore: ConversationStore,
-  summaryStore: SummaryStore,
-  scrubber: ScrubEngine,
-  pid: string,
-  sub: DiscoveredSubagentSession,
-): Promise<number> {
-  const parsed = parseTranscript(sub.path);
-  const existing = await getStoredConversation(db, conversationStore, sub.sessionId);
-  const storedCount = existing?.storedCount ?? 0;
-  const newMessages = parsed.slice(storedCount);
-  if (newMessages.length === 0) return 0;
-
-  const conversation = await conversationStore.getOrCreateConversation(sub.sessionId, undefined, {
-    parentSessionId: sub.parentSessionId,
-    subagentType: sub.subagentType,
-    subagentDesc: sub.subagentDesc,
-  });
-  const { records } = await writeNewMessages(
-    db, conversationStore, summaryStore, scrubber, pid, sub.sessionId, conversation.conversationId, storedCount, newMessages,
-  );
-  return records.length;
-}
-
 async function ingestAllSubagents(
   db: DatabaseSync, pid: string, scrubber: ScrubEngine, subagents: DiscoveredSubagentSession[],
 ): Promise<void> {
   runLcmMigrations(db);
-  const conversationStore = new ConversationStore(db);
-  const summaryStore = new SummaryStore(db);
+  const capture = new SessionCapture(db, pid, scrubber);
   for (const sub of subagents) {
-    await ingestSubagentSession(db, conversationStore, summaryStore, scrubber, pid, sub);
+    await capture.write({
+      sessionId: sub.sessionId,
+      messages: parseTranscript(sub.path),
+      attribution: { parentSessionId: sub.parentSessionId, subagentType: sub.subagentType, subagentDesc: sub.subagentDesc },
+    });
   }
 }
 
@@ -373,64 +259,43 @@ export function createIngestHandler(config: DaemonConfig, paths: LcmPaths): Rout
         try {
           runLcmMigrations(db);
 
-          // Check if session is already fully ingested in session_ingest_log — using the same
-          // db connection to avoid double-open overhead and lock contention. Replay and
-          // Codex skip this shortcut: Codex imports can recover a final record deferred by
-          // live capture, and the stored-count slice below keeps both paths idempotent.
-          try {
-            const row = input.replay === true || input.client === "codex"
-              ? undefined
-              : db.prepare("SELECT 1 FROM session_ingest_log WHERE session_id = ?").get(session_id);
-            if (row) return { ingested: 0, totalTokens: 0 };
-          } catch {
-            // Table may not exist yet — proceed with normal flow
+          // A session already fully ingested is skipped — on the same db connection to
+          // avoid double-open overhead and lock contention. Replay and Codex skip this
+          // shortcut: Codex imports can recover a final record deferred by live capture,
+          // and the capture module's stored-count slice keeps both paths idempotent.
+          if (input.replay !== true && input.client !== "codex" && isSessionComplete(db, session_id)) {
+            return { ingested: 0, totalTokens: 0 };
           }
 
-          const conversationStore = new ConversationStore(db);
-          const summaryStore = new SummaryStore(db);
-          const existing = await getStoredConversation(db, conversationStore, session_id);
-          const storedCount = existing?.storedCount ?? 0;
+          const capture = new SessionCapture(db, pid, scrubber);
           let cursor: CodexTranscriptCursor | undefined;
-          let sourceCount = 0;
+          let sourceOffset = 0;
           if (codexPath) {
-            let prior = existing ? loadCodexCursor(db, existing.conversationId, codexPath) : undefined;
-            if (prior && prior.messageCount !== storedCount) prior = undefined;
+            const existing = await capture.stored(session_id);
+            const prior = existing ? capture.codexCursor(existing, codexPath) : undefined;
             try {
               const delta = await readCodexTranscriptDelta(codexPath, {
                 cursor: prior, includeTrailingRecord: input.source === "import",
               });
               validateCodexMetadata(delta.sessionMeta, input, cwd);
               if (!delta.resumed && existing) {
-                validateCodexRecovery(db, {
-                  conversationId: existing.conversationId, storedCount, messages: delta.messages,
-                }, scrubber);
+                validateCodexRecovery(db, { ...existing, messages: delta.messages }, scrubber);
               }
               parsed = delta.messages;
-              sourceCount = delta.resumed && prior ? prior.messageCount : 0;
+              sourceOffset = delta.resumed && prior ? prior.messageCount : 0;
               cursor = delta.cursor;
             } catch (error) {
               throw new TranscriptError(error instanceof Error ? error.message : "invalid transcript");
             }
           }
-          const conversation = await conversationStore.getOrCreateConversation(session_id, undefined, {
-            parentSessionId: input.parent_session_id,
-            subagentType: input.subagent_type,
-            subagentDesc: input.subagent_desc,
+          const { conversationId, records, totalCounts } = await capture.write({
+            sessionId: session_id,
+            messages: parsed,
+            sourceOffset,
+            transcriptPath: input.client === "codex" ? codexPath : resolveClaudeTranscriptPathForBackfill(input, cwd),
+            attribution: requestAttribution(input),
+            ...(cursor && codexPath ? { codexCursor: { transcriptPath: codexPath, cursor } } : {}),
           });
-          // A recovery scan may skip only a verified, already-stored prefix.
-          // Valid suffix reads begin exactly at the database's message count.
-          const newMessages = parsed.slice(Math.max(0, storedCount - sourceCount));
-
-          if (newMessages.length === 0 && !cursor) return { ingested: 0, totalTokens: 0 };
-
-          const { records, totalCounts } = await writeNewMessages(
-            db, conversationStore, summaryStore, scrubber, pid, session_id, conversation.conversationId, storedCount, newMessages,
-            () => {
-              if (cursor && codexPath) saveCodexCursor(db, {
-                conversationId: conversation.conversationId, transcriptPath: codexPath, cursor,
-              });
-            },
-          );
           if (records.length === 0) return { ingested: 0, totalTokens: 0 };
 
           try {
@@ -448,7 +313,7 @@ export function createIngestHandler(config: DaemonConfig, paths: LcmPaths): Rout
           // Samples the corpus on this connection now; the model call runs after the response.
           void scheduleProjectLanguageDetection(cwd, db, config, paths, input.client);
 
-          const totalTokens = await summaryStore.getContextTokenCount(conversation.conversationId);
+          const totalTokens = await capture.summaryStore.getContextTokenCount(conversationId);
           const totalRedacted = totalCounts.gitleaks + totalCounts.builtIn + totalCounts.global + totalCounts.project;
           const redactionCategories: string[] = [];
           if (totalCounts.gitleaks > 0) redactionCategories.push("gitleaks");

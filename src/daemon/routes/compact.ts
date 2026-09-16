@@ -11,9 +11,7 @@ import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { markSessionCompacted } from "../../db/session-compactions.js";
-import { upsertRedactionCounts } from "../../db/redaction-stats.js";
-import { ConversationStore } from "../../store/conversation-store.js";
-import { SummaryStore } from "../../store/summary-store.js";
+import { SessionCapture } from "../../capture.js";
 import { CompactionEngine, compactEngineConfig, COMPACT_TOKEN_BUDGET } from "../../compaction.js";
 import { parseTranscript } from "../../transcript.js";
 import type { LcmSummarizeFn } from "../../llm/types.js";
@@ -271,39 +269,17 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         try {
           runLcmMigrations(db);
 
-          const conversationStore = new ConversationStore(db);
-          const summaryStore = new SummaryStore(db);
-          const conversation = await conversationStore.getOrCreateConversation(session_id);
-
-          // Ingest new messages from the transcript into the DB.
+          // Capture what the transcript holds past the stored count, through the same
+          // module `/ingest` writes with; the conversation exists after this either way.
+          const capture = new SessionCapture(db, pid, scrubber);
+          const { conversationStore, summaryStore } = capture;
           const safeTranscriptPath = transcript_path ? isSafeTranscriptPath(transcript_path, cwd) : false;
-          if (!skip_ingest && safeTranscriptPath && existsSync(safeTranscriptPath)) {
-            const parsed = parseTranscript(safeTranscriptPath);
-            const storedCount = await conversationStore.getMessageCount(conversation.conversationId);
-            const newMessages = parsed.slice(storedCount);
-            if (newMessages.length > 0) {
-              const ingestCounts = { gitleaks: 0, builtIn: 0, global: 0, project: 0 };
-              const inputs = newMessages.map((m, i) => {
-                const { text: scrubbedContent, gitleaks, builtIn, global: globalCount, project } = scrubber.scrubWithCounts(m.content);
-                ingestCounts.gitleaks += gitleaks;
-                ingestCounts.builtIn += builtIn;
-                ingestCounts.global += globalCount;
-                ingestCounts.project += project;
-                return {
-                  conversationId: conversation.conversationId,
-                  seq: storedCount + i,
-                  role: m.role as "user" | "assistant" | "system",
-                  content: scrubbedContent,
-                  tokenCount: m.tokenCount,
-                };
-              });
-              await conversationStore.withTransaction(async () => {
-                const records = await conversationStore.createMessagesBulk(inputs);
-                upsertRedactionCounts(db, pid, ingestCounts);
-                await summaryStore.appendContextMessages(conversation.conversationId, records.map((r) => r.messageId));
-              });
-            }
-          }
+          const readable = !skip_ingest && safeTranscriptPath && existsSync(safeTranscriptPath) ? safeTranscriptPath : undefined;
+          const conversation = await capture.write({
+            sessionId: session_id,
+            transcriptPath: readable,
+            messages: readable ? parseTranscript(readable) : [],
+          });
 
           // Check if there's anything to compact
           const tokenCount = await summaryStore.getContextTokenCount(conversation.conversationId);
