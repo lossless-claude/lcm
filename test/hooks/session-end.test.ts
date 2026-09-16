@@ -1,19 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { handleSessionEnd } from "../../src/hooks/session-end.js";
+import { ensureDaemon } from "../../src/daemon/lifecycle.js";
 import { readAuthToken } from "../../src/daemon/auth.js";
+import { safeLogError } from "../../src/hooks/hook-errors.js";
+import { createLcmPaths } from "../../src/lcm-paths.js";
 
 vi.mock("../../src/daemon/lifecycle.js", () => ({
   ensureDaemon: vi.fn().mockResolvedValue({ connected: true }),
 }));
 
-vi.mock("../../src/daemon/config.js", () => ({
-  loadDaemonConfig: vi.fn().mockReturnValue({
-    compaction: { autoCompactMinTokens: 10000 },
-  }),
-}));
-
 vi.mock("../../src/daemon/auth.js", () => ({
   readAuthToken: vi.fn().mockReturnValue("test-token-abc"),
+}));
+
+vi.mock("../../src/hooks/hook-errors.js", () => ({
+  safeLogError: vi.fn(),
 }));
 
 const mockHttpReq = vi.hoisted(() => ({
@@ -26,10 +27,12 @@ vi.mock("node:http", () => ({
   request: vi.fn().mockReturnValue(mockHttpReq),
 }));
 
-function createMockClient(ingestResponse: unknown) {
+const paths = createLcmPaths("/tmp/lcm-session-end-test");
+
+function createMockClient(response: unknown = { queued: "scheduled" }) {
   return {
     post: vi.fn().mockImplementation((path: string) => {
-      if (path === "/ingest") return Promise.resolve(ingestResponse);
+      if (path === "/session-end") return Promise.resolve(response);
       return Promise.reject(new Error(`unexpected path: ${path}`));
     }),
   } as any;
@@ -39,206 +42,103 @@ describe("handleSessionEnd", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockHttpReq.on.mockReturnThis();
+    vi.mocked(ensureDaemon).mockResolvedValue({ connected: true } as any);
   });
 
-  it("calls /ingest with parsed stdin", async () => {
-    const client = createMockClient({ ingested: 5, totalTokens: 500 });
-    const stdin = JSON.stringify({ session_id: "s1", cwd: "/tmp" });
-    const result = await handleSessionEnd(stdin, client, 3737);
+  it("posts stdin once to /session-end and exits 0", async () => {
+    const client = createMockClient();
+    const stdin = JSON.stringify({ session_id: "s1", cwd: "/tmp", transcript_path: "/tmp/t.jsonl" });
+    const result = await handleSessionEnd(stdin, client, paths, 3737);
     expect(result.exitCode).toBe(0);
-    expect(client.post).toHaveBeenCalledWith("/ingest", { session_id: "s1", cwd: "/tmp" }, expect.objectContaining({ timeoutMs: expect.any(Number) }));
+    expect(client.post).toHaveBeenCalledTimes(1);
+    expect(client.post).toHaveBeenCalledWith(
+      "/session-end",
+      { session_id: "s1", cwd: "/tmp", transcript_path: "/tmp/t.jsonl" },
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
   });
 
-  it("fires compact via http.request when totalTokens exceeds threshold", async () => {
-    const { request } = await import("node:http");
-    const client = createMockClient({ ingested: 100, totalTokens: 25000 });
-    const stdin = JSON.stringify({ session_id: "s1", cwd: "/tmp" });
-    await handleSessionEnd(stdin, client, 3737);
-    expect(request).toHaveBeenCalledWith(
-      expect.objectContaining({ path: "/compact", method: "POST", port: 3737 }),
+  it("acknowledgement deadline fits the host's SessionEnd budget", async () => {
+    const client = createMockClient();
+    await handleSessionEnd(JSON.stringify({ session_id: "s1", cwd: "/tmp" }), client, paths, 3737);
+    const timeoutMs = client.post.mock.calls[0][2].timeoutMs as number;
+    // Strictly under the ~1.5s host budget: the health probe before the post eats into it too.
+    expect(timeoutMs).toBeLessThan(1500);
+    expect(timeoutMs).toBeLessThanOrEqual(1000);
+  });
+
+  it("never spawns a daemon", async () => {
+    await handleSessionEnd(JSON.stringify({ session_id: "s1", cwd: "/tmp" }), createMockClient(), paths, 3737);
+    expect(ensureDaemon).toHaveBeenCalledWith(expect.objectContaining({ noSpawn: true, spawnTimeoutMs: 0 }));
+  });
+
+  it("exits 0 without posting when no daemon is up", async () => {
+    vi.mocked(ensureDaemon).mockResolvedValueOnce({ connected: false } as any);
+    const client = createMockClient();
+    const result = await handleSessionEnd(JSON.stringify({ session_id: "s1", cwd: "/tmp" }), client, paths, 3737);
+    expect(result.exitCode).toBe(0);
+    expect(client.post).not.toHaveBeenCalled();
+  });
+
+  it("exits 0 when the daemon rejects or times out, and logs the failure", async () => {
+    const client = { post: vi.fn().mockRejectedValue(new Error("timeout")) } as any;
+    const result = await handleSessionEnd(JSON.stringify({ session_id: "s1", cwd: "/tmp" }), client, paths, 3737);
+    expect(result.exitCode).toBe(0);
+    expect(safeLogError).toHaveBeenCalledWith(
+      "session-end",
+      expect.objectContaining({ message: "timeout" }),
+      expect.objectContaining({ sessionId: "s1", cwd: "/tmp" }),
     );
+  });
+
+  it("fires /ingest the old way when a compatible older daemon has no /session-end", async () => {
+    const { request } = await import("node:http");
+    const notFound = Object.assign(new Error("HTTP 404"), { status: 404 });
+    const client = { post: vi.fn().mockRejectedValue(notFound) } as any;
+    const input = { session_id: "s1", cwd: "/tmp", transcript_path: "/tmp/t.jsonl" };
+    const result = await handleSessionEnd(JSON.stringify(input), client, paths, 3737);
+    expect(result.exitCode).toBe(0);
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({
+      path: "/ingest", method: "POST", port: 3737,
+      headers: expect.objectContaining({ Authorization: "Bearer test-token-abc" }),
+    }));
+    expect(mockHttpReq.write).toHaveBeenCalledWith(JSON.stringify(input));
     expect(mockHttpReq.end).toHaveBeenCalled();
   });
 
-  it("fires compact even when totalTokens is below old threshold", async () => {
-    const { request } = await import("node:http");
-    const client = createMockClient({ ingested: 5, totalTokens: 500 });
-    const stdin = JSON.stringify({ session_id: "s1", cwd: "/tmp" });
-    await handleSessionEnd(stdin, client, 3737);
-    const httpReqMock = vi.mocked(request);
-    const compactCalls = httpReqMock.mock.calls.filter(
-      (args: any[]) => args[0]?.path === "/compact",
-    );
-    expect(compactCalls.length).toBeGreaterThan(0);
-  });
-
-  it("skips compact when hooks.disableAutoCompact is true", async () => {
-    const { loadDaemonConfig } = await import("../../src/daemon/config.js");
-    vi.mocked(loadDaemonConfig).mockReturnValueOnce({
-      compaction: { autoCompactMinTokens: 0 },
-      hooks: { disableAutoCompact: true, snapshotIntervalSec: 60 },
-    } as any);
-    const { request } = await import("node:http");
-    const client = createMockClient({ ingested: 100, totalTokens: 99999 });
-    await handleSessionEnd(JSON.stringify({ session_id: "s1", cwd: "/tmp" }), client, 3737);
-    const httpReqMock = vi.mocked(request);
-    const compactCalls = httpReqMock.mock.calls.filter(
-      (args: any[]) => args[0]?.path === "/compact",
-    );
-    expect(compactCalls.length).toBe(0);
-  });
-
-  it("fires promote after ingest (always)", async () => {
-    const { request } = await import("node:http");
-    const client = createMockClient({ ingested: 5, totalTokens: 100 });
-    await handleSessionEnd(
-      JSON.stringify({ session_id: "s1", cwd: "/tmp" }),
-      client, 3737,
-    );
-    const httpReqMock = vi.mocked(request);
-    const promoteCalls = httpReqMock.mock.calls.filter(
-      (args: any[]) => args[0]?.path === "/promote",
-    );
-    expect(promoteCalls.length).toBe(1);
-  });
-
-  it("records session completion in ingest manifest", async () => {
-    const { request } = await import("node:http");
-    const client = createMockClient({ ingested: 5, totalTokens: 100 });
-    await handleSessionEnd(
-      JSON.stringify({ session_id: "s1", cwd: "/tmp" }),
-      client, 3737,
-    );
-    const httpReqMock = vi.mocked(request);
-    const manifestCalls = httpReqMock.mock.calls.filter(
-      (args: any[]) => args[0]?.path === "/session-complete",
-    );
-    expect(manifestCalls.length).toBe(1);
-  });
-
-  it("calls socket.unref() so the process does not wait for a compact response", async () => {
-    // fireCompactRequest registers a "socket" handler that calls unref() — this is
-    // what prevents the Node.js event loop from staying alive until the daemon responds.
+  it("defers socket.unref() until the fallback request body is flushed", async () => {
     const mockSocket = { unref: vi.fn() };
-    mockHttpReq.on.mockImplementation((event: string, cb: (s: unknown) => void) => {
+    let finish: (() => void) | undefined;
+    mockHttpReq.on.mockImplementation((event: string, cb: (arg?: unknown) => void) => {
       if (event === "socket") cb(mockSocket);
-      if (event === "finish") cb(undefined);
+      if (event === "finish") finish = cb as () => void;
       return mockHttpReq;
     });
-
-    const client = createMockClient({ ingested: 100, totalTokens: 25000 });
-    const input = JSON.stringify({ session_id: "s1", cwd: "/tmp" });
-    const result = await handleSessionEnd(input, client, 3737);
-
-    expect(result.exitCode).toBe(0);
-    expect(mockSocket.unref).toHaveBeenCalled();
+    const client = { post: vi.fn().mockRejectedValue(Object.assign(new Error("HTTP 404"), { status: 404 })) } as any;
+    await handleSessionEnd(JSON.stringify({ session_id: "s1", cwd: "/tmp" }), client, paths, 3737);
+    expect(mockSocket.unref).not.toHaveBeenCalled();
+    finish?.();
+    expect(mockSocket.unref).toHaveBeenCalledTimes(1);
   });
 
-  it("fires compact at exact threshold boundary (>=)", async () => {
+  it("omits the Authorization header on the fallback when no daemon token exists", async () => {
+    vi.mocked(readAuthToken).mockReturnValueOnce(null);
     const { request } = await import("node:http");
-    const client = createMockClient({ ingested: 50, totalTokens: 10000 });
-    const input = JSON.stringify({ session_id: "s1", cwd: "/tmp" });
-    await handleSessionEnd(input, client, 3737);
-    expect(request).toHaveBeenCalled();
+    const client = { post: vi.fn().mockRejectedValue(Object.assign(new Error("HTTP 404"), { status: 404 })) } as any;
+    await handleSessionEnd(JSON.stringify({ session_id: "s1", cwd: "/tmp" }), client, paths, 3737);
+    const call = vi.mocked(request).mock.calls[0][0] as { headers?: Record<string, string> };
+    expect(call.headers?.Authorization).toBeUndefined();
+  });
+
+  it("does not fall back to /ingest on any other failure", async () => {
+    const { request } = await import("node:http");
+    const client = { post: vi.fn().mockRejectedValue(Object.assign(new Error("HTTP 500"), { status: 500 })) } as any;
+    await handleSessionEnd(JSON.stringify({ session_id: "s1", cwd: "/tmp" }), client, paths, 3737);
+    expect(request).not.toHaveBeenCalled();
   });
 
   it("handles empty stdin gracefully", async () => {
-    const client = createMockClient({ ingested: 0 });
-    const result = await handleSessionEnd("", client, 3737);
+    const result = await handleSessionEnd("", createMockClient(), paths, 3737);
     expect(result.exitCode).toBe(0);
   });
-
-  it("writes stderr warning when ingest reports redacted content", async () => {
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    const { loadDaemonConfig } = await import("../../src/daemon/config.js");
-    vi.mocked(loadDaemonConfig).mockReturnValueOnce({
-      compaction: {},
-      hooks: {},
-      security: { sensitivePatterns: [], notify_on_filter: true },
-    } as any);
-    const client = createMockClient({
-      ingested: 2,
-      totalTokens: 500,
-      redacted: 1,
-      redactedCategories: ["built_in"],
-    });
-    await handleSessionEnd(JSON.stringify({ session_id: "s1", cwd: "/tmp" }), client, 3737);
-    expect(stderrSpy).toHaveBeenCalledWith(
-      expect.stringContaining("lcm: filtered sensitive data from history (pattern: built_in)"),
-    );
-    stderrSpy.mockRestore();
-  });
-
-  it("does not write stderr when notify_on_filter is false", async () => {
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    const { loadDaemonConfig } = await import("../../src/daemon/config.js");
-    vi.mocked(loadDaemonConfig).mockReturnValueOnce({
-      compaction: {},
-      hooks: {},
-      security: { sensitivePatterns: [], notify_on_filter: false },
-    } as any);
-    const client = createMockClient({
-      ingested: 2,
-      totalTokens: 500,
-      redacted: 1,
-      redactedCategories: ["gitleaks"],
-    });
-    await handleSessionEnd(JSON.stringify({ session_id: "s1", cwd: "/tmp" }), client, 3737);
-    const filteredCalls = stderrSpy.mock.calls.filter((args) =>
-      typeof args[0] === "string" && args[0].includes("lcm: filtered"),
-    );
-    expect(filteredCalls.length).toBe(0);
-    stderrSpy.mockRestore();
-  });
-
-  it("does not write stderr when no redactions occurred", async () => {
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    const { loadDaemonConfig } = await import("../../src/daemon/config.js");
-    vi.mocked(loadDaemonConfig).mockReturnValueOnce({
-      compaction: {},
-      hooks: {},
-      security: { sensitivePatterns: [] },
-    } as any);
-    const client = createMockClient({ ingested: 3, totalTokens: 300 });
-    await handleSessionEnd(JSON.stringify({ session_id: "s1", cwd: "/tmp" }), client, 3737);
-    const filteredCalls = stderrSpy.mock.calls.filter((args) =>
-      typeof args[0] === "string" && args[0].includes("lcm: filtered"),
-    );
-    expect(filteredCalls.length).toBe(0);
-    stderrSpy.mockRestore();
-  });
-
-  it("sends Authorization header on all fire-and-forget requests", async () => {
-    const { request } = await import("node:http");
-    const client = createMockClient({ ingested: 5, totalTokens: 100 });
-    await handleSessionEnd(JSON.stringify({ session_id: "s1", cwd: "/tmp" }), client, 3737);
-    const httpReqMock = vi.mocked(request);
-    const paths = ["/compact", "/promote", "/promote-events", "/session-complete"];
-    for (const path of paths) {
-      const calls = httpReqMock.mock.calls.filter((args: any[]) => args[0]?.path === path);
-      expect(calls.length, `expected a request to ${path}`).toBeGreaterThan(0);
-      const expected = "Bearer test-token-abc";
-      for (const call of calls) {
-        expect(call[0]?.headers?.Authorization).toBe(expected);
-      }
-    }
-  });
-
-  it("omits Authorization header when no daemon token exists", async () => {
-    vi.mocked(readAuthToken).mockReturnValueOnce(null)
-      .mockReturnValueOnce(null)
-      .mockReturnValueOnce(null)
-      .mockReturnValueOnce(null);
-    const { request } = await import("node:http");
-    const client = createMockClient({ ingested: 5, totalTokens: 100 });
-    await handleSessionEnd(JSON.stringify({ session_id: "s1", cwd: "/tmp" }), client, 3737);
-    const httpReqMock = vi.mocked(request);
-    for (const call of httpReqMock.mock.calls) {
-      expect(call[0]?.headers?.Authorization).toBeUndefined();
-    }
-  });
 });
-
-function stdin(obj: Record<string, unknown>): string {
-  return JSON.stringify(obj);
-}

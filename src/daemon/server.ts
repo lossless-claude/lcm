@@ -26,6 +26,7 @@ import { createReviewStaleHandler } from "./routes/review-stale.js";
 import { createToolEventHandler } from "./routes/tool-event.js";
 import { createSessionScavengeHandler } from "./routes/session-scavenge.js";
 import { createSessionStartCompactHandler } from "./routes/session-start-compact.js";
+import { createSessionEndHandler, invokeRoute } from "./routes/session-end.js";
 import { backfillProjectIdentities } from "./project-group.js";
 import { PKG_VERSION, BUILD_ID } from "./version.js";
 import { lcmHome } from "../lcm-home.js";
@@ -163,19 +164,11 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
           const sessionId = file.replace(".jsonl", "");
           const transcriptPath = join(sessionsDir, file);
 
-          // Use the ingest route logic directly
-          const mockReq = {} as any;
-          const response = { statusCode: 200, body: "" };
-          const mockRes = {
-            writeHead: (code: number) => { response.statusCode = code; },
-            end: (data: string) => { response.body = data; },
-          } as any;
-
-          await ingestHandler(mockReq, mockRes, JSON.stringify({
-            session_id: sessionId,
-            cwd: meta.cwd,
-            transcript_path: transcriptPath,
-          }));
+          try {
+            await invokeRoute(ingestHandler, { session_id: sessionId, cwd: meta.cwd, transcript_path: transcriptPath });
+          } catch {
+            continue; // one rejected transcript must not end the sweep
+          }
         }
       }
     } catch {
@@ -243,6 +236,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
       routes.set("POST /status", createStatusHandler(config, paths, startTime, actualPort));
       // Needs its own port to reuse fireCompactRequest's loopback call.
       routes.set("POST /session-start-compact", createSessionStartCompactHandler(config, actualPort, paths));
+      routes.set("POST /session-end", createSessionEndHandler(config, actualPort, paths, ingestHandler));
 
       resolve({
         address: () => addr,

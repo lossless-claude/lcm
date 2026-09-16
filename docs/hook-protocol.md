@@ -59,7 +59,7 @@ After restore succeeds and `cwd` is present, the hook also fires one non-blockin
 
 **Command:** `lcm session-end`
 
-Invoked when the Claude Code session ends. lcm ingests the completed session transcript and triggers passive-learning event promotion.
+Invoked when the Claude Code session ends. The hook posts its stdin once to `POST /session-end` and exits; the daemon answers `202` before doing any work, then runs the ingest on its own and, once it has landed, fires compact, promote, promote-events and session-complete — only the ingest is sequenced, because the other four depend on it. The host gives SessionEnd hooks a shared budget of about 1.5s, far shorter than a large ingest, and a hook killed mid-sequence would never send the steps after the kill — so the daemon owns the sequence and the hook only hands it over. A redaction notice (`security.notify_on_filter`) and an ingest failure are recorded through the hook error log (`~/.lossless-claude/logs/events.log` and the events sidecar), not printed to the terminal. Both `hooks.disableAutoCompact` and `security.notify_on_filter` are read from the daemon's startup config, so a change in `config.json` takes effect on the next daemon start. A compatible daemon of an earlier patch that has no `/session-end` answers `404`; the hook then fires `/ingest` the old way, fire-and-forget, and compaction, promotion and the completion record are left to the SessionStart sweep, since none of them may run before that ingest lands.
 
 **Stdin fields:**
 
@@ -69,7 +69,7 @@ Invoked when the Claude Code session ends. lcm ingests the completed session tra
 | `cwd` | string | Working directory |
 | `hook_event_name` | string | `"SessionEnd"` |
 
-**Response:** Exit code `0`. Runs best-effort; failures do not block session exit.
+**Response:** Exit code `0`. Runs best-effort; a daemon that is down, rejects or does not acknowledge in time does not block session exit.
 
 ## UserPromptSubmit Hook
 
@@ -174,12 +174,12 @@ Every hook bounds its daemon call so a wedged daemon can never hold the session 
 |------|-------|-----------------|--------------|
 | PreCompact | `/compact` | 120s — summarization calls an LLM | `timeout: 120` on the PreCompact entry in `.claude-plugin/plugin.json` |
 | SessionStart | `/restore` | 10s | host default |
-| SessionEnd | `/ingest` | 10s | host default (SessionEnd hooks share a short budget) |
+| SessionEnd | `/session-end` | 1s — waits for the `202`, not the work | host default (SessionEnd hooks share a budget of about 1.5s) |
 | UserPromptSubmit | `/prompt-search` | 5s | host default |
 
 A client deadline longer than the host timeout is dead code — the host kills the hook first. PreCompact is the only hook that declares a matching host `timeout`, and the two must stay in sync.
 
-SessionEnd additionally passes `noSpawn: true`, so it never starts a daemon just to ingest: if none is running the hook exits 0 and the `SessionSnapshot` hook's incremental ingest is the fallback.
+SessionEnd additionally passes `noSpawn: true`, so it never starts a daemon just to ingest: if none is running the hook exits 0, and the `SessionSnapshot` hook's incremental ingest plus the SessionStart catch-up sweep are the fallback.
 
 ## Auto-heal
 
