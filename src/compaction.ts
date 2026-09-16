@@ -7,13 +7,6 @@ import { resolveLcmConfig } from "./db/config.js";
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
-export interface CompactionDecision {
-  shouldCompact: boolean;
-  reason: "threshold" | "manual" | "none";
-  currentTokens: number;
-  threshold: number;
-}
-
 export interface CompactionResult {
   actionTaken: boolean;
   /** Tokens before compaction */
@@ -47,8 +40,6 @@ export interface CompactionConfig {
   leafChunkTokens?: number;
   /** Target tokens for condensed summaries (default 900) */
   condensedTargetTokens: number;
-  /** Maximum compaction rounds (default 10) */
-  maxRounds: number;
   /** IANA timezone for timestamps in summaries (default: UTC) */
   timezone?: string;
   /** BCP 47 language tag for generated summaries, when configured or detected. */
@@ -85,7 +76,6 @@ export function compactEngineConfig(opts: {
     incrementalMaxDepth: knobs.incrementalMaxDepth,
     leafChunkTokens: knobs.leafChunkTokens,
     condensedTargetTokens: knobs.condensedTargetTokens,
-    maxRounds: 10,
     language: opts.language,
     scrubber: opts.scrubber,
   };
@@ -206,200 +196,16 @@ export class CompactionEngine {
     private config: CompactionConfig,
   ) {}
 
-  // ── evaluate ─────────────────────────────────────────────────────────────
-
-  /** Evaluate whether compaction is needed. */
-  async evaluate(
-    conversationId: number,
-    tokenBudget: number,
-    observedTokenCount?: number,
-  ): Promise<CompactionDecision> {
-    const storedTokens = await this.summaryStore.getContextTokenCount(conversationId);
-    const liveTokens =
-      typeof observedTokenCount === "number" &&
-      Number.isFinite(observedTokenCount) &&
-      observedTokenCount > 0
-        ? Math.floor(observedTokenCount)
-        : 0;
-    const currentTokens = Math.max(storedTokens, liveTokens);
-    const threshold = Math.floor(this.config.contextThreshold * tokenBudget);
-
-    if (currentTokens > threshold) {
-      return {
-        shouldCompact: true,
-        reason: "threshold",
-        currentTokens,
-        threshold,
-      };
-    }
-
-    return {
-      shouldCompact: false,
-      reason: "none",
-      currentTokens,
-      threshold,
-    };
-  }
-
-  /**
-   * Evaluate whether the raw-message leaf trigger is active.
-   *
-   * Counts message tokens outside the protected fresh tail and compares against
-   * `leafChunkTokens`. This lets callers trigger a soft incremental leaf pass
-   * before the full context threshold is breached.
-   */
-  async evaluateLeafTrigger(conversationId: number): Promise<{
-    shouldCompact: boolean;
-    rawTokensOutsideTail: number;
-    threshold: number;
-  }> {
-    const rawTokensOutsideTail = await this.countRawTokensOutsideFreshTail(conversationId);
-    const threshold = this.resolveLeafChunkTokens();
-    return {
-      shouldCompact: rawTokensOutsideTail >= threshold,
-      rawTokensOutsideTail,
-      threshold,
-    };
-  }
-
   // ── compact ──────────────────────────────────────────────────────────────
 
-  /** Run a full compaction sweep for a conversation. */
-  async compact(input: {
-    conversationId: number;
-    tokenBudget: number;
-    /** LLM call function for summarization */
-    summarize: CompactionSummarizeFn;
-    force?: boolean;
-    hardTrigger?: boolean;
-    /** Seed context from a prior session's final summary (used in replay import). */
-    previousSummaryContent?: string;
-  }): Promise<CompactionResult> {
-    return this.compactFullSweep(input);
-  }
-
   /**
-   * Run a single leaf pass against the oldest compactable raw chunk.
-   *
-   * This is the soft-trigger path used for incremental maintenance.
-   */
-  async compactLeaf(input: {
-    conversationId: number;
-    tokenBudget: number;
-    summarize: CompactionSummarizeFn;
-    force?: boolean;
-    previousSummaryContent?: string;
-  }): Promise<CompactionResult> {
-    const { conversationId, tokenBudget, summarize, force } = input;
-
-    const tokensBefore = await this.summaryStore.getContextTokenCount(conversationId);
-    const threshold = Math.floor(this.config.contextThreshold * tokenBudget);
-    const leafTrigger = await this.evaluateLeafTrigger(conversationId);
-
-    if (!force && tokensBefore <= threshold && !leafTrigger.shouldCompact) {
-      return {
-        actionTaken: false,
-        tokensBefore,
-        tokensAfter: tokensBefore,
-        condensed: false,
-      };
-    }
-
-    const leafChunk = await this.selectOldestLeafChunk(conversationId);
-    if (leafChunk.items.length === 0) {
-      return {
-        actionTaken: false,
-        tokensBefore,
-        tokensAfter: tokensBefore,
-        condensed: false,
-      };
-    }
-
-    const previousSummaryContent =
-      input.previousSummaryContent ??
-      (await this.resolvePriorLeafSummaryContext(conversationId, leafChunk.items));
-
-    const leafResult = await this.leafPass(
-      conversationId,
-      leafChunk.items,
-      summarize,
-      previousSummaryContent,
-    );
-    const tokensAfterLeaf = await this.summaryStore.getContextTokenCount(conversationId);
-
-    await this.persistCompactionEvents({
-      conversationId,
-      tokensBefore,
-      tokensAfterLeaf,
-      tokensAfterFinal: tokensAfterLeaf,
-      leafResult: { summaryId: leafResult.summaryId, level: leafResult.level },
-      condenseResult: null,
-    });
-
-    let tokensAfter = tokensAfterLeaf;
-    let condensed = false;
-    let createdSummaryId = leafResult.summaryId;
-    const createdSummaryIds = [leafResult.summaryId];
-    let level = leafResult.level;
-
-    const incrementalMaxDepth = this.resolveIncrementalMaxDepth();
-    const condensedMinChunkTokens = this.resolveCondensedMinChunkTokens();
-    if (incrementalMaxDepth > 0) {
-      for (let targetDepth = 0; targetDepth < incrementalMaxDepth; targetDepth++) {
-        const fanout = this.resolveFanoutForDepth(targetDepth, false);
-        const chunk = await this.selectOldestChunkAtDepth(conversationId, targetDepth);
-        if (chunk.items.length < fanout || chunk.summaryTokens < condensedMinChunkTokens) {
-          break;
-        }
-
-        const passTokensBefore = await this.summaryStore.getContextTokenCount(conversationId);
-        const condenseResult = await this.condensedPass(
-          conversationId,
-          chunk.items,
-          targetDepth,
-          summarize,
-        );
-        const passTokensAfter = await this.summaryStore.getContextTokenCount(conversationId);
-        await this.persistCompactionEvents({
-          conversationId,
-          tokensBefore: passTokensBefore,
-          tokensAfterLeaf: passTokensBefore,
-          tokensAfterFinal: passTokensAfter,
-          leafResult: null,
-          condenseResult,
-        });
-
-        tokensAfter = passTokensAfter;
-        condensed = true;
-        createdSummaryId = condenseResult.summaryId;
-        createdSummaryIds.push(condenseResult.summaryId);
-        level = condenseResult.level;
-
-        if (passTokensAfter >= passTokensBefore) {
-          break;
-        }
-      }
-    }
-
-    return {
-      actionTaken: true,
-      tokensBefore,
-      tokensAfter,
-      createdSummaryId,
-      createdSummaryIds,
-      condensed,
-      level,
-    };
-  }
-
-  /**
-   * Run a hard-trigger sweep:
+   * Run a full compaction sweep for a conversation:
    *
    * Phase 1: repeatedly compact raw-message chunks outside the fresh tail.
    * Phase 2: repeatedly condense oldest summary chunks while chunk utilization
    *          remains high enough to be worthwhile.
    */
-  async compactFullSweep(input: {
+  async compact(input: {
     conversationId: number;
     tokenBudget: number;
     summarize: CompactionSummarizeFn;
@@ -539,78 +345,27 @@ export class CompactionEngine {
     };
   }
 
-  // ── compactUntilUnder ────────────────────────────────────────────────────
+  // ── Private helpers ──────────────────────────────────────────────────────
 
-  /** Compact until under the requested target, running up to maxRounds. */
-  async compactUntilUnder(input: {
-    conversationId: number;
-    tokenBudget: number;
-    targetTokens?: number;
-    currentTokens?: number;
-    summarize: CompactionSummarizeFn;
-  }): Promise<{ success: boolean; rounds: number; finalTokens: number }> {
-    const { conversationId, tokenBudget, summarize } = input;
-    const targetTokens =
-      typeof input.targetTokens === "number" &&
-      Number.isFinite(input.targetTokens) &&
-      input.targetTokens > 0
-        ? Math.floor(input.targetTokens)
-        : tokenBudget;
-
-    const storedTokens = await this.summaryStore.getContextTokenCount(conversationId);
-    const liveTokens =
-      typeof input.currentTokens === "number" &&
-      Number.isFinite(input.currentTokens) &&
-      input.currentTokens > 0
-        ? Math.floor(input.currentTokens)
-        : 0;
-    let lastTokens = Math.max(storedTokens, liveTokens);
-
-    // For forced overflow recovery, callers may pass an observed count that
-    // equals the context budget. Treat equality as still needing a compaction
-    // attempt so we can create headroom for provider-side framing overhead.
-    if (lastTokens < targetTokens) {
-      return { success: true, rounds: 0, finalTokens: lastTokens };
-    }
-
-    for (let round = 1; round <= this.config.maxRounds; round++) {
-      const result = await this.compact({
-        conversationId,
-        tokenBudget,
-        summarize,
-        force: true,
-      });
-
-      if (result.tokensAfter <= targetTokens) {
-        return {
-          success: true,
-          rounds: round,
-          finalTokens: result.tokensAfter,
-        };
-      }
-
-      // No progress -- bail to avoid infinite loop
-      if (!result.actionTaken || result.tokensAfter >= lastTokens) {
-        return {
-          success: false,
-          rounds: round,
-          finalTokens: result.tokensAfter,
-        };
-      }
-
-      lastTokens = result.tokensAfter;
-    }
-
-    // Exhausted all rounds
-    const finalTokens = await this.summaryStore.getContextTokenCount(conversationId);
+  /**
+   * Evaluate whether the raw-message leaf trigger is active.
+   *
+   * Counts message tokens outside the protected fresh tail and compares against
+   * `leafChunkTokens`.
+   */
+  private async evaluateLeafTrigger(conversationId: number): Promise<{
+    shouldCompact: boolean;
+    rawTokensOutsideTail: number;
+    threshold: number;
+  }> {
+    const rawTokensOutsideTail = await this.countRawTokensOutsideFreshTail(conversationId);
+    const threshold = this.resolveLeafChunkTokens();
     return {
-      success: finalTokens <= targetTokens,
-      rounds: this.config.maxRounds,
-      finalTokens,
+      shouldCompact: rawTokensOutsideTail >= threshold,
+      rawTokensOutsideTail,
+      threshold,
     };
   }
-
-  // ── Private helpers ──────────────────────────────────────────────────────
 
   /** Normalize configured leaf chunk size to a safe positive integer. */
   private resolveLeafChunkTokens(): number {
@@ -854,16 +609,6 @@ export class CompactionEngine {
     return 2;
   }
 
-  private resolveIncrementalMaxDepth(): number {
-    if (
-      typeof this.config.incrementalMaxDepth === "number" &&
-      Number.isFinite(this.config.incrementalMaxDepth)
-    ) {
-      if (this.config.incrementalMaxDepth < 0) return Infinity;
-      if (this.config.incrementalMaxDepth > 0) return Math.floor(this.config.incrementalMaxDepth);
-    }
-    return 0;
-  }
   private resolveFanoutForDepth(targetDepth: number, hardTrigger: boolean): number {
     if (hardTrigger) {
       return this.resolveCondensedMinFanoutHard();
