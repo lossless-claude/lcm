@@ -1,8 +1,16 @@
-import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, chmodSync } from "node:fs";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { discoverSubagentTranscripts, walkSubagentTranscripts } from "../src/subagent-attribution.js";
+
+// Only readdirSync is wrapped so a single test can simulate an EACCES failure
+// on one directory; every other export, and every other call to readdirSync,
+// passes straight through to the real node:fs implementation.
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, readdirSync: vi.fn(actual.readdirSync) };
+});
 
 describe("discoverSubagentTranscripts", () => {
   const dirs: string[] = [];
@@ -101,6 +109,16 @@ describe("discoverSubagentTranscripts", () => {
     expect(found[0].attribution).toEqual({ parentSessionId: null, subagentType: null, subagentDesc: null });
   });
 
+  it("leaves attribution all-null when the sidecar parses to an array, without dropping the transcript", () => {
+    const sessionDir = makeSessionDir();
+    writeFileSync(join(sessionDir, "subagents", "agent-array.jsonl"), "");
+    writeFileSync(join(sessionDir, "subagents", "agent-array.meta.json"), "[]");
+
+    const found = discoverSubagentTranscripts(sessionDir);
+    expect(found.map((f) => f.sessionId)).toEqual(["agent-array"]);
+    expect(found[0].attribution).toEqual({ parentSessionId: null, subagentType: null, subagentDesc: null });
+  });
+
   it("skips a symlinked subagents/ directory itself", () => {
     const root = mkdtempSync(join(tmpdir(), "lcm-subagent-discover-test-"));
     dirs.push(root);
@@ -121,11 +139,19 @@ describe("discoverSubagentTranscripts", () => {
     const locked = join(subagentsDir, "workflows", "wf_locked");
     mkdirSync(locked, { recursive: true });
     writeFileSync(join(locked, "agent-b.jsonl"), "");
-    chmodSync(locked, 0o000);
+
+    // Simulate an unreadable directory (EACCES) rather than relying on chmod,
+    // which is a no-op for tests running as root (containers) and non-portable.
+    const mockedReaddirSync = vi.mocked(readdirSync);
+    const actualImplementation = mockedReaddirSync.getMockImplementation()!;
+    mockedReaddirSync.mockImplementation((dir: unknown, options?: unknown) => {
+      if (dir === locked) throw new Error("EACCES: permission denied");
+      return (actualImplementation as (...args: unknown[]) => unknown)(dir, options);
+    });
     try {
       expect(discoverSubagentTranscripts(sessionDir).map((f) => f.sessionId)).toEqual(["agent-a"]);
     } finally {
-      chmodSync(locked, 0o755);
+      mockedReaddirSync.mockImplementation(actualImplementation as typeof readdirSync);
     }
   });
 

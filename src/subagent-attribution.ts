@@ -46,7 +46,7 @@ function readSubagentAttribution(
   } catch {
     return EMPTY_ATTRIBUTION;
   }
-  if (parsed === null || typeof parsed !== "object") return EMPTY_ATTRIBUTION;
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return EMPTY_ATTRIBUTION;
   const meta = parsed as Record<string, unknown>;
 
   const parentAgentId = typeof meta.parentAgentId === "string" && meta.parentAgentId ? meta.parentAgentId : null;
