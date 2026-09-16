@@ -141,7 +141,8 @@ export function registerKnowledgeCommands(program: Command, deps: KnowledgeComma
       const config = loadDaemonConfig(paths.configPath);
       const port = config.daemon?.port ?? 3737;
       const client = await createDaemonClientOrExit();
-      const { readdirSync, existsSync, readFileSync } = await import("node:fs");
+      const { readdirSync, existsSync } = await import("node:fs");
+      const { readProjectMetaIn } = await import("../daemon/project-meta.js");
 
       if (dryRun) console.log("  [dry-run] No changes will be written.\n");
 
@@ -152,12 +153,8 @@ export function registerKnowledgeCommands(program: Command, deps: KnowledgeComma
         if (existsSync(projectsDir)) {
           for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
             if (!entry.isDirectory()) continue;
-            const metaPath = join(projectsDir, entry.name, "meta.json");
-            if (!existsSync(metaPath)) continue;
-            try {
-              const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
-              if (meta.cwd) cwds.push(meta.cwd);
-            } catch { /* skip unreadable */ }
+            const cwd = readProjectMetaIn(join(projectsDir, entry.name))?.cwd;
+            if (cwd) cwds.push(cwd);
           }
         }
       } else {
@@ -225,7 +222,8 @@ export function registerKnowledgeCommands(program: Command, deps: KnowledgeComma
       await admitCliDatabaseWork();
       const { exportKnowledge } = await import("../portable-knowledge.js");
       const { join } = await import("node:path");
-      const { existsSync, readdirSync, readFileSync } = await import("node:fs");
+      const { existsSync, readdirSync } = await import("node:fs");
+      const { readProjectMetaIn } = await import("../daemon/project-meta.js");
       const paths = createLcmPaths(lcmHome());
 
       const tags: string[] | undefined = opts.tags
@@ -241,12 +239,8 @@ export function registerKnowledgeCommands(program: Command, deps: KnowledgeComma
         if (existsSync(projectsDir)) {
           for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
             if (!entry.isDirectory()) continue;
-            const metaPath = join(projectsDir, entry.name, "meta.json");
-            if (!existsSync(metaPath)) continue;
-            try {
-              const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
-              if (meta.cwd) cwds.push(meta.cwd);
-            } catch { /* skip */ }
+            const cwd = readProjectMetaIn(join(projectsDir, entry.name))?.cwd;
+            if (cwd) cwds.push(cwd);
           }
         }
       } else {

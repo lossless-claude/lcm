@@ -1,9 +1,10 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "../config.js";
 import type { LcmPaths } from "../../lcm-paths.js";
-import { projectId, projectDbPath, projectMetaPath } from "../project.js";
+import { projectId, projectDbPath } from "../project.js";
+import { updateProjectMeta } from "../project-meta.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
@@ -109,17 +110,9 @@ export function createPromoteHandler(
         }
       }
 
-      // Update meta.json unless dry_run
       if (!dry_run) {
         try {
-          const metaPath = projectMetaPath(cwd, paths);
-          let meta: Record<string, unknown> = {};
-          if (existsSync(metaPath)) {
-            meta = JSON.parse(readFileSync(metaPath, "utf-8"));
-          }
-          meta.cwd = cwd;
-          meta.lastPromote = new Date().toISOString();
-          writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+          updateProjectMeta(cwd, paths, { lastPromote: new Date().toISOString() });
         } catch { /* non-fatal */ }
       }
     } catch (err) {

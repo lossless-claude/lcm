@@ -1,6 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
 import type { LcmPaths } from "../lcm-paths.js";
-import { projectMetaPath } from "../daemon/project.js";
+import { readProjectMeta } from "../daemon/project-meta.js";
 import { primarySubtag } from "../store/language-pack.js";
 
 /**
@@ -16,14 +15,8 @@ export type PivotLanguages = { authorLanguage?: string; pivotLanguage: string };
 
 /** The language recorded for this project, or undefined while none has been detected. */
 export function projectAuthorLanguage(cwd: string, paths: LcmPaths): string | undefined {
-  const path = projectMetaPath(cwd, paths);
-  if (!existsSync(path)) return undefined;
-  try {
-    const meta = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
-    return typeof meta.language === "string" && meta.language.length > 0 ? meta.language : undefined;
-  } catch {
-    return undefined;
-  }
+  const language = readProjectMeta(cwd, paths)?.language;
+  return typeof language === "string" && language.length > 0 ? language : undefined;
 }
 
 export function pivotLanguagesFor(cwd: string, pivotLanguage: string, paths: LcmPaths): PivotLanguages {

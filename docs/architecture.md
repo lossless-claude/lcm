@@ -61,6 +61,12 @@ The operations are shaped by what Episodic memory is asked to do:
 - **Read summaries** — by id, by conversation, deepest-first for a session's restore, newest-first across the project, or as a subtree under `lcm_expand`.
 - **Search** — `searchMessagesSync` / `searchSummariesSync`, full-text with a LIKE fallback, or regex.
 
+### The project record
+
+Beside each project's database sits `meta.json`, the project record: `cwd`, the git identity (`git`), the detected author `language` and `languageDetectedAt`, and the `lastIngest`, `lastCompact` and `lastPromote` timestamps. `src/daemon/project-meta.ts` is its only reader and writer: every other module reads through `readProjectMeta` / `readProjectMetaIn` and updates by key through `updateProjectMeta` / `updateProjectMetaIn`, which merge a patch into the current record in one synchronous read-modify-write and land it through a temporary file and a rename, so a crash mid-write cannot leave a torn file. The cwd-keyed update always re-asserts `cwd`, so a record is never left without the key that enumeration (`lcm export --all`, `lcm compact --all`, the compaction sweep, stats) selects on.
+
+One corrupt-file policy, whichever code path meets the file first: a read treats an unparsable file as absent; an update moves it aside as `meta.json.corrupt-<timestamp>` and starts again from the caller's keys. The alternatives both lose something silently — refusing to write leaves the project invisible to every enumeration until someone deletes the file by hand, and overwriting in place discards the evidence — while moving aside heals the project on its next write and keeps the bad bytes for inspection.
+
 ## Compaction lifecycle
 
 ### Ingestion
@@ -261,6 +267,8 @@ This handles the case where Claude Code wrote messages to the session file but c
 ## Operation serialization
 
 All mutating operations (ingest, compact) are serialized per-session using a promise queue. This prevents races between concurrent afterTurn/compact calls for the same conversation without blocking operations on different conversations.
+
+A project's `meta.json` is written by routes on different sessions of the same project, so the per-session queue does not cover it; it needs no queue of its own because each update in `src/daemon/project-meta.ts` is a single synchronous read-modify-write that nothing in the process can interleave with. Writers in other processes are outside the daemon's trust boundary, as they are for the database.
 
 ## Authentication
 

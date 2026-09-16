@@ -1,7 +1,8 @@
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { ensureProjectDir, projectId, projectMetaPath } from "./project.js";
+import { ensureProjectDir, projectId } from "./project.js";
+import { readProjectMeta, readProjectMetaIn, updateProjectMeta } from "./project-meta.js";
 import type { LcmPaths } from "../lcm-paths.js";
 import { discoverGitIdentity, type GitIdentity } from "./git-identity.js";
 
@@ -82,28 +83,17 @@ function openIndex(paths: LcmPaths): DatabaseSync {
 }
 
 function readGitMeta(cwd: string, paths: LcmPaths): ProjectGitMeta | null {
-  const path = projectMetaPath(cwd, paths);
-  if (!existsSync(path)) return null;
-  try {
-    const git = JSON.parse(readFileSync(path, "utf-8")).git;
-    if (!git || !Array.isArray(git.remotes)) return null;
-    return {
-      remotes: git.remotes.filter((r: unknown): r is string => typeof r === "string"),
-      relPath: typeof git.relPath === "string" ? git.relPath : "",
-      checkedAt: typeof git.checkedAt === "string" ? git.checkedAt : "",
-    };
-  } catch {
-    return null;
-  }
+  const git = readProjectMeta(cwd, paths)?.git as Partial<Record<keyof ProjectGitMeta, unknown>> | undefined;
+  if (!git || !Array.isArray(git.remotes)) return null;
+  return {
+    remotes: git.remotes.filter((r: unknown): r is string => typeof r === "string"),
+    relPath: typeof git.relPath === "string" ? git.relPath : "",
+    checkedAt: typeof git.checkedAt === "string" ? git.checkedAt : "",
+  };
 }
 
 function writeGitMeta(cwd: string, git: ProjectGitMeta, paths: LcmPaths): void {
-  const path = projectMetaPath(cwd, paths);
-  let meta: Record<string, unknown> = { cwd };
-  if (existsSync(path)) {
-    try { meta = JSON.parse(readFileSync(path, "utf-8")); } catch { /* keep default */ }
-  }
-  writeFileSync(path, JSON.stringify({ ...meta, git }, null, 2));
+  updateProjectMeta(cwd, paths, { git });
 }
 
 function isFresh(checkedAt: string): boolean {
@@ -203,29 +193,25 @@ export async function backfillProjectIdentities(paths: LcmPaths): Promise<number
   for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     if (++seen % BACKFILL_YIELD_EVERY === 0) await new Promise(setImmediate);
-    const metaPath = join(projectsDir, entry.name, "meta.json");
-    if (!existsSync(metaPath)) continue;
-    try {
-      const cwd = JSON.parse(readFileSync(metaPath, "utf-8")).cwd;
-      // A project whose folder is gone cannot be asked for its remotes; leave
-      // whatever was recorded before untouched.
-      if (typeof cwd !== "string" || !existsSync(cwd)) continue;
-      recordProjectIdentity(cwd, paths);
-      visited += 1;
-    } catch {
-      // A corrupt meta.json skips that project, never the whole backfill.
-    }
+    // A corrupt meta.json reads as absent and skips that project, never the whole backfill.
+    const cwd = readProjectMetaIn(join(projectsDir, entry.name))?.cwd;
+    // A project whose folder is gone cannot be asked for its remotes; leave
+    // whatever was recorded before untouched.
+    if (typeof cwd !== "string" || !existsSync(cwd)) continue;
+    recordProjectIdentity(cwd, paths);
+    visited += 1;
   }
   return visited;
 }
 
 /**
- * Ensures the project directory exists and its git identity is up to date.
- * Every route that writes to a project goes through here, so the index tracks
- * whatever the daemon has actually seen.
+ * Ensures the project directory exists, records its cwd and keeps its git
+ * identity up to date. Every route that writes to a project goes through here,
+ * so the index tracks whatever the daemon has actually seen.
  */
 export function openProject(cwd: string, paths: LcmPaths): string {
   const dir = ensureProjectDir(cwd, paths);
+  updateProjectMeta(cwd, paths, { cwd });
   recordProjectIdentity(cwd, paths);
   return dir;
 }

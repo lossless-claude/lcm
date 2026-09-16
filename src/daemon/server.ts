@@ -138,7 +138,8 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
 
   const scanForTranscripts = async () => {
     try {
-      const { readdirSync, existsSync, readFileSync } = await import("node:fs");
+      const { readdirSync, existsSync } = await import("node:fs");
+      const { readProjectMetaIn } = await import("./project-meta.js");
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
 
@@ -147,12 +148,8 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
 
       for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
-        const metaPath = join(projectsDir, entry.name, "meta.json");
-        if (!existsSync(metaPath)) continue;
-
-        let meta: { cwd?: string; lastCompact?: string } = {};
-        try { meta = JSON.parse(readFileSync(metaPath, "utf-8")); } catch { continue; }
-        if (!meta.cwd) continue;
+        const meta = readProjectMetaIn(join(projectsDir, entry.name));
+        if (!meta?.cwd) continue;
 
         // Find Claude Code session files for this project's cwd
         const cwdDashed = meta.cwd.replace(/\//g, "-").replace(/^-/, "");

@@ -1,8 +1,9 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { projectDbPath, projectId, projectMetaPath } from "./daemon/project.js";
+import { projectDbPath, projectId } from "./daemon/project.js";
+import { readProjectMeta } from "./daemon/project-meta.js";
 import { closeLcmConnection, getLcmConnection } from "./db/connection.js";
 import { runLcmMigrations } from "./db/migration.js";
 import { ConversationStore } from "./store/conversation-store.js";
@@ -483,14 +484,8 @@ function formatBuildReport(bench: BenchFile, out: string, rejected: string[]): s
 
 /** The language the daemon recorded for this project, if it has run detection. */
 function recordedProjectLanguage(cwd: string, paths: LcmPaths): string | null {
-  const metaPath = projectMetaPath(cwd, paths);
-  if (!existsSync(metaPath)) return null;
-  try {
-    const meta = JSON.parse(readFileSync(metaPath, "utf-8")) as { language?: unknown };
-    return typeof meta.language === "string" ? parseLanguageTag(meta.language) : null;
-  } catch {
-    return null;
-  }
+  const language = readProjectMeta(cwd, paths)?.language;
+  return typeof language === "string" ? parseLanguageTag(language) : null;
 }
 
 /**
