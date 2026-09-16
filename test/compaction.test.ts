@@ -58,7 +58,6 @@ describe("CompactionEngine.compact — previousSummaryContent seeding", () => {
       condensedMinFanoutHard: 5,
       incrementalMaxDepth: 0,
       condensedTargetTokens: 900,
-      maxRounds: 1,
       language: "pt-BR",
     });
 
