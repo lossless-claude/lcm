@@ -111,20 +111,21 @@ translations written by the calling agent from the tool description — the same
 
 | arm | corpus (sessions) | questions | `query` alone | with `pivotQuery` | Δ |
 |---|---|---|---|---|---|
-| tune | `lcm` (284) | 30, seed 1234 | 8/30 = 0.267 | 14/30 = 0.467 | +6 / −0 |
-| tune | `dwigt` (1773) | 30, seed 1234 | 13/30 = 0.433 | 13/30 = 0.433 | +3 / −3 |
+| tune | `lcm` (284) | 30, built at `ea10a75` | 8/30 = 0.267 | 14/30 = 0.467 | +6 / −0 |
+| tune | `dwigt` (1773) | 30, built at `ea10a75` | 13/30 = 0.433 | 13/30 = 0.433 | +3 / −3 |
 | holdout | `trilha-probatoria` (383) | 18 reviewed of 30, seed 20260916 | 15/18 = 0.833 | 14/18 = 0.778 | +0 / −1 |
 
 Pooled over the tune group: 21/60 → 27/60. The holdout was built fresh (a seed no sweep had used,
 12 generated questions dropped on review as unanswerable from memory) and graded once. Its one loss
-is a labelled session moving from rank 5 to rank 6; it is also the corpus whose own content is
+is a labelled session dropping out of the top five; it is also the corpus whose own content is
 pt-BR, where the ceiling experiment had already found the least to gain. A `pivotQuery` averaged
 123–215 bytes per corpus, on the call the agent was making anyway.
 
 English non-regression, `d733f1f` (the `main` before) against `f41c636`, same store, no
 `pivotQuery`: six `en` sets (`xgh`, `.claude`, `lossless-claude`, `Inspector`, `autoimprove`,
-`xavier-school`; 112 questions, seed 1234) returned the same top-5 for every question, and so did
-the three pt-BR sets above. The by-language selection changes nothing for a single-language project.
+`xavier-school`; 112 questions) returned the same top-5 for every question, and so did the `lcm`
+and `dwigt` sets above and the 14-question `trilha-probatoria` set built at `ea10a75`. The
+by-language selection changes nothing for a single-language project.
 
 ### Failure visibility
 
