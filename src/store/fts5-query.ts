@@ -129,6 +129,11 @@ export function prepareFts5Query(raw: string, preExtracted?: readonly string[], 
 /** The language each side of a pivot query is tokenised under; either may be unset. */
 export type QueryLanguages = { authorLanguage?: string; pivotLanguage?: string };
 
+/** One optional language tag as the list `extractQueryTerms` takes. */
+export function languageList(tag: string | undefined): string[] {
+  return tag ? [tag] : [];
+}
+
 /**
  * The caller's query and the caller's own translation of it, combined into one
  * additive term set.
@@ -165,8 +170,8 @@ export function combineWithPivotQuery(query: string, paths: LcmPaths | undefined
  */
 export function combinedQueryTerms(query: string, paths: LcmPaths | undefined, pivotQuery?: string, languages: QueryLanguages = {}): string[] | null {
   if (!pivotQuery || pivotQuery.trim().length === 0) return null;
-  const terms = extractQueryTerms(query, paths, languages.authorLanguage ? [languages.authorLanguage] : []);
-  const pivotTerms = extractQueryTerms(pivotQuery, paths, languages.pivotLanguage ? [languages.pivotLanguage] : [])
+  const terms = extractQueryTerms(query, paths, languageList(languages.authorLanguage));
+  const pivotTerms = extractQueryTerms(pivotQuery, paths, languageList(languages.pivotLanguage))
     .filter((term) => !terms.includes(term));
   if (pivotTerms.length === 0) return null;
   return [...terms, ...pivotTerms];

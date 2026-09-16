@@ -121,9 +121,10 @@ is a labelled session moving from rank 5 to rank 6; it is also the corpus whose 
 pt-BR, where the ceiling experiment had already found the least to gain. A `pivotQuery` averaged
 123–215 bytes per corpus, on the call the agent was making anyway.
 
-English non-regression, same commit against `main` before it: six `en` sets (`xgh`, `.claude`,
-`lossless-claude`, `Inspector`, `autoimprove`, `xavier-school`; 112 questions) returned the same
-top-5 for every question. The by-language selection changes nothing for a single-language project.
+English non-regression, `d733f1f` (the `main` before) against `f41c636`, same store, no
+`pivotQuery`: six `en` sets (`xgh`, `.claude`, `lossless-claude`, `Inspector`, `autoimprove`,
+`xavier-school`; 112 questions, seed 1234) returned the same top-5 for every question, and so did
+the three pt-BR sets above. The by-language selection changes nothing for a single-language project.
 
 ### Failure visibility
 

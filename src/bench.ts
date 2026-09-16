@@ -10,7 +10,7 @@ import { PromotedStore } from "./db/promoted.js";
 import { rankNativeHistory } from "./search/native-history.js";
 import { searchHistoryGroup } from "./search/group-history.js";
 import { searchPromotedGroup } from "./search/group-promoted.js";
-import { combinedQueryTerms, extractQueryTerms, type QueryLanguages } from "./store/fts5-query.js";
+import { combinedQueryTerms, extractQueryTerms, languageList, type QueryLanguages } from "./store/fts5-query.js";
 import { ensureLanguagePack } from "./store/language-pack.js";
 import { detectLanguage, isDistinctivePrompt, LANGUAGE_SAMPLE_SIZE, MAX_PROMPT_LENGTH, parseLanguageTag } from "./search/language.js";
 import type { LcmSummarizeFn } from "./llm/types.js";
@@ -692,7 +692,7 @@ async function loadBenchFile(file: string, paths: LcmPaths): Promise<BenchLoad> 
   }
   if (bench?.version !== 1 || !Array.isArray(bench.queries) || bench.queries.length === 0) return { error: "Invalid benchmark: expected version 1 with nonempty queries.\n" };
   const seenQuestions = new Set<string>();
-  const languages = bench.language ? [bench.language] : [];
+  const languages = languageList(bench.language);
   for (const query of bench.queries) {
     const problem = benchQueryProblem(query, seenQuestions, paths, languages);
     if (problem) return { error: problem };
@@ -746,7 +746,7 @@ type ScoreContext = {
 
 async function scoreQuery(query: BenchQuery, ctx: ScoreContext): Promise<QueryOutcome> {
   const start = performance.now();
-  const questionLanguages = ctx.languages.authorLanguage ? [ctx.languages.authorLanguage] : [];
+  const questionLanguages = languageList(ctx.languages.authorLanguage);
   // The same term set the /search route derives, pivot included, so the bench measures what callers see.
   const terms = combinedQueryTerms(query.question, ctx.paths, query.pivotQuery, ctx.languages) ?? extractQueryTerms(query.question, ctx.paths, questionLanguages);
   // The same ranking explicit search emits, so the bench measures what callers see.

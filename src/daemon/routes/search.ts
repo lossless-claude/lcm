@@ -11,7 +11,7 @@ import { searchNativeHistory } from "../../search/native-history.js";
 import { searchHistoryGroup } from "../../search/group-history.js";
 import { searchPromotedGroup } from "../../search/group-promoted.js";
 import { pivotLanguagesFor } from "../../search/pivot-language.js";
-import { combinedQueryTerms, combineWithPivotQuery, extractQueryTerms } from "../../store/fts5-query.js";
+import { combinedQueryTerms, combineWithPivotQuery, extractQueryTerms, languageList } from "../../store/fts5-query.js";
 import { validateCwd } from "../validate-cwd.js";
 import { projectRef } from "../project-group.js";
 
@@ -49,14 +49,13 @@ export function createSearchHandler(config: DaemonConfig, paths: LcmPaths): Rout
     // pivot's to `pivotQuery`. They also travel with every result, so a caller that
     // searched without a pivotQuery can see from the response that one applies and retry.
     const languages = cwd ? pivotLanguagesFor(cwd, config.search.pivotLanguage, paths) : undefined;
-    const queryLanguages = languages?.authorLanguage ? [languages.authorLanguage] : [];
 
     // The caller's own translation is combined here, once, and the term set travels with
     // the string: each layer below would otherwise re-tokenise the mixture without knowing
     // which side each word came from, keeping function words the pivot side had dropped.
     const rawPivot = typeof pivotQuery === "string" ? pivotQuery : undefined;
     const searchQuery = combineWithPivotQuery(String(query), paths, rawPivot, languages);
-    const searchTerms = combinedQueryTerms(String(query), paths, rawPivot, languages) ?? extractQueryTerms(String(query), paths, queryLanguages);
+    const searchTerms = combinedQueryTerms(String(query), paths, rawPivot, languages) ?? extractQueryTerms(String(query), paths, languageList(languages?.authorLanguage));
 
     let episodic: unknown[] = [];
     let promoted: unknown[] = [];

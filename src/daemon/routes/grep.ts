@@ -11,14 +11,8 @@ import { ConversationStore } from "../../store/conversation-store.js";
 import { SummaryStore } from "../../store/summary-store.js";
 import { RetrievalEngine } from "../../retrieval.js";
 import { validateCwd } from "../validate-cwd.js";
-import { extractQueryTerms } from "../../store/fts5-query.js";
+import { extractQueryTerms, languageList } from "../../store/fts5-query.js";
 import { projectAuthorLanguage } from "../../search/pivot-language.js";
-
-/** The project's recorded author language, as the list `extractQueryTerms` takes. */
-function authorLanguages(cwd: string, paths: LcmPaths): string[] {
-  const language = projectAuthorLanguage(cwd, paths);
-  return language ? [language] : [];
-}
 
 export function createGrepHandler(_config: DaemonConfig, paths: LcmPaths): RouteHandler {
   return async (_req, res, body) => {
@@ -61,7 +55,7 @@ export function createGrepHandler(_config: DaemonConfig, paths: LcmPaths): Route
         mode: searchMode,
         scope: scope ?? "both",
         since,
-        terms: searchMode === "full_text" ? extractQueryTerms(query, paths, authorLanguages(cwd, paths)) : undefined,
+        terms: searchMode === "full_text" ? extractQueryTerms(query, paths, languageList(projectAuthorLanguage(cwd, paths))) : undefined,
       });
       db.close();
       sendJson(res, 200, result);
