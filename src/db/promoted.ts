@@ -6,7 +6,7 @@ import {
   likePlanForPreparedQuery,
   type Fts5PreparedQuery,
 } from "../store/fts5-query.js";
-import { voteTagsOf } from "./votes.js";
+import { parseStoredTags, singleMemoryIdTag, voteTagsOf } from "./votes.js";
 
 export type PromotedRow = {
   id: string;
@@ -86,16 +86,13 @@ export class PromotedStore {
     // single memory, and a grep baseline that ORs terms must not win.
     const rows = this.searchFullText(prepared.or, limit, projectId);
 
-    let results = rows.map((r) => ({
-      id: r.id,
-      content: r.content,
-      tags: JSON.parse(r.tags) as string[],
-      projectId: r.project_id,
-      sessionId: r.session_id,
-      confidence: r.confidence,
-      createdAt: r.created_at,
-      rank: r.rank,
-    }));
+    let results = rows.flatMap((r) => {
+      const tags = parseStoredTags(r.tags);
+      return tags ? [{
+        id: r.id, content: r.content, tags, projectId: r.project_id,
+        sessionId: r.session_id, confidence: r.confidence, createdAt: r.created_at, rank: r.rank,
+      }] : [];
+    });
 
     // Vocabulary-mismatch fallback: when the question's words don't overlap
     // the corpus at all (porter stems diverge), retry as a substring scan so
@@ -158,16 +155,13 @@ export class PromotedStore {
        LIMIT ?`
     ).all(...args) as PromotedRow[];
 
-    return rows.map((r) => ({
-      id: r.id,
-      content: r.content,
-      tags: JSON.parse(r.tags) as string[],
-      projectId: r.project_id,
-      sessionId: r.session_id,
-      confidence: r.confidence,
-      createdAt: r.created_at,
-      rank: 0,
-    }));
+    return rows.flatMap((r) => {
+      const tags = parseStoredTags(r.tags);
+      return tags ? [{
+        id: r.id, content: r.content, tags, projectId: r.project_id,
+        sessionId: r.session_id, confidence: r.confidence, createdAt: r.created_at, rank: 0,
+      }] : [];
+    });
   }
 
   getAll(opts?: { projectId?: string; since?: string; tags?: string[] }): PromotedRow[] {
@@ -188,8 +182,8 @@ export class PromotedStore {
 
     if (opts?.tags && opts.tags.length > 0) {
       rows = rows.filter((r) => {
-        const rowTags = JSON.parse(r.tags) as string[];
-        return opts.tags!.every((t) => rowTags.includes(t));
+        const rowTags = parseStoredTags(r.tags);
+        return rowTags !== null && opts.tags!.every((t) => rowTags.includes(t));
       });
     }
 
@@ -263,6 +257,8 @@ export class PromotedStore {
     staleAfterDays: number;
     staleSurfacingWithoutUseLimit: number;
     projectId?: string;
+    legacyUsageCounts?: ReadonlyMap<string, number>;
+    ambiguousIds?: ReadonlySet<string>;
   }): Array<PromotedRow & { surfacingCount: number; usageCount: number; daysSinceCreated: number }> {
     const cutoffMs = Date.now() - opts.staleAfterDays * 24 * 60 * 60 * 1000;
     // Use SQLite datetime format (YYYY-MM-DD HH:MM:SS) to match created_at,
@@ -301,18 +297,17 @@ export class PromotedStore {
     ).all() as Array<{ tags: string }>;
     const usageMap = new Map<string, number>();
     for (const row of usageRows) {
-      for (const id of ids) {
-        if (row.tags.includes(`"memory_id:${id}"`)) {
-          usageMap.set(id, (usageMap.get(id) ?? 0) + 1);
-        }
-      }
+      const tags = parseStoredTags(row.tags);
+      if (!tags || !tags.includes("signal:memory_used")) continue;
+      const memoryId = singleMemoryIdTag(tags);
+      if (memoryId && ids.includes(memoryId)) usageMap.set(memoryId, (usageMap.get(memoryId) ?? 0) + 1);
     }
 
     const result: Array<PromotedRow & { surfacingCount: number; usageCount: number; daysSinceCreated: number }> = [];
 
     for (const row of rows) {
       const surfacingCount = surfacingMap.get(row.id) ?? 0;
-      const usageCount = usageMap.get(row.id) ?? 0;
+      const usageCount = opts.ambiguousIds?.has(row.id) ? 0 : (usageMap.get(row.id) ?? 0) + (opts.legacyUsageCounts?.get(row.id) ?? 0);
       const daysSinceCreated = Math.floor((Date.now() - Date.parse(row.created_at)) / (24 * 60 * 60 * 1000));
 
       const surfacedWithoutUse = surfacingCount >= opts.staleSurfacingWithoutUseLimit && usageCount === 0;
@@ -342,7 +337,8 @@ export class PromotedStore {
 
     const counts = new Map<string, { plusOne: number; minusOne: number; objections: Array<{ voteId: string; reason: string; sessionId: string | null }> }>();
     for (const row of rows) {
-      const tags = JSON.parse(row.tags) as string[];
+      const tags = parseStoredTags(row.tags);
+      if (!tags) continue;
       const vote = voteTagsOf(tags);
       if (!vote) continue;
 

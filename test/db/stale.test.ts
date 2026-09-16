@@ -99,6 +99,21 @@ describe("PromotedStore.findStale", () => {
     expect(stale).toHaveLength(0);
   });
 
+  it("does not count ambiguous historical usage signals", () => {
+    const db = makeDb();
+    const id = insertOldMemory(db, "Old ambiguous usage", 120);
+    const store = new PromotedStore(db);
+    for (const tags of [
+      ["signal:memory_used"],
+      ["signal:memory_used", "memory_id:"],
+      ["signal:memory_used", `memory_id:${id}`, "memory_id:other"],
+    ]) store.insert({ content: "historical usage", tags, projectId: "proj-1" });
+
+    const stale = store.findStale({ staleAfterDays: 90, staleSurfacingWithoutUseLimit: 5 });
+    expect(stale).toHaveLength(1);
+    expect(stale[0].usageCount).toBe(0);
+  });
+
   it("filters by projectId", () => {
     const db = makeDb();
     insertOldMemory(db, "Project A old", 120, "proj-a");

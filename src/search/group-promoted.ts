@@ -76,7 +76,6 @@ export function searchPromotedGroup(cwd: string, input: GroupSearchInput, paths:
   const members = projectGroup(cwd, paths);
   const lists: GroupPromotedHit[][] = [];
   const feedback = new Map<string, RecallFeedback>();
-
   for (const member of members) {
     const dbPath = projectDbPath(member.cwd, paths);
     if (!existsSync(dbPath)) continue;
@@ -94,7 +93,6 @@ export function searchPromotedGroup(cwd: string, input: GroupSearchInput, paths:
       closeLcmConnection(dbPath);
     }
   }
-
   const hits = lists.length <= 1
     ? (lists[0] ?? []).slice(0, input.limit)
     : fuseByReciprocalRank(lists, input.limit);

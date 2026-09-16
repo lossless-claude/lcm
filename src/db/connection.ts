@@ -5,9 +5,14 @@ import { dirname } from "path";
 type ConnectionEntry = {
   db: DatabaseSync;
   refs: number;
+  path: string;
 };
 
 const _connections = new Map<string, ConnectionEntry>();
+
+function connectionKey(dbPath: string, readOnly = false): string {
+  return readOnly ? `${dbPath}\0read-only` : dbPath;
+}
 
 function isConnectionHealthy(db: DatabaseSync): boolean {
   try {
@@ -26,35 +31,37 @@ function forceCloseConnection(entry: ConnectionEntry): void {
   }
 }
 
-export function getLcmConnection(dbPath: string): DatabaseSync {
+export function getLcmConnection(dbPath: string, options: { readOnly?: boolean } = {}): DatabaseSync {
   // No TOCTOU race here: Node.js is single-threaded and this function is
   // synchronous. There is no await/yield between the health check and the
   // refs increment, so no other caller can interleave and close the connection
   // in between. The sequence (check => increment => return) is atomic w.r.t.
   // the JavaScript event loop.
-  const existing = _connections.get(dbPath);
+  const key = connectionKey(dbPath, options.readOnly);
+  const existing = _connections.get(key);
   if (existing) {
     if (isConnectionHealthy(existing.db)) {
       existing.refs += 1;
       return existing.db;
     }
     forceCloseConnection(existing);
-    _connections.delete(dbPath);
+    _connections.delete(key);
   }
 
-  // Ensure parent directory exists
-  mkdirSync(dirname(dbPath), { recursive: true });
+  if (!options.readOnly) mkdirSync(dirname(dbPath), { recursive: true });
+  const db = new DatabaseSync(dbPath, options.readOnly ? { readOnly: true } : {});
+  if (!options.readOnly) {
+    // Enable WAL mode for better concurrent read performance
+    db.exec("PRAGMA journal_mode = WAL");
+    // Wait up to 5 seconds on busy instead of failing immediately
+    db.exec("PRAGMA busy_timeout = 5000");
+    // Enable foreign key enforcement
+    db.exec("PRAGMA foreign_keys = ON");
+  } else {
+    db.exec("PRAGMA busy_timeout = 5000");
+  }
 
-  const db = new DatabaseSync(dbPath);
-
-  // Enable WAL mode for better concurrent read performance
-  db.exec("PRAGMA journal_mode = WAL");
-  // Wait up to 5 seconds on busy instead of failing immediately
-  db.exec("PRAGMA busy_timeout = 5000");
-  // Enable foreign key enforcement
-  db.exec("PRAGMA foreign_keys = ON");
-
-  _connections.set(dbPath, { db, refs: 1 });
+  _connections.set(key, { db, refs: 1, path: dbPath });
   return db;
 }
 
@@ -70,8 +77,8 @@ export interface PoolStats {
 }
 
 export function getPoolStats(): PoolStats {
-  const connections = Array.from(_connections.entries()).map(([path, entry]) => ({
-    path,
+  const connections = Array.from(_connections.values()).map((entry) => ({
+    path: entry.path,
     refs: entry.refs,
     status: (entry.refs > 0 ? "active" : "idle") as "active" | "idle",
   }));
@@ -85,24 +92,25 @@ export function getPoolStats(): PoolStats {
 }
 
 /**
- * Returns true if a pooled connection for dbPath is currently open (refs > 0).
- * Used by callers that track per-connection state (e.g., migration-done cache)
- * so they can invalidate their state when the underlying connection is evicted.
+ * Returns true if a read-write pooled connection for dbPath is currently open.
+ * Callers that track mutable per-connection state use this to invalidate it when
+ * the writable handle is evicted; read-only handles do not carry that state.
  */
 export function isLcmConnectionOpen(dbPath: string): boolean {
   return _connections.has(dbPath);
 }
 
-export function closeLcmConnection(dbPath?: string): void {
+export function closeLcmConnection(dbPath?: string, options: { readOnly?: boolean } = {}): void {
   if (typeof dbPath === "string" && dbPath.trim()) {
-    const entry = _connections.get(dbPath);
+    const key = connectionKey(dbPath, options.readOnly);
+    const entry = _connections.get(key);
     if (!entry) {
       return;
     }
     entry.refs = Math.max(0, entry.refs - 1);
     if (entry.refs === 0) {
       forceCloseConnection(entry);
-      _connections.delete(dbPath);
+      _connections.delete(key);
     }
     return;
   }

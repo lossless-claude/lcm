@@ -327,13 +327,13 @@ LCM identifies stale candidates by combining age with recall feedback signals:
 
 ### Inspecting stale candidates
 
-Call the `/review-stale` daemon endpoint with `{ "cwd": "/path/to/project" }` to list stale candidates with their surfacing and usage counts.
+Call the `/review-stale` daemon endpoint with `{ "cwd": "/path/to/project" }` to list stale candidates with their surfacing and usage counts across that checkout's project group. Each result includes `ownerProjectId`; pass it as `owner_project_id` with an archive or revive action to select that owning checkout unambiguously.
 
 ### Archiving and reviving
 
 Stale candidates can be archived non-destructively. Archived memories are excluded from search and recall but remain in the database and can be revived later.
 
-The `/review-stale` endpoint accepts `action: "archive"` or `action: "revive"` with a `target_id` to manage individual memories.
+The `/review-stale` endpoint accepts `action: "archive"` or `action: "revive"` with a `target_id` to manage individual memories. It searches the caller's project group when no owner is supplied; if that ID occurs in more than one checkout, it refuses without changing either and asks for `owner_project_id` from a stats or stale result.
 
 ### Stats integration
 
@@ -350,6 +350,8 @@ An agent reports a use of a surfaced memory with `signal:memory_used` (see
 reason — adds an explicit "checked and still correct" or "checked and contradicted" signal,
 distinct from mere use. See `docs/agent-tools.md` for the `lcm_store` shape and validation
 rules a vote is checked against.
+
+Use and vote signals follow their target memory to its owning checkout, so new feedback counts for a memory always come from one database. On upgrade, a historical `signal:memory_used` left in another checkout is counted once only when its target ID has exactly one active owner in the project group; an ambiguous legacy ID is not attributed. Multi-project stats identify that owner as `ownerProjectId`.
 
 - **Enforcement threshold** (`promotion.enforcementThreshold`, default 3): a memory with at
   least this many reported uses appears under "Promotion candidates" in `lcm stats` /

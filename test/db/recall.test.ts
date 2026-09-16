@@ -254,4 +254,19 @@ describe("RecallStore.getFeedback", () => {
       lastSurfacedAt: null,
     });
   });
+
+  it("counts only signals with one non-empty memory_id", () => {
+    const db = makeDb();
+    const promoted = new PromotedStore(db);
+    const recall = new RecallStore(db);
+    const memoryId = promoted.insert({ content: "target", tags: [], projectId: "p1" });
+    for (const tags of [
+      ["signal:memory_used"],
+      ["signal:memory_used", "memory_id:"],
+      ["signal:memory_used", `memory_id:${memoryId}`, "memory_id:other"],
+      ["signal:memory_used", `memory_id:${memoryId}`],
+    ]) promoted.insert({ content: "historical usage", tags, projectId: "p1" });
+
+    expect(recall.getFeedback([memoryId]).get(memoryId)?.usageCount).toBe(1);
+  });
 });

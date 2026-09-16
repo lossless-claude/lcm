@@ -3,27 +3,10 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 
 /** An isolated base dir, so these tests never touch the developer's own store. */
 const base = realpathSync(mkdtempSync(join(tmpdir(), "lcm-prompt-search-group-base-")));
-// Not only the project mock: anything resolved from the storage root rather than from
-// `daemon/project.js` would otherwise read the host's real store, where another checkout
-// of the same remote may already be registered and a local hit resolves to a foreign id.
-process.env.LCM_HOME = base;
-vi.mock("../../../src/daemon/project.js", async (importOriginal) => {
-  const original = await importOriginal<typeof import("../../../src/daemon/project.js")>();
-  const dirOf = (cwd: string) => join(base, "projects", original.projectId(cwd));
-  return {
-    ...original,
-    BASE_DIR: base,
-    projectDir: dirOf,
-    projectDbPath: (cwd: string) => join(dirOf(cwd), "db.sqlite"),
-    projectMetaPath: (cwd: string) => join(dirOf(cwd), "meta.json"),
-    ensureProjectDir: (cwd: string) => { mkdirSync(dirOf(cwd), { recursive: true }); return dirOf(cwd); },
-  };
-});
-
 const { createDaemon } = await import("../../../src/daemon/server.js");
 const { loadDaemonConfig } = await import("../../../src/daemon/config.js");
 const { runLcmMigrations } = await import("../../../src/db/migration.js");
@@ -35,10 +18,6 @@ const { createLcmPaths } = await import("../../../src/lcm-paths.js");
 const paths = createLcmPaths(base);
 
 const tempDirs: string[] = [];
-// Per test, not once at load: the group index and the daemon's own LcmPaths come from the
-// storage root rather than from the project mock, and another suite file points the same
-// variable at its own base — whichever loaded last would otherwise win for both.
-beforeEach(() => { process.env.LCM_HOME = base; });
 afterEach(() => { for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 afterAll(() => rmSync(base, { recursive: true, force: true }));
 
@@ -71,7 +50,7 @@ describe("POST /prompt-search across a project group", () => {
     const config = loadDaemonConfig("/nonexistent");
     config.daemon.port = 0;
     config.restoration.promptSearchMinScore = 0;
-    const daemon = await createDaemon(config);
+    const daemon = await createDaemon(config, { paths });
     const port = daemon.address().port;
 
     try {
@@ -95,7 +74,15 @@ describe("POST /prompt-search across a project group", () => {
       expect(siblingIndex).toBeGreaterThanOrEqual(0);
 
       // The local hint's id carries no project.
-      expect(data.projectIds[hereIndex]).toBeFalsy();
+      expect(data.projectIds[hereIndex], JSON.stringify({
+        here,
+        sibling,
+        hereProjectId: projectId(here),
+        siblingProjectId: projectId(sibling),
+        hints: data.hints,
+        ids: data.ids,
+        projectIds: data.projectIds,
+      })).toBeFalsy();
       // The sibling's id is tagged with the project it came from.
       const siblingProjectId = data.projectIds[siblingIndex];
       expect(siblingProjectId).toBe(projectId(sibling));

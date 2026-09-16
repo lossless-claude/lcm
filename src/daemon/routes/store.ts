@@ -48,7 +48,10 @@ async function getScrubEngine(config: DaemonConfig, projDir: string): Promise<Sc
  * checkout must count against that memory rather than creating an orphaned reference in the
  * voter's own project.
  */
-function resolveVoteTargetCwd(projectPath: string, memoryId: string, paths: LcmPaths): string | null {
+type MemoryTarget = { cwd: string } | { ambiguous: true } | null;
+
+function resolveMemoryTargetCwd(projectPath: string, memoryId: string, paths: LcmPaths): MemoryTarget {
+  let target: string | null = null;
   for (const member of projectGroup(projectPath, paths)) {
     const dbPath = projectDbPath(member.cwd, paths);
     if (!existsSync(dbPath)) continue;
@@ -58,14 +61,17 @@ function resolveVoteTargetCwd(projectPath: string, memoryId: string, paths: LcmP
     try {
       db = getLcmConnection(dbPath);
       const row = new PromotedStore(db).getById(memoryId);
-      if (row && !row.archived_at) return member.cwd;
+      if (row && !row.archived_at) {
+        if (target) return { ambiguous: true };
+        target = member.cwd;
+      }
     } catch {
       continue;
     } finally {
       if (db) closeLcmConnection(dbPath);
     }
   }
-  return null;
+  return target ? { cwd: target } : null;
 }
 
 /**
@@ -110,6 +116,11 @@ export function createStoreHandler(config: DaemonConfig, paths: LcmPaths): Route
       return;
     }
 
+    if (!Array.isArray(tags) || !tags.every((tag): tag is string => typeof tag === "string")) {
+      sendJson(res, 400, { error: "tags must be an array of strings" });
+      return;
+    }
+
     const rawProjectPath = input.cwd || metadata.projectPath || "";
     if (!rawProjectPath) {
       sendJson(res, 400, { error: "cwd or metadata.projectPath is required" });
@@ -124,8 +135,36 @@ export function createStoreHandler(config: DaemonConfig, paths: LcmPaths): Route
       return;
     }
 
+    // Every store request creates or updates a project database. Record its identity even
+    // for ordinary memories so a later feedback signal from a sibling can discover it.
+    openProject(projectPath, paths);
+
     let targetPath = projectPath;
     let vote: { memoryId: string; direction: "+1" | "-1" } | null = null;
+    const usageMemoryIds = tags.includes("signal:memory_used")
+      ? tags.filter((tag: string) => tag.startsWith("memory_id:")).map((tag: string) => tag.slice("memory_id:".length))
+      : [];
+    if (tags.includes("signal:memory_used") && (usageMemoryIds.length !== 1 || usageMemoryIds[0].trim() === "")) {
+      sendJson(res, 400, { error: "signal:memory_used requires exactly one non-empty memory_id tag" });
+      return;
+    }
+    const usageMemoryId = usageMemoryIds[0];
+
+    if (isVoteRecord(tags) || usageMemoryId) {
+      const memoryId = isVoteRecord(tags) ? undefined : usageMemoryId;
+      if (memoryId) {
+        const resolved = resolveMemoryTargetCwd(projectPath, memoryId, paths);
+        if (resolved && "ambiguous" in resolved) {
+          sendJson(res, 409, { error: `memory_id ${memoryId} is ambiguous across this project group` });
+          return;
+        }
+        if (!resolved) {
+          sendJson(res, 400, { error: `memory_id ${memoryId} was not found (or is archived) in this project or its group` });
+          return;
+        }
+        targetPath = resolved.cwd;
+      }
+    }
 
     if (isVoteRecord(tags)) {
       const parsed = parseVote(tags, text);
@@ -133,15 +172,16 @@ export function createStoreHandler(config: DaemonConfig, paths: LcmPaths): Route
         sendJson(res, 400, { error: parsed.error });
         return;
       }
-      // Register this checkout first: projectGroup only knows checkouts it has seen, so a
-      // first vote from an unregistered one would not find a target held by a sibling.
-      openProject(projectPath, paths);
-      const resolved = resolveVoteTargetCwd(projectPath, parsed.memoryId, paths);
+      const resolved = resolveMemoryTargetCwd(projectPath, parsed.memoryId, paths);
+      if (resolved && "ambiguous" in resolved) {
+        sendJson(res, 409, { error: `memory_id ${parsed.memoryId} is ambiguous across this project group` });
+        return;
+      }
       if (!resolved) {
         sendJson(res, 400, { error: `memory_id ${parsed.memoryId} was not found (or is archived) in this project or its group` });
         return;
       }
-      targetPath = resolved;
+      targetPath = resolved.cwd;
       vote = { memoryId: parsed.memoryId, direction: parsed.direction };
     }
 
@@ -149,6 +189,23 @@ export function createStoreHandler(config: DaemonConfig, paths: LcmPaths): Route
     // checkout's own sensitive-patterns.txt is what governs what may be written there.
     const scrubber = await getScrubEngine(config, projectDir(targetPath, paths));
     const scrubbedText = scrubber.scrub(text);
+
+    const targetMemoryId = vote?.memoryId ?? usageMemoryId;
+    if (targetMemoryId) {
+      const resolved = resolveMemoryTargetCwd(projectPath, targetMemoryId, paths);
+      if (resolved && "ambiguous" in resolved) {
+        sendJson(res, 409, { error: `memory_id ${targetMemoryId} is ambiguous across this project group` });
+        return;
+      }
+      if (!resolved) {
+        sendJson(res, 400, { error: `memory_id ${targetMemoryId} was not found (or is archived) in this project or its group` });
+        return;
+      }
+      if (resolved.cwd !== targetPath) {
+        sendJson(res, 400, { error: `memory_id ${targetMemoryId} owner changed while storing feedback` });
+        return;
+      }
+    }
 
     const dbPath = projectDbPath(targetPath, paths);
     mkdirSync(dirname(dbPath), { recursive: true });
@@ -159,6 +216,16 @@ export function createStoreHandler(config: DaemonConfig, paths: LcmPaths): Route
       // Core: write to SQLite promoted table
       runLcmMigrations(db);
       const store = new PromotedStore(db);
+
+      // A use resolves before scrubber initialization, which awaits I/O. Recheck its
+      // target here so an archive during that await cannot leave an orphaned signal.
+      if (usageMemoryId) {
+        const target = store.getById(usageMemoryId);
+        if (!target || target.archived_at) {
+          sendJson(res, 400, { error: `memory_id ${usageMemoryId} was not found (or is archived) in this project or its group` });
+          return;
+        }
+      }
 
       const insert = () => store.insert({
         content: scrubbedText,

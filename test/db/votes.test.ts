@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { isSignalTagged, isVoteRecord, parseVote, voteTagsOf } from "../../src/db/votes.js";
+import { isSignalTagged, isVoteRecord, parseVote, singleMemoryIdTag, voteTagsOf } from "../../src/db/votes.js";
+
+describe("singleMemoryIdTag", () => {
+  it("accepts exactly one non-empty target", () => {
+    expect(singleMemoryIdTag(["signal:memory_used", "memory_id:abc"])).toBe("abc");
+  });
+
+  it.each([
+    [["signal:memory_used"]],
+    [["signal:memory_used", "memory_id:"]],
+    [["signal:memory_used", "memory_id:a", "memory_id:b"]],
+  ])("rejects missing, empty, and duplicate targets", (tags) => {
+    expect(singleMemoryIdTag(tags)).toBeNull();
+  });
+});
 
 describe("isSignalTagged", () => {
   it("recognizes any signal: tag", () => {

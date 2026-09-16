@@ -34,6 +34,14 @@ export interface GroupMember {
   cwd: string;
 }
 
+interface IndexedGroupMember extends GroupMember {
+  relPath: string;
+  remote: string;
+}
+
+type ReadGroupIndex = (paths: LcmPaths) => IndexedGroupMember[];
+export type ReadGroupMembers = (paths: LcmPaths, relPath: string, remotes: readonly string[]) => IndexedGroupMember[];
+
 /** How a project is named on a result that leaves the daemon. */
 export const projectRef = (cwd: string) => ({ id: projectId(cwd), cwd });
 
@@ -230,36 +238,88 @@ export function openProject(cwd: string, paths: LcmPaths): string {
  * A member whose directory no longer exists is dropped here rather than deleted
  * from the index, so a temporarily unmounted checkout comes back on its own.
  */
-export function projectGroup(cwd: string, paths: LcmPaths): GroupMember[] {
-  const self: GroupMember = { projectId: projectId(cwd), cwd };
-  const git = readGitMeta(cwd, paths);
-  if (!git || git.remotes.length === 0) return [self];
-
-  let rows: GroupMember[] = [];
+function readGroupIndex(paths: LcmPaths): IndexedGroupMember[] {
   try {
     const db = openIndex(paths);
     try {
-      const placeholders = git.remotes.map(() => "?").join(", ");
-      rows = db.prepare(
-        `SELECT DISTINCT i.project_id AS projectId, i.cwd AS cwd
+      return db.prepare(
+        `SELECT i.project_id AS projectId, i.cwd AS cwd, i.rel_path AS relPath, r.remote AS remote
            FROM project_identity i
            JOIN project_remote r ON r.project_id = i.project_id
-          WHERE r.remote IN (${placeholders})
-            AND i.rel_path = ?
           ORDER BY i.cwd`,
-      ).all(...git.remotes, git.relPath) as unknown as GroupMember[];
+      ).all() as unknown as IndexedGroupMember[];
     } finally {
       db.close();
     }
   } catch {
-    return [self];
+    return [];
+  }
+}
+
+/** Reads only the index rows that can belong to one project's group. */
+function readGroupMembers(paths: LcmPaths, relPath: string, remotes: readonly string[]): IndexedGroupMember[] {
+  if (remotes.length === 0) return [];
+  try {
+    const db = openIndex(paths);
+    try {
+      const placeholders = remotes.map(() => "?").join(", ");
+      return db.prepare(
+        `SELECT i.project_id AS projectId, i.cwd AS cwd, i.rel_path AS relPath, r.remote AS remote
+           FROM project_identity i
+           JOIN project_remote r ON r.project_id = i.project_id
+          WHERE i.rel_path = ? AND r.remote IN (${placeholders})
+          ORDER BY i.cwd`,
+      ).all(relPath, ...remotes) as unknown as IndexedGroupMember[];
+    } finally {
+      db.close();
+    }
+  } catch {
+    return [];
+  }
+}
+
+function groupFromRows(cwd: string, git: ProjectGitMeta | null, rows: Iterable<IndexedGroupMember>): GroupMember[] {
+  const self: GroupMember = { projectId: projectId(cwd), cwd };
+  if (!git || git.remotes.length === 0) return [self];
+
+  const remotes = new Set(git.remotes);
+  const seen = new Set([self.projectId]);
+  const siblings: GroupMember[] = [];
+  for (const row of rows) {
+    if (row.relPath !== git.relPath || !remotes.has(row.remote) || seen.has(row.projectId) || !existsSync(row.cwd)) continue;
+    seen.add(row.projectId);
+    siblings.push({ projectId: row.projectId, cwd: row.cwd });
+  }
+  return [self, ...siblings.sort((a, b) => a.cwd.localeCompare(b.cwd))];
+}
+
+/**
+ * Resolves several project groups from one read of the identity index. Each requested
+ * project retains projectGroup's asymmetric result: itself is first, and vanished siblings
+ * are omitted without removing their index records.
+ */
+export function projectGroups(cwds: Iterable<string>, paths: LcmPaths, readIndex: ReadGroupIndex = readGroupIndex): Map<string, GroupMember[]> {
+  const requested = [...new Set(cwds)];
+  const metas = new Map(requested.map(cwd => [cwd, readGitMeta(cwd, paths)]));
+  const rowsByIdentity = new Map<string, IndexedGroupMember[]>();
+  const hasGroupableProject = [...metas.values()].some(git => git && git.remotes.length > 0);
+  for (const row of hasGroupableProject ? readIndex(paths) : []) {
+    const key = `${row.relPath}\0${row.remote}`;
+    const members = rowsByIdentity.get(key) ?? [];
+    members.push(row);
+    rowsByIdentity.set(key, members);
   }
 
-  const members = [self];
-  for (const row of rows) {
-    if (row.projectId === self.projectId) continue;
-    if (!existsSync(row.cwd)) continue;
-    members.push(row);
+  const groups = new Map<string, GroupMember[]>();
+  for (const cwd of requested) {
+    const git = metas.get(cwd);
+    const rows = git ? git.remotes.flatMap(remote => rowsByIdentity.get(`${git.relPath}\0${remote}`) ?? []) : [];
+    groups.set(cwd, groupFromRows(cwd, git ?? null, rows));
   }
-  return members;
+  return groups;
+}
+
+export function projectGroup(cwd: string, paths: LcmPaths, readMembers: ReadGroupMembers = readGroupMembers): GroupMember[] {
+  const git = readGitMeta(cwd, paths);
+  return groupFromRows(cwd, git, git ? readMembers(paths, git.relPath, git.remotes) : []);
 }
