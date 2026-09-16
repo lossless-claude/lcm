@@ -230,6 +230,7 @@ it("renders objection owners in local lcm_stats output", async () => {
     llmUsage: { calls: 0, okCalls: 0, failedCalls: 0, tokensSpent: 0, tokensInput: 0, tokensCached: 0, tokensOutput: 0, costUsd: null, callsWithCost: 0 },
     promotionCandidates: [{ id: "memory-2", ownerProjectId: "candidate-owner", content: "new rule", useCount: 3, plusOne: 1, minusOne: 0, objections: [] }],
     contested: [{ id: "memory-1", ownerProjectId: "memory-owner", content: "old rule", objections: [{ voteId: "vote-1", ownerProjectId: "vote-owner", reason: "contradicted" }] }],
+    transcriptScanStats: [{ projectId: "project-1", cwd: "/work/project", transcriptsSeen: 10, subagentExcluded: 6, ingested: 3, skipped: 1, subagentShare: 0.6 }],
   });
   const { Server } = await import("@modelcontextprotocol/server");
   const { startMcpServer } = await import("../../src/mcp/server.js");
@@ -240,4 +241,5 @@ it("renders objection owners in local lcm_stats output", async () => {
   expect(result.content[0].text).toContain("memory-2");
   expect(result.content[0].text).toContain("memory-1");
   expect(result.content[0].text).toContain("vote-1, owner: vote-owner");
+  expect(result.content[0].text).toContain("| /work/project | 6 | 3 | 1 | 10 | 60.0% |");
 });

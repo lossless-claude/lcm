@@ -1,6 +1,12 @@
 import { existsSync, readdirSync, readFileSync, type Dirent } from "node:fs";
 import { basename, join } from "node:path";
 
+export const SUBAGENT_SESSION = /^agent-/;
+
+export function isSubagentSessionId(sessionId: string): boolean {
+  return SUBAGENT_SESSION.test(sessionId);
+}
+
 /**
  * What a subagent transcript's `.meta.json` sidecar can tell us about the
  * dispatch that created it. All three are null together: either the sidecar

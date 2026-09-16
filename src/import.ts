@@ -8,7 +8,8 @@ import { findAllCodexTranscripts } from "./codex-transcript.js";
 import type { ProgressState } from "./cli/progress-state.js";
 import { projectDbPath, projectId } from "./daemon/project.js";
 import { createLcmPaths, type LcmPaths } from "./lcm-paths.js";
-import { readSubagentAttribution } from "./subagent-attribution.js";
+import { isSubagentSessionId, readSubagentAttribution } from "./subagent-attribution.js";
+import { recordTranscriptScanStats, type TranscriptScanCounts } from "./db/transcript-scan-stats.js";
 import {
   appendReplayManifestSessions,
   clearReplayState,
@@ -323,6 +324,7 @@ async function ingestSessionList(
    * state the first pass had already started rebuilding.
    */
   clearedCwds: Set<string>,
+  onOutcome?: (session: SessionEntry, outcome: "ingested" | "skipped") => void,
 ): Promise<void> {
   // Replay runs are resumable: a manifest freezes the ordering and a ledger
   // records completed compactions, so a restarted run skips finished work.
@@ -414,7 +416,8 @@ async function ingestSessionList(
   const total = sessions.length + doneCount;
   const processedBase = doneCount;
 
-  for (const { path, sessionId, cwd, client: sourceClient = "claude", parentSessionId, subagentType, subagentDesc } of sessions) {
+  for (const session of sessions) {
+    const { path, sessionId, cwd, client: sourceClient = "claude", parentSessionId, subagentType, subagentDesc } = session;
     // Stop starting new work after SIGINT/SIGTERM; the renderer waits for the
     // in-flight session to settle before exiting.
     if (options.onBeforeSession && !options.onBeforeSession()) break;
@@ -433,6 +436,7 @@ async function ingestSessionList(
     // an import may need to recover a final record deferred by live capture.
     if (!options.replay && sourceClient !== "codex" && options.paths && isSessionAlreadyIngested(cwd, sessionId, options.paths)) {
       result.skippedEmpty++;
+      onOutcome?.(session, "skipped");
       if (options.verbose) console.log(`  ↩️ ${sessionId}: already fully ingested`);
       options.onProgress?.({ completed: processedBase + result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
       continue;
@@ -467,9 +471,11 @@ async function ingestSessionList(
       });
       if (res.ingested === 0 && res.totalTokens === 0) {
         result.skippedEmpty++;
+        onOutcome?.(session, "skipped");
         if (options.verbose) console.log(`  \u23ed\ufe0f ${sessionId}: empty or already ingested`);
       } else {
         result.imported++;
+        onOutcome?.(session, "ingested");
         result.totalMessages += res.ingested;
         // In replay mode, totalTokens is sourced from compact's tokensBefore to avoid
         // double-counting (compact covers already-ingested sessions too).
@@ -624,6 +630,7 @@ async function ingestSessionList(
       options.onProgress?.({ completed: processedBase + result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
     } catch (err) {
       result.failed++;
+      onOutcome?.(session, "skipped");
       if (options.replay) {
         previousSummaryByCwd.set(cwd, undefined); // chain broken by ingest failure
       }
@@ -650,6 +657,7 @@ export async function importSessions(
   // One --restart clear per project for the whole import, however many session
   // lists reach that project.
   const clearedCwds = new Set<string>();
+  const transcriptScanStats = new Map<string, TranscriptScanCounts>();
 
   // --- Session lists, in import order: every Claude project dir, then every Codex project ---
   const sessionLists: SessionEntry[][] = [];
@@ -680,7 +688,20 @@ export async function importSessions(
     }
 
     for (const { dir, cwd } of projectDirs) {
-      sessionLists.push(findSessionFiles(dir).map(f => ({ ...f, cwd })));
+      const discovered = findSessionFiles(dir);
+      if (!options.dryRun && paths && discovered.length > 0) {
+        const subagentExcluded = discovered.filter((file) => isSubagentSessionId(file.sessionId)).length;
+        const previous = transcriptScanStats.get(cwd) ?? {
+          transcriptsSeen: 0, subagentExcluded: 0, ingested: 0, skipped: 0,
+        };
+        transcriptScanStats.set(cwd, {
+          transcriptsSeen: previous.transcriptsSeen + discovered.length,
+          subagentExcluded: previous.subagentExcluded + subagentExcluded,
+          ingested: previous.ingested,
+          skipped: previous.skipped + discovered.length - subagentExcluded,
+        });
+      }
+      sessionLists.push(discovered.map(f => ({ ...f, cwd })));
     }
   }
 
@@ -711,7 +732,23 @@ export async function importSessions(
   }
 
   for (const sessions of sessionLists) {
-    await ingestSessionList(client, sessions, options, result, clearedCwds);
+    await ingestSessionList(client, sessions, options, result, clearedCwds, (session, outcome) => {
+      if (session.client === "codex" || isSubagentSessionId(session.sessionId)) return;
+      const stats = transcriptScanStats.get(session.cwd);
+      if (!stats || outcome !== "ingested") return;
+      stats.ingested++;
+      stats.skipped--;
+    });
+  }
+
+  if (!options.dryRun && paths) {
+    for (const [cwd, counts] of transcriptScanStats) {
+      try {
+        recordTranscriptScanStats(cwd, paths, counts, options._claudeProjectsDir);
+      } catch {
+        // Scan accounting is diagnostic and must not turn a successful import into a failure.
+      }
+    }
   }
 
   return result;

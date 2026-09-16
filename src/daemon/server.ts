@@ -16,6 +16,8 @@ import { createDescribeHandler } from "./routes/describe.js";
 import { createStoreHandler } from "./routes/store.js";
 import { createRecentHandler } from "./routes/recent.js";
 import { createIngestHandler } from "./routes/ingest.js";
+import { isSubagentSessionId } from "../subagent-attribution.js";
+import { recordTranscriptScanStats, type TranscriptScanCounts } from "../db/transcript-scan-stats.js";
 import { createPromptSearchHandler } from "./routes/prompt-search.js";
 import { createStatusHandler } from "./routes/status.js";
 import { createSessionCompleteHandler } from "./routes/session-complete.js";
@@ -158,10 +160,15 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
         const sessionsDir = join(homedir(), ".claude", "projects", cwdDashed);
         if (!existsSync(sessionsDir)) continue;
 
+        const scanStats: TranscriptScanCounts = {
+          transcriptsSeen: 0, subagentExcluded: 0, ingested: 0, skipped: 0,
+        };
         for (const file of readdirSync(sessionsDir)) {
           if (!file.endsWith(".jsonl")) continue;
           const sessionId = file.replace(".jsonl", "");
           const transcriptPath = join(sessionsDir, file);
+          scanStats.transcriptsSeen++;
+          if (isSubagentSessionId(sessionId)) scanStats.subagentExcluded++;
 
           // Use the ingest route logic directly
           const mockReq = {} as any;
@@ -176,6 +183,22 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
             cwd: meta.cwd,
             transcript_path: transcriptPath,
           }));
+          if (isSubagentSessionId(sessionId)) continue;
+          try {
+            const result = JSON.parse(response.body) as { ingested?: unknown };
+            if (typeof result.ingested === "number" && result.ingested > 0) {
+              scanStats.ingested++;
+            } else {
+              scanStats.skipped++;
+            }
+          } catch {
+            scanStats.skipped++;
+          }
+        }
+        try {
+          recordTranscriptScanStats(meta.cwd, paths, scanStats);
+        } catch {
+          // Scan accounting is diagnostic and must not turn a successful scan into a failure.
         }
       }
     } catch {

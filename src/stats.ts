@@ -139,6 +139,16 @@ export interface LlmUsageStats {
   callsWithCost: number;
 }
 
+export interface TranscriptScanStats {
+  projectId: string;
+  cwd: string | null;
+  transcriptsSeen: number;
+  subagentExcluded: number;
+  ingested: number;
+  skipped: number;
+  subagentShare: number | null;
+}
+
 interface OverallStats {
   projects: number;
   conversations: number;
@@ -160,6 +170,7 @@ interface OverallStats {
   llmUsage: LlmUsageStats;
   promotionCandidates: PromotionCandidate[];
   contested: ContestedMemory[];
+  transcriptScanStats?: TranscriptScanStats[];
 }
 
 function queryProjectStats(
@@ -192,6 +203,22 @@ function queryProjectStats(
     const promoted = promotedColumns.size ? db.prepare(
       `SELECT COUNT(*) as count FROM promoted`
     ).get() as { count: number } : { count: 0 };
+
+    const transcriptScanColumns = columns("transcript_scan_stats");
+    const transcriptScanRow = transcriptScanColumns.size ? db.prepare(`
+      SELECT
+        COALESCE(transcripts_seen, 0) as transcripts_seen,
+        COALESCE(subagent_excluded, 0) as subagent_excluded,
+        COALESCE(ingested, 0) as ingested,
+        COALESCE(skipped, 0) as skipped
+      FROM transcript_scan_stats
+      WHERE id = 1
+    `).get() as {
+      transcripts_seen: number;
+      subagent_excluded: number;
+      ingested: number;
+      skipped: number;
+    } | undefined : undefined;
 
     const redactionRows = columns("redaction_stats").size ? db.prepare(
       `SELECT category, COALESCE(SUM(count), 0) as count FROM redaction_stats WHERE project_id = ? GROUP BY category`
@@ -316,6 +343,17 @@ function queryProjectStats(
       },
       promotionCandidates,
       contested,
+      transcriptScanStats: transcriptScanRow ? [{
+        projectId,
+        cwd: null,
+        transcriptsSeen: transcriptScanRow.transcripts_seen,
+        subagentExcluded: transcriptScanRow.subagent_excluded,
+        ingested: transcriptScanRow.ingested,
+        skipped: transcriptScanRow.skipped,
+        subagentShare: transcriptScanRow.transcripts_seen > 0
+          ? transcriptScanRow.subagent_excluded / transcriptScanRow.transcripts_seen
+          : null,
+      }] : [],
     };
   } finally {
     db.close();
@@ -387,6 +425,18 @@ export function printStats(stats: OverallStats, verbose: boolean): void {
   const labelWidth = Math.max(...memRows.map(([l]) => l.length));
   for (const [label, value] of memRows) {
     console.log(`    ${dim}${pad(label, labelWidth, "left")}${reset}  ${value}`);
+  }
+
+  const transcriptScans = (stats.transcriptScanStats ?? []).filter((scan) => scan.transcriptsSeen > 0);
+  if (transcriptScans.length > 0) {
+    console.log();
+    console.log(sectionHeader("Transcript scans"));
+    console.log();
+    for (const scan of transcriptScans) {
+      const project = scan.cwd ?? scan.projectId;
+      const share = scan.subagentShare === null ? "–" : `${(scan.subagentShare * 100).toFixed(1)}%`;
+      console.log(`    ${dim}${project}${reset}  ${scan.subagentExcluded} excluded as subagent / ${scan.transcriptsSeen} transcripts (${share}; ${scan.ingested} ingested, ${scan.skipped} skipped)`);
+    }
   }
 
   // Compression section (only when summarization has happened)
@@ -604,6 +654,7 @@ export function collectStats(paths: LcmPaths): OverallStats {
       llmUsage: { calls: 0, okCalls: 0, failedCalls: 0, tokensSpent: 0, tokensInput: 0, tokensCached: 0, tokensOutput: 0, costUsd: null, callsWithCost: 0 },
       promotionCandidates: [],
       contested: [],
+      transcriptScanStats: [],
     };
   }
 
@@ -625,6 +676,7 @@ export function collectStats(paths: LcmPaths): OverallStats {
   const totalLlmUsage: LlmUsageStats = { calls: 0, okCalls: 0, failedCalls: 0, tokensSpent: 0, tokensInput: 0, tokensCached: 0, tokensOutput: 0, costUsd: null, callsWithCost: 0 };
   const allPromotionCandidates: PromotionCandidate[] = [];
   const allContested: ContestedMemory[] = [];
+  const allTranscriptScanStats: TranscriptScanStats[] = [];
 
   // Load stale + promotion config once for all projects
   let staleCfg = { staleAfterDays: 90, staleSurfacingWithoutUseLimit: 5, enforcementThreshold: 3 };
@@ -676,6 +728,12 @@ export function collectStats(paths: LcmPaths): OverallStats {
       // vote records without any conversation of its own — a fresh checkout using lcm_store.
       allPromotionCandidates.push(...projStats.promotionCandidates);
       allContested.push(...projStats.contested);
+      for (const scan of projStats.transcriptScanStats ?? []) {
+        allTranscriptScanStats.push({
+          ...scan,
+          cwd: cwdByProjectId.get(entry.name) ?? null,
+        });
+      }
       // Only count projects with stored messages
       if (projStats.messages === 0) continue;
       totalProjects++;
@@ -756,5 +814,6 @@ export function collectStats(paths: LcmPaths): OverallStats {
     llmUsage: totalLlmUsage,
     promotionCandidates: allPromotionCandidates,
     contested: allContested,
+    transcriptScanStats: allTranscriptScanStats,
   };
 }

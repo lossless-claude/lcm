@@ -4,6 +4,7 @@ import { RetrievalEngine } from "../retrieval.js";
 import { ConversationStore, type MessageSearchResult } from "../store/conversation-store.js";
 import { SummaryStore, type SummarySearchResult } from "../store/summary-store.js";
 import { prepareFts5Query } from "../store/fts5-query.js";
+import { isSubagentSessionId } from "../subagent-attribution.js";
 
 const MAX_SNIPPET_CHARS = 1000;
 /** Reciprocal-rank offset: small enough that a top position still outweighs one corroborating source further down. */
@@ -260,8 +261,6 @@ export function rankHistoryHits(
  * filename. That naming is an external convention: if it ever changes, this
  * filter silently stops matching and search quietly gets noisier again.
  */
-const SUBAGENT_SESSION = /^agent-/;
-
 /**
  * Drop subagent transcripts from the ranked candidates.
  *
@@ -277,7 +276,7 @@ const SUBAGENT_SESSION = /^agent-/;
  * ranked recall offers up on its own.
  */
 function withoutSubagents(hits: RankedHistoryHit[]): RankedHistoryHit[] {
-  return hits.filter(hit => !(hit.sessionId && SUBAGENT_SESSION.test(hit.sessionId)));
+  return hits.filter(hit => !(hit.sessionId && isSubagentSessionId(hit.sessionId)));
 }
 
 /**

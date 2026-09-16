@@ -901,6 +901,17 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
     );
   `);
 
+  // Cumulative transcript scan classifications, kept per project database.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS transcript_scan_stats (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      transcripts_seen INTEGER NOT NULL DEFAULT 0,
+      subagent_excluded INTEGER NOT NULL DEFAULT 0,
+      ingested INTEGER NOT NULL DEFAULT 0,
+      skipped INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS llm_usage_stats (
       provider TEXT NOT NULL,

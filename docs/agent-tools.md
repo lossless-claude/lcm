@@ -218,6 +218,13 @@ Show token savings, compression ratios, and usage statistics across all lcm proj
 |-------|------|----------|---------|-------------|
 | `verbose` | boolean | | `false` | Include per-conversation breakdown |
 
+When transcript imports have run, also reports one **Transcript scans** row per project.
+Each row is cumulative since scan accounting was introduced and includes transcripts
+seen, subagent transcripts excluded by the `agent-*` filename rule, successfully
+ingested transcripts, other skipped transcripts, and the excluded share. The four
+counts are a partition of the transcripts seen, so a sudden zero subagent share can
+show that the host harness naming convention has drifted.
+
 Also reports, whenever either is non-empty: **Promotion candidates** — memories with
 reported uses at or above `promotion.enforcementThreshold` (default 3), each with its memory
 ID, text, use count, `+1` count, `-1` count, and any objections — and **Contested** — memories with at

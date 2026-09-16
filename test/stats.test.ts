@@ -103,6 +103,24 @@ describe("printStats", () => {
     expect(out).toContain("150"); // messages
   });
 
+  it("prints transcript scan counts and subagent share per project", () => {
+    const out = captureLog(() => printStats({
+      ...baseStats,
+      transcriptScanStats: [{
+        projectId: "project-1",
+        cwd: "/work/project",
+        transcriptsSeen: 10,
+        subagentExcluded: 6,
+        ingested: 3,
+        skipped: 1,
+        subagentShare: 0.6,
+      }],
+    }, false));
+    expect(out).toContain("Transcript scans");
+    expect(out).toContain("/work/project");
+    expect(out).toContain("6 excluded as subagent / 10 transcripts (60.0%; 3 ingested, 1 skipped)");
+  });
+
   it("omits Compression section when no summaries exist", () => {
     const out = captureLog(() => printStats({ ...baseStats, summaries: 0 }, false));
     expect(out).not.toContain("Compression");

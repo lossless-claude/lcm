@@ -51,6 +51,19 @@ function localTools(paths: LcmPaths): Partial<Record<string, (args: Record<strin
       lines.push(`| Events | ${formatNumber(stats.eventsCaptured)} captured (${stats.eventsUnprocessed} unprocessed, ${stats.eventsErrors} errors (30d)) |`);
     }
 
+    const transcriptScans = (stats.transcriptScanStats ?? []).filter((scan) => scan.transcriptsSeen > 0);
+    if (transcriptScans.length > 0) {
+      lines.push("");
+      lines.push("## Transcript scans");
+      lines.push("");
+      lines.push("| Project | Subagent excluded | Ingested | Skipped | Seen | Share |");
+      lines.push("|---------|-------------------:|---------:|--------:|-----:|------:|");
+      for (const scan of transcriptScans) {
+        const share = scan.subagentShare === null ? "–" : `${(scan.subagentShare * 100).toFixed(1)}%`;
+        lines.push(`| ${scan.cwd ?? scan.projectId} | ${scan.subagentExcluded} | ${scan.ingested} | ${scan.skipped} | ${scan.transcriptsSeen} | ${share} |`);
+      }
+    }
+
     // Compression section (only when summarization has happened)
     if (stats.summaries > 0) {
       lines.push("");

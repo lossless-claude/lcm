@@ -7,6 +7,8 @@ import { cwdToProjectHash, findSessionFiles, importSessions } from "../src/impor
 import type { DaemonClient } from "../src/daemon/client.js";
 import { runLcmMigrations } from "../src/db/migration.js";
 import { projectId } from "../src/daemon/project.js";
+import { createLcmPaths } from "../src/lcm-paths.js";
+import { collectStats } from "../src/stats.js";
 
 // --- cwdToProjectHash ---
 
@@ -397,6 +399,37 @@ describe("importSessions", () => {
     expect(result.totalTokens).toBe(500);
     expect(result.failed).toBe(0);
     expect(result.skippedEmpty).toBe(0);
+  });
+
+  it("records cumulative scan counts for subagent, ingested, and skipped transcripts", async () => {
+    const claudeProjectsDir = makeTmpDir();
+    const lcmDir = makeTmpDir();
+    const cwd = "/home/user/scan-project";
+    const projectDir = join(claudeProjectsDir, cwdToProjectHash(cwd));
+    mkdirSync(projectDir, { recursive: true });
+    for (const sessionId of ["agent-one", "agent-two", "session-ok", "session-empty"]) {
+      writeFileSync(join(projectDir, `${sessionId}.jsonl`), "");
+    }
+
+    const client = makeMockClient(async (_path, body) => {
+      const sessionId = (body as { session_id: string }).session_id;
+      return sessionId === "session-empty"
+        ? { ingested: 0, totalTokens: 0 }
+        : { ingested: 1, totalTokens: 10 };
+    });
+
+    await importSessions(client, { cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+    await importSessions(client, { cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+
+    const scan = collectStats(createLcmPaths(lcmDir)).transcriptScanStats?.find((entry) => entry.cwd === cwd);
+    expect(scan).toMatchObject({
+      transcriptsSeen: 8,
+      subagentExcluded: 4,
+      ingested: 2,
+      skipped: 2,
+      subagentShare: 0.5,
+    });
+    expect(scan!.subagentExcluded + scan!.ingested + scan!.skipped).toBe(scan!.transcriptsSeen);
   });
 
   it("counts empty transcripts as skippedEmpty (ingested=0, totalTokens=0)", async () => {

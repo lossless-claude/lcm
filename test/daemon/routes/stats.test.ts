@@ -6,6 +6,7 @@ import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { createDaemon, type DaemonInstance } from "../../../src/daemon/server.js";
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { runLcmMigrations } from "../../../src/db/migration.js";
+import { addTranscriptScanStats } from "../../../src/db/transcript-scan-stats.js";
 import { ConversationStore } from "../../../src/store/conversation-store.js";
 import { SummaryStore } from "../../../src/store/summary-store.js";
 
@@ -41,6 +42,7 @@ describe("GET /stats", () => {
       tokenCount: 10,
       sourceMessageTokenCount: 8,
     });
+    addTranscriptScanStats(db, { transcriptsSeen: 10, subagentExcluded: 6, ingested: 3, skipped: 1 });
     db.close();
 
     daemon = await createDaemon(loadDaemonConfig("/nonexistent", { daemon: { port: 0 } }));
@@ -78,6 +80,13 @@ describe("GET /stats", () => {
     });
     expect(body.llmUsage).not.toHaveProperty("callsOk");
     expect(body.llmUsage).not.toHaveProperty("callsFailed");
+    expect(body.transcriptScanStats).toEqual([expect.objectContaining({
+      transcriptsSeen: 10,
+      subagentExcluded: 6,
+      ingested: 3,
+      skipped: 1,
+      subagentShare: 0.6,
+    })]);
   });
 
   it("redactionCounts.total equals sum of built-in, global, and project", async () => {
