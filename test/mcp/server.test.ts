@@ -6,7 +6,7 @@ const ensureDaemonMcpMock = vi.hoisted(() => vi.fn().mockResolvedValue({ connect
 const holdMock = vi.hoisted(() => vi.fn().mockReturnValue(null));
 const collectStatsMock = vi.hoisted(() => vi.fn(() => { throw new Error("database access during hold"); }));
 vi.mock("../../src/daemon/hold.js", () => ({ readHold: holdMock }));
-vi.mock("../../src/stats.js", () => ({ collectStats: collectStatsMock, formatNumber: String }));
+vi.mock("../../src/stats.js", () => ({ collectStats: collectStatsMock, formatNumber: String, formatSubagentShare: () => "" }));
 afterEach(() => { holdMock.mockReturnValue(null); });
 
 vi.mock("../../src/daemon/lifecycle.js", () => ({
