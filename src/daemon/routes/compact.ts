@@ -274,11 +274,11 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           const capture = new SessionCapture(db, pid, scrubber);
           const { conversationStore, summaryStore } = capture;
           const safeTranscriptPath = transcript_path ? isSafeTranscriptPath(transcript_path, cwd) : false;
-          const readable = !skip_ingest && safeTranscriptPath && existsSync(safeTranscriptPath) ? safeTranscriptPath : undefined;
+          const captureFrom = !skip_ingest && safeTranscriptPath && existsSync(safeTranscriptPath) ? safeTranscriptPath : undefined;
           const conversation = await capture.write({
             sessionId: session_id,
-            transcriptPath: readable,
-            messages: readable ? parseTranscript(readable) : [],
+            transcriptPath: captureFrom,
+            messages: captureFrom ? parseTranscript(captureFrom) : [],
           });
 
           // Check if there's anything to compact

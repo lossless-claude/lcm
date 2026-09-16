@@ -77,6 +77,7 @@ function toMessagePartInput(sessionId: string, part: MessagePart, ordinal: numbe
 }
 
 export class SessionCapture {
+  /** The stores this capture writes through, on the same connection — a route reads back through them rather than opening a second pair. */
   readonly conversationStore: ConversationStore;
   readonly summaryStore: SummaryStore;
 
