@@ -62,6 +62,15 @@ describe("collectStats subagent share", () => {
     expect(stats.conversations).toBe(4);
   });
 
+  it("does not count a case-variant prefix as subagent-by-name, matching the search filter", async () => {
+    await withProjects([
+      { sessionId: "Agent-foo", parentSessionId: "human-1" },
+      { sessionId: "human-1" },
+    ]);
+    const stats = collectStats(createLcmPaths(process.env.LCM_HOME!));
+    expect(stats.subagent).toEqual({ byName: 0, attributedNotByName: 1 });
+  });
+
   it("reports zeros when nothing is stored", () => {
     home = mkdtempSync(join(tmpdir(), "lcm-subagent-home-"));
     process.env.LCM_HOME = join(home, ".lossless-claude");

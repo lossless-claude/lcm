@@ -178,10 +178,12 @@ interface OverallStats {
 
 /** Like every other optional metric here, a column the database lacks counts as 0. */
 function querySubagentStats(db: DatabaseSync, conversationColumns: Set<string>): SubagentStats {
-  const subagentLike = `'${SUBAGENT_SESSION_PREFIX}%'`;
-  const byName = conversationColumns.has("session_id") ? `SUM(session_id LIKE ${subagentLike})` : "0";
+  // GLOB, unlike LIKE, is case-sensitive for ASCII in SQLite, matching the case-sensitive
+  // SUBAGENT_SESSION regex in src/search/native-history.ts.
+  const subagentGlob = `'${SUBAGENT_SESSION_PREFIX}*'`;
+  const byName = conversationColumns.has("session_id") ? `SUM(session_id GLOB ${subagentGlob})` : "0";
   const attributedNotByName = conversationColumns.has("parent_session_id")
-    ? `SUM(parent_session_id IS NOT NULL AND session_id NOT LIKE ${subagentLike})`
+    ? `SUM(parent_session_id IS NOT NULL AND session_id NOT GLOB ${subagentGlob})`
     : "0";
   const row = db.prepare(
     `SELECT COALESCE(${byName}, 0) as byName,
