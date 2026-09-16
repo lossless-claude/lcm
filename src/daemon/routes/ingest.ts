@@ -102,9 +102,12 @@ async function ingestAllSubagents(
   runLcmMigrations(db);
   const capture = new SessionCapture(db, pid, scrubber);
   for (const sub of subagents) {
+    const messages = parseTranscript(sub.path);
+    // A transcript the subagent has not written to yet earns no conversation row.
+    if (messages.length === 0) continue;
     await capture.write({
       sessionId: sub.sessionId,
-      messages: parseTranscript(sub.path),
+      messages,
       attribution: { parentSessionId: sub.parentSessionId, subagentType: sub.subagentType, subagentDesc: sub.subagentDesc },
     });
   }
