@@ -105,22 +105,24 @@ export class SessionCapture {
   }
 
   /**
-   * Creates the conversation if needed, then writes the messages past the
-   * stored count in one transaction. An empty delta still creates the
-   * conversation and still persists a cursor.
+   * Creates the conversation if needed and writes the messages past the
+   * stored count, all in one transaction — a failed write or a crash mid-way
+   * leaves neither the conversation row nor a partial message set behind. An
+   * empty delta still creates the conversation and still persists a cursor.
    */
   async write(input: CaptureInput): Promise<CaptureResult> {
     const attribution = input.attribution
       ?? (input.transcriptPath ? attributionFromTranscriptPath(input.transcriptPath) : undefined);
-    const conversation = await this.conversationStore.getOrCreateConversation(input.sessionId, undefined, attribution);
-    const conversationId = conversation.conversationId;
-    const storedCount = await this.conversationStore.getMessageCount(conversationId);
-    // A resumed read may skip only an already-stored prefix; new content begins at the stored count.
-    const newMessages = input.messages.slice(Math.max(0, storedCount - (input.sourceOffset ?? 0)));
-    const { inputs, totalCounts } = this.scrub(newMessages, conversationId, storedCount);
-    if (inputs.length === 0 && !input.codexCursor) return { conversationId, records: [], totalCounts };
 
-    const records = await this.conversationStore.withTransaction(async () => {
+    return this.conversationStore.withTransaction(async () => {
+      const conversation = await this.conversationStore.getOrCreateConversation(input.sessionId, undefined, attribution);
+      const conversationId = conversation.conversationId;
+      const storedCount = await this.conversationStore.getMessageCount(conversationId);
+      // A resumed read may skip only an already-stored prefix; new content begins at the stored count.
+      const newMessages = input.messages.slice(Math.max(0, storedCount - (input.sourceOffset ?? 0)));
+      const { inputs, totalCounts } = this.scrub(newMessages, conversationId, storedCount);
+      if (inputs.length === 0 && !input.codexCursor) return { conversationId, records: [], totalCounts };
+
       const created = inputs.length > 0 ? await this.conversationStore.createMessagesBulk(inputs) : [];
       if (created.length > 0) {
         upsertRedactionCounts(this.db, this.projectId, totalCounts);
@@ -128,9 +130,8 @@ export class SessionCapture {
         await this.persistMessageParts(input.sessionId, newMessages, created);
       }
       if (input.codexCursor) saveCodexCursor(this.db, { conversationId, ...input.codexCursor });
-      return created;
+      return { conversationId, records: created, totalCounts };
     });
-    return { conversationId, records, totalCounts };
   }
 
   private scrub(

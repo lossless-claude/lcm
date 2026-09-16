@@ -114,6 +114,20 @@ describe("SessionCapture", () => {
     expect(row.count).toBe(result.totalCounts.gitleaks);
   });
 
+  it("a failure in a later write leaves no conversation row behind", async () => {
+    const original = capture.conversationStore.createMessagesBulk.bind(capture.conversationStore);
+    capture.conversationStore.createMessagesBulk = async () => {
+      throw new Error("boom");
+    };
+    try {
+      await expect(capture.write({ sessionId: "s1", messages: conversation.slice(0, 2) })).rejects.toThrow("boom");
+    } finally {
+      capture.conversationStore.createMessagesBulk = original;
+    }
+    expect(db.prepare("SELECT 1 FROM conversations WHERE session_id = ?").get("s1")).toBeUndefined();
+    expect(stored().messages).toHaveLength(0);
+  });
+
   it("owns the session ingest log", () => {
     expect(isSessionComplete(db, "s1")).toBe(false);
     markSessionComplete(db, "s1", 4);
