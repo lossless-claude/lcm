@@ -155,7 +155,7 @@ export function languageList(tag: string | undefined): string[] {
  * No pivot query, or one whose terms add nothing, returns `query` untouched, so
  * the single-language path is unchanged.
  */
-export function combineWithPivotQuery(query: string, paths: LcmPaths | undefined, pivotQuery?: string, languages?: QueryLanguages): string {
+export function combineWithPivotQuery(query: string, paths?: LcmPaths, pivotQuery?: string, languages?: QueryLanguages): string {
   const terms = combinedQueryTerms(query, paths, pivotQuery, languages);
   return terms ? terms.join(" ") : query;
 }
@@ -168,7 +168,7 @@ export function combineWithPivotQuery(query: string, paths: LcmPaths | undefined
  * alone to a layer that re-extracts would undo the whole point: each side is tokenised here
  * under its own language, and the layer below does not know which words came from which side.
  */
-export function combinedQueryTerms(query: string, paths: LcmPaths | undefined, pivotQuery?: string, languages: QueryLanguages = {}): string[] | null {
+export function combinedQueryTerms(query: string, paths?: LcmPaths, pivotQuery?: string, languages: QueryLanguages = {}): string[] | null {
   if (!pivotQuery || pivotQuery.trim().length === 0) return null;
   const terms = extractQueryTerms(query, paths, languageList(languages.authorLanguage));
   const pivotTerms = extractQueryTerms(pivotQuery, paths, languageList(languages.pivotLanguage))

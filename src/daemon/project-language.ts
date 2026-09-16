@@ -52,7 +52,8 @@ export function scheduleProjectLanguageDetection(
   const pending = inFlight.get(metaPath);
   if (pending) return pending;
   if (failed.has(metaPath)) return Promise.resolve();
-  if (typeof readMeta(metaPath).language === "string") return Promise.resolve();
+  const meta = readMeta(metaPath);
+  if (typeof meta.language === "string") return ensureExistingProjectPivotPack(metaPath, meta.language, config, paths, client);
   const turns = sampleHumanTurns(db, paths);
   if (turns.length < MIN_TURNS_FOR_DETECTION) return Promise.resolve();
   const detection = detectAndRecord(metaPath, turns, config, paths, client).finally(() => inFlight.delete(metaPath));
@@ -82,6 +83,30 @@ async function detectAndRecord(
     // Once per daemon lifetime per project: a broken provider must not turn every ingest into a warning.
     failed.add(metaPath);
     console.warn(`[lcm] language detection skipped for ${metaPath}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * A project that already has a recorded language never re-detects, but a pivot
+ * language configured after that detection still needs its pack: this is the
+ * reconciliation path, run on every later ingest instead of only on first
+ * detection. `ensureLanguagePack` is idempotent (it stats the pack file before
+ * generating), so the repeated check is cheap once the pack exists.
+ */
+async function ensureExistingProjectPivotPack(
+  metaPath: string, language: string, config: DaemonConfig, paths: LcmPaths, client?: CompactClient,
+): Promise<void> {
+  const pivot = config.search.pivotLanguage;
+  if (primarySubtag(pivot) === "en" || primarySubtag(pivot) === primarySubtag(language)) return;
+  try {
+    const provider = resolveEffectiveProvider(config, client);
+    const summarize = await createSummarizer(provider, config);
+    if (!summarize) return;
+    await ensureLanguagePack(paths, pivot, summarize, `${provider}:${config.llm.model}`);
+  } catch (err) {
+    // Once per daemon lifetime per project: a broken provider must not turn every ingest into a warning.
+    failed.add(metaPath);
+    console.warn(`[lcm] pivot language pack generation skipped for ${metaPath}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 

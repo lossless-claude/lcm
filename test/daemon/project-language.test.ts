@@ -147,6 +147,16 @@ describe("scheduleProjectLanguageDetection", () => {
     expect(JSON.parse(readFileSync(join(dir, "meta.json"), "utf-8")).language).toBe("de");
   });
 
+  it("ensures the pivot pack for an already-detected project without re-detecting", async () => {
+    writeFileSync(join(dir, "meta.json"), JSON.stringify({ cwd: dir, language: "pt-BR" }));
+    const summarize = vi.fn().mockResolvedValue(PACK_REPLY);
+    vi.mocked(createSummarizer).mockResolvedValue(summarize);
+    await scheduleProjectLanguageDetection(dir, await seededDb(25), testConfig({}, { pivotLanguage: "es" }), paths);
+    await vi.waitFor(() => expect(existsSync(languagePackPath("es"))).toBe(true));
+    expect(summarize).toHaveBeenCalledOnce();
+    expect(JSON.parse(readFileSync(join(dir, "meta.json"), "utf-8")).language).toBe("pt-BR");
+  });
+
   it("warns once and stops retrying when the provider fails", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const summarize = vi.fn().mockRejectedValue(new Error("API key is invalid"));
