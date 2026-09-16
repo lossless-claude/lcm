@@ -9,6 +9,7 @@ import { isSignalTagged, parseStoredTags } from "./db/votes.js";
 import { loadDaemonConfig } from "./daemon/config.js";
 import { projectGroups } from "./daemon/project-group.js";
 import type { LcmPaths } from "./lcm-paths.js";
+import { SUBAGENT_SESSION_PREFIX } from "./search/native-history.js";
 
 export type { RecallStats };
 
@@ -142,7 +143,7 @@ export interface LlmUsageStats {
 /**
  * How many stored conversations the search filter treats as subagent transcripts.
  * `byName` is what `SUBAGENT_SESSION` in src/search/native-history.ts matches: a session id
- * starting with `agent-`, a naming convention owned by the host harness. `attributedNotByName`
+ * starting with `SUBAGENT_SESSION_PREFIX`, a naming convention owned by the host harness. `attributedNotByName`
  * are conversations the `.meta.json` sidecar attributed to a parent session but whose id the
  * name filter misses — non-zero means the convention drifted and search got noisier.
  */
@@ -255,12 +256,12 @@ function queryProjectStats(
       ORDER BY c.conversation_id DESC
     `).all() as { conversation_id: number; messages: number; summaries: number; max_depth: number; raw_tokens: number; summary_tokens: number }[];
 
-    // Older schemas lack `session_id`, and `parent_session_id` arrived after `agent-%`
-    // rows already existed on some databases; a missing column counts as 0.
+    // Like every other optional metric here, a column the database lacks counts as 0.
     const conversationColumns = columns("conversations");
-    const byName = conversationColumns.has("session_id") ? "SUM(session_id LIKE 'agent-%')" : "0";
+    const subagentLike = `'${SUBAGENT_SESSION_PREFIX}%'`;
+    const byName = conversationColumns.has("session_id") ? `SUM(session_id LIKE ${subagentLike})` : "0";
     const attributedNotByName = conversationColumns.has("parent_session_id")
-      ? "SUM(parent_session_id IS NOT NULL AND session_id NOT LIKE 'agent-%')"
+      ? `SUM(parent_session_id IS NOT NULL AND session_id NOT LIKE ${subagentLike})`
       : "0";
     const subagentRow = db.prepare(
       `SELECT COALESCE(${byName}, 0) as byName,
