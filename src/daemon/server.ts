@@ -236,7 +236,9 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
       routes.set("POST /status", createStatusHandler(config, paths, startTime, actualPort));
       // Needs its own port to reuse fireCompactRequest's loopback call.
       routes.set("POST /session-start-compact", createSessionStartCompactHandler(config, actualPort, paths));
-      routes.set("POST /session-end", createSessionEndHandler(config, actualPort, paths, ingestHandler));
+      // The follow-ups call this daemon back, so they must present the token it checks.
+      const sequencePaths = options?.tokenPath ? { ...paths, tokenPath: options.tokenPath } : paths;
+      routes.set("POST /session-end", createSessionEndHandler(config, actualPort, sequencePaths, ingestHandler));
 
       resolve({
         address: () => addr,

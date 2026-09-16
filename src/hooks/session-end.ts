@@ -154,7 +154,9 @@ export async function handleSessionEnd(
   // killed by the host loses nothing. The health probe above shares the budget.
   let input: Record<string, unknown> = {};
   try {
-    input = JSON.parse(stdin || "{}");
+    const parsed: unknown = JSON.parse(stdin || "{}");
+    // Valid JSON that is not an object (`null`, a list) must still fail open below.
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) input = parsed as Record<string, unknown>;
     const remainingMs = Math.max(MIN_ACK_TIMEOUT_MS, SESSION_END_TIMEOUT_MS - (Date.now() - started));
     await client.post("/session-end", input, { timeoutMs: remainingMs });
   } catch (err) {
