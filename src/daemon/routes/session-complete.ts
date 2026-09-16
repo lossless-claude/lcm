@@ -6,6 +6,7 @@ import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { validateCwd } from "../validate-cwd.js";
 import type { LcmPaths } from "../../lcm-paths.js";
+import { markSessionComplete } from "../../capture.js";
 
 export function createSessionCompleteHandler(paths: LcmPaths): RouteHandler {
   return async (_req, res, body) => {
@@ -27,10 +28,7 @@ export function createSessionCompleteHandler(paths: LcmPaths): RouteHandler {
     try {
       db.exec("PRAGMA busy_timeout = 5000");
       runLcmMigrations(db);
-      db.prepare(
-        "INSERT INTO session_ingest_log (session_id, message_count) VALUES (?, ?) " +
-          "ON CONFLICT(session_id) DO UPDATE SET message_count = excluded.message_count",
-      ).run(session_id, message_count ?? 0);
+      markSessionComplete(db, session_id, message_count ?? 0);
       sendJson(res, 200, { recorded: true });
     } finally {
       db.close();

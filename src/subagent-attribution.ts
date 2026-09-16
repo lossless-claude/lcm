@@ -33,7 +33,7 @@ const EMPTY_ATTRIBUTION: SubagentAttribution = {
  * something other than an object — yields all three fields null: not an
  * error, and no fallback to the folder name.
  */
-function readSubagentAttribution(
+export function readSubagentAttribution(
   transcriptPath: string,
   folderSessionId: string,
 ): SubagentAttribution {

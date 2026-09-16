@@ -42,14 +42,12 @@ Reading a transcript file to recover what its own path already encodes has no pa
 
 `message_parts` has unused `subtask_agent` / `subtask_desc` columns that look purpose-built
 for this. They are a dead end here: the `INSERT` in `src/store/conversation-store.ts`
-does not list the `subtask_*` columns, and the only writer of parts at all is
-`src/compaction.ts` — no import path writes parts, so reaching those columns means
-building the parts pipeline from scratch. That pipeline is real, scoped, and separate
-(#421, structured skill/slash-command extraction from `parseTranscript`); duplicating a
-slice of it here to reach three columns nothing else populates yet would create two
-writers into the same table with different rules for what counts as "this row exists,"
-which is exactly the kind of drift `message-parts-vs-events-db.md` already flags as a
-cost worth avoiding. Session-level attribution belongs on `conversations`, one row per
+does not list the `subtask_*` columns, and parts are written by one module,
+`src/capture.ts`, from what `parseTranscript` extracted (#421, structured skill/slash-command
+extraction). Reaching three columns nothing else populates from a second place would
+create two writers into the same table with different rules for what counts as "this row
+exists," which is exactly the kind of drift `message-parts-vs-events-db.md` already flags
+as a cost worth avoiding. Session-level attribution belongs on `conversations`, one row per
 session, not `message_parts`, one row per structured fragment inside a session.
 
 ## Backfill: gated by a marker, not by "still has nulls"
