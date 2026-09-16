@@ -74,7 +74,15 @@ describe("POST /prompt-search across a project group", () => {
       expect(siblingIndex).toBeGreaterThanOrEqual(0);
 
       // The local hint's id carries no project.
-      expect(data.projectIds[hereIndex]).toBeFalsy();
+      expect(data.projectIds[hereIndex], JSON.stringify({
+        here,
+        sibling,
+        hereProjectId: projectId(here),
+        siblingProjectId: projectId(sibling),
+        hints: data.hints,
+        ids: data.ids,
+        projectIds: data.projectIds,
+      })).toBeFalsy();
       // The sibling's id is tagged with the project it came from.
       const siblingProjectId = data.projectIds[siblingIndex];
       expect(siblingProjectId).toBe(projectId(sibling));
