@@ -168,6 +168,7 @@ describe("discoverSubagentTranscripts", () => {
       const found = discoverSubagentTranscripts(sessionDir);
       expect(found).toHaveLength(1);
       expect(found[0].sessionId).toBe("agent-x");
+      expect(found[0].path).toBe(join(subagentsDir, "agent-x.jsonl"));
       expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('duplicate sessionId "agent-x"'));
     } finally {
       errorSpy.mockRestore();
