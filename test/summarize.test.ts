@@ -11,7 +11,6 @@ function makeDeps(overrides?: Partial<LcmDependencies>): LcmDependencies {
       leafMinFanout: 8,
       condensedMinFanout: 4,
       condensedMinFanoutHard: 2,
-      incrementalMaxDepth: 0,
       leafChunkTokens: 20_000,
       condensedTargetTokens: 900,
     },

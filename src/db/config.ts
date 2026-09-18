@@ -19,8 +19,6 @@ export type LcmConfig = {
   condensedMinFanout: number;
   /** Relaxed minimum fanout for hard-trigger sweeps. */
   condensedMinFanoutHard: number;
-  /** Condensation depth after each leaf pass; 0 = leaves only, -1 = unlimited. */
-  incrementalMaxDepth: number;
   /** Source tokens per leaf compaction chunk. */
   leafChunkTokens: number;
   /** Target size of a condensed summary, in tokens. */
@@ -33,7 +31,6 @@ export const LCM_CONFIG_DEFAULTS: Readonly<Omit<LcmConfig, "enabled">> = {
   leafMinFanout: 3,
   condensedMinFanout: 2,
   condensedMinFanoutHard: 1,
-  incrementalMaxDepth: 0,
   leafChunkTokens: 20000,
   condensedTargetTokens: 900,
 };
@@ -55,7 +52,6 @@ export function resolveLcmConfig(env: NodeJS.ProcessEnv = process.env): LcmConfi
     leafMinFanout: numberFrom(env, "LCM_LEAF_MIN_FANOUT", defaults.leafMinFanout),
     condensedMinFanout: numberFrom(env, "LCM_CONDENSED_MIN_FANOUT", defaults.condensedMinFanout),
     condensedMinFanoutHard: numberFrom(env, "LCM_CONDENSED_MIN_FANOUT_HARD", defaults.condensedMinFanoutHard),
-    incrementalMaxDepth: numberFrom(env, "LCM_INCREMENTAL_MAX_DEPTH", defaults.incrementalMaxDepth),
     leafChunkTokens: numberFrom(env, "LCM_LEAF_CHUNK_TOKENS", defaults.leafChunkTokens),
     condensedTargetTokens: numberFrom(env, "LCM_CONDENSED_TARGET_TOKENS", defaults.condensedTargetTokens),
   };

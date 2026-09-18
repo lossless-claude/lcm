@@ -56,7 +56,6 @@ describe("CompactionEngine.compact — previousSummaryContent seeding", () => {
       leafMinFanout: 1,
       condensedMinFanout: 10,
       condensedMinFanoutHard: 5,
-      incrementalMaxDepth: 0,
       condensedTargetTokens: 900,
       language: "pt-BR",
     });
@@ -95,7 +94,6 @@ describe("compactEngineConfig", () => {
       leafMinFanout: 3,
       condensedMinFanout: 2,
       condensedMinFanoutHard: 1,
-      incrementalMaxDepth: 0,
       leafChunkTokens: 20000,
       condensedTargetTokens: 900,
     });
