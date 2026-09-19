@@ -14,7 +14,7 @@ beforeEach(async () => {
   runLcmMigrations(db);
   messages = new ConversationStore(db);
   summaries = new SummaryStore(db);
-  await messages.createConversation({ sessionId: "native-context" });
+  await messages.getOrCreateConversation("native-context");
 });
 afterEach(() => db.close());
 
@@ -26,7 +26,7 @@ it("returns the explanation beyond the short FTS snippet near a late match", asy
   const reason = "Retrying with bounded exponential backoff resolved the outage.";
   const content = "Unrelated history. ".repeat(200) + "Saffron failed. " + "Diagnostic detail. ".repeat(20) + reason;
   const source = await seed(content);
-  const short = await messages.searchMessages({ query: "Saffron", mode: "full_text" });
+  const short = messages.searchMessagesSync({ query: "Saffron", mode: "full_text" });
   expect(short[0].snippet).not.toContain(reason);
   const [hit] = await searchNativeHistory(db, { query: "Saffron", limit: 5 });
   expect(hit).toMatchObject({ messageId: source.messageId, snippetTruncated: true });
@@ -77,7 +77,7 @@ it("keeps source context available when FTS is unavailable", async () => {
 });
 
 it("ranks a session corroborated by a message and a summary above a single top message", async () => {
-  await messages.createConversation({ sessionId: "corroborated" });
+  await messages.getOrCreateConversation("corroborated");
   await seed("Saffron retry Saffron retry: the strongest single message.");
   await messages.createMessage({ conversationId: 2, seq: 1, role: "assistant", content: "Saffron retry noted in the message.", tokenCount: 10 });
   await summaries.insertSummary({ summaryId: "summary-2", conversationId: 2, kind: "leaf", content: "Saffron retry recorded in the summary.", tokenCount: 10 });
@@ -89,7 +89,7 @@ it("ranks a session corroborated by a message and a summary above a single top m
 });
 
 it("spreads a small limit across sessions before returning second hits", async () => {
-  await messages.createConversation({ sessionId: "second" });
+  await messages.getOrCreateConversation("second");
   await seed("Saffron once.");
   await messages.createMessage({ conversationId: 1, seq: 2, role: "assistant", content: "Saffron twice.", tokenCount: 5 });
   await messages.createMessage({ conversationId: 2, seq: 1, role: "assistant", content: "Saffron elsewhere.", tokenCount: 5 });
@@ -125,13 +125,13 @@ it("filters subagents and normalises session length in the synchronous search pa
   for (let seq = 2; seq <= 21; seq++) {
     await messages.createMessage({ conversationId: 1, seq, role: "user", content: "Unrelated maintenance detail.", tokenCount: 5 });
   }
-  const short = await messages.createConversation({ sessionId: "short-human" });
+  const short = await messages.getOrCreateConversation("short-human");
   await messages.createMessage({ conversationId: short.conversationId, seq: 1, role: "user", content, tokenCount: 10 });
-  const agent = await messages.createConversation({ sessionId: "agent-panel" });
+  const agent = await messages.getOrCreateConversation("agent-panel");
   await messages.createMessage({ conversationId: agent.conversationId, seq: 1, role: "assistant", content: "Saffron Saffron Saffron", tokenCount: 10 });
   await summaries.insertSummary({ summaryId: "agent-summary", conversationId: agent.conversationId, kind: "leaf", content: "Saffron", tokenCount: 5 });
 
-  const raw = await messages.searchMessages({ query: "Saffron", mode: "full_text" });
+  const raw = messages.searchMessagesSync({ query: "Saffron", mode: "full_text" });
   expect(raw.findIndex(hit => hit.conversationId === 1)).toBeLessThan(raw.findIndex(hit => hit.conversationId === short.conversationId));
   const hits = await searchNativeHistory(db, { query: "Saffron", limit: 5 });
   expect(hits.map(hit => hit.sessionId)).toEqual(["short-human", "native-context"]);

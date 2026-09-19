@@ -28,10 +28,7 @@ describe("FTS fallback", () => {
     const conversationStore = new ConversationStore(db, { fts5Available: false });
     const summaryStore = new SummaryStore(db, { fts5Available: false });
 
-    const conversation = await conversationStore.createConversation({
-      sessionId: "fallback-session",
-      title: "Fallback search",
-    });
+    const conversation = await conversationStore.getOrCreateConversation("fallback-session", "Fallback search");
 
     const [userMessage, assistantMessage] = await conversationStore.createMessagesBulk([
       {
@@ -64,7 +61,7 @@ describe("FTS fallback", () => {
 
     expect(summary.summaryId).toBe("sum_fallback");
 
-    const messageResults = await conversationStore.searchMessages({
+    const messageResults = conversationStore.searchMessagesSync({
       query: "database migration",
       mode: "full_text",
       conversationId: conversation.conversationId,
@@ -73,7 +70,7 @@ describe("FTS fallback", () => {
     expect(messageResults).toHaveLength(1);
     expect(messageResults[0]?.snippet.toLowerCase()).toContain("database migration");
 
-    const summaryResults = await summaryStore.searchSummaries({
+    const summaryResults = summaryStore.searchSummariesSync({
       query: "search usable",
       mode: "full_text",
       conversationId: conversation.conversationId,
@@ -81,9 +78,6 @@ describe("FTS fallback", () => {
     });
     expect(summaryResults).toHaveLength(1);
     expect(summaryResults[0]?.summaryId).toBe("sum_fallback");
-
-    const deleted = await conversationStore.deleteMessages([assistantMessage.messageId]);
-    expect(deleted).toBe(1);
 
     const ftsTables = db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts%'")

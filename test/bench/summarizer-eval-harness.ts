@@ -312,7 +312,7 @@ export async function runEval(input: {
   runLcmMigrations(db);
   const conversationStore = new ConversationStore(db);
   const summaryStore = new SummaryStore(db);
-  const conversation = await conversationStore.createConversation({ sessionId: `eval-${session.label}` });
+  const conversation = await conversationStore.getOrCreateConversation(`eval-${session.label}`);
   const cid = conversation.conversationId;
 
   const records = await conversationStore.createMessagesBulk(

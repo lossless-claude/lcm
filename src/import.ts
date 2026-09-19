@@ -167,8 +167,12 @@ export function findSessionFiles(projectDir: string): DiscoveredSessionFile[] {
 
   // Deduplicate: when a session has both a flat and nested transcript,
   // keep only the flat file (the canonical source in newer Claude Code versions).
-  // Subagent files (inside subagents/) are kept unconditionally because their
-  // paths never match the nested transcript pattern below.
+  // A subagent file at `<session>/subagents/<X>/<X>.jsonl` does match the
+  // nested pattern below (sessionId X, path ending in X/X.jsonl) and would be
+  // dropped if a flat `<project>/<X>.jsonl` also existed — Claude Code does
+  // not write that layout today, so this is a theoretical false-positive
+  // risk, not a pattern mismatch.
+
   const nestedSuffix = (sid: string) => join(sid, `${sid}.jsonl`);
   const deduped = files.filter(f => {
     const isNested = f.path.endsWith(nestedSuffix(f.sessionId));

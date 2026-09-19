@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { parseSqliteDate } from "../db/sqlite-date.js";
 import { randomUUID } from "node:crypto";
 import {
+  byRankThenNewest,
   prepareFts5Query,
   shouldRetryWithLike,
   likePlanForPreparedQuery,
@@ -58,20 +59,6 @@ export type CreateMessagePartInput = {
   toolInput?: string | null;
   toolOutput?: string | null;
   metadata?: string | null;
-};
-
-export type MessagePartRecord = {
-  partId: string;
-  messageId: MessageId;
-  sessionId: string;
-  partType: MessagePartType;
-  ordinal: number;
-  textContent: string | null;
-  toolCallId: string | null;
-  toolName: string | null;
-  toolInput: string | null;
-  toolOutput: string | null;
-  metadata: string | null;
 };
 
 /**
@@ -157,20 +144,6 @@ interface MessageSearchRow {
   created_at: string;
 }
 
-interface MessagePartRow {
-  part_id: string;
-  message_id: number;
-  session_id: string;
-  part_type: MessagePartType;
-  ordinal: number;
-  text_content: string | null;
-  tool_call_id: string | null;
-  tool_name: string | null;
-  tool_input: string | null;
-  tool_output: string | null;
-  metadata: string | null;
-}
-
 interface CountRow {
   count: number;
 }
@@ -222,22 +195,6 @@ function toSearchResult(row: MessageSearchRow): MessageSearchResult {
   };
 }
 
-function toMessagePartRecord(row: MessagePartRow): MessagePartRecord {
-  return {
-    partId: row.part_id,
-    messageId: row.message_id,
-    sessionId: row.session_id,
-    partType: row.part_type,
-    ordinal: row.ordinal,
-    textContent: row.text_content,
-    toolCallId: row.tool_call_id,
-    toolName: row.tool_name,
-    toolInput: row.tool_input,
-    toolOutput: row.tool_output,
-    metadata: row.metadata,
-  };
-}
-
 // ── ConversationStore ─────────────────────────────────────────────────────────
 
 export class ConversationStore {
@@ -266,7 +223,7 @@ export class ConversationStore {
 
   // ── Conversation operations ───────────────────────────────────────────────
 
-  async createConversation(input: CreateConversationInput): Promise<ConversationRecord> {
+  private async createConversation(input: CreateConversationInput): Promise<ConversationRecord> {
     const result = this.db
       // Every conversation opened from here on is parsed by the tagging
       // parser. Older ones keep NULL, which reads as unknown; they are never
@@ -308,7 +265,7 @@ export class ConversationStore {
         `${CONVERSATION_SELECT_COLUMNS}
        FROM conversations
        WHERE session_id = ?
-       ORDER BY created_at DESC
+       ORDER BY created_at DESC, conversation_id DESC
        LIMIT 1`,
       )
       .get(sessionId) as unknown as ConversationRow | undefined;
@@ -323,20 +280,31 @@ export class ConversationStore {
   ): Promise<ConversationRecord> {
     const existing = await this.getConversationBySessionId(sessionId);
     if (existing) {
-      return existing;
+      return this.backfillAttribution(existing, attribution);
     }
     return this.createConversation({ sessionId, title, ...attribution });
   }
 
-  async markConversationBootstrapped(conversationId: ConversationId): Promise<void> {
+  /**
+   * Fills a still-null attribution on an already-created row — the row was
+   * captured before its `.meta.json` sidecar existed, or before whichever
+   * caller passed attribution ran. Guarded by `parent_session_id IS NULL` so
+   * a later read of an all-null sidecar can never clobber a row already
+   * correctly attributed.
+   */
+  private backfillAttribution(existing: ConversationRecord, attribution?: SubagentAttributionInput): ConversationRecord {
+    if (!attribution?.parentSessionId || existing.parentSessionId !== null) {
+      return existing;
+    }
     this.db
       .prepare(
         `UPDATE conversations
-       SET bootstrapped_at = COALESCE(bootstrapped_at, datetime('now')),
-           updated_at = datetime('now')
-       WHERE conversation_id = ?`,
+       SET parent_session_id = ?, subagent_type = ?, subagent_desc = ?
+       WHERE conversation_id = ? AND parent_session_id IS NULL`,
       )
-      .run(conversationId);
+      .run(attribution.parentSessionId, attribution.subagentType ?? null, attribution.subagentDesc ?? null, existing.conversationId);
+
+    return this.getConversationSync(existing.conversationId) ?? existing;
   }
 
   async listConversations(): Promise<ConversationRecord[]> {
@@ -348,6 +316,40 @@ export class ConversationStore {
       )
       .all() as unknown as ConversationRow[];
     return rows.map(toConversationRecord);
+  }
+
+  /**
+   * The conversation with the latest user/assistant message or summary,
+   * leaving out the named session: what a session that has captured nothing
+   * yet is shown in its place.
+   */
+  async latestActiveConversation(excludingSessionId: string): Promise<ConversationRecord | null> {
+    const row = this.db
+      .prepare(
+        `${CONVERSATION_SELECT_COLUMNS}
+       FROM conversations c
+       WHERE c.session_id != ?
+         AND (EXISTS (
+           SELECT 1 FROM messages m
+           WHERE m.conversation_id = c.conversation_id AND m.role IN ('user', 'assistant')
+         ) OR EXISTS (
+           SELECT 1 FROM summaries s WHERE s.conversation_id = c.conversation_id
+         ))
+       ORDER BY MAX(
+         COALESCE((
+           SELECT MAX(julianday(m.created_at)) FROM messages m
+           WHERE m.conversation_id = c.conversation_id
+             AND m.role IN ('user', 'assistant')
+         ), -1),
+         COALESCE((
+           SELECT MAX(julianday(s.created_at)) FROM summaries s
+           WHERE s.conversation_id = c.conversation_id
+         ), -1)
+       ) DESC, c.conversation_id DESC
+       LIMIT 1`,
+      )
+      .get(excludingSessionId) as unknown as ConversationRow | undefined;
+    return row ? toConversationRecord(row) : null;
   }
 
   // ── Message operations ────────────────────────────────────────────────────
@@ -437,53 +439,6 @@ export class ConversationStore {
     return rows.map(toMessageRecord);
   }
 
-  async getLastMessage(conversationId: ConversationId): Promise<MessageRecord | null> {
-    const row = this.db
-      .prepare(
-        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
-       FROM messages
-       WHERE conversation_id = ?
-       ORDER BY seq DESC
-       LIMIT 1`,
-      )
-      .get(conversationId) as unknown as MessageRow | undefined;
-
-    return row ? toMessageRecord(row) : null;
-  }
-
-  async hasMessage(
-    conversationId: ConversationId,
-    role: MessageRole,
-    content: string,
-  ): Promise<boolean> {
-    const row = this.db
-      .prepare(
-        `SELECT 1 AS count
-       FROM messages
-       WHERE conversation_id = ? AND role = ? AND content = ?
-       LIMIT 1`,
-      )
-      .get(conversationId, role, content) as unknown as CountRow | undefined;
-
-    return row?.count === 1;
-  }
-
-  async countMessagesByIdentity(
-    conversationId: ConversationId,
-    role: MessageRole,
-    content: string,
-  ): Promise<number> {
-    const row = this.db
-      .prepare(
-        `SELECT COUNT(*) AS count
-       FROM messages
-       WHERE conversation_id = ? AND role = ? AND content = ?`,
-      )
-      .get(conversationId, role, content) as unknown as CountRow | undefined;
-
-    return row?.count ?? 0;
-  }
-
   async getMessageById(messageId: MessageId): Promise<MessageRecord | null> {
     return this.getMessageByIdSync(messageId);
   }
@@ -536,34 +491,13 @@ export class ConversationStore {
     }
   }
 
-  async getMessageParts(messageId: MessageId): Promise<MessagePartRecord[]> {
-    const rows = this.db
-      .prepare(
-        `SELECT
-         part_id,
-         message_id,
-         session_id,
-         part_type,
-         ordinal,
-         text_content,
-         tool_call_id,
-         tool_name,
-         tool_input,
-         tool_output,
-         metadata
-       FROM message_parts
-       WHERE message_id = ?
-       ORDER BY ordinal`,
-      )
-      .all(messageId) as unknown as MessagePartRow[];
-
-    return rows.map(toMessagePartRecord);
-  }
-
-  async getMessageCount(conversationId: ConversationId): Promise<number> {
-    const row = this.db
-      .prepare(`SELECT COUNT(*) AS count FROM messages WHERE conversation_id = ?`)
-      .get(conversationId) as unknown as CountRow;
+  /** Messages in one conversation, or in every conversation when none is named. */
+  async getMessageCount(conversationId?: ConversationId): Promise<number> {
+    const row = (
+      conversationId == null
+        ? this.db.prepare(`SELECT COUNT(*) AS count FROM messages`).get()
+        : this.db.prepare(`SELECT COUNT(*) AS count FROM messages WHERE conversation_id = ?`).get(conversationId)
+    ) as unknown as CountRow;
     return row?.count ?? 0;
   }
 
@@ -577,50 +511,7 @@ export class ConversationStore {
     return row?.max_seq ?? 0;
   }
 
-  // ── Deletion ──────────────────────────────────────────────────────────────
-
-  /**
-   * Delete messages and their associated records (context_items, FTS, message_parts).
-   *
-   * Skips messages referenced in summary_messages (already compacted) to avoid
-   * breaking the summary DAG. Returns the count of actually deleted messages.
-   */
-  async deleteMessages(messageIds: MessageId[]): Promise<number> {
-    if (messageIds.length === 0) {
-      return 0;
-    }
-
-    let deleted = 0;
-    for (const messageId of messageIds) {
-      // Skip if referenced by a summary (ON DELETE RESTRICT would fail anyway)
-      const refRow = this.db
-        .prepare(`SELECT 1 AS found FROM summary_messages WHERE message_id = ? LIMIT 1`)
-        .get(messageId) as unknown as { found: number } | undefined;
-      if (refRow) {
-        continue;
-      }
-
-      // Remove from context_items first (RESTRICT constraint)
-      this.db
-        .prepare(`DELETE FROM context_items WHERE item_type = 'message' AND message_id = ?`)
-        .run(messageId);
-
-      this.deleteMessageFromFullText(messageId);
-
-      // Delete the message (message_parts cascade via ON DELETE CASCADE)
-      this.db.prepare(`DELETE FROM messages WHERE message_id = ?`).run(messageId);
-
-      deleted += 1;
-    }
-
-    return deleted;
-  }
-
   // ── Search ────────────────────────────────────────────────────────────────
-
-  async searchMessages(input: MessageSearchInput): Promise<MessageSearchResult[]> {
-    return this.searchMessagesSync(input);
-  }
 
   searchMessagesSync(input: MessageSearchInput): MessageSearchResult[] {
     const limit = input.limit ?? 50;
@@ -661,17 +552,6 @@ export class ConversationStore {
         .run(messageId, content);
     } catch {
       // Full-text indexing is optional. Message persistence must still succeed.
-    }
-  }
-
-  private deleteMessageFromFullText(messageId: MessageId): void {
-    if (!this.fts5Available) {
-      return;
-    }
-    try {
-      this.db.prepare(`DELETE FROM messages_fts WHERE rowid = ?`).run(messageId);
-    } catch {
-      // Ignore FTS cleanup failures; the source row deletion is authoritative.
     }
   }
 
@@ -742,10 +622,10 @@ export class ConversationStore {
        FROM messages_fts
        JOIN messages m ON m.message_id = messages_fts.rowid
        WHERE ${where.join(" AND ")}
-        ORDER BY rank, m.created_at DESC
+       ORDER BY rank
        LIMIT ?`;
     const rows = this.db.prepare(sql).all(...args) as unknown as MessageSearchRow[];
-    return rows.map(toSearchResult);
+    return byRankThenNewest(rows.map(toSearchResult));
   }
 
   /** Substring scan OR-ing the prepared terms (vocabulary-mismatch fallback). */

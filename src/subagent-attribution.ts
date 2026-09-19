@@ -79,13 +79,24 @@ export interface DiscoveredSubagentTranscript {
  * skipped without losing what was found before it. The owning session is
  * `basename(sessionDir)` for every transcript found, however deep; the
  * directories in between are never a parent.
+ *
+ * Two transcripts under the same `subagents/` tree sharing a basename (so
+ * the same `sessionId`) dedupe to the first one found, in walk order; every
+ * later duplicate is dropped and logged instead of overwriting the row the
+ * first one already ingested with a different transcript's tail.
  */
 export function discoverSubagentTranscripts(sessionDir: string): DiscoveredSubagentTranscript[] {
   const subagentsDir = join(sessionDir, "subagents");
   if (!isRealDirectory(subagentsDir)) return [];
-  const found: DiscoveredSubagentTranscript[] = [];
-  walkSubagentDir(subagentsDir, basename(sessionDir), found);
-  return found;
+  const walk: WalkState = { folderSessionId: basename(sessionDir), out: [], seenSessionIds: new Set() };
+  walkSubagentDir(subagentsDir, walk);
+  return walk.out;
+}
+
+interface WalkState {
+  folderSessionId: string;
+  out: DiscoveredSubagentTranscript[];
+  seenSessionIds: Set<string>;
 }
 
 function isRealDirectory(path: string): boolean {
@@ -104,15 +115,21 @@ function listEntries(dir: string): Dirent[] {
   }
 }
 
-function walkSubagentDir(dir: string, folderSessionId: string, out: DiscoveredSubagentTranscript[]): void {
+function walkSubagentDir(dir: string, walk: WalkState): void {
   for (const entry of listEntries(dir)) {
     if (entry.isSymbolicLink()) continue;
     if (entry.isDirectory()) {
-      walkSubagentDir(join(dir, entry.name), folderSessionId, out);
+      walkSubagentDir(join(dir, entry.name), walk);
       continue;
     }
-    const found = isSubagentTranscriptFile(entry) ? discoveredTranscript(join(dir, entry.name), folderSessionId) : null;
-    if (found) out.push(found);
+    const found = isSubagentTranscriptFile(entry) ? discoveredTranscript(join(dir, entry.name), walk.folderSessionId) : null;
+    if (!found) continue;
+    if (walk.seenSessionIds.has(found.sessionId)) {
+      console.error(`subagent-attribution: duplicate sessionId "${found.sessionId}" at ${found.path}, keeping the first`);
+      continue;
+    }
+    walk.seenSessionIds.add(found.sessionId);
+    walk.out.push(found);
   }
 }
 

@@ -11,7 +11,7 @@ import type { LcmPaths } from "../../lcm-paths.js";
 import { sanitizeError } from "../safe-error.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { PromotedStore } from "../../db/promoted.js";
-import { isVoteRecord, parseVote, voteTagsOf } from "../../db/votes.js";
+import { isVoteRecord, parseVote } from "../../db/votes.js";
 import { ScrubEngine } from "../../scrub.js";
 import { validateCwd } from "../validate-cwd.js";
 
@@ -83,24 +83,16 @@ function resolveMemoryTargetCwd(projectPath: string, memoryId: string, paths: Lc
  */
 function reconcileSessionVote(
   store: PromotedStore,
-  db: DatabaseSync,
   sessionId: string | undefined,
   memoryId: string,
   direction: "+1" | "-1",
 ): { existingId: string } | null {
   if (!sessionId || sessionId === "manual") return null;
 
-  const rows = db.prepare(
-    `SELECT id, tags FROM promoted
-     WHERE archived_at IS NULL AND session_id = ?
-     AND tags LIKE '%"signal:memory_vote"%'`
-  ).all(sessionId) as Array<{ id: string; tags: string }>;
-
-  for (const row of rows) {
-    const vote = voteTagsOf(JSON.parse(row.tags) as string[]);
-    if (!vote || vote.memoryId !== memoryId) continue;
-    if (vote.direction === direction) return { existingId: row.id };
-    store.archive(row.id);
+  for (const vote of store.activeVotesBySession(sessionId)) {
+    if (vote.memoryId !== memoryId) continue;
+    if (vote.direction === direction) return { existingId: vote.id };
+    store.archive(vote.id);
     return null;
   }
   return null;
@@ -255,7 +247,7 @@ export function createStoreHandler(config: DaemonConfig, paths: LcmPaths): Route
           sendJson(res, 400, { error: `memory_id ${vote.memoryId} was not found (or is archived) in this project or its group` });
           return;
         }
-        const coalesced = reconcileSessionVote(store, db, metadata.sessionId, vote.memoryId, vote.direction);
+        const coalesced = reconcileSessionVote(store, metadata.sessionId, vote.memoryId, vote.direction);
         if (coalesced) {
           db.exec("COMMIT");
           sendJson(res, 200, { stored: true, id: coalesced.existingId });

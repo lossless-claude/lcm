@@ -480,7 +480,7 @@ describe("POST /ingest", () => {
     expect(await (await post({ session_id: "done-sess", cwd: tempDir, messages: grown, replay: true })).json()).toEqual({ ingested: 0, totalTokens: 0 });
   });
 
-  it("returns ingested=0 when transcript_path is missing and messages[] is absent", async () => {
+  it("rejects an explicitly supplied Claude transcript path outside the project", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-ingest-missing-"));
     tempDirs.push(tempDir);
 
@@ -495,8 +495,8 @@ describe("POST /ingest", () => {
       }),
     });
 
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ingested: 0, totalTokens: 0 });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Claude transcript path is not allowed" });
   });
 
   it("backfills the model on a Claude tool-call event whose hook payload could not carry one", async () => {

@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { sep } from "node:path";
 import type { CodexTranscriptCursor } from "./codex-transcript-reader.js";
 import { loadCodexCursor, saveCodexCursor } from "./db/codex-cursor.js";
+import type { EventsDb } from "./hooks/events-db.js";
 import { upsertRedactionCounts } from "./db/redaction-stats.js";
 import type { ScrubEngine } from "./scrub.js";
 import {
@@ -15,13 +16,16 @@ import {
 import { SummaryStore } from "./store/summary-store.js";
 import { readSubagentAttribution } from "./subagent-attribution.js";
 import type { MessagePart, ParsedMessage } from "./transcript.js";
+import { transcriptSource, type StoredTranscript, type TranscriptLocator } from "./transcript-source.js";
 
 /**
  * Capture (see CONTEXT.md): the one writer of a session's transcript content.
  * Every route that lands messages in `messages` goes through `SessionCapture`,
  * so what counts as "already stored", how content is scrubbed, and which
  * sibling rows (`context_items`, `message_parts`, redaction counts, the Codex
- * cursor) accompany a message are decided in exactly one place.
+ * cursor) accompany a message are decided in exactly one place. It is also
+ * the one caller of the transcript-source seam (src/transcript-source.ts):
+ * a route names the client and the session, and Capture picks the adapter.
  */
 
 export type RedactionCounts = { gitleaks: number; builtIn: number; global: number; project: number };
@@ -49,6 +53,19 @@ export interface CaptureResult {
   conversationId: number;
   records: MessageRecord[];
   totalCounts: RedactionCounts;
+}
+
+export interface TranscriptCaptureInput extends TranscriptLocator {
+  /** Selects the adapter; anything that is not Codex reads Claude Code transcripts. */
+  client?: string;
+  attribution?: SubagentAttributionInput;
+}
+
+export interface TranscriptCaptureResult extends CaptureResult {
+  /** The transcript that was read, as the adapter located it. */
+  transcriptPath: string;
+  /** Fills the model on the session's events whose hook payload could not carry one. */
+  backfillModels(events: EventsDb): void;
 }
 
 /**
@@ -95,16 +112,46 @@ export class SessionCapture {
 
   /** The session's conversation and how many of its messages are stored, or undefined before its first write. */
   async stored(sessionId: string): Promise<StoredSession | undefined> {
-    const row = this.db.prepare("SELECT conversation_id FROM conversations WHERE session_id = ?")
-      .get(sessionId) as { conversation_id: number } | undefined;
-    if (!row) return undefined;
-    return { conversationId: row.conversation_id, storedCount: await this.conversationStore.getMessageCount(row.conversation_id) };
+    const conversation = await this.conversationStore.getConversationBySessionId(sessionId);
+    if (!conversation) return undefined;
+    const { conversationId } = conversation;
+    return { conversationId, storedCount: await this.conversationStore.getMessageCount(conversationId) };
   }
 
-  /** A Codex cursor is only trusted while it accounts for exactly the stored messages. */
-  codexCursor(stored: StoredSession, transcriptPath: string): CodexTranscriptCursor | undefined {
-    const cursor = loadCodexCursor(this.db, stored.conversationId, transcriptPath);
-    return cursor && cursor.messageCount === stored.storedCount ? cursor : undefined;
+  /**
+   * Reads what the session's transcript holds beyond what is stored, through
+   * the adapter for its client, and writes it. Undefined when there is no
+   * transcript to read, or when it holds nothing and the session has no
+   * conversation yet: an empty transcript earns no conversation row, but an
+   * existing conversation is still written to, so a sidecar that appeared
+   * since the last write reaches its attribution.
+   */
+  async captureTranscript(input: TranscriptCaptureInput): Promise<TranscriptCaptureResult | undefined> {
+    const source = transcriptSource(input.client);
+    const transcriptPath = source.locate(input);
+    if (!transcriptPath) return undefined;
+    const stored = await this.stored(input.sessionId);
+    const delta = await source.read(transcriptPath, stored && this.storedTranscript(stored, transcriptPath), {
+      ...input, scrub: (text) => this.scrubber.scrubWithCounts(text).text,
+    });
+    if (!stored && delta.messages.length === 0 && !delta.codexCursor) return undefined;
+    const written = await this.write({
+      sessionId: input.sessionId,
+      messages: delta.messages,
+      sourceOffset: delta.sourceOffset,
+      transcriptPath,
+      attribution: input.attribution,
+      ...(delta.codexCursor ? { codexCursor: { transcriptPath, cursor: delta.codexCursor } } : {}),
+    });
+    return { ...written, transcriptPath, backfillModels: (events) => delta.backfillModels(events, input.sessionId) };
+  }
+
+  private storedTranscript(stored: StoredSession, transcriptPath: string): StoredTranscript {
+    return {
+      storedCount: stored.storedCount,
+      storedMessages: () => this.conversationStore.getMessages(stored.conversationId, { limit: stored.storedCount }),
+      codexCursor: loadCodexCursor(this.db, stored.conversationId, transcriptPath),
+    };
   }
 
   /**
