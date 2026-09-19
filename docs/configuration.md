@@ -69,7 +69,6 @@ Set recommended environment variables:
 
 ```bash
 export LCM_FRESH_TAIL_COUNT=32
-export LCM_INCREMENTAL_MAX_DEPTH=-1
 ```
 
 Restart Claude Code.
@@ -143,15 +142,6 @@ For most use cases, 0.75 is a good balance.
 
 - Lower values create deeper DAGs with more levels of abstraction.
 - Higher values keep the DAG shallower but with more nodes at each level.
-
-### Incremental max depth
-
-`LCM_INCREMENTAL_MAX_DEPTH` (default `0`) controls whether condensation happens automatically after leaf passes.
-
-- **0** — Only leaf summaries are created incrementally. Condensation only happens during manual `/compact` or overflow.
-- **1** — After each leaf pass, attempt to condense d0 summaries into d1.
-- **2+** — Deeper automatic condensation up to the specified depth.
-- **-1** — Unlimited depth. Condensation cascades as deep as needed after each leaf pass. Recommended for long-running sessions.
 
 ### Summary target tokens
 
