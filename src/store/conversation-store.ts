@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { parseSqliteDate } from "../db/sqlite-date.js";
 import { randomUUID } from "node:crypto";
 import {
+  byRankThenNewest,
   prepareFts5Query,
   shouldRetryWithLike,
   likePlanForPreparedQuery,
@@ -742,10 +743,10 @@ export class ConversationStore {
        FROM messages_fts
        JOIN messages m ON m.message_id = messages_fts.rowid
        WHERE ${where.join(" AND ")}
-        ORDER BY rank, m.created_at DESC
+       ORDER BY rank
        LIMIT ?`;
     const rows = this.db.prepare(sql).all(...args) as unknown as MessageSearchRow[];
-    return rows.map(toSearchResult);
+    return byRankThenNewest(rows.map(toSearchResult));
   }
 
   /** Substring scan OR-ing the prepared terms (vocabulary-mismatch fallback). */

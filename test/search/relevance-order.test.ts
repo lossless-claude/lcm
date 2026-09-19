@@ -90,3 +90,50 @@ describe("full-text candidate fill", () => {
     expect(result.summaries).toHaveLength(2);
   });
 });
+
+describe("full-text ranking lets FTS5 apply the candidate limit", () => {
+  let db: DatabaseSync;
+  let engine: RetrievalEngine;
+  const matchStatements: string[] = [];
+
+  beforeEach(async () => {
+    db = new DatabaseSync(":memory:");
+    runLcmMigrations(db);
+    const conversations = new ConversationStore(db);
+    const summaries = new SummaryStore(db);
+    engine = new RetrievalEngine(conversations, summaries);
+    for (const [index, date] of ["2026-01-01T00:00:00Z", "2026-03-01T00:00:00Z", "2026-02-01T00:00:00Z"].entries()) {
+      const conversation = await conversations.createConversation({ sessionId: `session-${index}` });
+      await conversations.createMessage({ conversationId: conversation.conversationId, seq: 0, role: "user", content: "The beacon flickered.", tokenCount: 5 });
+      await summaries.insertSummary({ summaryId: `summary-${index}`, conversationId: conversation.conversationId, kind: "leaf", content: "The beacon flickered.", tokenCount: 5 });
+      db.prepare("UPDATE messages SET created_at = ? WHERE conversation_id = ?").run(date, conversation.conversationId);
+      db.prepare("UPDATE summaries SET created_at = ? WHERE conversation_id = ?").run(date, conversation.conversationId);
+    }
+    const prepare = db.prepare.bind(db);
+    matchStatements.length = 0;
+    Object.defineProperty(db, "prepare", {
+      value: (sql: string) => {
+        if (/ MATCH \?/.test(sql)) matchStatements.push(sql);
+        return prepare(sql);
+      },
+    });
+  });
+
+  afterEach(() => db.close());
+
+  it("breaks equal ranks newest first", async () => {
+    const result = await engine.grep({ query: "beacon", mode: "full_text", scope: "both" });
+    expect(result.messages.map((m) => m.conversationId)).toEqual([2, 3, 1]);
+    expect(result.summaries.map((s) => s.conversationId)).toEqual([2, 3, 1]);
+  });
+
+  it("orders by rank alone in SQL, so no matched row is sorted outside FTS5", async () => {
+    await engine.grep({ query: "beacon", mode: "full_text", scope: "both" });
+    const statements = matchStatements.splice(0);
+    expect(statements).toHaveLength(2);
+    for (const sql of statements) {
+      const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all('"beacon"', 50) as Array<{ detail: string }>;
+      expect(plan.map((row) => row.detail).join("\n")).not.toMatch(/TEMP B-TREE/);
+    }
+  });
+});

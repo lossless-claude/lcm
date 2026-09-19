@@ -27,9 +27,22 @@ Single-keyword queries (`lcm search worktrees`) keep strict semantics — no LIK
 one-term lookup.
 
 Full-text matches are ordered by BM25 relevance within each source (messages or summaries),
-including AND and single-keyword queries, before candidate limits are applied. Newer matches
-break relevance ties. Regex lookup remains newest-first. When the all-term match returns fewer
-candidates than the limit, the remaining slots are filled with BM25-ranked any-term matches.
+including AND and single-keyword queries, before candidate limits are applied. Among the
+candidates kept, newer matches break relevance ties. Regex lookup remains newest-first. When the
+all-term match returns fewer candidates than the limit, the remaining slots are filled with
+BM25-ranked any-term matches.
+
+The SQL behind each source orders by `rank` alone, the one ordering FTS5 consumes itself, so the
+join to the source row and the `snippet()` call run only for the rows the limit keeps; the
+tie-break is applied afterwards, over those rows. An ORDER BY that FTS5 cannot consume (`rank`
+plus any second column) makes the planner sort in a temp b-tree instead: every matched row is
+joined and snippeted before the limit applies, and the cost of a many-term OR query then scales
+with the matched content read from disk rather than with the limit. Measured on a corpus of
+1,800 sessions and 516k messages (1.1 GB of message text), where a many-term OR query matches
+up to 159k rows, that shape answered one 14-term query in 6.6 s cold against 54 ms with `rank` alone;
+over the corpus's 30-question benchmark, p95 went from 10.5 s to 0.76 s and p50 from 7.4 s to
+0.4 s with the same hit@5, into the range the other corpora already answered in.
+`test/search/relevance-order.test.ts` pins the plan shape.
 
 The search response then fuses message and summary candidates by session: each session scores
 the sum of the reciprocal ranks of its best message and its best summary, so evidence present
