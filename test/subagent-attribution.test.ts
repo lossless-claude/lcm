@@ -155,6 +155,26 @@ describe("discoverSubagentTranscripts", () => {
     }
   });
 
+  it("dedupes two transcripts sharing a basename at different depths, keeping the first found", () => {
+    const sessionDir = makeSessionDir();
+    const subagentsDir = join(sessionDir, "subagents");
+    const workflowRunDir = join(subagentsDir, "workflows", "wf_1");
+    mkdirSync(workflowRunDir, { recursive: true });
+    writeFileSync(join(subagentsDir, "agent-x.jsonl"), "top-level");
+    writeFileSync(join(workflowRunDir, "agent-x.jsonl"), "nested");
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const found = discoverSubagentTranscripts(sessionDir);
+      expect(found).toHaveLength(1);
+      expect(found[0].sessionId).toBe("agent-x");
+      expect(found[0].path).toBe(join(subagentsDir, "agent-x.jsonl"));
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('duplicate sessionId "agent-x"'));
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("skips symlinked transcripts and symlinked directories", () => {
     const sessionDir = makeSessionDir();
     const subagentsDir = join(sessionDir, "subagents");

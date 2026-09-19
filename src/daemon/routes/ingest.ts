@@ -103,14 +103,18 @@ async function ingestAllSubagents(
   runLcmMigrations(db);
   const capture = new SessionCapture(db, pid, scrubber);
   for (const sub of subagents) {
-    const messages = parseTranscript(sub.path);
-    // A transcript the subagent has not written to yet earns no conversation row.
-    if (messages.length === 0) continue;
-    await capture.write({
-      sessionId: sub.sessionId,
-      messages,
-      attribution: sub.attribution,
-    });
+    try {
+      const messages = parseTranscript(sub.path);
+      // A transcript the subagent has not written to yet earns no conversation row.
+      if (messages.length === 0) continue;
+      await capture.write({
+        sessionId: sub.sessionId,
+        messages,
+        attribution: sub.attribution,
+      });
+    } catch (err) {
+      console.error(`ingest: subagent capture failed for session ${sub.sessionId}: ${err instanceof Error ? err.message : err}`);
+    }
   }
 }
 
