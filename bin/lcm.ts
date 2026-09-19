@@ -126,13 +126,23 @@ async function main() {
 
   registerUnknownCommandFallback(program);
 
-  // Handle root-level help and no-args before Commander parses — this prevents
-  // Commander from seeing --help at the root level and intercepting it before
-  // dispatching to subcommands (lcm import --help would otherwise show root help).
-  if (argv.length <= 2 || (argv.length === 3 && (argv[2] === "-h" || argv[2] === "--help"))) {
-    const { printHelp } = await import("../src/cli-help.js");
-    printHelp();
-    exit(0);
+  // Route hand-written help before Commander validates required positional
+  // arguments. Native help remains available for command trees such as bench.
+  const args = argv.slice(2);
+  const optionBoundary = args.indexOf("--");
+  const parsedArgs = optionBoundary === -1 ? args : args.slice(0, optionBoundary);
+  const requestedHelp = parsedArgs.at(-1) === "-h" || parsedArgs.at(-1) === "--help";
+  if (args.length === 0 || requestedHelp) {
+    const { hasCommandHelp, printHelp } = await import("../src/cli-help.js");
+    const target = args[0] === "help"
+      ? args.slice(1).find((arg) => arg !== "-h" && arg !== "--help")
+      : args[0] === "-h" || args[0] === "--help"
+        ? undefined
+        : args[0];
+    if (!target || target === "help" || hasCommandHelp(target)) {
+      printHelp(target === "help" ? undefined : target);
+      exit(0);
+    }
   }
 
   await program.parseAsync(argv);

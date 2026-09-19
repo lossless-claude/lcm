@@ -1,0 +1,10 @@
+
+  lcm describe — Inspect metadata and lineage for a stored summary node.
+
+  Usage: lcm describe <nodeId>
+
+  Examples:
+    lcm describe sum_abc123def456  Show metadata for a summary node
+
+  Note: Use lcm search or lcm grep first to find a node ID worth inspecting.
+

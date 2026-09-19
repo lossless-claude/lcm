@@ -1,0 +1,10 @@
+
+  lcm session-snapshot — Capture a rolling session snapshot.
+
+  Usage: lcm session-snapshot
+
+  Examples:
+    lcm session-snapshot  Read a session snapshot event from stdin
+
+  Note: Invoked automatically by the Stop hook. Not intended for direct use.
+
