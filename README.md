@@ -277,7 +277,6 @@ All environment variables are optional. The default summarizer mode is `auto`. T
 | `LCM_LEAF_MIN_FANOUT` | `3` | Minimum raw messages outside the fresh tail before a leaf pass runs |
 | `LCM_CONDENSED_MIN_FANOUT` | `2` | Minimum same-depth summaries before they are condensed |
 | `LCM_CONDENSED_MIN_FANOUT_HARD` | `1` | The same minimum during a hard-trigger sweep |
-| `LCM_INCREMENTAL_MAX_DEPTH` | `0` | Condensation depth after each leaf pass; `-1` is unlimited |
 | `LCM_LEAF_CHUNK_TOKENS` | `20000` | Maximum source tokens per leaf compaction pass |
 | `LCM_CONDENSED_TARGET_TOKENS` | `900` | Target size for condensed summaries |
 
