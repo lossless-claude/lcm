@@ -80,7 +80,8 @@ export function registerCompactCommand(program: Command, deps: CompactCommandDep
 
         // Auto-promote after a successful compact: new summaries are prime promotion candidates.
         if (compacted > 0 && !noPromote) {
-          const { readdirSync, existsSync, readFileSync } = await import("node:fs");
+          const { readdirSync, existsSync } = await import("node:fs");
+          const { readProjectMetaIn } = await import("../daemon/project-meta.js");
           const promoteCwds: string[] = [];
           if (cwd) {
             promoteCwds.push(cwd);
@@ -89,12 +90,8 @@ export function registerCompactCommand(program: Command, deps: CompactCommandDep
             if (existsSync(projectsDir)) {
               for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
                 if (!entry.isDirectory()) continue;
-                const metaPath = join(projectsDir, entry.name, "meta.json");
-                if (!existsSync(metaPath)) continue;
-                try {
-                  const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
-                  if (meta.cwd) promoteCwds.push(meta.cwd);
-                } catch { /* skip unreadable */ }
+                const cwd = readProjectMetaIn(join(projectsDir, entry.name))?.cwd;
+                if (cwd) promoteCwds.push(cwd);
               }
             }
           }

@@ -1,10 +1,11 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
 import type { LcmPaths } from "../../lcm-paths.js";
-import { projectDbPath, projectDir, projectId, projectMetaPath, claudeTranscriptPath } from "../project.js";
+import { updateProjectMeta } from "../project-meta.js";
+import { projectDbPath, projectDir, projectId, claudeTranscriptPath } from "../project.js";
 import { openProject } from "../project-group.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
@@ -196,14 +197,7 @@ export function createIngestHandler(config: DaemonConfig, paths: LcmPaths): Rout
           const { conversationId, records, totalCounts } = written;
 
           try {
-            const metaPath = projectMetaPath(cwd, paths);
-            let meta: Record<string, unknown> = {};
-            if (existsSync(metaPath)) {
-              meta = JSON.parse(readFileSync(metaPath, "utf-8"));
-            }
-            meta.cwd = cwd;
-            meta.lastIngest = new Date().toISOString();
-            writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+            updateProjectMeta(cwd, paths, { lastIngest: new Date().toISOString() });
           } catch {
             // non-fatal: meta.json update failure shouldn't fail the ingest
           }

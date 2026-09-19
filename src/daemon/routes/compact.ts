@@ -1,10 +1,11 @@
 import type { SummarizeJobStore } from "../summarize-jobs.js";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
 import type { LcmPaths } from "../../lcm-paths.js";
-import { projectId, projectDbPath, projectDir, projectMetaPath } from "../project.js";
+import { updateProjectMeta } from "../project-meta.js";
+import { projectId, projectDbPath, projectDir } from "../project.js";
 import { openProject } from "../project-group.js";
 import { enqueue } from "../project-queue.js";
 import { sendJson } from "../server.js";
@@ -402,16 +403,8 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           // Promotion is now handled by the standalone /promote route
           const promotedCount = 0;
 
-          // Update meta.json
           try {
-            const metaPath = projectMetaPath(cwd, paths);
-            let meta: Record<string, unknown> = {};
-            if (existsSync(metaPath)) {
-              meta = JSON.parse(readFileSync(metaPath, "utf-8"));
-            }
-            meta.cwd = cwd;
-            meta.lastCompact = new Date().toISOString();
-            writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+            updateProjectMeta(cwd, paths, { lastCompact: new Date().toISOString() });
           } catch { /* non-fatal */ }
 
           // Tell the restore that follows to replay the saved instructions.

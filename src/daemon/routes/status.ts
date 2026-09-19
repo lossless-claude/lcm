@@ -1,8 +1,9 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "../config.js";
 import type { LcmPaths } from "../../lcm-paths.js";
-import { projectDbPath, projectMetaPath } from "../project.js";
+import { projectDbPath } from "../project.js";
+import { readProjectMeta } from "../project-meta.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { PKG_VERSION } from "../server.js";
@@ -61,22 +62,10 @@ export function createStatusHandler(config: DaemonConfig, paths: LcmPaths, start
         }
       }
 
-      // Read meta.json for timestamps
-      let lastIngest: string | null = null;
-      let lastCompact: string | null = null;
-      let lastPromote: string | null = null;
-
-      const metaPath = projectMetaPath(cwd, paths);
-      if (existsSync(metaPath)) {
-        try {
-          const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
-          lastIngest = meta.lastIngest ?? null;
-          lastCompact = meta.lastCompact ?? null;
-          lastPromote = meta.lastPromote ?? null;
-        } catch {
-          // If meta.json parse fails, keep timestamps as null
-        }
-      }
+      const meta = readProjectMeta(cwd, paths);
+      const lastIngest = meta?.lastIngest ?? null;
+      const lastCompact = meta?.lastCompact ?? null;
+      const lastPromote = meta?.lastPromote ?? null;
 
       sendJson(res, 200, {
         daemon: {

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, realpathSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, normalize, join as pathJoin, dirname, basename } from "node:path";
 import type { LcmPaths } from "../lcm-paths.js";
@@ -108,15 +108,14 @@ export function isSafeTranscriptPath(transcriptPath: string, cwd: string, client
   return false;
 }
 
-/** Ensures the project dir exists and writes cwd to meta.json. */
+/**
+ * Ensures the project dir exists. The project's record (`meta.json`) is owned by
+ * `project-meta.ts`, which this module must not import: it would form a cycle
+ * through `projectMetaPath`, and a test that mocks this module would then see
+ * the record written somewhere else. `openProject` records `cwd`.
+ */
 export const ensureProjectDir = (cwd: string, paths: LcmPaths): string => {
   const dir = projectDir(cwd, paths);
   mkdirSync(dir, { recursive: true });
-  const metaPath = join(dir, "meta.json");
-  let meta: Record<string, unknown> = { cwd };
-  if (existsSync(metaPath)) {
-    try { meta = { ...JSON.parse(readFileSync(metaPath, "utf-8")), cwd }; } catch { /* keep default */ }
-  }
-  writeFileSync(metaPath, JSON.stringify(meta, null, 2));
   return dir;
 };

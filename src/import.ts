@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, existsSync, lstatSync, type Dirent } from "node:fs";
+import { readdirSync, existsSync, lstatSync, type Dirent } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
@@ -7,6 +7,7 @@ import { formatNumber, formatRatio } from "./stats.js";
 import { findAllCodexTranscripts } from "./codex-transcript.js";
 import type { ProgressState } from "./cli/progress-state.js";
 import { projectDbPath, projectId } from "./daemon/project.js";
+import { readProjectMetaIn } from "./daemon/project-meta.js";
 import { createLcmPaths, type LcmPaths } from "./lcm-paths.js";
 import { discoverSubagentTranscripts, type SubagentAttribution } from "./subagent-attribution.js";
 import { isSessionComplete } from "./capture.js";
@@ -87,15 +88,8 @@ function buildProjectMap(paths: LcmPaths): Map<string, string> {
   if (!existsSync(lcmProjectsDir)) return map;
   for (const entry of readdirSync(lcmProjectsDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
-    const metaPath = join(lcmProjectsDir, entry.name, 'meta.json');
-    if (!existsSync(metaPath)) continue;
-    try {
-      const meta = JSON.parse(readFileSync(metaPath, 'utf-8'));
-      if (meta.cwd) {
-        const hash = cwdToProjectHash(meta.cwd);
-        map.set(hash, meta.cwd);
-      }
-    } catch {}
+    const cwd = readProjectMetaIn(join(lcmProjectsDir, entry.name))?.cwd;
+    if (cwd) map.set(cwdToProjectHash(cwd), cwd);
   }
   return map;
 }

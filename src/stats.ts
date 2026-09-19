@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { readdirSync, existsSync, readFileSync } from "node:fs";
+import { readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { collectEventStats } from "./db/events-stats.js";
 import { closeLcmConnection, getLcmConnection } from "./db/connection.js";
@@ -8,6 +8,7 @@ import { PromotedStore } from "./db/promoted.js";
 import { isSignalTagged, parseStoredTags } from "./db/votes.js";
 import { loadDaemonConfig } from "./daemon/config.js";
 import { projectGroups } from "./daemon/project-group.js";
+import { readProjectMetaIn } from "./daemon/project-meta.js";
 import type { LcmPaths } from "./lcm-paths.js";
 import { SUBAGENT_SESSION_PREFIX } from "./search/native-history.js";
 
@@ -691,10 +692,9 @@ export function collectStats(paths: LcmPaths): OverallStats {
   );
   const cwdByProjectId = new Map<string, string>();
   for (const projectId of projectIds) {
-    try {
-      const meta = JSON.parse(readFileSync(join(baseDir, projectId, "meta.json"), "utf8")) as { cwd?: unknown };
-      if (typeof meta.cwd === "string") cwdByProjectId.set(projectId, meta.cwd);
-    } catch { /* a legacy project has no group identity */ }
+    // A legacy project has no meta.json and so no group identity.
+    const cwd = readProjectMetaIn(join(baseDir, projectId))?.cwd;
+    if (typeof cwd === "string") cwdByProjectId.set(projectId, cwd);
   }
   const groupsByCwd = projectGroups(cwdByProjectId.values(), paths);
   const groupsByOwner = new Map<string, string[]>();

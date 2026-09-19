@@ -1,5 +1,6 @@
-import { readdirSync, readFileSync, existsSync } from "node:fs";
+import { readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { readProjectMetaIn } from "./daemon/project-meta.js";
 import { runLcmMigrations } from "./db/migration.js";
 import { closeLcmConnection, getLcmConnection } from "./db/connection.js";
 import type { ProgressState } from "./cli/progress-state.js";
@@ -33,13 +34,7 @@ export interface UncompactedConversation {
 /** Find conversations eligible for compaction, above the token threshold. */
 /** The cwd recorded in a project's meta.json, or "" when absent or corrupt. */
 function readProjectCwd(projDir: string): string {
-  const metaPath = join(projDir, "meta.json");
-  if (!existsSync(metaPath)) return "";
-  try {
-    return JSON.parse(readFileSync(metaPath, "utf-8")).cwd ?? "";
-  } catch {
-    return "";
-  }
+  return readProjectMetaIn(projDir)?.cwd ?? "";
 }
 
 /** Every tracked project with a database: its directory and cwd. */
