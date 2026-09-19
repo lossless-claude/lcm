@@ -265,7 +265,7 @@ export class ConversationStore {
         `${CONVERSATION_SELECT_COLUMNS}
        FROM conversations
        WHERE session_id = ?
-       ORDER BY created_at DESC
+       ORDER BY created_at DESC, conversation_id DESC
        LIMIT 1`,
       )
       .get(sessionId) as unknown as ConversationRow | undefined;

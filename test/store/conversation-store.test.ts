@@ -75,6 +75,21 @@ describe("ConversationStore — conversations", () => {
     expect(await store.getConversation(9999)).toBeNull();
   });
 
+  it("getConversationBySessionId breaks same-second ties by the newest row", async () => {
+    const db = makeDb();
+    const store = makeStore(db);
+    db.prepare(
+      `INSERT INTO conversations (session_id, role_tagging, created_at)
+       VALUES (?, 'tagged', ?)`,
+    ).run("duplicate-session", "2026-09-19 04:00:00");
+    const newer = db.prepare(
+      `INSERT INTO conversations (session_id, role_tagging, created_at)
+       VALUES (?, 'tagged', ?)`,
+    ).run("duplicate-session", "2026-09-19 04:00:00");
+
+    expect((await store.getConversationBySessionId("duplicate-session"))?.conversationId).toBe(Number(newer.lastInsertRowid));
+  });
+
   it("listConversations returns every conversation in creation order", async () => {
     const store = makeStore(makeDb());
     await store.getOrCreateConversation("list-1");
