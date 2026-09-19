@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ensureLanguagePack,
+  hasLanguagePack,
   invalidateLanguagePacks,
   languagePackPath,
   loadLanguagePacks,
@@ -82,13 +83,15 @@ describe("query terms with language packs", () => {
   });
 
   it("changes nothing when no pack is installed", () => {
-    expect(extractQueryTerms("como foi o deploy que quebrou a busca?", undefined, ["pt-BR"])).toEqual(["como", "foi", "o", "deploy", "que", "quebrou", "busca"]);
+    expect(extractQueryTerms("como foi o deploy que quebrou a busca?", undefined, ["pt-BR"])).toEqual(["como", "foi", "o", "deploy", "que", "quebrou", "a", "busca"]);
   });
 
   it("applies no pack the configured languages do not name, whatever the query's words", () => {
     writePack("pt-BR", PT_WORDS);
     const question = "como foi o deploy que quebrou a busca?";
-    expect(extractQueryTerms(question)).toEqual(["como", "foi", "o", "deploy", "que", "quebrou", "busca"]);
+    expect(extractQueryTerms(question)).toEqual(["como", "foi", "o", "deploy", "que", "quebrou", "a", "busca"]);
+    // Tagged "en", only the query's own English-pack word ("a") is dropped — the
+    // pt-BR pack was never named, so its words survive whatever the query means.
     expect(extractQueryTerms(question, undefined, ["en"])).toEqual(["como", "foi", "o", "deploy", "que", "quebrou", "busca"]);
     // "era" is a pt-BR function word and an English noun; an English project keeps it.
     expect(extractQueryTerms("which era introduced the daemon?", undefined, ["en"])).toEqual(["era", "introduced", "daemon"]);
@@ -109,6 +112,39 @@ describe("query terms with language packs", () => {
     expect(packStopwordsFor(["pt-BR"]).has("que")).toBe(true);
     expect(packStopwordsFor(["fr"]).size).toBe(0);
     warn.mockRestore();
+  });
+
+  it("serves the built-in English pack with no file on disk", () => {
+    expect(extractQueryTerms("how did we undo that broken release?", undefined, ["en"])).toEqual([
+      "undo", "broken", "release",
+    ]);
+    expect(hasLanguagePack("en")).toBe(true);
+  });
+
+  it("lets a disk pack for 'en' replace the built-in rather than add to it", () => {
+    writePack("en", ["release"]);
+    // The built-in's "how"/"did"/"we" survive: only the disk file's own words are dropped.
+    expect(extractQueryTerms("how did we undo that broken release?", undefined, ["en"])).toEqual([
+      "how", "did", "we", "undo", "that", "broken",
+    ]);
+  });
+});
+
+describe("hasLanguagePack", () => {
+  it("is true for a built-in tag with no file, and for a tag with a file", () => {
+    expect(hasLanguagePack("en")).toBe(true);
+    expect(hasLanguagePack("pt-BR")).toBe(false);
+    writePack("pt-BR", PT_WORDS);
+    expect(hasLanguagePack("pt-BR")).toBe(true);
+  });
+});
+
+describe("ensureLanguagePack and the built-in English pack", () => {
+  it("resolves 'en' as already satisfied without calling the model or writing a file", async () => {
+    const summarize = vi.fn();
+    expect(await ensureLanguagePack("en", summarize)).toBe("exists");
+    expect(summarize).not.toHaveBeenCalled();
+    expect(existsSync(languagePackPath("en"))).toBe(false);
   });
 });
 
@@ -186,9 +222,9 @@ describe("a pivot union survives the layers below it", () => {
 
     const union = combinedQueryTerms(query, undefined, pivot, languages)!;
     expect(union).toEqual(["compactação", "decide", "manter", "compaction", "keep"]);
-    // Under the pivot language alone, the pt-BR side keeps its function words.
+    // With no author language configured, the pt-BR side loses no function words at all.
     expect(combinedQueryTerms(query, undefined, pivot, { pivotLanguage: "en" })).toEqual(
-      ["como", "compactação", "decide", "o", "que", "manter", "compaction", "keep"],
+      ["como", "a", "compactação", "decide", "o", "que", "manter", "compaction", "keep"],
     );
   });
 

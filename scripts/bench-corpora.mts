@@ -25,6 +25,10 @@ import { basename, delimiter, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { buildBench, runBench } from "../src/bench.js";
 import { projectDbPath } from "../src/daemon/project.js";
+import { lcmHome } from "../src/lcm-home.js";
+import { createLcmPaths } from "../src/lcm-paths.js";
+
+const paths = createLcmPaths(lcmHome());
 
 const VALIDATION_FILENAME = ".lcm-bench-validation.json";
 
@@ -110,7 +114,7 @@ async function discoverCorpora(): Promise<string[]> {
     if (size < MIN_DB_BYTES) continue;
     try {
       const cwd = (JSON.parse(readFileSync(meta, "utf-8")) as { cwd?: string }).cwd;
-      if (cwd && existsSync(projectDbPath(cwd))) found.push({ cwd, size });
+      if (cwd && existsSync(projectDbPath(cwd, paths))) found.push({ cwd, size });
     } catch {
       continue;
     }
@@ -119,7 +123,7 @@ async function discoverCorpora(): Promise<string[]> {
 }
 
 function validationFile(cwd: string): string {
-  return join(dirname(projectDbPath(cwd)), VALIDATION_FILENAME);
+  return join(dirname(projectDbPath(cwd, paths)), VALIDATION_FILENAME);
 }
 
 /**
@@ -129,7 +133,7 @@ function validationFile(cwd: string): string {
  */
 function sessionCount(cwd: string): number {
   try {
-    const db = new DatabaseSync(projectDbPath(cwd), { readOnly: true });
+    const db = new DatabaseSync(projectDbPath(cwd, paths), { readOnly: true });
     try {
       const row = db.prepare("SELECT COUNT(DISTINCT session_id) AS n FROM conversations WHERE session_id IS NOT NULL AND session_id != ''").get() as { n: number };
       return row.n;

@@ -14,8 +14,10 @@ multi-word query, so an eight-word question requires all eight words to co-occur
 
 1. **Tokenize** — split on non-word characters (Unicode-aware, matching the `unicode61` tokenizer),
    lowercase, dedupe.
-2. **Drop English stopwords** — "how", "did", "we", "the", … carry no discriminative power but
-   would otherwise participate in the AND. If every word is a stopword, the original words are kept.
+2. **Drop configured-language stopwords** — the function words of the languages the search is
+   configured for ("how", "did", "we", "the", … for English; "que", "como", "para", … for pt-BR)
+   carry no discriminative power but would otherwise participate in the AND. No configured
+   language drops nothing. If every word is a stopword, the original words are kept.
 3. **Try AND** over the remaining content terms (most precise).
 4. **Fall back to OR** ranked by BM25 when AND matches nothing — the same behavior as a `grep` that
    ORs its terms, but with ranking.
@@ -65,25 +67,29 @@ runtime lacks FTS5 (search then falls back to LIKE over the same prepared terms)
 
 ### Language packs
 
-Query preparation always drops English function words. Every other language gets a **language
-pack**: a JSON file at `~/.lossless-claude/languages/<tag>.json` holding that language's function
-words, generated once by the configured summarizer the first time a corpus in that language is
-seen, and reused from then on. A pack applies to a query when its language is one the search is
-configured for — the project's recorded author language for `query`, `search.pivotLanguage` for a
-`pivotQuery` — matched on the primary subtag (`pt` and `pt-BR` are one language). So a pt-BR
-question loses "que", "como", "para" the way an English one loses "what", "how", "for", and the
-words that happen to appear in the query never choose a pack: a collision with another language's
-function words changes nothing, and two languages in one string cannot activate a pack neither
-activates alone. A project with no recorded language loses English function words only.
+English is a **language pack** like any other: a JSON file at
+`~/.lossless-claude/languages/<tag>.json` holding a language's function words. English's pack
+ships built into lcm — no model call and no file needed for it to apply — and every other
+language's pack is generated once by the configured summarizer the first time a corpus in that
+language is seen, then reused from then on. Either way, a file at `languages/<tag>.json` is the
+final word: for `en` it replaces the shipped list rather than adding to it, the same as a
+hand-edited file replaces a generated one for any other tag. A pack applies to a query when its
+language is one the search is configured for — the project's recorded author language for
+`query`, `search.pivotLanguage` for a `pivotQuery` — matched on the primary subtag (`pt` and
+`pt-BR` are one language). So a pt-BR question loses "que", "como", "para" the way an English one
+loses "what", "how", "for", and the words that happen to appear in the query never choose a pack:
+a collision with another language's function words changes nothing, and two languages in one
+string cannot activate a pack neither activates alone. A project with no recorded language loses
+no function words at all — search preparation has no fallback list of its own.
 
 Packs are created by the daemon: after an ingest, a project with no recorded language and at least
 20 human turns (tool output pasted into a user turn does not count) is sampled, the model names the
 language, the tag is written to the project's `meta.json` as `language`, and the pack is generated if
-this machine has none. The same step generates the pack for `search.pivotLanguage` when it is
-neither English (which ships in code) nor the author's language, and does so again on every later
-ingest for a project whose language was already recorded, so a pivot configured after detection
-still gets a pack. `lcm bench build --generator llm` ensures both packs the same way on the corpus
-it detects. A mock or disabled summarizer skips the step; a provider failure is logged once per
+this machine has none (a no-op for `en`, already satisfied by the built-in). The same step generates
+the pack for `search.pivotLanguage` when it is not the author's own language, and does so again on
+every later ingest for a project whose language was already recorded, so a pivot configured after
+detection still gets a pack. `lcm bench build --generator llm` ensures both packs the same way on the
+corpus it detects. A mock or disabled summarizer skips the step; a provider failure is logged once per
 project per daemon lifetime and not retried until restart. Without a pack, a question in that
 language goes through whole, function words included.
 
@@ -91,6 +97,19 @@ Packs are plain JSON, reviewable and hand-editable; deleting one makes the next 
 it. On the 74 pt-BR bench questions built at `ea10a75`, dropping pt-BR function words alone moved
 hit@5 from 0.419 to 0.486 (+7 / −2) with no model call at search time. `LCM_LANGUAGES_DIR` points
 the loader elsewhere; the test suite uses it so no test reads a developer's real packs.
+
+English becoming a pack like any other (issue #509) changes the single-language English path: it
+used to be a fixed list unioned with any disk `en.json`; now it is the disk file alone when one
+exists, or the built-in list when it does not. Measured with `scripts/bench-corpora.mts` on 15 real
+corpora (14 en, 1 pt-BR, same list and seed both sides), `128a8eb` (`main` before) against `02fef82`
+(this branch): 111 of 150 questions returned the same top-5. The pt-BR set was untouched, 8/30 both
+sides, as expected since its pack was never English's. The pooled en hit rate moved from 58/120 to
+57/120 — one question lost its top-5 hit, on a machine whose disk `en.json` predates this change and
+does not carry the contraction remnants (`s`, `t`, `d`, `ll`, `re`, `ve`) the built-in list does: the
+query's "hasn't" tokenizes to "hasn", "t", and with the disk file now replacing the built-in list
+outright rather than adding to it, that bare "t" survives into the query and shifts the ranking. This
+is the migration risk the changeset states, observed once rather than merely predicted; a disk `en.json`
+that already carries those six entries sees no change at all.
 
 ### Cross-language queries: `pivotQuery`
 
