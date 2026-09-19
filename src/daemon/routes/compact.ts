@@ -12,6 +12,8 @@ import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { markSessionCompacted } from "../../db/session-compactions.js";
 import { SessionCapture } from "../../capture.js";
+import { EventsDb } from "../../hooks/events-db.js";
+import { eventsDbPath } from "../../db/events-path.js";
 import { CompactionEngine, compactEngineConfig, COMPACT_TOKEN_BUDGET } from "../../compaction.js";
 import { TranscriptSourceError } from "../../transcript-source.js";
 import type { LcmSummarizeFn } from "../../llm/types.js";
@@ -277,6 +279,17 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           const captured = skip_ingest
             ? undefined
             : await capture.captureTranscript({ sessionId: session_id, client, cwd, transcriptPath: transcript_path });
+          if (captured) {
+            const sidecarPath = eventsDbPath(cwd, paths);
+            if (existsSync(sidecarPath)) {
+              const events = new EventsDb(sidecarPath);
+              try {
+                captured.backfillModels(events);
+              } finally {
+                events.close();
+              }
+            }
+          }
           const conversation = captured ?? await capture.write({ sessionId: session_id, messages: [] });
 
           // Check if there's anything to compact

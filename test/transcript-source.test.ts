@@ -1,4 +1,4 @@
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -68,11 +68,12 @@ describe("Claude transcript source", () => {
 
   it("locates the caller's transcript when it lies under the project, and none when it does not", () => {
     const { cwd, path } = fixture();
-    expect(source.locate({ sessionId: "claude-session", cwd, transcriptPath: path })).toBe(path);
+    expect(source.locate({ sessionId: "claude-session", cwd, transcriptPath: path })).toBe(realpathSync(path));
     expect(source.locate({ sessionId: "claude-session", cwd, transcriptPath: join(cwd, "missing.jsonl") })).toBeUndefined();
     const elsewhere = tempDir("lcm-claude-elsewhere-");
     writeFileSync(join(elsewhere, "other.jsonl"), line("user", "x"));
-    expect(source.locate({ sessionId: "claude-session", cwd, transcriptPath: join(elsewhere, "other.jsonl") })).toBeUndefined();
+    expect(() => source.locate({ sessionId: "claude-session", cwd, transcriptPath: join(elsewhere, "other.jsonl") }))
+      .toThrow(TranscriptSourceError);
   });
 });
 
@@ -169,7 +170,7 @@ describe("Codex transcript source", () => {
 
   it("locates only an existing transcript under an allowed base, and refuses loudly otherwise", () => {
     const { cwd, path } = fixture();
-    expect(source.locate({ sessionId, cwd, transcriptPath: path })).toBe(path);
+    expect(source.locate({ sessionId, cwd, transcriptPath: path })).toBe(realpathSync(path));
     expect(source.locate({ sessionId, cwd })).toBeUndefined();
     expect(() => source.locate({ sessionId, cwd, transcriptPath: join(cwd, "missing.jsonl") }))
       .toThrow("Codex transcript is unreadable");

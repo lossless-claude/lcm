@@ -66,9 +66,11 @@ const claudeSource: TranscriptSource = {
   locate(input) {
     // A caller that knows only the session (the function-hooks module) gets Claude Code's
     // own transcript location; it still has to pass isSafeTranscriptPath like any other.
-    const path = input.transcriptPath ?? claudeTranscriptPath(input.cwd, input.sessionId);
+    const suppliedPath = input.transcriptPath;
+    const path = suppliedPath ?? claudeTranscriptPath(input.cwd, input.sessionId);
     if (!path) return undefined;
     const safe = isSafeTranscriptPath(path, input.cwd, "claude");
+    if (!safe && suppliedPath) throw new TranscriptSourceError("Claude transcript path is not allowed");
     return safe && existsSync(safe) ? safe : undefined;
   },
   async read(path, stored) {
