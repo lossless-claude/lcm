@@ -9,6 +9,9 @@ import { PKG_VERSION } from "../server.js";
 import { validateCwd } from "../validate-cwd.js";
 import { sanitizeError } from "../safe-error.js";
 import { compactingSessionsFor } from "./compact.js";
+import { PromotedStore } from "../../db/promoted.js";
+import { ConversationStore } from "../../store/conversation-store.js";
+import { SummaryStore } from "../../store/summary-store.js";
 
 export function createStatusHandler(config: DaemonConfig, paths: LcmPaths, startTime: number, actualPort?: number): RouteHandler {
   return async (_req, res, body) => {
@@ -45,17 +48,9 @@ export function createStatusHandler(config: DaemonConfig, paths: LcmPaths, start
         try {
           db.exec("PRAGMA busy_timeout = 5000");
 
-          // Count messages
-          const msgResult = db.prepare("SELECT COUNT(*) as count FROM messages").get() as { count: number };
-          messageCount = msgResult?.count ?? 0;
-
-          // Count summaries
-          const sumResult = db.prepare("SELECT COUNT(*) as count FROM summaries").get() as { count: number };
-          summaryCount = sumResult?.count ?? 0;
-
-          // Count promoted
-          const promResult = db.prepare("SELECT COUNT(*) as count FROM promoted").get() as { count: number };
-          promotedCount = promResult?.count ?? 0;
+          messageCount = await new ConversationStore(db).getMessageCount();
+          summaryCount = await new SummaryStore(db).countSummaries();
+          promotedCount = new PromotedStore(db).count();
         } catch {
           // If database query fails, return zeros
           messageCount = 0;

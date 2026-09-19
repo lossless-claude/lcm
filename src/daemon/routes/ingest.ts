@@ -4,61 +4,23 @@ import type { DatabaseSync } from "node:sqlite";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
 import type { LcmPaths } from "../../lcm-paths.js";
-import { projectDbPath, projectDir, projectId, projectMetaPath, isSafeTranscriptPath, claudeTranscriptPath } from "../project.js";
+import { projectDbPath, projectDir, projectId, projectMetaPath, claudeTranscriptPath } from "../project.js";
 import { openProject } from "../project-group.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import type { SubagentAttributionInput } from "../../store/conversation-store.js";
-import { parseTranscript, extractToolUseModels, type ParsedMessage } from "../../transcript.js";
-import { extractCodexSessionMeta, extractCodexTurnModels, parseCodexTranscript } from "../../codex-transcript.js";
+import { TranscriptSourceError } from "../../transcript-source.js";
 import { EventsDb } from "../../hooks/events-db.js";
 import { eventsDbPath } from "../../db/events-path.js";
 import { ScrubEngine } from "../../scrub.js";
 import { validateCwd } from "../validate-cwd.js";
 import { scheduleProjectLanguageDetection } from "../project-language.js";
 import { enqueue } from "../project-queue.js";
-import { readCodexTranscriptDelta, type CodexTranscriptCursor } from "../../codex-transcript-reader.js";
-import { SessionCapture, isSessionComplete } from "../../capture.js";
+import { SessionCapture, isSessionComplete, type CaptureInput, type CaptureResult, type TranscriptCaptureResult } from "../../capture.js";
 import { discoverSubagentTranscripts, type DiscoveredSubagentTranscript } from "../../subagent-attribution.js";
 
-class TranscriptError extends Error {}
-
-function validateCodexRecovery(
-  db: DatabaseSync,
-  source: { conversationId: number; storedCount: number; messages: ParsedMessage[] },
-  scrubber: ScrubEngine,
-): void {
-  if (source.messages.length < source.storedCount) {
-    throw new Error("Codex transcript is shorter than stored history; restore the full transcript before retrying");
-  }
-  const stored = db.prepare("SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY seq LIMIT ?")
-    .all(source.conversationId, source.storedCount) as Array<{ role: string; content: string }>;
-  if (stored.length !== source.storedCount) throw new Error("Stored Codex history changed during recovery");
-  for (const [index, previous] of stored.entries()) {
-    const message = source.messages[index];
-    if (message.role !== previous.role || scrubber.scrubWithCounts(message.content).text !== scrubber.scrubWithCounts(previous.content).text) {
-      throw new Error("Codex transcript prefix differs from stored history; check the original transcript and redaction settings before retrying");
-    }
-  }
-}
-
-function codexTranscriptPath(path: string, cwd: string): string {
-  const safePath = isSafeTranscriptPath(path, cwd, "codex");
-  if (!safePath) throw new Error("Codex transcript path is not allowed");
-  if (!existsSync(safePath)) throw new Error("Codex transcript is unreadable");
-  return safePath;
-}
-
-function validateCodexMetadata(
-  meta: { cwd?: string; id?: string } | undefined, input: IngestInput, cwd: string,
-): void {
-  if (!meta?.cwd) throw new Error("Codex transcript metadata is missing a cwd");
-  if (projectId(meta.cwd) !== projectId(cwd)) throw new Error("Codex transcript cwd does not match requested project");
-  if (meta.id ? meta.id !== input.session_id : input.source !== "import") {
-    throw new Error("Codex transcript session id does not match request");
-  }
-}
+type ParsedMessage = CaptureInput["messages"][number];
 
 function isParsedMessage(value: unknown): value is ParsedMessage {
   if (!value || typeof value !== "object") return false;
@@ -98,18 +60,16 @@ function requestAttribution(input: IngestInput): SubagentAttributionInput | unde
  * have added since; the capture module never re-inserts what is stored.
  */
 async function ingestAllSubagents(
-  db: DatabaseSync, pid: string, scrubber: ScrubEngine, subagents: DiscoveredSubagentTranscript[],
+  db: DatabaseSync, cwd: string, pid: string, scrubber: ScrubEngine, subagents: DiscoveredSubagentTranscript[],
 ): Promise<void> {
   runLcmMigrations(db);
   const capture = new SessionCapture(db, pid, scrubber);
   for (const sub of subagents) {
     try {
-      const messages = parseTranscript(sub.path);
-      // A transcript the subagent has not written to yet earns no conversation row.
-      if (messages.length === 0) continue;
-      await capture.write({
+      await capture.captureTranscript({
         sessionId: sub.sessionId,
-        messages,
+        cwd,
+        transcriptPath: sub.path,
         attribution: sub.attribution,
       });
     } catch (err) {
@@ -146,85 +106,28 @@ async function ingestSubagentTranscripts(
     openProject(cwd, paths);
     const db = getLcmConnection(dbPath);
     try {
-      await ingestAllSubagents(db, pid, scrubber, subagents);
+      await ingestAllSubagents(db, cwd, pid, scrubber, subagents);
     } finally {
       closeLcmConnection(dbPath);
     }
   });
 }
 
-export function resolveIngestMessages(input: IngestInput, cwd: string): ParsedMessage[] {
-  if (Array.isArray(input.messages)) {
-    return input.messages.filter(isParsedMessage);
-  }
-
-  // A caller that knows only the session (the function-hooks module) gets Claude Code's
-  // own transcript location; it still has to pass isSafeTranscriptPath like any other.
-  const transcriptPath = input.transcript_path
-    ?? (input.client !== "codex" && input.session_id ? claudeTranscriptPath(cwd, input.session_id) ?? undefined : undefined);
-
-  if (transcriptPath) {
-    const client = input.client === "codex" ? "codex" : "claude";
-    const safePath = isSafeTranscriptPath(transcriptPath, cwd, client);
-    if (client === "codex" && !safePath) {
-      throw new Error("Codex transcript path is not allowed");
-    }
-    if (client === "codex" && (!safePath || !existsSync(safePath))) {
-      throw new Error("Codex transcript is unreadable");
-    }
-    if (safePath && existsSync(safePath)) {
-      if (client !== "codex") return parseTranscript(safePath);
-
-      const meta = extractCodexSessionMeta(safePath);
-      validateCodexMetadata(meta, input, cwd);
-      return parseCodexTranscript(safePath, {
-        includeTrailingRecord: input.source === "import",
-        strict: true,
-      });
-    }
-  }
-
-  return [];
-}
-
-function resolveClaudeTranscriptPathForBackfill(input: IngestInput, cwd: string): string | undefined {
-  const path = input.transcript_path
-    ?? (input.session_id ? claudeTranscriptPath(cwd, input.session_id) ?? undefined : undefined);
-  if (!path) return undefined;
-  const safe = isSafeTranscriptPath(path, cwd, "claude");
-  return safe && existsSync(safe) ? safe : undefined;
-}
-
 /**
- * Claude's PostToolUse payload carries no model (see src/hooks/post-tool.ts),
- * so its events land with `model IS NULL`. Best-effort, on every ingest of the
- * session: scan the transcript for each tool_use block's model and fill any
- * rows still waiting. Never blocks or fails the ingest response — a session
- * with nothing to fill costs one indexed lookup.
+ * Neither harness's hook payload carries a model (see src/hooks/post-tool.ts),
+ * so tool-call events land with `model IS NULL`; the transcript holds it.
+ * Best-effort, on every ingest of the session, after the response: the
+ * adapter that read the transcript fills any rows still waiting. Never
+ * blocks or fails the ingest response.
  */
-function backfillClaudeToolModels(cwd: string, sessionId: string, transcriptPath: string | undefined, paths: LcmPaths): void {
-  if (!transcriptPath) return;
+function backfillToolModels(cwd: string, captured: TranscriptCaptureResult, paths: LcmPaths): void {
   // An import-only project has no sidecar: opening one here would create and migrate
   // an empty database on every ingest, for rows that cannot exist.
   const sidecarPath = eventsDbPath(cwd, paths);
   if (!existsSync(sidecarPath)) return;
   const db = new EventsDb(sidecarPath);
   try {
-    if (!db.hasUnfilledModels(sessionId)) return;
-    db.backfillToolCallModels(sessionId, extractToolUseModels(transcriptPath));
-  } finally {
-    db.close();
-  }
-}
-
-function backfillCodexToolModels(cwd: string, sessionId: string, transcriptPath: string | undefined, paths: LcmPaths): void {
-  if (!transcriptPath) return;
-  const sidecarPath = eventsDbPath(cwd, paths);
-  if (!existsSync(sidecarPath)) return;
-  const db = new EventsDb(sidecarPath);
-  try {
-    if (!db.hasUnfilledCodexModels(sessionId)) return;
-    db.backfillCodexTurnModels(sessionId, extractCodexTurnModels(transcriptPath));
+    captured.backfillModels(db);
   } finally {
     db.close();
   }
@@ -249,20 +152,8 @@ export function createIngestHandler(config: DaemonConfig, paths: LcmPaths): Rout
     }
 
     const dbPath = projectDbPath(cwd, paths);
-
-    let parsed: ParsedMessage[] = [];
-    let codexPath: string | undefined;
-    try {
-      if (input.client === "codex" && input.transcript_path && !Array.isArray(input.messages)) {
-        codexPath = codexTranscriptPath(input.transcript_path, cwd);
-      } else {
-        parsed = resolveIngestMessages(input, cwd);
-      }
-    } catch (err) {
-      sendJson(res, 400, { error: err instanceof Error ? err.message : "invalid transcript" });
-      return;
-    }
-    if (parsed.length === 0 && !codexPath) {
+    const structured = Array.isArray(input.messages) ? input.messages.filter(isParsedMessage) : undefined;
+    if (structured && structured.length === 0) {
       sendJson(res, 200, { ingested: 0, totalTokens: 0 });
       return;
     }
@@ -273,6 +164,7 @@ export function createIngestHandler(config: DaemonConfig, paths: LcmPaths): Rout
         config.security?.sensitivePatterns ?? [],
         projectDir(cwd, paths),
       );
+      let captured: TranscriptCaptureResult | undefined;
       const result = await enqueue(pid, async () => {
         openProject(cwd, paths);
         const db = getLcmConnection(dbPath);
@@ -288,35 +180,20 @@ export function createIngestHandler(config: DaemonConfig, paths: LcmPaths): Rout
           }
 
           const capture = new SessionCapture(db, pid, scrubber);
-          let cursor: CodexTranscriptCursor | undefined;
-          let sourceOffset = 0;
-          if (codexPath) {
-            const existing = await capture.stored(session_id);
-            const prior = existing ? capture.codexCursor(existing, codexPath) : undefined;
-            try {
-              const delta = await readCodexTranscriptDelta(codexPath, {
-                cursor: prior, includeTrailingRecord: input.source === "import",
-              });
-              validateCodexMetadata(delta.sessionMeta, input, cwd);
-              if (!delta.resumed && existing) {
-                validateCodexRecovery(db, { ...existing, messages: delta.messages }, scrubber);
-              }
-              parsed = delta.messages;
-              sourceOffset = delta.resumed && prior ? prior.messageCount : 0;
-              cursor = delta.cursor;
-            } catch (error) {
-              throw new TranscriptError(error instanceof Error ? error.message : "invalid transcript");
-            }
+          const attribution = requestAttribution(input);
+          let written: CaptureResult | undefined;
+          if (structured) {
+            // Structured mode carries the messages themselves and names no transcript.
+            written = await capture.write({ sessionId: session_id, messages: structured, attribution });
+          } else {
+            captured = await capture.captureTranscript({
+              sessionId: session_id, client: input.client, cwd, transcriptPath: input.transcript_path,
+              source: input.source, attribution,
+            });
+            written = captured;
           }
-          const { conversationId, records, totalCounts } = await capture.write({
-            sessionId: session_id,
-            messages: parsed,
-            sourceOffset,
-            transcriptPath: input.client === "codex" ? codexPath : resolveClaudeTranscriptPathForBackfill(input, cwd),
-            attribution: requestAttribution(input),
-            ...(cursor && codexPath ? { codexCursor: { transcriptPath: codexPath, cursor } } : {}),
-          });
-          if (records.length === 0) return { ingested: 0, totalTokens: 0 };
+          if (!written || written.records.length === 0) return { ingested: 0, totalTokens: 0 };
+          const { conversationId, records, totalCounts } = written;
 
           try {
             const metaPath = projectMetaPath(cwd, paths);
@@ -362,25 +239,18 @@ export function createIngestHandler(config: DaemonConfig, paths: LcmPaths): Rout
       }
       sendJson(res, 200, result);
       // After the response: the scan is O(transcript) and the caller is waiting.
-      if (input.client !== "codex") {
+      if (captured) {
+        const read = captured;
         setImmediate(() => {
           try {
-            backfillClaudeToolModels(cwd, session_id, resolveClaudeTranscriptPathForBackfill(input, cwd), paths);
+            backfillToolModels(cwd, read, paths);
           } catch (err) {
             console.error(`ingest: model backfill failed for session ${session_id}: ${err instanceof Error ? err.message : err}`);
           }
         });
-      } else {
-        setImmediate(() => {
-          try {
-            backfillCodexToolModels(cwd, session_id, codexPath, paths);
-          } catch (err) {
-            console.error(`ingest: Codex model backfill failed for session ${session_id}: ${err instanceof Error ? err.message : err}`);
-          }
-        });
       }
     } catch (err) {
-      sendJson(res, err instanceof TranscriptError ? 400 : 500, { error: err instanceof Error ? err.message : "ingest failed" });
+      sendJson(res, err instanceof TranscriptSourceError ? 400 : 500, { error: err instanceof Error ? err.message : "ingest failed" });
     }
   };
 }

@@ -32,14 +32,26 @@ async function seedConversation(input: {
     runLcmMigrations(db);
     const conversations = new ConversationStore(db, { fts5Available: false });
     const summaries = new SummaryStore(db, { fts5Available: false });
-    const conversation = await conversations.createConversation({ sessionId: input.sessionId });
+    const conversation = await conversations.getOrCreateConversation(input.sessionId);
     if (input.conversationCreatedAt) {
       db.prepare(
         `UPDATE conversations SET created_at = ?, updated_at = ? WHERE conversation_id = ?`,
       ).run(input.conversationCreatedAt, input.conversationCreatedAt, conversation.conversationId);
     }
 
+    // A summary enters the context the way compaction puts it there: replacing a
+    // range of messages. The placeholder it replaces is a system message, which
+    // neither the context window nor the activity ranking reads.
+    let seq = 0;
     if (input.summary) {
+      const compacted = await conversations.createMessage({
+        conversationId: conversation.conversationId,
+        seq: seq++,
+        role: "system",
+        content: "compacted",
+        tokenCount: 1,
+      });
+      await summaries.appendContextMessages(conversation.conversationId, [compacted.messageId]);
       const summaryId = `${input.sessionId}-summary`;
       await summaries.insertSummary({
         summaryId,
@@ -52,13 +64,18 @@ async function seedConversation(input: {
         db.prepare(`UPDATE summaries SET created_at = ? WHERE summary_id = ?`)
           .run(input.summaryCreatedAt, summaryId);
       }
-      await summaries.appendContextSummary(conversation.conversationId, summaryId);
+      await summaries.replaceContextRangeWithSummary({
+        conversationId: conversation.conversationId,
+        startOrdinal: 0,
+        endOrdinal: 0,
+        summaryId,
+      });
     }
 
-    for (const [seq, message] of (input.messages ?? []).entries()) {
+    for (const message of input.messages ?? []) {
       const record = await conversations.createMessage({
         conversationId: conversation.conversationId,
-        seq,
+        seq: seq++,
         role: message.role,
         content: message.content,
         tokenCount: 20,
@@ -67,7 +84,7 @@ async function seedConversation(input: {
         db.prepare(`UPDATE messages SET created_at = ? WHERE message_id = ?`)
           .run(message.createdAt, record.messageId);
       }
-      await summaries.appendContextMessage(conversation.conversationId, record.messageId);
+      await summaries.appendContextMessages(conversation.conversationId, [record.messageId]);
     }
   } finally {
     db.close();

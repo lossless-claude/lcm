@@ -82,7 +82,7 @@ export function createReviewStaleHandler(config: DaemonConfig, paths: LcmPaths):
             const db = getLcmConnection(dbPath);
             try {
               runLcmMigrations(db);
-              return Boolean(db.prepare("SELECT 1 FROM promoted WHERE id = ?").get(targetId));
+              return new PromotedStore(db).getById(targetId) !== null;
             } finally {
               closeLcmConnection(dbPath);
             }

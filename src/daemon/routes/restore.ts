@@ -15,18 +15,13 @@ import { PromotedStore } from "../../db/promoted.js";
 import { wasSessionJustCompacted } from "../../db/session-compactions.js";
 import { fenceContent } from "../content-fence.js";
 import { validateCwd } from "../validate-cwd.js";
+import { ConversationStore } from "../../store/conversation-store.js";
+import { SummaryStore } from "../../store/summary-store.js";
 
 type SessionInstructionsRow = {
   content: string;
   content_hash: string;
   updated_at: string;
-};
-
-type CodexContextItemRow = {
-  ordinal: number;
-  item_type: "message" | "summary";
-  role: "user" | "assistant" | null;
-  content: string;
 };
 
 /** Reads the mark `/compact` left for this session, if this project has a DB at all. */
@@ -100,93 +95,37 @@ function remainingContextBudget(parts: string[], totalBudget: number): number {
   return Math.max(0, Math.floor(totalBudget) - used - separator);
 }
 
-function readCodexContext(
+async function readCodexContext(
   db: DatabaseSync,
   sessionId: unknown,
   source: unknown,
   itemLimit: number,
   byteBudget: number,
-): string {
+): Promise<string> {
   const limit = Math.max(0, Math.floor(itemLimit));
   if (limit === 0) return "";
+  const conversations = new ConversationStore(db);
+  const summaries = new SummaryStore(db);
   const current = typeof sessionId === "string" && sessionId
-    ? db.prepare(
-        `SELECT conversation_id FROM conversations
-         WHERE session_id = ?
-         ORDER BY updated_at DESC, conversation_id DESC
-         LIMIT 1`,
-      ).get(sessionId) as { conversation_id: number } | undefined
-    : undefined;
-  const readRows = (conversationId: number): CodexContextItemRow[] => {
-    const contextRows = db.prepare(
-      `WITH ranked AS (
-         SELECT ci.ordinal, ci.item_type, m.role, COALESCE(m.content, s.content) AS content,
-                ROW_NUMBER() OVER (PARTITION BY ci.item_type ORDER BY ci.ordinal DESC) AS item_rank
-         FROM context_items ci
-         LEFT JOIN messages m ON ci.item_type = 'message' AND m.message_id = ci.message_id
-         LEFT JOIN summaries s ON ci.item_type = 'summary' AND s.summary_id = ci.summary_id
-         WHERE ci.conversation_id = ?
-           AND ((ci.item_type = 'summary' AND s.content IS NOT NULL)
-             OR (ci.item_type = 'message' AND m.role IN ('user', 'assistant') AND m.content IS NOT NULL))
-       )
-       SELECT ordinal, item_type, role, content
-       FROM ranked
-       WHERE item_rank <= ?
-       ORDER BY ordinal`,
-    ).all(conversationId, limit) as unknown as CodexContextItemRow[];
-    if (contextRows.length > 0) return contextRows;
-
-    // Older imports may have messages but no materialized context_items. Those messages
-    // are still useful when no summarizer has produced a context sequence yet.
-    return (db.prepare(
-      `SELECT seq AS ordinal, 'message' AS item_type, role, content
-       FROM messages
-       WHERE conversation_id = ? AND role IN ('user', 'assistant')
-       ORDER BY seq DESC
-       LIMIT ?`,
-    ).all(conversationId, limit) as unknown as CodexContextItemRow[]).reverse();
-  };
+    ? await conversations.getConversationBySessionId(sessionId)
+    : null;
 
   let conversation = current;
-  let rows = conversation ? readRows(conversation.conversation_id) : [];
+  let rows = conversation ? await summaries.readContextWindow(conversation.conversationId, limit) : [];
   let isCurrentSession = rows.length > 0;
 
   // SessionStart can run after a metadata-only ingest has created the new conversation.
   // An empty shell must not mask the latest useful context from the same project.
   if (rows.length === 0 && source === "startup") {
-    conversation = db.prepare(
-      `SELECT c.conversation_id FROM conversations c
-       WHERE c.session_id != ?
-         AND (EXISTS (
-           SELECT 1 FROM messages m
-           WHERE m.conversation_id = c.conversation_id AND m.role IN ('user', 'assistant')
-         ) OR EXISTS (
-           SELECT 1 FROM summaries s WHERE s.conversation_id = c.conversation_id
-         ))
-       ORDER BY MAX(
-         COALESCE((
-           SELECT MAX(julianday(m.created_at)) FROM messages m
-           WHERE m.conversation_id = c.conversation_id
-             AND m.role IN ('user', 'assistant')
-         ), -1),
-         COALESCE((
-           SELECT MAX(julianday(s.created_at)) FROM summaries s
-           WHERE s.conversation_id = c.conversation_id
-         ), -1)
-       ) DESC, c.conversation_id DESC
-       LIMIT 1`,
-    ).get(typeof sessionId === "string" ? sessionId : "") as { conversation_id: number } | undefined;
-    rows = conversation ? readRows(conversation.conversation_id) : [];
+    conversation = await conversations.latestActiveConversation(typeof sessionId === "string" ? sessionId : "");
+    rows = conversation ? await summaries.readContextWindow(conversation.conversationId, limit) : [];
     isCurrentSession = false;
   }
 
   if (!conversation || rows.length === 0) return "";
 
-  // A tool log labelled "User" would tell the model the user said it, which
-  // is the confusion the role tag exists to end.
-  const speaker = (role: string | null) =>
-    role === "assistant" ? "Assistant" : role === "tool" ? "Tool" : "User";
-  const items = rows.map((row) => row.item_type === "summary"
+  const speaker = (role: string | null) => (role === "assistant" ? "Assistant" : "User");
+  const items = rows.map((row) => row.itemType === "summary"
     ? `Summary:\n${row.content}`
     : `${speaker(row.role)}:\n${row.content}`);
   const tag = isCurrentSession ? "recent-session-context" : "recent-project-context";
@@ -299,17 +238,13 @@ function refreshInstructionsSnapshot(db: DatabaseSync, cwd: string): void {
 }
 
 /** The session's own recent summaries, deepest first. */
-function readEpisodicContext(db: DatabaseSync, sessionId: unknown, limit: number): string {
+async function readEpisodicContext(db: DatabaseSync, sessionId: unknown, limit: number): Promise<string> {
   // A non-string session id matches no conversation, and binding one throws — which would
   // take the promoted memory and the snapshot refresh down with it, silently.
   if (typeof sessionId !== "string" || !sessionId) return "";
-  const rows = db.prepare(
-    `SELECT s.content FROM summaries s
-     JOIN conversations c ON s.conversation_id = c.conversation_id
-     WHERE c.session_id = ?
-     ORDER BY s.depth DESC, s.created_at DESC
-     LIMIT ?`,
-  ).all(sessionId, limit) as Array<{ content: string }>;
+  const conversation = await new ConversationStore(db).getConversationBySessionId(sessionId);
+  if (!conversation) return "";
+  const rows = await new SummaryStore(db).summariesDeepestFirst(conversation.conversationId, limit);
   if (rows.length === 0) return "";
   return fenceContent(rows.map((r) => r.content).join("\n\n"), "recent-session-context");
 }
@@ -323,7 +258,7 @@ function readEpisodicContext(db: DatabaseSync, sessionId: unknown, limit: number
  * next compaction without returning it — the harness injects those files itself, so echoing
  * them back would duplicate them.
  */
-function buildClaudeRestore(config: DaemonConfig, req: RestoreRequest, paths: LcmPaths): RestoreContext {
+async function buildClaudeRestore(config: DaemonConfig, req: RestoreRequest, paths: LcmPaths): Promise<RestoreContext> {
   // `source` is absent whenever the function-hooks module asks: prompt.context carries no
   // reason for firing, so there the mark `/compact` left is the only thing that
   // distinguishes a post-compaction restore from a fresh one.
@@ -344,7 +279,7 @@ function buildClaudeRestore(config: DaemonConfig, req: RestoreRequest, paths: Lc
     const db = getLcmConnection(dbPath);
     try {
       runLcmMigrations(db);
-      episodic = readEpisodicContext(db, req.sessionId, config.restoration.recentSummaries);
+      episodic = await readEpisodicContext(db, req.sessionId, config.restoration.recentSummaries);
       promoted = fenceOrEmpty(readPromotedMemories(db, req.cwd, config), "project-knowledge");
       refreshInstructionsSnapshot(db, req.cwd);
     } catch { /* Non-fatal: return whatever was gathered before the failure. */ } finally {
@@ -366,7 +301,7 @@ function buildClaudeRestore(config: DaemonConfig, req: RestoreRequest, paths: Lc
  * recent context and the project's promoted knowledge, each trimmed to what is left of the
  * injection budget.
  */
-function buildCodexRestore(config: DaemonConfig, req: RestoreRequest, paths: LcmPaths): RestoreContext {
+async function buildCodexRestore(config: DaemonConfig, req: RestoreRequest, paths: LcmPaths): Promise<RestoreContext> {
   const parts = req.orientation ? [req.orientation] : [];
   const answer = () => ({ context: parts.join("\n\n"), includeInsights: true as const });
   if (!req.cwd) return answer();
@@ -376,7 +311,7 @@ function buildCodexRestore(config: DaemonConfig, req: RestoreRequest, paths: Lcm
   const db = getLcmConnection(dbPath);
   try {
     runLcmMigrations(db);
-    const recent = readCodexContext(
+    const recent = await readCodexContext(
       db, req.sessionId, req.source,
       config.restoration.recentSummaries,
       remainingContextBudget(parts, budget),
@@ -450,8 +385,8 @@ export function createRestoreHandler(config: DaemonConfig, paths: LcmPaths): Rou
         orientation: buildOrientationPrompt(),
       };
       const built = input.client === "codex"
-        ? buildCodexRestore(config, request, paths)
-        : buildClaudeRestore(config, request, paths);
+        ? await buildCodexRestore(config, request, paths)
+        : await buildClaudeRestore(config, request, paths);
 
       const responseBody: { context: string; insights?: Insight[] } = { context: built.context };
       if (built.includeInsights) {

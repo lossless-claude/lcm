@@ -9,7 +9,6 @@
  *   - search with empty/punctuation-only query
  *   - transaction commit and rollback
  *   - update on non-existent id is a no-op
- *   - deleteById on non-existent id is safe
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -237,13 +236,5 @@ describe("PromotedStore extended", () => {
 
     const rows = store.getAll();
     expect(rows.map((r) => r.content)).not.toContain("Should be rolled back");
-  });
-
-  // ── deleteById ───────────────────────────────────────────────────────────
-
-  it("deleteById on a non-existent id does not throw", () => {
-    const db = makeDb();
-    const store = new PromotedStore(db);
-    expect(() => store.deleteById("does-not-exist")).not.toThrow();
   });
 });
