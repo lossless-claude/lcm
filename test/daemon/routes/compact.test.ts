@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -776,5 +776,69 @@ describe("POST /compact — scrub redaction during transcript ingestion", () => 
     } finally {
       db.close();
     }
+  });
+});
+
+describe("POST /compact — Codex transcript capture (#505)", () => {
+  let daemon: DaemonInstance | undefined;
+  const tempDirs: string[] = [];
+
+  afterEach(async () => {
+    if (daemon) {
+      await daemon.stop();
+      daemon = undefined;
+    }
+    for (const dir of tempDirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  const codexMessage = (role: "user" | "assistant", text: string) => JSON.stringify({
+    type: "response_item",
+    payload: { type: "message", role, content: [{ type: role === "user" ? "input_text" : "output_text", text }] },
+  });
+
+  it("ingests the delta of a Codex session through the same adapter /ingest reads with", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-compact-codex-"));
+    tempDirs.push(tempDir);
+    const sessionId = "codex-compact-session";
+    const transcriptPath = join(tempDir, "rollout.jsonl");
+    const meta = JSON.stringify({ type: "session_meta", payload: { id: sessionId, cwd: tempDir } });
+    writeFileSync(transcriptPath, `${meta}\n${codexMessage("user", "first")}\n${codexMessage("assistant", "second")}\n`);
+
+    daemon = await createDaemon(loadDaemonConfig("/x", { daemon: { port: 0 }, summarizer: { mock: true } }));
+    const post = (route: string, body: Record<string, unknown>) => fetch(`http://127.0.0.1:${daemon!.address().port}${route}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+
+    const ingested = await post("/ingest", { session_id: sessionId, cwd: tempDir, client: "codex", transcript_path: transcriptPath });
+    expect(await ingested.json()).toMatchObject({ ingested: 2 });
+
+    appendFileSync(transcriptPath, `${codexMessage("user", "third, after the last /ingest")}\n`);
+    const compacted = await post("/compact", { session_id: sessionId, cwd: tempDir, client: "codex", transcript_path: transcriptPath });
+    expect(compacted.status, await compacted.clone().text()).toBe(200);
+    expect(await readMessageContents(tempDir, sessionId)).toEqual(["first", "second", "third, after the last /ingest"]);
+
+    // The cursor /compact advanced is the one the next /ingest resumes from.
+    appendFileSync(transcriptPath, `${codexMessage("assistant", "fourth")}\n`);
+    const resumed = await post("/ingest", { session_id: sessionId, cwd: tempDir, client: "codex", transcript_path: transcriptPath });
+    expect(await resumed.json()).toMatchObject({ ingested: 1 });
+    expect(await readMessageContents(tempDir, sessionId)).toHaveLength(4);
+  });
+
+  it("answers 400 for a Codex transcript that names another project instead of silently reading nothing", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-compact-codex-mismatch-"));
+    tempDirs.push(tempDir);
+    const transcriptPath = join(tempDir, "rollout.jsonl");
+    const meta = JSON.stringify({ type: "session_meta", payload: { id: "codex-other", cwd: join(tempDir, "elsewhere") } });
+    writeFileSync(transcriptPath, `${meta}\n${codexMessage("user", "first")}\n`);
+
+    daemon = await createDaemon(loadDaemonConfig("/x", { daemon: { port: 0 }, summarizer: { mock: true } }));
+    const res = await fetch(`http://127.0.0.1:${daemon.address().port}/compact`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: "codex-other", cwd: tempDir, client: "codex", transcript_path: transcriptPath }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Codex transcript cwd does not match requested project" });
   });
 });

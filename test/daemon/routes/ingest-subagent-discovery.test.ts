@@ -11,6 +11,15 @@ import { createLcmPaths } from "../../../src/lcm-paths.js";
 const paths = createLcmPaths(lcmHome());
 import { DatabaseSync } from "node:sqlite";
 
+// Only parseTranscript is wrapped so one test can simulate it throwing for a
+// single subagent path; every other export, and every other transcript,
+// passes straight through to the real implementation.
+vi.mock("../../../src/transcript.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/transcript.js")>();
+  return { ...actual, parseTranscript: vi.fn(actual.parseTranscript) };
+});
+import { parseTranscript } from "../../../src/transcript.js";
+
 const tempDirs: string[] = [];
 
 /** Writes transcript entries as Claude Code does, one JSON object per line. */
@@ -173,6 +182,63 @@ describe("POST /ingest discovers subagent transcripts (#434)", () => {
     try {
       const conversations = db.prepare("SELECT session_id FROM conversations").all();
       expect(conversations).toEqual([{ session_id: sessionId }]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("captures every sibling subagent when one transcript fails to parse", async () => {
+    const { sessionId, subagentsDir } = setUp();
+    writeTranscript(join(subagentsDir, "agent-bad.jsonl"), [entry("user", "boom")]);
+    writeTranscript(join(subagentsDir, "agent-good.jsonl"), [entry("user", "do the task"), entry("assistant", "done")]);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const mockedParseTranscript = vi.mocked(parseTranscript);
+    const actualImplementation = mockedParseTranscript.getMockImplementation()!;
+    mockedParseTranscript.mockImplementation((path: string) => {
+      if (path.endsWith("agent-bad.jsonl")) throw new Error("simulated parse failure");
+      return actualImplementation(path);
+    });
+
+    daemon = await createDaemon(loadDaemonConfig("/nonexistent", { daemon: { port: 0 } }));
+    try {
+      await ingest(sessionId);
+
+      const db = new DatabaseSync(projectDbPath(cwd, paths), { readOnly: true });
+      try {
+        const row = db.prepare("SELECT session_id FROM conversations WHERE session_id = 'agent-good'").get();
+        expect(row).toEqual({ session_id: "agent-good" });
+        expect(db.prepare("SELECT session_id FROM conversations WHERE session_id = 'agent-bad'").get()).toBeUndefined();
+        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("agent-bad"));
+      } finally {
+        db.close();
+      }
+    } finally {
+      mockedParseTranscript.mockImplementation(actualImplementation);
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("attributes a subagent captured before its sidecar existed on the next /ingest after the sidecar appears", async () => {
+    const { sessionId, subagentsDir } = setUp();
+    const subagentPath = join(subagentsDir, "agent-sub1.jsonl");
+    writeTranscript(subagentPath, [entry("user", "do the task")]);
+    // No sidecar yet: the first /ingest creates the row with attribution all-null.
+
+    daemon = await createDaemon(loadDaemonConfig("/nonexistent", { daemon: { port: 0 } }));
+    await ingest(sessionId);
+
+    writeFileSync(
+      join(subagentsDir, "agent-sub1.meta.json"),
+      JSON.stringify({ agentType: "general-purpose", description: "run the task" }),
+    );
+    await ingest(sessionId);
+
+    const db = new DatabaseSync(projectDbPath(cwd, paths), { readOnly: true });
+    try {
+      const row = db.prepare(
+        "SELECT parent_session_id, subagent_type, subagent_desc FROM conversations WHERE session_id = 'agent-sub1'",
+      ).get();
+      expect(row).toEqual({ parent_session_id: sessionId, subagent_type: "general-purpose", subagent_desc: "run the task" });
     } finally {
       db.close();
     }

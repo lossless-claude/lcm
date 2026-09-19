@@ -6,6 +6,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { getLcmConnection, closeLcmConnection } from "../../src/db/connection.js";
 import { runLcmMigrations } from "../../src/db/migration.js";
 import { ConversationStore } from "../../src/store/conversation-store.js";
+import { SummaryStore } from "../../src/store/summary-store.js";
 
 const tempDirs: string[] = [];
 
@@ -28,358 +29,206 @@ function makeStore(db: DatabaseSync): ConversationStore {
   return new ConversationStore(db, { fts5Available: false });
 }
 
-// ── Conversation CRUD ─────────────────────────────────────────────────────────
+// ── Finding a conversation by session ─────────────────────────────────────────
 
-describe("ConversationStore — conversation CRUD", () => {
-  it("createConversation returns a record with correct fields", async () => {
+describe("ConversationStore — conversations", () => {
+  it("getOrCreateConversation opens a conversation for a new session", async () => {
     const store = makeStore(makeDb());
-    const rec = await store.createConversation({ sessionId: "sess-1", title: "My Session" });
+    const rec = await store.getOrCreateConversation("sess-1", "My Session");
     expect(rec.sessionId).toBe("sess-1");
     expect(rec.title).toBe("My Session");
     expect(rec.conversationId).toBeGreaterThan(0);
-    expect(rec.bootstrappedAt).toBeNull();
     expect(rec.createdAt).toBeInstanceOf(Date);
+    expect(rec.roleTagging).toBe("tagged");
   });
 
-  it("createConversation stores null title when not provided", async () => {
-    const store = makeStore(makeDb());
-    const rec = await store.createConversation({ sessionId: "sess-notitle" });
-    expect(rec.title).toBeNull();
-  });
-
-  it("getConversation returns null for unknown id", async () => {
-    const store = makeStore(makeDb());
-    expect(await store.getConversation(9999)).toBeNull();
-  });
-
-  it("getConversationBySessionId returns a conversation for the sessionId when multiple exist", async () => {
-    const db = makeDb();
-    const store = makeStore(db);
-    await store.createConversation({ sessionId: "shared-sess" });
-    await store.createConversation({ sessionId: "shared-sess", title: "newer" });
-    const result = await store.getConversationBySessionId("shared-sess");
-    // Should return one of the conversations for the session (most-recent by created_at)
-    expect(result).not.toBeNull();
-    expect(result?.sessionId).toBe("shared-sess");
-  });
-
-  it("getConversationBySessionId returns null for unknown sessionId", async () => {
-    const store = makeStore(makeDb());
-    expect(await store.getConversationBySessionId("no-such-session")).toBeNull();
-  });
-
-  it("getOrCreateConversation is idempotent for same sessionId", async () => {
+  it("getOrCreateConversation answers the same conversation for the same session", async () => {
     const store = makeStore(makeDb());
     const first = await store.getOrCreateConversation("idem-sess");
     const second = await store.getOrCreateConversation("idem-sess");
-    expect(first.conversationId).toBe(second.conversationId);
+    expect(second.conversationId).toBe(first.conversationId);
+    expect(await store.listConversations()).toHaveLength(1);
   });
 
-  it("markConversationBootstrapped sets bootstrappedAt only once (COALESCE)", async () => {
+  it("getOrCreateConversation fills attribution in once a sidecar names a parent, and never overwrites it", async () => {
     const store = makeStore(makeDb());
-    const conv = await store.createConversation({ sessionId: "boot-sess" });
-    await store.markConversationBootstrapped(conv.conversationId);
-    const after1 = await store.getConversation(conv.conversationId);
-    expect(after1?.bootstrappedAt).toBeInstanceOf(Date);
+    const bare = await store.getOrCreateConversation("agent-1");
+    expect(bare.parentSessionId).toBeNull();
 
-    await store.markConversationBootstrapped(conv.conversationId);
-    const after2 = await store.getConversation(conv.conversationId);
-    // bootstrappedAt should remain unchanged (COALESCE prevents overwrite)
-    expect(after2?.bootstrappedAt?.getTime()).toBe(after1?.bootstrappedAt?.getTime());
+    const attributed = await store.getOrCreateConversation("agent-1", undefined, {
+      parentSessionId: "parent-a", subagentType: "explore", subagentDesc: "look around",
+    });
+    expect(attributed.conversationId).toBe(bare.conversationId);
+    expect(attributed.parentSessionId).toBe("parent-a");
+    expect(attributed.subagentType).toBe("explore");
+
+    const later = await store.getOrCreateConversation("agent-1", undefined, { parentSessionId: "parent-b" });
+    expect(later.parentSessionId).toBe("parent-a");
   });
 
-  it("listConversations returns all conversations in order", async () => {
+  it("getConversationBySessionId finds what getOrCreateConversation opened, and null otherwise", async () => {
     const store = makeStore(makeDb());
-    await store.createConversation({ sessionId: "list-1" });
-    await store.createConversation({ sessionId: "list-2" });
-    const list = await store.listConversations();
-    expect(list.length).toBeGreaterThanOrEqual(2);
+    const opened = await store.getOrCreateConversation("find-me");
+    expect((await store.getConversationBySessionId("find-me"))?.conversationId).toBe(opened.conversationId);
+    expect(await store.getConversationBySessionId("no-such-session")).toBeNull();
+    expect(await store.getConversation(opened.conversationId)).toEqual(opened);
+    expect(await store.getConversation(9999)).toBeNull();
+  });
+
+  it("getConversationBySessionId breaks same-second ties by the newest row", async () => {
+    const db = makeDb();
+    const store = makeStore(db);
+    db.prepare(
+      `INSERT INTO conversations (session_id, role_tagging, created_at)
+       VALUES (?, 'tagged', ?)`,
+    ).run("duplicate-session", "2026-09-19 04:00:00");
+    const newer = db.prepare(
+      `INSERT INTO conversations (session_id, role_tagging, created_at)
+       VALUES (?, 'tagged', ?)`,
+    ).run("duplicate-session", "2026-09-19 04:00:00");
+
+    expect((await store.getConversationBySessionId("duplicate-session"))?.conversationId).toBe(Number(newer.lastInsertRowid));
+  });
+
+  it("listConversations returns every conversation in creation order", async () => {
+    const store = makeStore(makeDb());
+    await store.getOrCreateConversation("list-1");
+    await store.getOrCreateConversation("list-2");
+    expect((await store.listConversations()).map((c) => c.sessionId)).toEqual(["list-1", "list-2"]);
+  });
+
+  it("latestActiveConversation picks the conversation with the newest user/assistant message or summary, never the excluded session", async () => {
+    const db = makeDb();
+    const store = makeStore(db);
+    const summaries = new SummaryStore(db, { fts5Available: false });
+
+    const empty = await store.getOrCreateConversation("empty-shell");
+    const older = await store.getOrCreateConversation("older");
+    const newer = await store.getOrCreateConversation("newer");
+    await store.createMessage({ conversationId: older.conversationId, seq: 0, role: "user", content: "old", tokenCount: 1 });
+    await store.createMessage({ conversationId: newer.conversationId, seq: 0, role: "user", content: "new", tokenCount: 1 });
+    db.prepare(`UPDATE messages SET created_at = ? WHERE conversation_id = ?`).run("2026-01-01 00:00:00", older.conversationId);
+    db.prepare(`UPDATE messages SET created_at = ? WHERE conversation_id = ?`).run("2026-02-01 00:00:00", newer.conversationId);
+
+    expect((await store.latestActiveConversation("empty-shell"))?.conversationId).toBe(newer.conversationId);
+    expect((await store.latestActiveConversation("newer"))?.conversationId).toBe(older.conversationId);
+
+    // A later summary outranks an earlier message.
+    await summaries.insertSummary({ summaryId: "s-old", conversationId: older.conversationId, kind: "leaf", content: "x", tokenCount: 1 });
+    db.prepare(`UPDATE summaries SET created_at = ? WHERE summary_id = ?`).run("2026-03-01 00:00:00", "s-old");
+    expect((await store.latestActiveConversation("empty-shell"))?.conversationId).toBe(older.conversationId);
+
+    // A conversation with only a tool message is not active.
+    await store.createMessage({ conversationId: empty.conversationId, seq: 0, role: "tool", content: "log", tokenCount: 1 });
+    expect((await store.latestActiveConversation("older"))?.conversationId).toBe(newer.conversationId);
   });
 });
 
-// ── Message operations ────────────────────────────────────────────────────────
+// ── Appending a delta and reading it back ─────────────────────────────────────
 
-describe("ConversationStore — message operations", () => {
+describe("ConversationStore — messages", () => {
   let store: ConversationStore;
   let conversationId: number;
 
   beforeEach(async () => {
     store = makeStore(makeDb());
-    const conv = await store.createConversation({ sessionId: "msg-sess" });
-    conversationId = conv.conversationId;
+    conversationId = (await store.getOrCreateConversation("msg-sess")).conversationId;
   });
 
-  it("createMessage returns correct record", async () => {
-    const msg = await store.createMessage({
-      conversationId,
-      seq: 1,
-      role: "user",
-      content: "hello world",
-      tokenCount: 2,
-    });
-    expect(msg.role).toBe("user");
-    expect(msg.content).toBe("hello world");
-    expect(msg.tokenCount).toBe(2);
-    expect(msg.seq).toBe(1);
-  });
-
-  it("getMessages returns messages in seq order", async () => {
-    await store.createMessage({ conversationId, seq: 1, role: "user", content: "a", tokenCount: 1 });
-    await store.createMessage({ conversationId, seq: 2, role: "assistant", content: "b", tokenCount: 1 });
-    const msgs = await store.getMessages(conversationId);
-    expect(msgs.map((m) => m.seq)).toEqual([1, 2]);
-  });
-
-  it("getMessages with afterSeq filters correctly", async () => {
-    await store.createMessage({ conversationId, seq: 1, role: "user", content: "a", tokenCount: 1 });
-    await store.createMessage({ conversationId, seq: 2, role: "user", content: "b", tokenCount: 1 });
-    await store.createMessage({ conversationId, seq: 3, role: "user", content: "c", tokenCount: 1 });
-    const msgs = await store.getMessages(conversationId, { afterSeq: 1 });
-    expect(msgs.map((m) => m.seq)).toEqual([2, 3]);
-  });
-
-  it("getMessages with limit restricts results", async () => {
-    for (let i = 1; i <= 5; i++) {
-      await store.createMessage({ conversationId, seq: i, role: "user", content: `msg${i}`, tokenCount: 1 });
-    }
-    const msgs = await store.getMessages(conversationId, { limit: 3 });
-    expect(msgs).toHaveLength(3);
-  });
-
-  it("getLastMessage returns null for empty conversation", async () => {
-    expect(await store.getLastMessage(conversationId)).toBeNull();
-  });
-
-  it("getLastMessage returns the highest-seq message", async () => {
-    await store.createMessage({ conversationId, seq: 1, role: "user", content: "first", tokenCount: 1 });
-    await store.createMessage({ conversationId, seq: 2, role: "assistant", content: "last", tokenCount: 1 });
-    const last = await store.getLastMessage(conversationId);
-    expect(last?.seq).toBe(2);
-    expect(last?.content).toBe("last");
-  });
-
-  it("getMaxSeq returns 0 when no messages exist", async () => {
-    expect(await store.getMaxSeq(conversationId)).toBe(0);
-  });
-
-  it("getMaxSeq returns the highest seq", async () => {
-    await store.createMessage({ conversationId, seq: 5, role: "user", content: "x", tokenCount: 1 });
-    await store.createMessage({ conversationId, seq: 3, role: "user", content: "y", tokenCount: 1 });
-    expect(await store.getMaxSeq(conversationId)).toBe(5);
-  });
-
-  it("hasMessage returns false when message absent", async () => {
-    expect(await store.hasMessage(conversationId, "user", "no such message")).toBe(false);
-  });
-
-  it("hasMessage returns true when message present", async () => {
-    await store.createMessage({ conversationId, seq: 1, role: "user", content: "exact text", tokenCount: 1 });
-    expect(await store.hasMessage(conversationId, "user", "exact text")).toBe(true);
-  });
-
-  it("countMessagesByIdentity counts exact duplicates", async () => {
-    await store.createMessage({ conversationId, seq: 1, role: "user", content: "dup", tokenCount: 1 });
-    await store.createMessage({ conversationId, seq: 2, role: "user", content: "dup", tokenCount: 1 });
-    expect(await store.countMessagesByIdentity(conversationId, "user", "dup")).toBe(2);
-  });
-
-  it("getMessageById returns null for unknown id", async () => {
+  it("createMessage then getMessages returns the message as written", async () => {
+    const msg = await store.createMessage({ conversationId, seq: 1, role: "user", content: "hello world", tokenCount: 2 });
+    expect(msg).toMatchObject({ conversationId, seq: 1, role: "user", content: "hello world", tokenCount: 2 });
+    expect(await store.getMessages(conversationId)).toEqual([msg]);
+    expect(await store.getMessageById(msg.messageId)).toEqual(msg);
     expect(await store.getMessageById(99999)).toBeNull();
   });
 
-  it("getMessageCount returns correct count", async () => {
-    await store.createMessage({ conversationId, seq: 1, role: "user", content: "x", tokenCount: 1 });
-    await store.createMessage({ conversationId, seq: 2, role: "user", content: "y", tokenCount: 1 });
-    expect(await store.getMessageCount(conversationId)).toBe(2);
-  });
-
-  it("createMessagesBulk inserts all messages and returns records", async () => {
+  it("createMessagesBulk appends a delta that getMessages reads back in seq order", async () => {
     const records = await store.createMessagesBulk([
       { conversationId, seq: 10, role: "user", content: "bulk1", tokenCount: 1 },
       { conversationId, seq: 11, role: "assistant", content: "bulk2", tokenCount: 1 },
     ]);
-    expect(records).toHaveLength(2);
-    expect(records[0].content).toBe("bulk1");
-    expect(records[1].content).toBe("bulk2");
+    expect(records.map((r) => r.content)).toEqual(["bulk1", "bulk2"]);
+    expect((await store.getMessages(conversationId)).map((m) => m.seq)).toEqual([10, 11]);
+    expect(await store.createMessagesBulk([])).toEqual([]);
   });
 
-  it("createMessagesBulk with empty array returns empty array", async () => {
-    const records = await store.createMessagesBulk([]);
-    expect(records).toEqual([]);
+  it("getMessages reads past a seq, or only the stored prefix", async () => {
+    for (let i = 1; i <= 5; i++) {
+      await store.createMessage({ conversationId, seq: i, role: "user", content: `msg${i}`, tokenCount: 1 });
+    }
+    expect((await store.getMessages(conversationId, { afterSeq: 3 })).map((m) => m.seq)).toEqual([4, 5]);
+    expect((await store.getMessages(conversationId, { limit: 3 })).map((m) => m.seq)).toEqual([1, 2, 3]);
+  });
+
+  it("getMessageCount and getMaxSeq describe what is stored, per conversation or in all", async () => {
+    expect(await store.getMessageCount(conversationId)).toBe(0);
+    expect(await store.getMaxSeq(conversationId)).toBe(0);
+    await store.createMessage({ conversationId, seq: 5, role: "user", content: "x", tokenCount: 1 });
+    await store.createMessage({ conversationId, seq: 3, role: "user", content: "y", tokenCount: 1 });
+    const other = await store.getOrCreateConversation("other");
+    await store.createMessage({ conversationId: other.conversationId, seq: 0, role: "user", content: "z", tokenCount: 1 });
+
+    expect(await store.getMessageCount(conversationId)).toBe(2);
+    expect(await store.getMaxSeq(conversationId)).toBe(5);
+    expect(await store.getMessageCount()).toBe(3);
+  });
+
+  it("withTransaction rolls back the delta on a thrown error and re-throws", async () => {
+    await expect(
+      store.withTransaction(async () => {
+        await store.createMessage({ conversationId, seq: 1, role: "user", content: "aborted", tokenCount: 1 });
+        throw new Error("intentional rollback");
+      }),
+    ).rejects.toThrow("intentional rollback");
+    expect(await store.getMessageCount(conversationId)).toBe(0);
   });
 });
 
 // ── Message parts ─────────────────────────────────────────────────────────────
 
 describe("ConversationStore — message parts", () => {
-  it("createMessageParts and getMessageParts round-trip", async () => {
-    const store = makeStore(makeDb());
-    const conv = await store.createConversation({ sessionId: "parts-sess" });
-    const msg = await store.createMessage({
-      conversationId: conv.conversationId,
-      seq: 1,
-      role: "assistant",
-      content: "tool output",
-      tokenCount: 3,
-    });
+  it("a message written with a compaction part is left out when the context is rebuilt", async () => {
+    const db = makeDb();
+    const store = makeStore(db);
+    const summaries = new SummaryStore(db, { fts5Available: false });
+    const conv = await store.getOrCreateConversation("parts-sess");
+    const kept = await store.createMessage({ conversationId: conv.conversationId, seq: 0, role: "user", content: "kept", tokenCount: 1 });
+    const event = await store.createMessage({ conversationId: conv.conversationId, seq: 1, role: "system", content: "compacted", tokenCount: 1 });
+    await store.createMessageParts(event.messageId, [{ sessionId: "parts-sess", partType: "compaction", ordinal: 0 }]);
+    await store.createMessageParts(kept.messageId, []);
 
-    await store.createMessageParts(msg.messageId, [
-      {
-        sessionId: "parts-sess",
-        partType: "tool",
-        ordinal: 0,
-        toolName: "Bash",
-        toolInput: '{"command":"ls"}',
-        toolOutput: "file1.ts\nfile2.ts",
-        toolCallId: "call-abc",
-      },
-      {
-        sessionId: "parts-sess",
-        partType: "text",
-        ordinal: 1,
-        textContent: "done",
-      },
-    ]);
+    await summaries.resetConversationContext(conv.conversationId);
 
-    const parts = await store.getMessageParts(msg.messageId);
-    expect(parts).toHaveLength(2);
-    expect(parts[0].partType).toBe("tool");
-    expect(parts[0].toolName).toBe("Bash");
-    expect(parts[0].ordinal).toBe(0);
-    expect(parts[1].partType).toBe("text");
-    expect(parts[1].textContent).toBe("done");
-    expect(parts[1].toolName).toBeNull();
-  });
-
-  it("createMessageParts with empty array is a no-op", async () => {
-    const store = makeStore(makeDb());
-    const conv = await store.createConversation({ sessionId: "empty-parts-sess" });
-    const msg = await store.createMessage({
-      conversationId: conv.conversationId,
-      seq: 1,
-      role: "user",
-      content: "hi",
-      tokenCount: 1,
-    });
-    await store.createMessageParts(msg.messageId, []);
-    const parts = await store.getMessageParts(msg.messageId);
-    expect(parts).toHaveLength(0);
+    expect((await summaries.getContextItems(conv.conversationId)).map((i) => i.messageId)).toEqual([kept.messageId]);
+    expect(await store.getMessageById(event.messageId)).toBeNull();
   });
 });
 
-// ── deleteMessages ────────────────────────────────────────────────────────────
+// ── Search ────────────────────────────────────────────────────────────────────
 
-describe("ConversationStore — deleteMessages", () => {
-  it("returns 0 for empty array", async () => {
+describe("ConversationStore — searchMessagesSync", () => {
+  it("regex mode finds matching messages, honours the limit, and refuses an unsafe pattern", async () => {
     const store = makeStore(makeDb());
-    expect(await store.deleteMessages([])).toBe(0);
-  });
-
-  it("deletes messages not referenced by summaries", async () => {
-    const store = makeStore(makeDb());
-    const conv = await store.createConversation({ sessionId: "del-sess" });
-    const msg = await store.createMessage({
-      conversationId: conv.conversationId,
-      seq: 1,
-      role: "user",
-      content: "deletable",
-      tokenCount: 1,
-    });
-
-    const deleted = await store.deleteMessages([msg.messageId]);
-    expect(deleted).toBe(1);
-    expect(await store.getMessageById(msg.messageId)).toBeNull();
-  });
-});
-
-// ── searchMessages — regex mode ───────────────────────────────────────────────
-
-describe("ConversationStore — searchMessages regex", () => {
-  it("finds messages matching a regex pattern", async () => {
-    const store = makeStore(makeDb());
-    const conv = await store.createConversation({ sessionId: "search-sess" });
-    await store.createMessage({
-      conversationId: conv.conversationId,
-      seq: 1,
-      role: "user",
-      content: "use React hooks",
-      tokenCount: 3,
-    });
-    await store.createMessage({
-      conversationId: conv.conversationId,
-      seq: 2,
-      role: "user",
-      content: "prefer Vue",
-      tokenCount: 2,
-    });
-
-    const results = await store.searchMessages({
-      query: "React|Vue",
-      mode: "regex",
-    });
-    expect(results.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it("throws on unsafe regex pattern", async () => {
-    const store = makeStore(makeDb());
-    await expect(
-      store.searchMessages({ query: "(a+)+$", mode: "regex" }), // codeql[js/redos] - intentional test input
-    ).rejects.toThrow(/unsafe/i);
-  });
-
-  it("returns empty when no message matches regex", async () => {
-    const store = makeStore(makeDb());
-    const conv = await store.createConversation({ sessionId: "nomatch-sess" });
-    await store.createMessage({
-      conversationId: conv.conversationId,
-      seq: 1,
-      role: "user",
-      content: "hello world",
-      tokenCount: 2,
-    });
-
-    const results = await store.searchMessages({ query: "xyz123nomatch", mode: "regex" });
-    expect(results).toHaveLength(0);
-  });
-
-  it("respects limit in regex search", async () => {
-    const store = makeStore(makeDb());
-    const conv = await store.createConversation({ sessionId: "limit-sess" });
+    const conv = await store.getOrCreateConversation("search-sess");
     for (let i = 1; i <= 5; i++) {
-      await store.createMessage({
-        conversationId: conv.conversationId,
-        seq: i,
-        role: "user",
-        content: `token-${i}`,
-        tokenCount: 1,
-      });
+      await store.createMessage({ conversationId: conv.conversationId, seq: i, role: "user", content: `token-${i} React`, tokenCount: 2 });
     }
-    const results = await store.searchMessages({ query: "token-\\d", mode: "regex", limit: 2 });
-    expect(results).toHaveLength(2);
+    await store.createMessage({ conversationId: conv.conversationId, seq: 6, role: "user", content: "prefer Vue", tokenCount: 2 });
+
+    expect(store.searchMessagesSync({ query: "React|Vue", mode: "regex" })).toHaveLength(6);
+    expect(store.searchMessagesSync({ query: "token-\\d", mode: "regex", limit: 2 })).toHaveLength(2);
+    expect(store.searchMessagesSync({ query: "xyz123nomatch", mode: "regex" })).toHaveLength(0);
+    expect(() => store.searchMessagesSync({ query: "(a+)+$", mode: "regex" })) // codeql[js/redos] - intentional test input
+      .toThrow(/unsafe/i);
   });
-});
 
-// ── withTransaction ───────────────────────────────────────────────────────────
-
-describe("ConversationStore — withTransaction", () => {
-  it("rolls back on thrown error and re-throws", async () => {
+  it("full_text mode falls back to a substring scan without FTS5", async () => {
     const store = makeStore(makeDb());
-    const conv = await store.createConversation({ sessionId: "tx-sess" });
-
-    await expect(
-      store.withTransaction(async () => {
-        await store.createMessage({
-          conversationId: conv.conversationId,
-          seq: 1,
-          role: "user",
-          content: "aborted",
-          tokenCount: 1,
-        });
-        throw new Error("intentional rollback");
-      }),
-    ).rejects.toThrow("intentional rollback");
-
-    // Message should not exist after rollback
-    expect(await store.getMessageCount(conv.conversationId)).toBe(0);
+    const conv = await store.getOrCreateConversation("like-sess");
+    await store.createMessage({ conversationId: conv.conversationId, seq: 1, role: "user", content: "database migration fallback", tokenCount: 3 });
+    const results = store.searchMessagesSync({ query: "database migration", mode: "full_text", conversationId: conv.conversationId });
+    expect(results).toHaveLength(1);
+    expect(results[0].snippet.toLowerCase()).toContain("database migration");
   });
 });

@@ -48,6 +48,19 @@ The **context_items** table maintains the ordered list of what the model sees fo
 
 When compaction creates a summary from a range of messages (or summaries), the source items are replaced by a single summary item. This keeps the context list compact while preserving ordering.
 
+### The store surface
+
+Episodic memory is reached through two stores, and only through them: `ConversationStore` (`src/store/conversation-store.ts`) owns `conversations`, `messages` and `message_parts`; `SummaryStore` (`src/store/summary-store.ts`) owns `summaries`, their lineage tables, `context_items` and `large_files`. Promoted memory is reached through `PromotedStore` (`src/db/promoted.ts`), which owns `promoted` and is the one reader of how a vote is encoded in its tags. No daemon route, the importer or the capture module prepares its own statement against those tables; `test/store/store-surface.test.ts` pins that, and every public store method has a caller in `src/`. Callers with their own SQL for other reasons — replay, stats, native history search, the bench — stay outside the stores.
+
+The operations are shaped by what Episodic memory is asked to do:
+
+- **Find the conversation of a session** — `getOrCreateConversation` opens it on first capture and fills attribution in once a sidecar names a parent; `getConversationBySessionId` answers it afterwards; `latestActiveConversation` is what a session that captured nothing yet is shown instead.
+- **Append a delta** — `createMessagesBulk` writes the messages past the stored count, `appendContextMessages` puts them at the end of the context, `createMessageParts` keeps their structure; `getMessageCount`, `getMaxSeq` and `getMessages` describe what is stored so the next delta starts after it.
+- **Read the context window** — `getContextItems` for compaction's view of the whole list, `readContextWindow` for a restore's view of its end (the last N summaries and the last N user/assistant messages, with a plain-messages fallback for a conversation captured before context items were materialised), `getContextTokenCount` and `getDistinctDepthsInContext` for the compaction triggers.
+- **Replace a range with a summary** — `insertSummary`, `linkSummaryToMessages` / `linkSummaryToParents` for its lineage, then `replaceContextRangeWithSummary`; `resetConversationContext` undoes every summary of a conversation and rebuilds the context from its messages.
+- **Read summaries** — by id, by conversation, deepest-first for a session's restore, newest-first across the project, or as a subtree under `lcm_expand`.
+- **Search** — `searchMessagesSync` / `searchSummariesSync`, full-text with a LIKE fallback, or regex.
+
 ## Compaction lifecycle
 
 ### Ingestion
@@ -60,7 +73,9 @@ When Claude Code processes a turn, it calls the context engine's lifecycle hooks
 
 Every route that lands transcript content in `messages` — `/ingest`, the subagent path inside it, and `/compact` — writes through one module, `src/capture.ts` (`SessionCapture`). It owns what "already stored" means (the delta past the conversation's message count), scrubbing, the bulk insert, `context_items`, `message_parts`, redaction counts, the Codex cursor and `session_ingest_log`. When the caller passes no attribution and the transcript is a subagent transcript, the module reads the `.meta.json` sidecar itself, so which route sees a session first does not change what is stored about it.
 
-When `/ingest` processes a session it also looks for that session's subagent transcripts under `<project>/<session_id>/subagents/`, recursively (a workflow run writes its own subagents under `subagents/workflows/wf_<id>/`); `journal.jsonl` is not a transcript and is skipped. `discoverSubagentTranscripts` in `src/subagent-attribution.ts` is the one walker of that directory, shared with `lcm import` and the migration backfill, so every path captures the same set with the same attribution. The lookup is scoped to that one session directory, never a walk of the projects tree. Each subagent transcript is captured as its own session and attributed to the parent session (see CONTEXT.md for the terms).
+What a transcript holds beyond what is stored is answered by one interface, the transcript source (`src/transcript-source.ts`), with an adapter per harness; `SessionCapture` is its only caller, so a route names the client and the session and never chooses how the file is read. Each adapter owns its own delta model and validation: the Claude adapter locates the transcript (the caller's path, or Claude Code's own location for the session), re-parses the file and returns what follows the stored count; the Codex adapter validates the path against Codex's session directories, resumes from the byte-offset cursor persisted with the last write — trusted only while it accounts for exactly the stored messages — and, when it cannot resume, re-reads the whole file and verifies the stored prefix under the current redaction rules before anything is written. The adapter's answer also carries the model backfill for the session's tool-call events, so `/ingest` runs it after the response without knowing which transcript format supplied it. A transcript an adapter refuses (a Codex path outside its bases, metadata naming another project or session, a file shorter than the stored history) is a `TranscriptSourceError`, which `/ingest` and `/compact` answer with 400.
+
+When `/ingest` processes a session it also looks for that session's subagent transcripts under `<project>/<session_id>/subagents/`, recursively (a workflow run writes its own subagents under `subagents/workflows/wf_<id>/`); `journal.jsonl` is not a transcript and is skipped. `discoverSubagentTranscripts` in `src/subagent-attribution.ts` is the one walker of that directory, shared with `lcm import` and the migration backfill, so every path captures the same set with the same attribution. Two transcripts sharing a basename (so the same `sessionId`) at different depths dedupe to the first found, in walk order; the walker logs and drops every later duplicate instead of one call slicing a second transcript by the first one's stored count. The lookup is scoped to that one session directory, never a walk of the projects tree. Each subagent transcript is captured and ingested independently — one failing to parse is logged and skipped, never stopping its siblings — and attributed to the parent session (see CONTEXT.md for the terms); a conversation row created before its `.meta.json` sidecar existed gets its attribution filled in on the next `/ingest` that finds it, once the sidecar appears.
 
 ### Leaf compaction
 
@@ -211,9 +226,9 @@ For broader recall, agents can first use `lcm_grep` or `lcm_search` to find rele
 
 ## Large file handling — planned, not implemented
 
-Nothing below runs today. The storage layer exists — a `large_files` table and
-`insertLargeFile`/`getLargeFile` on the summary store — but no config key, threshold or
-ingestion path writes such a record.
+Nothing below runs today. The storage layer exists — a `large_files` table, read by
+`getLargeFile` on the summary store — but no config key, threshold or ingestion path
+writes such a record.
 Ingestion scrubs and stores messages whole. This section describes the intended design, so
 that the half already built is not mistaken for a working feature.
 

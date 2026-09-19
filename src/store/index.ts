@@ -6,7 +6,6 @@ export type {
   MessageRole,
   MessagePartType,
   MessageRecord,
-  MessagePartRecord,
   ConversationRecord,
   CreateMessageInput,
   CreateMessagePartInput,
@@ -22,8 +21,8 @@ export type {
   CreateSummaryInput,
   SummaryRecord,
   ContextItemRecord,
+  ContextWindowItem,
   SummarySearchInput,
   SummarySearchResult,
-  CreateLargeFileInput,
   LargeFileRecord,
 } from "./summary-store.js";
