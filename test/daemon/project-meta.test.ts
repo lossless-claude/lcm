@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -25,7 +25,7 @@ afterEach(async () => {
 function newCwd(): string {
   const cwd = mkdtempSync(join(tmpdir(), "lcm-project-meta-"));
   tempDirs.push(cwd);
-  return cwd;
+  return realpathSync(cwd);
 }
 
 function seedMeta(cwd: string, content: string): string {
