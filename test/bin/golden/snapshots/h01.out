@@ -1,0 +1,10 @@
+
+  lcm codex-hook — Dispatch a native Codex lifecycle hook.
+
+  Usage: lcm codex-hook
+
+  Examples:
+    lcm codex-hook  Read a Codex hook event from stdin and dispatch it
+
+  Note: Invoked automatically by the Codex hook integration. Not intended for direct use.
+
