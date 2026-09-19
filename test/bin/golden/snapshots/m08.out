@@ -1,0 +1,15 @@
+
+  lcm grep — Search raw messages and summaries by keyword or regex.
+
+  Usage: lcm grep <query> [--mode full_text|regex] [--scope messages|summaries|both] [--since <iso>]
+
+  Options:
+    --mode <mode>    Search mode: full_text (default) or regex
+    --scope <scope>  Scope: messages, summaries, or both (default: both)
+    --since <iso>    Only include matches on or after this ISO timestamp
+
+  Examples:
+    lcm grep "ECONNREFUSED"                              Search for an exact error string
+    lcm grep "createDaemon|startMcpServer" --mode regex  Regex search across history
+    lcm grep "migration" --scope summaries               Search only summaries
+

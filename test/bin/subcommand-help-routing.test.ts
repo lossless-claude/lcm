@@ -58,12 +58,12 @@ describe("helpRequested", () => {
   });
 });
 
-describe("built connector CLI without an agent argument", () => {
+describe("built CLI help routing", () => {
   const cli = resolve("dist/bin/lcm.js");
   function invoke(args: string[]) {
     const directory = mkdtempSync(join(tmpdir(), "lcm-help-"));
     try {
-      const result = spawnSync(process.execPath, [cli, "connectors", ...args], {
+      const result = spawnSync(process.execPath, [cli, ...args], {
         cwd: directory,
         env: { ...process.env, HOME: directory, LCM_HOME: join(directory, "lcm") },
         encoding: "utf8",
@@ -77,18 +77,44 @@ describe("built connector CLI without an agent argument", () => {
     }
   }
 
+  const commandPaths = [
+    ["help"],
+    ["install"], ["uninstall"],
+    ["daemon"], ["daemon", "start"], ["daemon", "stop"], ["daemon", "restart"],
+    ["status"], ["stats"], ["doctor"], ["diagnose"], ["mcp"],
+    ["search"], ["grep"], ["describe"], ["expand"], ["store"],
+    ["compact"], ["import"], ["promote"], ["export"], ["import-knowledge"],
+    ["connectors"], ["connectors", "list"], ["connectors", "install"],
+    ["connectors", "remove"], ["connectors", "doctor"],
+    ["sensitive"], ["sensitive", "list"], ["sensitive", "add"],
+    ["sensitive", "remove"], ["sensitive", "test"], ["sensitive", "purge"],
+    ["bench"], ["bench", "build"], ["bench", "run"],
+    ["codex-hook"], ["restore"], ["session-end"], ["user-prompt"],
+    ["post-tool"], ["session-snapshot"],
+  ];
+
+  it.each(commandPaths.map((command) => [command.join(" "), command] as const))(
+    "lcm %s --help exits successfully without side effects",
+    (_label, command) => {
+      const result = invoke([...command, "--help"]);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("Usage:");
+      expect(result.stderr).toBe("");
+    },
+  );
+
   it.each([
     ["install", "--help"], ["install", "-h"],
     ["remove", "--help"], ["remove", "-h"],
   ])("connectors %s %s shows help without side effects", (command, flag) => {
-    const result = invoke([command, flag]);
+    const result = invoke(["connectors", command, flag]);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("lcm connectors —");
     expect(result.stderr).toBe("");
   });
 
   it.each(["install", "remove"])("connectors %s still requires an agent without help", (command) => {
-    const result = invoke([command]);
+    const result = invoke(["connectors", command]);
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/agent/);
     expect(result.stdout).toBe("");

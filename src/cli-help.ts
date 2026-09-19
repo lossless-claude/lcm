@@ -328,6 +328,15 @@ const HELP: Record<string, CommandHelp> = {
     notes: "Normally launched automatically by Claude Code via the mcpServers config. No need to run manually.",
   },
 
+  "codex-hook": {
+    summary: "Dispatch a native Codex lifecycle hook.",
+    usage: "lcm codex-hook",
+    examples: [
+      ["lcm codex-hook", "Read a Codex hook event from stdin and dispatch it"],
+    ],
+    notes: "Invoked automatically by the Codex hook integration. Not intended for direct use.",
+  },
+
   restore: {
     summary: "Dispatch the restore hook — restores prior context at session start.",
     usage: "lcm restore",
@@ -363,7 +372,20 @@ const HELP: Record<string, CommandHelp> = {
     ],
     notes: "Invoked automatically by the Claude Code PostToolUse hook. Not intended for direct use.",
   },
+
+  "session-snapshot": {
+    summary: "Capture a rolling session snapshot.",
+    usage: "lcm session-snapshot",
+    examples: [
+      ["lcm session-snapshot", "Read a session snapshot event from stdin"],
+    ],
+    notes: "Invoked automatically by the Stop hook. Not intended for direct use.",
+  },
 };
+
+export function hasCommandHelp(command: string): boolean {
+  return Object.hasOwn(HELP, command);
+}
 
 const GROUPS = [
   {
