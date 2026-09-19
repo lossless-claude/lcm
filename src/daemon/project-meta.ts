@@ -31,9 +31,15 @@ export interface ProjectMeta {
 const metaPathIn = (projectDir: string): string => join(projectDir, "meta.json");
 
 function readMetaFile(metaPath: string): ProjectMeta | null {
-  if (!existsSync(metaPath)) return null;
+  let content: string;
   try {
-    const parsed: unknown = JSON.parse(readFileSync(metaPath, "utf-8"));
+    content = readFileSync(metaPath, "utf-8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  try {
+    const parsed: unknown = JSON.parse(content);
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
     return parsed as ProjectMeta;
   } catch {

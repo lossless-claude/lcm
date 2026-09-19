@@ -84,6 +84,15 @@ describe("project meta owner", () => {
     expect(readdirSync(projectDir(cwd, paths))).toEqual(["meta.json"]);
   });
 
+  it("propagates filesystem errors instead of treating them as corrupt JSON", () => {
+    const cwd = newCwd();
+    const metaPath = projectMetaPath(cwd, paths);
+    mkdirSync(metaPath, { recursive: true });
+
+    expect(() => updateProjectMeta(cwd, paths, { lastIngest: "t1" })).toThrow();
+    expect(corruptCopies(cwd)).toEqual([]);
+  });
+
   it("keeps git, language and lastIngest through openProject, /ingest, /compact and /promote", async () => {
     const cwd = newCwd();
     const git = { remotes: ["example.invalid/owner/repo"], relPath: "", checkedAt: new Date().toISOString() };
