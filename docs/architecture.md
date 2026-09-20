@@ -188,6 +188,21 @@ The assembler runs before each model turn and builds the message array:
 6. Normalize assistant content to array blocks (Anthropic API compatibility).
 7. Sanitize tool-use/result pairing (ensures every tool_result has a matching tool_use).
 
+### Session start
+
+`POST /restore` is what a harness calls when a session starts. `src/daemon/routes/restore.ts`
+is only its wire; every assembly rule lives in `src/daemon/restore/`, behind one entry point,
+`createRestore(config, paths)`. The module decides which client is asking (`"codex"`,
+otherwise Claude Code) and whether the restore follows a compaction — the `source` the
+harness sent, or else the mark `/compact` left for that session — and therefore which blocks
+are read. Claude Code replays the saved CLAUDE.md snapshot after a compaction and otherwise
+returns the session's recent summaries plus the project's promoted memories, refreshing that
+snapshot without echoing it, because the harness injects those files itself. Codex reads the
+conversation's context window under a byte budget and never reads, replays or writes the
+snapshot. Every block is fenced before it is returned, insights ride beside the context
+rather than inside it, a section that cannot be read contributes nothing instead of failing
+the restore, and one project-database connection serves the whole call.
+
 ### XML summary format
 
 Summaries are presented to the model as user messages wrapped in XML:

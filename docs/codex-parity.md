@@ -13,7 +13,7 @@ LCM captures Codex sessions automatically through native hooks, restores relevan
 - `src/connectors/installer.ts`: Codex TOML MCP registration remains manual.
 - `src/codex-transcript-reader.ts` and `src/daemon/routes/ingest.ts`: asynchronous suffix reading and shared incremental ingestion for live hooks and historical imports.
 - `src/db/codex-cursor.ts`: byte checkpoints committed atomically with their messages.
-- `src/daemon/routes/restore.ts` and `src/daemon/routes/prompt-search.ts`: restoration from session context and recall from promoted and episodic memory.
+- `src/daemon/restore/` and `src/daemon/routes/prompt-search.ts`: restoration from session context and recall from promoted and episodic memory.
 - `src/import.ts` and `src/cli/knowledge.ts`: replay discovery across both providers, with explicit provider selection preserved.
 - `src/llm/codex-process.ts`: internal summaries disable hooks and use ephemeral sessions to prevent self-capture.
 

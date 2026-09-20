@@ -3,17 +3,17 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadDaemonConfig } from "../../../src/daemon/config.js";
-import { projectDbPath } from "../../../src/daemon/project.js";
-import { createDaemon, type DaemonInstance } from "../../../src/daemon/server.js";
-import { lcmHome } from "../../../src/lcm-home.js";
-import { createLcmPaths } from "../../../src/lcm-paths.js";
+import { loadDaemonConfig } from "../../src/daemon/config.js";
+import { projectDbPath } from "../../src/daemon/project.js";
+import { createRestore, type Restore } from "../../src/daemon/restore/index.js";
+import { lcmHome } from "../../src/lcm-home.js";
+import { createLcmPaths } from "../../src/lcm-paths.js";
+import { runLcmMigrations } from "../../src/db/migration.js";
+import { PromotedStore } from "../../src/db/promoted.js";
+import { ConversationStore } from "../../src/store/conversation-store.js";
+import { SummaryStore } from "../../src/store/summary-store.js";
 
 const paths = createLcmPaths(lcmHome());
-import { runLcmMigrations } from "../../../src/db/migration.js";
-import { PromotedStore } from "../../../src/db/promoted.js";
-import { ConversationStore } from "../../../src/store/conversation-store.js";
-import { SummaryStore } from "../../../src/store/summary-store.js";
 
 type RestoreBody = { context: string };
 
@@ -91,8 +91,7 @@ async function seedConversation(input: {
   }
 }
 
-describe("POST /restore for Codex", () => {
-  let daemon: DaemonInstance | undefined;
+describe("restore (Codex)", () => {
   const tempProjects: Array<{ cwd: string; dbDir: string }> = [];
 
   function makeProject(): string {
@@ -101,21 +100,18 @@ describe("POST /restore for Codex", () => {
     return cwd;
   }
 
-  async function restore(cwd: string, sessionId: string, source: string): Promise<RestoreBody> {
-    const response = await fetch(`http://127.0.0.1:${daemon!.address().port}/restore`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ client: "codex", session_id: sessionId, cwd, source }),
-    });
-    expect(response.status).toBe(200);
-    return response.json() as Promise<RestoreBody>;
+  /** Codex's restore, which must answer a context: anything else is reported by its message. */
+  async function restore(project: Restore, cwd: string, sessionId: string, source: string): Promise<RestoreBody> {
+    const outcome = await project({ client: "codex", sessionId, cwd, source });
+    if (outcome.kind !== "context") throw new Error(`restore ${outcome.kind}: ${outcome.message}`);
+    return outcome;
   }
 
-  afterEach(async () => {
-    if (daemon) {
-      await daemon.stop();
-      daemon = undefined;
-    }
+  function codexRestore(cwd: string, overrides?: Record<string, unknown>): Restore {
+    return createRestore(loadDaemonConfig(cwd, { daemon: { port: 0 }, ...overrides }), paths);
+  }
+
+  afterEach(() => {
     for (const project of tempProjects.splice(0)) {
       rmSync(project.dbDir, { recursive: true, force: true });
       rmSync(project.cwd, { recursive: true, force: true });
@@ -133,10 +129,10 @@ describe("POST /restore for Codex", () => {
         { role: "assistant", content: "The implementation now queries only this SQLite database." },
       ],
     });
-    daemon = await createDaemon(loadDaemonConfig(cwd, { daemon: { port: 0 } }));
+    const project = codexRestore(cwd);
 
     for (const source of ["resume", "compact"]) {
-      const body = await restore(cwd, "codex-current", source);
+      const body = await restore(project, cwd, "codex-current", source);
       expect(body.context).toContain("<recent-session-context>");
       expect(body.context).toContain("durable cursor design");
       expect(body.context).toContain("Keep the restore route project-scoped.");
@@ -154,9 +150,9 @@ describe("POST /restore for Codex", () => {
         { role: "assistant", content: "It must survive a native resume." },
       ],
     });
-    daemon = await createDaemon(loadDaemonConfig(cwd, { daemon: { port: 0 } }));
+    const project = codexRestore(cwd);
 
-    const body = await restore(cwd, "codex-unsummarized", "resume");
+    const body = await restore(project, cwd, "codex-unsummarized", "resume");
     expect(body.context).toContain("This fact exists only in the raw turn tail.");
     expect(body.context).toContain("It must survive a native resume.");
   });
@@ -176,9 +172,9 @@ describe("POST /restore for Codex", () => {
     });
     // SessionStart ingestion may have already created this empty shell from session_meta.
     await seedConversation({ cwd, sessionId: "brand-new-codex-session" });
-    daemon = await createDaemon(loadDaemonConfig(cwd, { daemon: { port: 0 } }));
+    const project = codexRestore(cwd);
 
-    const body = await restore(cwd, "brand-new-codex-session", "startup");
+    const body = await restore(project, cwd, "brand-new-codex-session", "startup");
     expect(body.context).toContain("<recent-project-context>");
     expect(body.context).toContain("Local project uses a resumable manifest.");
     expect(body.context).not.toContain("Foreign project secret");
@@ -215,9 +211,9 @@ describe("POST /restore for Codex", () => {
       sessionId: "brand-new-empty-shell",
       conversationCreatedAt: "2026-04-01 00:00:00",
     });
-    daemon = await createDaemon(loadDaemonConfig(cwd, { daemon: { port: 0 } }));
+    const project = codexRestore(cwd);
 
-    const body = await restore(cwd, "brand-new-empty-shell", "startup");
+    const body = await restore(project, cwd, "brand-new-empty-shell", "startup");
     expect(body.context).toContain("The older session contains the newest project work.");
     expect(body.context).not.toContain("This newer-created session is stale.");
   });
@@ -246,9 +242,9 @@ describe("POST /restore for Codex", () => {
       sessionId: "brand-new-empty-shell",
       conversationCreatedAt: "2026-04-01 00:00:00",
     });
-    daemon = await createDaemon(loadDaemonConfig(cwd, { daemon: { port: 0 } }));
+    const project = codexRestore(cwd);
 
-    const body = await restore(cwd, "brand-new-empty-shell", "startup");
+    const body = await restore(project, cwd, "brand-new-empty-shell", "startup");
     expect(body.context).toContain("The later summary is the latest project activity.");
     expect(body.context).not.toContain("This message is earlier after timezone normalization.");
   });
@@ -268,10 +264,10 @@ describe("POST /restore for Codex", () => {
        VALUES (1, ?, ?, datetime('now'))`,
     ).run("OLD CLAUDE SNAPSHOT MUST NOT BE REPLAYED", "stable-hash");
     db.close();
-    daemon = await createDaemon(loadDaemonConfig(cwd, { daemon: { port: 0 } }));
+    const project = codexRestore(cwd);
 
     for (const source of ["startup", "compact"]) {
-      const body = await restore(cwd, "codex-no-claude", source);
+      const body = await restore(project, cwd, "codex-no-claude", source);
       expect(body.context).toContain("Codex-owned context remains available.");
       expect(body.context).not.toContain("CLAUDE");
       expect(body.context).not.toContain("<project-instructions>");
@@ -296,12 +292,9 @@ describe("POST /restore for Codex", () => {
       summary: `OLDER-SUMMARY ${"s".repeat(500)}`,
       messages: [{ role: "user", content: `NEWEST-CONTEXT ${"x".repeat(500)}` }],
     });
-    daemon = await createDaemon(loadDaemonConfig(cwd, {
-      daemon: { port: 0 },
-      restoration: { maxInjectedMemoryBytes: 220 },
-    }));
+    const project = codexRestore(cwd, { restoration: { maxInjectedMemoryBytes: 220 } });
 
-    const body = await restore(cwd, "codex-bounded", "resume");
+    const body = await restore(project, cwd, "codex-bounded", "resume");
     expect(Buffer.byteLength(body.context, "utf8")).toBeLessThanOrEqual(220);
     expect(body.context).toContain("NEWEST-CONTEXT");
     expect(body.context).toContain("</recent-session-context>");
@@ -322,12 +315,10 @@ describe("POST /restore for Codex", () => {
         tags: ["type:decision"], projectId: cwd, confidence: 0.9,
       });
     } finally { db.close(); }
-    daemon = await createDaemon(loadDaemonConfig(cwd, {
-      daemon: { port: 0 }, restoration: { recentSummaries: 0 },
-    }));
+    const project = codexRestore(cwd, { restoration: { recentSummaries: 0 } });
 
     for (const sessionId of source === "startup" ? ["codex-disabled-recent", "new-session"] : ["codex-disabled-recent"]) {
-      const body = await restore(cwd, sessionId, source);
+      const body = await restore(project, cwd, sessionId, source);
       expect(body.context).not.toContain("SHOULD STAY DISABLED");
       expect(body.context).not.toContain("<recent-session-context>");
       expect(body.context).not.toContain("<recent-project-context>");
