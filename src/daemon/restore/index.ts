@@ -68,7 +68,7 @@ export function createRestore(config: DaemonConfig, paths: LcmPaths): Restore {
       try {
         // The wire value is untrusted; `validateCwd` is the module that decides what a usable
         // project directory is, and answers a message a client may read.
-        cwd = validateCwd(request.cwd as string);
+        cwd = validateCwd(typeof request.cwd === "string" ? request.cwd : "");
       } catch (err) {
         return { kind: "invalid-cwd", message: err instanceof Error ? err.message : "invalid cwd" };
       }
