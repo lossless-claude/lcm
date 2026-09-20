@@ -17,7 +17,7 @@ import {
   type HarnessHandle,
 } from "../harness.js";
 import { findUncompacted } from "../../../src/batch-compact.js";
-import { projectDir, projectId } from "../../../src/daemon/project.js";
+import { projectDir, projectId, claudeProjectSlug } from "../../../src/daemon/project.js";
 import { lcmHome } from "../../../src/lcm-home.js";
 import { createLcmPaths } from "../../../src/lcm-paths.js";
 
@@ -114,7 +114,7 @@ beforeAll(async () => {
     fakeHome,
     ".claude",
     "projects",
-    projectCwd.replace(/\//g, "-"),
+    claudeProjectSlug(projectCwd),
   );
   mkdirSync(claudeProject, { recursive: true });
   copyFileSync(harness.fixturePath, join(claudeProject, "claude-current.jsonl"));

@@ -23,8 +23,9 @@ export const projectMetaPath = (cwd: string, paths: LcmPaths): string =>
 /**
  * The directory name Claude Code files a session under: the cwd with every non-alphanumeric
  * character replaced by "-", keeping the leading dash (`/Users/me/.agents` →
- * `-Users-me--agents`). The only place this rule is written down; every reader of
- * `~/.claude/projects/` goes through it.
+ * `-Users-me--agents`). The one place this rule is written down: code that derives a project
+ * directory from a cwd goes through it, while code that only enumerates `~/.claude/projects/`
+ * reads the directory names as they are.
  */
 export const claudeProjectSlug = (cwd: string): string => cwd.replace(/[^A-Za-z0-9]/g, "-");
 
