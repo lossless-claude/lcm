@@ -47,7 +47,7 @@ Events are promoted to cross-session memory at session boundaries (session-end, 
 
 ### Error→Fix Correlation
 
-When a tool error is followed by a successful command with a matching prefix (within 20 events), the system correlates them as an error→fix pair. These are tagged `category:solution` and promoted with higher priority.
+When a tool error is followed by a successful command with a matching prefix (within 20 events), the system correlates them as an error→fix pair. These are tagged `type:solution` (overriding the `type:gotcha` an error event would otherwise take) and promoted with higher priority.
 
 ### Learned Insights
 

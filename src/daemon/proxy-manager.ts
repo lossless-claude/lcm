@@ -118,7 +118,7 @@ export function createClaudeCliProxyManager(opts: ProxyManagerOptions): ProxyMan
             console.warn(
               "[lcm] claude-server unavailable. Run 'claude login' to authenticate,\n" +
               "      then restart Claude Code. Alternatively, set LCM_SUMMARY_PROVIDER=anthropic\n" +
-              "      and LCM_SUMMARY_API_KEY=<key> to use the Anthropic API directly."
+              "      and ANTHROPIC_API_KEY=<key> to use the Anthropic API directly."
             );
             _available = false;
             deletePidFile();
@@ -189,7 +189,7 @@ export function createClaudeCliProxyManager(opts: ProxyManagerOptions): ProxyMan
         console.warn(
           "[lcm] claude-server unavailable. Run 'claude login' to authenticate,\n" +
           "      then restart Claude Code. Alternatively, set LCM_SUMMARY_PROVIDER=anthropic\n" +
-          "      and LCM_SUMMARY_API_KEY=<key> to use the Anthropic API directly."
+          "      and ANTHROPIC_API_KEY=<key> to use the Anthropic API directly."
         );
       }
       // Kill the child we spawned since it's not healthy

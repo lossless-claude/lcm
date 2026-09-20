@@ -37,7 +37,7 @@ is gone from `lcm sensitive list` after you removed it.
 
 **hooks**: `docs/hook-protocol.md` is the contract. Done when every hook command it lists
 answers a valid stdin payload with the output shape it documents, within its timeout, and
-the daemon's `/prompt-search` answers `scripts/prompt-search-test.js <query>` directly.
+the daemon's `/prompt-search` answers `.claude/skills/lcm-dogfood/scripts/prompt-search-test.js <query>` directly.
 
 **mcp**: `docs/agent-tools.md` is the contract. Done when every tool it lists has been
 called with a documented parameter set and answered in the documented shape, including a
@@ -49,7 +49,7 @@ only when no summary id exists yet.
 returns within its timeout with empty or valid output, and status shows the daemon up
 again.
 
-**debug**: `~/.lossless-claude/daemon.log` tail, `scripts/db-integrity.js`, and `$PWD`
+**debug**: `~/.lossless-claude/daemon.log` tail, `.claude/skills/lcm-dogfood/scripts/db-integrity.js`, and `$PWD`
 against `pwd`. Done when no ERROR line is unexplained, every project database reports
 `ok`, and the two paths match.
 

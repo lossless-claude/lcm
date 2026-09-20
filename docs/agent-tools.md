@@ -228,7 +228,7 @@ non-zero value means the convention drifted and those transcripts are no longer 
 
 Also reports, whenever either is non-empty: **Promotion candidates** — memories with
 reported uses at or above `promotion.enforcementThreshold` (default 3), each with its memory
-ID, text, use count, `+1` count, `-1` count, and any objections — and **Contested** — memories with at
+ID, text, owner project, use count, `+1` count and `-1` count — and **Contested** — memories with at
 least one `-1`, with the reason for each. Both sections are always shown when non-empty,
 independent of `verbose`: a human decides what to do with a candidate or an objection, lcm
 only surfaces the counts. See `docs/configuration.md` for the threshold and how a contested

@@ -106,15 +106,6 @@ export interface ScrubCounts {
   project: number;
 }
 
-/** Gitleaks sync date extracted from generated file header (ISO string or null). */
-export function getGitleaksSyncDate(): string | null {
-  // Import the generated file's header comment to extract the sync date.
-  // We parse it from the module-level comment using a regex on the import URL.
-  // Since we can't read import comments at runtime, we embed it via the GITLEAKS_PATTERNS array length check.
-  // The date is exposed via the module's comment; callers can read it via readGitleaksSyncDate().
-  return null;
-}
-
 export class ScrubEngine {
   private readonly spanningPatterns: Array<{ source: string; regex: RegExp }> = [];
   private readonly tokenPatterns: Array<{ source: string; regex: RegExp }> = [];

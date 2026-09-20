@@ -21,16 +21,22 @@ export const projectMetaPath = (cwd: string, paths: LcmPaths): string =>
   join(projectDir(cwd, paths), "meta.json");
 
 /**
- * Where Claude Code writes a session's transcript: ~/.claude/projects/<cwd with every
- * non-alphanumeric character replaced by "-">/<session_id>.jsonl. Used when a caller knows
- * the session but not the file (the function-hooks module has `$.session.id()` and
- * `$.session.cwd()`, not `transcript_path`). Returns null for a session id that is not a
- * plain file name.
+ * The directory name Claude Code files a session under: the cwd with every non-alphanumeric
+ * character replaced by "-", keeping the leading dash (`/Users/me/.agents` →
+ * `-Users-me--agents`). The only place this rule is written down; every reader of
+ * `~/.claude/projects/` goes through it.
+ */
+export const claudeProjectSlug = (cwd: string): string => cwd.replace(/[^A-Za-z0-9]/g, "-");
+
+/**
+ * Where Claude Code writes a session's transcript: `~/.claude/projects/<slug>/<session_id>.jsonl`.
+ * Used when a caller knows the session but not the file (the function-hooks module has
+ * `$.session.id()` and `$.session.cwd()`, not `transcript_path`). Returns null for a session id
+ * that is not a plain file name.
  */
 export function claudeTranscriptPath(cwd: string, sessionId: string): string | null {
   if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) return null;
-  const projectSlug = cwd.replace(/[^A-Za-z0-9]/g, "-");
-  return join(homedir(), ".claude", "projects", projectSlug, `${sessionId}.jsonl`);
+  return join(homedir(), ".claude", "projects", claudeProjectSlug(cwd), `${sessionId}.jsonl`);
 }
 
 function tryRealpath(p: string): string {

@@ -9,7 +9,7 @@ import type { LcmConfig } from "./db/config.js";
 
 /**
  * Minimal LLM completion interface needed by LCM for summarization.
- * Matches the signature of completeSimple from @mariozechner/pi-ai.
+ * Implemented by the summarizer providers in src/llm/.
  */
 export type CompletionContentBlock = {
   type: string;
@@ -126,9 +126,6 @@ export interface LcmDependencies {
 
   /** Read the latest assistant reply from a session's messages */
   readLatestAssistantReply: (messages: unknown[]) => string | undefined;
-
-  /** Sanitize tool use/result pairing in message arrays */
-  // sanitizeToolUseResultPairing removed — now imported directly in assembler from transcript-repair.ts
 
   /** Resolve the Claude Code agent directory */
   resolveAgentDir: () => string;

@@ -46,7 +46,8 @@ and its sibling worker asset handles the SessionStart catch-up scan.
 
 `dist/` remains the npm artifact and `npm run build` never touches `bundle/`:
 otherwise every developer PR would dirty it. `bundle/` changes only in version PRs
-(below), and `.gitattributes` marks it binary so those diffs stay readable.
+(below), and `.gitattributes` marks it binary so git reports it as bytes rather than
+rendering the bundle line by line.
 
 ## One daemon, newest wins
 
@@ -107,7 +108,8 @@ and is closed by `claude plugin update`.
 `version-pr.yml` runs `npm run version-packages`, which bumps the version and then
 builds `dist/` and `bundle/`; the changesets action commits everything into the
 version PR. CI runs on that commit; merging it triggers `publish.yml`, which tags
-the merge commit as before. `publish.yml` neither builds nor touches `bundle/`.
+the merge commit as before. `publish.yml` neither rebuilds nor commits `bundle/`: it builds
+`dist/`, and it refuses to tag unless the committed bundle is present.
 
 ## Rejected
 

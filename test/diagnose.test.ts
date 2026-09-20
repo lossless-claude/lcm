@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cwdToProjectHash } from "../src/import.js";
+import { claudeProjectSlug } from "../src/daemon/project.js";
 import { diagnose, scanSession } from "../src/diagnose.js";
 
 function writeJsonl(filePath: string, entries: unknown[]) {
@@ -32,7 +32,7 @@ describe("diagnose", () => {
   }
 
   function makeProjectDir(root: string, cwd: string): string {
-    const dir = join(root, cwdToProjectHash(cwd));
+    const dir = join(root, claudeProjectSlug(cwd));
     mkdirSync(dir, { recursive: true });
     return dir;
   }

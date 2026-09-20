@@ -6,7 +6,7 @@
 - falls back from FTS5 search to a slower `LIKE`-based search
 - loses FTS ranking/snippet quality
 
-lcm uses Node's built-in `node:sqlite` module (`src/db/features.ts` probes it at startup), not
+lcm uses Node's built-in `node:sqlite` module (`src/db/features.ts` probes it when a database is opened), not
 `better-sqlite3`. Official Node 22 builds already compile SQLite with FTS5 enabled — most
 installs need nothing further. Run the probe below first; only build a custom Node (last
 section) if it reports `fts5: fail`.

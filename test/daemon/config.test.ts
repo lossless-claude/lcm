@@ -98,7 +98,7 @@ describe("loadDaemonConfig", () => {
   it("throws when provider resolves to 'anthropic' and apiKey is missing", () => {
     expect(() =>
       loadDaemonConfig("/nonexistent", { llm: { provider: "anthropic", apiKey: "" } }, {})
-    ).toThrow("LCM_SUMMARY_API_KEY is required");
+    ).toThrow("needs an API key");
   });
 
   it("does not throw for 'anthropic' when apiKey is provided", () => {
@@ -165,7 +165,7 @@ describe("loadDaemonConfig", () => {
 
   it("requires credentials for an active Anthropic session fallback", () => {
     expect(() => loadDaemonConfig("/nonexistent", { llm: { provider: "session", fallbackProvider: "anthropic" } }, {}))
-      .toThrow("LCM_SUMMARY_API_KEY is required");
+      .toThrow("needs an API key");
   });
 
   it("does not inject Anthropic credentials for an inactive fallback", () => {
