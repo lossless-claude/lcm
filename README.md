@@ -300,6 +300,10 @@ npx vitest
 npx tsc --noEmit
 ```
 
+Build before testing: the suite asserts `dist/` was built from the current sources, and fails
+with the rebuild command instead of silently testing a stale binary. `LCM_SKIP_CACHE_SYNC=1
+npm run build` skips the plugin-cache sync when only `dist/` matters.
+
 To score a candidate summarizer model against the real compaction engine, see [docs/summarizer-bench.md](https://github.com/lossless-claude/lcm/blob/main/docs/summarizer-bench.md). The bench is opt-in — it is skipped unless `LCM_EVAL_MODEL` and `LCM_EVAL_CORPUS_DIR` are set, so `npx vitest` never calls a paid API.
 
 ### Repository layout

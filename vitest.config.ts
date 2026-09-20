@@ -17,7 +17,7 @@ export default defineConfig({
           name: "unit",
           include: ["test/**/*.test.ts"],
           exclude: ["test/e2e/**", "node_modules/**", ".claude/**"],
-          setupFiles: ["./test/setup-env.ts"],
+          setupFiles: ["./test/setup-dist.ts", "./test/setup-env.ts"],
         },
       },
       {
@@ -27,7 +27,7 @@ export default defineConfig({
           name: "e2e",
           include: ["test/e2e/**/*.test.ts"],
           exclude: ["node_modules/**", ".claude/**"],
-          setupFiles: ["./test/setup-env.ts"],
+          setupFiles: ["./test/setup-dist.ts", "./test/setup-env.ts"],
           // E2E tests spin up real daemons backed by SQLite — must run
           // sequentially to avoid concurrent write conflicts.
           fileParallelism: false,
