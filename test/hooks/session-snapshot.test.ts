@@ -15,24 +15,31 @@ function makeDeps(overrides: Partial<SnapshotDeps> = {}): SnapshotDeps {
   };
 }
 
+/**
+ * The function-hooks claim lives at a fixed path under the shared temp dir, keyed by the session
+ * id, so a fixed id lets a concurrent suite run claim or delete this run's file and the hook
+ * answers for reasons the test never set up (#526). Ids are unique per process, so those files are.
+ */
+const sid = (name: string): string => `${name}-p${process.pid}`;
+
 describe("handleSessionSnapshot", () => {
   it("stays silent while the function-hooks module holds the session", async () => {
     process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = "1";
     const { claimPath } = await import("../../src/hooks/session-claim.js");
     const { writeFileSync, rmSync } = await import("node:fs");
-    writeFileSync(claimPath("abc-123"), JSON.stringify({ sessionId: "abc-123", ts: Date.now() }));
+    writeFileSync(claimPath(sid("abc-123")), JSON.stringify({ sessionId: sid("abc-123"), ts: Date.now() }));
     try {
       const deps = makeDeps();
       const { handleSessionSnapshot } = await import("../../src/hooks/session-snapshot.js");
       const result = await handleSessionSnapshot(
-        JSON.stringify({ session_id: "abc-123", cwd: "/tmp/test", transcript_path: "/tmp/session.jsonl" }),
+        JSON.stringify({ session_id: sid("abc-123"), cwd: "/tmp/test", transcript_path: "/tmp/session.jsonl" }),
         paths, deps,
       );
       expect(result).toEqual({ exitCode: 0, stdout: "" });
       expect(deps.post).not.toHaveBeenCalled();
       expect(deps.writeFileSync).not.toHaveBeenCalled();
     } finally {
-      rmSync(claimPath("abc-123"), { force: true });
+      rmSync(claimPath(sid("abc-123")), { force: true });
       delete process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS;
     }
   });
@@ -43,7 +50,7 @@ describe("handleSessionSnapshot", () => {
       const deps = makeDeps({ statSync: vi.fn().mockImplementation(() => { throw new Error("ENOENT"); }) });
       const { handleSessionSnapshot } = await import("../../src/hooks/session-snapshot.js");
       await handleSessionSnapshot(
-        JSON.stringify({ session_id: "unclaimed-1", cwd: "/tmp/test", transcript_path: "/tmp/session.jsonl" }),
+        JSON.stringify({ session_id: sid("unclaimed-1"), cwd: "/tmp/test", transcript_path: "/tmp/session.jsonl" }),
         paths, deps,
       );
       expect(deps.post).toHaveBeenCalled();
@@ -58,12 +65,12 @@ describe("handleSessionSnapshot", () => {
     });
     const { handleSessionSnapshot } = await import("../../src/hooks/session-snapshot.js");
     const result = await handleSessionSnapshot(
-      JSON.stringify({ session_id: "abc-123", cwd: "/tmp/test", transcript_path: "/tmp/session.jsonl" }),
+      JSON.stringify({ session_id: sid("abc-123"), cwd: "/tmp/test", transcript_path: "/tmp/session.jsonl" }),
       paths, deps,
     );
     expect(result.exitCode).toBe(0);
     expect(deps.post).toHaveBeenCalledWith("/ingest", {
-      session_id: "abc-123",
+      session_id: sid("abc-123"),
       cwd: "/tmp/test",
       transcript_path: "/tmp/session.jsonl",
     });
@@ -76,7 +83,7 @@ describe("handleSessionSnapshot", () => {
     });
     const { handleSessionSnapshot } = await import("../../src/hooks/session-snapshot.js");
     const result = await handleSessionSnapshot(
-      JSON.stringify({ session_id: "abc-123", cwd: "/tmp/test", transcript_path: "/tmp/session.jsonl" }),
+      JSON.stringify({ session_id: sid("abc-123"), cwd: "/tmp/test", transcript_path: "/tmp/session.jsonl" }),
       paths, deps,
     );
     expect(result.exitCode).toBe(0);
@@ -89,7 +96,7 @@ describe("handleSessionSnapshot", () => {
     });
     const { handleSessionSnapshot } = await import("../../src/hooks/session-snapshot.js");
     const result = await handleSessionSnapshot(
-      JSON.stringify({ session_id: "abc-123", cwd: "/tmp/test", transcript_path: "/tmp/session.jsonl" }),
+      JSON.stringify({ session_id: sid("abc-123"), cwd: "/tmp/test", transcript_path: "/tmp/session.jsonl" }),
       paths, deps,
     );
     expect(result.exitCode).toBe(0);
@@ -103,7 +110,7 @@ describe("handleSessionSnapshot", () => {
     });
     const { handleSessionSnapshot } = await import("../../src/hooks/session-snapshot.js");
     const result = await handleSessionSnapshot(
-      JSON.stringify({ session_id: "abc-123", cwd: "/tmp/test", transcript_path: "/tmp/session.jsonl" }),
+      JSON.stringify({ session_id: sid("abc-123"), cwd: "/tmp/test", transcript_path: "/tmp/session.jsonl" }),
       paths, deps,
     );
     expect(result.exitCode).toBe(0);
