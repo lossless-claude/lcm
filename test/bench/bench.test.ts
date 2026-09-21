@@ -661,11 +661,14 @@ describe("lcm bench", () => {
 
     // Captured, not counted: a set diff alone would also pass if the run never created a
     // directory at all, which is the one thing this regression must not accept.
-    const rgDirsBefore = new Set(readdirSync(tmpdir()).filter((name) => name.startsWith("lcm-bench-rg-")));
+    // Scoped to this process: another run's `lcm-bench-rg-*` directory in the shared temp
+    // root must not be mistaken for ours.
+    const rgPrefix = `lcm-bench-rg-${process.pid}-`;
+    const rgDirsBefore = new Set(readdirSync(tmpdir()).filter((name) => name.startsWith(rgPrefix)));
     let created: string | undefined;
     vi.mocked(getLcmConnection).mockImplementationOnce(() => {
       created = readdirSync(tmpdir())
-        .filter((name) => name.startsWith("lcm-bench-rg-"))
+        .filter((name) => name.startsWith(rgPrefix))
         .find((name) => !rgDirsBefore.has(name));
       throw testError;
     });
