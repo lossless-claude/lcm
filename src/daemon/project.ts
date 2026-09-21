@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, normalize, join as pathJoin, dirname, basename } from "node:path";
 import type { LcmPaths } from "../lcm-paths.js";
+import type { SessionClient } from "../session-client.js";
 
 function canonicalizeCwd(cwd: string): string {
   try { return realpathSync(cwd); } catch { return cwd; }
@@ -70,11 +71,14 @@ function realpathDeep(p: string): string {
   return p; // fallback: return original
 }
 
-export function isSafeTranscriptPath(transcriptPath: string, cwd: string, client: "claude" | "codex" = "claude"): string | false {
+export function isSafeTranscriptPath(transcriptPath: string, cwd: string, client: SessionClient = "claude"): string | false {
   const resolved = resolve(transcriptPath);
+  const ompAgentDir = process.env.PI_CODING_AGENT_DIR || pathJoin(homedir(), ".omp", "agent");
   const transcriptBases = client === "codex"
     ? [pathJoin(homedir(), ".codex", "sessions"), pathJoin(homedir(), ".codex", "archived_sessions")]
-    : [pathJoin(homedir(), ".claude", "projects")];
+    : client === "omp"
+      ? [pathJoin(ompAgentDir, "sessions")]
+      : [pathJoin(homedir(), ".claude", "projects")];
 
   // Check for symlinks: if the resolved path is a symlink, follow it and re-validate.
   let lstat: ReturnType<typeof lstatSync> | null = null;

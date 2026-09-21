@@ -3,9 +3,11 @@ import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { extractCodexTurnModels, type CodexSessionMeta } from "./codex-transcript.js";
 import { readCodexTranscriptDelta, type CodexTranscriptCursor, type CodexTranscriptDelta } from "./codex-transcript-reader.js";
-import { loadCodexCursor, saveCodexCursor } from "./db/codex-cursor.js";
+import { loadTranscriptCursor, saveTranscriptCursor } from "./db/transcript-cursor.js";
 import { claudeTranscriptPath, isSafeTranscriptPath, projectId } from "./daemon/project.js";
 import type { EventsDb } from "./hooks/events-db.js";
+import { extractOmpTurnModels, type OmpSessionMeta } from "./omp-transcript.js";
+import { readOmpTranscriptDelta, type OmpTranscriptCursor, type OmpTranscriptDelta } from "./omp-transcript-reader.js";
 import type { SessionClient } from "./session-client.js";
 import { discoverSubagentTranscripts, type DiscoveredSubagentTranscript } from "./subagent-attribution.js";
 import { extractToolUseModels, parseTranscript, type ParsedMessage } from "./transcript.js";
@@ -98,8 +100,8 @@ const claudeSource: TranscriptSource = {
       messages: parseTranscript(path).slice(storedCount),
       sourceOffset: storedCount,
       backfillModels(events, sessionId) {
-        if (!events.hasUnfilledModels(sessionId)) return;
-        events.backfillToolCallModels(sessionId, extractToolUseModels(path));
+        if (!events.hasUnfilledModels(sessionId, "claude")) return;
+        events.backfillToolCallModels(sessionId, extractToolUseModels(path), "claude");
       },
     };
   },
@@ -157,21 +159,76 @@ const codexSource: TranscriptSource = {
       sourceOffset: delta.resumed && prior ? prior.messageCount : 0,
       checkpoint: delta.cursor,
       backfillModels(events, sessionId) {
-        if (!events.hasUnfilledCodexModels(sessionId)) return;
-        events.backfillCodexTurnModels(sessionId, extractCodexTurnModels(path));
+        if (!events.hasUnfilledTurnModels(sessionId, "codex")) return;
+        events.backfillTurnModels(sessionId, extractCodexTurnModels(path), "codex");
       },
     };
   },
   loadCheckpoint(db, conversationId, transcriptPath) {
-    return loadCodexCursor(db, conversationId, transcriptPath);
+    return loadTranscriptCursor(db, conversationId, transcriptPath);
   },
   saveCheckpoint(db, conversationId, transcriptPath, checkpoint) {
     // The checkpoint is this adapter's own token; the cast is the adapter boundary.
-    saveCodexCursor(db, { conversationId, transcriptPath, cursor: checkpoint as CodexTranscriptCursor });
+    saveTranscriptCursor(db, { conversationId, transcriptPath, cursor: checkpoint as CodexTranscriptCursor });
   },
 };
 
-/** The adapter for a client; anything that is not Codex reads Claude Code transcripts. */
+/** An OMP session file the adapter will not read: wrong project, session, or path. */
+function validateOmpMetadata(meta: OmpSessionMeta, ctx: ReadContext): void {
+  if (!meta.cwd) throw new TranscriptSourceError("OMP transcript metadata is missing a cwd");
+  if (projectId(meta.cwd) !== projectId(ctx.cwd)) throw new TranscriptSourceError("OMP transcript cwd does not match requested project");
+  if (meta.id ? meta.id !== ctx.sessionId : ctx.source !== "import") {
+    throw new TranscriptSourceError("OMP transcript session id does not match request");
+  }
+}
+
+const ompSource: TranscriptSource = {
+  client: "omp",
+  mayRecoverTail: true,
+  locate(input) {
+    // The OMP hook and the importer always know the session file; unlike Claude,
+    // there is nothing derivable from the session id alone.
+    if (!input.transcriptPath) return undefined;
+    const safe = isSafeTranscriptPath(input.transcriptPath, input.cwd, "omp");
+    if (!safe) throw new TranscriptSourceError("OMP transcript path is not allowed");
+    if (!existsSync(safe)) throw new TranscriptSourceError("OMP transcript is unreadable");
+    return safe;
+  },
+  async read(path, stored, ctx) {
+    // The checkpoint is this adapter's own token; the cast is the adapter boundary.
+    const cursor = stored?.checkpoint as OmpTranscriptCursor | undefined;
+    // A cursor is trusted only while it accounts for exactly the stored messages.
+    const prior = cursor && stored && cursor.messageCount === stored.storedCount ? cursor : undefined;
+    let delta: OmpTranscriptDelta;
+    try {
+      delta = await readOmpTranscriptDelta(path, { cursor: prior, includeTrailingRecord: ctx.source === "import" });
+    } catch (error) {
+      throw new TranscriptSourceError(error instanceof Error ? error.message : "invalid transcript");
+    }
+    validateOmpMetadata(delta.sessionMeta, ctx);
+    if (!delta.resumed && stored) await validateCodexRecovery(stored, delta.messages, ctx);
+    return {
+      messages: delta.messages,
+      sourceOffset: delta.resumed && prior ? prior.messageCount : 0,
+      checkpoint: delta.cursor,
+      backfillModels(events, sessionId) {
+        if (!events.hasUnfilledModels(sessionId, "omp")) return;
+        events.backfillToolCallModels(sessionId, extractOmpTurnModels(path), "omp");
+      },
+    };
+  },
+  loadCheckpoint(db, conversationId, transcriptPath) {
+    return loadTranscriptCursor(db, conversationId, transcriptPath);
+  },
+  saveCheckpoint(db, conversationId, transcriptPath, checkpoint) {
+    // The checkpoint is this adapter's own token; the cast is the adapter boundary.
+    saveTranscriptCursor(db, { conversationId, transcriptPath, cursor: checkpoint as OmpTranscriptCursor });
+  },
+};
+
+/** The adapter for a client; an unknown client reads Claude Code transcripts. */
 export function transcriptSource(client: string | undefined): TranscriptSource {
-  return client === "codex" ? codexSource : claudeSource;
+  if (client === "codex") return codexSource;
+  if (client === "omp") return ompSource;
+  return claudeSource;
 }

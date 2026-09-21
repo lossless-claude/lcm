@@ -7,6 +7,8 @@ import type { LcmPaths } from "../../lcm-paths.js";
 import { compactingSessionsFor } from "./compact.js";
 import { createSessionStartCompactScanner } from "../session-start-compact-worker.js";
 import { resolveLcmConfig } from "../../db/config.js";
+import type { SessionClient } from "../../session-client.js";
+import { isSessionClient } from "../../session-client.js";
 
 /**
  * SessionStart's catch-up sweep: a conversation of the same project that ended
@@ -22,12 +24,12 @@ export function createSessionStartCompactHandler(config: DaemonConfig, daemonPor
   const scanner = createSessionStartCompactScanner();
 
   return async (_req, res, body) => {
-    let input: { session_id?: unknown; cwd?: string };
+    let input: { session_id?: unknown; cwd?: string; client?: unknown };
     try {
       const parsed: unknown = JSON.parse(body || "{}");
       // `null` and `[1]` are valid JSON and would reach the reads below as a 500.
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
-      input = parsed as { session_id?: unknown; cwd?: string };
+      input = parsed as { session_id?: unknown; cwd?: string; client?: unknown };
     } catch {
       sendJson(res, 400, { error: "Invalid JSON body" });
       return;
@@ -54,6 +56,8 @@ export function createSessionStartCompactHandler(config: DaemonConfig, daemonPor
       return;
     }
 
+    const client: SessionClient = isSessionClient(input.client) ? input.client : "claude";
+
     // The caller is a fire-and-forget hook. Answer before asking the worker to scan the
     // project's messages and summaries so neither the request nor the daemon's event loop
     // waits for candidate selection.
@@ -76,7 +80,9 @@ export function createSessionStartCompactHandler(config: DaemonConfig, daemonPor
           session_id: conv.sessionId,
           cwd: conv.cwd,
           skip_ingest: true,
-          client: "claude",
+          // The sweep cannot see a conversation's own client (conversations carry
+          // none); the caller's is the only signal, and it only picks the summarizer.
+          client,
         }, paths);
       }
     }).catch((err: unknown) => {

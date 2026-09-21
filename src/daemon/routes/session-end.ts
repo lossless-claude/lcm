@@ -4,6 +4,8 @@ import type { DaemonConfig } from "../config.js";
 import { validateCwd } from "../validate-cwd.js";
 import type { LcmPaths } from "../../lcm-paths.js";
 import { safeLogError } from "../../hooks/hook-errors.js";
+import type { SessionClient } from "../../session-client.js";
+import { isSessionClient } from "../../session-client.js";
 import {
   fireCompactRequest,
   firePromoteEventsRequest,
@@ -55,6 +57,7 @@ interface SessionEndRequest {
   input: Record<string, unknown>;
   sessionId: string;
   cwd: string;
+  client: SessionClient;
 }
 
 /** Parses and validates the body; answers the 400 itself and returns null when it does. */
@@ -74,7 +77,7 @@ function parseSessionEndRequest(body: string, res: Parameters<RouteHandler>[1]):
     return null;
   }
   try {
-    return { input, sessionId, cwd: validateCwd(input.cwd as string) };
+    return { input, sessionId, cwd: validateCwd(input.cwd as string), client: isSessionClient(input.client) ? input.client : "claude" };
   } catch (err) {
     sendJson(res, 400, { error: err instanceof Error ? err.message : "invalid cwd" });
     return null;
@@ -87,17 +90,18 @@ interface SequenceTarget {
   paths: LcmPaths;
   sessionId: string;
   cwd: string;
+  client: SessionClient;
 }
 
 /** What the hook used to fire after its own ingest returned. */
 function runPostIngestSequence(target: SequenceTarget, ingested: IngestResult): void {
-  const { config, daemonPort, paths, sessionId, cwd } = target;
+  const { config, daemonPort, paths, sessionId, cwd, client } = target;
   if (config.security?.notify_on_filter !== false && ingested.redacted && ingested.redacted > 0) {
     const categories = (ingested.redactedCategories ?? []).join(", ");
     safeLogError("session-end:redaction-notice", `filtered sensitive data from history (pattern: ${categories})`, { cwd, sessionId, paths });
   }
   if (!config.hooks?.disableAutoCompact) {
-    fireCompactRequest(daemonPort, { session_id: sessionId, cwd, skip_ingest: true, client: "claude" }, paths);
+    fireCompactRequest(daemonPort, { session_id: sessionId, cwd, skip_ingest: true, client }, paths);
   }
   firePromoteRequest(daemonPort, { cwd }, paths);
   firePromoteEventsRequest(daemonPort, { cwd }, paths);
@@ -109,14 +113,14 @@ export function createSessionEndHandler(config: DaemonConfig, daemonPort: number
   return async (_req, res, body) => {
     const request = parseSessionEndRequest(body, res);
     if (!request) return;
-    const { input, sessionId, cwd } = request;
+    const { input, sessionId, cwd, client } = request;
 
     sendJson(res, 202, { accepted: true });
 
     // Ingest sees the same identity the follow-ups do: trimmed id, real path.
     const ingestBody = { ...input, session_id: sessionId, cwd };
     void invokeRoute<IngestResult>(ingest, ingestBody)
-      .then((ingested) => runPostIngestSequence({ config, daemonPort, paths, sessionId, cwd }, ingested))
+      .then((ingested) => runPostIngestSequence({ config, daemonPort, paths, sessionId, cwd, client }, ingested))
       .catch((err: unknown) => safeLogError("session-end", err, { cwd, sessionId, paths }));
   };
 }

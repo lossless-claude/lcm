@@ -7,4 +7,11 @@
  * is a summarizer provider but not a session client — it has no hooks and no
  * transcript of its own.
  */
-export type SessionClient = "claude" | "codex";
+export type SessionClient = "claude" | "codex" | "omp";
+
+const SESSION_CLIENTS: readonly SessionClient[] = ["claude", "codex", "omp"];
+
+/** Whether an untrusted wire value names a session client. */
+export function isSessionClient(value: unknown): value is SessionClient {
+  return typeof value === "string" && (SESSION_CLIENTS as readonly string[]).includes(value);
+}
