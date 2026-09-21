@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { DaemonClient } from "./daemon/client.js";
 import { formatNumber, formatRatio } from "./stats.js";
 import { findAllCodexTranscripts } from "./codex-transcript.js";
+import { findAllOmpTranscripts } from "./omp-transcript.js";
 import type { ProgressState } from "./cli/progress-state.js";
 import { claudeProjectSlug, projectDbPath, projectId } from "./daemon/project.js";
 import { readProjectMetaIn } from "./daemon/project-meta.js";
@@ -23,7 +24,7 @@ import {
   refuseRestartDuringCompaction,
 } from "./replay-resume.js";
 
-export type ImportProvider = "claude" | "codex" | "all";
+export type ImportProvider = "claude" | "codex" | "omp" | "all";
 
 interface ImportOptions {
   paths?: LcmPaths;
@@ -50,6 +51,8 @@ interface ImportOptions {
   _lcmDir?: string;
   /** Override ~/.codex path — used in tests only */
   _codexDir?: string;
+  /** Override ~/.omp/agent path — used in tests only */
+  _ompDir?: string;
 }
 
 export interface ImportResult {
@@ -185,7 +188,7 @@ interface SessionEntry {
   path: string;
   sessionId: string;
   cwd: string;
-  client?: "claude" | "codex";
+  client?: "claude" | "codex" | "omp";
   /** Subagent sessions only — see DiscoveredSessionFile. */
   attribution?: SubagentAttribution;
 }
@@ -373,9 +376,9 @@ async function ingestSessionList(
       continue;
     }
 
-    // Skip completed Claude sessions unless replaying. Codex still reaches /ingest:
-    // an import may need to recover a final record deferred by live capture.
-    if (!options.replay && sourceClient !== "codex" && options.paths && isSessionAlreadyIngested(cwd, sessionId, options.paths)) {
+    // Claude's adapter cannot recover a tail, so a completed Claude session can skip /ingest.
+    // Codex and OMP may have a final record deferred by live capture and must reach /ingest.
+    if (!options.replay && sourceClient === "claude" && options.paths && isSessionAlreadyIngested(cwd, sessionId, options.paths)) {
       result.skippedEmpty++;
       if (options.verbose) console.log(`  ↩️ ${sessionId}: already fully ingested`);
       options.onProgress?.({ completed: processedBase + result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
@@ -401,7 +404,7 @@ async function ingestSessionList(
         cwd,
         transcript_path: path,
         source: "import",
-        ...(sourceClient === "codex" ? { client: "codex" } : {}),
+        ...(sourceClient !== "claude" ? { client: sourceClient } : {}),
         // A completed session's transcript may have grown; replay must ingest the tail.
         ...(options.replay ? { replay: true } : {}),
         // Subagent attribution, carried from the sidecar findSessionFiles already read.
@@ -595,7 +598,7 @@ export async function importSessions(
   // lists reach that project.
   const clearedCwds = new Set<string>();
 
-  // --- Session lists, in import order: every Claude project dir, then every Codex project ---
+  // --- Session lists, in import order: every Claude project dir, then Codex and OMP ---
   const sessionLists: SessionEntry[][] = [];
 
   if (provider === "claude" || provider === "all") {
@@ -638,6 +641,23 @@ export async function importSessions(
       if (!options.all && id !== targetProject) continue;
       const sessions = projects.get(id) ?? [];
       sessions.push({ ...transcript, cwd: transcript.cwd, client: "codex" });
+      projects.set(id, sessions);
+    }
+    // Keep replay context inside one project when importing all projects.
+    sessionLists.push(...projects.values());
+  }
+
+  if (provider === "omp" || provider === "all") {
+    const ompTranscripts = findAllOmpTranscripts(options._ompDir);
+    const targetProject = projectId(options.cwd ?? process.cwd());
+    const projects = new Map<string, SessionEntry[]>();
+    for (const transcript of ompTranscripts) {
+      // Unknown provenance must not be assigned to the invoking project.
+      if (!transcript.cwd) continue;
+      const id = projectId(transcript.cwd);
+      if (!options.all && id !== targetProject) continue;
+      const sessions = projects.get(id) ?? [];
+      sessions.push({ ...transcript, cwd: transcript.cwd, client: "omp" });
       projects.set(id, sessions);
     }
     // Keep replay context inside one project when importing all projects.

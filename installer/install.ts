@@ -185,7 +185,7 @@ export function ensureLcmMd(
 
 /** One line per harness: what `lcm install` did for it. */
 export type HarnessOutcome = { status: "ok" | "skipped" | "failed"; detail: string };
-export type InstallOutcome = { claude: HarnessOutcome; codex: HarnessOutcome };
+export type InstallOutcome = { claude: HarnessOutcome; codex: HarnessOutcome; omp: HarnessOutcome };
 
 export async function install(deps: ServiceDeps = defaultDeps): Promise<InstallOutcome> {
   let claude: HarnessOutcome;
@@ -196,16 +196,17 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<InstallO
     claude = { status: "failed", detail: err instanceof Error ? err.message : String(err) };
   }
   const codex = installCodex(deps);
+  const omp = installOmp(deps);
 
-  reportInstallOutcomes({ claude, codex });
-  return { claude, codex };
+  reportInstallOutcomes({ claude, codex, omp });
+  return { claude, codex, omp };
 }
 
 const OUTCOME_MARKS: Record<HarnessOutcome["status"], string> = { ok: "✓", skipped: "○", failed: "✗" };
 
 function reportInstallOutcomes(outcome: InstallOutcome): void {
   console.log("");
-  for (const [harness, result] of [["Claude Code", outcome.claude], ["Codex", outcome.codex]] as const) {
+  for (const [harness, result] of [["Claude Code", outcome.claude], ["Codex", outcome.codex], ["Oh My Pi", outcome.omp]] as const) {
     console.log(`  ${OUTCOME_MARKS[result.status]} ${harness}: ${result.detail}`);
   }
 }
@@ -234,6 +235,25 @@ function installCodex(deps: ServiceDeps): HarnessOutcome {
       },
     });
     return { status: "ok", detail: `hooks installed in ${result.path}${result.notice ? ` — ${result.notice}` : ""}` };
+  } catch (err) {
+    return { status: "failed", detail: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** OMP loads the self-contained hook directly, so installation is safe from the npm CLI or bundle. */
+function installOmp(deps: ServiceDeps): HarnessOutcome {
+  try {
+    const found = deps.spawnSync("sh", ["-c", "command -v omp"], { encoding: "utf-8" });
+    if (found.status !== 0 || typeof found.stdout !== "string" || !found.stdout.trim()) {
+      return { status: "skipped", detail: "omp not on PATH" };
+    }
+    const result = installConnector("omp", "hooks", homedir(), {
+      writeFile: (path, data) => {
+        deps.mkdirSync(dirname(path), { recursive: true });
+        deps.writeFileSync(path, data);
+      },
+    });
+    return { status: "ok", detail: `hooks installed in ${result.path}` };
   } catch (err) {
     return { status: "failed", detail: err instanceof Error ? err.message : String(err) };
   }

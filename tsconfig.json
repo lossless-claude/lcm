@@ -13,6 +13,6 @@
     "resolveJsonModule": true,
     "noEmitOnError": false
   },
-  "include": ["src/**/*.ts", "bin/**/*.ts", "installer/**/*.ts"],
+  "include": ["src/**/*.ts", "bin/**/*.ts", "installer/**/*.ts", "hooks/omp/**/*.ts"],
   "exclude": ["node_modules", "dist", "test/**/*.ts"]
 }

@@ -1,7 +1,7 @@
 import type { Agent, AgentCategory } from './types.js';
 
 export const AGENTS: Agent[] = [
-  // CLI tools (7)
+  // CLI tools (8)
   {
     id: 'claude-code',
     name: 'Claude Code',
@@ -27,6 +27,16 @@ export const AGENTS: Agent[] = [
       hooks: '.codex/hooks.json',
       mcp: '.codex/config.toml',
       skill: '.agents/skills/',
+    },
+  },
+  {
+    id: 'omp',
+    name: 'Oh My Pi',
+    category: 'cli',
+    defaultType: 'hooks',
+    supportedTypes: ['hooks'],
+    configPaths: {
+      hooks: '.omp/hooks/post/lcm.ts',
     },
   },
   {

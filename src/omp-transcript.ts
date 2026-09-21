@@ -164,7 +164,8 @@ export function parseOmpTranscriptRecord(record: string): ParsedOmpTranscriptRec
   }
 
   if (entry.type !== "message" || !entry.message) return {};
-  return { message: parseOmpMessageEntry(entry.message) };
+  const messages = parseOmpMessageEntry(entry.message);
+  return messages.length === 0 ? {} : { message: messages };
 }
 
 // ---------------------------------------------------------------------------

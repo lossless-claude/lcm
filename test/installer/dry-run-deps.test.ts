@@ -77,6 +77,14 @@ describe("DryRunServiceDeps", () => {
     expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining("[dry-run] would run: sh"));
   });
 
+  it("spawnSync for 'command -v omp' returns the probed binary name", () => {
+    const deps = new DryRunServiceDeps();
+    const result = deps.spawnSync("sh", ["-c", "command -v omp"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("omp");
+    expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining("[dry-run] would run: sh"));
+  });
+
   // ── spawnSync — setup.sh special case ────────────────────────────────────
 
   it("spawnSync for 'bash setup.sh' actually runs setup.sh with XGH_DRY_RUN=1", () => {

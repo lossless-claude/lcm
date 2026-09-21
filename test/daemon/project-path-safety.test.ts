@@ -43,6 +43,34 @@ describe("isSafeTranscriptPath", () => {
     expect(isSafeTranscriptPath(join(homedir(), ".codex", "sessions", "..", "auth.json"), cwd, "codex")).toBe(false);
   });
 
+  it("allows only the OMP session root when explicitly selected, honoring PI_CODING_AGENT_DIR", () => {
+    vi.stubEnv("PI_CODING_AGENT_DIR", "");
+    const p = join(homedir(), ".omp", "agent", "sessions", "-work-project", "2026-09-20T10-00-00-000Z_sess.jsonl");
+    expect(isSafeTranscriptPath(p, cwd, "omp")).toBeTruthy();
+    expect(isSafeTranscriptPath(p, cwd)).toBe(false);
+    // The daemon's own home and any other harness's roots are not OMP transcripts.
+    expect(isSafeTranscriptPath(join(homedir(), ".omp", "agent", "config.yml"), cwd, "omp")).toBe(false);
+    expect(isSafeTranscriptPath(join(homedir(), ".claude", "projects", "p", "s.jsonl"), cwd, "omp")).toBe(false);
+  });
+
+  it("allows an OMP agent dir relocated by PI_CODING_AGENT_DIR", () => {
+    const relocated = join(fixture, "omp-agent");
+    mkdirSync(join(relocated, "sessions", "-work-project"), { recursive: true });
+    vi.stubEnv("PI_CODING_AGENT_DIR", relocated);
+    const p = join(relocated, "sessions", "-work-project", "session.jsonl");
+    expect(isSafeTranscriptPath(p, cwd, "omp")).toBeTruthy();
+    expect(isSafeTranscriptPath(join(homedir(), ".omp", "agent", "sessions", "-work-project", "session.jsonl"), cwd, "omp")).toBe(false);
+    vi.stubEnv("PI_CODING_AGENT_DIR", "");
+  });
+
+  it("allows an OMP profile's session root as well, so a profile hook is not silently refused", () => {
+    vi.stubEnv("PI_CODING_AGENT_DIR", "");
+    const profile = join(homedir(), ".omp", "profiles", "work", "agent", "sessions", "-work-project");
+    mkdirSync(profile, { recursive: true });
+    expect(isSafeTranscriptPath(join(profile, "session.jsonl"), cwd, "omp")).toBeTruthy();
+    expect(isSafeTranscriptPath(join(homedir(), ".omp", "profiles", "work", "agent", "config.yml"), cwd, "omp")).toBe(false);
+  });
+
   it("rejects paths outside allowed bases", () => {
     expect(isSafeTranscriptPath("/etc/passwd", cwd)).toBe(false);
     expect(isSafeTranscriptPath(join(homedir(), ".ssh", "id_rsa"), cwd)).toBe(false);

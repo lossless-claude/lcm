@@ -32,11 +32,15 @@ const BUILDS_A_PATH = [
 const FACTORY = ["src/lcm-home.ts", "src/lcm-paths.ts"];
 
 /**
- * The hooks module is the one exception: it runs with no imports, so it spells the
- * fallback inside the host command it sends to `sh`. The assertion below fails if that
- * stops being true, rather than leaving a dead exception behind.
+ * Hook modules that run with no imports from this package, so each spells the fallback
+ * itself: the Claude function-hooks module inside the host command it sends to `sh`, the
+ * Oh My Pi hook inside its daemon resolution. The assertions below fail if one stops
+ * needing the exception, rather than leaving a dead allowance behind.
  */
-const HOST_COMMAND = "hooks/lcm-hooks.ts";
+const HOST_COMMANDS = ["hooks/lcm-hooks.ts", "hooks/omp/lcm.ts"];
+
+/** Reads the storage root through the ambient environment because it has no imports to reach the factory. */
+const READS_LCM_HOME: string[] = ["hooks/lcm-hooks.ts", "hooks/omp/lcm.ts"];
 
 function sourceFiles(): string[] {
   const out = execFileSync("git", ["ls-files", "src", "bin", "hooks"], { encoding: "utf-8" });
@@ -56,7 +60,7 @@ describe("the storage root is resolved in one place", () => {
   it("names ~/.lossless-claude only in the factory", () => {
     const offenders = sourceFiles()
       .filter((file) => !FACTORY.includes(file))
-      .filter((file) => file !== HOST_COMMAND)
+      .filter((file) => !HOST_COMMANDS.includes(file))
       .filter((file) => {
         const source = readFileSync(file, "utf-8");
         return BUILDS_A_PATH.some((pattern) => pattern.test(source));
@@ -65,8 +69,11 @@ describe("the storage root is resolved in one place", () => {
       .toEqual([]);
   });
 
-  it("still needs its one exception, so the allowance is not dead", () => {
-    expect(readFileSync(HOST_COMMAND, "utf-8")).toContain(`$HOME/${ROOT_LITERAL}`);
+  it("still needs its exceptions, so each allowance is not dead", () => {
+    // The host command spells the fallback for `sh`; the OMP hook spells it in its own
+    // daemon resolution. Both are checked as strings, not as "the file mentions the root".
+    expect(readFileSync("hooks/lcm-hooks.ts", "utf-8")).toContain(`$HOME/${ROOT_LITERAL}`);
+    expect(readFileSync("hooks/omp/lcm.ts", "utf-8")).toContain(`"${ROOT_LITERAL}"`);
   });
 
   it("reads LCM_HOME only in the factory", () => {
@@ -74,8 +81,7 @@ describe("the storage root is resolved in one place", () => {
       .filter((file) => !FACTORY.includes(file))
       // The read, not the name: a doc comment may mention the variable.
       .filter((file) => /\benv\.LCM_HOME\b/.test(readFileSync(file, "utf-8")))
-      // The hooks module has no imports: it reads the variable in a host command instead.
-      .filter((file) => file !== "hooks/lcm-hooks.ts");
+      .filter((file) => !READS_LCM_HOME.includes(file));
     expect(offenders, "resolve the root through lcmHome() instead of reading LCM_HOME")
       .toEqual([]);
   });
@@ -94,9 +100,11 @@ const HOMEDIR_ALLOWLIST: Record<string, string> = {
   "src/diagnose.ts": "reads Claude Code's own ~/.claude/projects transcripts",
   "src/import.ts": "reads Claude Code's own ~/.claude/projects transcripts",
   "src/codex-transcript.ts": "reads Codex's own ~/.codex transcripts",
+  "src/omp-transcript.ts": "reads Oh My Pi's own session directory under the agent dir",
   "src/bootstrap.ts": "locates Claude Code's own ~/.claude/settings.json",
   "src/hooks/auto-heal.ts": "locates Claude Code's own ~/.claude/settings.json",
   "src/connectors/installer.ts": "expands a `~/` path the user typed in a connector config",
+  "src/connectors/omp-hooks.ts": "locates Oh My Pi's own agent directory for its hook file",
   "src/doctor/doctor.ts": "reports the host home directory in a diagnostic, not an lcm path",
   "src/cli/connectors.ts": "expands --global to the user's home for a connector's own config",
   "src/daemon/project.ts": "reads Claude Code's/Codex's own transcript directories",
@@ -164,7 +172,7 @@ describe("lcmHome() outside the factory is named, not incidental", () => {
   it("names every caller in the allowlist, composition root or remaining fallback", () => {
     const offenders = sourceFiles()
       .filter((file) => !FACTORY.includes(file))
-      .filter((file) => file !== HOST_COMMAND) // spells the fallback in a shell command, not a call
+      .filter((file) => !READS_LCM_HOME.includes(file)) // spells the fallback itself, not a call
       .filter((file) => !(file in LCM_HOME_ALLOWLIST))
       .filter(callsLcmHome);
     expect(offenders, "a new lcmHome() call site must be a composition root, or take its paths from its caller — add it to LCM_HOME_ALLOWLIST with which it is, or thread an LcmPaths through instead")

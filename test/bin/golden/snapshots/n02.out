@@ -16,6 +16,9 @@
     lcm connectors install github-copilot      Install the GitHub Copilot workspace skill for VS Code
     lcm connectors install codex               Install native Codex lifecycle hooks
     lcm connectors install codex --global      Install Codex into ~/.codex instead of the current project
+    lcm connectors install omp                 Install the Oh My Pi hook into this project's .omp/hooks
+    lcm connectors install omp --global        Install the Oh My Pi hook into your global OMP agent directory
+    lcm connectors remove omp --global         Remove the global Oh My Pi hook
     lcm connectors install codex --type rules  Install rules-based connector for Codex
     lcm connectors remove codex                Remove the Codex connector
     lcm connectors remove codex --global       Remove Codex from your global config
@@ -23,6 +26,7 @@
     lcm connectors doctor --global             Check the global agent config
     lcm connectors doctor github-copilot       Check GitHub Copilot connector health
     lcm connectors doctor codex                Check Codex connector health
+    lcm connectors doctor omp                  Check Oh My Pi connector health
 
-  Note: Codex defaults to native lifecycle hooks; review their trust in Codex /hooks after installation. Installation alone does not prove activation. Optional types: 'rules' (instructions), 'mcp' (server), 'skill' (guidance). Codex MCP setup remains manual. GitHub Copilot defaults to a repo-local skill.
+  Note: Codex defaults to native lifecycle hooks; review their trust in Codex /hooks after installation. Installation alone does not prove activation. Optional types: 'rules' (instructions), 'mcp' (server), 'skill' (guidance). Codex MCP setup remains manual. GitHub Copilot defaults to a repo-local skill. Oh My Pi defaults to a hook module written to <agent dir>/hooks/post/lcm.ts or <project>/.omp/hooks/post/lcm.ts; OMP loads it for every session of that agent directory, and its activation cannot be confirmed from the filesystem either.
 
