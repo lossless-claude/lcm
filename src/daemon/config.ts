@@ -232,8 +232,8 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
   // Validate: anthropic provider requires an API key
   if (usesAnthropic && !merged.llm.apiKey) {
     throw new Error(
-      "[lcm] LCM_SUMMARY_API_KEY is required when using the Anthropic provider. " +
-      "Set it in your environment or switch to 'auto', 'claude-process', or another provider."
+      "[lcm] The Anthropic provider needs an API key: set `llm.apiKey` in ~/.lossless-claude/config.json " +
+      "or export ANTHROPIC_API_KEY, or switch to 'auto', 'claude-process', or another provider."
     );
   }
 

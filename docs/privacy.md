@@ -16,13 +16,18 @@ No data is sent to any lcm server. There is no telemetry.
 
 ## What leaves your machine
 
-lcm is a local runtime. By default, **nothing leaves your machine**.
+lcm is a local runtime: nothing goes to any lcm server, and there is no telemetry.
 
-The exception is the summarizer, which you configure explicitly:
+The only component that can send data off your machine is the summarizer. Nothing is
+configured out of the box, so `llm.provider` is `auto`, which means "use the CLI of the
+harness that is running" — messages go to Anthropic via the `claude` CLI in a Claude
+session (your Claude subscription), to OpenAI via `codex` in a Codex session, to GitHub via
+`copilot` in a Copilot session. Set `llm.provider` to `disabled` to keep everything local.
 
 | Summarizer (`llm.provider`) | Data sent externally |
 |-----------------------------|----------------------|
-| `disabled` (default) | Nothing |
+| `auto` (default) | Whatever the running harness's CLI sends: Anthropic via `claude-process`, OpenAI via `codex-process`, GitHub via `copilot-process` |
+| `disabled` | Nothing |
 | `claude-process` | Messages sent to Anthropic via the `claude` CLI (your Claude subscription) |
 | `codex-process` | Messages sent to OpenAI via the `codex` CLI (your OpenAI subscription) |
 | `copilot-process` | Messages sent to GitHub via the `copilot` CLI (your Copilot subscription) |
@@ -39,7 +44,7 @@ lcm scrubs secrets from message content **before writing to SQLite** and **befor
 
 Two sets are always active, regardless of configuration:
 
-- The **gitleaks** rule set, generated into `src/generated-patterns.ts` (221 patterns at the time of writing; `lcm sensitive list` prints the current count).
+- The **gitleaks** rule set, generated into `src/generated-patterns.ts` (204 patterns at the time of writing; `lcm sensitive list` prints the current count).
 - A **native** set in `src/scrub.ts` that fills the gaps gitleaks covers only with surrounding context: bare OpenAI, Anthropic, GitHub, AWS, npm, Slack, Stripe, Google, SendGrid, Twilio, Shopify, Vault and Doppler tokens, PEM key headers, bearer tokens, password assignments, and database connection strings with embedded credentials.
 
 Patterns are applied in this order: gitleaks, native, global user patterns, then project patterns. `lcm sensitive list` shows every active pattern with its source.
@@ -73,8 +78,11 @@ Messages and summaries persist until you explicitly remove them:
 # Remove data for the current project
 lcm sensitive purge --yes
 
-# Remove all lcm data
+# Remove lcm's hooks, MCP entry and daemon service (stored memory stays)
 lcm uninstall
+
+# Remove all lcm data
+rm -rf ~/.lossless-claude
 ```
 
 SQLite database files are stored in `~/.lossless-claude/projects/`. You can delete individual project directories manually to remove their history.
@@ -95,4 +103,4 @@ The `Security` section of the doctor output shows:
 - External summarizer (optional) receives only the text to be summarized, after scrubbing.
 - Built-in patterns redact common secret formats automatically.
 - Add project-specific patterns with `lcm sensitive add`.
-- Delete your data with `lcm uninstall` or by removing `~/.lossless-claude/`.
+- `lcm uninstall` removes lcm's hooks, MCP entry and daemon service; delete stored memory by removing `~/.lossless-claude/`.

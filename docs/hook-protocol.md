@@ -75,7 +75,7 @@ Invoked when the Claude Code session ends. The hook posts its stdin once to `POS
 
 **Command:** `lcm user-prompt`
 
-Invoked on each user prompt. lcm searches memory for relevant hints and injects a `<memory-hints>` block into the prompt.
+Invoked on each user prompt. lcm searches memory for relevant hints and injects a `<memory-context>` block into the prompt.
 
 **Stdin fields:**
 
@@ -112,10 +112,10 @@ Invoked after a tool call **succeeds**, and only for the tools the `PostToolUse`
 | `tool_use_id` | string | Claude Code's id for this call; the dedup key |
 | `tool_input` | object | The tool's input arguments |
 | `tool_response` | any | The tool's response object |
-| `tool_output` | string | Plaintext output (if available) |
+| `tool_output` | object | Result envelope; lcm reads only `{ isError?: boolean }` |
 | `hook_event_name` | string | `"PostToolUse"` |
 
-**Response:** Always exit code `0`. This hook runs on every tool call and must be fast; it does no network I/O and only writes to a local sidecar SQLite database.
+**Response:** Always exit code `0`. This hook runs on every tool call and must be fast: it writes to a local sidecar SQLite database, and when an extracted event is priority 1 it also fires one unawaited `POST /promote-events` to the daemon.
 
 ## Function hooks module (early access)
 
@@ -162,7 +162,7 @@ An optional periodic hook that incrementally ingests the live session transcript
 | `session_id` | string | Session identifier |
 | `cwd` | string | Working directory |
 | `transcript_path` | string | Path to the live JSONL session transcript |
-| `hook_event_name` | string | `"SessionSnapshot"` (if provided) |
+| `hook_event_name` | string | `"Stop"` (the event this hook is registered on) |
 
 **Response:** Exit code `0`.
 
@@ -183,4 +183,4 @@ SessionEnd additionally passes `noSpawn: true`, so it never starts a daemon just
 
 ## Auto-heal
 
-All lcm hooks self-repair on each invocation: before dispatching, `validateAndFixHooks()` checks that all required hook entries remain registered in `~/.claude/settings.json` and re-adds any missing entries. This means lcm hooks survive `claude settings reset` or manual edits to the settings file.
+Every lcm hook except `post-tool` self-repairs on each invocation: before dispatching, `validateAndFixHooks()` removes any lcm hook entries that leaked into `~/.claude/settings.json`. lcm hooks are owned by `.claude-plugin/plugin.json`, so a copy in `settings.json` would make every hook fire twice; a stale `lcm compact` command there is rewritten to `lcm compact --hook` instead. `post-tool` runs on every tool call and returns before this repair, deliberately, to stay inside its deadline.

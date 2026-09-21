@@ -6,7 +6,7 @@ import type { DaemonClient } from "./daemon/client.js";
 import { formatNumber, formatRatio } from "./stats.js";
 import { findAllCodexTranscripts } from "./codex-transcript.js";
 import type { ProgressState } from "./cli/progress-state.js";
-import { projectDbPath, projectId } from "./daemon/project.js";
+import { projectDbPath, projectId, claudeProjectSlug } from "./daemon/project.js";
 import { readProjectMetaIn } from "./daemon/project-meta.js";
 import { createLcmPaths, type LcmPaths } from "./lcm-paths.js";
 import { discoverSubagentTranscripts, type SubagentAttribution } from "./subagent-attribution.js";
@@ -76,12 +76,6 @@ export interface ImportResult {
   };
 }
 
-export function cwdToProjectHash(cwd: string): string {
-  // Claude Code uses the cwd with slashes replaced by dashes, keeping the leading dash
-  // e.g. /home/dev/projects/app → -home-dev-projects-app
-  return cwd.replace(/\//g, '-');
-}
-
 function buildProjectMap(paths: LcmPaths): Map<string, string> {
   const lcmProjectsDir = paths.projectsDir;
   const map = new Map<string, string>();
@@ -89,7 +83,7 @@ function buildProjectMap(paths: LcmPaths): Map<string, string> {
   for (const entry of readdirSync(lcmProjectsDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const cwd = readProjectMetaIn(join(lcmProjectsDir, entry.name))?.cwd;
-    if (cwd) map.set(cwdToProjectHash(cwd), cwd);
+    if (cwd) map.set(claudeProjectSlug(cwd), cwd);
   }
   return map;
 }
@@ -621,8 +615,7 @@ export async function importSessions(
       }
     } else {
       const cwd = options.cwd ?? process.cwd();
-      const hash = cwdToProjectHash(cwd);
-      const dir = join(claudeProjectsDir, hash);
+      const dir = join(claudeProjectsDir, claudeProjectSlug(cwd));
       if (existsSync(dir)) {
         projectDirs.push({ dir, cwd });
       }

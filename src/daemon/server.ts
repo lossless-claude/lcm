@@ -31,6 +31,7 @@ import { backfillProjectIdentities } from "./project-group.js";
 import { PKG_VERSION, BUILD_ID } from "./version.js";
 import { lcmHome } from "../lcm-home.js";
 import { createLcmPaths, type LcmPaths } from "../lcm-paths.js";
+import { claudeProjectSlug } from "./project.js";
 export { PKG_VERSION };
 
 export type RouteHandler = (req: IncomingMessage, res: ServerResponse, body: string) => Promise<void>;
@@ -152,8 +153,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
         if (!meta?.cwd) continue;
 
         // Find Claude Code session files for this project's cwd
-        const cwdDashed = meta.cwd.replace(/\//g, "-").replace(/^-/, "");
-        const sessionsDir = join(homedir(), ".claude", "projects", cwdDashed);
+        const sessionsDir = join(homedir(), ".claude", "projects", claudeProjectSlug(meta.cwd));
         if (!existsSync(sessionsDir)) continue;
 
         for (const file of readdirSync(sessionsDir)) {

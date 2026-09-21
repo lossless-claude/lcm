@@ -208,10 +208,12 @@ lcm store "content"       # persist a durable memory entry
 lcm stats                  # memory and compression overview
 lcm stats -v               # per-conversation breakdown
 lcm stats --pool           # connection pool statistics
+lcm stats --pool --json    # connection pool statistics as JSON
 
 # Compaction & promotion
 lcm compact                # compact the current project
 lcm compact --all          # compact all tracked projects
+lcm compact --verbose      # per-session token detail
 lcm compact --replay       # compact sequentially with threaded context (resumable)
 lcm compact --replay --restart  # discard recorded progress and start from scratch
 lcm promote                # promote durable insights to long-term memory
@@ -268,8 +270,8 @@ All environment variables are optional. The default summarizer mode is `auto`. T
 
 | Variable | Default | Description |
 |---|---|---|
-| `LCM_SUMMARY_PROVIDER` | `auto` | `auto`, `claude-process`, `codex-process`, `copilot-process`, `anthropic`, `openai`, or `disabled` |
-| `LCM_SUMMARY_API_KEY` | unset | Required by the `anthropic` provider |
+| `LCM_SUMMARY_PROVIDER` | `auto` | `auto`, `claude-process`, `codex-process`, `copilot-process`, `anthropic`, `openai`, `disabled`, or `session` |
+| `ANTHROPIC_API_KEY` | unset | Read only when `llm.provider` is `anthropic` (or `session` falling back to it) and `llm.apiKey` is unset |
 | `LCM_HOME` | `~/.lossless-claude` | Where the daemon, databases, sidecars and logs live |
 | `LCM_ENABLED` | `true` | Set to `false` to make every Claude Code and Codex command hook a no-op while keeping the plugin registered |
 | `LCM_CONTEXT_THRESHOLD` | `0.75` | Context fill ratio that triggers compaction |
@@ -282,7 +284,9 @@ All environment variables are optional. The default summarizer mode is `auto`. T
 
 `auto` resolves per caller:
 
-- `lcm` -> `claude-process`
+- Claude caller -> `claude-process`
+- Codex caller -> `codex-process`
+- Copilot caller -> `copilot-process`
 - explicit config or `LCM_SUMMARY_PROVIDER` override always takes precedence
 
 See [`docs/configuration.md`](docs/configuration.md) for tuning notes and deeper operational guidance.
@@ -295,6 +299,10 @@ npm run build
 npx vitest
 npx tsc --noEmit
 ```
+
+Build before testing: the suite asserts `dist/` was built from the current sources, and fails
+with the rebuild command instead of silently testing a stale binary. `LCM_SKIP_CACHE_SYNC=1
+npm run build` skips the plugin-cache sync when only `dist/` matters.
 
 To score a candidate summarizer model against the real compaction engine, see [docs/summarizer-bench.md](https://github.com/lossless-claude/lcm/blob/main/docs/summarizer-bench.md). The bench is opt-in — it is skipped unless `LCM_EVAL_MODEL` and `LCM_EVAL_CORPUS_DIR` are set, so `npx vitest` never calls a paid API.
 

@@ -2,7 +2,8 @@ import { createReadStream, existsSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline";
-import { cwdToProjectHash, findSessionFiles } from "./import.js";
+import { findSessionFiles } from "./import.js";
+import { claudeProjectSlug } from "./daemon/project.js";
 
 const RELEVANT_COMMAND_RE = /(^|[\s"'`])(?:[^"'`\s]+\/)?(?:lcm|lossless-claude)(?=$|[\s"'`])/;
 const OLD_BINARY_RE = /(^|[\s"'`])(?:[^"'`\s]+\/)?lossless-claude(?=$|[\s"'`])/;
@@ -415,7 +416,7 @@ function getProjectDirs(options: DiagnoseOptions): string[] {
   }
 
   const cwd = options.cwd ?? process.cwd();
-  const projectDir = join(claudeProjectsDir, cwdToProjectHash(cwd));
+  const projectDir = join(claudeProjectsDir, claudeProjectSlug(cwd));
   return existsSync(projectDir) ? [projectDir] : [];
 }
 

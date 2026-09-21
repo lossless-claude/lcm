@@ -1,12 +1,15 @@
 
   lcm stats — Show memory inventory: message counts, compression ratios, and summary statistics.
 
-  Usage: lcm stats [-v]
+  Usage: lcm stats [-v] [--pool [--json]]
 
   Options:
     -v, --verbose  Show per-conversation breakdown
+    --pool         Show connection pool statistics from the daemon
+    --json         Output structured JSON (use with --pool)
 
   Examples:
-    lcm stats     Summary view across all projects
-    lcm stats -v  Per-conversation detail
+    lcm stats                Summary view across all projects
+    lcm stats -v             Per-conversation detail
+    lcm stats --pool --json  Connection pool statistics as JSON
 

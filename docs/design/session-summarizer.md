@@ -38,7 +38,7 @@ Why: it removes the `claude` CLI process spawn per chunk that `claude-process` p
 
 ### Job store and routes
 
-- In-memory, in the daemon process. `Map<jobId, Job>` plus a per-session FIFO of unclaimed job ids. A job: `{ id, session_id, kind: "leaf" | "condensed", depth, system, prompt, targetTokens, maxTokens, createdAt, state: "queued" | "claimed" | "done" | "failed" | "expired" }` and a promise resolver the provider awaits.
+- In-memory, in the daemon process. `Map<jobId, Job>` plus a per-session FIFO of unclaimed job ids. A job: `{ id, session_id, kind: "leaf" | "condensed", depth, system, prompt, targetTokens, maxTokens, createdAt }` — the `state: "queued" | "claimed" | "done" | "failed" | "expired"` lives on the store's internal entry beside it, and a promise resolver the provider awaits.
 - `GET /summarize-jobs/next?session_id=…`: if a queued job exists for that session, claim it and answer `200 { job }` without `state`/resolver; otherwise hold the request until one appears or 25 s pass, then `204`. One waiter per session; a second waiter replaces the first (the first gets `204`). Bearer auth like every other route.
 - `POST /summarize-jobs/:id` with `{ text }` or `{ error }`: resolves the provider's promise if the job is still `claimed`; a job already `expired` (the provider fell back) answers `200 { discarded: true }` and changes nothing. Body size cap like other routes. Validate that `text` is a non-empty string.
 - Expire `queued`/`claimed` jobs at the provider's 20 s deadline; delete finished jobs after a minute.
@@ -68,7 +68,7 @@ Why: it removes the `claude` CLI process spawn per chunk that `claude-process` p
 ## Out of scope, filed separately
 
 - Dead config keys `compaction.leafTokens` and `compaction.maxDepth`, removed in #379. `compaction.autoCompactMinTokens` turned out to be live: `lcm compact` uses it as the threshold that picks conversations.
-- `previousSummary` is dropped before it reaches any daemon provider (`SummarizeContext` has no such field), so inter-chunk continuity is lost on every provider path.
+- ~~`previousSummary` is dropped before it reaches any daemon provider~~ — resolved since: `SummarizeContext.previousSummary` (`src/llm/types.ts`) is rendered into the prompt as `<previous_context>`, so chunks read as one thread on every provider path.
 - A disk queue for events while the daemon is down; dedup by `(session_id, tool_use_id)`.
 
 ## Constraints to keep in mind

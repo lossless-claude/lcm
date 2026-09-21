@@ -25,7 +25,7 @@
 
 - Dependabot security updates are enabled
 - Review and merge dependency PRs promptly
-- CodeQL analysis runs on all PRs
+- CodeQL analysis runs on all PRs through GitHub's default setup, configured in repository settings rather than by a workflow in this repo
 
 ## Incident Escalation
 

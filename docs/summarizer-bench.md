@@ -51,7 +51,7 @@ npm run build && node -e 'import("./dist/src/daemon/project.js").then(p => conso
 
 The database is opened read-only through the immutable URI — the only form that opens these WAL databases without taking a lock, so it is safe to run against a live install. A conversation id that matches no messages fails rather than leaving an empty file behind.
 
-A synthetic session carrying planted facts is always appended to the corpus, so fact-survival is scored even on a corpus of one.
+A synthetic session carrying planted facts is appended to the corpus, so fact-survival is scored even on a corpus of one — unless `LCM_EVAL_SESSIONS` is set to a label list that excludes its `synthetic-planted` label.
 
 ## What it scores
 

@@ -105,7 +105,7 @@ lcm connectors remove codex --global
 Use the global flag when you want Codex to pick up the connector from your
 user-level config rather than a single repository checkout.
 
-`lcm install` does not configure VS Code or Codex connectors today. Use `lcm connectors install ...` for those clients.
+`lcm install` installs the Codex lifecycle hooks globally when `codex` is on PATH (the equivalent of `lcm connectors install codex --global`), unless it runs from the plugin bundle, where Codex is skipped with that reason. VS Code (GitHub Copilot) is not configured by `lcm install`; use `lcm connectors install github-copilot`.
 
 ## Tuning guide
 
@@ -217,7 +217,7 @@ The provider can be pinned from the environment; the model only from `~/.lossles
 
 ```bash
 export LCM_SUMMARY_PROVIDER=anthropic
-export LCM_SUMMARY_API_KEY=<key>   # required by the anthropic provider
+export ANTHROPIC_API_KEY=<key>     # required by the anthropic provider; `llm.apiKey` in config.json wins over it
 ```
 
 ```json
@@ -347,7 +347,8 @@ Use and vote signals follow their target memory to its owning checkout, so new f
 
 - **Enforcement threshold** (`promotion.enforcementThreshold`, default 3): a memory with at
   least this many reported uses appears under "Promotion candidates" in `lcm stats` /
-  `lcm_stats`, shown with its text, use count, `+1` count, `-1` count, and any objections.
+  `lcm_stats`, shown with its text, owner project, use count, `+1` count and `-1` count.
+  Objections are listed under "Contested".
   lcm does not classify what kind of enforcement fits; a human reads the text.
 - **Contested**: any memory with at least one `-1` appears under "Contested", with every
   objection's reason and vote id, regardless of its use count.

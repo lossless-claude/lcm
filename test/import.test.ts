@@ -4,28 +4,80 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { discoverSubagentTranscripts } from "../src/subagent-attribution.js";
-import { cwdToProjectHash, findSessionFiles, importSessions } from "../src/import.js";
+import { findSessionFiles, importSessions } from "../src/import.js";
 import type { DaemonClient } from "../src/daemon/client.js";
 import { runLcmMigrations } from "../src/db/migration.js";
-import { projectId } from "../src/daemon/project.js";
+import { projectId, claudeProjectSlug } from "../src/daemon/project.js";
 
-// --- cwdToProjectHash ---
+// --- claudeProjectSlug ---
 
-describe("cwdToProjectHash", () => {
+describe("claudeProjectSlug", () => {
   it("keeps leading dash from absolute path", () => {
-    expect(cwdToProjectHash("/home/user/project")).toBe("-home-user-project");
+    expect(claudeProjectSlug("/home/user/project")).toBe("-home-user-project");
   });
 
   it("replaces all slashes with dashes", () => {
-    expect(cwdToProjectHash("/a/b/c")).toBe("-a-b-c");
+    expect(claudeProjectSlug("/a/b/c")).toBe("-a-b-c");
   });
 
   it("handles root path", () => {
-    expect(cwdToProjectHash("/")).toBe("-");
+    expect(claudeProjectSlug("/")).toBe("-");
   });
 
   it("handles path without leading slash", () => {
-    expect(cwdToProjectHash("home/user")).toBe("home-user");
+    expect(claudeProjectSlug("home/user")).toBe("home-user");
+  });
+
+  it("replaces every non-alphanumeric character, not only slashes", () => {
+    expect(claudeProjectSlug("/Users/me/.agents/my_repo")).toBe("-Users-me--agents-my-repo");
+  });
+});
+
+// --- import --all against Claude Code's own directory names ---
+
+describe("importSessions --all", () => {
+  const dirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of dirs) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    dirs.length = 0;
+  });
+
+  function makeTmpDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), "lcm-import-all-"));
+    dirs.push(dir);
+    return dir;
+  }
+
+  it("finds a tracked project whose cwd holds characters Claude Code renames", async () => {
+    const claudeProjectsDir = makeTmpDir();
+    const lcmDir = makeTmpDir();
+    const cwd = "/Users/me/.agents/my_repo";
+    mkdirSync(join(lcmDir, "projects", projectId(cwd)), { recursive: true });
+    writeFileSync(join(lcmDir, "projects", projectId(cwd), "meta.json"), JSON.stringify({ cwd }));
+    // The directory name Claude Code writes for that cwd, spelled out rather than
+    // derived, so a slug rule that drifts from Claude Code's fails here.
+    const projDir = join(claudeProjectsDir, "-Users-me--agents-my-repo");
+    mkdirSync(projDir, { recursive: true });
+    writeFileSync(join(projDir, "s1.jsonl"), '{"session":"s1"}\n');
+
+    const sessionIds: string[] = [];
+    const client = makeMockClient(async (_path, body) => {
+      if (body && typeof body === "object" && "session_id" in body && typeof body.session_id === "string") {
+        sessionIds.push(body.session_id);
+      }
+      return { ingested: 1, totalTokens: 10 };
+    });
+
+    const result = await importSessions(client, {
+      provider: "claude", all: true,
+      _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir,
+    });
+
+    expect(sessionIds).toEqual(["s1"]);
+    expect(result.imported).toBe(1);
   });
 });
 
@@ -243,7 +295,7 @@ describe("importSessions", () => {
   it("does not call client.post on dry-run", async () => {
     const claudeProjectsDir = makeTmpDir();
     const cwd = "/home/user/myproject";
-    const projectHash = cwdToProjectHash(cwd);
+    const projectHash = claudeProjectSlug(cwd);
     const projectDir = join(claudeProjectsDir, projectHash);
     mkdirSync(projectDir, { recursive: true });
     writeFileSync(join(projectDir, "session-1.jsonl"), "");
@@ -266,7 +318,7 @@ describe("importSessions", () => {
   it("calls /ingest with transcript_path and counts imported", async () => {
     const claudeProjectsDir = makeTmpDir();
     const cwd = "/home/user/myproject";
-    const projectHash = cwdToProjectHash(cwd);
+    const projectHash = claudeProjectSlug(cwd);
     const projectDir = join(claudeProjectsDir, projectHash);
     mkdirSync(projectDir, { recursive: true });
     writeFileSync(join(projectDir, "session-abc.jsonl"), "");
@@ -299,7 +351,7 @@ describe("importSessions", () => {
   it("counts empty transcripts as skippedEmpty (ingested=0, totalTokens=0)", async () => {
     const claudeProjectsDir = makeTmpDir();
     const cwd = "/home/user/emptyproject";
-    const projectHash = cwdToProjectHash(cwd);
+    const projectHash = claudeProjectSlug(cwd);
     const projectDir = join(claudeProjectsDir, projectHash);
     mkdirSync(projectDir, { recursive: true });
     writeFileSync(join(projectDir, "empty-session.jsonl"), "");
@@ -321,7 +373,7 @@ describe("importSessions", () => {
   it("counts failed ingest calls", async () => {
     const claudeProjectsDir = makeTmpDir();
     const cwd = "/home/user/failproject";
-    const projectHash = cwdToProjectHash(cwd);
+    const projectHash = claudeProjectSlug(cwd);
     const projectDir = join(claudeProjectsDir, projectHash);
     mkdirSync(projectDir, { recursive: true });
     writeFileSync(join(projectDir, "bad-session.jsonl"), "");
@@ -343,7 +395,7 @@ describe("importSessions", () => {
   it("replay mode calls compact after each session in mtime order, threading latestSummaryContent", async () => {
     const claudeProjectsDir = makeTmpDir();
     const cwd = "/test/project";
-    const hash = cwdToProjectHash(cwd);
+    const hash = claudeProjectSlug(cwd);
     const projDir = join(claudeProjectsDir, hash);
     mkdirSync(projDir, { recursive: true });
 
@@ -383,7 +435,7 @@ describe("importSessions", () => {
   it("replay mode accumulates totalTokens and tokensAfter from compact responses", async () => {
     const claudeProjectsDir = makeTmpDir();
     const cwd = "/test/token-stats";
-    const hash = cwdToProjectHash(cwd);
+    const hash = claudeProjectSlug(cwd);
     const projDir = join(claudeProjectsDir, hash);
     mkdirSync(projDir, { recursive: true });
 
@@ -441,7 +493,7 @@ describe("importSessions", () => {
     // but /compact returns real token counts. The final result should reflect the compact tokens.
     const claudeProjectsDir = makeTmpDir();
     const cwd = "/test/already-ingested";
-    const hash = cwdToProjectHash(cwd);
+    const hash = claudeProjectSlug(cwd);
     const projDir = join(claudeProjectsDir, hash);
     mkdirSync(projDir, { recursive: true });
     writeFileSync(join(projDir, "session-1.jsonl"), "");
@@ -477,7 +529,7 @@ describe("importSessions", () => {
   it("replay mode: compact failure warns unconditionally and falls back to ingest tokens", async () => {
     const claudeProjectsDir = makeTmpDir();
     const cwd = "/test/compact-fail";
-    const hash = cwdToProjectHash(cwd);
+    const hash = claudeProjectSlug(cwd);
     const projDir = join(claudeProjectsDir, hash);
     mkdirSync(projDir, { recursive: true });
 
@@ -601,7 +653,7 @@ describe("importSessions", () => {
   it("replay mode resets previousSummary when ingest fails, breaking the compact chain", async () => {
     const claudeProjectsDir = makeTmpDir();
     const cwd = "/test/project";
-    const hash = cwdToProjectHash(cwd);
+    const hash = claudeProjectSlug(cwd);
     const projDir = join(claudeProjectsDir, hash);
     mkdirSync(projDir, { recursive: true });
 
@@ -661,7 +713,7 @@ describe("importSessions", () => {
     // The full idempotency check is tested in the e2e test.
     const claudeProjectsDir = makeTmpDir();
     const cwd = "/home/user/myproject";
-    const projectHash = cwdToProjectHash(cwd);
+    const projectHash = claudeProjectSlug(cwd);
     const projectDir = join(claudeProjectsDir, projectHash);
     mkdirSync(projectDir, { recursive: true });
     writeFileSync(join(projectDir, "session-already-ingested.jsonl"), "");
@@ -712,7 +764,7 @@ describe("importSessions replay resume", () => {
   function setup(cwd: string, sessionIds: string[]): { claudeProjectsDir: string; lcmDir: string; projDir: string } {
     const claudeProjectsDir = makeTmpDir();
     const lcmDir = makeTmpDir();
-    const projDir = join(claudeProjectsDir, cwdToProjectHash(cwd));
+    const projDir = join(claudeProjectsDir, claudeProjectSlug(cwd));
     mkdirSync(projDir, { recursive: true });
     for (const id of sessionIds) {
       writeFileSync(join(projDir, `${id}.jsonl`), `{"session":"${id}"}\n`);
@@ -1191,7 +1243,7 @@ describe("importSessions replay resume", () => {
     const cwdB = "/test/multi-b";
     mkdirSync(join(lcmDir, "projects", projectId(cwdA)), { recursive: true });
     writeFileSync(join(lcmDir, "projects", projectId(cwdA), "meta.json"), JSON.stringify({ cwd: cwdA }));
-    const projDirA = join(claudeProjectsDir, cwdToProjectHash(cwdA));
+    const projDirA = join(claudeProjectsDir, claudeProjectSlug(cwdA));
     mkdirSync(projDirA, { recursive: true });
     writeFileSync(join(projDirA, "a1.jsonl"), '{"session":"a1"}\n');
 
@@ -1384,7 +1436,7 @@ describe("importSessions — provider: codex", () => {
     // Claude project dir
     const claudeProjectsDir = makeTmpDir();
     const cwd = "/home/user/claudeproject";
-    const hash = cwdToProjectHash(cwd);
+    const hash = claudeProjectSlug(cwd);
     const claudeProjDir = join(claudeProjectsDir, hash);
     mkdirSync(claudeProjDir, { recursive: true });
     writeFileSync(join(claudeProjDir, "claude-session.jsonl"), "");

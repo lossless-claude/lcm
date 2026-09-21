@@ -20,10 +20,10 @@ claude plugin validate --strict .
 claude plugin validate .claude-plugin/plugin.json
 ```
 
-The repo root holds both `marketplace.json` and `plugin.json`, and the
-marketplace manifest wins there — so the first call checks only that manifest,
-strictly: unrecognized fields, missing metadata, and other issues the runtime
-tolerates. The plugin's own agents, skills, commands and hooks module are walked
+The `.claude-plugin/` directory holds both `marketplace.json` and `plugin.json`, and the
+marketplace manifest wins when that directory is resolved from `.` — so the first call checks
+only that manifest, strictly: unrecognized fields, missing metadata, and other issues the
+runtime tolerates. The plugin's own agents, skills, commands and hooks module are walked
 only when `plugin.json` is named, which is what the second call does.
 
 That second call is deliberately **not** `--strict`. Under `--strict` it fails

@@ -71,11 +71,19 @@ One corrupt-file policy, whichever code path meets the file first: a read treats
 
 ### Ingestion
 
-When Claude Code processes a turn, it calls the context engine's lifecycle hooks:
+lcm is not called by a context-engine lifecycle API; the harness runs lcm's own hooks, and
+every one of them is a thin shell around a daemon route. Claude Code's command hooks are
+`lcm compact --hook` (PreCompact), `lcm restore` (SessionStart), `lcm session-end`,
+`lcm user-prompt`, `lcm session-snapshot` (Stop) and `lcm post-tool` (PostToolUse and
+PostToolUseFailure); the function-hooks module speaks the same routes through
+`session.start`, `prompt.context`, `prompt.submit`, `prompt.section`, `turn.complete` and
+`tool.call`. `docs/hook-protocol.md` is the contract for their payloads and deadlines.
 
-1. **bootstrap** — On session start, reconciles the JSONL session file with the LCM database. Imports any messages that exist in the file but not in LCM (crash recovery).
-2. **ingest** / **ingestBatch** — Persists new messages to the database and appends them to context_items.
-3. **afterTurn** — After the model responds, ingests new messages, then evaluates whether compaction should run.
+Capture itself happens on `POST /ingest`, reached from `session-end`, the Stop snapshot, and
+the SessionStart catch-up sweep the daemon runs for conversations a killed session left
+uncompacted. `POST /session-end` hands the whole end-of-session sequence to the daemon —
+ingest, then compact, promote and session-complete — after acknowledging with `202`, so a
+host that stops waiting for the hook cannot drop the steps behind it.
 
 Every route that lands transcript content in `messages` — `/ingest`, the subagent path inside it, and `/compact` — writes through one module, `src/capture.ts` (`SessionCapture`). It owns what "already stored" means (the delta past the conversation's message count), scrubbing, the bulk insert, `context_items`, `message_parts`, redaction counts, the Codex cursor and `session_ingest_log`. When the caller passes no attribution and the transcript is a subagent transcript, the module reads the `.meta.json` sidecar itself, so which route sees a session first does not change what is stored about it.
 
@@ -171,22 +179,18 @@ This ensures compaction always makes progress, even if the LLM produces poor out
 
 ## Context assembly
 
-The assembler runs before each model turn and builds the message array:
+There is no message-array assembler: nothing in lcm rewrites the harness's message list.
+What a session starts with is one block of text, and `POST /restore` is the only thing that
+builds it.
 
-```
-[summary₁, summary₂, ..., summaryₙ, message₁, message₂, ..., messageₘ]
- ├── budget-constrained ──┤  ├──── fresh tail (always included) ────┤
-```
+1. Read the session's recent summaries deepest-first, and the project's promoted memory.
+2. Render each block as plain text and fence it — summaries join their stored `content` and
+   are returned as one `<recent-session-context>` block, promoted memories as their own
+   fenced block, passive-capture insights beside them.
+3. Fit the result to the byte budget the caller's client implies; a section that cannot be
+   read contributes nothing rather than failing the call.
 
-### Steps
-
-1. Fetch all context_items ordered by ordinal.
-2. Resolve each item — summaries become user messages with XML wrappers; messages are reconstructed from parts.
-3. Split into evictable prefix and protected fresh tail (last `freshTailCount` raw messages).
-4. Compute fresh tail token cost (always included, even if over budget).
-5. Fill remaining budget from the evictable set, keeping newest items and dropping oldest.
-6. Normalize assistant content to array blocks (Anthropic API compatibility).
-7. Sanitize tool-use/result pairing (ensures every tool_result has a matching tool_use).
+The harness, not lcm, decides where that text goes in the model's context.
 
 ### Session start
 
@@ -202,35 +206,6 @@ conversation's context window under a byte budget and never reads, replays or wr
 snapshot. Every block is fenced before it is returned, insights ride beside the context
 rather than inside it, a section that cannot be read contributes nothing instead of failing
 the restore, and one project-database connection serves the whole call.
-
-### XML summary format
-
-Summaries are presented to the model as user messages wrapped in XML:
-
-```xml
-<summary id="sum_abc123" kind="leaf" depth="0" descendant_count="0"
-         earliest_at="2026-02-17T07:37:00" latest_at="2026-02-17T08:23:00">
-  <content>
-    ...summary text with timestamps...
-
-    Expand for details about: exact error messages, full config diff, intermediate debugging steps
-  </content>
-</summary>
-```
-
-Condensed summaries also include parent references:
-
-```xml
-<summary id="sum_def456" kind="condensed" depth="1" descendant_count="8" ...>
-  <parents>
-    <summary_ref id="sum_aaa111" />
-    <summary_ref id="sum_bbb222" />
-  </parents>
-  <content>...</content>
-</summary>
-```
-
-The XML attributes give the model enough metadata to reason about summary age, scope, and how to drill deeper. The `<parents>` section enables targeted expansion of specific source summaries.
 
 ## Expansion system
 
@@ -270,27 +245,40 @@ the content stayed reachable.
 
 ## Session reconciliation
 
-LCM handles crash recovery through **bootstrap reconciliation**:
+Crash recovery does not compare transcripts: the delta is arithmetic on what lcm already
+stored.
 
-1. On session start, read the JSONL session file (Claude Code's ground truth).
-2. Compare against the LCM database.
-3. Find the most recent message that exists in both (the "anchor").
-4. Import any messages after the anchor that are in JSONL but not in LCM.
+1. A Claude transcript is re-parsed in full and sliced past the conversation's stored message
+   count (`src/transcript-source.ts`); the stored conversation is the ground truth for how
+   much of the file lcm has.
+2. A Codex transcript resumes from the byte-offset cursor persisted with the last write, and
+   the cursor is trusted only while it accounts for exactly the stored messages.
+3. When the cursor cannot be trusted — a replaced, truncated or extended file — Codex re-reads
+   the whole file and the capture verifies the stored prefix, after current redaction rules
+   have been applied to both sides, before accepting the suffix.
 
-This handles the case where Claude Code wrote messages to the session file but crashed before LCM could persist them.
+This covers a session whose messages reached the transcript while lcm was down or killed, and
+a file that grew or was rewritten between two runs.
 
 ## Operation serialization
 
-All mutating operations (ingest, compact) are serialized per-session using a promise queue. This prevents races between concurrent afterTurn/compact calls for the same conversation without blocking operations on different conversations.
+All mutating operations (ingest, compact) are serialized **per project** — the queue is keyed by
+`projectId(cwd)` (`src/daemon/project-queue.ts`), not by session — so two conversations of the same
+project wait on each other while different projects do not. `/compact` adds its own per-session
+guard on top, which is what keeps one session from compacting twice at once.
 
-A project's `meta.json` is written by routes on different sessions of the same project, so the per-session queue does not cover it; it needs no queue of its own because each update in `src/daemon/project-meta.ts` is a single synchronous read-modify-write that nothing in the process can interleave with. Writers in other processes are outside the daemon's trust boundary, as they are for the database.
+A project's `meta.json` is written by routes on different sessions of the same project, so the per-project queue is not what covers it; it needs no queue of its own because each update in `src/daemon/project-meta.ts` is a single synchronous read-modify-write that nothing in the process can interleave with. Writers in other processes are outside the daemon's trust boundary, as they are for the database.
 
 ## Authentication
 
-LCM needs to call an LLM for summarization. It resolves credentials through a three-tier cascade:
+lcm needs an LLM only for summarization, and it resolves the credential the way the daemon
+config does:
 
-1. **Auth profiles** — Claude Code's OAuth/token/API-key profile system (`auth-profiles.json`), checked in priority order
-2. **Environment variables** — Standard provider env vars (`ANTHROPIC_API_KEY`, etc.)
-3. **Custom provider key** — From models config (e.g., `models.json`)
+1. `llm.apiKey` in `~/.lossless-claude/config.json` — the value may interpolate an environment
+   variable as `${NAME}`.
+2. `ANTHROPIC_API_KEY`, read only when the effective provider is `anthropic` (directly, or as
+   the `session` provider's fallback) and no key was configured.
 
-For OAuth providers (e.g., Anthropic via Claude Max), LCM handles token refresh and credential persistence automatically.
+There is no profile store to consult: the process-backed providers (`claude-process`,
+`codex-process`, `copilot-process`) authenticate through their own CLI's login, so lcm never
+sees their credentials.

@@ -40,14 +40,14 @@ make sure a maintainer gets a `.changeset/*.md` file onto `main`.
 1. Merge releasable PRs to `main`
 2. Let the `Version Packages` workflow open or update the release PR
 3. Review the generated version bump and `CHANGELOG.md`
-4. Merge the release PR to `main`
-5. Manually trigger the `Publish Package` workflow on the merged release commit
+4. Merge the release PR to `main` — that push changes `package.json`, which runs `publish.yml`
+5. Trigger the `Publish Package` workflow by hand only when the version file did not change (`gh workflow run publish.yml --ref main`)
 6. Approve the workflow if a protected GitHub Environment is configured
-7. Let the workflow:
+7. Let the workflow, each step running only if its result is still missing:
    - install dependencies
    - run tests
+   - create and push tag `vX.Y.Z`
    - publish to npm
-   - create tag `vX.Y.Z`
    - create the GitHub release
 
 ## External setup required
@@ -62,4 +62,7 @@ Recommended external setup:
 
 When configuring npm trusted publishing, register the GitHub workflow using the exact workflow filename in this repo: `.github/workflows/publish.yml`.
 
-The publish workflow is intentionally manual. Release issuance should stay deliberate even after trusted publishing is enabled.
+The publish workflow runs on its own when a push to `main` changes `package.json` — the merge of
+the version PR. It can also be started by hand (`gh workflow run publish.yml --ref main`) for a
+release whose version file did not change. Release issuance stays deliberate: every step is
+skipped when its result already exists.

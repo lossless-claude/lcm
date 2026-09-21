@@ -95,8 +95,8 @@ language goes through whole, function words included.
 
 Packs are plain JSON, reviewable and hand-editable; deleting one makes the next detection regenerate
 it. On the 74 pt-BR bench questions built at `ea10a75`, dropping pt-BR function words alone moved
-hit@5 from 0.419 to 0.486 (+7 / −2) with no model call at search time. `LCM_LANGUAGES_DIR` points
-the loader elsewhere; the test suite uses it so no test reads a developer's real packs.
+hit@5 from 0.419 to 0.486 (+7 / −2) with no model call at search time. `LCM_LANGUAGES_DIR` points the loader elsewhere for callers that supply no storage root; the test
+suite uses it so no test reads a developer's real packs.
 
 English becoming a pack like any other (issue #509) changes the single-language English path: it
 used to be a fixed list unioned with any disk `en.json`; now it is the disk file alone when one
@@ -337,7 +337,8 @@ score is not evidence that a release meets real-world recall targets.
 
 Query preparation and OR-fallback bridge part of the vocabulary gap; the rest is semantic.
 Embedding summaries and promoted memories and fusing with BM25 is the planned next step — the
-`restoration.semanticTopK` / `restoration.semanticThreshold` config keys are reserved for it — but
+names `restoration.semanticTopK` / `restoration.semanticThreshold` are reserved for it, and neither
+key exists in the config schema today, so setting one now changes nothing — but
 it is independent of the query-preparation fix above, which is worth having regardless: an
 unprocessed natural-language string passed to an AND-ing full-text engine returns empty by
 construction.

@@ -147,13 +147,14 @@ const HELP: Record<string, CommandHelp> = {
 
   compact: {
     summary: "Compact conversation context into DAG summary nodes.",
-    usage: "lcm compact [--all] [--dry-run] [--replay] [--restart] [--no-promote]",
+    usage: "lcm compact [--all] [--dry-run] [--replay] [--restart] [--no-promote] [-v]",
     options: [
       ["--all", "Compact all tracked projects (default: current project only)"],
       ["--dry-run", "Show what would be compacted without writing anything"],
       ["--replay", "Compact sequentially, threading each summary through the prior context (resumes where the last run stopped)"],
       ["--restart", "With --replay: discard recorded progress and all summaries in the conversations the run touches, then start from scratch"],
       ["--no-promote", "Skip the automatic promote step that runs after compaction"],
+      ["-v, --verbose", "Show per-session token details"],
     ],
     examples: [
       ["lcm compact", "Compact current project"],
@@ -206,13 +207,16 @@ const HELP: Record<string, CommandHelp> = {
 
   stats: {
     summary: "Show memory inventory: message counts, compression ratios, and summary statistics.",
-    usage: "lcm stats [-v]",
+    usage: "lcm stats [-v] [--pool [--json]]",
     options: [
       ["-v, --verbose", "Show per-conversation breakdown"],
+      ["--pool", "Show connection pool statistics from the daemon"],
+      ["--json", "Output structured JSON (use with --pool)"],
     ],
     examples: [
       ["lcm stats", "Summary view across all projects"],
       ["lcm stats -v", "Per-conversation detail"],
+      ["lcm stats --pool --json", "Connection pool statistics as JSON"],
     ],
   },
 
