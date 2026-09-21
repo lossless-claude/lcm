@@ -80,14 +80,20 @@ describe("DryRunServiceDeps", () => {
   // ── spawnSync — setup.sh special case ────────────────────────────────────
 
   it("spawnSync for 'bash setup.sh' actually runs setup.sh with XGH_DRY_RUN=1", () => {
-    // Script must end in "setup.sh" to trigger the special case
-    const scriptPath = join(tmpdir(), `lc-test-setup.sh`);
+    // Script must end in "setup.sh" to trigger the special case, and its name must be unique
+    // to this process: the temp dir is shared, so a second suite run on the same machine
+    // deleting a fixed name between this write and the spawn makes bash exit 127 — a "command
+    // not found" that reads as a broken installer instead of a collided temp file (#526).
+    const scriptPath = join(tmpdir(), `lc-test-${process.pid}-${Date.now()}-setup.sh`);
     writeFileSync(scriptPath, `#!/bin/bash\necho "[dry-run] backend: ollama (test)"`);
-    const deps = new DryRunServiceDeps();
-    const result = deps.spawnSync("bash", [scriptPath], { env: { ...process.env, XGH_DRY_RUN: "1" } });
-    expect(result.status).toBe(0);
-    expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining("[dry-run] would run: bash"));
-    rmSync(scriptPath);
+    try {
+      const deps = new DryRunServiceDeps();
+      const result = deps.spawnSync("bash", [scriptPath], { env: { ...process.env, XGH_DRY_RUN: "1" } });
+      expect(result.status).toBe(0);
+      expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining("[dry-run] would run: bash"));
+    } finally {
+      rmSync(scriptPath, { force: true });
+    }
   });
 
   // ── promptUser ───────────────────────────────────────────────────────────

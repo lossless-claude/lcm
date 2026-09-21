@@ -317,6 +317,10 @@ not automatically prove relevance judgments or corpus representativeness.
 | p95 query latency | ≤ 500 ms |
 
 Thresholds ratchet upward as retrieval improves; they are never tuned down to make a build pass.
+The latency row is the one threshold a busy — or simply slower — machine moves, so it is measured
+against a budget the same run scales by a contention probe: the 500 ms above is the floor, and a
+failure names the measured time and the budget it missed. The other three rows are not
+timing-sensitive and never scale.
 A passing synthetic gate proves regression coverage, not release quality. Published quality numbers
 must come from a reviewed, representative real corpus. LLM generation alone does not establish
 question quality or corpus representativeness.

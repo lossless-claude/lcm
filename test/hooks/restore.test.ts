@@ -31,6 +31,7 @@ vi.mock("../../src/hooks/daemon-requests.js", () => ({
 
 import { ensureDaemon } from "../../src/daemon/lifecycle.js";
 import { fireSessionStartCompactRequest } from "../../src/hooks/daemon-requests.js";
+import { claimPath } from "../../src/hooks/session-claim.js";
 import { lcmHome } from "../../src/lcm-home.js";
 import { createLcmPaths } from "../../src/lcm-paths.js";
 
@@ -38,11 +39,33 @@ const paths = createLcmPaths(lcmHome());
 const mockEnsureDaemon = vi.mocked(ensureDaemon);
 const mockFireSessionStartCompact = vi.mocked(fireSessionStartCompactRequest);
 
+/**
+ * The hook's two coordination files — the restore lock `lcm-restore-<id>.lock` and the
+ * function-hooks claim `lcm-claim-<id>.json` — sit at fixed paths under the shared temp dir,
+ * keyed only by the session id. A fixed id therefore lets a second suite run on the same
+ * machine hold, delete or claim this run's files, and the hook goes silent for a reason the
+ * test never set up (#526). Ids are unique per process, so those files are too.
+ */
+const SESSION_TAG = `p${process.pid}`;
+const sid = (name: string): string => `${name}-${SESSION_TAG}`;
+const SESSION_NAMES = [
+  "s1",
+  "s2",
+  "s3",
+  "s4",
+  "dedup-guard-test-abc123",
+  "dead-pid-test-session",
+  "s-owned",
+  "s-unclaimed",
+];
+
 describe("handleSessionStart", () => {
   beforeEach(() => {
-    // Clear session locks between tests to prevent cross-test bleed
-    for (const id of ["s1", "s2", "s3", "s4", "dedup-guard-test-abc123", "dead-pid-test-session"]) {
+    // Clear session locks and claims between tests to prevent cross-test bleed
+    for (const name of SESSION_NAMES) {
+      const id = sid(name);
       rmSync(join(tmpdir(), `lcm-restore-${id}.lock`), { force: true });
+      rmSync(claimPath(id), { force: true });
     }
     mockFireSessionStartCompact.mockClear();
   });
@@ -53,7 +76,7 @@ describe("handleSessionStart", () => {
       health: vi.fn(),
       post: vi.fn().mockResolvedValue({ context: "<memory-orientation>\nMemory active\n</memory-orientation>" }),
     };
-    const result = await handleSessionStart(JSON.stringify({ session_id: "s1", cwd: "/proj", hook_event_name: "SessionStart" }), client as any, paths);
+    const result = await handleSessionStart(JSON.stringify({ session_id: sid("s1"), cwd: "/proj", hook_event_name: "SessionStart" }), client as any, paths);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("<memory-orientation>");
   });
@@ -64,14 +87,14 @@ describe("handleSessionStart", () => {
       health: vi.fn(),
       post: vi.fn().mockResolvedValue({ context: "ctx" }),
     };
-    await handleSessionStart(JSON.stringify({ session_id: "s4", cwd: "/proj" }), client as any, paths, 4242);
-    expect(mockFireSessionStartCompact).toHaveBeenCalledWith(4242, { cwd: "/proj", session_id: "s4" }, paths);
+    await handleSessionStart(JSON.stringify({ session_id: sid("s4"), cwd: "/proj" }), client as any, paths, 4242);
+    expect(mockFireSessionStartCompact).toHaveBeenCalledWith(4242, { cwd: "/proj", session_id: sid("s4") }, paths);
   });
 
   it("does not fire the session-start compact sweep without a cwd", async () => {
     mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
     const client = { health: vi.fn(), post: vi.fn().mockResolvedValue({ context: "ctx" }) };
-    await handleSessionStart(JSON.stringify({ session_id: "s1" }), client as any, paths);
+    await handleSessionStart(JSON.stringify({ session_id: sid("s1") }), client as any, paths);
     expect(mockFireSessionStartCompact).not.toHaveBeenCalled();
   });
 
@@ -95,7 +118,7 @@ describe("handleSessionStart", () => {
         ],
       }),
     };
-    const result = await handleSessionStart(JSON.stringify({ session_id: "s1", cwd: "/proj" }), client as any, paths);
+    const result = await handleSessionStart(JSON.stringify({ session_id: sid("s1"), cwd: "/proj" }), client as any, paths);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("<memory-orientation>");
     expect(result.stdout).toContain('<learned-insights source="passive-capture">');
@@ -110,7 +133,7 @@ describe("handleSessionStart", () => {
       health: vi.fn(),
       post: vi.fn().mockResolvedValue({ context: "some context" }),
     };
-    const result = await handleSessionStart(JSON.stringify({ session_id: "s2", cwd: "/proj" }), client as any, paths);
+    const result = await handleSessionStart(JSON.stringify({ session_id: sid("s2"), cwd: "/proj" }), client as any, paths);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).not.toContain("<learned-insights");
   });
@@ -121,13 +144,13 @@ describe("handleSessionStart", () => {
       health: vi.fn(),
       post: vi.fn().mockResolvedValue({ context: "some context", insights: [] }),
     };
-    const result = await handleSessionStart(JSON.stringify({ session_id: "s3", cwd: "/proj" }), client as any, paths);
+    const result = await handleSessionStart(JSON.stringify({ session_id: sid("s3"), cwd: "/proj" }), client as any, paths);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).not.toContain("<learned-insights");
   });
 
   it("returns empty output without contacting daemon on duplicate session_id", async () => {
-    const sessionId = "dedup-guard-test-abc123";
+    const sessionId = sid("dedup-guard-test-abc123");
     const lockPath = join(tmpdir(), `lcm-restore-${sessionId}.lock`);
     if (existsSync(lockPath)) rmSync(lockPath);
 
@@ -152,7 +175,7 @@ describe("handleSessionStart", () => {
   });
 
   it("proceeds normally when lock file exists but owner process is dead", async () => {
-    const sessionId = "dead-pid-test-session";
+    const sessionId = sid("dead-pid-test-session");
     const lockPath = join(tmpdir(), `lcm-restore-${sessionId}.lock`);
     // Write a lock file with a PID that is guaranteed dead (PID 0 is invalid, large PID unlikely to exist)
     const { writeFileSync } = await import("node:fs");
@@ -175,20 +198,20 @@ describe("handleSessionStart", () => {
 
   it("stays silent while the function-hooks module holds the session", async () => {
     process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = "1";
-    const { claimPath } = await import("../../src/hooks/session-claim.js");
+    const owned = sid("s-owned");
     const { writeFileSync, rmSync } = await import("node:fs");
-    writeFileSync(claimPath("s-owned"), JSON.stringify({ sessionId: "s-owned", ts: Date.now() }));
+    writeFileSync(claimPath(owned), JSON.stringify({ sessionId: owned, ts: Date.now() }));
     mockEnsureDaemon.mockClear();
     try {
       const client = { health: vi.fn(), post: vi.fn() };
       const result = await handleSessionStart(
-        JSON.stringify({ session_id: "s-owned", cwd: "/proj" }), client as any, paths,
+        JSON.stringify({ session_id: owned, cwd: "/proj" }), client as any, paths,
       );
       expect(result).toEqual({ exitCode: 0, stdout: "" });
       expect(client.post).not.toHaveBeenCalled();
       expect(mockEnsureDaemon).not.toHaveBeenCalled();
     } finally {
-      rmSync(claimPath("s-owned"), { force: true });
+      rmSync(claimPath(owned), { force: true });
       delete process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS;
     }
   });
@@ -199,7 +222,7 @@ describe("handleSessionStart", () => {
       mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
       const client = { health: vi.fn(), post: vi.fn().mockResolvedValue({ context: "ctx" }) };
       const result = await handleSessionStart(
-        JSON.stringify({ session_id: "s-unclaimed", cwd: "/proj" }), client as any, paths,
+        JSON.stringify({ session_id: sid("s-unclaimed"), cwd: "/proj" }), client as any, paths,
       );
       expect(result.stdout).toBe("ctx");
     } finally {
