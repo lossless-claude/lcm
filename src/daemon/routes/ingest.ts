@@ -5,21 +5,22 @@ import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
 import type { LcmPaths } from "../../lcm-paths.js";
 import { updateProjectMeta } from "../project-meta.js";
-import { projectDbPath, projectDir, projectId, claudeTranscriptPath } from "../project.js";
+import { projectDbPath, projectDir, projectId } from "../project.js";
 import { openProject } from "../project-group.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import type { SubagentAttributionInput } from "../../store/conversation-store.js";
-import { TranscriptSourceError } from "../../transcript-source.js";
+import { TranscriptSourceError, transcriptSource } from "../../transcript-source.js";
 import { EventsDb } from "../../hooks/events-db.js";
 import { eventsDbPath } from "../../db/events-path.js";
+import type { SessionClient } from "../../session-client.js";
 import { ScrubEngine } from "../../scrub.js";
 import { validateCwd } from "../validate-cwd.js";
 import { scheduleProjectLanguageDetection } from "../project-language.js";
 import { enqueue } from "../project-queue.js";
 import { SessionCapture, isSessionComplete, type CaptureInput, type CaptureResult, type TranscriptCaptureResult } from "../../capture.js";
-import { discoverSubagentTranscripts, type DiscoveredSubagentTranscript } from "../../subagent-attribution.js";
+import type { DiscoveredSubagentTranscript } from "../../subagent-attribution.js";
 
 type ParsedMessage = CaptureInput["messages"][number];
 
@@ -40,7 +41,7 @@ export interface IngestInput {
   cwd?: string;
   messages?: unknown;
   transcript_path?: string;
-  client?: "claude" | "codex";
+  client?: SessionClient;
   source?: "live" | "import";
   replay?: boolean;
   /** Subagent attribution, carried from the transcript's `.meta.json` sidecar. */
@@ -80,27 +81,14 @@ async function ingestAllSubagents(
 }
 
 /**
- * The subagent transcripts of one already-known session, at
- * `<project>/<session_id>/subagents/`. Scoped to that one session directory:
- * `/ingest` already knows which session it is processing, so this never
- * walks the whole projects tree.
- */
-function discoverSubagentSessionTranscripts(cwd: string, sessionId: string): DiscoveredSubagentTranscript[] {
-  const transcriptPath = claudeTranscriptPath(cwd, sessionId);
-  if (!transcriptPath) return [];
-  return discoverSubagentTranscripts(join(dirname(transcriptPath), sessionId));
-}
-
-/**
- * Discovers and ingests the subagent transcripts dispatched by one session —
- * the only way they reach the database without `lcm import` run by hand
- * (issue #434). Skipped entirely, before opening any queue or connection,
- * when the session has no `subagents/` directory.
+ * Ingests the subagent transcripts dispatched by one session — the only way
+ * they reach the database without `lcm import` run by hand (issue #434). The
+ * caller discovers them through the session's transcript adapter; this opens
+ * no queue or connection when the list is empty.
  */
 async function ingestSubagentTranscripts(
-  cwd: string, dbPath: string, pid: string, sessionId: string, scrubber: ScrubEngine, paths: LcmPaths,
+  cwd: string, dbPath: string, pid: string, subagents: DiscoveredSubagentTranscript[], scrubber: ScrubEngine, paths: LcmPaths,
 ): Promise<void> {
-  const subagents = discoverSubagentSessionTranscripts(cwd, sessionId);
   if (subagents.length === 0) return;
 
   await enqueue(pid, async () => {
@@ -159,6 +147,7 @@ export function createIngestHandler(config: DaemonConfig, paths: LcmPaths): Rout
       return;
     }
 
+    const source = transcriptSource(input.client);
     const pid = projectId(cwd);
     try {
       const scrubber = await ScrubEngine.forProject(
@@ -173,10 +162,10 @@ export function createIngestHandler(config: DaemonConfig, paths: LcmPaths): Rout
           runLcmMigrations(db);
 
           // A session already fully ingested is skipped — on the same db connection to
-          // avoid double-open overhead and lock contention. Replay and Codex skip this
-          // shortcut: Codex imports can recover a final record deferred by live capture,
-          // and the capture module's stored-count slice keeps both paths idempotent.
-          if (input.replay !== true && input.client !== "codex" && isSessionComplete(db, session_id)) {
+          // avoid double-open overhead and lock contention. A client whose adapter may
+          // recover a deferred tail (and replay) skips this shortcut: the capture
+          // module's stored-count slice keeps those paths idempotent.
+          if (input.replay !== true && !source.mayRecoverTail && isSessionComplete(db, session_id)) {
             return { ingested: 0, totalTokens: 0 };
           }
 
@@ -224,9 +213,10 @@ export function createIngestHandler(config: DaemonConfig, paths: LcmPaths): Rout
       // live path that discovers them (issue #434). Best-effort: a subagent
       // transcript problem must not turn an otherwise-successful ingest into
       // an error response for the session that was actually asked for.
-      if (input.client !== "codex") {
+      const subagents = source.discoverSubagents?.(cwd, session_id) ?? [];
+      if (subagents.length > 0) {
         try {
-          await ingestSubagentTranscripts(cwd, dbPath, pid, session_id, scrubber, paths);
+          await ingestSubagentTranscripts(cwd, dbPath, pid, subagents, scrubber, paths);
         } catch (err) {
           console.error(`ingest: subagent discovery failed for session ${session_id}: ${err instanceof Error ? err.message : err}`);
         }

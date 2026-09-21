@@ -25,7 +25,7 @@ export async function handlePreCompact(stdin: string, client: DaemonClient, path
     }, { timeoutMs: COMPACT_TIMEOUT_MS });
 
     try {
-      const { firePromoteEventsRequest } = await import("./session-end.js");
+      const { firePromoteEventsRequest } = await import("./daemon-requests.js");
       firePromoteEventsRequest(daemonPort, { cwd: input.cwd }, paths);
     } catch {
       // Silent fail — PreCompact must not delay session

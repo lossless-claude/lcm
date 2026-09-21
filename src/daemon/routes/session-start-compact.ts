@@ -1,4 +1,4 @@
-import { fireCompactRequest } from "../../hooks/session-end.js";
+import { fireCompactRequest } from "../../hooks/daemon-requests.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import type { DaemonConfig } from "../config.js";

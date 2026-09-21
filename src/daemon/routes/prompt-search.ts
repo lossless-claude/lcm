@@ -181,7 +181,8 @@ export interface PromptSearchRequest {
   recordEvents?: boolean;
   /** `"context"`: add the rendered `<memory-context>` block to the response as `context`. */
   format?: "context";
-  client?: "codex";
+  /** Also fill the hint budget from the session's native episodic history (a client whose live capture is searchable before promotion asks for this). */
+  nativeHistory?: boolean;
 }
 
 function validatePromptSearchInput(input: unknown): PromptSearchRequest {
@@ -209,7 +210,7 @@ function validatePromptSearchInput(input: unknown): PromptSearchRequest {
     debug: obj.debug === true,
     recordEvents: obj.recordEvents === true,
     format: obj.format === "context" ? "context" : undefined,
-    client: obj.client === "codex" ? "codex" : undefined,
+    nativeHistory: obj.nativeHistory === true,
   };
 }
 
@@ -317,10 +318,10 @@ export function createPromptSearchHandler(config: DaemonConfig, paths: LcmPaths)
         resurfaceMargin,
       );
 
-      // Codex's live capture is searchable before promotion or summarization.
-      // Keep promoted ranking intact, and fill the same bounded hint budget
-      // with native episodic matches rather than requiring a manual import.
-      const history = input.client === "codex"
+      // A client whose live capture is searchable before promotion or summarization
+      // asks for this. Keep promoted ranking intact, and fill the same bounded hint
+      // budget with native episodic matches rather than requiring a manual import.
+      const history = input.nativeHistory
         ? await searchNativeHistory(db, { query, limit: targetHintCount, terms: queryTerms, project: projectRef(cwd) })
         : [];
       // A hit surfaced from a sibling checkout carries its own project id, so the

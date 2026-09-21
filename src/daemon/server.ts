@@ -1,8 +1,12 @@
 import { SummarizeJobStore } from "./summarize-jobs.js";
 import { createNextSummarizeJobHandler, createAnswerSummarizeJobHandler } from "./routes/summarize-jobs.js";
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
+import { existsSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { DaemonConfig } from "./config.js";
+import { readProjectMetaIn } from "./project-meta.js";
 import { sanitizeError } from "./safe-error.js";
 import { readAuthToken } from "./auth.js";
 import type { ProxyManager } from "./proxy-manager.js";
@@ -28,10 +32,10 @@ import { createSessionScavengeHandler } from "./routes/session-scavenge.js";
 import { createSessionStartCompactHandler } from "./routes/session-start-compact.js";
 import { createSessionEndHandler, invokeRoute } from "./routes/session-end.js";
 import { backfillProjectIdentities } from "./project-group.js";
+import { claudeProjectSlug } from "./project.js";
 import { PKG_VERSION, BUILD_ID } from "./version.js";
 import { lcmHome } from "../lcm-home.js";
 import { createLcmPaths, type LcmPaths } from "../lcm-paths.js";
-import { claudeProjectSlug } from "./project.js";
 export { PKG_VERSION };
 
 export type RouteHandler = (req: IncomingMessage, res: ServerResponse, body: string) => Promise<void>;
@@ -136,44 +140,9 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   // Periodic transcript ingestion scan
   const INGEST_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
   const ingestHandler = createIngestHandler(config, paths);
-
-  const scanForTranscripts = async () => {
-    try {
-      const { readdirSync, existsSync } = await import("node:fs");
-      const { readProjectMetaIn } = await import("./project-meta.js");
-      const { join } = await import("node:path");
-      const { homedir } = await import("node:os");
-
-      const projectsDir = paths.projectsDir;
-      if (!existsSync(projectsDir)) return;
-
-      for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue;
-        const meta = readProjectMetaIn(join(projectsDir, entry.name));
-        if (!meta?.cwd) continue;
-
-        // Find Claude Code session files for this project's cwd
-        const sessionsDir = join(homedir(), ".claude", "projects", claudeProjectSlug(meta.cwd));
-        if (!existsSync(sessionsDir)) continue;
-
-        for (const file of readdirSync(sessionsDir)) {
-          if (!file.endsWith(".jsonl")) continue;
-          const sessionId = file.replace(".jsonl", "");
-          const transcriptPath = join(sessionsDir, file);
-
-          try {
-            await invokeRoute(ingestHandler, { session_id: sessionId, cwd: meta.cwd, transcript_path: transcriptPath });
-          } catch {
-            continue; // one rejected transcript must not end the sweep
-          }
-        }
-      }
-    } catch {
-      // non-fatal: periodic scan failure shouldn't crash daemon
-    }
-  };
-
-  const ingestInterval = setInterval(scanForTranscripts, INGEST_INTERVAL_MS);
+  const ingestInterval = setInterval(() => {
+    void scanForTranscripts(config, paths, ingestHandler);
+  }, INGEST_INTERVAL_MS);
   ingestInterval.unref(); // don't prevent process exit
 
   // Group every project already on disk, shortly after the daemon is serving so
@@ -254,4 +223,42 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
       });
     });
   });
+}
+
+/**
+ * One pass of the periodic transcript scan: for every project with stored
+ * memory, ingests the Claude Code transcripts under
+ * `~/.claude/projects/<claudeProjectSlug(cwd)>` that live capture has not
+ * reached yet. Best-effort by construction — one rejected transcript, or the
+ * sweep itself, must never fault the daemon.
+ */
+export async function scanForTranscripts(config: DaemonConfig, paths: LcmPaths, ingest: RouteHandler): Promise<void> {
+  try {
+    const projectsDir = paths.projectsDir;
+    if (!existsSync(projectsDir)) return;
+
+    for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const meta = readProjectMetaIn(join(projectsDir, entry.name));
+      if (!meta?.cwd) continue;
+
+      // Find Claude Code session files for this project's cwd
+      const sessionsDir = join(homedir(), ".claude", "projects", claudeProjectSlug(meta.cwd));
+      if (!existsSync(sessionsDir)) continue;
+
+      for (const file of readdirSync(sessionsDir)) {
+        if (!file.endsWith(".jsonl")) continue;
+        const sessionId = file.replace(".jsonl", "");
+        const transcriptPath = join(sessionsDir, file);
+
+        try {
+          await invokeRoute(ingest, { session_id: sessionId, cwd: meta.cwd, transcript_path: transcriptPath });
+        } catch {
+          continue; // one rejected transcript must not end the sweep
+        }
+      }
+    }
+  } catch {
+    // non-fatal: periodic scan failure shouldn't crash daemon
+  }
 }

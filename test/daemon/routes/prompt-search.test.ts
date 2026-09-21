@@ -7,6 +7,7 @@ import { createDaemon, type DaemonInstance } from "../../../src/daemon/server.js
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { runLcmMigrations } from "../../../src/db/migration.js";
 import { PromotedStore } from "../../../src/db/promoted.js";
+import { ConversationStore } from "../../../src/store/conversation-store.js";
 import { projectDbPath } from "../../../src/daemon/project.js";
 import { lcmHome } from "../../../src/lcm-home.js";
 import { createLcmPaths } from "../../../src/lcm-paths.js";
@@ -870,6 +871,56 @@ describe("POST /prompt-search", () => {
       verifyDb.close();
 
       expect(row.count).toBeGreaterThan(0);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it("searches the session's native history only when the caller asks for it", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-prompt-search-native-"));
+    tempDirs.push(tempDir);
+
+    const dbPath = projectDbPath(tempDir, paths);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    runLcmMigrations(db);
+    const messages = new ConversationStore(db);
+    const conversation = await messages.getOrCreateConversation("native-history-session");
+    await messages.createMessage({
+      conversationId: conversation.conversationId,
+      seq: 0,
+      role: "assistant",
+      content: "Deploying Zephyrite requires rotating the staging certificate first.",
+      tokenCount: 50,
+    });
+    db.close();
+
+    const config = loadDaemonConfig("/nonexistent");
+    config.daemon.port = 0;
+    config.restoration.promptSearchMinScore = 0;
+    const daemon = await createDaemon(config);
+    const port = daemon.address().port;
+
+    try {
+      const post = async (body: Record<string, unknown>) => {
+        const res = await fetch(`http://127.0.0.1:${port}/prompt-search`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        expect(res.status).toBe(200);
+        return (await res.json()) as { hints: string[]; ids: string[] };
+      };
+
+      // Enabled: the live-captured message fills the hint budget as a native hit.
+      const enabled = await post({ query: "Zephyrite", cwd: tempDir, nativeHistory: true });
+      const nativeIds = enabled.ids.filter((id) => id.startsWith("message:"));
+      expect(nativeIds).toHaveLength(1);
+      expect(enabled.hints.join("\n")).toContain("Zephyrite");
+
+      // Disabled (the default): no native episodic hits, promoted results only.
+      const disabled = await post({ query: "Zephyrite", cwd: tempDir });
+      expect(disabled.ids.some((id) => id.startsWith("message:") || id.startsWith("summary:"))).toBe(false);
     } finally {
       await daemon.stop();
     }

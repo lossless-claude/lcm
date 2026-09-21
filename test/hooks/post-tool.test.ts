@@ -10,10 +10,10 @@ import { createLcmPaths, type LcmPaths } from "../../src/lcm-paths.js";
 vi.mock("../../src/daemon/config.js", () => ({
   loadDaemonConfig: () => ({ daemon: { port: 4242 } }),
 }));
-vi.mock("../../src/hooks/session-end.js", () => ({
+vi.mock("../../src/hooks/daemon-requests.js", () => ({
   firePromoteEventsRequest: vi.fn(),
 }));
-import { firePromoteEventsRequest } from "../../src/hooks/session-end.js";
+import { firePromoteEventsRequest } from "../../src/hooks/daemon-requests.js";
 
 vi.mock("../../src/db/events-path.js", () => ({
   eventsDbPath: () => join(process.env.TEST_EVENTS_DIR!, "test.db"),

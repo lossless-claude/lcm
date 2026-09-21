@@ -6,7 +6,7 @@ import type { DaemonClient } from "./daemon/client.js";
 import { formatNumber, formatRatio } from "./stats.js";
 import { findAllCodexTranscripts } from "./codex-transcript.js";
 import type { ProgressState } from "./cli/progress-state.js";
-import { projectDbPath, projectId, claudeProjectSlug } from "./daemon/project.js";
+import { claudeProjectSlug, projectDbPath, projectId } from "./daemon/project.js";
 import { readProjectMetaIn } from "./daemon/project-meta.js";
 import { createLcmPaths, type LcmPaths } from "./lcm-paths.js";
 import { discoverSubagentTranscripts, type SubagentAttribution } from "./subagent-attribution.js";
@@ -75,6 +75,7 @@ export interface ImportResult {
     callsWithCost: number;
   };
 }
+
 
 function buildProjectMap(paths: LcmPaths): Map<string, string> {
   const lcmProjectsDir = paths.projectsDir;

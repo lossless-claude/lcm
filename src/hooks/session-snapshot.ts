@@ -100,7 +100,7 @@ export async function handleSessionSnapshot(
       const { loadDaemonConfig: _loadConfig } = await import("../daemon/config.js");
       const _config = _loadConfig(paths.configPath);
       const port = _config.daemon?.port ?? 3737;
-      const { firePromoteEventsRequest } = await import("./session-end.js");
+      const { firePromoteEventsRequest } = await import("./daemon-requests.js");
       firePromoteEventsRequest(port, { cwd: input.cwd }, paths);
     } catch {
       // Best-effort only

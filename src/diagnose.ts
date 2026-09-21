@@ -2,8 +2,8 @@ import { createReadStream, existsSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline";
-import { findSessionFiles } from "./import.js";
 import { claudeProjectSlug } from "./daemon/project.js";
+import { findSessionFiles } from "./import.js";
 
 const RELEVANT_COMMAND_RE = /(^|[\s"'`])(?:[^"'`\s]+\/)?(?:lcm|lossless-claude)(?=$|[\s"'`])/;
 const OLD_BINARY_RE = /(^|[\s"'`])(?:[^"'`\s]+\/)?lossless-claude(?=$|[\s"'`])/;
