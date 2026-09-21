@@ -9,7 +9,7 @@ import {
   firePromoteEventsRequest,
   firePromoteRequest,
   fireSessionCompleteRequest,
-} from "../../hooks/session-end.js";
+} from "../../hooks/daemon-requests.js";
 
 export interface IngestResult {
   ingested?: number;

@@ -1,12 +1,9 @@
 // src/hooks/post-tool.ts
-import { extractPostToolEvents } from "./extractors.js";
-import { EventsDb } from "./events-db.js";
-import { eventsDbPath } from "../db/events-path.js";
-import { firePromoteEventsRequest } from "./session-end.js";
+import { firePromoteEventsRequest } from "./daemon-requests.js";
 import { safeLogError } from "./hook-errors.js";
 import { functionHooksOwnSession } from "./session-claim.js";
 import type { LcmPaths } from "../lcm-paths.js";
-import { withHookWrite } from "./write-admission.js";
+import { recordPostToolEvents } from "./tool-events.js";
 
 // Back-compat re-export: some callers historically imported the function-hooks gate from this module.
 export { functionHooksActive, functionHooksOwnSession } from "./session-claim.js";
@@ -14,82 +11,13 @@ export { functionHooksActive, functionHooksOwnSession } from "./session-claim.js
 /** Daemon port from config.json — Claude Code does not pass it on stdin. */
 async function configuredDaemonPort(paths: LcmPaths): Promise<number> {
   try {
+    // Deliberately dynamic: this hook runs on every tool call, and the config module
+    // is only needed when a priority-1 event actually fires a promote request.
     const { loadDaemonConfig } = await import("../daemon/config.js");
     return loadDaemonConfig(paths.configPath).daemon?.port ?? 3737;
   } catch {
     return 3737;
   }
-}
-
-/** The PostToolUse / PostToolUseFailure payload, as the command hook and the daemon route both receive it. */
-export interface PostToolPayload {
-  session_id: string;
-  cwd: string;
-  tool_name: string;
-  tool_input?: Record<string, unknown>;
-  tool_response?: unknown;
-  tool_output?: { isError?: boolean };
-  /** Claude Code's id for this tool call; both hook paths receive it. */
-  tool_use_id?: string;
-  /** Codex turn id, used only to backfill a missing Codex model from its transcript. */
-  turn_id?: string;
-  hook_event_name?: string;
-  error?: string;
-  is_interrupt?: boolean;
-  /** Which harness produced this call. Defaults to "claude" — the Codex normalizer is the only other writer. */
-  client?: "claude" | "codex";
-  /** The model that issued the tool call. Codex's hook payload carries it; Claude's does not, so it stays null until the next ingest backfills it. */
-  model?: string | null;
-}
-
-export interface RecordedPostTool {
-  /** Events written to the sidecar events DB. */
-  recorded: number;
-  /** True when at least one written event had priority 1 (promote now, not at session end). */
-  hasPriority1: boolean;
-  sourceHook: "PostToolUse" | "PostToolUseFailure";
-}
-
-/**
- * Extract passive-learning events from one tool call and write them to the project's
- * events DB. Shared by the command hook (stdin) and the daemon's POST /tool-event route
- * (function hooks module), so both paths record identical rows.
- */
-export function recordPostToolEvents(payload: PostToolPayload, paths: LcmPaths): RecordedPostTool {
-  const sourceHook = payload.hook_event_name === "PostToolUseFailure" ? "PostToolUseFailure" : "PostToolUse";
-  const events = extractPostToolEvents({
-    tool_name: payload.tool_name,
-    tool_input: payload.tool_input ?? {},
-    tool_response: payload.tool_response,
-    tool_output: payload.tool_output,
-    hook_event_name: sourceHook,
-    error: payload.error,
-    is_interrupt: payload.is_interrupt,
-  });
-  if (events.length === 0) return { recorded: 0, hasPriority1: false, sourceHook };
-
-  // The command hook forwards raw stdin, so the id is only trusted once it is a
-  // non-empty string; both call sites get the same normalization this way.
-  const toolUseId = typeof payload.tool_use_id === "string" && payload.tool_use_id
-    ? payload.tool_use_id
-    : undefined;
-  const turnId = typeof payload.turn_id === "string" ? payload.turn_id.trim() || undefined : undefined;
-
-  const client = payload.client === "codex" ? "codex" : "claude";
-  const model = typeof payload.model === "string" && payload.model ? payload.model : null;
-
-  const recorded = withHookWrite(paths, () => {
-    const db = new EventsDb(eventsDbPath(payload.cwd, paths));
-    try {
-      // Dedup on the whole call, not each event: one call extracts several events, and a
-      // per-event check would leave a half batch when the paths raced.
-      return db.insertToolCallEvents(payload.session_id, events, sourceHook, toolUseId, client, model, turnId);
-    } finally {
-      db.close();
-    }
-  }, 0);
-  if (recorded === 0) return { recorded: 0, hasPriority1: false, sourceHook };
-  return { recorded, hasPriority1: events.some(e => e.priority === 1), sourceHook };
 }
 
 export async function handlePostToolUse(

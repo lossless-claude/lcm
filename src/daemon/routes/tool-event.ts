@@ -1,6 +1,6 @@
 import { sendJson, type RouteHandler } from "../server.js";
 import { validateCwd } from "../validate-cwd.js";
-import { recordPostToolEvents } from "../../hooks/post-tool.js";
+import { recordPostToolEvents } from "../../hooks/tool-events.js";
 import { createPromoteEventsHandler } from "./promote-events.js";
 import { safeLogError } from "../../hooks/hook-errors.js";
 import type { DaemonConfig } from "../config.js";

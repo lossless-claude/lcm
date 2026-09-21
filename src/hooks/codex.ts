@@ -8,7 +8,7 @@ import { daemonNotice, warnOncePerSession } from "./fail-open.js";
 import { buildMemoryContext } from "./memory-context.js";
 import { lcmHome } from "../lcm-home.js";
 import { createLcmPaths, type LcmPaths } from "../lcm-paths.js";
-import { firePromoteEventsRequest } from "./session-end.js";
+import { firePromoteEventsRequest } from "./daemon-requests.js";
 
 const EVENTS = new Set([
   "SessionStart", "UserPromptSubmit", "Stop", "Interrupt", "SessionEnd", "PreCompact",
@@ -113,9 +113,9 @@ async function dispatchCodexToolHook(stdin: string, paths: LcmPaths): Promise<{ 
   try {
     const input = parseToolInput(stdin);
     if (!input) return EMPTY;
-    // Imported here, not at module scope: post-tool.js pulls node:sqlite, whose
+    // Imported here, not at module scope: tool-events.js pulls node:sqlite, whose
     // ExperimentalWarning would then reach stderr on every lifecycle no-op too.
-    const { recordPostToolEvents } = await import("./post-tool.js");
+    const { recordPostToolEvents } = await import("./tool-events.js");
     const outcome = recordPostToolEvents({ ...normalizeCodexTool(input), client: "codex" }, paths);
     if (outcome.hasPriority1) {
       const config = loadDaemonConfig(paths.configPath);
@@ -305,7 +305,7 @@ export async function dispatchCodexHook(
       const recalled = await client.post<{
         hints?: string[]; ids?: string[]; projectIds?: (string | null)[]; pivotHint?: string;
       }>("/prompt-search", {
-        ...identity, query: input.prompt, learningInstructionBytes: 0,
+        ...identity, query: input.prompt, learningInstructionBytes: 0, nativeHistory: true,
       }, { timeoutMs: 5000, signal });
       return contextOutput("UserPromptSubmit", buildMemoryContext(
         recalled.hints ?? [], recalled.ids ?? [], recalled.projectIds ?? [], recalled.pivotHint,

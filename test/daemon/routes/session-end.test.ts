@@ -11,7 +11,7 @@ const fired = {
   promoteEvents: vi.fn(),
   sessionComplete: vi.fn(),
 };
-vi.mock("../../../src/hooks/session-end.js", () => ({
+vi.mock("../../../src/hooks/daemon-requests.js", () => ({
   fireCompactRequest: (...args: unknown[]) => fired.compact(...args),
   firePromoteRequest: (...args: unknown[]) => fired.promote(...args),
   firePromoteEventsRequest: (...args: unknown[]) => fired.promoteEvents(...args),

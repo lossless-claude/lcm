@@ -28,8 +28,8 @@ function tempDir(prefix: string): string {
 }
 
 /** A stored state that mirrors what the adapter's own earlier answer would have written. */
-function stored(messages: Array<{ role: string; content: string }>, codexCursor?: CodexTranscriptCursor): StoredTranscript {
-  return { storedCount: messages.length, storedMessages: async () => messages, codexCursor };
+function stored(messages: Array<{ role: string; content: string }>, checkpoint?: CodexTranscriptCursor): StoredTranscript {
+  return { storedCount: messages.length, storedMessages: async () => messages, checkpoint };
 }
 
 describe("Claude transcript source", () => {
@@ -49,7 +49,7 @@ describe("Claude transcript source", () => {
     const delta = await source.read(path, undefined, ctx(cwd));
     expect(delta.sourceOffset).toBe(0);
     expect(delta.messages.map((m) => [m.role, m.content])).toEqual([["user", "one"], ["assistant", "two"]]);
-    expect(delta.codexCursor).toBeUndefined();
+    expect(delta.checkpoint).toBeUndefined();
   });
 
   it("empty delta: a fully stored transcript holds nothing more", async () => {
@@ -99,26 +99,26 @@ describe("Codex transcript source", () => {
     const delta = await source.read(path, undefined, ctx(cwd));
     expect(delta.sourceOffset).toBe(0);
     expect(delta.messages.map((m) => m.content)).toEqual(["one", "two"]);
-    expect(delta.codexCursor).toMatchObject({ messageCount: 2, recordBoundary: true });
+    expect(delta.checkpoint).toMatchObject({ messageCount: 2, recordBoundary: true });
   });
 
   it("empty delta: an unchanged transcript resumes at its cursor and holds nothing more", async () => {
     const { cwd, path } = fixture();
     const first = await source.read(path, undefined, ctx(cwd));
-    const second = await source.read(path, stored(first.messages, first.codexCursor), ctx(cwd));
+    const second = await source.read(path, stored(first.messages, first.checkpoint), ctx(cwd));
     expect(second.messages).toEqual([]);
     expect(second.sourceOffset).toBe(2);
-    expect(second.codexCursor).toEqual(first.codexCursor);
+    expect(second.checkpoint).toEqual(first.checkpoint);
   });
 
   it("delta after a stored prefix: resumes from the cursor and reports the offset it skipped", async () => {
     const { cwd, path } = fixture();
     const first = await source.read(path, undefined, ctx(cwd));
     appendFileSync(path, `${record("user", "three")}\n`);
-    const delta = await source.read(path, stored(first.messages, first.codexCursor), ctx(cwd));
+    const delta = await source.read(path, stored(first.messages, first.checkpoint), ctx(cwd));
     expect(delta.sourceOffset).toBe(2);
     expect(delta.messages.map((m) => m.content)).toEqual(["three"]);
-    expect(delta.codexCursor?.messageCount).toBe(3);
+    expect(delta.checkpoint?.messageCount).toBe(3);
   });
 
   it("stale cursor: one that does not account for the stored count is discarded for a verified full re-read", async () => {
@@ -126,7 +126,7 @@ describe("Codex transcript source", () => {
     const first = await source.read(path, undefined, ctx(cwd));
     appendFileSync(path, `${record("user", "three")}\n`);
     // Only one message stored, but the cursor claims two: the cursor is not trusted.
-    const delta = await source.read(path, stored(first.messages.slice(0, 1), first.codexCursor), ctx(cwd));
+    const delta = await source.read(path, stored(first.messages.slice(0, 1), first.checkpoint), ctx(cwd));
     expect(delta.sourceOffset).toBe(0);
     expect(delta.messages.map((m) => m.content)).toEqual(["one", "two", "three"]);
   });
@@ -135,7 +135,7 @@ describe("Codex transcript source", () => {
     const { cwd, path } = fixture();
     const first = await source.read(path, undefined, ctx(cwd));
     const rewritten = [{ role: "user", content: "not one" }, { role: "assistant", content: "two" }];
-    await expect(source.read(path, stored(rewritten, { ...first.codexCursor!, messageCount: 1 }), ctx(cwd)))
+    await expect(source.read(path, stored(rewritten, { ...(first.checkpoint as CodexTranscriptCursor), messageCount: 1 }), ctx(cwd)))
       .rejects.toThrow(TranscriptSourceError);
   });
 
@@ -144,7 +144,7 @@ describe("Codex transcript source", () => {
     const first = await source.read(path, undefined, ctx(cwd));
     const meta = JSON.stringify({ type: "session_meta", payload: { id: sessionId, cwd } });
     writeFileSync(path, `${meta}\n${record("user", "one")}\n`);
-    await expect(source.read(path, stored(first.messages, first.codexCursor), ctx(cwd)))
+    await expect(source.read(path, stored(first.messages, first.checkpoint), ctx(cwd)))
       .rejects.toThrow("Codex transcript is shorter than stored history; restore the full transcript before retrying");
   });
 

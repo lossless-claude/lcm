@@ -1,7 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
 import { sep } from "node:path";
-import type { CodexTranscriptCursor } from "./codex-transcript-reader.js";
-import { loadCodexCursor, saveCodexCursor } from "./db/codex-cursor.js";
 import type { EventsDb } from "./hooks/events-db.js";
 import { upsertRedactionCounts } from "./db/redaction-stats.js";
 import type { ScrubEngine } from "./scrub.js";
@@ -16,14 +14,15 @@ import {
 import { SummaryStore } from "./store/summary-store.js";
 import { readSubagentAttribution } from "./subagent-attribution.js";
 import type { MessagePart, ParsedMessage } from "./transcript.js";
-import { transcriptSource, type StoredTranscript, type TranscriptLocator } from "./transcript-source.js";
+import { transcriptSource, type StoredTranscript, type TranscriptLocator, type TranscriptSource } from "./transcript-source.js";
 
 /**
  * Capture (see CONTEXT.md): the one writer of a session's transcript content.
  * Every route that lands messages in `messages` goes through `SessionCapture`,
  * so what counts as "already stored", how content is scrubbed, and which
- * sibling rows (`context_items`, `message_parts`, redaction counts, the Codex
- * cursor) accompany a message are decided in exactly one place. It is also
+ * sibling rows (`context_items`, `message_parts`, redaction counts, the
+ * transcript adapter's resume checkpoint) accompany a message are decided in
+ * exactly one place. It is also
  * the one caller of the transcript-source seam (src/transcript-source.ts):
  * a route names the client and the session, and Capture picks the adapter.
  */
@@ -39,14 +38,16 @@ export interface CaptureInput {
   sessionId: string;
   /** Transcript messages, from the first one or from `sourceOffset` onwards. Whatever is already stored is skipped. */
   messages: ParsedMessage[];
-  /** How many leading messages `messages` already omits (a Codex cursor resume). */
+  /** How many leading messages `messages` already omits (an adapter checkpoint resume). */
   sourceOffset?: number;
   /** Transcript path; when `attribution` is absent and this is a subagent transcript, its sidecar supplies it. */
   transcriptPath?: string;
   /** The `/ingest` subagent path always passes the walker's; `/compact` and a direct `/ingest` of a subagent transcript may pass none. */
   attribution?: SubagentAttributionInput;
-  /** Persisted in the same transaction as the messages it accounts for. */
-  codexCursor?: { transcriptPath: string; cursor: CodexTranscriptCursor };
+  /** The transcript adapter's opaque resume token; persisted in the same transaction as the messages it accounts for. */
+  checkpoint?: unknown;
+  /** Persists that token for the session's conversation; called inside the write transaction. */
+  persistCheckpoint?: (db: DatabaseSync, conversationId: number) => void;
 }
 
 export interface CaptureResult {
@@ -131,26 +132,32 @@ export class SessionCapture {
     const transcriptPath = source.locate(input);
     if (!transcriptPath) return undefined;
     const stored = await this.stored(input.sessionId);
-    const delta = await source.read(transcriptPath, stored && this.storedTranscript(stored, transcriptPath), {
+    const delta = await source.read(transcriptPath, stored && this.storedTranscript(source, stored, transcriptPath), {
       ...input, scrub: (text) => this.scrubber.scrubWithCounts(text).text,
     });
-    if (!stored && delta.messages.length === 0 && !delta.codexCursor) return undefined;
+    if (!stored && delta.messages.length === 0 && delta.checkpoint === undefined) return undefined;
     const written = await this.write({
       sessionId: input.sessionId,
       messages: delta.messages,
       sourceOffset: delta.sourceOffset,
       transcriptPath,
       attribution: input.attribution,
-      ...(delta.codexCursor ? { codexCursor: { transcriptPath, cursor: delta.codexCursor } } : {}),
+      ...(delta.checkpoint !== undefined
+        ? {
+            checkpoint: delta.checkpoint,
+            persistCheckpoint: (db, conversationId) =>
+              source.saveCheckpoint?.(db, conversationId, transcriptPath, delta.checkpoint),
+          }
+        : {}),
     });
     return { ...written, transcriptPath, backfillModels: (events) => delta.backfillModels(events, input.sessionId) };
   }
 
-  private storedTranscript(stored: StoredSession, transcriptPath: string): StoredTranscript {
+  private storedTranscript(source: TranscriptSource, stored: StoredSession, transcriptPath: string): StoredTranscript {
     return {
       storedCount: stored.storedCount,
       storedMessages: () => this.conversationStore.getMessages(stored.conversationId, { limit: stored.storedCount }),
-      codexCursor: loadCodexCursor(this.db, stored.conversationId, transcriptPath),
+      checkpoint: source.loadCheckpoint?.(this.db, stored.conversationId, transcriptPath),
     };
   }
 
@@ -158,7 +165,7 @@ export class SessionCapture {
    * Creates the conversation if needed and writes the messages past the
    * stored count, all in one transaction — a failed write or a crash mid-way
    * leaves neither the conversation row nor a partial message set behind. An
-   * empty delta still creates the conversation and still persists a cursor.
+   * empty delta still creates the conversation and still persists a checkpoint.
    */
   async write(input: CaptureInput): Promise<CaptureResult> {
     const attribution = input.attribution
@@ -171,7 +178,7 @@ export class SessionCapture {
       // A resumed read may skip only an already-stored prefix; new content begins at the stored count.
       const newMessages = input.messages.slice(Math.max(0, storedCount - (input.sourceOffset ?? 0)));
       const { inputs, totalCounts } = this.scrub(newMessages, conversationId, storedCount);
-      if (inputs.length === 0 && !input.codexCursor) return { conversationId, records: [], totalCounts };
+      if (inputs.length === 0 && input.checkpoint === undefined) return { conversationId, records: [], totalCounts };
 
       const created = inputs.length > 0 ? await this.conversationStore.createMessagesBulk(inputs) : [];
       if (created.length > 0) {
@@ -179,7 +186,7 @@ export class SessionCapture {
         await this.summaryStore.appendContextMessages(conversationId, created.map((r) => r.messageId));
         await this.persistMessageParts(input.sessionId, newMessages, created);
       }
-      if (input.codexCursor) saveCodexCursor(this.db, { conversationId, ...input.codexCursor });
+      if (input.checkpoint !== undefined) input.persistCheckpoint?.(this.db, conversationId);
       return { conversationId, records: created, totalCounts };
     });
   }

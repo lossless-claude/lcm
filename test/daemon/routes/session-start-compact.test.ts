@@ -15,7 +15,7 @@ vi.mock("../../../src/daemon/session-start-compact-worker.js", () => ({
 }));
 
 const fireCompactRequest = vi.fn();
-vi.mock("../../../src/hooks/session-end.js", () => ({
+vi.mock("../../../src/hooks/daemon-requests.js", () => ({
   fireCompactRequest: (...args: unknown[]) => fireCompactRequest(...args),
 }));
 

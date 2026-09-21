@@ -17,7 +17,7 @@ import {
   type HarnessHandle,
 } from "../harness.js";
 import { findUncompacted } from "../../../src/batch-compact.js";
-import { projectDir, projectId, claudeProjectSlug } from "../../../src/daemon/project.js";
+import { claudeProjectSlug, projectDir, projectId } from "../../../src/daemon/project.js";
 import { lcmHome } from "../../../src/lcm-home.js";
 import { createLcmPaths } from "../../../src/lcm-paths.js";
 

@@ -2,7 +2,7 @@ import type { DaemonClient } from "../daemon/client.js";
 import { ensureDaemon } from "../daemon/lifecycle.js";
 import { PKG_VERSION } from "../daemon/version.js";
 import { functionHooksOwnSession } from "./session-claim.js";
-import { fireSessionStartCompactRequest } from "./session-end.js";
+import { fireSessionStartCompactRequest } from "./daemon-requests.js";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { writeFileSync, readFileSync } from "node:fs";

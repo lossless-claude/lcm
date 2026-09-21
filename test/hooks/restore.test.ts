@@ -24,13 +24,13 @@ vi.mock("../../src/db/events-path.js", () => ({
   eventsDbPath: vi.fn().mockReturnValue("/tmp/test-events.db"),
 }));
 
-vi.mock("../../src/hooks/session-end.js", () => ({
+vi.mock("../../src/hooks/daemon-requests.js", () => ({
   firePromoteEventsRequest: vi.fn(),
   fireSessionStartCompactRequest: vi.fn(),
 }));
 
 import { ensureDaemon } from "../../src/daemon/lifecycle.js";
-import { fireSessionStartCompactRequest } from "../../src/hooks/session-end.js";
+import { fireSessionStartCompactRequest } from "../../src/hooks/daemon-requests.js";
 import { lcmHome } from "../../src/lcm-home.js";
 import { createLcmPaths } from "../../src/lcm-paths.js";
 

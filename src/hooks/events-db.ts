@@ -5,6 +5,7 @@ import { dirname } from "node:path";
 import type { ExtractedEvent } from "./extractors.js";
 import { getLcmConnection, closeLcmConnection, isLcmConnectionOpen } from "../db/connection.js";
 import { sanitizeError } from "../daemon/safe-error.js";
+import type { SessionClient } from "../session-client.js";
 
 /**
  * Tracks which db paths have already had migrations applied in this process.
@@ -250,7 +251,7 @@ export class EventsDb {
   /** The key a row dedups on: which one it is depends on what produced the event. */
   private insertRow(
     sessionId: string, event: ExtractedEvent, sourceHook: string,
-    keys: { toolUseId?: string; turnId?: string; promptHash?: string; client?: "claude" | "codex"; model?: string | null } = {},
+    keys: { toolUseId?: string; turnId?: string; promptHash?: string; client?: SessionClient; model?: string | null } = {},
   ): number {
     const stmt = this.db.prepare(`
       INSERT INTO events (session_id, seq, type, category, data, priority, source_hook, tool_use_id, turn_id, prompt_hash, client, model)
@@ -268,7 +269,7 @@ export class EventsDb {
 
   insertEvent(
     sessionId: string, event: ExtractedEvent, sourceHook: string, toolUseId?: string,
-    client?: "claude" | "codex", model?: string | null, turnId?: string,
+    client?: SessionClient, model?: string | null, turnId?: string,
   ): number {
     return this.insertRow(sessionId, event, sourceHook, { toolUseId, client, model, turnId });
   }
@@ -293,7 +294,7 @@ export class EventsDb {
    */
   insertToolCallEvents(
     sessionId: string, events: ExtractedEvent[], sourceHook: string, toolUseId?: string,
-    client?: "claude" | "codex", model?: string | null, turnId?: string,
+    client?: SessionClient, model?: string | null, turnId?: string,
   ): number {
     if (!toolUseId) {
       for (const event of events) this.insertEvent(sessionId, event, sourceHook, undefined, client, model, turnId);

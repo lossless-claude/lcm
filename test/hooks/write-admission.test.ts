@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { clearHold, writeHold } from "../../src/daemon/hold.js";
-import { recordPostToolEvents } from "../../src/hooks/post-tool.js";
+import { recordPostToolEvents } from "../../src/hooks/tool-events.js";
 import { recordUserPromptEvents } from "../../src/hooks/user-prompt.js";
 import { safeLogError, _resetCircuitBreaker } from "../../src/hooks/hook-errors.js";
 import { createLcmPaths, type LcmPaths } from "../../src/lcm-paths.js";
@@ -61,7 +61,7 @@ it("held stop drains a command-hook write already inside SQLite before succeedin
   writeFileSync(script, `
     import fs from 'node:fs';
     import { EventsDb } from ${moduleUrl("events-db.js")};
-    import { recordPostToolEvents } from ${moduleUrl("post-tool.js")};
+    import { recordPostToolEvents } from ${moduleUrl("tool-events.js")};
     import { lcmHome } from ${rootModuleUrl("lcm-home.js")};
     import { createLcmPaths } from ${rootModuleUrl("lcm-paths.js")};
     const root = process.env.LCM_HOME;

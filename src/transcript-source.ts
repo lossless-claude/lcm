@@ -1,20 +1,26 @@
 import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import { extractCodexTurnModels, type CodexSessionMeta } from "./codex-transcript.js";
-import { readCodexTranscriptDelta, type CodexTranscriptCursor } from "./codex-transcript-reader.js";
+import { readCodexTranscriptDelta, type CodexTranscriptCursor, type CodexTranscriptDelta } from "./codex-transcript-reader.js";
+import { loadCodexCursor, saveCodexCursor } from "./db/codex-cursor.js";
 import { claudeTranscriptPath, isSafeTranscriptPath, projectId } from "./daemon/project.js";
 import type { EventsDb } from "./hooks/events-db.js";
+import type { SessionClient } from "./session-client.js";
+import { discoverSubagentTranscripts, type DiscoveredSubagentTranscript } from "./subagent-attribution.js";
 import { extractToolUseModels, parseTranscript, type ParsedMessage } from "./transcript.js";
 
 /**
  * The transcript-source seam: one interface answering "what does this
- * transcript hold beyond what is already stored", with an adapter per harness.
- * Each adapter owns its own delta model — Claude re-parses the file and slices
- * at the stored count; Codex resumes from a byte-offset cursor and verifies the
- * stored prefix when it cannot — and its own validation rules. `SessionCapture`
- * (src/capture.ts) is the only caller; no route selects an adapter itself.
+ * transcript hold beyond what is already stored", with an adapter per session
+ * client (src/session-client.ts). Each adapter owns its own delta model —
+ * Claude re-parses the file and slices at the stored count; Codex resumes from
+ * a byte-offset cursor and verifies the stored prefix when it cannot — its own
+ * validation rules, and its own resume checkpoint, opaque to callers. It also
+ * states the capabilities the ingest route forks on, so no shared code names a
+ * client. `SessionCapture` (src/capture.ts) is the only reader; no route
+ * selects an adapter itself.
  */
-
-export type TranscriptClient = "claude" | "codex";
 
 /** What is known about a session's transcript before it is read. */
 export interface TranscriptLocator {
@@ -31,8 +37,8 @@ export interface StoredTranscript {
   storedCount: number;
   /** The stored prefix in order, for an adapter that must verify it before trusting a full re-read. */
   storedMessages(): Promise<Array<{ role: string; content: string }>>;
-  /** The Codex cursor persisted with the last write, unverified. */
-  codexCursor?: CodexTranscriptCursor;
+  /** The adapter's resume checkpoint as last persisted, unverified. Opaque: only the adapter that wrote it may read it. */
+  checkpoint?: unknown;
 }
 
 export interface ReadContext extends TranscriptLocator {
@@ -45,17 +51,25 @@ export interface TranscriptDelta {
   messages: ParsedMessage[];
   /** How many leading messages `messages` omits because they are stored. */
   sourceOffset: number;
-  /** Persisted in the same transaction as the messages it accounts for. */
-  codexCursor?: CodexTranscriptCursor;
+  /** The adapter's resume checkpoint; persisted in the same transaction as the messages it accounts for. Opaque to capture. */
+  checkpoint?: unknown;
   /** Fills the model on the session's events whose hook payload could not carry one; scans the transcript only when rows wait. */
   backfillModels(events: EventsDb, sessionId: string): void;
 }
 
 export interface TranscriptSource {
-  readonly client: TranscriptClient;
+  readonly client: SessionClient;
+  /** True when a read may recover transcript content the live hook path could not deliver — such a client must never take a "session complete" shortcut. */
+  readonly mayRecoverTail: boolean;
   /** The file this session reads from, validated; undefined when there is none. Throws for a path the adapter refuses. */
   locate(input: TranscriptLocator): string | undefined;
   read(path: string, stored: StoredTranscript | undefined, ctx: ReadContext): Promise<TranscriptDelta>;
+  /** Discovers the subagent transcripts dispatched by one session. Absent when the client has no subagent transcripts. */
+  discoverSubagents?(cwd: string, sessionId: string): DiscoveredSubagentTranscript[];
+  /** The checkpoint persisted with the session's last write, for `read` to resume from. Absent when the adapter keeps none. */
+  loadCheckpoint?(db: DatabaseSync, conversationId: number, transcriptPath: string): unknown;
+  /** Persists a delta's checkpoint. Called by capture inside the message-append transaction, so a crash leaves neither behind. */
+  saveCheckpoint?(db: DatabaseSync, conversationId: number, transcriptPath: string, checkpoint: unknown): void;
 }
 
 /** A transcript the adapter refuses to read: the caller's request is wrong, not the daemon. */
@@ -63,6 +77,11 @@ export class TranscriptSourceError extends Error {}
 
 const claudeSource: TranscriptSource = {
   client: "claude",
+  mayRecoverTail: false,
+  discoverSubagents(cwd, sessionId) {
+    const transcriptPath = claudeTranscriptPath(cwd, sessionId);
+    return transcriptPath ? discoverSubagentTranscripts(join(dirname(transcriptPath), sessionId)) : [];
+  },
   locate(input) {
     // A caller that knows only the session (the function-hooks module) gets Claude Code's
     // own transcript location; it still has to pass isSafeTranscriptPath like any other.
@@ -112,6 +131,7 @@ async function validateCodexRecovery(stored: StoredTranscript, messages: ParsedM
 
 const codexSource: TranscriptSource = {
   client: "codex",
+  mayRecoverTail: true,
   locate(input) {
     if (!input.transcriptPath) return undefined;
     const safe = isSafeTranscriptPath(input.transcriptPath, input.cwd, "codex");
@@ -120,9 +140,11 @@ const codexSource: TranscriptSource = {
     return safe;
   },
   async read(path, stored, ctx) {
+    // The checkpoint is this adapter's own token; the cast is the adapter boundary.
+    const cursor = stored?.checkpoint as CodexTranscriptCursor | undefined;
     // A cursor is trusted only while it accounts for exactly the stored messages.
-    const prior = stored?.codexCursor && stored.codexCursor.messageCount === stored.storedCount ? stored.codexCursor : undefined;
-    let delta: Awaited<ReturnType<typeof readCodexTranscriptDelta>>;
+    const prior = cursor && stored && cursor.messageCount === stored.storedCount ? cursor : undefined;
+    let delta: CodexTranscriptDelta;
     try {
       delta = await readCodexTranscriptDelta(path, { cursor: prior, includeTrailingRecord: ctx.source === "import" });
     } catch (error) {
@@ -133,12 +155,19 @@ const codexSource: TranscriptSource = {
     return {
       messages: delta.messages,
       sourceOffset: delta.resumed && prior ? prior.messageCount : 0,
-      codexCursor: delta.cursor,
+      checkpoint: delta.cursor,
       backfillModels(events, sessionId) {
         if (!events.hasUnfilledCodexModels(sessionId)) return;
         events.backfillCodexTurnModels(sessionId, extractCodexTurnModels(path));
       },
     };
+  },
+  loadCheckpoint(db, conversationId, transcriptPath) {
+    return loadCodexCursor(db, conversationId, transcriptPath);
+  },
+  saveCheckpoint(db, conversationId, transcriptPath, checkpoint) {
+    // The checkpoint is this adapter's own token; the cast is the adapter boundary.
+    saveCodexCursor(db, { conversationId, transcriptPath, cursor: checkpoint as CodexTranscriptCursor });
   },
 };
 

@@ -10,7 +10,7 @@ vi.mock("../../src/db/events-path.js", () => ({
   eventsDir: () => process.env.TEST_EVENTS_DIR!,
 }));
 
-import { recordPostToolEvents, type PostToolPayload } from "../../src/hooks/post-tool.js";
+import { recordPostToolEvents, type PostToolPayload } from "../../src/hooks/tool-events.js";
 import { EventsDb } from "../../src/hooks/events-db.js";
 import { createLcmPaths, type LcmPaths } from "../../src/lcm-paths.js";
 

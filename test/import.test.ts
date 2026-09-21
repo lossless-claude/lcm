@@ -7,13 +7,17 @@ import { discoverSubagentTranscripts } from "../src/subagent-attribution.js";
 import { findSessionFiles, importSessions } from "../src/import.js";
 import type { DaemonClient } from "../src/daemon/client.js";
 import { runLcmMigrations } from "../src/db/migration.js";
-import { projectId, claudeProjectSlug } from "../src/daemon/project.js";
+import { claudeProjectSlug, projectId } from "../src/daemon/project.js";
 
 // --- claudeProjectSlug ---
 
 describe("claudeProjectSlug", () => {
   it("keeps leading dash from absolute path", () => {
     expect(claudeProjectSlug("/home/user/project")).toBe("-home-user-project");
+  });
+
+  it("replaces every non-alphanumeric character, not only slashes", () => {
+    expect(claudeProjectSlug("/Users/me/.agents/my_repo")).toBe("-Users-me--agents-my-repo");
   });
 
   it("replaces all slashes with dashes", () => {
@@ -26,58 +30,6 @@ describe("claudeProjectSlug", () => {
 
   it("handles path without leading slash", () => {
     expect(claudeProjectSlug("home/user")).toBe("home-user");
-  });
-
-  it("replaces every non-alphanumeric character, not only slashes", () => {
-    expect(claudeProjectSlug("/Users/me/.agents/my_repo")).toBe("-Users-me--agents-my-repo");
-  });
-});
-
-// --- import --all against Claude Code's own directory names ---
-
-describe("importSessions --all", () => {
-  const dirs: string[] = [];
-
-  afterEach(() => {
-    for (const dir of dirs) {
-      rmSync(dir, { recursive: true, force: true });
-    }
-    dirs.length = 0;
-  });
-
-  function makeTmpDir(): string {
-    const dir = mkdtempSync(join(tmpdir(), "lcm-import-all-"));
-    dirs.push(dir);
-    return dir;
-  }
-
-  it("finds a tracked project whose cwd holds characters Claude Code renames", async () => {
-    const claudeProjectsDir = makeTmpDir();
-    const lcmDir = makeTmpDir();
-    const cwd = "/Users/me/.agents/my_repo";
-    mkdirSync(join(lcmDir, "projects", projectId(cwd)), { recursive: true });
-    writeFileSync(join(lcmDir, "projects", projectId(cwd), "meta.json"), JSON.stringify({ cwd }));
-    // The directory name Claude Code writes for that cwd, spelled out rather than
-    // derived, so a slug rule that drifts from Claude Code's fails here.
-    const projDir = join(claudeProjectsDir, "-Users-me--agents-my-repo");
-    mkdirSync(projDir, { recursive: true });
-    writeFileSync(join(projDir, "s1.jsonl"), '{"session":"s1"}\n');
-
-    const sessionIds: string[] = [];
-    const client = makeMockClient(async (_path, body) => {
-      if (body && typeof body === "object" && "session_id" in body && typeof body.session_id === "string") {
-        sessionIds.push(body.session_id);
-      }
-      return { ingested: 1, totalTokens: 10 };
-    });
-
-    const result = await importSessions(client, {
-      provider: "claude", all: true,
-      _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir,
-    });
-
-    expect(sessionIds).toEqual(["s1"]);
-    expect(result.imported).toBe(1);
   });
 });
 

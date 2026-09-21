@@ -10,8 +10,10 @@ import { createCodexProcessSummarizer } from "../llm/codex-process.js";
 import { createCopilotProcessSummarizer } from "../llm/copilot-process.js";
 import { createMockSummarizer } from "../llm/mock-summarizer.js";
 import type { LcmSummarizeFn } from "../llm/types.js";
+import type { SessionClient } from "../session-client.js";
 
-export type CompactClient = "claude" | "codex" | "copilot";
+/** The client a /compact call came from; copilot never calls, but its summarizer can be pinned by name. */
+export type CompactClient = SessionClient | "copilot";
 export type EffectiveProvider = Exclude<DaemonConfig["llm"]["provider"], "auto">;
 
 function configuredSummarizerLanguage(config: DaemonConfig): string | undefined {

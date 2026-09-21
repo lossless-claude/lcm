@@ -1,3 +1,5 @@
+import type { SessionClient } from "../session-client.js";
+
 export type SummarizerProvider =
   | "claude-process"
   | "codex-process"
@@ -43,7 +45,7 @@ export type SummarizeContext = {
   /** BCP 47 language tag for generated summary text, when configured or detected. */
   language?: string;
   sessionId?: string;
-  client?: "claude" | "codex" | "copilot";
+  client?: SessionClient | "copilot";
   isCondensed?: boolean;
   targetTokens?: number;
   depth?: number;
