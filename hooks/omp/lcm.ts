@@ -28,6 +28,8 @@ export interface HookContext {
     getSessionId?: () => string | undefined;
     getSessionFile?: () => string | undefined;
     getCwd?: () => string | undefined;
+    /** OMP's own signal that the session file exists; persistence is lazy. */
+    isSessionOnDisk?: () => boolean;
   };
 }
 
@@ -296,6 +298,25 @@ export function sessionIdentity(ctx: HookContext | undefined): SessionIdentity |
   }
 }
 
+/**
+ * Whether OMP has written this session's file yet.
+ *
+ * OMP keeps a new session in memory until it holds an assistant message, so
+ * `getSessionFile()` can name a path that leads nowhere. The daemon refuses a
+ * supplied transcript path it cannot read, which would answer every first
+ * capture of a fresh session with a 400; skipping the capture until the harness
+ * says the file exists is the same signal OMP's own resume hint gates on. An
+ * older OMP without the method is treated as on-disk, which is the old behavior.
+ */
+function sessionOnDisk(ctx: HookContext | undefined): boolean {
+  try {
+    const isOnDisk = ctx?.sessionManager?.isSessionOnDisk;
+    return typeof isOnDisk !== "function" || isOnDisk.call(ctx?.sessionManager) !== false;
+  } catch {
+    return true;
+  }
+}
+
 function sessionStopIdentity(ctx: HookContext | undefined, event: SessionStopEvent): SessionIdentity | undefined {
   const current = sessionIdentity(ctx);
   const sessionId = current?.sessionId ?? safeString(event.session_id);
@@ -473,7 +494,7 @@ export default function lcm(pi: HookApi): void {
 
   const fireIngest = (ctx: HookContext, timeoutMs = DEFAULT_TIMEOUT_MS, eventIdentity?: SessionIdentity): void => {
     const identity = eventIdentity ?? sessionIdentity(ctx);
-    if (!identity) return;
+    if (!identity || !sessionOnDisk(ctx)) return;
     void post("/ingest", ingestBody(identity), {
       timeoutMs,
       fireAndForget: true,
@@ -489,7 +510,7 @@ export default function lcm(pi: HookApi): void {
     // Capture before restore, and wait for it: restore reads the stored conversation,
     // and a session lcm has not ingested yet would answer from the project's latest
     // *other* conversation while this session's capture is still in flight.
-    await post("/ingest", ingestBody(identity));
+    if (sessionOnDisk(ctx)) await post("/ingest", ingestBody(identity));
     const restored = await post("/restore", { ...base, source: "startup" });
     const context = contextFromResponse(restored);
     if (context) restoreContext = context;
@@ -565,7 +586,7 @@ export default function lcm(pi: HookApi): void {
     const identity = sessionIdentity(ctx);
     if (!identity) return undefined;
     const body = identityBody(identity);
-    void post("/ingest", ingestBody(identity), { fireAndForget: true });
+    if (sessionOnDisk(ctx)) void post("/ingest", ingestBody(identity), { fireAndForget: true });
     void post("/compact", { ...body, skip_ingest: true }, { fireAndForget: true });
     return undefined;
   });

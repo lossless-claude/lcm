@@ -95,8 +95,9 @@ A matching result confirms that captured OMP content is searchable in the curren
 
 ## Remaining gaps
 
-1. The connector does not register an MCP server for Oh My Pi.
-2. There is no OMP-specific summarizer provider. Summaries use the configured default summarizer.
-3. Archived `.jsonl.gz` OMP sessions are not imported.
-4. Import discovery scans the active agent directory (`PI_CODING_AGENT_DIR`, else `~/.omp/agent`). A session started under `omp --profile <name>` still captures live — the daemon accepts its transcript under the profile's own agent directory — but `lcm import` does not discover profile sessions yet.
+1. The connector does not register an MCP server for Oh My Pi ([#541](https://github.com/lossless-claude/lcm/issues/541)).
+2. There is no OMP-specific summarizer provider. Summaries use the configured default summarizer, which on an OMP-only machine means an API provider ([#542](https://github.com/lossless-claude/lcm/issues/542)).
+3. Archived `.jsonl.gz` OMP sessions are not imported ([#544](https://github.com/lossless-claude/lcm/issues/544)).
+4. Import discovery scans the active agent directory (`PI_CODING_AGENT_DIR`, else `~/.omp/agent`). A session started under `omp --profile <name>` still captures live — the daemon accepts its transcript under the profile's own agent directory — but `lcm import` does not discover profile sessions yet ([#543](https://github.com/lossless-claude/lcm/issues/543)).
 5. Hook activation and trust cannot be proven from the filesystem; diagnostics report that state as unknown, as with Codex.
+6. Memory follows the session file in order, so a turn abandoned by an OMP rewind or branch switch is still captured ([#539](https://github.com/lossless-claude/lcm/issues/539)), and a `/clear` boundary is not honoured, so one conversation spans two logically separate sessions ([#540](https://github.com/lossless-claude/lcm/issues/540)).

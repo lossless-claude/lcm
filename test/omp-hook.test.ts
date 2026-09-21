@@ -116,6 +116,29 @@ describe("OMP lcm hook", () => {
     expect(requests[2]?.fireAndForget).toBe(true);
   });
 
+  it("skips capture while OMP has not written the session file yet, and still restores", async () => {
+    const { handlers } = hook();
+    await getHandler(handlers, "session_start")({ type: "session_start" }, context({
+      sessionManager: {
+        getSessionId: () => "omp-session",
+        getSessionFile: () => "/workspace/omp-session.jsonl",
+        isSessionOnDisk: () => false,
+      },
+    }));
+
+    // No /ingest: a path OMP has allocated but not written is refused by the daemon.
+    expect(requests.map((request) => request.path)).toEqual(["/restore", "/session-start-compact"]);
+
+    await getHandler(handlers, "agent_end")({}, context({
+      sessionManager: {
+        getSessionId: () => "omp-session",
+        getSessionFile: () => "/workspace/omp-session.jsonl",
+        isSessionOnDisk: () => false,
+      },
+    }));
+    expect(requests.map((request) => request.path)).toEqual(["/restore", "/session-start-compact"]);
+  });
+
   it("injects restore exactly once and combines prompt-search context in one message", async () => {
     const { handlers } = hook();
     await getHandler(handlers, "session_start")({}, context());
