@@ -486,7 +486,10 @@ export default function lcm(pi: HookApi): void {
     const identity = sessionIdentity(ctx);
     if (!identity) return undefined;
     const base = identityBody(identity);
-    void post("/ingest", ingestBody(identity), { fireAndForget: true });
+    // Capture before restore, and wait for it: restore reads the stored conversation,
+    // and a session lcm has not ingested yet would answer from the project's latest
+    // *other* conversation while this session's capture is still in flight.
+    await post("/ingest", ingestBody(identity));
     const restored = await post("/restore", { ...base, source: "startup" });
     const context = contextFromResponse(restored);
     if (context) restoreContext = context;

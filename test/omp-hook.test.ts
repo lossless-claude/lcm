@@ -54,6 +54,34 @@ describe("OMP lcm hook", () => {
     delete process.env.LCM_HOME;
   });
 
+  it("waits for the capture before restoring, so restore cannot read a session that is still landing", async () => {
+    const order: string[] = [];
+    const ingest = Promise.withResolvers<void>();
+    __setTransportForTests(async (request) => {
+      if (request.path === "/restore") {
+        order.push("restore");
+        return { context: "restored memory" };
+      }
+      if (request.path !== "/ingest") return undefined;
+      order.push("ingest:start");
+      await ingest.promise;
+      order.push("ingest:end");
+      return undefined;
+    });
+
+    const { handlers } = hook();
+    const started = getHandler(handlers, "session_start")({ type: "session_start" }, context());
+    // Let the handler reach the ingest request, then hold it until released: a restore
+    // issued before this point would be recorded ahead of "ingest:end".
+    await Promise.resolve();
+    await Promise.resolve();
+    order.push("released");
+    ingest.resolve();
+    await started;
+
+    expect(order).toEqual(["ingest:start", "released", "ingest:end", "restore"]);
+  });
+
   it("captures, restores, and schedules startup compaction with the omp client", async () => {
     const { handlers } = hook();
     await getHandler(handlers, "session_start")({ type: "session_start" }, context());
@@ -81,8 +109,11 @@ describe("OMP lcm hook", () => {
       cwd: "/workspace/omp-project",
       client: "omp",
     });
-    expect(requests[0]?.fireAndForget).toBe(true);
+    // Only the sweep is fire-and-forget: capture and restore are awaited so restore
+    // reads a captured session (the ordering test above), and the compaction sweep
+    // must not delay session start.
     expect(requests[1]?.fireAndForget).toBe(false);
+    expect(requests[2]?.fireAndForget).toBe(true);
   });
 
   it("injects restore exactly once and combines prompt-search context in one message", async () => {
