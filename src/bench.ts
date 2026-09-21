@@ -867,7 +867,8 @@ export async function runBench(opts: BenchOptions): Promise<BenchResult> {
   }
 
   // Conversation text is copied here only for the duration of the run.
-  const rgDir = await mkdtemp(join(tmpdir(), "lcm-bench-rg-"));
+  // The pid in the name keeps concurrent runs' directories distinguishable.
+  const rgDir = await mkdtemp(join(tmpdir(), `lcm-bench-rg-${process.pid}-`));
   try {
     // Migrations may backfill on first open, so this handle is read-write.
     const db = getLcmConnection(dbPath);
