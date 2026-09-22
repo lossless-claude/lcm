@@ -315,9 +315,10 @@ export class EventsDb {
   }
 
   /**
-   * True when this session has tool-call events still waiting for a `model` —
-   * the daemon fills it from the transcript, so a hook payload without one
-   * (Claude's) leaves the column null until the next ingest.
+   * True when this session has tool-call events of one client still waiting for a `model`.
+   * The daemon fills it from that client's transcript at the next ingest, so a hook whose
+   * payload carries no model — Claude Code's never does — leaves the column null in the
+   * meantime. Scoped to a client because a transcript only knows its own harness's models.
    */
   hasUnfilledModels(sessionId: string, client: SessionClient = "claude"): boolean {
     const row = this.db.prepare(
@@ -335,12 +336,14 @@ export class EventsDb {
   }
 
   /**
-   * Fills `model` on tool-call events the hook payload could not carry it on,
-   * joined by `tool_use_id`. Never overwrites a model already recorded.
+   * Fills `model` on tool-call events a hook payload could not carry it on, joined by
+   * `tool_use_id`. Never overwrites a model already recorded.
    *
-   * Claude rows only. The model comes from a Claude transcript, and a Codex event whose
-   * payload carried no model would otherwise be stamped with it on an id collision —
-   * a wrong provenance is worse than the null this column is allowed to hold.
+   * Scoped to one client: the model is read from that client's transcript, so the update
+   * touches only that client's rows. A call id that collides with another client's row is
+   * left alone — stamping a model from the wrong harness would be worse provenance than
+   * the null this column is allowed to hold. Claude and Oh My Pi both reach this by
+   * `tool_use_id`; Codex uses {@link backfillTurnModels} instead.
    */
   backfillToolCallModels(sessionId: string, pairs: ReadonlyMap<string, string>, client: SessionClient = "claude"): number {
     if (pairs.size === 0) return 0;
