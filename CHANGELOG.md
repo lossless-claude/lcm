@@ -1,5 +1,356 @@
 # @lossless-claude/lcm
 
+## 0.13.0
+
+### Minor Changes
+
+- c30bdb5: feat: one tool vocabulary every harness translates onto, so no harness's tools raise nothing
+
+  Passive learning keyed on Claude Code's tool names, and each harness carried its own bespoke
+  renamer: `normalizeCodexTool` translated two Codex ids, the Oh My Pi hook translated eleven of
+  its own. Anything else fell through and recorded nothing on success.
+
+  `src/hooks/tool-vocabulary.ts` is now the seam. A harness owns a table; the module owns what a
+  table means — an id is mapped to a canonical name (optionally rewriting the payload into the
+  fields the extractor reads), declared silent with the reason written down, or left absent. A
+  declined mapping still passes the call through under the harness's own name, so a failed tool
+  records its error regardless of whether its payload fit a shape.
+
+  `src/hooks/extractors.ts` exports the canonical set the harnesses may target and gains four
+  shapes they needed: GitHub write operations (`github_pr_create`, `github_pr_push`,
+  `github_pr_checkout`, `github_run_watch`), a started security scan (`security_scan`), an
+  agent-written context note (`context_note`), and context lifecycle changes
+  (`context_checkpoint`, `context_rewind`, `context_reset`). Promotion tags the two new categories
+  through the documented `category:<category>` fallback, as `task`, `subagent`, `skill` and `mcp`
+  already do.
+
+  Codex gains `update_plan` (a `task_update` naming the step in progress) and `spawn_agent` (a
+  `subagent_dispatch` when the payload names one); a `write_stdin` poll is declared transport. Oh
+  My Pi gains `todo`, `github`, `security_scan`, `context_notes`, `checkpoint`, `rewind` and
+  `new_context`, and declares its own memory tools silent so lcm neither duplicates nor feeds back
+  what the harness already remembers.
+
+- 1b16d5e: chore: the storage root is constructed at each composition root instead of imported
+
+  `defaultLcmPaths` and `lcmPath()` are gone. The CLI's `main()`, `createDaemon()`, and the
+  hooks builder each build one `LcmPaths` and thread it down through batch compaction,
+  bootstrap, import, replay state, sensitive-pattern
+  commands, stats, portable knowledge, and language packs. The package entry point now
+  exports `createMemoryApi(client)` without constructing an ambient default client.
+  `daemon/config.ts`'s `socketPath` default is derived from `configPath`'s own directory
+  instead of resolving the root again.
+
+  The paths guard test grows two checks rather than a duplicate: `homedir()` outside the
+  factory must be a host-harness or user-typed path, and every remaining `lcmHome()` call
+  site is named as either a composition root or a library fallback still to be threaded.
+
+  Library helpers do not resolve the storage root from the ambient environment. Callers
+  that choose the root pass the resulting `LcmPaths` through every storage access.
+
+- c6d3b6c: feat: agents can vote on a promoted memory; `lcm stats` surfaces promotion candidates and contested memories
+
+  `lcm_store` accepts a `signal:memory_vote` record: `vote:+1` ("checked against current evidence and still correct") or `vote:-1` ("checked and contradicted"), naming the target with `memory_id:<id>`, with a reason required in the text on both directions. A malformed vote — missing or duplicated `memory_id:`/`vote:` tags, an unrecognized vote value, or an empty reason — is rejected with a message naming the broken rule. The target may live in a sibling checkout of the same repository; the store resolves it the way `lcm_describe` resolves a `projectId` and writes the vote into whichever database holds it. A repeated identical vote from the same real session counts once; a later opposite vote from the same session archives the earlier one.
+
+  `lcm stats` and `lcm_stats` gain two sections, always shown when non-empty: **Promotion candidates** (memories with reported uses at or above the new `promotion.enforcementThreshold`, default 3, shown with their `+1`/`-1` counts) and **Contested** (any memory with at least one `-1`, with each objection's reason and vote id). A contested entry clears by archiving the memory, superseding it with a corrected `lcm_store`, or dismissing a single objection by archiving its own vote id through the existing `/review-stale` archive action. Recall is unchanged: votes affect no ranking, scoring, or prompt-time injection.
+
+  Fixes a gap this made visible: `signal:memory_used` and `signal:memory_vote` records were previously reachable through `lcm_search` and the prompt hook like any other promoted memory. Both are now excluded from every promoted-memory search — they exist to be counted, not surfaced.
+
+- 6b21809: Add Oh My Pi as a first-class session client with connector installation, native lifecycle hooks, transcript import, and replay alongside Claude Code and Codex.
+- bfb7fa5: feat: passive-learning events record client and model provenance; Codex captures PostToolUse
+
+  Every event in the passive-learning sidecar now carries `client` (`claude` or `codex`, the harness that produced it — existing rows read back as `claude`) and `model` (the model that issued the tool call). Codex's `PostToolUse` / `PostToolUseFailure` hook payload carries its model when the host sends one; Claude Code's never does, so that column stays null until the session's transcript is next ingested, which backfills it by matching each tool call's id.
+
+  `lcm codex-hook` now handles `PostToolUse` and `PostToolUseFailure`: the payload's field names already match the shape `src/hooks/extractors.ts` consumes for Claude Code, so one extractor, one allowlist and one truncation rule cover both harnesses, and it writes straight to the project's local sidecar with no daemon round trip. `lcm connectors install codex` registers the two new hooks; reinstalling stays idempotent.
+
+  What this does not yet cover, for a native Codex host: a `tool_name` Codex serializes under its own name rather than Claude Code's (`apply_patch`, `exec_command`) matches no extractor branch, so it produces no event; and a payload that omits `model` leaves the column null, because the per-turn transcript backfill exists for Claude Code only.
+
+- 9e10fda: feat: `lcm_search` takes a `pivotQuery`, the caller's own translation of the query
+
+  A project's author may write in one language while most of the text that answers
+  a query — tool output, code, summaries — is in another. `lcm_search` now accepts
+  an optional `pivotQuery`: the caller's translation of `query` into
+  `search.pivotLanguage` (new, default `en`). Each side is prepared on its own, so
+  each loses only its own language's function words, and the two term sets are
+  searched together — a hit through either side counts. Without a `pivotQuery`, or
+  with one that adds no term, search behaves exactly as before.
+
+  The caller is told when to supply one: the `lcm_search` description names the
+  project's author language and the pivot language when they differ, a search
+  response carries both once a language has been recorded for the project, and the
+  `<memory-context>` block the prompt hook emits carries the same one-line hint.
+  No model call is added inside the daemon at query time, and `lcm_grep` keeps its
+  literal semantics.
+
+- 9a44005: feat: generate new summaries in the project's recorded language
+
+  Add `summarizer.language` for an explicit output language. When it is unset,
+  new summaries use the project's recorded author language when available;
+  existing captured messages and summaries are unchanged. Configured values are
+  canonicalized as BCP 47 language tags and invalid tags are rejected.
+
+- 950a2b9: feat: the Claude Code plugin is self-contained; Codex stays on the npm CLI
+
+  The plugin runs from a prebuilt `bundle/` committed at each release: hooks and the MCP server call `bundle/lcm.js` and `bundle/mcp-server.js` in exec form (`command` + `args`, no shell), so a marketplace install works with only `node` on PATH. No hook installs packages, compiles, or touches PATH any more. `lcm.mjs`, `mcp.mjs` and `.claude-plugin/lcm-mcp.sh` are removed, and `config.json` no longer carries `mcpNodePath`.
+
+  One daemon serves both distributions, newest wins: a newer caller restarts an older daemon; an older caller connects when the compatible component matches (the minor while 0.x, the major from 1.0) and warns once; an incompatible one fails open. A hook that cannot run exits 0 and writes one stderr line per session naming the repair command; `lcm doctor` reports the same conditions and checks the installed bundle.
+
+  `lcm install` now also provisions Codex globally when `codex` is on PATH, reports one outcome per harness, exits non-zero on any failure, and `--dry-run` writes nothing at all.
+
+  Releases: the version PR builds and commits `bundle/`; `publish.yml` only tags, publishes and creates the release as before.
+
+- 41bb250: feat: SessionStart catches up conversations left uncompacted by a session that ended without `SessionEnd`
+
+  A session killed by a crashed terminal, a sleeping machine, or a daemon that
+  was down at exit kept its raw messages captured but never summarized — only a
+  manual `lcm compact --all` revisited it. Every SessionStart now fires one
+  non-blocking `POST /session-start-compact` request; the daemon selects
+  conversations of the same project with enough raw messages not covered by summaries
+  or protected as the fresh tail, excludes the session that is starting,
+  conversations already compacting, and conversations below
+  `compaction.autoCompactMinTokens`, and requests
+  compaction for at most `compaction.autoCompactSessionStartMax` of them
+  (default 2), oldest first, so a larger backlog drains over several starts.
+  `hooks.disableAutoCompact` turns the sweep off. Session-start latency is
+  unaffected: the request is fire-and-forget, mirroring the one `SessionEnd`
+  already uses.
+
+### Patch Changes
+
+- 59834e7: fix: `bench run` cleans up its temporary ripgrep directory and reports the original error
+
+  A failure while acquiring the database connection left the `lcm-bench-rg-*`
+  directory behind. Connection acquisition and scoring moved inside the `try`
+  whose `finally` removes that directory, so it is cleaned up on every path.
+  Those failures now return `exitCode: 1` with the error text on stdout instead
+  of propagating, and a rejection from the cleanup itself no longer replaces
+  that error.
+
+- af0e7c5: chore: the bench temp-directory cleanup test no longer reads another run's directory
+
+  `lcm bench` copied conversation text into `mkdtemp(join(tmpdir(), "lcm-bench-rg-"))`, a name no
+  process owns. The regression test that asserts the directory is removed on every path — including a
+  failure to acquire the database connection — identified its own directory by diffing `lcm-bench-rg-*`
+  entries in the shared temp root, so under two concurrent suite runs the first new entry could be
+  another run's live directory and the assertion read as a leak (issue #537).
+
+  The directory is now created under `lcm-bench-rg-<pid>-`, and the test matches that process-scoped
+  prefix. The assertion itself is unchanged: the created directory is still captured rather than
+  counted, so a run that never created one fails.
+
+  Test infrastructure only: nothing about the emitted CLI or the daemon changes.
+
+- c945159: Client separation pass: session-client identity, capability-bearing transcript adapters, one owner for Claude Code's project-directory name.
+
+  `src/session-client.ts` now names the one session-client type (`"claude" | "codex"`), kept deliberately separate from summarizer providers; the hook, events and ingest code import it instead of restating ad-hoc unions.
+
+  The transcript-source seam no longer leaks Codex into shared types: the resume cursor became an adapter-opaque `checkpoint`, loaded and persisted through the adapter inside capture's write transaction, and the ingest route reads client capabilities off the adapter (`mayRecoverTail`, `discoverSubagents`) instead of comparing the client string; `POST /prompt-search` takes an explicit `nativeHistory` flag from the Codex hook rather than forking on the client name. Shared hook helpers moved to `src/hooks/tool-events.ts` (tool-event recording) and `src/hooks/daemon-requests.ts` (fire-and-forget daemon requests), so neither client's adapter imports the other's entry-point module.
+
+  Claude Code's project-directory slug (`~/.claude/projects/<slug>`) has one owner, `claudeProjectSlug` in `src/daemon/project.ts`: the cwd with every non-alphanumeric character replaced by `-`. `lcm import`, `lcm diagnose` and the daemon's periodic transcript scan previously re-implemented older slash-only variants, so projects whose path contains a dot or underscore silently found no sessions; the periodic scan additionally dropped the leading dash and matched nothing at all. The scan pass is now a named export, exercised directly by tests that pin the slug rule and refuse the old slash-only name.
+
+- d8837e5: Capture native Codex `apply_patch` and compatibility `exec_command` passive-learning events, and backfill a missing event model from the matching transcript turn.
+- 88e7c14: Show command help before validating required positional arguments, so every `lcm` subcommand accepts `--help` without running its action.
+- cd8b8fa: chore: `CompactionEngine` exposes only `compact`
+
+  `evaluate`, `compactLeaf` and `compactUntilUnder` had no caller and are
+  removed, together with the `maxRounds` config key and the `CompactionDecision`
+  type that only they used. `compactFullSweep` is folded into `compact` and
+  `evaluateLeafTrigger` is private to it.
+  `docs/architecture.md` describes the one sweep the daemon runs.
+
+- 3859d63: fix: the skill connector installs where Codex and Copilot read it
+
+  The `skill` connector for Codex and GitHub Copilot now installs to `.agents/skills/lcm-memory/SKILL.md`, the location both hosts actually read (Codex only scans `.agents/skills`; Copilot also accepts it). One installed file now serves both hosts in a repository that uses both. Installing or removing the skill connector also clears a pre-existing copy at the old location (`.codex/skills/` or `.github/skills/`) so the two copies never coexist.
+
+- 3021d91: Harden cross-checkout memory feedback: validate explicit owners, reject ambiguous target IDs,
+  register ordinary stores for sibling discovery, expose actionable memory IDs in MCP stats, and
+  count unambiguous legacy requester-side use signals once during upgrade.
+- 55b38f6: Keep cross-checkout memory use and vote feedback with the memory owner, and let stale review resolve explicitly owned entries across a project group.
+- a17fbea: chore: a build records the sources it was made from, and the suite refuses a stale one
+
+  `npm run build` now also writes `dist/BUILD_SOURCES`, a fingerprint of the files the build
+  reads (`src/`, `bin/`, `installer/`, `tsconfig.json`). The test suite recomputes it before
+  every test file and fails with the rebuild command when `dist/` no longer matches the working
+  tree.
+
+  Suites that spawn the built CLI — golden snapshots, help routing, daemon hold behaviour, the
+  e2e flows — compared a `dist/` built from older sources against committed expectations, so an
+  edit without a rebuild passed locally and failed in CI. Test infrastructure only: nothing
+  about the emitted CLI changes, apart from the new fingerprint file travelling with it.
+
+- ad696c9: fix: one owner for Claude Code's project-directory name, and documentation corrections
+
+  Three modules encoded Claude Code's `~/.claude/projects/<cwd>` naming rule and two disagreed with
+  the third and with Claude Code: `cwdToProjectHash` in `src/import.ts` replaced only slashes, and
+  the daemon's periodic transcript sweep additionally stripped the leading dash. A cwd holding a
+  `.`, `_` or `+` was therefore never matched, so `lcm import --all` skipped those projects, `lcm
+diagnose` looked in a directory that does not exist, and the ten-minute catch-up sweep found
+  nothing for any project. The rule now lives once, as `claudeProjectSlug` in
+  `src/daemon/project.ts`, and every reader of `~/.claude/projects/` goes through it.
+
+  `lcm compact --help` lists `-v, --verbose`, and `lcm stats --help` lists `--pool` and `--json`;
+  all three were installed and undiscoverable. The "Anthropic provider needs a key" error names the
+  variable the daemon actually reads — `llm.apiKey` in `config.json`, or `ANTHROPIC_API_KEY` — where
+  it previously named `LCM_SUMMARY_API_KEY`, which no code path ever read and the docs taught.
+
+  Corrections in tracked documentation: `docs/privacy.md` states the real default summarizer
+  (`auto`, so the running harness's CLI does send the text it summarizes) and what `lcm uninstall`
+  actually removes; `docs/hook-protocol.md` describes auto-heal's direction, the `<memory-context>`
+  block, the `tool_output` shape, the post-tool daemon call and the `Stop` event;
+  `docs/architecture.md` drops the assembler, the `<summary>` XML format and the non-existent
+  lifecycle hooks and reconciliation in favour of what `createRestore` and the transcript sources
+  do; `docs/import.md` states that Codex tool calls and outputs are imported as `tool` messages;
+  `RELEASING.md` states that merging the version PR publishes and that the tag precedes npm;
+  `docs/configuration.md`, `docs/agent-tools.md`, `docs/search.md`, `docs/fts5.md`,
+  `docs/passive-learning.md`, `docs/ci-runner.md`, `README.md` and `AGENTS.md` carry the rest.
+
+- 02fef82: feat: English is a language pack like every other language
+
+  `lcm search` and `lcm grep` no longer drop a hardcoded English stopword list
+  from every query. English's function words now ship as a built-in language
+  pack, applied only when English is one of the languages the search is
+  configured for (the project's recorded author language, or
+  `search.pivotLanguage`) — the same rule every other language's pack already
+  followed. A project with no recorded language now loses no function words at
+  all, for any language, instead of English's alone. Pivot-pack generation on
+  ingest no longer special-cases English: it is ensured the same way as any
+  other pivot language, and the built-in pack means that ensure step is a no-op
+  for English rather than a model call.
+
+  A machine that already has a model-generated `~/.lossless-claude/languages/en.json`
+  now has that file replace the built-in list rather than add to it, the same as
+  a hand-edited file replaces a generated one for any other language tag.
+
+- 660a33e: fix: `lcm install --dry-run` previews the skill copy instead of failing
+
+  The dry run exited 1 because the `/memory` skill copy ran for real while its
+  target directory was only pretended. The skill copy, the removal of the
+  per-command files earlier versions installed, and the plugin cache cleanup now
+  all go through the dry-run layer, so a dry run writes and removes nothing. The
+  skill source is also found when lcm runs from source, not only from `dist/`.
+
+- 70834df: chore: the tests that failed only under CPU load no longer report a regression
+
+  Three tests failed only when the suite ran on a busy machine (issue #526):
+
+  - The recall gate combined four assertions — recall@5, beating the grep baseline, the empty-result
+    rate and query latency — in one test body with a 15 s vitest timeout. Under load that body
+    outlived the timeout, so the run reported a wall-clock failure that reads as a search regression
+    while every quality number was green. The measurement is now a single shared pass; the quality
+    thresholds and the latency budget are separate tests, and the latency budget is scaled by a
+    contention probe taken in the same pass. The documented 500 ms is the floor of that budget: an
+    idle machine at the reference speed pays exactly it, and a busy or slower one fails with a
+    message naming the measured time and the budget it missed. The pass itself keeps a 120 s
+    wall-clock budget, so contention can no longer kill it as a timeout.
+  - `test/installer/dry-run-deps.test.ts` wrote a fixed `lc-test-setup.sh` name into the shared temp
+    directory; a second suite run deleting that file between the write and the spawn made bash exit
+    127, which reads as a broken installer. The name is unique per process now.
+  - `test/hooks/restore.test.ts` and `test/hooks/session-snapshot.test.ts` used fixed session ids,
+    and the restore lock and the function-hooks claim are fixed paths under the shared temp directory
+    keyed by that id: a concurrent run could hold, claim or delete them, and the hook went silent — or
+    answered — for a reason the test never set up. Ids are unique per process now.
+
+  Test infrastructure only: nothing about the emitted CLI or the daemon changes, and no threshold is
+  lowered.
+
+- e6d17df: fix: the `<memory-context>` block names a sibling checkout's memories with their project
+
+  Promoted memory is unioned across every checkout of a repository, so the `<memory-context>` block
+  a prompt receives could surface a memory from a sibling checkout. Its id, listed bare in the
+  trailing `surfaced-memory-ids` comment, then resolved against the current project and answered
+  "not found" when passed to `lcm_describe` or `lcm_expand`. An id from a sibling now renders as
+  `<id>@<projectId>`, and the block's intro sentence tells the agent to pass that suffix as
+  `projectId`. An id from the current project keeps its bare form.
+
+- 586e792: Stopword packs follow the configured languages: the project's recorded author language for `query`, `search.pivotLanguage` for `pivotQuery`, matched on the primary subtag. The words in a query no longer choose a pack, so a mixed-language string cannot activate one neither side would, and a non-English pivot language gets its pack generated at detection. `lcm bench` scores an optional `pivotQuery` per question the way `lcm_search` does; the measurement of the shipped `pivotQuery` is recorded in `docs/search.md`.
+- f04a35f: A project's `meta.json` has one owner, `src/daemon/project-meta.ts`, with one corrupt-file policy: an update moves an unparsable file aside as `meta.json.corrupt-<timestamp>` and starts again from the caller's keys, and a read treats it as absent. Ingest, compact, promote, git identity and language detection each update their own key and keep every other, so a record no longer loses `git`, `language` or its timestamps depending on which path touched it first. Writes land through a temporary file and a rename, so a crash mid-write cannot leave a torn record.
+- 88f5607: fix: stale daemon-activity markers no longer accumulate without bound
+
+  Every hook and CLI entry that touches the daemon writes a startup marker and
+  removes it when its work settles; a process that dies first (a killed hook,
+  a crashed CLI) left the marker behind forever, so the directory could grow to
+  hundreds of files. Markers now live in `tmpDir` instead of the storage root,
+  and a marker whose pid is no longer alive — or that has aged past one hour,
+  so pid reuse cannot resurrect it — is pruned whenever markers are scanned or
+  a new one is registered. A marker is kept while the process that wrote it is still the process holding that pid —
+  decided by the owner's own elapsed running time, so a recycled pid cannot make a marker
+  immortal and a long operation cannot age out under its own owner. Where the owner's
+  lifetime cannot be read, the one-hour cutoff is the fallback, and a registration refreshes
+  its marker while its work runs. The directory versions before this change wrote to is still
+  swept, so an upgrade leaves nothing behind there.
+
+- e1c8ebe: Removed `LCM_INCREMENTAL_MAX_DEPTH`, a documented environment variable that had no consumer: no code path ever read it into a decision, so setting it changed nothing.
+- ad7f23f: refactor: the restore assembly moves behind one entry point in `src/daemon/restore/`
+
+  `createRestore(config, paths)` is the module's only entry point, and it answers one call
+  with one of three outcomes — the context, an unusable `cwd`, or a fault — so `POST /restore`
+  no longer throws its way to a status. Everything the route used to hold now sits behind
+  that seam: which client is asking, whether the restore follows a compaction, the Claude
+  CLAUDE.md snapshot replay-versus-refresh rule, the Codex byte budget, the passive-capture
+  insights that ride beside the context, and the fencing. `src/daemon/routes/restore.ts` is
+  the wire only.
+
+  The module opens one project-database connection per call where the route opened up to
+  four, and the two route suites are now suites of the module: they call `createRestore`
+  directly against temp project databases instead of driving a daemon over HTTP. The
+  snapshot's reader moved to `src/daemon/restore/instructions.ts`, so the `homedir()`
+  allowlist follows it; the route keeps a wire test covering the status and body mapping.
+
+- 8aefaec: Ranked full-text search over messages and summaries orders by `rank` alone in SQL, so FTS5 applies the candidate limit itself and the source row and snippet are read only for the candidates kept; before, every matched row was joined and snippeted before the limit, and a many-term query on a large corpus took seconds. Newer matches still break relevance ties, now among the kept candidates, so which equal-rank rows sit at the limit boundary may differ.
+- 63dbd0b: The SessionEnd hook hands the whole end-of-session sequence to the daemon in one acknowledged request (`POST /session-end`): ingest, then compact, promote, promote-events and session-complete run daemon-side after a `202`. The host's SessionEnd budget no longer cancels the hook mid-ingest and drops the steps after it. The redaction notice moves from the terminal to the hook error log.
+- 871f86d: fix: `/compact` captures transcript messages through the same module as `/ingest`
+
+  A session whose first messages reached the database through `/compact` had no
+  `message_parts` rows and, for a subagent transcript, no attribution on its
+  conversation. One capture module (`src/capture.ts`) now owns writing a
+  session's new messages for every route, including reading a subagent
+  transcript's sidecar when the caller supplies no attribution.
+
+- f00c265: Live `/ingest` now captures subagent transcripts nested under a workflow run
+  (`subagents/workflows/wf_<id>/`), as `lcm import` already did: one directory walker
+  serves import, live ingest and the migration backfill, which now also attributes
+  transcripts nested under a workflow run. A sidecar that is not a JSON object, or a
+  nested directory that cannot be read, no longer drops or aborts discovery.
+- 9a2c51d: `lcm stats` and `lcm_stats` show the share of conversations search excludes as subagent transcripts
+
+  Search drops subagent transcripts by a session-id naming convention (`agent-`) owned by the
+  host harness. The Memory section now reports how many stored conversations that rule matches,
+  over all conversations, and how many the `.meta.json` sidecar attributed to a parent session
+  without matching the rule — the count that turns non-zero when the convention drifts.
+
+- 0afefcf: chore: the stores are the only readers and writers of Episodic and Promoted memory's tables
+
+  `ConversationStore` and `SummaryStore` expose the operations Episodic memory
+  is asked for — find a session's conversation, append a delta, read the context
+  window, replace a range with a summary — and the daemon routes, the importer
+  and the capture module go through them instead of preparing their own
+  statements; a test pins that. Methods only tests called are removed.
+  `PromotedStore` is the one reader of `signal:memory_vote` rows, so how a vote
+  is encoded in its tags is decided in one place. `/recent` answers summary
+  records in the store's shape (`summaryId`, `tokenCount`, `createdAt`, …).
+
+- 927b53b: fix: subagent transcripts dedupe by session id and ingest independently, and attribution backfills on an existing row
+
+  Two subagent transcripts sharing a basename at different depths under
+  `subagents/` now dedupe to the first one found instead of one call slicing
+  the second transcript by the first one's stored message count. One subagent
+  transcript that fails to parse or capture no longer aborts `/ingest` for its
+  siblings — the failure is logged and the loop continues. A subagent captured
+  before its `.meta.json` sidecar existed now gets its parent, type and
+  description filled in on the next `/ingest` that finds the sidecar, instead
+  of staying unattributed forever.
+
+- 0a1647b: refactor: one transcript-source interface behind `/ingest` and `/compact`, with a Claude and a Codex adapter
+
+  Reading a transcript now goes through one interface with an adapter per
+  harness, called only by the capture module; neither `/ingest` nor `/compact`
+  branches on the client to decide how a transcript is read. `/compact` with a
+  Codex `transcript_path` now ingests that session's delta through the Codex
+  cursor, where it previously validated the path against Claude Code's
+  transcript directory and read nothing, and answers 400 for a Codex transcript
+  the adapter refuses instead of silently skipping it.
+
+- abcb12b: Update the bundled secret-detection patterns from gitleaks.
+
 ## 0.12.0
 
 ### Minor Changes
