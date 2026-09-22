@@ -53,6 +53,13 @@ export async function buildBundle({ root = repoRoot, outDir = join(root, "bundle
     target: "node22",
     absWorkingDir: root,
     logLevel: "warning",
+    // Every release commits a fresh copy of these files, so their size is repo history:
+    // minifying halves the artifact per release (4.7 MB -> 2.5 MB across the three).
+    minify: true,
+    // Minification costs a failing hook its stack trace, and that trace is what reaches
+    // the user's error log and lcm's own hook-error log. Keeping function and class names
+    // is ~5% of the minified size and leaves those frames readable.
+    keepNames: true,
     define: {
       __PKG_VERSION__: JSON.stringify(version),
       __BUILD_ID__: JSON.stringify(buildId),
