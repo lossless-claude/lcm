@@ -116,17 +116,21 @@ function validateCodexMetadata(meta: CodexSessionMeta, ctx: ReadContext): void {
   }
 }
 
-/** A full re-read is trusted only while its prefix, under the current redaction rules, is what was stored. */
-async function validateCodexRecovery(stored: StoredTranscript, messages: ParsedMessage[], ctx: ReadContext): Promise<void> {
+/**
+ * A full re-read is trusted only while its prefix, under the current redaction rules, is
+ * what was stored. Shared by every cursor-backed client, so the label names the harness
+ * whose transcript the caller was reading — an OMP failure must not report itself as Codex.
+ */
+async function validateTranscriptRecovery(stored: StoredTranscript, messages: ParsedMessage[], ctx: ReadContext, label: string): Promise<void> {
   if (messages.length < stored.storedCount) {
-    throw new TranscriptSourceError("Codex transcript is shorter than stored history; restore the full transcript before retrying");
+    throw new TranscriptSourceError(`${label} transcript is shorter than stored history; restore the full transcript before retrying`);
   }
   const previous = await stored.storedMessages();
-  if (previous.length !== stored.storedCount) throw new TranscriptSourceError("Stored Codex history changed during recovery");
+  if (previous.length !== stored.storedCount) throw new TranscriptSourceError(`Stored ${label} history changed during recovery`);
   for (const [index, prior] of previous.entries()) {
     const message = messages[index];
     if (message.role !== prior.role || ctx.scrub(message.content) !== ctx.scrub(prior.content)) {
-      throw new TranscriptSourceError("Codex transcript prefix differs from stored history; check the original transcript and redaction settings before retrying");
+      throw new TranscriptSourceError(`${label} transcript prefix differs from stored history; check the original transcript and redaction settings before retrying`);
     }
   }
 }
@@ -153,7 +157,7 @@ const codexSource: TranscriptSource = {
       throw new TranscriptSourceError(error instanceof Error ? error.message : "invalid transcript");
     }
     validateCodexMetadata(delta.sessionMeta, ctx);
-    if (!delta.resumed && stored) await validateCodexRecovery(stored, delta.messages, ctx);
+    if (!delta.resumed && stored) await validateTranscriptRecovery(stored, delta.messages, ctx, "Codex");
     return {
       messages: delta.messages,
       sourceOffset: delta.resumed && prior ? prior.messageCount : 0,
@@ -206,7 +210,7 @@ const ompSource: TranscriptSource = {
       throw new TranscriptSourceError(error instanceof Error ? error.message : "invalid transcript");
     }
     validateOmpMetadata(delta.sessionMeta, ctx);
-    if (!delta.resumed && stored) await validateCodexRecovery(stored, delta.messages, ctx);
+    if (!delta.resumed && stored) await validateTranscriptRecovery(stored, delta.messages, ctx, "OMP");
     return {
       messages: delta.messages,
       sourceOffset: delta.resumed && prior ? prior.messageCount : 0,

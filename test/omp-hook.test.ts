@@ -208,6 +208,32 @@ describe("OMP lcm hook", () => {
     expect(requests[1]?.body).not.toHaveProperty("tool_output");
   });
 
+  it("waits for the capture before compacting, so the compaction cannot run against stale rows", async () => {
+    const order: string[] = [];
+    const ingest = Promise.withResolvers<void>();
+    __setTransportForTests(async (request) => {
+      if (request.path === "/compact") {
+        order.push("compact");
+        return undefined;
+      }
+      if (request.path !== "/ingest") return undefined;
+      order.push("ingest:start");
+      await ingest.promise;
+      order.push("ingest:end");
+      return undefined;
+    });
+
+    const { handlers } = hook();
+    const started = getHandler(handlers, "session_before_compact")({}, context());
+    await Promise.resolve();
+    await Promise.resolve();
+    order.push("released");
+    ingest.resolve();
+    await started;
+
+    expect(order).toEqual(["ingest:start", "released", "ingest:end", "compact"]);
+  });
+
   it("ingests and compacts before a session compact", async () => {
     const { handlers } = hook();
     await getHandler(handlers, "session_before_compact")({}, context());

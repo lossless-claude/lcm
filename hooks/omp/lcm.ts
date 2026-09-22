@@ -702,7 +702,11 @@ export default function lcm(pi: HookApi): void {
     const identity = sessionIdentity(ctx);
     if (!identity) return undefined;
     const body = identityBody(identity);
-    if (sessionOnDisk(ctx)) void post("/ingest", ingestBody(identity), { fireAndForget: true });
+    // Capture before compacting, and wait for it. /compact with skip_ingest reads what is
+    // already stored, and the whole point of this capture is the tail OMP is about to
+    // replace; firing it without waiting let the compaction run against stale rows. The
+    // capture is a local request with its own timeout, so the host is not left hanging.
+    if (sessionOnDisk(ctx)) await post("/ingest", ingestBody(identity));
     void post("/compact", { ...body, skip_ingest: true }, { fireAndForget: true });
     return undefined;
   });
