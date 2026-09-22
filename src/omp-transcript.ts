@@ -352,7 +352,7 @@ export function findOmpSessionFiles(sessionsDir: string): OmpSessionFile[] {
  * not discovered.
  */
 export function findAllOmpTranscripts(ompDir?: string): OmpSessionFile[] {
-  const root = ompDir ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".omp", "agent");
+  const root = ompDir ?? (process.env.PI_CODING_AGENT_DIR || join(homedir(), ".omp", "agent"));
   const results = findOmpSessionFiles(join(root, "sessions"));
 
   // Prefer the latest transcript for an identity; order is a deterministic
