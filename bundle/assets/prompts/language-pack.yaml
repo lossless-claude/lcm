@@ -1,0 +1,12 @@
+name: language-pack
+description: Asks the model for the function words of one language, so query terms in that language can be stripped of words that match every document
+variables:
+  - tag
+template: |-
+  List the function words of the language tagged "{{tag}}" (BCP 47): articles, prepositions, conjunctions, pronouns, auxiliary and light verbs in their common inflections, demonstratives, common adverbs of degree and time, and question words. These are words that appear in almost any sentence and never identify a topic.
+
+  Rules:
+  - Between 80 and 300 words.
+  - Single words only, lowercase, in the language's own spelling with its accents. No phrases, no punctuation.
+  - Do not include technical vocabulary, nouns that name things, or words specific to any domain.
+  - Return only a JSON array of strings. No prose, no code fence.
