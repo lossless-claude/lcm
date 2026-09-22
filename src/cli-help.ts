@@ -19,7 +19,7 @@ interface CommandHelp {
 
 const HELP: Record<string, CommandHelp> = {
   install: {
-    summary: "Set up lcm for every harness on this machine: Claude Code (settings, MCP server, /memory skill, lcm.md, doctor) and, when `codex` is on PATH, the global Codex hooks. Reports one outcome per harness and exits non-zero on any failure.",
+    summary: "Set up lcm for every harness on this machine: Claude Code (settings, MCP server, /memory skill, lcm.md, doctor) and, when `codex` is on PATH, the global Codex hooks, and when `omp` is on PATH the global Oh My Pi hook. Reports one outcome per harness and exits non-zero on any failure.",
     usage: "lcm install [--dry-run]",
     options: [
       ["--dry-run", "Preview all changes without writing anything, the shared core included"],
@@ -167,11 +167,12 @@ const HELP: Record<string, CommandHelp> = {
   },
 
   import: {
-    summary: "Import Claude Code or Codex session transcripts into lossless memory.",
-    usage: "lcm import [--provider claude|codex|all | --codex] [--all] [--verbose] [--dry-run] [--replay] [--restart]",
+    summary: "Import Claude Code, Codex or Oh My Pi session transcripts into lossless memory.",
+    usage: "lcm import [--provider claude|codex|omp|all | --codex | --omp] [--all] [--verbose] [--dry-run] [--replay] [--restart]",
     options: [
-      ["--provider <provider>", "Transcript source: claude, codex, all (default: claude; with --replay: all)"],
+      ["--provider <provider>", "Transcript source: claude, codex, omp, all (default: claude; with --replay: all)"],
       ["--codex", "Alias for --provider codex"],
+      ["--omp", "Alias for --provider omp"],
       ["--all", "Import all projects (default: current project only)"],
       ["--verbose", "Show per-session import detail"],
       ["--dry-run", "Preview without importing"],
@@ -181,12 +182,13 @@ const HELP: Record<string, CommandHelp> = {
     examples: [
       ["lcm import", "Import current Claude Code project sessions"],
       ["lcm import --all", "Import all tracked Claude Code projects"],
-      ["lcm import --replay", "Discover and replay Claude and Codex sessions in the current project"],
-      ["lcm import --all --replay", "Import and compact both providers across all projects"],
+      ["lcm import --replay", "Discover and replay Claude, Codex and Oh My Pi sessions in the current project"],
+      ["lcm import --all --replay", "Import and compact every provider across all projects"],
       ["lcm import --dry-run", "Preview what would be imported"],
       ["lcm import --provider codex --replay", "Import and compact current project Codex sessions"],
+      ["lcm import --omp", "Import current project Oh My Pi sessions"],
     ],
-    notes: "Claude transcripts come from ~/.claude/projects/; Codex transcripts from ~/.codex/sessions/ and ~/.codex/archived_sessions/. Codex requires session_meta.cwd; unknown projects are skipped. --replay includes both providers unless --provider or --codex is explicit. --all includes other projects. Dry-run never starts the daemon. Codex import and hooks share incremental ingestion so later transcript growth is captured without duplicating prior messages.",
+    notes: "Claude transcripts come from ~/.claude/projects/; Codex transcripts from ~/.codex/sessions/ and ~/.codex/archived_sessions/; Oh My Pi session files from <agent dir>/sessions/ (PI_CODING_AGENT_DIR, default ~/.omp/agent). Codex requires session_meta.cwd and OMP requires the session header's cwd; unknown projects are skipped. --replay includes every provider unless --provider, --codex or --omp is explicit. --all includes other projects. Dry-run never starts the daemon. Codex and OMP import share incremental ingestion with their hooks, so later transcript growth is captured without duplicating prior messages.",
   },
 
   promote: {
@@ -253,6 +255,9 @@ const HELP: Record<string, CommandHelp> = {
       ["lcm connectors install github-copilot", "Install the GitHub Copilot workspace skill for VS Code"],
       ["lcm connectors install codex", "Install native Codex lifecycle hooks"],
       ["lcm connectors install codex --global", "Install Codex into ~/.codex instead of the current project"],
+      ["lcm connectors install omp", "Install the Oh My Pi hook into this project's .omp/hooks"],
+      ["lcm connectors install omp --global", "Install the Oh My Pi hook into your global OMP agent directory"],
+      ["lcm connectors remove omp --global", "Remove the global Oh My Pi hook"],
       ["lcm connectors install codex --type rules", "Install rules-based connector for Codex"],
       ["lcm connectors remove codex", "Remove the Codex connector"],
       ["lcm connectors remove codex --global", "Remove Codex from your global config"],
@@ -260,8 +265,9 @@ const HELP: Record<string, CommandHelp> = {
       ["lcm connectors doctor --global", "Check the global agent config"],
       ["lcm connectors doctor github-copilot", "Check GitHub Copilot connector health"],
       ["lcm connectors doctor codex", "Check Codex connector health"],
+      ["lcm connectors doctor omp", "Check Oh My Pi connector health"],
     ],
-    notes: "Codex defaults to native lifecycle hooks; review their trust in Codex /hooks after installation. Installation alone does not prove activation. Optional types: 'rules' (instructions), 'mcp' (server), 'skill' (guidance). Codex MCP setup remains manual. GitHub Copilot defaults to a repo-local skill.",
+    notes: "Codex defaults to native lifecycle hooks; review their trust in Codex /hooks after installation. Installation alone does not prove activation. Optional types: 'rules' (instructions), 'mcp' (server), 'skill' (guidance). Codex MCP setup remains manual. GitHub Copilot defaults to a repo-local skill. Oh My Pi defaults to a hook module written to <agent dir>/hooks/post/lcm.ts or <project>/.omp/hooks/post/lcm.ts; OMP loads it for every session of that agent directory, and its activation cannot be confirmed from the filesystem either.",
   },
 
   sensitive: {
@@ -417,7 +423,7 @@ const GROUPS = [
       { name: "expand <nodeId> [--depth N]", summary: "Expand a summary node into source detail" },
       { name: "store <text> [--tag ...]", summary: "Store a durable memory entry" },
       { name: "compact [--all] [--dry-run] [--replay] [--restart] [--no-promote]", summary: "Compact conversations into DAG summaries (auto-promotes after)" },
-      { name: "import [--provider claude|codex|all] [--all] [--verbose] [--dry-run] [--replay] [--restart]", summary: "Import Claude Code or Codex session transcripts" },
+      { name: "import [--provider claude|codex|omp|all] [--all] [--verbose] [--dry-run] [--replay] [--restart]", summary: "Import Claude Code, Codex or Oh My Pi session transcripts" },
       { name: "promote [--all] [--verbose] [--dry-run]", summary: "Promote insights to long-term memory" },
       { name: "stats [-v]", summary: "Memory inventory and compression ratios" },
       { name: "diagnose [--all] [--days N] [--verbose] [--json]", summary: "Scan sessions for hook failures and issues" },

@@ -14,6 +14,13 @@ import {
   type CodexHookCommandOptions,
   type CodexHooksDiagnosis,
 } from "./codex-hooks.js";
+import {
+  diagnoseOmpHooks,
+  installOmpHooks,
+  ompAgentDir,
+  removeOmpHooks,
+  type OmpHooksDiagnosis,
+} from "./omp-hooks.js";
 
 export interface InstallResult {
   success: boolean;
@@ -35,6 +42,15 @@ function resolveConfigPath(configPath: string, cwd: string): string {
     return join(homedir(), configPath.slice(2));
   }
   return join(cwd, configPath);
+}
+
+// OMP has distinct project and global roots: its project hook lives under the
+// workspace's .omp directory, while the user hook lives under agentDir.
+function resolveAgentConfigPath(agentId: string, connectorType: ConnectorType, configPath: string, cwd: string): string {
+  if (agentId === "omp" && connectorType === "hooks" && cwd === homedir()) {
+    return join(ompAgentDir(), "hooks", "post", "lcm.ts");
+  }
+  return resolveConfigPath(configPath, cwd);
 }
 
 function removeMarkers(content: string): string {
@@ -128,9 +144,17 @@ export function installConnector(
   }
   if (!configPath) throw new Error(`No config path defined for ${agent.name} with type ${connectorType}`);
 
-  const resolvedPath = resolveConfigPath(configPath, cwd);
+  const resolvedPath = resolveAgentConfigPath(agent.id, connectorType, configPath, cwd);
 
   if (connectorType === 'hooks') {
+    if (agent.id === "omp") {
+      installOmpHooks(resolvedPath, options);
+      return {
+        success: true,
+        path: resolvedPath,
+        requiresRestart: requiresRestart(connectorType),
+      };
+    }
     installCodexHooks(resolvedPath, options);
     return {
       success: true,
@@ -176,16 +200,17 @@ export function removeConnector(agentIdOrName: string, type?: ConnectorType, cwd
   const configPath = agent.configPaths[connectorType];
   if (!configPath) return false;
 
-  const resolvedPath = resolveConfigPath(configPath, cwd);
+  const resolvedPath = resolveAgentConfigPath(agent.id, connectorType, configPath, cwd);
 
   if (connectorType === 'hooks') {
-    return removeCodexHooks(resolvedPath);
+    return agent.id === "omp"
+      ? removeOmpHooks(resolvedPath)
+      : removeCodexHooks(resolvedPath);
   }
 
   if (connectorType === 'mcp') {
     return removeMcpJson(resolvedPath);
   }
-
   if (connectorType === 'skill') {
     const skillPath = join(resolvedPath, 'lcm-memory', 'SKILL.md');
     const existed = existsSync(skillPath);
@@ -216,11 +241,12 @@ export function listConnectors(cwd: string = process.cwd()): InstalledConnector[
     for (const type of agent.supportedTypes) {
       const configPath = agent.configPaths[type as ConnectorType];
       if (!configPath) continue;
-
-      const resolvedPath = resolveConfigPath(configPath, cwd);
+      const resolvedPath = resolveAgentConfigPath(agent.id, type, configPath, cwd);
 
       if (type === 'hooks') {
-        const diagnosis = diagnoseCodexHooks(resolvedPath);
+        const diagnosis = agent.id === "omp"
+          ? diagnoseOmpHooks(resolvedPath)
+          : diagnoseCodexHooks(resolvedPath);
         if (diagnosis.installed) {
           installed.push({ agentId: agent.id, agentName: agent.name, type, path: resolvedPath });
         }
@@ -261,7 +287,7 @@ export function diagnoseConnector(
   type?: ConnectorType,
   cwd: string = process.cwd(),
   options: CodexHookCommandOptions = {},
-): CodexHooksDiagnosis {
+): CodexHooksDiagnosis | OmpHooksDiagnosis {
   const agent = findAgent(agentIdOrName);
   if (!agent) throw new Error(`Unknown agent: ${agentIdOrName}`);
   const connectorType = type ?? agent.defaultType;
@@ -273,5 +299,8 @@ export function diagnoseConnector(
   }
   const configPath = agent.configPaths.hooks;
   if (!configPath) throw new Error(`No config path defined for ${agent.name} with type ${connectorType}`);
-  return diagnoseCodexHooks(resolveConfigPath(configPath, cwd), options);
+  const resolvedPath = resolveAgentConfigPath(agent.id, connectorType, configPath, cwd);
+  return agent.id === "omp"
+    ? diagnoseOmpHooks(resolvedPath)
+    : diagnoseCodexHooks(resolvedPath, options);
 }

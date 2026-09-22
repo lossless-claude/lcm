@@ -24,8 +24,11 @@ Running doctor...
 [dry-run] would run doctor checks
 [dry-run] would create: <TMP>/home/.codex
 [dry-run] would write: <TMP>/home/.codex/hooks.json
+[dry-run] would create: <TMP>/home/.omp/agent/hooks/post
+[dry-run] would write: <TMP>/home/.omp/agent/hooks/post/lcm.ts
 
   ✓ Claude Code: settings, MCP server, /memory skill, lcm.md installed; all checks passed
   ✓ Codex: hooks installed in <TMP>/home/.codex/hooks.json — Codex requires trust review for non-managed hooks. Review this connector with /hooks after restarting Codex.
+  ✓ Oh My Pi: hooks installed in <TMP>/home/.omp/agent/hooks/post/lcm.ts
 
   No changes written.

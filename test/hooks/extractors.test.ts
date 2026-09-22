@@ -1,10 +1,12 @@
 // test/hooks/extractors.test.ts
 import { describe, it, expect } from "vitest";
 import {
+  EXTRACTOR_TOOL_NAMES,
   extractPostToolEvents,
   extractUserPromptEvents,
   normalizePromptWithChannels,
   type ExtractedEvent,
+  type PostToolInput,
 } from "../../src/hooks/extractors.js";
 
 describe("extractPostToolEvents", () => {
@@ -355,6 +357,81 @@ describe("extractUserPromptEvents — Telegram channel wrapping", () => {
     expect(events.length).toBeGreaterThan(0);
     for (const event of events) {
       expect(event.tags).toBeUndefined();
+    }
+  });
+});
+
+describe("harness-agnostic tool shapes", () => {
+  it("records a GitHub write operation, and stays silent for its reads and searches", () => {
+    const created = extractPostToolEvents({
+      tool_name: "GitHub",
+      tool_input: { op: "pr_create", repo: "acme/lcm", title: "Fix the OMP parser" },
+    });
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({ type: "github_pr_create", category: "git", priority: 2 });
+    expect(created[0].data).toContain("Fix the OMP parser");
+
+    for (const op of ["repo_view", "file_read", "search_prs", "search_code"]) {
+      expect(extractPostToolEvents({ tool_name: "GitHub", tool_input: { op } })).toEqual([]);
+    }
+  });
+
+  it("records a security scan when one is started, not when its status is polled", () => {
+    const started = extractPostToolEvents({
+      tool_name: "SecurityScan",
+      tool_input: { action: "start", target_kind: "working_tree" },
+    });
+    expect(started).toEqual([
+      { type: "security_scan", category: "security", data: "scan started (working_tree)", priority: 2 },
+    ]);
+    expect(extractPostToolEvents({ tool_name: "SecurityScan", tool_input: { action: "status" } })).toEqual([]);
+  });
+
+  it("records a written context note as its own content", () => {
+    const events = extractPostToolEvents({
+      tool_name: "ContextNote",
+      tool_input: { text: "Postgres chosen over SQLite for the ledger table" },
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: "context_note", category: "context", priority: 2 });
+    expect(events[0].data).toContain("Postgres chosen over SQLite");
+  });
+
+  it("records a context change by kind", () => {
+    expect(extractPostToolEvents({ tool_name: "ContextChange", tool_input: { kind: "rewind", detail: "abandoned the SQLite path" } }))
+      .toEqual([{ type: "context_rewind", category: "context", data: "abandoned the SQLite path", priority: 2 }]);
+    expect(extractPostToolEvents({ tool_name: "ContextChange", tool_input: { kind: "checkpoint", detail: "explore the parser" } }))
+      .toEqual([{ type: "context_checkpoint", category: "context", data: "explore the parser", priority: 2 }]);
+    expect(extractPostToolEvents({ tool_name: "ContextChange", tool_input: { kind: "reset" } }))
+      .toEqual([{ type: "context_reset", category: "context", data: "fresh context requested", priority: 2 }]);
+  });
+
+  // Every name a harness may target must have a shape here. The fixture record is typed
+  // by the exported name list, so adding a canonical name fails to compile until it has
+  // a fixture, and this test fails unless the extractor has a case for it.
+  it("has a shape for every canonical tool name", () => {
+    const fixtures: Record<(typeof EXTRACTOR_TOOL_NAMES)[number], PostToolInput> = {
+      AskUserQuestion: { tool_name: "AskUserQuestion", tool_input: { question: "Which store?" }, tool_response: "SQLite" },
+      EnterPlanMode: { tool_name: "EnterPlanMode", tool_input: {} },
+      ExitPlanMode: { tool_name: "ExitPlanMode", tool_input: {}, tool_response: "approved" },
+      Bash: { tool_name: "Bash", tool_input: { command: "git commit -m x" } },
+      Read: { tool_name: "Read", tool_input: { file_path: "src/a.ts" } },
+      Edit: { tool_name: "Edit", tool_input: { file_path: "src/a.ts" } },
+      Write: { tool_name: "Write", tool_input: { file_path: "src/a.ts" } },
+      Glob: { tool_name: "Glob", tool_input: { pattern: "src/**" } },
+      Grep: { tool_name: "Grep", tool_input: { pattern: "needle" } },
+      TaskCreate: { tool_name: "TaskCreate", tool_input: { subject: "wire the seam" } },
+      TaskUpdate: { tool_name: "TaskUpdate", tool_input: { subject: "wire the seam", status: "in_progress" } },
+      Agent: { tool_name: "Agent", tool_input: { description: "explore the parser" } },
+      Skill: { tool_name: "Skill", tool_input: { skill: "lcm-memory" } },
+      GitHub: { tool_name: "GitHub", tool_input: { op: "pr_create", title: "Fix the parser" } },
+      SecurityScan: { tool_name: "SecurityScan", tool_input: { action: "start" } },
+      ContextNote: { tool_name: "ContextNote", tool_input: { text: "Postgres for the ledger" } },
+      ContextChange: { tool_name: "ContextChange", tool_input: { kind: "reset" } },
+    };
+
+    for (const name of EXTRACTOR_TOOL_NAMES) {
+      expect(extractPostToolEvents(fixtures[name]), `no event for canonical tool ${name}`).not.toEqual([]);
     }
   });
 });

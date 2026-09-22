@@ -15,9 +15,10 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
   // ─── import ────────────────────────────────────────────────────────────────
   program
     .command("import")
-    .description("Import Claude Code or Codex session transcripts into lossless memory")
-    .option("--provider <provider>", "Transcript source: claude, codex, all (replay defaults to all)")
+    .description("Import Claude Code, Codex, or OMP session transcripts into lossless memory")
+    .option("--provider <provider>", "Transcript source: claude, codex, omp, all (replay defaults to all)")
     .option("--codex", "Import Codex transcripts (alias for --provider codex)")
+    .option("--omp", "Import OMP transcripts (alias for --provider omp)")
     .option("--all", "Import all projects")
     .option("--verbose", "Show per-session import detail")
     .option("--dry-run", "Preview without importing")
@@ -43,16 +44,22 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
       const paths = createLcmPaths(lcmHome());
       type ImportProvider = import("../import.js").ImportProvider;
 
-      let provider: ImportProvider = opts.codex ? "codex" : replay ? "all" : "claude";
+      let provider: ImportProvider = opts.codex ? "codex" : opts.omp ? "omp" : replay ? "all" : "claude";
+      if (opts.codex && opts.omp) {
+        fail("  --codex cannot be combined with --omp");
+      }
       if (opts.codex && opts.provider && opts.provider !== "codex") {
         fail("  --codex cannot be combined with a different --provider");
       }
+      if (opts.omp && opts.provider && opts.provider !== "omp") {
+        fail("  --omp cannot be combined with a different --provider");
+      }
       if (opts.provider) {
         const provVal = opts.provider as string;
-        if (provVal === "claude" || provVal === "codex" || provVal === "all") {
+        if (provVal === "claude" || provVal === "codex" || provVal === "omp" || provVal === "all") {
           provider = provVal as ImportProvider;
         } else {
-          fail(`  Unknown provider "${provVal}". Use: claude, codex, all`);
+          fail(`  Unknown provider "${provVal}". Use: claude, codex, omp, all`);
         }
       }
 
@@ -77,7 +84,8 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
 
       const providerLabel =
         provider === "codex" ? "Codex CLI" :
-        provider === "all"   ? "Claude Code + Codex CLI" :
+        provider === "omp"   ? "OMP" :
+        provider === "all"   ? "Claude Code + Codex CLI + OMP" :
                                "Claude Code";
       console.log(`\n  Importing ${providerLabel} sessions${all ? " (all projects)" : ""}...\n`);
       renderer.start();

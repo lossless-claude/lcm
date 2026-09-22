@@ -29,7 +29,7 @@
 - Every message is stored in a project SQLite database.
 - Older context is compacted into a DAG of summaries instead of being dropped.
 - Durable decisions and findings are promoted into cross-session memory.
-- Claude Code already has end-to-end hook integration, while VS Code and Codex use connector-based workflows on the same backend today.
+- Claude Code already has end-to-end hook integration, while VS Code, Codex, and Oh My Pi use connector-based workflows on the same backend today.
 
 Humans and agents use the same backend. The integration surface differs by client, but the memory model is shared.
 
@@ -57,6 +57,7 @@ flowchart LR
 | Claude Code | Yes | Yes | Yes, via transcript/hooks | Yes | Primary hook-based integration |
 | GitHub Copilot (VS Code) | No | Yes, via skill/rules | No | No | Repo-local skill can teach Copilot to call `lcm`, but there is no automatic restore or turn capture yet |
 | Codex | Yes | Yes | Yes, via native lifecycle hooks | LCM memory compacts on `PreCompact`; native compaction continues | `lcm connectors install codex` installs the hooks; see [docs/vscode-codex.md](docs/vscode-codex.md). MCP config in `.codex/config.toml` is still manual |
+| Oh My Pi | Yes | Yes | Yes, via native lifecycle hooks | Yes | `lcm connectors install omp` installs the hooks; see [docs/omp.md](docs/omp.md). |
 
 ## LCM Model
 
@@ -90,6 +91,7 @@ flowchart TD
 - Claude Code if you want hook-based automation
 - GitHub Copilot in VS Code if you want VS Code integration
 - Codex CLI if you want Codex connector installation, summarization, or transcript import
+- Oh My Pi if you want Oh My Pi connector installation or transcript import
 
 ### Claude Code
 
@@ -105,7 +107,7 @@ claude plugin install lcm@lossless-claude
 lcm install
 ```
 
-`lcm install` writes config, registers MCP, installs the `/memory` skill and `lcm.md`, verifies the daemon, and, when `codex` is on PATH, installs the Codex hooks globally. It reports one outcome per harness and exits non-zero on any failure; `--dry-run` writes nothing. Run from the Claude Code plugin (`/memory install`) it skips Codex and leaves the MCP entry to the plugin manifest; use the npm CLI for both harnesses.
+`lcm install` writes config, registers MCP, installs the `/memory` skill and `lcm.md`, and sets up the Claude Code, Codex, and Oh My Pi integrations. It reports one outcome per harness and exits non-zero on any failure; `--dry-run` writes nothing. Run from the Claude Code plugin (`/memory install`) it skips the connector installs and leaves the MCP entry to the plugin manifest; use the npm CLI for all harnesses.
 
 ### VS Code (GitHub Copilot)
 
@@ -141,16 +143,18 @@ lcm connectors doctor codex
 
 The default connector installs native hooks for automatic restore, prompt recall, incremental turn capture, and compaction continuity. Review and trust them in Codex `/hooks`; connector diagnostics distinguish configuration from activation. See [Codex setup](docs/vscode-codex.md).
 
-Import older Codex sessions or replay both Claude and Codex history:
+Import older Codex or Oh My Pi sessions, or replay all supported history:
 
 ```bash
 lcm import --codex
+lcm import --omp
 lcm import --replay
 ```
 
 If you also want MCP inside Codex, run `lcm connectors install codex --type mcp`. Today that prints the TOML block you must add manually to `.codex/config.toml`.
 
-See [`docs/vscode-codex.md`](docs/vscode-codex.md) for the current VS Code/Codex setup path and known shortcomings.
+See [`docs/vscode-codex.md`](docs/vscode-codex.md) and [`docs/omp.md`](docs/omp.md) for the current connector setup paths and known shortcomings.
+
 
 ## Hooks
 
@@ -225,6 +229,7 @@ lcm import --all           # import all projects
 lcm import --replay        # import and compact with threaded context (resumable)
 lcm import --replay --restart # discard recorded progress and start from scratch
 lcm import --provider codex   # import Codex sessions (--codex is the short form)
+lcm import --provider omp     # import Oh My Pi sessions (--omp is the short form)
 lcm export                 # export promoted knowledge to JSON on stdout
 lcm export --all --output <f> # every project, written to files; --tags, --since filter
 lcm import-knowledge <f>   # import a knowledge JSON file

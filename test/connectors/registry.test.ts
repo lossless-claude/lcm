@@ -3,8 +3,8 @@ import { AGENTS, findAgent, getAgentsByCategory } from "../../src/connectors/reg
 import { CONNECTOR_TYPES, requiresRestart } from "../../src/connectors/types.js";
 
 describe("connector registry", () => {
-  it("has exactly 22 agents", () => {
-    expect(AGENTS).toHaveLength(22);
+  it("has exactly 23 agents", () => {
+    expect(AGENTS).toHaveLength(23);
   });
 
   it("all agents have required fields", () => {
@@ -41,7 +41,7 @@ describe("connector registry", () => {
 
   it("getAgentsByCategory filters correctly", () => {
     const cli = getAgentsByCategory("cli");
-    expect(cli.length).toBe(7);
+    expect(cli.length).toBe(8);
     expect(cli.every(a => a.category === "cli")).toBe(true);
   });
 
@@ -65,6 +65,17 @@ describe("connector registry", () => {
     expect(codex?.defaultType).toBe("hooks");
     expect(codex?.supportedTypes).toContain("skill");
     expect(codex?.configPaths.hooks).toBe(".codex/hooks.json");
+  });
+
+  it("registers OMP as a hooks-only connector", () => {
+    const omp = findAgent("omp");
+    expect(omp).toMatchObject({
+      id: "omp",
+      name: "Oh My Pi",
+      defaultType: "hooks",
+      supportedTypes: ["hooks"],
+      configPaths: { hooks: ".omp/hooks/post/lcm.ts" },
+    });
   });
 
   it("codex and github-copilot share the same skill config path", () => {

@@ -1,11 +1,12 @@
 
-  lcm import — Import Claude Code or Codex session transcripts into lossless memory.
+  lcm import — Import Claude Code, Codex or Oh My Pi session transcripts into lossless memory.
 
-  Usage: lcm import [--provider claude|codex|all | --codex] [--all] [--verbose] [--dry-run] [--replay] [--restart]
+  Usage: lcm import [--provider claude|codex|omp|all | --codex | --omp] [--all] [--verbose] [--dry-run] [--replay] [--restart]
 
   Options:
-    --provider <provider>  Transcript source: claude, codex, all (default: claude; with --replay: all)
+    --provider <provider>  Transcript source: claude, codex, omp, all (default: claude; with --replay: all)
     --codex                Alias for --provider codex
+    --omp                  Alias for --provider omp
     --all                  Import all projects (default: current project only)
     --verbose              Show per-session import detail
     --dry-run              Preview without importing
@@ -15,10 +16,11 @@
   Examples:
     lcm import                            Import current Claude Code project sessions
     lcm import --all                      Import all tracked Claude Code projects
-    lcm import --replay                   Discover and replay Claude and Codex sessions in the current project
-    lcm import --all --replay             Import and compact both providers across all projects
+    lcm import --replay                   Discover and replay Claude, Codex and Oh My Pi sessions in the current project
+    lcm import --all --replay             Import and compact every provider across all projects
     lcm import --dry-run                  Preview what would be imported
     lcm import --provider codex --replay  Import and compact current project Codex sessions
+    lcm import --omp                      Import current project Oh My Pi sessions
 
-  Note: Claude transcripts come from ~/.claude/projects/; Codex transcripts from ~/.codex/sessions/ and ~/.codex/archived_sessions/. Codex requires session_meta.cwd; unknown projects are skipped. --replay includes both providers unless --provider or --codex is explicit. --all includes other projects. Dry-run never starts the daemon. Codex import and hooks share incremental ingestion so later transcript growth is captured without duplicating prior messages.
+  Note: Claude transcripts come from ~/.claude/projects/; Codex transcripts from ~/.codex/sessions/ and ~/.codex/archived_sessions/; Oh My Pi session files from <agent dir>/sessions/ (PI_CODING_AGENT_DIR, default ~/.omp/agent). Codex requires session_meta.cwd and OMP requires the session header's cwd; unknown projects are skipped. --replay includes every provider unless --provider, --codex or --omp is explicit. --all includes other projects. Dry-run never starts the daemon. Codex and OMP import share incremental ingestion with their hooks, so later transcript growth is captured without duplicating prior messages.
 

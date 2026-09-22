@@ -45,9 +45,11 @@ export class DryRunServiceDeps implements ServiceDeps, TeardownDeps {
       return result;
     }
 
-    // Special case 2: binary resolution — return canned result, no output printed
+    // Model every PATH probe as installed, including the OMP harness. Returning
+    // the probed name keeps dry-run output honest while preserving success.
     if (cmd === "sh" && args[0] === "-c" && typeof args[1] === "string" && args[1].startsWith("command -v")) {
-      return { ...fakeZeroExit(), stdout: "lcm" };
+      const binary = args[1].trim().split(/\s+/).at(-1) ?? "lcm";
+      return { ...fakeZeroExit(), stdout: binary };
     }
 
     // All other commands: print and fake

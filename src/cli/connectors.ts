@@ -120,27 +120,28 @@ export function registerConnectorsCommands(program: Command): void {
 
       if (agents.length === 0) fail(`  Unknown agent: ${agentName}`);
 
-      const installed = listConnectors(opts.global ? homedir() : process.cwd());
       console.log("\n  Connector health:\n");
+      const installed = listConnectors(opts.global ? homedir() : process.cwd());
       for (const agent of agents) {
-        if (agent.id === "codex") {
-          const diagnosis = diagnoseConnector("codex", undefined, opts.global ? homedir() : process.cwd());
-          console.log(`  ${diagnosis.status === "installed" ? "○" : "⚠"} Codex: ${diagnosis.message}`);
+        const hasDetailedHooks = agent.supportedTypes.includes("hooks");
+        if (hasDetailedHooks) {
+          const diagnosis = diagnoseConnector(agent.id, "hooks", opts.global ? homedir() : process.cwd());
+          console.log(`  ${diagnosis.status === "installed" ? "○" : "⚠"} ${agent.name}: ${diagnosis.message}`);
           console.log(`    Path: ${diagnosis.path}`);
           for (const issue of diagnosis.issues) console.log(`    ${issue}`);
         }
-        const agentConnectors = installed.filter((c: any) => c.agentId === (agent as any).id);
-        if ((agentConnectors as any[]).length === 0) {
-          console.log(`  ⚠ ${(agent as any).name}: no connectors installed`);
+        const agentConnectors = installed.filter((c) => c.agentId === agent.id);
+        if (agentConnectors.length === 0) {
+          console.log(`  ⚠ ${agent.name}: no connectors installed`);
         } else {
-          for (const c of agentConnectors as any[]) {
-            if (agent.id === "codex" && c.type === "hooks") continue;
-            console.log(`  ✓ ${(agent as any).name}: ${c.type} at ${c.path}`);
+          for (const c of agentConnectors) {
+            if (hasDetailedHooks && c.type === "hooks") continue;
+            console.log(`  ✓ ${agent.name}: ${c.type} at ${c.path}`);
           }
         }
       }
       console.log();
-    });
 
+    });
   program.addCommand(connectorsCmd);
 }

@@ -211,6 +211,25 @@ describe("install", () => {
       0o600,
     );
   });
+
+  it("reports OMP as skipped when omp is not on PATH", async () => {
+    const spawn = vi.fn((cmd: string, args: string[]) => {
+      const probe = args[1] ?? "";
+      const found = probe.includes("command -v lcm");
+      return { status: found ? 0 : 1, stdout: found ? "/usr/local/bin/lcm\n" : "", stderr: "", pid: 1, output: [], signal: null };
+    });
+    const deps = makeDeps({ spawnSync: spawn });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const outcome = await install(deps);
+      expect(outcome.omp).toEqual({ status: "skipped", detail: "omp not on PATH" });
+      expect(logSpy.mock.calls.flat().some((line) => typeof line === "string" && line.includes("Oh My Pi"))).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
 });
 
 // ─── install dry-run ─────────────────────────────────────────────────────────
@@ -239,7 +258,7 @@ describe("install --dry-run in a home that has never seen lcm", () => {
 });
 
 describe("install with DryRunServiceDeps", () => {
-  it("prints [dry-run] lines for both harnesses and writes nothing, not even the shared core", async () => {
+  it("prints [dry-run] lines for all harnesses and writes nothing, not even the shared core", async () => {
     const { DryRunServiceDeps } = await import("../../installer/dry-run-deps.js");
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -254,10 +273,12 @@ describe("install with DryRunServiceDeps", () => {
         .flatMap((c: any[]) => c)
         .filter((s: any) => typeof s === "string" && s.includes("[dry-run]"));
       expect(dryRunLines.some((l: string) => l.includes("would write:") && l.includes("settings.json"))).toBe(true);
-      // The canned `command -v` answer makes Codex look installed, so its hooks file is previewed too.
+      // The canned command probes make both native harnesses look installed,
+      // so their managed files are previewed.
       expect(dryRunLines.some((l: string) => l.includes("would write:") && l.endsWith(join(".codex", "hooks.json")))).toBe(true);
+      expect(dryRunLines.some((l: string) => l.includes("would write:") && l.endsWith(join(".omp", "agent", "hooks", "post", "lcm.ts")))).toBe(true);
       expect(outcome.codex.status).toBe("ok");
-      expect(readdirSync(fakeHome)).toEqual([]);
+      expect(outcome.omp.status).toBe("ok");
     } finally {
       process.env.HOME = originalHome;
       rmSync(fakeHome, { recursive: true, force: true });

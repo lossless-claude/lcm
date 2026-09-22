@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getLcmDbFeatures } from "./features.js";
-import { ensureCodexCursorTable } from "./codex-cursor.js";
+import { ensureTranscriptCursorTable } from "./transcript-cursor.js";
 import { walkSubagentTranscripts } from "../subagent-attribution.js";
 import { extractCommandParts, type MessagePart } from "../transcript.js";
 
@@ -966,7 +966,7 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
     CREATE INDEX IF NOT EXISTS replay_ledger_position_idx ON replay_ledger (run_id, position);
   `);
   ensureReplayLedgerOutcomeColumn(db);
-  ensureCodexCursorTable(db);
+  ensureTranscriptCursorTable(db);
 
   const fts5Available = options?.fts5Available ?? getLcmDbFeatures(db).fts5Available;
   if (!fts5Available) {

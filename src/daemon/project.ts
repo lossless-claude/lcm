@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, normalize, join as pathJoin, dirname, basename } from "node:path";
 import type { LcmPaths } from "../lcm-paths.js";
+import type { SessionClient } from "../session-client.js";
 
 function canonicalizeCwd(cwd: string): string {
   try { return realpathSync(cwd); } catch { return cwd; }
@@ -70,11 +71,30 @@ function realpathDeep(p: string): string {
   return p; // fallback: return original
 }
 
-export function isSafeTranscriptPath(transcriptPath: string, cwd: string, client: "claude" | "codex" = "claude"): string | false {
+/**
+ * Every OMP agent directory whose sessions lcm will read: the active one
+ * (PI_CODING_AGENT_DIR, else the default) plus each named profile's, because
+ * `omp --profile <name>` relocates sessions to
+ * `~/.omp/profiles/<name>/agent/sessions` and a hook installed there reports
+ * paths lcm would otherwise refuse — silently, since capture is best-effort.
+ */
+function ompSessionRoots(): string[] {
+  const home = homedir();
+  const roots = [process.env.PI_CODING_AGENT_DIR || pathJoin(home, ".omp", "agent")];
+  const profilesDir = pathJoin(home, ".omp", "profiles");
+  try {
+    for (const entry of readdirSync(profilesDir)) roots.push(pathJoin(profilesDir, entry, "agent"));
+  } catch { /* no profiles directory: the default root is the whole list */ }
+  return roots.map(root => pathJoin(root, "sessions"));
+}
+
+export function isSafeTranscriptPath(transcriptPath: string, cwd: string, client: SessionClient = "claude"): string | false {
   const resolved = resolve(transcriptPath);
   const transcriptBases = client === "codex"
     ? [pathJoin(homedir(), ".codex", "sessions"), pathJoin(homedir(), ".codex", "archived_sessions")]
-    : [pathJoin(homedir(), ".claude", "projects")];
+    : client === "omp"
+      ? ompSessionRoots()
+      : [pathJoin(homedir(), ".claude", "projects")];
 
   // Check for symlinks: if the resolved path is a symlink, follow it and re-validate.
   let lstat: ReturnType<typeof lstatSync> | null = null;

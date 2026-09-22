@@ -4,6 +4,7 @@ import { EventsDb } from "./events-db.js";
 import { eventsDbPath } from "../db/events-path.js";
 import type { LcmPaths } from "../lcm-paths.js";
 import type { SessionClient } from "../session-client.js";
+import { isSessionClient } from "../session-client.js";
 import { withHookWrite } from "./write-admission.js";
 
 /**
@@ -64,7 +65,7 @@ export function recordPostToolEvents(payload: PostToolPayload, paths: LcmPaths):
     : undefined;
   const turnId = typeof payload.turn_id === "string" ? payload.turn_id.trim() || undefined : undefined;
 
-  const client = payload.client === "codex" ? "codex" : "claude";
+  const client: SessionClient = isSessionClient(payload.client) ? payload.client : "claude";
   const model = typeof payload.model === "string" && payload.model ? payload.model : null;
 
   const recorded = withHookWrite(paths, () => {

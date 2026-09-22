@@ -1,5 +1,5 @@
 
-  lcm install — Set up lcm for every harness on this machine: Claude Code (settings, MCP server, /memory skill, lcm.md, doctor) and, when `codex` is on PATH, the global Codex hooks. Reports one outcome per harness and exits non-zero on any failure.
+  lcm install — Set up lcm for every harness on this machine: Claude Code (settings, MCP server, /memory skill, lcm.md, doctor) and, when `codex` is on PATH, the global Codex hooks, and when `omp` is on PATH the global Oh My Pi hook. Reports one outcome per harness and exits non-zero on any failure.
 
   Usage: lcm install [--dry-run]
 

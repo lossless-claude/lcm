@@ -1219,7 +1219,7 @@ describe("importSessions replay resume", () => {
 
     await expect(importSessions(client, {
       provider: "all", replay: true, restart: true, all: true,
-      _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir, _codexDir: codexDir,
+      _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir, _codexDir: codexDir, _ompDir: "/nonexistent/omp/dir",
     })).rejects.toThrow(/--restart refused.*b1/);
 
     // Every project was checked before anything ran, so no ingest/compact
@@ -1410,9 +1410,123 @@ describe("importSessions — provider: codex", () => {
       cwd,
       _claudeProjectsDir: claudeProjectsDir,
       _codexDir: codexDir,
+      _ompDir: "/nonexistent/omp/dir",
     });
 
     expect(sessionIds.sort()).toEqual(["claude-session", "codex-session"]);
     expect(result.imported).toBe(2);
+  });
+});
+
+// --- importSessions with provider: "omp" ---
+
+function makeOmpSessionHeaderLine(id: string, cwd?: string): string {
+  return JSON.stringify({ type: "session", id, ...(cwd ? { cwd } : {}) });
+}
+
+function makeOmpMessageLine(role: "user" | "assistant", text: string): string {
+  return JSON.stringify({ type: "message", message: { role, content: text } });
+}
+
+describe("importSessions — provider: omp", () => {
+  const dirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of dirs) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    dirs.length = 0;
+    vi.restoreAllMocks();
+  });
+
+  function makeTmpDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), "lcm-import-omp-"));
+    dirs.push(dir);
+    return dir;
+  }
+
+  function writeOmpSession(root: string, id: string, cwd?: string): string {
+    const bucket = join(root, "sessions", "2026-09-21");
+    mkdirSync(bucket, { recursive: true });
+    const path = join(bucket, `20260921T000000-${id}.jsonl`);
+    const lines = [makeOmpSessionHeaderLine(id, cwd)];
+    if (cwd) lines.push(makeOmpMessageLine("user", `hello from ${id}`));
+    writeFileSync(path, `${lines.join("\n")}\n`);
+    return path;
+  }
+
+  it("discovers session files and filters them to the requested cwd", async () => {
+    const ompDir = makeTmpDir();
+    const target = "/project-a";
+    const targetPath = writeOmpSession(ompDir, "omp-a", target);
+    writeOmpSession(ompDir, "omp-b", "/project-b");
+
+    const calls: { path: string; body: unknown }[] = [];
+    const client = makeMockClient(async (path, body) => {
+      calls.push({ path, body });
+      return { ingested: 1, totalTokens: 12 };
+    });
+
+    const result = await importSessions(client, {
+      provider: "omp",
+      cwd: target,
+      _ompDir: ompDir,
+    });
+
+    expect(result.imported).toBe(1);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      path: "/ingest",
+      body: {
+        session_id: "omp-a",
+        cwd: target,
+        transcript_path: targetPath,
+        client: "omp",
+      },
+    });
+  });
+
+  it("skips OMP sessions without cwd instead of assigning unknown provenance", async () => {
+    const ompDir = makeTmpDir();
+    writeOmpSession(ompDir, "omp-no-cwd");
+
+    const client = makeMockClient(async () => ({ ingested: 1, totalTokens: 12 }));
+    const result = await importSessions(client, {
+      provider: "omp",
+      cwd: "/project-a",
+      _ompDir: ompDir,
+    });
+
+    expect(client.post).not.toHaveBeenCalled();
+    expect(result.imported).toBe(0);
+  });
+
+  it("does not use the completed-session shortcut for OMP", async () => {
+    const ompDir = makeTmpDir();
+    const lcmDir = makeTmpDir();
+    const cwd = "/project-a";
+    writeOmpSession(ompDir, "omp-tail", cwd);
+
+    const dbPath = join(lcmDir, "projects", projectId(cwd), "db.sqlite");
+    mkdirSync(join(lcmDir, "projects", projectId(cwd)), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    runLcmMigrations(db, { fts5Available: false });
+    db.prepare("INSERT INTO session_ingest_log (session_id, message_count) VALUES (?, ?)").run("omp-tail", 1);
+    db.close();
+
+    const calls: { path: string; body: unknown }[] = [];
+    const client = makeMockClient(async (path, body) => {
+      calls.push({ path, body });
+      return { ingested: 1, totalTokens: 12 };
+    });
+    await importSessions(client, {
+      provider: "omp",
+      cwd,
+      _ompDir: ompDir,
+      _lcmDir: lcmDir,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ path: "/ingest", body: { client: "omp", session_id: "omp-tail" } });
   });
 });

@@ -1,7 +1,14 @@
 import type { DatabaseSync } from "node:sqlite";
-import type { CodexTranscriptCursor } from "../codex-transcript-reader.js";
+import type { JsonlTranscriptCursor } from "../jsonl-transcript-reader.js";
 
-export function ensureCodexCursorTable(db: DatabaseSync): void {
+/**
+ * The byte-cursor checkpoint store for every append-only JSONL client
+ * (Codex, OMP): the schema is format-blind, and a conversation belongs to one
+ * client, so one row per conversation serves both adapters. The physical table
+ * keeps its original name — renaming it would need a destructive migration for
+ * no behavioral gain.
+ */
+export function ensureTranscriptCursorTable(db: DatabaseSync): void {
   db.exec(`CREATE TABLE IF NOT EXISTS codex_ingest_cursors (
     conversation_id INTEGER PRIMARY KEY REFERENCES conversations(conversation_id) ON DELETE CASCADE,
     transcript_path TEXT NOT NULL,
@@ -18,9 +25,9 @@ export function ensureCodexCursorTable(db: DatabaseSync): void {
   }
 }
 
-export function loadCodexCursor(
+export function loadTranscriptCursor(
   db: DatabaseSync, conversationId: number, transcriptPath: string,
-): CodexTranscriptCursor | undefined {
+): JsonlTranscriptCursor | undefined {
   const row = db.prepare(`SELECT byte_offset, message_count, file_device, file_inode, record_boundary, prefix_fingerprint
     FROM codex_ingest_cursors WHERE conversation_id = ? AND transcript_path = ?`)
     .get(conversationId, transcriptPath) as {
@@ -35,9 +42,9 @@ export function loadCodexCursor(
 }
 
 /** Commit only in the same transaction that appends the corresponding messages. */
-export function saveCodexCursor(
+export function saveTranscriptCursor(
   db: DatabaseSync,
-  checkpoint: { conversationId: number; transcriptPath: string; cursor: CodexTranscriptCursor },
+  checkpoint: { conversationId: number; transcriptPath: string; cursor: JsonlTranscriptCursor },
 ): void {
   const { conversationId, transcriptPath, cursor } = checkpoint;
   db.prepare(`INSERT INTO codex_ingest_cursors

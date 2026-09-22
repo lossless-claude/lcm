@@ -82,7 +82,7 @@ export function createRestore(config: DaemonConfig, paths: LcmPaths): Restore {
     };
 
     try {
-      return input.client === "codex"
+      return input.client === "codex" || input.client === "omp"
         ? await codexOutcome(input, config, paths)
         : await claudeOutcome(input, config, paths);
     } catch (err) {
@@ -145,7 +145,7 @@ async function claudeOutcome(input: NormalizedRequest, config: DaemonConfig, pat
 }
 
 /**
- * Codex's restore.
+ * The restore for a harness that keeps its own instructions (Codex, OMP).
  *
  * The native host keeps its own instructions, so nothing here reads or writes the CLAUDE.md
  * snapshot, and the compaction mark is never consulted. What it returns is the

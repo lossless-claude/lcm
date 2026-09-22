@@ -8,7 +8,37 @@ export interface ExtractedEvent {
   tags?: string[];
 }
 
-interface PostToolInput {
+/**
+ * Every tool name this module has a shape for — the vocabulary a harness adapter
+ * translates onto. `mcp__`-prefixed names are handled by prefix and are not listed.
+ *
+ * A harness may only target a name in this list, and each name must keep producing at
+ * least one event: test/hooks/extractors.test.ts fixes a payload per name and fails when
+ * one goes quiet, so a name cannot be added here without a case behind it.
+ */
+export const EXTRACTOR_TOOL_NAMES = [
+  "AskUserQuestion",
+  "EnterPlanMode",
+  "ExitPlanMode",
+  "Bash",
+  "Read",
+  "Edit",
+  "Write",
+  "Glob",
+  "Grep",
+  "TaskCreate",
+  "TaskUpdate",
+  "Agent",
+  "Skill",
+  "GitHub",
+  "SecurityScan",
+  "ContextNote",
+  "ContextChange",
+] as const;
+
+export type CanonicalToolName = (typeof EXTRACTOR_TOOL_NAMES)[number];
+
+export interface PostToolInput {
   tool_name: string;
   tool_input: Record<string, unknown>;
   tool_response?: unknown;
@@ -50,6 +80,15 @@ const ENV_COMMANDS = ["npm install", "npm i ", "yarn add", "pip install", "pip3 
 
 const GIT_COMMANDS = ["git commit", "git merge", "git rebase", "git checkout", "git switch",
   "git branch", "git push", "git pull", "git stash", "git reset", "git cherry-pick"];
+
+/** GitHub operations that change something; the reads and searches return no event. */
+const GITHUB_WRITE_OPS = ["pr_create", "pr_push", "pr_checkout", "run_watch"];
+
+/** Actions that start a scan; polling, cancelling and validating it return no event. */
+const SCAN_START_ACTIONS = ["start", "cloud_start"];
+
+/** Context lifecycle kinds a harness may report. */
+const CONTEXT_CHANGE_KINDS = ["checkpoint", "rewind", "reset"];
 
 function truncate(s: string): string {
   return s.length > DATA_SOFT_CAP ? s.slice(0, DATA_SOFT_CAP) + "..." : s;
@@ -192,6 +231,40 @@ export function extractPostToolEvents(input: PostToolInput): ExtractedEvent[] {
   // MCP tools (priority 3) — tool name only, no args
   if (tool_name.startsWith("mcp__")) {
     return [{ type: "mcp_call", category: "mcp", data: tool_name, priority: 3 }];
+  }
+
+  // GitHub writes (priority 2). Reads and searches describe the repository, not the
+  // work done to it, and would drown the git events the Bash path records.
+  if (tool_name === "GitHub") {
+    const op = String(input.tool_input.op ?? "");
+    if (!GITHUB_WRITE_OPS.includes(op)) return [];
+    const subject = String(input.tool_input.title ?? input.tool_input.pr ?? input.tool_input.repo ?? "");
+    return [{ type: `github_${op}`, category: "git", data: truncate(subject ? `${op}: ${subject}` : op), priority: 2 }];
+  }
+
+  // Security scans (priority 2) — starting one is a deliberate act; polling its status is not.
+  if (tool_name === "SecurityScan") {
+    const action = String(input.tool_input.action ?? "");
+    if (!SCAN_START_ACTIONS.includes(action)) return [];
+    const target = String(input.tool_input.target_kind ?? "").trim();
+    return [{ type: "security_scan", category: "security", data: truncate(target ? `scan started (${target})` : "scan started"), priority: 2 }];
+  }
+
+  // Agent-authored context notes (priority 2) — the note itself is the memory.
+  if (tool_name === "ContextNote") {
+    const text = String(input.tool_input.text ?? "").trim();
+    if (!text) return [];
+    return [{ type: "context_note", category: "context", data: truncate(text), priority: 2 }];
+  }
+
+  // Context lifecycle (priority 2) — explains later loss of context, and a rewind
+  // carries the findings that ended an exploration.
+  if (tool_name === "ContextChange") {
+    const kind = String(input.tool_input.kind ?? "");
+    if (!CONTEXT_CHANGE_KINDS.includes(kind)) return [];
+    const detail = String(input.tool_input.detail ?? "").trim();
+    const fallback = kind === "reset" ? "fresh context requested" : `${kind} recorded`;
+    return [{ type: `context_${kind}`, category: "context", data: truncate(detail || fallback), priority: 2 }];
   }
 
   // Any other tool with the legacy isError flag
