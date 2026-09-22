@@ -112,6 +112,93 @@ describe("Codex PostToolUse / PostToolUseFailure capture", () => {
     db.close();
   });
 
+  it("records the current step of an update_plan call as a task update", async () => {
+    await dispatchCodexHook(JSON.stringify({
+      hook_event_name: "PostToolUse",
+      session_id: "codex-session",
+      cwd: "/repo",
+      tool_name: "update_plan",
+      tool_input: {
+        explanation: "Validating each finding against the source material",
+        plan: [
+          { step: "Read the plan and the verdict", status: "completed" },
+          { step: "Validate each cited finding", status: "in_progress" },
+          { step: "Summarize agreements and disagreements", status: "pending" },
+        ],
+      },
+    }), enabledDeps());
+
+    const db = new EventsDb(join(dir, "test.db"));
+    expect(db.getUnprocessed()).toEqual([
+      expect.objectContaining({
+        type: "task_update", category: "task",
+        data: "Validate each cited finding → in_progress", client: "codex",
+      }),
+    ]);
+    db.close();
+  });
+
+  it("records nothing for an update_plan call that carries no step", async () => {
+    await dispatchCodexHook(JSON.stringify({
+      hook_event_name: "PostToolUse",
+      session_id: "codex-session",
+      cwd: "/repo",
+      tool_name: "update_plan",
+      tool_input: { explanation: "no plan yet" },
+    }), enabledDeps());
+
+    const db = new EventsDb(join(dir, "test.db"));
+    expect(db.getUnprocessed()).toEqual([]);
+    db.close();
+  });
+
+  it("records a spawn_agent dispatch when the payload names what the subagent is for", async () => {
+    await dispatchCodexHook(JSON.stringify({
+      hook_event_name: "PostToolUse",
+      session_id: "codex-session",
+      cwd: "/repo",
+      tool_name: "spawn_agent",
+      tool_input: { prompt: "Review the diff for regressions\nSecond line is not the summary" },
+    }), enabledDeps());
+
+    const db = new EventsDb(join(dir, "test.db"));
+    expect(db.getUnprocessed()).toEqual([
+      expect.objectContaining({
+        type: "subagent_dispatch", category: "subagent", client: "codex",
+        data: "Review the diff for regressions\nSecond line is not the summary",
+      }),
+    ]);
+    db.close();
+  });
+
+  it("records nothing for a spawn_agent call whose payload names nothing", async () => {
+    await dispatchCodexHook(JSON.stringify({
+      hook_event_name: "PostToolUse",
+      session_id: "codex-session",
+      cwd: "/repo",
+      tool_name: "spawn_agent",
+      tool_input: {},
+    }), enabledDeps());
+
+    const db = new EventsDb(join(dir, "test.db"));
+    expect(db.getUnprocessed()).toEqual([]);
+    db.close();
+  });
+
+  it("records nothing for write_stdin, which is transport rather than an act", async () => {
+    await dispatchCodexHook(JSON.stringify({
+      hook_event_name: "PostToolUse",
+      session_id: "codex-session",
+      cwd: "/repo",
+      tool_name: "write_stdin",
+      tool_input: { session_id: "exec-1", chars: "y\n" },
+    }), enabledDeps());
+
+    const db = new EventsDb(join(dir, "test.db"));
+    expect(db.getUnprocessed()).toEqual([]);
+    db.close();
+  });
+
   it("does not classify the unsupported exec spelling as Bash", async () => {
     await dispatchCodexHook(JSON.stringify({
       hook_event_name: "PostToolUse",

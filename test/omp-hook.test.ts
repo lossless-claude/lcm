@@ -5,8 +5,9 @@ import {
   type HookContext,
   type HookHandler,
   type TransportRequest,
-  normalizeOmpTool,
+  translateOmpTool,
 } from "../hooks/omp/lcm.js";
+import { extractPostToolEvents } from "../src/hooks/extractors.js";
 import lcm from "../hooks/omp/lcm.js";
 
 function context(overrides: Partial<HookContext> = {}): HookContext {
@@ -252,44 +253,136 @@ describe("OMP lcm hook", () => {
   });
 });
 
-describe("normalizeOmpTool", () => {
+describe("translateOmpTool", () => {
   it("maps the file tools and carries a structural edit's path set for the extractor", () => {
-    expect(normalizeOmpTool("write", { path: "b.md" }, undefined)).toEqual({ tool_name: "Write", tool_input: { path: "b.md" } });
-    expect(normalizeOmpTool("ast_edit", { pat: "x", paths: ["a.ts", "b.ts"] }, undefined)).toEqual({
+    expect(translateOmpTool({ toolName: "write", input: { path: "b.md" } })).toEqual({ tool_name: "Write", tool_input: { path: "b.md" } });
+    expect(translateOmpTool({ toolName: "ast_edit", input: { pat: "x", paths: ["a.ts", "b.ts"] } })).toEqual({
       tool_name: "Edit",
       tool_input: { pat: "x", paths: ["a.ts", "b.ts"], file_paths: ["a.ts", "b.ts"] },
     });
-    expect(normalizeOmpTool("ast_grep", { pat: "x", paths: ["a.ts"] }, undefined)).toEqual({
+    expect(translateOmpTool({ toolName: "ast_grep", input: { pat: "x", paths: ["a.ts"] } })).toEqual({
       tool_name: "Grep",
       tool_input: { pat: "x", paths: ["a.ts"], file_paths: ["a.ts"] },
     });
   });
 
   it("gives a subagent dispatch the description the extractor reads", () => {
-    expect(normalizeOmpTool("task", { label: "Explore auth", prompt: "go" }, undefined)).toEqual({
+    expect(translateOmpTool({ toolName: "task", input: { label: "Explore auth", prompt: "go" } })).toEqual({
       tool_name: "Agent",
       tool_input: { label: "Explore auth", prompt: "go", description: "Explore auth" },
     });
-    expect(normalizeOmpTool("task", { prompt: "first line\nsecond" }, undefined).tool_input.description).toBe("first line");
+    expect(translateOmpTool({ toolName: "task", input: { prompt: "first line\nsecond" } }).tool_input.description).toBe("first line");
+    // A dispatch that names nothing travels under its own name rather than inventing one.
+    expect(translateOmpTool({ toolName: "task", input: {} }).tool_name).toBe("task");
   });
 
-  it("turns an ask into a decision with its question and answer", () => {
-    expect(normalizeOmpTool("ask", { questions: [{ header: "Auth", question: "Which flow?" }] }, "OAuth2")).toEqual({
+  it("turns an ask into a decision question", () => {
+    expect(translateOmpTool({ toolName: "ask", input: { questions: [{ header: "Auth", question: "Which flow?" }] } })).toEqual({
       tool_name: "AskUserQuestion",
       tool_input: { questions: [{ header: "Auth", question: "Which flow?" }], question: "Auth: Which flow?" },
-      tool_response: "OAuth2",
     });
   });
 
   it("names the skill behind a manage_skill call", () => {
-    expect(normalizeOmpTool("manage_skill", { action: "create", name: "lcm-memory" }, undefined)).toEqual({
+    expect(translateOmpTool({ toolName: "manage_skill", input: { action: "create", name: "lcm-memory" } })).toEqual({
       tool_name: "Skill",
       tool_input: { action: "create", name: "lcm-memory", skill: "lcm-memory" },
     });
   });
 
-  it("leaves names the extractor has no case for, and MCP tools, untouched", () => {
-    expect(normalizeOmpTool("lsp", { query: "x" }, undefined)).toEqual({ tool_name: "lsp", tool_input: { query: "x" } });
-    expect(normalizeOmpTool("mcp__github__search", {}, undefined).tool_name).toBe("mcp__github__search");
+  it("turns a todo operation into a task update, and leaves a read alone", () => {
+    expect(translateOmpTool({ toolName: "todo", input: { op: "start", task: "Inspect repo" } })).toEqual({
+      tool_name: "TaskUpdate",
+      tool_input: { op: "start", task: "Inspect repo", subject: "Inspect repo", status: "in_progress" },
+    });
+    // An init names its work as a phased list rather than a single task.
+    expect(translateOmpTool({ toolName: "todo", input: { op: "init", list: [{ phase: "Requested", items: ["Inspect repo", "Write summary"] }] } }).tool_input)
+      .toMatchObject({ subject: "Inspect repo", status: "created" });
+    expect(translateOmpTool({ toolName: "todo", input: { op: "done", task: "Inspect repo" } }).tool_input.status).toBe("completed");
+    // Blocking and unblocking are the states OMP itself records.
+    expect(translateOmpTool({ toolName: "todo", input: { op: "block", task: "Inspect repo", reason: "waiting on CI" } }).tool_input.status).toBe("blocked");
+    expect(translateOmpTool({ toolName: "todo", input: { op: "unblock", task: "Inspect repo" } }).tool_input.status).toBe("pending");
+    // `view` reads the list: no act to record, so the call travels under its own name.
+    expect(translateOmpTool({ toolName: "todo", input: { op: "view" } }).tool_name).toBe("todo");
+  });
+
+  it("maps the tools the extractor gained for this harness", () => {
+    expect(translateOmpTool({ toolName: "github", input: { op: "pr_create", title: "Fix the parser" } })).toEqual({
+      tool_name: "GitHub",
+      tool_input: { op: "pr_create", title: "Fix the parser", detail: "Fix the parser" },
+    });
+    expect(translateOmpTool({ toolName: "github", input: { op: "search_prs", query: "x" } }).tool_name).toBe("github");
+    expect(translateOmpTool({ toolName: "security_scan", input: { action: "start", target_kind: "working_tree" } })).toEqual({
+      tool_name: "SecurityScan",
+      tool_input: { action: "start", target_kind: "working_tree" },
+    });
+    expect(translateOmpTool({ toolName: "context_notes", input: { text: "Postgres for the ledger" } })).toEqual({
+      tool_name: "ContextNote",
+      tool_input: { text: "Postgres for the ledger" },
+    });
+    expect(translateOmpTool({ toolName: "checkpoint", input: { goal: "explore the parser" } })).toEqual({
+      tool_name: "ContextChange",
+      tool_input: { goal: "explore the parser", kind: "checkpoint", detail: "explore the parser" },
+    });
+    expect(translateOmpTool({ toolName: "rewind", input: { report: "abandoned the SQLite path\nmore detail" } }).tool_input)
+      .toEqual({ report: "abandoned the SQLite path\nmore detail", kind: "rewind", detail: "abandoned the SQLite path" });
+    expect(translateOmpTool({ toolName: "new_context", input: {} })).toEqual({ tool_name: "ContextChange", tool_input: { kind: "reset" } });
+  });
+
+  it("leaves the harness's own memory tools and its queries under their own names", () => {
+    for (const toolName of ["retain", "recall", "reflect", "learn", "memory_edit", "lsp", "eval", "hub", "web_search"]) {
+      expect(translateOmpTool({ toolName, input: { query: "x" } }).tool_name, toolName).toBe(toolName);
+    }
+    expect(translateOmpTool({ toolName: "mcp__github__search", input: {} }).tool_name).toBe("mcp__github__search");
+  });
+});
+
+/**
+ * The table above is inlined in the hook, which cannot import lcm's seam. This is what
+ * holds the two together: every mapped payload must reach the real extractor and produce
+ * a real event, so a mapping that drifts from the extractor's expectations fails here.
+ */
+describe("OMP tool vocabulary against the real extractor", () => {
+  const cases: Array<{ toolName: string; input: Record<string, unknown>; response?: string; type: string }> = [
+    { toolName: "read", input: { path: "src/a.ts" }, type: "file_read" },
+    { toolName: "write", input: { path: "src/a.ts" }, type: "file_write" },
+    { toolName: "edit", input: { path: "src/a.ts" }, type: "file_edit" },
+    { toolName: "glob", input: { pattern: "src/**" }, type: "file_glob" },
+    { toolName: "grep", input: { pattern: "needle" }, type: "file_grep" },
+    { toolName: "bash", input: { command: "git commit -m x" }, type: "git_commit" },
+    { toolName: "ast_edit", input: { pat: "x", paths: ["src/a.ts"] }, type: "file_edit" },
+    { toolName: "ast_grep", input: { pat: "x", paths: ["src/a.ts"] }, type: "file_grep" },
+    { toolName: "task", input: { label: "Explore auth" }, type: "subagent_dispatch" },
+    { toolName: "ask", input: { questions: [{ header: "Auth", question: "Which flow?" }] }, response: "OAuth2", type: "decision" },
+    { toolName: "manage_skill", input: { action: "create", name: "lcm-memory" }, type: "skill_use" },
+    { toolName: "todo", input: { op: "start", task: "Inspect repo" }, type: "task_update" },
+    { toolName: "github", input: { op: "pr_create", title: "Fix the parser" }, type: "github_pr_create" },
+    { toolName: "security_scan", input: { action: "start", target_kind: "working_tree" }, type: "security_scan" },
+    { toolName: "context_notes", input: { text: "Postgres for the ledger" }, type: "context_note" },
+    { toolName: "checkpoint", input: { goal: "explore the parser" }, type: "context_checkpoint" },
+    { toolName: "rewind", input: { report: "abandoned the SQLite path" }, type: "context_rewind" },
+    { toolName: "new_context", input: {}, type: "context_reset" },
+  ];
+
+  it.each(cases)("$toolName reaches the extractor as $type", ({ toolName, input, response, type }) => {
+    const translated = translateOmpTool({ toolName, input });
+    const events = extractPostToolEvents({
+      tool_name: translated.tool_name,
+      tool_input: translated.tool_input,
+      ...(response === undefined ? {} : { tool_response: response }),
+      hook_event_name: "PostToolUse",
+    });
+    expect(events.map((event) => event.type)).toContain(type);
+  });
+
+  it("records a failure for a silent tool, which is how its calls still reach the extractor", () => {
+    const translated = translateOmpTool({ toolName: "retain", input: { items: [] } });
+    const events = extractPostToolEvents({
+      tool_name: translated.tool_name,
+      tool_input: translated.tool_input,
+      hook_event_name: "PostToolUseFailure",
+      error: "memory backend unavailable",
+    });
+    expect(events.map((event) => event.type)).toEqual(["error_tool"]);
   });
 });

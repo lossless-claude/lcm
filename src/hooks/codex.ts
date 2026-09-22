@@ -9,6 +9,7 @@ import { buildMemoryContext } from "./memory-context.js";
 import { lcmHome } from "../lcm-home.js";
 import { createLcmPaths, type LcmPaths } from "../lcm-paths.js";
 import { firePromoteEventsRequest } from "./daemon-requests.js";
+import { translateToolCall, type ToolVocabulary } from "./tool-vocabulary.js";
 
 const EVENTS = new Set([
   "SessionStart", "UserPromptSubmit", "Stop", "Interrupt", "SessionEnd", "PreCompact",
@@ -84,24 +85,61 @@ function codexPatchPaths(command: unknown): string[] {
   )];
 }
 
-/** Maps only Codex-local names to the equivalent extractor input. */
-function normalizeCodexTool(input: CodexToolInput): CodexToolInput {
-  // Compatibility for hosts that serialize unified command execution by its
-  // local function name; Codex's hook reference matches this path as Bash.
-  if (input.tool_name === "exec_command") {
-    return { ...input, tool_name: "Bash" };
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim() !== "") return value;
   }
-  if (input.tool_name === "apply_patch") {
-    const filePaths = codexPatchPaths(input.tool_input?.command);
-    if (filePaths.length === 0) return input;
-    return {
-      ...input,
-      tool_name: "Edit",
-      tool_input: { ...input.tool_input, file_paths: filePaths },
-    };
-  }
-  return input;
+  return undefined;
 }
+
+/**
+ * Codex's tool ids as its hook reports them, onto the extractor's vocabulary.
+ *
+ * Codex names two paths by their local function name rather than by what they do, and
+ * reports a plan tool and a subagent tool the extractor has no id for. Everything else
+ * either matches already (`mcp__*` by prefix) or is deliberately silent below.
+ */
+const CODEX_TOOL_VOCABULARY: ToolVocabulary = {
+  // Compatibility for hosts that serialize unified command execution by its local
+  // function name; Codex's hook reference matches this path as Bash.
+  exec_command: { canonical: "Bash" },
+  apply_patch: {
+    canonical: "Edit",
+    input: (call) => {
+      const filePaths = codexPatchPaths(call.input.command);
+      // A patch that names no file carries nothing the file extractor can use.
+      return filePaths.length === 0 ? undefined : { ...call.input, file_paths: filePaths };
+    },
+  },
+  update_plan: {
+    canonical: "TaskUpdate",
+    // Real shape, from this machine's Codex rollouts:
+    // { explanation?: string, plan: [{ step: string, status: "pending"|"in_progress"|"completed" }] }
+    // The current step is the memory worth keeping; a status is passed through in
+    // Codex's own words rather than translated, since the extractor treats it as prose.
+    input: (call) => {
+      const plan = Array.isArray(call.input.plan) ? call.input.plan.filter(isRecord) : [];
+      if (plan.length === 0) return undefined;
+      const current = plan.find((step) => step.status === "in_progress") ?? plan[plan.length - 1];
+      const subject = firstNonEmptyString(current.step);
+      if (!subject) return undefined;
+      return { ...call.input, subject, status: firstNonEmptyString(current.status) ?? "updated" };
+    },
+  },
+  spawn_agent: {
+    canonical: "Agent",
+    // The extractor keys subagent dispatches on `description`. No `spawn_agent` call
+    // exists in the local rollouts, so its payload field is unverified: read the
+    // plausible ones and decline rather than invent a description.
+    input: (call) => {
+      const description = firstNonEmptyString(call.input.description, call.input.prompt, call.input.label);
+      return description === undefined ? undefined : { ...call.input, description };
+    },
+  },
+  // Transport for an existing unified-exec session: the command's own PostToolUse
+  // arrives when it finishes, so this is not an act of its own.
+  write_stdin: { silent: "transport for an existing exec session, not an act" },
+};
 
 /**
  * Codex `PostToolUse` / `PostToolUseFailure`. This writes straight to the
@@ -113,10 +151,17 @@ async function dispatchCodexToolHook(stdin: string, paths: LcmPaths): Promise<{ 
   try {
     const input = parseToolInput(stdin);
     if (!input) return EMPTY;
+    const translated = translateToolCall(CODEX_TOOL_VOCABULARY, {
+      toolName: input.tool_name,
+      input: input.tool_input ?? {},
+      response: input.tool_response,
+    });
     // Imported here, not at module scope: tool-events.js pulls node:sqlite, whose
     // ExperimentalWarning would then reach stderr on every lifecycle no-op too.
     const { recordPostToolEvents } = await import("./tool-events.js");
-    const outcome = recordPostToolEvents({ ...normalizeCodexTool(input), client: "codex" }, paths);
+    // The translated name and input lead; every other field (the failure flag, the
+    // error text, the turn id) still belongs to the payload as the harness sent it.
+    const outcome = recordPostToolEvents({ ...input, ...translated, client: "codex" }, paths);
     if (outcome.hasPriority1) {
       const config = loadDaemonConfig(paths.configPath);
       firePromoteEventsRequest(config.daemon?.port ?? 3737, { cwd: input.cwd }, paths);

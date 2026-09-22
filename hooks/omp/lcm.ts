@@ -396,73 +396,191 @@ function memoryMessage(content: string): { message: Record<string, unknown> } {
   };
 }
 
+/** One tool call as OMP reported it. */
+export interface OmpToolCall {
+  readonly toolName: string;
+  readonly input: Record<string, unknown>;
+}
+
+type OmpToolMapping =
+  | { readonly canonical: string; readonly input?: (call: OmpToolCall) => Record<string, unknown> | undefined }
+  | { readonly silent: string };
+
+/** `todo` operations as the status word the stored memory reads better with. */
+const TODO_STATUS: Record<string, string> = {
+  init: "created",
+  append: "created",
+  start: "in_progress",
+  // OMP's own unblock returns the item to pending and clears its blocker.
+  unblock: "pending",
+  done: "completed",
+  rm: "abandoned",
+  drop: "abandoned",
+  block: "blocked",
+};
+
+/** GitHub operations that change something; the reads and searches record nothing. */
+const GITHUB_WRITE_OPS = ["pr_create", "pr_push", "pr_checkout", "run_watch"];
+
+/** Actions that start a scan; polling or validating one is not an act of its own. */
+const SCAN_START_ACTIONS = ["start", "cloud_start"];
+
+function withPathSet(call: OmpToolCall): Record<string, unknown> {
+  const paths = Array.isArray(call.input.paths)
+    ? call.input.paths.filter((path): path is string => typeof path === "string" && path.trim() !== "")
+    : [];
+  // A structural edit or search names a set of paths; the extractor accepts file_paths.
+  return paths.length === 0 ? { ...call.input } : { ...call.input, file_paths: paths };
+}
+
+function firstTodoItem(list: unknown): string | undefined {
+  if (!Array.isArray(list)) return undefined;
+  for (const phase of list) {
+    if (!isRecord(phase) || !Array.isArray(phase.items)) continue;
+    const item = phase.items.find((entry): entry is string => typeof entry === "string" && entry.trim() !== "");
+    if (item !== undefined) return item;
+  }
+  return undefined;
+}
+
+function contextChange(call: OmpToolCall, kind: string, detail: string | undefined): Record<string, unknown> {
+  return detail === undefined ? { ...call.input, kind } : { ...call.input, kind, detail };
+}
+
 /**
- * OMP's built-in tool ids are lowercase (`read`, `bash`, `ast_edit`, …) and the
- * daemon's passive-learning extractor is written against the capitalized
- * harness names, so an unmapped call records nothing at all. This mirrors what
- * the Codex adapter does for its own local names: translate the tool and, where
- * the extractor reads a differently named field, translate that too.
+ * OMP's tool ids, onto the daemon extractor's vocabulary.
+ *
+ * Inlined rather than imported: OMP loads this module in-process with no package
+ * resolution, so it cannot reach lcm's own seam (src/hooks/tool-vocabulary.ts).
+ * `test/omp-hook.test.ts` holds the two together instead, by putting every translated
+ * call through the real extractor, where a mapping that stops producing events fails.
+ *
+ * A mapper may decline a payload too thin for its shape; the call then travels under its
+ * own name, so the extractor's generic arms still see it. A `silent` entry records the
+ * same thing with the reason written down, so coverage can be audited rather than guessed.
  */
-export function normalizeOmpTool(
-  toolName: string,
-  toolInput: Record<string, unknown>,
-  toolContent: string | undefined,
-): { tool_name: string; tool_input: Record<string, unknown>; tool_response?: string } {
-  const rename: Record<string, string> = {
-    read: "Read",
-    write: "Write",
-    edit: "Edit",
-    glob: "Glob",
-    grep: "Grep",
-    bash: "Bash",
-    // A structural edit searches a set of paths; the extractor accepts file_paths.
-    ast_edit: "Edit",
-    ast_grep: "Grep",
-  };
-  const renamed = rename[toolName];
-  if (renamed) {
-    const paths = Array.isArray(toolInput.paths)
-      ? toolInput.paths.filter((path): path is string => typeof path === "string" && path.trim() !== "")
-      : [];
-    return {
-      tool_name: renamed,
-      tool_input: paths.length > 0 ? { ...toolInput, file_paths: paths } : toolInput,
-    };
-  }
-
-  if (toolName === "task") {
+const OMP_TOOL_VOCABULARY: Record<string, OmpToolMapping> = {
+  read: { canonical: "Read" },
+  write: { canonical: "Write" },
+  edit: { canonical: "Edit" },
+  glob: { canonical: "Glob" },
+  grep: { canonical: "Grep" },
+  bash: { canonical: "Bash" },
+  ast_edit: { canonical: "Edit", input: withPathSet },
+  ast_grep: { canonical: "Grep", input: withPathSet },
+  task: {
+    canonical: "Agent",
     // The extractor keys subagent dispatches on `description`.
-    const label = safeString(toolInput.label) ?? safeString(toolInput.description);
-    const prompt = safeString(toolInput.prompt);
-    const description = label ?? (prompt ? prompt.split("\n")[0].slice(0, 200) : undefined);
-    return {
-      tool_name: "Agent",
-      tool_input: description ? { ...toolInput, description } : toolInput,
-    };
-  }
+    input: (call) => {
+      const label = safeString(call.input.label) ?? safeString(call.input.description);
+      const prompt = safeString(call.input.prompt);
+      const description = label ?? (prompt === undefined ? undefined : prompt.split("\n")[0]);
+      return description === undefined ? undefined : { ...call.input, description };
+    },
+  },
+  ask: {
+    canonical: "AskUserQuestion",
+    // A user answer is a durable decision: the extractor reads one question, and the
+    // response travels as the tool's response text.
+    input: (call) => {
+      const questions = Array.isArray(call.input.questions) ? call.input.questions : [];
+      const first = questions.find(isRecord);
+      const question = first === undefined
+        ? undefined
+        : [safeString(first.header), safeString(first.question)].filter(Boolean).join(": ");
+      return question ? { ...call.input, question } : undefined;
+    },
+  },
+  manage_skill: {
+    canonical: "Skill",
+    input: (call) => {
+      const skill = safeString(call.input.name) ?? safeString(call.input.skill);
+      return skill === undefined ? undefined : { ...call.input, skill };
+    },
+  },
+  todo: {
+    canonical: "TaskUpdate",
+    // Real shape: { op, list?: [{phase, items}], task?, phase?, items?, reason? }, with
+    // ops init | start | done | rm | drop | block | unblock | append | view.
+    input: (call) => {
+      const op = safeString(call.input.op);
+      const status = op === undefined ? undefined : TODO_STATUS[op];
+      const subject = safeString(call.input.task) ?? firstTodoItem(call.input.list) ?? safeString(call.input.phase);
+      // `view` reads the list, and a call that names no task says nothing.
+      if (status === undefined || subject === undefined) return undefined;
+      return { ...call.input, subject, status };
+    },
+  },
+  github: {
+    canonical: "GitHub",
+    input: (call) => {
+      const op = safeString(call.input.op);
+      if (op === undefined || !GITHUB_WRITE_OPS.includes(op)) return undefined;
+      const detail = safeString(call.input.title) ?? safeString(call.input.pr) ?? safeString(call.input.repo);
+      return detail === undefined ? { ...call.input, op } : { ...call.input, op, detail };
+    },
+  },
+  security_scan: {
+    canonical: "SecurityScan",
+    input: (call) => {
+      const action = safeString(call.input.action);
+      if (action === undefined || !SCAN_START_ACTIONS.includes(action)) return undefined;
+      const target = safeString(call.input.target_kind);
+      return target === undefined ? { ...call.input, action } : { ...call.input, action, target_kind: target };
+    },
+  },
+  context_notes: {
+    canonical: "ContextNote",
+    // Writing a note replaces the notebook; reading it (no text) is not an act.
+    input: (call) => {
+      const text = safeString(call.input.text);
+      return text === undefined ? undefined : { ...call.input, text };
+    },
+  },
+  checkpoint: {
+    canonical: "ContextChange",
+    input: (call) => contextChange(call, "checkpoint", safeString(call.input.goal)),
+  },
+  rewind: {
+    canonical: "ContextChange",
+    input: (call) => {
+      const report = safeString(call.input.report);
+      return contextChange(call, "rewind", report === undefined ? undefined : report.split("\n")[0]);
+    },
+  },
+  new_context: { canonical: "ContextChange", input: (call) => contextChange(call, "reset", undefined) },
 
-  if (toolName === "ask") {
-    // A user answer is a durable decision: the extractor reads one question and
-    // the response text.
-    const questions = Array.isArray(toolInput.questions) ? toolInput.questions : [];
-    const first = questions.find(isRecord);
-    const question = first ? [safeString(first.header), safeString(first.question)].filter(Boolean).join(": ") : "";
-    return {
-      tool_name: "AskUserQuestion",
-      tool_input: question ? { ...toolInput, question } : toolInput,
-      ...(toolContent !== undefined ? { tool_response: toolContent } : {}),
-    };
-  }
+  // OMP's own long-term memory. Recording it would duplicate lcm's memory and risk the
+  // feedback loop the extractor already guards against for lcm_store.
+  retain: { silent: "the harness's own long-term memory" },
+  recall: { silent: "a read of the harness's own memory" },
+  reflect: { silent: "a read of the harness's own memory" },
+  learn: { silent: "the harness's own long-term memory" },
+  memory_edit: { silent: "the harness's own memory files" },
+  // Queries and out-of-band plumbing: no durable fact.
+  lsp: { silent: "language-server query" },
+  eval: { silent: "in-process evaluation" },
+  debug: { silent: "debugger control" },
+  hub: { silent: "out-of-band messaging" },
+  web_search: { silent: "a search leaves no durable fact" },
+  goal: { silent: "loop control" },
+  yield: { silent: "loop control" },
+  think: { silent: "reasoning, not an act" },
+};
 
-  if (toolName === "manage_skill") {
-    const skill = safeString(toolInput.name) ?? safeString(toolInput.skill);
-    return {
-      tool_name: "Skill",
-      tool_input: skill ? { ...toolInput, skill } : toolInput,
-    };
-  }
+/**
+ * Translate one OMP tool call for the daemon's extractor.
+ *
+ * Never discards a call: an unmapped id, a silent id, and a payload a mapper declines all
+ * travel under OMP's own name, where the extractor's generic arms can still act on them.
+ */
+export function translateOmpTool(call: OmpToolCall): { tool_name: string; tool_input: Record<string, unknown> } {
+  const passthrough = { tool_name: call.toolName, tool_input: { ...call.input } };
+  const mapping = OMP_TOOL_VOCABULARY[call.toolName];
+  if (mapping === undefined || "silent" in mapping) return passthrough;
 
-  return { tool_name: toolName, tool_input: toolInput };
+  const input = mapping.input === undefined ? call.input : mapping.input(call);
+  return input === undefined ? passthrough : { tool_name: mapping.canonical, tool_input: input };
 }
 
 function contextFromResponse(response: unknown): string | undefined {
@@ -565,15 +683,13 @@ export default function lcm(pi: HookApi): void {
     const input = isRecord(event.input) ? event.input : {};
     const toolContent = boundedToolContent(event.content);
     const isError = event.isError === true;
-    const normalized = normalizeOmpTool(toolName, input, toolContent);
+    const translated = translateOmpTool({ toolName, input });
     const body: Record<string, unknown> = {
       ...identityBody(identity),
-      tool_name: normalized.tool_name,
-      tool_input: normalized.tool_input,
+      tool_name: translated.tool_name,
+      tool_input: translated.tool_input,
       ...(safeString(event.toolCallId) ? { tool_use_id: event.toolCallId } : {}),
-      ...(normalized.tool_response !== undefined
-        ? { tool_response: normalized.tool_response }
-        : toolContent !== undefined ? { tool_response: toolContent } : {}),
+      ...(toolContent !== undefined ? { tool_response: toolContent } : {}),
       ...(isError ? { tool_output: { isError: true }, error: toolContent } : {}),
       ...(modelName(ctx) ? { model: modelName(ctx) } : {}),
       hook_event_name: isError ? "PostToolUseFailure" : "PostToolUse",
