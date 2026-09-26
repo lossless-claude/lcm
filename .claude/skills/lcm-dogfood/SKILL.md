@@ -9,9 +9,9 @@ disable-model-invocation: true
 Proves what only a live install can: the installed plugin, the configured summarizer and the user's own memory working together. Hook output shapes, daemon-down behaviour and command options stay out of this skill; `test/e2e/` exercises them against an isolated daemon.
 
 Run every phase, or only `$0`. The target is the real lcm home (`LCM_HOME`, default `~/.lossless-claude`):
-- Phases that write (`compact`, `sensitive`, `mcp`) touch only the current project, or add and then remove their own entries. A run costs one project's summarization and keeps every existing summary; `--all` and `--restart` stay out of this skill.
+- Phases that write memory (`compact`, `sensitive`, `mcp`) touch only the current project, or add and then remove their own entries. A run costs one project's summarization and keeps every existing summary; `--all` and `--restart` stay out of this skill.
 - `integrity` only reads, across the whole home.
-- `lcm doctor` (in `health`, and `lcm_doctor` in `mcp`) repairs lcm's own setup when it finds it drifted: the hooks and MCP entries in `~/.claude/settings.json`, `~/.claude/lcm.md`, a stale daemon. Each repair prints as a fixed warning; record it in the scorecard as a finding, since a live install that needed one had drifted.
+- `lcm doctor` (in `health`, and `lcm_doctor` in `mcp`) writes outside the project: it repairs lcm's own setup when it finds it drifted: the hooks and MCP entries in `~/.claude/settings.json`, `~/.claude/lcm.md`, a stale daemon. Each repair prints as a fixed warning; record it in the scorecard as a finding, since a live install that needed one had drifted.
 
 Binary: `lcm` on PATH. Record each check as PASS, FAIL or SKIP (with the reason), keep going on FAIL, and open an issue for each failure worth tracking. The daemon log is `logs/daemon.log` in the lcm home, one JSON record per line; `docs/configuration.md` ("Daemon log") names its events.
 
