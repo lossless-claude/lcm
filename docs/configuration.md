@@ -88,6 +88,43 @@ Use it to run lcm against a scratch directory without touching your own memory â
 
 Both the daemon and the client must see the same value: a daemon started without it answers on the port from `~/.lossless-claude/config.json` and writes to the real databases.
 
+## Daemon log
+
+The daemon writes one JSON record per line to `~/.lossless-claude/logs/daemon.log`. Every record has `ts`, `level` and `event`; the rest are fields such as `route`, `status`, `cwd`, `session_id`, `reason` and `err`. `lcm doctor` reads it for the `daemon-log` check. To answer "why did compaction not run for this project?", filter it by `cwd`:
+
+```bash
+jq -c 'select(.cwd == "/path/to/project")' ~/.lossless-claude/logs/daemon.log*
+```
+
+- **Requests**: one `request` record per request, with its route, status and duration. `/session-end`, `/compact` and `/session-start-compact` are logged at `info`, so a `/session-end` with no `/compact` after it is visible. `/tool-event`, `/health` and `/summarize-jobs/*` are logged at `debug`. A 5xx is logged at `error`, and a 4xx at `warn`.
+- **Outcomes**: `compact.done`, `compact.skipped` (`reason`: `already-compacting`, `disabled`, `no_work`, `auto-compact-disabled`), `compact.sweep`, `promote.done` and `session_end.ingested`.
+- **Failures**: `route.failed`, `compact.failed`, `promote.failed`, `daemon_request.failed` (a follow-up request the daemon could not send to itself), and `summarizer.fallback` (the session provider did not answer, so `to_provider` summarized instead).
+- **Continuity**:
+  - `daemon.start` records `prev`: `clean` when the previous daemon left a `daemon.stop`, `unclean` when it did not, and `none` for the first log.
+  - `daemon.stop` is written on idle shutdown, SIGTERM, SIGINT, a hold and an uncaught exception.
+  - `log.gap` records how many records were dropped while appends were failing, and over what period.
+
+`daemon` settings in `config.json`, read at daemon start:
+
+| Key | Default | Effect |
+|---|---|---|
+| `daemon.logLevel` | `info` | Lowest level written: `debug`, `info`, `warn` or `error`. |
+| `daemon.logMaxSizeMB` | `10` | When `daemon.log` would pass this size, it is renamed to `daemon.log.<timestamp>`. |
+| `daemon.logRetentionDays` | `7` | Rotated files older than this are deleted. |
+
+- **Secrets**:
+  - Free-form text (messages, errors, reasons) passes through the same secret patterns as stored transcripts: gitleaks, the built-in patterns, `security.sensitivePatterns`, and the project's `sensitive-patterns.txt`.
+  - Until a project's patterns are loaded, free-form text of a record naming that project is omitted, and the record carries `scrub: "pending"`. If they cannot be loaded, the record carries `scrub: "unavailable"`.
+  - Request bodies are never logged.
+- **Stderr**:
+  - What the daemon prints outside the log goes to `logs/daemon.stderr`. This includes a crash before the log opens.
+  - That file is kept across restarts. Once it is past 10 MB, it is moved to `daemon.stderr.1` at the next spawn.
+- **When `lcm doctor` reports "coverage incomplete"**:
+  - It does so when, in the last 24 hours, a daemon ended without `daemon.stop`, records were dropped, or the running daemon cannot write.
+  - It reports `0 daemon errors` only when none of these happened.
+  - A daemon killed with SIGKILL, or by a power loss, also counts as ending without `daemon.stop`. So "coverage incomplete" means continuity cannot be proven, not that records were lost.
+  - A daemon that could not write a single record during its whole life leaves no trace at all, because every record goes to the same disk that was failing. An example is a disk that stays full from start to exit.
+
 ## Connector scope
 
 The connector manager can install into either the current project or your global

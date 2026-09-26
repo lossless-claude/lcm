@@ -9,6 +9,7 @@ import { createSessionStartCompactScanner } from "../session-start-compact-worke
 import { resolveLcmConfig } from "../../db/config.js";
 import type { SessionClient } from "../../session-client.js";
 import { isSessionClient } from "../../session-client.js";
+import { noopDaemonLog, type DaemonLog } from "../log.js";
 
 /**
  * SessionStart's catch-up sweep: a conversation of the same project that ended
@@ -20,7 +21,7 @@ import { isSessionClient } from "../../session-client.js";
  * the selection work below. Requires the daemon's own listening port to reuse
  * `fireCompactRequest` unchanged, exactly as a hook would call it.
  */
-export function createSessionStartCompactHandler(config: DaemonConfig, daemonPort: number, paths: LcmPaths): RouteHandler {
+export function createSessionStartCompactHandler(config: DaemonConfig, daemonPort: number, paths: LcmPaths, log: DaemonLog = noopDaemonLog): RouteHandler {
   const scanner = createSessionStartCompactScanner();
 
   return async (_req, res, body) => {
@@ -75,6 +76,7 @@ export function createSessionStartCompactHandler(config: DaemonConfig, daemonPor
         .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)) // oldest first: drain a backlog over several starts
         .slice(0, cap);
 
+      log.write("info", "compact.sweep", { cwd, session_id: sessionId, candidates: candidates.length, eligible: eligible.length });
       for (const conv of eligible) {
         fireCompactRequest(daemonPort, {
           session_id: conv.sessionId,
@@ -83,10 +85,10 @@ export function createSessionStartCompactHandler(config: DaemonConfig, daemonPor
           // The sweep cannot see a conversation's own client (conversations carry
           // none); the caller's is the only signal, and it only picks the summarizer.
           client,
-        }, paths);
+        }, paths, (err) => log.write("error", "daemon_request.failed", { path: "/compact", cwd: conv.cwd, session_id: conv.sessionId, err }));
       }
     }).catch((err: unknown) => {
-      console.error(`session-start-compact: selection failed for ${cwd}: ${err instanceof Error ? err.message : err}`);
+      log.write("error", "compact.sweep_failed", { cwd, err });
     });
   };
 }

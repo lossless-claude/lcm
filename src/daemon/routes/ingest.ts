@@ -18,6 +18,7 @@ import type { SessionClient } from "../../session-client.js";
 import { ScrubEngine } from "../../scrub.js";
 import { validateCwd } from "../validate-cwd.js";
 import { scheduleProjectLanguageDetection } from "../project-language.js";
+import { noopDaemonLog, type DaemonLog } from "../log.js";
 import { enqueue } from "../project-queue.js";
 import { SessionCapture, isSessionComplete, type CaptureInput, type CaptureResult, type TranscriptCaptureResult } from "../../capture.js";
 import type { DiscoveredSubagentTranscript } from "../../subagent-attribution.js";
@@ -122,7 +123,7 @@ function backfillToolModels(cwd: string, captured: TranscriptCaptureResult, path
   }
 }
 
-export function createIngestHandler(config: DaemonConfig, paths: LcmPaths): RouteHandler {
+export function createIngestHandler(config: DaemonConfig, paths: LcmPaths, log: DaemonLog = noopDaemonLog): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}") as IngestInput;
     const { session_id } = input;
@@ -218,7 +219,7 @@ export function createIngestHandler(config: DaemonConfig, paths: LcmPaths): Rout
         try {
           await ingestSubagentTranscripts(cwd, dbPath, pid, subagents, scrubber, paths);
         } catch (err) {
-          console.error(`ingest: subagent discovery failed for session ${session_id}: ${err instanceof Error ? err.message : err}`);
+          log.write("warn", "ingest.subagents_failed", { cwd, session_id, err });
         }
       }
       sendJson(res, 200, result);
@@ -229,7 +230,7 @@ export function createIngestHandler(config: DaemonConfig, paths: LcmPaths): Rout
           try {
             backfillToolModels(cwd, read, paths);
           } catch (err) {
-            console.error(`ingest: model backfill failed for session ${session_id}: ${err instanceof Error ? err.message : err}`);
+            log.write("warn", "ingest.model_backfill_failed", { cwd, session_id, err });
           }
         });
       }

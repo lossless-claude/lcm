@@ -14,10 +14,12 @@ import { PromotedStore } from "../../db/promoted.js";
 import { shouldPromote } from "../../promotion/detector.js";
 import { deduplicateAndInsert } from "../../promotion/dedup.js";
 import { validateCwd } from "../validate-cwd.js";
+import { noopDaemonLog, type DaemonLog } from "../log.js";
 
 export function createPromoteHandler(
   config: DaemonConfig,
   paths: LcmPaths,
+  log: DaemonLog = noopDaemonLog,
 ): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
@@ -105,7 +107,9 @@ export function createPromoteHandler(
                 },
               });
               promoted++;
-            } catch { /* non-fatal — don't count failed promotions */ }
+            } catch (err) {
+              log.write("warn", "promote.insert_failed", { cwd, err }); // not counted as promoted
+            }
           }
         }
       }
@@ -113,15 +117,19 @@ export function createPromoteHandler(
       if (!dry_run) {
         try {
           updateProjectMeta(cwd, paths, { lastPromote: new Date().toISOString() });
-        } catch { /* non-fatal */ }
+        } catch (err) {
+          log.write("warn", "promote.meta_failed", { cwd, err });
+        }
       }
     } catch (err) {
+      log.write("error", "promote.failed", { cwd, err });
       sendJson(res, 500, { error: err instanceof Error ? err.message : "promote failed" });
       return;
     } finally {
       db.close();
     }
 
+    log.write("info", "promote.done", { cwd, processed, promoted, dry_run });
     sendJson(res, 200, { processed, promoted, conversations: totalConversations });
   };
 }

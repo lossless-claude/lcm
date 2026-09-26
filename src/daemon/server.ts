@@ -36,6 +36,7 @@ import { claudeProjectSlug } from "./project.js";
 import { PKG_VERSION, BUILD_ID } from "./version.js";
 import { lcmHome } from "../lcm-home.js";
 import { createLcmPaths, type LcmPaths } from "../lcm-paths.js";
+import { noopDaemonLog, type DaemonLog, type LogLevel } from "./log.js";
 export { PKG_VERSION };
 
 export type RouteHandler = (req: IncomingMessage, res: ServerResponse, body: string) => Promise<void>;
@@ -53,9 +54,32 @@ export type DaemonOptions = {
    * for and never use.
    */
   backfillIdentities?: boolean;
+  /** Where the daemon records requests, outcomes and failures. Defaults to a log that drops everything. */
+  log?: DaemonLog;
 };
 
 const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
+
+// Routes whose request line is noise at info: per tool call, per poll, per health probe.
+const DEBUG_ROUTES = new Set(["POST /tool-event", "GET /health", "GET /summarize-jobs/next"]);
+
+function requestLevel(key: string, status: number): LogLevel {
+  if (status >= 500) return "error";
+  if (status >= 400) return "warn";
+  return DEBUG_ROUTES.has(key) || key.startsWith("POST /summarize-jobs/") ? "debug" : "info";
+}
+
+/** The identity fields of a JSON body, for the request line; never the body itself. */
+function requestIdentity(body: string): { cwd?: string; session_id?: string } {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (!parsed || typeof parsed !== "object") return {};
+    const { cwd, session_id } = parsed as Record<string, unknown>;
+    return { ...(typeof cwd === "string" ? { cwd } : {}), ...(typeof session_id === "string" ? { session_id } : {}) };
+  } catch {
+    return {}; // not JSON: the route answers the 400
+  }
+}
 
 export async function readBody(req: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
@@ -90,6 +114,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   const paths = options?.paths ?? createLcmPaths(lcmHome());
   const startTime = Date.now();
   const proxyManager = options?.proxyManager;
+  const log = options?.log ?? noopDaemonLog;
   const serverToken = options?.tokenPath ? readAuthToken(options.tokenPath) : null;
   if (options?.tokenPath && serverToken === null) {
     throw new Error(`Auth token file specified but could not be read: ${options.tokenPath}`);
@@ -99,7 +124,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
   let idleTriggered = false;
   const onIdle = options?.onIdle ?? (() => {
-    console.log("[lcm] idle timeout — shutting down");
+    log.close("idle");
     process.exit(0);
   });
 
@@ -113,20 +138,20 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   }
 
   routes.set("GET /health", async (_req, res) =>
-    sendJson(res, 200, { status: "ok", version: PKG_VERSION, build: BUILD_ID, pid: process.pid, uptime: Math.floor((Date.now() - startTime) / 1000) }));
+    sendJson(res, 200, { status: "ok", version: PKG_VERSION, build: BUILD_ID, pid: process.pid, uptime: Math.floor((Date.now() - startTime) / 1000), log: log.state() }));
   const summarizeJobs = new SummarizeJobStore();
   const answerSummarizeJob = createAnswerSummarizeJobHandler(summarizeJobs);
   routes.set("GET /summarize-jobs/next", createNextSummarizeJobHandler(summarizeJobs));
-  routes.set("POST /compact", createCompactHandler(config, paths, summarizeJobs));
-  routes.set("POST /promote", createPromoteHandler(config, paths));
+  routes.set("POST /compact", createCompactHandler(config, paths, summarizeJobs, log));
+  routes.set("POST /promote", createPromoteHandler(config, paths, log));
   routes.set("POST /restore", createRestoreHandler(config, paths));
   routes.set("POST /grep", createGrepHandler(config, paths));
-  routes.set("POST /search", createSearchHandler(config, paths));
+  routes.set("POST /search", createSearchHandler(config, paths, log));
   routes.set("POST /expand", createExpandHandler(config, paths));
   routes.set("POST /describe", createDescribeHandler(config, paths));
   routes.set("POST /store", createStoreHandler(config, paths));
   routes.set("POST /recent", createRecentHandler(config, paths));
-  routes.set("POST /ingest", createIngestHandler(config, paths));
+  routes.set("POST /ingest", createIngestHandler(config, paths, log));
   routes.set("POST /prompt-search", createPromptSearchHandler(config, paths));
   routes.set("POST /session-complete", createSessionCompleteHandler(paths));
   routes.set("POST /promote-events", createPromoteEventsHandler(config, paths));
@@ -139,7 +164,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
 
   // Periodic transcript ingestion scan
   const INGEST_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
-  const ingestHandler = createIngestHandler(config, paths);
+  const ingestHandler = createIngestHandler(config, paths, log);
   const ingestInterval = setInterval(() => {
     void scanForTranscripts(config, paths, ingestHandler);
   }, INGEST_INTERVAL_MS);
@@ -168,11 +193,19 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
         return;
       }
     }
+    const started = Date.now();
+    let identity: { cwd?: string; session_id?: string } = {};
+    res.on("finish", () => log.write(requestLevel(key, res.statusCode), "request",
+      { route: key, status: res.statusCode, ms: Date.now() - started, ...identity }));
     try {
-      await handler(req, res, req.method !== "GET" ? await readBody(req) : "");
+      const body = req.method !== "GET" ? await readBody(req) : "";
+      identity = requestIdentity(body);
+      if (identity.cwd) await log.prepare(identity.cwd);
+      await handler(req, res, body);
     } catch (err: unknown) {
       const status = (err as { statusCode?: number })?.statusCode ?? 500;
       const message = status === 413 ? "payload too large" : sanitizeError(err instanceof Error ? err.message : "internal error");
+      log.write("error", "route.failed", { route: key, ...identity, err });
       sendJson(res, status, { error: message });
     }
   });
@@ -182,7 +215,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
     try {
       await proxyManager.start();
     } catch (err) {
-      console.warn(`[lcm] claude-server proxy failed to start: ${err instanceof Error ? err.message : err}`);
+      log.write("warn", "proxy.start_failed", { err });
     }
   }
 
@@ -201,10 +234,10 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
       // Now that we know the actual port, register the status handler
       routes.set("POST /status", createStatusHandler(config, paths, startTime, actualPort));
       // Needs its own port to reuse fireCompactRequest's loopback call.
-      routes.set("POST /session-start-compact", createSessionStartCompactHandler(config, actualPort, paths));
+      routes.set("POST /session-start-compact", createSessionStartCompactHandler(config, actualPort, paths, log));
       // The follow-ups call this daemon back, so they must present the token it checks.
       const sequencePaths = options?.tokenPath ? { ...paths, tokenPath: options.tokenPath } : paths;
-      routes.set("POST /session-end", createSessionEndHandler(config, actualPort, sequencePaths, ingestHandler));
+      routes.set("POST /session-end", createSessionEndHandler(config, actualPort, sequencePaths, ingestHandler, log));
 
       resolve({
         address: () => addr,

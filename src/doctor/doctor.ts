@@ -16,6 +16,8 @@ import { BUILD_ID, PKG_VERSION } from "../daemon/version.js";
 import { cliEntrypoint } from "../cli-entrypoint.js";
 import { daemonOwnership } from "../daemon/lifecycle.js";
 import { repairCommand } from "../hooks/fail-open.js";
+import { checkDaemonLog } from "./daemon-log-check.js";
+import type { LogState } from "../daemon/log.js";
 
 const COLORS = {
   green: "\x1b[0;32m",
@@ -287,13 +289,15 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
   let daemonHealthy = false;
   let daemonVersion: string | undefined;
   let daemonBuild: string | undefined;
+  let daemonLogState: LogState | undefined;
   try {
     const res = await deps.fetch(`http://127.0.0.1:${config.port}/health`);
     if (res.ok) {
-      const h = (await res.json()) as { status?: string; version?: string; build?: string };
+      const h = (await res.json()) as { status?: string; version?: string; build?: string; log?: LogState };
       daemonHealthy = h.status === "ok";
       daemonVersion = h.version;
       daemonBuild = h.build;
+      daemonLogState = h.log;
     }
   } catch {}
 
@@ -387,6 +391,8 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
       results.push({ name: "daemon", category: "Daemon", status: "fail", message: `localhost:${config.port} not responding\n     Fix: lcm daemon start` });
     }
   }
+
+  results.push(checkDaemonLog(deps.lcmHome, daemonLogState));
 
   // ── Settings ──
   const settingsPath = join(deps.homedir, ".claude", "settings.json");

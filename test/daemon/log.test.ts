@@ -1,0 +1,157 @@
+import { describe, it, expect, afterEach } from "vitest";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { openDaemonLog, readDaemonLog, type DaemonLogOptions } from "../../src/daemon/log.js";
+import { checkDaemonLog } from "../../src/doctor/daemon-log-check.js";
+import { createDaemon, type DaemonInstance } from "../../src/daemon/server.js";
+import { loadDaemonConfig } from "../../src/daemon/config.js";
+
+const SECRET = "sk-ant-api03-" + "a".repeat(40);
+const EPOCH = new Date(0);
+const TWO_HUNDRED_BYTES_IN_MB = 200 / (1024 * 1024);
+const FINISH_FLUSH_MS = 50;
+
+describe("daemon log", () => {
+  let home: string;
+  let daemon: DaemonInstance | undefined;
+  afterEach(async () => {
+    if (daemon) { await daemon.stop(); daemon = undefined; }
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  function options(overrides: Partial<DaemonLogOptions> = {}): DaemonLogOptions {
+    home = mkdtempSync(join(tmpdir(), "lcm-log-"));
+    return {
+      path: join(home, "logs", "daemon.log"),
+      level: "info",
+      maxSizeMB: 10,
+      retentionDays: 7,
+      globalPatterns: [],
+      projectDirFor: (cwd) => join(home, "projects", cwd.replace(/\W/g, "_")),
+      version: "0.0.0-test",
+      ...overrides,
+    };
+  }
+
+  it("round-trips records at or above the configured level", () => {
+    const opts = options();
+    const log = openDaemonLog(opts);
+    log.write("debug", "noise");
+    log.write("warn", "compact.skipped", { session_id: "s1", reason: "no_work", candidates: 3 });
+    const records = readDaemonLog(opts.path, { since: EPOCH });
+    expect(records.map((r) => r.event)).toEqual(["compact.skipped"]);
+    expect(records[0]).toMatchObject({ level: "warn", session_id: "s1", reason: "no_work", candidates: 3 });
+    expect(readDaemonLog(opts.path, { since: EPOCH, minLevel: "error" })).toEqual([]);
+  });
+
+  it("marks each start with how the previous daemon ended", () => {
+    const opts = options();
+    const first = openDaemonLog(opts);
+    first.start();
+    first.close("SIGTERM");
+    const second = openDaemonLog(opts);
+    second.start();
+    // no close: the next start must see an unclean predecessor
+    openDaemonLog(opts).start();
+    const starts = readDaemonLog(opts.path, { since: EPOCH }).filter((r) => r.event === "daemon.start");
+    expect(starts.map((r) => r.prev)).toEqual(["none", "clean", "unclean"]);
+  });
+
+  it("writes no stop marker for a process that never started serving", () => {
+    const opts = options();
+    openDaemonLog(opts).close("hold");
+    expect(existsSync(opts.path)).toBe(false);
+  });
+
+  it("scrubs free-form text of a record without a cwd", () => {
+    const opts = options();
+    openDaemonLog(opts).write("error", "route.failed", { route: "POST /x", err: new Error(`bad key ${SECRET}`) });
+    const [record] = readDaemonLog(opts.path, { since: EPOCH });
+    expect(JSON.stringify(record)).not.toContain(SECRET);
+    expect(record.err).toMatchObject({ name: "Error" });
+    expect(String((record.err as { message: string }).message)).toContain("[REDACTED]");
+  });
+
+  it("omits free-form text until the project's own patterns are loaded", async () => {
+    const opts = options();
+    const cwd = "/work/repo";
+    mkdirSync(opts.projectDirFor(cwd), { recursive: true });
+    writeFileSync(join(opts.projectDirFor(cwd), "sensitive-patterns.txt"), "project-only-\\d+\n");
+    const log = openDaemonLog(opts);
+    log.write("error", "compact.failed", { cwd, err: new Error("leaked project-only-42") });
+    await log.prepare(cwd);
+    log.write("error", "compact.failed", { cwd, err: new Error("leaked project-only-42") });
+    const [pending, ready] = readDaemonLog(opts.path, { since: EPOCH });
+    expect(pending).toMatchObject({ cwd, scrub: "pending" });
+    expect((pending.err as { message?: string }).message).toBeUndefined();
+    expect(ready.scrub).toBeUndefined();
+    expect(JSON.stringify(ready)).not.toContain("project-only-42");
+  });
+
+  it("rotates past the size limit and prunes rotations past retention", () => {
+    let now = new Date("2026-01-01T00:00:00Z");
+    const opts = options({ maxSizeMB: TWO_HUNDRED_BYTES_IN_MB, now: () => now });
+    const log = openDaemonLog(opts);
+    for (let i = 0; i < 5; i++) log.write("info", "request", { route: "POST /compact", status: 200 });
+    const rotated = () => readdirSync(join(home, "logs")).filter((f) => f.startsWith("daemon.log."));
+    expect(rotated().length).toBeGreaterThan(0);
+    const old = join(home, "logs", rotated()[0]);
+    utimesSync(old, new Date("2025-01-01"), new Date("2025-01-01"));
+    now = new Date("2026-01-02T00:00:00Z");
+    for (let i = 0; i < 5; i++) log.write("info", "request", { route: "POST /compact", status: 200 });
+    expect(existsSync(old)).toBe(false);
+  });
+
+  it("never throws on a failed write, and records the gap once writing resumes", () => {
+    let now = new Date("2026-01-01T00:00:00Z");
+    const opts = options({ now: () => now });
+    mkdirSync(join(home, "logs"), { recursive: true });
+    mkdirSync(opts.path); // a directory where the file should be: every append fails
+    const log = openDaemonLog(opts);
+    expect(() => log.write("error", "compact.failed", { session_id: "s1" })).not.toThrow();
+    log.write("error", "compact.failed", { session_id: "s2" });
+    expect(log.state()).toMatchObject({ failing: true, dropped: 2 });
+    rmSync(opts.path, { recursive: true });
+    now = new Date("2026-01-01T00:02:00Z"); // past the one-minute pause
+    log.write("info", "compact.done", { session_id: "s3" });
+    const events = readDaemonLog(opts.path, { since: EPOCH }).map((r) => r.event);
+    expect(events).toEqual(["log.gap", "compact.done"]);
+    expect(log.state().failing).toBe(false);
+  });
+
+  describe("doctor check", () => {
+    it("reports errors only when the log proves continuity", () => {
+      const opts = options();
+      const log = openDaemonLog(opts);
+      log.start();
+      expect(checkDaemonLog(home, log.state())).toMatchObject({ status: "pass", message: "0 daemon errors (24h)" });
+      log.write("error", "compact.failed", { session_id: "s1" });
+      expect(checkDaemonLog(home, log.state())).toMatchObject({ status: "warn" });
+      expect(checkDaemonLog(home, log.state()).message).toContain("1 daemon error (24h) — last: compact.failed");
+    });
+
+    it("warns that coverage is incomplete after an unclean predecessor", () => {
+      const opts = options();
+      openDaemonLog(opts).start();
+      const next = openDaemonLog(opts);
+      next.start();
+      expect(checkDaemonLog(home, next.state()).message).toMatch(/^coverage incomplete: a daemon ended without a stop record/);
+    });
+  });
+
+  it("logs every request and the cause of a failing route", async () => {
+    const opts = options();
+    const log = openDaemonLog(opts);
+    daemon = await createDaemon(loadDaemonConfig("/x", { daemon: { port: 0 } }), { log });
+    daemon.registerRoute("POST", "/boom", async () => { throw new Error("exploded"); });
+    await fetch(`http://127.0.0.1:${daemon.address().port}/boom`, {
+      method: "POST", body: JSON.stringify({ session_id: "s9", cwd: "/work/other", prompt: "never logged" }),
+    });
+    await new Promise((r) => setTimeout(r, FINISH_FLUSH_MS)); // the request line is written on "finish"
+    const records = readDaemonLog(opts.path, { since: EPOCH });
+    expect(records.find((r) => r.event === "route.failed")).toMatchObject({ route: "POST /boom", session_id: "s9", err: { message: "exploded" } });
+    expect(records.find((r) => r.event === "request")).toMatchObject({ route: "POST /boom", status: 500, level: "error", cwd: "/work/other" });
+    expect(JSON.stringify(records)).not.toContain("never logged");
+  });
+});

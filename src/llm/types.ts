@@ -52,6 +52,8 @@ export type SummarizeContext = {
   /** The preceding chunk's summary, rendered into the prompt so chunks read as one thread. */
   previousSummary?: string;
   onUsage?: (usage: SummarizerUsage) => void;
+  /** The session provider did not answer; `toProvider` is summarizing instead. */
+  onFallback?: (fallback: { reason: string; toProvider: string }) => void;
 };
 
 export type LcmSummarizeFn = (

@@ -4,6 +4,35 @@ import { Command, Option } from "commander";
 import { lcmHome } from "../lcm-home.js";
 import { createLcmPaths } from "../lcm-paths.js";
 import { fail, helpRequested, showHelpAndExit } from "./support.js";
+import type { DaemonConfig } from "../daemon/config.js";
+import type { DaemonLog } from "../daemon/log.js";
+
+/**
+ * Opens the daemon log for this process and records a crash before exiting, so
+ * an uncaught exception leaves `daemon.crash` and `daemon.stop` behind.
+ */
+async function openProcessLog(config: DaemonConfig): Promise<DaemonLog> {
+  const { openDaemonLog } = await import("../daemon/log.js");
+  const { projectDir } = await import("../daemon/project.js");
+  const { PKG_VERSION } = await import("../daemon/version.js");
+  const paths = createLcmPaths(lcmHome());
+  const log = openDaemonLog({
+    path: join(paths.logsDir, "daemon.log"),
+    level: config.daemon.logLevel,
+    maxSizeMB: config.daemon.logMaxSizeMB,
+    retentionDays: config.daemon.logRetentionDays,
+    globalPatterns: config.security?.sensitivePatterns ?? [],
+    projectDirFor: (cwd) => projectDir(cwd, paths),
+    version: PKG_VERSION ?? "unknown",
+  });
+  process.on("uncaughtException", (err) => {
+    log.write("error", "daemon.crash", { err });
+    log.close("crash");
+    console.error(err);
+    exit(1);
+  });
+  return log;
+}
 
 export function registerDaemonCommands(program: Command): void {
   // ─── daemon ────────────────────────────────────────────────────────────────
@@ -63,7 +92,7 @@ export function registerDaemonCommands(program: Command): void {
         const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 10000 });
         if (!connected) {
           if (opts.automatic && readHold(pidFilePath)) { process.exitCode = 75; return; }
-          fail(`lcm daemon did not answer on port ${port} within 10s — check ~/.lossless-claude/daemon.log`);
+          fail(`lcm daemon did not answer on port ${port} within 10s — check ~/.lossless-claude/logs/daemon.log and logs/daemon.stderr`);
         }
         const h = await checkDaemonHealth(port);
         console.log(`lcm daemon started in background on port ${port} (pid ${h?.pid ?? "?"})`);
@@ -73,18 +102,20 @@ export function registerDaemonCommands(program: Command): void {
       const { createDaemon } = await import("../daemon/server.js");
       const { ensureAuthToken } = await import("../daemon/auth.js");
       const { writeFileSync } = await import("node:fs");
+      const log = await openProcessLog(config);
       const unregisterStartup = registerDaemonActivity(pidFilePath);
       try {
         // Register before checking: a concurrent held stop either sees this
         // process or has already published the hold that prevents startup.
         if (readHold(pidFilePath)) { process.exitCode = 75; return; }
         ensureAuthToken(tokenPath);
-        const daemon = await createDaemon(config, { tokenPath, backfillIdentities: true });
+        const daemon = await createDaemon(config, { tokenPath, backfillIdentities: true, log });
         if (readHold(pidFilePath)) {
           await daemon.stop();
           process.exitCode = 75;
           return;
         }
+        log.start();
         writeFileSync(pidFilePath, String(process.pid));
         console.log(`lcm daemon started on port ${daemon.address().port}`);
       } catch (err) {
@@ -98,8 +129,8 @@ export function registerDaemonCommands(program: Command): void {
       } finally {
         unregisterStartup();
       }
-      process.on("SIGTERM", () => exit(0));
-      process.on("SIGINT", () => exit(0));
+      process.on("SIGTERM", () => { log.close("SIGTERM"); exit(0); });
+      process.on("SIGINT", () => { log.close("SIGINT"); exit(0); });
     });
 
   daemonCmd.command("stop")
@@ -156,7 +187,7 @@ export function registerDaemonCommands(program: Command): void {
       mkdirSync(lcDir, { recursive: true });
       const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 10000, expectedVersion: PKG_VERSION, expectedBuild: BUILD_ID });
       if (!connected) {
-        fail(`lcm daemon did not answer on port ${port} within 10s — check ~/.lossless-claude/daemon.log`);
+        fail(`lcm daemon did not answer on port ${port} within 10s — check ~/.lossless-claude/logs/daemon.log and logs/daemon.stderr`);
       }
       const h = await checkDaemonHealth(port);
       console.log(`lcm daemon restarted on port ${port} (pid ${h?.pid ?? "?"}, v${h?.version ?? "?"})`);
