@@ -17,7 +17,9 @@ Binary: `lcm` on PATH. Record each check as PASS, FAIL or SKIP (with the reason)
 
 ## Phases
 
-**health**: `lcm --version`, `lcm status`, `lcm doctor`, and `daemon.logLevel` from `config.json` in the lcm home. Done when the version equals `package.json`, the daemon is up on this project, and every doctor check passes or its warning (or repair) is recorded. The `daemon-log` check covers errors and continuity in the daemon log. A `daemon.logLevel` of `warn` or `error` drops the `info` records that `capture` and `compact` look for: mark those log checks SKIP with that reason.
+**health**: `lcm --version`, `lcm status`, `lcm doctor`. Done when the version equals `package.json`, the daemon is up on this project, and every doctor check passes or its warning (or repair) is recorded. The `daemon-log` check covers errors and continuity in the daemon log.
+
+The running daemon's log level decides what `capture` and `compact` can find. `daemon.start` is written at every level; any other `info` record after the last `daemon.start` shows the running daemon writes `info`. Without one, the level is `warn` or higher: mark the checks for `info` records (the `/prompt-search` request, `compact.done`, `compact.skipped`) SKIP with that reason. `summarizer.fallback` is a `warn` record and is checked at any level.
 
 **capture**: the plugin's hooks reaching the daemon from this session. To find this session's id, echo a unique marker (such as `dogfood-` plus the epoch seconds) in one command, then, in the next, search this project's directory under `~/.claude/projects/` recursively for `*.jsonl` files containing it. The one file that holds it is this session's transcript, and its name without `.jsonl` is the session id. Done when the daemon log holds a `request` record for `POST /prompt-search` with `status` 200, `cwd` equal to this project and `session_id` equal to this session's id.
 
