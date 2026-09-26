@@ -24,10 +24,11 @@ Binary: `lcm` on PATH. Record each check as PASS, FAIL or SKIP (with the reason)
 
 **compact**: note the time, then `lcm compact`, which compacts the current project and then promotes. The summarizer is an LLM call; allow five minutes. Done when:
 - a second identical run creates nothing;
-- the daemon log holds a `compact.done` or `compact.skipped` record for this project written after the noted time, and every `summarizer.fallback` record from that interval is noted in the scorecard with its `reason`;
+- either `lcm compact` printed that there was nothing to compact (it then sends no request, so the log has no record), or the daemon log holds a `compact.done` or `compact.skipped` record for this project written after the noted time;
+- every `summarizer.fallback` record from that interval is noted in the scorecard with its `reason`;
 - `lcm stats --verbose` agrees with the summary and promotion counts `lcm compact` printed.
 
-**sensitive**: `lcm help sensitive`, then each subcommand. It writes the real pattern list, so remove every pattern you add. Done when a built-in secret and a pattern you added are both `[REDACTED]` by `lcm sensitive test`, and your pattern is gone from `lcm sensitive list`.
+**sensitive**: `list`, `add`, `test` and `remove`, from `lcm help sensitive`. It writes the real pattern list, so remove every pattern you add. `purge` deletes stored memory, so this skill never runs it. Done when a built-in secret and a pattern you added are both `[REDACTED]` by `lcm sensitive test`, and your pattern is gone from `lcm sensitive list`.
 
 **mcp**: `docs/agent-tools.md` is the contract. Done when every tool it lists has been called with a documented parameter set and answered in the documented shape, including an `lcm_store` followed by an `lcm_search` that finds it. Skip `lcm_expand` and `lcm_describe` only when no summary id exists yet.
 
