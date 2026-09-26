@@ -115,12 +115,15 @@ jq -c 'select(.cwd == "/path/to/project")' ~/.lossless-claude/logs/daemon.log*
 - **Secrets**:
   - Free-form text (messages, errors, reasons) passes through the same secret patterns as stored transcripts: gitleaks, the built-in patterns, `security.sensitivePatterns`, and the project's `sensitive-patterns.txt`.
   - Until a project's patterns are loaded, free-form text of a record naming that project is omitted, and the record carries `scrub: "pending"`. If they cannot be loaded, the record carries `scrub: "unavailable"`.
+  - Identity fields (`route`, `cwd`, `session_id`) stay present so records can be filtered, and still pass through gitleaks, the built-in patterns and `security.sensitivePatterns`.
   - Request bodies are never logged.
 - **Stderr**:
   - What the daemon prints outside the log goes to `logs/daemon.stderr`. This includes a crash before the log opens.
   - That file is kept across restarts. Once it is past 10 MB, it is moved to `daemon.stderr.1` at the next spawn.
 - **When `lcm doctor` reports "coverage incomplete"**:
   - It does so when, in the last 24 hours, a daemon ended without `daemon.stop`, records were dropped, or the running daemon cannot write.
+  - It also reports "coverage incomplete" when no daemon is running and the log, at any age, does not end on `daemon.stop`.
+  - A running daemon older than the log is reported with `Fix: lcm daemon restart`.
   - It reports `0 daemon errors` only when none of these happened.
   - A daemon killed with SIGKILL, or by a power loss, also counts as ending without `daemon.stop`. So "coverage incomplete" means continuity cannot be proven, not that records were lost.
   - A daemon that could not write a single record during its whole life leaves no trace at all, because every record goes to the same disk that was failing. An example is a disk that stays full from start to exit.

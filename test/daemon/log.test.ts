@@ -73,6 +73,16 @@ describe("daemon log", () => {
     expect(String((record.err as { message: string }).message)).toContain("[REDACTED]");
   });
 
+  it("scrubs identity fields and an error name that is not an identifier", () => {
+    const opts = options();
+    const err = new Error("boom");
+    err.name = `Leaky ${SECRET}`;
+    openDaemonLog(opts).write("error", "route.failed", { route: `POST /x?t=${SECRET}`, session_id: SECRET, err });
+    const [record] = readDaemonLog(opts.path, { since: EPOCH });
+    expect(JSON.stringify(record)).not.toContain(SECRET);
+    expect(record.session_id).toContain("[REDACTED]");
+  });
+
   it("omits free-form text until the project's own patterns are loaded", async () => {
     const opts = options();
     const cwd = "/work/repo";
@@ -152,6 +162,18 @@ describe("daemon log", () => {
       const opts = options();
       openDaemonLog(opts).start();
       expect(checkDaemonLog(home, undefined).message).toMatch(/^coverage incomplete: the last daemon is not running/);
+    });
+
+    it("judges a dead daemon by the log's last record, however old", () => {
+      const opts = options({ now: () => new Date("2020-01-01T00:00:00Z") });
+      openDaemonLog(opts).start();
+      expect(checkDaemonLog(home, undefined).message).toMatch(/^coverage incomplete: the last daemon is not running/);
+    });
+
+    it("does not report a daemon that predates the log as clean", () => {
+      options();
+      expect(checkDaemonLog(home, "unsupported")).toMatchObject({ status: "warn" });
+      expect(checkDaemonLog(home, "unsupported").message).toMatch(/predates the daemon log/);
     });
 
     it("warns that coverage is incomplete after an unclean predecessor", () => {

@@ -56,6 +56,7 @@ export type DaemonLogOptions = {
 const LEVELS: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
 const IDENTITY_FIELDS = new Set(["route", "cwd", "session_id", "parent_session_id", "prev", "version", "from", "to", "to_provider", "path"]);
 const MAX_MESSAGE_CHARS = 2048;
+const MAX_IDENTITY_CHARS = 512;
 const FAILURE_PAUSE_MS = 60_000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const BYTES_PER_MB = 1024 * 1024;
@@ -90,8 +91,8 @@ function lastLine(file: string): string | undefined {
   return buf.toString("utf-8").split("\n").filter((l) => l.trim()).pop();
 }
 
-/** How the previous daemon ended: its last record is `daemon.stop` ("clean"), anything else ("unclean"), or absent ("none"). */
-function previousEnding(path: string): "clean" | "unclean" | "none" {
+/** How the log ends: its last record is `daemon.stop` ("clean"), anything else ("unclean"), or there is none ("none"). */
+export function logEnding(path: string): "clean" | "unclean" | "none" {
   for (const file of [path, ...rotatedFiles(path).reverse()]) {
     let line: string | undefined;
     try { line = lastLine(file); } catch { continue; } // missing file: try the next rotation
@@ -145,13 +146,18 @@ class LogFile {
 
 /** Global scrubber for records without a `cwd`; per-project scrubbers, loaded asynchronously, for the rest. */
 class Scrubbers {
-  private global: ScrubEngine | undefined;
+  private globalEngine: ScrubEngine | undefined;
   private readonly projects = new Map<string, Scrubbing>();
   private readonly loading = new Map<string, Promise<void>>();
   constructor(private readonly globalPatterns: string[], private readonly projectDirFor: (cwd: string) => string) {}
 
+  /** Gitleaks, built-in and `security.sensitivePatterns`: complete for any record without a project. */
+  global(): ScrubEngine {
+    return this.globalEngine ??= new ScrubEngine(this.globalPatterns, []);
+  }
+
   for(cwd: unknown): Scrubbing {
-    if (typeof cwd !== "string" || !cwd) return this.global ??= new ScrubEngine(this.globalPatterns, []);
+    if (typeof cwd !== "string" || !cwd) return this.global();
     const dir = this.projectDirFor(cwd);
     const known = this.projects.get(dir);
     if (known) return known;
@@ -180,33 +186,47 @@ class Scrubbers {
 
 type LogEntry = { level: LogLevel; event: string; fields: Record<string, unknown> };
 
-/** One JSONL line. Free-form text goes through `scrubbing`, or is omitted when no scrubber is ready. */
-function renderRecord(ts: string, { level, event, fields }: LogEntry, scrubbing: Scrubbing): string {
+/**
+ * The scrubbers one record needs. Identity fields (route, cwd, session_id, …) often come
+ * from a request body, so they are scrubbed too, with the global engine, which is always
+ * ready; they stay present so a record can be found by project or session.
+ */
+type Engines = { freeForm: Scrubbing; identity: ScrubEngine };
+type Scrub = (text: string) => string | undefined;
+
+/** One JSONL line. Free-form text goes through the project scrubber, or is omitted when it is not ready. */
+function renderRecord(ts: string, { level, event, fields }: LogEntry, engines: Engines): string {
   const record: Record<string, unknown> = { ts, level, event };
   let omitted = false;
-  const freeForm = (text: string): string | undefined => {
-    if (typeof scrubbing === "string") { omitted = true; return undefined; }
-    return scrubbing.scrub(text.slice(0, MAX_MESSAGE_CHARS));
+  const freeForm: Scrub = (text) => {
+    if (typeof engines.freeForm === "string") { omitted = true; return undefined; }
+    return engines.freeForm.scrub(text.slice(0, MAX_MESSAGE_CHARS));
   };
+  const identity: Scrub = (text) => engines.identity.scrub(text.slice(0, MAX_IDENTITY_CHARS));
   for (const [key, value] of Object.entries(fields)) {
-    if (value !== undefined) record[key] = renderField(key, value, freeForm);
+    if (value !== undefined) record[key] = renderField(key, value, IDENTITY_FIELDS.has(key) ? identity : freeForm);
   }
-  if (omitted) record.scrub = scrubbing;
+  if (omitted) record.scrub = engines.freeForm;
   return JSON.stringify(record) + "\n";
 }
 
-function renderField(key: string, value: unknown, freeForm: (text: string) => string | undefined): unknown {
+function renderField(key: string, value: unknown, scrub: Scrub): unknown {
   if (typeof value === "number" || typeof value === "boolean" || value === null) return value;
-  if (key === "err") return describeError(value, freeForm);
-  if (typeof value === "string") return IDENTITY_FIELDS.has(key) ? value : freeForm(value);
-  return freeForm(JSON.stringify(value));
+  if (key === "err") return describeError(value, scrub);
+  if (typeof value === "string") return scrub(value);
+  return scrub(JSON.stringify(value));
 }
 
-function describeError(value: unknown, freeForm: (text: string) => string | undefined): Record<string, unknown> {
+const SAFE_ERROR_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+const SAFE_ERROR_CODE = /^[A-Za-z0-9_]{1,40}$/;
+
+/** An error's name and code are kept only when they look like identifiers; anything else is free-form text. */
+function describeError(value: unknown, freeForm: Scrub): Record<string, unknown> {
   if (!(value instanceof Error)) return { message: freeForm(String(value)) };
   const code = (value as NodeJS.ErrnoException).code;
-  const safeCode = typeof code === "string" && /^[A-Za-z0-9_]{1,40}$/.test(code) ? { code } : {};
-  return { name: value.name, message: freeForm(value.message), ...safeCode };
+  const safeCode = typeof code === "string" && SAFE_ERROR_CODE.test(code) ? { code } : {};
+  const name = SAFE_ERROR_NAME.test(value.name) ? value.name : freeForm(value.name);
+  return { name, message: freeForm(value.message), ...safeCode };
 }
 
 class FileDaemonLog implements DaemonLog {
@@ -233,7 +253,7 @@ class FileDaemonLog implements DaemonLog {
     if (this.started) return;
     this.started = true;
     this.file.prune();
-    const fields = { pid: process.pid, version: this.opts.version, prev: previousEnding(this.opts.path) };
+    const fields = { pid: process.pid, version: this.opts.version, prev: logEnding(this.opts.path) };
     this.emit({ level: "info", event: "daemon.start", fields }, true);
   }
 
@@ -262,7 +282,8 @@ class FileDaemonLog implements DaemonLog {
   }
 
   private render(entry: LogEntry): string {
-    return renderRecord(this.now().toISOString(), entry, this.scrubbers.for(entry.fields.cwd));
+    const engines = { freeForm: this.scrubbers.for(entry.fields.cwd), identity: this.scrubbers.global() };
+    return renderRecord(this.now().toISOString(), entry, engines);
   }
 
   /** Renders and appends; a record that cannot be rendered (a circular field) is counted as dropped. */

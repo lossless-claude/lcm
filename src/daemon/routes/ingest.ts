@@ -243,7 +243,9 @@ export function createIngestHandler(config: DaemonConfig, paths: LcmPaths, log: 
         });
       }
     } catch (err) {
-      sendJson(res, err instanceof TranscriptSourceError ? 400 : 500, { error: err instanceof Error ? err.message : "ingest failed" });
+      const status = err instanceof TranscriptSourceError ? 400 : 500;
+      log.write(status === 500 ? "error" : "warn", "ingest.failed", { cwd: input.cwd, session_id: input.session_id, err });
+      sendJson(res, status, { error: err instanceof Error ? err.message : "ingest failed" });
     }
   };
 }
