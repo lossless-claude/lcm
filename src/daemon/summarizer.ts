@@ -87,9 +87,9 @@ export async function createSummarizer(
       }
       const fallbackConfig = { ...config, llm: { ...config.llm, provider: config.llm.fallbackProvider ?? "auto" as const } };
       const fallbackProvider = resolveEffectiveProvider(fallbackConfig, ctx.client);
-      ctx.onFallback?.({ reason: sessionMissReason, toProvider: fallbackProvider });
       const fallback = await createSummarizer(fallbackProvider, fallbackConfig);
       if (!fallback) throw new Error("Session summarizer unavailable and fallback disabled");
+      ctx.onFallback?.({ reason: sessionMissReason, toProvider: fallbackProvider });
       return fallback(text, aggressive, ctx);
     });
   }

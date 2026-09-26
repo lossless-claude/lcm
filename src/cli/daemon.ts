@@ -26,9 +26,9 @@ async function openProcessLog(config: DaemonConfig): Promise<DaemonLog> {
     version: PKG_VERSION ?? "unknown",
   });
   process.on("uncaughtException", (err) => {
-    log.write("error", "daemon.crash", { err });
+    // The stack goes into the record, where it is scrubbed; a raw copy on stderr would not be.
+    log.write("error", "daemon.crash", { err, stack: err instanceof Error ? err.stack : undefined });
     log.close("crash");
-    console.error(err);
     exit(1);
   });
   return log;
@@ -92,7 +92,7 @@ export function registerDaemonCommands(program: Command): void {
         const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 10000 });
         if (!connected) {
           if (opts.automatic && readHold(pidFilePath)) { process.exitCode = 75; return; }
-          fail(`lcm daemon did not answer on port ${port} within 10s — check ~/.lossless-claude/logs/daemon.log and logs/daemon.stderr`);
+          fail(`lcm daemon did not answer on port ${port} within 10s — check ~/.lossless-claude/logs/daemon.log and ~/.lossless-claude/logs/daemon.stderr`);
         }
         const h = await checkDaemonHealth(port);
         console.log(`lcm daemon started in background on port ${port} (pid ${h?.pid ?? "?"})`);
@@ -187,7 +187,7 @@ export function registerDaemonCommands(program: Command): void {
       mkdirSync(lcDir, { recursive: true });
       const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 10000, expectedVersion: PKG_VERSION, expectedBuild: BUILD_ID });
       if (!connected) {
-        fail(`lcm daemon did not answer on port ${port} within 10s — check ~/.lossless-claude/logs/daemon.log and logs/daemon.stderr`);
+        fail(`lcm daemon did not answer on port ${port} within 10s — check ~/.lossless-claude/logs/daemon.log and ~/.lossless-claude/logs/daemon.stderr`);
       }
       const h = await checkDaemonHealth(port);
       console.log(`lcm daemon restarted on port ${port} (pid ${h?.pid ?? "?"}, v${h?.version ?? "?"})`);

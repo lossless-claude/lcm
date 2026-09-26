@@ -3,16 +3,27 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { readDaemonLog, type LogRecord, type LogState } from "../daemon/log.js";
 import type { CheckResult } from "./types.js";
+import { createLcmPaths } from "../lcm-paths.js";
 
 const WINDOW_MS = 24 * 60 * 60 * 1000;
 
-/** Why the last 24 h of the log cannot prove it holds every record, or empty when it can. */
+const endedUnclean = (r: LogRecord) => r.event === "daemon.start" && r.prev === "unclean";
+const droppedRecords = (r: LogRecord) => r.event === "log.gap" || (r.event === "daemon.stop" && Number(r.dropped) > 0);
+
+/**
+ * Why the last 24 h of the log cannot prove it holds every record, or empty when it can.
+ * `live` is undefined when no daemon answers: a log that then ends on anything but
+ * `daemon.stop` belongs to a daemon that died and has not been restarted.
+ */
 function coverageGaps(records: LogRecord[], live: LogState | undefined): string[] {
-  const gaps: string[] = [];
-  if (records.some((r) => r.event === "daemon.start" && r.prev === "unclean")) gaps.push("a daemon ended without a stop record");
-  if (records.some((r) => r.event === "log.gap" || (r.event === "daemon.stop" && Number(r.dropped) > 0))) gaps.push("records were dropped");
-  if (live?.failing) gaps.push("the running daemon cannot write its log");
-  return gaps;
+  const last = records[records.length - 1];
+  const checks: Array<[boolean, string]> = [
+    [!live && last !== undefined && last.event !== "daemon.stop", "the last daemon is not running and left no stop record"],
+    [records.some(endedUnclean), "a daemon ended without a stop record"],
+    [records.some(droppedRecords), "records were dropped"],
+    [live?.failing === true, "the running daemon cannot write its log"],
+  ];
+  return checks.filter(([applies]) => applies).map(([, gap]) => gap);
 }
 
 /**
@@ -20,7 +31,7 @@ function coverageGaps(records: LogRecord[], live: LogState | undefined): string[
  * can prove continuity: no unclean predecessor, no gap, no live write failure.
  */
 export function checkDaemonLog(lcmHome: string, live: LogState | undefined, now = new Date()): CheckResult {
-  const path = join(lcmHome, "logs", "daemon.log");
+  const path = join(createLcmPaths(lcmHome).logsDir, "daemon.log");
   const base = { name: "daemon-log", category: "Daemon" } as const;
   if (!existsSync(path) && !live?.failing) {
     return { ...base, status: "warn", message: "no daemon log yet — it starts with the next daemon start\n     Fix: lcm daemon restart" };

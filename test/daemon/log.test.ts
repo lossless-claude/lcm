@@ -129,6 +129,14 @@ describe("daemon log", () => {
     expect(log.state()).toMatchObject({ failing: true, dropped: 1 });
   });
 
+  it("keeps every rotation when two happen within one millisecond", () => {
+    const opts = options({ maxSizeMB: TWO_HUNDRED_BYTES_IN_MB, now: () => EPOCH });
+    const log = openDaemonLog(opts);
+    for (let i = 0; i < 6; i++) log.write("info", "request", { route: "POST /compact", status: 200 });
+    const records = readDaemonLog(opts.path, { since: EPOCH });
+    expect(records).toHaveLength(6);
+  });
+
   describe("doctor check", () => {
     it("reports errors only when the log proves continuity", () => {
       const opts = options();
@@ -138,6 +146,12 @@ describe("daemon log", () => {
       log.write("error", "compact.failed", { session_id: "s1" });
       expect(checkDaemonLog(home, log.state())).toMatchObject({ status: "warn" });
       expect(checkDaemonLog(home, log.state()).message).toContain("1 daemon error (24h) — last: compact.failed");
+    });
+
+    it("warns when no daemon answers and the log does not end on a stop", () => {
+      const opts = options();
+      openDaemonLog(opts).start();
+      expect(checkDaemonLog(home, undefined).message).toMatch(/^coverage incomplete: the last daemon is not running/);
     });
 
     it("warns that coverage is incomplete after an unclean predecessor", () => {

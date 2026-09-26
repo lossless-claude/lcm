@@ -258,6 +258,18 @@ function checkPassiveLearning(results: CheckResult[], hooksInstalled: boolean, v
   }
 }
 
+/** The running daemon's log state, or undefined when no daemon answers. */
+async function liveLogState(deps: DoctorDeps, port: number): Promise<LogState | undefined> {
+  try {
+    const res = await deps.fetch(`http://127.0.0.1:${port}/health`);
+    if (!res.ok) return undefined;
+    const h = (await res.json()) as { status?: string; log?: LogState };
+    return h.status === "ok" ? (h.log ?? { failing: false, dropped: 0 }) : undefined;
+  } catch {
+    return undefined; // not running
+  }
+}
+
 export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false): Promise<CheckResult[]> {
   const deps = { ...defaultDeps(), ...overrides };
   const results: CheckResult[] = [];
@@ -289,15 +301,13 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
   let daemonHealthy = false;
   let daemonVersion: string | undefined;
   let daemonBuild: string | undefined;
-  let daemonLogState: LogState | undefined;
   try {
     const res = await deps.fetch(`http://127.0.0.1:${config.port}/health`);
     if (res.ok) {
-      const h = (await res.json()) as { status?: string; version?: string; build?: string; log?: LogState };
+      const h = (await res.json()) as { status?: string; version?: string; build?: string };
       daemonHealthy = h.status === "ok";
       daemonVersion = h.version;
       daemonBuild = h.build;
-      daemonLogState = h.log;
     }
   } catch {}
 
@@ -392,7 +402,8 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
     }
   }
 
-  results.push(checkDaemonLog(deps.lcmHome, daemonLogState));
+  // Asked again here: the checks above may have restarted or started the daemon.
+  results.push(checkDaemonLog(deps.lcmHome, await liveLogState(deps, config.port)));
 
   // ── Settings ──
   const settingsPath = join(deps.homedir, ".claude", "settings.json");

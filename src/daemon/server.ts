@@ -206,7 +206,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
     } catch (err: unknown) {
       const status = (err as { statusCode?: number })?.statusCode ?? 500;
       const message = status === 413 ? "payload too large" : sanitizeError(err instanceof Error ? err.message : "internal error");
-      log.write("error", "route.failed", { route: key, ...identity, err });
+      log.write(status >= 500 ? "error" : "warn", "route.failed", { route: key, ...identity, err });
       sendJson(res, status, { error: message });
     }
   });

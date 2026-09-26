@@ -54,7 +54,7 @@ export type DaemonLogOptions = {
 };
 
 const LEVELS: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
-const IDENTITY_FIELDS = new Set(["route", "cwd", "session_id", "prev", "version", "from", "to", "to_provider", "path"]);
+const IDENTITY_FIELDS = new Set(["route", "cwd", "session_id", "parent_session_id", "prev", "version", "from", "to", "to_provider", "path"]);
 const MAX_MESSAGE_CHARS = 2048;
 const FAILURE_PAUSE_MS = 60_000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -62,6 +62,14 @@ const BYTES_PER_MB = 1024 * 1024;
 const TAIL_BYTES = 64 * 1024;
 
 type Scrubbing = ScrubEngine | "pending" | "unavailable";
+
+const DEFAULT_MAX_SIZE_MB = 10;
+const DEFAULT_RETENTION_DAYS = 7;
+
+/** A malformed `config.json` number falls back to the default instead of rotating on every append. */
+function positiveOr(value: number, fallback: number): number {
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
 
 function rotatedFiles(path: string): string[] {
   const prefix = `${basename(path)}.`;
@@ -96,6 +104,7 @@ function previousEnding(path: string): "clean" | "unclean" | "none" {
 /** The log file on disk: size-based rotation and age-based pruning of rotations. */
 class LogFile {
   private size = -1;
+  private rotations = 0;
   private readonly path: string;
   private readonly maxBytes: number;
   private readonly retentionMs: number;
@@ -123,7 +132,8 @@ class LogFile {
   private rotateIfFull(bytes: number): void {
     if (this.size < 0) this.size = this.currentSize();
     if (this.size === 0 || this.size + bytes <= this.maxBytes) return;
-    renameSync(this.path, `${this.path}.${this.now().toISOString().replace(/[:.]/g, "-")}`);
+    // The counter keeps two rotations within one millisecond from overwriting each other.
+    renameSync(this.path, `${this.path}.${this.now().toISOString().replace(/[:.]/g, "-")}-${++this.rotations}`);
     this.size = 0;
     this.prune();
   }
@@ -213,7 +223,9 @@ class FileDaemonLog implements DaemonLog {
   constructor(private readonly opts: DaemonLogOptions) {
     this.now = opts.now ?? (() => new Date());
     this.minLevel = LEVELS[opts.level in LEVELS ? (opts.level as LogLevel) : "info"];
-    this.file = new LogFile({ path: opts.path, maxBytes: opts.maxSizeMB * BYTES_PER_MB, retentionMs: opts.retentionDays * DAY_MS, now: this.now });
+    const maxSizeMB = positiveOr(opts.maxSizeMB, DEFAULT_MAX_SIZE_MB);
+    const retentionDays = positiveOr(opts.retentionDays, DEFAULT_RETENTION_DAYS);
+    this.file = new LogFile({ path: opts.path, maxBytes: maxSizeMB * BYTES_PER_MB, retentionMs: retentionDays * DAY_MS, now: this.now });
     this.scrubbers = new Scrubbers(opts.globalPatterns, opts.projectDirFor);
   }
 
@@ -269,15 +281,22 @@ class FileDaemonLog implements DaemonLog {
   private append(line: string, marker: boolean): void {
     const nowMs = this.now().getTime();
     if (nowMs < this.pausedUntil && !marker) { this.dropped++; return; }
-    const gap = this.dropped > 0
-      ? this.render({ level: "warn", event: "log.gap", fields: { dropped: this.dropped, from: this.firstFailureAt, to: this.now().toISOString() } })
-      : "";
+    const gap = this.dropped > 0 ? this.renderGap() : "";
     try {
       this.file.append(gap + line);
       this.dropped = 0;
       this.firstFailureAt = undefined;
     } catch (err) {
       this.recordFailure(nowMs, err);
+    }
+  }
+
+  /** The `log.gap` line, or nothing when it cannot be rendered: the record it precedes is still written. */
+  private renderGap(): string {
+    try {
+      return this.render({ level: "warn", event: "log.gap", fields: { dropped: this.dropped, from: this.firstFailureAt, to: this.now().toISOString() } });
+    } catch {
+      return "";
     }
   }
 

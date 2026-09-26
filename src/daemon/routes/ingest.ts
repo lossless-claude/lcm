@@ -62,11 +62,15 @@ function requestAttribution(input: IngestInput): SubagentAttributionInput | unde
  * every `/ingest` for the parent captures whatever the subagent transcripts
  * have added since; the capture module never re-inserts what is stored.
  */
+/** A subagent transcript that could not be captured; the parent ingest still succeeds. */
+type SubagentFailure = { sessionId: string; err: unknown };
+
 async function ingestAllSubagents(
   db: DatabaseSync, cwd: string, pid: string, scrubber: ScrubEngine, subagents: DiscoveredSubagentTranscript[],
-): Promise<void> {
+): Promise<SubagentFailure[]> {
   runLcmMigrations(db);
   const capture = new SessionCapture(db, pid, scrubber);
+  const failures: SubagentFailure[] = [];
   for (const sub of subagents) {
     try {
       await capture.captureTranscript({
@@ -76,9 +80,10 @@ async function ingestAllSubagents(
         attribution: sub.attribution,
       });
     } catch (err) {
-      console.error(`ingest: subagent capture failed for session ${sub.sessionId}: ${err instanceof Error ? err.message : err}`);
+      failures.push({ sessionId: sub.sessionId, err });
     }
   }
+  return failures;
 }
 
 /**
@@ -89,14 +94,14 @@ async function ingestAllSubagents(
  */
 async function ingestSubagentTranscripts(
   cwd: string, dbPath: string, pid: string, subagents: DiscoveredSubagentTranscript[], scrubber: ScrubEngine, paths: LcmPaths,
-): Promise<void> {
-  if (subagents.length === 0) return;
+): Promise<SubagentFailure[]> {
+  if (subagents.length === 0) return [];
 
-  await enqueue(pid, async () => {
+  return enqueue(pid, async () => {
     openProject(cwd, paths);
     const db = getLcmConnection(dbPath);
     try {
-      await ingestAllSubagents(db, cwd, pid, scrubber, subagents);
+      return await ingestAllSubagents(db, cwd, pid, scrubber, subagents);
     } finally {
       closeLcmConnection(dbPath);
     }
@@ -188,8 +193,8 @@ export function createIngestHandler(config: DaemonConfig, paths: LcmPaths, log: 
 
           try {
             updateProjectMeta(cwd, paths, { lastIngest: new Date().toISOString() });
-          } catch {
-            // non-fatal: meta.json update failure shouldn't fail the ingest
+          } catch (err) {
+            log.write("warn", "ingest.meta_failed", { cwd, session_id, err }); // must not fail the ingest
           }
           // Samples the corpus on this connection now; the model call runs after the response.
           void scheduleProjectLanguageDetection(cwd, db, config, paths, input.client);
@@ -217,7 +222,10 @@ export function createIngestHandler(config: DaemonConfig, paths: LcmPaths, log: 
       const subagents = source.discoverSubagents?.(cwd, session_id) ?? [];
       if (subagents.length > 0) {
         try {
-          await ingestSubagentTranscripts(cwd, dbPath, pid, subagents, scrubber, paths);
+          const failures = await ingestSubagentTranscripts(cwd, dbPath, pid, subagents, scrubber, paths);
+          for (const failure of failures) {
+            log.write("warn", "ingest.subagent_failed", { cwd, session_id: failure.sessionId, parent_session_id: session_id, err: failure.err });
+          }
         } catch (err) {
           log.write("warn", "ingest.subagents_failed", { cwd, session_id, err });
         }
