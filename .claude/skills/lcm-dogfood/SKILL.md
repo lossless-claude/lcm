@@ -6,9 +6,11 @@ disable-model-invocation: true
 
 # lcm dogfood
 
-Proves what only a live install can: the installed plugin, the configured summarizer and the user's own memory working together. Hook output shapes, daemon-down behaviour and the full option matrix of each command belong to `test/e2e/`, which runs them against an isolated daemon.
+Proves what only a live install can: the installed plugin, the configured summarizer and the user's own memory working together. Hook output shapes, daemon-down behaviour and command options stay out of this skill; `test/e2e/` exercises them against an isolated daemon.
 
-Run every phase, or only `$0`. The target is the real lcm home (`LCM_HOME`, default `~/.lossless-claude`), so every command is scoped to the current project: a run costs one project's summarization and keeps every existing summary. `--all` and `--restart` stay out of this skill.
+Run every phase, or only `$0`. The target is the real lcm home (`LCM_HOME`, default `~/.lossless-claude`):
+- Phases that write (`compact`, `sensitive`, `mcp`) touch only the current project, or add and then remove their own entries. A run costs one project's summarization and keeps every existing summary; `--all` and `--restart` stay out of this skill.
+- Phases that only read (`health`, `integrity`) cover the whole home.
 
 Binary: `lcm` on PATH. Record each check as PASS, FAIL or SKIP (with the reason), keep going on FAIL, and open an issue for each failure worth tracking. The daemon log is `logs/daemon.log` in the lcm home, one JSON record per line; `docs/configuration.md` ("Daemon log") names its events.
 
@@ -20,9 +22,9 @@ Binary: `lcm` on PATH. Record each check as PASS, FAIL or SKIP (with the reason)
 
 **import**: `lcm import --dry-run`. Done when it lists this project's sessions and `lcm status` shows the same message count before and after.
 
-**compact**: `lcm compact`, which compacts the current project and then promotes. The summarizer is an LLM call; allow five minutes. Done when:
+**compact**: note the time, then `lcm compact`, which compacts the current project and then promotes. The summarizer is an LLM call; allow five minutes. Done when:
 - a second identical run creates nothing;
-- the daemon log holds a `compact.done` or `compact.skipped` record for this project, and any `summarizer.fallback` record is noted in the scorecard with its `reason`;
+- the daemon log holds a `compact.done` or `compact.skipped` record for this project written after the noted time, and every `summarizer.fallback` record from that interval is noted in the scorecard with its `reason`;
 - `lcm stats --verbose` agrees with the summary and promotion counts `lcm compact` printed.
 
 **sensitive**: `lcm help sensitive`, then each subcommand. It writes the real pattern list, so remove every pattern you add. Done when a built-in secret and a pattern you added are both `[REDACTED]` by `lcm sensitive test`, and your pattern is gone from `lcm sensitive list`.
