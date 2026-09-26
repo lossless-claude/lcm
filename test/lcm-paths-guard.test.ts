@@ -10,7 +10,7 @@
 // remaining escape hatches (homedir(), LCM_HOME): it is a grep, not an analysis, because that
 // is how every violation so far was written.
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -44,7 +44,7 @@ const READS_LCM_HOME: string[] = ["hooks/lcm-hooks.ts", "hooks/omp/lcm.ts"];
 
 function sourceFiles(): string[] {
   const out = execFileSync("git", ["ls-files", "src", "bin", "hooks"], { encoding: "utf-8" });
-  return out.split("\n").filter((f) => f.endsWith(".ts") || f.endsWith(".mjs"));
+  return out.split("\n").filter((f) => existsSync(f) && (f.endsWith(".ts") || f.endsWith(".mjs")));
 }
 
 describe("the suite never runs against the developer's own memory", () => {

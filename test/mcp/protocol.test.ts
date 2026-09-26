@@ -8,6 +8,7 @@ const state = vi.hoisted(() => ({
   post: vi.fn(),
   transport: undefined as StdioServerTransport | undefined,
   handle: undefined as StdioServerHandle | undefined,
+  languages: { authorLanguage: "en", pivotLanguage: "en" } as { authorLanguage?: string; pivotLanguage: string },
 }));
 
 vi.mock("../../src/daemon/lifecycle.js", () => ({
@@ -21,6 +22,10 @@ vi.mock("../../src/daemon/client.js", () => ({
   DaemonClient: vi.fn().mockImplementation(function () { return { post: state.post }; }),
 }));
 vi.mock("../../src/daemon/version.js", () => ({ PKG_VERSION: "9.9.9-test" }));
+vi.mock("../../src/search/pivot-language.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../src/search/pivot-language.js")>(),
+  pivotLanguagesFor: () => state.languages,
+}));
 vi.mock("../../src/stats.js", () => ({
   formatSubagentShare: String,
   collectStats: () => { throw new Error("stats unavailable"); },
@@ -55,6 +60,7 @@ describe("MCP 2026-07-28 over stdio", () => {
     replies = lines[Symbol.asyncIterator]();
     state.transport = new StdioServerTransport(input, output);
     state.post.mockReset().mockResolvedValue({ matches: ["remembered"] });
+    state.languages = { authorLanguage: "en", pivotLanguage: "en" };
     id = 0;
     await startMcpServer();
   });
@@ -99,6 +105,22 @@ describe("MCP 2026-07-28 over stdio", () => {
     ]);
   });
 
+  it("refreshes the search description for each list request without changing its schema", async () => {
+    state.languages = { authorLanguage: "pt-BR", pivotLanguage: "en" };
+    const first = (await request("tools/list")).result.tools;
+    const translated = first.find((tool: { name: string }) => tool.name === "lcm_search");
+    expect(translated.description).toContain("author language is pt-BR");
+    expect(translated.description).toContain("pass `pivotQuery`");
+
+    state.languages = { authorLanguage: "en", pivotLanguage: "en" };
+    const second = (await request("tools/list")).result.tools;
+    const base = second.find((tool: { name: string }) => tool.name === "lcm_search");
+    expect(base.description).not.toContain("author language is pt-BR");
+    expect(base.inputSchema).toEqual(translated.inputSchema);
+    expect(second.filter((tool: { name: string }) => tool.name !== "lcm_search"))
+      .toEqual(first.filter((tool: { name: string }) => tool.name !== "lcm_search"));
+  });
+
   it.each([
     ["lcm_grep", "/grep", { query: "hello" }],
     ["lcm_search", "/search", { query: "hello" }],
@@ -132,6 +154,15 @@ describe("MCP 2026-07-28 over stdio", () => {
     expect((await request("tools/call", { name: "not_a_tool" })).result).toMatchObject({
       resultType: "complete", isError: true, content: [{ type: "text", text: "Unknown tool: not_a_tool" }],
     });
+  });
+
+  it.each(["toString", "constructor", "__proto__"])("rejects inherited name %s as an unknown tool", async (name) => {
+    const { result } = await request("tools/call", { name, arguments: {} });
+    expect(result).toMatchObject({
+      resultType: "complete", isError: true,
+      content: [{ type: "text", text: `Unknown tool: ${name}` }],
+    });
+    expect(state.post).not.toHaveBeenCalled();
   });
 
   // Both revisions are served, because which one a client offers is the client's choice

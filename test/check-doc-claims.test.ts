@@ -74,7 +74,10 @@ export function printHelp() {}
 `;
 
 const MCP_TOOL = `
-export const tool = { name: "lcm_test_tool" };
+export const tools = [
+  { name: "lcm_test_tool" },
+  { name: "lcm_second_tool" },
+];
 `;
 
 // A command source split out of bin/lcm.ts the way a later PR will do it: the function takes
@@ -104,13 +107,13 @@ function makeFixture(opts: { cliFiles?: Record<string, string> } = {}) {
   execFileSync("git", ["init", "-q"], { cwd: root });
 
   mkdirSync(join(root, "bin"), { recursive: true });
-  mkdirSync(join(root, "src", "mcp", "tools"), { recursive: true });
+  mkdirSync(join(root, "src", "mcp"), { recursive: true });
   mkdirSync(join(root, "test"), { recursive: true });
   mkdirSync(join(root, "docs"), { recursive: true });
 
   writeFileSync(join(root, "bin", "lcm.ts"), BIN_LCM);
   writeFileSync(join(root, "src", "cli-help.ts"), CLI_HELP);
-  writeFileSync(join(root, "src", "mcp", "tools", "x.ts"), MCP_TOOL);
+  writeFileSync(join(root, "src", "mcp", "tool-catalog.ts"), MCP_TOOL);
   // Read only under test/: exercises the INTERNAL_ENV case (LCM_SKIP_CACHE_SYNC is listed
   // there as test/script/CI-only), never under a production dir.
   writeFileSync(join(root, "test", "fixture.test.ts"), `const skip = process.env.LCM_SKIP_CACHE_SYNC;\n`);
@@ -133,6 +136,13 @@ function writeDoc(root: string, relPath: string, content: string) {
 }
 
 describe("checkDocClaims — per-path CLI options", () => {
+  it("recognizes every MCP tool in the consolidated catalog", () => {
+    const root = makeFixture();
+    writeDoc(root, "README.md", "`lcm_test_tool` and `lcm_second_tool` are available.\n");
+
+    expect(checkDocClaims(root).errors).toEqual([]);
+  });
+
   it("treats a flag valid on one path as an error on a different path", () => {
     const root = makeFixture();
     // --detach belongs to `daemon start`, not `daemon stop`.

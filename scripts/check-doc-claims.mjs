@@ -8,7 +8,7 @@
 //       another;
 //   (b) an `LCM_*` environment variable, against every LCM_* token the code, scripts,
 //       tests and workflows read;
-//   (c) an `lcm_*` MCP tool name, against src/mcp/tools/*.ts.
+//   (c) an `lcm_*` MCP tool name, against src/mcp/tool-catalog.ts.
 //
 // A claim the code does not back is an error and fails the run. The reverse direction — a
 // CLI option or public env var the code defines that no document mentions — is a warning,
@@ -399,11 +399,12 @@ function envSurface(rootDir) {
 }
 
 function mcpSurface(rootDir) {
-  const dir = join(rootDir, "src/mcp/tools");
+  const file = join(rootDir, "src/mcp/tool-catalog.ts");
   const names = new Set();
-  for (const file of walk(dir)) {
-    const m = readFileSync(file, "utf8").match(/name:\s*["'`](lcm_[a-z_]+)["'`]/);
-    if (m) names.add(m[1]);
+  if (existsSync(file)) {
+    for (const m of readFileSync(file, "utf8").matchAll(/name:\s*["'`](lcm_[a-z_]+)["'`]/g)) {
+      names.add(m[1]);
+    }
   }
   return names;
 }
@@ -454,7 +455,7 @@ function checkDocClaims(rootDir) {
   if (docs.length === 0) errors.push("no tracked Markdown found — the file walk is wrong, not the docs");
   if (cli.pathSet.size === 0) errors.push("CLI surface is empty — the extraction is wrong, not the docs");
   if (env.all.size === 0) errors.push("no LCM_* token found in the code — the extraction is wrong, not the docs");
-  if (mcp.size === 0) errors.push("no MCP tool found under src/mcp/tools — the extraction is wrong, not the docs");
+  if (mcp.size === 0) errors.push("no MCP tool found in src/mcp/tool-catalog.ts — the extraction is wrong, not the docs");
   if (errors.length) return { errors, warnings };
 
   const mentionedFlagsByPath = new Map();
@@ -494,7 +495,7 @@ function checkDocClaims(rootDir) {
     for (const m of text.matchAll(/\blcm_[a-z_]+\b/g)) {
       if (!mcp.has(m[0])) {
         const n = text.slice(0, m.index).split("\n").length;
-        errors.push(`${rel}:${n}: ${m[0]} — src/mcp/tools defines no such tool`);
+        errors.push(`${rel}:${n}: ${m[0]} — src/mcp/tool-catalog.ts defines no such tool`);
       }
     }
   }

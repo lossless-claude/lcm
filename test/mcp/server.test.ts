@@ -219,6 +219,18 @@ it("blocks local database tools when a hold begins after MCP startup", async () 
   expect(collectStatsMock).not.toHaveBeenCalled();
 });
 
+it("reports a hold before an inherited unknown tool name", async () => {
+  const { Server } = await import("@modelcontextprotocol/server");
+  const { startMcpServer } = await import("../../src/mcp/server.js");
+  await startMcpServer();
+  const server = vi.mocked(Server).mock.results.at(-1)!.value;
+  const handler = server.setRequestHandler.mock.calls.find(([method]: [string]) => method === "tools/call")[1];
+  holdMock.mockReturnValue({ until: "2099-01-01T00:00:00.000Z", pid: 1 });
+
+  const result = await handler({ params: { name: "toString", arguments: {} } });
+  expect(result.content[0].text).toContain("held down until");
+});
+
 it("renders objection owners in local lcm_stats output", async () => {
   collectStatsMock.mockReturnValue({
     projects: 0, conversations: 0, compactedConversations: 0, messages: 0, summaries: 0,
