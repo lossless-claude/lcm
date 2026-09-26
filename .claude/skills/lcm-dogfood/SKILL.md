@@ -9,14 +9,20 @@ disable-model-invocation: true
 Proves what only a live install can: the installed plugin, the configured summarizer and the user's own memory working together. Hook output shapes, daemon-down behaviour and command options stay out of this skill; `test/e2e/` exercises them against an isolated daemon.
 
 Run every phase, or only `$0`. The target is the real lcm home (`LCM_HOME`, default `~/.lossless-claude`):
-- Phases that write (`compact`, `sensitive`, `mcp`) touch only the current project, or add and then remove their own entries. A run costs one project's summarization and keeps every existing summary; `--all` and `--restart` stay out of this skill.
-- Phases that only read (`health`, `integrity`) cover the whole home.
+- Phases that write memory (`compact`, `sensitive`, `mcp`) touch only the current project, or add and then remove their own entries. A run costs one project's summarization and keeps every existing summary; `--all` and `--restart` stay out of this skill.
+- `integrity` only reads, across the whole home.
+- `lcm doctor` (in `health`, and `lcm_doctor` in `mcp`) writes outside the project: it repairs lcm's own setup when it finds it drifted: the hooks and MCP entries in `~/.claude/settings.json`, `~/.claude/lcm.md`, a stale daemon. Each repair prints as a fixed warning; record it in the scorecard as a finding, since a live install that needed one had drifted.
 
 Binary: `lcm` on PATH. Record each check as PASS, FAIL or SKIP (with the reason), keep going on FAIL, and open an issue for each failure worth tracking. The daemon log is `logs/daemon.log` in the lcm home, one JSON record per line; `docs/configuration.md` ("Daemon log") names its events.
 
 ## Phases
 
-**health**: `lcm --version`, `lcm status`, `lcm doctor`. Done when the version equals `package.json`, the daemon is up on this project, and every doctor check passes or its warning is recorded. The `daemon-log` check covers errors and continuity in the daemon log.
+**health**: `lcm --version`, `lcm status`, `lcm doctor`. Done when the version equals `package.json`, the daemon is up on this project, and every doctor check passes or its warning (or repair) is recorded. The `daemon-log` check covers errors and continuity in the daemon log.
+
+The running daemon's log level decides what `capture` and `compact` can find. The daemon reads `daemon.logLevel` from `config.json` in the lcm home only when it starts, so when that file is newer than the last `daemon.start` record, run `lcm daemon restart` first. The level in the file is then the running one; a missing or unrecognised value means `info`.
+- `debug` or `info`: every log check runs.
+- `warn`: mark the checks for `info` records (the `/prompt-search` request, `compact.done`, `compact.skipped`) SKIP with that reason; `summarizer.fallback` is a `warn` record and is still checked.
+- `error`: mark those and the `summarizer.fallback` check SKIP.
 
 **capture**: the plugin's hooks reaching the daemon from this session. To find this session's id, echo a unique marker (such as `dogfood-` plus the epoch seconds) in one command, then, in the next, search this project's directory under `~/.claude/projects/` recursively for `*.jsonl` files containing it. The one file that holds it is this session's transcript, and its name without `.jsonl` is the session id. Done when the daemon log holds a `request` record for `POST /prompt-search` with `status` 200, `cwd` equal to this project and `session_id` equal to this session's id.
 
