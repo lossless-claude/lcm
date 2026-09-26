@@ -182,6 +182,11 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   const server: Server = createServer(async (req, res) => {
     resetIdleTimer();
     const key = `${req.method} ${req.url?.split("?")[0]}`;
+    const started = Date.now();
+    let identity: { cwd?: string; session_id?: string } = {};
+    // Registered before the 404 and 401 answers: a stale token on a fire-and-forget request fails only here.
+    res.on("finish", () => log.write(requestLevel(key, res.statusCode), "request",
+      { route: key, status: res.statusCode, ms: Date.now() - started, ...identity }));
     const handler = routes.get(key) ?? (req.method === "POST" && /^\/summarize-jobs\/[^/?]+$/.test(req.url?.split("?")[0] ?? "") ? answerSummarizeJob : undefined);
     if (!handler) { sendJson(res, 404, { error: "not found" }); return; }
     // Auth: skip for GET /health, require Bearer token for everything else
@@ -193,10 +198,6 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
         return;
       }
     }
-    const started = Date.now();
-    let identity: { cwd?: string; session_id?: string } = {};
-    res.on("finish", () => log.write(requestLevel(key, res.statusCode), "request",
-      { route: key, status: res.statusCode, ms: Date.now() - started, ...identity }));
     try {
       const body = req.method !== "GET" ? await readBody(req) : "";
       identity = requestIdentity(body);

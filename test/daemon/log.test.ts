@@ -120,6 +120,15 @@ describe("daemon log", () => {
     expect(log.state().failing).toBe(false);
   });
 
+  it("counts a record it cannot render instead of throwing", () => {
+    const opts = options();
+    const log = openDaemonLog(opts);
+    const loop: Record<string, unknown> = {};
+    loop.self = loop;
+    expect(() => log.write("info", "x", { loop })).not.toThrow();
+    expect(log.state()).toMatchObject({ failing: true, dropped: 1 });
+  });
+
   describe("doctor check", () => {
     it("reports errors only when the log proves continuity", () => {
       const opts = options();
@@ -153,5 +162,16 @@ describe("daemon log", () => {
     expect(records.find((r) => r.event === "route.failed")).toMatchObject({ route: "POST /boom", session_id: "s9", err: { message: "exploded" } });
     expect(records.find((r) => r.event === "request")).toMatchObject({ route: "POST /boom", status: 500, level: "error", cwd: "/work/other" });
     expect(JSON.stringify(records)).not.toContain("never logged");
+  });
+
+  it("logs a request the daemon refuses before any route runs", async () => {
+    const opts = options();
+    const tokenPath = join(home, "daemon.token");
+    writeFileSync(tokenPath, "secret-token");
+    daemon = await createDaemon(loadDaemonConfig("/x", { daemon: { port: 0 } }), { log: openDaemonLog(opts), tokenPath });
+    await fetch(`http://127.0.0.1:${daemon.address().port}/compact`, { method: "POST", body: "{}" });
+    await new Promise((r) => setTimeout(r, FINISH_FLUSH_MS));
+    expect(readDaemonLog(opts.path, { since: EPOCH })).toContainEqual(
+      expect.objectContaining({ event: "request", route: "POST /compact", status: 401, level: "warn" }));
   });
 });

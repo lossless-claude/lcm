@@ -101,7 +101,7 @@ jq -c 'select(.cwd == "/path/to/project")' ~/.lossless-claude/logs/daemon.log*
 - **Failures**: `route.failed`, `compact.failed`, `promote.failed`, `daemon_request.failed` (a follow-up request the daemon could not send to itself), and `summarizer.fallback` (the session provider did not answer, so `to_provider` summarized instead).
 - **Continuity**:
   - `daemon.start` records `prev`: `clean` when the previous daemon left a `daemon.stop`, `unclean` when it did not, and `none` for the first log.
-  - `daemon.stop` is written on idle shutdown, SIGTERM, SIGINT, a hold and an uncaught exception.
+  - `daemon.stop` is written on idle shutdown, SIGTERM, SIGINT and an uncaught exception. `lcm daemon stop` sends SIGTERM.
   - `log.gap` records how many records were dropped while appends were failing, and over what period.
 
 `daemon` settings in `config.json`, read at daemon start:

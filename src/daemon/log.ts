@@ -222,16 +222,20 @@ class FileDaemonLog implements DaemonLog {
     this.started = true;
     this.file.prune();
     const fields = { pid: process.pid, version: this.opts.version, prev: previousEnding(this.opts.path) };
-    this.append(this.render({ level: "info", event: "daemon.start", fields }));
+    this.emit({ level: "info", event: "daemon.start", fields }, true);
   }
 
   write(level: LogLevel, event: string, fields: Record<string, unknown> = {}): void {
     if (this.closed || LEVELS[level] < this.minLevel) return;
-    this.append(this.render({ level, event, fields }));
+    this.emit({ level, event, fields }, false);
   }
 
-  prepare(cwd: string): Promise<void> {
-    return this.scrubbers.prepare(cwd);
+  async prepare(cwd: string): Promise<void> {
+    try {
+      await this.scrubbers.prepare(cwd);
+    } catch {
+      return; // records naming this cwd keep omitting free-form text
+    }
   }
 
   state(): LogState {
@@ -241,7 +245,7 @@ class FileDaemonLog implements DaemonLog {
   close(reason: string): void {
     if (this.closed || !this.started) return;
     // Written at every level: the stop marker is what proves continuity.
-    this.append(this.render({ level: "info", event: "daemon.stop", fields: { pid: process.pid, reason, dropped: this.dropped } }));
+    this.emit({ level: "info", event: "daemon.stop", fields: { pid: process.pid, reason, dropped: this.dropped } }, true);
     this.closed = true;
   }
 
@@ -249,9 +253,22 @@ class FileDaemonLog implements DaemonLog {
     return renderRecord(this.now().toISOString(), entry, this.scrubbers.for(entry.fields.cwd));
   }
 
-  private append(line: string): void {
+  /** Renders and appends; a record that cannot be rendered (a circular field) is counted as dropped. */
+  private emit(entry: LogEntry, marker: boolean): void {
+    let line: string;
+    try {
+      line = this.render(entry);
+    } catch {
+      this.dropped++;
+      return;
+    }
+    this.append(line, marker);
+  }
+
+  /** A start or stop marker is attempted even while appends are paused: it is what proves continuity. */
+  private append(line: string, marker: boolean): void {
     const nowMs = this.now().getTime();
-    if (nowMs < this.pausedUntil) { this.dropped++; return; }
+    if (nowMs < this.pausedUntil && !marker) { this.dropped++; return; }
     const gap = this.dropped > 0
       ? this.render({ level: "warn", event: "log.gap", fields: { dropped: this.dropped, from: this.firstFailureAt, to: this.now().toISOString() } })
       : "";
