@@ -194,6 +194,12 @@ describe("daemon log", () => {
       expect(checkDaemonLog(home, undefined).message).toMatch(/^coverage incomplete: the last daemon is not running/);
     });
 
+    it("treats a missing log as unproven when no daemon answers", () => {
+      options();
+      expect(checkDaemonLog(home, undefined).message).toMatch(/^coverage incomplete: the last daemon is not running/);
+      expect(checkDaemonLog(home, { failing: false, dropped: 0 }).message).toMatch(/^no daemon log yet/);
+    });
+
     it("does not report a daemon that predates the log as clean", () => {
       options();
       expect(checkDaemonLog(home, "unsupported")).toMatchObject({ status: "warn" });

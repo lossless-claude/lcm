@@ -42,7 +42,8 @@ export function checkDaemonLog(lcmHome: string, reported: LiveLog, now = new Dat
     return { ...base, status: "warn", message: "the running daemon predates the daemon log and records nothing\n     Fix: lcm daemon restart" };
   }
   const live = reported;
-  if (!existsSync(path) && !live?.failing) {
+  // Only a running daemon can be "not logged yet"; with none answering, a missing log proves nothing.
+  if (!existsSync(path) && live && !live.failing) {
     return { ...base, status: "warn", message: "no daemon log yet — it starts with the next daemon start\n     Fix: lcm daemon restart" };
   }
   const records = readDaemonLog(path, { since: new Date(now.getTime() - WINDOW_MS) });
