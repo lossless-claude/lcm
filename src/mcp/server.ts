@@ -7,30 +7,15 @@ import { loadDaemonConfig } from "../daemon/config.js";
 import { ensureDaemon, registerDaemonActivity } from "../daemon/lifecycle.js";
 import { readHold } from "../daemon/hold.js";
 import { PKG_VERSION } from "../daemon/version.js";
-import { lcmGrepTool } from "./tools/lcm-grep.js";
-import { lcmExpandTool } from "./tools/lcm-expand.js";
-import { lcmDescribeTool } from "./tools/lcm-describe.js";
-import { lcmSearchTool, lcmSearchToolFor } from "./tools/lcm-search.js";
 import { pivotLanguagesFor } from "../search/pivot-language.js";
-import { lcmStoreTool } from "./tools/lcm-store.js";
-import { lcmStatsTool } from "./tools/lcm-stats.js";
-import { lcmDoctorTool } from "./tools/lcm-doctor.js";
+import { createToolCatalog, getMcpToolDefinitions } from "./tool-catalog.js";
+import type { LocalHandlers } from "./tool-catalog.js";
 import { lcmHome } from "../lcm-home.js";
 import { createLcmPaths } from "../lcm-paths.js";
 import type { LcmPaths } from "../lcm-paths.js";
 
-const TOOLS = [lcmGrepTool, lcmExpandTool, lcmDescribeTool, lcmSearchTool, lcmStoreTool, lcmStatsTool, lcmDoctorTool];
-
-const TOOL_ROUTES: Record<string, string> = {
-  lcm_grep: "/grep",
-  lcm_expand: "/expand",
-  lcm_describe: "/describe",
-  lcm_search: "/search",
-  lcm_store: "/store",
-};
-
-function localTools(paths: LcmPaths): Partial<Record<string, (args: Record<string, unknown>) => Promise<string>>> { return {
-  lcm_stats: async (args) => {
+function localTools(paths: LcmPaths): LocalHandlers { return {
+  stats: async (args: Record<string, unknown>): Promise<string> => {
     const { collectStats, formatNumber, formatSubagentShare } = await import("../stats.js");
     const stats = collectStats(paths);
     const verbose = args.verbose === true;
@@ -147,23 +132,14 @@ function localTools(paths: LcmPaths): Partial<Record<string, (args: Record<strin
 
     return lines.join("\n");
   },
-  lcm_doctor: async () => {
+  doctor: async (): Promise<string> => {
     const { runDoctor, formatResultsPlain } = await import("../doctor/doctor.js");
     const results = await runDoctor();
     return formatResultsPlain(results);
   },
 }; }
 
-// Build per-tool allowlist from tool definitions (keyed by tool name)
-const TOOL_ALLOWED_KEYS: Record<string, Set<string>> = {};
-for (const tool of TOOLS) {
-  const props = (tool.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties;
-  if (props) {
-    TOOL_ALLOWED_KEYS[tool.name] = new Set(Object.keys(props));
-  }
-}
-
-export function getMcpToolDefinitions() { return TOOLS; }
+export { getMcpToolDefinitions };
 
 export type DaemonRequestOpts = {
   port: number;
@@ -228,7 +204,7 @@ export async function handleDaemonRequest(
 
 export async function startMcpServer(): Promise<void> {
   const paths = createLcmPaths(lcmHome());
-  const LOCAL_TOOLS = localTools(paths);
+  const catalog = createToolCatalog(localTools(paths));
   const config = loadDaemonConfig(paths.configPath);
   const port = config.daemon.port;
   const pidFilePath = paths.pidPath;
@@ -254,8 +230,7 @@ export async function startMcpServer(): Promise<void> {
   // and pivot languages before its first search, not after an empty result.
   server.setRequestHandler("tools/list", async () => {
     const languages = pivotLanguagesFor(process.env.PWD ?? process.cwd(), config.search.pivotLanguage, paths);
-    const search = lcmSearchToolFor(languages);
-    return { tools: TOOLS.map((tool) => (tool.name === search.name ? search : tool)) };
+    return { tools: catalog.list(languages) };
   });
 
   server.setRequestHandler("tools/call", async (req) => {
@@ -265,29 +240,20 @@ export async function startMcpServer(): Promise<void> {
     if (typeof rawArgs !== "object" || rawArgs === null || Array.isArray(rawArgs)) {
       return { content: [{ type: "text", text: `Invalid arguments for tool ${req.params.name}: must be an object` }], isError: true };
     }
-    const allowedKeys = TOOL_ALLOWED_KEYS[req.params.name];
-    const filteredArgs: Record<string, unknown> = {};
-    if (allowedKeys) {
-      for (const key of allowedKeys) {
-        if (key in rawArgs) filteredArgs[key] = (rawArgs as Record<string, unknown>)[key];
-      }
-    } else {
-      // No schema properties defined — default-deny: pass nothing through.
-      // This is safer than a denylist-based approach which could miss unknown keys.
-      void rawArgs;
-    }
-
-    const localHandler = LOCAL_TOOLS[req.params.name];
+    const resolved = catalog.resolve(req.params.name, rawArgs as Record<string, unknown>);
+    const localCall = resolved?.destination.kind === "local"
+      ? { handler: resolved.destination.handler, args: resolved.args }
+      : undefined;
     // Register before admission so a held stop drains work that already began.
-    const unregister = localHandler ? registerDaemonActivity(pidFilePath) : undefined;
+    const unregister = localCall ? registerDaemonActivity(pidFilePath) : undefined;
     try {
       const hold = readHold(pidFilePath);
       if (hold) {
         return { content: [{ type: "text", text: `lcm daemon held down until ${hold.until}. Release it with: lcm daemon start` }], isError: true };
       }
-      if (localHandler) {
+      if (localCall) {
         try {
-          const text = await localHandler(filteredArgs);
+          const text = await localCall.handler(localCall.args);
           return { content: [{ type: "text", text }] };
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -298,10 +264,10 @@ export async function startMcpServer(): Promise<void> {
       unregister?.();
     }
 
-    const route = TOOL_ROUTES[req.params.name];
-    if (!route) return { content: [{ type: "text", text: `Unknown tool: ${req.params.name}` }], isError: true };
-    const body = { ...filteredArgs, cwd: process.env.PWD ?? process.cwd() };
-    return handleDaemonRequest(client, route, body, {
+    if (!resolved) return { content: [{ type: "text", text: `Unknown tool: ${req.params.name}` }], isError: true };
+    if (resolved.destination.kind !== "daemon") throw new Error("Unreachable local tool destination");
+    const body = { ...resolved.args, cwd: process.env.PWD ?? process.cwd() };
+    return handleDaemonRequest(client, resolved.destination.route, body, {
       port, pidFilePath,
       spawnCommand: process.execPath,
       spawnArgs: [lcmBin, "daemon", "start", "--automatic"],
