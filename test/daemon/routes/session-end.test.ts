@@ -126,10 +126,10 @@ describe("POST /session-end", () => {
     await settled();
 
     expect(ingest.bodies.map((b) => JSON.parse(b))).toEqual([{ ...body, session_id: "s1", cwd: dir }]);
-    expect(fired.compact).toHaveBeenCalledWith(PORT, { session_id: "s1", cwd: dir, skip_ingest: true, client: "claude" }, paths);
-    expect(fired.promote).toHaveBeenCalledWith(PORT, { cwd: dir }, paths);
-    expect(fired.promoteEvents).toHaveBeenCalledWith(PORT, { cwd: dir }, paths);
-    expect(fired.sessionComplete).toHaveBeenCalledWith(PORT, { session_id: "s1", cwd: dir, message_count: 7 }, paths);
+    expect(fired.compact).toHaveBeenCalledWith(PORT, { session_id: "s1", cwd: dir, skip_ingest: true, client: "claude" }, paths, expect.any(Function));
+    expect(fired.promote).toHaveBeenCalledWith(PORT, { cwd: dir }, paths, expect.any(Function));
+    expect(fired.promoteEvents).toHaveBeenCalledWith(PORT, { cwd: dir }, paths, expect.any(Function));
+    expect(fired.sessionComplete).toHaveBeenCalledWith(PORT, { session_id: "s1", cwd: dir, message_count: 7 }, paths, expect.any(Function));
   });
 
   it("skips compact when hooks.disableAutoCompact is set, and still records completion", async () => {

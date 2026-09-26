@@ -16,6 +16,8 @@ import { BUILD_ID, PKG_VERSION } from "../daemon/version.js";
 import { cliEntrypoint } from "../cli-entrypoint.js";
 import { daemonOwnership } from "../daemon/lifecycle.js";
 import { repairCommand } from "../hooks/fail-open.js";
+import { checkDaemonLog, type LiveLog } from "./daemon-log-check.js";
+import type { LogState } from "../daemon/log.js";
 
 const COLORS = {
   green: "\x1b[0;32m",
@@ -256,6 +258,19 @@ function checkPassiveLearning(results: CheckResult[], hooksInstalled: boolean, v
   }
 }
 
+/** The running daemon's log state; "unsupported" when it predates the log; undefined when no daemon answers. */
+async function liveLogState(deps: DoctorDeps, port: number): Promise<LiveLog> {
+  try {
+    const res = await deps.fetch(`http://127.0.0.1:${port}/health`);
+    if (!res.ok) return undefined;
+    const h = (await res.json()) as { status?: string; log?: LogState };
+    if (h.status !== "ok") return undefined;
+    return h.log ?? "unsupported";
+  } catch {
+    return undefined; // not running
+  }
+}
+
 export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false): Promise<CheckResult[]> {
   const deps = { ...defaultDeps(), ...overrides };
   const results: CheckResult[] = [];
@@ -387,6 +402,9 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
       results.push({ name: "daemon", category: "Daemon", status: "fail", message: `localhost:${config.port} not responding\n     Fix: lcm daemon start` });
     }
   }
+
+  // Asked again here: the checks above may have restarted or started the daemon.
+  results.push(checkDaemonLog(deps.lcmHome, await liveLogState(deps, config.port)));
 
   // ── Settings ──
   const settingsPath = join(deps.homedir, ".claude", "settings.json");

@@ -6,6 +6,7 @@ import type { DaemonConfig } from "../config.js";
 import type { LcmPaths } from "../../lcm-paths.js";
 import { updateProjectMeta } from "../project-meta.js";
 import { projectId, projectDbPath, projectDir } from "../project.js";
+import { noopDaemonLog, type DaemonLog } from "../log.js";
 import { openProject } from "../project-group.js";
 import { enqueue } from "../project-queue.js";
 import { sendJson } from "../server.js";
@@ -188,7 +189,7 @@ export function recordCompactLlmUsage(db: DatabaseSync, usage: CompactLlmUsage):
 }
 
 
-export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs?: SummarizeJobStore): RouteHandler {
+export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs?: SummarizeJobStore, log: DaemonLog = noopDaemonLog): RouteHandler {
   const summarizerCache = new Map<EffectiveProvider, Promise<LcmSummarizeFn | null>>();
 
   const getSummarizer = (provider: EffectiveProvider): Promise<LcmSummarizeFn | null> => {
@@ -224,6 +225,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     // Guard must be checked and set synchronously (before any await) to prevent
     // concurrent requests from racing through the has() check before add() runs.
     if (compactingNow.has(session_id)) {
+      log.write("info", "compact.skipped", { cwd, session_id, reason: "already-compacting" });
       sendJson(res, 200, {
         skipped: true,
         replayOutcome: "skipped",
@@ -248,6 +250,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     try {
       const summarize = await getSummarizer(effectiveProvider);
       if (!summarize) {
+        log.write("info", "compact.skipped", { cwd, session_id, reason: "disabled" });
         sendJson(res, 200, {
           summary: "Summarization disabled — no summarizer configured.",
           replayOutcome: "disabled",
@@ -332,6 +335,8 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                 ...ctx,
                 sessionId: session_id,
                 client,
+                onFallback: ({ reason, toProvider }) =>
+                  log.write("warn", "summarizer.fallback", { cwd, session_id, reason, to_provider: toProvider }),
                 onUsage: (usage) => {
                   // Every provider reports normalized usage; only providers
                   // whose response carries it call onUsage at all.
@@ -405,7 +410,9 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
 
           try {
             updateProjectMeta(cwd, paths, { lastCompact: new Date().toISOString() });
-          } catch { /* non-fatal */ }
+          } catch (err) {
+            log.write("warn", "compact.meta_failed", { cwd, session_id, err });
+          }
 
           // Tell the restore that follows to replay the saved instructions.
           markSessionCompacted(db, session_id);
@@ -465,15 +472,21 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         } finally {
           try {
             for (const usage of usageByProvider.values()) recordCompactLlmUsage(db, usage);
-          } catch {
-            // non-fatal stats accounting
+          } catch (err) {
+            log.write("warn", "compact.usage_failed", { cwd, session_id, err }); // stats accounting only
           }
           closeLcmConnection(dbPath);
         }
       }); // end enqueue
 
+      if (result.replayOutcome === "compacted" && "tokensBefore" in result) {
+        log.write("info", "compact.done", { cwd, session_id, tokens_before: result.tokensBefore, tokens_after: result.tokensAfter });
+      } else {
+        log.write("info", "compact.skipped", { cwd, session_id, reason: result.replayOutcome });
+      }
       sendJson(res, 200, result);
     } catch (err) {
+      log.write("error", "compact.failed", { cwd, session_id, err });
       const llmUsage =
         err instanceof Error
           ? (err as Error & { llmUsage?: CompactLlmUsage }).llmUsage

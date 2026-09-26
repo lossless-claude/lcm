@@ -4,6 +4,7 @@ import type { DaemonConfig } from "../config.js";
 import type { LcmPaths } from "../../lcm-paths.js";
 import { projectDbPath } from "../project.js";
 import { sendJson } from "../server.js";
+import { noopDaemonLog, type DaemonLog } from "../log.js";
 import type { RouteHandler } from "../server.js";
 import { closeLcmConnection, getLcmConnection } from "../../db/connection.js";
 import { runLcmMigrations } from "../../db/migration.js";
@@ -19,7 +20,7 @@ function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export function createSearchHandler(config: DaemonConfig, paths: LcmPaths): RouteHandler {
+export function createSearchHandler(config: DaemonConfig, paths: LcmPaths, log: DaemonLog = noopDaemonLog): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
     const { query, pivotQuery, limit = 5, layers, tags } = input;
@@ -83,7 +84,7 @@ export function createSearchHandler(config: DaemonConfig, paths: LcmPaths): Rout
               // Non-fatal for the response, but never silent: a real failure
               // (malformed FTS5 syntax, missing table, corrupt index) must be
               // distinguishable from a query that legitimately matched nothing.
-              console.warn(`[lcm] /search episodic layer failed: ${describeError(err)}`);
+              log.write("warn", "search.layer_failed", { cwd, layer: "episodic", err });
               errors.push(`episodic: ${describeError(err)}`);
             }
           }
@@ -95,12 +96,12 @@ export function createSearchHandler(config: DaemonConfig, paths: LcmPaths): Rout
             try {
               promoted = searchPromotedGroup(cwd, { query: searchQuery, limit, tags: filterTags, terms: searchTerms }, paths).hits;
             } catch (err) {
-              console.warn(`[lcm] /search promoted layer failed: ${describeError(err)}`);
+              log.write("warn", "search.layer_failed", { cwd, layer: "promoted", err });
               errors.push(`promoted: ${describeError(err)}`);
             }
           }
         } catch (err) {
-          console.warn(`[lcm] /search database open failed: ${describeError(err)}`);
+          log.write("warn", "search.database_failed", { cwd, err });
           errors.push(`database: ${describeError(err)}`);
         } finally {
           closeLcmConnection(dbPath);
