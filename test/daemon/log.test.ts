@@ -83,6 +83,23 @@ describe("daemon log", () => {
     expect(record.session_id).toContain("[REDACTED]");
   });
 
+  it("scrubs an identifier-shaped error name and code", () => {
+    const opts = options();
+    const awsKey = "AKIA" + "Z".repeat(16);
+    const err = Object.assign(new Error("boom"), { code: awsKey });
+    err.name = awsKey;
+    openDaemonLog(opts).write("error", "route.failed", { err });
+    expect(JSON.stringify(readDaemonLog(opts.path, { since: EPOCH }))).not.toContain(awsKey);
+  });
+
+  it("falls back to info for a malformed level", () => {
+    const opts = options({ level: "toString" });
+    const log = openDaemonLog(opts);
+    log.write("debug", "noise");
+    log.write("info", "kept");
+    expect(readDaemonLog(opts.path, { since: EPOCH }).map((r) => r.event)).toEqual(["kept"]);
+  });
+
   it("omits free-form text until the project's own patterns are loaded", async () => {
     const opts = options();
     const cwd = "/work/repo";
@@ -167,6 +184,13 @@ describe("daemon log", () => {
     it("judges a dead daemon by the log's last record, however old", () => {
       const opts = options({ now: () => new Date("2020-01-01T00:00:00Z") });
       openDaemonLog(opts).start();
+      expect(checkDaemonLog(home, undefined).message).toMatch(/^coverage incomplete: the last daemon is not running/);
+    });
+
+    it("treats an unreadable log as unproven when no daemon answers", () => {
+      const opts = options();
+      mkdirSync(join(home, "logs"), { recursive: true });
+      writeFileSync(opts.path, "");
       expect(checkDaemonLog(home, undefined).message).toMatch(/^coverage incomplete: the last daemon is not running/);
     });
 

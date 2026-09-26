@@ -67,6 +67,11 @@ type Scrubbing = ScrubEngine | "pending" | "unavailable";
 const DEFAULT_MAX_SIZE_MB = 10;
 const DEFAULT_RETENTION_DAYS = 7;
 
+/** A malformed `daemon.logLevel` (not a string, or an inherited name such as `toString`) means `info`. */
+function levelOrInfo(value: unknown): LogLevel {
+  return typeof value === "string" && Object.hasOwn(LEVELS, value) ? (value as LogLevel) : "info";
+}
+
 /** A malformed `config.json` number falls back to the default instead of rotating on every append. */
 function positiveOr(value: number, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? value : fallback;
@@ -217,16 +222,15 @@ function renderField(key: string, value: unknown, scrub: Scrub): unknown {
   return scrub(JSON.stringify(value));
 }
 
-const SAFE_ERROR_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
-const SAFE_ERROR_CODE = /^[A-Za-z0-9_]{1,40}$/;
-
-/** An error's name and code are kept only when they look like identifiers; anything else is free-form text. */
+/** Name, message and code are all set by whoever threw, so all three are free-form text. */
 function describeError(value: unknown, freeForm: Scrub): Record<string, unknown> {
   if (!(value instanceof Error)) return { message: freeForm(String(value)) };
   const code = (value as NodeJS.ErrnoException).code;
-  const safeCode = typeof code === "string" && SAFE_ERROR_CODE.test(code) ? { code } : {};
-  const name = SAFE_ERROR_NAME.test(value.name) ? value.name : freeForm(value.name);
-  return { name, message: freeForm(value.message), ...safeCode };
+  return {
+    name: freeForm(value.name),
+    message: freeForm(value.message),
+    ...(typeof code === "string" || typeof code === "number" ? { code: freeForm(String(code)) } : {}),
+  };
 }
 
 class FileDaemonLog implements DaemonLog {
@@ -242,7 +246,7 @@ class FileDaemonLog implements DaemonLog {
 
   constructor(private readonly opts: DaemonLogOptions) {
     this.now = opts.now ?? (() => new Date());
-    this.minLevel = LEVELS[opts.level in LEVELS ? (opts.level as LogLevel) : "info"];
+    this.minLevel = LEVELS[levelOrInfo(opts.level)];
     const maxSizeMB = positiveOr(opts.maxSizeMB, DEFAULT_MAX_SIZE_MB);
     const retentionDays = positiveOr(opts.retentionDays, DEFAULT_RETENTION_DAYS);
     this.file = new LogFile({ path: opts.path, maxBytes: maxSizeMB * BYTES_PER_MB, retentionMs: retentionDays * DAY_MS, now: this.now });

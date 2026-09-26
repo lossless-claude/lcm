@@ -18,12 +18,12 @@ export type LiveLog = LogState | "unsupported" | undefined;
 
 /**
  * Why the last 24 h of the log cannot prove it holds every record, or empty when it can.
- * With no daemon answering, a log whose last record (at any age) is not `daemon.stop`
- * belongs to a daemon that died and has not been restarted.
+ * With no daemon answering, a log whose last record (at any age) is not `daemon.stop`,
+ * or that has no readable record at all, cannot show the last daemon stopped cleanly.
  */
 function coverageGaps(records: LogRecord[], live: LogState | undefined, path: string): string[] {
   const checks: Array<[boolean, string]> = [
-    [!live && logEnding(path) === "unclean", "the last daemon is not running and left no stop record"],
+    [!live && logEnding(path) !== "clean", "the last daemon is not running and left no stop record"],
     [records.some(endedUnclean), "a daemon ended without a stop record"],
     [records.some(droppedRecords), "records were dropped"],
     [live?.failing === true, "the running daemon cannot write its log"],
