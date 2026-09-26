@@ -18,9 +18,9 @@ Binary: `lcm` on PATH. Record each check as PASS, FAIL or SKIP (with the reason)
 
 **health**: `lcm --version`, `lcm status`, `lcm doctor`. Done when the version equals `package.json`, the daemon is up on this project, and every doctor check passes or its warning is recorded. The `daemon-log` check covers errors and continuity in the daemon log.
 
-**capture**: the plugin's hooks reaching the daemon from this session. This session's id is the name, without `.jsonl`, of the most recently modified `.jsonl` file directly in this project's directory under `~/.claude/projects/`; subagent transcripts sit in subdirectories and are not session ids. Done when the daemon log holds a `request` record for `POST /prompt-search` with `status` 200, `cwd` equal to this project and `session_id` equal to this session's id.
+**capture**: the plugin's hooks reaching the daemon from this session. To find this session's id, echo a unique marker (such as `dogfood-` plus the epoch seconds) in one command, then, in the next, search this project's directory under `~/.claude/projects/` recursively for `*.jsonl` files containing it. The one file that holds it is this session's transcript, and its name without `.jsonl` is the session id. Done when the daemon log holds a `request` record for `POST /prompt-search` with `status` 200, `cwd` equal to this project and `session_id` equal to this session's id.
 
-**import**: `lcm import --dry-run`. Done when it lists this project's sessions and `lcm status` shows the same message count before and after.
+**import**: `lcm import --dry-run --verbose`. Done when it lists this project's sessions and `lcm status` shows the same message count before and after.
 
 **compact**: note the time and the `Summaries` and `Promoted` counts `lcm status` shows for this project, then `lcm compact`, which compacts the current project and then promotes. The summarizer is an LLM call; allow five minutes. Done when:
 - a second identical run creates nothing;
