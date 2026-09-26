@@ -19,7 +19,10 @@ Binary: `lcm` on PATH. Record each check as PASS, FAIL or SKIP (with the reason)
 
 **health**: `lcm --version`, `lcm status`, `lcm doctor`. Done when the version equals `package.json`, the daemon is up on this project, and every doctor check passes or its warning (or repair) is recorded. The `daemon-log` check covers errors and continuity in the daemon log.
 
-The running daemon's log level decides what `capture` and `compact` can find. `daemon.start` is written at every level; any other `info` record after the last `daemon.start` shows the running daemon writes `info`. Without one, the level is `warn` or higher: mark the checks for `info` records (the `/prompt-search` request, `compact.done`, `compact.skipped`) SKIP with that reason. `summarizer.fallback` is a `warn` record and is checked at any level.
+The running daemon's log level decides what `capture` and `compact` can find. The daemon reads `daemon.logLevel` from `config.json` in the lcm home only when it starts, so when that file is newer than the last `daemon.start` record, run `lcm daemon restart` first. The level in the file is then the running one; a missing or unrecognised value means `info`.
+- `debug` or `info`: every log check runs.
+- `warn`: mark the checks for `info` records (the `/prompt-search` request, `compact.done`, `compact.skipped`) SKIP with that reason; `summarizer.fallback` is a `warn` record and is still checked.
+- `error`: mark those and the `summarizer.fallback` check SKIP.
 
 **capture**: the plugin's hooks reaching the daemon from this session. To find this session's id, echo a unique marker (such as `dogfood-` plus the epoch seconds) in one command, then, in the next, search this project's directory under `~/.claude/projects/` recursively for `*.jsonl` files containing it. The one file that holds it is this session's transcript, and its name without `.jsonl` is the session id. Done when the daemon log holds a `request` record for `POST /prompt-search` with `status` 200, `cwd` equal to this project and `session_id` equal to this session's id.
 
