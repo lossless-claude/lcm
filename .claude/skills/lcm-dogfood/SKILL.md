@@ -1,59 +1,36 @@
 ---
 name: lcm-dogfood
-description: Exercise the lcm public surface in a live session and report a scorecard. Usage: /lcm-dogfood [health|import|compact|promote|sensitive|hooks|mcp|resilience|debug]
+description: Exercise a live lcm install (installed plugin, real summarizer, the user's own data) and report a scorecard. Usage: /lcm-dogfood [health|capture|import|compact|sensitive|mcp|integrity]
 disable-model-invocation: true
 ---
 
 # lcm dogfood
 
-Run every phase, or only `$0`. The CLI's own help is the checklist: for each command,
-`lcm help <command>` names the options, and the phase passes when every documented option
-ran and did what the help says. Nothing in this file lists options or counts, so it cannot
-go stale; the help can.
+Proves what only a live install can: the installed plugin, the configured summarizer and the user's own memory working together. Hook output shapes, daemon-down behaviour and the full option matrix of each command belong to `test/e2e/`, which runs them against an isolated daemon.
 
-Binary: `lcm` on PATH, or `node dist/bin/lcm.js` after `npm run build`. Large output goes
-through `ctx_execute`; short output through Bash. Record each check as PASS, FAIL or SKIP
-(with the reason), keep going on FAIL, and open an issue for each failure worth tracking.
+Run every phase, or only `$0`. The target is the real lcm home (`LCM_HOME`, default `~/.lossless-claude`), so every command is scoped to the current project: a run costs one project's summarization and keeps every existing summary. `--all` and `--restart` stay out of this skill.
+
+Binary: `lcm` on PATH. Record each check as PASS, FAIL or SKIP (with the reason), keep going on FAIL, and open an issue for each failure worth tracking. The daemon log is `logs/daemon.log` in the lcm home, one JSON record per line; `docs/configuration.md` ("Daemon log") names its events.
 
 ## Phases
 
-**health**: `lcm status`, `lcm doctor`, `lcm --version`. Done when the daemon is up on this
-project, every doctor check passes or its warning is recorded, and the version equals
-`package.json`.
+**health**: `lcm --version`, `lcm status`, `lcm doctor`. Done when the version equals `package.json`, the daemon is up on this project, and every doctor check passes or its warning is recorded. The `daemon-log` check covers errors and continuity in the daemon log.
 
-**import**: `lcm help import`, then every option. Done when a second identical run adds no
-message beyond the current session's own.
+**capture**: the plugin's hooks reaching the daemon. Done when the daemon log holds a `request` record for `POST /prompt-search` with `status` 200 and `cwd` equal to this project, written after this session started.
 
-**compact**: `lcm help compact`, then every option. The summarizer is an LLM call; allow
-five minutes. Done when a second identical run creates nothing.
+**import**: `lcm import --dry-run`. Done when it lists this project's sessions and `lcm status` shows the same message count before and after.
 
-**promote**: `lcm help promote`, then `lcm stats --verbose`. Done when the promoted count
-moved, or the output states there was nothing promotable, and the stats agree with the
-counts the earlier phases printed.
+**compact**: `lcm compact`, which compacts the current project and then promotes. The summarizer is an LLM call; allow five minutes. Done when:
+- a second identical run creates nothing;
+- the daemon log holds a `compact.done` or `compact.skipped` record for this project, and any `summarizer.fallback` record is noted in the scorecard with its `reason`;
+- `lcm stats --verbose` agrees with the summary and promotion counts `lcm compact` printed.
 
-**sensitive**: `lcm help sensitive`, then every subcommand. Done when a built-in secret and
-a pattern you added are both `[REDACTED]` by `lcm sensitive test`, and the pattern you added
-is gone from `lcm sensitive list` after you removed it.
+**sensitive**: `lcm help sensitive`, then each subcommand. It writes the real pattern list, so remove every pattern you add. Done when a built-in secret and a pattern you added are both `[REDACTED]` by `lcm sensitive test`, and your pattern is gone from `lcm sensitive list`.
 
-**hooks**: `docs/hook-protocol.md` is the contract. Done when every hook command it lists
-answers a valid stdin payload with the output shape it documents, within its timeout, and
-the daemon's `/prompt-search` answers `.claude/skills/lcm-dogfood/scripts/prompt-search-test.js <query>` directly.
+**mcp**: `docs/agent-tools.md` is the contract. Done when every tool it lists has been called with a documented parameter set and answered in the documented shape, including an `lcm_store` followed by an `lcm_search` that finds it. Skip `lcm_expand` and `lcm_describe` only when no summary id exists yet.
 
-**mcp**: `docs/agent-tools.md` is the contract. Done when every tool it lists has been
-called with a documented parameter set and answered in the documented shape, including a
-`lcm_store` followed by an `lcm_search` that finds it. Skip `lcm_expand` and `lcm_describe`
-only when no summary id exists yet.
-
-**resilience**: stop the daemon (`lcm daemon stop`), then `lcm status`, a hook command, and
-`lcm daemon start --detach`. Done when the down state is reported without a hang, the hook
-returns within its timeout with empty or valid output, and status shows the daemon up
-again.
-
-**debug**: `~/.lossless-claude/daemon.log` tail, `.claude/skills/lcm-dogfood/scripts/db-integrity.js`, and `$PWD`
-against `pwd`. Done when no ERROR line is unexplained, every project database reports
-`ok`, and the two paths match.
+**integrity**: `node .claude/skills/lcm-dogfood/scripts/db-integrity.js`, which checks every project database read-only; on a large home it takes minutes. Done when it prints `N of N project databases ok`.
 
 ## Scorecard
 
-One row per phase run: checks, PASS, FAIL, SKIP. For each FAIL: the error, the daemon log
-excerpt, the suggested fix. Done when every phase you ran has a row.
+One row per phase run: checks, PASS, FAIL, SKIP. For each FAIL: the error, the daemon log records around it, the suggested fix. Done when every phase you ran has a row.

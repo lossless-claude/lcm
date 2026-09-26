@@ -1,40 +1,40 @@
 #!/usr/bin/env node
-// Check integrity of all lcm project databases
+// PRAGMA integrity_check on every project database under the lcm home (LCM_HOME, default ~/.lossless-claude).
+// Opens each database read-only. Exits 1 when any database is not "ok".
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-const projectsDir = path.join(os.homedir(), ".lossless-claude", "projects");
+const home = process.env.LCM_HOME?.trim() || path.join(os.homedir(), ".lossless-claude");
+const projectsDir = path.join(home, "projects");
 if (!fs.existsSync(projectsDir)) {
-  console.log("No projects directory found");
+  console.log(`No projects directory at ${projectsDir}`);
   process.exit(0);
 }
 
-const dirs = fs.readdirSync(projectsDir).filter((d) => {
-  const dbPath = path.join(projectsDir, d, "db.sqlite");
-  return fs.existsSync(dbPath);
-});
-
+const dirs = fs.readdirSync(projectsDir).filter((d) => fs.existsSync(path.join(projectsDir, d, "db.sqlite")));
 if (dirs.length === 0) {
   console.log("No project databases found");
   process.exit(0);
 }
 
-let allOk = true;
+let failed = 0;
 for (const d of dirs) {
   const dbPath = path.join(projectsDir, d, "db.sqlite");
   try {
-    const db = new DatabaseSync(dbPath);
+    const db = new DatabaseSync(dbPath, { readOnly: true });
     const result = db.prepare("PRAGMA integrity_check").get();
-    const status = result.integrity_check === "ok" ? "ok" : "FAIL";
-    if (status !== "ok") allOk = false;
-    console.log(`${d.slice(0, 16)}...  ${status}`);
     db.close();
+    if (result.integrity_check !== "ok") {
+      failed++;
+      console.log(`${d.slice(0, 16)}...  FAIL: ${result.integrity_check}`);
+    }
   } catch (e) {
+    failed++;
     console.log(`${d.slice(0, 16)}...  ERROR: ${e.message}`);
-    allOk = false;
   }
 }
 
-process.exit(allOk ? 0 : 1);
+console.log(`${dirs.length - failed} of ${dirs.length} project databases ok`);
+process.exit(failed === 0 ? 0 : 1);
