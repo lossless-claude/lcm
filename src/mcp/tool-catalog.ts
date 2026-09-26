@@ -3,13 +3,23 @@ import type { PivotLanguages } from "../search/pivot-language.js";
 import { pivotQueryApplies } from "../search/pivot-language.js";
 
 type LocalHandler = (args: Record<string, unknown>) => Promise<string>;
-type LocalHandlers = { stats: LocalHandler; doctor: LocalHandler };
+export type LocalHandlers = { stats: LocalHandler; doctor: LocalHandler };
 
 type Destination =
   | { kind: "daemon"; route: string }
   | { kind: "local"; handler: keyof LocalHandlers };
 
 type ToolEntry = { definition: Tool; destination: Destination };
+
+type ResolvedTool = {
+  destination: { kind: "daemon"; route: string } | { kind: "local"; handler: LocalHandler };
+  args: Record<string, unknown>;
+};
+
+type ToolCatalog = {
+  list(languages: PivotLanguages): Tool[];
+  resolve(name: string, rawArgs: Record<string, unknown>): ResolvedTool | undefined;
+};
 
 const SEARCH_DESCRIPTION =
   "Search native project memory across episodic messages/summaries and promoted memories. Returns separate ranked layer lists. Episodic matches include bounded source context, exact spans and source hashes.";
@@ -134,15 +144,15 @@ const ENTRIES: ToolEntry[] = [
   },
 ];
 
-export function getMcpToolDefinitions() {
+export function getMcpToolDefinitions(): Tool[] {
   return ENTRIES.map(({ definition }) => definition);
 }
 
-export function createToolCatalog(localHandlers: LocalHandlers) {
+export function createToolCatalog(localHandlers: LocalHandlers): ToolCatalog {
   const byName = new Map<string, (typeof ENTRIES)[number]>(ENTRIES.map((entry) => [entry.definition.name, entry]));
 
   return {
-    list(languages: PivotLanguages) {
+    list(languages: PivotLanguages): Tool[] {
       return ENTRIES.map(({ definition }) => {
         if (definition.name !== "lcm_search" || !pivotQueryApplies(languages)) return definition;
         return {
@@ -151,7 +161,7 @@ export function createToolCatalog(localHandlers: LocalHandlers) {
         };
       });
     },
-    resolve(name: string, rawArgs: Record<string, unknown>) {
+    resolve(name: string, rawArgs: Record<string, unknown>): ResolvedTool | undefined {
       const entry = byName.get(name);
       if (!entry) return undefined;
       const args: Record<string, unknown> = {};

@@ -9,12 +9,13 @@ import { readHold } from "../daemon/hold.js";
 import { PKG_VERSION } from "../daemon/version.js";
 import { pivotLanguagesFor } from "../search/pivot-language.js";
 import { createToolCatalog, getMcpToolDefinitions } from "./tool-catalog.js";
+import type { LocalHandlers } from "./tool-catalog.js";
 import { lcmHome } from "../lcm-home.js";
 import { createLcmPaths } from "../lcm-paths.js";
 import type { LcmPaths } from "../lcm-paths.js";
 
-function localTools(paths: LcmPaths) { return {
-  stats: async (args: Record<string, unknown>) => {
+function localTools(paths: LcmPaths): LocalHandlers { return {
+  stats: async (args: Record<string, unknown>): Promise<string> => {
     const { collectStats, formatNumber, formatSubagentShare } = await import("../stats.js");
     const stats = collectStats(paths);
     const verbose = args.verbose === true;
@@ -131,7 +132,7 @@ function localTools(paths: LcmPaths) { return {
 
     return lines.join("\n");
   },
-  doctor: async () => {
+  doctor: async (): Promise<string> => {
     const { runDoctor, formatResultsPlain } = await import("../doctor/doctor.js");
     const results = await runDoctor();
     return formatResultsPlain(results);
