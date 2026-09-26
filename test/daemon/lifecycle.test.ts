@@ -1,7 +1,7 @@
 import { utimesSync, statSync, chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { daemonOwnership, ensureDaemon, isOlderVersion, isStaleDaemon, registerDaemonActivity, stopDaemon } from "../../src/daemon/lifecycle.js";
 
@@ -406,7 +406,9 @@ describe("ensureDaemon", () => {
     expect(spawnMock).toHaveBeenCalledWith(
       "lcm",
       ["daemon", "start"],
-      expect.objectContaining({ detached: true, stdio: "ignore" }),
+      expect.objectContaining({ detached: true, stdio: ["ignore", "ignore", expect.any(Number)] }),
     );
+    // stderr lands next to the log, so a crash before the log exists survives the respawn.
+    expect(existsSync(join(dirname(pidFile), "logs", "daemon.stderr"))).toBe(true);
   });
 });

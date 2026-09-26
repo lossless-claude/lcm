@@ -107,7 +107,7 @@ lcm daemon restart
 ## Verify
 
 ```bash
-tail -n 60 ~/.lossless-claude/daemon.log
+tail -n 60 ~/.lossless-claude/logs/daemon.log ~/.lossless-claude/logs/daemon.stderr
 ```
 
 Confirm the daemon is up (`lcm status` reports its version and uptime), then run a search and

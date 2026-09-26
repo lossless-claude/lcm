@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, utimesSync, writeFileSync, unlinkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { join, dirname } from "node:path";
@@ -277,6 +277,26 @@ export async function checkDaemonHealth(
   }
 }
 
+const DAEMON_STDERR_MAX_BYTES = 10 * 1024 * 1024;
+
+/**
+ * `<lcm home>/logs/daemon.stderr`, opened for append, for what the daemon prints
+ * before its log exists or outside it (a crash at module load). Kept across
+ * spawns so the previous failure survives the respawn; past 10 MB it is moved
+ * to `daemon.stderr.1`, replacing the one before. Undefined when it cannot be
+ * opened: the daemon then starts with stderr ignored, as before.
+ */
+function openDaemonStderr(pidFilePath: string): number | undefined {
+  const path = join(dirname(pidFilePath), "logs", "daemon.stderr");
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    if (existsSync(path) && statSync(path).size > DAEMON_STDERR_MAX_BYTES) renameSync(path, `${path}.1`);
+    return openSync(path, "a");
+  } catch {
+    return undefined; // start without it rather than not at all
+  }
+}
+
 export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDaemonResult> {
   const fetchFn = opts._fetchOverride ?? globalThis.fetch;
 
@@ -382,11 +402,18 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
   }
   const spawnArgs = opts.spawnArgs ?? [...sourceLoaderArgs, process.argv[1], "daemon", "start", "--automatic"];
   const spawnImpl = opts._spawnOverride ?? spawn;
-  const child = spawnImpl(spawnCommand, spawnArgs, {
-    detached: true,
-    stdio: "ignore",
-    env: { ...process.env },
-  }) as ChildProcess;
+  const stderrFd = openDaemonStderr(opts.pidFilePath);
+  let child: ChildProcess;
+  try {
+    child = spawnImpl(spawnCommand, spawnArgs, {
+      detached: true,
+      stdio: ["ignore", "ignore", stderrFd ?? "ignore"],
+      env: { ...process.env },
+    }) as ChildProcess;
+  } finally {
+    // The child holds its own copy of the descriptor.
+    if (stderrFd !== undefined) closeSync(stderrFd);
+  }
   child.unref();
 
   // The child registers itself before checking holds and publishes daemon.pid

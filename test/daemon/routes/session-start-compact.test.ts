@@ -132,7 +132,7 @@ describe("POST /session-start-compact", () => {
     expect(out.body).toEqual({ queued: "scheduled" });
     await settled();
     expect(fireCompactRequest).toHaveBeenCalledTimes(1);
-    expect(fireCompactRequest).toHaveBeenCalledWith(4242, expect.objectContaining({ session_id: "s-old" }), paths);
+    expect(fireCompactRequest).toHaveBeenCalledWith(4242, expect.objectContaining({ session_id: "s-old" }), paths, expect.any(Function));
   });
 
   it("skips a conversation already compacting", async () => {
@@ -158,8 +158,8 @@ describe("POST /session-start-compact", () => {
     expect(out.body).toEqual({ queued: "scheduled" });
     await settled();
     expect(fireCompactRequest).toHaveBeenCalledTimes(2);
-    expect(fireCompactRequest).toHaveBeenNthCalledWith(1, 4242, expect.objectContaining({ session_id: "oldest" }), paths);
-    expect(fireCompactRequest).toHaveBeenNthCalledWith(2, 4242, expect.objectContaining({ session_id: "middle" }), paths);
+    expect(fireCompactRequest).toHaveBeenNthCalledWith(1, 4242, expect.objectContaining({ session_id: "oldest" }), paths, expect.any(Function));
+    expect(fireCompactRequest).toHaveBeenNthCalledWith(2, 4242, expect.objectContaining({ session_id: "middle" }), paths, expect.any(Function));
   });
 
   it("answers before the worker scan completes", async () => {

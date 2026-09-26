@@ -62,6 +62,7 @@ export async function createSummarizer(
   if (provider === "disabled") return null;
   if (provider === "session") {
     return withConfiguredLanguage(async (text, aggressive, ctx = {}) => {
+      let sessionMissReason = "no live session job queue";
       if (jobs && ctx.sessionId) {
         const targetTokens = ctx.targetTokens ?? resolveTargetTokens({
           inputTokens: Math.ceil(text.length / 4), mode: aggressive ? "aggressive" : "normal",
@@ -82,10 +83,13 @@ export async function createSummarizer(
             tokensUsed: inputTokens + outputTokens, estimated: answer.usage?.estimated ?? true });
           return answer.text.trim();
         }
+        sessionMissReason = answer.error ? String(answer.error) : "empty answer";
       }
       const fallbackConfig = { ...config, llm: { ...config.llm, provider: config.llm.fallbackProvider ?? "auto" as const } };
-      const fallback = await createSummarizer(resolveEffectiveProvider(fallbackConfig, ctx.client), fallbackConfig);
+      const fallbackProvider = resolveEffectiveProvider(fallbackConfig, ctx.client);
+      const fallback = await createSummarizer(fallbackProvider, fallbackConfig);
       if (!fallback) throw new Error("Session summarizer unavailable and fallback disabled");
+      ctx.onFallback?.({ reason: sessionMissReason, toProvider: fallbackProvider });
       return fallback(text, aggressive, ctx);
     });
   }

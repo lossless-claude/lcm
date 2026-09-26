@@ -12,6 +12,7 @@ import {
   firePromoteRequest,
   fireSessionCompleteRequest,
 } from "../../hooks/daemon-requests.js";
+import { noopDaemonLog, type DaemonLog } from "../log.js";
 
 export interface IngestResult {
   ingested?: number;
@@ -47,9 +48,10 @@ export async function invokeRoute<T>(handler: RouteHandler, body: Record<string,
  * The host gives SessionEnd hooks a budget far shorter than a large ingest, and
  * a hook killed mid-ingest never sends the steps after it. So the hook fires
  * this once and exits; the daemon answers `202` before doing any of the work.
- * Body: `{ session_id, cwd, transcript_path? }`. The daemon runs with stdio
- * ignored, so the ingest outcome and the redaction notice go through
- * `safeLogError`; the four follow-ups are not observed, as in the hook before.
+ * Body: `{ session_id, cwd, transcript_path? }`. The ingest outcome and the
+ * redaction notice go through `safeLogError`, and the daemon log records the
+ * ingest, a suppressed compact and any follow-up that could not be sent; each
+ * follow-up route logs its own outcome.
  * `hooks.disableAutoCompact` and `security.notify_on_filter` come from the
  * daemon's startup config.
  */
@@ -91,25 +93,31 @@ interface SequenceTarget {
   sessionId: string;
   cwd: string;
   client: SessionClient;
+  log: DaemonLog;
 }
 
 /** What the hook used to fire after its own ingest returned. */
 function runPostIngestSequence(target: SequenceTarget, ingested: IngestResult): void {
-  const { config, daemonPort, paths, sessionId, cwd, client } = target;
+  const { config, daemonPort, paths, sessionId, cwd, client, log } = target;
+  log.write("info", "session_end.ingested", { cwd, session_id: sessionId, ingested: ingested.ingested ?? 0 });
+  const onError = (path: string) => (err: Error) =>
+    log.write("error", "daemon_request.failed", { path, cwd, session_id: sessionId, err });
   if (config.security?.notify_on_filter !== false && ingested.redacted && ingested.redacted > 0) {
     const categories = (ingested.redactedCategories ?? []).join(", ");
     safeLogError("session-end:redaction-notice", `filtered sensitive data from history (pattern: ${categories})`, { cwd, sessionId, paths });
   }
-  if (!config.hooks?.disableAutoCompact) {
-    fireCompactRequest(daemonPort, { session_id: sessionId, cwd, skip_ingest: true, client }, paths);
+  if (config.hooks?.disableAutoCompact) {
+    log.write("info", "compact.skipped", { cwd, session_id: sessionId, reason: "auto-compact-disabled" });
+  } else {
+    fireCompactRequest(daemonPort, { session_id: sessionId, cwd, skip_ingest: true, client }, paths, onError("/compact"));
   }
-  firePromoteRequest(daemonPort, { cwd }, paths);
-  firePromoteEventsRequest(daemonPort, { cwd }, paths);
+  firePromoteRequest(daemonPort, { cwd }, paths, onError("/promote"));
+  firePromoteEventsRequest(daemonPort, { cwd }, paths, onError("/promote-events"));
   // `ingested` is this call's delta, not the session total.
-  fireSessionCompleteRequest(daemonPort, { session_id: sessionId, cwd, message_count: ingested.ingested ?? 0 }, paths);
+  fireSessionCompleteRequest(daemonPort, { session_id: sessionId, cwd, message_count: ingested.ingested ?? 0 }, paths, onError("/session-complete"));
 }
 
-export function createSessionEndHandler(config: DaemonConfig, daemonPort: number, paths: LcmPaths, ingest: RouteHandler): RouteHandler {
+export function createSessionEndHandler(config: DaemonConfig, daemonPort: number, paths: LcmPaths, ingest: RouteHandler, log: DaemonLog = noopDaemonLog): RouteHandler {
   return async (_req, res, body) => {
     const request = parseSessionEndRequest(body, res);
     if (!request) return;
@@ -120,7 +128,10 @@ export function createSessionEndHandler(config: DaemonConfig, daemonPort: number
     // Ingest sees the same identity the follow-ups do: trimmed id, real path.
     const ingestBody = { ...input, session_id: sessionId, cwd };
     void invokeRoute<IngestResult>(ingest, ingestBody)
-      .then((ingested) => runPostIngestSequence({ config, daemonPort, paths, sessionId, cwd, client }, ingested))
-      .catch((err: unknown) => safeLogError("session-end", err, { cwd, sessionId, paths }));
+      .then((ingested) => runPostIngestSequence({ config, daemonPort, paths, sessionId, cwd, client, log }, ingested))
+      .catch((err: unknown) => {
+        log.write("error", "session_end.failed", { cwd, session_id: sessionId, err });
+        safeLogError("session-end", err, { cwd, sessionId, paths });
+      });
   };
 }

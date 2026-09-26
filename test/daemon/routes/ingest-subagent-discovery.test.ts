@@ -7,6 +7,7 @@ import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { claudeTranscriptPath, projectDbPath } from "../../../src/daemon/project.js";
 import { lcmHome } from "../../../src/lcm-home.js";
 import { createLcmPaths } from "../../../src/lcm-paths.js";
+import { noopDaemonLog } from "../../../src/daemon/log.js";
 
 const paths = createLcmPaths(lcmHome());
 import { DatabaseSync } from "node:sqlite";
@@ -191,7 +192,7 @@ describe("POST /ingest discovers subagent transcripts (#434)", () => {
     const { sessionId, subagentsDir } = setUp();
     writeTranscript(join(subagentsDir, "agent-bad.jsonl"), [entry("user", "boom")]);
     writeTranscript(join(subagentsDir, "agent-good.jsonl"), [entry("user", "do the task"), entry("assistant", "done")]);
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const log = { ...noopDaemonLog, write: vi.fn() };
     const mockedParseTranscript = vi.mocked(parseTranscript);
     const actualImplementation = mockedParseTranscript.getMockImplementation()!;
     mockedParseTranscript.mockImplementation((path: string) => {
@@ -199,7 +200,7 @@ describe("POST /ingest discovers subagent transcripts (#434)", () => {
       return actualImplementation(path);
     });
 
-    daemon = await createDaemon(loadDaemonConfig("/nonexistent", { daemon: { port: 0 } }));
+    daemon = await createDaemon(loadDaemonConfig("/nonexistent", { daemon: { port: 0 } }), { log });
     try {
       await ingest(sessionId);
 
@@ -208,13 +209,13 @@ describe("POST /ingest discovers subagent transcripts (#434)", () => {
         const row = db.prepare("SELECT session_id FROM conversations WHERE session_id = 'agent-good'").get();
         expect(row).toEqual({ session_id: "agent-good" });
         expect(db.prepare("SELECT session_id FROM conversations WHERE session_id = 'agent-bad'").get()).toBeUndefined();
-        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("agent-bad"));
+        expect(log.write).toHaveBeenCalledWith("warn", "ingest.subagent_failed",
+          expect.objectContaining({ session_id: "agent-bad", parent_session_id: sessionId }));
       } finally {
         db.close();
       }
     } finally {
       mockedParseTranscript.mockImplementation(actualImplementation);
-      errorSpy.mockRestore();
     }
   });
 

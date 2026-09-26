@@ -19,6 +19,9 @@ function authHeaders(paths: LcmPaths): Record<string, string> {
   return token ? { Authorization: "Bearer " + token } : {};
 }
 
+/** Receives a transport failure of a fire-and-forget request; the response itself is never observed. */
+export type FireErrorHandler = (err: Error) => void;
+
 /**
  * Fire a request to the daemon without waiting for the response.
  *
@@ -29,7 +32,7 @@ function authHeaders(paths: LcmPaths): Record<string, string> {
  * This is intentionally separate from DaemonClient.post() (which uses fetch and
  * keeps the event loop alive until a response is received).
  */
-export function fireDaemonRequest(port: number, path: string, body: Record<string, unknown>, paths: LcmPaths): void {
+export function fireDaemonRequest(port: number, path: string, body: Record<string, unknown>, paths: LcmPaths, onError?: FireErrorHandler): void {
   const json = JSON.stringify(body);
   const req = request({
     hostname: "127.0.0.1",
@@ -45,25 +48,25 @@ export function fireDaemonRequest(port: number, path: string, body: Record<strin
   req.on("socket", (socket: Socket) => {
     req.on("finish", () => socket.unref());
   });
-  req.on("error", () => {}); // non-fatal
+  req.on("error", (err) => onError?.(err)); // non-fatal; only the daemon passes a handler
   req.write(json);
   req.end();
 }
 
-export function fireCompactRequest(port: number, body: Record<string, unknown>, paths: LcmPaths): void {
-  fireDaemonRequest(port, "/compact", body, paths);
+export function fireCompactRequest(port: number, body: Record<string, unknown>, paths: LcmPaths, onError?: FireErrorHandler): void {
+  fireDaemonRequest(port, "/compact", body, paths, onError);
 }
 
-export function firePromoteRequest(port: number, body: Record<string, unknown>, paths: LcmPaths): void {
-  fireDaemonRequest(port, "/promote", body, paths);
+export function firePromoteRequest(port: number, body: Record<string, unknown>, paths: LcmPaths, onError?: FireErrorHandler): void {
+  fireDaemonRequest(port, "/promote", body, paths, onError);
 }
 
-export function firePromoteEventsRequest(port: number, body: Record<string, unknown>, paths: LcmPaths): void {
-  fireDaemonRequest(port, "/promote-events", body, paths);
+export function firePromoteEventsRequest(port: number, body: Record<string, unknown>, paths: LcmPaths, onError?: FireErrorHandler): void {
+  fireDaemonRequest(port, "/promote-events", body, paths, onError);
 }
 
-export function fireSessionCompleteRequest(port: number, body: Record<string, unknown>, paths: LcmPaths): void {
-  fireDaemonRequest(port, "/session-complete", body, paths);
+export function fireSessionCompleteRequest(port: number, body: Record<string, unknown>, paths: LcmPaths, onError?: FireErrorHandler): void {
+  fireDaemonRequest(port, "/session-complete", body, paths, onError);
 }
 
 /**
@@ -72,6 +75,6 @@ export function fireSessionCompleteRequest(port: number, body: Record<string, un
  * so it never adds latency to session start; the daemon does the selection,
  * cap and per-conversation `/compact` calls on its own.
  */
-export function fireSessionStartCompactRequest(port: number, body: Record<string, unknown>, paths: LcmPaths): void {
-  fireDaemonRequest(port, "/session-start-compact", body, paths);
+export function fireSessionStartCompactRequest(port: number, body: Record<string, unknown>, paths: LcmPaths, onError?: FireErrorHandler): void {
+  fireDaemonRequest(port, "/session-start-compact", body, paths, onError);
 }
