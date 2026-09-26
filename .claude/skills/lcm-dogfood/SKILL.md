@@ -18,15 +18,15 @@ Binary: `lcm` on PATH. Record each check as PASS, FAIL or SKIP (with the reason)
 
 **health**: `lcm --version`, `lcm status`, `lcm doctor`. Done when the version equals `package.json`, the daemon is up on this project, and every doctor check passes or its warning is recorded. The `daemon-log` check covers errors and continuity in the daemon log.
 
-**capture**: the plugin's hooks reaching the daemon. Done when the daemon log holds a `request` record for `POST /prompt-search` with `status` 200 and `cwd` equal to this project, written after this session started.
+**capture**: the plugin's hooks reaching the daemon from this session. This session's id is the name, without `.jsonl`, of the most recently modified transcript in this project's directory under `~/.claude/projects/`. Done when the daemon log holds a `request` record for `POST /prompt-search` with `status` 200, `cwd` equal to this project and `session_id` equal to this session's id.
 
 **import**: `lcm import --dry-run`. Done when it lists this project's sessions and `lcm status` shows the same message count before and after.
 
-**compact**: note the time, then `lcm compact`, which compacts the current project and then promotes. The summarizer is an LLM call; allow five minutes. Done when:
+**compact**: note the time and the `Summaries` and `Promoted` counts `lcm status` shows for this project, then `lcm compact`, which compacts the current project and then promotes. The summarizer is an LLM call; allow five minutes. Done when:
 - a second identical run creates nothing;
 - either `lcm compact` printed that there was nothing to compact (it then sends no request, so the log has no record), or the daemon log holds a `compact.done` or `compact.skipped` record for this project written after the noted time;
 - every `summarizer.fallback` record from that interval is noted in the scorecard with its `reason`;
-- `lcm stats --verbose` agrees with the summary and promotion counts `lcm compact` printed.
+- `lcm status` shows this project's `Summaries` and `Promoted` counts moved by what `lcm compact` printed. `lcm stats` totals every project, so it cannot confirm one project's counts.
 
 **sensitive**: `list`, `add`, `test` and `remove`, from `lcm help sensitive`. It writes the real pattern list, so remove every pattern you add. `purge` deletes stored memory, so this skill never runs it. Done when a built-in secret and a pattern you added are both `[REDACTED]` by `lcm sensitive test`, and your pattern is gone from `lcm sensitive list`.
 
