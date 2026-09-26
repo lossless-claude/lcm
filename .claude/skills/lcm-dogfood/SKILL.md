@@ -10,13 +10,14 @@ Proves what only a live install can: the installed plugin, the configured summar
 
 Run every phase, or only `$0`. The target is the real lcm home (`LCM_HOME`, default `~/.lossless-claude`):
 - Phases that write (`compact`, `sensitive`, `mcp`) touch only the current project, or add and then remove their own entries. A run costs one project's summarization and keeps every existing summary; `--all` and `--restart` stay out of this skill.
-- Phases that only read (`health`, `integrity`) cover the whole home.
+- `integrity` only reads, across the whole home.
+- `lcm doctor` (in `health`, and `lcm_doctor` in `mcp`) repairs lcm's own setup when it finds it drifted: the hooks and MCP entries in `~/.claude/settings.json`, `~/.claude/lcm.md`, a stale daemon. Each repair prints as a fixed warning; record it in the scorecard as a finding, since a live install that needed one had drifted.
 
 Binary: `lcm` on PATH. Record each check as PASS, FAIL or SKIP (with the reason), keep going on FAIL, and open an issue for each failure worth tracking. The daemon log is `logs/daemon.log` in the lcm home, one JSON record per line; `docs/configuration.md` ("Daemon log") names its events.
 
 ## Phases
 
-**health**: `lcm --version`, `lcm status`, `lcm doctor`. Done when the version equals `package.json`, the daemon is up on this project, and every doctor check passes or its warning is recorded. The `daemon-log` check covers errors and continuity in the daemon log.
+**health**: `lcm --version`, `lcm status`, `lcm doctor`, and `daemon.logLevel` from `config.json` in the lcm home. Done when the version equals `package.json`, the daemon is up on this project, and every doctor check passes or its warning (or repair) is recorded. The `daemon-log` check covers errors and continuity in the daemon log. A `daemon.logLevel` of `warn` or `error` drops the `info` records that `capture` and `compact` look for: mark those log checks SKIP with that reason.
 
 **capture**: the plugin's hooks reaching the daemon from this session. To find this session's id, echo a unique marker (such as `dogfood-` plus the epoch seconds) in one command, then, in the next, search this project's directory under `~/.claude/projects/` recursively for `*.jsonl` files containing it. The one file that holds it is this session's transcript, and its name without `.jsonl` is the session id. Done when the daemon log holds a `request` record for `POST /prompt-search` with `status` 200, `cwd` equal to this project and `session_id` equal to this session's id.
 
