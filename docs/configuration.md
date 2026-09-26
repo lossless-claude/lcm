@@ -275,6 +275,17 @@ Valid provider values are:
 - `disabled`
 - `session` (early access, see below)
 
+`anthropic` and `openai` call their API through a client library: `@anthropic-ai/sdk` and `openai`. The `openai` provider also serves any OpenAI-compatible endpoint set in `llm.baseURL`, such as OpenRouter.
+- **Plugin install:** the plugin bundle includes both libraries.
+- **npm install:** the npm package lists both libraries as optional peer dependencies, so npm does not install them. A daemon started from the npm package (`lcm daemon start`, `lcm daemon restart`) needs the library for its provider, and for `llm.fallbackProvider`, installed next to lcm. Install it, then restart the daemon so it loads the library:
+
+  ```bash
+  npm install -g openai              # or @anthropic-ai/sdk
+  lcm daemon restart
+  ```
+
+  Without the library, each summarization by that provider fails with `Cannot find package 'openai'` (or `'@anthropic-ai/sdk'`), and the daemon log records it as `compact.failed`.
+
 ### Session provider
 
 `llm.provider: "session"` asks the live Claude Code session that owns the transcript to run each summarization through its own client, via lcm's function-hooks module (`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`; see `docs/hook-protocol.md`). Leaf chunks go to `haiku` through `$.model.complete`; condensed nodes go through `$.model.fork`, so the session's own model sees the whole conversation. Tokens are charged to the session's Claude account.
