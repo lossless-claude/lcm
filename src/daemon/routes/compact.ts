@@ -369,6 +369,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       "claude-process": "Claude (process)",
       "codex-process": "Codex (process)",
       "copilot-process": "Copilot (process)",
+      "omp-process": "OMP (process)",
       "anthropic": "Anthropic API",
       "openai": "OpenAI API",
       "disabled": "Disabled",

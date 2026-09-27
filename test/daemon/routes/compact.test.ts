@@ -38,6 +38,10 @@ vi.mock("../../../src/llm/copilot-process.js", () => ({
   createCopilotProcessSummarizer: vi.fn().mockReturnValue(async () => "copilot-process-summary"),
 }));
 
+vi.mock("../../../src/llm/omp-process.js", () => ({
+  createOmpProcessSummarizer: vi.fn().mockReturnValue(async () => "omp-process-summary"),
+}));
+
 vi.mock("../../../src/daemon/project-language.js", () => ({
   scheduleProjectLanguageDetection: vi.fn().mockResolvedValue(undefined),
 }));
@@ -45,6 +49,7 @@ vi.mock("../../../src/daemon/project-language.js", () => ({
 import { createClaudeProcessSummarizer } from "../../../src/llm/claude-process.js";
 import { createCopilotProcessSummarizer } from "../../../src/llm/copilot-process.js";
 import { createCodexProcessSummarizer } from "../../../src/llm/codex-process.js";
+import { createOmpProcessSummarizer } from "../../../src/llm/omp-process.js";
 import { createAnthropicSummarizer } from "../../../src/llm/anthropic.js";
 import { createOpenAISummarizer } from "../../../src/llm/openai.js";
 import { scheduleProjectLanguageDetection } from "../../../src/daemon/project-language.js";
@@ -665,6 +670,26 @@ describe("createCompactHandler — summarizer branching", () => {
     await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd, client: "copilot" }));
 
     expect(createCopilotProcessSummarizer).toHaveBeenCalled();
+    expect(createClaudeProcessSummarizer).not.toHaveBeenCalled();
+  });
+
+  it("uses createOmpProcessSummarizer when provider is omp-process", async () => {
+    vi.clearAllMocks();
+    const handler = createCompactHandler(makeConfig("omp-process"), paths);
+    const { res } = mockRes();
+    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd }));
+
+    expect(createOmpProcessSummarizer).toHaveBeenCalledWith(expect.objectContaining({ model: "test-model" }));
+    expect(createClaudeProcessSummarizer).not.toHaveBeenCalled();
+  });
+
+  it("auto + client=omp resolves to omp-process", async () => {
+    vi.clearAllMocks();
+    const handler = createCompactHandler(makeConfig("auto"), paths);
+    const { res } = mockRes();
+    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd, client: "omp" }));
+
+    expect(createOmpProcessSummarizer).toHaveBeenCalled();
     expect(createClaudeProcessSummarizer).not.toHaveBeenCalled();
   });
 
