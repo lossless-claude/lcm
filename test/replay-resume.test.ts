@@ -11,6 +11,8 @@ import {
   fingerprintFile,
   fingerprintStats,
   isClientGaveUpError,
+  isConnectionDroppedError,
+  isDaemonUnreachableError,
   loadLatestSessionSummary,
   planReplayResume,
   recordReplayProgress,
@@ -468,6 +470,9 @@ describe("isClientGaveUpError", () => {
 
     const undiciSocket = Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" });
     expect(isClientGaveUpError(new TypeError("fetch failed", { cause: undiciSocket }))).toBe(true);
+
+    const brokenPipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+    expect(isClientGaveUpError(new TypeError("fetch failed", { cause: brokenPipe }))).toBe(true);
   });
 
   it("does not match daemon-reported failures or non-error values", () => {
@@ -477,6 +482,48 @@ describe("isClientGaveUpError", () => {
     expect(isClientGaveUpError(null)).toBe(false);
     // A cause without one of the socket codes is not a client-side give-up.
     expect(isClientGaveUpError(new Error("boom", { cause: new Error("inner") }))).toBe(false);
+  });
+});
+
+describe("isDaemonUnreachableError", () => {
+  it("matches a refused connection only", () => {
+    const refused = Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+    expect(isDaemonUnreachableError(new TypeError("fetch failed", { cause: refused }))).toBe(true);
+
+    const reset = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+    expect(isDaemonUnreachableError(new TypeError("fetch failed", { cause: reset }))).toBe(false);
+    const timeout = new Error("Request timed out");
+    timeout.name = "TimeoutError";
+    expect(isDaemonUnreachableError(timeout)).toBe(false);
+    expect(isDaemonUnreachableError(null)).toBe(false);
+  });
+});
+
+describe("isConnectionDroppedError", () => {
+  it("matches mid-flight socket drops (ECONNRESET, EPIPE, UND_ERR_SOCKET)", () => {
+    for (const code of ["ECONNRESET", "EPIPE", "UND_ERR_SOCKET"]) {
+      const original = Object.assign(new Error(code), { code });
+      expect(isConnectionDroppedError(new TypeError("fetch failed", { cause: original }))).toBe(true);
+    }
+  });
+
+  it("does not match a refused connection or the client's own timeout/abort", () => {
+    // ECONNREFUSED is unambiguous on its own (isDaemonUnreachableError) — no
+    // probe needed, so it is deliberately not in this set.
+    const refused = Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+    expect(isConnectionDroppedError(new TypeError("fetch failed", { cause: refused }))).toBe(false);
+
+    // TimeoutError/AbortError are the client's own decision, not evidence the
+    // daemon is unresponsive — they are handled by isClientGaveUpError alone.
+    const timeout = new Error("Request timed out");
+    timeout.name = "TimeoutError";
+    expect(isConnectionDroppedError(timeout)).toBe(false);
+    const abort = new Error("Request aborted");
+    abort.name = "AbortError";
+    expect(isConnectionDroppedError(abort)).toBe(false);
+
+    expect(isConnectionDroppedError(new Error("HTTP 500"))).toBe(false);
+    expect(isConnectionDroppedError(null)).toBe(false);
   });
 });
 
