@@ -46,12 +46,13 @@ export function buildCompactionMessage(p: {
   const saved = p.tokensBefore - p.tokensAfter;
   // A compaction can leave the context larger than it found it. Report that
   // honestly instead of a "compression"/"saved" framing that implies shrinkage.
-  const grew = p.tokensBefore > 0 && p.tokensAfter > p.tokensBefore;
+  // From an empty baseline there is no ratio or percentage to report.
+  const grew = p.tokensAfter > p.tokensBefore;
   const ratio = grew
-    ? (p.tokensAfter / p.tokensBefore).toFixed(1)
+    ? p.tokensBefore > 0 ? (p.tokensAfter / p.tokensBefore).toFixed(1) : "–"
     : p.tokensAfter > 0 ? (p.tokensBefore / p.tokensAfter).toFixed(1) : "–";
   const pctLabel = grew
-    ? `${(((p.tokensAfter / p.tokensBefore) - 1) * 100).toFixed(1)}% grew`
+    ? p.tokensBefore > 0 ? `${(((p.tokensAfter / p.tokensBefore) - 1) * 100).toFixed(1)}% grew` : "grew"
     : `${(p.tokensBefore > 0 ? (1 - p.tokensAfter / p.tokensBefore) * 100 : 0).toFixed(1)}% saved`;
   const barWidth = 30;
   const filled = p.tokensBefore > 0

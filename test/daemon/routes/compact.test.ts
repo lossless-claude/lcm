@@ -548,6 +548,18 @@ describe("buildCompactionMessage", () => {
     expect(msg).not.toContain("█");
     expect(msg).not.toContain("% saved");
     expect(msg).not.toContain("-100.0%");
+    expect(msg).toContain("100.0% grew");
+    expect(msg).toContain("2.0×  growth  ·  1.0K tokens added");
+    expect(msg).not.toContain("compression");
+  });
+
+  it("labels growth from an empty baseline without a ratio or percentage", () => {
+    const msg = buildCompactionMessage({ ...base, tokensBefore: 0, tokensAfter: 500 });
+    expect(msg).toContain("░".repeat(30));
+    expect(msg).toContain("  grew");
+    expect(msg).toContain("–×  growth  ·  500 tokens added");
+    expect(msg).not.toContain("% saved");
+    expect(msg).not.toContain("compression");
   });
 });
 
