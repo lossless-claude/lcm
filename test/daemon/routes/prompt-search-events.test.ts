@@ -37,7 +37,7 @@ describe("POST /prompt-search with recordEvents (function-hooks module path)", (
   it("records the prompt's events even when the project has no memory DB yet", async () => {
     const { res, out } = respond();
     await handler({} as never, res, JSON.stringify({
-      query: "always use postgres for the migration", cwd: dir, session_id: "s1", recordEvents: true,
+      query: "explain the postgres migration", cwd: dir, session_id: "s1", recordEvents: true,
     }));
     expect(out.status).toBe(200);
     expect(out.body).toEqual({ hints: [] });
@@ -52,7 +52,7 @@ describe("POST /prompt-search with recordEvents (function-hooks module path)", (
   it("writes nothing without recordEvents (the command hook's own path)", async () => {
     const { res } = respond();
     await handler({} as never, res, JSON.stringify({
-      query: "always use postgres for the migration", cwd: dir, session_id: "s1",
+      query: "explain the postgres migration", cwd: dir, session_id: "s1",
     }));
     const { existsSync } = await import("node:fs");
     expect(existsSync(eventsDbPath(dir, paths))).toBe(false);

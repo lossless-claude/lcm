@@ -243,13 +243,14 @@ describe("extractPostToolEvents — PostToolUseFailure", () => {
 });
 
 describe("extractUserPromptEvents", () => {
-  it("extracts decision from 'always use' pattern", () => {
-    const events = extractUserPromptEvents("always use TypeScript for new files");
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
-      category: "decision",
-      priority: 1,
-    });
+  it.each([
+    "always use TypeScript for new files",
+    "never commit to main, use a branch instead",
+    "I prefer tabs",
+    "sempre use TypeScript nos arquivos novos",
+  ])("emits no decision event for %j", (prompt) => {
+    const events = extractUserPromptEvents(prompt);
+    expect(events.filter(e => e.category === "decision")).toHaveLength(0);
   });
 
   it("extracts role from 'I'm a' pattern", () => {
@@ -270,32 +271,6 @@ describe("extractUserPromptEvents", () => {
     });
   });
 
-  // Negative-match guards
-  it("does NOT extract decision from 'don't worry'", () => {
-    const events = extractUserPromptEvents("don't worry about tests");
-    expect(events.filter(e => e.category === "decision")).toHaveLength(0);
-  });
-
-  it("does NOT extract decision from 'never mind'", () => {
-    const events = extractUserPromptEvents("never mind, let's move on");
-    expect(events.filter(e => e.category === "decision")).toHaveLength(0);
-  });
-
-  it("does NOT extract decision from 'not sure'", () => {
-    const events = extractUserPromptEvents("I'm not sure about that");
-    expect(events.filter(e => e.category === "decision")).toHaveLength(0);
-  });
-
-  it("does NOT extract decision from 'doesn't matter'", () => {
-    const events = extractUserPromptEvents("it doesn't matter which one");
-    expect(events.filter(e => e.category === "decision")).toHaveLength(0);
-  });
-
-  it("returns empty for generic prompts", () => {
-    const events = extractUserPromptEvents("fix the bug in main.ts");
-    // "fix" matches intent, so we expect 1 intent event
-    expect(events.filter(e => e.category === "decision")).toHaveLength(0);
-  });
 });
 
 describe("normalizePromptWithChannels", () => {
@@ -322,29 +297,17 @@ describe("normalizePromptWithChannels", () => {
 });
 
 describe("extractUserPromptEvents — Telegram channel wrapping", () => {
-  it("extracts decision from channel-wrapped prompt", () => {
-    const raw = '<channel source="telegram" chat_id="123" message_id="456" user="pedro" ts="1234">always use TypeScript for new files</channel>';
+  it("strips XML from stored data in role events from Telegram", () => {
+    const raw = '<channel source="telegram" chat_id="123" message_id="1" user="pedro" ts="1234">I\'m a staff engineer on this repo</channel>';
     const events = extractUserPromptEvents(raw);
-    const decisions = events.filter(e => e.category === "decision");
-    expect(decisions).toHaveLength(1);
-    expect(decisions[0]).toMatchObject({
-      type: "user_decision",
-      category: "decision",
-      priority: 1,
-    });
-  });
-
-  it("strips XML from stored data in decision events from Telegram", () => {
-    const raw = '<channel source="telegram" chat_id="123" message_id="1" user="pedro" ts="1234">always use TypeScript for new files</channel>';
-    const events = extractUserPromptEvents(raw);
-    const decision = events.find(e => e.category === "decision");
-    expect(decision).toBeDefined();
-    expect(decision!.data).not.toContain("<channel");
-    expect(decision!.data).toContain("always use TypeScript");
+    const role = events.find(e => e.category === "role");
+    expect(role).toBeDefined();
+    expect(role!.data).not.toContain("<channel");
+    expect(role!.data).toContain("I'm a staff engineer");
   });
 
   it("adds source:telegram tag to events extracted from channel messages", () => {
-    const raw = '<channel source="telegram" chat_id="123" message_id="1" user="pedro" ts="1234">always use TypeScript</channel>';
+    const raw = '<channel source="telegram" chat_id="123" message_id="1" user="pedro" ts="1234">explain how the daemon works</channel>';
     const events = extractUserPromptEvents(raw);
     expect(events.length).toBeGreaterThan(0);
     for (const event of events) {
@@ -353,7 +316,7 @@ describe("extractUserPromptEvents — Telegram channel wrapping", () => {
   });
 
   it("does NOT add source:telegram tag for non-channel prompts", () => {
-    const events = extractUserPromptEvents("always use TypeScript");
+    const events = extractUserPromptEvents("explain how the daemon works");
     expect(events.length).toBeGreaterThan(0);
     for (const event of events) {
       expect(event.tags).toBeUndefined();

@@ -9,7 +9,7 @@ Passive learning captures your Claude Code sessions automatically; durable insig
 Two hooks capture events during your session:
 
 - **PostToolUse** / **PostToolUseFailure** — fire after every tool call, success or failure. Extract structured metadata (tool name, command, file path) from tool inputs. Raw tool input and output are not captured, with one deliberate exception: `AskUserQuestion` stores the truncated question and the answer you chose, because the answer *is* the decision the event records.
-- **UserPromptSubmit** — fires on each user prompt. Detects decisions ("always use X"), role statements ("I'm a data scientist"), and intent patterns.
+- **UserPromptSubmit** — fires on each user prompt. Detects role statements ("I'm a data scientist") and intent patterns. It does not detect decisions: a keyword match is not a lasting decision (see [decision-detection-eval.md](design/decision-detection-eval.md)).
 
 Both Claude Code and Codex CLI drive the same tool-event extractor. Codex maps native `apply_patch` inputs and accepts `exec_command` as a compatibility spelling for unified command execution; unknown names remain untouched. Every event records `client` (`claude` or `codex`, the harness that produced it — `claude` by default) and `model` (the model that issued the tool call). When a hook does not carry the model, the next transcript ingest fills it without overwriting an existing value: Claude joins tool-call IDs, and Codex joins `turn_id` values against the transcript's `turn_context` records.
 
@@ -95,10 +95,6 @@ When a pattern crosses the reinforcement threshold, `reinforcementBoost` is adde
   - Tagged with `source:passive-capture` and `hook:<PostToolUse|UserPromptSubmit>`
   - Searchable via `lcm search` and `lcm grep`
   - Deduplicated via BM25 matching
-
-## Negative-Match Guards
-
-The UserPromptSubmit extractor includes guards against false-positive decisions. Phrases like "don't worry", "never mind", "not sure", "doesn't matter", and "up to you" suppress decision extraction to prevent noise.
 
 ## Recovery
 

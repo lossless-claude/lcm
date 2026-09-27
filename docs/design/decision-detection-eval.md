@@ -1,21 +1,21 @@
 # Decision detection: what a calibrated classifier can and cannot do
 
-**Status:** evaluated, 2026-09-27. Scopes #581; no code change is made by this document.
+**Status:** evaluated, 2026-09-27. Decided in #581: the `user_decision` event is removed.
 
-The passive `user_decision` event (`src/hooks/extractors.ts`, `decisionPatterns`) is a
+The passive `user_decision` event (`src/hooks/extractors.ts`, `decisionPatterns`) was a
 bounded judgment: does this user turn state a decision, rule or preference that should keep
 applying after the request? We measured it, a pt-BR keyword list and two external decision
-models on the same turns. The shipped detector finds none of the decisions in pt-BR. A
+models on the same turns. The shipped detector found none of the decisions in pt-BR. A
 calibrated classifier ranks turns well, but its confident answers are not reliable enough to
 promote anything on their own. The category itself needs a definition first; round 2 below
 tests one, and two independent annotators apply it consistently.
 
-This evaluation justifies two constraints for future integration work, tracked in #581.
-Today `extractUserPromptEvents` emits `user_decision` at priority 1 and `promote-events`
-promotes it with the `decision` confidence; the evidence here says it should not be a
-promotion signal until the category is defined and a detector meets it. And a classifier's
-answer should only ever route a turn to review (see Constraints on any integration). This
-document changes no code.
+This evaluation justifies two constraints. `extractUserPromptEvents` no longer emits
+`user_decision`: it was promoted at priority 1 with the `decision` confidence, and no detector
+met the round-2 definition well enough to be a promotion signal. Decisions from
+`AskUserQuestion` are unaffected; the answer there is the decision. And a classifier's answer
+should only ever route a turn to review (see Constraints on any integration); lcm has no review
+surface yet, so a classifier is not integrated.
 
 ## Corpus and labels
 
