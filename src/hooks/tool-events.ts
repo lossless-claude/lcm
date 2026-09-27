@@ -75,17 +75,12 @@ export function recordPostToolEvents(payload: PostToolPayload, paths: LcmPaths):
   return withHookWrite(paths, () => {
     const db = new EventsDb(eventsDbPath(payload.cwd, paths));
     try {
-      // Dedup on the whole call, not each event: one call extracts several events.
-      const recorded = events.length === 0 ? 0
-        : db.insertToolCallEvents(payload.session_id, events, sourceHook, toolUseId, client, model, turnId);
       const operationId = toolUseId
         ? createHash("sha256").update(`${harness}\0${payload.session_id}\0${toolUseId}`).digest("hex")
         : undefined;
-      db.recordHookObservation({
-        sessionId: payload.session_id, harness, hook: sourceHook, operation: "tool-capture",
-        kind: "execution", status: "completed",
-        reason: events.length === 0 ? "no-match" : recorded === 0 ? "duplicate" : "events",
-        operationId,
+      const recorded = db.recordToolCapture({
+        sessionId: payload.session_id, events, sourceHook, toolUseId, client, model, turnId,
+        harness, operationId,
       });
       return { recorded, hasPriority1: recorded > 0 && events.some(e => e.priority === 1), sourceHook };
     } finally {

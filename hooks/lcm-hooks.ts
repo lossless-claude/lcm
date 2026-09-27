@@ -88,6 +88,7 @@ function noteHook(
   sessionId: string, hook: string, operation: string,
   kind: HookObservation["kind"], status: string, reason = "",
 ): void {
+  if (!sessionId?.trim()) return;
   const snapshot = hookSnapshots.get(sessionId) ?? {
     counts: new Map<string, HookObservation>(), failures: [], seq: 0, truncated: false, writing: false,
   };
@@ -115,6 +116,7 @@ function noteHook(
 }
 
 async function flushHookObservations($: EngineInterface, sessionId: string): Promise<void> {
+  if (!sessionId?.trim()) return;
   const snapshot = hookSnapshots.get(sessionId);
   if (!snapshot || snapshot.writing) return;
   snapshot.writing = true;

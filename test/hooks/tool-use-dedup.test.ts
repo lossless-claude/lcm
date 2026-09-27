@@ -99,6 +99,18 @@ describe("tool call dedup on (session_id, tool_use_id)", () => {
     expect(rows().every((r) => r.tool_use_id === null)).toBe(true);
   });
 
+  it("rolls back a no-ID tool event when its outcome cannot be stored", () => {
+    const db = new EventsDb(join(dir, "events.db"));
+    db.raw().exec(`
+      CREATE TRIGGER reject_tool_observation BEFORE INSERT ON hook_observation_summary
+      BEGIN SELECT RAISE(ABORT, 'observation write failed'); END;
+    `);
+    db.close();
+
+    expect(() => call({ tool_use_id: undefined })).toThrow("observation write failed");
+    expect(rows()).toHaveLength(0);
+  });
+
   it("adds the column and index to a database written before the migration", () => {
     const path = join(dir, "events.db");
     const legacy = new DatabaseSync(path);

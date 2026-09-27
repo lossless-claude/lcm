@@ -72,6 +72,14 @@ describe("function-hook session summarizer", () => {
     });
   });
 
+  it("does not create a snapshot without a usable session id", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
+    harness.engine.session.id.mockResolvedValue("");
+    await expect(harness.trigger()).resolves.toEqual({});
+    expect(harness.engine.fs.write.mock.calls.some(([path]) => String(path).includes("lcm-hook-observe-")))
+      .toBe(false);
+  });
+
   it("flushes turn outcomes into the bounded local snapshot", async () => {
     const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
     await harness.trigger();

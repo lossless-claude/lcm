@@ -363,12 +363,42 @@ export class EventsDb {
     }
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const duplicate = this.hasToolCall(sessionId, toolUseId);
-      if (!duplicate) {
-        for (const event of events) this.insertEvent(sessionId, event, sourceHook, toolUseId, client, model, turnId);
-      }
+      const recorded = this.writeToolCallEvents(sessionId, events, sourceHook, toolUseId, client, model, turnId);
       this.db.exec("COMMIT");
-      return duplicate ? 0 : events.length;
+      return recorded;
+    } catch (e) {
+      try { this.db.exec("ROLLBACK"); } catch { /* the transaction is already gone */ }
+      throw e;
+    }
+  }
+
+  private writeToolCallEvents(
+    sessionId: string, events: ExtractedEvent[], sourceHook: string, toolUseId?: string,
+    client?: SessionClient, model?: string | null, turnId?: string,
+  ): number {
+    if (toolUseId && this.hasToolCall(sessionId, toolUseId)) return 0;
+    for (const event of events) this.insertEvent(sessionId, event, sourceHook, toolUseId, client, model, turnId);
+    return events.length;
+  }
+
+  /** Persist a tool call and its outcome together, including calls without an id. */
+  recordToolCapture(input: {
+    sessionId: string; events: ExtractedEvent[]; sourceHook: "PostToolUse" | "PostToolUseFailure";
+    toolUseId?: string; client: SessionClient; model: string | null; turnId?: string;
+    harness: HookObservation["harness"]; operationId?: string;
+  }): number {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const recorded = this.writeToolCallEvents(input.sessionId, input.events, input.sourceHook,
+        input.toolUseId, input.client, input.model, input.turnId);
+      this.writeHookObservation({
+        sessionId: input.sessionId, harness: input.harness, hook: input.sourceHook,
+        operation: "tool-capture", kind: "execution", status: "completed",
+        reason: input.events.length === 0 ? "no-match" : recorded === 0 ? "duplicate" : "events",
+        operationId: input.operationId,
+      });
+      this.db.exec("COMMIT");
+      return recorded;
     } catch (e) {
       try { this.db.exec("ROLLBACK"); } catch { /* the transaction is already gone */ }
       throw e;
@@ -534,6 +564,18 @@ export class EventsDb {
 
   /** Aggregate operational metadata; a retained operation id counts only once. */
   recordHookObservation(observation: HookObservation): boolean {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const recorded = this.writeHookObservation(observation);
+      this.db.exec("COMMIT");
+      return recorded;
+    } catch (e) {
+      try { this.db.exec("ROLLBACK"); } catch { /* the transaction is already gone */ }
+      throw e;
+    }
+  }
+
+  private writeHookObservation(observation: HookObservation): boolean {
     const fields = [observation.harness, observation.hook, observation.operation, observation.kind,
       observation.status, observation.reason ?? "", observation.failureCode ?? ""];
     if (fields.some((value) => value.length > 80 || !/^[a-zA-Z0-9_.:-]*$/.test(value))) {
@@ -543,16 +585,11 @@ export class EventsDb {
       throw new Error("hook operation id is too long");
     }
     const reason = observation.reason ?? "";
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
       if (observation.operationId) {
         const inserted = this.db.prepare(
           "INSERT OR IGNORE INTO hook_observation_seen (operation_id, kind) VALUES (?, ?)"
         ).run(observation.operationId, observation.kind);
-        if (inserted.changes === 0) {
-          this.db.exec("COMMIT");
-          return false;
-        }
+        if (inserted.changes === 0) return false;
       }
       this.db.prepare(`
         INSERT INTO hook_observation_summary
@@ -577,12 +614,7 @@ export class EventsDb {
         `).run(observation.sessionId, observation.sessionId);
       }
       this.pruneHookObservations();
-      this.db.exec("COMMIT");
       return true;
-    } catch (e) {
-      try { this.db.exec("ROLLBACK"); } catch { /* the transaction is already gone */ }
-      throw e;
-    }
   }
 
   getHookObservationSummary(sessionId: string): HookObservationSummary[] {
