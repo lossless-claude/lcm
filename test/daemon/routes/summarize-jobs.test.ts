@@ -75,7 +75,10 @@ describe("summarize job routes", () => {
   it.each(["not JSON", "null", "[]", "{}", '{"text":" "}', '{"text":5}', '{"text":"ok","error":"bad"}',
     '{"text":"ok","providerId":"openai"}', '{"text":"ok","usage":{"input_tokens":-1,"output_tokens":1,"estimated":true}}',
     '{"text":"ok","usage":{"input_tokens":1,"output_tokens":1.5,"estimated":true}}',
-    '{"text":"ok","usage":{"input_tokens":1,"output_tokens":1,"estimated":"true"}}'])
+    '{"text":"ok","usage":{"input_tokens":1,"output_tokens":1,"estimated":"true"}}',
+    '{"text":"ok","usageAttempts":[{"providerId":"openai","usage":{"input_tokens":1,"output_tokens":1,"estimated":false}}]}',
+    '{"text":"ok","usageAttempts":[{"providerId":"session:fork","usage":{"input_tokens":-1,"output_tokens":1,"estimated":false}}]}',
+    '{"text":"ok","usageAttempts":[{"providerId":"session:fork","usage":{"input_tokens":1,"output_tokens":1,"estimated":false},"failed":"yes"}]}'])
   ("rejects malformed answers: %s", async (body) => {
     const res = response();
     await createAnswerSummarizeJobHandler(store)(request("/summarize-jobs/id"), res as unknown as ServerResponse, body);

@@ -10,6 +10,7 @@ import {
 } from "./daemon-requests.js";
 import { join } from "node:path";
 import type { LcmPaths } from "../lcm-paths.js";
+import { observeHook } from "./observe.js";
 
 /**
  * Deadline for the `202` from `/session-end`, and — on a 404 fallback — for the
@@ -40,9 +41,23 @@ async function runLegacyFallback(
   const sessionId = input.session_id as string | undefined;
   const { safeLogError } = await import("./hook-errors.js");
   try {
-    const ingested = await client.post<{ ingested?: number; redacted?: number; redactedCategories?: string[] }>(
-      "/ingest", input, { timeoutMs: remainingMs },
-    );
+    let ingested: { ingested?: number; redacted?: number; redactedCategories?: string[] };
+    try {
+      ingested = await client.post<typeof ingested>("/ingest", input, { timeoutMs: remainingMs });
+    } catch (error) {
+      const httpStatus = (error as { status?: unknown })?.status;
+      const rejected = typeof httpStatus === "number";
+      const reason = rejected ? `http-${httpStatus}` : error instanceof Error && error.name === "TimeoutError" ? "timeout" : "transport";
+      observeHook(cwd, { sessionId: sessionId ?? "", harness: "claude-command", hook: "SessionEnd",
+        operation: "capture", kind: "delivery", status: rejected ? "rejected" : "unconfirmed", reason,
+        ...(rejected ? { failureCode: reason } : {}) }, paths);
+      safeLogError("session-end", error, { cwd, sessionId, paths });
+      return;
+    }
+    observeHook(cwd, { sessionId: sessionId ?? "", harness: "claude-command", hook: "SessionEnd",
+      operation: "capture", kind: "delivery", status: "accepted", reason: "legacy-fallback" }, paths);
+    observeHook(cwd, { sessionId: sessionId ?? "", harness: "claude-command", hook: "SessionEnd",
+      operation: "capture", kind: "execution", status: "completed", reason: "legacy-fallback" }, paths);
     const config = loadDaemonConfig(paths.configPath);
     if (config.security?.notify_on_filter !== false && ingested.redacted) {
       const categories = (ingested.redactedCategories ?? []).join(", ");
@@ -69,17 +84,34 @@ export async function handleSessionEnd(
   const daemonPort = port ?? 3737;
   const pidFilePath = paths.pidPath;
   const started = Date.now();
+  let observedInput: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(stdin || "{}");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) observedInput = parsed;
+  } catch { /* The route still validates the original payload. */ }
+  const cwd = typeof observedInput.cwd === "string" ? observedInput.cwd : undefined;
+  const sessionId = typeof observedInput.session_id === "string" ? observedInput.session_id : "";
+  const observeDelivery = (status: "accepted" | "rejected" | "unconfirmed", reason = "") =>
+    observeHook(cwd, { sessionId, harness: "claude-command", hook: "SessionEnd",
+      operation: "session-end", kind: "delivery", status, reason,
+      ...(status === "rejected" ? { failureCode: reason } : {}) }, paths);
   // Never spawn a daemon here, only talk to one that is already up. The Stop hook's
   // session-snapshot has been ingesting incrementally, and SessionStart sweeps what
   // this misses.
-  const { connected } = await ensureDaemon({
-    port: daemonPort,
-    pidFilePath,
-    spawnTimeoutMs: 0,
-    noSpawn: true,
-    expectedVersion: PKG_VERSION,
-  });
-  if (!connected) return { exitCode: 0, stdout: "" };
+  let connected = false;
+  try {
+    ({ connected } = await ensureDaemon({
+      port: daemonPort,
+      pidFilePath,
+      spawnTimeoutMs: 0,
+      noSpawn: true,
+      expectedVersion: PKG_VERSION,
+    }));
+  } catch { /* A health-probe failure must not block SessionEnd. */ }
+  if (!connected) {
+    observeDelivery("unconfirmed", "daemon-unavailable");
+    return { exitCode: 0, stdout: "" };
+  }
 
   // One request; the daemon runs ingest → compact → promote → promote-events →
   // session-complete on its own (`src/daemon/routes/session-end.ts`), so a hook
@@ -91,14 +123,19 @@ export async function handleSessionEnd(
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) input = parsed as Record<string, unknown>;
     const remainingMs = Math.max(MIN_ACK_TIMEOUT_MS, SESSION_END_TIMEOUT_MS - (Date.now() - started));
     await client.post("/session-end", input, { timeoutMs: remainingMs });
+    observeDelivery("accepted");
   } catch (err) {
     if ((err as { status?: number }).status === 404) {
+      observeDelivery("rejected", "http-404");
       // A compatible daemon of an earlier patch has no /session-end: run the
       // sequence the hook ran before it was handed to the daemon, within what
       // is left of the same budget.
       const remainingMs = Math.max(MIN_ACK_TIMEOUT_MS, SESSION_END_TIMEOUT_MS - (Date.now() - started));
       await runLegacyFallback(client, input, paths, daemonPort, remainingMs);
     } else {
+      const status = (err as { status?: unknown })?.status;
+      observeDelivery(typeof status === "number" ? "rejected" : "unconfirmed",
+        typeof status === "number" ? `http-${status}` : err instanceof Error && err.name === "TimeoutError" ? "timeout" : "transport");
       // Loaded here, not at module top: hook-errors pulls in node:sqlite, whose
       // experimental warning would otherwise reach stderr on every hook start.
       // Anything else must not block exit, but leaves a trace — the terminal is gone by now.

@@ -19,7 +19,7 @@ import { ScrubEngine } from "../../scrub.js";
 import { validateCwd } from "../validate-cwd.js";
 import { scheduleProjectLanguageDetection } from "../project-language.js";
 import { noopDaemonLog, type DaemonLog } from "../log.js";
-import { enqueue } from "../project-queue.js";
+import { enqueue, withProjectMutation } from "../project-queue.js";
 import { SessionCapture, isSessionComplete, type CaptureInput, type CaptureResult, type TranscriptCaptureResult } from "../../capture.js";
 import type { DiscoveredSubagentTranscript } from "../../subagent-attribution.js";
 
@@ -99,12 +99,14 @@ async function ingestSubagentTranscripts(
 
   return enqueue(pid, async () => {
     openProject(cwd, paths);
-    const db = getLcmConnection(dbPath);
-    try {
-      return await ingestAllSubagents(db, cwd, pid, scrubber, subagents);
-    } finally {
-      closeLcmConnection(dbPath);
-    }
+    return withProjectMutation(pid, async () => {
+      const db = getLcmConnection(dbPath);
+      try {
+        return await ingestAllSubagents(db, cwd, pid, scrubber, subagents);
+      } finally {
+        closeLcmConnection(dbPath);
+      }
+    });
   });
 }
 
@@ -163,6 +165,7 @@ export function createIngestHandler(config: DaemonConfig, paths: LcmPaths, log: 
       let captured: TranscriptCaptureResult | undefined;
       const result = await enqueue(pid, async () => {
         openProject(cwd, paths);
+        return withProjectMutation(pid, async () => {
         const db = getLcmConnection(dbPath);
         try {
           runLcmMigrations(db);
@@ -214,6 +217,7 @@ export function createIngestHandler(config: DaemonConfig, paths: LcmPaths, log: 
         } finally {
           closeLcmConnection(dbPath);
         }
+        });
       });
       // Subagent transcripts have no dispatcher of their own — this is the only
       // live path that discovers them (issue #434). Best-effort: a subagent

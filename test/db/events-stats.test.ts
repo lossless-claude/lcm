@@ -37,6 +37,10 @@ describe("collectEventStats", () => {
     db1.insertEvent("s1", { type: "decision", category: "decision", data: "d1", priority: 1 }, "PostToolUse");
     db1.insertEvent("s1", { type: "file", category: "pattern", data: "f1", priority: 3 }, "PostToolUse");
     db1.logHookError("PostToolUse", new Error("err1"));
+    db1.recordHookObservation({ sessionId: "s1", harness: "claude-command", hook: "PreCompact",
+      operation: "capture", kind: "execution", status: "completed" });
+    db1.recordHookObservation({ sessionId: "s1", harness: "claude-command", hook: "PreCompact",
+      operation: "summary", kind: "execution", status: "failed", failureCode: "summary-error" });
     db1.close();
 
     const db2 = new EventsDb(join(tempDir, "project2.db"));
@@ -53,6 +57,31 @@ describe("collectEventStats", () => {
     expect(detailed).toMatchObject(stats);
     expect(detailed.projects).toHaveLength(2);
     expect(detailed.recentErrors).toEqual([expect.objectContaining({ hook: "PostToolUse", error: "err1" })]);
+    expect(detailed.recentHookObservations).toEqual(expect.arrayContaining([expect.objectContaining({
+      file: "project1.db", sessionId: "s1", harness: "claude-command",
+      hook: "PreCompact", operation: "capture", status: "completed", count: 1,
+    })]));
+    expect(detailed.hookFailures).toBe(1);
+    expect(detailed.recentHookFailures).toEqual([expect.objectContaining({
+      sessionId: "s1", operation: "summary", code: "summary-error",
+    })]);
+  });
+
+  it("does not report observations or failures older than seven days", () => {
+    const path = join(tempDir, "stale.db");
+    const events = new EventsDb(path);
+    events.recordHookObservation({ sessionId: "old", harness: "claude-command", hook: "PreCompact",
+      operation: "capture", kind: "execution", status: "failed", failureCode: "capture-error" });
+    events.close();
+    const db = new DatabaseSync(path);
+    db.exec("UPDATE hook_observation_summary SET last_seen = datetime('now', '-8 days')");
+    db.exec("UPDATE hook_observation_failures SET created_at = datetime('now', '-8 days')");
+    db.close();
+
+    const detailed = collectDetailedEventStats(paths);
+    expect(detailed.hookFailures).toBe(0);
+    expect(detailed.recentHookObservations).toEqual([]);
+    expect(detailed.recentHookFailures).toEqual([]);
   });
 
   it.each([collectEventStats, collectDetailedEventStats])("reads legacy sidecars without changing their schema or bytes (%s)", (collect) => {

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { dispatchCodexHook, type CodexHookDeps } from "../../src/hooks/codex.js";
 import { createLcmPaths } from "../../src/lcm-paths.js";
 import { lcmHome } from "../../src/lcm-home.js";
+import { readHookOutcomeLog } from "../../src/doctor/hook-outcome-log.js";
 
 const paths = createLcmPaths(lcmHome());
 
@@ -122,6 +123,22 @@ describe("Codex native lifecycle adapter", () => {
     expect(outputContext(result.stdout).additionalContext).toContain("s-1");
   });
 
+  it("records accepted delivery for successful capture, restore, and search", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-codex-outcomes-"));
+    temporaryDirectories.push(cwd);
+    const isolatedPaths = createLcmPaths(cwd);
+    const { deps } = dependencies({ "/restore": { context: "remember" }, "/prompt-search": { hints: [] } });
+    deps.paths = isolatedPaths;
+    await dispatchCodexHook(payload("SessionStart", { cwd }), deps);
+    await dispatchCodexHook(payload("UserPromptSubmit", { cwd, prompt: "search" }), deps);
+    await dispatchCodexHook(payload("Stop", { cwd }), deps);
+    expect(readHookOutcomeLog(isolatedPaths.logsDir, cwd).outcomes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ operation: "capture", kind: "delivery", status: "accepted" }),
+      expect.objectContaining({ operation: "restore", kind: "delivery", status: "accepted" }),
+      expect.objectContaining({ operation: "search", kind: "delivery", status: "accepted" }),
+    ]));
+  });
+
   it("suffixes a sibling checkout's id with the project the daemon reported", async () => {
     const { deps } = dependencies({
       "/prompt-search": { hints: ["Local.", "Sibling."], ids: ["s-1", "s-2"], projectIds: [null, "sibling-project"] },
@@ -146,12 +163,12 @@ describe("Codex native lifecycle adapter", () => {
     expect(connect).toHaveBeenCalledExactlyOnceWith(identity.session_id, shortDeadline);
   });
 
-  it("ingests before compacting and leaves restore to the compact SessionStart", async () => {
+  it("lets the daemon capture before compacting and leaves restore to the compact SessionStart", async () => {
     const { post, deps } = dependencies({ "/compact": { latestSummaryContent: "preserved fact" } });
     expect(await dispatchCodexHook(payload("PreCompact", { trigger: "auto" }), deps)).toEqual({ exitCode: 0, stdout: "" });
-    expect(post.mock.calls.map(([path]) => path)).toEqual(["/ingest", "/compact"]);
+    expect(post.mock.calls.map(([path]) => path)).toEqual(["/compact"]);
     expect(post).toHaveBeenLastCalledWith("/compact", {
-      session_id: identity.session_id, cwd: identity.cwd, client: "codex", skip_ingest: true,
+      ...identity, client: "codex", capture_required: true, operation_id: expect.any(String),
     }, expect.objectContaining({ timeoutMs: 115_000 }));
   });
 

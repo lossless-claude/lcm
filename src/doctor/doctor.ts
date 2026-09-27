@@ -18,6 +18,8 @@ import { daemonOwnership } from "../daemon/lifecycle.js";
 import { repairCommand } from "../hooks/fail-open.js";
 import { checkDaemonLog, type LiveLog } from "./daemon-log-check.js";
 import type { LogState } from "../daemon/log.js";
+import { readFunctionHookSnapshots, readOmpHookSnapshots } from "./hook-snapshots.js";
+import { readHookOutcomeLog } from "./hook-outcome-log.js";
 
 const COLORS = {
   green: "\x1b[0;32m",
@@ -205,7 +207,8 @@ function formatTimeAgo(date: Date): string {
 }
 
 function checkPassiveLearning(results: CheckResult[], hooksInstalled: boolean, verbose: boolean, deps: DoctorDeps): void {
-  if (!hooksInstalled) return;
+  // Verbose diagnostics must still show Codex and OMP evidence without the Claude plugin.
+  if (!hooksInstalled && !verbose) return;
 
   const paths = createLcmPaths(deps.lcmHome);
   const stats = verbose ? collectDetailedEventStats(paths, 2000) : collectEventStats(paths, 2000);
@@ -254,6 +257,58 @@ function checkPassiveLearning(results: CheckResult[], hooksInstalled: boolean, v
     if (detailed.recentErrors.length > 0) {
       const errorLines = detailed.recentErrors.map(e => `  ${e.created_at} ${e.hook}: ${e.error}`).join("\n");
       results.push({ name: "events-recent-errors", category: "Passive Learning", status: "warn", message: `Recent errors:\n${errorLines}` });
+    }
+    if (detailed.recentHookObservations.length > 0) {
+      const lines = detailed.recentHookObservations.map((item) =>
+        `  ${item.lastSeen} ${item.file.slice(0, 8)}… ${item.sessionId || "unassigned"} ` +
+        `${item.harness}/${item.hook} ${item.operation}: ${item.kind}/${item.status}` +
+        `${item.reason ? ` (${item.reason})` : ""} ×${item.count}`
+      ).join("\n");
+      results.push({ name: "hook-outcomes", category: "Passive Learning",
+        status: detailed.hookFailures > 0 ? "warn" : "pass",
+        message: `Recent retained hook outcomes (observed activity only; ${detailed.hookFailures} failures retained):\n${lines}` });
+    }
+    if (detailed.recentHookFailures.length > 0) {
+      const lines = detailed.recentHookFailures.map((item) =>
+        `  ${item.createdAt} ${item.file.slice(0, 8)}… ${JSON.stringify(item.sessionId)} ` +
+        `${item.harness}/${item.hook} ${item.operation}: ${item.code}`
+      ).join("\n");
+      results.push({ name: "hook-failures", category: "Passive Learning", status: "warn",
+        message: `Recent retained hook failures:\n${lines}` });
+    }
+    const cwd = deps.cwd ?? process.cwd();
+    const commandLog = readHookOutcomeLog(paths.logsDir, cwd);
+    if (commandLog.outcomes.length > 0 || commandLog.truncated) {
+      const lines = commandLog.outcomes.map((item) =>
+        `  ${new Date(item.lastSeen).toISOString()} ${JSON.stringify(item.sessionId)} ` +
+        `${item.harness}/${item.hook} ${item.operation}: ${item.kind}/${item.status}` +
+        `${item.reason ? ` (${item.reason})` : ""} ×${item.count}`
+      ).join("\n");
+      results.push({ name: "command-hook-outcomes", category: "Passive Learning",
+        status: commandLog.truncated || commandLog.failures.length > 0 ? "warn" : "pass",
+        message: `Recent local command-hook outcomes (observed activity only${commandLog.truncated ? ", coverage truncated" : ""}):${lines ? `\n${lines}` : ""}` });
+    }
+    const localSnapshots = [
+      ...readFunctionHookSnapshots(cwd).map((snapshot) => ({ harness: "Claude function", snapshot })),
+      ...readOmpHookSnapshots(cwd, paths.logsDir).map((snapshot) => ({ harness: "OMP", snapshot })),
+    ];
+    for (const { harness, snapshot } of localSnapshots) {
+      const session = JSON.stringify(snapshot.sessionId);
+      const lines = snapshot.observations.map((item) =>
+        `  ${item.hook} ${item.operation}: ${item.kind}/${item.status}` +
+        `${item.reason ? ` (${item.reason})` : ""} ×${item.count}`
+      ).concat(snapshot.failures.map((item) =>
+        `  failure ${new Date(item.at).toISOString()} ${item.hook} ${item.operation}: ${item.code}`
+      )).join("\n");
+      results.push({ name: "local-hook-outcomes", category: "Passive Learning",
+        status: snapshot.truncated || snapshot.failures.length > 0 ? "warn" : "pass",
+        message: `${harness} hook snapshot ${session} (observed activity only${snapshot.truncated ? ", truncated" : ""}):\n${lines}` });
+    }
+    if (detailed.recentHookObservations.length === 0 && detailed.hookFailures === 0
+      && commandLog.outcomes.length === 0
+      && localSnapshots.every(({ snapshot }) => snapshot.observations.length === 0 && snapshot.failures.length === 0)) {
+      results.push({ name: "hook-coverage", category: "Passive Learning", status: "warn",
+        message: "Hook coverage unknown: no retained observations were found. Missing evidence cannot establish whether hooks ran." });
     }
   }
 }

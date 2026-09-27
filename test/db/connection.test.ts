@@ -1,8 +1,9 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, it, expect } from "vitest";
-import { getLcmConnection, closeLcmConnection, getPoolStats, isLcmConnectionOpen } from "../../src/db/connection.js";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { DatabaseSync } from "node:sqlite";
+import { getLcmConnection, closeLcmConnection, getPoolStats, isLcmConnectionOpen, openStandaloneLcmConnection } from "../../src/db/connection.js";
 
 const tempDirs: string[] = [];
 
@@ -15,6 +16,41 @@ afterEach(() => {
 });
 
 describe("getPoolStats", () => {
+  it("closes an independent handle when SQLite setup fails", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lcm-pool-test-"));
+    tempDirs.push(tempDir);
+    const dbPath = join(tempDir, "locked.sqlite");
+    const blocker = new DatabaseSync(dbPath);
+    blocker.exec("CREATE TABLE value (n INTEGER); BEGIN EXCLUSIVE");
+    const close = vi.spyOn(DatabaseSync.prototype, "close");
+    try {
+      expect(() => openStandaloneLcmConnection(dbPath)).toThrow(/database is locked/i);
+      expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      close.mockRestore();
+      blocker.exec("ROLLBACK");
+      blocker.close();
+    }
+  });
+
+  it("configures an independent handle without closing the pooled connection", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lcm-pool-test-"));
+    tempDirs.push(tempDir);
+    const dbPath = join(tempDir, "test.sqlite");
+    const pooled = getLcmConnection(dbPath);
+    const independent = openStandaloneLcmConnection(dbPath);
+    try {
+      expect(independent).not.toBe(pooled);
+      expect(independent.prepare("PRAGMA journal_mode").get()).toMatchObject({ journal_mode: "wal" });
+      expect(independent.prepare("PRAGMA foreign_keys").get()).toMatchObject({ foreign_keys: 1 });
+      expect(independent.prepare("PRAGMA busy_timeout").get()).toMatchObject({ timeout: 5000 });
+      expect(getPoolStats().totalConnections).toBe(1);
+    } finally {
+      independent.close();
+    }
+    expect(pooled.prepare("SELECT 1 AS value").get()).toEqual({ value: 1 });
+  });
+
   it("opens a read-only handle without changing database bytes", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lcm-pool-test-"));
     tempDirs.push(tempDir);

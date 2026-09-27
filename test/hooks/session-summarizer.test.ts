@@ -16,10 +16,13 @@ async function start(options: Record<string, number> = {}, jobs: unknown[] = [le
     process: { run: vi.fn(async () => ({ stdout: "secret\n__CONFIG__\n{}\n__TMPDIR__/tmp", exitCode: 0 })) },
     fs: { write: vi.fn(async () => undefined) },
     model: {
-      complete: vi.fn(async () => "  summary  "),
-      fork: vi.fn(async (): Promise<any> => null),
+      complete: vi.fn(async (): Promise<unknown> => "  summary  "),
+      fork: vi.fn(async (): Promise<unknown> => null),
     },
-    clock: { after: vi.fn((ms: number, callback: () => void) => { if (ms >= 60_000) retries.push(callback); else callback(); }) },
+    clock: {
+      after: vi.fn((ms: number, callback: () => void) => { if (ms >= 60_000) retries.push(callback); else callback(); }),
+      sleep: vi.fn(() => new Promise<void>(() => {})),
+    },
     ui: { log: vi.fn() },
     http: {
       fetch: vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
@@ -46,7 +49,7 @@ async function start(options: Record<string, number> = {}, jobs: unknown[] = [le
   const { register } = await import("../../hooks/lcm-hooks.js");
   register(((event: string, ...args: any[]) => handlers.set(event, args.at(-1))) as any, options);
   const trigger = () => handlers.get("session.start")!(engine, {}, vi.fn((event) => event));
-  return { engine, posts, done, trigger, retries, jobs };
+  return { engine, posts, done, trigger, retries, jobs, handlers };
 }
 
 describe("function-hook session summarizer", () => {
@@ -56,10 +59,113 @@ describe("function-hook session summarizer", () => {
     const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
     expect(await harness.trigger()).toEqual({});
     expect(harness.engine.fs.write).toHaveBeenCalledWith(
-      `/tmp/lcm-claim-${sessionId.replace("/", "_")}.json`,
+      "/tmp/lcm-claim-session%2Fone.json",
       expect.stringContaining(`"sessionId":"${sessionId}"`),
     );
     expect(harness.engine.model.complete).not.toHaveBeenCalled();
+    const snapshotWrite = harness.engine.fs.write.mock.calls.find(([path]) => String(path).includes("lcm-hook-observe-"));
+    expect(snapshotWrite).toBeDefined();
+    expect(JSON.parse(snapshotWrite![1])).toMatchObject({
+      harness: "claude-function", sessionId, observations: [
+        { hook: "session.start", operation: "claim", kind: "execution", status: "completed", count: 1 },
+      ],
+    });
+  });
+
+  it("does not create a snapshot without a usable session id", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
+    harness.engine.session.id.mockResolvedValue("");
+    await expect(harness.trigger()).resolves.toEqual({});
+    expect(harness.engine.fs.write.mock.calls.some(([path]) => String(path).includes("lcm-hook-observe-")))
+      .toBe(false);
+  });
+
+  it("uses distinct claim and snapshot files for colliding sanitized IDs", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
+    harness.engine.session.id.mockResolvedValueOnce("a/b").mockResolvedValueOnce("a_b");
+    await harness.trigger();
+    await harness.trigger();
+    const paths = harness.engine.fs.write.mock.calls.map(([path]) => String(path));
+    expect(paths).toContain("/tmp/lcm-claim-a%2Fb.json");
+    expect(paths).toContain("/tmp/lcm-claim-a%5Fb.json");
+    expect(paths.some((path) => path.includes("lcm-hook-observe-a%2Fb-"))).toBe(true);
+    expect(paths.some((path) => path.includes("lcm-hook-observe-a%5Fb-"))).toBe(true);
+  });
+
+  it("flushes turn outcomes into the bounded local snapshot", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
+    await harness.trigger();
+    await harness.handlers.get("turn.complete")!(harness.engine, {}, vi.fn((event) => event));
+    const snapshots = harness.engine.fs.write.mock.calls
+      .filter(([path]) => String(path).includes("lcm-hook-observe-"));
+    expect(snapshots).toHaveLength(2);
+    expect(JSON.parse(snapshots[1][1]).observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ hook: "turn.complete", operation: "capture", kind: "delivery", status: "accepted" }),
+      expect.objectContaining({ hook: "turn.complete", operation: "promote-events", kind: "delivery", status: "accepted" }),
+    ]));
+  });
+
+  it("keeps session start fail-open when snapshot preparation throws", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
+    harness.engine.session.cwd.mockImplementationOnce(() => { throw new Error("cwd unavailable"); });
+    await expect(harness.trigger()).resolves.toEqual({});
+    expect(harness.engine.ui.log).toHaveBeenCalledWith(expect.stringContaining("snapshot could not be written"));
+  });
+
+  it("bounds a stalled diagnostic write without delaying session start", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
+    harness.engine.clock.sleep.mockResolvedValue(undefined);
+    const blocked = Promise.withResolvers<void>();
+    let snapshotWrites = 0;
+    harness.engine.fs.write.mockImplementation((path: string) => {
+      if (!path.includes("lcm-hook-observe-")) return Promise.resolve();
+      return ++snapshotWrites === 1 ? blocked.promise : Promise.resolve();
+    });
+    await expect(harness.trigger()).resolves.toEqual({});
+    for (let turn = 0; turn < 20; turn++) {
+      await harness.handlers.get("turn.complete")!(harness.engine, {}, vi.fn((event) => event));
+    }
+    expect(harness.engine.fs.write.mock.calls.filter(([path]) => String(path).includes("lcm-hook-observe-")))
+      .toHaveLength(1);
+    blocked.resolve();
+    await blocked.promise;
+    await Promise.resolve();
+    await harness.handlers.get("turn.complete")!(harness.engine, {}, vi.fn((event) => event));
+    expect(snapshotWrites).toBe(2);
+    expect(harness.engine.clock.sleep).toHaveBeenCalledWith(250);
+    expect(harness.engine.ui.log).toHaveBeenCalledWith(expect.stringContaining("snapshot could not be written"));
+  });
+
+  it("records an HTTP rejection as rejected with its status", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
+    await harness.trigger();
+    const originalFetch = harness.engine.http.fetch.getMockImplementation()!;
+    harness.engine.http.fetch.mockImplementation(async (url, init) =>
+      url.endsWith("/ingest") ? { ok: false, status: 401, text: "" } : originalFetch(url, init));
+    await harness.handlers.get("turn.complete")!(harness.engine, {}, vi.fn((event) => event));
+    const snapshots = harness.engine.fs.write.mock.calls
+      .filter(([path]) => String(path).includes("lcm-hook-observe-"));
+    expect(JSON.parse(snapshots.at(-1)![1]).observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ hook: "turn.complete", operation: "capture", kind: "delivery",
+        status: "rejected", reason: "http-401" }),
+    ]));
+  });
+
+  it("records accepted delivery and completed execution for restore and search", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
+    await harness.trigger();
+    await harness.handlers.get("prompt.context")!(harness.engine, { blocks: [] }, vi.fn(async (event) => event));
+    await harness.handlers.get("prompt.submit")!(harness.engine, { text: "find memory" }, vi.fn(async (event) => event));
+    await harness.handlers.get("turn.complete")!(harness.engine, {}, vi.fn((event) => event));
+    const snapshots = harness.engine.fs.write.mock.calls
+      .filter(([path]) => String(path).includes("lcm-hook-observe-"));
+    const observations = JSON.parse(snapshots.at(-1)![1]).observations;
+    for (const [hook, operation] of [["prompt.context", "restore"], ["prompt.submit", "search"]]) {
+      expect(observations).toEqual(expect.arrayContaining([
+        expect.objectContaining({ hook, operation, kind: "delivery", status: "accepted" }),
+        expect.objectContaining({ hook, operation, kind: "execution", status: "completed" }),
+      ]));
+    }
   });
 
   it("lets session.start finish when the claim cannot be written", async () => {
@@ -82,6 +188,80 @@ describe("function-hook session summarizer", () => {
     );
     expect(engine.model.complete).toHaveBeenCalledWith({ model: "haiku", system: "system", prompt: "prompt", maxTokens: 1024 });
     expect(posts[0].body).toEqual({ text: "summary", providerId: "session:haiku", usage: { input_tokens: 3, output_tokens: 2, estimated: true } });
+  });
+
+  it("retains accepted delivery for a summary answer", async () => {
+    const harness = await start();
+    await harness.trigger();
+    await harness.done;
+    const snapshots = harness.engine.fs.write.mock.calls
+      .filter(([path]) => String(path).includes("lcm-hook-observe-"));
+    expect(JSON.parse(snapshots.at(-1)![1]).observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ hook: "session.start", operation: "summary-answer", kind: "delivery", status: "accepted" }),
+    ]));
+  });
+
+  it("retains rejected delivery for a summary answer", async () => {
+    const harness = await start();
+    const originalFetch = harness.engine.http.fetch.getMockImplementation()!;
+    harness.engine.http.fetch.mockImplementation(async (url, init) =>
+      init?.method === "POST" && url.includes("/summarize-jobs/")
+        ? { ok: false, status: 500, text: "{}" }
+        : originalFetch(url, init));
+    await harness.trigger();
+    await harness.done;
+    const snapshots = harness.engine.fs.write.mock.calls
+      .filter(([path]) => String(path).includes("lcm-hook-observe-"));
+    expect(JSON.parse(snapshots.at(-1)![1]).observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ hook: "session.start", operation: "summary-answer", kind: "delivery",
+        status: "rejected", reason: "http-500" }),
+    ]));
+  });
+
+  it("accepts the current model completion result shape", async () => {
+    const harness = await start();
+    harness.engine.model.complete.mockResolvedValue({
+      isAnswered: true, text: " current result ", usage: { input_tokens: 3, output_tokens: 2 },
+    });
+    await harness.trigger();
+    await harness.done;
+    expect(harness.posts[0].body.text).toBe("current result");
+    expect(harness.posts[0].body.usage).toEqual({ input_tokens: 3, output_tokens: 2, estimated: false });
+  });
+
+  it("reports a failed fork's usage separately from the fallback answer", async () => {
+    const { trigger, done, engine, posts } = await start({}, [{ ...leaf, kind: "condensed" }]);
+    engine.model.fork.mockResolvedValue({ isAnswered: false, reason: "empty-reply",
+      usage: { input_tokens: 40, output_tokens: 7 } });
+    await trigger();
+    await done;
+    expect(posts[0].body).toEqual({
+      text: "summary", providerId: "session:haiku",
+      usage: { input_tokens: 3, output_tokens: 2, estimated: true },
+      usageAttempts: [{ providerId: "session:fork",
+        usage: { input_tokens: 40, output_tokens: 7, estimated: false }, failed: true }],
+    });
+  });
+
+  it("applies the output cap to a failed fork and its fallback together", async () => {
+    const { trigger, done, engine, posts } = await start({ sessionSummarizerMaxOutputTokens: 3 }, [{ ...leaf, kind: "condensed" }]);
+    engine.model.fork.mockResolvedValue({ isAnswered: false, reason: "empty-reply",
+      usage: { input_tokens: 40, output_tokens: 3 } });
+    await trigger();
+    await done;
+    expect(posts[0].body).toEqual({ error: "spend cap", usageAttempts: [
+      { providerId: "session:fork", usage: { input_tokens: 40, output_tokens: 3, estimated: false }, failed: true },
+    ] });
+    expect(engine.model.complete).not.toHaveBeenCalled();
+  });
+
+  it("limits the fallback completion to tokens remaining after a failed fork", async () => {
+    const { trigger, done, engine } = await start({ sessionSummarizerMaxOutputTokens: 10 }, [{ ...leaf, kind: "condensed" }]);
+    engine.model.fork.mockResolvedValue({ isAnswered: false, reason: "empty-reply",
+      usage: { input_tokens: 40, output_tokens: 7 } });
+    await trigger();
+    await done;
+    expect(engine.model.complete).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: 3 }));
   });
 
   it("uses forks for condensed jobs and accounts exact usage", async () => {
@@ -107,14 +287,34 @@ describe("function-hook session summarizer", () => {
     engine.model.complete.mockRejectedValueOnce(new Error("unavailable")).mockResolvedValueOnce(" ");
     trigger();
     await done;
-    expect(posts.map((post) => post.body)).toEqual([{ error: "unavailable" }, { error: "empty summary" }]);
+    expect(posts.map((post) => post.body)).toEqual([{ error: "unavailable" }, {
+      error: "empty summary", usageAttempts: [
+        { providerId: "session:haiku", usage: { input_tokens: 3, output_tokens: 0, estimated: true }, failed: true },
+      ],
+    }]);
+  });
+
+  it("retains fork and completion usage when neither attempt answers", async () => {
+    const { trigger, done, engine, posts } = await start({}, [{ ...leaf, kind: "condensed" }]);
+    engine.model.fork.mockResolvedValue({ isAnswered: false, reason: "empty-reply",
+      usage: { input_tokens: 40, output_tokens: 7 } });
+    engine.model.complete.mockResolvedValue({ isAnswered: false, reason: "empty-reply",
+      usage: { input_tokens: 3, output_tokens: 2 } });
+    await trigger();
+    await done;
+    expect(posts[0].body).toEqual({ error: "empty-reply", usageAttempts: [
+      { providerId: "session:fork", usage: { input_tokens: 40, output_tokens: 7, estimated: false }, failed: true },
+      { providerId: "session:haiku", usage: { input_tokens: 3, output_tokens: 2, estimated: false }, failed: true },
+    ] });
   });
 
   it("stops when a response exceeds the spend cap", async () => {
     const { trigger, done, engine, posts } = await start({ sessionSummarizerMaxOutputTokens: 1 }, [leaf, leaf]);
     trigger();
     await done;
-    expect(posts[0].body).toEqual({ error: "spend cap" });
+    expect(posts[0].body).toEqual({ error: "spend cap", usageAttempts: [
+      { providerId: "session:haiku", usage: { input_tokens: 3, output_tokens: 2, estimated: true }, failed: false },
+    ] });
     expect(engine.model.complete).toHaveBeenCalledTimes(1);
   });
 

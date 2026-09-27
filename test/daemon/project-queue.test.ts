@@ -1,7 +1,25 @@
 import { describe, it, expect } from "vitest";
-import { enqueue } from "../../src/daemon/project-queue.js";
+import { acquireProjectMutation, enqueue } from "../../src/daemon/project-queue.js";
 
 describe("enqueue", () => {
+  it("lets a local mutation run during an external wait and reacquires before resuming", async () => {
+    const first = await acquireProjectMutation("proj-mutation");
+    const external = Promise.withResolvers<void>();
+    const waiting = Promise.withResolvers<void>();
+    const outside = first.yieldWhile(async () => { waiting.resolve(); await external.promise; });
+    await waiting.promise;
+    const second = await acquireProjectMutation("proj-mutation");
+    let resumed = false;
+    void outside.then(() => { resumed = true; });
+    external.resolve();
+    await Promise.resolve();
+    expect(resumed).toBe(false);
+    second.release();
+    await outside;
+    expect(resumed).toBe(true);
+    first.release();
+  });
+
   it("returns the result of fn", async () => {
     const result = await enqueue("proj-result", () => Promise.resolve(42));
     expect(result).toBe(42);

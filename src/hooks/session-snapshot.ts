@@ -2,6 +2,7 @@ import { statSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { functionHooksOwnSession } from "./session-claim.js";
 import type { LcmPaths } from "../lcm-paths.js";
+import { observeHook } from "./observe.js";
 
 export interface SnapshotDeps {
   statSync: (path: string) => { mtimeMs: number } | null;
@@ -23,16 +24,35 @@ export async function handleSessionSnapshot(
   paths: LcmPaths,
   deps?: Partial<SnapshotDeps>,
 ): Promise<{ exitCode: number; stdout: string }> {
+  let cwd: string | undefined;
+  let sessionId = "";
+  let captureConfirmed = false;
+  const observeExecution = (status: "completed" | "delegated" | "deferred" | "failed", reason = "") =>
+    observeHook(cwd, {
+      sessionId, harness: "claude-command", hook: "Stop", operation: "capture", kind: "execution", status, reason,
+      ...(status === "failed" ? { failureCode: reason } : {}),
+    }, paths);
+  const observeDelivery = (status: "accepted" | "rejected" | "unconfirmed", reason = "") =>
+    observeHook(cwd, {
+      sessionId, harness: "claude-command", hook: "Stop", operation: "capture", kind: "delivery", status, reason,
+      ...(status === "rejected" ? { failureCode: reason } : {}),
+    }, paths);
   try {
     const input = JSON.parse(stdin || "{}");
-    const { session_id, cwd, transcript_path } = input;
+    const { session_id, transcript_path } = input;
+    sessionId = typeof session_id === "string" ? session_id : "";
+    cwd = typeof input.cwd === "string" ? input.cwd : undefined;
     if (!session_id || !cwd || !transcript_path) {
+      if (cwd) observeExecution("failed", "invalid-input");
       return { exitCode: 0, stdout: "" };
     }
 
     // The module ingests on turn.complete while it holds the session; a second ingest
     // per turn from here would only parse the same transcript twice.
-    if (functionHooksOwnSession(session_id)) return { exitCode: 0, stdout: "" };
+    if (functionHooksOwnSession(session_id)) {
+      observeExecution("delegated", "function-hook");
+      return { exitCode: 0, stdout: "" };
+    }
 
     const safeSessionId = session_id.replace(/[^a-zA-Z0-9_-]/g, "_");
     const cursorDir = paths.tmpDir;
@@ -54,13 +74,20 @@ export async function handleSessionSnapshot(
       // No cursor file — treat as expired
     }
     if (stat && (Date.now() - stat.mtimeMs) < intervalSec * 1000) {
+      observeExecution("deferred", "throttled");
       return { exitCode: 0, stdout: "" };
     }
 
     // POST to /ingest — daemon handles delta via storedCount
     const _post = deps?.post;
     if (_post) {
-      await _post("/ingest", { session_id, cwd, transcript_path });
+      const response = await _post("/ingest", { session_id, cwd, transcript_path });
+      if (response && typeof response === "object") {
+        const result = response as { ok?: boolean; status?: number };
+        if (result.ok === false || (typeof result.status === "number" && result.status >= 400)) {
+          throw Object.assign(new Error("ingest rejected"), { status: result.status ?? 500 });
+        }
+      }
     } else {
       const { loadDaemonConfig } = await import("../daemon/config.js");
       const { readFileSync: _readFileSync } = await import("node:fs");
@@ -82,13 +109,17 @@ export async function handleSessionSnapshot(
         headers["Authorization"] = `Bearer ${token}`;
       }
 
-      await fetch(`${baseUrl}/ingest`, {
+      const response = await fetch(`${baseUrl}/ingest`, {
         method: "POST",
         headers,
         body: JSON.stringify({ session_id, cwd, transcript_path }),
         signal: AbortSignal.timeout(5000),
       });
+      if (!response.ok) throw Object.assign(new Error("ingest rejected"), { status: response.status });
     }
+    captureConfirmed = true;
+    observeDelivery("accepted");
+    observeExecution("completed");
 
     // Touch cursor file
     const _writeFileSync = deps?.writeFileSync ?? writeFileSync;
@@ -107,7 +138,16 @@ export async function handleSessionSnapshot(
     }
 
     return { exitCode: 0, stdout: "" };
-  } catch {
+  } catch (err) {
+    if (captureConfirmed) {
+      observeHook(cwd, { sessionId, harness: "claude-command", hook: "Stop",
+        operation: "retry-timer", kind: "execution", status: "failed",
+        reason: "write-error", failureCode: "write-error" }, paths);
+      return { exitCode: 0, stdout: "" };
+    }
+    const status = (err as { status?: unknown })?.status;
+    observeDelivery(typeof status === "number" ? "rejected" : "unconfirmed",
+      typeof status === "number" ? `http-${status}` : err instanceof Error && err.name === "TimeoutError" ? "timeout" : "transport");
     return { exitCode: 0, stdout: "" };
   }
 }

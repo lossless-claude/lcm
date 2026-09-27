@@ -81,11 +81,14 @@ PostToolUseFailure); the function-hooks module speaks the same routes through
 
 Capture itself happens on `POST /ingest`, reached from `session-end`, the Stop snapshot, and
 the SessionStart catch-up sweep the daemon runs for conversations a killed session left
-uncompacted. `POST /session-end` hands the whole end-of-session sequence to the daemon —
+uncompacted. PreCompact can Capture inside `/compact`, before lcm summarization, with
+separate outcomes for the two operations. `POST /session-end` hands the whole end-of-session sequence to the daemon —
 ingest, then compact, promote and session-complete — after acknowledging with `202`, so a
 host that stops waiting for the hook cannot drop the steps behind it.
 
 Every route that lands transcript content in `messages` — `/ingest`, the subagent path inside it, and `/compact` — writes through one module, `src/capture.ts` (`SessionCapture`). It owns what "already stored" means (the delta past the conversation's message count), scrubbing, the bulk insert, `context_items`, `message_parts`, redaction counts, the Codex cursor and `session_ingest_log`. When the caller passes no attribution and the transcript is a subagent transcript, the module reads the `.meta.json` sidecar itself, so which route sees a session first does not change what is stored about it.
+
+Hook operation evidence is separate from Capture: the project's events sidecar aggregates tool-capture and daemon pre-compaction outcomes by Session, harness, hook, operation, delivery or execution status, and reason. Individual failure codes are retained separately. Short-lived Claude Code command and Codex lifecycle hooks append bounded metadata to a local log without loading SQLite at startup. The Claude Code function module and OMP keep bounded local snapshots because their host adapters cannot use the sidecar write path when the daemon is unavailable. `lcm doctor -v` aggregates these sources; missing evidence never establishes that an expected hook did not run.
 
 What a transcript holds beyond what is stored is answered by one interface, the transcript source (`src/transcript-source.ts`), with an adapter per harness; `SessionCapture` is its only caller, so a route names the client and the session and never chooses how the file is read. Each adapter owns its own delta model and validation: the Claude adapter locates the transcript (the caller's path, or Claude Code's own location for the session), re-parses the file and returns what follows the stored count; the Codex adapter validates the path against Codex's session directories, resumes from the byte-offset cursor persisted with the last write — trusted only while it accounts for exactly the stored messages — and, when it cannot resume, re-reads the whole file and verifies the stored prefix under the current redaction rules before anything is written. The adapter's answer also carries the model backfill for the session's tool-call events, so `/ingest` runs it after the response without knowing which transcript format supplied it. A transcript an adapter refuses (a Codex path outside its bases, metadata naming another project or session, a file shorter than the stored history) is a `TranscriptSourceError`, which `/ingest` and `/compact` answer with 400.
 
@@ -262,10 +265,13 @@ a file that grew or was rewritten between two runs.
 
 ## Operation serialization
 
-All mutating operations (ingest, compact) are serialized **per project** — the queue is keyed by
+Ordinary ingest and compact requests are serialized **per project** — the queue is keyed by
 `projectId(cwd)` (`src/daemon/project-queue.ts`), not by session — so two conversations of the same
 project wait on each other while different projects do not. `/compact` adds its own per-session
-guard on top, which is what keeps one session from compacting twice at once.
+guard on top, which is what keeps one session from compacting twice at once. A required PreCompact
+Capture bypasses a queue occupied by an LLM call so it can finish within the hook deadline.
+It shares a short per-project mutation lease with ingest and compact database work; compaction
+releases that lease only while awaiting the external LLM and reacquires it before writing.
 
 A project's `meta.json` is written by routes on different sessions of the same project, so the per-project queue is not what covers it; it needs no queue of its own because each update in `src/daemon/project-meta.ts` is a single synchronous read-modify-write that nothing in the process can interleave with. Writers in other processes are outside the daemon's trust boundary, as they are for the database.
 

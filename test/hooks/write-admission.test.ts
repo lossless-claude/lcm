@@ -66,8 +66,8 @@ it("held stop drains a command-hook write already inside SQLite before succeedin
     import { createLcmPaths } from ${rootModuleUrl("lcm-paths.js")};
     const root = process.env.LCM_HOME;
     const paths = createLcmPaths(lcmHome());
-    const insert = EventsDb.prototype.insertToolCallEvents;
-    EventsDb.prototype.insertToolCallEvents = function(...args) {
+    const insert = EventsDb.prototype.recordToolCapture;
+    EventsDb.prototype.recordToolCapture = function(...args) {
       fs.writeFileSync(root + '/ready', '');
       while (!fs.existsSync(root + '/resume')) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
       return insert.apply(this, args);

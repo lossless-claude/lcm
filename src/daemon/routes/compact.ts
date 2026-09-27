@@ -1,20 +1,21 @@
 import type { SummarizeJobStore } from "../summarize-jobs.js";
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
-import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
+import { getLcmConnection, closeLcmConnection, openStandaloneLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
 import type { LcmPaths } from "../../lcm-paths.js";
 import { updateProjectMeta } from "../project-meta.js";
 import { projectId, projectDbPath, projectDir } from "../project.js";
 import { noopDaemonLog, type DaemonLog } from "../log.js";
 import { openProject } from "../project-group.js";
-import { enqueue } from "../project-queue.js";
+import { enqueue, hasQueuedProjectWork, withProjectMutation } from "../project-queue.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { markSessionCompacted } from "../../db/session-compactions.js";
-import { SessionCapture } from "../../capture.js";
+import { SessionCapture, type TranscriptCaptureResult } from "../../capture.js";
 import { EventsDb } from "../../hooks/events-db.js";
+import { withHookWrite } from "../../hooks/write-admission.js";
 import { eventsDbPath } from "../../db/events-path.js";
 import { CompactionEngine, compactEngineConfig, COMPACT_TOKEN_BUDGET } from "../../compaction.js";
 import { TranscriptSourceError } from "../../transcript-source.js";
@@ -188,6 +189,68 @@ export function recordCompactLlmUsage(db: DatabaseSync, usage: CompactLlmUsage):
   );
 }
 
+async function captureTranscriptForCompact(
+  capture: SessionCapture,
+  input: { sessionId: string; cwd: string; client?: string; transcriptPath?: string },
+  paths: LcmPaths,
+  log: DaemonLog,
+): Promise<TranscriptCaptureResult | undefined> {
+  const captured = await capture.captureTranscript(input);
+  if (captured) {
+    const sidecarPath = eventsDbPath(input.cwd, paths);
+    if (existsSync(sidecarPath)) {
+      try {
+        const events = new EventsDb(sidecarPath);
+        try {
+          captured.backfillModels(events);
+        } finally {
+          events.close();
+        }
+      } catch (err) {
+        log.write("warn", "compact.model_backfill_failed", { cwd: input.cwd, session_id: input.sessionId, err });
+      }
+    }
+  }
+  return captured;
+}
+
+type PrecompactStage = {
+  status: "completed" | "skipped" | "deferred" | "failed";
+  reason?: string;
+};
+
+function recordPrecompactStages(
+  input: { cwd: string; sessionId: string; client?: string; operationId?: string; capture?: PrecompactStage; summary: PrecompactStage },
+  paths: LcmPaths,
+  log: DaemonLog,
+): void {
+  const harness = input.client === "codex" ? "codex" : input.client === "omp" ? "omp" : "claude-command";
+  const hook = harness === "omp" ? "session_before_compact" : "PreCompact";
+  try {
+    withHookWrite(paths, () => {
+      const db = new EventsDb(eventsDbPath(input.cwd, paths));
+      try {
+        if (input.capture) db.recordHookObservation({
+          sessionId: input.sessionId, harness, hook, operation: "capture", kind: "execution",
+          status: input.capture.status, reason: input.capture.reason,
+          ...(input.operationId ? { operationId: `${input.operationId}:capture` } : {}),
+          ...(input.capture.status === "failed" ? { failureCode: input.capture.reason ?? "capture-error" } : {}),
+        });
+        db.recordHookObservation({
+          sessionId: input.sessionId, harness, hook, operation: "summary", kind: "execution",
+          status: input.summary.status, reason: input.summary.reason,
+          ...(input.operationId ? { operationId: `${input.operationId}:summary` } : {}),
+          ...(input.summary.status === "failed" ? { failureCode: input.summary.reason ?? "summary-error" } : {}),
+        });
+      } finally {
+        db.close();
+      }
+    }, undefined);
+  } catch (err) {
+    log.write("warn", "precompact.observation_failed", { cwd: input.cwd, session_id: input.sessionId, err });
+  }
+}
+
 
 export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs?: SummarizeJobStore, log: DaemonLog = noopDaemonLog): RouteHandler {
   const summarizerCache = new Map<EffectiveProvider, Promise<LcmSummarizeFn | null>>();
@@ -204,6 +267,10 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
     const { session_id, transcript_path, skip_ingest, client, previous_summary } = input;
+    const captureRequired = input.capture_required === true;
+    const precompactVerified = input.precompact_verified === true && client === "omp" && skip_ingest === true;
+    const operationId = typeof input.operation_id === "string" && input.operation_id.length <= 140
+      ? input.operation_id : undefined;
     const MAX_PREVIOUS_SUMMARY_LENGTH = 50_000;
     const validatedPreviousSummary = typeof previous_summary === "string"
       ? previous_summary.slice(0, MAX_PREVIOUS_SUMMARY_LENGTH)
@@ -222,14 +289,61 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       return;
     }
 
+    if (captureRequired && skip_ingest) {
+      sendJson(res, 400, { error: "capture_required and skip_ingest cannot be combined" });
+      return;
+    }
+
+    const captureOnly = async () => {
+      try {
+        // A summary for this session may own the project's queue while waiting on
+        // an LLM. Capture must finish before the host's PreCompact deadline.
+        const dbPath = projectDbPath(cwd, paths);
+        openProject(cwd, paths);
+        const scrubber = await ScrubEngine.forProject(
+          config.security?.sensitivePatterns ?? [], projectDir(cwd, paths),
+        );
+        return await withProjectMutation(projectId(cwd), async () => {
+          const db = openStandaloneLcmConnection(dbPath);
+          try {
+            runLcmMigrations(db);
+            const captured = await captureTranscriptForCompact(new SessionCapture(db, projectId(cwd), scrubber), {
+              sessionId: session_id, cwd, client, transcriptPath: transcript_path,
+            }, paths, log);
+            const outcome = captured
+              ? { status: "completed" as const, messages: captured.records.length }
+              : { status: "deferred" as const, reason: "no-capture-result" as const };
+            log.write("info", "precompact.capture", { cwd, session_id, ...outcome });
+            return outcome;
+          } finally {
+            db.close();
+          }
+        });
+      } catch (err) {
+        log.write("error", "precompact.capture_failed", { cwd, session_id, err });
+        return { status: "failed" as const, reason: err instanceof TranscriptSourceError ? "invalid-source" as const : "capture-error" as const };
+      }
+    };
+
     // Guard must be checked and set synchronously (before any await) to prevent
     // concurrent requests from racing through the has() check before add() runs.
-    if (compactingNow.has(session_id)) {
-      log.write("info", "compact.skipped", { cwd, session_id, reason: "already-compacting" });
+    if (compactingNow.has(session_id) || (captureRequired && hasQueuedProjectWork(projectId(cwd)))) {
+      log.write("info", "compact.skipped", { cwd, session_id, reason: "project-busy" });
+      const captureOutcome = captureRequired ? await captureOnly() : undefined;
+      if (captureRequired) log.write("info", "precompact.summary", { cwd, session_id, status: "skipped", reason: "busy" });
+      if (captureRequired && captureOutcome) recordPrecompactStages({
+        cwd, sessionId: session_id, client, operationId, capture: captureOutcome,
+        summary: { status: "skipped", reason: "busy" },
+      }, paths, log);
+      if (precompactVerified) recordPrecompactStages({
+        cwd, sessionId: session_id, client, operationId,
+        summary: { status: "skipped", reason: "busy" },
+      }, paths, log);
       sendJson(res, 200, {
         skipped: true,
         replayOutcome: "skipped",
-        summary: "Compaction already in progress for this session.",
+        summary: captureRequired ? "" : "Compaction already in progress for this session.",
+        ...(captureRequired ? { captureOutcome, summaryOutcome: { status: "skipped", reason: "busy" } } : {}),
       });
       return;
     }
@@ -247,10 +361,15 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     };
     const providerLabel = providerLabels[effectiveProvider] ?? effectiveProvider;
 
+    let captureOutcomeForError: { status: "completed"; messages: number } | { status: "failed"; reason: string } | undefined;
     try {
-      const summarize = await getSummarizer(effectiveProvider);
-      if (!summarize) {
+      const summarize = captureRequired ? null : await getSummarizer(effectiveProvider);
+      if (!summarize && !captureRequired) {
         log.write("info", "compact.skipped", { cwd, session_id, reason: "disabled" });
+        if (precompactVerified) recordPrecompactStages({
+          cwd, sessionId: session_id, client, operationId,
+          summary: { status: "skipped", reason: "disabled" },
+        }, paths, log);
         sendJson(res, 200, {
           summary: "Summarization disabled — no summarizer configured.",
           replayOutcome: "disabled",
@@ -265,12 +384,14 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         openProject(cwd, paths);
         const llmUsage = createCompactLlmUsage(effectiveProvider, config.llm.model);
         const usageByProvider = new Map<string, CompactLlmUsage>();
+        const answeringProviders = new Set<string>();
 
         const scrubber = await ScrubEngine.forProject(
           config.security?.sensitivePatterns ?? [],
           projectDir(cwd, paths),
         );
 
+        return withProjectMutation(pid, async (lease) => {
         const db = getLcmConnection(dbPath);
         try {
           runLcmMigrations(db);
@@ -280,19 +401,36 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           // either way, since compaction needs the row even when nothing was read.
           const capture = new SessionCapture(db, pid, scrubber);
           const { conversationStore, summaryStore } = capture;
-          const captured = skip_ingest
-            ? undefined
-            : await capture.captureTranscript({ sessionId: session_id, client, cwd, transcriptPath: transcript_path });
-          if (captured) {
-            const sidecarPath = eventsDbPath(cwd, paths);
-            if (existsSync(sidecarPath)) {
-              const events = new EventsDb(sidecarPath);
-              try {
-                captured.backfillModels(events);
-              } finally {
-                events.close();
-              }
+          let captured: TranscriptCaptureResult | undefined;
+          if (!skip_ingest) {
+            try {
+              captured = await captureTranscriptForCompact(capture, {
+                sessionId: session_id, client, cwd, transcriptPath: transcript_path,
+              }, paths, log);
+            } catch (err) {
+              if (captureRequired) captureOutcomeForError = {
+                status: "failed",
+                reason: err instanceof TranscriptSourceError ? "invalid-source" : "capture-error",
+              };
+              throw err;
             }
+          }
+          const captureOutcome = captureRequired
+            ? captured
+              ? { status: "completed" as const, messages: captured.records.length }
+              : { status: "deferred" as const, reason: "no-capture-result" as const }
+            : undefined;
+          if (captureRequired) {
+            log.write("info", "precompact.capture", { cwd, session_id, ...captureOutcome });
+            if (captured) captureOutcomeForError = captureOutcome as { status: "completed"; messages: number };
+            else return {
+              summary: "",
+              replayOutcome: "skipped",
+              providerId: effectiveProvider,
+              providerLabel,
+              captureOutcome,
+              summaryOutcome: { status: "skipped" as const, reason: "capture-deferred" },
+            };
           }
           const conversation = captured ?? await capture.write({ sessionId: session_id, messages: [] });
 
@@ -301,12 +439,28 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
 
           if (tokenCount === 0) {
             // A replay ledgers this as done; otherwise every later run sees a gap here.
-            return { summary: "No messages to compact.", replayOutcome: "no_work", providerId: effectiveProvider, providerLabel };
+            return {
+              summary: "No messages to compact.", replayOutcome: "no_work", providerId: effectiveProvider, providerLabel,
+              ...(captureRequired ? { captureOutcome, summaryOutcome: { status: "skipped", reason: "no-work" } } : {}),
+            };
+          }
+
+          const activeSummarize = captureRequired ? await getSummarizer(effectiveProvider) : summarize;
+          if (!activeSummarize) {
+            return {
+              summary: "Summarization disabled — no summarizer configured.",
+              replayOutcome: "disabled",
+              providerId: effectiveProvider,
+              providerLabel,
+              captureOutcome,
+              summaryOutcome: { status: "skipped" as const, reason: "disabled" },
+            };
           }
 
           let language = resolveSummarizerLanguage(config, cwd, paths);
           if (language === undefined) {
-            await scheduleProjectLanguageDetection(cwd, db, config, paths, client);
+            const detection = scheduleProjectLanguageDetection(cwd, db, config, paths, client);
+            await lease.yieldWhile(() => detection);
             language = resolveSummarizerLanguage(config, cwd, paths);
           } else {
             void scheduleProjectLanguageDetection(cwd, db, config, paths, client);
@@ -319,11 +473,14 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             let sawUsage = false;
             const callUsage = new Map<string, CompactLlmUsage>();
             const finishUsage = (ok: boolean) => {
-              for (const [key, call] of callUsage) {
+              for (const call of callUsage.values()) {
+                const key = JSON.stringify([call.provider, call.model]);
                 const bucket = usageByProvider.get(key) ?? createCompactLlmUsage(call.provider, call.model);
-                bucket.calls += 1;
-                bucket.okCalls += ok ? 1 : 0;
-                bucket.failedCalls += ok ? 0 : 1;
+                const failedAttempt = call.failedCalls > 0;
+                const answeredAttempt = call.okCalls > 0;
+                bucket.calls += failedAttempt ? call.failedCalls : answeredAttempt ? call.okCalls : 1;
+                bucket.okCalls += answeredAttempt ? call.okCalls : failedAttempt ? 0 : ok ? 1 : 0;
+                bucket.failedCalls += failedAttempt ? call.failedCalls : answeredAttempt ? 0 : ok ? 0 : 1;
                 bucket.callsEstimated = (bucket.callsEstimated ?? 0) + (call.callsEstimated ?? 0);
                 addTokens(bucket, { tokens: call.tokensSpent, input: call.tokensInput,
                   cached: call.tokensCached, output: call.tokensOutput, cost: call.costUsd });
@@ -331,7 +488,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
               }
             };
             try {
-              const summary = await summarize(text, aggressive, {
+              const summary = await lease.yieldWhile(() => activeSummarize(text, aggressive, {
                 ...ctx,
                 sessionId: session_id,
                 client,
@@ -341,12 +498,15 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                   // Every provider reports normalized usage; only providers
                   // whose response carries it call onUsage at all.
                   sawUsage = true;
-                  const key = JSON.stringify([usage.provider, usage.model ?? config.llm.model]);
+                  const key = JSON.stringify([usage.provider, usage.model ?? config.llm.model, usage.failed ?? "derived"]);
                   let bucket = callUsage.get(key);
                   if (!bucket) {
                     bucket = createCompactLlmUsage(usage.provider, usage.model ?? config.llm.model);
                     callUsage.set(key, bucket);
                   }
+                  if (usage.failed === true) bucket.failedCalls += 1;
+                  else if (usage.failed === false) bucket.okCalls += 1;
+                  else answeringProviders.add(usage.provider);
                   // One per estimated response, not a flag: a call that retries reports
                   // usage more than once and each estimated response counts.
                   bucket.callsEstimated = (bucket.callsEstimated ?? 0) + (usage.estimated ? 1 : 0);
@@ -361,13 +521,13 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                     callTokensSpent.cost = (callTokensSpent.cost ?? 0) + usage.costUsd;
                   }
                   const reportedModel = usage.model?.trim();
-                  if (!sawReportedUsageModel && reportedModel) {
+                  if (reportedModel && (usage.failed === undefined || !sawReportedUsageModel)) {
                     llmUsage.model = reportedModel;
                     sawReportedUsageModel = true;
                   }
                   ctx.onUsage?.(usage);
                 },
-              });
+              }));
               if (sawUsage) {
                 llmUsage.calls += 1;
                 llmUsage.okCalls += 1;
@@ -444,7 +604,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           // Name the provider that actually answered when it was a single one: with the
           // session provider the fallback may have done the work, and the PreCompact banner
           // should say so. Several providers in one run keep the configured name.
-          const answeredBy = [...new Set([...usageByProvider.values()].map((usage) => usage.provider))];
+          const answeredBy = [...answeringProviders];
           const answeredProvider = answeredBy.length === 1 ? answeredBy[0] : effectiveProvider;
           const sessionLabels: Record<string, string> = { "session:haiku": "Live session (haiku)", "session:fork": "Live session (fork)" };
           const answeredLabel = answeredProvider === effectiveProvider
@@ -462,6 +622,10 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             tokensAfter: compactResult.tokensAfter,
             providerId: answeredProvider,
             providerLabel: answeredLabel,
+            ...(captureRequired ? {
+              captureOutcome,
+              summaryOutcome: { status: compactResult.actionTaken ? "completed" : "skipped", reason: compactResult.actionTaken ? undefined : "no-work" },
+            } : {}),
             ...(llmUsage.calls > 0 ? { llmUsage } : {}),
           };
         } catch (error) {
@@ -477,6 +641,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           }
           closeLcmConnection(dbPath);
         }
+        });
       }); // end enqueue
 
       if (result.replayOutcome === "compacted" && "tokensBefore" in result) {
@@ -484,15 +649,57 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       } else {
         log.write("info", "compact.skipped", { cwd, session_id, reason: result.replayOutcome });
       }
+      if (captureRequired && "summaryOutcome" in result) {
+        const outcome = result.summaryOutcome;
+        log.write("info", "precompact.summary", { cwd, session_id, ...outcome });
+        if ("captureOutcome" in result && result.captureOutcome) recordPrecompactStages({
+          cwd, sessionId: session_id, client, operationId,
+          capture: result.captureOutcome as PrecompactStage,
+          summary: outcome as PrecompactStage,
+        }, paths, log);
+      }
+      if (precompactVerified) recordPrecompactStages({
+        cwd, sessionId: session_id, client, operationId,
+        summary: result.replayOutcome === "compacted"
+          ? { status: "completed" }
+          : { status: "skipped", reason: result.replayOutcome },
+      }, paths, log);
       sendJson(res, 200, result);
     } catch (err) {
       log.write("error", "compact.failed", { cwd, session_id, err });
+      if (captureRequired) {
+        if (captureOutcomeForError?.status !== "completed") {
+          log.write("error", "precompact.capture_failed", { cwd, session_id, err });
+        }
+        log.write("info", "precompact.summary", {
+          cwd, session_id,
+          status: captureOutcomeForError?.status === "completed" ? "failed" : "skipped",
+          reason: captureOutcomeForError?.status === "completed" ? "summary-error" : "capture-failed",
+        });
+        recordPrecompactStages({
+          cwd, sessionId: session_id, client, operationId,
+          capture: captureOutcomeForError ?? { status: "failed", reason: "capture-error" },
+          summary: captureOutcomeForError?.status === "completed"
+            ? { status: "failed", reason: "summary-error" }
+            : { status: "skipped", reason: "capture-failed" },
+        }, paths, log);
+      }
+      if (precompactVerified) recordPrecompactStages({
+        cwd, sessionId: session_id, client, operationId,
+        summary: { status: "failed", reason: "summary-error" },
+      }, paths, log);
       const llmUsage =
         err instanceof Error
           ? (err as Error & { llmUsage?: CompactLlmUsage }).llmUsage
           : undefined;
       sendJson(res, err instanceof TranscriptSourceError ? 400 : 500, {
         error: err instanceof Error ? err.message : "compact failed",
+        ...(captureRequired ? {
+          captureOutcome: captureOutcomeForError ?? { status: "failed", reason: "capture-error" },
+          summaryOutcome: captureOutcomeForError?.status === "completed"
+            ? { status: "failed", reason: "summary-error" }
+            : { status: "skipped", reason: "capture-failed" },
+        } : {}),
         ...(llmUsage ? { llmUsage } : {}),
       });
     } finally {

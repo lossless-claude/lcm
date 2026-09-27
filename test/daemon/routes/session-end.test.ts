@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { DaemonConfig } from "../../../src/daemon/config.js";
 import type { RouteHandler } from "../../../src/daemon/server.js";
+import { EventsDb } from "../../../src/hooks/events-db.js";
+import { eventsDbPath } from "../../../src/db/events-path.js";
 
 const fired = {
   compact: vi.fn(),
@@ -101,6 +103,12 @@ describe("POST /session-end", () => {
     ingest.release();
     await settled();
     expect(fired.sessionComplete).toHaveBeenCalledTimes(1);
+    const db = new EventsDb(eventsDbPath(dir, paths));
+    try {
+      expect(db.getHookObservationSummary("s1")).toEqual(expect.arrayContaining([
+        expect.objectContaining({ hook: "SessionEnd", operation: "capture", status: "completed", count: 1 }),
+      ]));
+    } finally { db.close(); }
   });
 
   it("fires nothing when ingest answers a non-2xx status, and logs it", async () => {
@@ -115,6 +123,12 @@ describe("POST /session-end", () => {
       expect.objectContaining({ message: expect.stringContaining("HTTP 400") }),
       expect.objectContaining({ sessionId: "s1" }),
     );
+    const db = new EventsDb(eventsDbPath(dir, paths));
+    try {
+      expect(db.getHookObservationSummary("s1")).toEqual(expect.arrayContaining([
+        expect.objectContaining({ hook: "SessionEnd", operation: "capture", status: "failed", count: 1 }),
+      ]));
+    } finally { db.close(); }
   });
 
   it("hands ingest the validated identity, then fires compact, promote, promote-events and session-complete", async () => {

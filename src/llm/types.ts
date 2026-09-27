@@ -25,6 +25,8 @@ export type SummarizerUsage = {
   provider: SummarizerProvider;
   model?: string;
   estimated?: boolean;
+  /** A reported attempt that spent tokens but did not produce a usable answer. */
+  failed?: boolean;
   inputTokens?: number;
   cachedInputTokens?: number;
   outputTokens?: number;

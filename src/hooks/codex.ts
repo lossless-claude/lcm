@@ -1,4 +1,5 @@
 import { open } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { DaemonClient } from "../daemon/client.js";
 import { resolveLcmConfig } from "../db/config.js";
 import { loadDaemonConfig } from "../daemon/config.js";
@@ -10,6 +11,7 @@ import { lcmHome } from "../lcm-home.js";
 import { createLcmPaths, type LcmPaths } from "../lcm-paths.js";
 import { firePromoteEventsRequest } from "./daemon-requests.js";
 import { translateToolCall, type ToolVocabulary } from "./tool-vocabulary.js";
+import { observeHook } from "./observe.js";
 
 const EVENTS = new Set([
   "SessionStart", "UserPromptSubmit", "Stop", "Interrupt", "SessionEnd", "PreCompact",
@@ -309,62 +311,125 @@ export async function dispatchCodexHook(
   } catch {
     // Malformed stdin falls through to the lifecycle parser, which rejects it too.
   }
+  let observedInput: CodexInput | undefined;
+  let activeOperation = "capture";
   try {
     const input = parseInput(stdin);
     if (!input) return EMPTY;
+    observedInput = input;
     const shortDeadline = input.hook_event_name === "Interrupt" || input.hook_event_name === "SessionEnd";
+    const compacting = input.hook_event_name === "PreCompact";
+    if (compacting) activeOperation = "precompact";
+    const observe = (operation: string, status: "completed" | "deferred" | "failed", reason = "") =>
+      observeHook(input.cwd, { sessionId: input.session_id, harness: "codex",
+        hook: input.hook_event_name, operation, kind: "execution", status, reason,
+        ...(status === "failed" ? { failureCode: reason } : {}) }, paths);
+    const observeDelivery = (operation: string, status: "accepted" | "rejected" | "unconfirmed", reason = "") =>
+      observeHook(input.cwd, { sessionId: input.session_id, harness: "codex",
+        hook: input.hook_event_name, operation, kind: "delivery", status, reason,
+        ...(status === "rejected" ? { failureCode: reason } : {}) }, paths);
+    const precompactOperationId = compacting ? randomUUID() : undefined;
+    const observePrecompactDelivery = (status: "accepted" | "rejected" | "unconfirmed", reason?: string) => {
+      if (!precompactOperationId) return;
+      observeHook(input.cwd, {
+        sessionId: input.session_id, harness: "codex", hook: "PreCompact", operation: "precompact",
+        kind: "delivery", status, reason, operationId: precompactOperationId,
+        ...(status === "rejected" ? { failureCode: reason ?? "rejected" } : {}),
+      }, paths);
+    };
     // Codex caps Interrupt and SessionEnd hooks at three seconds. Never start a
     // daemon there; one health probe still keeps an incompatible daemon unused.
-    if (!await connect(input.session_id, shortDeadline)) {
+    let connected = false;
+    try {
+      connected = await connect(input.session_id, shortDeadline);
+    } catch { /* Connection failure is reported by the common no-connection branch. */ }
+    if (!connected) {
       console.error("[lcm] Codex memory daemon is unavailable; capture and recall deferred.");
+      if (compacting) observePrecompactDelivery("unconfirmed", "daemon-unavailable");
+      else {
+        observeDelivery("capture", "unconfirmed", "daemon-unavailable");
+        if (input.hook_event_name === "SessionStart") observeDelivery("restore", "unconfirmed", "daemon-unavailable");
+        if (input.hook_event_name === "UserPromptSubmit" && input.prompt?.trim())
+          observeDelivery("search", "unconfirmed", "daemon-unavailable");
+      }
       return EMPTY;
     }
-    const compacting = input.hook_event_name === "PreCompact";
     const signal = AbortSignal.timeout(shortDeadline ? 2000 : compacting ? 120_000 : 15_000);
     const identity = { session_id: input.session_id, cwd: input.cwd, client: "codex" };
     let transcriptValidated = false;
 
     // Capture on every turn and before restore/compaction. The daemon serializes
     // ingestion and owns deduplication, so retries and overlapping hooks are safe.
-    if (input.transcript_path) {
+    if (input.transcript_path && !compacting) {
       try {
         await client.post("/ingest", {
           ...identity, transcript_path: input.transcript_path,
         }, { timeoutMs: shortDeadline ? 1500 : 5000, signal });
         transcriptValidated = true;
+        observeDelivery("capture", "accepted");
+        observe("capture", "completed");
       } catch (error) {
         // Existing memory remains useful even if a transcript is not ready yet.
         console.error(`[lcm] Codex ${input.hook_event_name} capture failed: ${error instanceof Error ? error.message : "unknown error"}`);
+        const status = (error as { status?: unknown })?.status;
+        observeDelivery("capture", typeof status === "number" ? "rejected" : "unconfirmed",
+          typeof status === "number" ? `http-${status}` : error instanceof Error && error.name === "TimeoutError" ? "timeout" : "transport");
       }
-    }
+    } else if (!compacting) observe("capture", "deferred", "source-unavailable");
 
     if (input.hook_event_name === "SessionStart") {
+      activeOperation = "restore";
       const restored = await client.post<{ context?: string }>("/restore", {
         ...identity, source: input.source ?? "startup",
       }, { timeoutMs: 10_000, signal });
+      observeDelivery("restore", "accepted");
+      observe("restore", "completed", restored.context ? "context" : "no-context");
       if (input.source === "compact" && transcriptValidated && input.transcript_path &&
           await hasContextAfterCompaction(input.transcript_path, restored.context ?? "")) return EMPTY;
       return contextOutput("SessionStart", restored.context ?? "");
     }
     if (input.hook_event_name === "UserPromptSubmit" && input.prompt?.trim()) {
+      activeOperation = "search";
       const recalled = await client.post<{
         hints?: string[]; ids?: string[]; projectIds?: (string | null)[]; pivotHint?: string;
       }>("/prompt-search", {
         ...identity, query: input.prompt, learningInstructionBytes: 0, nativeHistory: true,
       }, { timeoutMs: 5000, signal });
+      observeDelivery("search", "accepted");
+      observe("search", "completed", recalled.hints?.length ? "hints" : "no-hints");
       return contextOutput("UserPromptSubmit", buildMemoryContext(
         recalled.hints ?? [], recalled.ids ?? [], recalled.projectIds ?? [], recalled.pivotHint,
       ) ?? "");
     }
+    if (input.hook_event_name === "UserPromptSubmit") observe("search", "deferred", "empty-prompt");
     if (compacting) {
-      await client.post("/compact", {
-        ...identity, skip_ingest: true,
-      }, { timeoutMs: 115_000, signal });
+      activeOperation = "precompact";
+      try {
+        await client.post("/compact", {
+          ...identity, transcript_path: input.transcript_path, capture_required: true,
+          operation_id: precompactOperationId,
+        }, { timeoutMs: 115_000, signal });
+        observePrecompactDelivery("accepted");
+      } catch (err) {
+        const status = (err as { status?: unknown })?.status;
+        observePrecompactDelivery(typeof status === "number" ? "rejected" : "unconfirmed",
+          typeof status === "number" ? `http-${status}` : err instanceof Error && err.name === "TimeoutError" ? "timeout" : "transport");
+        throw err;
+      }
       // SessionStart(source=compact) restores the saved memory. PreCompact output
       // is advisory, and must not be used as the continuation delivery channel.
     }
     return EMPTY;
   } catch (error) {
+    if (observedInput && activeOperation !== "precompact") {
+      const status = (error as { status?: unknown })?.status;
+      observeHook(observedInput.cwd, {
+        sessionId: observedInput.session_id, harness: "codex", hook: observedInput.hook_event_name,
+        operation: activeOperation, kind: "delivery",
+        status: typeof status === "number" ? "rejected" : "unconfirmed",
+        reason: typeof status === "number" ? `http-${status}` : error instanceof Error && error.name === "TimeoutError" ? "timeout" : "transport",
+      }, paths);
+    }
     console.error(`[lcm] Codex hook failed: ${error instanceof Error ? error.message : "unknown error"}`);
     return EMPTY;
   }

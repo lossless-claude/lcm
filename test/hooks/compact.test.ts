@@ -24,7 +24,7 @@ describe("handlePreCompact", () => {
     expect(result.stdout).toContain("Compacted");
     expect(client.post).toHaveBeenCalledWith(
       "/compact",
-      expect.objectContaining({ client: "claude" }),
+      expect.objectContaining({ client: "claude", capture_required: true }),
       expect.objectContaining({ timeoutMs: expect.any(Number) }),
     );
   });
@@ -46,5 +46,29 @@ describe("handlePreCompact", () => {
     const result = await handlePreCompact("{}", client as any, paths, port);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("");
+  });
+
+  it("prints nothing when required Capture is deferred", async () => {
+    mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
+    const client = { post: vi.fn().mockResolvedValue({ summary: "", captureOutcome: { status: "deferred" },
+      summaryOutcome: { status: "skipped", reason: "capture-deferred" } }) };
+    const result = await handlePreCompact(JSON.stringify({ session_id: "s1", cwd: "/proj" }), client as any, paths, port);
+    expect(result).toEqual({ exitCode: 0, stdout: "" });
+  });
+
+  it.each(["no-work", "disabled", "busy"])("prints nothing when the lcm summary is skipped (%s)", async (reason) => {
+    mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
+    const client = { post: vi.fn().mockResolvedValue({
+      summary: "No compaction needed.", latestSummaryContent: "old summary",
+      captureOutcome: { status: "completed" }, summaryOutcome: { status: "skipped", reason },
+    }) };
+    const result = await handlePreCompact(JSON.stringify({ session_id: "s1", cwd: "/proj" }), client as any, paths, port);
+    expect(result).toEqual({ exitCode: 0, stdout: "" });
+  });
+
+  it("fails open for a JSON null payload", async () => {
+    const client = { post: vi.fn() };
+    await expect(handlePreCompact("null", client as any, paths)).resolves.toEqual({ exitCode: 0, stdout: "" });
+    expect(client.post).not.toHaveBeenCalled();
   });
 });

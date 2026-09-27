@@ -61,6 +61,21 @@ describe("tool call dedup on (session_id, tool_use_id)", () => {
 
     expect(rows()).toHaveLength(first.recorded);
     expect(rows().every((r) => r.tool_use_id === "toolu_abc")).toBe(true);
+    const db = new EventsDb(join(dir, "events.db"));
+    expect(db.getHookObservationSummary("s1")).toMatchObject([
+      { harness: "claude-command", operation: "tool-capture", status: "completed", count: 1 },
+    ]);
+    db.close();
+  });
+
+  it("records a completed no-match extraction without an event row", () => {
+    expect(call({ tool_name: "UnknownTool", tool_input: {}, tool_response: "", tool_use_id: "toolu_no_match" }).recorded).toBe(0);
+    expect(rows()).toHaveLength(0);
+    const db = new EventsDb(join(dir, "events.db"));
+    expect(db.getHookObservationSummary("s1")).toMatchObject([
+      { operation: "tool-capture", status: "completed", reason: "no-match", count: 1 },
+    ]);
+    db.close();
   });
 
   it("records two different calls in the same session", () => {
@@ -82,6 +97,18 @@ describe("tool call dedup on (session_id, tool_use_id)", () => {
     expect(first.recorded).toBeGreaterThan(0);
     expect(second.recorded).toBe(first.recorded);
     expect(rows().every((r) => r.tool_use_id === null)).toBe(true);
+  });
+
+  it("rolls back a no-ID tool event when its outcome cannot be stored", () => {
+    const db = new EventsDb(join(dir, "events.db"));
+    db.raw().exec(`
+      CREATE TRIGGER reject_tool_observation BEFORE INSERT ON hook_observation_summary
+      BEGIN SELECT RAISE(ABORT, 'observation write failed'); END;
+    `);
+    db.close();
+
+    expect(() => call({ tool_use_id: undefined })).toThrow("observation write failed");
+    expect(rows()).toHaveLength(0);
   });
 
   it("adds the column and index to a database written before the migration", () => {

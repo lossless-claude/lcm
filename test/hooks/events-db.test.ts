@@ -24,6 +24,62 @@ describe("EventsDb", () => {
     db.close();
   });
 
+  it("keeps delivery and execution distinct while counting a retry only once", () => {
+    const db = new EventsDb(dbPath);
+    const base = {
+      sessionId: "s1", harness: "codex" as const, hook: "PreCompact", operation: "capture",
+      operationId: "capture-1",
+    };
+    expect(db.recordHookObservation({ ...base, kind: "delivery", status: "unconfirmed" })).toBe(true);
+    expect(db.recordHookObservation({ ...base, kind: "execution", status: "completed" })).toBe(true);
+    expect(db.recordHookObservation({ ...base, kind: "execution", status: "completed" })).toBe(false);
+    expect(db.recordHookObservation({ ...base, operationId: "capture-2", kind: "execution", status: "completed" })).toBe(true);
+
+    expect(db.getHookObservationSummary("s1")).toMatchObject([
+      { kind: "delivery", status: "unconfirmed", count: 1 },
+      { kind: "execution", status: "completed", count: 2 },
+    ]);
+    db.close();
+  });
+
+  it("scopes a repeated operation id to its session, harness, hook, and operation", () => {
+    const db = new EventsDb(dbPath);
+    // A retained key from an older build has no Session scope and must not
+    // suppress an observation under the new scoped identity.
+    db.raw().prepare("INSERT INTO hook_observation_seen (operation_id, kind) VALUES (?, ?)")
+      .run("shared-id", "execution");
+    const base = { sessionId: "s1", harness: "codex" as const, hook: "PreCompact",
+      operation: "capture", kind: "execution" as const, status: "completed" as const,
+      operationId: "shared-id" };
+    expect(db.recordHookObservation(base)).toBe(true);
+    expect(db.recordHookObservation(base)).toBe(false);
+    expect(db.recordHookObservation({ ...base, sessionId: "s2" })).toBe(true);
+    expect(db.recordHookObservation({ ...base, harness: "omp" })).toBe(true);
+    expect(db.recordHookObservation({ ...base, hook: "SessionEnd" })).toBe(true);
+    expect(db.recordHookObservation({ ...base, operation: "summary" })).toBe(true);
+    expect(db.getHookObservationSummary("s2")).toMatchObject([
+      { sessionId: "s2", harness: "codex", operation: "capture", count: 1 },
+    ]);
+    db.close();
+  });
+
+  it("retains individual failure codes within a per-session bound", () => {
+    const db = new EventsDb(dbPath);
+    for (let i = 0; i < 65; i++) {
+      db.recordHookObservation({
+        sessionId: "s1", harness: "claude-command", hook: "PreCompact", operation: "capture",
+        kind: "execution", status: "failed", failureCode: `failure-${i}`, operationId: `failure-${i}`,
+      });
+    }
+    expect(db.getHookObservationSummary("s1")).toMatchObject([
+      { kind: "execution", status: "failed", count: 65 },
+    ]);
+    const failures = db.raw().prepare("SELECT code FROM hook_observation_failures WHERE session_id = ? ORDER BY id").all("s1") as { code: string }[];
+    expect(failures).toHaveLength(64);
+    expect(failures[0].code).toBe("failure-1");
+    db.close();
+  });
+
   it("inserts and retrieves events", () => {
     const db = new EventsDb(dbPath);
     db.insertEvent("session-1", {
@@ -146,7 +202,7 @@ describe("EventsDb", () => {
       expect(columns.map((c) => c.name)).toContain("tool_use_id");
       expect(columns.map((c) => c.name)).toEqual(expect.arrayContaining(["client", "model"]));
       const versionRow = db.raw().prepare("SELECT version FROM schema_version").get() as { version: number };
-      expect(versionRow.version).toBe(7);
+      expect(versionRow.version).toBe(8);
       db.close();
     });
 
@@ -187,11 +243,11 @@ describe("EventsDb", () => {
       expect(row.client).toBe("claude");
       expect(row.model).toBeNull();
       const versionRow = db.raw().prepare("SELECT version FROM schema_version").get() as { version: number };
-      expect(versionRow.version).toBe(7);
+      expect(versionRow.version).toBe(8);
       db.close();
     });
 
-    it("migrates a v6 DB to v7 without changing existing rows", () => {
+    it("migrates a v6 DB to the current schema without changing existing rows", () => {
       const { DatabaseSync } = require("node:sqlite");
       const { mkdirSync } = require("node:fs");
       const { dirname } = require("node:path");
@@ -216,7 +272,7 @@ describe("EventsDb", () => {
       expect(db.raw().prepare("SELECT session_id, tool_use_id, client, model, turn_id FROM events").get()).toEqual({
         session_id: "v6-session", tool_use_id: "call_v6", client: "codex", model: "model-v6", turn_id: null,
       });
-      expect(db.raw().prepare("SELECT version FROM schema_version").get()).toEqual({ version: 7 });
+      expect(db.raw().prepare("SELECT version FROM schema_version").get()).toEqual({ version: 8 });
       db.close();
     });
 

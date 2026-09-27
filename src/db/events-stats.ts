@@ -18,6 +18,11 @@ export interface EventStats {
 }
 
 export interface DetailedEventStats extends EventStats {
+  hookFailures: number;
+  recentHookFailures: Array<{
+    file: string; sessionId: string; harness: string; hook: string;
+    operation: string; code: string; createdAt: string;
+  }>;
   projects: Array<{
     file: string;
     captured: number;
@@ -25,6 +30,18 @@ export interface DetailedEventStats extends EventStats {
     lastCapture: string | null;
   }>;
   recentErrors: Array<{ created_at: string; hook: string; error: string }>;
+  recentHookObservations: Array<{
+    file: string;
+    sessionId: string;
+    harness: string;
+    hook: string;
+    operation: string;
+    kind: string;
+    status: string;
+    reason: string;
+    count: number;
+    lastSeen: string;
+  }>;
 }
 
 const MAX_DBS = 50;
@@ -95,7 +112,7 @@ export function collectEventStats(paths: LcmPaths, timeoutMs = 2000): EventStats
 export function collectDetailedEventStats(paths: LcmPaths, timeoutMs = 2000): DetailedEventStats {
   const result: DetailedEventStats = {
     captured: 0, unprocessed: 0, errors: 0, lastCapture: null, scanned: 0, total: 0,
-    projects: [], recentErrors: [],
+    projects: [], recentErrors: [], recentHookObservations: [], recentHookFailures: [], hookFailures: 0,
   };
   const dir = eventsDir(paths);
   const deadline = Date.now() + timeoutMs;
@@ -139,6 +156,36 @@ export function collectDetailedEventStats(paths: LcmPaths, timeoutMs = 2000): De
           ).all() as Array<{ created_at: string; hook: string; error: string }>;
           result.recentErrors.push(...errors);
         }
+        const hasHookObservations = db.prepare(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hook_observation_summary'"
+        ).get();
+        if (hasHookObservations) {
+          const observations = db.prepare(`
+            SELECT session_id AS sessionId, harness, hook, operation, kind, status, reason,
+                   count, last_seen AS lastSeen
+            FROM hook_observation_summary
+            WHERE last_seen >= datetime('now', '-7 days')
+            ORDER BY last_seen DESC LIMIT 10
+          `).all() as Array<Omit<DetailedEventStats["recentHookObservations"][number], "file">>;
+          result.recentHookObservations.push(...observations.map((observation) => ({ file, ...observation })));
+          const hasHookFailures = db.prepare(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hook_observation_failures'"
+          ).get();
+          if (hasHookFailures) {
+            const failures = db.prepare(
+              "SELECT COUNT(*) AS count FROM hook_observation_failures WHERE created_at >= datetime('now', '-7 days')"
+            ).get() as { count: number };
+            result.hookFailures += failures.count;
+            const recent = db.prepare(`
+              SELECT session_id AS sessionId, harness, hook, operation, code,
+                     created_at AS createdAt
+              FROM hook_observation_failures
+              WHERE created_at >= datetime('now', '-7 days')
+              ORDER BY id DESC LIMIT 5
+            `).all() as Array<Omit<DetailedEventStats["recentHookFailures"][number], "file">>;
+            result.recentHookFailures.push(...recent.map((failure) => ({ file, ...failure })));
+          }
+        }
       } finally {
         db.close();
       }
@@ -152,6 +199,10 @@ export function collectDetailedEventStats(paths: LcmPaths, timeoutMs = 2000): De
   // Sort and limit recent errors across all DBs
   result.recentErrors.sort((a, b) => b.created_at.localeCompare(a.created_at));
   result.recentErrors = result.recentErrors.slice(0, 5);
+  result.recentHookObservations.sort((a, b) => b.lastSeen.localeCompare(a.lastSeen));
+  result.recentHookObservations = result.recentHookObservations.slice(0, 20);
+  result.recentHookFailures.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  result.recentHookFailures = result.recentHookFailures.slice(0, 10);
 
   return result;
 }

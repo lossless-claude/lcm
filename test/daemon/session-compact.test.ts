@@ -82,6 +82,86 @@ it("compacts through the session queue and persists actual provider and estimate
   }
 });
 
+it("counts unanswered session attempts as failed and attributes the answering provider", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "lcm-session-attempts-"));
+  const jobs = new SummarizeJobStore();
+  const abort = new AbortController();
+  const config = loadDaemonConfig("/x", { llm: { provider: "session", fallbackProvider: "openai" } }, {});
+  const sessionId = "session-attempts";
+  let served = 0;
+  const serve = (async () => {
+    while (!abort.signal.aborted) {
+      const job = await jobs.next(sessionId, abort.signal);
+      if (!job) continue;
+      served++;
+      jobs.answer(job.id, { text: "live session summary", providerId: "session:haiku",
+        usage: { input_tokens: 3, output_tokens: 2, estimated: true },
+        usageAttempts: [{ providerId: "session:fork", failed: true,
+          usage: { input_tokens: 40, output_tokens: 7, estimated: false } }],
+      });
+    }
+  })();
+  try {
+    await invoke(createIngestHandler(config, paths), { cwd, session_id: sessionId,
+      messages: Array.from({ length: 40 }, (_, i) => ({ role: i % 2 ? "assistant" : "user",
+        content: `message ${i}`, tokenCount: 300 })),
+    });
+    const result = await invoke(createCompactHandler(config, paths, jobs), { cwd, session_id: sessionId });
+    expect(served).toBeGreaterThan(0);
+    expect(result.providerId).toBe("session:haiku");
+    const db = new DatabaseSync(projectDbPath(cwd, paths));
+    try {
+      expect(db.prepare("SELECT provider, calls_total, calls_ok, calls_failed FROM llm_usage_stats ORDER BY provider").all())
+        .toMatchObject([
+          { provider: "session:fork", calls_total: served, calls_ok: 0, calls_failed: served },
+          { provider: "session:haiku", calls_total: served, calls_ok: served, calls_failed: 0 },
+        ]);
+    } finally { db.close(); }
+  } finally {
+    abort.abort();
+    await serve;
+    jobs.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+it("keeps a cap-discarded answered attempt successful without attributing the fallback to it", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "lcm-session-cap-attempt-"));
+  const jobs = new SummarizeJobStore();
+  const abort = new AbortController();
+  const config = loadDaemonConfig("/x", { llm: { provider: "session", fallbackProvider: "openai" } }, {});
+  const sessionId = "cap-attempt";
+  let served = 0;
+  const serve = (async () => {
+    while (!abort.signal.aborted) {
+      const job = await jobs.next(sessionId, abort.signal);
+      if (!job) continue;
+      served++;
+      jobs.answer(job.id, { error: "spend cap", usageAttempts: [{ providerId: "session:haiku", failed: false,
+        usage: { input_tokens: 3, output_tokens: 2, estimated: true } }] });
+    }
+  })();
+  try {
+    await invoke(createIngestHandler(config, paths), { cwd, session_id: sessionId,
+      messages: Array.from({ length: 40 }, (_, i) => ({ role: i % 2 ? "assistant" : "user",
+        content: `message ${i}`, tokenCount: 300 })),
+    });
+    const result = await invoke(createCompactHandler(config, paths, jobs), { cwd, session_id: sessionId });
+    expect(served).toBeGreaterThan(0);
+    expect(result.providerId).toBe("openai");
+    const db = new DatabaseSync(projectDbPath(cwd, paths));
+    try {
+      expect(db.prepare("SELECT provider, calls_ok, calls_failed FROM llm_usage_stats WHERE provider = 'session:haiku'").get())
+        .toMatchObject({ provider: "session:haiku", calls_ok: served, calls_failed: 0 });
+    } finally { db.close(); }
+  } finally {
+    abort.abort();
+    await serve;
+    jobs.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 it("names the fallback provider in the response when no session served a job", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "lcm-session-fallback-"));
   const jobs = new SummarizeJobStore(50); // nobody polls: every job expires at once

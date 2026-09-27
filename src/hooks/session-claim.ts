@@ -12,9 +12,10 @@ import { tmpdir } from "node:os";
  */
 export type SessionClaim = { sessionId: string; ts: number };
 
-/** Filenames must survive a session id from any host, as in session-snapshot.ts. */
+/** The function module uses this injective encoding for claim filenames. */
 function safeSessionId(sessionId: string): string {
-  return sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  return encodeURIComponent(sessionId).replace(/[_.!~*'()]/g,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
 }
 
 export function claimPath(sessionId: string): string {

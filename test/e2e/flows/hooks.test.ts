@@ -104,7 +104,8 @@ describe("Flow 15: PreCompact hook", { timeout: 60_000 }, () => {
   it("returns exit 0 with summary text", async () => {
     const h = handle!;
 
-    // First ingest some data so there is something to compact
+    // First ingest some data so there is something to compact; the transcript
+    // remains the Capture source required before lcm emits a summary.
     await h.client.post("/ingest", {
       session_id: "e2e-precompact-test",
       cwd: h.tmpDir,
@@ -121,6 +122,7 @@ describe("Flow 15: PreCompact hook", { timeout: 60_000 }, () => {
       session_id: "e2e-precompact-test",
       cwd: h.tmpDir,
       client: "claude",
+      transcript_path: h.fixturePath,
     });
 
     const { handlePreCompact } = await import("../../../src/hooks/compact.js");
