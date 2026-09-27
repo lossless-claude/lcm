@@ -143,36 +143,61 @@ Rules:
   secret, and keeping it environment-only keeps its URL check at load. A declared
   `ANTHROPIC_API_KEY` also feeds the implicit key of an `anthropic` endpoint that sets none
   (`defaultApiKey`), so the two ways of naming that key cannot disagree.
-- Load validates the shape only: a `\w+` name, a non-empty array of strings, an absolute
-  `argv[0]` (the daemon's `PATH` is also inherited from the spawner). Load runs nothing:
-  hooks, the MCP server and CLI commands call `loadDaemonConfig` just to read the port.
+- Load validates the shape: a `\w+` name, a non-empty array of strings, an absolute
+  `argv[0]` (the daemon's `PATH` is also inherited from the spawner). When `llm.secrets` is
+  non-empty it also `stat`s `config.json` and its directory, under the conditions in the
+  assessment below. Load runs nothing: hooks, the MCP server and CLI commands call
+  `loadDaemonConfig` just to read the port.
 - The daemon runs the command when it first builds that endpoint's adapter: `execFile` with
-  no shell, stdin closed, a timeout, an output cap, one trailing newline trimmed. Standard
-  error is discarded. An empty output, a non-zero exit or a timeout is a failure.
+  no shell, stdin closed, a 10 s timeout, a 64 KiB output cap, one trailing newline
+  trimmed. Standard error is discarded. An empty output, a non-zero exit or a timeout is a failure.
 - The value lives only inside the adapter's client object; it is never written back into
   `config.llm`, so no route or log that serializes the config can carry it.
-- A failure is logged as the name and the outcome (`exit <n>`, `timeout`, `empty`), never
-  the output, and raised as an error the chain treats as advancing
-  (`src/llm/provider-chain.ts:failureAdvancesChain`), then retried at the next build.
+- A failure is raised as `CredentialUnavailableError`, defined in `src/llm/provider-chain.ts`
+  next to `SessionUnavailableError`, whose message is the name and the outcome (`exit <n>`,
+  `timeout`, `empty`), never the output; the log line says the same. The resolver runs
+  before any request, so there is no status for `httpFailureAdvances` to
+  read, and an unclassified error on an `http` link stops the chain. `failureAdvancesChain`
+  therefore passes `CredentialUnavailableError` before its per-kind branches, as it does
+  `SummaryRejectedError`, so the call moves to the next link.
+- Resolution happens in the link's adapter build (`link.summarizer()`), which `runLink`
+  already runs inside the try that feeds `failureAdvancesChain`. `LinkFactory.adapter`
+  drops a rejected build, so the next call that reaches the link builds it again and reruns
+  the command. Only a value is cached; a failure never is.
 
 Assessment:
 
-- **Security:** no copy at rest beyond the user's own store. Running a command from
-  `config.json` means whoever can write that file can run code as the user; they can already
-  point a `baseURL` at their own server and receive the key and every summarized transcript,
-  so no trust boundary moves. The command's own access to its store is subject to B's
-  **unconfirmed** caveats; C does not remove them, it lets the user pick a store that works
-  non-interactively on their host.
+- **Security:** no copy at rest beyond the user's own store. The command source is local
+  code execution as the daemon user: whoever can write `config.json` can run any program
+  with any arguments, `/bin/sh -c` included. A `baseURL` they control today lets them
+  receive the key and the transcripts sent for summary, not run code, so `config.json`
+  becomes a trust boundary it was not. An absolute `argv[0]` removes the dependency on the
+  spawner's `PATH` and nothing more; lcm does not filter which program runs, the boundary
+  is who can write the file.
+  Today nothing guards that boundary: `src/bootstrap.ts:ensureCore` writes `config.json`
+  `0600` only when it is missing, ignores a failed `chmod`, and creates its directory with
+  the default mode; `src/daemon/config.ts:loadDaemonConfig` reads the file without checking
+  owner or mode; `src/db/config.ts` reads only the environment. So load checks, with `stat`
+  only, that `config.json` is a regular file owned by the daemon's uid, and that neither it
+  nor its directory is writable by group or others. If either fails, every name in
+  `llm.secrets` is refused: the endpoints that need one are left out of the chain at load,
+  as an endpoint with `missingEnv` is, with one log line naming the path and the failed
+  condition, and nothing else stops (invariant 3). Fixing the mode takes a daemon restart.
+  The command then runs under the rules above (no shell, bounded time and output). Its
+  own access to its store is subject to B's **unconfirmed** caveats; C does not remove
+  them, it lets the user pick a store that works non-interactively on their host.
 - **Failure modes:** a locked store or a failing command disables only that endpoint, per
   summary attempt, and recovers without a restart once the command succeeds. Rotation needs a
   daemon restart (the value is cached per process), as today.
 - **UX:** the user moves the expression their shell profile already runs into config, once.
-- **Code:** a schema check in `provider-config.ts`, a resolver used from
-  `summarizer.ts:createEndpointSummarizer`, one error type, tests. Estimated at a few hundred
-  lines with tests, **unmeasured**.
+- **Code:** a schema check in `provider-config.ts`, the owner and mode check in
+  `loadDaemonConfig`, a resolver used from `summarizer.ts:createEndpointSummarizer`,
+  `CredentialUnavailableError` and its branch in `failureAdvancesChain`, tests. Estimated
+  at a few hundred lines with tests, **unmeasured**.
 - **`/health`:** `summarizer` gains, per endpoint with a declared key, whether it has resolved,
   not yet been tried, or last failed and how. Never the value.
-- **Doctor:** checks that each declared `argv[0]` is absolute and executable, reports the
+- **Doctor:** checks that each declared `argv[0]` is absolute and executable and that
+  `config.json` and its directory pass the owner and mode check, reports the
   daemon's resolution state from `/health`, and changes its fix text to name `llm.secrets`
   next to exporting the variable. It does not run the command: `lcm_doctor` runs from an
   agent, and a store may raise a prompt.
@@ -181,9 +206,9 @@ What a call-time key changes in today's code, which the implementation must hand
 
 - `createSummarizer` awaits the first link's adapter eagerly, and the compact handler
   (`src/daemon/routes/compact.ts:createCompactHandler`) caches that promise per provider with
-  no eviction. A resolution failure there would be a permanently cached rejection. Loading
-  the client library stays eager; resolving the key moves inside the link, where the chain
-  catches it.
+  no eviction. A resolution failure there would be a permanently cached rejection. The
+  eager step keeps loading the client library but no longer calls `link.summarizer()`;
+  resolving the key happens only there, inside the chain.
 - `namedChain` and `firstRunnableSummarizer` treat an endpoint with a declared key as
   runnable, since they cannot know before it runs. The replay ledger's configured model may
   then name an endpoint that fails resolution; the chain's `summarizer.fallback` event records
@@ -255,18 +280,26 @@ same spawner dependency but carry no secret.
 The resolver and its wiring, no reporting changes:
 
 1. `provider-config.ts`: parse and validate `llm.secrets` (shape, absolute `argv[0]`, `apiKey`
-   references only). An endpoint whose only unset names are declared is not marked
-   `missingEnv`; it records which declared names its `apiKey` needs.
+   references only); `loadDaemonConfig`, which has the path, runs the owner and mode check
+   on `config.json` and its directory. An
+   endpoint whose only unset names are declared, and whose declarations passed the check, is
+   not marked `missingEnv`; it records which declared names its `apiKey` needs.
 2. A resolver module: runs one declared command under the rules above, caches the value per
-   process, returns a typed failure.
-3. `summarizer.ts`: the adapter build resolves the key inside the link; the eager first-link
-   build loads only the client library; the failure type advances the chain and is retried at
-   the next build.
-4. Tests: a declared name ignores the environment; an undeclared name behaves as today; a
-   failing, empty or slow command leaves only that endpoint out and does not poison the
-   compact handler's cache; the value never appears in `config.llm`, `/health` or the log.
-5. `docs/configuration.md` (the named-endpoint table and "Unset variables") and
-   `docs/architecture.md` ("Authentication") describe `llm.secrets`; a changeset.
+   process, throws `CredentialUnavailableError`.
+3. `provider-chain.ts`: `CredentialUnavailableError`, and `failureAdvancesChain` passing it
+   whatever the link kind.
+4. `summarizer.ts`: `link.summarizer()` resolves the key; the eager first-link step loads
+   only the client library; `LinkFactory.adapter` drops the failed build, so the next call
+   reruns the command.
+5. Tests: a declared name ignores the environment; an undeclared name behaves as today; a
+   failing, empty or slow command on the first link hands that call to the next link, leaves
+   only that endpoint out and does not poison the compact handler's cache; a `config.json` or
+   directory that is group- or world-writable, or owned by another uid, disables every
+   declared name and nothing else; the value never appears in `config.llm`, `/health` or the
+   log.
+6. `docs/configuration.md` (the named-endpoint table and "Unset variables") and
+   `docs/architecture.md` ("Authentication", and the failures that advance in "Provider
+   chain") describe `llm.secrets`; a changeset.
 
 A second PR adds the `/health` resolution state and the doctor checks. It is also where the
 **unconfirmed** keychain behaviour of a detached daemon on macOS and Linux gets checked on
