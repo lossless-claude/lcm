@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { readHookOutcomeLog } from "../../src/doctor/hook-outcome-log.js";
@@ -48,5 +48,27 @@ describe("local command-hook outcome inspection", () => {
     expect(readHookOutcomeLog(paths.logsDir, dir).outcomes).toMatchObject([
       { sessionId: "s1", status: "accepted", count: 1 },
     ]);
+  });
+
+  it("does not replace the retained log while another hook owns rotation", () => {
+    const dir = mkdtempSync(join(tmpdir(), "lcm-hook-outcome-rotation-"));
+    dirs.push(dir);
+    const paths = createLcmPaths(dir);
+    mkdirSync(paths.logsDir, { recursive: true });
+    const log = join(paths.logsDir, "hook-outcomes.log");
+    const lock = `${log}.rotate.lock`;
+    writeFileSync(log, "x".repeat(2 * 1024 * 1024));
+    writeFileSync(lock, "");
+    const observation = { sessionId: "s1", harness: "codex" as const, hook: "Stop",
+      operation: "capture", kind: "delivery" as const, status: "accepted" as const };
+
+    expect(observeHook(dir, observation, paths)).toBe(false);
+    expect(existsSync(`${log}.1`)).toBe(false);
+    expect(statSync(log).size).toBe(2 * 1024 * 1024);
+    rmSync(lock);
+    expect(observeHook(dir, observation, paths)).toBe(true);
+    expect(statSync(`${log}.1`).size).toBe(2 * 1024 * 1024);
+    expect(observeHook(dir, observation, paths)).toBe(true);
+    expect(statSync(`${log}.1`).size).toBe(2 * 1024 * 1024);
   });
 });

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -25,14 +25,15 @@ function context(overrides: Partial<HookContext> = {}): HookContext {
   };
 }
 
-function hook(): { handlers: Map<string, HookHandler>; pi: HookApi } {
+function hook(): { handlers: Map<string, HookHandler>; pi: HookApi; loggerError: ReturnType<typeof vi.fn> } {
   const handlers = new Map<string, HookHandler>();
+  const loggerError = vi.fn();
   const pi: HookApi = {
     on: (event, handler) => handlers.set(event, handler),
-    logger: { error: vi.fn() },
+    logger: { error: loggerError },
   };
   lcm(pi);
-  return { handlers, pi };
+  return { handlers, pi, loggerError };
 }
 
 function getHandler(handlers: Map<string, HookHandler>, event: string): HookHandler {
@@ -218,6 +219,18 @@ describe("OMP lcm hook", () => {
     expect(snapshot).toBeDefined();
     expect(readFileSync(join(home, "logs", snapshot!), "utf8")).not.toContain(privatePayload);
     expect(requests[1]?.body).not.toHaveProperty("tool_output");
+  });
+
+  it("throttles failed observation snapshot attempts across tool events", async () => {
+    // A file at logs/ makes snapshot mkdir fail without affecting the hook result.
+    writeFileSync(join(home, "logs"), "unwritable snapshot destination");
+    const { handlers, loggerError } = hook();
+    const tool = getHandler(handlers, "tool_result");
+    for (let index = 0; index < 20; index++) {
+      await expect(tool({ toolName: "Read", input: { path: "a.ts" }, content: "ok" }, context()))
+        .resolves.toBeUndefined();
+    }
+    expect(loggerError).toHaveBeenCalledTimes(1);
   });
 
   it("sends lcm summarization only after confirmed pre-compaction capture", async () => {

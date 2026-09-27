@@ -651,7 +651,9 @@ export default function lcm(pi: HookApi): void {
     if (!identity) return;
     const sessionId = identity.sessionId;
     const state = observations.get(sessionId);
-    if (!state || (!force && Date.now() - state.lastFlush < 60_000)) return;
+    const now = Date.now();
+    if (!state || (!force && now - state.lastFlush < 60_000)) return;
+    state.lastFlush = now;
     const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
     const seq = ++state.seq;
     const logs = join(resolveDaemon().home, "logs");
@@ -665,7 +667,6 @@ export default function lcm(pi: HookApi): void {
         observations: [...state.counts.values()], failures: state.failures,
       }), { mode: 0o600 });
       renameSync(temporary, target);
-      state.lastFlush = Date.now();
     } catch (error) {
       try { rmSync(temporary, { force: true }); } catch { /* best effort */ }
       logError(pi, "hook observation snapshot", error);
