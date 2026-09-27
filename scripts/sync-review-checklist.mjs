@@ -5,7 +5,7 @@
 // keeps its own title and frontmatter; the rules sit between the markers below.
 // test/review-checklist.test.ts fails when a consumer's copy differs.
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -30,6 +30,6 @@ export function syncReviewChecklist(root) {
   }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   syncReviewChecklist(join(fileURLToPath(import.meta.url), "..", ".."));
 }
