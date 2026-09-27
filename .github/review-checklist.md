@@ -1,7 +1,3 @@
-# Copilot Review Instructions — lcm
-
-<!-- review-checklist:start — generated from .github/review-checklist.md by scripts/sync-review-checklist.mjs; edit the source -->
-
 ## Repository context
 
 TypeScript SQLite daemon that persists Claude session memories across context resets. Uses Node.js `DatabaseSync` (synchronous SQLite API from `node:sqlite`) and exposes an HTTP daemon with REST routes.
@@ -97,5 +93,3 @@ Before reporting a review finding as fixed, verify it against the graph. Editing
 - Do not flag `DatabaseSync` usage in test fixtures that mock the connection — context matters.
 - Do not flag TypeScript-specific patterns that are idiomatic (e.g., discriminated unions, assertion functions).
 - Do not flag style preferences already covered by the formatter/linter.
-
-<!-- review-checklist:end -->

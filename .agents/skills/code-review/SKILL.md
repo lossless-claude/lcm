@@ -7,22 +7,31 @@ description: Review code changes in the lcm repository. Use when asked to review
 
 Review code changes in this repository against the project rules below. These rules exist because they have caused real production bugs — flag violations with high confidence.
 
-## codebase-memory MCP
-
-A `codebase-memory` MCP server is preloaded with a graph of this repo. Use it whenever a rule below needs evidence from outside the diff.
-
-- `list_projects` first — the project name comes from the checkout path; never guess it.
-- `trace_path` for callers and callees. This is what settles "does anything else depend on this?"
-- `search_graph` to find a symbol, `get_code_snippet` for its source, `query_graph` for multi-hop questions, `get_architecture` for orientation.
-- `search_code` only for literal or non-code text, or where graph coverage is thin.
-
-Rules that are unreliable without it: **#1** (a caller may own the close), **#4** (`collectStats()` is often reached indirectly), **#5** (existing tests live outside the diff), **#10** (whether a named symbol still exists).
-
-Cite what you looked up. "Nothing else calls this" is not reviewable unless you say how you checked.
+<!-- review-checklist:start — generated from .github/review-checklist.md by scripts/sync-review-checklist.mjs; edit the source -->
 
 ## Repository context
 
 TypeScript SQLite daemon that persists Claude session memories across context resets. Uses Node.js `DatabaseSync` (synchronous SQLite API from `node:sqlite`) and exposes an HTTP daemon with REST routes.
+
+## codebase-memory MCP: query the graph first
+
+A `codebase-memory` MCP server is running with a prebuilt graph of this repo. Use it before any text search or file view; built-in grep/regex search and line-range file reads are fallbacks, not the starting point.
+
+Do this, in order, before reading any diff hunk:
+
+1. `list_projects`: the project name comes from the checkout path; never guess it.
+2. For every changed exported function, class, route or schema column, `search_graph` to locate it and `trace_path` to list its callers and callees. `trace_path` is what settles "does anything else depend on this?"; do not claim that nothing else depends on a symbol without it.
+3. `get_code_snippet` for the source you need; `query_graph` for multi-hop questions; `get_architecture` for orientation.
+
+When writing code rather than reviewing it, `trace_path` before changing any signature, return shape, or schema column.
+
+`search_code` only for literal or non-code text, or where graph coverage is thin. Fall back to built-in search only when a graph call errors, and say so.
+
+Rules that are unreliable without the graph: **#1** (a caller may own the close), **#4** (`collectStats()` is often reached indirectly), **#5** (existing tests live outside the diff), **#10** (whether a named symbol still exists).
+
+The review body opens with a short "Graph calls" list naming the tools used and the symbols traced; a review without that list is incomplete. Cite what you looked up: "nothing else calls this" is not reviewable unless you say how you checked.
+
+Before reporting a review finding as fixed, verify it against the graph. Editing the file a finding points at is not the same as closing it. State which findings you verified and how.
 
 ## Review checklist
 
@@ -95,3 +104,5 @@ TypeScript SQLite daemon that persists Claude session memories across context re
 - Do not flag `DatabaseSync` usage in test fixtures that mock the connection — context matters.
 - Do not flag TypeScript-specific patterns that are idiomatic (e.g., discriminated unions, assertion functions).
 - Do not flag style preferences already covered by the formatter/linter.
+
+<!-- review-checklist:end -->
