@@ -605,4 +605,26 @@ describe("install — OMP", () => {
       vi.mocked(console.log).mockRestore();
     }
   });
+
+  it("reports the installed hook when only the MCP registration fails", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const agentDir = mkdtempSync(join(tmpdir(), "lcm-install-omp-"));
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    try {
+      const writeFileSync = vi.fn((path: string) => {
+        if (path === join(agentDir, "mcp.json")) throw new Error("EACCES");
+      });
+      const outcome = await install(makeDeps({ spawnSync: ompFound, writeFileSync }));
+      expect(outcome.omp).toEqual({
+        status: "failed",
+        detail: `hooks installed in ${join(agentDir, "hooks", "post", "lcm.ts")}; MCP registration failed: EACCES`,
+      });
+    } finally {
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      rmSync(agentDir, { recursive: true, force: true });
+      vi.mocked(console.log).mockRestore();
+    }
+  });
 });

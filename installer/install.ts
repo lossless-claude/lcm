@@ -260,8 +260,12 @@ function installOmp(deps: ServiceDeps): HarnessOutcome {
     if (runningFromPluginBundle()) {
       return { status: "ok", detail: `hooks installed in ${result.path}; run lcm install from the npm CLI to register the MCP server` };
     }
-    const mcp = installConnector("omp", "mcp", homedir(), write);
-    return { status: "ok", detail: `hooks installed in ${result.path}, MCP server registered in ${mcp.path}` };
+    try {
+      const mcp = installConnector("omp", "mcp", homedir(), write);
+      return { status: "ok", detail: `hooks installed in ${result.path}, MCP server registered in ${mcp.path}` };
+    } catch (err) {
+      return { status: "failed", detail: `hooks installed in ${result.path}; MCP registration failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
   } catch (err) {
     return { status: "failed", detail: err instanceof Error ? err.message : String(err) };
   }
