@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { AGENTS } from "../../src/connectors/registry.js";
@@ -84,6 +84,26 @@ describe("harness guidance checks", () => {
     const results = run(["omp"]);
     expect(results["omp-hooks"]).toMatchObject({ status: "pass", message: `learning instruction via ${hook}` });
     expect(results["omp-mcp"]).toMatchObject({ status: "pass", message: `MCP server registered in ${mcp}` });
+  });
+
+  it("names a foreign OMP hook file, which blocks the install command", () => {
+    const path = join(project, ".omp", "hooks", "post", "lcm.ts");
+    mkdirSync(join(project, ".omp", "hooks", "post"), { recursive: true });
+    writeFileSync(path, "export default function foreign() {}\n");
+    const result = run(["omp"])["omp-hooks"];
+    expect(result.status).toBe("warn");
+    expect(result.message).toContain(`${path}: hook file is not managed by lcm`);
+    expect(result.message).toContain("repair or remove that file");
+  });
+
+  it("names a malformed Codex hooks file", () => {
+    const path = join(project, ".codex", "hooks.json");
+    mkdirSync(join(project, ".codex"), { recursive: true });
+    writeFileSync(path, "{ not json");
+    const result = run(["codex"])["codex-hooks"];
+    expect(result.status).toBe("warn");
+    expect(result.message.startsWith(`${path}: `)).toBe(true);
+    expect(result.message).toContain("repair or remove that file");
   });
 
   it("warns about an outdated OMP hook", () => {

@@ -1,9 +1,15 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { installConnector, removeConnector, diagnoseConnector, listConnectors } from "../../src/connectors/installer.js";
 import { OMP_HOOK_MARKER } from "../../src/connectors/omp-hooks.js";
+import { runningFromPluginBundle } from "../../src/hooks/fail-open.js";
+
+vi.mock("../../src/hooks/fail-open.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/hooks/fail-open.js")>()),
+  runningFromPluginBundle: vi.fn(() => false),
+}));
 
 let root: string;
 let previousAgentDir: string | undefined;
@@ -119,6 +125,22 @@ describe("OMP MCP registration", () => {
     expect(JSON.parse(readFileSync(result.path, "utf8")).mcpServers.lcm.args).toEqual(["/opt/lcm/dist/bin/lcm.js", "mcp"]);
     expect(removeConnector("omp", "mcp", homedir())).toBe(true);
     expect(JSON.parse(readFileSync(result.path, "utf8")).mcpServers).toEqual({});
+  });
+
+  it("refuses a malformed mcp.json instead of replacing the servers it holds", () => {
+    const path = join(root, ".omp", "mcp.json");
+    mkdirSync(join(root, ".omp"), { recursive: true });
+    writeFileSync(path, "{ not json");
+
+    expect(() => installConnector("omp", "mcp", root, entry)).toThrow(/not a JSON object/);
+    expect(readFileSync(path, "utf8")).toBe("{ not json");
+  });
+
+  it("refuses to register from the plugin bundle, whose CLI path the next plugin update deletes", () => {
+    vi.mocked(runningFromPluginBundle).mockReturnValueOnce(true);
+
+    expect(() => installConnector("omp", "mcp", root)).toThrow(/npm CLI/);
+    expect(existsSync(join(root, ".omp", "mcp.json"))).toBe(false);
   });
 
   it("removes only the lcm entry", () => {

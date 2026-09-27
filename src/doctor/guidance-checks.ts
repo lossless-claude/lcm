@@ -45,7 +45,11 @@ function registersLcmMcp(deps: DoctorDeps, path: string): boolean {
 function hookResult(name: string, diagnoses: HookDiagnosis[], fix: string): CheckResult {
   const installed = diagnoses.find((d) => d.installed && d.complete) ?? diagnoses.find((d) => d.installed);
   if (!installed) {
-    return { name, category: CATEGORY, status: "warn", message: `hooks not installed — the agent never receives the learning instruction\n     Fix: ${fix}` };
+    // A malformed or foreign file blocks the install command too, so name it instead of the command.
+    const unusable = diagnoses.find((d) => d.issues.length > 0);
+    return unusable
+      ? { name, category: CATEGORY, status: "warn", message: `${unusable.path}: ${unusable.issues.join("; ")} — the agent never receives the learning instruction\n     Fix: repair or remove that file, then ${fix}` }
+      : { name, category: CATEGORY, status: "warn", message: `hooks not installed — the agent never receives the learning instruction\n     Fix: ${fix}` };
   }
   if (!installed.complete) {
     return { name, category: CATEGORY, status: "warn", message: `${installed.path}: ${installed.issues.join("; ")}\n     Fix: ${fix}` };

@@ -7,6 +7,7 @@ import { LCM_MARKERS } from "./constants.js";
 import { generateContent } from "./template-service.js";
 import { findAgent, AGENTS, LEGACY_SKILL_PATHS } from "./registry.js";
 import { mcpServerEntry } from "../installer/mcp-server-entry.js";
+import { runningFromPluginBundle } from "../hooks/fail-open.js";
 import {
   diagnoseCodexHooks,
   installCodexHooks,
@@ -83,15 +84,23 @@ function writeFileCreatingDir(path: string, data: string): void {
   writeFileSync(path, data);
 }
 
-// The existing config object, or {} when the file is missing, malformed or not an object.
+// The existing config object, or {} when the file is missing. A file that is not a
+// JSON object is refused: rewriting it would drop the servers it holds.
 function readJsonObject(filePath: string): any {
   if (!existsSync(filePath)) return {};
-  let parsed: any;
-  try { parsed = JSON.parse(readFileSync(filePath, 'utf-8')); } catch { return {}; }
-  return typeof parsed === 'object' && parsed !== null ? parsed : {};
+  let parsed: unknown;
+  try { parsed = JSON.parse(readFileSync(filePath, 'utf-8')); } catch { parsed = undefined; }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`Cannot register the MCP server: ${filePath} is not a JSON object; fix or remove it`);
+  }
+  return parsed;
 }
 
 function installMcpJson(filePath: string, options: CodexHookCommandOptions = {}): void {
+  // The entry names the running CLI; from the plugin bundle that is a versioned cache path the next plugin update deletes.
+  if (runningFromPluginBundle()) {
+    throw new Error("Cannot register the MCP server from the Claude Code plugin; run this command from the npm CLI");
+  }
   const writeFile = options.writeFile ?? writeFileCreatingDir;
   const existing = readJsonObject(filePath);
   if (typeof existing.mcpServers !== 'object' || existing.mcpServers === null || Array.isArray(existing.mcpServers)) {
