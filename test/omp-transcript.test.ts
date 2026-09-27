@@ -354,19 +354,34 @@ describe("findAllOmpTranscripts", () => {
 });
 
 describe("parseOmpArchiveTranscript", () => {
-  function gzFixture(lines: string[]): string {
+  /** `terminated: false` builds a fixture whose final line has no trailing newline. */
+  function gzFixture(lines: string[], terminated = true): string {
     const dir = tempDir("lcm-omp-archive-fixture-");
     const path = join(dir, "session.jsonl.gz");
-    writeFileSync(path, gzipSync(lines.map((line) => `${line}\n`).join("")));
+    const raw = lines.join("\n") + (terminated ? "\n" : "");
+    writeFileSync(path, gzipSync(raw));
     return path;
   }
 
-  it("reads every message from a gzipped transcript, including an unterminated final record", () => {
+  it("reads every message from a gzipped transcript with a trailing newline", () => {
     const path = gzFixture([
       header("/work/project"),
       message("user", [{ type: "text", text: "one" }]),
       message("assistant", [{ type: "text", text: "two" }]),
     ]);
+    expect(parseOmpArchiveTranscript(path).map((m) => m.content)).toEqual(["one", "two"]);
+  });
+
+  it("includes the final record even when the archive's last line has no trailing newline", () => {
+    const lines = [
+      header("/work/project"),
+      message("user", [{ type: "text", text: "one" }]),
+      message("assistant", [{ type: "text", text: "two" }]),
+    ];
+    const raw = lines.join("\n");
+    // Prove the fixture actually exercises the unterminated-final-line case.
+    expect(raw.endsWith("\n")).toBe(false);
+    const path = gzFixture(lines, false);
     expect(parseOmpArchiveTranscript(path).map((m) => m.content)).toEqual(["one", "two"]);
   });
 

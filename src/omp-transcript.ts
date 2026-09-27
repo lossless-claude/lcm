@@ -299,6 +299,40 @@ function decompressOmpArchive(transcriptPath: string): string {
   return decodeOmpTranscriptUtf8(gunzipSync(readFileSync(transcriptPath)));
 }
 
+export interface OmpArchiveContents {
+  meta: OmpSessionMeta | undefined;
+  records: ParsedOmpTranscriptRecord[];
+  /** Lazy: a caller that never needs a model backfill never pays for the JSON pass. */
+  turnModels: () => Map<string, string>;
+}
+
+/**
+ * Decompress an archived (`.jsonl.gz`) OMP transcript exactly once and derive
+ * its session metadata, records, and tool-call model map from that single
+ * decode. `gunzipSync` is the expensive step an ingest read must not repeat
+ * per archive; parsing the already-decoded text more than once is cheap by
+ * comparison. Used by the ingest read path (`readOmpArchive` in
+ * src/transcript-source.ts). Discovery (`findOmpSessionFiles`, via
+ * `extractOmpArchiveSessionMeta`) decompresses separately: it runs before a
+ * session is selected for import, over every archive in the directory, not
+ * just the one(s) an ingest actually reads, so it cannot share this decode.
+ * Returns undefined for a missing or corrupt archive.
+ */
+export function loadOmpArchive(transcriptPath: string): OmpArchiveContents | undefined {
+  let raw: string;
+  try {
+    raw = decompressOmpArchive(transcriptPath);
+  } catch {
+    return undefined;
+  }
+  const records = ompRecordsFromText(raw, true);
+  return {
+    meta: records.find((record) => record.sessionMeta)?.sessionMeta,
+    records,
+    turnModels: () => extractOmpTurnModelsFromLines(raw),
+  };
+}
+
 /**
  * Every record in an archived (`.jsonl.gz`) OMP session, in file order — the
  * archived counterpart of a live delta's `records` field
@@ -311,13 +345,7 @@ function decompressOmpArchive(transcriptPath: string): string {
  * Unreadable or corrupt archives return an empty array.
  */
 export function parseOmpArchiveRecords(transcriptPath: string): ParsedOmpTranscriptRecord[] {
-  let raw: string;
-  try {
-    raw = decompressOmpArchive(transcriptPath);
-  } catch {
-    return [];
-  }
-  return ompRecordsFromText(raw, true);
+  return loadOmpArchive(transcriptPath)?.records ?? [];
 }
 
 /** The live-path messages of an archived (`.jsonl.gz`) OMP session. See `parseOmpArchiveRecords`. */
@@ -365,13 +393,7 @@ export function extractOmpTurnModels(transcriptPath: string): Map<string, string
 
 /** Same as `extractOmpTurnModels`, for an archived (`.jsonl.gz`) transcript. */
 export function extractOmpArchiveTurnModels(transcriptPath: string): Map<string, string> {
-  let raw: string;
-  try {
-    raw = decompressOmpArchive(transcriptPath);
-  } catch {
-    return new Map();
-  }
-  return extractOmpTurnModelsFromLines(raw);
+  return loadOmpArchive(transcriptPath)?.turnModels() ?? new Map();
 }
 
 // ---------------------------------------------------------------------------

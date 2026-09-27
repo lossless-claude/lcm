@@ -7,10 +7,8 @@ import { loadTranscriptCursor, saveTranscriptCursor } from "./db/transcript-curs
 import { claudeTranscriptPath, isSafeTranscriptPath, projectId } from "./daemon/project.js";
 import type { EventsDb } from "./hooks/events-db.js";
 import {
-  extractOmpArchiveSessionMeta,
-  extractOmpArchiveTurnModels,
   extractOmpTurnModels,
-  parseOmpArchiveRecords,
+  loadOmpArchive,
   selectOmpLiveMessages,
   type OmpSessionMeta,
   type ParsedOmpTranscriptRecord,
@@ -251,14 +249,19 @@ function ompStoredBoundary(
  * `records` are (`selectOmpLiveMessages`, `ompMessagesAfterStored`), so an
  * archived and a live transcript of the same session give the same stored
  * conversation.
+ *
+ * `loadOmpArchive` decompresses the file exactly once and hands back meta,
+ * records, and a lazy model-backfill map derived from that single decode —
+ * gunzip is the costly step; a read must not repeat it for metadata, the
+ * record list, and a possible model backfill separately.
  */
 async function readOmpArchive(path: string, stored: StoredTranscript | undefined, ctx: ReadContext): Promise<TranscriptDelta> {
-  const meta = extractOmpArchiveSessionMeta(path) ?? {};
-  validateOmpMetadata(meta, ctx);
-  const records = parseOmpArchiveRecords(path);
+  const archive = loadOmpArchive(path);
+  validateOmpMetadata(archive?.meta ?? {}, ctx);
+  const records = archive?.records ?? [];
   const backfillModels: TranscriptDelta["backfillModels"] = (events, sessionId) => {
     if (!events.hasUnfilledModels(sessionId, "omp")) return;
-    events.backfillToolCallModels(sessionId, extractOmpArchiveTurnModels(path), "omp");
+    events.backfillToolCallModels(sessionId, archive?.turnModels() ?? new Map(), "omp");
   };
   if (stored) {
     const messages = await ompMessagesAfterStored(stored, records, ctx);
