@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { execFile, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -135,6 +136,53 @@ describe("the port guard", () => {
       victim.kill("SIGKILL");
       await new Promise<void>((done) => fake.close(() => done()));
       rmSync(home, { recursive: true, force: true });
+      rmSync(guardDir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a child listen on a guarded port with EADDRINUSE and creates no listener", async () => {
+    const guardedPort = await new Promise<number>((resolve, reject) => {
+      const probe = createNetServer();
+      probe.once("error", reject);
+      probe.listen(0, "127.0.0.1", () => {
+        const { port } = probe.address() as { port: number };
+        probe.close((error) => error ? reject(error) : resolve(port));
+      });
+    });
+    const guardDir = mkdtempSync(join(tmpdir(), "lcm-port-guard-log-"));
+    const listenScript = [
+      "import { createServer } from 'node:net';",
+      "const server = createServer();",
+      "setTimeout(() => process.exit(2), 1000).unref();",
+      "server.once('error', (error) => {",
+      "  process.stdout.write(JSON.stringify({ code: error.code, listening: server.listening }));",
+      "  process.exit(0);",
+      "});",
+      "server.once('listening', () => process.exit(1));",
+      `server.listen(${guardedPort}, '127.0.0.1');`,
+    ].join("\n");
+    try {
+      const { stdout, stderr } = await execute(process.execPath, ["--input-type=module", "-e", listenScript], {
+        timeout: 15_000,
+        env: {
+          ...process.env,
+          LCM_TEST_GUARDED_PORTS: `${process.env.LCM_TEST_GUARDED_PORTS},${guardedPort}`,
+          // Its own log, so the refusal this test provokes does not fail the file.
+          LCM_TEST_GUARD_DIR: guardDir,
+        },
+      });
+      expect(JSON.parse(stdout)).toEqual({ code: "EADDRINUSE", listening: false });
+      expect(stderr).toContain(`[lcm test guard] refused to listen on port ${guardedPort}`);
+      expect(readdirSync(guardDir)).not.toEqual([]);
+
+      const server = createNetServer();
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(guardedPort, "127.0.0.1", () => resolve());
+      });
+      expect(server.listening).toBe(true);
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    } finally {
       rmSync(guardDir, { recursive: true, force: true });
     }
   });
