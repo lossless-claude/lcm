@@ -1,6 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { hasCommandHelp, printHelp } from "../src/cli-help.js";
 import {
   LCM_MD_CONTENT, LEARNING_INSTRUCTION, RULES_CLI, RULES_MCP,
   STORE_TOOL_DESCRIPTION, STORE_TOOL_TAGS_DESCRIPTION, STORE_TYPES, TAG_PREFIXES,
@@ -9,11 +10,11 @@ import {
 const RESERVED = ["signal:memory_used", "signal:memory_vote", "memory_id:<id>", "vote:+1", "vote:-1"];
 
 const surfaces = [
-  { name: "lcm.md", text: LCM_MD_CONTENT, store: "lcm_store", reserved: false },
-  { name: "learning instruction", text: LEARNING_INSTRUCTION, store: "lcm_store", reserved: true },
-  { name: "CLI rules", text: RULES_CLI, store: "lcm store", reserved: true },
-  { name: "MCP rules", text: RULES_MCP, store: "lcm_store", reserved: true },
-  { name: "lcm_store definition", text: `${STORE_TOOL_DESCRIPTION}\n${STORE_TOOL_TAGS_DESCRIPTION}`, store: "lcm_search", reserved: true },
+  { name: "lcm.md", text: LCM_MD_CONTENT, noun: "lcm_store", reserved: false },
+  { name: "learning instruction", text: LEARNING_INSTRUCTION, noun: "lcm_store", reserved: true },
+  { name: "CLI rules", text: RULES_CLI, noun: "lcm store", reserved: true },
+  { name: "MCP rules", text: RULES_MCP, noun: "lcm_store", reserved: true },
+  { name: "lcm_store definition", text: `${STORE_TOOL_DESCRIPTION}\n${STORE_TOOL_TAGS_DESCRIPTION}`, noun: "lcm_search", reserved: true },
 ];
 
 describe("every guidance surface states the same rule", () => {
@@ -27,7 +28,7 @@ describe("every guidance surface states the same rule", () => {
     });
 
     it(`${s.name} uses its own tool naming`, () => {
-      expect(s.text).toContain(s.store);
+      expect(s.text).toContain(s.noun);
     });
 
     it(`${s.name} ${s.reserved ? "carries" : "leaves out"} the reserved tags`, () => {
@@ -60,11 +61,36 @@ describe("every guidance surface states the same rule", () => {
   });
 });
 
+describe("the CLI rules name only commands and flags the CLI documents", () => {
+  const commands = [...RULES_CLI.matchAll(/`lcm ([a-z][a-z-]*)([^`]*)`/g)];
+
+  it("names at least the recall and store commands", () => {
+    expect(commands.map((m) => m[1])).toEqual(expect.arrayContaining(["search", "grep", "describe", "expand", "store"]));
+  });
+
+  for (const [, command, rest] of commands) {
+    it(`lcm ${command}${rest}`, () => {
+      expect(hasCommandHelp(command)).toBe(true);
+      const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+      try {
+        printHelp(command);
+        const help = write.mock.calls.map((c) => String(c[0])).join("");
+        for (const flag of rest.match(/--[a-z-]+/g) ?? []) expect(help).toContain(flag);
+      } finally {
+        write.mockRestore();
+      }
+    });
+  }
+});
+
 describe("docs/tag-schema.md", () => {
   const doc = readFileSync(join(__dirname, "..", "docs", "tag-schema.md"), "utf8");
 
-  it("lists every type the guidance asks for", () => {
-    for (const t of STORE_TYPES) expect(doc).toContain(`\`type:${t.value}\``);
+  it("defines every type the guidance asks for the way the guidance does", () => {
+    for (const t of STORE_TYPES) {
+      const when = t.when.charAt(0).toUpperCase() + t.when.slice(1);
+      expect(doc).toContain(`| \`type:${t.value}\` | ${when} |`);
+    }
   });
 
   it("documents every prefix and reserved tag the guidance names", () => {

@@ -21,13 +21,13 @@ holds by convention, and a filter only finds what was stored with the exact same
 
 | Value | When to use |
 |-------|-------------|
-| `type:decision` | An architectural or process decision, with the trade-off that settled it |
-| `type:preference` | How the user or the team wants things done ("always X", "never Y") |
-| `type:root-cause` | The identified cause of a bug, failure or incident |
-| `type:pattern` | A recurring structure worth reusing: code shape, workflow, convention |
-| `type:gotcha` | A non-obvious pitfall or surprising behaviour |
-| `type:solution` | A specific fix or answer to a concrete problem |
-| `type:workflow` | A step-by-step process that works |
+| `type:decision` | An architectural or design choice, with the trade-off that settled it |
+| `type:preference` | How the user wants things done |
+| `type:root-cause` | A bug cause that took effort to uncover |
+| `type:pattern` | A codebase convention documented nowhere else |
+| `type:gotcha` | A non-obvious pitfall |
+| `type:solution` | A non-trivial fix worth remembering |
+| `type:workflow` | A multi-step process that works |
 | `type:feat`, `type:fix`, `type:chore` | The kind of change a piece of work was |
 
 Passive promotion (`docs/passive-learning.md`) also produces `type:user-context` (from role

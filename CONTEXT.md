@@ -76,5 +76,6 @@ _Avoid_: category, label
 
 **Guidance**:
 The text lcm puts in front of an agent to teach it when to search memory and what to store.
-One module renders it for every surface that carries it (`src/guidance.ts`).
-_Avoid_: orientation, instructions
+One module renders it for every surface that carries it (`src/guidance.ts`). Distinct from
+the harness's own instructions (CLAUDE.md), which restore replays after a compaction.
+_Avoid_: orientation
