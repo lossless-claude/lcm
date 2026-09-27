@@ -246,6 +246,94 @@ describe("OMP transcript source", () => {
     expect(() => source.locate({ sessionId, cwd, transcriptPath: join(elsewhere, "session.jsonl") }))
       .toThrow("OMP transcript path is not allowed");
   });
+
+  describe("an append-only tree: new captures follow the path from the last entry", () => {
+    /** `[id, parentId]`: an entry's place in the tree. */
+    type At = [string, string | null];
+    const timestamp = "2026-09-20T23:30:16.129Z";
+    const say = ([id, parentId]: At, role: string, text: string) =>
+      JSON.stringify({ type: "message", id, parentId, timestamp, message: { role, content: [{ type: "text", text }] } });
+    const rewindTo = ([id, parentId]: At) => JSON.stringify({ type: "branch_summary", id, parentId, timestamp, fromId: "a2", summary: "" });
+    const trunk = [say(["u1", null], "user", "first question"), say(["a1", "u1"], "assistant", "first answer")];
+    const wrongTurn = [say(["u2", "a1"], "user", "wrong turn"), say(["a2", "u2"], "assistant", "wrong answer")];
+    const betterTurn = [rewindTo(["b1", "a1"]), say(["u3", "b1"], "user", "better question"), say(["a3", "u3"], "assistant", "better answer")];
+    const as = (role: string, content: string) => ({ role, content });
+
+    function treeFixture(lines: string[]): { cwd: string; path: string } {
+      const { cwd, path } = fixture();
+      const header = JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp, cwd });
+      writeFileSync(path, `${[header, ...lines].join("\n")}\n`);
+      return { cwd, path };
+    }
+    const append = (path: string, lines: string[]) => appendFileSync(path, `${lines.join("\n")}\n`);
+    const contents = (delta: { messages: Array<{ content: string }> }) => delta.messages.map((m) => m.content);
+
+    it("a rewind into the stored prefix resumes from the cursor and adds only the live continuation", async () => {
+      const { cwd, path } = treeFixture([...trunk, ...wrongTurn]);
+      const first = await source.read(path, undefined, ctx(cwd));
+      append(path, betterTurn);
+      const delta = await source.read(path, stored(first.messages, first.checkpoint), ctx(cwd));
+      expect(delta.sourceOffset).toBe(4);
+      expect(contents(delta)).toEqual(["better question", "better answer"]);
+      expect(delta.checkpoint).toMatchObject({ messageCount: 6 });
+    });
+
+    it("a turn abandoned before it was captured is never stored", async () => {
+      const { cwd, path } = treeFixture(trunk);
+      const first = await source.read(path, undefined, ctx(cwd));
+      append(path, [...wrongTurn, ...betterTurn]);
+      const delta = await source.read(path, stored(first.messages, first.checkpoint), ctx(cwd));
+      expect(delta.sourceOffset).toBe(2);
+      expect(contents(delta)).toEqual(["better question", "better answer"]);
+      expect(delta.checkpoint).toMatchObject({ messageCount: 4 });
+    });
+
+    it("a recovery scan keeps stored turns a rewind abandoned and adds only the live continuation", async () => {
+      const { cwd, path } = treeFixture([...trunk, ...wrongTurn, ...betterTurn]);
+      const storedInFileOrder = [
+        as("user", "first question"), as("assistant", "first answer"), as("user", "wrong turn"), as("assistant", "wrong answer"),
+      ];
+      const delta = await source.read(path, stored(storedInFileOrder), ctx(cwd));
+      expect(delta.sourceOffset).toBe(4);
+      expect(contents(delta)).toEqual(["better question", "better answer"]);
+      expect(delta.checkpoint).toMatchObject({ messageCount: 6 });
+
+      const nothingNew = await source.read(path, stored([...storedInFileOrder, ...delta.messages]), ctx(cwd));
+      expect(contents(nothingNew)).toEqual([]);
+      expect(nothingNew.checkpoint).toMatchObject({ messageCount: 6 });
+    });
+
+    it("a recovery scan accepts stored history that skipped an abandoned turn", async () => {
+      const { cwd, path } = treeFixture([...trunk, ...wrongTurn, ...betterTurn, say(["u4", "a3"], "user", "next question")]);
+      const liveOnly = [
+        as("user", "first question"), as("assistant", "first answer"), as("user", "better question"), as("assistant", "better answer"),
+      ];
+      const delta = await source.read(path, stored(liveOnly), ctx(cwd));
+      expect(delta.sourceOffset).toBe(4);
+      expect(contents(delta)).toEqual(["next question"]);
+      expect(delta.checkpoint).toMatchObject({ messageCount: 5 });
+    });
+
+    it("a recovery scan does not match stored history to a repeat on an abandoned branch", async () => {
+      const { cwd, path } = treeFixture([
+        say(["r1", null], "user", "root"),
+        say(["y1", "r1"], "assistant", "yes"),
+        JSON.stringify({ type: "branch_summary", id: "b1", parentId: "r1", timestamp, fromId: "y1", summary: "" }),
+        say(["y2", "b1"], "assistant", "yes"),
+      ]);
+      const liveOnly = [as("user", "root"), as("assistant", "yes")];
+      const delta = await source.read(path, stored(liveOnly), ctx(cwd));
+      expect(delta.sourceOffset).toBe(2);
+      expect(contents(delta)).toEqual([]);
+      expect(delta.checkpoint).toMatchObject({ messageCount: 2 });
+    });
+
+    it("a recovery scan refuses stored history the file does not hold in order", async () => {
+      const { cwd, path } = treeFixture([...trunk, ...wrongTurn]);
+      await expect(source.read(path, stored([as("assistant", "first answer"), as("user", "first question")]), ctx(cwd)))
+        .rejects.toThrow(TranscriptSourceError);
+    });
+  });
 });
 
 describe("adapter selection", () => {

@@ -78,6 +78,8 @@ It keeps bounded operation counts and failure codes in two alternating snapshots
 
 The hook takes the session id from OMP's `sessionManager.getSessionId()` and the transcript path from `sessionManager.getSessionFile()`. OMP stores session transcripts under `<agentDir>/sessions/<encoded-cwd>/`, using the same `<agentDir>` selection as the connector. A session's id comes from the id in its session-file header; the transcript file, rather than a reconstructed path, is the source used for live capture.
 
+A session file is an append-only tree: every entry names its parent, and a rewind or branch switch moves the leaf while the abandoned continuation stays in the file. Capture and import keep only the path the user kept — the `parentId` chain from the file's last entry, which is the leaf OMP itself resumes from. Each capture applies this to the entries appended since the previous one, so a turn abandoned before it was captured is never stored. A turn captured before a later rewind abandoned it stays in memory. A file written before OMP's tree format, whose entries carry no id, is read in file order.
+
 ## Import existing sessions
 
 Import OMP sessions for the current project with either spelling:
@@ -115,5 +117,6 @@ A matching result confirms that captured OMP content is searchable in the curren
 2. Archived `.jsonl.gz` OMP sessions are not imported ([#544](https://github.com/lossless-claude/lcm/issues/544)).
 3. Import discovery scans the active agent directory (`PI_CODING_AGENT_DIR`, else `~/.omp/agent`). A session started under `omp --profile <name>` still captures live — the daemon accepts its transcript under the profile's own agent directory — but `lcm import` does not discover profile sessions yet ([#543](https://github.com/lossless-claude/lcm/issues/543)).
 4. Hook activation and trust cannot be proven from the filesystem; diagnostics report that state as unknown, as with Codex.
-5. Memory follows the session file in order, so a turn abandoned by an OMP rewind or branch switch is still captured ([#539](https://github.com/lossless-claude/lcm/issues/539)), and a `/clear` boundary is not honoured, so one conversation spans two logically separate sessions ([#540](https://github.com/lossless-claude/lcm/issues/540)).
-6. Passive learning records the OMP tools translated to extractor shapes; the harness's own memory tools and other non-durable plumbing remain intentionally silent.
+5. A `/clear` boundary is not honoured, so one conversation spans two logically separate sessions ([#540](https://github.com/lossless-claude/lcm/issues/540)).
+6. A turn captured before a rewind or branch switch abandoned it stays in memory and still matches `lcm search` and `lcm grep`; only turns abandoned before their capture are left out ([#539](https://github.com/lossless-claude/lcm/issues/539)). When a branch abandoned before its capture is later reopened with `/tree`, the session's continuation from it is captured but the branch's earlier turns are not.
+7. Passive learning records the OMP tools translated to extractor shapes; the harness's own memory tools and other non-durable plumbing remain intentionally silent.
