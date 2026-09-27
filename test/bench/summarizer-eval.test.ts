@@ -158,7 +158,7 @@ describe.skipIf(!model || !corpusDir)(`summarizer eval: ${model} via ${provider}
   for (const session of sessions) {
     for (let run = 1; run <= runs; run++) {
       it(`${session.label} run ${run}`, async () => {
-        const summarizer = createEvalSummarizer(provider, model!);
+        const summarizer = await createEvalSummarizer(provider, model!);
         const result = await runEval({ session, summarizer, model: model!, provider, variant, run, language });
         const file = writeResult(RESULTS_DIR, result);
         const facts = result.plantedFacts

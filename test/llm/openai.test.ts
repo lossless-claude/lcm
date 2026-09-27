@@ -46,15 +46,19 @@ describe("createOpenAISummarizer", () => {
     expect(args.messages[0].content).toContain("Earlier the user chose SQLite over Postgres.");
   });
 
-  it("sends reasoning verbatim when configured and omits the key otherwise", async () => {
+  it("sends body fields verbatim under the generated ones, and nothing extra when unset", async () => {
     const withReasoning = makeClient("Summary.");
     await createOpenAISummarizer({
       model: "m",
       baseURL: "http://x/v1",
-      reasoning: { effort: "minimal" },
+      body: { reasoning: { effort: "minimal" }, thinking: { type: "disabled" }, model: "from-body", max_tokens: 1 },
       _clientOverride: withReasoning as any,
     })("Conversation text", false, {});
-    expect(withReasoning.chat.completions.create.mock.calls[0][0].reasoning).toEqual({ effort: "minimal" });
+    const sent = withReasoning.chat.completions.create.mock.calls[0][0];
+    expect(sent).toMatchObject({ reasoning: { effort: "minimal" }, thinking: { type: "disabled" } });
+    // Config load rejects these in a body; the adapter still lets the generated fields win.
+    expect(sent.model).toBe("m");
+    expect(sent.max_tokens).toBeGreaterThanOrEqual(1024);
 
     const without = makeClient("Summary.");
     await createOpenAISummarizer({ model: "m", baseURL: "http://x/v1", _clientOverride: without as any })(

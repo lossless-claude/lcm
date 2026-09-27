@@ -593,7 +593,7 @@ describe("createCompactHandler — summarizer branching", () => {
     const { res } = mockRes();
     await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd }));
     expect(createOpenAISummarizer).toHaveBeenCalledWith(
-      expect.objectContaining({ reasoning: { effort: "minimal" } })
+      expect.objectContaining({ body: { reasoning: { effort: "minimal" } } })
     );
   });
 

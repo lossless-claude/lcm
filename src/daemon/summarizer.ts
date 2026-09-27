@@ -2,6 +2,7 @@ import { SummarizeJobStore } from "./summarize-jobs.js";
 import { buildSummaryPrompt } from "../llm/prompt.js";
 import { LCM_SUMMARIZER_SYSTEM_PROMPT, resolveTargetTokens, resolveMaxOutputTokens } from "../summarize.js";
 import type { DaemonConfig } from "./config.js";
+import type { EndpointConfig, ProcessEndpointType } from "./provider-config.js";
 import type { LcmPaths } from "../lcm-paths.js";
 import { projectAuthorLanguage } from "../search/pivot-language.js";
 import { parseLanguageTag } from "../search/language.js";
@@ -10,12 +11,20 @@ import { createCodexProcessSummarizer } from "../llm/codex-process.js";
 import { createCopilotProcessSummarizer } from "../llm/copilot-process.js";
 import { createMockSummarizer } from "../llm/mock-summarizer.js";
 import type { LcmSummarizeFn } from "../llm/types.js";
-import { acceptSummaryText, SummaryRejectedError } from "../llm/summary-rejection.js";
+import { acceptSummaryText } from "../llm/summary-rejection.js";
+import { createProviderChain, SessionUnavailableError, type ProviderLink, type ProviderLinkKind } from "../llm/provider-chain.js";
 import type { SessionClient } from "../session-client.js";
 
 /** The client a /compact call came from; copilot never calls, but its summarizer can be pinned by name. */
 export type CompactClient = SessionClient | "copilot";
-export type EffectiveProvider = Exclude<DaemonConfig["llm"]["provider"], "auto">;
+/**
+ * What summarizes first once `auto` is resolved: a provider type, `session` or
+ * `disabled`, or with `llm.providers`, an endpoint name.
+ */
+export type EffectiveProvider = string;
+
+type ConcreteType = EndpointConfig["type"];
+const PROCESS_TYPES: ReadonlySet<string> = new Set<ProcessEndpointType>(["claude-process", "codex-process", "copilot-process"]);
 
 function configuredSummarizerLanguage(config: DaemonConfig): string | undefined {
   const language = config.summarizer?.language;
@@ -37,13 +46,138 @@ export function resolveSummarizerLanguage(
   return configuredSummarizerLanguage(config) ?? projectAuthorLanguage(cwd, paths);
 }
 
+function autoProvider(client?: CompactClient): ProcessEndpointType {
+  if (client === "codex") return "codex-process";
+  if (client === "copilot") return "copilot-process";
+  return "claude-process";
+}
+
 export function resolveEffectiveProvider(config: DaemonConfig, client?: CompactClient): EffectiveProvider {
-  if (config.llm.provider === "auto") {
-    if (client === "codex") return "codex-process";
-    if (client === "copilot") return "copilot-process";
-    return "claude-process";
+  return config.llm.provider === "auto" ? autoProvider(client) : config.llm.provider;
+}
+
+/**
+ * The live session summarizes through its own client. Every way it can fail to
+ * answer is a `SessionUnavailableError`, and a rejected answer a `SummaryRejectedError`:
+ * the chain hands both to the next link.
+ */
+function createSessionSummarizer(jobs?: SummarizeJobStore): LcmSummarizeFn {
+  return async (text, aggressive, ctx = {}) => {
+    if (!jobs || !ctx.sessionId) throw new SessionUnavailableError("no live session job queue");
+    const targetTokens = ctx.targetTokens ?? resolveTargetTokens({
+      inputTokens: Math.ceil(text.length / 4), mode: aggressive ? "aggressive" : "normal",
+      isCondensed: ctx.isCondensed ?? false, condensedTargetTokens: 2000,
+    });
+    const system = ctx.taskPrompt ?? LCM_SUMMARIZER_SYSTEM_PROMPT;
+    const prompt = buildSummaryPrompt(text, aggressive, ctx);
+    const answer = await jobs.enqueue({
+      session_id: ctx.sessionId, kind: ctx.isCondensed ? "condensed" : "leaf",
+      depth: ctx.depth ?? (ctx.isCondensed ? 1 : 0), system, prompt, targetTokens,
+      maxTokens: resolveMaxOutputTokens(targetTokens),
+    });
+    for (const attempt of answer.usageAttempts ?? []) {
+      ctx.onUsage?.({ provider: attempt.providerId, model: attempt.providerId.split(":")[1],
+        inputTokens: attempt.usage.input_tokens, outputTokens: attempt.usage.output_tokens,
+        tokensUsed: attempt.usage.input_tokens + attempt.usage.output_tokens,
+        estimated: attempt.usage.estimated, failed: attempt.failed ?? true });
+    }
+    if (answer.error) throw new SessionUnavailableError(String(answer.error));
+    const summary = answer.text ?? "";
+    const inputTokens = answer.usage?.input_tokens ?? Math.ceil((system.length + prompt.length) / 4);
+    const outputTokens = answer.usage?.output_tokens ?? Math.ceil(summary.length / 4);
+    const provider = answer.providerId ?? (ctx.isCondensed ? "session:fork" : "session:haiku");
+    // Reported before the answer is judged: a rejected answer was still charged.
+    ctx.onUsage?.({ provider, model: provider.split(":")[1], inputTokens, outputTokens,
+      tokensUsed: inputTokens + outputTokens, estimated: answer.usage?.estimated ?? true });
+    return acceptSummaryText(summary, provider).trim();
+  };
+}
+
+async function createEndpointSummarizer(endpoint: EndpointConfig): Promise<LcmSummarizeFn> {
+  switch (endpoint.type) {
+    case "claude-process":
+      return createClaudeProcessSummarizer(endpoint.model ? { model: endpoint.model } : {});
+    case "codex-process":
+      return createCodexProcessSummarizer({ model: endpoint.model });
+    case "copilot-process":
+      return createCopilotProcessSummarizer({ model: endpoint.model });
+    case "openai": {
+      const { createOpenAISummarizer } = await import("../llm/openai.js");
+      return createOpenAISummarizer({ model: endpoint.model, baseURL: endpoint.baseURL ?? "", apiKey: endpoint.apiKey, body: endpoint.body });
+    }
+    case "anthropic": {
+      const { createAnthropicSummarizer } = await import("../llm/anthropic.js");
+      return createAnthropicSummarizer({ model: endpoint.model, apiKey: endpoint.apiKey ?? "", baseURL: endpoint.baseURL, body: endpoint.body });
+    }
   }
-  return config.llm.provider;
+}
+
+/** The one endpoint the flat `llm.*` fields describe, for a given provider type. */
+function flatEndpoint(type: ConcreteType, llm: DaemonConfig["llm"]): EndpointConfig {
+  // No model for the claude CLI on purpose: the flat llm.model is shared across
+  // providers, so a model pinned for codex/openai must not leak into it.
+  if (type === "claude-process") return { type };
+  if (type === "codex-process" || type === "copilot-process") return { type, model: llm.model };
+  if (type === "anthropic") return { type, model: llm.model, apiKey: llm.apiKey };
+  return { type, model: llm.model, baseURL: llm.baseURL, apiKey: llm.apiKey,
+    ...(llm.reasoning !== undefined ? { body: { reasoning: llm.reasoning } } : {}) };
+}
+
+function kindOf(type: ConcreteType): ProviderLinkKind {
+  return PROCESS_TYPES.has(type) ? "process" : "http";
+}
+
+/** Builds each link's adapter on first use, and again after a failed build. */
+class LinkFactory {
+  private readonly adapters = new Map<string, Promise<LcmSummarizeFn>>();
+  private readonly session: LcmSummarizeFn;
+
+  constructor(private readonly config: DaemonConfig, jobs?: SummarizeJobStore) {
+    this.session = createSessionSummarizer(jobs);
+  }
+
+  link(name: string): ProviderLink {
+    if (name === "session") {
+      return () => ({ name, kind: "session", summarizer: async () => this.session });
+    }
+    // Resolved per call, from the client that asked, as `auto` is everywhere else.
+    if (name === "auto") return (ctx) => this.link(autoProvider(ctx.client))(ctx);
+    const endpoint = this.config.llm.providers && Object.hasOwn(this.config.llm.providers, name)
+      ? this.config.llm.providers[name]
+      : undefined;
+    // A named endpoint reports usage under its own name; a provider type under its adapter's label.
+    if (endpoint) return this.endpointLink(name, endpoint, name);
+    if (this.config.llm.providers && !PROCESS_TYPES.has(name)) throw new Error(`[lcm] No summarizer endpoint named "${name}"`);
+    return this.endpointLink(name, flatEndpoint(name as ConcreteType, this.config.llm));
+  }
+
+  private endpointLink(name: string, endpoint: EndpointConfig, usageLabel?: string): ProviderLink {
+    const summarizer = () => this.adapter(name, endpoint);
+    return () => ({ name, kind: kindOf(endpoint.type), usageLabel, summarizer });
+  }
+
+  private adapter(name: string, endpoint: EndpointConfig): Promise<LcmSummarizeFn> {
+    let adapter = this.adapters.get(name);
+    if (!adapter) {
+      adapter = createEndpointSummarizer(endpoint);
+      // A client library installed after a failed load is picked up on the next call.
+      adapter.catch(() => this.adapters.delete(name));
+      this.adapters.set(name, adapter);
+    }
+    return adapter;
+  }
+}
+
+/**
+ * The links `provider` summarizes through, in order. With `llm.providers`, the
+ * endpoints in `llm.fallback` follow it and nothing else does. With the flat form,
+ * only the session provider has a fallback: `llm.fallbackProvider`, `auto` if unset.
+ */
+function chainOf(provider: EffectiveProvider, config: DaemonConfig, links: LinkFactory): ProviderLink[] {
+  if (config.llm.providers) return [provider, ...(config.llm.fallback ?? [])].map((name) => links.link(name));
+  if (provider !== "session") return [links.link(provider)];
+  const fallback = config.llm.fallbackProvider ?? "auto";
+  return fallback === "disabled" ? [links.link("session")] : [links.link("session"), links.link(fallback)];
 }
 
 export async function createSummarizer(
@@ -61,78 +195,11 @@ export async function createSummarizer(
   // Mock summarizer for E2E testing — deterministic, no LLM calls
   if (config.summarizer?.mock) return withConfiguredLanguage(createMockSummarizer());
   if (provider === "disabled") return null;
-  if (provider === "session") {
-    return withConfiguredLanguage(async (text, aggressive, ctx = {}) => {
-      let sessionMissReason = "no live session job queue";
-      if (jobs && ctx.sessionId) {
-        const targetTokens = ctx.targetTokens ?? resolveTargetTokens({
-          inputTokens: Math.ceil(text.length / 4), mode: aggressive ? "aggressive" : "normal",
-          isCondensed: ctx.isCondensed ?? false, condensedTargetTokens: 2000,
-        });
-        const system = ctx.taskPrompt ?? LCM_SUMMARIZER_SYSTEM_PROMPT;
-        const prompt = buildSummaryPrompt(text, aggressive, ctx);
-        const answer = await jobs.enqueue({
-          session_id: ctx.sessionId, kind: ctx.isCondensed ? "condensed" : "leaf",
-          depth: ctx.depth ?? (ctx.isCondensed ? 1 : 0), system, prompt, targetTokens,
-          maxTokens: resolveMaxOutputTokens(targetTokens),
-        });
-        for (const attempt of answer.usageAttempts ?? []) {
-          ctx.onUsage?.({ provider: attempt.providerId, model: attempt.providerId.split(":")[1],
-            inputTokens: attempt.usage.input_tokens, outputTokens: attempt.usage.output_tokens,
-            tokensUsed: attempt.usage.input_tokens + attempt.usage.output_tokens,
-            estimated: attempt.usage.estimated, failed: attempt.failed ?? true });
-        }
-        if (answer.error) {
-          sessionMissReason = String(answer.error);
-        } else {
-          const text = answer.text ?? "";
-          const inputTokens = answer.usage?.input_tokens ?? Math.ceil((system.length + prompt.length) / 4);
-          const outputTokens = answer.usage?.output_tokens ?? Math.ceil(text.length / 4);
-          const provider = answer.providerId ?? (ctx.isCondensed ? "session:fork" : "session:haiku");
-          // Reported before the answer is judged: a rejected answer was still charged.
-          ctx.onUsage?.({ provider, model: provider.split(":")[1], inputTokens, outputTokens,
-            tokensUsed: inputTokens + outputTokens, estimated: answer.usage?.estimated ?? true });
-          try {
-            return acceptSummaryText(text, provider).trim();
-          } catch (err) {
-            // A rejected answer goes to the fallback like an error does.
-            if (!(err instanceof SummaryRejectedError)) throw err;
-            sessionMissReason = err.message;
-          }
-        }
-      }
-      const fallbackConfig = { ...config, llm: { ...config.llm, provider: config.llm.fallbackProvider ?? "auto" as const } };
-      const fallbackProvider = resolveEffectiveProvider(fallbackConfig, ctx.client);
-      const fallback = await createSummarizer(fallbackProvider, fallbackConfig);
-      if (!fallback) throw new Error("Session summarizer unavailable and fallback disabled");
-      ctx.onFallback?.({ reason: sessionMissReason, toProvider: fallbackProvider });
-      return fallback(text, aggressive, ctx);
-    });
-  }
-  // No model passed on purpose: config.llm.model is shared across providers, so
-  // a model pinned for codex/openai must not leak into the claude CLI.
-  if (provider === "claude-process") return withConfiguredLanguage(createClaudeProcessSummarizer());
-  if (provider === "codex-process") {
-    return withConfiguredLanguage(createCodexProcessSummarizer({ model: config.llm.model }));
-  }
-  if (provider === "copilot-process") {
-    return withConfiguredLanguage(createCopilotProcessSummarizer({ model: config.llm.model }));
-  }
-  if (provider === "openai") {
-    const { createOpenAISummarizer } = await import("../llm/openai.js");
-    return withConfiguredLanguage(createOpenAISummarizer({
-      model: config.llm.model,
-      baseURL: config.llm.baseURL,
-      apiKey: config.llm.apiKey,
-      reasoning: config.llm.reasoning,
-    }));
-  }
-  // anthropic
-  const { createAnthropicSummarizer } = await import("../llm/anthropic.js");
-  return withConfiguredLanguage(createAnthropicSummarizer({
-    model: config.llm.model,
-    apiKey: config.llm.apiKey!,
-  }));
+  const links = chainOf(provider, config, new LinkFactory(config, jobs));
+  // The first link is built now, so a missing client library fails before any work;
+  // a fallback's is built only when the chain reaches it.
+  await links[0]({}).summarizer();
+  return withConfiguredLanguage(createProviderChain(links));
 }
 
 /**

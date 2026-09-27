@@ -22,7 +22,8 @@ export type SummarizerProvider =
  * callers can tell "no cache" apart from "cache not reported".
  */
 export type SummarizerUsage = {
-  provider: SummarizerProvider;
+  /** The adapter's own label, or the endpoint's name when it is one of `llm.providers`. */
+  provider: SummarizerProvider | (string & {});
   model?: string;
   estimated?: boolean;
   /** A reported attempt that spent tokens but did not produce a usable answer. */

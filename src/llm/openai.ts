@@ -12,13 +12,20 @@ type OpenAISummarizerOptions = {
   model: string;
   baseURL: string;
   apiKey?: string;
-  reasoning?: Record<string, unknown>;
+  /** Extra top-level request fields (`reasoning`, `thinking`, ...), validated at config load. */
+  body?: Record<string, unknown>;
   _clientOverride?: any;
   _retryDelayMs?: number;
 };
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/** A 4xx other than a timeout or a rate limit: a refused key or request, not a transient failure. */
+function isClientError(err: any): boolean {
+  const status = err?.status;
+  return typeof status === "number" && status >= 400 && status < 500 && status !== 408 && status !== 429;
 }
 
 /**
@@ -84,10 +91,11 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {
         const response = await client.chat.completions.create({
+          // Vendor fields absent from the OpenAI SDK types go first, so every field
+          // generated below wins. Nothing extra is sent when unset: servers that
+          // reject unknown fields keep working.
+          ...opts.body,
           model: opts.model,
-          // `reasoning` is provider-specific and absent from the OpenAI SDK types;
-          // omitted entirely when unset so servers rejecting unknown fields keep working.
-          ...(opts.reasoning !== undefined ? { reasoning: opts.reasoning } : {}),
           ...(askForCostAccounting ? { usage: { include: true } } : {}),
           max_tokens: resolveMaxOutputTokens(targetTokens),
           // Merge system content into user message for compatibility with local
@@ -111,7 +119,7 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
         // the input would persist raw conversation text as a fake summary.
         return acceptSummaryText(choice?.message?.content ?? "", "openai", usage?.model ?? opts.model);
       } catch (err: any) {
-        if (err?.status === 401) throw err; // auth error: no retry
+        if (isClientError(err)) throw err; // the same request fails the same way: no retry
         if (err instanceof SummaryRejectedError && !err.retryable) throw err;
         lastError = err;
         if (attempt < MAX_RETRIES - 1) await sleep(retryDelayMs * Math.pow(2, attempt));

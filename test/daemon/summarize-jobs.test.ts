@@ -163,7 +163,7 @@ describe("session summarize jobs", () => {
     expect(onFallback).toHaveBeenCalledWith({ reason: expect.stringContaining("summary rejected"), toProvider: "openai" });
   });
 
-  it("does not fall back from a rejected fallback answer: the rejection reaches the caller", async () => {
+  it("does not fall back from a rejected fallback answer: both failures reach the caller", async () => {
     const { SummaryRejectedError } = await import("../../src/llm/summary-rejection.js");
     const rejection = new SummaryRejectedError({ reason: "length", provider: "openai" });
     fallback.mockRejectedValue(rejection);
@@ -171,7 +171,10 @@ describe("session summarize jobs", () => {
     const pending = summarize("conversation", false, { sessionId: "one" });
     const job = await store.next("one");
     store.answer(job!.id, { error: "model unavailable" });
-    await expect(pending).rejects.toBe(rejection);
+    await expect(pending).rejects.toMatchObject({ name: "ProviderChainExhaustedError",
+      failures: [{ provider: "session", error: expect.objectContaining({ message: "model unavailable" }) },
+        { provider: "openai", error: rejection }] });
+    expect(fallback).toHaveBeenCalledOnce();
   });
 
   it("uses the client's auto fallback without a session module", async () => {
