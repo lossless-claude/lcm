@@ -702,9 +702,10 @@ export default function lcm(pi: HookApi): void {
 
   const fireIngest = (ctx: HookContext, hook: string, timeoutMs = DEFAULT_TIMEOUT_MS, eventIdentity?: SessionIdentity): void => {
     const identity = eventIdentity ?? sessionIdentity(ctx);
+    const forceFlush = hook === "session_shutdown";
     if (!identity || !identity.transcriptPath || !sessionOnDisk(ctx)) {
       note(ctx, hook, "capture", "execution", "deferred", identity ? "source-unavailable" : "missing-identity", identity);
-      flush(ctx, false, identity);
+      flush(ctx, forceFlush, identity);
       return;
     }
     void post("/ingest", ingestBody(identity), {
@@ -712,7 +713,7 @@ export default function lcm(pi: HookApi): void {
       fireAndForget: true,
     });
     note(ctx, hook, "capture", "delivery", "submitted", "", identity);
-    flush(ctx, false, identity);
+    flush(ctx, forceFlush, identity);
   };
 
   register("session_start", "session_start", async (_rawEvent, ctx) => {

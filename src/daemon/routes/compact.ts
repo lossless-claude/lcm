@@ -325,9 +325,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       }
     };
 
-    // Guard must be checked and set synchronously (before any await) to prevent
-    // concurrent requests from racing through the has() check before add() runs.
-    if (compactingNow.has(session_id) || (captureRequired && hasQueuedProjectWork(projectId(cwd)))) {
+    const skipBusy = async () => {
       log.write("info", "compact.skipped", { cwd, session_id, reason: "project-busy" });
       const captureOutcome = captureRequired ? await captureOnly() : undefined;
       if (captureRequired) log.write("info", "precompact.summary", { cwd, session_id, status: "skipped", reason: "busy" });
@@ -342,9 +340,15 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       sendJson(res, 200, {
         skipped: true,
         replayOutcome: "skipped",
-        summary: captureRequired ? "" : "Compaction already in progress for this session.",
+        summary: captureRequired || precompactVerified ? "" : "Compaction already in progress for this session.",
         ...(captureRequired ? { captureOutcome, summaryOutcome: { status: "skipped", reason: "busy" } } : {}),
       });
+    };
+
+    // Guard must be checked and set synchronously (before any await) to prevent
+    // concurrent requests from racing through the has() check before add() runs.
+    if (compactingNow.has(session_id) || ((captureRequired || precompactVerified) && hasQueuedProjectWork(projectId(cwd)))) {
+      await skipBusy();
       return;
     }
     const releaseCompacting = markCompacting(session_id, cwd);
@@ -379,6 +383,12 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         return;
       }
       const pid = projectId(cwd);
+      // Summarizer setup awaited above, so another request may have entered the
+      // queue since the first admission check. Recheck without awaiting before enqueue.
+      if (precompactVerified && hasQueuedProjectWork(pid)) {
+        await skipBusy();
+        return;
+      }
       const result = await enqueue(pid, async () => {
         const dbPath = projectDbPath(cwd, paths);
         openProject(cwd, paths);
