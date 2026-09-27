@@ -7,7 +7,8 @@ bounded judgment: does this user turn state a decision, rule or preference that 
 applying after the request? We measured it, a pt-BR keyword list and two external decision
 models on the same turns. The shipped detector finds none of the decisions in pt-BR. A
 calibrated classifier ranks turns well, but its confident answers are not reliable enough to
-promote anything on their own. The category itself needs a definition first.
+promote anything on their own. The category itself needs a definition first; round 2 below
+tests one, and two independent annotators apply it consistently.
 
 This evaluation justifies two design constraints: `user_decision` is not a promotion signal
 until #581 defines the category and a detector meets it, and a classifier's answer only ever
@@ -69,6 +70,47 @@ pt-BR keyword list flagged 7 there, none of them a decision.
    the question in English or in Portuguese about the same pt-BR turns made no difference;
    other input languages were not tested.
 
+## Round 2: a written definition, two LLM annotators, no human
+
+The second draw tests a written definition, anchored to the `type:decision` and
+`type:preference` rows of `docs/tag-schema.md`:
+
+> Does any part of this turn state a decision or preference that keeps applying in future
+> sessions? Yes: an architecture or process decision (what was chosen), or a preference about
+> how things should be done ("always X", "never Y", "I prefer Z"), that would still hold in a
+> future session — even when the rest of the turn is a one-off request. No: everything in it
+> applies to this task only (a request, a question, a report, an answer to the agent, a
+> one-off instruction).
+
+- 400 turns drawn at random from the same corpus (draw 2), none used in round 1, no keyword
+  stratum. The definition, the question text and the sample were frozen before any label.
+- Fable and Astra labeled all 400 blind with that definition; no human labeled this round.
+  Gold is the 349 turns where both said yes or both said no; 22 are decisions (about 6%).
+  The same definition, word for word, is Jev's question.
+
+The two annotators agreed at κ 0.75 on yes against the rest (0.83 across the four labels),
+which meets the bar #581 set.
+
+| Detector | Flagged | Correct | Precision | Recall | AUROC |
+| --- | --- | --- | --- | --- | --- |
+| `decisionPatterns` (shipped) | 0 | 0 | — | 0 of 22 | — |
+| pt-BR keyword list | 0 | 0 | — | 0 of 22 | — |
+| Jev 1.13.0, hosted | 29 | 15 | 0.52 | 15 of 22 | 0.956 |
+
+- The keyword lists found nothing: under the new definition, decisions are rarely phrased with
+  "always" or "never". Jev's seven misses are design decisions stated as instructions (a
+  default value, a removed process step), at P 0.26 to 0.43.
+- High confidence now means something: at P ≥ 0.8, 4 of 5 flags are decisions.
+- Jev is uncertain where the annotators disagree: on the 13 turns where only one of them said
+  yes, its P ranged from 0.16 to 0.69, all but one between 0.40 and 0.69.
+- With each annotator alone as gold, Jev's AUROC is 0.957 (Fable) and 0.937 (Astra).
+- Exploratory, not pre-registered: at 0.25 Jev catches all 22 and flags 88 of 349 turns; at
+  0.4, 18 of 22 with 39 flags.
+
+The definition is usable: two independent readers apply it consistently. This round cannot
+confirm the round-1 score the way a human label would, because every label is an LLM reading
+of the same text Jev reads, and consensus gold leaves out the 13 contested turns.
+
 ## Constraints on any integration
 
 - A hosted classifier sends the turn text off the machine. It is opt-in, and it only receives
@@ -79,7 +121,7 @@ pt-BR keyword list flagged 7 there, none of them a decision.
 
 ## Limits of this evidence
 
-One author, one language and 11 decisions. Recall of 11 of 11 has a 95% interval of roughly
+One author, one language, 11 decisions in round 1 and 22 in round 2. Recall of 11 of 11 has a 95% interval of roughly
 0.72 to 1.0. The adjudicated labels were shaped by two LLM annotators whose reading of the
 question matched Jev's. Laya ran on Apple MPS; the ONNX CPU path was not measured. A local
 drop-in for the hosted API (Kev) was not tested.
