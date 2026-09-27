@@ -166,6 +166,27 @@ the failed HTTP call. If nothing new was persisted, the previous chain link is
 kept and the session is skipped (retried by the next run). Only a
 daemon-reported failure breaks the chain at that link.
 
+A refused connection (the daemon process itself is gone, not just slow) is
+different from a client giving up: every later call would fail the same way,
+so `lcm import --replay` and `lcm compact --replay` stop the run there instead
+of marking every remaining session failed and breaking each one's chain link
+in turn. Nothing is recorded for the session in flight when this happens — no
+ledger row, no chain reset — so a plain rerun of the same command resumes
+exactly where it stopped, using the manifest/ledger already on disk. `lcm
+compact` also skips its post-batch auto-promote step in this case: `/promote`
+has no timeout, so posting it to a daemon that just proved unreachable could
+hang the command right after it reported stopping.
+
+A mid-flight socket drop (`ECONNRESET`, `EPIPE`) is ambiguous by itself: it
+looks the same whether the daemon just died or is alive but wedged — its
+event loop blocked on something slow — and RSTing every request it cannot
+service, `/health` included. The run resolves this with a short `/health`
+probe before deciding: a healthy answer means the daemon is only slow, so the
+session gets the give-up treatment above (recover its summary if one was
+persisted, otherwise skip it and keep going); no answer means the daemon
+cannot be trusted to service anything else either, so the run stops the same
+way it does for a refused connection.
+
 SIGINT/SIGTERM let the in-flight compaction settle before exiting, so a resumed
 run never duplicates or skips a half-finished session. A second signal exits
 at once.
@@ -193,6 +214,14 @@ leaf and condensed, before the escalation above. An adapter does not retry a len
 since the same request with the same budget stops the same way; an empty answer is retried
 like a transient failure.
 
+A length stop is retried once by the provider chain below, on the same link, with a changed
+request: the aggressive prompt and twice the output cap the answer stopped at
+(`SummaryRejectedError.maxOutputTokens`, sent back as `SummarizeContext.maxOutputTokens`).
+The aggressive prompt lowers a leaf's target, and with it the cap derived from it, so the cap
+is raised rather than derived; a condensed prompt has no aggressive form and gets the larger
+cap alone. A request that was already aggressive is not retried, which bounds the retry to one
+per link per chunk. The engine does not see the retry: the level it reports stays `normal`.
+
 A rejected answer moves the provider chain below to its next link, as an error does. With no
 link left, the rejection fails the pass: nothing from it is persisted and context is unchanged,
 while passes that finished earlier in the same compaction stay. `/compact` answers 500 naming
@@ -212,17 +241,21 @@ they are the one configured provider, or the session followed by `llm.fallbackPr
 chain; with none left, the first summary throws `SummarizerUnavailableError` naming each
 endpoint and variable, and `/health` and `lcm doctor` report the endpoints left out.
 
-Each link runs at most once per call, after its adapter's own retries. The next link runs
+Each link is tried once per call, after its adapter's own retries, plus the chain's one retry
+of a length stop (see [Rejected answers](#rejected-answers)). The next link runs
 after a session that did not answer (`SessionUnavailableError`), a `SummaryRejectedError`, a
 refused key (401/403), an account that cannot pay (402), a connection failure or a transient status still failing after the
 retries (408, 429, 5xx), or a failed CLI run. Anything else — a 400/422, a cancelled request,
 a missing client library, an unclassified exception — is thrown at once, since trying the next
-link would hide it. When more than one link ran and all failed, the chain throws
+link would hide it. The exception is a 400/422 answering the retry of a length stop: its larger
+cap may exceed the model's output limit, so the next link runs. When more than one link ran and all failed, the chain throws
 `ProviderChainExhaustedError`, naming each failure; like a rejection, it fails the pass and
 never becomes the deterministic fallback above.
 
-The chain calls `onFallback` between links, which is where `/compact` settles the abandoned
-attempt as failed before the next one reports its usage. A named endpoint's usage carries the
+The chain calls `onFallback` between attempts, which is where `/compact` settles the abandoned
+attempt as failed before the next one reports its usage. A link's retry of its own length stop
+is an attempt of its own, so its `onFallback` (and the `summarizer.fallback` log record) names
+the same link at both ends. A named endpoint's usage carries the
 endpoint's name, so one pass can record a failed `deepseek` call and an ok `openrouter` call.
 
 A link's adapter is built on first use, the first link's when the summarizer is created: a
@@ -308,6 +341,11 @@ stored.
 3. When the cursor cannot be trusted — a replaced, truncated or extended file — Codex re-reads
    the whole file and the capture verifies the stored prefix, after current redaction rules
    have been applied to both sides, before accepting the suffix.
+4. An OMP transcript uses the same cursor, but its file is a tree: each read keeps only the
+   entries on the `parentId` chain from the file's last entry. Stored history is therefore
+   the file's messages in order but not always its prefix. A recovery scan continues the
+   file's live path when stored history is a prefix of it; otherwise it requires that order
+   and accepts the live-path messages after the last stored one.
 
 This covers a session whose messages reached the transcript while lcm was down or killed, and
 a file that grew or was rewritten between two runs.

@@ -85,6 +85,35 @@ it("fails a compaction whose summary was cut off, storing nothing and counting t
   });
 });
 
+it("stores the shorter retry of a cut-off summary, counting the cut-off answer as its own failed call", async () => {
+  const requests: Array<{ aggressive: boolean; maxOutputTokens?: number }> = [];
+  openai.mockImplementation(async (_text: string, aggressive: boolean, ctx: any) => {
+    requests.push({ aggressive, maxOutputTokens: ctx.maxOutputTokens });
+    ctx.onUsage(OPENAI_USAGE);
+    if (requests.length === 1) {
+      throw new SummaryRejectedError({ reason: "length", provider: "openai", model: "reasoner", maxOutputTokens: 2_400 });
+    }
+    return "shorter summary";
+  });
+  const config = loadDaemonConfig("/x", { llm: { provider: "openai", model: "reasoner" } }, {});
+  const cwd = await ingestedSession(config, "session-retried");
+
+  const result = await invoke(createCompactHandler(config, paths), { cwd, session_id: "session-retried" });
+
+  expect(result.status).toBe(200);
+  expect(result.body.replayOutcome).toBe("compacted");
+  expect(result.body.providerId).toBe("openai");
+  // The retry asks for the shorter summary with twice the cap the first answer overran.
+  expect(requests[1]).toEqual({ aggressive: true, maxOutputTokens: 4_800 });
+  expect(result.body.llmUsage).toMatchObject({ calls: requests.length, okCalls: requests.length - 1, failedCalls: 1 });
+  readDb(cwd, (db) => {
+    const stored = db.prepare("SELECT COUNT(*) AS n FROM summaries").get() as { n: number };
+    expect(stored.n).toBe(requests.length - 1);
+    expect(db.prepare("SELECT provider, calls_total, calls_ok, calls_failed FROM llm_usage_stats").all())
+      .toEqual([{ provider: "openai", calls_total: requests.length, calls_ok: requests.length - 1, calls_failed: 1 }]);
+  });
+});
+
 it("counts an answer the engine rejects as a failed call, even when its adapter returned it", async () => {
   openai.mockImplementation(async (_text: string, _aggressive: boolean, ctx: any) => {
     ctx.onUsage(OPENAI_USAGE);

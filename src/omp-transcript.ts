@@ -16,6 +16,11 @@
  * migrations rewrite the file atomically, which a stale byte cursor detects as
  * an identity change and recovers from with a full scan.
  *
+ * Every entry after the header carries `id` and `parentId`: the file is an
+ * append-only tree. A rewind or branch switch moves the leaf and the abandoned
+ * continuation stays in the file, so memory keeps only the path from the last
+ * entry ({@link selectOmpLiveMessages}).
+ *
  * The persisted `message.role` is camelCase: `user`, `developer`, `assistant`,
  * `toolResult`. An assistant message carries tool invocations as `toolCall`
  * content blocks; each result is its own `toolResult` message entry.
@@ -65,6 +70,7 @@ interface OmpMessage {
 interface OmpEntry {
   type?: string;
   id?: string;
+  parentId?: string | null;
   cwd?: string;
   message?: OmpMessage;
 }
@@ -74,9 +80,17 @@ export interface OmpSessionMeta {
   cwd?: string;
 }
 
+/** An entry's place in the session tree. */
+export interface OmpTreeNode {
+  id: string;
+  parentId: string | null;
+}
+
 export interface ParsedOmpTranscriptRecord {
   message?: ParsedMessage | ParsedMessage[];
   sessionMeta?: OmpSessionMeta;
+  /** Every entry with an id has one; state entries are links in the parent chain too. */
+  node?: OmpTreeNode;
 }
 
 /** Marks a tool result the tool itself reported as failed. */
@@ -163,9 +177,58 @@ export function parseOmpTranscriptRecord(record: string): ParsedOmpTranscriptRec
     };
   }
 
-  if (entry.type !== "message" || !entry.message) return {};
+  const parsed: ParsedOmpTranscriptRecord = {};
+  if (typeof entry.id === "string" && entry.id) {
+    parsed.node = { id: entry.id, parentId: typeof entry.parentId === "string" ? entry.parentId : null };
+  }
+  if (entry.type !== "message" || !entry.message) return parsed;
   const messages = parseOmpMessageEntry(entry.message);
-  return messages.length === 0 ? {} : { message: messages };
+  if (messages.length > 0) parsed.message = messages;
+  return parsed;
+}
+
+/**
+ * The messages on the live path among `records`, in file order.
+ *
+ * OMP resumes a session from the last entry in the file and walks `parentId`
+ * to the root. This walks the same chain from the last entry among `records`
+ * and stops where the chain leaves them, so a delta keeps only its entries on
+ * the path the user kept; stored history before the delta is not revisited.
+ * Entries without an id predate the tree format and are always kept.
+ *
+ * In a `wholeFile` read the chain can only leave the records at an entry the
+ * file does not hold, such as a skipped malformed record; its ancestry is then
+ * unknown, so every entry is kept in file order rather than dropping the
+ * history before the break.
+ */
+export function selectOmpLiveMessages(records: readonly ParsedOmpTranscriptRecord[], wholeFile = false): ParsedMessage[] {
+  const live = ompLivePath(records, wholeFile);
+  const messages: ParsedMessage[] = [];
+  for (const { node, message } of records) {
+    if (!message || (node && live?.has(node.id) === false)) continue;
+    if (Array.isArray(message)) messages.push(...message);
+    else messages.push(message);
+  }
+  return messages;
+}
+
+/** The ids on the chain from the last entry; undefined when a whole-file chain breaks. */
+function ompLivePath(records: readonly ParsedOmpTranscriptRecord[], wholeFile: boolean): Set<string> | undefined {
+  const parents = new Map<string, string | null>();
+  let leaf: string | null = null;
+  for (const { node } of records) {
+    if (!node) continue;
+    parents.set(node.id, node.parentId);
+    leaf = node.id;
+  }
+
+  const live = new Set<string>();
+  // A corrupt cyclic chain stops at the first repeat, as OMP's own walk does.
+  let id = leaf;
+  for (; id !== null && parents.has(id) && !live.has(id); id = parents.get(id) ?? null) {
+    live.add(id);
+  }
+  return wholeFile && id !== null && !parents.has(id) ? undefined : live;
 }
 
 // ---------------------------------------------------------------------------
@@ -177,8 +240,10 @@ export function parseOmpTranscriptRecord(record: string): ParsedOmpTranscriptRec
  *
  * Unreadable files return an empty array and malformed JSON records are
  * skipped. Syntactically valid non-message entries and unsupported message
- * roles are ignored. A valid unterminated final record is included by default
- * for historical imports; set `includeTrailingRecord: false` for a live file.
+ * roles are ignored, and so are entries off the live path, unless a skipped
+ * malformed record broke that path, which reads the file in order. A valid
+ * unterminated final record is included by default for historical imports; set
+ * `includeTrailingRecord: false` for a live file.
  */
 export function parseOmpTranscript(transcriptPath: string, includeTrailingRecord = true): ParsedMessage[] {
   let raw: string;
@@ -188,7 +253,7 @@ export function parseOmpTranscript(transcriptPath: string, includeTrailingRecord
     return [];
   }
 
-  const messages: ParsedMessage[] = [];
+  const records: ParsedOmpTranscriptRecord[] = [];
   const lines = raw.split("\n");
   if (!includeTrailingRecord && !raw.endsWith("\n")) {
     // OMP appends completed entries; a final record without a newline is
@@ -199,17 +264,14 @@ export function parseOmpTranscript(transcriptPath: string, includeTrailingRecord
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    let parsed: ParsedOmpTranscriptRecord;
     try {
-      parsed = parseOmpTranscriptRecord(trimmed);
+      records.push(parseOmpTranscriptRecord(trimmed));
     } catch {
       continue;
     }
-    if (Array.isArray(parsed.message)) messages.push(...parsed.message);
-    else if (parsed.message) messages.push(parsed.message);
   }
 
-  return messages;
+  return selectOmpLiveMessages(records, true);
 }
 
 /** Maps each tool-call id to the model recorded on the assistant entry that dispatched it. */

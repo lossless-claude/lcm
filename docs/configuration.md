@@ -98,7 +98,7 @@ jq -c 'select(.cwd == "/path/to/project")' ~/.lossless-claude/logs/daemon.log*
 
 - **Requests**: one `request` record per request, with its route, status and duration. `/session-end`, `/compact` and `/session-start-compact` are logged at `info`, so a `/session-end` with no `/compact` after it is visible. `/tool-event`, `/health` and `/summarize-jobs/*` are logged at `debug`. A 5xx is logged at `error`, and a 4xx at `warn`.
 - **Outcomes**: `compact.done`, `compact.skipped` (`reason`: `already-compacting`, `disabled`, `no_work`, `auto-compact-disabled`), `compact.sweep`, `promote.done` and `session_end.ingested`.
-- **Failures**: `route.failed`, `compact.failed`, `promote.failed`, `daemon_request.failed` (a follow-up request the daemon could not send to itself), `ingest.subagent_failed`, `daemon.crash` (with its scrubbed stack), `summarizer.fallback` (`from_provider` produced no summary, so `to_provider` summarized instead), and `summarizer.endpoint_unavailable` at startup, once per named endpoint left out because `missing_env` is unset.
+- **Failures**: `route.failed`, `compact.failed`, `promote.failed`, `daemon_request.failed` (a follow-up request the daemon could not send to itself), `ingest.subagent_failed`, `daemon.crash` (with its scrubbed stack), `summarizer.fallback` (`from_provider` produced no summary, so `to_provider` summarized instead; the same endpoint at both ends when it is asked again after stopping at the output cap), and `summarizer.endpoint_unavailable` at startup, once per named endpoint left out because `missing_env` is unset.
 - **Continuity**:
   - `daemon.start` records `prev`: `clean` when the previous daemon left a `daemon.stop`, `unclean` when it did not, and `none` for the first log.
   - `daemon.stop` is written on idle shutdown, SIGTERM, SIGINT and an uncaught exception. `lcm daemon stop` sends SIGTERM.
@@ -341,7 +341,7 @@ A process endpoint accepts only `type` and `model`: its CLI authenticates throug
 - **Unset variables.** The daemon expands `${NAME}` from the environment of the process that started it, which may be any session's. An endpoint whose `apiKey` or `baseURL` names an unset variable (or an `anthropic` endpoint with no key and no `ANTHROPIC_API_KEY`) is left out of the chain, and the rest of the config loads; every other config error still stops the load. With every link of the chain left out, each summary fails with an error naming the endpoints and their variables. To see it: the daemon log's `summarizer.endpoint_unavailable` warning at startup, the `summarizer` field of the daemon's `/health` answer, and `lcm doctor`, which warns per endpoint left out and fails when none of the chain can run. Export the variable where the daemon starts, then run `lcm daemon restart`.
 - **Both forms.** With `llm.providers`, a non-empty flat `llm.model`, `llm.baseURL` or `llm.apiKey`, and any `llm.reasoning` or `llm.fallbackProvider`, are rejected; the empty strings `lcm install` writes are ignored: each endpoint holds its own settings and inherits none from another. Without `llm.providers`, `llm.fallback` is rejected and the flat form works as described in this section.
 
-Each link runs at most once per summarization, after its own retries. The chain moves to the next link when the current one:
+Each link is tried once per summarization, after its own retries, plus one retry when its answer stopped at the output cap (see [Cut-off and empty answers](#cut-off-and-empty-answers)). The chain moves to the next link when the current one:
 
 - is the session and does not answer (no module loaded, session gone, timeout, error);
 - returns an answer lcm rejects (see [Cut-off and empty answers](#cut-off-and-empty-answers));
@@ -349,7 +349,7 @@ Each link runs at most once per summarization, after its own retries. The chain 
 - cannot be reached, or is still unavailable after its retries (408, 429, 5xx);
 - is a process provider whose CLI run fails.
 
-Anything else fails the pass without trying the next link: a request the endpoint refuses as invalid (400, 422), a cancelled request, a client library that is not installed, or any error lcm does not recognise. When every link fails, the pass fails with one error naming each link's failure; it never falls back to storing raw text. Every attempt is recorded under its endpoint's name, so an answer DeepSeek cut off counts as a failed `deepseek` call even when OpenRouter's answer is the one stored. An HTTP or process attempt that failed before any usage came back (a refused key, a failed CLI run) is recorded as a failed call with no tokens, and an answer that carried no usage is still attributed to the endpoint that gave it, with that endpoint's configured model. `lcm doctor` checks the CLI of every process endpoint the chain lists.
+Anything else fails the pass without trying the next link: a request the endpoint refuses as invalid (400, 422) — except the retry of a cut-off answer, whose larger cap may exceed the model's output limit —, a cancelled request, a client library that is not installed, or any error lcm does not recognise. When every link fails, the pass fails with one error naming each link's failure; it never falls back to storing raw text. Every attempt is recorded under its endpoint's name, so an answer DeepSeek cut off counts as a failed `deepseek` call even when OpenRouter's answer is the one stored. An HTTP or process attempt that failed before any usage came back (a refused key, a failed CLI run) is recorded as a failed call with no tokens, and an answer that carried no usage is still attributed to the endpoint that gave it, with that endpoint's configured model. `lcm doctor` checks the CLI of every process endpoint the chain lists.
 
 ### Session provider
 
@@ -413,10 +413,17 @@ the output budget ran out, often spent on reasoning. So is an answer from any
 provider that holds only whitespace. A rejected answer moves the chain to its next
 link; with none left, it fails that compaction pass (`compact.failed`, naming the
 rejection): nothing from the pass is stored, and a replay leaves the session for its
-next run. The call's tokens are still counted, as a failed call. A length stop is not
-retried against the same endpoint, since the same request stops the same way: if it
-recurs, keep reasoning from spending the budget with the endpoint's `body` (or
-`llm.reasoning` in the flat form).
+next run. The call's tokens are still counted, as a failed call.
+
+The same request stops the same way, so before moving on, an answer cut off at the
+output cap is asked for once more on the same endpoint with a changed request: the
+shorter (aggressive) summary prompt and twice the output cap the first answer stopped
+at. A condensed summary has no shorter prompt and gets the larger cap alone. The retry
+is a call of its own, counted like any other, and happens once per endpoint per chunk:
+a request that already used the shorter prompt, including the compaction's own shorter
+retry of a summary that did not shrink, moves on at its first length stop. If a retry
+still stops at the cap, keep reasoning from spending the budget with the endpoint's
+`body` (or `llm.reasoning` in the flat form).
 
 ### Token cost reporting
 

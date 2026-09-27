@@ -37,7 +37,7 @@ async function chain(llm: Record<string, unknown>, jobs?: SummarizeJobStore) {
 const endpointsCalled = () => server.seen.map((request) => request.endpoint);
 
 describe("summarizer provider chain", () => {
-  it("calls DeepSeek first and moves to OpenRouter when DeepSeek's answer stops at the length limit", async () => {
+  it("calls DeepSeek first and moves to OpenRouter when DeepSeek's answer and its shorter retry stop at the length limit", async () => {
     server.answer("deepseek", completion("The session began with", "length", "deepseek-chat"));
     server.answer("openrouter", completion("the summary", "stop", "vendor/flash"));
     const summarize = await chain({ provider: "deepseek", fallback: ["openrouter"] });
@@ -46,11 +46,14 @@ describe("summarizer provider chain", () => {
 
     await expect(summarize("conversation", false, { onUsage, onFallback })).resolves.toBe("the summary");
 
-    expect(endpointsCalled()).toEqual(["deepseek", "openrouter"]);
-    expect(onFallback).toHaveBeenCalledExactlyOnceWith({ reason: expect.stringContaining("summary rejected: deepseek (deepseek-chat)"), fromProvider: "deepseek", toProvider: "openrouter" });
-    // Usage is labelled with the endpoint's name, the rejected attempt included.
+    expect(endpointsCalled()).toEqual(["deepseek", "deepseek", "openrouter"]);
+    expect(onFallback.mock.calls.map(([fallback]) => fallback)).toEqual([
+      { reason: expect.stringContaining("summary rejected: deepseek (deepseek-chat)"), fromProvider: "deepseek", toProvider: "deepseek" },
+      { reason: expect.stringContaining("summary rejected: deepseek (deepseek-chat)"), fromProvider: "deepseek", toProvider: "openrouter" },
+    ]);
+    // Usage is labelled with the endpoint's name, the rejected attempts included.
     expect(onUsage.mock.calls.map(([usage]) => [usage.provider, usage.model]))
-      .toEqual([["deepseek", "deepseek-chat"], ["openrouter", "vendor/flash"]]);
+      .toEqual([["deepseek", "deepseek-chat"], ["deepseek", "deepseek-chat"], ["openrouter", "vendor/flash"]]);
   });
 
   it("sends each endpoint only its own key, URL, model and body", async () => {
@@ -60,7 +63,8 @@ describe("summarizer provider chain", () => {
 
     await summarize("conversation", false, {});
 
-    const [deepseek, openrouter] = server.seen;
+    const deepseek = server.seen.find((request) => request.endpoint === "deepseek")!;
+    const openrouter = server.seen.find((request) => request.endpoint === "openrouter")!;
     expect(deepseek.authorization).toBe("Bearer sk-deepseek");
     expect(deepseek.body).toMatchObject({ model: "deepseek-chat", thinking: { type: "disabled" } });
     expect(deepseek.body).not.toHaveProperty("reasoning");
@@ -99,8 +103,9 @@ describe("summarizer provider chain", () => {
 
       expect(onFallback.mock.calls.map(([fallback]) => fallback))
         .toEqual([{ reason: "job timeout", fromProvider: "session", toProvider: "deepseek" },
+          { reason: expect.stringContaining("summary rejected"), fromProvider: "deepseek", toProvider: "deepseek" },
           { reason: expect.stringContaining("summary rejected"), fromProvider: "deepseek", toProvider: "openrouter" }]);
-      expect(endpointsCalled()).toEqual(["deepseek", "openrouter"]);
+      expect(endpointsCalled()).toEqual(["deepseek", "deepseek", "openrouter"]);
     } finally {
       jobs.close();
     }
@@ -140,7 +145,7 @@ describe("summarizer provider chain", () => {
     expect(onFallback).not.toHaveBeenCalled();
   });
 
-  it("throws one error naming every endpoint when all of them fail, each tried once", async () => {
+  it("throws one error naming every endpoint when all of them fail, each retried shorter once", async () => {
     server.answer("deepseek", completion("cut", "length"));
     server.answer("openrouter", completion("also cut", "length"));
     const summarize = await chain({ provider: "deepseek", fallback: ["openrouter"] });
@@ -150,7 +155,7 @@ describe("summarizer provider chain", () => {
     expect(error.name).toBe("ProviderChainExhaustedError");
     expect(error.message).toMatch(/deepseek: summary rejected: deepseek .*openrouter: summary rejected: openrouter /s);
     expect(error.failures).toHaveLength(2);
-    expect(endpointsCalled()).toEqual(["deepseek", "openrouter"]);
+    expect(endpointsCalled()).toEqual(["deepseek", "deepseek", "openrouter", "openrouter"]);
   });
 
   it("lets LCM_SUMMARY_PROVIDER pick the first endpoint, keeping the rest of the chain", async () => {
@@ -163,6 +168,89 @@ describe("summarizer provider chain", () => {
     await expect(summarize("conversation", false, {})).resolves.toBe("the summary");
     // openrouter is primary now and listed as a fallback too: it still runs once.
     expect(endpointsCalled()).toEqual(["openrouter"]);
+  });
+});
+
+describe("a summary that stops at the output cap", () => {
+  /** Answers `first` to the endpoint's first request and `rest` to every later one. */
+  const firstThen = (first: ReturnType<typeof completion>, rest: ReturnType<typeof completion>) => {
+    let requests = 0;
+    return () => (++requests === 1 ? first : rest);
+  };
+  const prompt = (i: number) => server.seen[i].body.messages[0].content as string;
+
+  it("is asked again on the same endpoint with the shorter prompt and twice the cap, before the chain moves on", async () => {
+    server.answer("deepseek", firstThen(completion("The session began with", "length"), completion("the shorter summary")));
+    server.answer("openrouter", completion("the summary"));
+    const summarize = await chain({ provider: "deepseek", fallback: ["openrouter"] });
+    const onUsage = vi.fn();
+    const onAttempt = vi.fn();
+    const onFallback = vi.fn();
+
+    await expect(summarize("conversation", false, { onUsage, onAttempt, onFallback })).resolves.toBe("the shorter summary");
+
+    expect(endpointsCalled()).toEqual(["deepseek", "deepseek"]);
+    expect(server.seen[1].body.max_tokens).toBe(2 * server.seen[0].body.max_tokens);
+    expect(prompt(1)).not.toBe(prompt(0));
+    // The overrun is its own attempt: settled as a failed call before the retry reports usage.
+    expect(onFallback).toHaveBeenCalledExactlyOnceWith({ reason: expect.stringContaining("summary rejected: deepseek"), fromProvider: "deepseek", toProvider: "deepseek" });
+    expect(onAttempt.mock.calls.map(([attempt]) => attempt.provider)).toEqual(["deepseek", "deepseek"]);
+    expect(onUsage.mock.calls.map(([usage]) => usage.provider)).toEqual(["deepseek", "deepseek"]);
+  });
+
+  it("gets a condensed summary, whose prompt has no shorter form, the larger cap alone", async () => {
+    server.answer("deepseek", firstThen(completion("cut", "length"), completion("the condensed summary")));
+    const summarize = await chain({ provider: "deepseek", fallback: ["openrouter"] });
+
+    await expect(summarize("summaries", false, { isCondensed: true, depth: 1 })).resolves.toBe("the condensed summary");
+
+    expect(endpointsCalled()).toEqual(["deepseek", "deepseek"]);
+    expect(prompt(1)).toBe(prompt(0));
+    expect(server.seen[1].body.max_tokens).toBe(2 * server.seen[0].body.max_tokens);
+  });
+
+  it("is not retried when the request was already the shorter one", async () => {
+    server.answer("deepseek", completion("cut", "length"));
+    server.answer("openrouter", completion("the summary"));
+    const summarize = await chain({ provider: "deepseek", fallback: ["openrouter"] });
+
+    await expect(summarize("conversation", true, {})).resolves.toBe("the summary");
+
+    expect(endpointsCalled()).toEqual(["deepseek", "openrouter"]);
+  });
+
+  it("moves on when the endpoint refuses the retry's larger cap", async () => {
+    server.answer("deepseek", firstThen(completion("cut", "length"), httpError(400, "max_tokens exceeds the model's limit")));
+    server.answer("openrouter", completion("the summary"));
+    const summarize = await chain({ provider: "deepseek", fallback: ["openrouter"] });
+    const onFallback = vi.fn();
+
+    await expect(summarize("conversation", false, { onFallback })).resolves.toBe("the summary");
+
+    expect(endpointsCalled()).toEqual(["deepseek", "deepseek", "openrouter"]);
+    expect(onFallback.mock.calls.map(([fallback]) => [fallback.fromProvider, fallback.toProvider]))
+      .toEqual([["deepseek", "deepseek"], ["deepseek", "openrouter"]]);
+  });
+
+  it("still stops at a retry failure that is not a refused request", async () => {
+    server.answer("deepseek", firstThen(completion("cut", "length"), httpError(404, "no such model")));
+    server.answer("openrouter", completion("the summary"));
+    const summarize = await chain({ provider: "deepseek", fallback: ["openrouter"] });
+
+    await expect(summarize("conversation", false, {})).rejects.toMatchObject({ status: 404 });
+
+    expect(endpointsCalled()).toEqual(["deepseek", "deepseek"]);
+  });
+
+  it("is retried with the flat config's one endpoint too", async () => {
+    server.answer("flat", firstThen(completion("cut", "length"), completion("the shorter summary")));
+    const config = loadDaemonConfig("/nonexistent", { llm: { provider: "openai", model: "m", baseURL: `${server.base}/flat` } }, {});
+    const summarize = (await createSummarizer(resolveEffectiveProvider(config), config))!;
+
+    await expect(summarize("conversation", false, {})).resolves.toBe("the shorter summary");
+
+    expect(endpointsCalled()).toEqual(["flat", "flat"]);
+    expect(server.seen[1].body.max_tokens).toBe(2 * server.seen[0].body.max_tokens);
   });
 });
 

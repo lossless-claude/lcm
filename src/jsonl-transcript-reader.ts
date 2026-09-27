@@ -36,16 +36,27 @@ export interface JsonlTranscriptCursor {
   fingerprint?: string;
 }
 
+/** One decoded record: the messages it contributes and any session metadata it carries. */
+export interface JsonlTranscriptRecord<M> {
+  message?: ParsedMessage | ParsedMessage[];
+  sessionMeta?: M;
+}
+
 /** The per-format surface the byte reader needs: decode and decode records. */
-export interface JsonlTranscriptFormat<M> {
+export interface JsonlTranscriptFormat<M, R extends JsonlTranscriptRecord<M> = JsonlTranscriptRecord<M>> {
   /** Human-readable format name used verbatim in errors ("Codex", "OMP"). */
   readonly label: string;
   /** Domain separator inside the prefix fingerprint; changing it invalidates every existing cursor. */
   readonly fingerprintVersion: string;
   /** Strict UTF-8 decode of one record's bytes. */
   decodeUtf8(bytes: Uint8Array, byteOffset?: number): string;
-  /** Parse one decoded record. Invalid JSON throws; valid non-message records return {}. */
-  parseRecord(record: string): { message?: ParsedMessage | ParsedMessage[]; sessionMeta?: M };
+  /** Parse one decoded record. Invalid JSON throws; valid non-message records return no message. */
+  parseRecord(record: string): R;
+  /**
+   * Chooses the messages a delta keeps from every record it read, in file order.
+   * Absent, each record's messages are kept as read.
+   */
+  selectMessages?(records: readonly R[]): ParsedMessage[];
 }
 
 export interface ReadJsonlTranscriptDeltaOptions {
@@ -54,15 +65,18 @@ export interface ReadJsonlTranscriptDeltaOptions {
   includeTrailingRecord: boolean;
 }
 
-export interface JsonlTranscriptDelta<M> {
+export interface JsonlTranscriptDelta<M, R = JsonlTranscriptRecord<M>> {
   messages: ParsedMessage[];
   cursor: JsonlTranscriptCursor;
   resumed: boolean;
   sessionMeta: M;
+  /** The delta's records in file order; present only for a format that selects its messages. */
+  records?: R[];
 }
 
-interface ScanResult {
+interface ScanResult<R> {
   messages: ParsedMessage[];
+  records?: R[];
   offset: number;
   recordBoundary: boolean;
 }
@@ -94,7 +108,7 @@ async function readWindow(handle: FileHandle, position: number, length: number, 
   return bytes;
 }
 
-async function fingerprintPrefix<M>(handle: FileHandle, offset: number, format: JsonlTranscriptFormat<M>): Promise<string> {
+async function fingerprintPrefix<M, R extends JsonlTranscriptRecord<M>>(handle: FileHandle, offset: number, format: JsonlTranscriptFormat<M, R>): Promise<string> {
   const firstLength = Math.min(offset, FINGERPRINT_WINDOW_BYTES);
   const remaining = offset - firstLength;
   const lastLength = Math.min(remaining, FINGERPRINT_WINDOW_BYTES);
@@ -111,13 +125,13 @@ async function fingerprintPrefix<M>(handle: FileHandle, offset: number, format: 
     .digest("hex");
 }
 
-async function canResume<M>(
+async function canResume<M, R extends JsonlTranscriptRecord<M>>(
   handle: FileHandle,
   cursor: JsonlTranscriptCursor | undefined,
   size: number,
   device: string,
   inode: string,
-  format: JsonlTranscriptFormat<M>,
+  format: JsonlTranscriptFormat<M, R>,
 ): Promise<boolean> {
   if (!cursor) return false;
   if (!isNonNegativeInteger(cursor.offset) || !isNonNegativeInteger(cursor.messageCount)) return false;
@@ -138,18 +152,18 @@ async function canResume<M>(
   return await fingerprintPrefix(handle, cursor.offset, format) === cursor.fingerprint;
 }
 
-function decodeRecord<M>(format: JsonlTranscriptFormat<M>, parts: Buffer[], length: number, byteOffset: number): string {
+function decodeRecord<M, R extends JsonlTranscriptRecord<M>>(format: JsonlTranscriptFormat<M, R>, parts: Buffer[], length: number, byteOffset: number): string {
   const bytes = parts.length === 1 ? parts[0] : Buffer.concat(parts, length);
   return format.decodeUtf8(bytes, byteOffset);
 }
 
-function parseCompleteRecord<M>(
-  format: JsonlTranscriptFormat<M>,
+function parseCompleteRecord<M, R extends JsonlTranscriptRecord<M>>(
+  format: JsonlTranscriptFormat<M, R>,
   record: string,
   byteOffset: number,
-): ReturnType<JsonlTranscriptFormat<M>["parseRecord"]> {
+): R | undefined {
   const trimmed = record.trim();
-  if (!trimmed) return {};
+  if (!trimmed) return undefined;
   try {
     return format.parseRecord(trimmed);
   } catch {
@@ -162,15 +176,22 @@ async function yieldToEventLoop(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
-async function scanRecords<M>(
+async function scanRecords<M, R extends JsonlTranscriptRecord<M>>(
   handle: FileHandle,
-  format: JsonlTranscriptFormat<M>,
+  format: JsonlTranscriptFormat<M, R>,
   startOffset: number,
   snapshotSize: number,
   includeTrailingRecord: boolean,
   initialRecordBoundary: boolean,
-): Promise<ScanResult> {
+): Promise<ScanResult<R>> {
   const messages: ParsedMessage[] = [];
+  const records: R[] = [];
+  const take = (parsed: R | undefined): void => {
+    if (!parsed) return;
+    if (format.selectMessages) records.push(parsed);
+    else if (Array.isArray(parsed.message)) messages.push(...parsed.message);
+    else if (parsed.message) messages.push(parsed.message);
+  };
   const buffer = Buffer.allocUnsafe(READ_CHUNK_BYTES);
   const pending: Buffer[] = [];
   let pendingLength = 0;
@@ -195,10 +216,8 @@ async function scanRecords<M>(
         pendingLength += segment.length;
       }
 
-      const parsed = parseCompleteRecord(format, decodeRecord(format, pending, pendingLength, pendingOffset), pendingOffset);
+      take(parseCompleteRecord(format, decodeRecord(format, pending, pendingLength, pendingOffset), pendingOffset));
       const nextOffset = position + index + 1;
-      if (Array.isArray(parsed.message)) messages.push(...parsed.message);
-      else if (parsed.message) messages.push(parsed.message);
 
       committedOffset = nextOffset;
       pendingOffset = nextOffset;
@@ -223,17 +242,16 @@ async function scanRecords<M>(
   }
 
   if (pendingLength > 0 && includeTrailingRecord && position === snapshotSize) {
-    const parsed = parseCompleteRecord(format, decodeRecord(format, pending, pendingLength, pendingOffset), pendingOffset);
-    if (Array.isArray(parsed.message)) messages.push(...parsed.message);
-    else if (parsed.message) messages.push(parsed.message);
+    take(parseCompleteRecord(format, decodeRecord(format, pending, pendingLength, pendingOffset), pendingOffset));
     committedOffset = position;
     recordBoundary = false;
   }
 
-  return { messages, offset: committedOffset, recordBoundary };
+  if (!format.selectMessages) return { messages, offset: committedOffset, recordBoundary };
+  return { messages: format.selectMessages(records), records, offset: committedOffset, recordBoundary };
 }
 
-async function readSessionMeta<M>(handle: FileHandle, format: JsonlTranscriptFormat<M>, snapshotSize: number): Promise<M | undefined> {
+async function readSessionMeta<M, R extends JsonlTranscriptRecord<M>>(handle: FileHandle, format: JsonlTranscriptFormat<M, R>, snapshotSize: number): Promise<M | undefined> {
   const scanSize = Math.min(snapshotSize, METADATA_LIMIT_BYTES);
   const buffer = Buffer.allocUnsafe(Math.min(8192, Math.max(1, scanSize)));
   const pending: Buffer[] = [];
@@ -296,11 +314,11 @@ async function readSessionMeta<M>(handle: FileHandle, format: JsonlTranscriptFor
  * whatever the format's parser extracts from the bounded header scan; the
  * caller validates it.
  */
-export async function readJsonlTranscriptDelta<M>(
+export async function readJsonlTranscriptDelta<M, R extends JsonlTranscriptRecord<M> = JsonlTranscriptRecord<M>>(
   transcriptPath: string,
-  format: JsonlTranscriptFormat<M>,
+  format: JsonlTranscriptFormat<M, R>,
   options: ReadJsonlTranscriptDeltaOptions,
-): Promise<JsonlTranscriptDelta<M>> {
+): Promise<JsonlTranscriptDelta<M, R>> {
   let handle: FileHandle;
   try {
     handle = await open(transcriptPath, "r");
@@ -349,6 +367,7 @@ export async function readJsonlTranscriptDelta<M>(
 
     return {
       messages: scan.messages,
+      records: scan.records,
       cursor: {
         offset: scan.offset,
         messageCount: initialMessageCount + scan.messages.length,
