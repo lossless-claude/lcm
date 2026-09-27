@@ -1,10 +1,11 @@
 /**
  * Incremental reader for append-only OMP session files: the format adapter
- * over the shared byte-cursor reader (src/jsonl-transcript-reader.ts).
+ * over the shared byte-cursor reader (src/jsonl-transcript-reader.ts). Each
+ * delta keeps only its entries on the session's live path.
  */
 
 import type { OmpSessionMeta, ParsedOmpTranscriptRecord } from "./omp-transcript.js";
-import { decodeOmpTranscriptUtf8, parseOmpTranscriptRecord } from "./omp-transcript.js";
+import { decodeOmpTranscriptUtf8, parseOmpTranscriptRecord, selectOmpLiveMessages } from "./omp-transcript.js";
 import type { ParsedMessage } from "./transcript.js";
 import { readJsonlTranscriptDelta, type JsonlTranscriptCursor, type ReadJsonlTranscriptDeltaOptions } from "./jsonl-transcript-reader.js";
 
@@ -17,6 +18,8 @@ export type OmpTranscriptDelta = {
   cursor: OmpTranscriptCursor;
   resumed: boolean;
   sessionMeta: OmpSessionMeta;
+  /** Every record the delta read, in file order, for a recovery scan to align with stored history. */
+  records?: ParsedOmpTranscriptRecord[];
 };
 
 const ompFormat = {
@@ -24,6 +27,7 @@ const ompFormat = {
   fingerprintVersion: OMP_FINGERPRINT_VERSION,
   decodeUtf8: decodeOmpTranscriptUtf8,
   parseRecord: (record: string): ParsedOmpTranscriptRecord => parseOmpTranscriptRecord(record),
+  selectMessages: selectOmpLiveMessages,
 };
 
 /**
@@ -34,5 +38,5 @@ export async function readOmpTranscriptDelta(
   transcriptPath: string,
   options: ReadOmpTranscriptDeltaOptions,
 ): Promise<OmpTranscriptDelta> {
-  return readJsonlTranscriptDelta<OmpSessionMeta>(transcriptPath, ompFormat, options);
+  return readJsonlTranscriptDelta<OmpSessionMeta, ParsedOmpTranscriptRecord>(transcriptPath, ompFormat, options);
 }

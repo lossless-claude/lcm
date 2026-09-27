@@ -6,7 +6,7 @@ import { readCodexTranscriptDelta, type CodexTranscriptCursor, type CodexTranscr
 import { loadTranscriptCursor, saveTranscriptCursor } from "./db/transcript-cursor.js";
 import { claudeTranscriptPath, isSafeTranscriptPath, projectId } from "./daemon/project.js";
 import type { EventsDb } from "./hooks/events-db.js";
-import { extractOmpTurnModels, type OmpSessionMeta } from "./omp-transcript.js";
+import { extractOmpTurnModels, selectOmpLiveMessages, type OmpSessionMeta, type ParsedOmpTranscriptRecord } from "./omp-transcript.js";
 import { readOmpTranscriptDelta, type OmpTranscriptCursor, type OmpTranscriptDelta } from "./omp-transcript-reader.js";
 import type { SessionClient } from "./session-client.js";
 import { discoverSubagentTranscripts, type DiscoveredSubagentTranscript } from "./subagent-attribution.js";
@@ -118,8 +118,9 @@ function validateCodexMetadata(meta: CodexSessionMeta, ctx: ReadContext): void {
 
 /**
  * A full re-read is trusted only while its prefix, under the current redaction rules, is
- * what was stored. Shared by every cursor-backed client, so the label names the harness
- * whose transcript the caller was reading — an OMP failure must not report itself as Codex.
+ * what was stored. The label names the harness whose transcript the caller was reading.
+ * OMP does not use it: a rewind can leave stored history that is not a prefix of the
+ * file's live path (`ompMessagesAfterStored`).
  */
 async function validateTranscriptRecovery(stored: StoredTranscript, messages: ParsedMessage[], ctx: ReadContext, label: string): Promise<void> {
   if (messages.length < stored.storedCount) {
@@ -186,6 +187,38 @@ function validateOmpMetadata(meta: OmpSessionMeta, ctx: ReadContext): void {
   }
 }
 
+/**
+ * A full OMP re-read against stored history: the live-path messages of the entries stored
+ * history does not account for yet.
+ *
+ * Stored history is each earlier delta's live path, so it holds the file's messages in order
+ * but not necessarily a prefix of them: a rewind may have abandoned a stored turn, or one
+ * skipped before it was captured. The earliest in-order match of stored history, under the
+ * current redaction rules, ends at the entry holding its last message; the entries after it
+ * are selected as one delta. History the file does not hold in order is refused.
+ */
+async function ompMessagesAfterStored(
+  stored: StoredTranscript, records: readonly ParsedOmpTranscriptRecord[], ctx: ReadContext,
+): Promise<ParsedMessage[]> {
+  const previous = await stored.storedMessages();
+  if (previous.length !== stored.storedCount) throw new TranscriptSourceError("Stored OMP history changed during recovery");
+  const inFileOrder = records.flatMap(({ message }, index) =>
+    (Array.isArray(message) ? message : message ? [message] : []).map((candidate) => ({ candidate, after: index + 1 })));
+  let matched = 0;
+  let boundary = 0;
+  for (const { candidate, after } of inFileOrder) {
+    if (matched === previous.length) break;
+    const prior = previous[matched];
+    if (candidate.role !== prior.role || ctx.scrub(candidate.content) !== ctx.scrub(prior.content)) continue;
+    matched++;
+    boundary = after;
+  }
+  if (matched < previous.length) {
+    throw new TranscriptSourceError("OMP transcript does not hold the stored history in order; check the original transcript and redaction settings before retrying");
+  }
+  return selectOmpLiveMessages(records.slice(boundary));
+}
+
 const ompSource: TranscriptSource = {
   client: "omp",
   mayRecoverTail: true,
@@ -210,15 +243,20 @@ const ompSource: TranscriptSource = {
       throw new TranscriptSourceError(error instanceof Error ? error.message : "invalid transcript");
     }
     validateOmpMetadata(delta.sessionMeta, ctx);
-    if (!delta.resumed && stored) await validateTranscriptRecovery(stored, delta.messages, ctx, "OMP");
+    const backfillModels: TranscriptDelta["backfillModels"] = (events, sessionId) => {
+      if (!events.hasUnfilledModels(sessionId, "omp")) return;
+      events.backfillToolCallModels(sessionId, extractOmpTurnModels(path), "omp");
+    };
+    if (!delta.resumed && stored) {
+      const messages = await ompMessagesAfterStored(stored, delta.records ?? [], ctx);
+      const checkpoint = { ...delta.cursor, messageCount: stored.storedCount + messages.length };
+      return { messages, sourceOffset: stored.storedCount, checkpoint, backfillModels };
+    }
     return {
       messages: delta.messages,
       sourceOffset: delta.resumed && prior ? prior.messageCount : 0,
       checkpoint: delta.cursor,
-      backfillModels(events, sessionId) {
-        if (!events.hasUnfilledModels(sessionId, "omp")) return;
-        events.backfillToolCallModels(sessionId, extractOmpTurnModels(path), "omp");
-      },
+      backfillModels,
     };
   },
   loadCheckpoint(db, conversationId, transcriptPath) {
