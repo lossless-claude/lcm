@@ -1813,6 +1813,59 @@ describe("importSessions — provider: omp", () => {
     expect(result.imported).toBe(0);
   });
 
+  it("reports the root it scanned, even when it finds nothing", async () => {
+    const ompDir = makeTmpDir();
+    const client = makeMockClient(async () => ({ ingested: 1, totalTokens: 12 }));
+
+    const result = await importSessions(client, {
+      provider: "omp",
+      cwd: "/project-a",
+      _ompDir: ompDir,
+    });
+
+    expect(result.imported).toBe(0);
+    expect(result.ompRootsScanned).toEqual([join(ompDir, "sessions")]);
+  });
+
+  it("ingests a session id held by two OMP roots once and reports the skipped copy", async () => {
+    const home = makeTmpDir();
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("PI_CODING_AGENT_DIR", "");
+    try {
+      const keptPath = writeOmpSession(join(home, ".omp", "agent"), "omp-shared", "/project-a");
+      const skippedPath = writeOmpSession(join(home, ".omp", "profiles", "work", "agent"), "omp-shared", "/project-a");
+      const old = new Date("2026-09-20T10:00:00.000Z");
+      utimesSync(skippedPath, old, old);
+
+      const calls: { path: string; body: unknown }[] = [];
+      const client = makeMockClient(async (path, body) => {
+        calls.push({ path, body });
+        return { ingested: 1, totalTokens: 12 };
+      });
+      const result = await importSessions(client, { provider: "omp", cwd: "/project-a" });
+
+      expect(calls.map((c) => (c.body as { transcript_path: string }).transcript_path)).toEqual([keptPath]);
+      expect(result.ompDuplicatesSkipped).toEqual([skippedPath]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("does not report OMP roots for a claude-only import", async () => {
+    const claudeProjectsDir = makeTmpDir();
+    const cwd = "/project-claude-only";
+    mkdirSync(join(claudeProjectsDir, claudeProjectSlug(cwd)), { recursive: true });
+    const client = makeMockClient(async () => ({ ingested: 1, totalTokens: 12 }));
+
+    const result = await importSessions(client, {
+      provider: "claude",
+      cwd,
+      _claudeProjectsDir: claudeProjectsDir,
+    });
+
+    expect(result.ompRootsScanned).toBeUndefined();
+  });
+
   it("does not use the completed-session shortcut for OMP", async () => {
     const ompDir = makeTmpDir();
     const lcmDir = makeTmpDir();
