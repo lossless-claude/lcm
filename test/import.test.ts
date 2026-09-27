@@ -1390,6 +1390,86 @@ describe("importSessions replay resume", () => {
     db.close();
   });
 
+  it("stops the run when /ingest itself refuses the connection", async () => {
+    const cwd = "/test/ingest-daemon-unreachable";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2", "s3"]);
+    const stderrLines: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: any[]) => { stderrLines.push(args.join(" ")); });
+
+    const ingestCalls: string[] = [];
+    const client = makeMockClient(async (path: string, body: any) => {
+      if (path === "/ingest") {
+        ingestCalls.push(body.session_id);
+        if (body.session_id === "s2") throw daemonUnreachableError();
+        return { ingested: 1, totalTokens: 100 };
+      }
+      if (path === "/compact") return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: `summary-of-${body.session_id}`, latestSummaryId: `sum-${body.session_id}`, tokensBefore: 100, tokensAfter: 10 };
+    });
+
+    const result = await importSessions(client, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+
+    // s3's /ingest is never called — the run stopped instead of failing it.
+    expect(ingestCalls).toEqual(["s1", "s2"]);
+    expect(stderrLines.some((l) => l.includes("unreachable"))).toBe(true);
+    expect(result.daemonUnreachable).toBe(true);
+    expect(result.failed).toBe(0);
+  });
+
+  it("stops the run when /ingest drops the socket and the health probe also fails", async () => {
+    const cwd = "/test/ingest-wedged-health-down";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2", "s3"]);
+    const stderrLines: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: any[]) => { stderrLines.push(args.join(" ")); });
+
+    const ingestCalls: string[] = [];
+    const client = makeMockClient(
+      async (path: string, body: any) => {
+        if (path === "/ingest") {
+          ingestCalls.push(body.session_id);
+          if (body.session_id === "s2") throw connectionResetError();
+          return { ingested: 1, totalTokens: 100 };
+        }
+        if (path === "/compact") return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: `summary-of-${body.session_id}`, latestSummaryId: `sum-${body.session_id}`, tokensBefore: 100, tokensAfter: 10 };
+      },
+      async () => null, // /health also fails to answer
+    );
+
+    const result = await importSessions(client, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+
+    // s3's /ingest is never called — the run stopped once the probe also failed.
+    expect(ingestCalls).toEqual(["s1", "s2"]);
+    expect(stderrLines.some((l) => l.includes("not answering"))).toBe(true);
+    expect(result.daemonUnreachable).toBe(true);
+    expect(result.failed).toBe(0);
+  });
+
+  it("keeps today's per-session failure when /ingest drops the socket but the health probe answers", async () => {
+    const cwd = "/test/ingest-blip-health-up";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2", "s3"]);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const ingestCalls: string[] = [];
+    const client = makeMockClient(
+      async (path: string, body: any) => {
+        if (path === "/ingest") {
+          ingestCalls.push(body.session_id);
+          if (body.session_id === "s2") throw connectionResetError();
+          return { ingested: 1, totalTokens: 100 };
+        }
+        if (path === "/compact") return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: `summary-of-${body.session_id}`, latestSummaryId: `sum-${body.session_id}`, tokensBefore: 100, tokensAfter: 10 };
+      },
+      async () => ({ status: "ok", uptime: 1 }), // /health answers — the daemon is just a bit slow, not gone
+    );
+
+    const result = await importSessions(client, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+
+    // Every session is still attempted — the run does not stop just because
+    // the probe was needed, only when the probe itself fails.
+    expect(ingestCalls).toEqual(["s1", "s2", "s3"]);
+    expect(result.failed).toBe(1);
+    expect(result.daemonUnreachable).toBeUndefined();
+  });
+
   it("restart refusal checks every provider list before any state is wiped", async () => {
     // Claude project dir for cwd A, codex rollout for cwd B; A imports first.
     const claudeProjectsDir = makeTmpDir();

@@ -247,18 +247,30 @@ describe("batchCompact — daemon becomes unreachable mid-replay", () => {
     insertMessage(db, s3, 0, 30);
 
     const attempted: string[] = [];
+    // Every patch that touches `current`, in order: the session it started
+    // ("session-N") or that it cleared ("cleared"). The stop patch must be
+    // the last entry and must clear session-2's `current` — otherwise the
+    // renderer's final frame keeps showing it as still processing.
+    const currentTransitions: string[] = [];
     const port = await startOneShotServer();
 
-    await batchCompact({
+    const result = await batchCompact({
       paths, minTokens: 10, dryRun: false, port, cwd, replay: true,
       onProgress: (patch) => {
         if (patch.current) attempted.push(patch.current.sessionId);
+        if (!("current" in patch)) return;
+        currentTransitions.push(patch.current ? patch.current.sessionId : "cleared");
       },
     });
 
     // session-1 succeeded; session-2's connection was refused; session-3 was
     // never attempted — the run stopped instead of consuming it.
     expect(attempted).toEqual(["session-1", "session-2"]);
+    expect(currentTransitions.slice(-2)).toEqual(["session-2", "cleared"]);
+    // The stop is visible to the caller, not just discarded locally — a
+    // caller like `lcm compact` can use it to skip a post-batch step (e.g.
+    // auto-promote) that would otherwise hit the same unreachable daemon.
+    expect(result.daemonUnreachable).toBe(true);
 
     const ledgerRows = db.prepare("SELECT session_id FROM replay_ledger").all() as { session_id: string }[];
     expect(ledgerRows.map((r) => r.session_id)).toEqual(["session-1"]);
@@ -337,11 +349,16 @@ describe("batchCompact — daemon becomes unreachable mid-replay", () => {
       stderrLines.push(args.join(" "));
     });
     const port = await startWedgedServer({ resetHealth: true });
+    // See the other stop test: the last two entries must be the session that
+    // was in flight when the stop happened, then its explicit clearing.
+    const currentTransitions: string[] = [];
 
-    await batchCompact({
+    const result = await batchCompact({
       paths, minTokens: 10, dryRun: false, port, cwd, replay: true,
       onProgress: (patch) => {
         if (patch.current) attempted.push(patch.current.sessionId);
+        if (!("current" in patch)) return;
+        currentTransitions.push(patch.current ? patch.current.sessionId : "cleared");
       },
     });
     consoleErrorSpy.mockRestore();
@@ -349,6 +366,8 @@ describe("batchCompact — daemon becomes unreachable mid-replay", () => {
     // session-3 is never attempted — the run stopped once the probe also failed.
     expect(attempted).toEqual(["session-1", "session-2"]);
     expect(stderrLines.some((l) => l.includes("not answering"))).toBe(true);
+    expect(currentTransitions.slice(-2)).toEqual(["session-2", "cleared"]);
+    expect(result.daemonUnreachable).toBe(true);
 
     const ledgerRows = db.prepare("SELECT session_id FROM replay_ledger").all() as { session_id: string }[];
     expect(ledgerRows.map((r) => r.session_id)).toEqual(["session-1"]);

@@ -554,7 +554,7 @@ async function ingestSessionList(
             // rerun picks up exactly where this one stopped.
             console.error(
               `  ⚠️ the daemon is unreachable (${err instanceof Error ? err.message : "unknown error"}); ` +
-              `stopping instead of failing every remaining session. Rerun \`lcm import${options.replay ? " --replay" : ""}\` to resume where this run left off.`,
+              `stopping instead of failing every remaining session. Rerun the same \`lcm import\` command to resume where this run left off.`,
             );
             result.daemonUnreachable = true;
             break;
@@ -567,7 +567,7 @@ async function ingestSessionList(
             // answer means treat it exactly like a refused connection.
             console.error(
               `  ⚠️ the daemon is not answering — down or unresponsive (${err instanceof Error ? err.message : "unknown error"}); ` +
-              `stopping instead of failing every remaining session. Rerun \`lcm import${options.replay ? " --replay" : ""}\` to resume where this run left off.`,
+              `stopping instead of failing every remaining session. Rerun the same \`lcm import\` command to resume where this run left off.`,
             );
             result.daemonUnreachable = true;
             break;
@@ -631,7 +631,7 @@ async function ingestSessionList(
         // identically. Stop instead of counting the rest as failed.
         console.error(
           `  \u26a0\ufe0f the daemon is unreachable (${err instanceof Error ? err.message : "unknown error"}); ` +
-          `stopping instead of failing every remaining session. Rerun \`lcm import${options.replay ? " --replay" : ""}\` to resume where this run left off.`,
+          `stopping instead of failing every remaining session. Rerun the same \`lcm import\` command to resume where this run left off.`,
         );
         result.daemonUnreachable = true;
         break;
@@ -639,7 +639,7 @@ async function ingestSessionList(
       if (isConnectionDroppedError(err) && !(await client.health())) {
         console.error(
           `  ⚠️ the daemon is not answering — down or unresponsive (${err instanceof Error ? err.message : "unknown error"}); ` +
-          `stopping instead of failing every remaining session. Rerun \`lcm import${options.replay ? " --replay" : ""}\` to resume where this run left off.`,
+          `stopping instead of failing every remaining session. Rerun the same \`lcm import\` command to resume where this run left off.`,
         );
         result.daemonUnreachable = true;
         break;

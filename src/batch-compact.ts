@@ -221,7 +221,7 @@ export async function batchCompact(opts: {
   onBeforeSession?: () => boolean;
   /** Wrap an in-flight conversation's work so signal handlers can wait for it before exiting */
   trackInFlight?: () => () => void;
-}): Promise<{ compacted: number }> {
+}): Promise<{ compacted: number; daemonUnreachable?: boolean }> {
   // --restart clears every tracked project, not only those with eligible
   // conversations: recorded state must go even when nothing currently passes
   // the token threshold.
@@ -449,9 +449,10 @@ export async function batchCompact(opts: {
         console.log(" stopped (daemon unreachable)");
         console.error(
           `  ⚠️ the daemon is unreachable (${errMsg}); stopping instead of failing the remaining sessions. ` +
-          `Rerun \`lcm compact${opts.replay ? " --replay" : ""}\` to resume where this run left off.`,
+          `Rerun the same \`lcm compact\` command to resume where this run left off.`,
         );
         daemonUnreachable = true;
+        onProgress?.({ current: undefined });
         break;
       }
       if (isConnectionDroppedError(err) && !(await client.health())) {
@@ -466,9 +467,10 @@ export async function batchCompact(opts: {
         console.log(" stopped (daemon not answering)");
         console.error(
           `  ⚠️ the daemon is not answering — down or unresponsive (${errMsg}); stopping instead of failing the remaining sessions. ` +
-          `Rerun \`lcm compact${opts.replay ? " --replay" : ""}\` to resume where this run left off.`,
+          `Rerun the same \`lcm compact\` command to resume where this run left off.`,
         );
         daemonUnreachable = true;
+        onProgress?.({ current: undefined });
         break;
       }
       const errMsg = err instanceof Error ? err.message : "unknown error";
@@ -544,5 +546,5 @@ export async function batchCompact(opts: {
     }
   }
 
-  return { compacted };
+  return { compacted, daemonUnreachable: daemonUnreachable || undefined };
 }
