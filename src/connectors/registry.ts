@@ -34,9 +34,10 @@ export const AGENTS: Agent[] = [
     name: 'Oh My Pi',
     category: 'cli',
     defaultType: 'hooks',
-    supportedTypes: ['hooks'],
+    supportedTypes: ['hooks', 'mcp'],
     configPaths: {
       hooks: '.omp/hooks/post/lcm.ts',
+      mcp: '.omp/mcp.json',
     },
   },
   {

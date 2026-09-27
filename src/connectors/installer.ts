@@ -44,11 +44,12 @@ function resolveConfigPath(configPath: string, cwd: string): string {
   return join(cwd, configPath);
 }
 
-// OMP has distinct project and global roots: its project hook lives under the
-// workspace's .omp directory, while the user hook lives under agentDir.
+// OMP has distinct project and global roots: its project files live under the
+// workspace's .omp directory, while the user files live under agentDir.
 function resolveAgentConfigPath(agentId: string, connectorType: ConnectorType, configPath: string, cwd: string): string {
-  if (agentId === "omp" && connectorType === "hooks" && cwd === homedir()) {
-    return join(ompAgentDir(), "hooks", "post", "lcm.ts");
+  if (agentId === "omp" && cwd === homedir()) {
+    if (connectorType === "hooks") return join(ompAgentDir(), "hooks", "post", "lcm.ts");
+    if (connectorType === "mcp") return join(ompAgentDir(), "mcp.json");
   }
   return resolveConfigPath(configPath, cwd);
 }
@@ -77,18 +78,27 @@ function installMarkdown(content: string, filePath: string, writeMode: 'append' 
 }
 
 // Strategy 2: Structured targets (MCP JSON)
-function installMcpJson(filePath: string): void {
-  mkdirSync(dirname(filePath), { recursive: true });
-  let existing: any = {};
-  if (existsSync(filePath)) {
-    try { existing = JSON.parse(readFileSync(filePath, 'utf-8')); } catch { existing = {}; }
-  }
-  if (typeof existing !== 'object' || existing === null) existing = {};
+function writeFileCreatingDir(path: string, data: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, data);
+}
+
+// The existing config object, or {} when the file is missing, malformed or not an object.
+function readJsonObject(filePath: string): any {
+  if (!existsSync(filePath)) return {};
+  let parsed: any;
+  try { parsed = JSON.parse(readFileSync(filePath, 'utf-8')); } catch { return {}; }
+  return typeof parsed === 'object' && parsed !== null ? parsed : {};
+}
+
+function installMcpJson(filePath: string, options: CodexHookCommandOptions = {}): void {
+  const writeFile = options.writeFile ?? writeFileCreatingDir;
+  const existing = readJsonObject(filePath);
   if (typeof existing.mcpServers !== 'object' || existing.mcpServers === null || Array.isArray(existing.mcpServers)) {
     existing.mcpServers = {};
   }
-  existing.mcpServers.lcm = { type: 'stdio', ...mcpServerEntry() };
-  writeFileSync(filePath, JSON.stringify(existing, null, 2) + '\n');
+  existing.mcpServers.lcm = { type: 'stdio', ...mcpServerEntry({ nodePath: options.nodePath, cliPath: options.cliPath }) };
+  writeFile(filePath, JSON.stringify(existing, null, 2) + '\n');
 }
 
 // Removes the skill file (and its now-empty lcm-memory directory) at an
@@ -173,7 +183,7 @@ export function installConnector(
         manual: `Add the following to ${configPath}:\n\n[mcp_servers.lcm]\ncommand = "lcm"\nargs = ["mcp"]`,
       };
     }
-    installMcpJson(resolvedPath);
+    installMcpJson(resolvedPath, options);
     return { success: true, path: resolvedPath, requiresRestart: requiresRestart(connectorType) };
   }
 

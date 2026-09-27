@@ -57,7 +57,7 @@ flowchart LR
 | Claude Code | Yes | Yes | Yes, via transcript/hooks | Yes | Primary hook-based integration |
 | GitHub Copilot (VS Code) | No | Yes, via skill/rules | No | No | Repo-local skill can teach Copilot to call `lcm`, but there is no automatic restore or turn capture yet |
 | Codex | Yes | Yes | Yes, via native lifecycle hooks | LCM memory compacts on `PreCompact`; native compaction continues | `lcm connectors install codex` installs the hooks; see [docs/vscode-codex.md](docs/vscode-codex.md). MCP config in `.codex/config.toml` is still manual |
-| Oh My Pi | Yes | Yes | Yes, via native lifecycle hooks | Yes | `lcm connectors install omp` installs the hooks; see [docs/omp.md](docs/omp.md). |
+| Oh My Pi | Yes | Yes | Yes, via native lifecycle hooks | Yes | `lcm connectors install omp` installs the hooks and `--type mcp` registers the MCP server; see [docs/omp.md](docs/omp.md). |
 
 ## LCM Model
 

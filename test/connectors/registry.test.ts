@@ -67,14 +67,14 @@ describe("connector registry", () => {
     expect(codex?.configPaths.hooks).toBe(".codex/hooks.json");
   });
 
-  it("registers OMP as a hooks-only connector", () => {
+  it("registers OMP with native hooks by default and an MCP config", () => {
     const omp = findAgent("omp");
     expect(omp).toMatchObject({
       id: "omp",
       name: "Oh My Pi",
       defaultType: "hooks",
-      supportedTypes: ["hooks"],
-      configPaths: { hooks: ".omp/hooks/post/lcm.ts" },
+      supportedTypes: ["hooks", "mcp"],
+      configPaths: { hooks: ".omp/hooks/post/lcm.ts", mcp: ".omp/mcp.json" },
     });
   });
 

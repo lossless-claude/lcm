@@ -240,20 +240,28 @@ function installCodex(deps: ServiceDeps): HarnessOutcome {
   }
 }
 
-/** OMP loads the self-contained hook directly, so installation is safe from the npm CLI or bundle. */
+/**
+ * OMP loads the self-contained hook directly, so the hook installs from the npm CLI or bundle.
+ * The MCP entry names an absolute CLI path, so, as for Codex, it installs from the npm CLI only.
+ */
 function installOmp(deps: ServiceDeps): HarnessOutcome {
   try {
     const found = deps.spawnSync("sh", ["-c", "command -v omp"], { encoding: "utf-8" });
     if (found.status !== 0 || typeof found.stdout !== "string" || !found.stdout.trim()) {
       return { status: "skipped", detail: "omp not on PATH" };
     }
-    const result = installConnector("omp", "hooks", homedir(), {
-      writeFile: (path, data) => {
+    const write = {
+      writeFile: (path: string, data: string) => {
         deps.mkdirSync(dirname(path), { recursive: true });
         deps.writeFileSync(path, data);
       },
-    });
-    return { status: "ok", detail: `hooks installed in ${result.path}` };
+    };
+    const result = installConnector("omp", "hooks", homedir(), write);
+    if (runningFromPluginBundle()) {
+      return { status: "ok", detail: `hooks installed in ${result.path}; run lcm install from the npm CLI to register the MCP server` };
+    }
+    const mcp = installConnector("omp", "mcp", homedir(), write);
+    return { status: "ok", detail: `hooks installed in ${result.path}, MCP server registered in ${mcp.path}` };
   } catch (err) {
     return { status: "failed", detail: err instanceof Error ? err.message : String(err) };
   }
