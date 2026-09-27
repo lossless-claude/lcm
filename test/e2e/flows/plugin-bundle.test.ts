@@ -112,7 +112,7 @@ describe("Flow 21: the installed plugin runs from bundle/ with no npm cache", { 
     expect(existsSync(join(pluginRoot, "bundle", "mcp-server.js"))).toBe(true);
     expect(existsSync(join(pluginRoot, "bundle", "session-start-compact-worker.js"))).toBe(true);
     expect(existsSync(join(pluginRoot, "bundle", "assets", "prompts", "system.yaml"))).toBe(true);
-    expect(existsSync(join(pluginRoot, "bundle", "assets", "templates", "skill", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(pluginRoot, "bundle", "assets", "templates"))).toBe(false);
   });
 
   it("runs the SessionStart hook from plugin.json and exits 0", async () => {
@@ -127,7 +127,7 @@ describe("Flow 21: the installed plugin runs from bundle/ with no npm cache", { 
     expect(existsSync(join(pluginRoot, "node_modules"))).toBe(false);
   });
 
-  it("renders a connector template from bundle/assets (the bundle reads its own copies)", async () => {
+  it("installs a connector skill from the bundle alone", async () => {
     const project = mkdtempSync(join(tmpdir(), "lcm-plugin-project-"));
     try {
       const r = await runHook(
@@ -137,7 +137,7 @@ describe("Flow 21: the installed plugin runs from bundle/ with no npm cache", { 
       );
       expect(r.status, r.stderr).toBe(0);
       const skill = readFileSync(join(project, ".agents", "skills", "lcm-memory", "SKILL.md"), "utf8");
-      expect(skill).toContain("name: lcm-memory"); // from assets/templates/skill/SKILL.md
+      expect(skill).toContain("name: lcm-memory");
     } finally {
       rmSync(project, { recursive: true, force: true });
     }

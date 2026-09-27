@@ -23,7 +23,7 @@
 //
 // Coverage comes from `git ls-files`, never from a list written by hand. Excluded on
 // purpose: CHANGELOG.md and .changeset/ (records of the past), docs/design/ (proposals),
-// plans/ (untracked working notes), bundle/ (a build artifact: copies of the templates).
+// plans/ (untracked working notes), bundle/ (a build artifact).
 //
 // Both sides abort when empty: an empty code side would pass every claim, which is the
 // exact failure this script exists to catch.

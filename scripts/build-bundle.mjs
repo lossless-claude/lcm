@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 // Builds the plugin artifact: `bundle/lcm.js` (the CLI, hooks and daemon entry),
 // `bundle/mcp-server.js` (the MCP server), `bundle/session-start-compact-worker.js`
-// (the daemon's catch-up scanner) and `bundle/assets/` (prompt YAML, connector
-// templates, setup.sh). A marketplace install runs from these with only a `node`
+// (the daemon's catch-up scanner) and `bundle/assets/` (prompt YAML, setup.sh). A marketplace install runs from these with only a `node`
 // on PATH: no npm install, no compile step, no `lcm` binary.
 //
 // `dist/` stays the npm artifact and is built by `npm run build`; this script is
@@ -38,6 +37,7 @@ export async function buildBundle({ root = repoRoot, outDir = join(root, "bundle
 
   // Only the listed artifacts are replaced, never the directory itself, so no output
   // directory can delete anything else; the repository root is still refused outright.
+  // `assets/templates` is no longer built; it stays listed so a rebuild removes it.
   if (relative(root, outDir) === "") {
     throw new Error(`build-bundle: output directory must not be the repository root (${root})`);
   }
@@ -88,7 +88,6 @@ export async function buildBundle({ root = repoRoot, outDir = join(root, "bundle
   mkdirSync(join(assets, "prompts"), { recursive: true });
   // The same selection as the npm artifact: the YAML templates, nothing else.
   cpSync(join(root, "src", "prompts"), join(assets, "prompts"), { recursive: true, filter: (src) => statSync(src).isDirectory() || src.endsWith(".yaml") });
-  cpSync(join(root, "src", "connectors", "templates"), join(assets, "templates"), { recursive: true });
   cpSync(join(root, "installer", "setup.sh"), join(assets, "setup.sh"));
 
   return { outDir, version, buildId };

@@ -6,6 +6,7 @@
 //   LCM_MD_CONTENT        ~/.claude/lcm.md, included from CLAUDE.md (MCP tool names)
 //   LEARNING_INSTRUCTION  the UserPromptSubmit instruction (MCP tool names)
 //   RULES_CLI, RULES_MCP  connector rules files, one per naming of the tools
+//   SKILL                 the connector skill (CLI names)
 //   STORE_TOOL_*          the lcm_store MCP definition
 //
 // The learning instruction is store-only: it rides beside the <memory-context> block the
@@ -86,7 +87,13 @@ function rules(n: Nouns, intro: string, tools: string): string {
 
 ${intro}
 
-## Core Rules
+${guidanceBody(n)}
+
+${tools}`;
+}
+
+function guidanceBody(n: Nouns): string {
+  return `## Core Rules
 
 - ${SEARCH_TRIGGER}
 - ${storeRule(n)}
@@ -102,9 +109,7 @@ ${typeTable()}
 
 ${TAGS_RULE}
 
-${reservedTags(n)}
-
-${tools}`;
+${reservedTags(n)}`;
 }
 
 export const LCM_MD_CONTENT = `# lcm memory
@@ -165,6 +170,32 @@ export const RULES_MCP = rules(MCP, "You are a coding agent integrated with lcm 
 - \`lcm_store\`: persist a durable insight to promoted memory
 - \`lcm_stats\`: show compression ratios and token savings
 - \`lcm_doctor\`: run diagnostics`);
+
+/** The connector skill (`lcm-memory/SKILL.md`). Model-invoked, so its description lists only triggers. */
+export const SKILL = `---
+name: lcm-memory
+description: Search and store lcm memory with the lcm CLI. Use before a code task in this project, before asking the user about something a past session may have settled, and when a durable insight (${STORE_TYPES.map((t) => t.value).join(", ")}) surfaces.
+---
+
+# lcm memory
+
+${guidanceBody(CLI)}
+
+## Examples
+
+- \`lcm search "How is authentication implemented?"\`
+- \`lcm grep "createDaemon|startMcpServer" --mode regex\`
+- \`lcm describe sum_abc123def456\`
+- \`lcm expand sum_abc123def456 --depth 2\`
+- \`lcm store "Auth uses JWT with 24h expiry instead of server sessions: the API stays stateless across instances. See src/middleware/auth.ts" --tag type:decision --tag scope:security\`
+
+## When a command fails
+
+- \`lcm\` not found: \`npm install -g @lossless-claude/lcm\`
+- daemon down: \`lcm daemon start --detach\`
+- search returns nothing: memory may be empty; proceed normally
+- anything else: \`lcm doctor\`
+`;
 
 export const STORE_TOOL_DESCRIPTION =
   `Store a durable insight in promoted memory: one concise insight and its why. Worth storing: ${STORE_TYPES.map((t) => t.value).join(", ")}. Stored memories are searchable via lcm_search.`;
