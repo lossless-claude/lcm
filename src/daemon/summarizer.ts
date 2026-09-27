@@ -75,6 +75,12 @@ export async function createSummarizer(
           depth: ctx.depth ?? (ctx.isCondensed ? 1 : 0), system, prompt, targetTokens,
           maxTokens: resolveMaxOutputTokens(targetTokens),
         });
+        for (const attempt of answer.usageAttempts ?? []) {
+          ctx.onUsage?.({ provider: attempt.providerId, model: attempt.providerId.split(":")[1],
+            inputTokens: attempt.usage.input_tokens, outputTokens: attempt.usage.output_tokens,
+            tokensUsed: attempt.usage.input_tokens + attempt.usage.output_tokens,
+            estimated: attempt.usage.estimated });
+        }
         if (!answer.error && answer.text?.trim()) {
           const inputTokens = answer.usage?.input_tokens ?? Math.ceil((system.length + prompt.length) / 4);
           const outputTokens = answer.usage?.output_tokens ?? Math.ceil(answer.text.length / 4);

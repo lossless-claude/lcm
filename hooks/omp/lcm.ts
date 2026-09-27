@@ -4,10 +4,11 @@
 // The local interfaces mirror OMP v18.2.6's `extensibility/hooks` types. The
 // adapter is loaded directly by Bun, so it deliberately depends only on Node
 // builtins and keeps the daemon protocol here instead of importing this package.
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { Buffer } from "node:buffer";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 
 const DEFAULT_PORT = 3737;
 const DEFAULT_TIMEOUT_MS = 1_500;
@@ -592,12 +593,70 @@ function contextFromResponse(response: unknown): string | undefined {
 export default function lcm(pi: HookApi): void {
   let restoreContext = "";
   let firstPrompt = true;
+  type Observation = { hook: string; operation: string; kind: "delivery" | "execution"; status: string; reason: string; count: number };
+  const observations = new Map<string, { cwd: string; counts: Map<string, Observation>; failures: { hook: string; operation: string; code: string; at: number }[]; seq: number; truncated: boolean; lastFlush: number }>();
+  const generation = Date.now();
+
+  const note = (ctx: HookContext, hook: string, operation: string, kind: Observation["kind"], status: string, reason = "", eventIdentity?: SessionIdentity): void => {
+    const identity = eventIdentity ?? sessionIdentity(ctx);
+    const sessionId = identity?.sessionId ?? "unassigned";
+    const state = observations.get(sessionId) ?? {
+      cwd: ctx.cwd ?? "", counts: new Map<string, Observation>(), failures: [], seq: 0, truncated: false, lastFlush: 0,
+    };
+    if (!observations.has(sessionId) && observations.size >= 32) {
+      observations.delete(observations.keys().next().value!);
+    }
+    observations.set(sessionId, state);
+    const key = JSON.stringify([hook, operation, kind, status, reason]);
+    const existing = state.counts.get(key);
+    if (existing) existing.count++;
+    else {
+      if (state.counts.size >= 128) {
+        state.counts.delete(state.counts.keys().next().value!);
+        state.truncated = true;
+      }
+      state.counts.set(key, { hook, operation, kind, status, reason, count: 1 });
+    }
+    if (status === "failed" || status === "rejected") {
+      state.failures.push({ hook, operation, code: reason || status, at: Date.now() });
+      if (state.failures.length > 32) {
+        state.failures.shift();
+        state.truncated = true;
+      }
+    }
+  };
+
+  const flush = (ctx: HookContext, force = false, eventIdentity?: SessionIdentity): void => {
+    const sessionId = (eventIdentity ?? sessionIdentity(ctx))?.sessionId ?? "unassigned";
+    const state = observations.get(sessionId);
+    if (!state || (!force && Date.now() - state.lastFlush < 60_000)) return;
+    const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const seq = ++state.seq;
+    const logs = join(resolveDaemon().home, "logs");
+    const target = join(logs, `lcm-hook-observe-omp-${safeId}-${seq % 2}.json`);
+    const temporary = `${target}.${randomUUID()}.tmp`;
+    try {
+      mkdirSync(logs, { recursive: true, mode: 0o700 });
+      writeFileSync(temporary, JSON.stringify({
+        version: 1, harness: "omp", sessionId, cwd: state.cwd, seq, generation,
+        updatedAt: Date.now(), truncated: state.truncated,
+        observations: [...state.counts.values()], failures: state.failures,
+      }), { mode: 0o600 });
+      renameSync(temporary, target);
+      state.lastFlush = Date.now();
+    } catch (error) {
+      try { rmSync(temporary, { force: true }); } catch { /* best effort */ }
+      logError(pi, "hook observation snapshot", error);
+    }
+  };
 
   const safe = (label: string, handler: HookHandler): HookHandler => async (event, ctx) => {
     try {
       return await handler(event, ctx);
     } catch (error) {
       logError(pi, label, error);
+      note(ctx, label, "callback", "execution", "failed", "callback-error");
+      flush(ctx, true);
       return undefined;
     }
   };
@@ -610,29 +669,46 @@ export default function lcm(pi: HookApi): void {
     }
   };
 
-  const fireIngest = (ctx: HookContext, timeoutMs = DEFAULT_TIMEOUT_MS, eventIdentity?: SessionIdentity): void => {
+  const fireIngest = (ctx: HookContext, hook: string, timeoutMs = DEFAULT_TIMEOUT_MS, eventIdentity?: SessionIdentity): void => {
     const identity = eventIdentity ?? sessionIdentity(ctx);
-    if (!identity || !sessionOnDisk(ctx)) return;
+    if (!identity || !sessionOnDisk(ctx)) {
+      note(ctx, hook, "capture", "execution", "deferred", identity ? "source-unavailable" : "missing-identity", identity);
+      flush(ctx, false, identity);
+      return;
+    }
     void post("/ingest", ingestBody(identity), {
       timeoutMs,
       fireAndForget: true,
     });
+    note(ctx, hook, "capture", "delivery", "submitted", "", identity);
+    flush(ctx, false, identity);
   };
 
   register("session_start", "session_start", async (_rawEvent, ctx) => {
     restoreContext = "";
     firstPrompt = true;
     const identity = sessionIdentity(ctx);
-    if (!identity) return undefined;
+    if (!identity) {
+      note(ctx, "session_start", "restore", "execution", "deferred", "missing-identity");
+      flush(ctx, true);
+      return undefined;
+    }
     const base = identityBody(identity);
     // Capture before restore, and wait for it: restore reads the stored conversation,
     // and a session lcm has not ingested yet would answer from the project's latest
     // *other* conversation while this session's capture is still in flight.
-    if (sessionOnDisk(ctx)) await post("/ingest", ingestBody(identity));
+    if (sessionOnDisk(ctx)) {
+      const captured = await post("/ingest", ingestBody(identity));
+      note(ctx, "session_start", "capture", "delivery", captured === undefined ? "unconfirmed" : "accepted");
+      if (captured !== undefined) note(ctx, "session_start", "capture", "execution", "completed");
+    } else note(ctx, "session_start", "capture", "execution", "deferred", "source-unavailable");
     const restored = await post("/restore", { ...base, source: "startup" });
+    note(ctx, "session_start", "restore", "delivery", restored === undefined ? "unconfirmed" : "accepted");
     const context = contextFromResponse(restored);
     if (context) restoreContext = context;
     void post("/session-start-compact", base, { fireAndForget: true });
+    note(ctx, "session_start", "catch-up", "delivery", "submitted");
+    flush(ctx, true);
     return undefined;
   });
 
@@ -655,7 +731,10 @@ export default function lcm(pi: HookApi): void {
         format: "context",
       });
       searched = contextFromResponse(result);
+      note(ctx, "before_agent_start", "search", "delivery", result === undefined ? "unconfirmed" : "accepted");
     }
+    else note(ctx, "before_agent_start", "search", "execution", "deferred", identity ? "missing-prompt" : "missing-identity");
+    flush(ctx);
 
     const content = [restored, searched].filter((text): text is string => Boolean(text?.trim())).join("\n\n");
     if (!content) return undefined;
@@ -665,13 +744,17 @@ export default function lcm(pi: HookApi): void {
 
   register("agent_end", "agent_end", async (rawEvent, ctx) => {
     const event = rawEvent as AgentEndEvent;
-    if (event.willContinue !== true) fireIngest(ctx);
+    if (event.willContinue !== true) fireIngest(ctx, "agent_end");
+    else {
+      note(ctx, "agent_end", "capture", "execution", "deferred", "continuing");
+      flush(ctx);
+    }
     return undefined;
   });
 
   register("session_stop", "session_stop", async (rawEvent, ctx) => {
     const event = rawEvent as SessionStopEvent;
-    fireIngest(ctx, DEFAULT_TIMEOUT_MS, sessionStopIdentity(ctx, event));
+    fireIngest(ctx, "session_stop", DEFAULT_TIMEOUT_MS, sessionStopIdentity(ctx, event));
     return undefined;
   });
 
@@ -679,7 +762,11 @@ export default function lcm(pi: HookApi): void {
     const event = rawEvent as Partial<ToolResultEvent>;
     const identity = sessionIdentity(ctx);
     const toolName = safeString(event.toolName);
-    if (!identity || !toolName) return undefined;
+    if (!identity || !toolName) {
+      note(ctx, "tool_result", "tool-capture", "execution", "deferred", identity ? "missing-tool" : "missing-identity");
+      flush(ctx);
+      return undefined;
+    }
     const input = isRecord(event.input) ? event.input : {};
     const toolContent = boundedToolContent(event.content);
     const isError = event.isError === true;
@@ -695,24 +782,49 @@ export default function lcm(pi: HookApi): void {
       hook_event_name: isError ? "PostToolUseFailure" : "PostToolUse",
     };
     void post("/tool-event", body, { fireAndForget: true });
+    note(ctx, "tool_result", "tool-capture", "delivery", "submitted");
+    flush(ctx);
     return undefined;
   });
 
   register("session_before_compact", "session_before_compact", async (_rawEvent, ctx) => {
     const identity = sessionIdentity(ctx);
-    if (!identity) return undefined;
+    if (!identity) {
+      note(ctx, "session_before_compact", "precompact", "execution", "deferred", "missing-identity");
+      flush(ctx, true);
+      return undefined;
+    }
     const body = identityBody(identity);
-    // Capture before compacting, and wait for it. /compact with skip_ingest reads what is
-    // already stored, and the whole point of this capture is the tail OMP is about to
-    // replace; firing it without waiting let the compaction run against stale rows. The
-    // capture is a local request with its own timeout, so the host is not left hanging.
-    if (sessionOnDisk(ctx)) await post("/ingest", ingestBody(identity));
-    void post("/compact", { ...body, skip_ingest: true }, { fireAndForget: true });
+    // OMP gives this callback a short budget. Confirm Capture before sending the
+    // unawaited summary request; a combined long-running request could outlive
+    // the host before its Capture was even delivered.
+    if (!sessionOnDisk(ctx)) {
+      note(ctx, "session_before_compact", "capture", "execution", "deferred", "source-unavailable");
+      note(ctx, "session_before_compact", "summary", "execution", "skipped", "capture-deferred");
+      flush(ctx, true);
+      return undefined;
+    }
+    const captured = await post("/ingest", ingestBody(identity));
+    note(ctx, "session_before_compact", "capture", "delivery", captured === undefined ? "unconfirmed" : "accepted");
+    if (captured === undefined) {
+      note(ctx, "session_before_compact", "summary", "execution", "skipped", "capture-unconfirmed");
+      flush(ctx, true);
+      return undefined;
+    }
+    note(ctx, "session_before_compact", "capture", "execution", "completed");
+    void post("/compact", {
+      ...body,
+      skip_ingest: true,
+      precompact_verified: true,
+      operation_id: randomUUID(),
+    }, { fireAndForget: true });
+    note(ctx, "session_before_compact", "summary", "delivery", "submitted");
+    flush(ctx, true);
     return undefined;
   });
 
   register("session_shutdown", "session_shutdown", async (_rawEvent, ctx) => {
-    fireIngest(ctx, SHUTDOWN_TIMEOUT_MS);
+    fireIngest(ctx, "session_shutdown", SHUTDOWN_TIMEOUT_MS);
     return undefined;
   });
 }

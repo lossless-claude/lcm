@@ -7,6 +7,7 @@ import { LEARNING_INSTRUCTION } from "./learning-instruction.js";
 import { functionHooksOwnSession } from "./session-claim.js";
 import type { LcmPaths } from "../lcm-paths.js";
 import { withHookWrite } from "./write-admission.js";
+import { observeHook } from "./observe.js";
 
 type PromptSearchResponse = {
   hints: string[];
@@ -57,22 +58,32 @@ export async function handleUserPromptSubmit(
   } catch {
     return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
   }
+  const input = parsed as { prompt?: string; session_id?: string; cwd?: string };
+  const cwd = typeof input.cwd === "string" ? input.cwd : process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+  const sessionId = typeof input.session_id === "string" ? input.session_id : "";
+  const observe = (operation: string, status: "completed" | "skipped" | "delegated" | "deferred" | "failed", reason = "") =>
+    observeHook(cwd, { sessionId, harness: "claude-command", hook: "UserPromptSubmit",
+      operation, kind: "execution", status, reason,
+      ...(status === "failed" ? { failureCode: reason } : {}) }, paths);
 
   // The module owns this event while it holds the session: prompt.section carries the
   // instruction and prompt.submit carries the memory context, so anything printed here
   // would reach the model twice.
   if (functionHooksOwnSession(parsed.session_id as string | undefined)) {
+    observe("search", "delegated", "function-hook");
     return { exitCode: 0, stdout: "" };
   }
 
   const daemonPort = port ?? 3737;
   const pidFilePath = paths.pidPath;
-  const { connected } = await ensureDaemon({ port: daemonPort, pidFilePath, spawnTimeoutMs: 5000, expectedVersion: PKG_VERSION });
-  if (!connected) return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
-
   try {
-    const input = parsed as { prompt?: string; session_id?: string; cwd?: string };
+    const { connected } = await ensureDaemon({ port: daemonPort, pidFilePath, spawnTimeoutMs: 5000, expectedVersion: PKG_VERSION });
+    if (!connected) {
+      observe("search", "deferred", "daemon-unavailable");
+      return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
+    }
     if (!input.prompt || typeof input.prompt !== "string" || !input.prompt.trim()) {
+      observe("search", "skipped", "empty-prompt");
       return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
     }
 
@@ -80,7 +91,8 @@ export async function handleUserPromptSubmit(
     try {
       if (input.session_id && typeof input.session_id === "string") {
         const cwd = input.cwd ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
-        await recordUserPromptEvents(String(input.prompt), input.session_id, cwd, paths);
+        const recorded = await recordUserPromptEvents(String(input.prompt), input.session_id, cwd, paths);
+        observe("prompt-extract", "completed", recorded > 0 ? "events" : "no-rows");
       }
     } catch (e) {
       safeLogError("UserPromptSubmit", e, {
@@ -88,6 +100,7 @@ export async function handleUserPromptSubmit(
         sessionId: input.session_id,
         paths,
       });
+      observe("prompt-extract", "failed", "extract-error");
     }
 
     const result = await client.post<PromptSearchResponse>("/prompt-search", {
@@ -98,15 +111,19 @@ export async function handleUserPromptSubmit(
     }, { timeoutMs: PROMPT_SEARCH_TIMEOUT_MS });
 
     if (!result.hints || result.hints.length === 0) {
+      observe("search", "completed", "no-hints");
       return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
     }
 
     const hint = buildMemoryContext(result.hints, result.ids ?? [], result.projectIds ?? [], result.pivotHint);
     if (!hint) {
+      observe("search", "completed", "no-context");
       return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
     }
+    observe("search", "completed", "context");
     return { exitCode: 0, stdout: `${hint}\n${LEARNING_INSTRUCTION}` };
   } catch {
+    observe("search", "failed", "search-error");
     return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
   }
 }

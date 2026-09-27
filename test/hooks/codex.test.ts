@@ -146,12 +146,12 @@ describe("Codex native lifecycle adapter", () => {
     expect(connect).toHaveBeenCalledExactlyOnceWith(identity.session_id, shortDeadline);
   });
 
-  it("ingests before compacting and leaves restore to the compact SessionStart", async () => {
+  it("lets the daemon capture before compacting and leaves restore to the compact SessionStart", async () => {
     const { post, deps } = dependencies({ "/compact": { latestSummaryContent: "preserved fact" } });
     expect(await dispatchCodexHook(payload("PreCompact", { trigger: "auto" }), deps)).toEqual({ exitCode: 0, stdout: "" });
-    expect(post.mock.calls.map(([path]) => path)).toEqual(["/ingest", "/compact"]);
+    expect(post.mock.calls.map(([path]) => path)).toEqual(["/compact"]);
     expect(post).toHaveBeenLastCalledWith("/compact", {
-      session_id: identity.session_id, cwd: identity.cwd, client: "codex", skip_ingest: true,
+      ...identity, client: "codex", capture_required: true, operation_id: expect.any(String),
     }, expect.objectContaining({ timeoutMs: 115_000 }));
   });
 

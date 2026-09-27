@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createLcmPaths, type LcmPaths } from "../../src/lcm-paths.js";
 import { lcmHome } from "../../src/lcm-home.js";
 import type { SnapshotDeps } from "../../src/hooks/session-snapshot.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { readHookOutcomeLog } from "../../src/doctor/hook-outcome-log.js";
 
 const paths: LcmPaths = createLcmPaths(lcmHome());
 
@@ -114,5 +118,37 @@ describe("handleSessionSnapshot", () => {
       paths, deps,
     );
     expect(result.exitCode).toBe(0);
+  });
+
+  it("keeps the retry timer eligible after an HTTP rejection", async () => {
+    const deps = makeDeps({ post: vi.fn().mockResolvedValue({ ok: false, status: 401 }) });
+    const { handleSessionSnapshot } = await import("../../src/hooks/session-snapshot.js");
+    const result = await handleSessionSnapshot(
+      JSON.stringify({ session_id: sid("rejected"), cwd: "/tmp/test", transcript_path: "/tmp/session.jsonl" }),
+      paths, deps,
+    );
+    expect(result).toEqual({ exitCode: 0, stdout: "" });
+    expect(deps.writeFileSync).not.toHaveBeenCalled();
+  });
+
+  it("does not label a local retry-timer write failure as a transport failure", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "lcm-stop-observation-"));
+    try {
+      const isolated = createLcmPaths(dir);
+      const deps = makeDeps({ writeFileSync: vi.fn(() => { throw new Error("read-only cursor"); }) });
+      const { handleSessionSnapshot } = await import("../../src/hooks/session-snapshot.js");
+      await handleSessionSnapshot(JSON.stringify({
+        session_id: sid("cursor-write"), cwd: dir, transcript_path: join(dir, "session.jsonl"),
+      }), isolated, deps);
+      const logged = readHookOutcomeLog(isolated.logsDir, dir);
+      expect(logged.outcomes).toEqual(expect.arrayContaining([
+        expect.objectContaining({ operation: "capture", status: "accepted" }),
+        expect.objectContaining({ operation: "capture", status: "completed" }),
+        expect.objectContaining({ operation: "retry-timer", status: "failed", reason: "write-error" }),
+      ]));
+      expect(logged.outcomes.some((item) => item.status === "unconfirmed")).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

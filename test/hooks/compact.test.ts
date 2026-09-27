@@ -24,7 +24,7 @@ describe("handlePreCompact", () => {
     expect(result.stdout).toContain("Compacted");
     expect(client.post).toHaveBeenCalledWith(
       "/compact",
-      expect.objectContaining({ client: "claude" }),
+      expect.objectContaining({ client: "claude", capture_required: true }),
       expect.objectContaining({ timeoutMs: expect.any(Number) }),
     );
   });

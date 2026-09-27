@@ -42,6 +42,30 @@ export interface HealthStats {
   lastError: string | null;
 }
 
+interface HookObservationBase {
+  sessionId: string;
+  harness: "claude-command" | "claude-function" | "codex" | "omp";
+  hook: string;
+  operation: string;
+  reason?: string;
+  failureCode?: string;
+  operationId?: string;
+}
+
+export type HookObservation = HookObservationBase & (
+  | { kind: "delivery"; status: "submitted" | "accepted" | "unconfirmed" | "rejected" }
+  | { kind: "execution"; status: "completed" | "skipped" | "delegated" | "deferred" | "failed" }
+);
+
+export interface HookObservationSummary extends Omit<HookObservationBase, "reason" | "failureCode" | "operationId"> {
+  kind: "delivery" | "execution";
+  status: string;
+  reason: string;
+  count: number;
+  firstSeen: string;
+  lastSeen: string;
+}
+
 /** Read health counters without opening, migrating, or mutating the database. */
 export function readEventHealthStats(db: DatabaseSync): HealthStats {
   const eventTotals = db.prepare(
@@ -68,7 +92,41 @@ export interface PatternReinforcementStats {
   distinctSessions: number;
 }
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
+
+const HOOK_OBSERVATION_SQL = `
+CREATE TABLE IF NOT EXISTS hook_observation_summary (
+  session_id TEXT NOT NULL,
+  harness TEXT NOT NULL,
+  hook TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  count INTEGER NOT NULL DEFAULT 0,
+  first_seen TEXT NOT NULL DEFAULT (datetime('now')),
+  last_seen TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (session_id, harness, hook, operation, kind, status, reason)
+);
+CREATE INDEX IF NOT EXISTS idx_hook_observation_last_seen ON hook_observation_summary(last_seen);
+CREATE TABLE IF NOT EXISTS hook_observation_failures (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  harness TEXT NOT NULL,
+  hook TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  code TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_hook_observation_failures_session ON hook_observation_failures(session_id, id);
+CREATE TABLE IF NOT EXISTS hook_observation_seen (
+  operation_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (operation_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_hook_observation_seen_created ON hook_observation_seen(created_at);
+`;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -104,6 +162,7 @@ CREATE TABLE IF NOT EXISTS error_log (
   created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_error_log_created ON error_log(created_at);
+${HOOK_OBSERVATION_SQL}
 `;
 
 export class EventsDb {
@@ -178,6 +237,7 @@ export class EventsDb {
         );
         CREATE INDEX IF NOT EXISTS idx_error_log_created ON error_log(created_at);
         CREATE INDEX IF NOT EXISTS idx_events_pattern_lookup ON events(type, category, data, created_at);
+        ${HOOK_OBSERVATION_SQL}
       `);
       // The events table here may predate v4, so the columns have to exist before the indexes.
       this.ensureColumn("tool_use_id");
@@ -238,6 +298,7 @@ export class EventsDb {
           this.ensureColumn("turn_id");
           this.db.exec("CREATE INDEX IF NOT EXISTS idx_events_turn ON events(session_id, turn_id)");
         }
+        if (currentVersion < 8) this.db.exec(HOOK_OBSERVATION_SQL);
         this.db.prepare("UPDATE schema_version SET version = ?").run(SCHEMA_VERSION);
         this.db.exec("COMMIT");
       } catch (e) {
@@ -469,6 +530,76 @@ export class EventsDb {
     this.db.prepare(
       "INSERT INTO error_log (hook, error, session_id) VALUES (?, ?, ?)"
     ).run(hook, msg, sessionId ?? null);
+  }
+
+  /** Aggregate operational metadata; a retained operation id counts only once. */
+  recordHookObservation(observation: HookObservation): boolean {
+    const fields = [observation.harness, observation.hook, observation.operation, observation.kind,
+      observation.status, observation.reason ?? "", observation.failureCode ?? ""];
+    if (fields.some((value) => value.length > 80 || !/^[a-zA-Z0-9_.:-]*$/.test(value))) {
+      throw new Error("invalid hook observation field");
+    }
+    if (observation.operationId && observation.operationId.length > 160) {
+      throw new Error("hook operation id is too long");
+    }
+    const reason = observation.reason ?? "";
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (observation.operationId) {
+        const inserted = this.db.prepare(
+          "INSERT OR IGNORE INTO hook_observation_seen (operation_id, kind) VALUES (?, ?)"
+        ).run(observation.operationId, observation.kind);
+        if (inserted.changes === 0) {
+          this.db.exec("COMMIT");
+          return false;
+        }
+      }
+      this.db.prepare(`
+        INSERT INTO hook_observation_summary
+          (session_id, harness, hook, operation, kind, status, reason, count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+        ON CONFLICT(session_id, harness, hook, operation, kind, status, reason)
+        DO UPDATE SET count = count + 1, last_seen = datetime('now')
+      `).run(observation.sessionId, observation.harness, observation.hook,
+        observation.operation, observation.kind, observation.status, reason);
+      if ((observation.status === "failed" || observation.status === "rejected") && observation.failureCode) {
+        this.db.prepare(`
+          INSERT INTO hook_observation_failures
+            (session_id, harness, hook, operation, code)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(observation.sessionId, observation.harness, observation.hook,
+          observation.operation, observation.failureCode);
+        this.db.prepare(`
+          DELETE FROM hook_observation_failures
+          WHERE session_id = ? AND id NOT IN (
+            SELECT id FROM hook_observation_failures WHERE session_id = ? ORDER BY id DESC LIMIT 64
+          )
+        `).run(observation.sessionId, observation.sessionId);
+      }
+      this.pruneHookObservations();
+      this.db.exec("COMMIT");
+      return true;
+    } catch (e) {
+      try { this.db.exec("ROLLBACK"); } catch { /* the transaction is already gone */ }
+      throw e;
+    }
+  }
+
+  getHookObservationSummary(sessionId: string): HookObservationSummary[] {
+    const rows = this.db.prepare(`
+      SELECT session_id AS sessionId, harness, hook, operation, kind, status, reason,
+             count, first_seen AS firstSeen, last_seen AS lastSeen
+      FROM hook_observation_summary WHERE session_id = ?
+      ORDER BY hook, operation, kind, status, reason
+    `).all(sessionId);
+    return rows as unknown as HookObservationSummary[];
+  }
+
+  pruneHookObservations(olderThanDays = 7): void {
+    const age = `-${Math.max(1, Math.floor(olderThanDays))} days`;
+    this.db.prepare("DELETE FROM hook_observation_summary WHERE last_seen < datetime('now', ?)").run(age);
+    this.db.prepare("DELETE FROM hook_observation_failures WHERE created_at < datetime('now', ?)").run(age);
+    this.db.prepare("DELETE FROM hook_observation_seen WHERE created_at < datetime('now', ?)").run(age);
   }
 
   getHealthStats(): HealthStats {

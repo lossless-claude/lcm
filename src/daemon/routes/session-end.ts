@@ -13,6 +13,9 @@ import {
   fireSessionCompleteRequest,
 } from "../../hooks/daemon-requests.js";
 import { noopDaemonLog, type DaemonLog } from "../log.js";
+import { EventsDb } from "../../hooks/events-db.js";
+import { eventsDbPath } from "../../db/events-path.js";
+import { withHookWrite } from "../../hooks/write-admission.js";
 
 export interface IngestResult {
   ingested?: number;
@@ -96,9 +99,29 @@ interface SequenceTarget {
   log: DaemonLog;
 }
 
+function recordSessionEndCapture(target: SequenceTarget, status: "completed" | "failed"): void {
+  const { cwd, sessionId, client, paths, log } = target;
+  const harness = client === "codex" ? "codex" : client === "omp" ? "omp" : "claude-command";
+  try {
+    withHookWrite(paths, () => {
+      const db = new EventsDb(eventsDbPath(cwd, paths));
+      try {
+        db.recordHookObservation({ sessionId, harness,
+          hook: harness === "omp" ? "session_shutdown" : "SessionEnd",
+          operation: "capture", kind: "execution", status,
+          ...(status === "failed" ? { failureCode: "ingest-error" } : {}),
+        });
+      } finally { db.close(); }
+    }, undefined);
+  } catch (err) {
+    log.write("warn", "session_end.observation_failed", { cwd, session_id: sessionId, err });
+  }
+}
+
 /** What the hook used to fire after its own ingest returned. */
 function runPostIngestSequence(target: SequenceTarget, ingested: IngestResult): void {
   const { config, daemonPort, paths, sessionId, cwd, client, log } = target;
+  recordSessionEndCapture(target, "completed");
   log.write("info", "session_end.ingested", { cwd, session_id: sessionId, ingested: ingested.ingested ?? 0 });
   const onError = (path: string) => (err: Error) =>
     log.write("error", "daemon_request.failed", { path, cwd, session_id: sessionId, err });
@@ -127,9 +150,14 @@ export function createSessionEndHandler(config: DaemonConfig, daemonPort: number
 
     // Ingest sees the same identity the follow-ups do: trimmed id, real path.
     const ingestBody = { ...input, session_id: sessionId, cwd };
+    let captureCompleted = false;
     void invokeRoute<IngestResult>(ingest, ingestBody)
-      .then((ingested) => runPostIngestSequence({ config, daemonPort, paths, sessionId, cwd, client, log }, ingested))
+      .then((ingested) => {
+        captureCompleted = true;
+        runPostIngestSequence({ config, daemonPort, paths, sessionId, cwd, client, log }, ingested);
+      })
       .catch((err: unknown) => {
+        if (!captureCompleted) recordSessionEndCapture({ config, daemonPort, paths, sessionId, cwd, client, log }, "failed");
         log.write("error", "session_end.failed", { cwd, session_id: sessionId, err });
         safeLogError("session-end", err, { cwd, sessionId, paths });
       });

@@ -30,7 +30,7 @@ The official [Codex hooks reference](https://developers.openai.com/codex/hooks) 
 | Capture completed turns | `Stop` | Incrementally ingest the Codex transcript without blocking or restarting the agent. |
 | Capture interruptions | `Interrupt` | Attempt a short write to an already running daemon within Codex's three-second cap. |
 | Capture remaining content | `SessionEnd` | Flush pending ingestion; do not rely on shutdown as the only capture event. |
-| Preserve compaction continuity | `PreCompact`, `SessionStart` with source `compact` | Capture before native compaction and restore memory for continuation; prevent duplicate work across lifecycle events. |
+| Preserve compaction continuity | `PreCompact`, `SessionStart` with source `compact` | Ask the daemon to Capture before lcm summarization in one operation, then restore memory for continuation. A failed Capture skips only that lcm summary; native compaction continues. |
 | Record passive-learning events | `PostToolUse`, and `PostToolUseFailure` where the host fires it as a distinct event | Write the payload straight to the project's local events sidecar, tagged `client: "codex"`. Native `apply_patch`, the compatibility `exec_command` spelling, `update_plan`, and `spawn_agent` are normalized before the shared extractor; unknown names are unchanged. The hook's `model` is retained when present, otherwise the next ingest fills it by joining `turn_id` with the transcript's `turn_context`. No daemon round trip — see [passive-learning.md](passive-learning.md). |
 
 `PostCompact` is also available, but LCM registers only `SessionStart(source=compact)` for restoration. LCM does not block native prompts, stops, or compaction on daemon failure.

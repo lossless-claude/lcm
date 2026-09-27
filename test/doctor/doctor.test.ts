@@ -12,10 +12,10 @@ vi.mock("../../src/daemon/lifecycle.js", async (importOriginal) => ({
 
 vi.mock("../../src/db/events-stats.js", () => ({
   collectEventStats: vi.fn().mockReturnValue({ captured: 0, unprocessed: 0, errors: 0, lastCapture: null, scanned: 1, total: 1 }),
-  collectDetailedEventStats: vi.fn().mockReturnValue({ captured: 0, unprocessed: 0, errors: 0, lastCapture: null, projects: [], recentErrors: [] }),
+  collectDetailedEventStats: vi.fn().mockReturnValue({ captured: 0, unprocessed: 0, errors: 0, lastCapture: null, scanned: 1, total: 1, projects: [], recentErrors: [], recentHookObservations: [], recentHookFailures: [], hookFailures: 0 }),
 }));
 
-import { collectEventStats } from "../../src/db/events-stats.js";
+import { collectDetailedEventStats, collectEventStats } from "../../src/db/events-stats.js";
 const mockCollectEventStats = vi.mocked(collectEventStats);
 
 const INSTALLED_LCM = JSON.stringify({ version: 2, plugins: { "lcm@lossless-claude": [{ scope: "user", version: "0.9.0" }] } });
@@ -204,6 +204,23 @@ describe("runDoctor summarizer modes", () => {
 });
 
 describe("Passive Learning checks", () => {
+  it("shows Codex hook outcomes in verbose mode without the Claude plugin", async () => {
+    vi.mocked(collectDetailedEventStats).mockReturnValueOnce({
+      captured: 0, unprocessed: 0, errors: 0, lastCapture: null, scanned: 1, total: 1,
+      projects: [], recentErrors: [], recentHookFailures: [], hookFailures: 0,
+      recentHookObservations: [{ file: "codex.db", sessionId: "codex-session", harness: "codex",
+        hook: "PreCompact", operation: "capture", kind: "execution", status: "completed",
+        reason: "", count: 1, lastSeen: "2026-09-27 12:00:00" }],
+    });
+    const base = minimalDeps({ cwd: "/tmp/test-proj" });
+    const results = await runDoctor({ ...base,
+      readFileSync: (path: string) => path.endsWith("installed_plugins.json")
+        ? "{}" : base.readFileSync(path),
+    }, true);
+    expect(results.find((r) => r.name === "hooks")?.status).toBe("fail");
+    expect(results.find((r) => r.name === "hook-outcomes")?.message).toContain("codex/PreCompact");
+  });
+
   it("runs passive learning checks when hooks status is warn (auto-fixed duplicates)", async () => {
     // Use deps where hooks check produces "warn" (duplicate hooks in settings.json auto-fixed)
     mockCollectEventStats.mockReturnValue({ captured: 10, unprocessed: 0, errors: 0, lastCapture: null, scanned: 1, total: 1 });

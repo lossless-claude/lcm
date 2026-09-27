@@ -13,8 +13,9 @@ import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { markSessionCompacted } from "../../db/session-compactions.js";
-import { SessionCapture } from "../../capture.js";
+import { SessionCapture, type TranscriptCaptureResult } from "../../capture.js";
 import { EventsDb } from "../../hooks/events-db.js";
+import { withHookWrite } from "../../hooks/write-admission.js";
 import { eventsDbPath } from "../../db/events-path.js";
 import { CompactionEngine, compactEngineConfig, COMPACT_TOKEN_BUDGET } from "../../compaction.js";
 import { TranscriptSourceError } from "../../transcript-source.js";
@@ -188,6 +189,68 @@ export function recordCompactLlmUsage(db: DatabaseSync, usage: CompactLlmUsage):
   );
 }
 
+async function captureTranscriptForCompact(
+  capture: SessionCapture,
+  input: { sessionId: string; cwd: string; client?: string; transcriptPath?: string },
+  paths: LcmPaths,
+  log: DaemonLog,
+): Promise<TranscriptCaptureResult | undefined> {
+  const captured = await capture.captureTranscript(input);
+  if (captured) {
+    const sidecarPath = eventsDbPath(input.cwd, paths);
+    if (existsSync(sidecarPath)) {
+      try {
+        const events = new EventsDb(sidecarPath);
+        try {
+          captured.backfillModels(events);
+        } finally {
+          events.close();
+        }
+      } catch (err) {
+        log.write("warn", "compact.model_backfill_failed", { cwd: input.cwd, session_id: input.sessionId, err });
+      }
+    }
+  }
+  return captured;
+}
+
+type PrecompactStage = {
+  status: "completed" | "skipped" | "deferred" | "failed";
+  reason?: string;
+};
+
+function recordPrecompactStages(
+  input: { cwd: string; sessionId: string; client?: string; operationId?: string; capture?: PrecompactStage; summary: PrecompactStage },
+  paths: LcmPaths,
+  log: DaemonLog,
+): void {
+  const harness = input.client === "codex" ? "codex" : input.client === "omp" ? "omp" : "claude-command";
+  const hook = harness === "omp" ? "session_before_compact" : "PreCompact";
+  try {
+    withHookWrite(paths, () => {
+      const db = new EventsDb(eventsDbPath(input.cwd, paths));
+      try {
+        if (input.capture) db.recordHookObservation({
+          sessionId: input.sessionId, harness, hook, operation: "capture", kind: "execution",
+          status: input.capture.status, reason: input.capture.reason,
+          ...(input.operationId ? { operationId: `${input.operationId}:capture` } : {}),
+          ...(input.capture.status === "failed" ? { failureCode: input.capture.reason ?? "capture-error" } : {}),
+        });
+        db.recordHookObservation({
+          sessionId: input.sessionId, harness, hook, operation: "summary", kind: "execution",
+          status: input.summary.status, reason: input.summary.reason,
+          ...(input.operationId ? { operationId: `${input.operationId}:summary` } : {}),
+          ...(input.summary.status === "failed" ? { failureCode: input.summary.reason ?? "summary-error" } : {}),
+        });
+      } finally {
+        db.close();
+      }
+    }, undefined);
+  } catch (err) {
+    log.write("warn", "precompact.observation_failed", { cwd: input.cwd, session_id: input.sessionId, err });
+  }
+}
+
 
 export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs?: SummarizeJobStore, log: DaemonLog = noopDaemonLog): RouteHandler {
   const summarizerCache = new Map<EffectiveProvider, Promise<LcmSummarizeFn | null>>();
@@ -204,6 +267,10 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
     const { session_id, transcript_path, skip_ingest, client, previous_summary } = input;
+    const captureRequired = input.capture_required === true;
+    const precompactVerified = input.precompact_verified === true && client === "omp" && skip_ingest === true;
+    const operationId = typeof input.operation_id === "string" && input.operation_id.length <= 140
+      ? input.operation_id : undefined;
     const MAX_PREVIOUS_SUMMARY_LENGTH = 50_000;
     const validatedPreviousSummary = typeof previous_summary === "string"
       ? previous_summary.slice(0, MAX_PREVIOUS_SUMMARY_LENGTH)
@@ -222,14 +289,59 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       return;
     }
 
+    if (captureRequired && skip_ingest) {
+      sendJson(res, 400, { error: "capture_required and skip_ingest cannot be combined" });
+      return;
+    }
+
+    const captureOnly = async () => {
+      try {
+        const captured = await enqueue(projectId(cwd), async () => {
+          const dbPath = projectDbPath(cwd, paths);
+          openProject(cwd, paths);
+          const scrubber = await ScrubEngine.forProject(
+            config.security?.sensitivePatterns ?? [], projectDir(cwd, paths),
+          );
+          const db = getLcmConnection(dbPath);
+          try {
+            runLcmMigrations(db);
+            return await captureTranscriptForCompact(new SessionCapture(db, projectId(cwd), scrubber), {
+              sessionId: session_id, cwd, client, transcriptPath: transcript_path,
+            }, paths, log);
+          } finally {
+            closeLcmConnection(dbPath);
+          }
+        });
+        const outcome = captured
+          ? { status: "completed" as const, messages: captured.records.length }
+          : { status: "deferred" as const, reason: "no-capture-result" as const };
+        log.write("info", "precompact.capture", { cwd, session_id, ...outcome });
+        return outcome;
+      } catch (err) {
+        log.write("error", "precompact.capture_failed", { cwd, session_id, err });
+        return { status: "failed" as const, reason: err instanceof TranscriptSourceError ? "invalid-source" as const : "capture-error" as const };
+      }
+    };
+
     // Guard must be checked and set synchronously (before any await) to prevent
     // concurrent requests from racing through the has() check before add() runs.
     if (compactingNow.has(session_id)) {
       log.write("info", "compact.skipped", { cwd, session_id, reason: "already-compacting" });
+      const captureOutcome = captureRequired ? await captureOnly() : undefined;
+      if (captureRequired) log.write("info", "precompact.summary", { cwd, session_id, status: "skipped", reason: "busy" });
+      if (captureRequired && captureOutcome) recordPrecompactStages({
+        cwd, sessionId: session_id, client, operationId, capture: captureOutcome,
+        summary: { status: "skipped", reason: "busy" },
+      }, paths, log);
+      if (precompactVerified) recordPrecompactStages({
+        cwd, sessionId: session_id, client, operationId,
+        summary: { status: "skipped", reason: "busy" },
+      }, paths, log);
       sendJson(res, 200, {
         skipped: true,
         replayOutcome: "skipped",
         summary: "Compaction already in progress for this session.",
+        ...(captureRequired ? { captureOutcome, summaryOutcome: { status: "skipped", reason: "busy" } } : {}),
       });
       return;
     }
@@ -247,10 +359,15 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     };
     const providerLabel = providerLabels[effectiveProvider] ?? effectiveProvider;
 
+    let captureOutcomeForError: { status: "completed"; messages: number } | { status: "failed"; reason: string } | undefined;
     try {
-      const summarize = await getSummarizer(effectiveProvider);
-      if (!summarize) {
+      const summarize = captureRequired ? null : await getSummarizer(effectiveProvider);
+      if (!summarize && !captureRequired) {
         log.write("info", "compact.skipped", { cwd, session_id, reason: "disabled" });
+        if (precompactVerified) recordPrecompactStages({
+          cwd, sessionId: session_id, client, operationId,
+          summary: { status: "skipped", reason: "disabled" },
+        }, paths, log);
         sendJson(res, 200, {
           summary: "Summarization disabled — no summarizer configured.",
           replayOutcome: "disabled",
@@ -280,19 +397,36 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           // either way, since compaction needs the row even when nothing was read.
           const capture = new SessionCapture(db, pid, scrubber);
           const { conversationStore, summaryStore } = capture;
-          const captured = skip_ingest
-            ? undefined
-            : await capture.captureTranscript({ sessionId: session_id, client, cwd, transcriptPath: transcript_path });
-          if (captured) {
-            const sidecarPath = eventsDbPath(cwd, paths);
-            if (existsSync(sidecarPath)) {
-              const events = new EventsDb(sidecarPath);
-              try {
-                captured.backfillModels(events);
-              } finally {
-                events.close();
-              }
+          let captured: TranscriptCaptureResult | undefined;
+          if (!skip_ingest) {
+            try {
+              captured = await captureTranscriptForCompact(capture, {
+                sessionId: session_id, client, cwd, transcriptPath: transcript_path,
+              }, paths, log);
+            } catch (err) {
+              if (captureRequired) captureOutcomeForError = {
+                status: "failed",
+                reason: err instanceof TranscriptSourceError ? "invalid-source" : "capture-error",
+              };
+              throw err;
             }
+          }
+          const captureOutcome = captureRequired
+            ? captured
+              ? { status: "completed" as const, messages: captured.records.length }
+              : { status: "deferred" as const, reason: "no-capture-result" as const }
+            : undefined;
+          if (captureRequired) {
+            log.write("info", "precompact.capture", { cwd, session_id, ...captureOutcome });
+            if (captured) captureOutcomeForError = captureOutcome as { status: "completed"; messages: number };
+            else return {
+              summary: "Capture deferred — no transcript content was captured.",
+              replayOutcome: "skipped",
+              providerId: effectiveProvider,
+              providerLabel,
+              captureOutcome,
+              summaryOutcome: { status: "skipped" as const, reason: "capture-deferred" },
+            };
           }
           const conversation = captured ?? await capture.write({ sessionId: session_id, messages: [] });
 
@@ -301,7 +435,22 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
 
           if (tokenCount === 0) {
             // A replay ledgers this as done; otherwise every later run sees a gap here.
-            return { summary: "No messages to compact.", replayOutcome: "no_work", providerId: effectiveProvider, providerLabel };
+            return {
+              summary: "No messages to compact.", replayOutcome: "no_work", providerId: effectiveProvider, providerLabel,
+              ...(captureRequired ? { captureOutcome, summaryOutcome: { status: "skipped", reason: "no-work" } } : {}),
+            };
+          }
+
+          const activeSummarize = captureRequired ? await getSummarizer(effectiveProvider) : summarize;
+          if (!activeSummarize) {
+            return {
+              summary: "Summarization disabled — no summarizer configured.",
+              replayOutcome: "disabled",
+              providerId: effectiveProvider,
+              providerLabel,
+              captureOutcome,
+              summaryOutcome: { status: "skipped" as const, reason: "disabled" },
+            };
           }
 
           let language = resolveSummarizerLanguage(config, cwd, paths);
@@ -331,7 +480,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
               }
             };
             try {
-              const summary = await summarize(text, aggressive, {
+              const summary = await activeSummarize(text, aggressive, {
                 ...ctx,
                 sessionId: session_id,
                 client,
@@ -462,6 +611,10 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             tokensAfter: compactResult.tokensAfter,
             providerId: answeredProvider,
             providerLabel: answeredLabel,
+            ...(captureRequired ? {
+              captureOutcome,
+              summaryOutcome: { status: compactResult.actionTaken ? "completed" : "skipped", reason: compactResult.actionTaken ? undefined : "no-work" },
+            } : {}),
             ...(llmUsage.calls > 0 ? { llmUsage } : {}),
           };
         } catch (error) {
@@ -484,15 +637,57 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       } else {
         log.write("info", "compact.skipped", { cwd, session_id, reason: result.replayOutcome });
       }
+      if (captureRequired && "summaryOutcome" in result) {
+        const outcome = result.summaryOutcome;
+        log.write("info", "precompact.summary", { cwd, session_id, ...outcome });
+        if ("captureOutcome" in result && result.captureOutcome) recordPrecompactStages({
+          cwd, sessionId: session_id, client, operationId,
+          capture: result.captureOutcome as PrecompactStage,
+          summary: outcome as PrecompactStage,
+        }, paths, log);
+      }
+      if (precompactVerified) recordPrecompactStages({
+        cwd, sessionId: session_id, client, operationId,
+        summary: result.replayOutcome === "compacted"
+          ? { status: "completed" }
+          : { status: "skipped", reason: result.replayOutcome },
+      }, paths, log);
       sendJson(res, 200, result);
     } catch (err) {
       log.write("error", "compact.failed", { cwd, session_id, err });
+      if (captureRequired) {
+        if (captureOutcomeForError?.status !== "completed") {
+          log.write("error", "precompact.capture_failed", { cwd, session_id, err });
+        }
+        log.write("info", "precompact.summary", {
+          cwd, session_id,
+          status: captureOutcomeForError?.status === "completed" ? "failed" : "skipped",
+          reason: captureOutcomeForError?.status === "completed" ? "summary-error" : "capture-failed",
+        });
+        recordPrecompactStages({
+          cwd, sessionId: session_id, client, operationId,
+          capture: captureOutcomeForError ?? { status: "failed", reason: "capture-error" },
+          summary: captureOutcomeForError?.status === "completed"
+            ? { status: "failed", reason: "summary-error" }
+            : { status: "skipped", reason: "capture-failed" },
+        }, paths, log);
+      }
+      if (precompactVerified) recordPrecompactStages({
+        cwd, sessionId: session_id, client, operationId,
+        summary: { status: "failed", reason: "summary-error" },
+      }, paths, log);
       const llmUsage =
         err instanceof Error
           ? (err as Error & { llmUsage?: CompactLlmUsage }).llmUsage
           : undefined;
       sendJson(res, err instanceof TranscriptSourceError ? 400 : 500, {
         error: err instanceof Error ? err.message : "compact failed",
+        ...(captureRequired ? {
+          captureOutcome: captureOutcomeForError ?? { status: "failed", reason: "capture-error" },
+          summaryOutcome: captureOutcomeForError?.status === "completed"
+            ? { status: "failed", reason: "summary-error" }
+            : { status: "skipped", reason: "capture-failed" },
+        } : {}),
         ...(llmUsage ? { llmUsage } : {}),
       });
     } finally {

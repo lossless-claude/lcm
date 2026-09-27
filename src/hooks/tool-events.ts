@@ -6,6 +6,7 @@ import type { LcmPaths } from "../lcm-paths.js";
 import type { SessionClient } from "../session-client.js";
 import { isSessionClient } from "../session-client.js";
 import { withHookWrite } from "./write-admission.js";
+import { createHash } from "node:crypto";
 
 /**
  * The PostToolUse / PostToolUseFailure payload, as the command hook and the
@@ -28,6 +29,8 @@ export interface PostToolPayload {
   is_interrupt?: boolean;
   /** Which harness produced this call. Defaults to "claude" — the Codex normalizer is the only other writer. */
   client?: SessionClient;
+  /** Distinguishes Claude's in-process module from its command hook. */
+  harness?: "claude-command" | "claude-function" | "codex" | "omp";
   /** The model that issued the tool call. Codex's hook payload carries it; Claude's does not, so it stays null until the next ingest backfills it. */
   model?: string | null;
 }
@@ -56,8 +59,6 @@ export function recordPostToolEvents(payload: PostToolPayload, paths: LcmPaths):
     error: payload.error,
     is_interrupt: payload.is_interrupt,
   });
-  if (events.length === 0) return { recorded: 0, hasPriority1: false, sourceHook };
-
   // The command hook forwards raw stdin, so the id is only trusted once it is a
   // non-empty string; both call sites get the same normalization this way.
   const toolUseId = typeof payload.tool_use_id === "string" && payload.tool_use_id
@@ -66,18 +67,29 @@ export function recordPostToolEvents(payload: PostToolPayload, paths: LcmPaths):
   const turnId = typeof payload.turn_id === "string" ? payload.turn_id.trim() || undefined : undefined;
 
   const client: SessionClient = isSessionClient(payload.client) ? payload.client : "claude";
+  const defaultHarness = client === "codex" ? "codex" : client === "omp" ? "omp" : "claude-command";
+  const harness = payload.harness === "claude-function" && client === "claude"
+    ? "claude-function" : defaultHarness;
   const model = typeof payload.model === "string" && payload.model ? payload.model : null;
 
-  const recorded = withHookWrite(paths, () => {
+  return withHookWrite(paths, () => {
     const db = new EventsDb(eventsDbPath(payload.cwd, paths));
     try {
-      // Dedup on the whole call, not each event: one call extracts several events, and a
-      // per-event check would leave a half batch when the paths raced.
-      return db.insertToolCallEvents(payload.session_id, events, sourceHook, toolUseId, client, model, turnId);
+      // Dedup on the whole call, not each event: one call extracts several events.
+      const recorded = events.length === 0 ? 0
+        : db.insertToolCallEvents(payload.session_id, events, sourceHook, toolUseId, client, model, turnId);
+      const operationId = toolUseId
+        ? createHash("sha256").update(`${harness}\0${payload.session_id}\0${toolUseId}`).digest("hex")
+        : undefined;
+      db.recordHookObservation({
+        sessionId: payload.session_id, harness, hook: sourceHook, operation: "tool-capture",
+        kind: "execution", status: "completed",
+        reason: events.length === 0 ? "no-match" : recorded === 0 ? "duplicate" : "events",
+        operationId,
+      });
+      return { recorded, hasPriority1: recorded > 0 && events.some(e => e.priority === 1), sourceHook };
     } finally {
       db.close();
     }
-  }, 0);
-  if (recorded === 0) return { recorded: 0, hasPriority1: false, sourceHook };
-  return { recorded, hasPriority1: events.some(e => e.priority === 1), sourceHook };
+  }, { recorded: 0, hasPriority1: false, sourceHook });
 }

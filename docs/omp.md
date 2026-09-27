@@ -47,6 +47,7 @@ Review and trust the installed hooks in Oh My Pi before expecting automatic capt
 ## Lifecycle events
 
 The installed module is loaded in-process by Oh My Pi. It uses the session manager for the session identity and transcript file, then sends lifecycle work to the local daemon. Hook failures do not block the Oh My Pi operation.
+It keeps bounded operation counts and failure codes in two alternating snapshots under lcm's `logs/` directory. `lcm doctor -v` reads recent snapshots for the current project. Fire-and-forget capture calls are recorded as submitted, not accepted; a lost response cannot establish completion.
 
 | Oh My Pi event | lcm behavior |
 | --- | --- |
@@ -55,7 +56,7 @@ The installed module is loaded in-process by Oh My Pi. It uses the session manag
 | `agent_end` | Capture the completed agent turn. |
 | `session_stop` | Capture the final available transcript content. |
 | `tool_result` | Record a `PostToolUse` or `PostToolUseFailure` tool event. |
-| `session_before_compact` | Capture pending content, then compact lcm memory before Oh My Pi compacts its context. |
+| `session_before_compact` | Await a bounded `/ingest` Capture, then submit lcm summarization only after a confirmed response. An unconfirmed Capture skips that lcm summary; Oh My Pi's own compaction continues. |
 | `session_shutdown` | Make a final best-effort capture. |
 
 ## Session identity and transcript layout

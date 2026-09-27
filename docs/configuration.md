@@ -128,6 +128,12 @@ jq -c 'select(.cwd == "/path/to/project")' ~/.lossless-claude/logs/daemon.log*
   - A daemon killed with SIGKILL, or by a power loss, also counts as ending without `daemon.stop`. So "coverage incomplete" means continuity cannot be proven, not that records were lost.
   - A daemon that could not write a single record during its whole life leaves no trace at all, because every record goes to the same disk that was failing. An example is a disk that stays full from start to exit.
 
+## Hook outcome evidence
+
+`lcm doctor -v` shows recent retained Hook operation counts and failure codes from active project sidecars, the current project's local command-hook log, and local snapshots. Tool capture and daemon pre-compaction outcomes aggregate in the project's events sidecar. Short-lived Claude Code command and Codex lifecycle hooks append bounded metadata to `logs/hook-outcomes.log` (rotated at 2 MB, with one retained predecessor) without loading SQLite at startup. Entries use the project hash instead of the raw working-directory path. The Claude Code function module writes alternating snapshots under the host temp directory, and OMP writes alternating snapshots under lcm's `logs/` directory. A client timeout means delivery or execution is unconfirmed, not failed. A missing row cannot prove that the harness never invoked the hook. Abrupt exit, storage failure, or retention pruning can leave incomplete coverage.
+
+The sidecar retains aggregated observations for seven days and at most 64 individual failure codes per Session. `doctor` reads up to seven days of the bounded command-hook log. Function and OMP snapshots bound their distinct outcome entries and individual failure codes per Session; `doctor` reads recent valid snapshots without migrating old sidecars.
+
 ## Connector scope
 
 The connector manager can install into either the current project or your global

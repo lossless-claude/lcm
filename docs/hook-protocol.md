@@ -18,7 +18,7 @@ A hook that cannot do its work fails open: it exits 0, prints nothing it would n
 
 **Command:** `lcm compact --hook`
 
-Invoked by Claude Code before it runs its built-in compaction. lcm writes a DAG summary of the session and prints it on stdout. The hook always exits `0`; it never blocks or replaces the built-in compaction. Empty stdout means lcm deferred (daemon unavailable or nothing to compact).
+Invoked by Claude Code before it runs its built-in compaction. The daemon attempts Capture before lcm summarization and reports the two outcomes separately. A failed or unavailable Capture skips this invocation's lcm summary; a disabled or busy summarizer does not suppress the Capture attempt. The hook prints a DAG summary when one is produced, always exits `0`, and never blocks or replaces the built-in compaction. Empty stdout means lcm deferred (daemon unavailable or nothing to compact).
 
 **Stdin fields:**
 
@@ -115,7 +115,7 @@ Invoked after a tool call **succeeds**, and only for the tools the `PostToolUse`
 | `tool_output` | object | Result envelope; lcm reads only `{ isError?: boolean }` |
 | `hook_event_name` | string | `"PostToolUse"` |
 
-**Response:** Always exit code `0`. This hook runs on every tool call and must be fast: it writes to a local sidecar SQLite database, and when an extracted event is priority 1 it also fires one unawaited `POST /promote-events` to the daemon.
+**Response:** Always exit code `0`. This hook runs on every tool call and must be fast: it writes extracted events and a bounded outcome count to the local sidecar SQLite database, including calls whose extractor found no event. When an extracted event is priority 1 it also fires one unawaited `POST /promote-events` to the daemon.
 
 ## Function hooks module (early access)
 
@@ -131,13 +131,15 @@ The SessionStart hook's other half, pruning the events sidecar and promoting wha
 
 `turn.complete` replaces the Stop hook's `session-snapshot`: at most once a minute it POSTs `/ingest` with `session_id` and `cwd` only, and `/ingest` derives the transcript file from them (`~/.claude/projects/<cwd slug>/<session_id>.jsonl`, still checked by `isSafeTranscriptPath`), then POSTs `/promote-events`. A caller that has `transcript_path` keeps sending it; the derivation is only the fallback.
 
+The module counts operation outcomes in memory and writes bounded Session snapshots through `$.fs` at `session.start` and `turn.complete`. It alternates two `<tmpdir>/lcm-hook-observe-<safe_session_id>-<slot>.json` files so a partially written copy does not erase the last valid one. `lcm doctor -v` reads recent valid snapshots for the current project. A daemon request without an observed response is reported as unconfirmed, even if the daemon later completed it. Snapshots carry counts and bounded failure codes, never prompt or tool content; an abrupt host exit can leave the last turn unflushed.
+
 A daemon that answers 404 (an older lcm build without these routes) is logged once per route per session, not per call.
 
-**Summarize jobs:** with `llm.provider: "session"` (see `docs/configuration.md`), the module also serves the daemon's summarization jobs for its own session. From `session.start` it holds one `GET /summarize-jobs/next?session_id=…` open (the daemon answers a job or `204` after 25 s) and answers each job on `POST /summarize-jobs/:id` with `{ text, providerId, usage }` or `{ error }`. Leaf jobs run `$.model.complete` with `haiku`; condensed jobs run `$.model.fork`, then `complete` when the fork has no warm cache. The poller stops for the session once the plugin's `sessionSummarizerMaxOutputTokens` cap is reached. A daemon that answers 404 (an older build, or a daemon swapped mid-session) does not stop it: the module logs that once and keeps polling every minute, so a later respawn with the route is picked up. Design: `docs/design/session-summarizer.md`.
+**Summarize jobs:** with `llm.provider: "session"` (see `docs/configuration.md`), the module also serves the daemon's summarization jobs for its own session. From `session.start` it holds one `GET /summarize-jobs/next?session_id=…` open (the daemon answers a job or `204` after 25 s) and answers each job on `POST /summarize-jobs/:id` with `{ text, providerId, usage }` or `{ error }`. An unanswered fork can also carry `usageAttempts`, so its spent tokens count separately from a later fallback answer and toward the session output-token cap. Leaf jobs run `$.model.complete` with `haiku`; condensed jobs run `$.model.fork`, then `complete` when the fork does not answer. The poller stops for the session once the plugin's `sessionSummarizerMaxOutputTokens` cap is reached. A daemon that answers 404 (an older build, or a daemon swapped mid-session) does not stop it: the module logs that once and keeps polling every minute, so a later respawn with the route is picked up. Design: `docs/design/session-summarizer.md`.
 
 **Daemon lifecycle:** the daemon exits when idle, and the command hooks bring it back through `ensureDaemon`. The module does the same: on a connection failure it runs `lcm daemon start --detach` through the host (at most once per minute) and retries the request once, and `session.start` checks `/health` before the first prompt. This needs an `lcm` binary on PATH (the npm CLI); without one the module logs it once and events are lost until a command hook (SessionStart, Stop, SessionEnd), which runs from the bundle and needs no binary, restarts the daemon.
 
-**Dedup rule:** the module claims its session. At `session.start` it writes `<tmpdir>/lcm-claim-<safe_session_id>.json` containing `{ sessionId, ts }` (where `<safe_session_id>` is `<session_id>` with any non `[a-zA-Z0-9_-]` replaced by `_`), awaited before the hook returns so the file is there before the first prompt. `lcm post-tool`, `lcm user-prompt`, `lcm session-snapshot` and `lcm restore` then exit without recording or printing anything when `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` **and** that file names their session (`functionHooksOwnSession` in `src/hooks/session-claim.ts`); otherwise every event would land twice and the model would read the memory context twice.
+**Dedup rule:** the module claims its session. At `session.start` it writes `<tmpdir>/lcm-claim-<safe_session_id>.json` containing `{ sessionId, ts }` (where `<safe_session_id>` is `<session_id>` with any non `[a-zA-Z0-9_-]` replaced by `_`), awaited before the hook returns so the file is there before the first prompt. `lcm post-tool`, `lcm user-prompt`, `lcm session-snapshot` and `lcm restore` then leave capture and context delivery to the module when `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` **and** that file names their session (`functionHooksOwnSession` in `src/hooks/session-claim.ts`); command hooks that can persist diagnostics record the delegation. Otherwise every event would land twice and the model would read the memory context twice.
 
 Both halves are load-bearing. The claim is what proves the module actually registered: the variable alone only says the host would load a module, so a validation error, a stripped `$` or an older build would silence the command hooks with nothing replacing them. The variable is what expires the claim: a session resumed without the gate keeps its session id, and the stale claim file would otherwise silence capture for the rest of it. An unreadable or absent claim means "not mine", and the temp file is deliberately not durable — the claim must not outlive the session.
 
@@ -154,6 +156,7 @@ Both halves are load-bearing. The claim is what proves the module actually regis
 **Command:** `lcm session-snapshot`
 
 An optional periodic hook that incrementally ingests the live session transcript between `SessionEnd` events. This is used for long-running sessions where you want memory to be updated without waiting for the session to end.
+An HTTP rejection leaves the retry timer eligible; it does not advance the stored transcript cursor.
 
 **Stdin fields:**
 

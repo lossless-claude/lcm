@@ -7,6 +7,11 @@ export type SummarizeJob = {
 export type JobAnswer = {
   text?: string; error?: string; providerId?: "session:haiku" | "session:fork";
   usage?: { input_tokens: number; output_tokens: number; estimated: boolean };
+  /** Attempts that spent tokens before the final answer or error. */
+  usageAttempts?: Array<{
+    providerId: "session:haiku" | "session:fork";
+    usage: { input_tokens: number; output_tokens: number; estimated: boolean };
+  }>;
 };
 type Entry = {
   job: SummarizeJob; state: "queued" | "claimed" | "done" | "failed" | "expired";

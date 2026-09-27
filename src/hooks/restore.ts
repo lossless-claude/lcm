@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { writeFileSync, readFileSync } from "node:fs";
 import type { LcmPaths } from "../lcm-paths.js";
+import { observeHook } from "./observe.js";
 
 /** Deadline for the /restore call — SessionStart blocks the session until this hook returns. */
 const RESTORE_TIMEOUT_MS = 10_000;
@@ -51,21 +52,31 @@ export async function handleSessionStart(stdin: string, client: DaemonClient, pa
     return { exitCode: 0, stdout: "" }; // malformed stdin must never block session start
   }
   const sessionId = typeof input.session_id === "string" ? input.session_id : "";
+  const observe = (status: "completed" | "delegated" | "deferred" | "failed", reason: string) =>
+    observeHook(input.cwd, { sessionId, harness: "claude-command", hook: "SessionStart",
+      operation: "restore", kind: "execution", status, reason,
+      ...(status === "failed" ? { failureCode: reason } : {}) }, paths);
 
   // The module restores through prompt.context and scavenges through the daemon while it
   // holds the session; printing the same context here would inject it twice.
-  if (functionHooksOwnSession(sessionId)) return { exitCode: 0, stdout: "" };
+  if (functionHooksOwnSession(sessionId)) {
+    observe("delegated", "function-hook");
+    return { exitCode: 0, stdout: "" };
+  }
 
   if (sessionId && !tryAcquireSessionLock(sessionId)) {
+    observe("delegated", "restore-lock");
     return { exitCode: 0, stdout: "" };
   }
 
   const daemonPort = port ?? 3737;
   const pidFilePath = paths.pidPath;
-  const { connected } = await ensureDaemon({ port: daemonPort, pidFilePath, spawnTimeoutMs: 5000, expectedVersion: PKG_VERSION });
-  if (!connected) return { exitCode: 0, stdout: "" };
-
   try {
+    const { connected } = await ensureDaemon({ port: daemonPort, pidFilePath, spawnTimeoutMs: 5000, expectedVersion: PKG_VERSION });
+    if (!connected) {
+      observe("deferred", "daemon-unavailable");
+      return { exitCode: 0, stdout: "" };
+    }
     const result = await client.post<{ context: string; insights?: Array<{ content: string; confidence: number; tags: string[] }> }>("/restore", input, { timeoutMs: RESTORE_TIMEOUT_MS });
     let stdout = result.context || "";
 
@@ -80,11 +91,21 @@ export async function handleSessionStart(stdin: string, client: DaemonClient, pa
     // by a session that ended without SessionEnd. Never awaited, so it adds no
     // latency here; the daemon does the selection and per-conversation compaction.
     if (input.cwd) {
-      fireSessionStartCompactRequest(daemonPort, { cwd: input.cwd, session_id: sessionId }, paths);
+      try {
+        fireSessionStartCompactRequest(daemonPort, { cwd: input.cwd, session_id: sessionId }, paths);
+        observeHook(input.cwd, { sessionId, harness: "claude-command", hook: "SessionStart",
+          operation: "catch-up", kind: "delivery", status: "submitted" }, paths);
+      } catch {
+        observeHook(input.cwd, { sessionId, harness: "claude-command", hook: "SessionStart",
+          operation: "catch-up", kind: "delivery", status: "rejected", reason: "send-error",
+          failureCode: "send-error" }, paths);
+      }
     }
 
+    observe("completed", stdout ? "context" : "no-context");
     return { exitCode: 0, stdout };
   } catch {
+    observe("failed", "restore-error");
     return { exitCode: 0, stdout: "" };
   }
 }

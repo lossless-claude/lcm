@@ -22,6 +22,20 @@ message. Structure is what a filter can select on; message text is what only ful
 search can reach.
 _Avoid_: typing, parsing, normalisation
 
+### What a harness hook does
+
+**Hook invocation**:
+One time an agent harness calls an lcm hook. An invocation may attempt several operations
+or none.
+
+**Hook operation**:
+One lcm action attempted during a hook invocation, such as capture or compaction. Its
+result is independent of other operations in the same invocation.
+
+**Hook outcome**:
+What lcm can establish about a hook operation. A timeout leaves completion unknown;
+missing evidence does not prove that the harness never invoked the hook.
+
 ### What a transcript holds
 
 **Session**:

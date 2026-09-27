@@ -24,7 +24,7 @@ Why: it removes the `claude` CLI process spawn per chunk that `claude-process` p
 | 10 | Fork returns `null` (cold cache, API error) | Try `complete` with `haiku`; if that fails too, answer `{error}`. |
 | 11 | Opt-in | `llm.provider: "session"`. Also accepted by `LCM_SUMMARY_PROVIDER`. |
 | 12 | Spend cap | Plugin `userConfig` key `sessionSummarizerMaxOutputTokens`, default `50000`, `0` disables serving jobs. Per job `maxTokens = max(1024, 2 × targetTokens)`, computed by the daemon and carried in the job. Cap reached → the module answers `{error: "spend cap"}`. |
-| 13 | Usage accounting | Into `llm_usage_stats` as today. `fork` reports exact usage; `complete` is estimated as `ceil(len/4)` for input and output and marked estimated. `providerId` is `session:haiku` or `session:fork`. |
+| 13 | Usage accounting | Into `llm_usage_stats` as today. `fork` reports exact usage; current hosts also report exact `complete` usage, while older text-only results are estimated as `ceil(len/4)`. An unanswered fork's usage remains a separate `session:fork` attempt when `complete` supplies the answer. Both attempts count toward the session output-token cap. |
 | 14 | Prompts | Rendered by the daemon with the same code the other providers use (`buildSummaryPrompt` / `buildSummaryPromptWithSystem`, `src/llm/prompt.ts`). The module never knows a prompt. |
 
 ## Daemon

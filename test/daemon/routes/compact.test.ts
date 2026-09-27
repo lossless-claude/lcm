@@ -11,6 +11,8 @@ import { ConversationStore } from "../../../src/store/conversation-store.js";
 import { SummaryStore } from "../../../src/store/summary-store.js";
 import { lcmHome } from "../../../src/lcm-home.js";
 import { createLcmPaths } from "../../../src/lcm-paths.js";
+import { EventsDb } from "../../../src/hooks/events-db.js";
+import { eventsDbPath } from "../../../src/db/events-path.js";
 
 const paths = createLcmPaths(lcmHome());
 
@@ -46,7 +48,7 @@ import { createCodexProcessSummarizer } from "../../../src/llm/codex-process.js"
 import { createAnthropicSummarizer } from "../../../src/llm/anthropic.js";
 import { createOpenAISummarizer } from "../../../src/llm/openai.js";
 import { scheduleProjectLanguageDetection } from "../../../src/daemon/project-language.js";
-import { createCompactHandler, buildCompactionMessage } from "../../../src/daemon/routes/compact.js";
+import { createCompactHandler, buildCompactionMessage, markCompacting } from "../../../src/daemon/routes/compact.js";
 import type { DaemonConfig } from "../../../src/daemon/config.js";
 
 function mockRes() {
@@ -74,6 +76,106 @@ function makeConfig(provider: DaemonConfig["llm"]["provider"]): DaemonConfig {
     summarizer: { mock: false },
   } as unknown as DaemonConfig;
 }
+
+describe("required pre-compaction capture", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("captures before reporting a disabled summarizer", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-disabled-"));
+    dirs.push(cwd);
+    const transcriptPath = join(cwd, "session.jsonl");
+    writeFileSync(transcriptPath, JSON.stringify({ message: { role: "user", content: "captured before disabled summary" } }) + "\n");
+    const { res, getBody } = mockRes();
+
+    await createCompactHandler(makeConfig("disabled"), paths)({} as any, res, JSON.stringify({
+      session_id: "precompact-disabled", cwd, transcript_path: transcriptPath, capture_required: true,
+    }));
+
+    expect(getBody().captureOutcome).toMatchObject({ status: "completed", messages: 1 });
+    expect(getBody().summaryOutcome).toMatchObject({ status: "skipped", reason: "disabled" });
+    expect(await readMessageCount(cwd, "precompact-disabled")).toBe(1);
+    const observations = new EventsDb(eventsDbPath(cwd, paths));
+    try {
+      expect(observations.getHookObservationSummary("precompact-disabled")).toMatchObject([
+        { operation: "capture", status: "completed", count: 1 },
+        { operation: "summary", status: "skipped", reason: "disabled", count: 1 },
+      ]);
+    } finally {
+      observations.close();
+    }
+  });
+
+  it("skips lcm summarization when no transcript source is available", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-no-source-"));
+    dirs.push(cwd);
+    const { res, getBody } = mockRes();
+
+    await createCompactHandler(makeConfig("openai"), paths)({} as any, res, JSON.stringify({
+      session_id: "precompact-no-source", cwd, client: "omp", capture_required: true,
+    }));
+
+    expect(getBody().captureOutcome).toMatchObject({ status: "deferred", reason: "no-capture-result" });
+    expect(getBody().summaryOutcome).toMatchObject({ status: "skipped", reason: "capture-deferred" });
+    expect(createOpenAISummarizer).not.toHaveBeenCalled();
+  });
+
+  it("keeps capture failure separate from a skipped summary", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-bad-source-"));
+    dirs.push(cwd);
+    const { res, getBody } = mockRes();
+
+    await createCompactHandler(makeConfig("openai"), paths)({} as any, res, JSON.stringify({
+      session_id: "precompact-bad-source", cwd, client: "omp",
+      transcript_path: join(cwd, "missing.jsonl"), capture_required: true,
+    }));
+
+    expect(getBody().captureOutcome.status).toBe("failed");
+    expect(getBody().summaryOutcome).toMatchObject({ status: "skipped", reason: "capture-failed" });
+    expect(createOpenAISummarizer).not.toHaveBeenCalled();
+  });
+
+  it("captures even when another summary for the session is busy", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-busy-"));
+    dirs.push(cwd);
+    const transcriptPath = join(cwd, "session.jsonl");
+    writeFileSync(transcriptPath, JSON.stringify({ message: { role: "user", content: "captured while busy" } }) + "\n");
+    const release = markCompacting("precompact-busy", cwd);
+    const { res, getBody } = mockRes();
+    try {
+      await createCompactHandler(makeConfig("openai"), paths)({} as any, res, JSON.stringify({
+        session_id: "precompact-busy", cwd, transcript_path: transcriptPath, capture_required: true,
+      }));
+    } finally {
+      release();
+    }
+
+    expect(getBody().captureOutcome).toMatchObject({ status: "completed", messages: 1 });
+    expect(getBody().summaryOutcome).toMatchObject({ status: "skipped", reason: "busy" });
+    expect(await readMessageCount(cwd, "precompact-busy")).toBe(1);
+  });
+
+  it("records the OMP summary outcome after its separately confirmed capture", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-omp-"));
+    dirs.push(cwd);
+    const { res } = mockRes();
+    await createCompactHandler(makeConfig("disabled"), paths)({} as any, res, JSON.stringify({
+      session_id: "omp-precompact", cwd, client: "omp", skip_ingest: true,
+      precompact_verified: true, operation_id: "omp-operation-1",
+    }));
+    const observations = new EventsDb(eventsDbPath(cwd, paths));
+    try {
+      expect(observations.getHookObservationSummary("omp-precompact")).toMatchObject([
+        { harness: "omp", hook: "session_before_compact", operation: "summary",
+          status: "skipped", reason: "disabled", count: 1 },
+      ]);
+    } finally {
+      observations.close();
+    }
+  });
+});
 
 async function readMessageCount(cwd: string, sessionId: string): Promise<number> {
   const db = new DatabaseSync(projectDbPath(cwd, paths));

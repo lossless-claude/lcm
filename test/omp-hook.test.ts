@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   __setTransportForTests,
   type HookApi,
@@ -9,6 +12,7 @@ import {
 } from "../hooks/omp/lcm.js";
 import { extractPostToolEvents } from "../src/hooks/extractors.js";
 import lcm from "../hooks/omp/lcm.js";
+import { readOmpHookSnapshots } from "../src/doctor/hook-snapshots.js";
 
 function context(overrides: Partial<HookContext> = {}): HookContext {
   return {
@@ -39,13 +43,16 @@ function getHandler(handlers: Map<string, HookHandler>, event: string): HookHand
 
 describe("OMP lcm hook", () => {
   let requests: TransportRequest[];
+  let home: string;
 
   beforeEach(() => {
     requests = [];
-    process.env.LCM_HOME = "omp-hook-test-home";
+    home = mkdtempSync(join(tmpdir(), "omp-hook-test-home-"));
+    process.env.LCM_HOME = home;
     __setTransportForTests((request) => {
       requests.push(request);
       if (request.path === "/restore") return { context: "restored memory" };
+      if (request.path === "/ingest") return { ingested: 0 };
       return undefined;
     });
   });
@@ -53,6 +60,7 @@ describe("OMP lcm hook", () => {
   afterEach(() => {
     __setTransportForTests();
     delete process.env.LCM_HOME;
+    rmSync(home, { recursive: true, force: true });
   });
 
   it("waits for the capture before restoring, so restore cannot read a session that is still landing", async () => {
@@ -189,7 +197,8 @@ describe("OMP lcm hook", () => {
   it("posts tool events with success and failure hook names", async () => {
     const { handlers } = hook();
     const tool = getHandler(handlers, "tool_result");
-    await tool({ toolName: "Bash", toolCallId: "call-1", input: { command: "false" }, content: "failed", isError: true }, context({ model: { id: "model-id" } }));
+    const privatePayload = "PRIVATE_TOOL_PAYLOAD_97a";
+    await tool({ toolName: "Bash", toolCallId: "call-1", input: { command: privatePayload }, content: privatePayload, isError: true }, context({ model: { id: "model-id" } }));
     await tool({ toolName: "Read", toolCallId: "call-2", input: { file_path: "a.ts" }, content: "ok", isError: false }, context({ model: { name: "model-name" } }));
 
     expect(requests.map((request) => request.path)).toEqual(["/tool-event", "/tool-event"]);
@@ -205,36 +214,13 @@ describe("OMP lcm hook", () => {
       model: "model-name",
       hook_event_name: "PostToolUse",
     });
+    const snapshot = readdirSync(join(home, "logs")).find((name) => name.startsWith("lcm-hook-observe-omp-"));
+    expect(snapshot).toBeDefined();
+    expect(readFileSync(join(home, "logs", snapshot!), "utf8")).not.toContain(privatePayload);
     expect(requests[1]?.body).not.toHaveProperty("tool_output");
   });
 
-  it("waits for the capture before compacting, so the compaction cannot run against stale rows", async () => {
-    const order: string[] = [];
-    const ingest = Promise.withResolvers<void>();
-    __setTransportForTests(async (request) => {
-      if (request.path === "/compact") {
-        order.push("compact");
-        return undefined;
-      }
-      if (request.path !== "/ingest") return undefined;
-      order.push("ingest:start");
-      await ingest.promise;
-      order.push("ingest:end");
-      return undefined;
-    });
-
-    const { handlers } = hook();
-    const started = getHandler(handlers, "session_before_compact")({}, context());
-    await Promise.resolve();
-    await Promise.resolve();
-    order.push("released");
-    ingest.resolve();
-    await started;
-
-    expect(order).toEqual(["ingest:start", "released", "ingest:end", "compact"]);
-  });
-
-  it("ingests and compacts before a session compact", async () => {
+  it("sends lcm summarization only after confirmed pre-compaction capture", async () => {
     const { handlers } = hook();
     await getHandler(handlers, "session_before_compact")({}, context());
     expect(requests.map((request) => request.path)).toEqual(["/ingest", "/compact"]);
@@ -243,7 +229,28 @@ describe("OMP lcm hook", () => {
       cwd: "/workspace/omp-project",
       client: "omp",
       skip_ingest: true,
+      precompact_verified: true,
     });
+    expect(readOmpHookSnapshots("/workspace/omp-project", join(home, "logs"))).toMatchObject([
+      { observations: expect.arrayContaining([
+        expect.objectContaining({ hook: "session_before_compact", operation: "capture", kind: "delivery", status: "accepted" }),
+        expect.objectContaining({ hook: "session_before_compact", operation: "summary", kind: "delivery", status: "submitted" }),
+      ]) },
+    ]);
+  });
+
+  it("skips lcm summarization when pre-compaction capture is unconfirmed", async () => {
+    __setTransportForTests((request) => {
+      requests.push(request);
+      return undefined;
+    });
+    const { handlers } = hook();
+    await getHandler(handlers, "session_before_compact")({}, context());
+    expect(requests.map((request) => request.path)).toEqual(["/ingest"]);
+    expect(readOmpHookSnapshots("/workspace/omp-project", join(home, "logs"))[0].observations)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ operation: "summary", status: "skipped", reason: "capture-unconfirmed" }),
+      ]));
   });
 
   it("fails open when the transport throws for every handler", async () => {

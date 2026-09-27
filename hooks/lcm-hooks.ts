@@ -63,6 +63,81 @@ let hostEnv: Promise<HostEnv> | null = null;
 /** Routes the running daemon answered 404 for: an older lcm build. Logged once each, not per call. */
 const missingRoutes = new Set<string>();
 
+type HookObservation = {
+  hook: string;
+  operation: string;
+  kind: "delivery" | "execution";
+  status: string;
+  reason: string;
+  count: number;
+};
+type HookSnapshot = {
+  counts: Map<string, HookObservation>;
+  failures: { hook: string; operation: string; code: string; at: number }[];
+  seq: number;
+  truncated: boolean;
+  write: Promise<void>;
+};
+const hookSnapshots = new Map<string, HookSnapshot>();
+const MAX_HOOK_OBSERVATIONS = 128;
+const MAX_ACTIVE_HOOK_SESSIONS = 32;
+const hookSnapshotGeneration = Date.now();
+const failedHookSnapshotWrites = new Set<string>();
+
+function noteHook(
+  sessionId: string, hook: string, operation: string,
+  kind: HookObservation["kind"], status: string, reason = "",
+): void {
+  const snapshot = hookSnapshots.get(sessionId) ?? {
+    counts: new Map<string, HookObservation>(), failures: [], seq: 0, truncated: false, write: Promise.resolve(),
+  };
+  if (!hookSnapshots.has(sessionId) && hookSnapshots.size >= MAX_ACTIVE_HOOK_SESSIONS) {
+    hookSnapshots.delete(hookSnapshots.keys().next().value!);
+  }
+  hookSnapshots.set(sessionId, snapshot);
+  const key = JSON.stringify([hook, operation, kind, status, reason]);
+  const existing = snapshot.counts.get(key);
+  if (existing) existing.count++;
+  else {
+    if (snapshot.counts.size >= MAX_HOOK_OBSERVATIONS) {
+      snapshot.counts.delete(snapshot.counts.keys().next().value!);
+      snapshot.truncated = true;
+    }
+    snapshot.counts.set(key, { hook, operation, kind, status, reason, count: 1 });
+  }
+  if (status === "failed" || status === "rejected") {
+    snapshot.failures.push({ hook, operation, code: reason || status, at: Date.now() });
+    if (snapshot.failures.length > 32) {
+      snapshot.failures.shift();
+      snapshot.truncated = true;
+    }
+  }
+}
+
+async function flushHookObservations($: EngineInterface, sessionId: string): Promise<void> {
+  const snapshot = hookSnapshots.get(sessionId);
+  if (!snapshot) return;
+  const { tmpDir } = await readHostEnv($);
+  const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const cwd = await $.session.cwd().catch(() => "");
+  const seq = ++snapshot.seq;
+  const path = `${tmpDir}/lcm-hook-observe-${safeId}-${seq % 2}.json`;
+  const content = JSON.stringify({
+    version: 1, harness: "claude-function", sessionId, cwd, seq, generation: hookSnapshotGeneration,
+    updatedAt: Date.now(), truncated: snapshot.truncated,
+    observations: [...snapshot.counts.values()], failures: snapshot.failures,
+  });
+  snapshot.write = snapshot.write.catch(() => undefined).then(() => $.fs.write(path, content));
+  try {
+    await snapshot.write;
+  } catch {
+    if (!failedHookSnapshotWrites.has(sessionId)) {
+      failedHookSnapshotWrites.add(sessionId);
+      $.ui.log("[lcm] hook observation snapshot could not be written");
+    }
+  }
+}
+
 /** No config file yet, or one being rewritten, both mean the compiled-in port. */
 function parsePort(configJson: string): number {
   try {
@@ -209,7 +284,13 @@ type SummaryAnswer = {
   text: string;
   providerId: "session:haiku" | "session:fork";
   usage: { input_tokens: number; output_tokens: number; estimated: boolean };
+  priorUsage?: UsageAttempt[];
 };
+type UsageAttempt = {
+  providerId: "session:haiku" | "session:fork";
+  usage: { input_tokens: number; output_tokens: number; estimated: boolean };
+};
+type SummaryFailure = Error & { usageAttempts?: UsageAttempt[] };
 const DEFAULT_SUMMARY_OUTPUT_CAP = 50_000;
 /** The engine's own estimate ratio; used only when the host reports no usage. */
 const CHARS_PER_TOKEN = 4;
@@ -226,28 +307,58 @@ function summaryDelay($: EngineInterface, ms: number): Promise<void> {
 }
 
 async function completeSummary($: EngineInterface, job: SummaryJob): Promise<SummaryAnswer> {
-  const text = await $.model.complete({
+  const result = await $.model.complete({
     model: "haiku", system: job.system, prompt: job.prompt, maxTokens: job.maxTokens,
   });
+  // Earlier engine builds returned the text directly; current builds return a
+  // discriminated result and do not reject when the provider cannot answer.
+  if (typeof result !== "string" && !result.isAnswered) {
+    const failure = new Error(result.reason) as SummaryFailure;
+    failure.usageAttempts = [{ providerId: "session:haiku", usage: {
+      input_tokens: result.usage.input_tokens,
+      output_tokens: result.usage.output_tokens, estimated: false,
+    } }];
+    throw failure;
+  }
+  const text = typeof result === "string" ? result : result.text;
   const trimmed = text.trim();
+  const usage = typeof result === "string"
+    ? { input_tokens: Math.ceil((job.system.length + job.prompt.length) / CHARS_PER_TOKEN),
+        output_tokens: Math.ceil(trimmed.length / CHARS_PER_TOKEN), estimated: true }
+    : { input_tokens: result.usage.input_tokens,
+        output_tokens: result.usage.output_tokens, estimated: false };
   return {
     text: trimmed, providerId: "session:haiku",
-    usage: {
-      input_tokens: Math.ceil((job.system.length + job.prompt.length) / CHARS_PER_TOKEN),
-      output_tokens: Math.ceil(trimmed.length / CHARS_PER_TOKEN), estimated: true,
-    },
+    usage,
   };
 }
 
 async function answerSummary($: EngineInterface, job: SummaryJob): Promise<SummaryAnswer> {
   if (job.kind === "condensed") {
     const fork = await $.model.fork({ prompt: `${job.system}\n\n${job.prompt}` }).catch(() => null);
-    if (fork !== null) {
+    if (fork && "text" in fork && "usage" in fork) {
       return {
         text: fork.text.trim(), providerId: "session:fork",
         usage: { input_tokens: fork.usage.input_tokens, output_tokens: fork.usage.output_tokens, estimated: false },
       };
     }
+    const forkAttempt: UsageAttempt | undefined = fork && "usage" in fork
+      ? { providerId: "session:fork", usage: {
+        input_tokens: fork.usage.input_tokens,
+        output_tokens: fork.usage.output_tokens, estimated: false,
+      } } : undefined;
+    let fallback: SummaryAnswer;
+    try {
+      fallback = await completeSummary($, job);
+    } catch (error) {
+      if (forkAttempt) {
+        const failure = (error instanceof Error ? error : new Error(String(error))) as SummaryFailure;
+        failure.usageAttempts = [forkAttempt, ...(failure.usageAttempts ?? [])];
+        throw failure;
+      }
+      throw error;
+    }
+    return forkAttempt ? { ...fallback, priorUsage: [forkAttempt] } : fallback;
   }
   return completeSummary($, job);
 }
@@ -316,19 +427,30 @@ async function serveSummaryJob(
     await postDaemon($, route, { error: "spend cap" });
     return null;
   }
+  let answer: SummaryAnswer;
   try {
-    const answer = await answerSummary($, job);
-    if (spent + answer.usage.output_tokens > cap) {
-      await postDaemon($, route, { error: "spend cap" });
-      return null;
-    }
-    if (!answer.text) throw new Error("empty summary");
-    await postDaemon($, route, answer);
-    return answer.usage.output_tokens;
+    answer = await answerSummary($, job);
   } catch (error) {
-    await postDaemon($, route, { error: error instanceof Error ? error.message : String(error) });
-    return 0;
+    const attempts = (error as SummaryFailure)?.usageAttempts ?? [];
+    const used = attempts.reduce((sum, attempt) => sum + attempt.usage.output_tokens, 0);
+    await postDaemon($, route, { error: spent + used > cap ? "spend cap" : error instanceof Error ? error.message : String(error),
+      ...(attempts.length ? { usageAttempts: attempts } : {}) });
+    return spent + used > cap ? null : used;
   }
+  const attempts: UsageAttempt[] = [...(answer.priorUsage ?? []),
+    { providerId: answer.providerId, usage: answer.usage }];
+  const totalOutput = attempts.reduce((sum, attempt) => sum + attempt.usage.output_tokens, 0);
+  if (spent + totalOutput > cap) {
+    await postDaemon($, route, { error: "spend cap", usageAttempts: attempts });
+    return null;
+  }
+  if (!answer.text) {
+    await postDaemon($, route, { error: "empty summary", usageAttempts: attempts });
+    return totalOutput;
+  }
+  const { priorUsage, ...body } = answer;
+  await postDaemon($, route, priorUsage ? { ...body, usageAttempts: priorUsage } : body);
+  return totalOutput;
 }
 
 /** One request at a time also serializes jobs from concurrent daemon compactions. */
@@ -358,9 +480,14 @@ function registerSessionStart(on: On, summaryCap: number): void {
     // Awaited, unlike the health probe: a command hook that runs before the claim lands
     // would record the same events this module is about to record.
     const sessionId = await $.session.id();
+    let claimed = true;
     await claimSession($, sessionId).catch((error: unknown) => {
+      claimed = false;
       $.ui.log(`[lcm] could not claim the session, command hooks stay active: ${String(error)}`);
     });
+    noteHook(sessionId, "session.start", "claim", "execution", claimed ? "completed" : "failed",
+      claimed ? "" : "write-failed");
+    await flushHookObservations($, sessionId);
     void readHostEnv($).then(({ port }) =>
       $.http.fetch(`http://127.0.0.1:${port}/health`).then(() => undefined, () => startDaemon($)));
     // The housekeeping the SessionStart command hook awaited. Nothing reads its result,
@@ -406,7 +533,10 @@ function registerRestoreContext(on: On): void {
   on("prompt.context", async ($, e, next) => {
     const { blocks } = await next(e);
     const [session_id, cwd] = await Promise.all([$.session.id(), $.session.cwd()]);
-    const text = restoreBlockText(await postDaemon($, "/restore", { session_id, cwd }));
+    const restored = await postDaemon($, "/restore", { session_id, cwd });
+    const text = restoreBlockText(restored);
+    noteHook(session_id, "prompt.context", "restore", restored ? "execution" : "delivery", restored ? "completed" : "unconfirmed",
+      restored ? text.trim() ? "context" : "no-context" : "unconfirmed");
     if (!text.trim()) return { blocks };
     return { blocks: [...blocks, { name: "lcm", text }] };
   });
@@ -419,6 +549,7 @@ function registerRestoreContext(on: On): void {
 function registerLearningInstruction(on: On): void {
   on("prompt.section", { name: "memory" }, async ($, e, next) => {
     const section = await next(e);
+    noteHook(await $.session.id(), "prompt.section", "instruction", "execution", "completed");
     return { text: `${section.text ?? ""}\n\n${LEARNING_INSTRUCTION}` };
   });
 }
@@ -426,7 +557,10 @@ function registerLearningInstruction(on: On): void {
 /** Memory hits ride as hidden context on the prompt; the user never sees them. */
 function registerPromptSearch(on: On): void {
   on("prompt.submit", async ($, e, next) => {
-    if (!e.text.trim()) return next(e);
+    if (!e.text.trim()) {
+      noteHook(await $.session.id(), "prompt.submit", "search", "execution", "skipped", "empty-prompt");
+      return next(e);
+    }
     const [result, search] = await Promise.all([
       next(e),
       Promise.all([$.session.id(), $.session.cwd()]).then(([session_id, cwd]) =>
@@ -437,6 +571,8 @@ function registerPromptSearch(on: On): void {
           format: "context",
         })),
     ]);
+    noteHook(await $.session.id(), "prompt.submit", "search", search ? "execution" : "delivery", search ? "completed" : "unconfirmed",
+      search ? typeof search.context === "string" ? "context" : "no-context" : "unconfirmed");
     if (result.drop !== undefined) return result;
     const context = typeof search?.context === "string" ? search.context : null;
     if (!context) return result;
@@ -451,12 +587,21 @@ function registerPromptSearch(on: On): void {
 function registerTurnIngest(on: On): void {
   on("turn.complete", async ($, e, next) => {
     const result = await next(e);
+    const session_id = await $.session.id();
     const now = Date.now();
-    if (now - lastIngestAt < INGEST_INTERVAL_MS) return result;
+    if (now - lastIngestAt < INGEST_INTERVAL_MS) {
+      noteHook(session_id, "turn.complete", "capture", "execution", "deferred", "throttled");
+      await flushHookObservations($, session_id);
+      return result;
+    }
     lastIngestAt = now;
-    const [session_id, cwd] = await Promise.all([$.session.id(), $.session.cwd()]);
-    await postDaemon($, "/ingest", { session_id, cwd });
-    await postDaemon($, "/promote-events", { cwd });
+    const cwd = await $.session.cwd();
+    const captured = await postDaemon($, "/ingest", { session_id, cwd });
+    noteHook(session_id, "turn.complete", "capture", "delivery", captured ? "accepted" : "unconfirmed");
+    if (captured) noteHook(session_id, "turn.complete", "capture", "execution", "completed");
+    const promoted = await postDaemon($, "/promote-events", { cwd });
+    noteHook(session_id, "turn.complete", "promote-events", "delivery", promoted ? "accepted" : "unconfirmed");
+    await flushHookObservations($, session_id);
     return result;
   });
 }
@@ -469,7 +614,7 @@ function toolEventPayload(
   const { tool, tool_use_id, ...tool_input } = event as { tool: string; tool_use_id: string } & Record<string, unknown>;
   const failed = result.isError === true;
   return {
-    session_id, cwd, tool_use_id,
+    session_id, cwd, tool_use_id, harness: "claude-function",
     tool_name: tool,
     tool_input,
     tool_response: result.result,
@@ -483,13 +628,23 @@ function toolEventPayload(
 function registerToolCapture(on: On): void {
   on("tool.call", async ($, e, next) => {
     const captured = CAPTURED_TOOLS.has(e.tool) || e.tool.startsWith("mcp__");
-    if (!captured) return next(e);
+    if (!captured) {
+      const result = await next(e);
+      noteHook(await $.session.id(), "tool.call", "tool-capture", "execution", "skipped", "unmatched-tool");
+      return result;
+    }
 
     const result = await next(e);
-    if (result.deny !== undefined) return result;
+    if (result.deny !== undefined) {
+      noteHook(await $.session.id(), "tool.call", "tool-capture", "execution", "skipped", "denied");
+      return result;
+    }
 
     const [session_id, cwd] = await Promise.all([$.session.id(), $.session.cwd()]);
-    await postDaemon($, "/tool-event", toolEventPayload(e, result, session_id, cwd));
+    const recorded = await postDaemon($, "/tool-event", toolEventPayload(e, result, session_id, cwd));
+    noteHook(session_id, "tool.call", "tool-capture", "delivery", recorded ? "accepted" : "unconfirmed");
+    if (recorded) noteHook(session_id, "tool.call", "tool-capture", "execution", "completed",
+      typeof recorded.recorded === "number" && recorded.recorded > 0 ? "events" : "no-match");
     return result;
   });
 }

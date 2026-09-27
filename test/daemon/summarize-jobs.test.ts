@@ -91,6 +91,24 @@ describe("session summarize jobs", () => {
     expect(fallback).not.toHaveBeenCalled();
   });
 
+  it("records a failed fork's usage under fork before the fallback answer", async () => {
+    const summarize = await sessionSummarizer();
+    const onUsage = vi.fn();
+    const pending = summarize("conversation", false, { sessionId: "one", isCondensed: true, onUsage });
+    const job = await store.next("one");
+    store.answer(job!.id, {
+      text: "summary", providerId: "session:haiku",
+      usage: { input_tokens: 3, output_tokens: 2, estimated: true },
+      usageAttempts: [{ providerId: "session:fork",
+        usage: { input_tokens: 40, output_tokens: 7, estimated: false } }],
+    });
+    await expect(pending).resolves.toBe("summary");
+    expect(onUsage.mock.calls.map(([usage]) => usage)).toEqual([
+      expect.objectContaining({ provider: "session:fork", inputTokens: 40, outputTokens: 7, estimated: false }),
+      expect.objectContaining({ provider: "session:haiku", inputTokens: 3, outputTokens: 2, estimated: true }),
+    ]);
+  });
+
   it("applies the configured language to session summarization jobs", async () => {
     const summarize = await sessionSummarizer("pt-BR");
     const pending = summarize("conversation", false, { sessionId: "one" });
