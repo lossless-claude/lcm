@@ -32,7 +32,7 @@
  */
 
 import { existsSync, lstatSync, openSync, readSync, closeSync, readdirSync, readFileSync, type Dirent } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { TextDecoder } from "node:util";
 import { gunzipSync } from "node:zlib";
@@ -532,49 +532,68 @@ export function findOmpSessionFiles(sessionsDir: string): OmpSessionFile[] {
  * directory (`PI_CODING_AGENT_DIR`, else `~/.omp/agent`) plus every named
  * profile's (`~/.omp/profiles/<name>/agent`). Exported so a caller can report
  * where discovery looked, including when it found nothing.
+ *
+ * A profile root is dropped when `profiles`, the profile directory or its
+ * `agent` directory is a symlink: `findOmpSessionFiles` refuses only a
+ * symlinked `sessions` directory itself, so a symlinked ancestor would lead
+ * discovery outside the OMP home. A profile root equal to the active one
+ * (`PI_CODING_AGENT_DIR` pointing at a profile) is scanned once.
  */
 export function ompDiscoveryRoots(ompDir?: string): string[] {
-  return ompDir !== undefined ? [join(ompDir, "sessions")] : ompSessionRoots();
+  if (ompDir !== undefined) return [join(ompDir, "sessions")];
+  const [active, ...profiles] = ompSessionRoots();
+  return [active, ...profiles.filter((root) => root !== active && !hasSymlinkedProfileAncestor(root))];
+}
+
+function hasSymlinkedProfileAncestor(profileSessionsRoot: string): boolean {
+  const agentDir = dirname(profileSessionsRoot);
+  const profileDir = dirname(agentDir);
+  return [dirname(profileDir), profileDir, agentDir].some((dir) => {
+    try {
+      return lstatSync(dir).isSymbolicLink();
+    } catch {
+      return false; // missing: there is nothing to scan beneath it
+    }
+  });
 }
 
 /**
  * Collect all OMP transcript files (live and archived) from every root
- * `ompDiscoveryRoots` names. Within one root, a live `.jsonl` always wins
- * over an archived `.jsonl.gz` copy of the same session id — `omp gc --apply`
- * compresses a session in place and normally removes the original, so a
- * surviving live file means OMP (or a later session) is still writing to it
- * — and otherwise the newest file of the same kind wins, a root's own
- * bucket-migration duplicates collapsing to it. Across roots, ids are never
- * merged, so a profile's session cannot silently mask — or be masked by —
- * another profile's copy of the same id.
+ * `ompDiscoveryRoots` names, one file per session id across all roots:
+ * import sends the id as the session identity, and the conversation and
+ * `session_ingest_log` are keyed by it, so two files with one id would be
+ * ingested into the same conversation. A live `.jsonl` always wins over an
+ * archived `.jsonl.gz` copy — `omp gc --apply` compresses a session in place
+ * and normally removes the original, so a surviving live file means OMP (or a
+ * later session) is still writing to it — and otherwise the newest file of
+ * the same kind wins; an equal-time tie keeps the file found first, the
+ * active root before any profile's. `onSkip` receives every file dropped in
+ * favour of a copy from a different root, so a caller can report it.
  */
-export function findAllOmpTranscripts(ompDir?: string): OmpSessionFile[] {
-  const roots = ompDiscoveryRoots(ompDir);
-
-  const combined: OmpSessionFile[] = [];
-  for (const root of roots) {
-    const found = findOmpSessionFiles(root);
-    // Prefer the latest transcript for an identity within this root only. A
-    // live file always wins over an archived copy; otherwise the newest file
-    // of the same kind wins, a deterministic tie-breaker for equal
-    // modification times.
-    const seen = new Map<string, OmpSessionFile>();
-    for (const f of found) {
-      const existing = seen.get(f.sessionId);
-      if (!existing) {
-        seen.set(f.sessionId, f);
-      } else if (existing.archived && !f.archived) {
-        seen.set(f.sessionId, f);
-      } else if (f.archived === existing.archived && f.mtime > existing.mtime) {
-        seen.set(f.sessionId, f);
-      }
-    }
-    combined.push(...seen.values());
+export function findAllOmpTranscripts(
+  ompDir?: string,
+  onSkip?: (skipped: OmpSessionFile, kept: OmpSessionFile) => void,
+): OmpSessionFile[] {
+  const found = ompDiscoveryRoots(ompDir).flatMap((root) => findOmpSessionFiles(root).map((file) => ({ file, root })));
+  const kept = new Map<string, { file: OmpSessionFile; root: string }>();
+  for (const candidate of found) {
+    const existing = kept.get(candidate.file.sessionId);
+    if (!existing || supersedes(candidate.file, existing.file)) kept.set(candidate.file.sessionId, candidate);
+  }
+  for (const { file, root } of found) {
+    const winner = kept.get(file.sessionId);
+    if (winner && winner.root !== root) onSkip?.(file, winner.file);
   }
 
-  return combined.sort((a, b) => {
+  return [...kept.values()].map((entry) => entry.file).sort((a, b) => {
     const d = a.mtime - b.mtime;
     if (d !== 0) return d;
     return a.sessionId.localeCompare(b.sessionId);
   });
+}
+
+/** Whether `candidate` replaces `existing` as a session's transcript: live over archived, else strictly newer. */
+function supersedes(candidate: OmpSessionFile, existing: OmpSessionFile): boolean {
+  if (candidate.archived !== existing.archived) return !candidate.archived;
+  return candidate.mtime > existing.mtime;
 }

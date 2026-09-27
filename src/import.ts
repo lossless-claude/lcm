@@ -91,6 +91,8 @@ export interface ImportResult {
   resumed?: { doneCount: number; totalCount: number; model?: string };
   /** Present for an explicit `--provider omp`/`--omp` run: every OMP sessions root discovery scanned, in scan order. */
   ompRootsScanned?: string[];
+  /** Present when two OMP roots hold the same session id: each transcript not imported because another root's copy was chosen. */
+  ompDuplicatesSkipped?: string[];
   /** Set when the daemon refused a connection outright; the run stopped instead of failing every remaining session. Rerun the same command to resume. */
   daemonUnreachable?: boolean;
   replayUsage?: {
@@ -729,7 +731,11 @@ export async function importSessions(
     // looked). A default `all` run would show this for every user regardless
     // of whether they use OMP at all.
     if (provider === "omp") result.ompRootsScanned = ompDiscoveryRoots(options._ompDir);
-    const ompTranscripts = findAllOmpTranscripts(options._ompDir);
+    // Reported for any provider: it is non-empty only when two OMP roots
+    // actually hold the same session id, so it is never noise for a non-OMP user.
+    const ompDuplicatesSkipped: string[] = [];
+    const ompTranscripts = findAllOmpTranscripts(options._ompDir, (skipped) => ompDuplicatesSkipped.push(skipped.path));
+    if (ompDuplicatesSkipped.length > 0) result.ompDuplicatesSkipped = ompDuplicatesSkipped;
     const targetProject = projectId(options.cwd ?? process.cwd());
     const projects = new Map<string, SessionEntry[]>();
     for (const transcript of ompTranscripts) {

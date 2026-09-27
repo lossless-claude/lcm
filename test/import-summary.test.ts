@@ -94,6 +94,13 @@ describe("printImportSummary", () => {
     capture();
     printImportSummary(baseResult());
     expect(logs.some(l => l.includes("OMP roots scanned"))).toBe(false);
+    expect(logs.some(l => l.includes("OMP duplicates skipped"))).toBe(false);
+  });
+
+  it("names every OMP transcript skipped because another root held the same session id", () => {
+    capture();
+    printImportSummary(baseResult({ ompDuplicatesSkipped: ["/home/user/.omp/agent/sessions/-p/a.jsonl"] }));
+    expect(logs.some(l => l.includes("OMP duplicates skipped") && l.includes("/home/user/.omp/agent/sessions/-p/a.jsonl"))).toBe(true);
   });
 
   it("does not show failed count when 0", () => {

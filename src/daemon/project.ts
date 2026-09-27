@@ -79,8 +79,9 @@ function realpathDeep(p: string): string {
  * paths lcm would otherwise refuse — silently, since capture is best-effort.
  *
  * `lcm import`'s OMP discovery (`ompDiscoveryRoots` / `findAllOmpTranscripts`
- * in `../omp-transcript.js`) enumerates the same roots, so a profile session
- * that captures live is also backfilled.
+ * in `../omp-transcript.js`) enumerates the same roots, minus any profile
+ * reached through a symlink, so a profile session that captures live is also
+ * backfilled.
  */
 export function ompSessionRoots(): string[] {
   const home = homedir();

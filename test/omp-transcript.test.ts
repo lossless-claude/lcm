@@ -1,5 +1,5 @@
 import { gzipSync } from "node:zlib";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -526,7 +526,7 @@ describe("findAllOmpTranscripts — profile roots", () => {
     );
   });
 
-  it("never merges a colliding session id across two roots, even when one is newer", () => {
+  it("keeps one file for a session id found in two roots, the newer, and reports the other", () => {
     const defaultRoot = join(fixture, ".omp", "agent");
     const workProfileRoot = join(fixture, ".omp", "profiles", "work", "agent");
     const older = new Date("2026-09-20T10:00:00.000Z");
@@ -534,9 +534,62 @@ describe("findAllOmpTranscripts — profile roots", () => {
     const defaultPath = writeSessionAt(defaultRoot, "default.jsonl", "sess-1", "/work/project", older);
     const profilePath = writeSessionAt(workProfileRoot, "profile.jsonl", "sess-1", "/work/project", newer);
 
-    const files = findAllOmpTranscripts();
-    expect(files.map((f) => f.path)).toEqual([defaultPath, profilePath]);
-    expect(files.every((f) => f.sessionId === "sess-1")).toBe(true);
+    const skipped: [string, string][] = [];
+    const files = findAllOmpTranscripts(undefined, (skip, kept) => skipped.push([skip.path, kept.path]));
+    expect(files.map((f) => f.path)).toEqual([profilePath]);
+    expect(skipped).toEqual([[defaultPath, profilePath]]);
+  });
+
+  it("keeps the active root's file when two roots hold a session id with the same modification time", () => {
+    const defaultRoot = join(fixture, ".omp", "agent");
+    const workProfileRoot = join(fixture, ".omp", "profiles", "work", "agent");
+    const mtime = new Date("2026-09-20T10:00:00.000Z");
+    const defaultPath = writeSessionAt(defaultRoot, "default.jsonl", "sess-1", "/work/project", mtime);
+    const profilePath = writeSessionAt(workProfileRoot, "profile.jsonl", "sess-1", "/work/project", mtime);
+
+    const skipped: string[] = [];
+    const files = findAllOmpTranscripts(undefined, (skip) => skipped.push(skip.path));
+    expect(files.map((f) => f.path)).toEqual([defaultPath]);
+    expect(skipped).toEqual([profilePath]);
+  });
+
+  it("scans a profile once when PI_CODING_AGENT_DIR points at it, reporting no duplicate", () => {
+    const workProfileRoot = join(fixture, ".omp", "profiles", "work", "agent");
+    vi.stubEnv("PI_CODING_AGENT_DIR", workProfileRoot);
+    const path = writeSessionAt(workProfileRoot, "profile.jsonl", "sess-1", "/work/project", new Date("2026-09-20T10:00:00.000Z"));
+
+    const skipped: string[] = [];
+    const files = findAllOmpTranscripts(undefined, (skip) => skipped.push(skip.path));
+    expect(files.map((f) => f.path)).toEqual([path]);
+    expect(skipped).toEqual([]);
+  });
+
+  it("does not follow a profile directory that is a symlink out of the OMP home", () => {
+    const outside = join(fixture, "outside");
+    writeSessionAt(join(outside, "agent"), "escaped.jsonl", "sess-escaped", "/work/project", new Date("2026-09-20T10:00:00.000Z"));
+    mkdirSync(join(fixture, ".omp", "profiles"), { recursive: true });
+    symlinkSync(outside, join(fixture, ".omp", "profiles", "evil"), "dir");
+
+    expect(findAllOmpTranscripts()).toEqual([]);
+    expect(ompDiscoveryRoots()).toEqual([join(fixture, ".omp", "agent", "sessions")]);
+  });
+
+  it("does not follow a profile's agent directory that is a symlink out of the OMP home", () => {
+    const outsideAgent = join(fixture, "outside-agent");
+    writeSessionAt(outsideAgent, "escaped.jsonl", "sess-escaped", "/work/project", new Date("2026-09-20T10:00:00.000Z"));
+    mkdirSync(join(fixture, ".omp", "profiles", "work"), { recursive: true });
+    symlinkSync(outsideAgent, join(fixture, ".omp", "profiles", "work", "agent"), "dir");
+
+    expect(findAllOmpTranscripts()).toEqual([]);
+  });
+
+  it("does not follow a profiles directory that is a symlink out of the OMP home", () => {
+    const outsideProfiles = join(fixture, "outside-profiles");
+    writeSessionAt(join(outsideProfiles, "work", "agent"), "escaped.jsonl", "sess-escaped", "/work/project", new Date("2026-09-20T10:00:00.000Z"));
+    mkdirSync(join(fixture, ".omp"), { recursive: true });
+    symlinkSync(outsideProfiles, join(fixture, ".omp", "profiles"), "dir");
+
+    expect(findAllOmpTranscripts()).toEqual([]);
   });
 
   it("still dedups bucket-migration duplicates within one profile's own root", () => {
@@ -559,16 +612,16 @@ describe("findAllOmpTranscripts — profile roots", () => {
     expect(files).toEqual([{ path: archivedPath, sessionId: "sess-cold", mtime: expect.any(Number), cwd: "/work/project", archived: true }]);
   });
 
-  it("a live file in one root does not suppress an archived copy of the same id in another root", () => {
+  it("a live file in one root wins over an archived copy of the same id in another root", () => {
     const defaultRoot = join(fixture, ".omp", "agent");
     const workProfileRoot = join(fixture, ".omp", "profiles", "work", "agent");
     const mtime = new Date("2026-09-20T10:00:00.000Z");
     const archivedPath = writeArchivedSessionAt(defaultRoot, "cold.jsonl.gz", "sess-1", "/work/project", mtime);
     const livePath = writeSessionAt(workProfileRoot, "live.jsonl", "sess-1", "/work/project", mtime);
 
-    const files = findAllOmpTranscripts();
-    expect(files.map((f) => [f.path, f.archived]).sort()).toEqual(
-      [[archivedPath, true], [livePath, false]].sort(),
-    );
+    const skipped: string[] = [];
+    const files = findAllOmpTranscripts(undefined, (skip) => skipped.push(skip.path));
+    expect(files.map((f) => [f.path, f.archived])).toEqual([[livePath, false]]);
+    expect(skipped).toEqual([archivedPath]);
   });
 });

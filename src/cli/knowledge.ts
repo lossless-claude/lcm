@@ -58,6 +58,7 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
       if (dryRun) {
         console.log(`  [dry-run] ${preview.imported} ${provider} sessions selected (${all ? "all projects" : "current project"})${replay ? "; would compact each session" : ""}. No changes written.`);
         if (preview.ompRootsScanned) console.log(`  OMP roots scanned: ${preview.ompRootsScanned.join(", ")}`);
+        if (preview.ompDuplicatesSkipped) console.log(`  OMP duplicates skipped (session id also in another root): ${preview.ompDuplicatesSkipped.join(", ")}`);
         return;
       }
       const client = await createDaemonClientOrExit();

@@ -100,7 +100,7 @@ lcm import --omp --replay
 
 `lcm import` discovers all supported transcript sources unless a provider is selected explicitly. Use `--provider omp` or `--omp` when the run should select only OMP sessions. See [Import past sessions](import.md) for discovery, project selection, and cursor behavior.
 
-OMP discovery scans every agent directory a profile session could live under: the active one (`PI_CODING_AGENT_DIR`, else `~/.omp/agent`) plus `~/.omp/profiles/<name>/agent` for every named profile — the same roots live capture accepts a transcript from. A session id is deduplicated to its newest copy only within the root it was found in, so a profile's session can never mask, or be masked by, another profile's copy of the same id. Running `--provider omp` or `--omp` reports every root scanned alongside the result (both `--dry-run` output and a non-interactive or `--verbose` run), so a "0 sessions" result names where discovery looked.
+OMP discovery scans every agent directory a profile session could live under: the active one (`PI_CODING_AGENT_DIR`, else `~/.omp/agent`) plus `~/.omp/profiles/<name>/agent` for every named profile — the same roots live capture accepts a transcript from, except a profile reached through a symlinked `profiles`, `<name>` or `agent` directory, which is not scanned. A session id found in several roots is imported once, from the live copy over an archived one, else the newest, else the active root's; each skipped copy is listed in the result. Running `--provider omp` or `--omp` reports every root scanned alongside the result (both `--dry-run` output and a non-interactive or `--verbose` run), so a "0 sessions" result names where discovery looked.
 
 ## Verify captured memory
 
