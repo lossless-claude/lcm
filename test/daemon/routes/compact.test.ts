@@ -540,6 +540,15 @@ describe("buildCompactionMessage", () => {
     const msg = buildCompactionMessage(base);
     expect(msg).toContain("━".repeat(46));
   });
+
+  it("does not throw and clamps the bar when the context grew (tokensAfter > tokensBefore)", () => {
+    expect(() => buildCompactionMessage({ ...base, tokensBefore: 1_000, tokensAfter: 2_000 })).not.toThrow();
+    const msg = buildCompactionMessage({ ...base, tokensBefore: 1_000, tokensAfter: 2_000 });
+    expect(msg).toContain("░".repeat(30));
+    expect(msg).not.toContain("█");
+    expect(msg).not.toContain("% saved");
+    expect(msg).not.toContain("-100.0%");
+  });
 });
 
 describe("createCompactHandler — summarizer branching", () => {
