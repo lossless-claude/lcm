@@ -459,3 +459,28 @@ describe("runDoctor process checks follow the effective chain", () => {
       .toEqual(["codex-process"]);
   });
 });
+
+describe("runDoctor with a daemon reporting its own chain", () => {
+  const base = minimalDeps();
+  const llm = { provider: "remote", providers: {
+    remote: { type: "openai", model: "m", baseURL: "http://127.0.0.1:9/v1" },
+    cx: { type: "codex-process", model: "m" },
+  } };
+  const deps = (summarizer: unknown) => minimalDeps({
+    env: {},
+    readFileSync: (path: string) => path.endsWith("config.json") ? JSON.stringify({ llm }) : base.readFileSync(path),
+    spawnSync: vi.fn(() => ({ status: 1, stdout: "", stderr: "" })),
+    fetch: vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: "ok", version: PKG_VERSION, summarizer }) }),
+  });
+
+  it("checks the CLIs of the chain the daemon runs, not the one this shell would", async () => {
+    // LCM_SUMMARY_PROVIDER=cx in the daemon's environment only.
+    const results = await runDoctor(deps({ chain: ["cx"], unavailable: [], allUnavailable: false }));
+    expect(results.filter((r) => r.name.endsWith("-process")).map((r) => r.name)).toEqual(["codex-process"]);
+  });
+
+  it("does not crash on a /health payload of another shape", async () => {
+    const results = await runDoctor(deps({ chain: ["remote"], unavailable: [{ name: "remote" }], allUnavailable: false }));
+    expect(results.some((r) => r.name === "stack")).toBe(true);
+  });
+});

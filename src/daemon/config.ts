@@ -165,12 +165,6 @@ export function deepMerge(target: Record<string, unknown>, source: Record<string
   return result;
 }
 
-/** The keys the config file and overrides set themselves, before defaults fill the rest. */
-function suppliedKeys(...sections: unknown[]): Set<string> {
-  return new Set(sections.flatMap((section) =>
-    section && typeof section === "object" && !Array.isArray(section) ? Object.keys(section) : []));
-}
-
 export function loadDaemonConfig(configPath: string, overrides?: any, env?: Record<string, string | undefined>): DaemonConfig {
   const e = env ?? process.env;
   let fileConfig: any = {};
@@ -190,7 +184,7 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
   }
   delete thresholds["mergeMaxEntries"];
   delete thresholds["confidenceDecayRate"];
-  normalizeNamedEndpoints(merged.llm, e, suppliedKeys(fileConfig?.llm, overrides?.llm));
+  normalizeNamedEndpoints(merged.llm, e);
   const namedEndpoints = merged.llm.providers !== undefined;
   if (merged.llm.apiKey) merged.llm.apiKey = merged.llm.apiKey.replace(/\$\{(\w+)\}/g, (_: string, k: string) => e[k] ?? "");
 
@@ -204,6 +198,13 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
       );
     }
     merged.llm.provider = e.LCM_SUMMARY_PROVIDER as DaemonConfig["llm"]["provider"];
+  }
+  // A typo here would otherwise surface only at the first summary, as an opaque error.
+  if (!namedEndpoints && !VALID_PROVIDERS.has(merged.llm.provider)) {
+    throw new Error(
+      `[lcm] Unknown summarizer provider "${merged.llm.provider}" in llm.provider. ` +
+      `Valid values: ${[...VALID_PROVIDERS].join(", ")}, or an endpoint named in llm.providers`
+    );
   }
   const fallbackProvider: unknown = merged.llm.fallbackProvider;
   if (fallbackProvider !== undefined && (

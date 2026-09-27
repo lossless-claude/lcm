@@ -26,6 +26,7 @@ export type EffectiveProvider = string;
 
 type ConcreteType = EndpointConfig["type"];
 const PROCESS_TYPES: ReadonlySet<string> = new Set<ProcessEndpointType>(["claude-process", "codex-process", "copilot-process"]);
+const KNOWN_TYPES: ReadonlySet<string> = new Set([...PROCESS_TYPES, "openai", "anthropic"]);
 
 function configuredSummarizerLanguage(config: DaemonConfig): string | undefined {
   const language = config.summarizer?.language;
@@ -150,6 +151,7 @@ class LinkFactory {
     // A named endpoint reports usage under its own name; a provider type under its adapter's label.
     if (endpoint) return this.endpointLink(name, endpoint, name);
     if (this.config.llm.providers && !PROCESS_TYPES.has(name)) throw new Error(`[lcm] No summarizer endpoint named "${name}"`);
+    if (!KNOWN_TYPES.has(name)) throw new Error(`[lcm] Unknown summarizer provider "${name}"`);
     return this.endpointLink(name, flatEndpoint(name as ConcreteType, this.config.llm));
   }
 
@@ -244,15 +246,22 @@ export function logUnavailableEndpoints(log: Pick<DaemonLog, "write">, llm: Daem
 }
 
 /**
- * The model the configured summarizer asks for first: the first runnable endpoint's
- * with `llm.providers`, `llm.model` in the flat form. Undefined when the first link names
- * no model (the session, a process provider left on its default).
+ * The link a summary is asked of first, and the model it is configured with, taken
+ * together so a label never pairs one link's name with another's model. With
+ * `llm.providers` it is the primary, or the fallback standing in for a primary left out
+ * for an unset variable; in the flat form, `provider` and `llm.model`. The model is
+ * undefined when that link names none (the session, a process provider on its default).
  */
+export function firstRunnableSummarizer(
+  config: DaemonConfig, provider: EffectiveProvider = config.llm.provider,
+): { provider: string; model?: string } {
+  if (!config.llm.providers) return { provider, ...(config.llm.model ? { model: config.llm.model } : {}) };
+  const first = namedChain(provider, config)[0] ?? provider;
+  const model = Object.hasOwn(config.llm.providers, first) ? config.llm.providers[first].model : undefined;
+  return { provider: first, ...(model ? { model } : {}) };
+}
+
+/** The model of `firstRunnableSummarizer`: what the replay ledger records before any answer. */
 export function configuredSummaryModel(config: DaemonConfig, provider: EffectiveProvider = config.llm.provider): string | undefined {
-  if (!config.llm.providers) return config.llm.model || undefined;
-  // The link that runs first: the primary, or the fallback that stands in for it when
-  // its variable was unset at load.
-  const first = namedChain(provider, config)[0];
-  const endpoint = first !== undefined && Object.hasOwn(config.llm.providers, first) ? config.llm.providers[first] : undefined;
-  return endpoint?.model || undefined;
+  return firstRunnableSummarizer(config, provider).model;
 }

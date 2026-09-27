@@ -281,6 +281,8 @@ Valid provider values are:
 - `disabled`
 - `session` (early access, see below)
 
+Any other value fails config load, unless it names an endpoint in `llm.providers` (see below).
+
 `anthropic` and `openai` call their API through a client library: `@anthropic-ai/sdk` and `openai`. The `openai` provider also serves any OpenAI-compatible endpoint set in `llm.baseURL`, such as OpenRouter.
 - **Plugin install:** the plugin bundle includes both libraries.
 - **npm install:** the npm package lists both libraries as optional peer dependencies, so npm does not install them. A daemon started from the npm package (`lcm daemon start`, `lcm daemon restart`) needs the library for every provider it may call — `llm.provider`, `llm.fallbackProvider`, and each endpoint in `llm.fallback` — installed next to lcm. Install it, then restart the daemon so it loads the library:
@@ -335,7 +337,7 @@ A process endpoint accepts only `type` and `model`: its CLI authenticates throug
 - **Selection.** `llm.provider` names an endpoint, or `session`, `auto` or `disabled` (`auto` when unset). `llm.fallback` names endpoints only, each once. Nothing else is added: a chain whose last link fails fails the pass.
 - **Selection by environment.** `LCM_SUMMARY_PROVIDER` replaces `llm.provider` and keeps `llm.fallback`; an endpoint it promotes out of `llm.fallback` still runs once. It also accepts a provider type such as `openai` when exactly one endpoint has that type.
 - **Unset variables.** The daemon expands `${NAME}` from the environment of the process that started it, which may be any session's. An endpoint whose `apiKey` or `baseURL` names an unset variable (or an `anthropic` endpoint with no key and no `ANTHROPIC_API_KEY`) is left out of the chain, and the rest of the config loads; every other config error still stops the load. With every link of the chain left out, each summary fails with an error naming the endpoints and their variables. To see it: the daemon log's `summarizer.endpoint_unavailable` warning at startup, the `summarizer` field of the daemon's `/health` answer, and `lcm doctor`, which warns per endpoint left out and fails when none of the chain can run. Export the variable where the daemon starts, then run `lcm daemon restart`.
-- **Both forms.** With `llm.providers`, the flat `llm.model`, `llm.baseURL`, `llm.apiKey`, `llm.reasoning` and `llm.fallbackProvider` are rejected: each endpoint holds its own settings and inherits none from another. Without `llm.providers`, `llm.fallback` is rejected and the flat form works as described in this section.
+- **Both forms.** With `llm.providers`, a non-empty flat `llm.model`, `llm.baseURL` or `llm.apiKey`, and any `llm.reasoning` or `llm.fallbackProvider`, are rejected; the empty strings `lcm install` writes are ignored: each endpoint holds its own settings and inherits none from another. Without `llm.providers`, `llm.fallback` is rejected and the flat form works as described in this section.
 
 Each link runs at most once per summarization, after its own retries. The chain moves to the next link when the current one:
 

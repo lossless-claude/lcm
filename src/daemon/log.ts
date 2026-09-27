@@ -54,7 +54,7 @@ export type DaemonLogOptions = {
 };
 
 const LEVELS: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
-const IDENTITY_FIELDS = new Set(["route", "cwd", "session_id", "parent_session_id", "prev", "version", "from", "to", "to_provider", "path"]);
+const IDENTITY_FIELDS = new Set(["route", "cwd", "session_id", "parent_session_id", "prev", "version", "from", "to", "from_provider", "to_provider", "path"]);
 const MAX_MESSAGE_CHARS = 2048;
 const MAX_IDENTITY_CHARS = 512;
 const FAILURE_PAUSE_MS = 60_000;

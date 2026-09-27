@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { loadDaemonConfig } from "../../src/daemon/config.js";
-import { configuredSummaryModel, createSummarizer, logUnavailableEndpoints, resolveEffectiveProvider } from "../../src/daemon/summarizer.js";
+import { configuredSummaryModel, createSummarizer, firstRunnableSummarizer, logUnavailableEndpoints, resolveEffectiveProvider } from "../../src/daemon/summarizer.js";
 import { unavailableEndpoints } from "../../src/daemon/provider-config.js";
 import { SummarizeJobStore } from "../../src/daemon/summarize-jobs.js";
 import { completion, httpError, startChatCompletionsServer } from "../helpers/chat-completions-server.js";
@@ -250,4 +250,20 @@ describe("the chain's attempt boundary", () => {
       { provider: "openrouter", kind: "http", model: "vendor/flash" },
     ]);
   });
+});
+
+describe("firstRunnableSummarizer", () => {
+  it("is the first runnable link's name and model together", () => {
+    const primaryLeftOut = loadDaemonConfig("/nonexistent", { llm: { providers: endpoints(), provider: "deepseek", fallback: ["openrouter"] } },
+      { OPENROUTER_API_KEY: "sk" });
+    expect(firstRunnableSummarizer(primaryLeftOut)).toEqual({ provider: "openrouter", model: "vendor/flash" });
+    const flat = loadDaemonConfig("/nonexistent", { llm: { provider: "openai", model: "m" } }, {});
+    expect(firstRunnableSummarizer(flat, "openai")).toEqual({ provider: "openai", model: "m" });
+  });
+});
+
+it("fails a hand-built flat config naming an unknown provider with a clear error", async () => {
+  const config = loadDaemonConfig("/nonexistent", {}, {});
+  config.llm.provider = "open-ai";
+  await expect(createSummarizer("open-ai", config)).rejects.toThrow(/Unknown summarizer provider "open-ai"/);
 });

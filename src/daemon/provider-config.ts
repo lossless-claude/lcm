@@ -196,10 +196,11 @@ function resolveSelection(value: string, providers: Record<string, EndpointConfi
 }
 
 /** The flat connection fields describe one endpoint; with several, each endpoint holds its own. */
-function rejectFlatFields(llm: LlmSection, supplied: ReadonlySet<string>): void {
+function rejectFlatFields(llm: LlmSection): void {
   for (const field of ["model", "apiKey", "baseURL"] as const) {
-    // The defaults fill these with "", so an empty value counts only when the config supplied it.
-    if (llm[field] || supplied.has(field)) fail(`llm.${field} cannot be combined with llm.providers: set it on an endpoint`);
+    // Only a value that says something: `lcm install` and the bootstrap write these as ""
+    // into every config they create, and adding llm.providers to such a file must load.
+    if (llm[field]) fail(`llm.${field} cannot be combined with llm.providers: set it on an endpoint`);
   }
   if (llm.reasoning !== undefined) {
     fail("llm.reasoning cannot be combined with llm.providers: set llm.providers.<name>.body.reasoning");
@@ -223,15 +224,13 @@ function normalizeFallback(fallback: unknown, providers: Record<string, Endpoint
  * primary selection resolved (`LCM_SUMMARY_PROVIDER` first) and `fallback` defaulted.
  * Without `llm.providers`, only rejects `llm.fallback`, which needs named endpoints.
  */
-export function normalizeNamedEndpoints(
-  llm: LlmSection, env: Record<string, string | undefined>, supplied: ReadonlySet<string> = new Set(),
-): void {
+export function normalizeNamedEndpoints(llm: LlmSection, env: Record<string, string | undefined>): void {
   if (llm.providers === undefined) {
     if (llm.fallback !== undefined) fail("llm.fallback needs llm.providers; with the flat form, set llm.fallbackProvider");
     return;
   }
   if (!isPlainObject(llm.providers)) fail("llm.providers must be a JSON object mapping endpoint names to endpoints");
-  rejectFlatFields(llm, supplied);
+  rejectFlatFields(llm);
   const providers: Record<string, EndpointConfig> = {};
   for (const [name, entry] of Object.entries(llm.providers)) providers[name] = normalizeEndpoint(name, entry, env);
   const fallback = normalizeFallback(llm.fallback ?? [], providers);

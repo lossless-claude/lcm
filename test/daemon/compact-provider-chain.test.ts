@@ -134,3 +134,15 @@ it("records an endpoint that failed without usage, and names the unmetered endpo
   expect(deepseek!.calls_failed).toBeGreaterThan(0);
   expect(deepseek!.calls_total).toBe(deepseek!.calls_failed);
 });
+
+it("names the first runnable endpoint's configured model when the engine kept no answer", async () => {
+  server.reset();
+  // Longer than its source every time: the engine discards it and stores its own truncation.
+  server.answer("deepseek", completion("padding ".repeat(20_000), "stop", "served-model"));
+  const config = loadDaemonConfig("/nonexistent", { llm: { provider: "deepseek", providers: namedEndpoints() } }, {});
+
+  const { result } = await compactFreshSession(config, "no-kept-answer");
+
+  expect(result.status).toBe(200);
+  expect(result.body.llmUsage.model).toBe("deepseek-chat");
+});

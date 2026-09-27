@@ -25,6 +25,7 @@ import { ScrubEngine } from "../../scrub.js";
 import {
   resolveEffectiveProvider,
   resolveSummarizerLanguage,
+  configuredSummaryModel,
   createSummarizer,
   type EffectiveProvider,
 } from "../summarizer.js";
@@ -660,7 +661,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           // The stored answer names the model. One that reported none (an unmetered
           // fallback), or none kept at all (the engine stored its truncation), gets the
           // configured model — never a discarded or rejected attempt's.
-          llmUsage.model = keptAnswers.at(-1)?.model ?? config.llm.model;
+          llmUsage.model = keptAnswers.at(-1)?.model ?? configuredSummaryModel(config, effectiveProvider) ?? config.llm.model;
           const answeredBy = [...answeringProviders];
           const answeredProvider = answeredBy.length === 1 ? answeredBy[0] : effectiveProvider;
           const sessionLabels: Record<string, string> = { "session:haiku": "Live session (haiku)", "session:fork": "Live session (fork)" };

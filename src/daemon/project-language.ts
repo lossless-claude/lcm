@@ -4,7 +4,7 @@ import type { DaemonConfig } from "./config.js";
 import type { LcmPaths } from "../lcm-paths.js";
 import { projectMetaPath } from "./project.js";
 import { readProjectMeta, updateProjectMeta } from "./project-meta.js";
-import { configuredSummaryModel, createSummarizer, resolveEffectiveProvider, type CompactClient } from "./summarizer.js";
+import { createSummarizer, firstRunnableSummarizer, resolveEffectiveProvider, type CompactClient } from "./summarizer.js";
 import { detectLanguage, sampleHumanTurns, LANGUAGE_SAMPLE_SIZE } from "../search/language.js";
 import { ensureLanguagePack, ensurePivotLanguagePack, hasLanguagePack, primarySubtag } from "../store/language-pack.js";
 
@@ -67,6 +67,12 @@ export function scheduleProjectLanguageDetection(
   return detection;
 }
 
+/** `name:model` of the link that generates a pack, both from that same link. */
+function summarizerIdentity(config: DaemonConfig, provider: string): string {
+  const first = firstRunnableSummarizer(config, provider);
+  return `${first.provider}:${first.model ?? ""}`;
+}
+
 async function detectAndRecord(
   cwd: string, metaPath: string, turns: string[], config: DaemonConfig, paths: LcmPaths, client?: CompactClient,
 ): Promise<void> {
@@ -78,7 +84,7 @@ async function detectAndRecord(
     if (!language) throw new Error("the model did not name a language");
     if (typeof readProjectMeta(cwd, paths)?.language === "string") return;
     updateProjectMeta(cwd, paths, { language, languageDetectedAt: new Date().toISOString() });
-    const generatedBy = `${provider}:${configuredSummaryModel(config, provider) ?? ""}`;
+    const generatedBy = summarizerIdentity(config, provider);
     trackPackGeneration(metaPath, ensureLanguagePack(paths, language, summarize, generatedBy));
     trackPackGeneration(metaPath, ensurePivotLanguagePack(paths, language, config.search.pivotLanguage, summarize, generatedBy));
   } catch (err) {
@@ -107,7 +113,7 @@ async function ensureExistingProjectPivotPack(
     const provider = resolveEffectiveProvider(config, client);
     const summarize = await createSummarizer(provider, config);
     if (!summarize) return;
-    const status = await ensurePivotLanguagePack(paths, language, pivot, summarize, `${provider}:${configuredSummaryModel(config, provider) ?? ""}`);
+    const status = await ensurePivotLanguagePack(paths, language, pivot, summarize, summarizerIdentity(config, provider));
     if (status === "failed") {
       // Once per daemon lifetime per project: a broken provider must not turn every ingest into a warning.
       failed.add(metaPath);

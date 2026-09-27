@@ -143,11 +143,22 @@ describe("llm.providers from programmatic overrides", () => {
     expect(loadDaemonConfig("/nonexistent", withBody(body), {}).llm.providers).toMatchObject({ local: { body } });
   });
 
-  it.each(["model", "apiKey", "baseURL"])("rejects an explicitly empty flat llm.%s next to llm.providers", (field) => {
-    expect(() => loadDaemonConfig("/nonexistent", { llm: { provider: "local", [field]: "",
-      providers: { local: { type: "openai", model: "m" } } } }, {})).toThrow(new RegExp(`llm\\.${field}`));
-    expect(() => load(`{ "provider": "deepseek", "${field}": "", "providers": { ${DEEPSEEK} } }`))
+  // `lcm install` and the bootstrap write the flat fields as "" into every config they create,
+  // so adding llm.providers to such a file must load. Only a flat value that says something fails.
+  it("loads the config the installer writes, with empty flat fields, once llm.providers is added", () => {
+    const config = load(`{ "provider": "deepseek", "model": "", "apiKey": "", "baseURL": "", "providers": { ${DEEPSEEK} } }`);
+    expect(config.llm.provider).toBe("deepseek");
+  });
+
+  it.each(["model", "apiKey", "baseURL"])("still rejects a non-empty flat llm.%s next to llm.providers", (field) => {
+    expect(() => load(`{ "provider": "deepseek", "${field}": "x", "providers": { ${DEEPSEEK} } }`))
       .toThrow(new RegExp(`llm\\.${field}`));
+  });
+});
+
+describe("an unknown flat llm.provider", () => {
+  it("fails at config load, naming the value", () => {
+    expect(() => load(`{ "provider": "open-ai" }`)).toThrow(/Unknown summarizer provider "open-ai"/);
   });
 });
 
