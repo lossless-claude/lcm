@@ -65,16 +65,6 @@ function errorHeadline(input: PostToolInput): string {
 const SENSITIVE_PATHS = [".env", ".ssh/", "credentials", "secrets/", ".npmrc", ".netrc"];
 const DATA_SOFT_CAP = 2000;
 
-const NEGATIVE_PATTERNS = [
-  "don't worry", "dont worry",
-  "never mind", "nevermind",
-  "not sure", "no idea",
-  "doesn't matter", "doesnt matter", "does not matter",
-  "forget about", "forget it",
-  "no preference", "whatever you think",
-  "up to you",
-];
-
 const ENV_COMMANDS = ["npm install", "npm i ", "yarn add", "pip install", "pip3 install",
   "nvm use", "volta install", "pnpm add", "uv pip install", "brew install"];
 
@@ -287,30 +277,10 @@ export function extractUserPromptEvents(prompt: string): ExtractedEvent[] {
   // Strip <channel> XML tags before running extractors
   const { text: normalizedPrompt, fromChannel } = normalizePromptWithChannels(prompt);
 
-  const lower = normalizedPrompt.toLowerCase();
-
   const channelTags = fromChannel ? ["source:telegram"] : undefined;
 
-  // Decision extraction with negative-match guards
-  const hasNegative = NEGATIVE_PATTERNS.some(np => lower.includes(np));
-  if (!hasNegative) {
-    const decisionPatterns = [
-      /\b(don'?t|never|always|prefer|use .+ instead)\b/i,
-    ];
-    for (const pattern of decisionPatterns) {
-      if (pattern.test(normalizedPrompt)) {
-        const event: ExtractedEvent = {
-          type: "user_decision",
-          category: "decision",
-          data: truncate(normalizedPrompt),
-          priority: 1,
-        };
-        if (channelTags) event.tags = channelTags;
-        events.push(event);
-        break;
-      }
-    }
-  }
+  // No decision extraction: a keyword match is not a lasting decision
+  // (docs/design/decision-detection-eval.md).
 
   // Role extraction
   const rolePatterns = [

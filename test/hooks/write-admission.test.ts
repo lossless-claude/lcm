@@ -32,13 +32,13 @@ const payload = { session_id: "test", cwd: "/project", tool_name: "AskUserQuesti
 it("blocks every direct hook sidecar writer and error-log fallback while held", async () => {
   writeHold(join(root, "daemon.pid"));
   expect(recordPostToolEvents(payload, paths).recorded).toBe(0);
-  expect(await recordUserPromptEvents("Always use TypeScript", "test", "/project", paths)).toBe(0);
+  expect(await recordUserPromptEvents("Explain the TypeScript build", "test", "/project", paths)).toBe(0);
   safeLogError("PostToolUse", new Error("held"), { cwd: "/project", paths });
   safeLogError("PostToolUse", new Error("held fallback"), { paths });
   expect(readdirSync(root).sort()).toEqual(["daemon.hold", "tmp"]);
   clearHold(join(root, "daemon.pid"));
   expect(recordPostToolEvents(payload, paths).recorded).toBeGreaterThan(0);
-  expect(await recordUserPromptEvents("Always use TypeScript", "test", "/project", paths)).toBeGreaterThan(0);
+  expect(await recordUserPromptEvents("Explain the TypeScript build", "test", "/project", paths)).toBeGreaterThan(0);
   safeLogError("PostToolUse", new Error("resumed fallback"), { paths });
   expect(existsSync(join(root, "events.log"))).toBe(true);
   expect(readdirSync(join(root, "tmp")).some((name) => name.startsWith("daemon.starting."))).toBe(false);
