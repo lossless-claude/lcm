@@ -1,5 +1,5 @@
 import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "./types.js";
-import { SummaryRejectedError } from "./summary-rejection.js";
+import { acceptSummaryText, SummaryRejectedError } from "./summary-rejection.js";
 
 /**
  * How a link reaches its model, which decides what counts as "try the next one":
@@ -132,7 +132,10 @@ async function runLink(
 ): Promise<{ summary: string } | { error: unknown }> {
   try {
     const summarize = await link.summarizer();
-    return { summary: await summarize(text, aggressive, withUsageLabel(ctx, link.usageLabel)) };
+    const answer = await summarize(text, aggressive, withUsageLabel(ctx, link.usageLabel));
+    // Judged inside the link, after the adapter reported its usage: an answer with no
+    // text moves the chain on. The process adapters return whatever their CLI printed.
+    return { summary: acceptSummaryText(answer, link.usageLabel ?? link.name) };
   } catch (error) {
     return { error };
   }

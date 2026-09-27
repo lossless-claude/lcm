@@ -77,14 +77,23 @@ function describeType(value: unknown): string {
 }
 
 
-/** Rejects prototype keys at any depth, and objects JSON.parse cannot produce. */
+/** null, a boolean, a string or a finite number: the scalars JSON can hold. */
+function isJsonScalar(value: unknown): boolean {
+  return value === null || typeof value === "boolean" || typeof value === "string"
+    || (typeof value === "number" && Number.isFinite(value));
+}
+
+/**
+ * Accepts only what JSON.parse can produce, with no prototype key at any depth. A
+ * config file cannot hold anything else, but programmatic overrides can.
+ */
 function assertPlainJson(value: unknown, where: string): void {
+  if (isJsonScalar(value)) return;
   if (Array.isArray(value)) {
     value.forEach((item, i) => assertPlainJson(item, `${where}[${i}]`));
     return;
   }
-  if (typeof value !== "object" || value === null) return;
-  if (!isPlainObject(value)) fail(`${where} must hold only JSON values`);
+  if (!isPlainObject(value)) fail(`${where} must be a JSON value (got ${describeType(value)})`);
   for (const key of Object.keys(value)) {
     if (PROTOTYPE_KEYS.has(key)) fail(`${where} holds the prototype key "${key}"`);
     assertPlainJson(value[key], `${where}.${key}`);
@@ -186,9 +195,10 @@ function resolveSelection(value: string, providers: Record<string, EndpointConfi
 }
 
 /** The flat connection fields describe one endpoint; with several, each endpoint holds its own. */
-function rejectFlatFields(llm: LlmSection): void {
+function rejectFlatFields(llm: LlmSection, supplied: ReadonlySet<string>): void {
   for (const field of ["model", "apiKey", "baseURL"] as const) {
-    if (llm[field]) fail(`llm.${field} cannot be combined with llm.providers: set it on an endpoint`);
+    // The defaults fill these with "", so an empty value counts only when the config supplied it.
+    if (llm[field] || supplied.has(field)) fail(`llm.${field} cannot be combined with llm.providers: set it on an endpoint`);
   }
   if (llm.reasoning !== undefined) {
     fail("llm.reasoning cannot be combined with llm.providers: set llm.providers.<name>.body.reasoning");
@@ -212,13 +222,15 @@ function normalizeFallback(fallback: unknown, providers: Record<string, Endpoint
  * primary selection resolved (`LCM_SUMMARY_PROVIDER` first) and `fallback` defaulted.
  * Without `llm.providers`, only rejects `llm.fallback`, which needs named endpoints.
  */
-export function normalizeNamedEndpoints(llm: LlmSection, env: Record<string, string | undefined>): void {
+export function normalizeNamedEndpoints(
+  llm: LlmSection, env: Record<string, string | undefined>, supplied: ReadonlySet<string> = new Set(),
+): void {
   if (llm.providers === undefined) {
     if (llm.fallback !== undefined) fail("llm.fallback needs llm.providers; with the flat form, set llm.fallbackProvider");
     return;
   }
   if (!isPlainObject(llm.providers)) fail("llm.providers must be a JSON object mapping endpoint names to endpoints");
-  rejectFlatFields(llm);
+  rejectFlatFields(llm, supplied);
   const providers: Record<string, EndpointConfig> = {};
   for (const [name, entry] of Object.entries(llm.providers)) providers[name] = normalizeEndpoint(name, entry, env);
   const fallback = normalizeFallback(llm.fallback ?? [], providers);

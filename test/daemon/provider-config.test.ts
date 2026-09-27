@@ -121,3 +121,32 @@ describe("LCM_SUMMARY_PROVIDER with llm.providers", () => {
     expect(() => load(llm, { DS: "a", OR: "b", LCM_SUMMARY_PROVIDER: "nope" })).toThrow(/LCM_SUMMARY_PROVIDER/);
   });
 });
+
+describe("llm.providers from programmatic overrides", () => {
+  const withBody = (body: Record<string, unknown>) =>
+    ({ llm: { provider: "local", providers: { local: { type: "openai", model: "m", body } } } });
+
+  it.each([
+    ["undefined", undefined],
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["a function", () => 1],
+    ["a symbol", Symbol("s")],
+    ["a bigint", 1n],
+  ])("rejects %s anywhere in a body, which JSON cannot hold", (_what, value) => {
+    expect(() => loadDaemonConfig("/nonexistent", withBody({ extra: value }), {})).toThrow(/llm\.providers\.local\.body\.extra/);
+    expect(() => loadDaemonConfig("/nonexistent", withBody({ extra: [{ nested: value }] }), {})).toThrow(/body\.extra\[0\]\.nested/);
+  });
+
+  it("accepts every JSON value", () => {
+    const body = { s: "x", num: 1.5, b: false, z: null, a: [1, "two", { three: [] }], o: { deep: { deeper: true } } };
+    expect(loadDaemonConfig("/nonexistent", withBody(body), {}).llm.providers).toMatchObject({ local: { body } });
+  });
+
+  it.each(["model", "apiKey", "baseURL"])("rejects an explicitly empty flat llm.%s next to llm.providers", (field) => {
+    expect(() => loadDaemonConfig("/nonexistent", { llm: { provider: "local", [field]: "",
+      providers: { local: { type: "openai", model: "m" } } } }, {})).toThrow(new RegExp(`llm\\.${field}`));
+    expect(() => load(`{ "provider": "deepseek", "${field}": "", "providers": { ${DEEPSEEK} } }`))
+      .toThrow(new RegExp(`llm\\.${field}`));
+  });
+});

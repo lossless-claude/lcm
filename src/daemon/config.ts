@@ -165,6 +165,12 @@ export function deepMerge(target: Record<string, unknown>, source: Record<string
   return result;
 }
 
+/** The keys the config file and overrides set themselves, before defaults fill the rest. */
+function suppliedKeys(...sections: unknown[]): Set<string> {
+  return new Set(sections.flatMap((section) =>
+    section && typeof section === "object" && !Array.isArray(section) ? Object.keys(section) : []));
+}
+
 export function loadDaemonConfig(configPath: string, overrides?: any, env?: Record<string, string | undefined>): DaemonConfig {
   const e = env ?? process.env;
   let fileConfig: any = {};
@@ -184,7 +190,7 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
   }
   delete thresholds["mergeMaxEntries"];
   delete thresholds["confidenceDecayRate"];
-  normalizeNamedEndpoints(merged.llm, e);
+  normalizeNamedEndpoints(merged.llm, e, suppliedKeys(fileConfig?.llm, overrides?.llm));
   const namedEndpoints = merged.llm.providers !== undefined;
   if (merged.llm.apiKey) merged.llm.apiKey = merged.llm.apiKey.replace(/\$\{(\w+)\}/g, (_: string, k: string) => e[k] ?? "");
 
