@@ -1,5 +1,4 @@
 import { stdout } from "node:process";
-import { homedir } from "node:os";
 import { Command } from "commander";
 import { fail, helpRequested, showHelpAndExit } from "./support.js";
 
@@ -24,7 +23,7 @@ export function registerConnectorsCommands(program: Command): void {
       const format: string = opts.format ?? "text";
       const { listConnectors } = await import("../connectors/installer.js");
       const { AGENTS } = await import("../connectors/registry.js");
-      const installed = listConnectors(opts.global ? homedir() : process.cwd());
+      const installed = listConnectors({ scope: opts.global ? "global" : "project" });
 
       if (format === "json") {
         const result = AGENTS.map((a: any) => ({
@@ -65,7 +64,7 @@ export function registerConnectorsCommands(program: Command): void {
       const type: any = opts.type;
       const { installConnector } = await import("../connectors/installer.js");
       try {
-        const result = installConnector(agentName, type, opts.global ? homedir() : process.cwd());
+        const result = installConnector({ agent: agentName, type, scope: opts.global ? "global" : "project" });
         if ((result as any).manual) {
           console.log(`\n  ${(result as any).manual}\n`);
         } else {
@@ -93,7 +92,7 @@ export function registerConnectorsCommands(program: Command): void {
       const type: any = opts.type;
       const { removeConnector } = await import("../connectors/installer.js");
       try {
-        const removed = removeConnector(agentName, type, opts.global ? homedir() : process.cwd());
+        const removed = removeConnector({ agent: agentName, type, scope: opts.global ? "global" : "project" });
         if (removed) {
           console.log(`\n  ✓ Removed connector for ${agentName}\n`);
         } else {
@@ -121,11 +120,11 @@ export function registerConnectorsCommands(program: Command): void {
       if (agents.length === 0) fail(`  Unknown agent: ${agentName}`);
 
       console.log("\n  Connector health:\n");
-      const installed = listConnectors(opts.global ? homedir() : process.cwd());
+      const installed = listConnectors({ scope: opts.global ? "global" : "project" });
       for (const agent of agents) {
         const hasDetailedHooks = agent.supportedTypes.includes("hooks");
         if (hasDetailedHooks) {
-          const diagnosis = diagnoseConnector(agent.id, "hooks", opts.global ? homedir() : process.cwd());
+          const diagnosis = diagnoseConnector({ agent: agent.id, type: "hooks", scope: opts.global ? "global" : "project" });
           console.log(`  ${diagnosis.status === "installed" ? "○" : "⚠"} ${agent.name}: ${diagnosis.message}`);
           console.log(`    Path: ${diagnosis.path}`);
           for (const issue of diagnosis.issues) console.log(`    ${issue}`);

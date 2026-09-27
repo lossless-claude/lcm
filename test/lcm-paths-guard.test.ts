@@ -106,7 +106,6 @@ const HOMEDIR_ALLOWLIST: Record<string, string> = {
   "src/connectors/installer.ts": "expands a `~/` path the user typed in a connector config",
   "src/connectors/omp-hooks.ts": "locates Oh My Pi's own agent directory for its hook file",
   "src/doctor/doctor.ts": "reports the host home directory in a diagnostic, not an lcm path",
-  "src/cli/connectors.ts": "expands --global to the user's home for a connector's own config",
   "src/daemon/project.ts": "reads Claude Code's/Codex's own transcript directories",
   "src/daemon/restore/instructions.ts": "reads Claude Code's own ~/.claude/CLAUDE.md",
   "src/daemon/server.ts": "reads Claude Code's own ~/.claude/projects transcripts",

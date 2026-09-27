@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync, rmdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
-import type { ConnectorType } from "./types.js";
+import type { Agent, ConnectorType } from "./types.js";
 import { requiresRestart } from "./types.js";
 import { LCM_MARKERS } from "./constants.js";
 import { generateContent } from "./template-service.js";
@@ -31,6 +31,23 @@ export interface InstallResult {
   notice?: string;
 }
 
+/** Where a connector lives: a project's working directory, or the agent's user-level config. */
+export type ConnectorScope = 'project' | 'global';
+
+export interface ConnectorLocation {
+  /** The project directory; ignored at global scope. Defaults to the process working directory. */
+  cwd?: string;
+  /** Defaults to `project`. */
+  scope?: ConnectorScope;
+}
+
+export interface ConnectorRequest extends ConnectorLocation {
+  /** An agent id or display name from the registry. */
+  agent: string;
+  /** Defaults to the agent's default connector type. */
+  type?: ConnectorType;
+}
+
 export interface InstalledConnector {
   agentId: string;
   agentName: string;
@@ -45,14 +62,25 @@ function resolveConfigPath(configPath: string, cwd: string): string {
   return join(cwd, configPath);
 }
 
+// The directory an agent's relative config paths resolve against: the home directory at global scope.
+function rootOf({ cwd = process.cwd(), scope = 'project' }: ConnectorLocation): string {
+  return scope === 'global' ? homedir() : cwd;
+}
+
 // OMP has distinct project and global roots: its project files live under the
 // workspace's .omp directory, while the user files live under agentDir.
-function resolveAgentConfigPath(agentId: string, connectorType: ConnectorType, configPath: string, cwd: string): string {
-  if (agentId === "omp" && cwd === homedir()) {
+function resolveAgentConfigPath(agentId: string, connectorType: ConnectorType, configPath: string, location: ConnectorLocation): string {
+  if (agentId === "omp" && location.scope === 'global') {
     if (connectorType === "hooks") return join(ompAgentDir(), "hooks", "post", "lcm.ts");
     if (connectorType === "mcp") return join(ompAgentDir(), "mcp.json");
   }
-  return resolveConfigPath(configPath, cwd);
+  return resolveConfigPath(configPath, rootOf(location));
+}
+
+function requireAgent(agentIdOrName: string): Agent {
+  const agent = findAgent(agentIdOrName);
+  if (!agent) throw new Error(`Unknown agent: ${agentIdOrName}`);
+  return agent;
 }
 
 function removeMarkers(content: string): string {
@@ -133,16 +161,10 @@ function removeMcpJson(filePath: string): boolean {
   return true;
 }
 
-export function installConnector(
-  agentIdOrName: string,
-  type?: ConnectorType,
-  cwd: string = process.cwd(),
-  options: CodexHookCommandOptions = {},
-): InstallResult {
-  const agent = findAgent(agentIdOrName);
-  if (!agent) throw new Error(`Unknown agent: ${agentIdOrName}`);
+export function installConnector(request: ConnectorRequest, options: CodexHookCommandOptions = {}): InstallResult {
+  const agent = requireAgent(request.agent);
 
-  const connectorType = type ?? agent.defaultType;
+  const connectorType = request.type ?? agent.defaultType;
   if (!agent.supportedTypes.includes(connectorType)) {
     throw new Error(`Agent "${agent.name}" does not support connector type "${connectorType}". Supported: ${agent.supportedTypes.join(', ')}`);
   }
@@ -163,7 +185,7 @@ export function installConnector(
   }
   if (!configPath) throw new Error(`No config path defined for ${agent.name} with type ${connectorType}`);
 
-  const resolvedPath = resolveAgentConfigPath(agent.id, connectorType, configPath, cwd);
+  const resolvedPath = resolveAgentConfigPath(agent.id, connectorType, configPath, request);
 
   if (connectorType === 'hooks') {
     if (agent.id === "omp") {
@@ -200,7 +222,7 @@ export function installConnector(
     const content = generateContent(agent, connectorType);
     const skillPath = join(resolvedPath, 'lcm-memory', 'SKILL.md');
     installMarkdown(content, skillPath, 'overwrite');
-    removeLegacySkill(agent.id, cwd);
+    removeLegacySkill(agent.id, rootOf(request));
     return { success: true, path: skillPath, requiresRestart: requiresRestart(connectorType) };
   }
 
@@ -211,15 +233,14 @@ export function installConnector(
   return { success: true, path: resolvedPath, requiresRestart: requiresRestart(connectorType) };
 }
 
-export function removeConnector(agentIdOrName: string, type?: ConnectorType, cwd: string = process.cwd()): boolean {
-  const agent = findAgent(agentIdOrName);
-  if (!agent) throw new Error(`Unknown agent: ${agentIdOrName}`);
+export function removeConnector(request: ConnectorRequest): boolean {
+  const agent = requireAgent(request.agent);
 
-  const connectorType = type ?? agent.defaultType;
+  const connectorType = request.type ?? agent.defaultType;
   const configPath = agent.configPaths[connectorType];
   if (!configPath) return false;
 
-  const resolvedPath = resolveAgentConfigPath(agent.id, connectorType, configPath, cwd);
+  const resolvedPath = resolveAgentConfigPath(agent.id, connectorType, configPath, request);
 
   if (connectorType === 'hooks') {
     return agent.id === "omp"
@@ -235,8 +256,9 @@ export function removeConnector(agentIdOrName: string, type?: ConnectorType, cwd
     const existed = existsSync(skillPath);
     if (existed) unlinkSync(skillPath);
     const legacyBase = LEGACY_SKILL_PATHS[agent.id];
-    const hadLegacy = !!legacyBase && existsSync(join(resolveConfigPath(legacyBase, cwd), 'lcm-memory', 'SKILL.md'));
-    removeLegacySkill(agent.id, cwd);
+    const root = rootOf(request);
+    const hadLegacy = !!legacyBase && existsSync(join(resolveConfigPath(legacyBase, root), 'lcm-memory', 'SKILL.md'));
+    removeLegacySkill(agent.id, root);
     return existed || hadLegacy;
   }
 
@@ -253,14 +275,14 @@ export function removeConnector(agentIdOrName: string, type?: ConnectorType, cwd
   return true;
 }
 
-export function listConnectors(cwd: string = process.cwd()): InstalledConnector[] {
+export function listConnectors(location: ConnectorLocation = {}): InstalledConnector[] {
   const installed: InstalledConnector[] = [];
 
   for (const agent of AGENTS) {
     for (const type of agent.supportedTypes) {
       const configPath = agent.configPaths[type as ConnectorType];
       if (!configPath) continue;
-      const resolvedPath = resolveAgentConfigPath(agent.id, type, configPath, cwd);
+      const resolvedPath = resolveAgentConfigPath(agent.id, type, configPath, location);
 
       if (type === 'hooks') {
         const diagnosis = agent.id === "omp"
@@ -302,14 +324,11 @@ export function listConnectors(cwd: string = process.cwd()): InstalledConnector[
 }
 
 export function diagnoseConnector(
-  agentIdOrName: string,
-  type?: ConnectorType,
-  cwd: string = process.cwd(),
+  request: ConnectorRequest,
   options: CodexHookCommandOptions = {},
 ): CodexHooksDiagnosis | OmpHooksDiagnosis {
-  const agent = findAgent(agentIdOrName);
-  if (!agent) throw new Error(`Unknown agent: ${agentIdOrName}`);
-  const connectorType = type ?? agent.defaultType;
+  const agent = requireAgent(request.agent);
+  const connectorType = request.type ?? agent.defaultType;
   if (connectorType !== 'hooks') {
     throw new Error(`Detailed connector diagnostics are not available for type "${connectorType}"`);
   }
@@ -318,7 +337,7 @@ export function diagnoseConnector(
   }
   const configPath = agent.configPaths.hooks;
   if (!configPath) throw new Error(`No config path defined for ${agent.name} with type ${connectorType}`);
-  const resolvedPath = resolveAgentConfigPath(agent.id, connectorType, configPath, cwd);
+  const resolvedPath = resolveAgentConfigPath(agent.id, connectorType, configPath, request);
   return agent.id === "omp"
     ? diagnoseOmpHooks(resolvedPath)
     : diagnoseCodexHooks(resolvedPath, options);

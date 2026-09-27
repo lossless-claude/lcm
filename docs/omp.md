@@ -40,7 +40,7 @@ lcm connectors remove omp
 lcm connectors remove omp --global
 ```
 
-The project connector writes `.omp/hooks/post/lcm.ts`. The global connector writes `<agentDir>/hooks/post/lcm.ts`, where `<agentDir>` is `PI_CODING_AGENT_DIR` when that environment variable is set, or `~/.omp/agent` otherwise. The project connector is selected from the current working directory; the global connector is selected from the agent directory.
+The project connector writes `.omp/hooks/post/lcm.ts`. The global connector writes `<agentDir>/hooks/post/lcm.ts`, where `<agentDir>` is `PI_CODING_AGENT_DIR` when that environment variable is set, or `~/.omp/agent` otherwise. Only `--global` selects the global connector: without it, the project connector lives in the current working directory, even when that directory is your home.
 
 ## Register the MCP server
 
