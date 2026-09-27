@@ -38,7 +38,7 @@
   ],
   "scripts": {
     "build": "tsc",
-"postbuild": "rm -rf dist/src/connectors/templates && mkdir -p dist/src/prompts && cp -r src/prompts/*.yaml dist/src/prompts/ && cp installer/setup.sh dist/installer/setup.sh && node scripts/write-build-id.mjs && sh scripts/sync-plugin-cache.sh",
+    "postbuild": "rm -rf dist/src/connectors/templates && mkdir -p dist/src/prompts && cp -r src/prompts/*.yaml dist/src/prompts/ && cp installer/setup.sh dist/installer/setup.sh && node scripts/write-build-id.mjs && sh scripts/sync-plugin-cache.sh",
     "build:bundle": "node scripts/build-bundle.mjs && LCM_SYNC_BUNDLE=1 sh scripts/sync-plugin-cache.sh",
     "prepublishOnly": "npm run build",
     "changeset": "changeset",
