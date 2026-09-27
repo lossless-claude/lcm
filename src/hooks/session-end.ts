@@ -41,9 +41,21 @@ async function runLegacyFallback(
   const sessionId = input.session_id as string | undefined;
   const { safeLogError } = await import("./hook-errors.js");
   try {
-    const ingested = await client.post<{ ingested?: number; redacted?: number; redactedCategories?: string[] }>(
-      "/ingest", input, { timeoutMs: remainingMs },
-    );
+    let ingested: { ingested?: number; redacted?: number; redactedCategories?: string[] };
+    try {
+      ingested = await client.post<typeof ingested>("/ingest", input, { timeoutMs: remainingMs });
+    } catch (error) {
+      const httpStatus = (error as { status?: unknown })?.status;
+      const rejected = typeof httpStatus === "number";
+      const reason = rejected ? `http-${httpStatus}` : error instanceof Error && error.name === "TimeoutError" ? "timeout" : "transport";
+      observeHook(cwd, { sessionId: sessionId ?? "", harness: "claude-command", hook: "SessionEnd",
+        operation: "capture", kind: "delivery", status: rejected ? "rejected" : "unconfirmed", reason,
+        ...(rejected ? { failureCode: reason } : {}) }, paths);
+      safeLogError("session-end", error, { cwd, sessionId, paths });
+      return;
+    }
+    observeHook(cwd, { sessionId: sessionId ?? "", harness: "claude-command", hook: "SessionEnd",
+      operation: "capture", kind: "delivery", status: "accepted", reason: "legacy-fallback" }, paths);
     observeHook(cwd, { sessionId: sessionId ?? "", harness: "claude-command", hook: "SessionEnd",
       operation: "capture", kind: "execution", status: "completed", reason: "legacy-fallback" }, paths);
     const config = loadDaemonConfig(paths.configPath);

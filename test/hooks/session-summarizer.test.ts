@@ -19,7 +19,10 @@ async function start(options: Record<string, number> = {}, jobs: unknown[] = [le
       complete: vi.fn(async (): Promise<unknown> => "  summary  "),
       fork: vi.fn(async (): Promise<unknown> => null),
     },
-    clock: { after: vi.fn((ms: number, callback: () => void) => { if (ms >= 60_000) retries.push(callback); else callback(); }) },
+    clock: {
+      after: vi.fn((ms: number, callback: () => void) => { if (ms >= 60_000) retries.push(callback); else callback(); }),
+      sleep: vi.fn(() => new Promise<void>(() => {})),
+    },
     ui: { log: vi.fn() },
     http: {
       fetch: vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
@@ -80,6 +83,37 @@ describe("function-hook session summarizer", () => {
       expect.objectContaining({ hook: "turn.complete", operation: "capture", kind: "delivery", status: "accepted" }),
       expect.objectContaining({ hook: "turn.complete", operation: "promote-events", kind: "delivery", status: "accepted" }),
     ]));
+  });
+
+  it("keeps session start fail-open when snapshot preparation throws", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
+    harness.engine.session.cwd.mockImplementationOnce(() => { throw new Error("cwd unavailable"); });
+    await expect(harness.trigger()).resolves.toEqual({});
+    expect(harness.engine.ui.log).toHaveBeenCalledWith(expect.stringContaining("snapshot could not be written"));
+  });
+
+  it("bounds a stalled diagnostic write without delaying session start", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
+    harness.engine.clock.sleep.mockResolvedValue(undefined);
+    const blocked = Promise.withResolvers<void>();
+    let snapshotWrites = 0;
+    harness.engine.fs.write.mockImplementation((path: string) => {
+      if (!path.includes("lcm-hook-observe-")) return Promise.resolve();
+      return ++snapshotWrites === 1 ? blocked.promise : Promise.resolve();
+    });
+    await expect(harness.trigger()).resolves.toEqual({});
+    for (let turn = 0; turn < 20; turn++) {
+      await harness.handlers.get("turn.complete")!(harness.engine, {}, vi.fn((event) => event));
+    }
+    expect(harness.engine.fs.write.mock.calls.filter(([path]) => String(path).includes("lcm-hook-observe-")))
+      .toHaveLength(1);
+    blocked.resolve();
+    await blocked.promise;
+    await Promise.resolve();
+    await harness.handlers.get("turn.complete")!(harness.engine, {}, vi.fn((event) => event));
+    expect(snapshotWrites).toBe(2);
+    expect(harness.engine.clock.sleep).toHaveBeenCalledWith(250);
+    expect(harness.engine.ui.log).toHaveBeenCalledWith(expect.stringContaining("snapshot could not be written"));
   });
 
   it("records an HTTP rejection as rejected with its status", async () => {

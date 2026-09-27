@@ -76,7 +76,7 @@ type HookSnapshot = {
   failures: { hook: string; operation: string; code: string; at: number }[];
   seq: number;
   truncated: boolean;
-  write: Promise<void>;
+  writing: boolean;
 };
 const hookSnapshots = new Map<string, HookSnapshot>();
 const MAX_HOOK_OBSERVATIONS = 128;
@@ -89,7 +89,7 @@ function noteHook(
   kind: HookObservation["kind"], status: string, reason = "",
 ): void {
   const snapshot = hookSnapshots.get(sessionId) ?? {
-    counts: new Map<string, HookObservation>(), failures: [], seq: 0, truncated: false, write: Promise.resolve(),
+    counts: new Map<string, HookObservation>(), failures: [], seq: 0, truncated: false, writing: false,
   };
   if (!hookSnapshots.has(sessionId) && hookSnapshots.size >= MAX_ACTIVE_HOOK_SESSIONS) {
     hookSnapshots.delete(hookSnapshots.keys().next().value!);
@@ -116,25 +116,34 @@ function noteHook(
 
 async function flushHookObservations($: EngineInterface, sessionId: string): Promise<void> {
   const snapshot = hookSnapshots.get(sessionId);
-  if (!snapshot) return;
-  const { tmpDir } = await readHostEnv($);
-  const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-  const cwd = await $.session.cwd().catch(() => "");
-  const seq = ++snapshot.seq;
-  const path = `${tmpDir}/lcm-hook-observe-${safeId}-${seq % 2}.json`;
-  const content = JSON.stringify({
-    version: 1, harness: "claude-function", sessionId, cwd, seq, generation: hookSnapshotGeneration,
-    updatedAt: Date.now(), truncated: snapshot.truncated,
-    observations: [...snapshot.counts.values()], failures: snapshot.failures,
-  });
-  snapshot.write = snapshot.write.catch(() => undefined).then(() => $.fs.write(path, content));
+  if (!snapshot || snapshot.writing) return;
+  snapshot.writing = true;
+  const write = async () => {
+    const { tmpDir } = await readHostEnv($);
+    const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const cwd = await $.session.cwd().catch(() => "");
+    const seq = ++snapshot.seq;
+    const path = `${tmpDir}/lcm-hook-observe-${safeId}-${seq % 2}.json`;
+    const content = JSON.stringify({
+      version: 1, harness: "claude-function", sessionId, cwd, seq, generation: hookSnapshotGeneration,
+      updatedAt: Date.now(), truncated: snapshot.truncated,
+      observations: [...snapshot.counts.values()], failures: snapshot.failures,
+    });
+    await $.fs.write(path, content);
+  };
+  const pending = write().finally(() => { snapshot.writing = false; });
   try {
-    await snapshot.write;
+    const outcome = await Promise.race([
+      pending.then(() => "written" as const, () => "failed" as const),
+      $.clock.sleep(250).then(() => "timeout" as const, () => "failed" as const),
+    ]);
+    if (outcome === "written") return;
   } catch {
-    if (!failedHookSnapshotWrites.has(sessionId)) {
-      failedHookSnapshotWrites.add(sessionId);
-      $.ui.log("[lcm] hook observation snapshot could not be written");
-    }
+    // Host calls may throw before returning a promise.
+  }
+  if (!failedHookSnapshotWrites.has(sessionId)) {
+    failedHookSnapshotWrites.add(sessionId);
+    try { $.ui.log("[lcm] hook observation snapshot could not be written"); } catch { /* diagnostic only */ }
   }
 }
 

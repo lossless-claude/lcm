@@ -5,8 +5,13 @@ import { readAuthToken } from "../../src/daemon/auth.js";
 import { safeLogError } from "../../src/hooks/hook-errors.js";
 import { loadDaemonConfig } from "../../src/daemon/config.js";
 import { createLcmPaths } from "../../src/lcm-paths.js";
+import { readHookOutcomeLog } from "../../src/doctor/hook-outcome-log.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-vi.mock("../../src/daemon/lifecycle.js", () => ({
+vi.mock("../../src/daemon/lifecycle.js", async (original) => ({
+  ...await original<typeof import("../../src/daemon/lifecycle.js")>(),
   ensureDaemon: vi.fn().mockResolvedValue({ connected: true }),
 }));
 
@@ -166,6 +171,25 @@ describe("handleSessionEnd", () => {
       expect.objectContaining({ message: "ingest failed" }),
       expect.objectContaining({ sessionId: "s1", cwd: "/tmp" }),
     );
+  });
+
+  it.each([
+    ["HTTP rejection", Object.assign(new Error("denied"), { status: 500 }), "rejected", "http-500"],
+    ["timeout", Object.assign(new Error("late"), { name: "TimeoutError" }), "unconfirmed", "timeout"],
+  ])("records fallback Capture %s", async (_label, error, status, reason) => {
+    const home = mkdtempSync(join(tmpdir(), "lcm-session-end-fallback-"));
+    const isolatedPaths = createLcmPaths(home);
+    try {
+      const client = { post: vi.fn().mockImplementation((path: string) =>
+        path === "/session-end" ? Promise.reject(notFound) : Promise.reject(error)) } as any;
+      const result = await handleSessionEnd(JSON.stringify({ session_id: "fallback", cwd: home }), client, isolatedPaths, 3737);
+      expect(result).toEqual({ exitCode: 0, stdout: "" });
+      expect(readHookOutcomeLog(isolatedPaths.logsDir, home).outcomes).toEqual(expect.arrayContaining([
+        expect.objectContaining({ operation: "capture", kind: "delivery", status, reason }),
+      ]));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("defers socket.unref() until a fallback request body is flushed", async () => {
