@@ -52,7 +52,7 @@ It keeps bounded operation counts and failure codes in two alternating snapshots
 | Oh My Pi event | lcm behavior |
 | --- | --- |
 | `session_start` | Ingest pending transcript content, restore memory, and run the catch-up sweep for missed compaction work. |
-| `before_agent_start` | Search memory for the prompt and return bounded prompt-time context. |
+| `before_agent_start` | Search memory for the prompt and return bounded prompt-time context, and append the learning instruction (CLI wording, `src/guidance.ts`) to the system prompt OMP passes, so it reaches every turn without showing in the conversation or taking hint bytes. A host that passes no system prompt gets the instruction in the memory message instead, and the hint budget reserves its bytes. |
 | `agent_end` | Capture the completed agent turn. |
 | `session_stop` | Capture the final available transcript content. |
 | `tool_result` | Record a `PostToolUse` or `PostToolUseFailure` tool event. |

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHarness, openProjectDb, type HarnessHandle } from "../harness.js";
+import { LEARNING_INSTRUCTION_CLI } from "../../../src/guidance.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const cli = join(root, "dist/bin/lcm.js");
@@ -92,8 +93,9 @@ describe("Codex lifecycle through the built CLI and real daemon", { timeout: 60_
     const recalled = await runHook("UserPromptSubmit", { prompt: "Quartz migration cobalt ledger retention" });
     expect(recalled.code, recalled.stderr).toBe(0);
     expect(JSON.parse(recalled.stdout).hookSpecificOutput.additionalContext).toContain("cobalt ledger");
+    expect(JSON.parse(recalled.stdout).hookSpecificOutput.additionalContext).toMatch(/<learning-instruction>[\s\S]*<\/learning-instruction>$/);
     const unrelated = await runHook("UserPromptSubmit", { prompt: "xylophone zeppelin marmalade" });
-    expect(unrelated.stdout).toBe("");
+    expect(JSON.parse(unrelated.stdout).hookSpecificOutput.additionalContext).toBe(LEARNING_INSTRUCTION_CLI);
 
     const resumed = await runHook("SessionStart", { source: "resume" });
     expect(JSON.parse(resumed.stdout).hookSpecificOutput.additionalContext).toContain("cobalt ledger");
