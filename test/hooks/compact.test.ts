@@ -52,7 +52,7 @@ describe("handlePreCompact", () => {
     mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
     const client = { post: vi.fn().mockResolvedValue({ summary: "", captureOutcome: { status: "deferred" },
       summaryOutcome: { status: "skipped", reason: "capture-deferred" } }) };
-    const result = await handlePreCompact(JSON.stringify({ session_id: "s1", cwd: "/proj" }), client as any, paths);
+    const result = await handlePreCompact(JSON.stringify({ session_id: "s1", cwd: "/proj" }), client as any, paths, port);
     expect(result).toEqual({ exitCode: 0, stdout: "" });
   });
 
@@ -62,7 +62,7 @@ describe("handlePreCompact", () => {
       summary: "No compaction needed.", latestSummaryContent: "old summary",
       captureOutcome: { status: "completed" }, summaryOutcome: { status: "skipped", reason },
     }) };
-    const result = await handlePreCompact(JSON.stringify({ session_id: "s1", cwd: "/proj" }), client as any, paths);
+    const result = await handlePreCompact(JSON.stringify({ session_id: "s1", cwd: "/proj" }), client as any, paths, port);
     expect(result).toEqual({ exitCode: 0, stdout: "" });
   });
 
