@@ -229,6 +229,50 @@ describe("function-hook session summarizer", () => {
     expect(harness.posts[0].body.usage).toEqual({ input_tokens: 3, output_tokens: 2, estimated: false });
   });
 
+  it("treats a non-string completion text as unanswered instead of throwing", async () => {
+    const { trigger, done, engine, posts } = await start();
+    engine.model.complete.mockResolvedValue({
+      isAnswered: true, text: { blocks: ["oops"] }, usage: { input_tokens: 3, output_tokens: 2 },
+    });
+    await trigger();
+    await done;
+    expect(posts[0].body).toEqual({
+      error: "model.complete: answer text was not a string",
+      usageAttempts: [{ providerId: "session:haiku",
+        usage: { input_tokens: 3, output_tokens: 2, estimated: false }, failed: true }],
+    });
+  });
+
+  it("falls back to Haiku when the fork's text is not a string", async () => {
+    const { trigger, done, engine, posts } = await start({}, [{ ...leaf, kind: "condensed" }]);
+    engine.model.fork.mockResolvedValue({ text: ["not", "a", "string"], usage: { input_tokens: 40, output_tokens: 7 } });
+    await trigger();
+    await done;
+    expect(engine.model.complete).toHaveBeenCalledTimes(1);
+    expect(posts[0].body).toEqual({
+      text: "summary", providerId: "session:haiku",
+      usage: { input_tokens: 3, output_tokens: 2, estimated: true },
+      usageAttempts: [{ providerId: "session:fork",
+        usage: { input_tokens: 40, output_tokens: 7, estimated: false }, failed: true }],
+    });
+  });
+
+  it("names model.fork when the fork's text is not a string and the fallback also fails", async () => {
+    const { trigger, done, engine, posts } = await start({}, [{ ...leaf, kind: "condensed" }]);
+    engine.model.fork.mockResolvedValue({ text: ["not", "a", "string"], usage: { input_tokens: 40, output_tokens: 7 } });
+    engine.model.complete.mockResolvedValue({ isAnswered: false, reason: "refused",
+      usage: { input_tokens: 3, output_tokens: 1 } });
+    await trigger();
+    await done;
+    expect(posts[0].body).toEqual({
+      error: "model.fork: answer text was not a string; fallback: refused",
+      usageAttempts: [
+        { providerId: "session:fork", usage: { input_tokens: 40, output_tokens: 7, estimated: false }, failed: true },
+        { providerId: "session:haiku", usage: { input_tokens: 3, output_tokens: 1, estimated: false }, failed: true },
+      ],
+    });
+  });
+
   it("reports a failed fork's usage separately from the fallback answer", async () => {
     const { trigger, done, engine, posts } = await start({}, [{ ...leaf, kind: "condensed" }]);
     engine.model.fork.mockResolvedValue({ isAnswered: false, reason: "empty-reply",

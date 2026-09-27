@@ -349,6 +349,19 @@ async function completeSummary($: EngineInterface, job: SummaryJob, remainingTok
     throw failure;
   }
   const text = typeof result === "string" ? result : result.text;
+  // The engine can mark a completion answered without its text being a string (the
+  // exact shape is not confirmed — the module has no committed types for it). Treat
+  // that the same as an unanswered job instead of throwing out of `.trim()`.
+  if (typeof text !== "string") {
+    const failure = new Error("model.complete: answer text was not a string") as SummaryFailure;
+    if (typeof result !== "string") {
+      failure.usageAttempts = [{ providerId: "session:haiku", usage: {
+        input_tokens: result.usage.input_tokens,
+        output_tokens: result.usage.output_tokens, estimated: false,
+      }, failed: true }];
+    }
+    throw failure;
+  }
   const trimmed = text.trim();
   const usage = typeof result === "string"
     ? { input_tokens: Math.ceil((job.system.length + job.prompt.length) / CHARS_PER_TOKEN),
@@ -364,12 +377,15 @@ async function completeSummary($: EngineInterface, job: SummaryJob, remainingTok
 async function answerSummary($: EngineInterface, job: SummaryJob, remainingTokens: number): Promise<SummaryAnswer> {
   if (job.kind === "condensed") {
     const fork = await $.model.fork({ prompt: `${job.system}\n\n${job.prompt}` }).catch(() => null);
-    if (fork && "text" in fork && "usage" in fork) {
+    // As in completeSummary: a fork can carry a `text` property that is not a string.
+    // Fall through to the failed-attempt path below rather than throwing out of `.trim()`.
+    if (fork && "text" in fork && "usage" in fork && typeof fork.text === "string") {
       return {
         text: fork.text.trim(), providerId: "session:fork",
         usage: { input_tokens: fork.usage.input_tokens, output_tokens: fork.usage.output_tokens, estimated: false },
       };
     }
+    const forkTextMalformed = Boolean(fork && "text" in fork && "usage" in fork);
     const forkAttempt: UsageAttempt | undefined = fork && "usage" in fork
       ? { providerId: "session:fork", usage: {
         input_tokens: fork.usage.input_tokens,
@@ -387,6 +403,7 @@ async function answerSummary($: EngineInterface, job: SummaryJob, remainingToken
     } catch (error) {
       if (forkAttempt) {
         const failure = (error instanceof Error ? error : new Error(String(error))) as SummaryFailure;
+        if (forkTextMalformed) failure.message = `model.fork: answer text was not a string; fallback: ${failure.message}`;
         failure.usageAttempts = [forkAttempt, ...(failure.usageAttempts ?? [])];
         throw failure;
       }

@@ -69,6 +69,12 @@ describe("createOpenAISummarizer", () => {
     expect(without.chat.completions.create.mock.calls[0][0]).not.toHaveProperty("reasoning");
   });
 
+  it("sends the context's output cap in place of the one its target implies", async () => {
+    const mockClient = makeClient("Summary.");
+    await createOpenAISummarizer({ model: "m", _clientOverride: mockClient as any })("text", true, { maxOutputTokens: 4800 });
+    expect(mockClient.chat.completions.create.mock.calls[0][0].max_tokens).toBe(4800);
+  });
+
   it("raises max_tokens with the condensed target", async () => {
     const mockClient = makeClient("Summary.");
     const summarizer = createOpenAISummarizer({ model: "m", baseURL: "http://x/v1", _clientOverride: mockClient as any });
@@ -224,7 +230,8 @@ describe("createOpenAISummarizer", () => {
     });
     const error = await summarize("x".repeat(600), false, { onUsage }).catch((err) => err);
     expect(error).toBeInstanceOf(SummaryRejectedError);
-    expect(error).toMatchObject({ reason: "length", provider: "openai" });
+    // The rejection names the cap the answer stopped at, which the chain's retry raises.
+    expect(error).toMatchObject({ reason: "length", provider: "openai", maxOutputTokens: 1024 });
     expect(error.message).toContain('finish_reason "length"');
     // The same request with the same budget stops the same way: one charge, not three.
     expect(create).toHaveBeenCalledTimes(1);

@@ -220,10 +220,13 @@ describe("findSessionFiles", () => {
 
 // --- importSessions ---
 
-function makeMockClient(postImpl: (path: string, body: unknown) => Promise<unknown>): DaemonClient {
+function makeMockClient(
+  postImpl: (path: string, body: unknown) => Promise<unknown>,
+  healthImpl?: () => Promise<{ status: string; uptime: number } | null>,
+): DaemonClient {
   return {
     post: vi.fn().mockImplementation(postImpl),
-    health: vi.fn(),
+    health: vi.fn().mockImplementation(healthImpl ?? (async () => null)),
   } as unknown as DaemonClient;
 }
 
@@ -1108,6 +1111,23 @@ describe("importSessions replay resume", () => {
     return err;
   }
 
+  /** Shaped like what DaemonClient throws when the daemon refuses the
+   * connection outright (nothing listening) — see `isDaemonUnreachableError`. */
+  function daemonUnreachableError(): Error {
+    const err = new TypeError("connect ECONNREFUSED 127.0.0.1:3737") as TypeError & { cause?: unknown };
+    err.cause = { code: "ECONNREFUSED" };
+    return err;
+  }
+
+  /** Shaped like what DaemonClient throws for a mid-flight socket drop — the
+   * ambiguous case a daemon that is alive but wedged also produces. See
+   * `isConnectionDroppedError`. */
+  function connectionResetError(): Error {
+    const err = new TypeError("socket hang up") as TypeError & { cause?: unknown };
+    err.cause = { code: "ECONNRESET" };
+    return err;
+  }
+
   it("a timed-out compact whose summary was stored keeps the chain and records the ledger row", async () => {
     const cwd = "/test/timeout-stored";
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2", "s3"]);
@@ -1242,6 +1262,212 @@ describe("importSessions replay resume", () => {
     // Without the fallback these tokens would be silently lost (0 added).
     expect(result.totalTokens).toBe(100);
     expect(result.tokensAfter).toBe(12);
+  });
+
+  it("stops the run when the daemon becomes unreachable, instead of failing every remaining session", async () => {
+    const cwd = "/test/daemon-unreachable";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2", "s3"]);
+    const stderrLines: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: any[]) => { stderrLines.push(args.join(" ")); });
+
+    const ingestCalls: string[] = [];
+    const compactBodies: { session_id: string; previous_summary?: string }[] = [];
+    const first = makeMockClient(async (path: string, body: any) => {
+      if (path === "/ingest") { ingestCalls.push(body.session_id); return { ingested: 1, totalTokens: 100 }; }
+      if (path === "/compact") {
+        compactBodies.push({ session_id: body.session_id, previous_summary: body.previous_summary });
+        if (body.session_id === "s2") throw daemonUnreachableError();
+        return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: `summary-of-${body.session_id}`, latestSummaryId: `sum-${body.session_id}`, tokensBefore: 100, tokensAfter: 10 };
+      }
+    });
+
+    const result = await importSessions(first, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+
+    // s3 is never even ingested — the run stopped instead of consuming it.
+    expect(ingestCalls).toEqual(["s1", "s2"]);
+    expect(compactBodies.map((b) => b.session_id)).toEqual(["s1", "s2"]);
+    expect(stderrLines.some((l) => l.includes("unreachable"))).toBe(true);
+    expect(result.daemonUnreachable).toBe(true);
+
+    const dbPath = join(lcmDir, "projects", projectId(cwd), "db.sqlite");
+    const db = new DatabaseSync(dbPath);
+    const ledgerRows = db.prepare("SELECT session_id FROM replay_ledger").all() as { session_id: string }[];
+    expect(ledgerRows.map((r) => r.session_id)).toEqual(["s1"]);
+    db.close();
+
+    // The daemon would have persisted s1's summary as part of compacting it;
+    // the mock only echoes what it claims, so recreate that row for the next
+    // run's resume plan to find.
+    persistSummary(lcmDir, cwd, "s1", "sum-s1", "summary-of-s1");
+
+    // Rerun against a healthy daemon: s2 is retried (not skipped) with s1's
+    // summary still threaded, and s3 follows it.
+    const compactBodies2: { session_id: string; previous_summary?: string }[] = [];
+    const second = makeMockClient(async (path: string, body: any) => {
+      if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
+      if (path === "/compact") {
+        compactBodies2.push({ session_id: body.session_id, previous_summary: body.previous_summary });
+        return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: `summary-of-${body.session_id}`, latestSummaryId: `sum-${body.session_id}`, tokensBefore: 100, tokensAfter: 10 };
+      }
+    });
+    await importSessions(second, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+
+    expect(compactBodies2.map((b) => b.session_id)).toEqual(["s2", "s3"]);
+    expect(compactBodies2[0].previous_summary).toBe("summary-of-s1");
+    expect(compactBodies2[1].previous_summary).toBe("summary-of-s2");
+  });
+
+  it("stops after one failed session when a wedged daemon also fails the health probe", async () => {
+    // A mid-flight socket drop (ECONNRESET) is ambiguous on its own: the
+    // daemon may have died, or it may be alive but wedged (event loop
+    // blocked on a slow query) and RSTing every request it cannot service,
+    // /health included. Probing and getting nothing back resolves that the
+    // same way as a refused connection.
+    const cwd = "/test/daemon-wedged-health-down";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2", "s3"]);
+    const stderrLines: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: any[]) => { stderrLines.push(args.join(" ")); });
+
+    const ingestCalls: string[] = [];
+    const compactBodies: { session_id: string }[] = [];
+    const client = makeMockClient(
+      async (path: string, body: any) => {
+        if (path === "/ingest") { ingestCalls.push(body.session_id); return { ingested: 1, totalTokens: 100 }; }
+        if (path === "/compact") {
+          compactBodies.push({ session_id: body.session_id });
+          if (body.session_id === "s2") throw connectionResetError();
+          return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: `summary-of-${body.session_id}`, latestSummaryId: `sum-${body.session_id}`, tokensBefore: 100, tokensAfter: 10 };
+        }
+      },
+      async () => null, // /health also fails to answer
+    );
+
+    const result = await importSessions(client, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+
+    // s3 is never even ingested — the run stopped once the probe also failed.
+    expect(ingestCalls).toEqual(["s1", "s2"]);
+    expect(compactBodies.map((b) => b.session_id)).toEqual(["s1", "s2"]);
+    expect(stderrLines.some((l) => l.includes("not answering"))).toBe(true);
+    expect(result.daemonUnreachable).toBe(true);
+
+    const dbPath = join(lcmDir, "projects", projectId(cwd), "db.sqlite");
+    const db = new DatabaseSync(dbPath);
+    const ledgerRows = db.prepare("SELECT session_id FROM replay_ledger").all() as { session_id: string }[];
+    expect(ledgerRows.map((r) => r.session_id)).toEqual(["s1"]);
+    db.close();
+  });
+
+  it("keeps today's give-up behaviour for a socket drop when the health probe answers", async () => {
+    const cwd = "/test/daemon-blip-health-up";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2", "s3"]);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const compactBodies: { session_id: string; previous_summary?: string }[] = [];
+    const client = makeMockClient(
+      async (path: string, body: any) => {
+        if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
+        if (path === "/compact") {
+          compactBodies.push({ session_id: body.session_id, previous_summary: body.previous_summary });
+          if (body.session_id === "s2") throw connectionResetError();
+          return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: `summary-of-${body.session_id}`, latestSummaryId: `sum-${body.session_id}`, tokensBefore: 100, tokensAfter: 10 };
+        }
+      },
+      async () => ({ status: "ok", uptime: 1 }), // /health answers — the daemon is just a bit slow, not gone
+    );
+
+    const result = await importSessions(client, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+
+    // Every session is still attempted — the run does not stop just because
+    // the probe was needed, only when the probe itself fails.
+    expect(compactBodies.map((b) => b.session_id)).toEqual(["s1", "s2", "s3"]);
+    expect(compactBodies[2].previous_summary).toBe("summary-of-s1"); // s2's chain link was skipped, not broken
+    expect(result.daemonUnreachable).toBeUndefined();
+
+    const dbPath = join(lcmDir, "projects", projectId(cwd), "db.sqlite");
+    const db = new DatabaseSync(dbPath);
+    const ledgerRows = db.prepare("SELECT session_id FROM replay_ledger").all() as { session_id: string }[];
+    expect(ledgerRows.map((r) => r.session_id).sort()).toEqual(["s1", "s3"]);
+    db.close();
+  });
+
+  it("stops the run when /ingest itself refuses the connection", async () => {
+    const cwd = "/test/ingest-daemon-unreachable";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2", "s3"]);
+    const stderrLines: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: any[]) => { stderrLines.push(args.join(" ")); });
+
+    const ingestCalls: string[] = [];
+    const client = makeMockClient(async (path: string, body: any) => {
+      if (path === "/ingest") {
+        ingestCalls.push(body.session_id);
+        if (body.session_id === "s2") throw daemonUnreachableError();
+        return { ingested: 1, totalTokens: 100 };
+      }
+      if (path === "/compact") return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: `summary-of-${body.session_id}`, latestSummaryId: `sum-${body.session_id}`, tokensBefore: 100, tokensAfter: 10 };
+    });
+
+    const result = await importSessions(client, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+
+    // s3's /ingest is never called — the run stopped instead of failing it.
+    expect(ingestCalls).toEqual(["s1", "s2"]);
+    expect(stderrLines.some((l) => l.includes("unreachable"))).toBe(true);
+    expect(result.daemonUnreachable).toBe(true);
+    expect(result.failed).toBe(0);
+  });
+
+  it("stops the run when /ingest drops the socket and the health probe also fails", async () => {
+    const cwd = "/test/ingest-wedged-health-down";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2", "s3"]);
+    const stderrLines: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: any[]) => { stderrLines.push(args.join(" ")); });
+
+    const ingestCalls: string[] = [];
+    const client = makeMockClient(
+      async (path: string, body: any) => {
+        if (path === "/ingest") {
+          ingestCalls.push(body.session_id);
+          if (body.session_id === "s2") throw connectionResetError();
+          return { ingested: 1, totalTokens: 100 };
+        }
+        if (path === "/compact") return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: `summary-of-${body.session_id}`, latestSummaryId: `sum-${body.session_id}`, tokensBefore: 100, tokensAfter: 10 };
+      },
+      async () => null, // /health also fails to answer
+    );
+
+    const result = await importSessions(client, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+
+    // s3's /ingest is never called — the run stopped once the probe also failed.
+    expect(ingestCalls).toEqual(["s1", "s2"]);
+    expect(stderrLines.some((l) => l.includes("not answering"))).toBe(true);
+    expect(result.daemonUnreachable).toBe(true);
+    expect(result.failed).toBe(0);
+  });
+
+  it("keeps today's per-session failure when /ingest drops the socket but the health probe answers", async () => {
+    const cwd = "/test/ingest-blip-health-up";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2", "s3"]);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const ingestCalls: string[] = [];
+    const client = makeMockClient(
+      async (path: string, body: any) => {
+        if (path === "/ingest") {
+          ingestCalls.push(body.session_id);
+          if (body.session_id === "s2") throw connectionResetError();
+          return { ingested: 1, totalTokens: 100 };
+        }
+        if (path === "/compact") return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: `summary-of-${body.session_id}`, latestSummaryId: `sum-${body.session_id}`, tokensBefore: 100, tokensAfter: 10 };
+      },
+      async () => ({ status: "ok", uptime: 1 }), // /health answers — the daemon is just a bit slow, not gone
+    );
+
+    const result = await importSessions(client, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+
+    // Every session is still attempted — the run does not stop just because
+    // the probe was needed, only when the probe itself fails.
+    expect(ingestCalls).toEqual(["s1", "s2", "s3"]);
+    expect(result.failed).toBe(1);
+    expect(result.daemonUnreachable).toBeUndefined();
   });
 
   it("restart refusal checks every provider list before any state is wiped", async () => {
