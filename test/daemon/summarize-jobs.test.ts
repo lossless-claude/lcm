@@ -160,7 +160,7 @@ describe("session summarize jobs", () => {
     expect(fallback).toHaveBeenCalledOnce();
     // The fork charged for its answer even though it was rejected.
     expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({ provider: "session:fork", inputTokens: 900, outputTokens: 700 }));
-    expect(onFallback).toHaveBeenCalledWith({ reason: expect.stringContaining("summary rejected"), toProvider: "openai" });
+    expect(onFallback).toHaveBeenCalledWith({ reason: expect.stringContaining("summary rejected"), fromProvider: "session", toProvider: "openai" });
   });
 
   it("does not fall back from a rejected fallback answer: both failures reach the caller", async () => {

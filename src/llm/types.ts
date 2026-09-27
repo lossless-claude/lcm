@@ -55,8 +55,14 @@ export type SummarizeContext = {
   /** The preceding chunk's summary, rendered into the prompt so chunks read as one thread. */
   previousSummary?: string;
   onUsage?: (usage: SummarizerUsage) => void;
-  /** The session provider did not answer; `toProvider` is summarizing instead. */
-  onFallback?: (fallback: { reason: string; toProvider: string }) => void;
+  /**
+   * A chain link is about to run: its name (the usage label it reports under), how it
+   * reaches its model, and the model it is configured with. Fires even for a link whose
+   * response carries no usage, so a caller can still name and count the attempt.
+   */
+  onAttempt?: (attempt: { provider: string; kind: "session" | "http" | "process"; model?: string }) => void;
+  /** `fromProvider` did not produce a summary; `toProvider` is summarizing instead. */
+  onFallback?: (fallback: { reason: string; fromProvider: string; toProvider: string }) => void;
 };
 
 export type LcmSummarizeFn = (

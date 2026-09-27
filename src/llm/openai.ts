@@ -10,7 +10,8 @@ import {
 
 type OpenAISummarizerOptions = {
   model: string;
-  baseURL: string;
+  /** Absent means the SDK's own default (OPENAI_BASE_URL, else the OpenAI API). */
+  baseURL?: string;
   apiKey?: string;
   /** Extra top-level request fields (`reasoning`, `thinking`, ...), validated at config load. */
   body?: Record<string, unknown>;
@@ -35,7 +36,8 @@ function isClientError(err: any): boolean {
  * that REPORTS the charge back (`usage.cost`), and only when the request opts
  * in. Plain servers reject unknown top-level fields, so the flag is host-scoped.
  */
-function isOpenRouter(baseURL: string): boolean {
+function isOpenRouter(baseURL: string | undefined): boolean {
+  if (!baseURL) return false;
   try {
     return new URL(baseURL).hostname.endsWith("openrouter.ai");
   } catch {
@@ -68,7 +70,7 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
   const client =
     opts._clientOverride ??
     new OpenAI({
-      baseURL: opts.baseURL,
+      ...(opts.baseURL ? { baseURL: opts.baseURL } : {}),
       apiKey: opts.apiKey || "local", // many local servers require a non-empty key
     });
   const retryDelayMs = opts._retryDelayMs ?? 1000;

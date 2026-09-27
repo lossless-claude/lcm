@@ -47,7 +47,7 @@ describe("summarizer provider chain", () => {
     await expect(summarize("conversation", false, { onUsage, onFallback })).resolves.toBe("the summary");
 
     expect(endpointsCalled()).toEqual(["deepseek", "openrouter"]);
-    expect(onFallback).toHaveBeenCalledExactlyOnceWith({ reason: expect.stringContaining("summary rejected: deepseek (deepseek-chat)"), toProvider: "openrouter" });
+    expect(onFallback).toHaveBeenCalledExactlyOnceWith({ reason: expect.stringContaining("summary rejected: deepseek (deepseek-chat)"), fromProvider: "deepseek", toProvider: "openrouter" });
     // Usage is labelled with the endpoint's name, the rejected attempt included.
     expect(onUsage.mock.calls.map(([usage]) => [usage.provider, usage.model]))
       .toEqual([["deepseek", "deepseek-chat"], ["openrouter", "vendor/flash"]]);
@@ -98,7 +98,8 @@ describe("summarizer provider chain", () => {
       await expect(summarize("conversation", false, { sessionId: "live", onFallback })).resolves.toBe("the summary");
 
       expect(onFallback.mock.calls.map(([fallback]) => fallback))
-        .toEqual([{ reason: "job timeout", toProvider: "deepseek" }, { reason: expect.stringContaining("summary rejected"), toProvider: "openrouter" }]);
+        .toEqual([{ reason: "job timeout", fromProvider: "session", toProvider: "deepseek" },
+          { reason: expect.stringContaining("summary rejected"), fromProvider: "deepseek", toProvider: "openrouter" }]);
       expect(endpointsCalled()).toEqual(["deepseek", "openrouter"]);
     } finally {
       jobs.close();
@@ -179,7 +180,7 @@ describe("the flat llm config, without llm.providers", () => {
 
       await expect(summarize("conversation", false, { sessionId: "live", onFallback })).resolves.toBe("the summary");
 
-      expect(onFallback).toHaveBeenCalledExactlyOnceWith({ reason: "job timeout", toProvider: "openai" });
+      expect(onFallback).toHaveBeenCalledExactlyOnceWith({ reason: "job timeout", fromProvider: "session", toProvider: "openai" });
     } finally {
       jobs.close();
     }
@@ -226,7 +227,27 @@ describe("configuredSummaryModel", () => {
   it("is the primary endpoint's model with named endpoints, and llm.model in the flat form", () => {
     const named = loadDaemonConfig("/nonexistent", { llm: { providers: endpoints(), provider: "deepseek" } }, ENV);
     expect(configuredSummaryModel(named)).toBe("deepseek-chat");
+    // With the primary left out for an unset variable, the endpoint that will run first.
+    const primaryLeftOut = loadDaemonConfig("/nonexistent", { llm: { providers: endpoints(), provider: "deepseek", fallback: ["openrouter"] } },
+      { OPENROUTER_API_KEY: "sk" });
+    expect(configuredSummaryModel(primaryLeftOut)).toBe("vendor/flash");
     const flat = loadDaemonConfig("/nonexistent", { llm: { provider: "openai", model: "m" } }, {});
     expect(configuredSummaryModel(flat)).toBe("m");
+  });
+});
+
+describe("the chain's attempt boundary", () => {
+  it("announces each link with its configured model before it runs", async () => {
+    server.answer("deepseek", httpError(401, "invalid api key"));
+    server.answer("openrouter", completion("the summary"));
+    const summarize = await chain({ provider: "deepseek", fallback: ["openrouter"] });
+    const onAttempt = vi.fn();
+
+    await summarize("conversation", false, { onAttempt });
+
+    expect(onAttempt.mock.calls.map(([attempt]) => attempt)).toEqual([
+      { provider: "deepseek", kind: "http", model: "deepseek-chat" },
+      { provider: "openrouter", kind: "http", model: "vendor/flash" },
+    ]);
   });
 });

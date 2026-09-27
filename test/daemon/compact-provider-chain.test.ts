@@ -18,7 +18,7 @@ import { projectDbPath } from "../../src/daemon/project.js";
 import type { RouteHandler } from "../../src/daemon/server.js";
 import { lcmHome } from "../../src/lcm-home.js";
 import { createLcmPaths } from "../../src/lcm-paths.js";
-import { completion, startChatCompletionsServer } from "../helpers/chat-completions-server.js";
+import { completion, httpError, startChatCompletionsServer } from "../helpers/chat-completions-server.js";
 
 const paths = createLcmPaths(lcmHome());
 let server: Awaited<ReturnType<typeof startChatCompletionsServer>>;
@@ -72,4 +72,65 @@ it("records DeepSeek's cut-off answer as failed and OpenRouter's that replaced i
   } finally {
     db.close();
   }
+});
+
+/** An answer that carries no `usage`, as some OpenAI-compatible servers send. */
+function unmetered(content: string) {
+  const reply = completion(content, "stop", "served-model");
+  delete (reply.body as { usage?: unknown }).usage;
+  return reply;
+}
+
+async function compactFreshSession(config: ReturnType<typeof loadDaemonConfig>, sessionId: string) {
+  const dir = mkdtempSync(join(tmpdir(), "lcm-chain-"));
+  const ingest = await invoke(createIngestHandler(config, paths), { cwd: dir, session_id: sessionId, messages:
+    Array.from({ length: 40 }, (_, i) => ({ role: i % 2 ? "assistant" : "user", content: `message ${i}`, tokenCount: 300 })) });
+  expect(ingest.status).toBe(200);
+  const result = await invoke(createCompactHandler(config, paths), { cwd: dir, session_id: sessionId });
+  const db = new DatabaseSync(projectDbPath(dir, paths));
+  try {
+    const rows = db.prepare("SELECT provider, model, calls_total, calls_ok, calls_failed FROM llm_usage_stats ORDER BY provider").all();
+    return { result, rows };
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const namedEndpoints = (deepseekKey?: string) => ({
+  deepseek: { type: "openai", model: "deepseek-chat", baseURL: `${server.base}/deepseek`, ...(deepseekKey ? { apiKey: deepseekKey } : {}) },
+  openrouter: { type: "openai", model: "vendor/flash", baseURL: `${server.base}/openrouter` },
+});
+
+it("names the first runnable endpoint when the primary was left out and the answer reports no usage", async () => {
+  server.reset();
+  server.answer("openrouter", unmetered("the stored summary"));
+  const config = loadDaemonConfig("/nonexistent", { llm: { provider: "deepseek", fallback: ["openrouter"],
+    providers: namedEndpoints("${DEEPSEEK_API_KEY}") } }, {});
+
+  const { result } = await compactFreshSession(config, "primary-left-out");
+
+  expect(result.status).toBe(200);
+  expect(result.body.providerId).toBe("openrouter");
+  expect(server.seen.map((request) => request.endpoint)).not.toContain("deepseek");
+});
+
+it("records an endpoint that failed without usage, and names the unmetered endpoint that answered", async () => {
+  server.reset();
+  server.answer("deepseek", httpError(401, "invalid api key"));
+  server.answer("openrouter", unmetered("the stored summary"));
+  const config = loadDaemonConfig("/nonexistent", { llm: { provider: "deepseek", fallback: ["openrouter"],
+    providers: namedEndpoints() } }, {});
+
+  const { result, rows } = await compactFreshSession(config, "failed-unmetered");
+
+  expect(result.status).toBe(200);
+  expect(result.body.providerId).toBe("openrouter");
+  // The model the handed-off endpoint is configured with, not the flat llm.model, which is empty here.
+  expect(result.body.llmUsage).toMatchObject({ provider: "openrouter", model: "vendor/flash", okCalls: 0 });
+  const deepseek = (rows as { provider: string; model: string; calls_total: number; calls_ok: number; calls_failed: number }[])
+    .find((row) => row.provider === "deepseek");
+  expect(deepseek).toMatchObject({ model: "deepseek-chat", calls_ok: 0 });
+  expect(deepseek!.calls_failed).toBeGreaterThan(0);
+  expect(deepseek!.calls_total).toBe(deepseek!.calls_failed);
 });

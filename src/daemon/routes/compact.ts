@@ -481,6 +481,16 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           // Each answer the summarizer gave and the engine kept, in order; the engine drops
           // the latest when it discards it (see onAnswerDiscarded below).
           const keptAnswers: Array<{ providers: string[]; model?: string }> = [];
+          /** A failed attempt whose response reported no usage: one failed call, no tokens. */
+          const countUnmeteredFailure = ({ provider, model }: { provider: string; model?: string }) => {
+            const key = JSON.stringify([provider, model ?? config.llm.model]);
+            const bucket = usageByProvider.get(key) ?? createCompactLlmUsage(provider, model ?? config.llm.model);
+            bucket.calls += 1;
+            bucket.failedCalls += 1;
+            usageByProvider.set(key, bucket);
+            llmUsage.calls += 1;
+            llmUsage.failedCalls += 1;
+          };
           const summarizeWithUsage: LcmSummarizeFn = async (text, aggressive, ctx = {}) => {
             // One attempt is what one provider answered: the session's answer and the
             // fallback that replaced it are two attempts, each settled with its own outcome.
@@ -491,8 +501,18 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             const callUsage = new Map<string, CompactLlmUsage>();
             // Only an attempt whose answer is stored names the provider that answered.
             const attemptAnswering = new Set<string>();
+            // The chain link running now, as the chain announced it: it names and counts an
+            // attempt whose response carried no usage at all.
+            let attempt: { provider: string; kind: string; model?: string } | undefined;
             const settleAttempt = (ok: boolean) => {
-              if (ok) keptAnswers.push({ providers: [...attemptAnswering], model: attemptModel });
+              // A session miss spent nothing lcm can see and is logged as a fallback; an HTTP
+              // or process attempt with no usage still ran, and is named or counted.
+              if (attempt && !sawUsage && attempt.kind !== "session") {
+                if (ok) attemptAnswering.add(attempt.provider);
+                else countUnmeteredFailure(attempt);
+              }
+              if (ok) keptAnswers.push({ providers: [...attemptAnswering], model: attemptModel ?? attempt?.model });
+              attempt = undefined;
               attemptModel = undefined;
               if (sawUsage) {
                 llmUsage.calls += 1;
@@ -523,11 +543,12 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                 ...ctx,
                 sessionId: session_id,
                 client,
-                onFallback: ({ reason, toProvider }) => {
+                onAttempt: (next) => { attempt = next; },
+                onFallback: ({ reason, fromProvider, toProvider }) => {
                   settleAttempt(false); // the abandoned attempt was charged but answered nothing usable
                   // The next attempt is the fallback's, even when it reports no usage.
                   attemptAnswering.add(toProvider);
-                  log.write("warn", "summarizer.fallback", { cwd, session_id, reason, to_provider: toProvider });
+                  log.write("warn", "summarizer.fallback", { cwd, session_id, reason, from_provider: fromProvider, to_provider: toProvider });
                 },
                 onUsage: (usage) => {
                   // Every provider reports normalized usage; only providers

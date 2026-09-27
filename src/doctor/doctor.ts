@@ -159,6 +159,29 @@ function addCopilotProcessChecks(results: CheckResult[], deps: DoctorDeps): void
 }
 
 
+const PROCESS_CHECKS: Record<string, (results: CheckResult[], deps: DoctorDeps) => void> = {
+  "claude-process": addClaudeProcessChecks,
+  "codex-process": addCodexProcessChecks,
+  "copilot-process": addCopilotProcessChecks,
+};
+
+/** The process types of the endpoints `llm.provider` and `llm.fallback` name, in chain order. */
+function namedChainProcessTypes(deps: DoctorDeps): string[] {
+  let llm: { provider?: unknown; fallback?: unknown; providers?: Record<string, { type?: unknown }> } | undefined;
+  try {
+    llm = (JSON.parse(deps.readFileSync(join(deps.lcmHome, "config.json"), "utf-8")) as { llm?: typeof llm }).llm;
+  } catch {
+    return []; // the config check reports a missing or unreadable file
+  }
+  const providers = llm?.providers;
+  if (!providers || typeof providers !== "object") return [];
+  const chain = [llm?.provider, ...(Array.isArray(llm?.fallback) ? llm.fallback : [])];
+  return chain.flatMap((name) => {
+    const type = typeof name === "string" && Object.hasOwn(providers, name) ? providers[name]?.type : undefined;
+    return typeof type === "string" && Object.hasOwn(PROCESS_CHECKS, type) ? [type] : [];
+  });
+}
+
 export function testMcpHandshake(spawnMcp: typeof spawn = spawn): Promise<CheckResult> {
   return new Promise((resolve) => {
     const request = {
@@ -651,17 +674,14 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
   addHarnessGuidanceChecks(results, deps);
 
   // ── Summarizer (conditional) ──
-  if (config.summarizer === "auto") {
-    addClaudeProcessChecks(results, deps);
-    addCodexProcessChecks(results, deps);
-    addCopilotProcessChecks(results, deps);
-  } else if (config.summarizer === "claude-process") {
-    addClaudeProcessChecks(results, deps);
-  } else if (config.summarizer === "codex-process") {
-    addCodexProcessChecks(results, deps);
-  } else if (config.summarizer === "copilot-process") {
-    addCopilotProcessChecks(results, deps);
-  } else if (config.summarizer === "anthropic") {
+  // Each CLI once: `auto` may use any of them, a process provider its own, and a named
+  // chain every process endpoint it lists.
+  const processTypes = new Set(config.summarizer === "auto"
+    ? Object.keys(PROCESS_CHECKS)
+    : Object.hasOwn(PROCESS_CHECKS, config.summarizer) ? [config.summarizer] : []);
+  for (const type of namedChainProcessTypes(deps)) processTypes.add(type);
+  for (const type of processTypes) PROCESS_CHECKS[type](results, deps);
+  if (config.summarizer === "anthropic") {
     if (process.env.ANTHROPIC_API_KEY) {
       results.push({ name: "anthropic-key", category: "Summarizer", status: "pass", message: "ANTHROPIC_API_KEY set" });
     } else {

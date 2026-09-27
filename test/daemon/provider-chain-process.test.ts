@@ -26,7 +26,7 @@ it("moves past a process endpoint whose answer holds only whitespace, keeping it
 
   await expect(summarize("conversation", false, { onUsage, onFallback })).resolves.toBe("the summary");
 
-  expect(onFallback).toHaveBeenCalledExactlyOnceWith({ reason: expect.stringContaining("summary rejected: claude"), toProvider: "local" });
+  expect(onFallback).toHaveBeenCalledExactlyOnceWith({ reason: expect.stringContaining("summary rejected: claude"), fromProvider: "claude", toProvider: "local" });
   expect(onUsage.mock.calls.map(([usage]) => usage.provider)).toEqual(["claude", "local"]);
   expect(server.seen.map((request) => request.endpoint)).toEqual(["local"]);
 });

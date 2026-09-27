@@ -16,6 +16,8 @@ export type ResolvedLink = {
   kind: ProviderLinkKind;
   /** When set, replaces the adapter's own `provider` label on every usage it reports. */
   usageLabel?: string;
+  /** The model the link is configured with, when it names one. */
+  model?: string;
   /** Created on first use: a link that is never reached never loads its client library. */
   summarizer: () => Promise<LcmSummarizeFn>;
 };
@@ -120,22 +122,28 @@ export function createProviderChain(links: ProviderLink[]): LcmSummarizeFn {
       if (!failureAdvancesChain(outcome.error, link.kind)) throw outcome.error;
       failures.push({ provider: link.name, error: outcome.error });
       const next = resolved[i + 1];
-      if (next) ctx.onFallback?.({ reason: messageOf(outcome.error), toProvider: next.name });
+      if (next) ctx.onFallback?.({ reason: messageOf(outcome.error), fromProvider: attemptName(link), toProvider: next.name });
     }
     if (failures.length === 1) throw failures[0].error;
     throw new ProviderChainExhaustedError(failures);
   };
 }
 
+/** The name a link's attempt is reported under: its usage label, or its own name. */
+function attemptName(link: ResolvedLink): string {
+  return link.usageLabel ?? link.name;
+}
+
 async function runLink(
   link: ResolvedLink, [text, aggressive, ctx]: [string, boolean | undefined, SummarizeContext],
 ): Promise<{ summary: string } | { error: unknown }> {
+  ctx.onAttempt?.({ provider: attemptName(link), kind: link.kind, ...(link.model ? { model: link.model } : {}) });
   try {
     const summarize = await link.summarizer();
     const answer = await summarize(text, aggressive, withUsageLabel(ctx, link.usageLabel));
     // Judged inside the link, after the adapter reported its usage: an answer with no
     // text moves the chain on. The process adapters return whatever their CLI printed.
-    return { summary: acceptSummaryText(answer, link.usageLabel ?? link.name) };
+    return { summary: acceptSummaryText(answer, attemptName(link)) };
   } catch (error) {
     return { error };
   }

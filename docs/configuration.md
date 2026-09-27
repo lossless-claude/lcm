@@ -98,7 +98,7 @@ jq -c 'select(.cwd == "/path/to/project")' ~/.lossless-claude/logs/daemon.log*
 
 - **Requests**: one `request` record per request, with its route, status and duration. `/session-end`, `/compact` and `/session-start-compact` are logged at `info`, so a `/session-end` with no `/compact` after it is visible. `/tool-event`, `/health` and `/summarize-jobs/*` are logged at `debug`. A 5xx is logged at `error`, and a 4xx at `warn`.
 - **Outcomes**: `compact.done`, `compact.skipped` (`reason`: `already-compacting`, `disabled`, `no_work`, `auto-compact-disabled`), `compact.sweep`, `promote.done` and `session_end.ingested`.
-- **Failures**: `route.failed`, `compact.failed`, `promote.failed`, `daemon_request.failed` (a follow-up request the daemon could not send to itself), `ingest.subagent_failed`, `daemon.crash` (with its scrubbed stack), `summarizer.fallback` (the session provider did not answer, so `to_provider` summarized instead), and `summarizer.endpoint_unavailable` at startup, once per named endpoint left out because `missing_env` is unset.
+- **Failures**: `route.failed`, `compact.failed`, `promote.failed`, `daemon_request.failed` (a follow-up request the daemon could not send to itself), `ingest.subagent_failed`, `daemon.crash` (with its scrubbed stack), `summarizer.fallback` (`from_provider` produced no summary, so `to_provider` summarized instead), and `summarizer.endpoint_unavailable` at startup, once per named endpoint left out because `missing_env` is unset.
 - **Continuity**:
   - `daemon.start` records `prev`: `clean` when the previous daemon left a `daemon.stop`, `unclean` when it did not, and `none` for the first log.
   - `daemon.stop` is written on idle shutdown, SIGTERM, SIGINT and an uncaught exception. `lcm daemon stop` sends SIGTERM.
@@ -345,7 +345,7 @@ Each link runs at most once per summarization, after its own retries. The chain 
 - cannot be reached, or is still unavailable after its retries (408, 429, 5xx);
 - is a process provider whose CLI run fails.
 
-Anything else fails the pass without trying the next link: a request the endpoint refuses as invalid (400, 422), a cancelled request, a client library that is not installed, or any error lcm does not recognise. When every link fails, the pass fails with one error naming each link's failure; it never falls back to storing raw text. Every attempt is recorded under its endpoint's name, so an answer DeepSeek cut off counts as a failed `deepseek` call even when OpenRouter's answer is the one stored.
+Anything else fails the pass without trying the next link: a request the endpoint refuses as invalid (400, 422), a cancelled request, a client library that is not installed, or any error lcm does not recognise. When every link fails, the pass fails with one error naming each link's failure; it never falls back to storing raw text. Every attempt is recorded under its endpoint's name, so an answer DeepSeek cut off counts as a failed `deepseek` call even when OpenRouter's answer is the one stored. An HTTP or process attempt that failed before any usage came back (a refused key, a failed CLI run) is recorded as a failed call with no tokens, and an answer that carried no usage is still attributed to the endpoint that gave it, with that endpoint's configured model. `lcm doctor` checks the CLI of every process endpoint the chain lists.
 
 ### Session provider
 

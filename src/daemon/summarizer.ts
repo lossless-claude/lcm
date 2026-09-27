@@ -105,7 +105,7 @@ async function createEndpointSummarizer(endpoint: EndpointConfig, label?: string
       return createCopilotProcessSummarizer({ model: endpoint.model });
     case "openai": {
       const { createOpenAISummarizer } = await import("../llm/openai.js");
-      return createOpenAISummarizer({ model: endpoint.model, baseURL: endpoint.baseURL ?? "", apiKey: endpoint.apiKey, body: endpoint.body, label });
+      return createOpenAISummarizer({ model: endpoint.model, baseURL: endpoint.baseURL || undefined, apiKey: endpoint.apiKey, body: endpoint.body, label });
     }
     case "anthropic": {
       const { createAnthropicSummarizer } = await import("../llm/anthropic.js");
@@ -155,7 +155,8 @@ class LinkFactory {
 
   private endpointLink(name: string, endpoint: EndpointConfig, usageLabel?: string): ProviderLink {
     const summarizer = () => this.adapter(name, endpoint, usageLabel);
-    return () => ({ name, kind: kindOf(endpoint.type), usageLabel, summarizer });
+    const model = endpoint.model || undefined;
+    return () => ({ name, kind: kindOf(endpoint.type), usageLabel, model, summarizer });
   }
 
   private adapter(name: string, endpoint: EndpointConfig, label?: string): Promise<LcmSummarizeFn> {
@@ -243,12 +244,15 @@ export function logUnavailableEndpoints(log: Pick<DaemonLog, "write">, llm: Daem
 }
 
 /**
- * The model the configured summarizer asks for first: the primary endpoint's with
- * `llm.providers`, `llm.model` in the flat form. Undefined when the first link names
+ * The model the configured summarizer asks for first: the first runnable endpoint's
+ * with `llm.providers`, `llm.model` in the flat form. Undefined when the first link names
  * no model (the session, a process provider left on its default).
  */
 export function configuredSummaryModel(config: DaemonConfig, provider: EffectiveProvider = config.llm.provider): string | undefined {
   if (!config.llm.providers) return config.llm.model || undefined;
-  const endpoint = Object.hasOwn(config.llm.providers, provider) ? config.llm.providers[provider] : undefined;
+  // The link that runs first: the primary, or the fallback that stands in for it when
+  // its variable was unset at load.
+  const first = namedChain(provider, config)[0];
+  const endpoint = first !== undefined && Object.hasOwn(config.llm.providers, first) ? config.llm.providers[first] : undefined;
   return endpoint?.model || undefined;
 }

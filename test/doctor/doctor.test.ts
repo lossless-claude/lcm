@@ -406,3 +406,26 @@ describe("runDoctor summarizer endpoints", () => {
     ]);
   });
 });
+
+describe("runDoctor named process endpoints", () => {
+  const namedConfig = JSON.stringify({ llm: { provider: "haiku", fallback: ["cx", "remote"], providers: {
+    haiku: { type: "claude-process" },
+    cx: { type: "codex-process", model: "m" },
+    remote: { type: "openai", model: "m", baseURL: "http://127.0.0.1:9/v1" },
+    unused: { type: "copilot-process" },
+  } } });
+  const base = minimalDeps();
+
+  it("checks the CLI of every process endpoint in the chain, and only those", async () => {
+    const results = await runDoctor(minimalDeps({
+      readFileSync: (path: string) => path.endsWith("config.json") ? namedConfig : base.readFileSync(path),
+      // No CLI is installed: `which` fails for each.
+      spawnSync: vi.fn(() => ({ status: 1, stdout: "", stderr: "" })),
+    }));
+    const processChecks = results.filter((r) => r.name.endsWith("-process"));
+    expect(processChecks.map((r) => [r.name, r.category, r.status])).toEqual([
+      ["claude-process", "Summarizer", "fail"],
+      ["codex-process", "Summarizer", "fail"],
+    ]);
+  });
+});
