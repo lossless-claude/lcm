@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { CompactionEngine, type CompactionConfig, type CompactionSummarizeFn } from "../src/compaction.js";
 import { runLcmMigrations } from "../src/db/migration.js";
+import { createOpenAISummarizer } from "../src/llm/openai.js";
 import { SummaryRejectedError } from "../src/llm/summary-rejection.js";
 import { ConversationStore } from "../src/store/conversation-store.js";
 import { SummaryStore } from "../src/store/summary-store.js";
@@ -59,6 +60,23 @@ describe("CompactionEngine summary gate", () => {
 
     expect(snapshot()).toEqual(before);
     expect(db.prepare("SELECT COUNT(*) AS n FROM summaries").get()).toEqual({ n: 0 });
+  });
+
+  it("a cut-off OpenAI-compatible answer stores nothing, however readable its text", async () => {
+    const { snapshot, compact } = await conversationWithMessages();
+    const before = snapshot();
+    const create = async () => ({
+      choices: [{ finish_reason: "length", message: { content: "Chronology and main decisions:\nThe agent" } }],
+      usage: { prompt_tokens: 15_000, completion_tokens: 1_024, total_tokens: 16_024 },
+    });
+    const summarize = createOpenAISummarizer({
+      model: "reasoner", baseURL: "https://api.example.test",
+      _clientOverride: { chat: { completions: { create } } }, _retryDelayMs: 0,
+    });
+
+    await expect(compact(summarize)).rejects.toMatchObject({ name: "SummaryRejectedError", reason: "length" });
+
+    expect(snapshot()).toEqual(before);
   });
 
   it("an adapter's rejection propagates unchanged and is never replaced by a fallback summary", async () => {
