@@ -27,10 +27,16 @@ filters (15 to 1,200 characters, no pasted tool output). Round 1 and round 2 dra
 
 - Round 1: 234 turns across 15 projects: 200 drawn at random, 34 more flagged by either
   keyword list.
-- The author labeled every turn before any model ran. Two LLM annotators (Claude Fable 5.1,
-  GPT-6 Astra) labeled the same turns blind. The author adjudicated the 52 disagreements,
-  seeing the annotators' answers but no model output.
-- Evaluated: 196 turns, 11 of them decisions. In the random stratum, 4 of 176 (about 2%).
+- Every annotator used four labels: yes, no, undecidable, and not typed by a person.
+- The author labeled all 234 turns before any model ran. Two LLM annotators (Claude Fable 5.1,
+  GPT-6 Astra) labeled the same 234 blind. The 52 disagreements are the turns where the three
+  did not all give the same label; the author adjudicated them, seeing the annotators'
+  answers but no model output.
+- Only turns whose final label is yes or no are scored; the exclusion is applied after
+  adjudication and before scoring. Final labels: 11 yes, 185 no, 4 undecidable, 34 not typed
+  by a person, so 196 turns are evaluated. In the random stratum, 176 of the 200 remain, 4 of
+  them decisions (about 2%). The author's first pass had 24 yes, 175 no, 2 undecidable and 33
+  not typed by a person, so the first-pass scores use 199 turns.
 - One question for every model, the same text in each: a yes/no (`noul`) asking whether the
   turn states a lasting decision, rule or preference. Decision threshold fixed at 0.5 before
   any result.
