@@ -84,6 +84,25 @@ describe("printImportSummary", () => {
     expect(logs.some(l => l.includes("Compression ratio"))).toBe(false);
   });
 
+  it("shows the OMP roots scanned when present, so '0 sessions' names where discovery looked", () => {
+    capture();
+    printImportSummary(baseResult({ ompRootsScanned: ["/home/user/.omp/agent/sessions", "/home/user/.omp/profiles/work/agent/sessions"] }));
+    expect(logs.some(l => l.includes("OMP roots scanned") && l.includes("/home/user/.omp/agent/sessions") && l.includes("/home/user/.omp/profiles/work/agent/sessions"))).toBe(true);
+  });
+
+  it("omits the OMP roots line when the omp provider did not run", () => {
+    capture();
+    printImportSummary(baseResult());
+    expect(logs.some(l => l.includes("OMP roots scanned"))).toBe(false);
+    expect(logs.some(l => l.includes("OMP duplicates skipped"))).toBe(false);
+  });
+
+  it("names every OMP transcript skipped because another root held the same session id", () => {
+    capture();
+    printImportSummary(baseResult({ ompDuplicatesSkipped: ["/home/user/.omp/agent/sessions/-p/a.jsonl"] }));
+    expect(logs.some(l => l.includes("OMP duplicates skipped") && l.includes("/home/user/.omp/agent/sessions/-p/a.jsonl"))).toBe(true);
+  });
+
   it("does not show failed count when 0", () => {
     capture();
     printImportSummary(baseResult({ failed: 0 }));

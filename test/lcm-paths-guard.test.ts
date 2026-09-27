@@ -100,7 +100,6 @@ const HOMEDIR_ALLOWLIST: Record<string, string> = {
   "src/diagnose.ts": "reads Claude Code's own ~/.claude/projects transcripts",
   "src/import.ts": "reads Claude Code's own ~/.claude/projects transcripts",
   "src/codex-transcript.ts": "reads Codex's own ~/.codex transcripts",
-  "src/omp-transcript.ts": "reads Oh My Pi's own session directory under the agent dir",
   "src/bootstrap.ts": "locates Claude Code's own ~/.claude/settings.json",
   "src/hooks/auto-heal.ts": "locates Claude Code's own ~/.claude/settings.json",
   "src/connectors/installer.ts": "expands a `~/` path the user typed in a connector config",

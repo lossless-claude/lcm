@@ -78,6 +78,8 @@ It keeps bounded operation counts and failure codes in two alternating snapshots
 
 The hook takes the session id from OMP's `sessionManager.getSessionId()` and the transcript path from `sessionManager.getSessionFile()`. OMP stores session transcripts under `<agentDir>/sessions/<encoded-cwd>/`, using the same `<agentDir>` selection as the connector. A session's id comes from the id in its session-file header; the transcript file, rather than a reconstructed path, is the source used for live capture.
 
+A session file is an append-only tree: every entry names its parent, and a rewind or branch switch moves the leaf while the abandoned continuation stays in the file. Capture and import keep only the path the user kept — the `parentId` chain from the file's last entry, which is the leaf OMP itself resumes from. Each capture applies this to the entries appended since the previous one, so a turn abandoned before it was captured is never stored. A turn captured before a later rewind abandoned it stays in memory. A file written before OMP's tree format, whose entries carry no id, is read in file order.
+
 ## Import existing sessions
 
 Import OMP sessions for the current project with either spelling:
@@ -98,6 +100,8 @@ lcm import --omp --replay
 
 `lcm import` discovers all supported transcript sources unless a provider is selected explicitly. Use `--provider omp` or `--omp` when the run should select only OMP sessions. See [Import past sessions](import.md) for discovery, project selection, and cursor behavior.
 
+OMP discovery scans every agent directory a profile session could live under: the active one (`PI_CODING_AGENT_DIR`, else `~/.omp/agent`) plus `~/.omp/profiles/<name>/agent` for every named profile — the same roots live capture accepts a transcript from, except a profile reached through a symlinked `profiles`, `<name>` or `agent` directory, which is not scanned. A session id found in several roots is imported once, from the live copy over an archived one, else the newest, else the active root's; each skipped copy is listed in the result. Running `--provider omp` or `--omp` reports every root scanned alongside the result (both `--dry-run` output and a non-interactive or `--verbose` run), so a "0 sessions" result names where discovery looked.
+
 ## Verify captured memory
 
 Run these from the project whose OMP session you want to check:
@@ -109,11 +113,23 @@ lcm grep "a distinctive phrase from the session" --scope messages
 
 A matching result confirms that captured OMP content is searchable in the current project's memory. `lcm search` searches episodic and promoted memory; `lcm grep --scope messages` checks the stored raw messages directly.
 
+## Archived sessions
+
+`omp gc --apply` archives a cold session by gzipping it in place, alongside the live files: `<agentDir>/sessions/<encoded-cwd>/<name>.jsonl.gz`. `lcm import` discovers these the same way as live `.jsonl` files. An archive is a single gzip member, not an append-only file, so it is import-only: it is read in full on every import and takes no resume checkpoint, and a repeated import stays idempotent because capture writes only the messages past what is already stored. If a live `.jsonl` and an archived `.jsonl.gz` both exist for the same session id, the live file always wins — `omp gc --apply` normally removes the original once it archives it, so a surviving live file means OMP is still writing to that session.
+
+## Summarizer
+
+In an OMP session, `LCM_SUMMARY_PROVIDER=auto` (the default) resolves to `omp-process`,
+which spawns `omp --print --mode json` with tools, LSP, extensions, skills and rules
+disabled and the run made ephemeral (`--no-session`). It reports usage the same way as
+`codex-process` (input, cached, output tokens); which model runs is whatever `omp` is
+configured with, unless `llm.model` names one. See
+[Model selection](configuration.md#model-selection) for pinning a different provider.
+
 ## Remaining gaps
 
-1. There is no OMP-specific summarizer provider. Summaries use the configured default summarizer, which on an OMP-only machine means an API provider ([#542](https://github.com/lossless-claude/lcm/issues/542)).
-2. Archived `.jsonl.gz` OMP sessions are not imported ([#544](https://github.com/lossless-claude/lcm/issues/544)).
-3. Import discovery scans the active agent directory (`PI_CODING_AGENT_DIR`, else `~/.omp/agent`). A session started under `omp --profile <name>` still captures live — the daemon accepts its transcript under the profile's own agent directory — but `lcm import` does not discover profile sessions yet ([#543](https://github.com/lossless-claude/lcm/issues/543)).
-4. Hook activation and trust cannot be proven from the filesystem; diagnostics report that state as unknown, as with Codex.
-5. Memory follows the session file in order, so a turn abandoned by an OMP rewind or branch switch is still captured ([#539](https://github.com/lossless-claude/lcm/issues/539)), and a `/clear` boundary is not honoured, so one conversation spans two logically separate sessions ([#540](https://github.com/lossless-claude/lcm/issues/540)).
-6. Passive learning records the OMP tools translated to extractor shapes; the harness's own memory tools and other non-durable plumbing remain intentionally silent.
+1. Hook activation and trust cannot be proven from the filesystem; diagnostics report that state as unknown, as with Codex.
+2. A `/clear` boundary is not honoured, so one conversation spans two logically separate sessions ([#540](https://github.com/lossless-claude/lcm/issues/540)).
+3. A turn captured before a rewind or branch switch abandoned it stays in memory and still matches `lcm search` and `lcm grep`; only turns abandoned before their capture are left out ([#539](https://github.com/lossless-claude/lcm/issues/539)). When a branch abandoned before its capture is later reopened with `/tree`, the session's continuation from it is captured but the branch's earlier turns are not.
+4. Passive learning records the OMP tools translated to extractor shapes; the harness's own memory tools and other non-durable plumbing remain intentionally silent.
+5. `*.jsonl.*.bak` recovery files (OMP falls back to these when a primary session file is missing) are not discovered.

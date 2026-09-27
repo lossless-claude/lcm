@@ -10,6 +10,7 @@ import { parseLanguageTag } from "../search/language.js";
 import { createClaudeProcessSummarizer } from "../llm/claude-process.js";
 import { createCodexProcessSummarizer } from "../llm/codex-process.js";
 import { createCopilotProcessSummarizer } from "../llm/copilot-process.js";
+import { createOmpProcessSummarizer } from "../llm/omp-process.js";
 import { createMockSummarizer } from "../llm/mock-summarizer.js";
 import type { LcmSummarizeFn } from "../llm/types.js";
 import { acceptSummaryText } from "../llm/summary-rejection.js";
@@ -25,7 +26,7 @@ export type CompactClient = SessionClient | "copilot";
 export type EffectiveProvider = string;
 
 type ConcreteType = EndpointConfig["type"];
-const PROCESS_TYPES: ReadonlySet<string> = new Set<ProcessEndpointType>(["claude-process", "codex-process", "copilot-process"]);
+const PROCESS_TYPES: ReadonlySet<string> = new Set<ProcessEndpointType>(["claude-process", "codex-process", "copilot-process", "omp-process"]);
 const KNOWN_TYPES: ReadonlySet<string> = new Set([...PROCESS_TYPES, "openai", "anthropic"]);
 
 function configuredSummarizerLanguage(config: DaemonConfig): string | undefined {
@@ -51,6 +52,7 @@ export function resolveSummarizerLanguage(
 function autoProvider(client?: CompactClient): ProcessEndpointType {
   if (client === "codex") return "codex-process";
   if (client === "copilot") return "copilot-process";
+  if (client === "omp") return "omp-process";
   return "claude-process";
 }
 
@@ -104,6 +106,8 @@ async function createEndpointSummarizer(endpoint: EndpointConfig, label?: string
       return createCodexProcessSummarizer({ model: endpoint.model });
     case "copilot-process":
       return createCopilotProcessSummarizer({ model: endpoint.model });
+    case "omp-process":
+      return createOmpProcessSummarizer({ model: endpoint.model });
     case "openai": {
       const { createOpenAISummarizer } = await import("../llm/openai.js");
       return createOpenAISummarizer({ model: endpoint.model, baseURL: endpoint.baseURL || undefined, apiKey: endpoint.apiKey, body: endpoint.body, label });
@@ -120,7 +124,7 @@ function flatEndpoint(type: ConcreteType, llm: DaemonConfig["llm"]): EndpointCon
   // No model for the claude CLI on purpose: the flat llm.model is shared across
   // providers, so a model pinned for codex/openai must not leak into it.
   if (type === "claude-process") return { type };
-  if (type === "codex-process" || type === "copilot-process") return { type, model: llm.model };
+  if (type === "codex-process" || type === "copilot-process" || type === "omp-process") return { type, model: llm.model };
   if (type === "anthropic") return { type, model: llm.model, apiKey: llm.apiKey };
   return { type, model: llm.model, baseURL: llm.baseURL, apiKey: llm.apiKey,
     ...(llm.reasoning !== undefined ? { body: { reasoning: llm.reasoning } } : {}) };

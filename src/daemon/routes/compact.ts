@@ -44,13 +44,20 @@ export function buildCompactionMessage(p: {
   maxDepth: number; promotedCount: number;
 }): string {
   const saved = p.tokensBefore - p.tokensAfter;
-  const ratio = p.tokensAfter > 0 ? (p.tokensBefore / p.tokensAfter).toFixed(1) : "–";
-  const pct = p.tokensBefore > 0
-    ? ((1 - p.tokensAfter / p.tokensBefore) * 100).toFixed(1)
-    : "0.0";
+  // A compaction can leave the context larger than it found it. Report that
+  // honestly instead of a "compression"/"saved" framing that implies shrinkage.
+  // From an empty baseline there is no ratio or percentage to report.
+  const grew = p.tokensAfter > p.tokensBefore;
+  const ratio = grew
+    ? p.tokensBefore > 0 ? (p.tokensAfter / p.tokensBefore).toFixed(1) : "–"
+    : p.tokensAfter > 0 ? (p.tokensBefore / p.tokensAfter).toFixed(1) : "–";
+  const pctLabel = grew
+    ? p.tokensBefore > 0 ? `${(((p.tokensAfter / p.tokensBefore) - 1) * 100).toFixed(1)}% grew` : "grew"
+    : `${(p.tokensBefore > 0 ? (1 - p.tokensAfter / p.tokensBefore) * 100 : 0).toFixed(1)}% saved`;
   const barWidth = 30;
   const filled = p.tokensBefore > 0
-    ? Math.round((1 - p.tokensAfter / p.tokensBefore) * barWidth) : 0;
+    ? Math.min(barWidth, Math.max(0, Math.round((1 - p.tokensAfter / p.tokensBefore) * barWidth)))
+    : 0;
   const bar = "█".repeat(filled) + "░".repeat(barWidth - filled);
   const border = "━".repeat(46);
   const numW = Math.max(
@@ -74,8 +81,10 @@ export function buildCompactionMessage(p: {
     border,
     ``,
     `  ${fmtN(p.tokensBefore)} ──────────────────────→ ${fmtN(p.tokensAfter)}`,
-    `  ${bar}  ${pct}% saved`,
-    `  ${ratio}×  compression  ·  ${fmtN(saved)} tokens freed`,
+    `  ${bar}  ${pctLabel}`,
+    grew
+      ? `  ${ratio}×  growth  ·  ${fmtN(Math.abs(saved))} tokens added`
+      : `  ${ratio}×  compression  ·  ${fmtN(saved)} tokens freed`,
     ``,
     ...rows,
     ``,
@@ -360,6 +369,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       "claude-process": "Claude (process)",
       "codex-process": "Codex (process)",
       "copilot-process": "Copilot (process)",
+      "omp-process": "OMP (process)",
       "anthropic": "Anthropic API",
       "openai": "OpenAI API",
       "disabled": "Disabled",
