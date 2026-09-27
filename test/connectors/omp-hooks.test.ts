@@ -66,6 +66,20 @@ describe("OMP connector installation", () => {
     });
   });
 
+  it("reports a managed hook that differs from the shipped hook as outdated", () => {
+    const path = installConnector("omp", "hooks", root).path;
+    writeFileSync(path, `${readFileSync(path, "utf8")}\n// from an older lcm\n`);
+
+    expect(diagnoseConnector("omp", "hooks", root)).toMatchObject({
+      status: "partial",
+      installed: true,
+      complete: false,
+      issues: [expect.stringContaining("differs from the shipped hook")],
+    });
+    installConnector("omp", "hooks", root);
+    expect(diagnoseConnector("omp", "hooks", root)).toMatchObject({ status: "installed", complete: true, issues: [] });
+  });
+
   it("removes a managed hook and prunes empty hook directories", () => {
     installConnector("omp", "hooks", root);
     const path = join(root, ".omp", "hooks", "post", "lcm.ts");

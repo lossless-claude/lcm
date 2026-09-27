@@ -143,16 +143,29 @@ export function diagnoseOmpHooks(filePath: string): OmpHooksDiagnosis {
     };
   }
 
+  return installedDiagnosis(filePath, source);
+}
+
+// The hook is a copy, so an install made before an upgrade keeps the old hook until reinstalled.
+function installedDiagnosis(filePath: string, source: string): OmpHooksDiagnosis {
+  const issues = isShippedHook(source) ? [] : ["hook file differs from the shipped hook; reinstall it with lcm connectors install omp (--global for the global hook)"];
   return {
-    status: "installed",
+    status: issues.length === 0 ? "installed" : "partial",
     path: filePath,
     installed: true,
-    complete: true,
+    complete: issues.length === 0,
     active: null,
     trust: "unknown",
-    issues: [],
-    message: "OMP hook is installed. OMP activation cannot be determined from the file alone.",
+    issues,
+    message: issues.length === 0
+      ? "OMP hook is installed. OMP activation cannot be determined from the file alone."
+      : "OMP hook is installed but outdated. OMP activation cannot be determined from the file alone.",
   };
+}
+
+function isShippedHook(source: string): boolean {
+  const shipped = templatePath();
+  return !existsSync(shipped) || readFileSync(shipped, "utf-8") === source;
 }
 
 /** The global OMP agent directory used by the installer and connector CLI. */

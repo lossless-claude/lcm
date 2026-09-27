@@ -57,6 +57,8 @@ The project connector adds `mcpServers.lcm` to `.omp/mcp.json`; the global conne
 
 Review and trust the installed hooks in Oh My Pi before expecting automatic capture. `doctor` can verify the file and connector configuration, but activation and trust cannot be proven from the filesystem; report that state as unknown, as with Codex.
 
+The installed hook is a copy of the one lcm ships, so an upgrade does not change it. `lcm connectors doctor omp` and `lcm doctor` report a hook that differs from the shipped one; reinstall it with the same `lcm connectors install omp` command, or `lcm install`. When `omp` is on PATH, `lcm doctor` also warns when the global or project hook or MCP server is missing.
+
 ## Lifecycle events
 
 The installed module is loaded in-process by Oh My Pi. It uses the session manager for the session identity and transcript file, then sends lifecycle work to the local daemon. Hook failures do not block the Oh My Pi operation.
