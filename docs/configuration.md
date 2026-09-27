@@ -343,7 +343,7 @@ Each link runs at most once per summarization, after its own retries. The chain 
 
 - is the session and does not answer (no module loaded, session gone, timeout, error);
 - returns an answer lcm rejects (see [Cut-off and empty answers](#cut-off-and-empty-answers));
-- refuses the key (401 or 403, not retried);
+- refuses the key (401 or 403, not retried), or its account cannot pay (402, not retried);
 - cannot be reached, or is still unavailable after its retries (408, 429, 5xx);
 - is a process provider whose CLI run fails.
 

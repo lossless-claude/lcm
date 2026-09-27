@@ -116,6 +116,18 @@ describe("summarizer provider chain", () => {
     expect(endpointsCalled()).toEqual(["deepseek", "openrouter"]);
   });
 
+  it("moves on after a 402 without retrying the endpoint whose account cannot pay", async () => {
+    server.answer("openrouter", httpError(402, "insufficient credits"));
+    server.answer("deepseek", completion("the summary"));
+    const summarize = await chain({ provider: "openrouter", fallback: ["deepseek"] });
+    const onFallback = vi.fn();
+
+    await expect(summarize("conversation", false, { onFallback })).resolves.toBe("the summary");
+
+    expect(endpointsCalled()).toEqual(["openrouter", "deepseek"]);
+    expect(onFallback).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ fromProvider: "openrouter", toProvider: "deepseek" }));
+  });
+
   it("stops at a 400: a request the endpoint refuses is a configuration error, not a reason to try the next", async () => {
     server.answer("deepseek", httpError(400, "unknown field thinking"));
     server.answer("openrouter", completion("the summary"));
