@@ -7,6 +7,10 @@
  * file an lcm home whose config.json names another port and a HOME of its own, and
  * `setup-port-guard.mjs` refuses the default port in every process the suite runs. Nothing
  * here writes a config of its own: that is the point.
+ *
+ * So this file is only safe while at least one of those layers is in place: without both,
+ * its CLI case runs `lcm daemon stop` against the default port for real. To see it fail,
+ * remove one layer at a time.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { execFile, spawn } from "node:child_process";
