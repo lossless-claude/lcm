@@ -283,14 +283,68 @@ Valid provider values are:
 
 `anthropic` and `openai` call their API through a client library: `@anthropic-ai/sdk` and `openai`. The `openai` provider also serves any OpenAI-compatible endpoint set in `llm.baseURL`, such as OpenRouter.
 - **Plugin install:** the plugin bundle includes both libraries.
-- **npm install:** the npm package lists both libraries as optional peer dependencies, so npm does not install them. A daemon started from the npm package (`lcm daemon start`, `lcm daemon restart`) needs the library for its provider, and for `llm.fallbackProvider`, installed next to lcm. Install it, then restart the daemon so it loads the library:
+- **npm install:** the npm package lists both libraries as optional peer dependencies, so npm does not install them. A daemon started from the npm package (`lcm daemon start`, `lcm daemon restart`) needs the library for every provider it may call — `llm.provider`, `llm.fallbackProvider`, and each endpoint in `llm.fallback` — installed next to lcm. Install it, then restart the daemon so it loads the library:
 
   ```bash
   npm install -g openai              # or @anthropic-ai/sdk
   lcm daemon restart
   ```
 
-  Without the library, each summarization by that provider fails with `Cannot find package 'openai'` (or `'@anthropic-ai/sdk'`), and the daemon log records it as `compact.failed`.
+  Without the library, each summarization by that provider fails with `Cannot find package 'openai'` (or `'@anthropic-ai/sdk'`), and the daemon log records it as `compact.failed`. A fallback's library is loaded only when the chain reaches it.
+
+### Several endpoints and a fallback chain
+
+The flat fields above (`llm.model`, `llm.baseURL`, `llm.apiKey`, `llm.reasoning`) describe one endpoint. To configure several at once — the DeepSeek API and OpenRouter, say — name each under `llm.providers`, pick the first with `llm.provider`, and list the others, in the order to try them, in `llm.fallback`:
+
+```json
+{
+  "llm": {
+    "provider": "session",
+    "fallback": ["deepseek", "openrouter"],
+    "providers": {
+      "deepseek": {
+        "type": "openai",
+        "model": "<deepseek-model>",
+        "baseURL": "https://api.deepseek.com",
+        "apiKey": "${DEEPSEEK_API_KEY}",
+        "body": { "thinking": { "type": "disabled" } }
+      },
+      "openrouter": {
+        "type": "openai",
+        "model": "<openrouter-model>",
+        "baseURL": "https://openrouter.ai/api/v1",
+        "apiKey": "${OPENROUTER_API_KEY}",
+        "body": { "reasoning": { "effort": "minimal" } }
+      }
+    }
+  }
+}
+```
+
+| Endpoint field | Applies to | Meaning |
+|---|---|---|
+| `type` | every endpoint | `openai` (any OpenAI-compatible server), `anthropic`, `claude-process`, `codex-process` or `copilot-process` |
+| `model` | every endpoint | Required for `openai` and `anthropic`. Optional for the process types, which use lcm's default for that CLI without it |
+| `baseURL` | `openai`, `anthropic` | The endpoint's URL; without it, the vendor's own API |
+| `apiKey` | `openai`, `anthropic` | May interpolate an environment variable as `${NAME}`; an unset variable fails config load. `anthropic` without one reads `ANTHROPIC_API_KEY` |
+| `body` | `openai`, `anthropic` | Extra request fields; see [Request body](#request-body) |
+
+A process endpoint accepts only `type` and `model`: its CLI authenticates through its own login. Any other field is rejected at config load, on every endpoint.
+
+- **Names.** An endpoint's name is what its usage is recorded under in `llm_usage_stats`, and what `llm.provider`, `llm.fallback` and `LCM_SUMMARY_PROVIDER` select it by. It is made of letters, digits, `_`, `-` and `.`; the provider values listed above are reserved.
+- **Selection.** `llm.provider` names an endpoint, or `session`, `auto` or `disabled` (`auto` when unset). `llm.fallback` names endpoints only, each once. Nothing else is added: a chain whose last link fails fails the pass.
+- **Environment.** `LCM_SUMMARY_PROVIDER` replaces `llm.provider` and keeps `llm.fallback`; an endpoint it promotes out of `llm.fallback` still runs once. It also accepts a provider type such as `openai` when exactly one endpoint has that type.
+- **Both forms.** With `llm.providers`, the flat `llm.model`, `llm.baseURL`, `llm.apiKey`, `llm.reasoning` and `llm.fallbackProvider` are rejected: each endpoint holds its own settings and inherits none from another. Without `llm.providers`, `llm.fallback` is rejected and the flat form works as described in this section.
+
+Each link runs at most once per summarization, after its own retries. The chain moves to the next link when the current one:
+
+- is the session and does not answer (no module loaded, session gone, timeout, error);
+- returns an answer lcm rejects (see [Cut-off and empty answers](#cut-off-and-empty-answers));
+- refuses the key (401 or 403, not retried);
+- cannot be reached, or is still unavailable after its retries (408, 429, 5xx);
+- is a process provider whose CLI run fails.
+
+Anything else fails the pass without trying the next link: a request the endpoint refuses as invalid (400, 422), a cancelled request, a client library that is not installed, or any error lcm does not recognise. When every link fails, the pass fails with one error naming each link's failure; it never falls back to storing raw text. Every attempt is recorded under its endpoint's name, so an answer DeepSeek cut off counts as a failed `deepseek` call even when OpenRouter's answer is the one stored.
 
 ### Session provider
 
@@ -301,24 +355,45 @@ Valid provider values are:
 ```
 
 - `llm.fallbackProvider` answers a job the session does not serve within 20 s (no module loaded, session gone, spend cap reached, an error, or an answer holding only whitespace). Any provider except `session` is valid. When absent, the `auto` resolution above applies. A provider you name explicitly in `llm.provider` is never replaced by the session path.
+- With `llm.providers`, the session is the first link of the chain above and `llm.fallback` replaces `llm.fallbackProvider`; there is no implicit `auto` fallback.
 - The module stops serving jobs when recorded output reaches `sessionSummarizerMaxOutputTokens`; set it in the plugin's `userConfig` (default 50000, 0 disables serving jobs). `$.model.complete` is limited to the remaining allowance, but `$.model.fork` has no output-token limit and can overshoot on its final call.
 - Usage is recorded as `session:haiku` or `session:fork`; current hosts report exact `complete` usage, while older text-only results use estimated token counts recorded in `llm_usage_stats.calls_estimated`.
 
-### Reasoning parameter
+### Request body
 
-The `openai` provider sends `llm.reasoning` verbatim with each chat completion
-request, for models that reason by default and would otherwise spend the whole
-output budget thinking:
+A model that reasons by default can spend the whole output budget thinking. Each vendor turns that off with a request field of its own, so an `openai` or `anthropic` endpoint's `body` holds extra top-level fields sent with every request:
+
+| Endpoint | `body` |
+|---|---|
+| DeepSeek API | `{ "thinking": { "type": "disabled" } }` |
+| OpenRouter | `{ "reasoning": { "effort": "minimal" } }` or `{ "reasoning": { "enabled": false } }`, depending on the model |
+| Qwen behind an OpenAI-compatible server (llama.cpp, MLX, vLLM) | `{ "chat_template_kwargs": { "enable_thinking": false } }` |
+
+```json
+{
+  "llm": {
+    "provider": "local-qwen",
+    "providers": {
+      "local-qwen": {
+        "type": "openai",
+        "model": "<qwen-model>",
+        "baseURL": "http://localhost:8080/v1",
+        "body": { "chat_template_kwargs": { "enable_thinking": false } }
+      }
+    }
+  }
+}
+```
+
+A body is forwarded untouched, so the accepted shape is whatever the server accepts, and config load cannot tell whether it honours a field. On OpenRouter it varies by model: GLM 5.3 Flash honours `{"effort":"minimal"}` and rejects `{"enabled":false}`; Qwen3.7 Flash honours only `{"enabled":false}`; Mercury 2.5 honours `effort`. The DeepSeek API ignores `reasoning`.
+
+Config load rejects a body that is not a JSON object, holds a key named `__proto__`, `constructor` or `prototype` at any depth, or sets a field lcm generates: `model`, `messages`, `system`, `prompt`, `input`, `stream`, `stream_options`, `max_tokens`, `max_completion_tokens`, `max_output_tokens`, `max_new_tokens`, `n`, `tools`, `tool_choice`, `functions`, `function_call`, `parallel_tool_calls`, `response_format`, `text` and `usage`.
+
+In the flat form, `llm.reasoning` is the one body field there is: the `openai` provider sends it as `reasoning`, and no `reasoning` key when unset.
 
 ```json
 { "llm": { "provider": "openai", "reasoning": { "effort": "minimal" } } }
 ```
-
-The value is forwarded untouched, so the accepted shape is whatever the model
-behind your OpenAI-compatible endpoint accepts: GLM 5.3 Flash honours
-`{"effort":"minimal"}` and rejects `{"enabled":false}`; Qwen3.7 Flash honours only
-`{"enabled":false}`; Mercury 2.5 honours `effort`. When unset, no `reasoning` key
-is sent.
 
 `llm.reasoning` is read only by the `openai` provider — `anthropic` and the
 process-backed providers ignore it silently. It must be a JSON object: a string,
@@ -330,12 +405,13 @@ A summary the model did not finish is never stored. When the `openai` provider's
 response ends with `finish_reason: "length"`, or the `anthropic` provider's with
 `stop_reason: "max_tokens"`, the answer is rejected however readable its text is:
 the output budget ran out, often spent on reasoning. So is an answer from any
-provider that holds only whitespace. A rejection fails that compaction pass
-(`compact.failed`, naming the rejection); nothing from the pass is stored, and a
-replay leaves the session for its next run. The call's tokens are still counted, as a
-failed call. A length stop is not retried against the same endpoint, since the same
-request stops the same way: if it recurs, keep reasoning from spending the budget,
-with `llm.reasoning` or the endpoint's own setting.
+provider that holds only whitespace. A rejected answer moves the chain to its next
+link; with none left, it fails that compaction pass (`compact.failed`, naming the
+rejection): nothing from the pass is stored, and a replay leaves the session for its
+next run. The call's tokens are still counted, as a failed call. A length stop is not
+retried against the same endpoint, since the same request stops the same way: if it
+recurs, keep reasoning from spending the budget with the endpoint's `body` (or
+`llm.reasoning` in the flat form).
 
 ### Token cost reporting
 
@@ -349,6 +425,9 @@ Every provider reports its usage in a normalized shape, stored in
 | `copilot-process` | no | no | yes | premium requests |
 | `openai` | yes | when the server reports it | yes | real charged cost, OpenRouter only |
 | `anthropic` | yes | yes | yes | — |
+
+The table's rows are provider types. An endpoint declared in `llm.providers` reports
+what its type reports, recorded under the endpoint's name.
 
 Every provider charges; only the Claude CLI and OpenRouter report the charge
 back as a number. A missing cost therefore means *unknown*, never *free*.

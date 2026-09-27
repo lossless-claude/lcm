@@ -193,11 +193,39 @@ leaf and condensed, before the escalation above. An adapter does not retry a len
 since the same request with the same budget stops the same way; an empty answer is retried
 like a transient failure.
 
-A rejection fails the pass: nothing from it is persisted and context is unchanged, while
-passes that finished earlier in the same compaction stay. `/compact` answers 500 naming the
-rejection and logs `compact.failed`, so a replay does not ledger the session and the next run
-retries it. The rejected call's tokens are recorded in `llm_usage_stats` as a failed call.
-The session provider's rejected answer goes to `llm.fallbackProvider`, as an error does.
+A rejected answer moves the provider chain below to its next link, as an error does. With no
+link left, the rejection fails the pass: nothing from it is persisted and context is unchanged,
+while passes that finished earlier in the same compaction stay. `/compact` answers 500 naming
+the rejection and logs `compact.failed`, so a replay does not ledger the session and the next
+run retries it. The rejected call's tokens are recorded in `llm_usage_stats` as a failed call.
+
+### Provider chain
+
+Every summarization goes through one chain of links, built by `createSummarizer`
+(`src/daemon/summarizer.ts`) and run by `createProviderChain` (`src/llm/provider-chain.ts`):
+`/compact`, language detection, `lcm bench` and the summarizer eval harness all get it from
+that factory. A link is the live session, an HTTP endpoint (`openai`, `anthropic`) or a CLI
+process. With `llm.providers` the links are `llm.provider` then `llm.fallback`, named
+endpoints validated once at config load (`src/daemon/provider-config.ts`); in the flat form
+they are the one configured provider, or the session followed by `llm.fallbackProvider`
+(`auto` when unset).
+
+Each link runs at most once per call, after its adapter's own retries. The next link runs
+after a session that did not answer (`SessionUnavailableError`), a `SummaryRejectedError`, a
+refused key (401/403), a connection failure or a transient status still failing after the
+retries (408, 429, 5xx), or a failed CLI run. Anything else — a 400/422, a cancelled request,
+a missing client library, an unclassified exception — is thrown at once, since trying the next
+link would hide it. When more than one link ran and all failed, the chain throws
+`ProviderChainExhaustedError`, naming each failure; like a rejection, it fails the pass and
+never becomes the deterministic fallback above.
+
+The chain calls `onFallback` between links, which is where `/compact` settles the abandoned
+attempt as failed before the next one reports its usage. A named endpoint's usage carries the
+endpoint's name, so one pass can record a failed `deepseek` call and an ok `openrouter` call.
+
+A link's adapter is built on first use, the first link's when the summarizer is created: a
+fallback whose client library is not installed fails only when the chain reaches it. An
+endpoint's `body` is merged into its request under the fields the adapter generates.
 
 ## Context assembly
 
@@ -302,10 +330,11 @@ A project's `meta.json` is written by routes on different sessions of the same p
 lcm needs an LLM only for summarization, and it resolves the credential the way the daemon
 config does:
 
-1. `llm.apiKey` in `~/.lossless-claude/config.json` — the value may interpolate an environment
-   variable as `${NAME}`.
-2. `ANTHROPIC_API_KEY`, read only when the effective provider is `anthropic` (directly, or as
-   the `session` provider's fallback) and no key was configured.
+1. `llm.apiKey` in `~/.lossless-claude/config.json`, or with named endpoints each endpoint's
+   own `llm.providers.<name>.apiKey` — the value may interpolate an environment variable as
+   `${NAME}`. In an endpoint, an unset variable fails config load instead of sending no key.
+2. `ANTHROPIC_API_KEY`, read only for an `anthropic` provider or endpoint (directly, or as the
+   `session` provider's fallback) with no key configured.
 
 There is no profile store to consult: the process-backed providers (`claude-process`,
 `codex-process`, `copilot-process`) authenticate through their own CLI's login, so lcm never
