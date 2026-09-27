@@ -4,7 +4,8 @@
 // Every surface that carries it renders it here, so the rule is stated once:
 //
 //   LCM_MD_CONTENT        ~/.claude/lcm.md, included from CLAUDE.md (MCP tool names)
-//   LEARNING_INSTRUCTION  the UserPromptSubmit instruction (MCP tool names)
+//   LEARNING_INSTRUCTION  Claude Code's per-prompt instruction (MCP tool names)
+//   LEARNING_INSTRUCTION_CLI  the same for Codex and OMP (CLI names)
 //   RULES_CLI, RULES_MCP  connector rules files, one per naming of the tools
 //   SKILL                 the connector skill (CLI names)
 //   STORE_TOOL_*          the lcm_store MCP definition
@@ -13,9 +14,10 @@
 // same hook surfaces, so it never repeats when to search. lcm.md leaves out the reserved
 // tags because every Claude Code prompt already carries the learning instruction.
 //
-// hooks/lcm-hooks.ts keeps a verbatim copy of LEARNING_INSTRUCTION (the module cannot import
-// from src/), so that text holds no backticks and no `${`; test/hooks/learning-instruction.test.ts
-// fails when the copy drifts. docs/tag-schema.md must list every type and prefix named here.
+// Two hook modules cannot import from src/ and keep a verbatim copy: hooks/lcm-hooks.ts of
+// LEARNING_INSTRUCTION, hooks/omp/lcm.ts of LEARNING_INSTRUCTION_CLI. So neither text holds
+// backticks or `${`; test/hooks/learning-instruction.test.ts fails when a copy drifts.
+// docs/tag-schema.md must list every type and prefix named here.
 
 /** The `type:` values an agent is asked to store, each with when it applies. */
 export const STORE_TYPES: ReadonlyArray<{ value: string; when: string }> = [
@@ -129,21 +131,28 @@ ${recallSteps(MCP).map((s) => `- ${s}`).join("\n")}
 ${storeRule(MCP)} Worth storing: ${STORE_TYPES.map((t) => t.value).join(", ")}. ${TAGS_RULE}
 `;
 
-export const LEARNING_INSTRUCTION = `<learning-instruction>
-When you recognize a durable insight, call lcm_store immediately:
+function learningInstruction(n: Nouns): string {
+  return `<learning-instruction>
+When you recognize a durable insight, ${n === MCP ? "call" : "run"} ${n.store} immediately:
 ${STORE_TYPES.map((t) => `- ${t.value}: ${t.when}`).join("\n")}
 
 ${TAGS_RULE}
-Usage: ${call(MCP, { text: "concise insight with why", tags: ["type:decision", "project:<repo>"] })}
+Usage: ${call(n, { text: "concise insight with why", tags: ["type:decision", "project:<repo>"] })}
 
 ${ACTED_ON}
-${call(MCP, USED)}
+${call(n, USED)}
 
 ${VOTE}
-${call(MCP, CONFIRMED)}
-${call(MCP, CONTRADICTED)}
+${call(n, CONFIRMED)}
+${call(n, CONTRADICTED)}
 ${NOT_A_DOWNVOTE}
 </learning-instruction>`;
+}
+
+export const LEARNING_INSTRUCTION = learningInstruction(MCP);
+
+/** For a harness whose agent reaches lcm through the CLI: Codex by default, and OMP. */
+export const LEARNING_INSTRUCTION_CLI = learningInstruction(CLI);
 
 export const RULES_CLI = rules(CLI, "You are a coding agent. Use the lcm CLI to manage persistent memory across sessions.", `## Available Commands
 

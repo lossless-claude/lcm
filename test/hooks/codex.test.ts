@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dispatchCodexHook, type CodexHookDeps } from "../../src/hooks/codex.js";
+import { LEARNING_INSTRUCTION_CLI } from "../../src/guidance.js";
 import { createLcmPaths } from "../../src/lcm-paths.js";
 import { lcmHome } from "../../src/lcm-home.js";
 import { readHookOutcomeLog } from "../../src/doctor/hook-outcome-log.js";
@@ -148,10 +149,10 @@ describe("Codex native lifecycle adapter", () => {
       .toContain("<!-- surfaced-memory-ids: s-1,s-2@sibling-project -->");
   });
 
-  it("emits no context for an unrelated prompt", async () => {
+  it("emits only the learning instruction for an unrelated prompt", async () => {
     const { deps } = dependencies({ "/prompt-search": { hints: [] } });
-    expect(await dispatchCodexHook(payload("UserPromptSubmit", { prompt: "unrelated" }), deps))
-      .toEqual({ exitCode: 0, stdout: "" });
+    const result = await dispatchCodexHook(payload("UserPromptSubmit", { prompt: "unrelated" }), deps);
+    expect(outputContext(result.stdout).additionalContext).toBe(LEARNING_INSTRUCTION_CLI);
   });
 
   it.each(["Stop", "Interrupt", "SessionEnd"])("captures %s without asking Codex to continue or block", async (event) => {
@@ -208,9 +209,37 @@ describe("Codex native lifecycle adapter", () => {
     expect(post).not.toHaveBeenCalled();
   });
 
-  it.each(["SessionStart", "UserPromptSubmit", "PreCompact", "Stop"])("fails open when %s requests fail", async (event) => {
+  it.each(["SessionStart", "PreCompact", "Stop"])("fails open when %s requests fail", async (event) => {
     const { post, deps } = dependencies();
     post.mockRejectedValue(new Error("daemon request timed out"));
     expect(await dispatchCodexHook(payload(event, { prompt: "quartz" }), deps)).toEqual({ exitCode: 0, stdout: "" });
+  });
+
+  it("fails open with only the learning instruction when UserPromptSubmit requests fail", async () => {
+    const { post, deps } = dependencies();
+    post.mockRejectedValue(new Error("daemon request timed out"));
+    const result = await dispatchCodexHook(payload("UserPromptSubmit", { prompt: "quartz" }), deps);
+    expect(result.exitCode).toBe(0);
+    expect(outputContext(result.stdout).additionalContext).toBe(LEARNING_INSTRUCTION_CLI);
+  });
+
+  it("carries the learning instruction when the daemon is unavailable or the prompt is empty", async () => {
+    const { connect, deps } = dependencies();
+    connect.mockResolvedValue(false);
+    expect(outputContext((await dispatchCodexHook(payload("UserPromptSubmit", { prompt: "quartz" }), deps)).stdout)
+      .additionalContext).toBe(LEARNING_INSTRUCTION_CLI);
+    connect.mockResolvedValue(true);
+    expect(outputContext((await dispatchCodexHook(payload("UserPromptSubmit", { prompt: " " }), deps)).stdout)
+      .additionalContext).toBe(LEARNING_INSTRUCTION_CLI);
+  });
+
+  it("reserves the instruction's bytes and never truncates it behind a large memory context", async () => {
+    const { post, deps } = dependencies({ "/prompt-search": { hints: ["x".repeat(20_000)], ids: ["s-1"] } });
+    const result = await dispatchCodexHook(payload("UserPromptSubmit", { prompt: "quartz" }), deps);
+    const bytes = Buffer.byteLength(`\n${LEARNING_INSTRUCTION_CLI}`, "utf8");
+    expect(post).toHaveBeenLastCalledWith("/prompt-search", expect.objectContaining({ learningInstructionBytes: bytes }), expect.anything());
+    const context = outputContext(result.stdout).additionalContext;
+    expect(context.endsWith(`\n${LEARNING_INSTRUCTION_CLI}`)).toBe(true);
+    expect(Buffer.byteLength(context, "utf8")).toBeLessThanOrEqual(16_000);
   });
 });

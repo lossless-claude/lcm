@@ -15,6 +15,30 @@ const DEFAULT_TIMEOUT_MS = 1_500;
 const SHUTDOWN_TIMEOUT_MS = 250;
 const TOOL_CONTENT_CAP = 2_000;
 
+// Verbatim copy of LEARNING_INSTRUCTION_CLI in src/guidance.ts (this file is installed on its
+// own and cannot import from src/); test/hooks/learning-instruction.test.ts fails when the two drift.
+const LEARNING_INSTRUCTION = `<learning-instruction>
+When you recognize a durable insight, run lcm store immediately:
+- decision: an architectural or design choice, with the trade-off that settled it
+- preference: how the user wants things done
+- root-cause: a bug cause that took effort to uncover
+- pattern: a codebase convention documented nowhere else
+- gotcha: a non-obvious pitfall
+- solution: a non-trivial fix worth remembering
+- workflow: a multi-step process that works
+
+Tag each store with type: plus one of project: or scope:; add source: when the origin matters for trust, and priority: rarely.
+Usage: lcm store "concise insight with why" --tag type:decision --tag project:<repo>
+
+When you act on a surfaced memory (use it to inform a decision, avoid a known pitfall, or reference it in your work), emit:
+lcm store "Acted on memory <id> — <one-line how>" --tag signal:memory_used --tag memory_id:<id>
+
+When you check a surfaced memory against current evidence, vote on it (reason is required both ways):
+lcm store "<what confirmed it, e.g. a file, test, or command output>" --tag signal:memory_vote --tag vote:+1 --tag memory_id:<id>
+lcm store "<what contradicts it>" --tag signal:memory_vote --tag vote:-1 --tag memory_id:<id>
+"Not relevant here" is not a -1 — only a real contradiction is.
+</learning-instruction>`;
+
 export interface HookLogger {
   error?: (message: string) => void;
   warn?: (message: string) => void;
@@ -86,7 +110,7 @@ export interface BeforeAgentStartEvent {
   type?: string;
   prompt: string;
   images?: unknown;
-  systemPrompt?: string;
+  systemPrompt?: string | string[];
 }
 
 export interface AgentEndEvent {
@@ -403,6 +427,22 @@ function boundedToolContent(value: unknown): string | undefined {
     }
   }
   return text.length > TOOL_CONTENT_CAP ? `${text.slice(0, TOOL_CONTENT_CAP)}...` : text;
+}
+
+/**
+ * Where this turn's learning instruction goes. OMP rebuilds the system prompt from its base
+ * before every turn, so appending the instruction there reaches every turn once, hidden from
+ * the user, and the hint budget holds back only its standing reservation. A returned system
+ * prompt replaces the host's, so without one to append to, the instruction rides in the
+ * memory message instead, and the hint budget reserves its bytes.
+ */
+function placeLearningInstruction(hostPrompt: string | string[] | undefined):
+  { systemPrompt?: string[]; inline?: string; inlineBytes: number } {
+  if (hostPrompt === undefined) {
+    return { inline: LEARNING_INSTRUCTION, inlineBytes: Buffer.byteLength(`\n\n${LEARNING_INSTRUCTION}`, "utf8") };
+  }
+  const base = typeof hostPrompt === "string" ? [hostPrompt] : hostPrompt;
+  return { systemPrompt: [...base, LEARNING_INSTRUCTION], inlineBytes: 0 };
 }
 
 function memoryMessage(content: string): { message: Record<string, unknown> } {
@@ -754,6 +794,7 @@ export default function lcm(pi: HookApi): void {
       firstPrompt = false;
     }
 
+    const instruction = placeLearningInstruction(event.systemPrompt);
     let searched: string | undefined;
     const identity = sessionIdentity(ctx);
     if (identity && typeof event.prompt === "string") {
@@ -761,7 +802,7 @@ export default function lcm(pi: HookApi): void {
         ...identityBody(identity),
         query: event.prompt,
         nativeHistory: true,
-        learningInstructionBytes: 0,
+        learningInstructionBytes: instruction.inlineBytes,
         format: "context",
       });
       searched = contextFromResponse(result.body);
@@ -772,10 +813,13 @@ export default function lcm(pi: HookApi): void {
     else note(ctx, "before_agent_start", "search", "execution", "deferred", identity ? "missing-prompt" : "missing-identity");
     flush(ctx);
 
-    const content = [restored, searched].filter((text): text is string => Boolean(text?.trim())).join("\n\n");
-    if (!content) return undefined;
+    const content = [restored, searched, instruction.inline]
+      .filter((text): text is string => Boolean(text?.trim())).join("\n\n");
     // OMP keeps only the FIRST returned message, so restore and prompt hints must be combined here.
-    return memoryMessage(content);
+    return {
+      ...(content ? memoryMessage(content) : {}),
+      ...(instruction.systemPrompt ? { systemPrompt: instruction.systemPrompt } : {}),
+    };
   });
 
   register("agent_end", "agent_end", async (rawEvent, ctx) => {
