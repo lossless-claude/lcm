@@ -429,3 +429,33 @@ describe("runDoctor named process endpoints", () => {
     ]);
   });
 });
+
+describe("runDoctor process checks follow the effective chain", () => {
+  const configWith = (llm: unknown) => JSON.stringify({ llm });
+  const base = minimalDeps();
+  const processChecksFor = async (llm: unknown, env: Record<string, string> = {}) => {
+    const results = await runDoctor(minimalDeps({
+      env,
+      readFileSync: (path: string) => path.endsWith("config.json") ? configWith(llm) : base.readFileSync(path),
+      spawnSync: vi.fn(() => ({ status: 1, stdout: "", stderr: "" })),
+    }));
+    return results.filter((r) => r.name.endsWith("-process")).map((r) => r.name);
+  };
+  const endpoints = {
+    remote: { type: "openai", model: "m", baseURL: "http://127.0.0.1:9/v1" },
+    cx: { type: "codex-process", model: "m" },
+  };
+
+  it("checks the endpoint llm.provider selects by its type", async () => {
+    expect(await processChecksFor({ provider: "codex-process", providers: endpoints })).toEqual(["codex-process"]);
+  });
+
+  it("checks the endpoint LCM_SUMMARY_PROVIDER promotes by name", async () => {
+    expect(await processChecksFor({ provider: "remote", providers: endpoints }, { LCM_SUMMARY_PROVIDER: "cx" })).toEqual(["codex-process"]);
+  });
+
+  it("checks the endpoint LCM_SUMMARY_PROVIDER selects by its type", async () => {
+    expect(await processChecksFor({ provider: "remote", providers: endpoints }, { LCM_SUMMARY_PROVIDER: "codex-process" }))
+      .toEqual(["codex-process"]);
+  });
+});

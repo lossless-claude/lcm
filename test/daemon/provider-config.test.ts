@@ -150,3 +150,15 @@ describe("llm.providers from programmatic overrides", () => {
       .toThrow(new RegExp(`llm\\.${field}`));
   });
 });
+
+describe("an anthropic endpoint with an empty apiKey", () => {
+  const llm = `{ "provider": "claude", "providers": { "claude": { "type": "anthropic", "model": "m", "apiKey": "" } } }`;
+
+  it("uses ANTHROPIC_API_KEY, as when apiKey is absent", () => {
+    expect(load(llm, { ANTHROPIC_API_KEY: "sk-ant" }).llm.providers).toMatchObject({ claude: { apiKey: "sk-ant" } });
+  });
+
+  it("is left out when ANTHROPIC_API_KEY is unset too", () => {
+    expect(unavailableEndpoints(load(llm, {}).llm)).toEqual([{ name: "claude", missingEnv: ["ANTHROPIC_API_KEY"] }]);
+  });
+});

@@ -159,7 +159,8 @@ function normalizeHttpEndpoint(where: string, entry: Record<string, unknown>, en
   const baseURL = entry.baseURL === undefined ? undefined : expandEnv(entry.baseURL, `${where}.baseURL`, expansion);
   // A URL built from an unset variable is not checked: the endpoint will not run anyway.
   if (baseURL !== undefined && missing.length === 0 && !isHttpUrl(baseURL)) fail(`${where}.baseURL must be an http(s) URL`);
-  const apiKey = entry.apiKey !== undefined
+  // An empty key is no key: an anthropic endpoint then reads ANTHROPIC_API_KEY, or is left out.
+  const apiKey = entry.apiKey !== undefined && entry.apiKey !== ""
     ? expandEnv(entry.apiKey, `${where}.apiKey`, expansion)
     : defaultApiKey(type, expansion);
   return {

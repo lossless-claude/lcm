@@ -21,7 +21,7 @@ import type { LogState } from "../daemon/log.js";
 import { readFunctionHookSnapshots, readOmpHookSnapshots } from "./hook-snapshots.js";
 import { readHookOutcomeLog } from "./hook-outcome-log.js";
 import { addHarnessGuidanceChecks } from "./guidance-checks.js";
-import { loadDaemonConfig } from "../daemon/config.js";
+import { loadDaemonConfig, type DaemonConfig } from "../daemon/config.js";
 import { summarizerAvailability } from "../daemon/provider-config.js";
 
 const COLORS = {
@@ -165,20 +165,25 @@ const PROCESS_CHECKS: Record<string, (results: CheckResult[], deps: DoctorDeps) 
   "copilot-process": addCopilotProcessChecks,
 };
 
-/** The process types of the endpoints `llm.provider` and `llm.fallback` name, in chain order. */
+/**
+ * The process types the effective named chain runs, in chain order: normalized by the
+ * daemon's own loader, so a provider selected by its type or promoted by
+ * LCM_SUMMARY_PROVIDER counts. `auto` may run any of them.
+ */
 function namedChainProcessTypes(deps: DoctorDeps): string[] {
-  let llm: { provider?: unknown; fallback?: unknown; providers?: Record<string, { type?: unknown }> } | undefined;
+  let llm: DaemonConfig["llm"];
   try {
-    llm = (JSON.parse(deps.readFileSync(join(deps.lcmHome, "config.json"), "utf-8")) as { llm?: typeof llm }).llm;
+    const raw = (JSON.parse(deps.readFileSync(join(deps.lcmHome, "config.json"), "utf-8")) as { llm?: unknown }).llm;
+    if (!raw || typeof raw !== "object" || !("providers" in raw)) return [];
+    llm = loadDaemonConfig("/nonexistent", { llm: raw }, deps.env ?? {}).llm;
   } catch {
-    return []; // the config check reports a missing or unreadable file
+    return []; // an unreadable file or an invalid config is reported by its own check
   }
-  const providers = llm?.providers;
-  if (!providers || typeof providers !== "object") return [];
-  const chain = [llm?.provider, ...(Array.isArray(llm?.fallback) ? llm.fallback : [])];
-  return chain.flatMap((name) => {
-    const type = typeof name === "string" && Object.hasOwn(providers, name) ? providers[name]?.type : undefined;
-    return typeof type === "string" && Object.hasOwn(PROCESS_CHECKS, type) ? [type] : [];
+  if (llm.provider === "auto") return Object.keys(PROCESS_CHECKS);
+  const providers = llm.providers ?? {};
+  return [llm.provider, ...(llm.fallback ?? [])].flatMap((name) => {
+    const type = Object.hasOwn(providers, name) ? providers[name].type : undefined;
+    return type !== undefined && Object.hasOwn(PROCESS_CHECKS, type) ? [type] : [];
   });
 }
 
