@@ -108,19 +108,27 @@ function resolveLinks(links: ProviderLink[], ctx: SummarizeContext): ResolvedLin
 }
 
 /**
- * Runs the links in order, each at most once per call, until one returns a summary.
- * `ctx.onFallback` fires between links, which is where a caller settles the abandoned
- * attempt. A failure that does not advance is thrown as is; when a second link has
- * run and every link failed, the failures are thrown together.
+ * Runs the links in order, each once per call, until one returns a summary. A link whose
+ * answer stopped at the output cap is asked once more before the chain moves on (see
+ * `overrunCap`). `ctx.onFallback` fires between attempts, which is where a caller settles
+ * the abandoned one. A failure that does not advance is thrown as is; when a second link
+ * has run and every link failed, the failures are thrown together.
  */
 export function createProviderChain(links: ProviderLink[]): LcmSummarizeFn {
   return async (text, aggressive, ctx = {}) => {
     const resolved = resolveLinks(links, ctx);
     const failures: { provider: string; error: unknown }[] = [];
     for (const [i, link] of resolved.entries()) {
-      const outcome = await runLink(link, [text, aggressive, ctx]);
+      let outcome = await runLink(link, [text, aggressive, ctx]);
+      const cap = overrunCap(outcome, aggressive);
+      let retried = false;
+      if (cap !== undefined && "error" in outcome) {
+        ctx.onFallback?.({ reason: messageOf(outcome.error), fromProvider: attemptName(link), toProvider: link.name });
+        outcome = await runLink(link, [text, true, { ...ctx, maxOutputTokens: 2 * cap }]);
+        retried = true;
+      }
       if ("summary" in outcome) return outcome.summary;
-      if (!failureAdvancesChain(outcome.error, link.kind)) throw outcome.error;
+      if (!failureAdvancesChain(outcome.error, link.kind) && !(retried && refusedRequest(outcome.error))) throw outcome.error;
       failures.push({ provider: link.name, error: outcome.error });
       const next = resolved[i + 1];
       if (next) ctx.onFallback?.({ reason: messageOf(outcome.error), fromProvider: attemptName(link), toProvider: next.name });
@@ -128,6 +136,28 @@ export function createProviderChain(links: ProviderLink[]): LcmSummarizeFn {
     if (failures.length === 1) throw failures[0].error;
     throw new ProviderChainExhaustedError(failures);
   };
+}
+
+/**
+ * The cap a link's answer stopped at, when that answer gets a second attempt: the shorter
+ * prompt with twice the cap. The shorter prompt lowers a leaf summary's target, and with it
+ * the cap its target implies, so the cap is raised instead of derived; a condensed or task
+ * prompt has no shorter form and gets the larger cap alone. A request that was already the
+ * shorter one is not retried, which bounds the retry to one per link per chunk.
+ */
+function overrunCap(outcome: { summary: string } | { error: unknown }, aggressive: boolean | undefined): number | undefined {
+  if (aggressive || !("error" in outcome)) return undefined;
+  const { error } = outcome;
+  return error instanceof SummaryRejectedError && error.reason !== "whitespace" ? error.maxOutputTokens : undefined;
+}
+
+/**
+ * A 400 or 422. On a retry it is the endpoint refusing the raised cap, which may exceed its
+ * model's output limit, not a request the next endpoint would build the same way.
+ */
+function refusedRequest(error: unknown): boolean {
+  const status = (error as { status?: unknown })?.status;
+  return status === 400 || status === 422;
 }
 
 /** The name a link's attempt is reported under: its usage label, or its own name. */
