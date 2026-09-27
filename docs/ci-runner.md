@@ -64,8 +64,9 @@ on the default port, and a test process that resolves that port can probe it,
 SIGTERM it or spawn over it. The test harness closes that on every machine, not
 only this one: `test/setup-env.ts` gives each test file its own HOME and an lcm
 home whose `config.json` names another port, and `test/setup-port-guard.mjs`
-refuses the default port in every Node process the suite runs, failing the test
-file that tried. `test/port-guard.test.ts` holds both in place.
+refuses the default port (`LCM_TEST_GUARDED_PORTS`) in every Node process the
+suite runs, logging each refusal under `LCM_TEST_GUARD_DIR` and failing the test
+file that made it. `test/port-guard.test.ts` holds both in place.
 
 ## Operations
 
