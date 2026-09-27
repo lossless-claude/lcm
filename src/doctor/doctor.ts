@@ -304,6 +304,12 @@ function checkPassiveLearning(results: CheckResult[], hooksInstalled: boolean, v
         status: snapshot.truncated || snapshot.failures.length > 0 ? "warn" : "pass",
         message: `${harness} hook snapshot ${session} (observed activity only${snapshot.truncated ? ", truncated" : ""}):\n${lines}` });
     }
+    if (detailed.recentHookObservations.length === 0 && detailed.hookFailures === 0
+      && commandLog.outcomes.length === 0
+      && localSnapshots.every(({ snapshot }) => snapshot.observations.length === 0 && snapshot.failures.length === 0)) {
+      results.push({ name: "hook-coverage", category: "Passive Learning", status: "warn",
+        message: "Hook coverage unknown: no retained observations were found. Missing evidence cannot establish whether hooks ran." });
+    }
   }
 }
 

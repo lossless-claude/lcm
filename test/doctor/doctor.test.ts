@@ -204,6 +204,13 @@ describe("runDoctor summarizer modes", () => {
 });
 
 describe("Passive Learning checks", () => {
+  it("reports unknown hook coverage when verbose inspection finds no retained evidence", async () => {
+    const results = await runDoctor(minimalDeps({ cwd: "/tmp/lcm-no-hook-evidence-project" }), true);
+    expect(results.find((result) => result.name === "hook-coverage")).toMatchObject({
+      status: "warn", message: expect.stringContaining("coverage unknown"),
+    });
+  });
+
   it("shows Codex hook outcomes in verbose mode without the Claude plugin", async () => {
     vi.mocked(collectDetailedEventStats).mockReturnValueOnce({
       captured: 0, unprocessed: 0, errors: 0, lastCapture: null, scanned: 1, total: 1,
