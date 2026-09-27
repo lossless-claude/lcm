@@ -300,7 +300,7 @@ Valid provider values are:
 { "llm": { "provider": "session", "fallbackProvider": "claude-process" } }
 ```
 
-- `llm.fallbackProvider` answers a job the session does not serve within 20 s (no module loaded, session gone, spend cap reached, or an error). Any provider except `session` is valid. When absent, the `auto` resolution above applies. A provider you name explicitly in `llm.provider` is never replaced by the session path.
+- `llm.fallbackProvider` answers a job the session does not serve within 20 s (no module loaded, session gone, spend cap reached, an error, or an answer holding only whitespace). Any provider except `session` is valid. When absent, the `auto` resolution above applies. A provider you name explicitly in `llm.provider` is never replaced by the session path.
 - The module stops serving jobs when recorded output reaches `sessionSummarizerMaxOutputTokens`; set it in the plugin's `userConfig` (default 50000, 0 disables serving jobs). `$.model.complete` is limited to the remaining allowance, but `$.model.fork` has no output-token limit and can overshoot on its final call.
 - Usage is recorded as `session:haiku` or `session:fork`; current hosts report exact `complete` usage, while older text-only results use estimated token counts recorded in `llm_usage_stats.calls_estimated`.
 
@@ -323,6 +323,19 @@ is sent.
 `llm.reasoning` is read only by the `openai` provider — `anthropic` and the
 process-backed providers ignore it silently. It must be a JSON object: a string,
 an array, `null` or a number is rejected at config load, not at request time.
+
+### Cut-off and empty answers
+
+A summary the model did not finish is never stored. When the `openai` provider's
+response ends with `finish_reason: "length"`, or the `anthropic` provider's with
+`stop_reason: "max_tokens"`, the answer is rejected however readable its text is:
+the output budget ran out, often spent on reasoning. So is an answer from any
+provider that holds only whitespace. A rejection fails that compaction pass
+(`compact.failed`, naming the rejection); nothing from the pass is stored, and a
+replay leaves the session for its next run. The call's tokens are still counted, as a
+failed call. A length stop is not retried against the same endpoint, since the same
+request stops the same way: if it recurs, keep reasoning from spending the budget,
+with `llm.reasoning` or the endpoint's own setting.
 
 ### Token cost reporting
 

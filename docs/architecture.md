@@ -104,7 +104,7 @@ The **leaf pass** converts raw messages into leaf summaries:
 4. Resolve the most recent prior summary for continuity (passed as `previous_context` so the LLM avoids repeating known information).
 5. Send to the LLM with the leaf prompt.
 6. Normalize provider response blocks (Anthropic/OpenAI text, output_text, and nested content/summary shapes) into plain text.
-7. If normalization is empty, re-run it against the whole response envelope (some providers put the text in a top-level field), then retry the request once at temperature 0.05, and only then fall back to deterministic truncation, logging provider/model/block-type diagnostics.
+7. Reject an answer the model did not finish or that holds no text (see [Rejected answers](#rejected-answers)): the pass stops before anything is persisted.
 8. If the summary is larger than the input (LLM failure), retry with the aggressive prompt. If still too large, fall back to deterministic truncation.
 9. Persist the summary, link to source messages, and replace the message range in context_items.
 
@@ -115,7 +115,7 @@ The **condensed pass** merges summaries at the same depth into a higher-level su
 1. Find the shallowest depth with enough contiguous same-depth summaries (≥ `leafMinFanout` for d0, ≥ `condensedMinFanout` for d1+).
 2. Concatenate their content with time range headers.
 3. Send to the LLM with the depth-appropriate prompt (d1, d2, or d3+).
-4. Apply the same escalation strategy (normal → aggressive → truncation fallback).
+4. Apply the same answer check and escalation strategy (normal → aggressive → truncation fallback).
 5. Persist with depth = targetDepth + 1, link to parent summaries, replace the range in context_items.
 
 ### Compaction sweep
@@ -178,7 +178,26 @@ Every summarization attempt follows this escalation:
 2. **Aggressive** — Tighter prompt requesting only durable facts, temperature 0.1, lower target tokens
 3. **Fallback** — Deterministic truncation to ~512 tokens, ending in a `[Truncated from N tokens]` marker (N is the input size)
 
-This ensures compaction always makes progress, even if the LLM produces poor output.
+The fallback keeps compaction making progress when the LLM answers but does not shrink its
+input; it never stands in for a rejected answer.
+
+### Rejected answers
+
+An answer is not a summary when the model stopped at its output limit — an OpenAI-compatible
+`finish_reason: "length"`, an Anthropic `stop_reason: "max_tokens"` — or when it holds only
+whitespace. A reasoning model can spend the whole output budget thinking and return a
+readable but cut-off tail, so a length stop is rejected however the text looks. The HTTP
+adapters throw `SummaryRejectedError` (`src/llm/summary-rejection.ts`) after reporting the
+call's usage; `CompactionEngine` applies the same whitespace check to every provider's answer,
+leaf and condensed, before the escalation above. An adapter does not retry a length stop,
+since the same request with the same budget stops the same way; an empty answer is retried
+like a transient failure.
+
+A rejection fails the pass: nothing from it is persisted and context is unchanged, while
+passes that finished earlier in the same compaction stay. `/compact` answers 500 naming the
+rejection and logs `compact.failed`, so a replay does not ledger the session and the next run
+retries it. The rejected call's tokens are recorded in `llm_usage_stats` as a failed call.
+The session provider's rejected answer goes to `llm.fallbackProvider`, as an error does.
 
 ## Context assembly
 

@@ -6,6 +6,7 @@ import {
 } from "../summarize.js";
 import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "./types.js";
 import { buildSummaryPrompt } from "./prompt.js";
+import { acceptSummaryText, SummaryRejectedError } from "./summary-rejection.js";
 
 export type { LcmSummarizeFn } from "./types.js";
 
@@ -72,18 +73,22 @@ export function createAnthropicSummarizer(opts: SummarizerOptions): LcmSummarize
           messages: [{ role: "user", content: prompt }],
         });
 
-        // Reported before the empty-content check: those tokens were charged
+        // Reported before the answer is judged: those tokens were charged
         // even when the model returned nothing usable.
         const usage = toUsage(response, opts.model);
         if (usage) ctx.onUsage?.(usage);
 
+        // A max_tokens stop is a cut-off tail, not a summary, however readable it looks.
+        if (response.stop_reason === "max_tokens") {
+          throw new SummaryRejectedError({ reason: "max_tokens", provider: "anthropic", model: usage?.model ?? opts.model });
+        }
         const textContent = response.content.find((c: any) => c.type === "text")?.text ?? "";
         // Empty content is a failure, not a summary: falling back to a slice of
         // the input would persist raw conversation text as a fake summary.
-        if (!textContent) throw new Error("summarizer returned empty content");
-        return textContent;
+        return acceptSummaryText(textContent, "anthropic", usage?.model ?? opts.model);
       } catch (err: any) {
         if (err?.status === 401) throw err; // auth error: no retry
+        if (err instanceof SummaryRejectedError && !err.retryable) throw err;
         lastError = err;
         if (attempt < MAX_RETRIES - 1) await sleep(retryDelayMs * Math.pow(2, attempt));
       }

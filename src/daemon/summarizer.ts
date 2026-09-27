@@ -10,6 +10,7 @@ import { createCodexProcessSummarizer } from "../llm/codex-process.js";
 import { createCopilotProcessSummarizer } from "../llm/copilot-process.js";
 import { createMockSummarizer } from "../llm/mock-summarizer.js";
 import type { LcmSummarizeFn } from "../llm/types.js";
+import { acceptSummaryText, SummaryRejectedError } from "../llm/summary-rejection.js";
 import type { SessionClient } from "../session-client.js";
 
 /** The client a /compact call came from; copilot never calls, but its summarizer can be pinned by name. */
@@ -81,15 +82,24 @@ export async function createSummarizer(
             tokensUsed: attempt.usage.input_tokens + attempt.usage.output_tokens,
             estimated: attempt.usage.estimated, failed: attempt.failed ?? true });
         }
-        if (!answer.error && answer.text?.trim()) {
+        if (answer.error) {
+          sessionMissReason = String(answer.error);
+        } else {
+          const text = answer.text ?? "";
           const inputTokens = answer.usage?.input_tokens ?? Math.ceil((system.length + prompt.length) / 4);
-          const outputTokens = answer.usage?.output_tokens ?? Math.ceil(answer.text.length / 4);
+          const outputTokens = answer.usage?.output_tokens ?? Math.ceil(text.length / 4);
           const provider = answer.providerId ?? (ctx.isCondensed ? "session:fork" : "session:haiku");
+          // Reported before the answer is judged: a rejected answer was still charged.
           ctx.onUsage?.({ provider, model: provider.split(":")[1], inputTokens, outputTokens,
             tokensUsed: inputTokens + outputTokens, estimated: answer.usage?.estimated ?? true });
-          return answer.text.trim();
+          try {
+            return acceptSummaryText(text, provider).trim();
+          } catch (err) {
+            // A rejected answer goes to the fallback like an error does.
+            if (!(err instanceof SummaryRejectedError)) throw err;
+            sessionMissReason = err.message;
+          }
         }
-        sessionMissReason = answer.error ? String(answer.error) : "empty answer";
       }
       const fallbackConfig = { ...config, llm: { ...config.llm, provider: config.llm.fallbackProvider ?? "auto" as const } };
       const fallbackProvider = resolveEffectiveProvider(fallbackConfig, ctx.client);

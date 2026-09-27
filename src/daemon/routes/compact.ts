@@ -20,6 +20,7 @@ import { eventsDbPath } from "../../db/events-path.js";
 import { CompactionEngine, compactEngineConfig, COMPACT_TOKEN_BUDGET } from "../../compaction.js";
 import { TranscriptSourceError } from "../../transcript-source.js";
 import type { LcmSummarizeFn } from "../../llm/types.js";
+import { acceptSummaryText } from "../../llm/summary-rejection.js";
 import { ScrubEngine } from "../../scrub.js";
 import {
   resolveEffectiveProvider,
@@ -478,11 +479,21 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
 
           let sawReportedUsageModel = false;
           const summarizeWithUsage: LcmSummarizeFn = async (text, aggressive, ctx = {}) => {
-            const callTokensSpent: { tokens: number; input: number; cached: number; output: number; cost?: number } =
+            // One attempt is what one provider answered: the session's answer and the
+            // fallback that replaced it are two attempts, each settled with its own outcome.
+            let callTokensSpent: { tokens: number; input: number; cached: number; output: number; cost?: number } =
               { tokens: 0, input: 0, cached: 0, output: 0 };
             let sawUsage = false;
             const callUsage = new Map<string, CompactLlmUsage>();
-            const finishUsage = (ok: boolean) => {
+            // Only an attempt whose answer is kept names the provider that answered.
+            const attemptAnswering = new Set<string>();
+            const settleAttempt = (ok: boolean) => {
+              if (sawUsage) {
+                llmUsage.calls += 1;
+                llmUsage.okCalls += ok ? 1 : 0;
+                llmUsage.failedCalls += ok ? 0 : 1;
+                addTokens(llmUsage, callTokensSpent);
+              }
               for (const call of callUsage.values()) {
                 const key = JSON.stringify([call.provider, call.model]);
                 const bucket = usageByProvider.get(key) ?? createCompactLlmUsage(call.provider, call.model);
@@ -496,14 +507,21 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                   cached: call.tokensCached, output: call.tokensOutput, cost: call.costUsd });
                 usageByProvider.set(key, bucket);
               }
+              if (ok) for (const provider of attemptAnswering) answeringProviders.add(provider);
+              attemptAnswering.clear();
+              callUsage.clear();
+              callTokensSpent = { tokens: 0, input: 0, cached: 0, output: 0 };
+              sawUsage = false;
             };
             try {
-              const summary = await lease.yieldWhile(() => activeSummarize(text, aggressive, {
+              const answer = await lease.yieldWhile(() => activeSummarize(text, aggressive, {
                 ...ctx,
                 sessionId: session_id,
                 client,
-                onFallback: ({ reason, toProvider }) =>
-                  log.write("warn", "summarizer.fallback", { cwd, session_id, reason, to_provider: toProvider }),
+                onFallback: ({ reason, toProvider }) => {
+                  settleAttempt(false); // the abandoned attempt was charged but answered nothing usable
+                  log.write("warn", "summarizer.fallback", { cwd, session_id, reason, to_provider: toProvider });
+                },
                 onUsage: (usage) => {
                   // Every provider reports normalized usage; only providers
                   // whose response carries it call onUsage at all.
@@ -516,7 +534,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                   }
                   if (usage.failed === true) bucket.failedCalls += 1;
                   else if (usage.failed === false) bucket.okCalls += 1;
-                  else answeringProviders.add(usage.provider);
+                  else attemptAnswering.add(usage.provider);
                   // One per estimated response, not a flag: a call that retries reports
                   // usage more than once and each estimated response counts.
                   bucket.callsEstimated = (bucket.callsEstimated ?? 0) + (usage.estimated ? 1 : 0);
@@ -538,20 +556,13 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                   ctx.onUsage?.(usage);
                 },
               }));
-              if (sawUsage) {
-                llmUsage.calls += 1;
-                llmUsage.okCalls += 1;
-                addTokens(llmUsage, callTokensSpent);
-              }
-              finishUsage(true);
+              // The engine gates every answer too; judging it here as well keeps an answer
+              // the engine will reject from being counted as a successful call.
+              const summary = acceptSummaryText(answer, effectiveProvider);
+              settleAttempt(true);
               return summary;
             } catch (error) {
-              if (sawUsage) {
-                llmUsage.calls += 1;
-                llmUsage.failedCalls += 1;
-                addTokens(llmUsage, callTokensSpent);
-              }
-              finishUsage(false);
+              settleAttempt(false);
               throw error;
             }
           };

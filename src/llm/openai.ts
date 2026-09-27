@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "./types.js";
 import { buildSummaryPrompt } from "./prompt.js";
+import { acceptSummaryText, SummaryRejectedError } from "./summary-rejection.js";
 import {
   LCM_SUMMARIZER_SYSTEM_PROMPT,
   resolveTargetTokens,
@@ -96,18 +97,22 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
           ],
         });
 
-        // Reported before the empty-content check: a reasoning model that
-        // spends the whole budget thinking still charged for those tokens.
+        // Reported before the answer is judged: a reasoning model that spends
+        // the whole budget thinking still charged for those tokens.
         const usage = toUsage(response, opts.model);
         if (usage) ctx.onUsage?.(usage);
 
-        const textContent = response.choices[0]?.message?.content ?? "";
+        const choice = response.choices[0];
+        // A length stop is a cut-off tail, not a summary, however readable it looks.
+        if (choice?.finish_reason === "length") {
+          throw new SummaryRejectedError({ reason: "length", provider: "openai", model: usage?.model ?? opts.model });
+        }
         // Empty content is a failure, not a summary: falling back to a slice of
         // the input would persist raw conversation text as a fake summary.
-        if (!textContent) throw new Error("summarizer returned empty content");
-        return textContent;
+        return acceptSummaryText(choice?.message?.content ?? "", "openai", usage?.model ?? opts.model);
       } catch (err: any) {
         if (err?.status === 401) throw err; // auth error: no retry
+        if (err instanceof SummaryRejectedError && !err.retryable) throw err;
         lastError = err;
         if (attempt < MAX_RETRIES - 1) await sleep(retryDelayMs * Math.pow(2, attempt));
       }

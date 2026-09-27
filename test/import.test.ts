@@ -813,6 +813,45 @@ describe("importSessions replay resume", () => {
     expect(projDir).toBeTruthy();
   });
 
+  it("a session whose summary was rejected stays out of the ledger and is compacted by the next run", async () => {
+    const cwd = "/test/resume-rejected";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2"]);
+    // The shape /compact answers a rejected summary with: a 500 naming the rejection, carrying its usage.
+    const rejected = Object.assign(new Error('summary rejected: openai (reasoner) stopped at the output token limit (finish_reason "length")'), {
+      status: 500,
+      body: {
+        error: 'summary rejected: openai (reasoner) stopped at the output token limit (finish_reason "length")',
+        llmUsage: { provider: "openai", model: "reasoner", calls: 1, okCalls: 0, failedCalls: 1,
+          tokensSpent: 16_024, tokensInput: 15_000, tokensCached: 0, tokensOutput: 1_024 },
+      },
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const first = makeMockClient(async (path: string, body: any) => {
+      if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
+      if (body.session_id === "s2") throw rejected;
+      return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: "summary-of-s1", latestSummaryId: "sum-s1" };
+    });
+    const firstRun = await importSessions(first, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+    expect(firstRun.replayUsage).toMatchObject({ okCalls: 0, failedCalls: 1, tokensOutput: 1_024 });
+
+    const db = new DatabaseSync(join(lcmDir, "projects", projectId(cwd), "db.sqlite"));
+    try {
+      const ledger = db.prepare("SELECT session_id, outcome FROM replay_ledger ORDER BY session_id").all();
+      expect(ledger).toEqual([{ session_id: "s1", outcome: "compacted" }]);
+    } finally {
+      db.close();
+    }
+
+    const compacted: string[] = [];
+    const second = makeMockClient(async (path: string, body: any) => {
+      if (path === "/ingest") return { ingested: 0, totalTokens: 0 };
+      compacted.push(body.session_id);
+      return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: "summary-of-s2", latestSummaryId: "sum-s2" };
+    });
+    await importSessions(second, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+    expect(compacted).toEqual(["s2"]);
+  });
+
   it("first-ever replay into a project with no database still records its manifest", async () => {
     const cwd = "/test/resume-fresh-db";
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2"]);
