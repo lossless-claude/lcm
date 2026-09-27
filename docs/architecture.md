@@ -214,7 +214,7 @@ endpoint and variable, and `/health` and `lcm doctor` report the endpoints left 
 
 Each link runs at most once per call, after its adapter's own retries. The next link runs
 after a session that did not answer (`SessionUnavailableError`), a `SummaryRejectedError`, a
-refused key (401/403), a connection failure or a transient status still failing after the
+refused key (401/403), an account that cannot pay (402), a connection failure or a transient status still failing after the
 retries (408, 429, 5xx), or a failed CLI run. Anything else — a 400/422, a cancelled request,
 a missing client library, an unclassified exception — is thrown at once, since trying the next
 link would hide it. When more than one link ran and all failed, the chain throws
