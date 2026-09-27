@@ -12,6 +12,7 @@ import { lcmHome } from "../../../src/lcm-home.js";
 import { createLcmPaths } from "../../../src/lcm-paths.js";
 
 const paths = createLcmPaths(lcmHome());
+const BACKLOG = 20;
 
 // Mock eventsDbPath to point at our temp dir
 vi.mock("../../../src/db/events-path.js", () => ({
@@ -221,6 +222,40 @@ describe("promote-events route", () => {
     expect(result.promoted).toBe(0);
     expect(result.message).toBe("no unprocessed events");
     expect(deduplicateAndInsert).not.toHaveBeenCalled();
+  });
+
+  function seedDecisions(count: number): void {
+    const edb = new EventsDb(sidecarPath);
+    for (let i = 0; i < count; i++) {
+      edb.insertEvent("s1", { type: "decision", category: "decision", data: `decision ${i}`, priority: 1 }, "PostToolUse");
+    }
+    edb.close();
+    setupProjectDb(dir).close();
+  }
+
+  it("lets the event loop run between events of a backlog", async () => {
+    seedDecisions(BACKLOG);
+    const handler = createPromoteEventsHandler(makeConfig(), paths);
+    const { res, getBody } = mockRes();
+
+    let otherWorkRan = false;
+    setImmediate(() => { otherWorkRan = true; });
+    await handler({} as any, res, JSON.stringify({ cwd: dir }));
+
+    expect(getBody().promoted).toBe(BACKLOG);
+    expect(otherWorkRan).toBe(true);
+  });
+
+  it("two concurrent runs for one project promote each event once", async () => {
+    seedDecisions(BACKLOG);
+    const handler = createPromoteEventsHandler(makeConfig(), paths);
+
+    await Promise.all([
+      handler({} as any, mockRes().res, JSON.stringify({ cwd: dir })),
+      handler({} as any, mockRes().res, JSON.stringify({ cwd: dir })),
+    ]);
+
+    expect(deduplicateAndInsert).toHaveBeenCalledTimes(BACKLOG);
   });
 
   it("returns 400 when cwd is missing", async () => {

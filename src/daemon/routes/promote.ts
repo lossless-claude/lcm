@@ -15,6 +15,7 @@ import { shouldPromote } from "../../promotion/detector.js";
 import { deduplicateAndInsert } from "../../promotion/dedup.js";
 import { validateCwd } from "../validate-cwd.js";
 import { noopDaemonLog, type DaemonLog } from "../log.js";
+import { acquireProjectMutation, yieldToEventLoop } from "../project-queue.js";
 
 export function createPromoteHandler(
   config: DaemonConfig,
@@ -44,12 +45,15 @@ export function createPromoteHandler(
       return;
     }
 
-    const db = new DatabaseSync(dbPath);
+    // Held across the loop's yields: a second run must not read the promoted set before this one writes it.
+    const lease = await acquireProjectMutation(projectId(cwd));
+    let db: DatabaseSync | undefined;
     let processed = 0;
     let promoted = 0;
     let totalConversations = 0;
 
     try {
+      db = new DatabaseSync(dbPath);
       db.exec("PRAGMA busy_timeout = 5000");
       runLcmMigrations(db);
       mkdirSync(dirname(dbPath), { recursive: true });
@@ -68,6 +72,7 @@ export function createPromoteHandler(
       totalConversations = conversations.length;
 
       for (const conversation of conversations) {
+        await yieldToEventLoop();
         const summaries = await summStore.getSummariesByConversation(conversation.conversationId);
 
         for (const summary of summaries) {
@@ -76,6 +81,7 @@ export function createPromoteHandler(
           if (alreadyPromotedContent.has(summary.content.slice(0, 100))) continue;
 
           processed++;
+          await yieldToEventLoop();
 
           const promotionResult = shouldPromote(
             {
@@ -126,7 +132,8 @@ export function createPromoteHandler(
       sendJson(res, 500, { error: err instanceof Error ? err.message : "promote failed" });
       return;
     } finally {
-      db.close();
+      db?.close();
+      lease.release();
     }
 
     log.write("info", "promote.done", { cwd, processed, promoted, dry_run });

@@ -239,6 +239,49 @@ describe("daemon log", () => {
     expect(JSON.stringify(records)).not.toContain("never logged");
   });
 
+  it("logs a request when it starts, at debug", async () => {
+    const opts = options({ level: "debug" });
+    daemon = await createDaemon(loadDaemonConfig("/x", { daemon: { port: 0 } }), { log: openDaemonLog(opts) });
+    daemon.registerRoute("POST", "/quiet", async (_req, res) => { res.writeHead(200); res.end("{}"); });
+    await fetch(`http://127.0.0.1:${daemon.address().port}/quiet`, {
+      method: "POST", body: JSON.stringify({ session_id: "s1", cwd: "/work/p" }),
+    });
+    await new Promise((r) => setTimeout(r, FINISH_FLUSH_MS));
+    const events = readDaemonLog(opts.path, { since: EPOCH }).filter((r) => r.route === "POST /quiet").map((r) => r.event);
+    expect(events).toEqual(["request.start", "request"]);
+    expect(readDaemonLog(opts.path, { since: EPOCH }).find((r) => r.event === "request.start"))
+      .toMatchObject({ level: "debug", session_id: "s1", cwd: "/work/p" });
+  });
+
+  it("names the request that blocked the event loop once the stall ends", async () => {
+    const opts = options();
+    const stallThresholdMs = 200;
+    daemon = await createDaemon(loadDaemonConfig("/x", { daemon: { port: 0 } }), { log: openDaemonLog(opts), stallThresholdMs });
+    daemon.registerRoute("POST", "/busy", async (_req, res) => {
+      const until = Date.now() + stallThresholdMs * 3;
+      while (Date.now() < until) { /* a synchronous query that does not return */ }
+      res.writeHead(200);
+      res.end("{}");
+    });
+    await fetch(`http://127.0.0.1:${daemon.address().port}/busy`, {
+      method: "POST", body: JSON.stringify({ session_id: "s2", cwd: "/work/q" }),
+    });
+    await new Promise((r) => setTimeout(r, stallThresholdMs * 3)); // the next tick reports it
+    const stalls = readDaemonLog(opts.path, { since: EPOCH }).filter((r) => r.event === "daemon.stalled" && r.route === "POST /busy");
+    expect(stalls).toHaveLength(1);
+    expect(stalls[0]).toMatchObject({ level: "warn", session_id: "s2", cwd: "/work/q" });
+    expect(stalls[0].ms).toBeGreaterThanOrEqual(stallThresholdMs);
+    expect(typeof stalls[0].started_at).toBe("string");
+
+    // A later stall with nothing in flight names no route: the finished request was forgotten.
+    const until = Date.now() + stallThresholdMs * 3;
+    while (Date.now() < until) { /* blocked outside any request */ }
+    await new Promise((r) => setTimeout(r, stallThresholdMs * 3));
+    const later = readDaemonLog(opts.path, { since: EPOCH }).filter((r) => r.event === "daemon.stalled");
+    expect(later.filter((r) => r.route === "POST /busy")).toHaveLength(1);
+    expect(later.some((r) => r.route === undefined)).toBe(true);
+  });
+
   it("logs a request the daemon refuses before any route runs", async () => {
     const opts = options();
     const tokenPath = join(home, "daemon.token");

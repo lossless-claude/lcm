@@ -10,6 +10,7 @@ import { runLcmMigrations } from "../../db/migration.js";
 import type { DaemonConfig } from "../config.js";
 import type { LcmPaths } from "../../lcm-paths.js";
 import { safeLogError } from "../../hooks/hook-errors.js";
+import { acquireProjectMutation, yieldToEventLoop } from "../project-queue.js";
 
 const AUTO_TAGS: Record<string, string> = {
   decision: "type:preference",
@@ -100,6 +101,8 @@ export function createPromoteEventsHandler(config: DaemonConfig, paths: LcmPaths
 
     const result: PromoteResult = { promoted: 0, skipped: 0, correlated: 0, errors: 0 };
 
+    // Held across the loop's yields: a second run must not read the unprocessed events before this one marks them.
+    const lease = await acquireProjectMutation(projectId(cwd));
     try {
       const sidecarPath = eventsDbPath(cwd, paths);
       const edb = new EventsDb(sidecarPath);
@@ -149,6 +152,7 @@ export function createPromoteEventsHandler(config: DaemonConfig, paths: LcmPaths
           const processedIds: number[] = [];
 
           for (const event of events) {
+            await yieldToEventLoop();
             try {
               const autoTag = (event as EventRow & { auto_tag?: string }).auto_tag;
               const tag = autoTag ?? AUTO_TAGS[event.category] ?? `category:${event.category}`;
@@ -244,6 +248,8 @@ export function createPromoteEventsHandler(config: DaemonConfig, paths: LcmPaths
       safeLogError("promote-events", error, { cwd, paths });
       sendJson(res, 500, { error: "failed to promote events" });
       return;
+    } finally {
+      lease.release();
     }
 
     sendJson(res, 200, result);

@@ -38,6 +38,7 @@ import { PKG_VERSION, BUILD_ID } from "./version.js";
 import { lcmHome } from "../lcm-home.js";
 import { createLcmPaths, type LcmPaths } from "../lcm-paths.js";
 import { noopDaemonLog, type DaemonLog, type LogLevel } from "./log.js";
+import { STALL_THRESHOLD_MS, watchEventLoop, type Stall } from "./stall-monitor.js";
 export { PKG_VERSION };
 
 export type RouteHandler = (req: IncomingMessage, res: ServerResponse, body: string) => Promise<void>;
@@ -57,6 +58,8 @@ export type DaemonOptions = {
   backfillIdentities?: boolean;
   /** Where the daemon records requests, outcomes and failures. Defaults to a log that drops everything. */
   log?: DaemonLog;
+  /** How long the event loop may stay blocked before `daemon.stalled` is logged. */
+  stallThresholdMs?: number;
 };
 
 const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
@@ -68,6 +71,24 @@ function requestLevel(key: string, status: number): LogLevel {
   if (status >= 500) return "error";
   if (status >= 400) return "warn";
   return DEBUG_ROUTES.has(key) || key.startsWith("POST /summarize-jobs/") ? "debug" : "info";
+}
+
+/** A request the daemon has accepted; `ended` is set once its response closes. */
+type InFlightRequest = { route: string; started: number; ended?: number; cwd?: string; session_id?: string };
+
+/**
+ * One `daemon.stalled` record per request in flight at any point since the tick before
+ * the stall, or one without a route when there was none; then forgets requests that ended.
+ */
+function reportStall(log: DaemonLog, inFlight: Set<InFlightRequest>, stall: Stall | undefined): void {
+  if (stall) {
+    const involved = [...inFlight].filter((r) => r.ended === undefined || r.ended >= stall.since);
+    if (involved.length === 0) log.write("warn", "daemon.stalled", { ms: stall.ms });
+    for (const r of involved) {
+      log.write("warn", "daemon.stalled", { ms: stall.ms, route: r.route, cwd: r.cwd, session_id: r.session_id, started_at: new Date(r.started).toISOString() });
+    }
+  }
+  for (const r of inFlight) if (r.ended !== undefined) inFlight.delete(r);
 }
 
 /** The identity fields of a JSON body, for the request line; never the body itself. */
@@ -182,11 +203,17 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
     : undefined;
   identityBackfill?.unref();
 
+  const inFlight = new Set<InFlightRequest>();
+  let stopStallWatch: (() => void) | undefined;
+
   const server: Server = createServer(async (req, res) => {
     resetIdleTimer();
     const key = `${req.method} ${req.url?.split("?")[0]}`;
     const started = Date.now();
     let identity: { cwd?: string; session_id?: string } = {};
+    const current: InFlightRequest = { route: key, started };
+    inFlight.add(current);
+    res.on("close", () => { current.ended = Date.now(); });
     // Registered before the 404 and 401 answers: a stale token on a fire-and-forget request fails only here.
     res.on("finish", () => log.write(requestLevel(key, res.statusCode), "request",
       { route: key, status: res.statusCode, ms: Date.now() - started, ...identity }));
@@ -204,6 +231,9 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
     try {
       const body = req.method !== "GET" ? await readBody(req) : "";
       identity = requestIdentity(body);
+      Object.assign(current, identity);
+      // A request that never completes has no `request` record; this one is its trace.
+      log.write("debug", "request.start", { route: key, ...identity });
       if (identity.cwd) await log.prepare(identity.cwd);
       await handler(req, res, body);
     } catch (err: unknown) {
@@ -226,12 +256,14 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   return new Promise((resolve, reject) => {
     server.once("error", (err) => {
       clearInterval(ingestInterval);
+      stopStallWatch?.();
       if (identityBackfill) clearTimeout(identityBackfill);
       if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
       reject(err);
     });
     server.listen(config.daemon.port, "127.0.0.1", () => {
       resetIdleTimer();
+      stopStallWatch = watchEventLoop(options?.stallThresholdMs ?? STALL_THRESHOLD_MS, (stall) => reportStall(log, inFlight, stall));
       const addr = server.address() as AddressInfo;
       const actualPort = addr.port;
 
@@ -248,6 +280,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
         stop: async () => {
           summarizeJobs.close();
           clearInterval(ingestInterval);
+          stopStallWatch?.();
           if (identityBackfill) clearTimeout(identityBackfill);
           if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
           if (proxyManager) {

@@ -14,6 +14,7 @@ import { lcmHome } from "../../../src/lcm-home.js";
 import { createLcmPaths } from "../../../src/lcm-paths.js";
 
 const paths = createLcmPaths(lcmHome());
+const BACKLOG = 20;
 
 function makeConfig(): DaemonConfig {
   return {
@@ -200,6 +201,63 @@ describe("createPromoteHandler", () => {
     const rows = db2.prepare("SELECT COUNT(*) as count FROM promoted").get() as { count: number };
     db2.close();
     expect(rows.count).toBe(0);
+  });
+
+  async function seedPromotable(count: number): Promise<string> {
+    const tempDir = mkdtempSync(join(tmpdir(), "lcm-promote-test-"));
+    tempDirs.push(tempDir);
+    const db = setupDb(tempDir);
+    const convStore = new ConversationStore(db);
+    const summStore = new SummaryStore(db);
+    const conv = await convStore.getOrCreateConversation("session-backlog");
+    for (let i = 0; i < count; i++) {
+      await summStore.insertSummary({
+        summaryId: `sum_${randomUUID()}`,
+        conversationId: conv.conversationId,
+        kind: "leaf",
+        content: `Topic ${i}: we decided to use store${i} for component${i}. This is an architecture decision.`,
+        depth: 2,
+        tokenCount: 50,
+        sourceMessageTokenCount: 500,
+        descendantCount: 5,
+        descendantTokenCount: 450,
+        earliestAt: new Date(),
+        latestAt: new Date(),
+      });
+    }
+    db.close();
+    return tempDir;
+  }
+
+  it("lets the event loop run between summaries of a backlog", async () => {
+    const tempDir = await seedPromotable(BACKLOG);
+    const handler = createPromoteHandler(makeConfig(), paths);
+    const { res, getBody } = mockRes();
+
+    let otherWorkRan = false;
+    setImmediate(() => { otherWorkRan = true; });
+    await handler({} as any, res, JSON.stringify({ cwd: tempDir }));
+
+    expect(getBody().promoted).toBe(BACKLOG);
+    expect(otherWorkRan).toBe(true);
+  });
+
+  it("two concurrent runs for one project do not both promote the backlog", async () => {
+    const tempDir = await seedPromotable(BACKLOG);
+    const handler = createPromoteHandler(makeConfig(), paths);
+    const first = mockRes();
+    const second = mockRes();
+
+    await Promise.all([
+      handler({} as any, first.res, JSON.stringify({ cwd: tempDir })),
+      handler({} as any, second.res, JSON.stringify({ cwd: tempDir })),
+    ]);
+
+    expect(first.getBody().promoted + second.getBody().promoted).toBe(BACKLOG);
+    const db = new DatabaseSync(projectDbPath(tempDir, paths));
+    const rows = db.prepare("SELECT COUNT(*) AS count FROM promoted").get() as { count: number };
+    db.close();
+    expect(rows.count).toBe(BACKLOG);
   });
 
   it("returns 400 when cwd is missing", async () => {
