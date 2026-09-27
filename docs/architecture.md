@@ -340,5 +340,5 @@ config does:
    `session` provider's fallback) with no key configured.
 
 There is no profile store to consult: the process-backed providers (`claude-process`,
-`codex-process`, `copilot-process`) authenticate through their own CLI's login, so lcm never
-sees their credentials.
+`codex-process`, `copilot-process`, `omp-process`) authenticate through their own CLI's login, so
+lcm never sees their credentials.

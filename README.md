@@ -275,7 +275,7 @@ All environment variables are optional. The default summarizer mode is `auto`. T
 
 | Variable | Default | Description |
 |---|---|---|
-| `LCM_SUMMARY_PROVIDER` | `auto` | `auto`, `claude-process`, `codex-process`, `copilot-process`, `anthropic`, `openai`, `disabled`, or `session` |
+| `LCM_SUMMARY_PROVIDER` | `auto` | `auto`, `claude-process`, `codex-process`, `copilot-process`, `omp-process`, `anthropic`, `openai`, `disabled`, or `session` |
 | `ANTHROPIC_API_KEY` | unset | Read only when `llm.provider` is `anthropic` (or `session` falling back to it) and `llm.apiKey` is unset |
 | `LCM_HOME` | `~/.lossless-claude` | Where the daemon, databases, sidecars and logs live |
 | `LCM_ENABLED` | `true` | Set to `false` to make every Claude Code and Codex command hook a no-op while keeping the plugin registered |
@@ -292,6 +292,7 @@ All environment variables are optional. The default summarizer mode is `auto`. T
 - Claude caller -> `claude-process`
 - Codex caller -> `codex-process`
 - Copilot caller -> `copilot-process`
+- OMP caller -> `omp-process`
 - explicit config or `LCM_SUMMARY_PROVIDER` override always takes precedence
 
 See [`docs/configuration.md`](docs/configuration.md) for tuning notes and deeper operational guidance.

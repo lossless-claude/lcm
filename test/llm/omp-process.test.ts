@@ -1,5 +1,7 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, it, expect, vi } from "vitest";
 import {
   createOmpProcessSummarizer,
@@ -112,6 +114,50 @@ describe("buildOmpArgs", () => {
 
   it("appends --model when one is configured", () => {
     expect(buildOmpArgs(" opus ", "SYSTEM")).toEqual(expect.arrayContaining(["--model", "opus"]));
+  });
+});
+
+// Real capture of `omp --print --mode json` (omp 18.2.8), run with exactly the
+// adapter's flags, prompt on stdin. Trimmed to the events that matter for
+// parsing; cwd, ids, provider, model and thinking signatures replaced by
+// placeholders.
+const REAL_CAPTURE = readFileSync(
+  join(__dirname, "..", "fixtures", "llm", "omp-print-json.jsonl"),
+  "utf-8",
+);
+
+describe("parsing a real omp --print --mode json capture", () => {
+  it("reads the summary text, model and usage from the fixture's turn_end", () => {
+    const message = parseOmpTurnEnd(REAL_CAPTURE);
+    expect(message?.content).toEqual([
+      { type: "thinking", thinking: "", thinkingSignature: "sig" },
+      {
+        type: "text",
+        text: "Renaming a variable across two files was requested and completed by the assistant.",
+      },
+    ]);
+    expect(message?.model).toBe("example-model");
+
+    expect(parseOmpUsage(REAL_CAPTURE)).toEqual({
+      provider: "omp-process",
+      model: "example-model",
+      inputTokens: 5258,
+      cachedInputTokens: 0,
+      outputTokens: 112,
+      tokensUsed: 5370,
+    });
+  });
+
+  it("extracts only the text block as the summarizer's answer", async () => {
+    const child = makeChild();
+    const summarizer = createOmpProcessSummarizer({ spawn: vi.fn().mockReturnValue(child) as any });
+
+    const promise = summarizer("Conversation text");
+    finish(child, 0, REAL_CAPTURE);
+
+    await expect(promise).resolves.toBe(
+      "Renaming a variable across two files was requested and completed by the assistant.",
+    );
   });
 });
 
