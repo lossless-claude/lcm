@@ -49,7 +49,7 @@ TypeScript SQLite daemon that persists Claude session memories across context re
 
 ### 4. `collectStats()` performance
 
-- `collectStats()` takes ~13 seconds due to full-table scans. It must NEVER be called in:
+- `collectStats()` runs full-table scans, so its cost grows with the database. It must NEVER be called in:
   - HTTP request handlers
   - Any path that runs more than once per user action
   - Startup initialization (lazy evaluation only)
@@ -81,7 +81,7 @@ TypeScript SQLite daemon that persists Claude session memories across context re
 
 ### 9. Daemon client conventions
 
-- Daemon HTTP requests must send the `Authorization: ******` header; the token is read via `readAuthToken(join(homedir(), ".lossless-claude", "daemon.token"))`. Auth is mandatory; a 401 arrives as a normal HTTP response, not a socket error — flag client code paths that drop the header or mishandle 401s.
+- Daemon HTTP requests must send the `Authorization: Bearer <token>` header; the token is read via `readAuthToken(join(homedir(), ".lossless-claude", "daemon.token"))`. Auth is mandatory; a 401 arrives as a normal HTTP response, not a socket error — flag client code paths that drop the header or mishandle 401s.
 - `DaemonClient` throws `Error` objects annotated with the HTTP status and parsed JSON body (`e.status`, `e.body`) on non-2xx responses — flag client code that swallows non-2xx responses or loses the status/body annotations.
 
 ### 10. Source references in prose
