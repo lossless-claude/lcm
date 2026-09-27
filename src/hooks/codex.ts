@@ -324,7 +324,7 @@ export async function dispatchCodexHook(
       observeHook(input.cwd, { sessionId: input.session_id, harness: "codex",
         hook: input.hook_event_name, operation, kind: "execution", status, reason,
         ...(status === "failed" ? { failureCode: reason } : {}) }, paths);
-    const observeDelivery = (operation: string, status: "rejected" | "unconfirmed", reason: string) =>
+    const observeDelivery = (operation: string, status: "accepted" | "rejected" | "unconfirmed", reason = "") =>
       observeHook(input.cwd, { sessionId: input.session_id, harness: "codex",
         hook: input.hook_event_name, operation, kind: "delivery", status, reason,
         ...(status === "rejected" ? { failureCode: reason } : {}) }, paths);
@@ -366,6 +366,7 @@ export async function dispatchCodexHook(
           ...identity, transcript_path: input.transcript_path,
         }, { timeoutMs: shortDeadline ? 1500 : 5000, signal });
         transcriptValidated = true;
+        observeDelivery("capture", "accepted");
         observe("capture", "completed");
       } catch (error) {
         // Existing memory remains useful even if a transcript is not ready yet.
@@ -381,6 +382,7 @@ export async function dispatchCodexHook(
       const restored = await client.post<{ context?: string }>("/restore", {
         ...identity, source: input.source ?? "startup",
       }, { timeoutMs: 10_000, signal });
+      observeDelivery("restore", "accepted");
       observe("restore", "completed", restored.context ? "context" : "no-context");
       if (input.source === "compact" && transcriptValidated && input.transcript_path &&
           await hasContextAfterCompaction(input.transcript_path, restored.context ?? "")) return EMPTY;
@@ -393,6 +395,7 @@ export async function dispatchCodexHook(
       }>("/prompt-search", {
         ...identity, query: input.prompt, learningInstructionBytes: 0, nativeHistory: true,
       }, { timeoutMs: 5000, signal });
+      observeDelivery("search", "accepted");
       observe("search", "completed", recalled.hints?.length ? "hints" : "no-hints");
       return contextOutput("UserPromptSubmit", buildMemoryContext(
         recalled.hints ?? [], recalled.ids ?? [], recalled.projectIds ?? [], recalled.pivotHint,

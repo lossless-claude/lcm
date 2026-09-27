@@ -439,13 +439,25 @@ async function nextSummaryJob(
 
 type SummaryBudget = { spent: number; cap: number };
 
+async function postSummaryAnswer($: EngineInterface, job: SummaryJob, route: string, body: unknown): Promise<void> {
+  try {
+    const outcome = await postDaemonOutcome($, route, body);
+    noteHook(job.session_id, "session.start", "summary-answer", "delivery", ...delivery(outcome));
+  } catch (error) {
+    noteHook(job.session_id, "session.start", "summary-answer", "delivery", "unconfirmed", "transport");
+    throw error;
+  } finally {
+    await flushHookObservations($, job.session_id);
+  }
+}
+
 /** Answers one job. Returns the output tokens it spent, or null when the cap was hit. */
 async function serveSummaryJob(
   $: EngineInterface, job: SummaryJob, { spent, cap }: SummaryBudget,
 ): Promise<number | null> {
   const route = `/summarize-jobs/${encodeURIComponent(job.id)}`;
   if (spent >= cap) {
-    await postDaemon($, route, { error: "spend cap" });
+    await postSummaryAnswer($, job, route, { error: "spend cap" });
     return null;
   }
   let answer: SummaryAnswer;
@@ -454,7 +466,7 @@ async function serveSummaryJob(
   } catch (error) {
     const attempts = (error as SummaryFailure)?.usageAttempts ?? [];
     const used = attempts.reduce((sum, attempt) => sum + attempt.usage.output_tokens, 0);
-    await postDaemon($, route, { error: spent + used > cap ? "spend cap" : error instanceof Error ? error.message : String(error),
+    await postSummaryAnswer($, job, route, { error: spent + used > cap ? "spend cap" : error instanceof Error ? error.message : String(error),
       ...(attempts.length ? { usageAttempts: attempts } : {}) });
     return spent + used > cap ? null : used;
   }
@@ -462,15 +474,15 @@ async function serveSummaryJob(
     { providerId: answer.providerId, usage: answer.usage }];
   const totalOutput = attempts.reduce((sum, attempt) => sum + attempt.usage.output_tokens, 0);
   if (spent + totalOutput > cap) {
-    await postDaemon($, route, { error: "spend cap", usageAttempts: attempts });
+    await postSummaryAnswer($, job, route, { error: "spend cap", usageAttempts: attempts });
     return null;
   }
   if (!answer.text) {
-    await postDaemon($, route, { error: "empty summary", usageAttempts: attempts });
+    await postSummaryAnswer($, job, route, { error: "empty summary", usageAttempts: attempts });
     return totalOutput;
   }
   const { priorUsage, ...body } = answer;
-  await postDaemon($, route, priorUsage ? { ...body, usageAttempts: priorUsage } : body);
+  await postSummaryAnswer($, job, route, priorUsage ? { ...body, usageAttempts: priorUsage } : body);
   return totalOutput;
 }
 
@@ -557,8 +569,9 @@ function registerRestoreContext(on: On): void {
     const outcome = await postDaemonOutcome($, "/restore", { session_id, cwd });
     const restored = outcome.body;
     const text = restoreBlockText(restored);
-    noteHook(session_id, "prompt.context", "restore", restored ? "execution" : "delivery", restored ? "completed" : delivery(outcome)[0],
-      restored ? text.trim() ? "context" : "no-context" : delivery(outcome)[1]);
+    noteHook(session_id, "prompt.context", "restore", "delivery", ...delivery(outcome));
+    if (restored) noteHook(session_id, "prompt.context", "restore", "execution", "completed",
+      text.trim() ? "context" : "no-context");
     if (!text.trim()) return { blocks };
     return { blocks: [...blocks, { name: "lcm", text }] };
   });
@@ -593,8 +606,10 @@ function registerPromptSearch(on: On): void {
           format: "context",
         })),
     ]);
-    noteHook(await $.session.id(), "prompt.submit", "search", search.body ? "execution" : "delivery", search.body ? "completed" : delivery(search)[0],
-      search.body ? typeof search.body.context === "string" ? "context" : "no-context" : delivery(search)[1]);
+    const sessionId = await $.session.id();
+    noteHook(sessionId, "prompt.submit", "search", "delivery", ...delivery(search));
+    if (search.body) noteHook(sessionId, "prompt.submit", "search", "execution", "completed",
+      typeof search.body.context === "string" ? "context" : "no-context");
     if (result.drop !== undefined) return result;
     const context = typeof search.body?.context === "string" ? search.body.context : null;
     if (!context) return result;

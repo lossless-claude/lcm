@@ -139,6 +139,23 @@ describe("function-hook session summarizer", () => {
     ]));
   });
 
+  it("records accepted delivery and completed execution for restore and search", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
+    await harness.trigger();
+    await harness.handlers.get("prompt.context")!(harness.engine, { blocks: [] }, vi.fn(async (event) => event));
+    await harness.handlers.get("prompt.submit")!(harness.engine, { text: "find memory" }, vi.fn(async (event) => event));
+    await harness.handlers.get("turn.complete")!(harness.engine, {}, vi.fn((event) => event));
+    const snapshots = harness.engine.fs.write.mock.calls
+      .filter(([path]) => String(path).includes("lcm-hook-observe-"));
+    const observations = JSON.parse(snapshots.at(-1)![1]).observations;
+    for (const [hook, operation] of [["prompt.context", "restore"], ["prompt.submit", "search"]]) {
+      expect(observations).toEqual(expect.arrayContaining([
+        expect.objectContaining({ hook, operation, kind: "delivery", status: "accepted" }),
+        expect.objectContaining({ hook, operation, kind: "execution", status: "completed" }),
+      ]));
+    }
+  });
+
   it("lets session.start finish when the claim cannot be written", async () => {
     const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
     harness.engine.fs.write.mockRejectedValueOnce(new Error("read-only fs"));
@@ -159,6 +176,34 @@ describe("function-hook session summarizer", () => {
     );
     expect(engine.model.complete).toHaveBeenCalledWith({ model: "haiku", system: "system", prompt: "prompt", maxTokens: 1024 });
     expect(posts[0].body).toEqual({ text: "summary", providerId: "session:haiku", usage: { input_tokens: 3, output_tokens: 2, estimated: true } });
+  });
+
+  it("retains accepted delivery for a summary answer", async () => {
+    const harness = await start();
+    await harness.trigger();
+    await harness.done;
+    const snapshots = harness.engine.fs.write.mock.calls
+      .filter(([path]) => String(path).includes("lcm-hook-observe-"));
+    expect(JSON.parse(snapshots.at(-1)![1]).observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ hook: "session.start", operation: "summary-answer", kind: "delivery", status: "accepted" }),
+    ]));
+  });
+
+  it("retains rejected delivery for a summary answer", async () => {
+    const harness = await start();
+    const originalFetch = harness.engine.http.fetch.getMockImplementation()!;
+    harness.engine.http.fetch.mockImplementation(async (url, init) =>
+      init?.method === "POST" && url.includes("/summarize-jobs/")
+        ? { ok: false, status: 500, text: "{}" }
+        : originalFetch(url, init));
+    await harness.trigger();
+    await harness.done;
+    const snapshots = harness.engine.fs.write.mock.calls
+      .filter(([path]) => String(path).includes("lcm-hook-observe-"));
+    expect(JSON.parse(snapshots.at(-1)![1]).observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ hook: "session.start", operation: "summary-answer", kind: "delivery",
+        status: "rejected", reason: "http-500" }),
+    ]));
   });
 
   it("accepts the current model completion result shape", async () => {

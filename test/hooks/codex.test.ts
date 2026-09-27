@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { dispatchCodexHook, type CodexHookDeps } from "../../src/hooks/codex.js";
 import { createLcmPaths } from "../../src/lcm-paths.js";
 import { lcmHome } from "../../src/lcm-home.js";
+import { readHookOutcomeLog } from "../../src/doctor/hook-outcome-log.js";
 
 const paths = createLcmPaths(lcmHome());
 
@@ -120,6 +121,22 @@ describe("Codex native lifecycle adapter", () => {
     }), expect.objectContaining({ timeoutMs: 5000 }));
     expect(outputContext(result.stdout).additionalContext).toContain("Quartz uses WAL.");
     expect(outputContext(result.stdout).additionalContext).toContain("s-1");
+  });
+
+  it("records accepted delivery for successful capture, restore, and search", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-codex-outcomes-"));
+    temporaryDirectories.push(cwd);
+    const isolatedPaths = createLcmPaths(cwd);
+    const { deps } = dependencies({ "/restore": { context: "remember" }, "/prompt-search": { hints: [] } });
+    deps.paths = isolatedPaths;
+    await dispatchCodexHook(payload("SessionStart", { cwd }), deps);
+    await dispatchCodexHook(payload("UserPromptSubmit", { cwd, prompt: "search" }), deps);
+    await dispatchCodexHook(payload("Stop", { cwd }), deps);
+    expect(readHookOutcomeLog(isolatedPaths.logsDir, cwd).outcomes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ operation: "capture", kind: "delivery", status: "accepted" }),
+      expect.objectContaining({ operation: "restore", kind: "delivery", status: "accepted" }),
+      expect.objectContaining({ operation: "search", kind: "delivery", status: "accepted" }),
+    ]));
   });
 
   it("suffixes a sibling checkout's id with the project the daemon reported", async () => {
