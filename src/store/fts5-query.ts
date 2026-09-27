@@ -91,9 +91,9 @@ export function extractQueryTerms(raw: string, paths?: LcmPaths, languages: read
  * Most terms one MATCH expression carries. FTS5 opens and seeks a segment iterator per term,
  * and node:sqlite runs the query synchronously on the daemon's event loop, so the cost of a
  * query grows with its term count times the index size. Callers pass whole documents (a
- * summary is the promotion-dedup query, a pasted prompt is the prompt-search query); on a
- * synthetic 20,000-document index an OR of 2,000 terms took 4.5 s and one of 5,000 took 9.5 s,
- * against 12–17 ms for 32. The first terms are kept, in the input's order.
+ * summary is the promotion-dedup query, a pasted prompt is the prompt-search query), so an
+ * unbounded query can hold the event loop for minutes. The first terms are kept, in the
+ * input's order.
  */
 export const MAX_QUERY_TERMS = 32;
 
