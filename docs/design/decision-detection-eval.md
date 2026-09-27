@@ -10,18 +10,23 @@ calibrated classifier ranks turns well, but its confident answers are not reliab
 promote anything on their own. The category itself needs a definition first; round 2 below
 tests one, and two independent annotators apply it consistently.
 
-This evaluation justifies two design constraints: `user_decision` is not a promotion signal
-until #581 defines the category and a detector meets it, and a classifier's answer only ever
-routes a turn to review (see Constraints on any integration).
+This evaluation justifies two constraints for future integration work, tracked in #581.
+Today `extractUserPromptEvents` emits `user_decision` at priority 1 and `promote-events`
+promotes it with the `decision` confidence; the evidence here says it should not be a
+promotion signal until the category is defined and a detector meets it. And a classifier's
+answer should only ever route a turn to review (see Constraints on any integration). This
+document changes no code.
 
 ## Corpus and labels
 
 The corpus is `pt-coding-turns-2026-09`, kept outside the repository because it holds a
-person's prompts.
+person's prompts: 1,967 turns one pt-BR author typed in coding sessions, each passed through
+`ScrubEngine` (a turn the scrubber changed was left out). 1,448 of them pass the sampling
+filters (15 to 1,200 characters, no pasted tool output). Round 1 and round 2 draw from those
+1,448 without overlap.
 
-- 234 turns one pt-BR author typed in coding sessions across 15 projects: 200 drawn at
-  random, 34 more flagged by either keyword list. Every turn passed through `ScrubEngine`;
-  a turn the scrubber changed was left out.
+- Round 1: 234 turns across 15 projects: 200 drawn at random, 34 more flagged by either
+  keyword list.
 - The author labeled every turn before any model ran. Two LLM annotators (Claude Fable 5.1,
   GPT-6 Astra) labeled the same turns blind. The author adjudicated the 52 disagreements,
   seeing the annotators' answers but no model output.
@@ -82,11 +87,14 @@ The second draw tests a written definition, anchored to the `type:decision` and
 > applies to this task only (a request, a question, a report, an answer to the agent, a
 > one-off instruction).
 
-- 400 turns drawn at random from the same corpus (draw 2), none used in round 1, no keyword
+- 400 turns drawn at random from the 1,214 filtered turns round 1 did not use, no keyword
   stratum. The definition, the question text and the sample were frozen before any label.
-- Fable and Astra labeled all 400 blind with that definition; no human labeled this round.
-  Gold is the 349 turns where both said yes or both said no; 22 are decisions (about 6%).
+- Fable and Astra labeled all 400 blind with that definition and the same four labels as
+  round 1 (yes, no, undecidable, not typed by a person); no human labeled this round.
   The same definition, word for word, is Jev's question.
+- Gold is the 349 turns where both said yes (22, about 6%) or both said no (327). The other
+  51 are out of gold: 30 both "not typed by a person", 1 both "undecidable", 13 where only
+  one said yes, and 7 where they disagreed without either saying yes.
 
 The two annotators agreed at κ 0.75 on yes against the rest (0.83 across the four labels),
 which meets the bar #581 set.
