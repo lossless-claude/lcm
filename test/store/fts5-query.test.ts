@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import {
   combineWithPivotQuery,
   extractQueryTerms,
+  MAX_QUERY_TERMS,
+  MAX_TERM_LENGTH,
   prepareFts5Query,
   shouldRetryWithLike,
   likePlanForPreparedQuery,
@@ -91,6 +93,28 @@ describe("prepareFts5Query", () => {
   it("returns null when there are no usable terms", () => {
     expect(prepareFts5Query("?!")).toBeNull();
     expect(prepareFts5Query("")).toBeNull();
+  });
+
+  // FTS5 opens and seeks one segment iterator per term, and node:sqlite runs on the daemon's
+  // event loop: a whole document passed as the query must not become thousands of OR'd terms.
+  it("keeps only the first MAX_QUERY_TERMS terms of a very long input", () => {
+    const words = Array.from({ length: 5000 }, (_, i) => `term${i}`);
+    const prepared = prepareFts5Query(words.join(" "))!;
+    expect(prepared.terms).toEqual(words.slice(0, MAX_QUERY_TERMS));
+    expect(prepared.or.split(" OR ")).toHaveLength(MAX_QUERY_TERMS);
+    expect(prepared.and.split(" ")).toHaveLength(MAX_QUERY_TERMS);
+  });
+
+  it("bounds a caller's pre-extracted term list the same way", () => {
+    const words = Array.from({ length: 5000 }, (_, i) => `term${i}`);
+    expect(prepareFts5Query(words.join(" "), words)!.terms).toHaveLength(MAX_QUERY_TERMS);
+  });
+
+  it("drops terms longer than MAX_TERM_LENGTH rather than truncating them", () => {
+    const blob = "a".repeat(MAX_TERM_LENGTH + 1);
+    const edge = "b".repeat(MAX_TERM_LENGTH);
+    expect(prepareFts5Query(`deploy ${blob} ${edge}`)!.terms).toEqual(["deploy", edge]);
+    expect(prepareFts5Query(blob)).toBeNull();
   });
 });
 

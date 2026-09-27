@@ -89,6 +89,7 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
       });
 
     const prompt = buildSummaryPrompt(text, aggressive, { ...ctx, targetTokens });
+    const maxOutputTokens = ctx.maxOutputTokens ?? resolveMaxOutputTokens(targetTokens);
 
     let lastError: Error | undefined;
 
@@ -101,7 +102,7 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
           ...opts.body,
           model: opts.model,
           ...(askForCostAccounting ? { usage: { include: true } } : {}),
-          max_tokens: resolveMaxOutputTokens(targetTokens),
+          max_tokens: maxOutputTokens,
           // Merge system content into user message for compatibility with local
           // servers (e.g. MLX/llama.cpp) that don't support role:"system".
           messages: [
@@ -117,7 +118,9 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
         const choice = response.choices[0];
         // A length stop is a cut-off tail, not a summary, however readable it looks.
         if (choice?.finish_reason === "length") {
-          throw new SummaryRejectedError({ reason: "length", provider: opts.label ?? "openai", model: usage?.model ?? opts.model });
+          throw new SummaryRejectedError({
+            reason: "length", provider: opts.label ?? "openai", model: usage?.model ?? opts.model, maxOutputTokens,
+          });
         }
         // Empty content is a failure, not a summary: falling back to a slice of
         // the input would persist raw conversation text as a fake summary.

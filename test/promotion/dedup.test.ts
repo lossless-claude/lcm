@@ -6,6 +6,7 @@ import { getLcmConnection, closeLcmConnection } from "../../src/db/connection.js
 import { runLcmMigrations } from "../../src/db/migration.js";
 import { PromotedStore } from "../../src/db/promoted.js";
 import { deduplicateAndInsert } from "../../src/promotion/dedup.js";
+import { MAX_QUERY_TERMS } from "../../src/store/fts5-query.js";
 
 const tempDirs: string[] = [];
 afterEach(() => {
@@ -210,5 +211,52 @@ describe("deduplicateAndInsert", () => {
     expect(results.length).toBe(1);
     // Confidence should upgrade to incoming's higher value: max(0.6, 0.95) = 0.95
     expect(results[0].confidence).toBe(0.95);
+  });
+
+  // A summary is the dedup query, whole: without a bound, every distinct word in it became
+  // one OR'd FTS5 term, run synchronously on the daemon's event loop against promoted_fts.
+  it("searches a populated index with a bounded query when the content is a very long document", async () => {
+    const db = makeDb();
+    const store = new PromotedStore(db);
+    const word = (i: number) => `w${i.toString(36)}x`;
+    for (let d = 0; d < 200; d++) {
+      store.insert({
+        content: Array.from({ length: 50 }, (_, k) => word((d * 37 + k * 11) % 3000)).join(" "),
+        tags: ["decision"],
+        projectId: "p1",
+        confidence: 0.5,
+      });
+    }
+
+    const matchExpressions: string[] = [];
+    const prepare = db.prepare.bind(db);
+    vi.spyOn(db, "prepare").mockImplementation((sql: string) => {
+      const statement = prepare(sql);
+      if (sql.includes("promoted_fts MATCH")) {
+        const all = statement.all.bind(statement);
+        statement.all = ((...args: Parameters<typeof all>) => {
+          matchExpressions.push(String(args[0]));
+          return all(...args);
+        }) as typeof statement.all;
+      }
+      return statement;
+    });
+
+    const id = await deduplicateAndInsert({
+      store,
+      content: Array.from({ length: 3000 }, (_, i) => word(i)).join(" "),
+      tags: ["decision"],
+      projectId: "p1",
+      sessionId: "s1",
+      depth: 2,
+      confidence: 0.5,
+      thresholds: { dedupBm25Threshold: 15, dedupCandidateLimit: 100 },
+    });
+
+    expect(id).toBeTruthy();
+    expect(matchExpressions.length).toBeGreaterThan(0);
+    for (const expression of matchExpressions) {
+      expect(expression.split(" OR ").length).toBeLessThanOrEqual(MAX_QUERY_TERMS);
+    }
   });
 });

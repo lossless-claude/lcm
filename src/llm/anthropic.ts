@@ -72,6 +72,7 @@ export function createAnthropicSummarizer(opts: SummarizerOptions): LcmSummarize
     });
 
     const prompt = buildSummaryPrompt(text, aggressive, { ...ctx, targetTokens });
+    const maxOutputTokens = ctx.maxOutputTokens ?? resolveMaxOutputTokens(targetTokens);
 
     let lastError: Error | undefined;
 
@@ -80,7 +81,7 @@ export function createAnthropicSummarizer(opts: SummarizerOptions): LcmSummarize
         const response = await client.messages.create({
           ...opts.body, // first, so every field generated below wins
           model: opts.model,
-          max_tokens: resolveMaxOutputTokens(targetTokens),
+          max_tokens: maxOutputTokens,
           system: ctx.taskPrompt ?? LCM_SUMMARIZER_SYSTEM_PROMPT,
           messages: [{ role: "user", content: prompt }],
         });
@@ -92,7 +93,9 @@ export function createAnthropicSummarizer(opts: SummarizerOptions): LcmSummarize
 
         // A max_tokens stop is a cut-off tail, not a summary, however readable it looks.
         if (response.stop_reason === "max_tokens") {
-          throw new SummaryRejectedError({ reason: "max_tokens", provider: opts.label ?? "anthropic", model: usage?.model ?? opts.model });
+          throw new SummaryRejectedError({
+            reason: "max_tokens", provider: opts.label ?? "anthropic", model: usage?.model ?? opts.model, maxOutputTokens,
+          });
         }
         const textContent = response.content.find((c: any) => c.type === "text")?.text ?? "";
         // Empty content is a failure, not a summary: falling back to a slice of

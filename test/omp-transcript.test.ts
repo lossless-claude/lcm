@@ -186,6 +186,14 @@ describe("parseOmpTranscript", () => {
       ])).toEqual(["first question", "first answer", "wrong turn", "wrong answer", "back on the first branch"]);
     });
 
+    it("a malformed record on the live path does not drop the entries before it", () => {
+      expect(contents([
+        ...trunk,
+        "{broken",
+        say(["u3", "x1"], "user", "after the broken record"),
+      ])).toEqual(["first question", "first answer", "wrong turn", "wrong answer", "after the broken record"]);
+    });
+
     it("entries without ids predate the tree format and stay in file order", () => {
       const legacy = (role: string, text: string) => JSON.stringify({ type: "message", message: { role, content: text } });
       expect(contents([legacy("user", "one"), legacy("assistant", "two")])).toEqual(["one", "two"]);
