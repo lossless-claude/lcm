@@ -85,6 +85,13 @@ describe("loadDaemonConfig", () => {
     expect(c.llm.provider).toBe("codex-process");
   });
 
+  it("accepts omp-process as a provider from file config", () => {
+    const c = loadDaemonConfig("/nonexistent/config.json", {
+      llm: { provider: "omp-process" }
+    });
+    expect(c.llm.provider).toBe("omp-process");
+  });
+
   it("does NOT inject ANTHROPIC_API_KEY when provider is openai", () => {
     const c = loadDaemonConfig("/nonexistent", { llm: { provider: "openai" } }, { ANTHROPIC_API_KEY: "sk-leaked" });
     expect(c.llm.apiKey).toBe("");
@@ -146,7 +153,7 @@ describe("loadDaemonConfig", () => {
     expect(config.llm.fallbackProvider).toBeUndefined();
   });
 
-  it.each(["auto", "claude-process", "codex-process", "copilot-process", "anthropic", "openai", "disabled"])(
+  it.each(["auto", "claude-process", "codex-process", "copilot-process", "omp-process", "anthropic", "openai", "disabled"])(
     "accepts %s as a session fallback", (fallbackProvider) => {
       const config = loadDaemonConfig("/nonexistent", { llm: { provider: "session", fallbackProvider, apiKey: "sk-test" } }, {});
       expect(config.llm.fallbackProvider).toBe(fallbackProvider);
@@ -183,6 +190,11 @@ describe("loadDaemonConfig", () => {
   it("accepts LCM_SUMMARY_PROVIDER=codex-process", () => {
     const c = loadDaemonConfig("/nonexistent", {}, { LCM_SUMMARY_PROVIDER: "codex-process" });
     expect(c.llm.provider).toBe("codex-process");
+  });
+
+  it("accepts LCM_SUMMARY_PROVIDER=omp-process", () => {
+    const c = loadDaemonConfig("/nonexistent", {}, { LCM_SUMMARY_PROVIDER: "omp-process" });
+    expect(c.llm.provider).toBe("omp-process");
   });
 
   it("LCM_SUMMARY_PROVIDER=anthropic overrides provider with apiKey", () => {
