@@ -221,3 +221,19 @@ it("names a fallback that reports no usage when its answer replaced a rejected s
     jobs.close();
   }
 });
+
+it("reports the configured model when the engine discarded every answer and stored its truncation", async () => {
+  // Both the normal and the aggressive answer are longer than the source, so the engine
+  // stores its deterministic truncation: no model's answer was kept.
+  openai.mockImplementation(async (_text: string, _aggressive: boolean, ctx: any) => {
+    ctx.onUsage({ ...OPENAI_USAGE, model: "discarded-model" });
+    return "unchanged ".repeat(20_000);
+  });
+  const config = loadDaemonConfig("/x", { llm: { provider: "openai", model: "reasoner" } }, {});
+  const cwd = await ingestedSession(config, "session-all-discarded");
+
+  const result = await invoke(createCompactHandler(config, paths), { cwd, session_id: "session-all-discarded" });
+
+  expect(result.status).toBe(200);
+  expect(result.body.llmUsage.model).toBe("reasoner");
+});
