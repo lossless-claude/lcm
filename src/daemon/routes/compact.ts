@@ -525,6 +525,8 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                 client,
                 onFallback: ({ reason, toProvider }) => {
                   settleAttempt(false); // the abandoned attempt was charged but answered nothing usable
+                  // The next attempt is the fallback's, even when it reports no usage.
+                  attemptAnswering.add(toProvider);
                   log.write("warn", "summarizer.fallback", { cwd, session_id, reason, to_provider: toProvider });
                 },
                 onUsage: (usage) => {

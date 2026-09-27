@@ -190,3 +190,31 @@ it("names the fallback whose answer was stored when the session's answer was dis
     jobs.close();
   }
 });
+
+it("names a fallback that reports no usage when its answer replaced a rejected session answer", async () => {
+  // Process-backed providers can answer without reporting usage; the handoff alone names them.
+  openai.mockImplementation(async () => "fallback summary");
+  const jobs = new SummarizeJobStore();
+  const abort = new AbortController();
+  const sessionId = "session-no-usage-fallback";
+  const serve = (async () => {
+    while (!abort.signal.aborted) {
+      const job = await jobs.next(sessionId, abort.signal);
+      if (job) jobs.answer(job.id, { text: "   ", providerId: "session:haiku",
+        usage: { input_tokens: 20, output_tokens: 3, estimated: true } });
+    }
+  })();
+  try {
+    const config = loadDaemonConfig("/x", { llm: { provider: "session", fallbackProvider: "openai", model: "reasoner" } }, {});
+    const cwd = await ingestedSession(config, sessionId);
+
+    const result = await invoke(createCompactHandler(config, paths, jobs), { cwd, session_id: sessionId });
+
+    expect(result.status).toBe(200);
+    expect(result.body.providerId).toBe("openai");
+  } finally {
+    abort.abort();
+    await serve;
+    jobs.close();
+  }
+});
