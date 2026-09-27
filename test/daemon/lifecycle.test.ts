@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { daemonOwnership, describePortHolder, ensureDaemon, identifyPortHolder, isLcmDaemonCommand, isOlderVersion, isStaleDaemon, registerDaemonActivity, stopDaemon } from "../../src/daemon/lifecycle.js";
+import { daemonOwnership, describePortHolder, describeUnansweredDaemon, ensureDaemon, identifyPortHolder, isLcmDaemonCommand, isOlderVersion, isStaleDaemon, registerDaemonActivity, stopDaemon } from "../../src/daemon/lifecycle.js";
 
 const tempDirs: string[] = [];
 
@@ -465,17 +465,33 @@ describe("identifyPortHolder", () => {
     expect(holder).toEqual({ pid: 4242, lcm: true });
   });
 
+  const customHome = { configPath: "/srv/lcm-home/config.json", logsDir: "/srv/lcm-home/logs" };
+
   it("says an unresponsive lcm daemon holds the port, not a foreign process", () => {
-    const message = describePortHolder(3999, { pid: 4242, lcm: true }, "/home/.lossless-claude/config.json");
+    const message = describePortHolder(3999, { pid: 4242, lcm: true }, customHome);
     expect(message).toContain("lcm daemon (pid 4242)");
     expect(message).toContain("already in use by an lcm daemon");
     expect(message).toContain("did not answer");
     expect(message).not.toContain("not an lcm daemon");
   });
 
+  it("points at the log under the daemon's own home", () => {
+    const message = describePortHolder(3999, { pid: 4242, lcm: true }, customHome);
+    expect(message).toContain("/srv/lcm-home/logs/daemon.log");
+    expect(message).not.toContain("~/.lossless-claude");
+  });
+
   it("keeps the foreign-process message for anything else", () => {
-    const message = describePortHolder(3999, { pid: 4242, lcm: false }, "/home/.lossless-claude/config.json");
+    const message = describePortHolder(3999, { pid: 4242, lcm: false }, customHome);
     expect(message).toContain("not an lcm daemon");
-    expect(message).toContain("daemon.port in /home/.lossless-claude/config.json");
+    expect(message).toContain("daemon.port in /srv/lcm-home/config.json");
+  });
+
+  it("names both logs under the daemon's own home when nothing holds the port", () => {
+    const message = describeUnansweredDaemon(3999, customHome.logsDir);
+    expect(message).toContain("did not answer on port 3999 within 10s");
+    expect(message).toContain("/srv/lcm-home/logs/daemon.log");
+    expect(message).toContain("/srv/lcm-home/logs/daemon.stderr");
+    expect(message).not.toContain("~/.lossless-claude");
   });
 });

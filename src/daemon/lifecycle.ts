@@ -313,14 +313,23 @@ export function identifyPortHolder(
 }
 
 /** Why a daemon could not take `port`, for the holder `identifyPortHolder` found. */
-export function describePortHolder(port: number, holder: PortHolder, configPath: string): string {
+export function describePortHolder(
+  port: number,
+  holder: PortHolder,
+  paths: { configPath: string; logsDir: string },
+): string {
   if (holder.lcm) {
     const pid = holder.pid ?? "?";
     // "Starting" covers a concurrent start that won the listen race and has not answered yet.
     return `Port ${port} is already in use by an lcm daemon (pid ${pid}) that did not answer: it is starting, busy or stuck.`
-      + ` Check ~/.lossless-claude/logs/daemon.log; to replace it, end pid ${pid} and run: lcm daemon start`;
+      + ` Check ${join(paths.logsDir, "daemon.log")}; to replace it, end pid ${pid} and run: lcm daemon start`;
   }
-  return `Port ${port} is already in use by another process (not an lcm daemon). Stop it or change daemon.port in ${configPath}.`;
+  return `Port ${port} is already in use by another process (not an lcm daemon). Stop it or change daemon.port in ${paths.configPath}.`;
+}
+
+/** Why a detached start failed when no process could be found on `port`. */
+export function describeUnansweredDaemon(port: number, logsDir: string): string {
+  return `lcm daemon did not answer on port ${port} within 10s — check ${join(logsDir, "daemon.log")} and ${join(logsDir, "daemon.stderr")}`;
 }
 
 export async function checkDaemonHealth(
