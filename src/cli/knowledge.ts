@@ -57,6 +57,7 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
       const preview = await importSessions(previewClient, { paths, all, provider, dryRun: true, verbose: dryRun && verbose, replay });
       if (dryRun) {
         console.log(`  [dry-run] ${preview.imported} ${provider} sessions selected (${all ? "all projects" : "current project"})${replay ? "; would compact each session" : ""}. No changes written.`);
+        if (preview.ompRootsScanned) console.log(`  OMP roots scanned: ${preview.ompRootsScanned.join(", ")}`);
         return;
       }
       const client = await createDaemonClientOrExit();

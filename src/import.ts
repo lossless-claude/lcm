@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { DaemonClient } from "./daemon/client.js";
 import { formatNumber, formatRatio } from "./stats.js";
 import { findAllCodexTranscripts } from "./codex-transcript.js";
-import { findAllOmpTranscripts } from "./omp-transcript.js";
+import { findAllOmpTranscripts, ompDiscoveryRoots } from "./omp-transcript.js";
 import type { ProgressState } from "./cli/progress-state.js";
 import { claudeProjectSlug, projectDbPath, projectId } from "./daemon/project.js";
 import { readProjectMetaIn } from "./daemon/project-meta.js";
@@ -87,6 +87,8 @@ export interface ImportResult {
   tokensAfter: number;
   /** Present when a replay run resumed from a previous run's recorded progress */
   resumed?: { doneCount: number; totalCount: number; model?: string };
+  /** Present for an explicit `--provider omp`/`--omp` run: every OMP sessions root discovery scanned, in scan order. */
+  ompRootsScanned?: string[];
   replayUsage?: {
     provider: string;
     model: string;
@@ -672,6 +674,11 @@ export async function importSessions(
   }
 
   if (provider === "omp" || provider === "all") {
+    // Reported only for an explicit `--provider omp`/`--omp` run: that is the
+    // scenario the issue names ("0 sessions" with no clue where discovery
+    // looked). A default `all` run would show this for every user regardless
+    // of whether they use OMP at all.
+    if (provider === "omp") result.ompRootsScanned = ompDiscoveryRoots(options._ompDir);
     const ompTranscripts = findAllOmpTranscripts(options._ompDir);
     const targetProject = projectId(options.cwd ?? process.cwd());
     const projects = new Map<string, SessionEntry[]>();

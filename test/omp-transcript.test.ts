@@ -2,7 +2,7 @@ import { gzipSync } from "node:zlib";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   extractOmpArchiveSessionMeta,
   extractOmpArchiveTurnModels,
@@ -10,6 +10,7 @@ import {
   extractOmpTurnModels,
   findAllOmpTranscripts,
   findOmpSessionFiles,
+  ompDiscoveryRoots,
   parseOmpArchiveTranscript,
   parseOmpTranscript,
   parseOmpTranscriptRecord,
@@ -404,5 +405,147 @@ describe("extractOmpArchiveTurnModels", () => {
 
   it("returns an empty map for a missing or corrupt archive", () => {
     expect(extractOmpArchiveTurnModels(join(tempDir("lcm-omp-archive-models-missing-"), "absent.jsonl.gz")).size).toBe(0);
+  });
+});
+
+/**
+ * Without an explicit `ompDir` override, discovery enumerates the same roots
+ * `isSafeTranscriptPath` accepts live capture from (src/daemon/project.ts):
+ * the active agent directory plus every named OMP profile's. `HOME` is
+ * stubbed to a fixture so this never touches the real user's `~/.omp`.
+ */
+describe("ompDiscoveryRoots", () => {
+  let fixture: string;
+
+  beforeEach(() => {
+    fixture = tempDir("lcm-omp-roots-");
+    vi.stubEnv("HOME", fixture);
+    vi.stubEnv("PI_CODING_AGENT_DIR", "");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("returns only the explicit override's sessions dir, ignoring any profiles", () => {
+    mkdirSync(join(fixture, ".omp", "profiles", "work", "agent"), { recursive: true });
+    expect(ompDiscoveryRoots("/explicit/omp/dir")).toEqual([join("/explicit/omp/dir", "sessions")]);
+  });
+
+  it("enumerates the default root plus every named profile when no override is given", () => {
+    mkdirSync(join(fixture, ".omp", "profiles", "work", "agent"), { recursive: true });
+    mkdirSync(join(fixture, ".omp", "profiles", "home", "agent"), { recursive: true });
+
+    expect(ompDiscoveryRoots().sort()).toEqual([
+      join(fixture, ".omp", "agent", "sessions"),
+      join(fixture, ".omp", "profiles", "home", "agent", "sessions"),
+      join(fixture, ".omp", "profiles", "work", "agent", "sessions"),
+    ].sort());
+  });
+
+  it("honors PI_CODING_AGENT_DIR for the default root only; profiles are unaffected", () => {
+    const relocated = join(fixture, "relocated-agent");
+    vi.stubEnv("PI_CODING_AGENT_DIR", relocated);
+    mkdirSync(join(fixture, ".omp", "profiles", "work", "agent"), { recursive: true });
+
+    expect(ompDiscoveryRoots()).toEqual([
+      join(relocated, "sessions"),
+      join(fixture, ".omp", "profiles", "work", "agent", "sessions"),
+    ]);
+  });
+
+  it("returns just the default root when there is no profiles directory", () => {
+    expect(ompDiscoveryRoots()).toEqual([join(fixture, ".omp", "agent", "sessions")]);
+  });
+});
+
+describe("findAllOmpTranscripts — profile roots", () => {
+  let fixture: string;
+
+  beforeEach(() => {
+    fixture = tempDir("lcm-omp-profile-scan-");
+    vi.stubEnv("HOME", fixture);
+    vi.stubEnv("PI_CODING_AGENT_DIR", "");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function writeSessionAt(root: string, fileName: string, id: string, cwd: string, mtime: Date): string {
+    const bucket = join(root, "sessions", "-work-project");
+    mkdirSync(bucket, { recursive: true });
+    const path = join(bucket, fileName);
+    writeFileSync(path, `${header(cwd, id)}\n`);
+    utimesSync(path, mtime, mtime);
+    return path;
+  }
+
+  function writeArchivedSessionAt(root: string, fileName: string, id: string, cwd: string, mtime: Date): string {
+    const bucket = join(root, "sessions", "-work-project");
+    mkdirSync(bucket, { recursive: true });
+    const path = join(bucket, fileName);
+    writeFileSync(path, gzipSync(`${header(cwd, id)}\n`));
+    utimesSync(path, mtime, mtime);
+    return path;
+  }
+
+  it("discovers a profile's sessions alongside the default root's", () => {
+    const defaultRoot = join(fixture, ".omp", "agent");
+    const workProfileRoot = join(fixture, ".omp", "profiles", "work", "agent");
+    const mtime = new Date("2026-09-20T10:00:00.000Z");
+    const defaultPath = writeSessionAt(defaultRoot, "default.jsonl", "sess-default", "/work/project", mtime);
+    const profilePath = writeSessionAt(workProfileRoot, "profile.jsonl", "sess-work", "/work/project", mtime);
+
+    const files = findAllOmpTranscripts();
+    expect(files.map((f) => [f.sessionId, f.path]).sort()).toEqual(
+      [["sess-default", defaultPath], ["sess-work", profilePath]].sort(),
+    );
+  });
+
+  it("never merges a colliding session id across two roots, even when one is newer", () => {
+    const defaultRoot = join(fixture, ".omp", "agent");
+    const workProfileRoot = join(fixture, ".omp", "profiles", "work", "agent");
+    const older = new Date("2026-09-20T10:00:00.000Z");
+    const newer = new Date("2026-09-20T12:00:00.000Z");
+    const defaultPath = writeSessionAt(defaultRoot, "default.jsonl", "sess-1", "/work/project", older);
+    const profilePath = writeSessionAt(workProfileRoot, "profile.jsonl", "sess-1", "/work/project", newer);
+
+    const files = findAllOmpTranscripts();
+    expect(files.map((f) => f.path)).toEqual([defaultPath, profilePath]);
+    expect(files.every((f) => f.sessionId === "sess-1")).toBe(true);
+  });
+
+  it("still dedups bucket-migration duplicates within one profile's own root", () => {
+    const workProfileRoot = join(fixture, ".omp", "profiles", "work", "agent");
+    const older = new Date("2026-09-20T10:00:00.000Z");
+    const newer = new Date("2026-09-20T12:00:00.000Z");
+    writeSessionAt(workProfileRoot, "old.jsonl", "sess-1", "/work/project", older);
+    const newerPath = writeSessionAt(workProfileRoot, "new.jsonl", "sess-1", "/work/project", newer);
+
+    const files = findAllOmpTranscripts();
+    expect(files).toEqual([{ path: newerPath, sessionId: "sess-1", mtime: expect.any(Number), cwd: "/work/project", archived: false }]);
+  });
+
+  it("discovers an archived session inside a profile root", () => {
+    const workProfileRoot = join(fixture, ".omp", "profiles", "work", "agent");
+    const mtime = new Date("2026-09-20T10:00:00.000Z");
+    const archivedPath = writeArchivedSessionAt(workProfileRoot, "cold.jsonl.gz", "sess-cold", "/work/project", mtime);
+
+    const files = findAllOmpTranscripts();
+    expect(files).toEqual([{ path: archivedPath, sessionId: "sess-cold", mtime: expect.any(Number), cwd: "/work/project", archived: true }]);
+  });
+
+  it("a live file in one root does not suppress an archived copy of the same id in another root", () => {
+    const defaultRoot = join(fixture, ".omp", "agent");
+    const workProfileRoot = join(fixture, ".omp", "profiles", "work", "agent");
+    const mtime = new Date("2026-09-20T10:00:00.000Z");
+    const archivedPath = writeArchivedSessionAt(defaultRoot, "cold.jsonl.gz", "sess-1", "/work/project", mtime);
+    const livePath = writeSessionAt(workProfileRoot, "live.jsonl", "sess-1", "/work/project", mtime);
+
+    const files = findAllOmpTranscripts();
+    expect(files.map((f) => [f.path, f.archived]).sort()).toEqual(
+      [[archivedPath, true], [livePath, false]].sort(),
+    );
   });
 });

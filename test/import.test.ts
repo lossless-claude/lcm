@@ -1587,6 +1587,35 @@ describe("importSessions — provider: omp", () => {
     expect(result.imported).toBe(0);
   });
 
+  it("reports the root it scanned, even when it finds nothing", async () => {
+    const ompDir = makeTmpDir();
+    const client = makeMockClient(async () => ({ ingested: 1, totalTokens: 12 }));
+
+    const result = await importSessions(client, {
+      provider: "omp",
+      cwd: "/project-a",
+      _ompDir: ompDir,
+    });
+
+    expect(result.imported).toBe(0);
+    expect(result.ompRootsScanned).toEqual([join(ompDir, "sessions")]);
+  });
+
+  it("does not report OMP roots for a claude-only import", async () => {
+    const claudeProjectsDir = makeTmpDir();
+    const cwd = "/project-claude-only";
+    mkdirSync(join(claudeProjectsDir, claudeProjectSlug(cwd)), { recursive: true });
+    const client = makeMockClient(async () => ({ ingested: 1, totalTokens: 12 }));
+
+    const result = await importSessions(client, {
+      provider: "claude",
+      cwd,
+      _claudeProjectsDir: claudeProjectsDir,
+    });
+
+    expect(result.ompRootsScanned).toBeUndefined();
+  });
+
   it("does not use the completed-session shortcut for OMP", async () => {
     const ompDir = makeTmpDir();
     const lcmDir = makeTmpDir();

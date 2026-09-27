@@ -32,11 +32,11 @@
  */
 
 import { existsSync, lstatSync, openSync, readSync, closeSync, readdirSync, readFileSync, type Dirent } from "node:fs";
-import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { TextDecoder } from "node:util";
 import { gunzipSync } from "node:zlib";
+import { ompSessionRoots } from "./daemon/project.js";
 import { estimateTokens } from "./transcript.js";
 import type { ParsedMessage } from "./transcript.js";
 
@@ -491,33 +491,54 @@ export function findOmpSessionFiles(sessionsDir: string): OmpSessionFile[] {
 }
 
 /**
- * Collect all OMP transcript files from an OMP agent directory
- * (`<agentDir>/sessions/`, live and archived). Defaults to ~/.omp/agent when
- * ompDir is omitted; PI_CODING_AGENT_DIR overrides the default.
+ * Every sessions directory `findAllOmpTranscripts` scans: the explicit
+ * override's alone when `ompDir` is given (the single-root case tests and
+ * `import`'s `_ompDir` rely on), otherwise the same roots live capture's
+ * `isSafeTranscriptPath` accepts for the `omp` client — the active agent
+ * directory (`PI_CODING_AGENT_DIR`, else `~/.omp/agent`) plus every named
+ * profile's (`~/.omp/profiles/<name>/agent`). Exported so a caller can report
+ * where discovery looked, including when it found nothing.
+ */
+export function ompDiscoveryRoots(ompDir?: string): string[] {
+  return ompDir !== undefined ? [join(ompDir, "sessions")] : ompSessionRoots();
+}
+
+/**
+ * Collect all OMP transcript files (live and archived) from every root
+ * `ompDiscoveryRoots` names. Within one root, a live `.jsonl` always wins
+ * over an archived `.jsonl.gz` copy of the same session id — `omp gc --apply`
+ * compresses a session in place and normally removes the original, so a
+ * surviving live file means OMP (or a later session) is still writing to it
+ * — and otherwise the newest file of the same kind wins, a root's own
+ * bucket-migration duplicates collapsing to it. Across roots, ids are never
+ * merged, so a profile's session cannot silently mask — or be masked by —
+ * another profile's copy of the same id.
  */
 export function findAllOmpTranscripts(ompDir?: string): OmpSessionFile[] {
-  const root = ompDir ?? (process.env.PI_CODING_AGENT_DIR || join(homedir(), ".omp", "agent"));
-  const results = findOmpSessionFiles(join(root, "sessions"));
+  const roots = ompDiscoveryRoots(ompDir);
 
-  // Prefer the latest transcript for an identity. A live file always wins
-  // over an archived copy of the same session: `omp gc --apply` compresses a
-  // session in place and normally removes the original, so a surviving
-  // `.jsonl` alongside its `.jsonl.gz` means the live file is the one OMP (or
-  // a later session) is still writing to. Order is a deterministic
-  // tie-breaker for equal modification times within the same kind.
-  const seen = new Map<string, OmpSessionFile>();
-  for (const f of results) {
-    const existing = seen.get(f.sessionId);
-    if (!existing) {
-      seen.set(f.sessionId, f);
-    } else if (existing.archived && !f.archived) {
-      seen.set(f.sessionId, f);
-    } else if (f.archived === existing.archived && f.mtime > existing.mtime) {
-      seen.set(f.sessionId, f);
+  const combined: OmpSessionFile[] = [];
+  for (const root of roots) {
+    const found = findOmpSessionFiles(root);
+    // Prefer the latest transcript for an identity within this root only. A
+    // live file always wins over an archived copy; otherwise the newest file
+    // of the same kind wins, a deterministic tie-breaker for equal
+    // modification times.
+    const seen = new Map<string, OmpSessionFile>();
+    for (const f of found) {
+      const existing = seen.get(f.sessionId);
+      if (!existing) {
+        seen.set(f.sessionId, f);
+      } else if (existing.archived && !f.archived) {
+        seen.set(f.sessionId, f);
+      } else if (f.archived === existing.archived && f.mtime > existing.mtime) {
+        seen.set(f.sessionId, f);
+      }
     }
+    combined.push(...seen.values());
   }
 
-  return [...seen.values()].sort((a, b) => {
+  return combined.sort((a, b) => {
     const d = a.mtime - b.mtime;
     if (d !== 0) return d;
     return a.sessionId.localeCompare(b.sessionId);
