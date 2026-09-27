@@ -14,7 +14,13 @@ import {
 import { SummaryStore } from "./store/summary-store.js";
 import { readSubagentAttribution } from "./subagent-attribution.js";
 import type { MessagePart, ParsedMessage } from "./transcript.js";
-import { transcriptSource, type StoredTranscript, type TranscriptLocator, type TranscriptSource } from "./transcript-source.js";
+import {
+  transcriptSource,
+  type ConversationBoundary,
+  type StoredTranscript,
+  type TranscriptLocator,
+  type TranscriptSource,
+} from "./transcript-source.js";
 
 /**
  * Capture (see CONTEXT.md): the one writer of a session's transcript content.
@@ -30,7 +36,9 @@ import { transcriptSource, type StoredTranscript, type TranscriptLocator, type T
 export type RedactionCounts = { gitleaks: number; builtIn: number; global: number; project: number };
 
 export interface StoredSession {
+  /** The session's newest conversation: the one a clear opened last, or its only one. */
   conversationId: number;
+  /** Messages stored across every conversation of the session. */
   storedCount: number;
 }
 
@@ -40,6 +48,8 @@ export interface CaptureInput {
   messages: ParsedMessage[];
   /** How many leading messages `messages` already omits (an adapter checkpoint resume). */
   sourceOffset?: number;
+  /** Clears among `messages`: each opens a new conversation for the messages from its position on. */
+  boundaries?: ConversationBoundary[];
   /** Transcript path; when `attribution` is absent and this is a subagent transcript, its sidecar supplies it. */
   transcriptPath?: string;
   /** The `/ingest` subagent path always passes the walker's; `/compact` and a direct `/ingest` of a subagent transcript may pass none. */
@@ -111,12 +121,12 @@ export class SessionCapture {
     this.summaryStore = new SummaryStore(db);
   }
 
-  /** The session's conversation and how many of its messages are stored, or undefined before its first write. */
+  /** The session's newest conversation and how many messages the session has stored, or undefined before its first write. */
   async stored(sessionId: string): Promise<StoredSession | undefined> {
     const conversation = await this.conversationStore.getConversationBySessionId(sessionId);
     if (!conversation) return undefined;
     const { conversationId } = conversation;
-    return { conversationId, storedCount: await this.conversationStore.getMessageCount(conversationId) };
+    return { conversationId, storedCount: await this.conversationStore.getSessionMessageCount(sessionId) };
   }
 
   /**
@@ -132,14 +142,15 @@ export class SessionCapture {
     const transcriptPath = source.locate(input);
     if (!transcriptPath) return undefined;
     const stored = await this.stored(input.sessionId);
-    const delta = await source.read(transcriptPath, stored && this.storedTranscript(source, stored, transcriptPath), {
+    const delta = await source.read(transcriptPath, stored && this.storedTranscript(source, input.sessionId, stored, transcriptPath), {
       ...input, scrub: (text) => this.scrubber.scrubWithCounts(text).text,
     });
-    if (!stored && delta.messages.length === 0 && delta.checkpoint === undefined) return undefined;
+    if (!stored && delta.messages.length === 0 && delta.checkpoint === undefined && !delta.boundaries?.length) return undefined;
     const written = await this.write({
       sessionId: input.sessionId,
       messages: delta.messages,
       sourceOffset: delta.sourceOffset,
+      boundaries: delta.boundaries,
       transcriptPath,
       attribution: input.attribution,
       ...(delta.checkpoint !== undefined
@@ -153,10 +164,10 @@ export class SessionCapture {
     return { ...written, transcriptPath, backfillModels: (events) => delta.backfillModels(events, input.sessionId) };
   }
 
-  private storedTranscript(source: TranscriptSource, stored: StoredSession, transcriptPath: string): StoredTranscript {
+  private storedTranscript(source: TranscriptSource, sessionId: string, stored: StoredSession, transcriptPath: string): StoredTranscript {
     return {
       storedCount: stored.storedCount,
-      storedMessages: () => this.conversationStore.getMessages(stored.conversationId, { limit: stored.storedCount }),
+      storedMessages: () => this.conversationStore.getSessionMessages(sessionId),
       checkpoint: source.loadCheckpoint?.(this.db, stored.conversationId, transcriptPath),
     };
   }
@@ -166,6 +177,12 @@ export class SessionCapture {
    * stored count, all in one transaction — a failed write or a crash mid-way
    * leaves neither the conversation row nor a partial message set behind. An
    * empty delta still creates the conversation and still persists a checkpoint.
+   *
+   * The stored count spans every conversation of the session. Each clear in
+   * the new messages opens the conversation that holds the messages after it,
+   * even when none follow, unless a conversation already carries that clear.
+   * A clear inside stored history is never split out after the fact. The
+   * result and the checkpoint belong to the last conversation written.
    */
   async write(input: CaptureInput): Promise<CaptureResult> {
     const attribution = input.attribution
@@ -173,29 +190,42 @@ export class SessionCapture {
 
     return this.conversationStore.withTransaction(async () => {
       const conversation = await this.conversationStore.getOrCreateConversation(input.sessionId, undefined, attribution);
-      const conversationId = conversation.conversationId;
-      const storedCount = await this.conversationStore.getMessageCount(conversationId);
+      const storedCount = await this.conversationStore.getSessionMessageCount(input.sessionId);
       // A resumed read may skip only an already-stored prefix; new content begins at the stored count.
-      const newMessages = input.messages.slice(Math.max(0, storedCount - (input.sourceOffset ?? 0)));
-      const { inputs, totalCounts } = this.scrub(newMessages, conversationId, storedCount);
-      if (inputs.length === 0 && input.checkpoint === undefined) return { conversationId, records: [], totalCounts };
-
-      const created = inputs.length > 0 ? await this.conversationStore.createMessagesBulk(inputs) : [];
-      if (created.length > 0) {
-        upsertRedactionCounts(this.db, this.projectId, totalCounts);
-        await this.summaryStore.appendContextMessages(conversationId, created.map((r) => r.messageId));
-        await this.persistMessageParts(input.sessionId, newMessages, created);
+      let start = Math.max(0, storedCount - (input.sourceOffset ?? 0));
+      let conversationId = conversation.conversationId;
+      const records: MessageRecord[] = [];
+      const totalCounts: RedactionCounts = { gitleaks: 0, builtIn: 0, global: 0, project: 0 };
+      for (const { entryId, at } of input.boundaries ?? []) {
+        if (at < start) continue;
+        records.push(...await this.append(input.sessionId, conversationId, input.messages.slice(start, at), totalCounts));
+        conversationId = (await this.conversationStore.getOrOpenConversationAt(input.sessionId, entryId, attribution)).conversationId;
+        start = at;
       }
+      records.push(...await this.append(input.sessionId, conversationId, input.messages.slice(start), totalCounts));
+      if (records.length > 0) upsertRedactionCounts(this.db, this.projectId, totalCounts);
       if (input.checkpoint !== undefined) input.persistCheckpoint?.(this.db, conversationId);
-      return { conversationId, records: created, totalCounts };
+      return { conversationId, records, totalCounts };
     });
   }
 
+  /** Appends messages after what the conversation already stores, with their context items and parts. */
+  private async append(
+    sessionId: string, conversationId: number, newMessages: ParsedMessage[], totalCounts: RedactionCounts,
+  ): Promise<MessageRecord[]> {
+    if (newMessages.length === 0) return [];
+    const storedCount = await this.conversationStore.getMessageCount(conversationId);
+    const inputs = this.scrub(newMessages, conversationId, storedCount, totalCounts);
+    const created = await this.conversationStore.createMessagesBulk(inputs);
+    await this.summaryStore.appendContextMessages(conversationId, created.map((r) => r.messageId));
+    await this.persistMessageParts(sessionId, newMessages, created);
+    return created;
+  }
+
   private scrub(
-    newMessages: ParsedMessage[], conversationId: number, storedCount: number,
-  ): { inputs: CreateMessageInput[]; totalCounts: RedactionCounts } {
-    const totalCounts: RedactionCounts = { gitleaks: 0, builtIn: 0, global: 0, project: 0 };
-    const inputs = newMessages.map((m, i) => {
+    newMessages: ParsedMessage[], conversationId: number, storedCount: number, totalCounts: RedactionCounts,
+  ): CreateMessageInput[] {
+    return newMessages.map((m, i) => {
       const { text, gitleaks, builtIn, global: globalCount, project } = this.scrubber.scrubWithCounts(m.content);
       totalCounts.gitleaks += gitleaks;
       totalCounts.builtIn += builtIn;
@@ -203,7 +233,6 @@ export class SessionCapture {
       totalCounts.project += project;
       return { conversationId, seq: storedCount + i, role: m.role as MessageRole, content: text, tokenCount: m.tokenCount };
     });
-    return { inputs, totalCounts };
   }
 
   /**

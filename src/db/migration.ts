@@ -133,6 +133,17 @@ function ensureSubagentAttributionColumns(db: DatabaseSync): void {
 }
 
 /**
+ * conversations.opened_by_entry_id: the transcript entry whose clear opened this conversation
+ * (an OMP `reset_boundary`), NULL for a session's first. See docs/design/omp-clear-boundary.md.
+ */
+function ensureConversationBoundaryColumn(db: DatabaseSync): void {
+  const columns = db.prepare(`PRAGMA table_info(conversations)`).all() as Array<{ name?: string }>;
+  if (!columns.some((col) => col.name === "opened_by_entry_id")) {
+    db.exec(`ALTER TABLE conversations ADD COLUMN opened_by_entry_id TEXT DEFAULT NULL`);
+  }
+}
+
+/**
  * Marks the one-time subagent-attribution backfill done, so it never re-walks
  * `~/.claude/projects` again on this database. `unmatched_count` is the
  * number of `agent-%` conversations whose transcript was no longer on disk
@@ -882,6 +893,7 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
   }
 
   ensureSubagentAttributionColumns(db);
+  ensureConversationBoundaryColumn(db);
   backfillSubagentAttribution(db, options?.claudeProjectsDir ?? defaultClaudeProjectsDir());
   backfillMessagePartsSkillCommand(db);
 

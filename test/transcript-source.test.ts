@@ -349,6 +349,64 @@ describe("OMP transcript source", () => {
       await expect(source.read(path, stored([as("assistant", "first answer"), as("user", "first question")]), ctx(cwd)))
         .rejects.toThrow(TranscriptSourceError);
     });
+
+    describe("a /clear reports where the new conversation starts", () => {
+      const clear = ([id, parentId]: At) => JSON.stringify({ type: "reset_boundary", id, parentId, timestamp });
+      const afterClear = [clear(["r1", "a1"]), say(["u2", "r1"], "user", "fresh start")];
+
+      it("a first read places the boundary among the messages it returns", async () => {
+        const { cwd, path } = treeFixture([...trunk, ...afterClear]);
+        const delta = await source.read(path, undefined, ctx(cwd));
+        expect(contents(delta)).toEqual(["first question", "first answer", "fresh start"]);
+        expect(delta.boundaries).toEqual([{ entryId: "r1", at: 2 }]);
+      });
+
+      it("a resumed delta crossing a boundary places it within the delta", async () => {
+        const { cwd, path } = treeFixture(trunk);
+        const first = await source.read(path, undefined, ctx(cwd));
+        expect(first.boundaries).toEqual([]);
+        append(path, afterClear);
+        const delta = await source.read(path, stored(first.messages, first.checkpoint), ctx(cwd));
+        expect(delta.sourceOffset).toBe(2);
+        expect(contents(delta)).toEqual(["fresh start"]);
+        expect(delta.boundaries).toEqual([{ entryId: "r1", at: 0 }]);
+        expect(delta.checkpoint).toMatchObject({ messageCount: 3 });
+      });
+
+      it("a boundary with nothing after it is reported at the end of the delta", async () => {
+        const { cwd, path } = treeFixture(trunk);
+        const first = await source.read(path, undefined, ctx(cwd));
+        append(path, [clear(["r1", "a1"])]);
+        const delta = await source.read(path, stored(first.messages, first.checkpoint), ctx(cwd));
+        expect(contents(delta)).toEqual([]);
+        expect(delta.boundaries).toEqual([{ entryId: "r1", at: 0 }]);
+      });
+
+      it("a recovery scan reports a boundary after stored history and never one inside it", async () => {
+        const { cwd, path } = treeFixture([...trunk, ...afterClear]);
+        const upToTheClear = await source.read(path, stored([as("user", "first question"), as("assistant", "first answer")]), ctx(cwd));
+        expect(contents(upToTheClear)).toEqual(["fresh start"]);
+        expect(upToTheClear.boundaries).toEqual([{ entryId: "r1", at: 0 }]);
+
+        const pastTheClear = await source.read(path, stored([
+          as("user", "first question"), as("assistant", "first answer"), as("user", "fresh start"),
+        ]), ctx(cwd));
+        expect(contents(pastTheClear)).toEqual([]);
+        expect(pastTheClear.boundaries).toEqual([]);
+      });
+
+      it("a recovery scan past a rewind reports a boundary on the live continuation", async () => {
+        const { cwd, path } = treeFixture([
+          ...trunk, ...wrongTurn, rewindTo(["b1", "a1"]), clear(["r1", "b1"]), say(["u3", "r1"], "user", "better question"),
+        ]);
+        const storedInFileOrder = [
+          as("user", "first question"), as("assistant", "first answer"), as("user", "wrong turn"), as("assistant", "wrong answer"),
+        ];
+        const delta = await source.read(path, stored(storedInFileOrder), ctx(cwd));
+        expect(contents(delta)).toEqual(["better question"]);
+        expect(delta.boundaries).toEqual([{ entryId: "r1", at: 0 }]);
+      });
+    });
   });
 
   describe("an archived (.jsonl.gz) transcript", () => {
@@ -448,6 +506,18 @@ describe("OMP transcript source", () => {
         const delta = await source.read(path, undefined, ctx(cwd));
         expect(delta.messages.map((m) => m.content)).toEqual(["first question", "first answer", "better question", "better answer"]);
         expect(delta.checkpoint).toBeUndefined();
+      });
+
+      it("an archived /clear is reported the same as a live one", async () => {
+        const clear = JSON.stringify({ type: "reset_boundary", id: "r1", parentId: "a1", timestamp });
+        const { cwd, path } = archivedTreeFixture([...trunk, clear, say(["u2", "r1"], "user", "fresh start")]);
+        const fresh = await source.read(path, undefined, ctx(cwd));
+        expect(fresh.messages.map((m) => m.content)).toEqual(["first question", "first answer", "fresh start"]);
+        expect(fresh.boundaries).toEqual([{ entryId: "r1", at: 2 }]);
+
+        const recovered = await source.read(path, stored([as("user", "first question"), as("assistant", "first answer")]), ctx(cwd));
+        expect(recovered.messages.map((m) => m.content)).toEqual(["fresh start"]);
+        expect(recovered.boundaries).toEqual([{ entryId: "r1", at: 0 }]);
       });
 
       it("a recovery scan keeps stored turns the archived rewind abandoned and adds only the live continuation", async () => {

@@ -1,6 +1,6 @@
 # An OMP `/clear` starts a new conversation
 
-**Status:** proposed, awaiting the product decision below. Refs #540. Builds on #539.
+**Status:** option A chosen; the first slice below is implemented. The second slice (closed-conversation compaction) is open. Refs #540. Builds on #539.
 
 ## The decision
 
@@ -57,7 +57,7 @@ The OMP hook never calls `/session-end` or `/session-complete`, and `import` doe
 
 ### A: a new conversation at each boundary
 
-Each `reset_boundary` closes the current conversation. The next messages go to a new `conversations` row with the **same `session_id`** and a new nullable column recording the boundary entry id that opened it (name to be settled, e.g. `opened_by_entry_id`; `NULL` for the first segment).
+Each `reset_boundary` closes the current conversation. The next messages go to a new `conversations` row with the **same `session_id`** and a new nullable column recording the boundary entry id that opened it (`opened_by_entry_id`; `NULL` for the first segment).
 
 The session id stays unchanged because it keys tool events, promoted memory's session affinity, `session_compactions`, the compaction in-flight guard, replay state and the sweep. Encoding the boundary into it would break all of these.
 
@@ -70,7 +70,7 @@ What the user sees:
 Migration and idempotency:
 
 - **No fingerprint bump.** The cursor format does not change, so existing OMP cursors keep resuming. Bumping `OMP_FINGERPRINT_VERSION` would only force every OMP file through a full re-read. A boundary already inside stored content is never split retroactively; boundaries appended after the upgrade are honoured. Conversations that are already mixed stay mixed.
-- **Recovery rule for full rescans that still happen** (a new inode after OMP rewrites a file, or a cursor mismatch): `ompMessagesAfterStored` reconciles the whole session's stored messages with the file, as today. Only the records after the entry holding the last stored message are segmented, by the rule under "Segmentation on the live path". A live boundary there opens a row unless a row already carries its entry id (a boundary that was the last record when it was captured). A boundary before that point is never re-split: it already has its row, or it predates boundary support. *Design, untested.*
+- **Recovery rule for full rescans that still happen** (a new inode after OMP rewrites a file, or a cursor mismatch): `ompMessagesAfterStored` reconciles the whole session's stored messages with the file, as today. Only the records after the entry holding the last stored message are segmented, by the rule under "Segmentation on the live path". A live boundary there opens a row unless a row already carries its entry id (a boundary that was the last record when it was captured). A boundary before that point is never re-split: it already has its row, or it predates boundary support.
 - **The cursor count stays cumulative.** `messageCount` keeps its contract, the total messages consumed through the offset, counted across every segment of the session. The per-segment position is derived at write time from the target row's own stored count, never from the cursor. The cursor is saved against the newest segment's row, in the same transaction as the messages, and only that row's cursor is loaded, because `getConversationBySessionId` returns the newest row. Each site that compares the count stays correct because the transcript read sees the session's stored total instead of the newest row's count:
   - `readJsonlTranscriptDelta` advances the count by the scanned suffix, and `canResume` checks only that it is a non-negative integer. Unchanged: a boundary is not a message, so the count the reader adds is the same.
   - `ompSource.read` trusts the cursor only while `cursor.messageCount === stored.storedCount`, passes `prior.messageCount` as `sourceOffset` on a resume, and rebuilds the checkpoint after a rescan as `stored.storedCount + messages.length`. `readOmpArchive` passes `stored.storedCount` as `sourceOffset`. `StoredTranscript.storedCount` becomes the sum of the stored counts of every conversation row with the session id. A Codex session has one row, so its value is unchanged.
@@ -114,7 +114,7 @@ Capture follows the `parentId` chain from the last entry, not file order (#539).
 ## First PR slice (option A)
 
 1. `src/omp-transcript.ts`: `reset_boundary` keeps its tree node and adds `boundary: { entryId }`. The live-path selection reports each live boundary's position among the messages it returns. The existing "stores nothing" test moves this entry to a test of its own.
-2. `src/jsonl-transcript-reader.ts`: unchanged apart from carrying the OMP selection's boundary positions on the delta. The OMP adapter computes segments from the records it already returns. Codex is unaffected.
+2. `src/jsonl-transcript-reader.ts`: unchanged. The OMP adapter computes boundary positions (`selectOmpLiveSegments`) from the records every OMP delta and archive read already returns, and reports them on `TranscriptDelta.boundaries`. Codex is unaffected.
 3. Schema: the nullable boundary column on `conversations`, with its migration.
 4. `src/capture.ts` and the OMP adapter: give the transcript read the session's stored total and every segment's stored messages, write each segment to its own row in one transaction, create the row for a boundary with no messages after it, save the cursor against the newest row with its cumulative count, and apply the recovery rule.
 5. Tests:

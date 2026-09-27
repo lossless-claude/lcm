@@ -74,6 +74,8 @@ export type SubagentAttributionInput = {
 export type CreateConversationInput = {
   sessionId: string;
   title?: string;
+  /** The transcript entry whose clear opens this conversation; absent for a session's first. */
+  openedByEntryId?: string;
 } & SubagentAttributionInput;
 
 export type ConversationRecord = {
@@ -229,8 +231,8 @@ export class ConversationStore {
       // parser. Older ones keep NULL, which reads as unknown; they are never
       // re-tagged, so the marker states what is known rather than guessing.
       .prepare(
-        `INSERT INTO conversations (session_id, title, role_tagging, parent_session_id, subagent_type, subagent_desc)
-         VALUES (?, ?, 'tagged', ?, ?, ?)`,
+        `INSERT INTO conversations (session_id, title, role_tagging, parent_session_id, subagent_type, subagent_desc, opened_by_entry_id)
+         VALUES (?, ?, 'tagged', ?, ?, ?, ?)`,
       )
       .run(
         input.sessionId,
@@ -238,6 +240,7 @@ export class ConversationStore {
         input.parentSessionId ?? null,
         input.subagentType ?? null,
         input.subagentDesc ?? null,
+        input.openedByEntryId ?? null,
       );
 
     const row = this.db
@@ -283,6 +286,48 @@ export class ConversationStore {
       return this.backfillAttribution(existing, attribution);
     }
     return this.createConversation({ sessionId, title, ...attribution });
+  }
+
+  /**
+   * The session's conversation opened by a clear at transcript entry `entryId`, creating it
+   * when no conversation carries that entry yet. A session has one conversation per clear
+   * after its first; the newest is the one {@link getConversationBySessionId} returns.
+   */
+  async getOrOpenConversationAt(
+    sessionId: string,
+    entryId: string,
+    attribution?: SubagentAttributionInput,
+  ): Promise<ConversationRecord> {
+    const row = this.db
+      .prepare(`${CONVERSATION_SELECT_COLUMNS} FROM conversations WHERE session_id = ? AND opened_by_entry_id = ?`)
+      .get(sessionId, entryId) as unknown as ConversationRow | undefined;
+    return row ? toConversationRecord(row) : this.createConversation({ sessionId, openedByEntryId: entryId, ...attribution });
+  }
+
+  /** Messages stored across every conversation of the session. */
+  async getSessionMessageCount(sessionId: string): Promise<number> {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS count FROM messages m
+         JOIN conversations c ON c.conversation_id = m.conversation_id
+         WHERE c.session_id = ?`,
+      )
+      .get(sessionId) as unknown as CountRow | undefined;
+    return row?.count ?? 0;
+  }
+
+  /** Every conversation's messages of the session, oldest conversation first, each in `seq` order. */
+  async getSessionMessages(sessionId: string): Promise<MessageRecord[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT m.message_id, m.conversation_id, m.seq, m.role, m.content, m.token_count, m.created_at
+         FROM messages m
+         JOIN conversations c ON c.conversation_id = m.conversation_id
+         WHERE c.session_id = ?
+         ORDER BY c.created_at, c.conversation_id, m.seq`,
+      )
+      .all(sessionId) as unknown as MessageRow[];
+    return rows.map(toMessageRecord);
   }
 
   /**
