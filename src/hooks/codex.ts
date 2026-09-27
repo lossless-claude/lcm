@@ -7,6 +7,7 @@ import { ensureDaemon } from "../daemon/lifecycle.js";
 import { PKG_VERSION } from "../daemon/version.js";
 import { daemonNotice, warnOncePerSession } from "./fail-open.js";
 import { buildMemoryContext } from "./memory-context.js";
+import { LEARNING_INSTRUCTION_CLI } from "../guidance.js";
 import { lcmHome } from "../lcm-home.js";
 import { createLcmPaths, type LcmPaths } from "../lcm-paths.js";
 import { firePromoteEventsRequest } from "./daemon-requests.js";
@@ -223,13 +224,13 @@ function defaultDeps(): CodexHookDeps {
   };
 }
 
-function boundContext(context: string): string {
+function boundContext(context: string, limit = CONTEXT_BYTES): string {
   // A byte cap also bounds non-ASCII output without splitting surrogate pairs.
   let bytes = 0;
   const bounded: string[] = [];
   for (const point of context) {
     bytes += Buffer.byteLength(point, "utf8");
-    if (bytes > CONTEXT_BYTES) break;
+    if (bytes > limit) break;
     bounded.push(point);
   }
   return bounded.join("");
@@ -243,6 +244,17 @@ function contextOutput(event: string, context: string): typeof EMPTY {
       hookEventName: event, additionalContext: boundContext(context),
     } }),
   };
+}
+
+// Every UserPromptSubmit carries the learning instruction, whether or not memory was
+// surfaced, so a Codex agent is told how to store on every turn. The cap trims the memory
+// context, never the instruction; the daemon reserves the same bytes out of the hint budget.
+const INSTRUCTION_SUFFIX = `\n${LEARNING_INSTRUCTION_CLI}`;
+const INSTRUCTION_BYTES = Buffer.byteLength(INSTRUCTION_SUFFIX, "utf8");
+
+function promptOutput(memoryContext: string): typeof EMPTY {
+  const bounded = boundContext(memoryContext, CONTEXT_BYTES - INSTRUCTION_BYTES);
+  return contextOutput("UserPromptSubmit", bounded.trim() ? `${bounded}${INSTRUCTION_SUFFIX}` : LEARNING_INSTRUCTION_CLI);
 }
 
 async function readRestoreEvidence(transcriptPath: string): Promise<string | null> {
@@ -352,7 +364,7 @@ export async function dispatchCodexHook(
         if (input.hook_event_name === "UserPromptSubmit" && input.prompt?.trim())
           observeDelivery("search", "unconfirmed", "daemon-unavailable");
       }
-      return EMPTY;
+      return input.hook_event_name === "UserPromptSubmit" ? promptOutput("") : EMPTY;
     }
     const signal = AbortSignal.timeout(shortDeadline ? 2000 : compacting ? 120_000 : 15_000);
     const identity = { session_id: input.session_id, cwd: input.cwd, client: "codex" };
@@ -393,15 +405,18 @@ export async function dispatchCodexHook(
       const recalled = await client.post<{
         hints?: string[]; ids?: string[]; projectIds?: (string | null)[]; pivotHint?: string;
       }>("/prompt-search", {
-        ...identity, query: input.prompt, learningInstructionBytes: 0, nativeHistory: true,
+        ...identity, query: input.prompt, learningInstructionBytes: INSTRUCTION_BYTES, nativeHistory: true,
       }, { timeoutMs: 5000, signal });
       observeDelivery("search", "accepted");
       observe("search", "completed", recalled.hints?.length ? "hints" : "no-hints");
-      return contextOutput("UserPromptSubmit", buildMemoryContext(
+      return promptOutput(buildMemoryContext(
         recalled.hints ?? [], recalled.ids ?? [], recalled.projectIds ?? [], recalled.pivotHint,
       ) ?? "");
     }
-    if (input.hook_event_name === "UserPromptSubmit") observe("search", "deferred", "empty-prompt");
+    if (input.hook_event_name === "UserPromptSubmit") {
+      observe("search", "deferred", "empty-prompt");
+      return promptOutput("");
+    }
     if (compacting) {
       activeOperation = "precompact";
       try {
@@ -431,6 +446,6 @@ export async function dispatchCodexHook(
       }, paths);
     }
     console.error(`[lcm] Codex hook failed: ${error instanceof Error ? error.message : "unknown error"}`);
-    return EMPTY;
+    return observedInput?.hook_event_name === "UserPromptSubmit" ? promptOutput("") : EMPTY;
   }
 }

@@ -13,6 +13,7 @@ import {
 import { extractPostToolEvents } from "../src/hooks/extractors.js";
 import lcm from "../hooks/omp/lcm.js";
 import { readOmpHookSnapshots } from "../src/doctor/hook-snapshots.js";
+import { LEARNING_INSTRUCTION_CLI } from "../src/guidance.js";
 
 function context(overrides: Partial<HookContext> = {}): HookContext {
   return {
@@ -178,7 +179,7 @@ describe("OMP lcm hook", () => {
     const { handlers } = hook();
     await getHandler(handlers, "session_start")({}, context());
     const before = getHandler(handlers, "before_agent_start");
-    const first = await before({ prompt: "first prompt" }, context()) as {
+    const first = await before({ prompt: "first prompt", systemPrompt: ["base"] }, context()) as {
       message: Record<string, unknown>;
     };
     expect(first.message).toMatchObject({
@@ -188,9 +189,32 @@ describe("OMP lcm hook", () => {
       attribution: "agent",
     });
 
-    const second = await before({ prompt: "second prompt" }, context());
-    expect(second).toBeUndefined();
+    const second = await before({ prompt: "second prompt", systemPrompt: ["base"] }, context());
+    expect(second).toEqual({ systemPrompt: ["base", LEARNING_INSTRUCTION_CLI] });
     expect(requests.filter((request) => request.path === "/prompt-search")).toHaveLength(2);
+  });
+
+  it("appends the learning instruction to the system prompt on every turn, reserving no hint bytes", async () => {
+    const before = getHandler(hook().handlers, "before_agent_start");
+    for (const systemPrompt of [["base", "tools"], "base"]) {
+      const result = await before({ prompt: "hello", systemPrompt }, context()) as { systemPrompt: string[] };
+      expect(result.systemPrompt).toEqual([...(Array.isArray(systemPrompt) ? systemPrompt : [systemPrompt]), LEARNING_INSTRUCTION_CLI]);
+    }
+    expect(requests.filter((r) => r.path === "/prompt-search").every((r) => r.body.learningInstructionBytes === 0)).toBe(true);
+  });
+
+  it("puts the learning instruction in the memory message when the host passes no system prompt", async () => {
+    __setTransportForTests((request) => {
+      requests.push(request);
+      return request.path === "/prompt-search" ? { context: "search memory" } : undefined;
+    });
+    const result = await getHandler(hook().handlers, "before_agent_start")({ prompt: "hello" }, context()) as {
+      message: Record<string, unknown>; systemPrompt?: unknown;
+    };
+    expect(result.systemPrompt).toBeUndefined();
+    expect(result.message.content).toBe(`search memory\n\n${LEARNING_INSTRUCTION_CLI}`);
+    expect(requests.find((r) => r.path === "/prompt-search")?.body.learningInstructionBytes)
+      .toBe(Buffer.byteLength(`\n\n${LEARNING_INSTRUCTION_CLI}`, "utf8"));
   });
 
   it("records completed execution after successful restore and search", async () => {
@@ -214,14 +238,14 @@ describe("OMP lcm hook", () => {
       ]));
   });
 
-  it("injects prompt-search context and returns undefined for an empty context", async () => {
+  it("injects prompt-search context and sends no message for an empty context", async () => {
     const { handlers } = hook();
     requests = [];
     __setTransportForTests((request) => {
       requests.push(request);
       return request.path === "/prompt-search" ? { context: "search memory" } : undefined;
     });
-    const result = await getHandler(handlers, "before_agent_start")({ prompt: "find this" }, context()) as {
+    const result = await getHandler(handlers, "before_agent_start")({ prompt: "find this", systemPrompt: ["base"] }, context()) as {
       message: Record<string, unknown>;
     };
     expect(result.message).toMatchObject({ content: "search memory", customType: "lcm-memory" });
@@ -230,7 +254,8 @@ describe("OMP lcm hook", () => {
       requests.push(request);
       return request.path === "/prompt-search" ? { context: "  " } : undefined;
     });
-    expect(await getHandler(hook().handlers, "before_agent_start")({ prompt: "no hint" }, context())).toBeUndefined();
+    expect(await getHandler(hook().handlers, "before_agent_start")({ prompt: "no hint", systemPrompt: ["base"] }, context()))
+      .toEqual({ systemPrompt: ["base", LEARNING_INSTRUCTION_CLI] });
   });
 
   it("ingests only when agent_end will not continue", async () => {
@@ -345,7 +370,8 @@ describe("OMP lcm hook", () => {
     const { handlers } = hook();
     const ctx = context();
     await expect(getHandler(handlers, "session_start")({}, ctx)).resolves.toBeUndefined();
-    await expect(getHandler(handlers, "before_agent_start")({ prompt: "hello" }, ctx)).resolves.toBeUndefined();
+    await expect(getHandler(handlers, "before_agent_start")({ prompt: "hello", systemPrompt: ["base"] }, ctx))
+      .resolves.toEqual({ systemPrompt: ["base", LEARNING_INSTRUCTION_CLI] });
     await expect(getHandler(handlers, "agent_end")({}, ctx)).resolves.toBeUndefined();
     await expect(getHandler(handlers, "session_stop")({ session_id: "omp-session" }, ctx)).resolves.toBeUndefined();
     await expect(getHandler(handlers, "tool_result")({ toolName: "Read", input: {}, content: "x" }, ctx)).resolves.toBeUndefined();

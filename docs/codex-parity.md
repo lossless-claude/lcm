@@ -26,7 +26,7 @@ The official [Codex hooks reference](https://developers.openai.com/codex/hooks) 
 | Behavior | Codex event | Adapter responsibility |
 | --- | --- | --- |
 | Restore memory | `SessionStart` | Handle startup, resume, clear, and compact sources; return bounded developer context. |
-| Recall before a prompt | `UserPromptSubmit` | Search using the prompt and return bounded `additionalContext`. |
+| Recall before a prompt | `UserPromptSubmit` | Search using the prompt and return bounded `additionalContext` that always ends with the learning instruction (CLI wording, `src/guidance.ts`), including when nothing matched, the prompt is empty, or the daemon is unavailable. The byte cap trims the memory context, never the instruction, and the hint budget reserves the larger of `restoration.reservedForLearningInstruction` and the instruction's bytes. |
 | Capture completed turns | `Stop` | Incrementally ingest the Codex transcript without blocking or restarting the agent. |
 | Capture interruptions | `Interrupt` | Attempt a short write to an already running daemon within Codex's three-second cap. |
 | Capture remaining content | `SessionEnd` | Flush pending ingestion; do not rely on shutdown as the only capture event. |
