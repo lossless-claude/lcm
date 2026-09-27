@@ -106,6 +106,15 @@ describe("harness guidance checks", () => {
     expect(result.message).toContain("repair or remove that file");
   });
 
+  it("does not count an OMP MCP entry that cannot start the server", () => {
+    const path = join(project, ".omp", "mcp.json");
+    mkdirSync(join(project, ".omp"), { recursive: true });
+    for (const lcm of [{}, true, { command: "node", args: ["lcm.js"] }]) {
+      writeFileSync(path, JSON.stringify({ mcpServers: { lcm } }));
+      expect(run(["omp"])["omp-mcp"].status).toBe("warn");
+    }
+  });
+
   it("warns about an outdated OMP hook", () => {
     const hook = installConnector("omp", "hooks", project).path;
     writeFileSync(hook, `${readFileSync(hook, "utf8")}\n// from an older lcm\n`);

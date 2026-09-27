@@ -37,8 +37,11 @@ function readOrEmpty(deps: DoctorDeps, path: string): string {
   try { return deps.readFileSync(path, "utf-8"); } catch { return ""; }
 }
 
+// An entry counts only when OMP can start it: a command, and arguments that run `mcp`.
 function registersLcmMcp(deps: DoctorDeps, path: string): boolean {
-  try { return !!JSON.parse(readOrEmpty(deps, path) || "{}")?.mcpServers?.lcm; } catch { return false; }
+  let entry: { command?: unknown; args?: unknown } | undefined;
+  try { entry = JSON.parse(readOrEmpty(deps, path) || "{}")?.mcpServers?.lcm; } catch { return false; }
+  return typeof entry?.command === "string" && Array.isArray(entry.args) && entry.args.includes("mcp");
 }
 
 /** A hook connector counts when installed globally or in the current project. */
