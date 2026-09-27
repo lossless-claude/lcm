@@ -10,6 +10,8 @@ export function printImportSummary(
   console.log(`  ${result.imported} sessions imported (${result.totalMessages} messages${tokenSuffix})`);
   if (result.skippedEmpty > 0) console.log(`  ${result.skippedEmpty} skipped (empty transcript)`);
   if (result.failed > 0) console.log(`  ${result.failed} failed`);
+  if (result.ompRootsScanned) console.log(`  OMP roots scanned: ${result.ompRootsScanned.join(", ")}`);
+  if (result.ompDuplicatesSkipped) console.log(`  OMP duplicates skipped (session id also in another root): ${result.ompDuplicatesSkipped.join(", ")}`);
 
   if (opts.replay) {
     console.log("  [replay] Sessions compacted sequentially with threaded context.");

@@ -77,8 +77,13 @@ function realpathDeep(p: string): string {
  * `omp --profile <name>` relocates sessions to
  * `~/.omp/profiles/<name>/agent/sessions` and a hook installed there reports
  * paths lcm would otherwise refuse — silently, since capture is best-effort.
+ *
+ * `lcm import`'s OMP discovery (`ompDiscoveryRoots` / `findAllOmpTranscripts`
+ * in `../omp-transcript.js`) enumerates the same roots, minus any profile
+ * reached through a symlink, so a profile session that captures live is also
+ * backfilled.
  */
-function ompSessionRoots(): string[] {
+export function ompSessionRoots(): string[] {
   const home = homedir();
   const roots = [process.env.PI_CODING_AGENT_DIR || pathJoin(home, ".omp", "agent")];
   const profilesDir = pathJoin(home, ".omp", "profiles");

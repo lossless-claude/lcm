@@ -10,7 +10,7 @@
  */
 
 export type HttpEndpointType = "openai" | "anthropic";
-export type ProcessEndpointType = "claude-process" | "codex-process" | "copilot-process";
+export type ProcessEndpointType = "claude-process" | "codex-process" | "copilot-process" | "omp-process";
 
 export type HttpEndpoint = {
   type: HttpEndpointType;
@@ -26,7 +26,7 @@ export type ProcessEndpoint = { type: ProcessEndpointType; model?: string };
 export type EndpointConfig = HttpEndpoint | ProcessEndpoint;
 
 const HTTP_TYPES: ReadonlySet<string> = new Set<HttpEndpointType>(["openai", "anthropic"]);
-const PROCESS_TYPES: ReadonlySet<string> = new Set<ProcessEndpointType>(["claude-process", "codex-process", "copilot-process"]);
+const PROCESS_TYPES: ReadonlySet<string> = new Set<ProcessEndpointType>(["claude-process", "codex-process", "copilot-process", "omp-process"]);
 const SELECTORS = new Set(["session", "auto", "disabled"]);
 const PROTOTYPE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 /** Names that already mean something as a provider value, so an endpoint cannot take them. */

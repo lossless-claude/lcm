@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { getLcmConnection, closeLcmConnection } from "../../src/db/connection.js";
 import { runLcmMigrations } from "../../src/db/migration.js";
 import { PromotedStore } from "../../src/db/promoted.js";
@@ -176,5 +176,27 @@ describe("PromotedStore", () => {
     store.archive(objectionId);
 
     expect(store.getVoteCounts().get(memoryId)).toBeUndefined();
+  });
+
+  // With the project row as the outer loop, SQLite re-runs the MATCH once per promoted row of
+  // the project, re-seeking every term each time: a project-scoped dedup query then costs rows
+  // times terms, all of it synchronous on the daemon's event loop.
+  it("drives a project-scoped search from the full-text index, not from the project's rows", () => {
+    const db = makeDb();
+    const store = new PromotedStore(db);
+    store.insert({ content: "Decided to use PostgreSQL for the database", tags: ["decision"], projectId: "p1" });
+
+    const statements: string[] = [];
+    const prepare = db.prepare.bind(db);
+    const spy = vi.spyOn(db, "prepare").mockImplementation((sql: string) => {
+      if (sql.includes("promoted_fts MATCH")) statements.push(sql);
+      return prepare(sql);
+    });
+    expect(store.search("postgresql database", 10, undefined, "p1")).toHaveLength(1);
+    spy.mockRestore();
+
+    const plan = (db.prepare(`EXPLAIN QUERY PLAN ${statements[0]}`).all('"postgresql"', "p1", 10) as Array<{ detail: string }>)
+      .map((row) => row.detail);
+    expect(plan[0]).toMatch(/^SCAN fts VIRTUAL TABLE/);
   });
 });

@@ -38,6 +38,10 @@ vi.mock("../../../src/llm/copilot-process.js", () => ({
   createCopilotProcessSummarizer: vi.fn().mockReturnValue(async () => "copilot-process-summary"),
 }));
 
+vi.mock("../../../src/llm/omp-process.js", () => ({
+  createOmpProcessSummarizer: vi.fn().mockReturnValue(async () => "omp-process-summary"),
+}));
+
 vi.mock("../../../src/daemon/project-language.js", () => ({
   scheduleProjectLanguageDetection: vi.fn().mockResolvedValue(undefined),
 }));
@@ -45,6 +49,7 @@ vi.mock("../../../src/daemon/project-language.js", () => ({
 import { createClaudeProcessSummarizer } from "../../../src/llm/claude-process.js";
 import { createCopilotProcessSummarizer } from "../../../src/llm/copilot-process.js";
 import { createCodexProcessSummarizer } from "../../../src/llm/codex-process.js";
+import { createOmpProcessSummarizer } from "../../../src/llm/omp-process.js";
 import { createAnthropicSummarizer } from "../../../src/llm/anthropic.js";
 import { createOpenAISummarizer } from "../../../src/llm/openai.js";
 import { scheduleProjectLanguageDetection } from "../../../src/daemon/project-language.js";
@@ -540,6 +545,27 @@ describe("buildCompactionMessage", () => {
     const msg = buildCompactionMessage(base);
     expect(msg).toContain("━".repeat(46));
   });
+
+  it("does not throw and clamps the bar when the context grew (tokensAfter > tokensBefore)", () => {
+    expect(() => buildCompactionMessage({ ...base, tokensBefore: 1_000, tokensAfter: 2_000 })).not.toThrow();
+    const msg = buildCompactionMessage({ ...base, tokensBefore: 1_000, tokensAfter: 2_000 });
+    expect(msg).toContain("░".repeat(30));
+    expect(msg).not.toContain("█");
+    expect(msg).not.toContain("% saved");
+    expect(msg).not.toContain("-100.0%");
+    expect(msg).toContain("100.0% grew");
+    expect(msg).toContain("2.0×  growth  ·  1.0K tokens added");
+    expect(msg).not.toContain("compression");
+  });
+
+  it("labels growth from an empty baseline without a ratio or percentage", () => {
+    const msg = buildCompactionMessage({ ...base, tokensBefore: 0, tokensAfter: 500 });
+    expect(msg).toContain("░".repeat(30));
+    expect(msg).toContain("  grew");
+    expect(msg).toContain("–×  growth  ·  500 tokens added");
+    expect(msg).not.toContain("% saved");
+    expect(msg).not.toContain("compression");
+  });
 });
 
 describe("createCompactHandler — summarizer branching", () => {
@@ -644,6 +670,26 @@ describe("createCompactHandler — summarizer branching", () => {
     await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd, client: "copilot" }));
 
     expect(createCopilotProcessSummarizer).toHaveBeenCalled();
+    expect(createClaudeProcessSummarizer).not.toHaveBeenCalled();
+  });
+
+  it("uses createOmpProcessSummarizer when provider is omp-process", async () => {
+    vi.clearAllMocks();
+    const handler = createCompactHandler(makeConfig("omp-process"), paths);
+    const { res } = mockRes();
+    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd }));
+
+    expect(createOmpProcessSummarizer).toHaveBeenCalledWith(expect.objectContaining({ model: "test-model" }));
+    expect(createClaudeProcessSummarizer).not.toHaveBeenCalled();
+  });
+
+  it("auto + client=omp resolves to omp-process", async () => {
+    vi.clearAllMocks();
+    const handler = createCompactHandler(makeConfig("auto"), paths);
+    const { res } = mockRes();
+    await handler({} as any, res, JSON.stringify({ session_id: "s1", cwd: testCwd, client: "omp" }));
+
+    expect(createOmpProcessSummarizer).toHaveBeenCalled();
     expect(createClaudeProcessSummarizer).not.toHaveBeenCalled();
   });
 

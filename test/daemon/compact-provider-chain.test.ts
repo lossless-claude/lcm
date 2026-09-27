@@ -66,8 +66,9 @@ it("records DeepSeek's cut-off answer as failed and OpenRouter's that replaced i
     expect(rows.map((row) => row.provider).sort()).toEqual(["deepseek", "openrouter"]);
     expect(openrouter.calls_ok).toBeGreaterThan(0);
     expect(openrouter).toMatchObject({ model: "vendor/flash", calls_failed: 0, calls_total: openrouter.calls_ok });
-    // Every pass tried DeepSeek first; none of its answers counts as a success.
-    expect(deepseek).toMatchObject({ model: "deepseek-chat", calls_ok: 0, calls_failed: openrouter.calls_ok });
+    // Every pass tried DeepSeek first, then its shorter retry; each is a failed call of its own.
+    expect(deepseek).toMatchObject({ model: "deepseek-chat", calls_ok: 0, calls_failed: 2 * openrouter.calls_ok,
+      calls_total: 2 * openrouter.calls_ok });
     expect(db.prepare("SELECT COUNT(*) AS n FROM summaries WHERE content = 'the stored summary'").get()).toEqual({ n: 1 });
   } finally {
     db.close();

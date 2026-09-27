@@ -78,8 +78,8 @@ describe("harness guidance checks", () => {
   });
 
   it("passes when the OMP hook and MCP server are installed globally", () => {
-    const hook = installConnector("omp", "hooks", homedir()).path;
-    const mcp = installConnector("omp", "mcp", homedir()).path;
+    const hook = installConnector({ agent: "omp", type: "hooks", scope: "global" }).path;
+    const mcp = installConnector({ agent: "omp", type: "mcp", scope: "global" }).path;
     expect(hook.startsWith(home)).toBe(true);
     const results = run(["omp"]);
     expect(results["omp-hooks"]).toMatchObject({ status: "pass", message: `learning instruction via ${hook}` });
@@ -116,7 +116,7 @@ describe("harness guidance checks", () => {
   });
 
   it("warns about an outdated OMP hook", () => {
-    const hook = installConnector("omp", "hooks", project).path;
+    const hook = installConnector({ agent: "omp", type: "hooks", cwd: project }).path;
     writeFileSync(hook, `${readFileSync(hook, "utf8")}\n// from an older lcm\n`);
     expect(run(["omp"])["omp-hooks"]).toMatchObject({ status: "warn", message: expect.stringContaining("differs from the shipped hook") });
   });
@@ -133,7 +133,7 @@ describe("harness guidance checks", () => {
   });
 
   it("passes when the Codex hooks and MCP server are installed in the project", () => {
-    const hooks = installConnector("codex", "hooks", project).path;
+    const hooks = installConnector({ agent: "codex", type: "hooks", cwd: project }).path;
     const config = join(project, ".codex", "config.toml");
     writeFileSync(config, '[mcp_servers.lcm]\ncommand = "lcm"\nargs = ["mcp"]\n');
     const results = run(["codex"]);

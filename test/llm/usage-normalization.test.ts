@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { parseCodexUsage, parseLegacyCodexTokens, extractCodexErrorEvents } from "../../src/llm/codex-process.js";
 import { parseClaudeResult } from "../../src/llm/claude-process.js";
 import { parseCopilotJsonl } from "../../src/llm/copilot-process.js";
+import { parseOmpUsage } from "../../src/llm/omp-process.js";
 
 // All three fixtures were captured verbatim from the real CLIs. They pin the
 // convention that makes the numbers comparable: inputTokens is the full prompt
@@ -113,5 +114,29 @@ describe("copilot usage normalization", () => {
     // that must stay distinguishable from a genuinely empty prompt.
     expect(outcome.outputTokens).toBe(221);
     expect(outcome.premiumRequests).toBe(0.33);
+  });
+});
+
+describe("omp usage normalization", () => {
+  // From `omp --print --mode json`'s turn_end event, shaped from pi-ai's Usage type.
+  const TURN_END =
+    '{"type":"turn_end","message":{"content":[{"type":"text","text":"OK"}],' +
+    '"usage":{"input":120,"output":40,"cacheRead":30,"cacheWrite":0,"totalTokens":160},' +
+    '"model":"claude-sonnet-5"}}';
+
+  it("treats cacheRead as a subset of input, matching the CLI's own totalTokens", () => {
+    expect(parseOmpUsage(TURN_END)).toEqual({
+      provider: "omp-process",
+      model: "claude-sonnet-5",
+      inputTokens: 120,
+      cachedInputTokens: 30,
+      outputTokens: 40,
+      tokensUsed: 160,
+    });
+  });
+
+  it("returns undefined when no turn_end carries usage", () => {
+    expect(parseOmpUsage('{"type":"agent_start"}')).toBeUndefined();
+    expect(parseOmpUsage("")).toBeUndefined();
   });
 });

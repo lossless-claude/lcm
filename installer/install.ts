@@ -239,7 +239,7 @@ function installCodex(deps: ServiceDeps): HarnessOutcome {
     if (found.status !== 0 || typeof found.stdout !== "string" || !found.stdout.trim()) {
       return { status: "skipped", detail: "codex not on PATH" };
     }
-    const result = installConnector("codex", "hooks", homedir(), writerFor(deps));
+    const result = installConnector({ agent: "codex", type: "hooks", scope: "global" }, writerFor(deps));
     return { status: "ok", detail: `hooks installed in ${result.path}${result.notice ? ` — ${result.notice}` : ""}` };
   } catch (err) {
     return { status: "failed", detail: err instanceof Error ? err.message : String(err) };
@@ -257,12 +257,12 @@ function installOmp(deps: ServiceDeps): HarnessOutcome {
       return { status: "skipped", detail: "omp not on PATH" };
     }
     const write = writerFor(deps);
-    const result = installConnector("omp", "hooks", homedir(), write);
+    const result = installConnector({ agent: "omp", type: "hooks", scope: "global" }, write);
     if (runningFromPluginBundle()) {
       return { status: "ok", detail: `hooks installed in ${result.path}; run lcm install from the npm CLI to register the MCP server` };
     }
     try {
-      const mcp = installConnector("omp", "mcp", homedir(), write);
+      const mcp = installConnector({ agent: "omp", type: "mcp", scope: "global" }, write);
       return { status: "ok", detail: `hooks installed in ${result.path}, MCP server registered in ${mcp.path}` };
     } catch (err) {
       return { status: "failed", detail: `hooks installed in ${result.path}; MCP registration failed: ${err instanceof Error ? err.message : String(err)}` };
