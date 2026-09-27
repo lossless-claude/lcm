@@ -1,6 +1,6 @@
 # Import past sessions
 
-`lcm import` imports Claude Code, Codex, and Oh My Pi session transcripts for the current project. `lcm import --replay` discovers and replays all three sources by default. Choose a source explicitly when needed:
+`lcm import` discovers and imports Claude Code, Codex, and Oh My Pi session transcripts for the current project. `--replay` adds threaded compaction of each imported session; it does not change which sources are read. Choose a source explicitly when needed:
 
 ```sh
 lcm import --provider codex --dry-run
