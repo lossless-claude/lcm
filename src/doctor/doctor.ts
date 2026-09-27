@@ -158,11 +158,20 @@ function addCopilotProcessChecks(results: CheckResult[], deps: DoctorDeps): void
   }
 }
 
+function addOmpProcessChecks(results: CheckResult[], deps: DoctorDeps): void {
+  if (checkBinary(deps, "omp")) {
+    results.push({ name: "omp-process", category: "Summarizer", status: "pass", message: "omp CLI found" });
+  } else {
+    results.push({ name: "omp-process", category: "Summarizer", status: "fail", message: "omp CLI not found\n     Fix: npm install -g @oh-my-pi/pi-coding-agent" });
+  }
+}
+
 
 const PROCESS_CHECKS: Record<string, (results: CheckResult[], deps: DoctorDeps) => void> = {
   "claude-process": addClaudeProcessChecks,
   "codex-process": addCodexProcessChecks,
   "copilot-process": addCopilotProcessChecks,
+  "omp-process": addOmpProcessChecks,
 };
 
 /** Where loadDaemonConfig reads no file: the doctor passes the `llm` it read itself. */
@@ -440,7 +449,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
     category: "Stack",
     status: "pass",
     message: config.summarizer === "auto"
-      ? "Summarizer: auto (Claude->claude-process, Codex->codex-process, Copilot->copilot-process)"
+      ? "Summarizer: auto (Claude->claude-process, Codex->codex-process, Copilot->copilot-process, OMP->omp-process)"
       : `Summarizer: ${config.summarizer}`,
   });
 

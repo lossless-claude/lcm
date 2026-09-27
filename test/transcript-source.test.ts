@@ -2,14 +2,29 @@ import { appendFileSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CodexTranscriptCursor } from "../src/codex-transcript-reader.js";
+import { EventsDb } from "../src/hooks/events-db.js";
 import {
   transcriptSource,
   TranscriptSourceError,
   type ReadContext,
   type StoredTranscript,
 } from "../src/transcript-source.js";
+
+/** Counts real `gunzipSync` calls without disturbing `gzipSync`, which fixtures use to build archives. */
+const zlibMock = vi.hoisted(() => ({ gunzipCalls: 0 }));
+
+vi.mock("node:zlib", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:zlib")>();
+  return {
+    ...actual,
+    gunzipSync: (...args: Parameters<typeof actual.gunzipSync>) => {
+      zlibMock.gunzipCalls++;
+      return actual.gunzipSync(...args);
+    },
+  };
+});
 
 /**
  * Each adapter answers "what does this transcript hold beyond what is stored"
@@ -315,6 +330,20 @@ describe("OMP transcript source", () => {
       expect(delta.checkpoint).toMatchObject({ messageCount: 5 });
     });
 
+    it("a recovery scan does not match stored history to a repeat on an abandoned branch", async () => {
+      const { cwd, path } = treeFixture([
+        say(["r1", null], "user", "root"),
+        say(["y1", "r1"], "assistant", "yes"),
+        JSON.stringify({ type: "branch_summary", id: "b1", parentId: "r1", timestamp, fromId: "y1", summary: "" }),
+        say(["y2", "b1"], "assistant", "yes"),
+      ]);
+      const liveOnly = [as("user", "root"), as("assistant", "yes")];
+      const delta = await source.read(path, stored(liveOnly), ctx(cwd));
+      expect(delta.sourceOffset).toBe(2);
+      expect(contents(delta)).toEqual([]);
+      expect(delta.checkpoint).toMatchObject({ messageCount: 2 });
+    });
+
     it("a recovery scan refuses stored history the file does not hold in order", async () => {
       const { cwd, path } = treeFixture([...trunk, ...wrongTurn]);
       await expect(source.read(path, stored([as("assistant", "first answer"), as("user", "first question")]), ctx(cwd)))
@@ -369,6 +398,29 @@ describe("OMP transcript source", () => {
       expect(source.locate({ sessionId, cwd, transcriptPath: path })).toBe(realpathSync(path));
       expect(() => source.locate({ sessionId, cwd, transcriptPath: join(cwd, "missing.jsonl.gz") }))
         .toThrow("OMP transcript is unreadable");
+    });
+
+    it("decompresses the archive exactly once per read, including a model backfill", async () => {
+      const cwd = tempDir("lcm-omp-archive-decompress-");
+      const path = join(cwd, "session.jsonl.gz");
+      const header = JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: "2026-08-01T00:00:00.000Z", cwd });
+      const assistantWithToolCall = JSON.stringify({
+        type: "message", id: "e1", parentId: null, timestamp: "2026-08-01T00:00:00.000Z",
+        message: { role: "assistant", model: "~z-ai/glm-flash-latest", content: [{ type: "toolCall", id: "call_1", name: "bash" }] },
+      });
+      writeFileSync(path, gzipSync(`${header}\n${assistantWithToolCall}\n`));
+
+      zlibMock.gunzipCalls = 0;
+      const delta = await source.read(path, undefined, ctx(cwd));
+
+      const dbDir = tempDir("lcm-omp-archive-events-");
+      const events = new EventsDb(join(dbDir, "events.db"));
+      events.insertToolCallEvents(sessionId, [{ type: "bash", category: "tool", data: "x", priority: 3 }], "PostToolUse", "call_1", "omp");
+      expect(events.hasUnfilledModels(sessionId, "omp")).toBe(true);
+      delta.backfillModels(events, sessionId);
+      events.close();
+
+      expect(zlibMock.gunzipCalls).toBe(1);
     });
 
     describe("a rewind inside the archive", () => {

@@ -201,8 +201,25 @@ export function parseOmpTranscriptRecord(record: string): ParsedOmpTranscriptRec
  * and stops where the chain leaves them, so a delta keeps only its entries on
  * the path the user kept; stored history before the delta is not revisited.
  * Entries without an id predate the tree format and are always kept.
+ *
+ * In a `wholeFile` read the chain can only leave the records at an entry the
+ * file does not hold, such as a skipped malformed record; its ancestry is then
+ * unknown, so every entry is kept in file order rather than dropping the
+ * history before the break.
  */
-export function selectOmpLiveMessages(records: readonly ParsedOmpTranscriptRecord[]): ParsedMessage[] {
+export function selectOmpLiveMessages(records: readonly ParsedOmpTranscriptRecord[], wholeFile = false): ParsedMessage[] {
+  const live = ompLivePath(records, wholeFile);
+  const messages: ParsedMessage[] = [];
+  for (const { node, message } of records) {
+    if (!message || (node && live?.has(node.id) === false)) continue;
+    if (Array.isArray(message)) messages.push(...message);
+    else messages.push(message);
+  }
+  return messages;
+}
+
+/** The ids on the chain from the last entry; undefined when a whole-file chain breaks. */
+function ompLivePath(records: readonly ParsedOmpTranscriptRecord[], wholeFile: boolean): Set<string> | undefined {
   const parents = new Map<string, string | null>();
   let leaf: string | null = null;
   for (const { node } of records) {
@@ -213,17 +230,11 @@ export function selectOmpLiveMessages(records: readonly ParsedOmpTranscriptRecor
 
   const live = new Set<string>();
   // A corrupt cyclic chain stops at the first repeat, as OMP's own walk does.
-  for (let id = leaf; id !== null && parents.has(id) && !live.has(id); id = parents.get(id) ?? null) {
+  let id = leaf;
+  for (; id !== null && parents.has(id) && !live.has(id); id = parents.get(id) ?? null) {
     live.add(id);
   }
-
-  const messages: ParsedMessage[] = [];
-  for (const { node, message } of records) {
-    if (!message || (node && !live.has(node.id))) continue;
-    if (Array.isArray(message)) messages.push(...message);
-    else messages.push(message);
-  }
-  return messages;
+  return wholeFile && id !== null && !parents.has(id) ? undefined : live;
 }
 
 // ---------------------------------------------------------------------------
@@ -264,7 +275,8 @@ function ompRecordsFromText(raw: string, includeTrailingRecord: boolean): Parsed
  *
  * Unreadable files return an empty array and malformed JSON records are
  * skipped. Syntactically valid non-message entries and unsupported message
- * roles are ignored, and so are entries off the live path. A valid
+ * roles are ignored, and so are entries off the live path, unless a skipped
+ * malformed record broke that path, which reads the file in order. A valid
  * unterminated final record is included by default for historical imports; set
  * `includeTrailingRecord: false` for a live file.
  */
@@ -275,7 +287,7 @@ export function parseOmpTranscript(transcriptPath: string, includeTrailingRecord
   } catch {
     return [];
   }
-  return selectOmpLiveMessages(ompRecordsFromText(raw, includeTrailingRecord));
+  return selectOmpLiveMessages(ompRecordsFromText(raw, includeTrailingRecord), true);
 }
 
 /**
@@ -285,6 +297,40 @@ export function parseOmpTranscript(transcriptPath: string, includeTrailingRecord
  */
 function decompressOmpArchive(transcriptPath: string): string {
   return decodeOmpTranscriptUtf8(gunzipSync(readFileSync(transcriptPath)));
+}
+
+export interface OmpArchiveContents {
+  meta: OmpSessionMeta | undefined;
+  records: ParsedOmpTranscriptRecord[];
+  /** Lazy: a caller that never needs a model backfill never pays for the JSON pass. */
+  turnModels: () => Map<string, string>;
+}
+
+/**
+ * Decompress an archived (`.jsonl.gz`) OMP transcript exactly once and derive
+ * its session metadata, records, and tool-call model map from that single
+ * decode. `gunzipSync` is the expensive step an ingest read must not repeat
+ * per archive; parsing the already-decoded text more than once is cheap by
+ * comparison. Used by the ingest read path (`readOmpArchive` in
+ * src/transcript-source.ts). Discovery (`findOmpSessionFiles`, via
+ * `extractOmpArchiveSessionMeta`) decompresses separately: it runs before a
+ * session is selected for import, over every archive in the directory, not
+ * just the one(s) an ingest actually reads, so it cannot share this decode.
+ * Returns undefined for a missing or corrupt archive.
+ */
+export function loadOmpArchive(transcriptPath: string): OmpArchiveContents | undefined {
+  let raw: string;
+  try {
+    raw = decompressOmpArchive(transcriptPath);
+  } catch {
+    return undefined;
+  }
+  const records = ompRecordsFromText(raw, true);
+  return {
+    meta: records.find((record) => record.sessionMeta)?.sessionMeta,
+    records,
+    turnModels: () => extractOmpTurnModelsFromLines(raw),
+  };
 }
 
 /**
@@ -299,18 +345,12 @@ function decompressOmpArchive(transcriptPath: string): string {
  * Unreadable or corrupt archives return an empty array.
  */
 export function parseOmpArchiveRecords(transcriptPath: string): ParsedOmpTranscriptRecord[] {
-  let raw: string;
-  try {
-    raw = decompressOmpArchive(transcriptPath);
-  } catch {
-    return [];
-  }
-  return ompRecordsFromText(raw, true);
+  return loadOmpArchive(transcriptPath)?.records ?? [];
 }
 
 /** The live-path messages of an archived (`.jsonl.gz`) OMP session. See `parseOmpArchiveRecords`. */
 export function parseOmpArchiveTranscript(transcriptPath: string): ParsedMessage[] {
-  return selectOmpLiveMessages(parseOmpArchiveRecords(transcriptPath));
+  return selectOmpLiveMessages(parseOmpArchiveRecords(transcriptPath), true);
 }
 
 /** Shared by a live and an archived read: maps each tool-call id to the model on the assistant entry that dispatched it. */
@@ -353,13 +393,7 @@ export function extractOmpTurnModels(transcriptPath: string): Map<string, string
 
 /** Same as `extractOmpTurnModels`, for an archived (`.jsonl.gz`) transcript. */
 export function extractOmpArchiveTurnModels(transcriptPath: string): Map<string, string> {
-  let raw: string;
-  try {
-    raw = decompressOmpArchive(transcriptPath);
-  } catch {
-    return new Map();
-  }
-  return extractOmpTurnModelsFromLines(raw);
+  return loadOmpArchive(transcriptPath)?.turnModels() ?? new Map();
 }
 
 // ---------------------------------------------------------------------------

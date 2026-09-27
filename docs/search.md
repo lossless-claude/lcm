@@ -18,6 +18,11 @@ multi-word query, so an eight-word question requires all eight words to co-occur
    configured for ("how", "did", "we", "the", … for English; "que", "como", "para", … for pt-BR)
    carry no discriminative power but would otherwise participate in the AND. No configured
    language drops nothing. If every word is a stopword, the original words are kept.
+   - **Bound** — terms longer than 64 characters are dropped, and only the first 32 terms are
+     kept, so AND and OR below range over those. FTS5 seeks one iterator per term and `node:sqlite`
+     runs on the daemon's event loop, so an unbounded query built from a whole document (a
+     summary for promotion dedup, a pasted prompt for prompt search) could keep the daemon from
+     answering anything for minutes.
 3. **Try AND** over the remaining content terms (most precise).
 4. **Fall back to OR** ranked by BM25 when AND matches nothing — the same behavior as a `grep` that
    ORs its terms, but with ranking.
