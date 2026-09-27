@@ -45,6 +45,12 @@ export interface CompactionConfig {
   language?: string;
   /** Optional scrubber to redact secrets before sending chunk text to LLM */
   scrubber?: ScrubEngine;
+  /**
+   * Called when the engine throws away the summarizer's latest answer instead of
+   * persisting it: before asking again aggressively, and before the deterministic
+   * truncation. Lets a caller attribute the stored summary to the answer it came from.
+   */
+  onAnswerDiscarded?: () => void;
 }
 
 /** Token budget the `/compact` route compacts against. */
@@ -795,10 +801,12 @@ export class CompactionEngine {
     let level: CompactionLevel = "normal";
 
     if (estimateTokens(summaryText) >= inputTokens) {
+      this.config.onAnswerDiscarded?.();
       summaryText = await summarizeGated(true);
       level = "aggressive";
 
       if (estimateTokens(summaryText) >= inputTokens) {
+        this.config.onAnswerDiscarded?.();
         const truncated =
           sourceText.length > FALLBACK_MAX_CHARS
             ? sourceText.slice(0, FALLBACK_MAX_CHARS)

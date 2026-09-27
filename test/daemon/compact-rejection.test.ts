@@ -148,3 +148,45 @@ it("counts a rejected session answer as failed and the fallback that replaced it
     jobs.close();
   }
 });
+
+it("names the fallback whose answer was stored when the session's answer was discarded for not shrinking", async () => {
+  openai.mockImplementation(async (_text: string, _aggressive: boolean, ctx: any) => {
+    ctx.onUsage(OPENAI_USAGE);
+    return "fallback summary";
+  });
+  const jobs = new SummarizeJobStore();
+  const abort = new AbortController();
+  const sessionId = "session-discarded-answer";
+  // The session answers the first job with text longer than its source, so the engine
+  // discards it and asks again aggressively; the session has gone, so the fallback answers.
+  const tooLong = "unchanged ".repeat(20_000);
+  let served = 0;
+  const serve = (async () => {
+    while (!abort.signal.aborted) {
+      const job = await jobs.next(sessionId, abort.signal);
+      if (!job) continue;
+      served += 1;
+      jobs.answer(job.id, served === 1
+        ? { text: tooLong, providerId: "session:haiku", usage: { input_tokens: 20, output_tokens: 50_000 } }
+        : { error: "session gone" });
+    }
+  })();
+  try {
+    const config = loadDaemonConfig("/x", { llm: { provider: "session", fallbackProvider: "openai", model: "reasoner" } }, {});
+    const cwd = await ingestedSession(config, sessionId);
+
+    const result = await invoke(createCompactHandler(config, paths, jobs), { cwd, session_id: sessionId });
+
+    expect(result.status).toBe(200);
+    expect(served).toBeGreaterThan(1);
+    expect(result.body.providerId).toBe("openai");
+    expect(result.body.llmUsage).toMatchObject({ provider: "openai", model: "reasoner" });
+    readDb(cwd, (db) => {
+      expect(db.prepare("SELECT COUNT(*) AS n FROM summaries WHERE content = 'fallback summary'").get()).toEqual({ n: 1 });
+    });
+  } finally {
+    abort.abort();
+    await serve;
+    jobs.close();
+  }
+});

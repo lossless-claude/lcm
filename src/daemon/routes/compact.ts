@@ -478,7 +478,9 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           }
 
           let sawReportedUsageModel = false;
-          let sawAcceptedUsageModel = false;
+          // Each answer the summarizer gave and the engine kept, in order; the engine drops
+          // the latest when it discards it (see onAnswerDiscarded below).
+          const keptAnswers: Array<{ providers: string[]; model?: string }> = [];
           const summarizeWithUsage: LcmSummarizeFn = async (text, aggressive, ctx = {}) => {
             // One attempt is what one provider answered: the session's answer and the
             // fallback that replaced it are two attempts, each settled with its own outcome.
@@ -487,14 +489,10 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             let sawUsage = false;
             let attemptModel: string | undefined;
             const callUsage = new Map<string, CompactLlmUsage>();
-            // Only an attempt whose answer is kept names the provider that answered.
+            // Only an attempt whose answer is stored names the provider that answered.
             const attemptAnswering = new Set<string>();
             const settleAttempt = (ok: boolean) => {
-              // The model that answered wins over one whose answer was rejected before it.
-              if (ok && attemptModel && !sawAcceptedUsageModel) {
-                llmUsage.model = attemptModel;
-                sawAcceptedUsageModel = true;
-              }
+              if (ok) keptAnswers.push({ providers: [...attemptAnswering], model: attemptModel });
               attemptModel = undefined;
               if (sawUsage) {
                 llmUsage.calls += 1;
@@ -515,7 +513,6 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                   cached: call.tokensCached, output: call.tokensOutput, cost: call.costUsd });
                 usageByProvider.set(key, bucket);
               }
-              if (ok) for (const provider of attemptAnswering) answeringProviders.add(provider);
               attemptAnswering.clear();
               callUsage.clear();
               callTokensSpent = { tokens: 0, input: 0, cached: 0, output: 0 };
@@ -557,10 +554,10 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                     callTokensSpent.cost = (callTokensSpent.cost ?? 0) + usage.costUsd;
                   }
                   const reportedModel = usage.model?.trim();
-                  // The attempt's answering model is settled with the attempt; until one is
-                  // accepted, the first model reported names the run.
+                  // The attempt's answering model is settled with the attempt; until an answer is
+                  // stored, the first model reported names the run.
                   if (reportedModel && usage.failed === undefined) attemptModel ??= reportedModel;
-                  if (reportedModel && !sawReportedUsageModel && !sawAcceptedUsageModel) {
+                  if (reportedModel && !sawReportedUsageModel) {
                     llmUsage.model = reportedModel;
                     sawReportedUsageModel = true;
                   }
@@ -581,7 +578,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           const engine = new CompactionEngine(
             conversationStore,
             summaryStore,
-            compactEngineConfig({ scrubber, language }),
+            { ...compactEngineConfig({ scrubber, language }), onAnswerDiscarded: () => { keptAnswers.pop(); } },
           );
 
           const compactResult = await engine.compact({
@@ -636,6 +633,9 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           // Name the provider that actually answered when it was a single one: with the
           // session provider the fallback may have done the work, and the PreCompact banner
           // should say so. Several providers in one run keep the configured name.
+          for (const kept of keptAnswers) for (const provider of kept.providers) answeringProviders.add(provider);
+          const storedModel = keptAnswers.at(-1)?.model;
+          if (storedModel) llmUsage.model = storedModel;
           const answeredBy = [...answeringProviders];
           const answeredProvider = answeredBy.length === 1 ? answeredBy[0] : effectiveProvider;
           const sessionLabels: Record<string, string> = { "session:haiku": "Live session (haiku)", "session:fork": "Live session (fork)" };
