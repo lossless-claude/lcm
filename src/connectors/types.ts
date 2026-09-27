@@ -1,6 +1,23 @@
 export const CONNECTOR_TYPES = ['rules', 'hook', 'hooks', 'mcp', 'skill'] as const;
 export type ConnectorType = (typeof CONNECTOR_TYPES)[number];
 
+/** Where a connector lives: a project's working directory, or the agent's user-level config. */
+export type ConnectorScope = 'project' | 'global';
+
+export interface ConnectorLocation {
+  /** The project directory; ignored at global scope. Defaults to the process working directory. */
+  cwd?: string;
+  /** Defaults to `project`. */
+  scope?: ConnectorScope;
+}
+
+export interface ConnectorRequest extends ConnectorLocation {
+  /** An agent id or display name from the registry. */
+  agent: string;
+  /** Defaults to the agent's default connector type. */
+  type?: ConnectorType;
+}
+
 export type AgentCategory = 'cli' | 'ai-ide' | 'vscode-ext' | 'other';
 
 /**
