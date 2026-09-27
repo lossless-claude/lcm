@@ -180,15 +180,15 @@ const HELP: Record<string, CommandHelp> = {
       ["--restart", "With --replay: discard recorded progress and all summaries in the conversations the run touches, then start from scratch"],
     ],
     examples: [
-      ["lcm import", "Import current Claude Code project sessions"],
-      ["lcm import --all", "Import all tracked Claude Code projects"],
-      ["lcm import --replay", "Discover and replay Claude, Codex and Oh My Pi sessions in the current project"],
+      ["lcm import", "Import Claude Code, Codex and Oh My Pi sessions of the current project"],
+      ["lcm import --all", "Import every provider across all projects"],
+      ["lcm import --replay", "Import and replay every provider in the current project"],
       ["lcm import --all --replay", "Import and compact every provider across all projects"],
       ["lcm import --dry-run", "Preview what would be imported"],
       ["lcm import --provider codex --replay", "Import and compact current project Codex sessions"],
       ["lcm import --omp", "Import current project Oh My Pi sessions"],
     ],
-    notes: "Claude transcripts come from ~/.claude/projects/; Codex transcripts from ~/.codex/sessions/ and ~/.codex/archived_sessions/; Oh My Pi session files from <agent dir>/sessions/ (PI_CODING_AGENT_DIR, default ~/.omp/agent). Codex requires session_meta.cwd and OMP requires the session header's cwd; unknown projects are skipped. --replay includes every provider unless --provider, --codex or --omp is explicit. --all includes other projects. Dry-run never starts the daemon. Codex and OMP import share incremental ingestion with their hooks, so later transcript growth is captured without duplicating prior messages.",
+    notes: "Claude transcripts come from ~/.claude/projects/; Codex transcripts from ~/.codex/sessions/ and ~/.codex/archived_sessions/; Oh My Pi session files from <agent dir>/sessions/ (PI_CODING_AGENT_DIR, default ~/.omp/agent). Codex requires session_meta.cwd and OMP requires the session header's cwd; unknown projects are skipped. Every provider is included unless --provider, --codex or --omp selects one. --all includes other projects. Dry-run never starts the daemon. Codex and OMP import share incremental ingestion with their hooks, so later transcript growth is captured without duplicating prior messages.",
   },
 
   promote: {
