@@ -340,7 +340,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       sendJson(res, 200, {
         skipped: true,
         replayOutcome: "skipped",
-        summary: "Compaction already in progress for this session.",
+        summary: captureRequired ? "" : "Compaction already in progress for this session.",
         ...(captureRequired ? { captureOutcome, summaryOutcome: { status: "skipped", reason: "busy" } } : {}),
       });
       return;
@@ -420,7 +420,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             log.write("info", "precompact.capture", { cwd, session_id, ...captureOutcome });
             if (captured) captureOutcomeForError = captureOutcome as { status: "completed"; messages: number };
             else return {
-              summary: "Capture deferred — no transcript content was captured.",
+              summary: "",
               replayOutcome: "skipped",
               providerId: effectiveProvider,
               providerLabel,

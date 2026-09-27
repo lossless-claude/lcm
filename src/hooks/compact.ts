@@ -40,7 +40,7 @@ export async function handlePreCompact(stdin: string, client: DaemonClient, path
       observeDelivery("unconfirmed", "daemon-unavailable");
       return { exitCode: 0, stdout: "" };
     }
-    const result = await client.post<{ summary: string; latestSummaryContent?: string }>("/compact", {
+    const result = await client.post<{ summary: string; latestSummaryContent?: string; summaryOutcome?: { status: string } }>("/compact", {
       ...input,
       client: "claude",
       capture_required: true,
@@ -54,6 +54,8 @@ export async function handlePreCompact(stdin: string, client: DaemonClient, path
     } catch {
       // Silent fail — PreCompact must not delay session
     }
+
+    if (result.summaryOutcome?.status === "skipped") return { exitCode: 0, stdout: "" };
 
     const parts: string[] = [];
     if (result.summary) parts.push(result.summary);

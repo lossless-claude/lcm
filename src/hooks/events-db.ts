@@ -2,6 +2,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { createHash } from "node:crypto";
 import type { ExtractedEvent } from "./extractors.js";
 import { getLcmConnection, closeLcmConnection, isLcmConnectionOpen } from "../db/connection.js";
 import { sanitizeError } from "../daemon/safe-error.js";
@@ -586,9 +587,13 @@ export class EventsDb {
     }
     const reason = observation.reason ?? "";
       if (observation.operationId) {
+        const scopedId = createHash("sha256").update(JSON.stringify([
+          observation.sessionId, observation.harness, observation.hook,
+          observation.operation, observation.operationId,
+        ])).digest("hex");
         const inserted = this.db.prepare(
           "INSERT OR IGNORE INTO hook_observation_seen (operation_id, kind) VALUES (?, ?)"
-        ).run(observation.operationId, observation.kind);
+        ).run(scopedId, observation.kind);
         if (inserted.changes === 0) return false;
       }
       this.db.prepare(`

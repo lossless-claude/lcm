@@ -109,6 +109,32 @@ describe("required pre-compaction capture", () => {
     }
   });
 
+  it("retains both Sessions when callers reuse a pre-compaction operation id", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-shared-id-"));
+    dirs.push(cwd);
+    const handler = createCompactHandler(makeConfig("disabled"), paths);
+    for (const sessionId of ["first-session", "second-session"]) {
+      const transcriptPath = join(cwd, `${sessionId}.jsonl`);
+      writeFileSync(transcriptPath, JSON.stringify({ message: { role: "user", content: sessionId } }) + "\n");
+      const { res } = mockRes();
+      await handler({} as any, res, JSON.stringify({
+        session_id: sessionId, cwd, transcript_path: transcriptPath,
+        capture_required: true, operation_id: "shared-operation",
+      }));
+    }
+    const observations = new EventsDb(eventsDbPath(cwd, paths));
+    try {
+      for (const sessionId of ["first-session", "second-session"]) {
+        expect(observations.getHookObservationSummary(sessionId)).toEqual(expect.arrayContaining([
+          expect.objectContaining({ operation: "capture", status: "completed", count: 1 }),
+          expect.objectContaining({ operation: "summary", status: "skipped", reason: "disabled", count: 1 }),
+        ]));
+      }
+    } finally {
+      observations.close();
+    }
+  });
+
   it("skips lcm summarization when no transcript source is available", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-no-source-"));
     dirs.push(cwd);
@@ -119,6 +145,7 @@ describe("required pre-compaction capture", () => {
     }));
 
     expect(getBody().captureOutcome).toMatchObject({ status: "deferred", reason: "no-capture-result" });
+    expect(getBody().summary).toBe("");
     expect(getBody().summaryOutcome).toMatchObject({ status: "skipped", reason: "capture-deferred" });
     expect(createOpenAISummarizer).not.toHaveBeenCalled();
   });
@@ -154,8 +181,32 @@ describe("required pre-compaction capture", () => {
     }
 
     expect(getBody().captureOutcome).toMatchObject({ status: "completed", messages: 1 });
+    expect(getBody().summary).toBe("");
     expect(getBody().summaryOutcome).toMatchObject({ status: "skipped", reason: "busy" });
     expect(await readMessageCount(cwd, "precompact-busy")).toBe(1);
+  });
+
+  it("keeps busy pre-compaction output empty without a Capture source", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-busy-no-source-"));
+    dirs.push(cwd);
+    const release = markCompacting("precompact-busy-no-source", cwd);
+    try {
+      const hook = mockRes();
+      await createCompactHandler(makeConfig("openai"), paths)({} as any, hook.res, JSON.stringify({
+        session_id: "precompact-busy-no-source", cwd, client: "omp", capture_required: true,
+      }));
+      expect(hook.getBody().captureOutcome).toMatchObject({ status: "deferred", reason: "no-capture-result" });
+      expect(hook.getBody().summaryOutcome).toMatchObject({ status: "skipped", reason: "busy" });
+      expect(hook.getBody().summary).toBe("");
+
+      const ordinary = mockRes();
+      await createCompactHandler(makeConfig("openai"), paths)({} as any, ordinary.res, JSON.stringify({
+        session_id: "precompact-busy-no-source", cwd,
+      }));
+      expect(ordinary.getBody().summary).toContain("already in progress");
+    } finally {
+      release();
+    }
   });
 
   it("captures while the project queue is occupied by an active summary", async () => {

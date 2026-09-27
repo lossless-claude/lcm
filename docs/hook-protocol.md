@@ -18,7 +18,7 @@ A hook that cannot do its work fails open: it exits 0, prints nothing it would n
 
 **Command:** `lcm compact --hook`
 
-Invoked by Claude Code before it runs its built-in compaction. The daemon attempts Capture before lcm summarization and reports the two outcomes separately. A failed or unavailable Capture skips this invocation's lcm summary; a disabled or busy summarizer does not suppress the Capture attempt. The hook prints a DAG summary when one is produced, always exits `0`, and never blocks or replaces the built-in compaction. Empty stdout means lcm deferred (daemon unavailable or nothing to compact).
+Invoked by Claude Code before it runs its built-in compaction. The daemon attempts Capture before lcm summarization and reports the two outcomes separately. A failed or unavailable Capture skips this invocation's lcm summary; a disabled or busy summarizer does not suppress the Capture attempt. The hook prints a DAG summary when one is produced, always exits `0`, and never blocks or replaces the built-in compaction. An explicit skipped summary emits empty stdout, including when Capture is unavailable, summarization is disabled or busy, or no work remains.
 
 **Stdin fields:**
 

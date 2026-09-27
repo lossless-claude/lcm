@@ -107,7 +107,9 @@ describe("Flow 20: hooks via `node dist/bin/lcm.js` with piped stdin", { timeout
         { role: "assistant", content: "Of course! I am happy to help you.", tokenCount: 10 },
       ],
     });
-    const r = await runHook(["compact", "--hook"], JSON.stringify({ session_id, cwd: h.tmpDir, trigger: "auto" }));
+    const r = await runHook(["compact", "--hook"], JSON.stringify({
+      session_id, cwd: h.tmpDir, transcript_path: h.fixturePath, trigger: "auto",
+    }));
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout.trim()).not.toBe("");
   });

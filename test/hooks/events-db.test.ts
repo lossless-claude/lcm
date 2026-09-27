@@ -42,6 +42,27 @@ describe("EventsDb", () => {
     db.close();
   });
 
+  it("scopes a repeated operation id to its session, harness, hook, and operation", () => {
+    const db = new EventsDb(dbPath);
+    // A retained key from an older build has no Session scope and must not
+    // suppress an observation under the new scoped identity.
+    db.raw().prepare("INSERT INTO hook_observation_seen (operation_id, kind) VALUES (?, ?)")
+      .run("shared-id", "execution");
+    const base = { sessionId: "s1", harness: "codex" as const, hook: "PreCompact",
+      operation: "capture", kind: "execution" as const, status: "completed" as const,
+      operationId: "shared-id" };
+    expect(db.recordHookObservation(base)).toBe(true);
+    expect(db.recordHookObservation(base)).toBe(false);
+    expect(db.recordHookObservation({ ...base, sessionId: "s2" })).toBe(true);
+    expect(db.recordHookObservation({ ...base, harness: "omp" })).toBe(true);
+    expect(db.recordHookObservation({ ...base, hook: "SessionEnd" })).toBe(true);
+    expect(db.recordHookObservation({ ...base, operation: "summary" })).toBe(true);
+    expect(db.getHookObservationSummary("s2")).toMatchObject([
+      { sessionId: "s2", harness: "codex", operation: "capture", count: 1 },
+    ]);
+    db.close();
+  });
+
   it("retains individual failure codes within a per-session bound", () => {
     const db = new EventsDb(dbPath);
     for (let i = 0; i < 65; i++) {
