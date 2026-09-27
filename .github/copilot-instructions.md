@@ -42,7 +42,7 @@ Before reporting a review finding as fixed, verify it against the graph. Editing
 - Route handler request/response objects must use typed interfaces, not `any`.
 
 ### `collectStats()` performance
-- `collectStats()` takes ~13 seconds due to full-table scans. It must NEVER be called in:
+- `collectStats()` runs full-table scans, so its cost grows with the database. It must NEVER be called in:
   - HTTP request handlers
   - Any path that runs more than once per user action
   - Startup initialization (lazy evaluation only)
