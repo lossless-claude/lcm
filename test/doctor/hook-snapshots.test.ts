@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { readFunctionHookSnapshots } from "../../src/doctor/hook-snapshots.js";
@@ -39,5 +39,22 @@ describe("function-hook snapshot inspection", () => {
     utimesSync(older, (now - 1000) / 1000, (now - 1000) / 1000);
     utimesSync(newer, now / 1000, now / 1000);
     expect(readFunctionHookSnapshots("/project", dir)[0]).toMatchObject({ generation: 2, seq: 1 });
+  });
+
+  it("reads a snapshot through an equivalent canonical project path", () => {
+    const dir = mkdtempSync(join(tmpdir(), "lcm-hook-snapshot-alias-"));
+    dirs.push(dir);
+    const project = join(dir, "project");
+    const alias = join(dir, "alias");
+    mkdirSync(project);
+    symlinkSync(project, alias);
+    writeFileSync(join(dir, "lcm-hook-observe-s1-0.json"), JSON.stringify({
+      version: 1, harness: "claude-function", sessionId: "s1", cwd: alias, seq: 1,
+      observations: [{ hook: "prompt.submit", operation: "search", kind: "delivery",
+        status: "accepted", reason: "", count: 1 }],
+    }));
+    expect(readFunctionHookSnapshots(project, dir)).toMatchObject([
+      { sessionId: "s1", observations: [{ status: "accepted", count: 1 }] },
+    ]);
   });
 });

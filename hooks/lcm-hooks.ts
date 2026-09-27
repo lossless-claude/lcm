@@ -84,6 +84,11 @@ const MAX_ACTIVE_HOOK_SESSIONS = 32;
 const hookSnapshotGeneration = Date.now();
 const failedHookSnapshotWrites = new Set<string>();
 
+function sessionFileId(sessionId: string): string {
+  return encodeURIComponent(sessionId).replace(/[_.!~*'()]/g,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
+}
+
 function noteHook(
   sessionId: string, hook: string, operation: string,
   kind: HookObservation["kind"], status: string, reason = "",
@@ -122,7 +127,7 @@ async function flushHookObservations($: EngineInterface, sessionId: string): Pro
   snapshot.writing = true;
   const write = async () => {
     const { tmpDir } = await readHostEnv($);
-    const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const safeId = sessionFileId(sessionId);
     const cwd = await $.session.cwd().catch(() => "");
     const seq = ++snapshot.seq;
     const path = `${tmpDir}/lcm-hook-observe-${safeId}-${seq % 2}.json`;
@@ -194,7 +199,7 @@ function readHostEnv($: EngineInterface): Promise<HostEnv> {
 async function claimSession($: EngineInterface, sessionId: string): Promise<void> {
   if (!sessionId) return;
   const { tmpDir } = await readHostEnv($);
-  const file = `${tmpDir}/lcm-claim-${sessionId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`;
+  const file = `${tmpDir}/lcm-claim-${sessionFileId(sessionId)}.json`;
   await $.fs.write(file, JSON.stringify({ sessionId, ts: Date.now() }));
 }
 

@@ -135,6 +135,13 @@ function safeString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
+function sessionFileId(sessionId: string): string | undefined {
+  try {
+    return encodeURIComponent(sessionId).replace(/[_.!~*'()]/g,
+      (char) => `%${char.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
+  } catch { return undefined; }
+}
+
 /** Resolve the daemon address without letting malformed local state break the host. */
 export function resolveDaemon(): ResolvedDaemon {
   const configuredHome = typeof process.env.LCM_HOME === "string" ? process.env.LCM_HOME.trim() : "";
@@ -654,7 +661,8 @@ export default function lcm(pi: HookApi): void {
     const now = Date.now();
     if (!state || (!force && now - state.lastFlush < 60_000)) return;
     state.lastFlush = now;
-    const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const safeId = sessionFileId(sessionId);
+    if (!safeId) return;
     const seq = ++state.seq;
     const logs = join(resolveDaemon().home, "logs");
     const target = join(logs, `lcm-hook-observe-omp-${safeId}-${seq % 2}.json`);
@@ -694,7 +702,7 @@ export default function lcm(pi: HookApi): void {
 
   const fireIngest = (ctx: HookContext, hook: string, timeoutMs = DEFAULT_TIMEOUT_MS, eventIdentity?: SessionIdentity): void => {
     const identity = eventIdentity ?? sessionIdentity(ctx);
-    if (!identity || !sessionOnDisk(ctx)) {
+    if (!identity || !identity.transcriptPath || !sessionOnDisk(ctx)) {
       note(ctx, hook, "capture", "execution", "deferred", identity ? "source-unavailable" : "missing-identity", identity);
       flush(ctx, false, identity);
       return;
@@ -720,7 +728,7 @@ export default function lcm(pi: HookApi): void {
     // Capture before restore, and wait for it: restore reads the stored conversation,
     // and a session lcm has not ingested yet would answer from the project's latest
     // *other* conversation while this session's capture is still in flight.
-    if (sessionOnDisk(ctx)) {
+    if (identity.transcriptPath && sessionOnDisk(ctx)) {
       const captured = await postWithOutcome("/ingest", ingestBody(identity));
       noteDelivery(ctx, "session_start", "capture", captured);
       if (captured.body !== undefined) note(ctx, "session_start", "capture", "execution", "completed");
@@ -728,6 +736,8 @@ export default function lcm(pi: HookApi): void {
     const restored = await postWithOutcome("/restore", { ...base, source: "startup" });
     noteDelivery(ctx, "session_start", "restore", restored);
     const context = contextFromResponse(restored.body);
+    if (restored.body !== undefined) note(ctx, "session_start", "restore", "execution", "completed",
+      context ? "context" : "no-context");
     if (context) restoreContext = context;
     void post("/session-start-compact", base, { fireAndForget: true });
     note(ctx, "session_start", "catch-up", "delivery", "submitted");
@@ -755,6 +765,8 @@ export default function lcm(pi: HookApi): void {
       });
       searched = contextFromResponse(result.body);
       noteDelivery(ctx, "before_agent_start", "search", result);
+      if (result.body !== undefined) note(ctx, "before_agent_start", "search", "execution", "completed",
+        searched ? "context" : "no-context");
     }
     else note(ctx, "before_agent_start", "search", "execution", "deferred", identity ? "missing-prompt" : "missing-identity");
     flush(ctx);
@@ -821,7 +833,7 @@ export default function lcm(pi: HookApi): void {
     // OMP gives this callback a short budget. Confirm Capture before sending the
     // unawaited summary request; a combined long-running request could outlive
     // the host before its Capture was even delivered.
-    if (!sessionOnDisk(ctx)) {
+    if (!identity.transcriptPath || !sessionOnDisk(ctx)) {
       note(ctx, "session_before_compact", "capture", "execution", "deferred", "source-unavailable");
       note(ctx, "session_before_compact", "summary", "execution", "skipped", "capture-deferred");
       flush(ctx, true);

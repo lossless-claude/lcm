@@ -60,4 +60,8 @@ describe("functionHooksOwnSession", () => {
     expect(claimPath("../../etc/passwd").startsWith(tmpdir())).toBe(true);
     expect(claimPath("../../etc/passwd")).not.toContain("/etc/");
   });
+
+  it("keeps sessions with colliding sanitized IDs separate", () => {
+    expect(claimPath("a/b")).not.toBe(claimPath("a_b"));
+  });
 });

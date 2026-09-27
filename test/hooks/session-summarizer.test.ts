@@ -59,7 +59,7 @@ describe("function-hook session summarizer", () => {
     const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
     expect(await harness.trigger()).toEqual({});
     expect(harness.engine.fs.write).toHaveBeenCalledWith(
-      `/tmp/lcm-claim-${sessionId.replace("/", "_")}.json`,
+      "/tmp/lcm-claim-session%2Fone.json",
       expect.stringContaining(`"sessionId":"${sessionId}"`),
     );
     expect(harness.engine.model.complete).not.toHaveBeenCalled();
@@ -78,6 +78,18 @@ describe("function-hook session summarizer", () => {
     await expect(harness.trigger()).resolves.toEqual({});
     expect(harness.engine.fs.write.mock.calls.some(([path]) => String(path).includes("lcm-hook-observe-")))
       .toBe(false);
+  });
+
+  it("uses distinct claim and snapshot files for colliding sanitized IDs", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
+    harness.engine.session.id.mockResolvedValueOnce("a/b").mockResolvedValueOnce("a_b");
+    await harness.trigger();
+    await harness.trigger();
+    const paths = harness.engine.fs.write.mock.calls.map(([path]) => String(path));
+    expect(paths).toContain("/tmp/lcm-claim-a%2Fb.json");
+    expect(paths).toContain("/tmp/lcm-claim-a%5Fb.json");
+    expect(paths.some((path) => path.includes("lcm-hook-observe-a%2Fb-"))).toBe(true);
+    expect(paths.some((path) => path.includes("lcm-hook-observe-a%5Fb-"))).toBe(true);
   });
 
   it("flushes turn outcomes into the bounded local snapshot", async () => {

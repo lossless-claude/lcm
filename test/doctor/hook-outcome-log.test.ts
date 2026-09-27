@@ -22,12 +22,18 @@ describe("local command-hook outcome inspection", () => {
     writeFileSync(join(dir, "hook-outcomes.log"), [
       JSON.stringify(base), JSON.stringify(base),
       JSON.stringify({ ...base, operationId: "op-2" }),
+      JSON.stringify({ ...base, sessionId: "s2" }),
+      JSON.stringify({ ...base, harness: "claude-command" }),
+      JSON.stringify({ ...base, hook: "SessionEnd" }),
       JSON.stringify({ ...base, projectId: projectId("/other"), operationId: "op-3" }),
       JSON.stringify({ ...base, operationId: "op-4", status: "rejected", reason: "http-401" }),
     ].join("\n") + "\n");
     const result = readHookOutcomeLog(dir, "/project");
     expect(result.outcomes).toEqual(expect.arrayContaining([
       expect.objectContaining({ sessionId: "s1", status: "accepted", count: 2 }),
+      expect.objectContaining({ sessionId: "s2", harness: "codex", status: "accepted", count: 1 }),
+      expect.objectContaining({ sessionId: "s1", harness: "claude-command", status: "accepted", count: 1 }),
+      expect.objectContaining({ sessionId: "s1", hook: "SessionEnd", status: "accepted", count: 1 }),
       expect.objectContaining({ sessionId: "s1", status: "rejected", count: 1 }),
     ]));
     expect(result.failures).toMatchObject([{ status: "rejected", reason: "http-401" }]);

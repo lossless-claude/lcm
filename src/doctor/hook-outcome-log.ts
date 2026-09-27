@@ -51,7 +51,8 @@ export function readHookOutcomeLog(
             .some((field) => field.length > 80 || !FIELD.test(field))) { truncated = true; continue; }
         if (now - row.ts > MAX_AGE_MS) continue;
         if (typeof row.operationId === "string") {
-          const identity = `${row.operationId}\0${row.kind}\0${row.operation}`;
+          const identity = JSON.stringify([row.sessionId, row.harness, row.hook,
+            row.operation, row.kind, row.operationId]);
           if (seen.has(identity)) continue;
           seen.add(identity);
         }

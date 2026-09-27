@@ -149,6 +149,31 @@ describe("OMP lcm hook", () => {
     expect(requests.map((request) => request.path)).toEqual(["/restore", "/session-start-compact"]);
   });
 
+  it("does not claim Capture when OMP has no transcript path", async () => {
+    const { handlers } = hook();
+    const ctx = context({ sessionManager: { getSessionId: () => "omp-session", getSessionFile: () => undefined } });
+    await getHandler(handlers, "session_start")({}, ctx);
+    await getHandler(handlers, "agent_end")({}, ctx);
+    await getHandler(handlers, "session_before_compact")({}, ctx);
+    expect(requests.map((request) => request.path)).toEqual(["/restore", "/session-start-compact"]);
+    expect(readOmpHookSnapshots("/workspace/omp-project", join(home, "logs"))[0].observations)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ hook: "session_before_compact", operation: "capture", status: "deferred", reason: "source-unavailable" }),
+        expect.objectContaining({ hook: "session_before_compact", operation: "summary", status: "skipped", reason: "capture-deferred" }),
+      ]));
+  });
+
+  it("keeps snapshots for session IDs that share a sanitized spelling", async () => {
+    const { handlers } = hook();
+    for (const sessionId of ["a/b", "a_b"]) {
+      await getHandler(handlers, "session_start")({}, context({ sessionManager: {
+        getSessionId: () => sessionId, getSessionFile: () => "/workspace/session.jsonl",
+      } }));
+    }
+    expect(readOmpHookSnapshots("/workspace/omp-project", join(home, "logs")).map((snapshot) => snapshot.sessionId))
+      .toEqual(expect.arrayContaining(["a/b", "a_b"]));
+  });
+
   it("injects restore exactly once and combines prompt-search context in one message", async () => {
     const { handlers } = hook();
     await getHandler(handlers, "session_start")({}, context());
@@ -166,6 +191,27 @@ describe("OMP lcm hook", () => {
     const second = await before({ prompt: "second prompt" }, context());
     expect(second).toBeUndefined();
     expect(requests.filter((request) => request.path === "/prompt-search")).toHaveLength(2);
+  });
+
+  it("records completed execution after successful restore and search", async () => {
+    __setTransportForTests((request) => {
+      requests.push(request);
+      if (request.path === "/restore") return { context: "restored memory" };
+      if (request.path === "/ingest") return { ingested: 0 };
+      if (request.path === "/prompt-search") return { context: "found memory" };
+      return undefined;
+    });
+    const { handlers } = hook();
+    await getHandler(handlers, "session_start")({}, context());
+    await getHandler(handlers, "before_agent_start")({ prompt: "find memory" }, context());
+    // The first snapshot is forced at SessionStart; another forced precompact
+    // flush retains the search observation from the same Session.
+    await getHandler(handlers, "session_before_compact")({}, context());
+    expect(readOmpHookSnapshots("/workspace/omp-project", join(home, "logs"))[0].observations)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ hook: "session_start", operation: "restore", kind: "execution", status: "completed", reason: "context" }),
+        expect.objectContaining({ hook: "before_agent_start", operation: "search", kind: "execution", status: "completed", reason: "context" }),
+      ]));
   });
 
   it("injects prompt-search context and returns undefined for an empty context", async () => {

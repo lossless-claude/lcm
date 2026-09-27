@@ -1,6 +1,7 @@
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { projectId } from "../daemon/project.js";
 
 export interface LocalHookSnapshot {
   sessionId: string;
@@ -18,8 +19,8 @@ export interface LocalHookSnapshot {
   failures: Array<{ hook: string; operation: string; code: string; at: number }>;
 }
 
-const FUNCTION_SNAPSHOT_NAME = /^lcm-hook-observe-[a-zA-Z0-9_-]+-[01]\.json$/;
-const OMP_SNAPSHOT_NAME = /^lcm-hook-observe-omp-[a-zA-Z0-9_-]+-[01]\.json$/;
+const FUNCTION_SNAPSHOT_NAME = /^lcm-hook-observe-[a-zA-Z0-9_%-]+-[01]\.json$/;
+const OMP_SNAPSHOT_NAME = /^lcm-hook-observe-omp-[a-zA-Z0-9_%-]+-[01]\.json$/;
 const MAX_SNAPSHOT_BYTES = 64 * 1024;
 const MAX_SNAPSHOT_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const FIELD = /^[a-zA-Z0-9_.:-]*$/;
@@ -28,6 +29,7 @@ const FIELD = /^[a-zA-Z0-9_.:-]*$/;
 function readSnapshots(
   cwd: string, dir: string, now: number, harness: "claude-function" | "omp",
 ): LocalHookSnapshot[] {
+  const expectedProject = projectId(cwd);
   let names: string[];
   try {
     const pattern = harness === "omp" ? OMP_SNAPSHOT_NAME : FUNCTION_SNAPSHOT_NAME;
@@ -48,7 +50,8 @@ function readSnapshots(
       const path = join(dir, name);
       if (stat.size > MAX_SNAPSHOT_BYTES || now - stat.mtimeMs > MAX_SNAPSHOT_AGE_MS) continue;
       const value = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-      if (value.version !== 1 || value.harness !== harness || value.cwd !== cwd
+      if (value.version !== 1 || value.harness !== harness
+        || typeof value.cwd !== "string" || projectId(value.cwd) !== expectedProject
         || typeof value.sessionId !== "string" || typeof value.seq !== "number"
         || !Number.isSafeInteger(value.seq) || value.seq < 0 || !Array.isArray(value.observations)) continue;
       const observations: LocalHookSnapshot["observations"] = [];

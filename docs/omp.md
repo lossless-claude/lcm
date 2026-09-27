@@ -56,7 +56,7 @@ It keeps bounded operation counts and failure codes in two alternating snapshots
 | `agent_end` | Capture the completed agent turn. |
 | `session_stop` | Capture the final available transcript content. |
 | `tool_result` | Record a `PostToolUse` or `PostToolUseFailure` tool event. |
-| `session_before_compact` | Await a bounded `/ingest` Capture, then submit lcm summarization only after a confirmed response. An unconfirmed or rejected Capture skips that lcm summary; Oh My Pi's own compaction continues. |
+| `session_before_compact` | Await a bounded `/ingest` Capture only when OMP supplies a transcript path, then submit lcm summarization after confirmed Capture. A missing source, unconfirmed delivery, or rejected Capture skips that lcm summary; Oh My Pi's own compaction continues. |
 | `session_shutdown` | Make a final best-effort capture. |
 
 ## Session identity and transcript layout
