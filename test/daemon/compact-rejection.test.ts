@@ -127,6 +127,11 @@ it("counts a rejected session answer as failed and the fallback that replaced it
 
     expect(result.status).toBe(200);
     expect(result.body.replayOutcome).toBe("compacted");
+    // The response names the provider whose answer was stored, not the one rejected before it.
+    expect(result.body.providerId).toBe("openai");
+    expect(result.body.llmUsage).toMatchObject({ provider: "openai", model: "reasoner" });
+    expect(result.body.llmUsage.okCalls).toBeGreaterThan(0);
+    expect(result.body.llmUsage.failedCalls).toBe(result.body.llmUsage.okCalls);
     readDb(cwd, (db) => {
       const rows = db.prepare("SELECT provider, calls_total, calls_ok, calls_failed FROM llm_usage_stats ORDER BY provider").all() as
         { provider: string; calls_total: number; calls_ok: number; calls_failed: number }[];

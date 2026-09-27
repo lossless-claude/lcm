@@ -478,16 +478,24 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           }
 
           let sawReportedUsageModel = false;
+          let sawAcceptedUsageModel = false;
           const summarizeWithUsage: LcmSummarizeFn = async (text, aggressive, ctx = {}) => {
             // One attempt is what one provider answered: the session's answer and the
             // fallback that replaced it are two attempts, each settled with its own outcome.
             let callTokensSpent: { tokens: number; input: number; cached: number; output: number; cost?: number } =
               { tokens: 0, input: 0, cached: 0, output: 0 };
             let sawUsage = false;
+            let attemptModel: string | undefined;
             const callUsage = new Map<string, CompactLlmUsage>();
             // Only an attempt whose answer is kept names the provider that answered.
             const attemptAnswering = new Set<string>();
             const settleAttempt = (ok: boolean) => {
+              // The model that answered wins over one whose answer was rejected before it.
+              if (ok && attemptModel && !sawAcceptedUsageModel) {
+                llmUsage.model = attemptModel;
+                sawAcceptedUsageModel = true;
+              }
+              attemptModel = undefined;
               if (sawUsage) {
                 llmUsage.calls += 1;
                 llmUsage.okCalls += ok ? 1 : 0;
@@ -549,7 +557,10 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                     callTokensSpent.cost = (callTokensSpent.cost ?? 0) + usage.costUsd;
                   }
                   const reportedModel = usage.model?.trim();
-                  if (reportedModel && (usage.failed === undefined || !sawReportedUsageModel)) {
+                  // The attempt's answering model is settled with the attempt; until one is
+                  // accepted, the first model reported names the run.
+                  if (reportedModel && usage.failed === undefined) attemptModel ??= reportedModel;
+                  if (reportedModel && !sawReportedUsageModel && !sawAcceptedUsageModel) {
                     llmUsage.model = reportedModel;
                     sawReportedUsageModel = true;
                   }
