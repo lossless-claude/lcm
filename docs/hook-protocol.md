@@ -30,6 +30,10 @@ Invoked by Claude Code before it runs its built-in compaction. The daemon attemp
 
 **Response:** Exit code `0`. Summary text on stdout when the daemon compacted; empty stdout to defer.
 
+### OMP pre-compaction and shutdown
+
+OMP's `session_before_compact` callback awaits `/ingest` to confirm Capture, then submits an unawaited `/compact` request with `precompact_verified: true`. If another operation occupies the project's compaction queue, the daemon records a busy summary skip instead of running that summary after the native compaction window. It checks again immediately before enqueue because summarizer setup can await. OMP returns control to native compaction regardless of lcm's outcome. Its `session_shutdown` callback forces the final local observation snapshot after recording the capture attempt, even when a snapshot was written recently; `lcm doctor -v` reads that evidence when storage succeeds.
+
 ## SessionStart Hook
 
 **Command:** `lcm restore`
