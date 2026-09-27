@@ -111,6 +111,10 @@ lcm grep "a distinctive phrase from the session" --scope messages
 
 A matching result confirms that captured OMP content is searchable in the current project's memory. `lcm search` searches episodic and promoted memory; `lcm grep --scope messages` checks the stored raw messages directly.
 
+## Archived sessions
+
+`omp gc --apply` archives a cold session by gzipping it in place, alongside the live files: `<agentDir>/sessions/<encoded-cwd>/<name>.jsonl.gz`. `lcm import` discovers these the same way as live `.jsonl` files. An archive is a single gzip member, not an append-only file, so it is import-only: it is read in full on every import and takes no resume checkpoint, and a repeated import stays idempotent because capture writes only the messages past what is already stored. If a live `.jsonl` and an archived `.jsonl.gz` both exist for the same session id, the live file always wins — `omp gc --apply` normally removes the original once it archives it, so a surviving live file means OMP is still writing to that session.
+
 ## Summarizer
 
 In an OMP session, `LCM_SUMMARY_PROVIDER=auto` (the default) resolves to `omp-process`,
@@ -122,9 +126,9 @@ configured with, unless `llm.model` names one. See
 
 ## Remaining gaps
 
-1. Archived `.jsonl.gz` OMP sessions are not imported ([#544](https://github.com/lossless-claude/lcm/issues/544)).
-2. Import discovery scans the active agent directory (`PI_CODING_AGENT_DIR`, else `~/.omp/agent`). A session started under `omp --profile <name>` still captures live — the daemon accepts its transcript under the profile's own agent directory — but `lcm import` does not discover profile sessions yet ([#543](https://github.com/lossless-claude/lcm/issues/543)).
-3. Hook activation and trust cannot be proven from the filesystem; diagnostics report that state as unknown, as with Codex.
-4. A `/clear` boundary is not honoured, so one conversation spans two logically separate sessions ([#540](https://github.com/lossless-claude/lcm/issues/540)).
-5. A turn captured before a rewind or branch switch abandoned it stays in memory and still matches `lcm search` and `lcm grep`; only turns abandoned before their capture are left out ([#539](https://github.com/lossless-claude/lcm/issues/539)). When a branch abandoned before its capture is later reopened with `/tree`, the session's continuation from it is captured but the branch's earlier turns are not.
-6. Passive learning records the OMP tools translated to extractor shapes; the harness's own memory tools and other non-durable plumbing remain intentionally silent.
+1. Import discovery scans the active agent directory (`PI_CODING_AGENT_DIR`, else `~/.omp/agent`). A session started under `omp --profile <name>` still captures live — the daemon accepts its transcript under the profile's own agent directory — but `lcm import` does not discover profile sessions yet ([#543](https://github.com/lossless-claude/lcm/issues/543)).
+2. Hook activation and trust cannot be proven from the filesystem; diagnostics report that state as unknown, as with Codex.
+3. A `/clear` boundary is not honoured, so one conversation spans two logically separate sessions ([#540](https://github.com/lossless-claude/lcm/issues/540)).
+4. A turn captured before a rewind or branch switch abandoned it stays in memory and still matches `lcm search` and `lcm grep`; only turns abandoned before their capture are left out ([#539](https://github.com/lossless-claude/lcm/issues/539)). When a branch abandoned before its capture is later reopened with `/tree`, the session's continuation from it is captured but the branch's earlier turns are not.
+5. Passive learning records the OMP tools translated to extractor shapes; the harness's own memory tools and other non-durable plumbing remain intentionally silent.
+6. `*.jsonl.*.bak` recovery files (OMP falls back to these when a primary session file is missing) are not discovered.

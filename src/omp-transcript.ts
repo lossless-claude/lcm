@@ -3,6 +3,11 @@
  *
  * OMP stores sessions in ~/.omp/agent/sessions/<encoded-cwd>/<timestamp>_<id>.jsonl
  * (or the active agent dir: --profile / PI_CODING_AGENT_DIR relocate it).
+ * `omp gc --apply` archives a cold session by gzipping it in place, alongside
+ * the live files: `<timestamp>_<id>.jsonl.gz`. An archive is a single gzip
+ * member, not an append-only file, so it is read in full and once — see
+ * `parseOmpArchiveTranscript` and the "archived transcripts are import-only"
+ * note on `src/jsonl-transcript-reader.ts`.
  *
  * Each JSONL line is one entry object with a top-level `type`:
  *
@@ -31,6 +36,7 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { TextDecoder } from "node:util";
+import { gunzipSync } from "node:zlib";
 import { estimateTokens } from "./transcript.js";
 import type { ParsedMessage } from "./transcript.js";
 
@@ -236,23 +242,13 @@ function ompLivePath(records: readonly ParsedOmpTranscriptRecord[], wholeFile: b
 // ---------------------------------------------------------------------------
 
 /**
- * Parse an OMP session file into the standard ParsedMessage format.
- *
- * Unreadable files return an empty array and malformed JSON records are
- * skipped. Syntactically valid non-message entries and unsupported message
- * roles are ignored, and so are entries off the live path, unless a skipped
- * malformed record broke that path, which reads the file in order. A valid
- * unterminated final record is included by default for historical imports; set
- * `includeTrailingRecord: false` for a live file.
+ * Parse already-decoded OMP JSONL text into records, in file order. Shared by
+ * a live file read (`parseOmpTranscript`) and a fully decompressed archive
+ * read (`parseOmpArchiveRecords`) — the byte source differs, the record shape
+ * does not. Malformed lines are skipped; each caller then selects the live
+ * path from the records it gets back.
  */
-export function parseOmpTranscript(transcriptPath: string, includeTrailingRecord = true): ParsedMessage[] {
-  let raw: string;
-  try {
-    raw = readFileSync(transcriptPath, "utf8");
-  } catch {
-    return [];
-  }
-
+function ompRecordsFromText(raw: string, includeTrailingRecord: boolean): ParsedOmpTranscriptRecord[] {
   const records: ParsedOmpTranscriptRecord[] = [];
   const lines = raw.split("\n");
   if (!includeTrailingRecord && !raw.endsWith("\n")) {
@@ -271,19 +267,95 @@ export function parseOmpTranscript(transcriptPath: string, includeTrailingRecord
     }
   }
 
-  return selectOmpLiveMessages(records, true);
+  return records;
 }
 
-/** Maps each tool-call id to the model recorded on the assistant entry that dispatched it. */
-export function extractOmpTurnModels(transcriptPath: string): Map<string, string> {
-  const models = new Map<string, string>();
+/**
+ * Parse an OMP session file into the standard ParsedMessage format.
+ *
+ * Unreadable files return an empty array and malformed JSON records are
+ * skipped. Syntactically valid non-message entries and unsupported message
+ * roles are ignored, and so are entries off the live path, unless a skipped
+ * malformed record broke that path, which reads the file in order. A valid
+ * unterminated final record is included by default for historical imports; set
+ * `includeTrailingRecord: false` for a live file.
+ */
+export function parseOmpTranscript(transcriptPath: string, includeTrailingRecord = true): ParsedMessage[] {
   let raw: string;
   try {
     raw = readFileSync(transcriptPath, "utf8");
   } catch {
-    return models;
+    return [];
   }
+  return selectOmpLiveMessages(ompRecordsFromText(raw, includeTrailingRecord), true);
+}
 
+/**
+ * Decompress an archived OMP transcript (`.jsonl.gz`, a single gzip member)
+ * and decode it strictly as UTF-8. Throws on corrupt gzip data or invalid
+ * UTF-8; callers treat that the same as an unreadable file.
+ */
+function decompressOmpArchive(transcriptPath: string): string {
+  return decodeOmpTranscriptUtf8(gunzipSync(readFileSync(transcriptPath)));
+}
+
+export interface OmpArchiveContents {
+  meta: OmpSessionMeta | undefined;
+  records: ParsedOmpTranscriptRecord[];
+  /** Lazy: a caller that never needs a model backfill never pays for the JSON pass. */
+  turnModels: () => Map<string, string>;
+}
+
+/**
+ * Decompress an archived (`.jsonl.gz`) OMP transcript exactly once and derive
+ * its session metadata, records, and tool-call model map from that single
+ * decode. `gunzipSync` is the expensive step an ingest read must not repeat
+ * per archive; parsing the already-decoded text more than once is cheap by
+ * comparison. Used by the ingest read path (`readOmpArchive` in
+ * src/transcript-source.ts). Discovery (`findOmpSessionFiles`, via
+ * `extractOmpArchiveSessionMeta`) decompresses separately: it runs before a
+ * session is selected for import, over every archive in the directory, not
+ * just the one(s) an ingest actually reads, so it cannot share this decode.
+ * Returns undefined for a missing or corrupt archive.
+ */
+export function loadOmpArchive(transcriptPath: string): OmpArchiveContents | undefined {
+  let raw: string;
+  try {
+    raw = decompressOmpArchive(transcriptPath);
+  } catch {
+    return undefined;
+  }
+  const records = ompRecordsFromText(raw, true);
+  return {
+    meta: records.find((record) => record.sessionMeta)?.sessionMeta,
+    records,
+    turnModels: () => extractOmpTurnModelsFromLines(raw),
+  };
+}
+
+/**
+ * Every record in an archived (`.jsonl.gz`) OMP session, in file order — the
+ * archived counterpart of a live delta's `records` field
+ * (src/jsonl-transcript-reader.ts), for a caller to select the live path from
+ * (`selectOmpLiveMessages`) or reconcile against stored history with
+ * (`ompMessagesAfterStored` in src/transcript-source.ts). An archive is a
+ * single gzip member, not an append-only file: it is always read in full,
+ * with no resume checkpoint. The trailing record is always complete —
+ * `omp gc --apply` only archives a session once it has stopped writing to it.
+ * Unreadable or corrupt archives return an empty array.
+ */
+export function parseOmpArchiveRecords(transcriptPath: string): ParsedOmpTranscriptRecord[] {
+  return loadOmpArchive(transcriptPath)?.records ?? [];
+}
+
+/** The live-path messages of an archived (`.jsonl.gz`) OMP session. See `parseOmpArchiveRecords`. */
+export function parseOmpArchiveTranscript(transcriptPath: string): ParsedMessage[] {
+  return selectOmpLiveMessages(parseOmpArchiveRecords(transcriptPath), true);
+}
+
+/** Shared by a live and an archived read: maps each tool-call id to the model on the assistant entry that dispatched it. */
+function extractOmpTurnModelsFromLines(raw: string): Map<string, string> {
+  const models = new Map<string, string>();
   for (const line of raw.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -305,8 +377,23 @@ export function extractOmpTurnModels(transcriptPath: string): Map<string, string
       }
     }
   }
-
   return models;
+}
+
+/** Maps each tool-call id to the model recorded on the assistant entry that dispatched it. */
+export function extractOmpTurnModels(transcriptPath: string): Map<string, string> {
+  let raw: string;
+  try {
+    raw = readFileSync(transcriptPath, "utf8");
+  } catch {
+    return new Map();
+  }
+  return extractOmpTurnModelsFromLines(raw);
+}
+
+/** Same as `extractOmpTurnModels`, for an archived (`.jsonl.gz`) transcript. */
+export function extractOmpArchiveTurnModels(transcriptPath: string): Map<string, string> {
+  return loadOmpArchive(transcriptPath)?.turnModels() ?? new Map();
 }
 
 // ---------------------------------------------------------------------------
@@ -349,17 +436,44 @@ export function extractOmpSessionMeta(transcriptPath: string): OmpSessionMeta | 
   return undefined;
 }
 
+/**
+ * Read the first `session` record's id and cwd from an archived (`.jsonl.gz`)
+ * transcript. Unlike `extractOmpSessionMeta`, there is no bounded streaming
+ * scan: the whole member must be decompressed before any of it is readable.
+ */
+export function extractOmpArchiveSessionMeta(transcriptPath: string): OmpSessionMeta | undefined {
+  let raw: string;
+  try {
+    raw = decompressOmpArchive(transcriptPath);
+  } catch {
+    return undefined;
+  }
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const meta = parseOmpTranscriptRecord(trimmed).sessionMeta;
+      if (meta) return meta;
+    } catch { /* skip malformed lines */ }
+  }
+  return undefined;
+}
+
 export interface OmpSessionFile {
   path: string;
   sessionId: string;
   mtime: number;
   cwd?: string;
+  /** A `.jsonl.gz` archive written by `omp gc --apply`: import-only, no resume checkpoint. */
+  archived: boolean;
 }
+
+const OMP_ARCHIVE_SUFFIX = ".jsonl.gz";
 
 /**
  * Discover OMP transcript files under a sessions root
- * (`<agentDir>/sessions/<bucket>/*.jsonl`): every bucket directory, flat
- * within it. Symlinks are not followed.
+ * (`<agentDir>/sessions/<bucket>/*.jsonl` and `*.jsonl.gz`): every bucket
+ * directory, flat within it. Symlinks are not followed.
  */
 export function findOmpSessionFiles(sessionsDir: string): OmpSessionFile[] {
   const files: OmpSessionFile[] = [];
@@ -382,17 +496,20 @@ export function findOmpSessionFiles(sessionsDir: string): OmpSessionFile[] {
       continue;
     }
     for (const entry of entries) {
-      if (!entry.isFile() || entry.isSymbolicLink() || !entry.name.endsWith(".jsonl")) continue;
+      if (!entry.isFile() || entry.isSymbolicLink()) continue;
+      const archived = entry.name.endsWith(OMP_ARCHIVE_SUFFIX);
+      if (!archived && !entry.name.endsWith(".jsonl")) continue;
       try {
         const full = join(bucketDir, entry.name);
         const st = lstatSync(full);
         if (st.isSymbolicLink()) continue;
-        const meta = extractOmpSessionMeta(full);
+        const meta = archived ? extractOmpArchiveSessionMeta(full) : extractOmpSessionMeta(full);
         files.push({
           path: full,
-          sessionId: meta?.id ?? basename(entry.name, ".jsonl"),
+          sessionId: meta?.id ?? basename(entry.name, archived ? OMP_ARCHIVE_SUFFIX : ".jsonl"),
           mtime: st.mtimeMs,
           cwd: meta?.cwd,
+          archived,
         });
       } catch {
         // skip unreadable entries
@@ -409,20 +526,29 @@ export function findOmpSessionFiles(sessionsDir: string): OmpSessionFile[] {
 
 /**
  * Collect all OMP transcript files from an OMP agent directory
- * (`<agentDir>/sessions/`). Defaults to ~/.omp/agent when ompDir is omitted;
- * PI_CODING_AGENT_DIR overrides the default. Archived (.jsonl.gz) sessions are
- * not discovered.
+ * (`<agentDir>/sessions/`, live and archived). Defaults to ~/.omp/agent when
+ * ompDir is omitted; PI_CODING_AGENT_DIR overrides the default.
  */
 export function findAllOmpTranscripts(ompDir?: string): OmpSessionFile[] {
   const root = ompDir ?? (process.env.PI_CODING_AGENT_DIR || join(homedir(), ".omp", "agent"));
   const results = findOmpSessionFiles(join(root, "sessions"));
 
-  // Prefer the latest transcript for an identity; order is a deterministic
-  // tie-breaker for equal modification times.
+  // Prefer the latest transcript for an identity. A live file always wins
+  // over an archived copy of the same session: `omp gc --apply` compresses a
+  // session in place and normally removes the original, so a surviving
+  // `.jsonl` alongside its `.jsonl.gz` means the live file is the one OMP (or
+  // a later session) is still writing to. Order is a deterministic
+  // tie-breaker for equal modification times within the same kind.
   const seen = new Map<string, OmpSessionFile>();
   for (const f of results) {
     const existing = seen.get(f.sessionId);
-    if (!existing || f.mtime > existing.mtime) seen.set(f.sessionId, f);
+    if (!existing) {
+      seen.set(f.sessionId, f);
+    } else if (existing.archived && !f.archived) {
+      seen.set(f.sessionId, f);
+    } else if (f.archived === existing.archived && f.mtime > existing.mtime) {
+      seen.set(f.sessionId, f);
+    }
   }
 
   return [...seen.values()].sort((a, b) => {
