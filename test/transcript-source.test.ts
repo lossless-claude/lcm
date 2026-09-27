@@ -314,6 +314,20 @@ describe("OMP transcript source", () => {
       expect(delta.checkpoint).toMatchObject({ messageCount: 5 });
     });
 
+    it("a recovery scan does not match stored history to a repeat on an abandoned branch", async () => {
+      const { cwd, path } = treeFixture([
+        say(["r1", null], "user", "root"),
+        say(["y1", "r1"], "assistant", "yes"),
+        JSON.stringify({ type: "branch_summary", id: "b1", parentId: "r1", timestamp, fromId: "y1", summary: "" }),
+        say(["y2", "b1"], "assistant", "yes"),
+      ]);
+      const liveOnly = [as("user", "root"), as("assistant", "yes")];
+      const delta = await source.read(path, stored(liveOnly), ctx(cwd));
+      expect(delta.sourceOffset).toBe(2);
+      expect(contents(delta)).toEqual([]);
+      expect(delta.checkpoint).toMatchObject({ messageCount: 2 });
+    });
+
     it("a recovery scan refuses stored history the file does not hold in order", async () => {
       const { cwd, path } = treeFixture([...trunk, ...wrongTurn]);
       await expect(source.read(path, stored([as("assistant", "first answer"), as("user", "first question")]), ctx(cwd)))

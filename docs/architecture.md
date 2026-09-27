@@ -310,8 +310,9 @@ stored.
    have been applied to both sides, before accepting the suffix.
 4. An OMP transcript uses the same cursor, but its file is a tree: each read keeps only the
    entries on the `parentId` chain from the file's last entry. Stored history is therefore
-   the file's messages in order but not always its prefix, so a recovery scan requires that
-   order and accepts the live-path messages after the last stored one.
+   the file's messages in order but not always its prefix. A recovery scan continues the
+   file's live path when stored history is a prefix of it; otherwise it requires that order
+   and accepts the live-path messages after the last stored one.
 
 This covers a session whose messages reached the transcript while lcm was down or killed, and
 a file that grew or was rewritten between two runs.

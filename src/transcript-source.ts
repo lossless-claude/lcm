@@ -193,30 +193,46 @@ function validateOmpMetadata(meta: OmpSessionMeta, ctx: ReadContext): void {
  *
  * Stored history is each earlier delta's live path, so it holds the file's messages in order
  * but not necessarily a prefix of them: a rewind may have abandoned a stored turn, or one
- * skipped before it was captured. The earliest in-order match of stored history, under the
- * current redaction rules, ends at the entry holding its last message; the entries after it
- * are selected as one delta. History the file does not hold in order is refused.
+ * skipped before it was captured. Comparisons apply the current redaction rules. Stored
+ * history that is a prefix of the file's live path continues that path, so a message repeated
+ * on an abandoned branch is not matched there and stored twice. Otherwise the earliest
+ * in-order match of stored history ends at the entry holding its last message, and the
+ * entries after it are selected as one delta. History the file does not hold in order is refused.
  */
 async function ompMessagesAfterStored(
   stored: StoredTranscript, records: readonly ParsedOmpTranscriptRecord[], ctx: ReadContext,
 ): Promise<ParsedMessage[]> {
   const previous = await stored.storedMessages();
   if (previous.length !== stored.storedCount) throw new TranscriptSourceError("Stored OMP history changed during recovery");
+  const same = (candidate: ParsedMessage, prior: { role: string; content: string }) =>
+    candidate.role === prior.role && ctx.scrub(candidate.content) === ctx.scrub(prior.content);
+  const live = selectOmpLiveMessages(records);
+  if (live.length >= previous.length && previous.every((prior, index) => same(live[index], prior))) {
+    return live.slice(previous.length);
+  }
+  return selectOmpLiveMessages(records.slice(ompStoredBoundary(previous, records, same)));
+}
+
+/** The index after the entry holding the last stored message, in the earliest in-order match. */
+function ompStoredBoundary(
+  previous: ReadonlyArray<{ role: string; content: string }>,
+  records: readonly ParsedOmpTranscriptRecord[],
+  same: (candidate: ParsedMessage, prior: { role: string; content: string }) => boolean,
+): number {
   const inFileOrder = records.flatMap(({ message }, index) =>
     (Array.isArray(message) ? message : message ? [message] : []).map((candidate) => ({ candidate, after: index + 1 })));
   let matched = 0;
   let boundary = 0;
   for (const { candidate, after } of inFileOrder) {
     if (matched === previous.length) break;
-    const prior = previous[matched];
-    if (candidate.role !== prior.role || ctx.scrub(candidate.content) !== ctx.scrub(prior.content)) continue;
+    if (!same(candidate, previous[matched])) continue;
     matched++;
     boundary = after;
   }
   if (matched < previous.length) {
     throw new TranscriptSourceError("OMP transcript does not hold the stored history in order; check the original transcript and redaction settings before retrying");
   }
-  return selectOmpLiveMessages(records.slice(boundary));
+  return boundary;
 }
 
 const ompSource: TranscriptSource = {
