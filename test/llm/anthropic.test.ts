@@ -20,6 +20,13 @@ describe("createAnthropicSummarizer", () => {
     expect(args.system).toBeDefined();
   });
 
+  it("sends the context's output cap in place of the one its target implies", async () => {
+    const mockCreate = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "Summary." }] });
+    await createAnthropicSummarizer({ model: "m", apiKey: "sk-test", _clientOverride: { messages: { create: mockCreate } } as any })(
+      "text", true, { maxOutputTokens: 4800 });
+    expect(mockCreate.mock.calls[0][0].max_tokens).toBe(4800);
+  });
+
   it("retries on empty content, then returns", async () => {
     const mockCreate = vi.fn()
       .mockResolvedValueOnce({ content: [] })
@@ -121,7 +128,7 @@ describe("createAnthropicSummarizer", () => {
     });
     const error = await summarize("x".repeat(600), false, { onUsage }).catch((err) => err);
     expect(error).toBeInstanceOf(SummaryRejectedError);
-    expect(error).toMatchObject({ reason: "max_tokens", provider: "anthropic" });
+    expect(error).toMatchObject({ reason: "max_tokens", provider: "anthropic", maxOutputTokens: 1024 });
     expect(mockCreate).toHaveBeenCalledTimes(1);
     expect(events).toEqual(["request", "usage"]);
   });

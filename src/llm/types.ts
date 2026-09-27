@@ -51,6 +51,8 @@ export type SummarizeContext = {
   client?: SessionClient | "copilot";
   isCondensed?: boolean;
   targetTokens?: number;
+  /** The request's output cap, in place of the one `targetTokens` implies. */
+  maxOutputTokens?: number;
   depth?: number;
   /** The preceding chunk's summary, rendered into the prompt so chunks read as one thread. */
   previousSummary?: string;
@@ -61,7 +63,10 @@ export type SummarizeContext = {
    * response carries no usage, so a caller can still name and count the attempt.
    */
   onAttempt?: (attempt: { provider: string; kind: "session" | "http" | "process"; model?: string }) => void;
-  /** `fromProvider` did not produce a summary; `toProvider` is summarizing instead. */
+  /**
+   * `fromProvider` did not produce a summary; `toProvider` is summarizing instead. The two
+   * are the same link when it retries its own answer that stopped at the output cap.
+   */
   onFallback?: (fallback: { reason: string; fromProvider: string; toProvider: string }) => void;
 };
 
