@@ -209,6 +209,7 @@ describe("runDoctor summarizer modes", () => {
     expect(results.some((result) => result.name === "claude-process")).toBe(true);
     expect(results.some((result) => result.name === "codex-process")).toBe(true);
     expect(results.some((result) => result.name === "copilot-process")).toBe(true);
+    expect(results.some((result) => result.name === "omp-process")).toBe(true);
   });
 });
 

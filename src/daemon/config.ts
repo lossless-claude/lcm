@@ -13,7 +13,7 @@ export interface SecurityConfig {
   notify_on_filter?: boolean;
 }
 
-export type SummaryProvider = "auto" | "claude-process" | "codex-process" | "copilot-process" | "anthropic" | "openai" | "disabled" | "session";
+export type SummaryProvider = "auto" | "claude-process" | "codex-process" | "copilot-process" | "omp-process" | "anthropic" | "openai" | "disabled" | "session";
 
 export type DaemonConfig = {
   version: number;
@@ -189,7 +189,7 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
   if (merged.llm.apiKey) merged.llm.apiKey = merged.llm.apiKey.replace(/\$\{(\w+)\}/g, (_: string, k: string) => e[k] ?? "");
 
   // Env var override: LCM_SUMMARY_PROVIDER takes precedence over config
-  const VALID_PROVIDERS = new Set(["auto", "claude-process", "codex-process", "copilot-process", "anthropic", "openai", "disabled", "session"]);
+  const VALID_PROVIDERS = new Set(["auto", "claude-process", "codex-process", "copilot-process", "omp-process", "anthropic", "openai", "disabled", "session"]);
   if (e.LCM_SUMMARY_PROVIDER && !namedEndpoints) {
     if (!VALID_PROVIDERS.has(e.LCM_SUMMARY_PROVIDER)) {
       throw new Error(

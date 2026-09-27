@@ -4,6 +4,7 @@ export type SummarizerProvider =
   | "claude-process"
   | "codex-process"
   | "copilot-process"
+  | "omp-process"
   | "openai"
   | "anthropic"
   | "session:haiku"

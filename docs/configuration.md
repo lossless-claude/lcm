@@ -256,8 +256,9 @@ LCM defaults to `LCM_SUMMARY_PROVIDER=auto`.
 
 - In Claude sessions, `auto` resolves to `claude-process`
 - In Codex sessions, `auto` resolves to `codex-process`
+- In OMP sessions, `auto` resolves to `omp-process`
 - In Copilot sessions, `auto` resolves to `copilot-process` — no client identifies itself as `copilot` yet, so today you select it with `LCM_SUMMARY_PROVIDER=copilot-process`
-- If you explicitly set `LCM_SUMMARY_PROVIDER`, that override applies to both CLIs
+- If you explicitly set `LCM_SUMMARY_PROVIDER`, that override applies to every CLI
 
 The provider can be pinned from the environment; the model only from `~/.lossless-claude/config.json`:
 
@@ -276,6 +277,7 @@ Valid provider values are:
 - `claude-process`
 - `codex-process`
 - `copilot-process`
+- `omp-process`
 - `anthropic`
 - `openai`
 - `disabled`
@@ -325,7 +327,7 @@ The flat fields above (`llm.model`, `llm.baseURL`, `llm.apiKey`, `llm.reasoning`
 
 | Endpoint field | Applies to | Meaning |
 |---|---|---|
-| `type` | every endpoint | `openai` (any OpenAI-compatible server), `anthropic`, `claude-process`, `codex-process` or `copilot-process` |
+| `type` | every endpoint | `openai` (any OpenAI-compatible server), `anthropic`, `claude-process`, `codex-process`, `copilot-process` or `omp-process` |
 | `model` | every endpoint | Required for `openai` and `anthropic`. Optional for the process types, which use lcm's default for that CLI without it |
 | `baseURL` | `openai`, `anthropic` | The endpoint's URL; without it, the vendor's own API. May interpolate `${NAME}` |
 | `apiKey` | `openai`, `anthropic` | May interpolate an environment variable as `${NAME}`. `anthropic` without one reads `ANTHROPIC_API_KEY` |
@@ -426,6 +428,7 @@ Every provider reports its usage in a normalized shape, stored in
 | `claude-process` | yes | yes | yes | list-price cost in USD |
 | `codex-process` | yes | yes | yes | — |
 | `copilot-process` | no | no | yes | premium requests |
+| `omp-process` | yes | yes | yes | — |
 | `openai` | yes | when the server reports it | yes | real charged cost, OpenRouter only |
 | `anthropic` | yes | yes | yes | — |
 
