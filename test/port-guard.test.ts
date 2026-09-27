@@ -19,6 +19,7 @@ import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { ensureCore } from "../src/bootstrap.js";
 import { loadDaemonConfig } from "../src/daemon/config.js";
@@ -63,7 +64,7 @@ describe("the harness keeps the suite off the real daemon", () => {
     expect(home.startsWith(process.env.HOME!)).toBe(false);
   });
 
-  it("ensureCore with no per-test config neither probes, signals nor replaces a daemon on the default port", async () => {
+  it("ensureCore on the harness config neither probes, signals nor replaces a daemon on the default port", async () => {
     // A stale "real" daemon answers on the default port: the exact case ensureDaemon
     // replaces. Other ports reach the network as usual.
     const realFetch = globalThis.fetch.bind(globalThis);
@@ -93,7 +94,7 @@ describe("the harness keeps the suite off the real daemon", () => {
     for (const spawned of daemonSpawns) expect(spawned.env?.LCM_HOME).toBe(lcmHome());
   }, 20_000);
 
-  it("a CLI child with no per-test config stops no daemon on the default port", async () => {
+  it("a CLI child on the harness config stops no daemon on the default port", async () => {
     const { stdout, stderr } = await execute(process.execPath, [cli, "daemon", "stop"], { timeout: 15_000 });
     expect(stderr).not.toContain("[lcm test guard]");
     expect(stdout).toContain("lcm daemon was not running");
@@ -101,6 +102,41 @@ describe("the harness keeps the suite off the real daemon", () => {
 });
 
 describe("the port guard", () => {
+  it("refuses a child whose lcm home has no config, at the port lcm falls back to", async () => {
+    // The real fallback path: no config.json, so the child resolves the compiled-in default
+    // port. It only asks /health, so a broken guard fails this test without disturbing the
+    // daemon that may be listening there.
+    const home = mkdtempSync(join(tmpdir(), "lcm-port-guard-bare-home-"));
+    const guardDir = mkdtempSync(join(tmpdir(), "lcm-port-guard-log-"));
+    const dist = (path: string) => JSON.stringify(pathToFileURL(resolve("dist/src", path)).href);
+    const probeScript = [
+      `import { loadDaemonConfig } from ${dist("daemon/config.js")};`,
+      `import { checkDaemonHealth } from ${dist("daemon/lifecycle.js")};`,
+      `import { createLcmPaths } from ${dist("lcm-paths.js")};`,
+      `import { lcmHome } from ${dist("lcm-home.js")};`,
+      "const { port } = loadDaemonConfig(createLcmPaths(lcmHome()).configPath).daemon;",
+      "const health = await checkDaemonHealth(port);",
+      "process.stdout.write(JSON.stringify({ port, health }));",
+    ].join("\n");
+    try {
+      const { stdout, stderr } = await execute(process.execPath, ["--input-type=module", "-e", probeScript], {
+        timeout: 15_000,
+        env: {
+          ...process.env,
+          LCM_HOME: home,
+          // Its own log, so the refusal this test provokes does not fail the file.
+          LCM_TEST_GUARD_DIR: guardDir,
+        },
+      });
+      expect(JSON.parse(stdout)).toEqual({ port: DEFAULT_PORT, health: null });
+      expect(stderr).toContain(`[lcm test guard] refused to connect to port ${DEFAULT_PORT}`);
+      expect(readdirSync(guardDir)).not.toEqual([]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(guardDir, { recursive: true, force: true });
+    }
+  });
+
   it("refuses a CLI child that resolves a guarded port, so the daemon there is neither probed nor signalled", async () => {
     // The CLI reads its port from config, so the guarded port here is the one the config
     // names: a stand-in for the default port, which only the real daemon may use.
