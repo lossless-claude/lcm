@@ -257,6 +257,22 @@ describe("function-hook session summarizer", () => {
     });
   });
 
+  it("names model.fork when the fork's text is not a string and the fallback also fails", async () => {
+    const { trigger, done, engine, posts } = await start({}, [{ ...leaf, kind: "condensed" }]);
+    engine.model.fork.mockResolvedValue({ text: ["not", "a", "string"], usage: { input_tokens: 40, output_tokens: 7 } });
+    engine.model.complete.mockResolvedValue({ isAnswered: false, reason: "refused",
+      usage: { input_tokens: 3, output_tokens: 1 } });
+    await trigger();
+    await done;
+    expect(posts[0].body).toEqual({
+      error: "model.fork: answer text was not a string; fallback: refused",
+      usageAttempts: [
+        { providerId: "session:fork", usage: { input_tokens: 40, output_tokens: 7, estimated: false }, failed: true },
+        { providerId: "session:haiku", usage: { input_tokens: 3, output_tokens: 1, estimated: false }, failed: true },
+      ],
+    });
+  });
+
   it("reports a failed fork's usage separately from the fallback answer", async () => {
     const { trigger, done, engine, posts } = await start({}, [{ ...leaf, kind: "condensed" }]);
     engine.model.fork.mockResolvedValue({ isAnswered: false, reason: "empty-reply",

@@ -385,6 +385,7 @@ async function answerSummary($: EngineInterface, job: SummaryJob, remainingToken
         usage: { input_tokens: fork.usage.input_tokens, output_tokens: fork.usage.output_tokens, estimated: false },
       };
     }
+    const forkTextMalformed = Boolean(fork && "text" in fork && "usage" in fork);
     const forkAttempt: UsageAttempt | undefined = fork && "usage" in fork
       ? { providerId: "session:fork", usage: {
         input_tokens: fork.usage.input_tokens,
@@ -402,6 +403,7 @@ async function answerSummary($: EngineInterface, job: SummaryJob, remainingToken
     } catch (error) {
       if (forkAttempt) {
         const failure = (error instanceof Error ? error : new Error(String(error))) as SummaryFailure;
+        if (forkTextMalformed) failure.message = `model.fork: answer text was not a string; fallback: ${failure.message}`;
         failure.usageAttempts = [forkAttempt, ...(failure.usageAttempts ?? [])];
         throw failure;
       }
