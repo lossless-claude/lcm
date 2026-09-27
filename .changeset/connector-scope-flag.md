@@ -2,4 +2,4 @@
 "@lossless-claude/lcm": patch
 ---
 
-`lcm connectors` for Oh My Pi uses the global config only with `--global`. Run from a project whose root is the home directory, `install`, `remove`, `list` and `doctor` now manage `~/.omp/hooks/post/lcm.ts` and `~/.omp/mcp.json` instead of the files in `<agentDir>`.
+`lcm connectors install`, `remove`, `list` and `doctor` use Oh My Pi's global config (`<agentDir>`) only with `--global`. Without it they manage the project in the current directory, including a project whose root is the home directory: `~/.omp/hooks/post/lcm.ts` and `~/.omp/mcp.json`.
