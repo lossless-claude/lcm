@@ -214,6 +214,14 @@ leaf and condensed, before the escalation above. An adapter does not retry a len
 since the same request with the same budget stops the same way; an empty answer is retried
 like a transient failure.
 
+A length stop is retried once by the provider chain below, on the same link, with a changed
+request: the aggressive prompt and twice the output cap the answer stopped at
+(`SummaryRejectedError.maxOutputTokens`, sent back as `SummarizeContext.maxOutputTokens`).
+The aggressive prompt lowers a leaf's target, and with it the cap derived from it, so the cap
+is raised rather than derived; a condensed prompt has no aggressive form and gets the larger
+cap alone. A request that was already aggressive is not retried, which bounds the retry to one
+per link per chunk. The engine does not see the retry: the level it reports stays `normal`.
+
 A rejected answer moves the provider chain below to its next link, as an error does. With no
 link left, the rejection fails the pass: nothing from it is persisted and context is unchanged,
 while passes that finished earlier in the same compaction stay. `/compact` answers 500 naming
@@ -233,17 +241,21 @@ they are the one configured provider, or the session followed by `llm.fallbackPr
 chain; with none left, the first summary throws `SummarizerUnavailableError` naming each
 endpoint and variable, and `/health` and `lcm doctor` report the endpoints left out.
 
-Each link runs at most once per call, after its adapter's own retries. The next link runs
+Each link is tried once per call, after its adapter's own retries, plus the chain's one retry
+of a length stop (see [Rejected answers](#rejected-answers)). The next link runs
 after a session that did not answer (`SessionUnavailableError`), a `SummaryRejectedError`, a
 refused key (401/403), an account that cannot pay (402), a connection failure or a transient status still failing after the
 retries (408, 429, 5xx), or a failed CLI run. Anything else — a 400/422, a cancelled request,
 a missing client library, an unclassified exception — is thrown at once, since trying the next
-link would hide it. When more than one link ran and all failed, the chain throws
+link would hide it. The exception is a 400/422 answering the retry of a length stop: its larger
+cap may exceed the model's output limit, so the next link runs. When more than one link ran and all failed, the chain throws
 `ProviderChainExhaustedError`, naming each failure; like a rejection, it fails the pass and
 never becomes the deterministic fallback above.
 
-The chain calls `onFallback` between links, which is where `/compact` settles the abandoned
-attempt as failed before the next one reports its usage. A named endpoint's usage carries the
+The chain calls `onFallback` between attempts, which is where `/compact` settles the abandoned
+attempt as failed before the next one reports its usage. A link's retry of its own length stop
+is an attempt of its own, so its `onFallback` (and the `summarizer.fallback` log record) names
+the same link at both ends. A named endpoint's usage carries the
 endpoint's name, so one pass can record a failed `deepseek` call and an ok `openrouter` call.
 
 A link's adapter is built on first use, the first link's when the summarizer is created: a

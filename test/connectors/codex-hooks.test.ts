@@ -46,7 +46,7 @@ afterEach(() => {
 
 describe("Codex hooks connector installation", () => {
   it("installs all native lifecycle events with their matchers and deadlines", () => {
-    const result = installConnector("codex", undefined, tmpDir, commandOptions);
+    const result = installConnector({ agent: "codex", cwd: tmpDir }, commandOptions);
     const config = readConfig();
 
     expect(result.path).toBe(hooksPath());
@@ -76,7 +76,7 @@ describe("Codex hooks connector installation", () => {
   });
 
   it("writes a shell-safe absolute command for runtime paths containing spaces", () => {
-    installConnector("codex", "hooks", tmpDir, commandOptions);
+    installConnector({ agent: "codex", type: "hooks", cwd: tmpDir }, commandOptions);
     const config = readConfig();
     const commands = Object.keys(config.hooks)
       .flatMap(event => managedHandlers(config, event))
@@ -106,11 +106,11 @@ describe("Codex hooks connector installation", () => {
       },
     });
 
-    installConnector("codex", "hooks", tmpDir, {
+    installConnector({ agent: "codex", type: "hooks", cwd: tmpDir }, {
       nodePath: "/old/node",
       cliPath: "/old/lcm.js",
     });
-    installConnector("codex", "hooks", tmpDir, commandOptions);
+    installConnector({ agent: "codex", type: "hooks", cwd: tmpDir }, commandOptions);
     const config = readConfig();
 
     expect(config.description).toBe("Keep this");
@@ -128,12 +128,12 @@ describe("Codex hooks connector installation", () => {
 
   it("refuses to overwrite malformed JSON or event shapes", () => {
     writeConfig("{not-json");
-    expect(() => installConnector("codex", "hooks", tmpDir, commandOptions)).toThrow("not valid JSON");
+    expect(() => installConnector({ agent: "codex", type: "hooks", cwd: tmpDir }, commandOptions)).toThrow("not valid JSON");
     expect(readFileSync(hooksPath(), "utf-8")).toBe("{not-json");
 
     writeConfig({ hooks: { SessionStart: { keep: true } } });
     const before = readFileSync(hooksPath(), "utf-8");
-    expect(() => installConnector("codex", "hooks", tmpDir, commandOptions)).toThrow("hooks.SessionStart");
+    expect(() => installConnector({ agent: "codex", type: "hooks", cwd: tmpDir }, commandOptions)).toThrow("hooks.SessionStart");
     expect(readFileSync(hooksPath(), "utf-8")).toBe(before);
   });
 });
@@ -150,14 +150,14 @@ describe("Codex hooks connector removal", () => {
       command: "keep-this-too",
       statusMessage: "LCM lifecycle: restoring context",
     };
-    installConnector("codex", "hooks", tmpDir, commandOptions);
+    installConnector({ agent: "codex", type: "hooks", cwd: tmpDir }, commandOptions);
     const config = readConfig();
     config.description = "Keep this too";
     config.hooks.Stop[0].hooks.unshift(unrelated, wrongEvent);
     config.hooks.PostToolUse = [{ matcher: "Bash", hooks: [unrelated] }];
     writeConfig(config);
 
-    expect(removeConnector("codex", "hooks", tmpDir)).toBe(true);
+    expect(removeConnector({ agent: "codex", type: "hooks", cwd: tmpDir })).toBe(true);
     const remaining = readConfig();
     expect(remaining.description).toBe("Keep this too");
     expect(remaining.hooks.Stop).toEqual([{ hooks: [unrelated, wrongEvent] }]);
@@ -166,16 +166,16 @@ describe("Codex hooks connector removal", () => {
   });
 
   it("deletes a hooks.json created solely for LCM", () => {
-    installConnector("codex", "hooks", tmpDir, commandOptions);
-    expect(removeConnector("codex", "hooks", tmpDir)).toBe(true);
+    installConnector({ agent: "codex", type: "hooks", cwd: tmpDir }, commandOptions);
+    expect(removeConnector({ agent: "codex", type: "hooks", cwd: tmpDir })).toBe(true);
     expect(existsSync(hooksPath())).toBe(false);
   });
 });
 
 describe("Codex hooks connector diagnostics", () => {
   it("separates installed configuration from unknown Codex trust and activation", () => {
-    installConnector("codex", "hooks", tmpDir, commandOptions);
-    const diagnosis = diagnoseConnector("codex", "hooks", tmpDir, commandOptions);
+    installConnector({ agent: "codex", type: "hooks", cwd: tmpDir }, commandOptions);
+    const diagnosis = diagnoseConnector({ agent: "codex", type: "hooks", cwd: tmpDir }, commandOptions);
 
     expect(diagnosis.status).toBe("installed");
     expect(diagnosis.installed).toBe(true);
@@ -184,18 +184,18 @@ describe("Codex hooks connector diagnostics", () => {
     expect(diagnosis.trust).toBe("unknown");
     expect(diagnosis.issues).toEqual([]);
     expect(diagnosis.message).toContain("/hooks");
-    expect(listConnectors(tmpDir)).toEqual(expect.arrayContaining([
+    expect(listConnectors({ cwd: tmpDir })).toEqual(expect.arrayContaining([
       expect.objectContaining({ agentId: "codex", type: "hooks", path: hooksPath() }),
     ]));
   });
 
   it("reports a partial installation when a managed handler is missing", () => {
-    installConnector("codex", "hooks", tmpDir, commandOptions);
+    installConnector({ agent: "codex", type: "hooks", cwd: tmpDir }, commandOptions);
     const config = readConfig();
     delete config.hooks.PreCompact;
     writeConfig(config);
 
-    const diagnosis = diagnoseConnector("codex", "hooks", tmpDir, commandOptions);
+    const diagnosis = diagnoseConnector({ agent: "codex", type: "hooks", cwd: tmpDir }, commandOptions);
     expect(diagnosis.status).toBe("partial");
     expect(diagnosis.installed).toBe(true);
     expect(diagnosis.complete).toBe(false);
@@ -205,7 +205,7 @@ describe("Codex hooks connector diagnostics", () => {
   });
 
   it("reports not installed without implying a trust decision", () => {
-    const diagnosis = diagnoseConnector("codex", "hooks", tmpDir, commandOptions);
+    const diagnosis = diagnoseConnector({ agent: "codex", type: "hooks", cwd: tmpDir }, commandOptions);
     expect(diagnosis.status).toBe("not-installed");
     expect(diagnosis.installed).toBe(false);
     expect(diagnosis.complete).toBe(false);

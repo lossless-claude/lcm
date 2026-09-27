@@ -53,7 +53,7 @@ export function registerDaemonCommands(program: Command): void {
     .option("-h, --help", "Show help")
     .action(async (opts) => {
       if (helpRequested(daemonCmd, opts)) await showHelpAndExit("daemon");
-      const { ensureDaemon, checkDaemonHealth, isStaleDaemon, registerDaemonActivity } = await import("../daemon/lifecycle.js");
+      const { ensureDaemon, checkDaemonHealth, describePortHolder, identifyPortHolder, isStaleDaemon, registerDaemonActivity } = await import("../daemon/lifecycle.js");
       const { loadDaemonConfig } = await import("../daemon/config.js");
       const { PKG_VERSION, BUILD_ID } = await import("../daemon/version.js");
       const { clearHold, readHold } = await import("../daemon/hold.js");
@@ -92,7 +92,10 @@ export function registerDaemonCommands(program: Command): void {
         const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 10000 });
         if (!connected) {
           if (opts.automatic && readHold(pidFilePath)) { process.exitCode = 75; return; }
-          fail(`lcm daemon did not answer on port ${port} within 10s — check ~/.lossless-claude/logs/daemon.log and ~/.lossless-claude/logs/daemon.stderr`);
+          const holder = identifyPortHolder(port, pidFilePath);
+          fail(holder.pid !== undefined
+            ? describePortHolder(port, holder, configPath)
+            : `lcm daemon did not answer on port ${port} within 10s — check ~/.lossless-claude/logs/daemon.log and ~/.lossless-claude/logs/daemon.stderr`);
         }
         const h = await checkDaemonHealth(port);
         console.log(`lcm daemon started in background on port ${port} (pid ${h?.pid ?? "?"})`);
@@ -123,7 +126,7 @@ export function registerDaemonCommands(program: Command): void {
       } catch (err) {
         const code = (err as NodeJS.ErrnoException)?.code;
         if (code === "EADDRINUSE") {
-          console.error(`Port ${port} is already in use by another process (not an lcm daemon). Stop it or change daemon.port in ${configPath}.`);
+          console.error(describePortHolder(port, identifyPortHolder(port, pidFilePath), configPath));
         } else {
           console.error(`lcm daemon failed to start: ${err instanceof Error ? err.message : String(err)}`);
         }
