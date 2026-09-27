@@ -131,7 +131,7 @@ configured with, unless `llm.model` names one. See
 ## Remaining gaps
 
 1. Hook activation and trust cannot be proven from the filesystem; diagnostics report that state as unknown, as with Codex.
-2. The conversation a `/clear` closes is not compacted afterwards: `/compact` and the catch-up sweep reach only the session's newest conversation. Its raw messages stay searchable ([#540](https://github.com/lossless-claude/lcm/issues/540)).
+2. The conversation a `/clear` closes is not compacted afterwards: `/compact`, `lcm compact` and the catch-up sweep reach a session only through its newest conversation, and the sweep does not select the older one. What was not summarized before the clear stays as raw messages, still searchable ([#540](https://github.com/lossless-claude/lcm/issues/540)).
 3. A turn captured before a rewind or branch switch abandoned it stays in memory and still matches `lcm search` and `lcm grep`; only turns abandoned before their capture are left out ([#539](https://github.com/lossless-claude/lcm/issues/539)). When a branch abandoned before its capture is later reopened with `/tree`, the session's continuation from it is captured but the branch's earlier turns are not.
 4. Passive learning records the OMP tools translated to extractor shapes; the harness's own memory tools and other non-durable plumbing remain intentionally silent.
 5. `*.jsonl.*.bak` recovery files (OMP falls back to these when a primary session file is missing) are not discovered.
