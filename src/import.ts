@@ -592,7 +592,7 @@ export async function importSessions(
 ): Promise<ImportResult> {
   const paths = options.paths ?? (options._lcmDir ? createLcmPaths(options._lcmDir) : undefined);
   if (paths) options.paths = paths;
-  const provider: ImportProvider = options.provider ?? (options.replay ? "all" : "claude");
+  const provider: ImportProvider = options.provider ?? "all";
   const result: ImportResult = { imported: 0, skippedEmpty: 0, failed: 0, totalMessages: 0, totalTokens: 0, tokensAfter: 0 };
   // One --restart clear per project for the whole import, however many session
   // lists reach that project.

@@ -80,7 +80,7 @@ lcm import --provider omp --replay
 lcm import --omp --replay
 ```
 
-`lcm import --replay` discovers all supported transcript sources unless a provider is selected explicitly. Use `--provider omp` or `--omp` when the run should select only OMP sessions. See [Import past sessions](import.md) for discovery, project selection, and cursor behavior.
+`lcm import` discovers all supported transcript sources unless a provider is selected explicitly. Use `--provider omp` or `--omp` when the run should select only OMP sessions. See [Import past sessions](import.md) for discovery, project selection, and cursor behavior.
 
 ## Verify captured memory
 

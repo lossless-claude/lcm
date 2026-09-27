@@ -4,7 +4,7 @@ Status: implemented native hook adapter and connector, with CLI/daemon integrati
 
 ## Outcome
 
-LCM captures Codex sessions automatically through native hooks, restores relevant memory at session start and resume, recalls related history before prompts, and preserves continuity across native compaction. `lcm import --replay` discovers both Claude and Codex sessions unless the caller explicitly chooses a provider.
+LCM captures Codex sessions automatically through native hooks, restores relevant memory at session start and resume, recalls related history before prompts, and preserves continuity across native compaction. `lcm import` discovers Claude, Codex and OMP sessions unless the caller explicitly chooses a provider.
 
 ## Implementation
 

@@ -16,7 +16,7 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
   program
     .command("import")
     .description("Import Claude Code, Codex, or OMP session transcripts into lossless memory")
-    .option("--provider <provider>", "Transcript source: claude, codex, omp, all (replay defaults to all)")
+    .option("--provider <provider>", "Transcript source: claude, codex, omp, all (default: all)")
     .option("--codex", "Import Codex transcripts (alias for --provider codex)")
     .option("--omp", "Import OMP transcripts (alias for --provider omp)")
     .option("--all", "Import all projects")

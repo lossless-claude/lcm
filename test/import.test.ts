@@ -254,7 +254,7 @@ describe("importSessions", () => {
 
     const client = makeMockClient(async () => ({ ingested: 1, totalTokens: 100 }));
 
-    const result = await importSessions(client, {
+    const result = await importSessions(client, { provider: "claude",
       dryRun: true,
       cwd,
       _claudeProjectsDir: claudeProjectsDir,
@@ -281,7 +281,7 @@ describe("importSessions", () => {
       return { ingested: 5, totalTokens: 500 };
     });
 
-    const result = await importSessions(client, {
+    const result = await importSessions(client, { provider: "claude",
       cwd,
       _claudeProjectsDir: claudeProjectsDir,
       _lcmDir: makeTmpDir(),
@@ -310,7 +310,7 @@ describe("importSessions", () => {
 
     const client = makeMockClient(async () => ({ ingested: 0, totalTokens: 0 }));
 
-    const result = await importSessions(client, {
+    const result = await importSessions(client, { provider: "claude",
       cwd,
       _claudeProjectsDir: claudeProjectsDir,
       _lcmDir: makeTmpDir(),
@@ -334,7 +334,7 @@ describe("importSessions", () => {
       throw new Error("daemon error");
     });
 
-    const result = await importSessions(client, {
+    const result = await importSessions(client, { provider: "claude",
       cwd,
       _claudeProjectsDir: claudeProjectsDir,
       _lcmDir: makeTmpDir(),
@@ -593,7 +593,7 @@ describe("importSessions", () => {
     const cwd = "/home/user/nonexistent";
     const client = makeMockClient(async () => ({ ingested: 1, totalTokens: 100 }));
 
-    const result = await importSessions(client, {
+    const result = await importSessions(client, { provider: "claude",
       cwd,
       _claudeProjectsDir: claudeProjectsDir,
     });
@@ -680,7 +680,7 @@ describe("importSessions", () => {
       return { ingested: 0, totalTokens: 0 };
     });
 
-    const result = await importSessions(client, {
+    const result = await importSessions(client, { provider: "claude",
       cwd,
       _claudeProjectsDir: claudeProjectsDir,
     });
@@ -892,7 +892,7 @@ describe("importSessions replay resume", () => {
     const plain = makeMockClient(async (path: string, body: any) => {
       if (path === "/ingest") { ingestBodies.push(body); return { ingested: 0, totalTokens: 0 }; }
     });
-    await importSessions(plain, { cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+    await importSessions(plain, { provider: "claude", cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
     expect(ingestBodies[1].replay).toBeUndefined();
   });
 
@@ -1226,6 +1226,35 @@ describe("importSessions replay resume", () => {
     // started and nothing was wiped.
     expect(statusCalls.sort()).toEqual([cwdA, cwdB].sort());
     expect(ingested).toEqual([]);
+  });
+
+  it("imports every source when no provider is given", async () => {
+    const cwd = "/test/default-all";
+    const claudeProjectsDir = makeTmpDir();
+    const projDir = join(claudeProjectsDir, claudeProjectSlug(cwd));
+    mkdirSync(projDir, { recursive: true });
+    writeFileSync(join(projDir, "a1.jsonl"), '{"session":"a1"}\n');
+    const codexDir = makeTmpDir();
+    mkdirSync(join(codexDir, "archived_sessions"), { recursive: true });
+    writeFileSync(join(codexDir, "archived_sessions", "rollout-b1.jsonl"), makeCodexSessionMetaLine("b1", cwd));
+    const ompDir = makeTmpDir();
+    const ompBucket = join(ompDir, "sessions", "2026-09-21");
+    mkdirSync(ompBucket, { recursive: true });
+    writeFileSync(join(ompBucket, "20260921T000000-c1.jsonl"),
+      `${makeOmpSessionHeaderLine("c1", cwd)}\n${makeOmpMessageLine("user", "hello from c1")}\n`);
+
+    const ingested: string[] = [];
+    const client = makeMockClient(async (path: string, body: any) => {
+      if (path === "/ingest") { ingested.push(body.session_id); return { ingested: 1, totalTokens: 10 }; }
+      if (path === "/compact") return { summary: "ok" };
+    });
+
+    await importSessions(client, {
+      cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: makeTmpDir(), _codexDir: codexDir, _ompDir: ompDir,
+    });
+
+    // One session per source: Claude Code (a1), Codex (b1), OMP (c1).
+    expect(ingested.sort()).toEqual(["a1", "b1", "c1"]);
   });
 });
 

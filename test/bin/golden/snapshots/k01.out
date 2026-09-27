@@ -4,7 +4,7 @@
   Usage: lcm import [--provider claude|codex|omp|all | --codex | --omp] [--all] [--verbose] [--dry-run] [--replay] [--restart]
 
   Options:
-    --provider <provider>  Transcript source: claude, codex, omp, all (default: claude; with --replay: all)
+    --provider <provider>  Transcript source: claude, codex, omp, all (default: all)
     --codex                Alias for --provider codex
     --omp                  Alias for --provider omp
     --all                  Import all projects (default: current project only)

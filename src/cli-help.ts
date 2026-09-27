@@ -170,7 +170,7 @@ const HELP: Record<string, CommandHelp> = {
     summary: "Import Claude Code, Codex or Oh My Pi session transcripts into lossless memory.",
     usage: "lcm import [--provider claude|codex|omp|all | --codex | --omp] [--all] [--verbose] [--dry-run] [--replay] [--restart]",
     options: [
-      ["--provider <provider>", "Transcript source: claude, codex, omp, all (default: claude; with --replay: all)"],
+      ["--provider <provider>", "Transcript source: claude, codex, omp, all (default: all)"],
       ["--codex", "Alias for --provider codex"],
       ["--omp", "Alias for --provider omp"],
       ["--all", "Import all projects (default: current project only)"],
