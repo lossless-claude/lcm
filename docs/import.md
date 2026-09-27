@@ -1,6 +1,6 @@
 # Import past sessions
 
-`lcm import` imports Claude Code, Codex, and Oh My Pi session transcripts for the current project. `lcm import --replay` discovers and replays all three sources by default. Choose a source explicitly when needed:
+`lcm import` discovers and imports Claude Code, Codex, and Oh My Pi session transcripts for the current project. `--replay` adds threaded compaction of each imported session; it does not change which sources are read. Choose a source explicitly when needed:
 
 ```sh
 lcm import --provider codex --dry-run
@@ -13,7 +13,7 @@ lcm import --omp --replay
 lcm import --provider all --all --dry-run
 ```
 
-`--provider` accepts `claude`, `codex`, `omp`, or `all`. The default is `all` with `--replay`, and `claude` otherwise. `--codex` is an alias for `--provider codex`, and `--omp` is an alias for `--provider omp`. An explicit source overrides the replay default. This selects transcript sources, independently of the model used to summarize them. Without `--all`, only the current project is selected. With `--all`, Claude imports tracked projects, Codex imports all projects identified in its transcripts, and OMP imports all discovered sessions whose working directory identifies a project.
+`--provider` accepts `claude`, `codex`, `omp`, or `all`. The default is `all`. `--codex` is an alias for `--provider codex`, and `--omp` is an alias for `--provider omp`. This selects transcript sources, independently of the model used to summarize them. Without `--all`, only the current project is selected. With `--all`, Claude imports tracked projects, Codex imports all projects identified in its transcripts, and OMP imports all discovered sessions whose working directory identifies a project.
 
 Codex discovery reads `~/.codex/sessions/` and `~/.codex/archived_sessions/` recursively, including dated `YYYY/MM/DD/rollout-*.jsonl` files and legacy layouts. It uses `session_meta.id` as session identity, falling back to the filename for older transcripts. If several files represent the same session, the latest modification time wins; an archive wins an equal-time tie. Discovery reads only the metadata header (up to 1 MiB), rather than loading every conversation. Files without a working directory in that header's `session_meta.cwd` are skipped rather than assigned to an unrelated project. Symlinks are not followed.
 

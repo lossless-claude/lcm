@@ -224,7 +224,7 @@ lcm promote                # promote durable insights to long-term memory
 lcm promote --all          # promote across all tracked projects
 
 # Import / export
-lcm import                 # import Claude Code sessions for the current project
+lcm import                 # import Claude Code, Codex and OMP sessions for the current project
 lcm import --all           # import all projects
 lcm import --replay        # import and compact with threaded context (resumable)
 lcm import --replay --restart # discard recorded progress and start from scratch

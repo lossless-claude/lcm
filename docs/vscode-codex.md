@@ -77,7 +77,7 @@ lcm import --replay --dry-run
 lcm import --replay
 ```
 
-`lcm import --replay` discovers both Claude and Codex sessions by default, including archived Codex sessions. Select one source explicitly with `--provider claude` or `--provider codex`. See [import behavior](import.md) for project selection and replay progress.
+`lcm import` discovers every supported source by default, Claude and Codex included, along with archived Codex sessions. Select one source explicitly with `--provider claude` or `--provider codex`. See [import behavior](import.md) for project selection and replay progress.
 
 ## Runtime requirements and limits
 

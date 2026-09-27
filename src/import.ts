@@ -26,6 +26,29 @@ import {
 
 export type ImportProvider = "claude" | "codex" | "omp" | "all";
 
+const IMPORT_PROVIDERS: readonly ImportProvider[] = ["claude", "codex", "omp", "all"];
+
+/** The transcript-source flags `lcm import` accepts: `--provider <name>` and its aliases `--codex` and `--omp`. */
+export type ImportProviderFlags = { provider?: string; codex?: boolean; omp?: boolean };
+
+/**
+ * The one place that decides which transcript sources an import reads. No flag means every
+ * source (`all`); `--codex` and `--omp` are aliases for `--provider codex|omp`. Throws with a
+ * user-facing message when the flags conflict or name an unknown source.
+ */
+export function resolveImportProvider(flags: ImportProviderFlags = {}): ImportProvider {
+  if (flags.codex && flags.omp) throw new Error("--codex cannot be combined with --omp");
+  const alias: ImportProvider | undefined = flags.codex ? "codex" : flags.omp ? "omp" : undefined;
+  const named = flags.provider;
+  if (named !== undefined && !IMPORT_PROVIDERS.includes(named as ImportProvider)) {
+    throw new Error(`Unknown provider "${named}". Use: ${IMPORT_PROVIDERS.join(", ")}`);
+  }
+  if (alias && named !== undefined && named !== alias) {
+    throw new Error(`--${alias} cannot be combined with a different --provider`);
+  }
+  return alias ?? (named as ImportProvider | undefined) ?? "all";
+}
+
 interface ImportOptions {
   paths?: LcmPaths;
   all?: boolean;
@@ -37,7 +60,7 @@ interface ImportOptions {
   restart?: boolean;
   /** Replay only: model label recorded in the ledger (shown on resume) */
   replayModel?: string;
-  /** Which transcript provider to import from (default: "claude") */
+  /** Which transcript provider to import from; resolved by `resolveImportProvider` (default: "all") */
   provider?: ImportProvider;
   /** Called with state patches as each session is processed — used by the ninja renderer */
   onProgress?: (patch: Partial<ProgressState>) => void;
@@ -592,7 +615,7 @@ export async function importSessions(
 ): Promise<ImportResult> {
   const paths = options.paths ?? (options._lcmDir ? createLcmPaths(options._lcmDir) : undefined);
   if (paths) options.paths = paths;
-  const provider: ImportProvider = options.provider ?? (options.replay ? "all" : "claude");
+  const provider = resolveImportProvider({ provider: options.provider });
   const result: ImportResult = { imported: 0, skippedEmpty: 0, failed: 0, totalMessages: 0, totalTokens: 0, tokensAfter: 0 };
   // One --restart clear per project for the whole import, however many session
   // lists reach that project.

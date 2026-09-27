@@ -16,7 +16,7 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
   program
     .command("import")
     .description("Import Claude Code, Codex, or OMP session transcripts into lossless memory")
-    .option("--provider <provider>", "Transcript source: claude, codex, omp, all (replay defaults to all)")
+    .option("--provider <provider>", "Transcript source: claude, codex, omp, all (default: all)")
     .option("--codex", "Import Codex transcripts (alias for --provider codex)")
     .option("--omp", "Import OMP transcripts (alias for --provider omp)")
     .option("--all", "Import all projects")
@@ -40,28 +40,15 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
       const { makeProgressState } = await import("./progress-state.js");
       const { join } = await import("node:path");
       const { homedir } = await import("node:os");
-      const { importSessions } = await import("../import.js");
+      const { importSessions, resolveImportProvider } = await import("../import.js");
       const paths = createLcmPaths(lcmHome());
-      type ImportProvider = import("../import.js").ImportProvider;
-
-      let provider: ImportProvider = opts.codex ? "codex" : opts.omp ? "omp" : replay ? "all" : "claude";
-      if (opts.codex && opts.omp) {
-        fail("  --codex cannot be combined with --omp");
-      }
-      if (opts.codex && opts.provider && opts.provider !== "codex") {
-        fail("  --codex cannot be combined with a different --provider");
-      }
-      if (opts.omp && opts.provider && opts.provider !== "omp") {
-        fail("  --omp cannot be combined with a different --provider");
-      }
-      if (opts.provider) {
-        const provVal = opts.provider as string;
-        if (provVal === "claude" || provVal === "codex" || provVal === "omp" || provVal === "all") {
-          provider = provVal as ImportProvider;
-        } else {
-          fail(`  Unknown provider "${provVal}". Use: claude, codex, omp, all`);
+      const provider = (() => {
+        try {
+          return resolveImportProvider({ provider: opts.provider, codex: opts.codex, omp: opts.omp });
+        } catch (err) {
+          return fail(`  ${err instanceof Error ? err.message : String(err)}`);
         }
-      }
+      })();
 
       const config = loadDaemonConfig(paths.configPath);
       const port = config.daemon?.port ?? 3737;
