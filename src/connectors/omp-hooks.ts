@@ -163,9 +163,13 @@ function installedDiagnosis(filePath: string, source: string): OmpHooksDiagnosis
   };
 }
 
+// Without a readable shipped hook there is nothing to compare against, so freshness is not reported.
 function isShippedHook(source: string): boolean {
-  const shipped = templatePath();
-  return !existsSync(shipped) || readFileSync(shipped, "utf-8") === source;
+  try {
+    return readFileSync(templatePath(), "utf-8") === source;
+  } catch {
+    return true;
+  }
 }
 
 /** The global OMP agent directory used by the installer and connector CLI. */

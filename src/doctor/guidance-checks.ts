@@ -3,6 +3,7 @@ import type { CheckResult, DoctorDeps } from "./types.js";
 import { diagnoseCodexHooks } from "../connectors/codex-hooks.js";
 import { diagnoseOmpHooks } from "../connectors/omp-hooks.js";
 import { runningFromPluginBundle } from "../hooks/fail-open.js";
+import { findAgent } from "../connectors/registry.js";
 
 /**
  * The doctor check that verifies each guidance row of the connector registry
@@ -60,6 +61,11 @@ function hookResult(name: string, diagnoses: HookDiagnosis[], fix: string): Chec
   return { name, category: CATEGORY, status: "pass", message: `learning instruction via ${installed.path}` };
 }
 
+// A row the user sets up by hand (`manual` in the registry) is optional when missing; any other row warns.
+function missingStatus(agentId: string, via: string): CheckResult["status"] {
+  return findAgent(agentId)?.guidance?.find((g) => g.via === via)?.manual ? "pass" : "warn";
+}
+
 function mcpResult(name: string, found: string | undefined, missing: Omit<CheckResult, "name" | "category">): CheckResult {
   return found
     ? { name, category: CATEGORY, status: "pass", message: `MCP server registered in ${found}` }
@@ -81,7 +87,7 @@ function addCodexChecks(results: CheckResult[], deps: DoctorDeps, cwd: string): 
   const configPaths = [join(deps.homedir, ".codex", "config.toml"), join(cwd, ".codex", "config.toml")];
   results.push(mcpResult(GUIDANCE_CHECK_NAMES["codex:mcp"],
     configPaths.find((p) => /^\s*\[mcp_servers\.lcm\]/m.test(readOrEmpty(deps, p))),
-    { status: "pass", message: "MCP server not registered (optional; the learning instruction names CLI commands)\n     To add it: lcm connectors install codex --type mcp" }));
+    { status: missingStatus("codex", "mcp"), message: "MCP server not registered (optional; the learning instruction names CLI commands)\n     To add it: lcm connectors install codex --type mcp" }));
 }
 
 function addOmpChecks(results: CheckResult[], deps: DoctorDeps, cwd: string): void {
@@ -90,7 +96,7 @@ function addOmpChecks(results: CheckResult[], deps: DoctorDeps, cwd: string): vo
   results.push(hookResult(GUIDANCE_CHECK_NAMES["omp:hooks"], hookPaths.map(diagnoseOmpHooks), "lcm install"));
   results.push(mcpResult(GUIDANCE_CHECK_NAMES["omp:mcp"],
     [join(agentDir, "mcp.json"), join(cwd, ".omp", "mcp.json")].find((p) => registersLcmMcp(deps, p)),
-    { status: "warn", message: "MCP server not registered — the agent cannot call lcm's tools\n     Fix: lcm install  (from the npm CLI), or lcm connectors install omp --type mcp --global" }));
+    { status: missingStatus("omp", "mcp"), message: "MCP server not registered — the agent cannot call lcm's tools\n     Fix: lcm install  (from the npm CLI), or lcm connectors install omp --type mcp --global" }));
 }
 
 /** Codex and OMP guidance checks, for each harness whose CLI is on PATH. */

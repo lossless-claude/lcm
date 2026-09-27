@@ -606,6 +606,29 @@ describe("install — OMP", () => {
     }
   });
 
+  it("installs OMP before the final doctor run, which checks its guidance", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const agentDir = mkdtempSync(join(tmpdir(), "lcm-install-omp-"));
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    try {
+      const deps = makeDeps({ spawnSync: ompFound });
+      let hookWrittenBeforeDoctor = false;
+      deps.runDoctor = vi.fn(async () => {
+        hookWrittenBeforeDoctor = (deps.writeFileSync as ReturnType<typeof vi.fn>).mock.calls
+          .some((c: any[]) => c[0] === join(agentDir, "hooks", "post", "lcm.ts"));
+        return [];
+      });
+      await install(deps);
+      expect(hookWrittenBeforeDoctor).toBe(true);
+    } finally {
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      rmSync(agentDir, { recursive: true, force: true });
+      vi.mocked(console.log).mockRestore();
+    }
+  });
+
   it("reports the installed hook when only the MCP registration fails", async () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     const agentDir = mkdtempSync(join(tmpdir(), "lcm-install-omp-"));
