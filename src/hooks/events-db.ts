@@ -93,7 +93,7 @@ export interface PatternReinforcementStats {
   distinctSessions: number;
 }
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 const HOOK_OBSERVATION_SQL = `
 CREATE TABLE IF NOT EXISTS hook_observation_summary (
@@ -120,6 +120,7 @@ CREATE TABLE IF NOT EXISTS hook_observation_failures (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_hook_observation_failures_session ON hook_observation_failures(session_id, id);
+CREATE INDEX IF NOT EXISTS idx_hook_observation_failures_created ON hook_observation_failures(created_at);
 CREATE TABLE IF NOT EXISTS hook_observation_seen (
   operation_id TEXT NOT NULL,
   kind TEXT NOT NULL,
@@ -300,6 +301,9 @@ export class EventsDb {
           this.db.exec("CREATE INDEX IF NOT EXISTS idx_events_turn ON events(session_id, turn_id)");
         }
         if (currentVersion < 8) this.db.exec(HOOK_OBSERVATION_SQL);
+        if (currentVersion < 9) this.db.exec(
+          "CREATE INDEX IF NOT EXISTS idx_hook_observation_failures_created ON hook_observation_failures(created_at)"
+        );
         this.db.prepare("UPDATE schema_version SET version = ?").run(SCHEMA_VERSION);
         this.db.exec("COMMIT");
       } catch (e) {

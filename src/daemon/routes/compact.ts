@@ -327,7 +327,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
 
     // Guard must be checked and set synchronously (before any await) to prevent
     // concurrent requests from racing through the has() check before add() runs.
-    if (compactingNow.has(session_id) || (captureRequired && hasQueuedProjectWork(projectId(cwd)))) {
+    if (compactingNow.has(session_id) || ((captureRequired || precompactVerified) && hasQueuedProjectWork(projectId(cwd)))) {
       log.write("info", "compact.skipped", { cwd, session_id, reason: "project-busy" });
       const captureOutcome = captureRequired ? await captureOnly() : undefined;
       if (captureRequired) log.write("info", "precompact.summary", { cwd, session_id, status: "skipped", reason: "busy" });
@@ -342,7 +342,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       sendJson(res, 200, {
         skipped: true,
         replayOutcome: "skipped",
-        summary: captureRequired ? "" : "Compaction already in progress for this session.",
+        summary: captureRequired || precompactVerified ? "" : "Compaction already in progress for this session.",
         ...(captureRequired ? { captureOutcome, summaryOutcome: { status: "skipped", reason: "busy" } } : {}),
       });
       return;

@@ -381,6 +381,38 @@ describe("required pre-compaction capture", () => {
       observations.close();
     }
   });
+
+  it("skips a verified OMP summary while another project request occupies the queue", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-omp-busy-"));
+    dirs.push(cwd);
+    const entered = Promise.withResolvers<void>();
+    const unblock = Promise.withResolvers<void>();
+    const queued = enqueue(projectId(cwd), async () => { entered.resolve(); await unblock.promise; });
+    await entered.promise;
+    const { res, getBody } = mockRes();
+    const request = createCompactHandler(makeConfig("openai"), paths)({} as any, res, JSON.stringify({
+      session_id: "omp-busy", cwd, client: "omp", skip_ingest: true,
+      precompact_verified: true, operation_id: "omp-busy-operation",
+    }));
+    try {
+      expect(await Promise.race([request.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 3000))]))
+        .toBe(true);
+      expect(getBody().skipped).toBe(true);
+      const observations = new EventsDb(eventsDbPath(cwd, paths));
+      try {
+        expect(observations.getHookObservationSummary("omp-busy")).toMatchObject([
+          { harness: "omp", hook: "session_before_compact", operation: "summary",
+            status: "skipped", reason: "busy", count: 1 },
+        ]);
+      } finally {
+        observations.close();
+      }
+    } finally {
+      unblock.resolve();
+      await queued;
+      await request;
+    }
+  });
 });
 
 async function readMessageCount(cwd: string, sessionId: string): Promise<number> {

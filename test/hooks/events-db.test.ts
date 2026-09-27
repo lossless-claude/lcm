@@ -24,6 +24,19 @@ describe("EventsDb", () => {
     db.close();
   });
 
+  it("adds the failure-age index when opening a version 8 sidecar", () => {
+    const old = new EventsDb(dbPath);
+    old.raw().exec("DROP INDEX idx_hook_observation_failures_created");
+    old.raw().exec("UPDATE schema_version SET version = 8");
+    old.close();
+
+    const migrated = new EventsDb(dbPath);
+    const indexes = migrated.raw().prepare("PRAGMA index_list('hook_observation_failures')")
+      .all() as { name: string }[];
+    expect(indexes.map((index) => index.name)).toContain("idx_hook_observation_failures_created");
+    migrated.close();
+  });
+
   it("keeps delivery and execution distinct while counting a retry only once", () => {
     const db = new EventsDb(dbPath);
     const base = {
@@ -202,7 +215,7 @@ describe("EventsDb", () => {
       expect(columns.map((c) => c.name)).toContain("tool_use_id");
       expect(columns.map((c) => c.name)).toEqual(expect.arrayContaining(["client", "model"]));
       const versionRow = db.raw().prepare("SELECT version FROM schema_version").get() as { version: number };
-      expect(versionRow.version).toBe(8);
+      expect(versionRow.version).toBe(9);
       db.close();
     });
 
@@ -243,7 +256,7 @@ describe("EventsDb", () => {
       expect(row.client).toBe("claude");
       expect(row.model).toBeNull();
       const versionRow = db.raw().prepare("SELECT version FROM schema_version").get() as { version: number };
-      expect(versionRow.version).toBe(8);
+      expect(versionRow.version).toBe(9);
       db.close();
     });
 
@@ -272,7 +285,7 @@ describe("EventsDb", () => {
       expect(db.raw().prepare("SELECT session_id, tool_use_id, client, model, turn_id FROM events").get()).toEqual({
         session_id: "v6-session", tool_use_id: "call_v6", client: "codex", model: "model-v6", turn_id: null,
       });
-      expect(db.raw().prepare("SELECT version FROM schema_version").get()).toEqual({ version: 8 });
+      expect(db.raw().prepare("SELECT version FROM schema_version").get()).toEqual({ version: 9 });
       db.close();
     });
 

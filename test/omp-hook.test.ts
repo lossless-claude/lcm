@@ -279,6 +279,17 @@ describe("OMP lcm hook", () => {
     expect(loggerError).toHaveBeenCalledTimes(1);
   });
 
+  it("persists the final shutdown capture outcome despite a recent snapshot", async () => {
+    const { handlers } = hook();
+    await getHandler(handlers, "session_start")({}, context());
+    await getHandler(handlers, "session_shutdown")({}, context());
+    expect(readOmpHookSnapshots("/workspace/omp-project", join(home, "logs"))[0].observations)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ hook: "session_shutdown", operation: "capture",
+          kind: "delivery", status: "submitted" }),
+      ]));
+  });
+
   it("sends lcm summarization only after confirmed pre-compaction capture", async () => {
     const { handlers } = hook();
     await getHandler(handlers, "session_before_compact")({}, context());
