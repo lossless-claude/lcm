@@ -188,6 +188,9 @@ export type HarnessOutcome = { status: "ok" | "skipped" | "failed"; detail: stri
 export type InstallOutcome = { claude: HarnessOutcome; codex: HarnessOutcome; omp: HarnessOutcome };
 
 export async function install(deps: ServiceDeps = defaultDeps): Promise<InstallOutcome> {
+  // Codex and OMP first: the Claude Code step ends with the doctor run, which checks their guidance too.
+  const codex = installCodex(deps);
+  const omp = installOmp(deps);
   let claude: HarnessOutcome;
   try {
     claude = await installClaudeCode(deps);
@@ -195,11 +198,19 @@ export async function install(deps: ServiceDeps = defaultDeps): Promise<InstallO
     if (err instanceof Error && err.stack) console.error(err.stack);
     claude = { status: "failed", detail: err instanceof Error ? err.message : String(err) };
   }
-  const codex = installCodex(deps);
-  const omp = installOmp(deps);
 
   reportInstallOutcomes({ claude, codex, omp });
   return { claude, codex, omp };
+}
+
+/** Connector writes routed through the service deps, so a dry run writes nothing. */
+function writerFor(deps: ServiceDeps): { writeFile: (path: string, data: string) => void } {
+  return {
+    writeFile: (path, data) => {
+      deps.mkdirSync(dirname(path), { recursive: true });
+      deps.writeFileSync(path, data);
+    },
+  };
 }
 
 const OUTCOME_MARKS: Record<HarnessOutcome["status"], string> = { ok: "✓", skipped: "○", failed: "✗" };
@@ -228,32 +239,34 @@ function installCodex(deps: ServiceDeps): HarnessOutcome {
     if (found.status !== 0 || typeof found.stdout !== "string" || !found.stdout.trim()) {
       return { status: "skipped", detail: "codex not on PATH" };
     }
-    const result = installConnector("codex", "hooks", homedir(), {
-      writeFile: (path, data) => {
-        deps.mkdirSync(dirname(path), { recursive: true });
-        deps.writeFileSync(path, data);
-      },
-    });
+    const result = installConnector("codex", "hooks", homedir(), writerFor(deps));
     return { status: "ok", detail: `hooks installed in ${result.path}${result.notice ? ` — ${result.notice}` : ""}` };
   } catch (err) {
     return { status: "failed", detail: err instanceof Error ? err.message : String(err) };
   }
 }
 
-/** OMP loads the self-contained hook directly, so installation is safe from the npm CLI or bundle. */
+/**
+ * OMP loads the self-contained hook directly, so the hook installs from the npm CLI or bundle.
+ * The MCP entry names an absolute CLI path, so, as for Codex, it installs from the npm CLI only.
+ */
 function installOmp(deps: ServiceDeps): HarnessOutcome {
   try {
     const found = deps.spawnSync("sh", ["-c", "command -v omp"], { encoding: "utf-8" });
     if (found.status !== 0 || typeof found.stdout !== "string" || !found.stdout.trim()) {
       return { status: "skipped", detail: "omp not on PATH" };
     }
-    const result = installConnector("omp", "hooks", homedir(), {
-      writeFile: (path, data) => {
-        deps.mkdirSync(dirname(path), { recursive: true });
-        deps.writeFileSync(path, data);
-      },
-    });
-    return { status: "ok", detail: `hooks installed in ${result.path}` };
+    const write = writerFor(deps);
+    const result = installConnector("omp", "hooks", homedir(), write);
+    if (runningFromPluginBundle()) {
+      return { status: "ok", detail: `hooks installed in ${result.path}; run lcm install from the npm CLI to register the MCP server` };
+    }
+    try {
+      const mcp = installConnector("omp", "mcp", homedir(), write);
+      return { status: "ok", detail: `hooks installed in ${result.path}, MCP server registered in ${mcp.path}` };
+    } catch (err) {
+      return { status: "failed", detail: `hooks installed in ${result.path}; MCP registration failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
   } catch (err) {
     return { status: "failed", detail: err instanceof Error ? err.message : String(err) };
   }

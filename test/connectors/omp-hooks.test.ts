@@ -1,14 +1,21 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { installConnector, removeConnector, diagnoseConnector } from "../../src/connectors/installer.js";
+import { installConnector, removeConnector, diagnoseConnector, listConnectors } from "../../src/connectors/installer.js";
 import { OMP_HOOK_MARKER } from "../../src/connectors/omp-hooks.js";
+import { runningFromPluginBundle } from "../../src/hooks/fail-open.js";
+
+vi.mock("../../src/hooks/fail-open.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/hooks/fail-open.js")>()),
+  runningFromPluginBundle: vi.fn(() => false),
+}));
 
 let root: string;
 let previousAgentDir: string | undefined;
 
 beforeEach(() => {
+  previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   root = mkdtempSync(join(tmpdir(), "lcm-omp-connector-"));
 });
 
@@ -65,6 +72,20 @@ describe("OMP connector installation", () => {
     });
   });
 
+  it("reports a managed hook that differs from the shipped hook as outdated", () => {
+    const path = installConnector("omp", "hooks", root).path;
+    writeFileSync(path, `${readFileSync(path, "utf8")}\n// from an older lcm\n`);
+
+    expect(diagnoseConnector("omp", "hooks", root)).toMatchObject({
+      status: "partial",
+      installed: true,
+      complete: false,
+      issues: [expect.stringContaining("differs from the shipped hook")],
+    });
+    installConnector("omp", "hooks", root);
+    expect(diagnoseConnector("omp", "hooks", root)).toMatchObject({ status: "installed", complete: true, issues: [] });
+  });
+
   it("removes a managed hook and prunes empty hook directories", () => {
     installConnector("omp", "hooks", root);
     const path = join(root, ".omp", "hooks", "post", "lcm.ts");
@@ -73,5 +94,61 @@ describe("OMP connector installation", () => {
     expect(existsSync(path)).toBe(false);
     expect(existsSync(join(root, ".omp", "hooks", "post"))).toBe(false);
     expect(existsSync(join(root, ".omp", "hooks"))).toBe(false);
+  });
+});
+
+describe("OMP MCP registration", () => {
+  const entry = { nodePath: "/usr/bin/node", cliPath: "/opt/lcm/dist/bin/lcm.js" };
+
+  it("registers the lcm MCP server in the project .omp/mcp.json, keeping other servers", () => {
+    const path = join(root, ".omp", "mcp.json");
+    mkdirSync(join(root, ".omp"), { recursive: true });
+    writeFileSync(path, JSON.stringify({ mcpServers: { other: { command: "other" } } }));
+
+    const result = installConnector("omp", "mcp", root, entry);
+
+    expect(result).toMatchObject({ success: true, path, requiresRestart: true });
+    expect(JSON.parse(readFileSync(path, "utf8")).mcpServers).toEqual({
+      other: { command: "other" },
+      lcm: { type: "stdio", command: "/usr/bin/node", args: ["/opt/lcm/dist/bin/lcm.js", "mcp"] },
+    });
+    expect(listConnectors(root)).toContainEqual({ agentId: "omp", agentName: "Oh My Pi", type: "mcp", path });
+  });
+
+  it("registers the global server in mcp.json beneath PI_CODING_AGENT_DIR", () => {
+    const agentDir = join(root, "agent");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+
+    const result = installConnector("omp", "mcp", homedir(), entry);
+
+    expect(result.path).toBe(join(agentDir, "mcp.json"));
+    expect(JSON.parse(readFileSync(result.path, "utf8")).mcpServers.lcm.args).toEqual(["/opt/lcm/dist/bin/lcm.js", "mcp"]);
+    expect(removeConnector("omp", "mcp", homedir())).toBe(true);
+    expect(JSON.parse(readFileSync(result.path, "utf8")).mcpServers).toEqual({});
+  });
+
+  it("refuses a malformed mcp.json instead of replacing the servers it holds", () => {
+    const path = join(root, ".omp", "mcp.json");
+    mkdirSync(join(root, ".omp"), { recursive: true });
+    writeFileSync(path, "{ not json");
+
+    expect(() => installConnector("omp", "mcp", root, entry)).toThrow(/not a JSON object/);
+    expect(readFileSync(path, "utf8")).toBe("{ not json");
+  });
+
+  it("refuses to register from the plugin bundle, whose CLI path the next plugin update deletes", () => {
+    vi.mocked(runningFromPluginBundle).mockReturnValueOnce(true);
+
+    expect(() => installConnector("omp", "mcp", root)).toThrow(/npm CLI/);
+    expect(existsSync(join(root, ".omp", "mcp.json"))).toBe(false);
+  });
+
+  it("removes only the lcm entry", () => {
+    installConnector("omp", "mcp", root, entry);
+    const path = join(root, ".omp", "mcp.json");
+
+    expect(removeConnector("omp", "mcp", root)).toBe(true);
+    expect(JSON.parse(readFileSync(path, "utf8")).mcpServers).toEqual({});
+    expect(removeConnector("omp", "mcp", root)).toBe(false);
   });
 });

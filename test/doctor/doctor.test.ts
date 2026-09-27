@@ -4,6 +4,7 @@ import { REQUIRED_HOOKS } from "../../installer/install.js";
 import { LCM_MD_CONTENT } from "../../src/guidance.js";
 import { ensureDaemon } from "../../src/daemon/lifecycle.js";
 import { PKG_VERSION } from "../../src/daemon/version.js";
+import { GUIDANCE_CHECK_NAMES } from "../../src/doctor/guidance-checks.js";
 
 vi.mock("../../src/daemon/lifecycle.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/daemon/lifecycle.js")>()),
@@ -73,6 +74,14 @@ describe("runDoctor security section", () => {
     // No warning for zero patterns — just informational
     expect(userPatterns?.status).toBe("pass");
     expect(userPatterns?.category).toBe("Security");
+  });
+});
+
+describe("runDoctor guidance checks", () => {
+  it("runs the check for every guidance row when every harness CLI is on PATH", async () => {
+    const results = await runDoctor(minimalDeps({ cwd: "/tmp/nonexistent-project-xyz" }));
+    const names = new Set(results.map((r) => r.name));
+    for (const name of Object.values(GUIDANCE_CHECK_NAMES)) expect(names).toContain(name);
   });
 });
 

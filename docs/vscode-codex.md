@@ -44,7 +44,7 @@ lcm connectors doctor codex
 
 This merges LCM command hooks into `.codex/hooks.json`, preserving unrelated hooks. Use `--global` to install in `~/.codex/hooks.json` instead. Reinstalling updates the LCM handlers without duplicating them; `lcm connectors remove codex` removes only those handlers.
 
-Review the installed hooks with Codex's `/hooks` interface and trust them before expecting automatic capture. Codex can skip untrusted or disabled hooks. `doctor` verifies the installed configuration and reports activation as unknown; it does not claim that installing a file activates it.
+Review the installed hooks with Codex's `/hooks` interface and trust them before expecting automatic capture. Codex can skip untrusted or disabled hooks. `doctor` verifies the installed configuration and reports activation as unknown; it does not claim that installing a file activates it. When `codex` is on PATH, `lcm doctor` warns when neither the global nor the project hooks are installed, since the hooks are how the Codex agent receives the learning instruction, and reports whether the MCP server is registered.
 
 The installed hooks call the resolved LCM executable independently of the session working directory:
 

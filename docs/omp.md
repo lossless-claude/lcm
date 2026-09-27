@@ -17,7 +17,7 @@ If you do not want a global link, run `node dist/bin/lcm.js ...` instead of `lcm
 
 ## Install the Oh My Pi connector
 
-`lcm install` sets up Claude Code, Codex, and Oh My Pi. It installs the OMP hook globally and reports one outcome per harness. `lcm install --dry-run` previews the changes without writing anything.
+`lcm install` sets up Claude Code, Codex, and Oh My Pi. It installs the OMP hook globally, registers the lcm MCP server in OMP's global MCP config, and reports one outcome per harness. The MCP entry names the absolute path of the CLI that ran the install, so `lcm install` from the Claude Code plugin installs the hook only; run it from the npm CLI to register the MCP server. `lcm install --dry-run` previews the changes without writing anything.
 
 For Oh My Pi in the current repository only:
 
@@ -42,7 +42,22 @@ lcm connectors remove omp --global
 
 The project connector writes `.omp/hooks/post/lcm.ts`. The global connector writes `<agentDir>/hooks/post/lcm.ts`, where `<agentDir>` is `PI_CODING_AGENT_DIR` when that environment variable is set, or `~/.omp/agent` otherwise. The project connector is selected from the current working directory; the global connector is selected from the agent directory.
 
+## Register the MCP server
+
+The MCP server gives the OMP agent lcm's tools (`lcm_search`, `lcm_store`, and the rest) without a shell command. `lcm install` registers it globally; to register or remove it by hand:
+
+```bash
+lcm connectors install omp --type mcp
+lcm connectors install omp --type mcp --global
+lcm connectors remove omp --type mcp
+lcm connectors remove omp --type mcp --global
+```
+
+The project connector adds `mcpServers.lcm` to `.omp/mcp.json`; the global connector adds it to `<agentDir>/mcp.json`. These are the files OMP's own `/mcp` command edits, and other servers in them are kept. Restart OMP to load the server. The learning instruction keeps its CLI wording, which holds whether or not the MCP server is registered.
+
 Review and trust the installed hooks in Oh My Pi before expecting automatic capture. `doctor` can verify the file and connector configuration, but activation and trust cannot be proven from the filesystem; report that state as unknown, as with Codex.
+
+The installed hook is a copy of the one lcm ships, so an upgrade does not change it. `lcm connectors doctor omp` and `lcm doctor` report a hook that differs from the shipped one; reinstall it with the same `lcm connectors install omp` command, or `lcm install`. When `omp` is on PATH, `lcm doctor` also warns when the global or project hook or MCP server is missing.
 
 ## Lifecycle events
 
@@ -96,10 +111,9 @@ A matching result confirms that captured OMP content is searchable in the curren
 
 ## Remaining gaps
 
-1. The connector does not register an MCP server for Oh My Pi ([#541](https://github.com/lossless-claude/lcm/issues/541)).
-2. There is no OMP-specific summarizer provider. Summaries use the configured default summarizer, which on an OMP-only machine means an API provider ([#542](https://github.com/lossless-claude/lcm/issues/542)).
-3. Archived `.jsonl.gz` OMP sessions are not imported ([#544](https://github.com/lossless-claude/lcm/issues/544)).
-4. Import discovery scans the active agent directory (`PI_CODING_AGENT_DIR`, else `~/.omp/agent`). A session started under `omp --profile <name>` still captures live — the daemon accepts its transcript under the profile's own agent directory — but `lcm import` does not discover profile sessions yet ([#543](https://github.com/lossless-claude/lcm/issues/543)).
-5. Hook activation and trust cannot be proven from the filesystem; diagnostics report that state as unknown, as with Codex.
-6. Memory follows the session file in order, so a turn abandoned by an OMP rewind or branch switch is still captured ([#539](https://github.com/lossless-claude/lcm/issues/539)), and a `/clear` boundary is not honoured, so one conversation spans two logically separate sessions ([#540](https://github.com/lossless-claude/lcm/issues/540)).
-7. Passive learning records the OMP tools translated to extractor shapes; the harness's own memory tools and other non-durable plumbing remain intentionally silent.
+1. There is no OMP-specific summarizer provider. Summaries use the configured default summarizer, which on an OMP-only machine means an API provider ([#542](https://github.com/lossless-claude/lcm/issues/542)).
+2. Archived `.jsonl.gz` OMP sessions are not imported ([#544](https://github.com/lossless-claude/lcm/issues/544)).
+3. Import discovery scans the active agent directory (`PI_CODING_AGENT_DIR`, else `~/.omp/agent`). A session started under `omp --profile <name>` still captures live — the daemon accepts its transcript under the profile's own agent directory — but `lcm import` does not discover profile sessions yet ([#543](https://github.com/lossless-claude/lcm/issues/543)).
+4. Hook activation and trust cannot be proven from the filesystem; diagnostics report that state as unknown, as with Codex.
+5. Memory follows the session file in order, so a turn abandoned by an OMP rewind or branch switch is still captured ([#539](https://github.com/lossless-claude/lcm/issues/539)), and a `/clear` boundary is not honoured, so one conversation spans two logically separate sessions ([#540](https://github.com/lossless-claude/lcm/issues/540)).
+6. Passive learning records the OMP tools translated to extractor shapes; the harness's own memory tools and other non-durable plumbing remain intentionally silent.
