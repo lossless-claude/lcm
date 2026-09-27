@@ -31,6 +31,28 @@ function forceCloseConnection(entry: ConnectionEntry): void {
   }
 }
 
+/** Open a configured independent handle. The caller owns and closes it. */
+export function openStandaloneLcmConnection(dbPath: string, options: { readOnly?: boolean } = {}): DatabaseSync {
+  if (!options.readOnly) mkdirSync(dirname(dbPath), { recursive: true });
+  const db = new DatabaseSync(dbPath, options.readOnly ? { readOnly: true } : {});
+  try {
+    if (!options.readOnly) {
+      // Enable WAL mode for better concurrent read performance
+      db.exec("PRAGMA journal_mode = WAL");
+      // Wait up to 5 seconds on busy instead of failing immediately
+      db.exec("PRAGMA busy_timeout = 5000");
+      // Enable foreign key enforcement
+      db.exec("PRAGMA foreign_keys = ON");
+    } else {
+      db.exec("PRAGMA busy_timeout = 5000");
+    }
+    return db;
+  } catch (error) {
+    try { db.close(); } catch { /* preserve the setup error */ }
+    throw error;
+  }
+}
+
 export function getLcmConnection(dbPath: string, options: { readOnly?: boolean } = {}): DatabaseSync {
   // No TOCTOU race here: Node.js is single-threaded and this function is
   // synchronous. There is no await/yield between the health check and the
@@ -48,18 +70,7 @@ export function getLcmConnection(dbPath: string, options: { readOnly?: boolean }
     _connections.delete(key);
   }
 
-  if (!options.readOnly) mkdirSync(dirname(dbPath), { recursive: true });
-  const db = new DatabaseSync(dbPath, options.readOnly ? { readOnly: true } : {});
-  if (!options.readOnly) {
-    // Enable WAL mode for better concurrent read performance
-    db.exec("PRAGMA journal_mode = WAL");
-    // Wait up to 5 seconds on busy instead of failing immediately
-    db.exec("PRAGMA busy_timeout = 5000");
-    // Enable foreign key enforcement
-    db.exec("PRAGMA foreign_keys = ON");
-  } else {
-    db.exec("PRAGMA busy_timeout = 5000");
-  }
+  const db = openStandaloneLcmConnection(dbPath, options);
 
   _connections.set(key, { db, refs: 1, path: dbPath });
   return db;

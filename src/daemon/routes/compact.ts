@@ -1,7 +1,7 @@
 import type { SummarizeJobStore } from "../summarize-jobs.js";
 import { existsSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
-import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
+import type { DatabaseSync } from "node:sqlite";
+import { getLcmConnection, closeLcmConnection, openStandaloneLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
 import type { LcmPaths } from "../../lcm-paths.js";
 import { updateProjectMeta } from "../project-meta.js";
@@ -303,9 +303,8 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         const scrubber = await ScrubEngine.forProject(
           config.security?.sensitivePatterns ?? [], projectDir(cwd, paths),
         );
-        const db = new DatabaseSync(dbPath);
+        const db = openStandaloneLcmConnection(dbPath);
         try {
-          db.exec("PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON");
           runLcmMigrations(db);
           const captured = await captureTranscriptForCompact(new SessionCapture(db, projectId(cwd), scrubber), {
             sessionId: session_id, cwd, client, transcriptPath: transcript_path,
