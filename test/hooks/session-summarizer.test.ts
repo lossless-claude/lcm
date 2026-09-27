@@ -82,6 +82,21 @@ describe("function-hook session summarizer", () => {
     ]));
   });
 
+  it("records an HTTP rejection as rejected with its status", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
+    await harness.trigger();
+    const originalFetch = harness.engine.http.fetch.getMockImplementation()!;
+    harness.engine.http.fetch.mockImplementation(async (url, init) =>
+      url.endsWith("/ingest") ? { ok: false, status: 401, text: "" } : originalFetch(url, init));
+    await harness.handlers.get("turn.complete")!(harness.engine, {}, vi.fn((event) => event));
+    const snapshots = harness.engine.fs.write.mock.calls
+      .filter(([path]) => String(path).includes("lcm-hook-observe-"));
+    expect(JSON.parse(snapshots.at(-1)![1]).observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ hook: "turn.complete", operation: "capture", kind: "delivery",
+        status: "rejected", reason: "http-401" }),
+    ]));
+  });
+
   it("lets session.start finish when the claim cannot be written", async () => {
     const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
     harness.engine.fs.write.mockRejectedValueOnce(new Error("read-only fs"));

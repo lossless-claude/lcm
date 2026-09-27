@@ -225,7 +225,13 @@ async function startDaemon($: EngineInterface): Promise<boolean> {
   return false;
 }
 
-type PostOutcome = { body: Record<string, unknown> | null; connectionFailed: boolean };
+type PostOutcome = { body: Record<string, unknown> | null; connectionFailed: boolean; httpStatus?: number };
+
+function delivery(outcome: PostOutcome): ["accepted" | "rejected" | "unconfirmed", string] {
+  return outcome.body ? ["accepted", ""]
+    : outcome.httpStatus !== undefined ? ["rejected", `http-${outcome.httpStatus}`]
+      : ["unconfirmed", "unconfirmed"];
+}
 
 /** A 404 means an older lcm build is listening. Say so once per route, not per call. */
 function logMissingRoute($: EngineInterface, route: string, consequence: string): void {
@@ -246,11 +252,11 @@ async function postOnce($: EngineInterface, route: string, body: unknown): Promi
       // Not "the command hooks still record": they stand down while this module holds the
       // session, so an older daemon means the call is simply lost.
       logMissingRoute($, route, "this call is dropped until the daemon is upgraded");
-      return { body: null, connectionFailed: false };
+      return { body: null, connectionFailed: false, httpStatus: res.status };
     }
     if (!res.ok) {
       $.ui.log(`[lcm] ${route}: daemon answered ${res.status}`);
-      return { body: null, connectionFailed: false };
+      return { body: null, connectionFailed: false, httpStatus: res.status };
     }
     return { body: JSON.parse(res.text) as Record<string, unknown>, connectionFailed: false };
   } catch {
@@ -263,13 +269,17 @@ async function postOnce($: EngineInterface, route: string, body: unknown): Promi
  * POST `body` to the daemon; resolves to the parsed JSON, or null when the daemon lacks the
  * route or cannot be reached. On a connection failure it starts the daemon and retries once.
  */
-async function postDaemon($: EngineInterface, route: string, body: unknown): Promise<Record<string, unknown> | null> {
+async function postDaemonOutcome($: EngineInterface, route: string, body: unknown): Promise<PostOutcome> {
   const first = await postOnce($, route, body);
-  if (!first.connectionFailed) return first.body;
-  if (!(await startDaemon($))) return null;
+  if (!first.connectionFailed) return first;
+  if (!(await startDaemon($))) return first;
   const second = await postOnce($, route, body);
   if (second.connectionFailed) $.ui.log(`[lcm] ${route}: daemon still unreachable after start`);
-  return second.body;
+  return second;
+}
+
+async function postDaemon($: EngineInterface, route: string, body: unknown): Promise<Record<string, unknown> | null> {
+  return (await postDaemonOutcome($, route, body)).body;
 }
 
 type SummaryJob = {
@@ -533,10 +543,11 @@ function registerRestoreContext(on: On): void {
   on("prompt.context", async ($, e, next) => {
     const { blocks } = await next(e);
     const [session_id, cwd] = await Promise.all([$.session.id(), $.session.cwd()]);
-    const restored = await postDaemon($, "/restore", { session_id, cwd });
+    const outcome = await postDaemonOutcome($, "/restore", { session_id, cwd });
+    const restored = outcome.body;
     const text = restoreBlockText(restored);
-    noteHook(session_id, "prompt.context", "restore", restored ? "execution" : "delivery", restored ? "completed" : "unconfirmed",
-      restored ? text.trim() ? "context" : "no-context" : "unconfirmed");
+    noteHook(session_id, "prompt.context", "restore", restored ? "execution" : "delivery", restored ? "completed" : delivery(outcome)[0],
+      restored ? text.trim() ? "context" : "no-context" : delivery(outcome)[1]);
     if (!text.trim()) return { blocks };
     return { blocks: [...blocks, { name: "lcm", text }] };
   });
@@ -564,17 +575,17 @@ function registerPromptSearch(on: On): void {
     const [result, search] = await Promise.all([
       next(e),
       Promise.all([$.session.id(), $.session.cwd()]).then(([session_id, cwd]) =>
-        postDaemon($, "/prompt-search", {
+        postDaemonOutcome($, "/prompt-search", {
           query: e.text, cwd, session_id,
           learningInstructionBytes: 0, // the instruction lives in prompt.section now, not in this budget
           recordEvents: true,
           format: "context",
         })),
     ]);
-    noteHook(await $.session.id(), "prompt.submit", "search", search ? "execution" : "delivery", search ? "completed" : "unconfirmed",
-      search ? typeof search.context === "string" ? "context" : "no-context" : "unconfirmed");
+    noteHook(await $.session.id(), "prompt.submit", "search", search.body ? "execution" : "delivery", search.body ? "completed" : delivery(search)[0],
+      search.body ? typeof search.body.context === "string" ? "context" : "no-context" : delivery(search)[1]);
     if (result.drop !== undefined) return result;
-    const context = typeof search?.context === "string" ? search.context : null;
+    const context = typeof search.body?.context === "string" ? search.body.context : null;
     if (!context) return result;
     return { ...result, context: [...(result.context ?? []), context] };
   });
@@ -596,11 +607,11 @@ function registerTurnIngest(on: On): void {
     }
     lastIngestAt = now;
     const cwd = await $.session.cwd();
-    const captured = await postDaemon($, "/ingest", { session_id, cwd });
-    noteHook(session_id, "turn.complete", "capture", "delivery", captured ? "accepted" : "unconfirmed");
-    if (captured) noteHook(session_id, "turn.complete", "capture", "execution", "completed");
-    const promoted = await postDaemon($, "/promote-events", { cwd });
-    noteHook(session_id, "turn.complete", "promote-events", "delivery", promoted ? "accepted" : "unconfirmed");
+    const captured = await postDaemonOutcome($, "/ingest", { session_id, cwd });
+    noteHook(session_id, "turn.complete", "capture", "delivery", ...delivery(captured));
+    if (captured.body) noteHook(session_id, "turn.complete", "capture", "execution", "completed");
+    const promoted = await postDaemonOutcome($, "/promote-events", { cwd });
+    noteHook(session_id, "turn.complete", "promote-events", "delivery", ...delivery(promoted));
     await flushHookObservations($, session_id);
     return result;
   });
@@ -641,10 +652,10 @@ function registerToolCapture(on: On): void {
     }
 
     const [session_id, cwd] = await Promise.all([$.session.id(), $.session.cwd()]);
-    const recorded = await postDaemon($, "/tool-event", toolEventPayload(e, result, session_id, cwd));
-    noteHook(session_id, "tool.call", "tool-capture", "delivery", recorded ? "accepted" : "unconfirmed");
-    if (recorded) noteHook(session_id, "tool.call", "tool-capture", "execution", "completed",
-      typeof recorded.recorded === "number" && recorded.recorded > 0 ? "events" : "no-match");
+    const recorded = await postDaemonOutcome($, "/tool-event", toolEventPayload(e, result, session_id, cwd));
+    noteHook(session_id, "tool.call", "tool-capture", "delivery", ...delivery(recorded));
+    if (recorded.body) noteHook(session_id, "tool.call", "tool-capture", "execution", "completed",
+      typeof recorded.body.recorded === "number" && recorded.body.recorded > 0 ? "events" : "no-match");
     return result;
   });
 }

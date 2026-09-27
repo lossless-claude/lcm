@@ -35,6 +35,14 @@ describe("handleUserPromptSubmit", () => {
     vi.clearAllMocks();
   });
 
+  it("fails open for a JSON null payload", async () => {
+    const client = { post: vi.fn() };
+    const result = await handleUserPromptSubmit("null", client as any, paths);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).not.toBe("");
+    expect(client.post).not.toHaveBeenCalled();
+  });
+
   it("stays silent while the function-hooks module holds the session (no double injection)", async () => {
     process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = "1";
     const { claimPath } = await import("../../src/hooks/session-claim.js");

@@ -58,6 +58,9 @@ export async function handleUserPromptSubmit(
   } catch {
     return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
   }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
+  }
   const input = parsed as { prompt?: string; session_id?: string; cwd?: string };
   const cwd = typeof input.cwd === "string" ? input.cwd : process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
   const sessionId = typeof input.session_id === "string" ? input.session_id : "";

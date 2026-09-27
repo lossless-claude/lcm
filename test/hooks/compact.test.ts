@@ -47,4 +47,10 @@ describe("handlePreCompact", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("");
   });
+
+  it("fails open for a JSON null payload", async () => {
+    const client = { post: vi.fn() };
+    await expect(handlePreCompact("null", client as any, paths)).resolves.toEqual({ exitCode: 0, stdout: "" });
+    expect(client.post).not.toHaveBeenCalled();
+  });
 });

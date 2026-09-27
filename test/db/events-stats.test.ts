@@ -67,6 +67,23 @@ describe("collectEventStats", () => {
     })]);
   });
 
+  it("does not report observations or failures older than seven days", () => {
+    const path = join(tempDir, "stale.db");
+    const events = new EventsDb(path);
+    events.recordHookObservation({ sessionId: "old", harness: "claude-command", hook: "PreCompact",
+      operation: "capture", kind: "execution", status: "failed", failureCode: "capture-error" });
+    events.close();
+    const db = new DatabaseSync(path);
+    db.exec("UPDATE hook_observation_summary SET last_seen = datetime('now', '-8 days')");
+    db.exec("UPDATE hook_observation_failures SET created_at = datetime('now', '-8 days')");
+    db.close();
+
+    const detailed = collectDetailedEventStats(paths);
+    expect(detailed.hookFailures).toBe(0);
+    expect(detailed.recentHookObservations).toEqual([]);
+    expect(detailed.recentHookFailures).toEqual([]);
+  });
+
   it.each([collectEventStats, collectDetailedEventStats])("reads legacy sidecars without changing their schema or bytes (%s)", (collect) => {
     const path = join(tempDir, "legacy.db");
     const db = new DatabaseSync(path);

@@ -1,6 +1,6 @@
 import type { SummarizeJobStore } from "../summarize-jobs.js";
 import { existsSync } from "node:fs";
-import type { DatabaseSync } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
 import type { LcmPaths } from "../../lcm-paths.js";
@@ -296,27 +296,28 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
 
     const captureOnly = async () => {
       try {
-        const captured = await enqueue(projectId(cwd), async () => {
-          const dbPath = projectDbPath(cwd, paths);
-          openProject(cwd, paths);
-          const scrubber = await ScrubEngine.forProject(
-            config.security?.sensitivePatterns ?? [], projectDir(cwd, paths),
-          );
-          const db = getLcmConnection(dbPath);
-          try {
-            runLcmMigrations(db);
-            return await captureTranscriptForCompact(new SessionCapture(db, projectId(cwd), scrubber), {
-              sessionId: session_id, cwd, client, transcriptPath: transcript_path,
-            }, paths, log);
-          } finally {
-            closeLcmConnection(dbPath);
-          }
-        });
-        const outcome = captured
-          ? { status: "completed" as const, messages: captured.records.length }
-          : { status: "deferred" as const, reason: "no-capture-result" as const };
-        log.write("info", "precompact.capture", { cwd, session_id, ...outcome });
-        return outcome;
+        // A summary for this session may own the project's queue while waiting on
+        // an LLM. Capture must finish before the host's PreCompact deadline.
+        const dbPath = projectDbPath(cwd, paths);
+        openProject(cwd, paths);
+        const scrubber = await ScrubEngine.forProject(
+          config.security?.sensitivePatterns ?? [], projectDir(cwd, paths),
+        );
+        const db = new DatabaseSync(dbPath);
+        try {
+          db.exec("PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON");
+          runLcmMigrations(db);
+          const captured = await captureTranscriptForCompact(new SessionCapture(db, projectId(cwd), scrubber), {
+            sessionId: session_id, cwd, client, transcriptPath: transcript_path,
+          }, paths, log);
+          const outcome = captured
+            ? { status: "completed" as const, messages: captured.records.length }
+            : { status: "deferred" as const, reason: "no-capture-result" as const };
+          log.write("info", "precompact.capture", { cwd, session_id, ...outcome });
+          return outcome;
+        } finally {
+          db.close();
+        }
       } catch (err) {
         log.write("error", "precompact.capture_failed", { cwd, session_id, err });
         return { status: "failed" as const, reason: err instanceof TranscriptSourceError ? "invalid-source" as const : "capture-error" as const };

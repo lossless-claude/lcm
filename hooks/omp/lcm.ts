@@ -72,6 +72,12 @@ export interface TransportRequest {
 
 export type Transport = (request: TransportRequest) => Promise<unknown | undefined> | unknown;
 
+class HttpResponseError extends Error {
+  constructor(readonly status: number) {
+    super(`daemon answered ${status}`);
+  }
+}
+
 export interface SessionStartEvent {
   type?: string;
 }
@@ -200,7 +206,7 @@ const nodeTransport: Transport = (request) => new Promise<unknown | undefined>((
       res.on("data", (chunk: Buffer | string) => chunks.push(Buffer.from(chunk)));
       res.on("end", () => {
         if ((res.statusCode ?? 0) < 200 || (res.statusCode ?? 0) >= 300) {
-          finish(undefined);
+          finish(new HttpResponseError(res.statusCode ?? 0));
           return;
         }
         const text = Buffer.concat(chunks).toString("utf8").trim();
@@ -255,12 +261,11 @@ export function __setTransportForTests(transport?: Transport): void {
   activeTransport = transport ?? nodeTransport;
 }
 
-/** POST JSON to the local daemon, failing closed when it is unavailable. */
-export async function post(
+async function postWithOutcome(
   path: string,
   body: Record<string, unknown>,
   options: PostOptions = {},
-): Promise<unknown | undefined> {
+): Promise<{ body: unknown | undefined; httpStatus?: number }> {
   const daemon = resolveDaemon();
   const request: TransportRequest = {
     path: path.startsWith("/") ? path : `/${path}`,
@@ -277,13 +282,20 @@ export async function post(
     } catch {
       // Capture is deliberately best-effort.
     }
-    return undefined;
+    return { body: undefined };
   }
   try {
-    return await activeTransport(request);
-  } catch {
-    return undefined;
+    const result = await activeTransport(request);
+    return result instanceof HttpResponseError ? { body: undefined, httpStatus: result.status } : { body: result };
+  } catch (error) {
+    const status = (error as { status?: unknown })?.status;
+    return typeof status === "number" ? { body: undefined, httpStatus: status } : { body: undefined };
   }
+}
+
+/** POST JSON to the local daemon, failing open when it is unavailable. */
+export async function post(path: string, body: Record<string, unknown>, options: PostOptions = {}): Promise<unknown | undefined> {
+  return (await postWithOutcome(path, body, options)).body;
 }
 
 /** Read the identity that is valid for every daemon call. */
@@ -599,7 +611,8 @@ export default function lcm(pi: HookApi): void {
 
   const note = (ctx: HookContext, hook: string, operation: string, kind: Observation["kind"], status: string, reason = "", eventIdentity?: SessionIdentity): void => {
     const identity = eventIdentity ?? sessionIdentity(ctx);
-    const sessionId = identity?.sessionId ?? "unassigned";
+    if (!identity) return;
+    const sessionId = identity.sessionId;
     const state = observations.get(sessionId) ?? {
       cwd: ctx.cwd ?? "", counts: new Map<string, Observation>(), failures: [], seq: 0, truncated: false, lastFlush: 0,
     };
@@ -626,8 +639,17 @@ export default function lcm(pi: HookApi): void {
     }
   };
 
+  const noteDelivery = (ctx: HookContext, hook: string, operation: string,
+    result: { body: unknown | undefined; httpStatus?: number }, identity?: SessionIdentity): void => {
+    note(ctx, hook, operation, "delivery",
+      result.body !== undefined ? "accepted" : result.httpStatus !== undefined ? "rejected" : "unconfirmed",
+      result.httpStatus !== undefined ? `http-${result.httpStatus}` : "", identity);
+  };
+
   const flush = (ctx: HookContext, force = false, eventIdentity?: SessionIdentity): void => {
-    const sessionId = (eventIdentity ?? sessionIdentity(ctx))?.sessionId ?? "unassigned";
+    const identity = eventIdentity ?? sessionIdentity(ctx);
+    if (!identity) return;
+    const sessionId = identity.sessionId;
     const state = observations.get(sessionId);
     if (!state || (!force && Date.now() - state.lastFlush < 60_000)) return;
     const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -698,13 +720,13 @@ export default function lcm(pi: HookApi): void {
     // and a session lcm has not ingested yet would answer from the project's latest
     // *other* conversation while this session's capture is still in flight.
     if (sessionOnDisk(ctx)) {
-      const captured = await post("/ingest", ingestBody(identity));
-      note(ctx, "session_start", "capture", "delivery", captured === undefined ? "unconfirmed" : "accepted");
-      if (captured !== undefined) note(ctx, "session_start", "capture", "execution", "completed");
+      const captured = await postWithOutcome("/ingest", ingestBody(identity));
+      noteDelivery(ctx, "session_start", "capture", captured);
+      if (captured.body !== undefined) note(ctx, "session_start", "capture", "execution", "completed");
     } else note(ctx, "session_start", "capture", "execution", "deferred", "source-unavailable");
-    const restored = await post("/restore", { ...base, source: "startup" });
-    note(ctx, "session_start", "restore", "delivery", restored === undefined ? "unconfirmed" : "accepted");
-    const context = contextFromResponse(restored);
+    const restored = await postWithOutcome("/restore", { ...base, source: "startup" });
+    noteDelivery(ctx, "session_start", "restore", restored);
+    const context = contextFromResponse(restored.body);
     if (context) restoreContext = context;
     void post("/session-start-compact", base, { fireAndForget: true });
     note(ctx, "session_start", "catch-up", "delivery", "submitted");
@@ -723,15 +745,15 @@ export default function lcm(pi: HookApi): void {
     let searched: string | undefined;
     const identity = sessionIdentity(ctx);
     if (identity && typeof event.prompt === "string") {
-      const result = await post("/prompt-search", {
+      const result = await postWithOutcome("/prompt-search", {
         ...identityBody(identity),
         query: event.prompt,
         nativeHistory: true,
         learningInstructionBytes: 0,
         format: "context",
       });
-      searched = contextFromResponse(result);
-      note(ctx, "before_agent_start", "search", "delivery", result === undefined ? "unconfirmed" : "accepted");
+      searched = contextFromResponse(result.body);
+      noteDelivery(ctx, "before_agent_start", "search", result);
     }
     else note(ctx, "before_agent_start", "search", "execution", "deferred", identity ? "missing-prompt" : "missing-identity");
     flush(ctx);
@@ -804,10 +826,11 @@ export default function lcm(pi: HookApi): void {
       flush(ctx, true);
       return undefined;
     }
-    const captured = await post("/ingest", ingestBody(identity));
-    note(ctx, "session_before_compact", "capture", "delivery", captured === undefined ? "unconfirmed" : "accepted");
-    if (captured === undefined) {
-      note(ctx, "session_before_compact", "summary", "execution", "skipped", "capture-unconfirmed");
+    const captured = await postWithOutcome("/ingest", ingestBody(identity));
+    noteDelivery(ctx, "session_before_compact", "capture", captured);
+    if (captured.body === undefined) {
+      note(ctx, "session_before_compact", "summary", "execution", "skipped",
+        captured.httpStatus !== undefined ? "capture-rejected" : "capture-unconfirmed");
       flush(ctx, true);
       return undefined;
     }

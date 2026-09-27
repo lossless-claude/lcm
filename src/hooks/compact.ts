@@ -20,6 +20,9 @@ export async function handlePreCompact(stdin: string, client: DaemonClient, path
   } catch {
     return { exitCode: 0, stdout: "" };
   }
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    return { exitCode: 0, stdout: "" };
+  }
   const cwd = typeof input.cwd === "string" ? input.cwd : undefined;
   const sessionId = typeof input.session_id === "string" ? input.session_id : "";
   const operationId = randomUUID();

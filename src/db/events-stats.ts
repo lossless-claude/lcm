@@ -163,7 +163,9 @@ export function collectDetailedEventStats(paths: LcmPaths, timeoutMs = 2000): De
           const observations = db.prepare(`
             SELECT session_id AS sessionId, harness, hook, operation, kind, status, reason,
                    count, last_seen AS lastSeen
-            FROM hook_observation_summary ORDER BY last_seen DESC LIMIT 10
+            FROM hook_observation_summary
+            WHERE last_seen >= datetime('now', '-7 days')
+            ORDER BY last_seen DESC LIMIT 10
           `).all() as Array<Omit<DetailedEventStats["recentHookObservations"][number], "file">>;
           result.recentHookObservations.push(...observations.map((observation) => ({ file, ...observation })));
           const hasHookFailures = db.prepare(
@@ -177,7 +179,9 @@ export function collectDetailedEventStats(paths: LcmPaths, timeoutMs = 2000): De
             const recent = db.prepare(`
               SELECT session_id AS sessionId, harness, hook, operation, code,
                      created_at AS createdAt
-              FROM hook_observation_failures ORDER BY id DESC LIMIT 5
+              FROM hook_observation_failures
+              WHERE created_at >= datetime('now', '-7 days')
+              ORDER BY id DESC LIMIT 5
             `).all() as Array<Omit<DetailedEventStats["recentHookFailures"][number], "file">>;
             result.recentHookFailures.push(...recent.map((failure) => ({ file, ...failure })));
           }

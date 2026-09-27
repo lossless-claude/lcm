@@ -49,6 +49,7 @@ import { createAnthropicSummarizer } from "../../../src/llm/anthropic.js";
 import { createOpenAISummarizer } from "../../../src/llm/openai.js";
 import { scheduleProjectLanguageDetection } from "../../../src/daemon/project-language.js";
 import { createCompactHandler, buildCompactionMessage, markCompacting } from "../../../src/daemon/routes/compact.js";
+import { enqueue } from "../../../src/daemon/project-queue.js";
 import type { DaemonConfig } from "../../../src/daemon/config.js";
 
 function mockRes() {
@@ -155,6 +156,31 @@ describe("required pre-compaction capture", () => {
     expect(getBody().captureOutcome).toMatchObject({ status: "completed", messages: 1 });
     expect(getBody().summaryOutcome).toMatchObject({ status: "skipped", reason: "busy" });
     expect(await readMessageCount(cwd, "precompact-busy")).toBe(1);
+  });
+
+  it("captures while the project queue is occupied by an active summary", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-queued-"));
+    dirs.push(cwd);
+    const transcriptPath = join(cwd, "session.jsonl");
+    writeFileSync(transcriptPath, JSON.stringify({ message: { role: "user", content: "tail while LLM waits" } }) + "\n");
+    const entered = Promise.withResolvers<void>();
+    const unblock = Promise.withResolvers<void>();
+    const queued = enqueue(projectId(cwd), async () => { entered.resolve(); await unblock.promise; });
+    await entered.promise;
+    const release = markCompacting("precompact-queued", cwd);
+    const { res, getBody } = mockRes();
+    const request = createCompactHandler(makeConfig("openai"), paths)({} as any, res, JSON.stringify({
+      session_id: "precompact-queued", cwd, transcript_path: transcriptPath, capture_required: true,
+    }));
+    try {
+      expect(await Promise.race([request.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 3000))])).toBe(true);
+      expect(getBody().captureOutcome).toMatchObject({ status: "completed", messages: 1 });
+    } finally {
+      unblock.resolve();
+      await queued;
+      await request;
+      release();
+    }
   });
 
   it("records the OMP summary outcome after its separately confirmed capture", async () => {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -253,6 +253,21 @@ describe("OMP lcm hook", () => {
       ]));
   });
 
+  it("records an HTTP capture rejection separately from unknown delivery", async () => {
+    __setTransportForTests((request) => {
+      requests.push(request);
+      return Promise.reject(Object.assign(new Error("rejected"), { status: 401 }));
+    });
+    const { handlers } = hook();
+    await getHandler(handlers, "session_before_compact")({}, context());
+    expect(requests.map((request) => request.path)).toEqual(["/ingest"]);
+    expect(readOmpHookSnapshots("/workspace/omp-project", join(home, "logs"))[0].observations)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ operation: "capture", kind: "delivery", status: "rejected", reason: "http-401" }),
+        expect.objectContaining({ operation: "summary", status: "skipped", reason: "capture-rejected" }),
+      ]));
+  });
+
   it("fails open when the transport throws for every handler", async () => {
     __setTransportForTests(() => {
       throw new Error("daemon unavailable");
@@ -275,6 +290,7 @@ describe("OMP lcm hook", () => {
       sessionManager: { getSessionId: () => undefined },
     }));
     expect(requests).toHaveLength(0);
+    expect(existsSync(join(home, "logs"))).toBe(false);
   });
 
   it("translates OMP's lowercase tool ids into the names the extractor keys on", async () => {
