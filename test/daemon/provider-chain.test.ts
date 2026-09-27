@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { loadDaemonConfig } from "../../src/daemon/config.js";
-import { createSummarizer, resolveEffectiveProvider } from "../../src/daemon/summarizer.js";
+import { configuredSummaryModel, createSummarizer, logUnavailableEndpoints, resolveEffectiveProvider } from "../../src/daemon/summarizer.js";
+import { unavailableEndpoints } from "../../src/daemon/provider-config.js";
 import { SummarizeJobStore } from "../../src/daemon/summarize-jobs.js";
 import { completion, httpError, startChatCompletionsServer } from "../helpers/chat-completions-server.js";
 
@@ -46,7 +47,7 @@ describe("summarizer provider chain", () => {
     await expect(summarize("conversation", false, { onUsage, onFallback })).resolves.toBe("the summary");
 
     expect(endpointsCalled()).toEqual(["deepseek", "openrouter"]);
-    expect(onFallback).toHaveBeenCalledExactlyOnceWith({ reason: expect.stringContaining("summary rejected"), toProvider: "openrouter" });
+    expect(onFallback).toHaveBeenCalledExactlyOnceWith({ reason: expect.stringContaining("summary rejected: deepseek (deepseek-chat)"), toProvider: "openrouter" });
     // Usage is labelled with the endpoint's name, the rejected attempt included.
     expect(onUsage.mock.calls.map(([usage]) => [usage.provider, usage.model]))
       .toEqual([["deepseek", "deepseek-chat"], ["openrouter", "vendor/flash"]]);
@@ -134,7 +135,7 @@ describe("summarizer provider chain", () => {
     const error = await summarize("conversation", false, {}).catch((err: unknown) => err as Error & { failures?: unknown[] });
 
     expect(error.name).toBe("ProviderChainExhaustedError");
-    expect(error.message).toMatch(/deepseek: summary rejected.*openrouter: summary rejected/s);
+    expect(error.message).toMatch(/deepseek: summary rejected: deepseek .*openrouter: summary rejected: openrouter /s);
     expect(error.failures).toHaveLength(2);
     expect(endpointsCalled()).toEqual(["deepseek", "openrouter"]);
   });
@@ -182,5 +183,50 @@ describe("the flat llm config, without llm.providers", () => {
     } finally {
       jobs.close();
     }
+  });
+});
+
+describe("an endpoint whose key variable is unset", () => {
+  const chainOf = (env: Record<string, string>) =>
+    loadDaemonConfig("/nonexistent", { llm: { providers: endpoints(), provider: "deepseek", fallback: ["openrouter"] } }, env);
+
+  it("loads, drops that endpoint from the chain and summarizes through the rest", async () => {
+    server.answer("openrouter", completion("the summary"));
+    const config = chainOf({ OPENROUTER_API_KEY: "sk-openrouter" });
+    expect(unavailableEndpoints(config.llm)).toEqual([{ name: "deepseek", missingEnv: ["DEEPSEEK_API_KEY"] }]);
+    const summarize = (await createSummarizer(resolveEffectiveProvider(config), config))!;
+    const onFallback = vi.fn();
+
+    await expect(summarize("conversation", false, { onFallback })).resolves.toBe("the summary");
+
+    expect(endpointsCalled()).toEqual(["openrouter"]);
+    expect(onFallback).not.toHaveBeenCalled();
+  });
+
+  it("fails the first summary, not the config load, when no endpoint of the chain has its key", async () => {
+    const config = chainOf({});
+    const summarize = (await createSummarizer(resolveEffectiveProvider(config), config))!;
+
+    await expect(summarize("conversation", false, {}))
+      .rejects.toThrow(/deepseek.*DEEPSEEK_API_KEY.*openrouter.*OPENROUTER_API_KEY/s);
+    expect(server.seen).toHaveLength(0);
+  });
+
+  it("writes one warning per unavailable endpoint to the daemon log", () => {
+    const write = vi.fn();
+    logUnavailableEndpoints({ write } as any, chainOf({}).llm);
+    expect(write.mock.calls).toEqual([
+      ["warn", "summarizer.endpoint_unavailable", { endpoint: "deepseek", missing_env: ["DEEPSEEK_API_KEY"] }],
+      ["warn", "summarizer.endpoint_unavailable", { endpoint: "openrouter", missing_env: ["OPENROUTER_API_KEY"] }],
+    ]);
+  });
+});
+
+describe("configuredSummaryModel", () => {
+  it("is the primary endpoint's model with named endpoints, and llm.model in the flat form", () => {
+    const named = loadDaemonConfig("/nonexistent", { llm: { providers: endpoints(), provider: "deepseek" } }, ENV);
+    expect(configuredSummaryModel(named)).toBe("deepseek-chat");
+    const flat = loadDaemonConfig("/nonexistent", { llm: { provider: "openai", model: "m" } }, {});
+    expect(configuredSummaryModel(flat)).toBe("m");
   });
 });

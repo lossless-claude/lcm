@@ -35,6 +35,20 @@ describe("daemon server", () => {
     }
   });
 
+  it("health endpoint lists summarizer endpoints left out for an unset variable", async () => {
+    daemon = await createDaemon(loadDaemonConfig("/x", { daemon: { port: 0 }, llm: { provider: "deepseek", fallback: ["local"], providers: {
+      deepseek: { type: "openai", model: "m", apiKey: "${DEEPSEEK_API_KEY}" },
+      local: { type: "openai", model: "m", baseURL: "http://127.0.0.1:1/v1" },
+    } } }, {}));
+    const res = await fetch(`http://127.0.0.1:${daemon.address().port}/health`);
+    const body = await res.json() as { summarizer?: unknown };
+    expect(body.summarizer).toEqual({
+      chain: ["deepseek", "local"],
+      unavailable: [{ name: "deepseek", missingEnv: ["DEEPSEEK_API_KEY"] }],
+      allUnavailable: false,
+    });
+  });
+
   it("health endpoint reports build fingerprint and pid", async () => {
     daemon = await createDaemon(loadDaemonConfig("/x", { daemon: { port: 0 } }));
     const res = await fetch(`http://127.0.0.1:${daemon.address().port}/health`);

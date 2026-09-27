@@ -56,7 +56,8 @@ export function registerCompactCommand(program: Command, deps: CompactCommandDep
         const compactRenderer = new NinjaRenderer({ state: compactState, renderOpts });
         compactRenderer.start();
 
-        const replayModel = config.llm.model || undefined;
+        const { configuredSummaryModel } = await import("../daemon/summarizer.js");
+        const replayModel = configuredSummaryModel(config);
         const { compacted } = await batchCompact({
           paths, minTokens, dryRun, port, cwd, replay, restart, verbose, tokenPath,
           replayModel,

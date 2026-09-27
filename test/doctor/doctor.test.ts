@@ -364,3 +364,45 @@ describe("runDoctor plugin bundle", () => {
     expect(results.find((r) => r.name === "plugin-bundle")).toBeUndefined();
   });
 });
+
+describe("runDoctor summarizer endpoints", () => {
+  const namedConfig = JSON.stringify({ llm: { provider: "deepseek", fallback: ["openrouter"], providers: {
+    deepseek: { type: "openai", model: "m", apiKey: "${DEEPSEEK_API_KEY}" },
+    openrouter: { type: "openai", model: "m", apiKey: "${OPENROUTER_API_KEY}" },
+  } } });
+  const base = minimalDeps();
+  const withEnv = (env: Record<string, string>, overrides: Partial<Parameters<typeof runDoctor>[0]> = {}) => minimalDeps({
+    env,
+    readFileSync: (path: string) => path.endsWith("config.json") ? namedConfig : base.readFileSync(path),
+    ...overrides,
+  });
+  const endpointChecks = (results: Awaited<ReturnType<typeof runDoctor>>) =>
+    results.filter((r) => r.name.startsWith("summarizer-"));
+
+  it("warns for each endpoint left without its variable, and passes the chain while one remains", async () => {
+    const checks = endpointChecks(await runDoctor(withEnv({ OPENROUTER_API_KEY: "sk" })));
+    expect(checks).toEqual([
+      expect.objectContaining({ name: "summarizer-endpoint-deepseek", category: "Summarizer", status: "warn",
+        message: expect.stringMatching(/deepseek.*DEEPSEEK_API_KEY/) }),
+    ]);
+  });
+
+  it("fails when the primary and every fallback are unavailable", async () => {
+    const checks = endpointChecks(await runDoctor(withEnv({})));
+    expect(checks.map((c) => [c.name, c.status])).toEqual([
+      ["summarizer-endpoint-deepseek", "warn"],
+      ["summarizer-endpoint-openrouter", "warn"],
+      ["summarizer-chain", "fail"],
+    ]);
+  });
+
+  it("reports the running daemon's view, since the daemon's environment is the one that summarizes", async () => {
+    const health = { status: "ok", version: PKG_VERSION, summarizer: { chain: ["deepseek", "openrouter"],
+      unavailable: [{ name: "openrouter", missingEnv: ["OPENROUTER_API_KEY"] }], allUnavailable: false } };
+    const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => health });
+    const checks = endpointChecks(await runDoctor(withEnv({ DEEPSEEK_API_KEY: "a", OPENROUTER_API_KEY: "b" }, { fetch })));
+    expect(checks).toEqual([
+      expect.objectContaining({ name: "summarizer-endpoint-openrouter", status: "warn", message: expect.stringContaining("daemon") }),
+    ]);
+  });
+});

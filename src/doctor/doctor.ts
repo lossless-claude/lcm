@@ -21,6 +21,8 @@ import type { LogState } from "../daemon/log.js";
 import { readFunctionHookSnapshots, readOmpHookSnapshots } from "./hook-snapshots.js";
 import { readHookOutcomeLog } from "./hook-outcome-log.js";
 import { addHarnessGuidanceChecks } from "./guidance-checks.js";
+import { loadDaemonConfig } from "../daemon/config.js";
+import { summarizerAvailability } from "../daemon/provider-config.js";
 
 const COLORS = {
   green: "\x1b[0;32m",
@@ -46,6 +48,7 @@ function defaultDeps(): DoctorDeps {
     homedir: homedir(),
     lcmHome: lcmHome(),
     platform: platform(),
+    env: process.env,
   };
 }
 
@@ -324,6 +327,57 @@ async function liveLogState(deps: DoctorDeps, port: number): Promise<LiveLog> {
     return h.log ?? "unsupported";
   } catch {
     return undefined; // not running
+  }
+}
+
+type Availability = ReturnType<typeof summarizerAvailability>;
+
+/** The running daemon's own view of its endpoints: its environment is the one that summarizes. */
+async function daemonAvailability(deps: DoctorDeps, port: number): Promise<Availability | undefined> {
+  try {
+    const res = await deps.fetch(`http://127.0.0.1:${port}/health`);
+    if (!res.ok) return undefined;
+    const view = ((await res.json()) as { summarizer?: Availability }).summarizer;
+    return Array.isArray(view?.chain) && Array.isArray(view?.unavailable) ? view : undefined;
+  } catch {
+    return undefined; // not running: fall back to this shell's view
+  }
+}
+
+function localAvailability(deps: DoctorDeps, llm: unknown): Availability {
+  return summarizerAvailability(loadDaemonConfig("/nonexistent", { llm }, deps.env ?? {}).llm);
+}
+
+/**
+ * With `llm.providers`: a warning per endpoint left out for an unset variable, and a
+ * failure when that leaves no link of the chain, as the running daemon reports it or,
+ * with no daemon up, as this shell's environment would.
+ */
+async function addNamedEndpointChecks(results: CheckResult[], deps: DoctorDeps, port: number): Promise<void> {
+  let llm: unknown;
+  try {
+    llm = (JSON.parse(deps.readFileSync(join(deps.lcmHome, "config.json"), "utf-8")) as { llm?: unknown }).llm;
+  } catch {
+    return; // the config check reports a missing or unreadable file
+  }
+  if (!llm || typeof llm !== "object" || !("providers" in llm)) return;
+  const fromDaemon = await daemonAvailability(deps, port);
+  const where = fromDaemon ? "the running daemon's environment" : "this shell (no daemon answered)";
+  let availability: Availability;
+  try {
+    availability = fromDaemon ?? localAvailability(deps, llm);
+  } catch (err) {
+    results.push({ name: "summarizer-config", category: "Summarizer", status: "fail", message: err instanceof Error ? err.message : String(err) });
+    return;
+  }
+  for (const { name, missingEnv } of availability.unavailable) {
+    results.push({ name: `summarizer-endpoint-${name}`, category: "Summarizer", status: "warn",
+      message: `${name} is left out of the summarizer chain: ${missingEnv.join(", ")} unset in ${where}` });
+  }
+  if (availability.allUnavailable) {
+    const missing = [...new Set(availability.unavailable.flatMap((u) => u.missingEnv))].join(", ");
+    results.push({ name: "summarizer-chain", category: "Summarizer", status: "fail",
+      message: `no endpoint of ${availability.chain.join(" -> ")} can run, so every summary fails\n     Fix: export ${missing} in the environment that starts the daemon, then: lcm daemon restart` });
   }
 }
 
@@ -614,6 +668,8 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
       results.push({ name: "anthropic-key", category: "Summarizer", status: "warn", message: "ANTHROPIC_API_KEY not set in environment" });
     }
   }
+
+  await addNamedEndpointChecks(results, deps, config.port);
 
   // ── MCP handshake ──
   if (daemonHealthy) {

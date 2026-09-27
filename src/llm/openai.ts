@@ -14,6 +14,8 @@ type OpenAISummarizerOptions = {
   apiKey?: string;
   /** Extra top-level request fields (`reasoning`, `thinking`, ...), validated at config load. */
   body?: Record<string, unknown>;
+  /** Names this endpoint in a rejection; the provider type when unset. */
+  label?: string;
   _clientOverride?: any;
   _retryDelayMs?: number;
 };
@@ -113,11 +115,11 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
         const choice = response.choices[0];
         // A length stop is a cut-off tail, not a summary, however readable it looks.
         if (choice?.finish_reason === "length") {
-          throw new SummaryRejectedError({ reason: "length", provider: "openai", model: usage?.model ?? opts.model });
+          throw new SummaryRejectedError({ reason: "length", provider: opts.label ?? "openai", model: usage?.model ?? opts.model });
         }
         // Empty content is a failure, not a summary: falling back to a slice of
         // the input would persist raw conversation text as a fake summary.
-        return acceptSummaryText(choice?.message?.content ?? "", "openai", usage?.model ?? opts.model);
+        return acceptSummaryText(choice?.message?.content ?? "", opts.label ?? "openai", usage?.model ?? opts.model);
       } catch (err: any) {
         if (isClientError(err)) throw err; // the same request fails the same way: no retry
         if (err instanceof SummaryRejectedError && !err.retryable) throw err;

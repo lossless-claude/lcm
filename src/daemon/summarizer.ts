@@ -2,7 +2,8 @@ import { SummarizeJobStore } from "./summarize-jobs.js";
 import { buildSummaryPrompt } from "../llm/prompt.js";
 import { LCM_SUMMARIZER_SYSTEM_PROMPT, resolveTargetTokens, resolveMaxOutputTokens } from "../summarize.js";
 import type { DaemonConfig } from "./config.js";
-import type { EndpointConfig, ProcessEndpointType } from "./provider-config.js";
+import { unavailableEndpoints, type EndpointConfig, type ProcessEndpointType } from "./provider-config.js";
+import type { DaemonLog } from "./log.js";
 import type { LcmPaths } from "../lcm-paths.js";
 import { projectAuthorLanguage } from "../search/pivot-language.js";
 import { parseLanguageTag } from "../search/language.js";
@@ -12,7 +13,7 @@ import { createCopilotProcessSummarizer } from "../llm/copilot-process.js";
 import { createMockSummarizer } from "../llm/mock-summarizer.js";
 import type { LcmSummarizeFn } from "../llm/types.js";
 import { acceptSummaryText } from "../llm/summary-rejection.js";
-import { createProviderChain, SessionUnavailableError, type ProviderLink, type ProviderLinkKind } from "../llm/provider-chain.js";
+import { createProviderChain, SessionUnavailableError, SummarizerUnavailableError, type ProviderLink, type ProviderLinkKind } from "../llm/provider-chain.js";
 import type { SessionClient } from "../session-client.js";
 
 /** The client a /compact call came from; copilot never calls, but its summarizer can be pinned by name. */
@@ -93,7 +94,8 @@ function createSessionSummarizer(jobs?: SummarizeJobStore): LcmSummarizeFn {
   };
 }
 
-async function createEndpointSummarizer(endpoint: EndpointConfig): Promise<LcmSummarizeFn> {
+/** `label` names a declared endpoint in usage and rejections; without it the adapter uses its type. */
+async function createEndpointSummarizer(endpoint: EndpointConfig, label?: string): Promise<LcmSummarizeFn> {
   switch (endpoint.type) {
     case "claude-process":
       return createClaudeProcessSummarizer(endpoint.model ? { model: endpoint.model } : {});
@@ -103,11 +105,11 @@ async function createEndpointSummarizer(endpoint: EndpointConfig): Promise<LcmSu
       return createCopilotProcessSummarizer({ model: endpoint.model });
     case "openai": {
       const { createOpenAISummarizer } = await import("../llm/openai.js");
-      return createOpenAISummarizer({ model: endpoint.model, baseURL: endpoint.baseURL ?? "", apiKey: endpoint.apiKey, body: endpoint.body });
+      return createOpenAISummarizer({ model: endpoint.model, baseURL: endpoint.baseURL ?? "", apiKey: endpoint.apiKey, body: endpoint.body, label });
     }
     case "anthropic": {
       const { createAnthropicSummarizer } = await import("../llm/anthropic.js");
-      return createAnthropicSummarizer({ model: endpoint.model, apiKey: endpoint.apiKey ?? "", baseURL: endpoint.baseURL, body: endpoint.body });
+      return createAnthropicSummarizer({ model: endpoint.model, apiKey: endpoint.apiKey ?? "", baseURL: endpoint.baseURL, body: endpoint.body, label });
     }
   }
 }
@@ -152,14 +154,14 @@ class LinkFactory {
   }
 
   private endpointLink(name: string, endpoint: EndpointConfig, usageLabel?: string): ProviderLink {
-    const summarizer = () => this.adapter(name, endpoint);
+    const summarizer = () => this.adapter(name, endpoint, usageLabel);
     return () => ({ name, kind: kindOf(endpoint.type), usageLabel, summarizer });
   }
 
-  private adapter(name: string, endpoint: EndpointConfig): Promise<LcmSummarizeFn> {
+  private adapter(name: string, endpoint: EndpointConfig, label?: string): Promise<LcmSummarizeFn> {
     let adapter = this.adapters.get(name);
     if (!adapter) {
-      adapter = createEndpointSummarizer(endpoint);
+      adapter = createEndpointSummarizer(endpoint, label);
       // A client library installed after a failed load is picked up on the next call.
       adapter.catch(() => this.adapters.delete(name));
       this.adapters.set(name, adapter);
@@ -168,13 +170,23 @@ class LinkFactory {
   }
 }
 
+function missingEnvOf(config: DaemonConfig, name: string): string[] | undefined {
+  const endpoint = config.llm.providers && Object.hasOwn(config.llm.providers, name) ? config.llm.providers[name] : undefined;
+  return endpoint && "missingEnv" in endpoint ? endpoint.missingEnv : undefined;
+}
+
+/** `provider` then `llm.fallback`, without the endpoints whose variables were unset at load. */
+function namedChain(provider: EffectiveProvider, config: DaemonConfig): string[] {
+  return [provider, ...(config.llm.fallback ?? [])].filter((name) => !missingEnvOf(config, name));
+}
+
 /**
  * The links `provider` summarizes through, in order. With `llm.providers`, the
  * endpoints in `llm.fallback` follow it and nothing else does. With the flat form,
  * only the session provider has a fallback: `llm.fallbackProvider`, `auto` if unset.
  */
 function chainOf(provider: EffectiveProvider, config: DaemonConfig, links: LinkFactory): ProviderLink[] {
-  if (config.llm.providers) return [provider, ...(config.llm.fallback ?? [])].map((name) => links.link(name));
+  if (config.llm.providers) return namedChain(provider, config).map((name) => links.link(name));
   if (provider !== "session") return [links.link(provider)];
   const fallback = config.llm.fallbackProvider ?? "auto";
   return fallback === "disabled" ? [links.link("session")] : [links.link("session"), links.link(fallback)];
@@ -196,6 +208,11 @@ export async function createSummarizer(
   if (config.summarizer?.mock) return withConfiguredLanguage(createMockSummarizer());
   if (provider === "disabled") return null;
   const links = chainOf(provider, config, new LinkFactory(config, jobs));
+  if (links.length === 0) {
+    // Surfaced when a summary is asked for, not at load: the rest of the daemon still runs.
+    const unavailable = unavailableEndpoints(config.llm);
+    return async () => { throw new SummarizerUnavailableError(unavailable); };
+  }
   // The first link is built now, so a missing client library fails before any work;
   // a fallback's is built only when the chain reaches it.
   await links[0]({}).summarizer();
@@ -216,4 +233,22 @@ export function makeSummarizerCache(config: DaemonConfig) {
     }
     return cached;
   };
+}
+
+/** One `summarizer.endpoint_unavailable` warning per declared endpoint left out for an unset variable. */
+export function logUnavailableEndpoints(log: Pick<DaemonLog, "write">, llm: DaemonConfig["llm"]): void {
+  for (const { name, missingEnv } of unavailableEndpoints(llm)) {
+    log.write("warn", "summarizer.endpoint_unavailable", { endpoint: name, missing_env: missingEnv });
+  }
+}
+
+/**
+ * The model the configured summarizer asks for first: the primary endpoint's with
+ * `llm.providers`, `llm.model` in the flat form. Undefined when the first link names
+ * no model (the session, a process provider left on its default).
+ */
+export function configuredSummaryModel(config: DaemonConfig, provider: EffectiveProvider = config.llm.provider): string | undefined {
+  if (!config.llm.providers) return config.llm.model || undefined;
+  const endpoint = Object.hasOwn(config.llm.providers, provider) ? config.llm.providers[provider] : undefined;
+  return endpoint?.model || undefined;
 }

@@ -358,6 +358,7 @@ export async function batchCompact(opts: {
         latestSummaryContent?: string;
         latestSummaryId?: string;
         latestSummaryIds?: string[];
+        llmUsage?: { model?: string };
       }>("/compact", {
         session_id: conv.sessionId,
         cwd: conv.cwd,
@@ -387,7 +388,8 @@ export async function batchCompact(opts: {
           contentFingerprint: fingerprintStats(conv.sourceMessages, conv.sourceTokens),
           summaryId: data.latestSummaryId ?? null,
           outcome,
-          model: opts.replayModel ?? null,
+          // The model whose answer was stored; a fallback may have replaced the configured one.
+          model: data.llmUsage?.model || opts.replayModel || null,
         });
       }
 

@@ -36,6 +36,7 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
 
       const { DaemonClient } = await import("../daemon/client.js");
       const { loadDaemonConfig } = await import("../daemon/config.js");
+      const { configuredSummaryModel } = await import("../daemon/summarizer.js");
       const { NinjaRenderer } = await import("./pipeline-runner.js");
       const { makeProgressState } = await import("./progress-state.js");
       const { join } = await import("node:path");
@@ -79,7 +80,7 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
 
       const result = await importSessions(client, {
         paths, all, verbose, dryRun, replay, restart, provider,
-        replayModel: config.llm.model || undefined,
+        replayModel: configuredSummaryModel(config),
         onBeforeSession: () => !renderer.shouldStop,
         trackInFlight: () => renderer.trackInFlight(),
         onProgress: (patch) => {

@@ -32,4 +32,6 @@ export interface DoctorDeps {
   lcmHome: string;
   platform: string;
   cwd?: string;
+  /** The environment named endpoints expand `${NAME}` from when no daemon reports its own. */
+  env?: Record<string, string | undefined>;
 }

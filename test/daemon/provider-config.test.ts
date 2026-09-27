@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { loadDaemonConfig } from "../../src/daemon/config.js";
+import { unavailableEndpoints } from "../../src/daemon/provider-config.js";
 
 const dir = mkdtempSync(join(tmpdir(), "lcm-provider-config-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -73,8 +74,27 @@ describe("llm.providers", () => {
     expect(() => load(`{ "provider": "openai", "providers": { "openai": { "type": "openai", "model": "m" } } }`)).toThrow(/reserved/);
   });
 
-  it("rejects a key referencing an unset environment variable", () => {
-    expect(() => load(`{ "provider": "deepseek", "providers": { ${DEEPSEEK} } }`, {})).toThrow(/DS.*not set/);
+  it("loads an endpoint whose key or URL references an unset variable, marking it unavailable", () => {
+    const config = load(`{ "provider": "deepseek", "fallback": ["local", "claude"], "providers": { ${DEEPSEEK},
+      "local": { "type": "openai", "model": "m", "baseURL": "\${LOCAL_URL}/v1" },
+      "claude": { "type": "anthropic", "model": "m" } } }`, {});
+    expect(unavailableEndpoints(config.llm)).toEqual([
+      { name: "deepseek", missingEnv: ["DS"] },
+      { name: "local", missingEnv: ["LOCAL_URL"] },
+      { name: "claude", missingEnv: ["ANTHROPIC_API_KEY"] },
+    ]);
+  });
+
+  it("expands a set variable in baseURL and still validates the result", () => {
+    const llm = (url: string) => `{ "provider": "local", "providers": { "local": { "type": "openai", "model": "m", "baseURL": "${url}" } } }`;
+    expect(load(llm("\${HOST}/v1"), { HOST: "http://127.0.0.1:8080" }).llm.providers)
+      .toMatchObject({ local: { baseURL: "http://127.0.0.1:8080/v1" } });
+    expect(() => load(llm("\${HOST}/v1"), { HOST: "not a url" })).toThrow(/baseURL must be an http\(s\) URL/);
+  });
+
+  it("stays fatal for everything but an unset variable, even on an unavailable endpoint", () => {
+    expect(() => load(`{ "provider": "deepseek", "providers": { "deepseek": { "type": "openai", "model": "m",
+      "apiKey": "\${UNSET}", "body": { "stream": true } } } }`, {})).toThrow(/body\.stream/);
   });
 
   it("rejects llm.fallback without llm.providers", () => {

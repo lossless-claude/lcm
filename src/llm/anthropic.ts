@@ -16,6 +16,8 @@ type SummarizerOptions = {
   baseURL?: string;
   /** Extra top-level request fields, validated at config load. */
   body?: Record<string, unknown>;
+  /** Names this endpoint in a rejection; the provider type when unset. */
+  label?: string;
   _clientOverride?: any;
   _retryDelayMs?: number;
 };
@@ -90,12 +92,12 @@ export function createAnthropicSummarizer(opts: SummarizerOptions): LcmSummarize
 
         // A max_tokens stop is a cut-off tail, not a summary, however readable it looks.
         if (response.stop_reason === "max_tokens") {
-          throw new SummaryRejectedError({ reason: "max_tokens", provider: "anthropic", model: usage?.model ?? opts.model });
+          throw new SummaryRejectedError({ reason: "max_tokens", provider: opts.label ?? "anthropic", model: usage?.model ?? opts.model });
         }
         const textContent = response.content.find((c: any) => c.type === "text")?.text ?? "";
         // Empty content is a failure, not a summary: falling back to a slice of
         // the input would persist raw conversation text as a fake summary.
-        return acceptSummaryText(textContent, "anthropic", usage?.model ?? opts.model);
+        return acceptSummaryText(textContent, opts.label ?? "anthropic", usage?.model ?? opts.model);
       } catch (err: any) {
         if (isClientError(err)) throw err; // the same request fails the same way: no retry
         if (err instanceof SummaryRejectedError && !err.retryable) throw err;

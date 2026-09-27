@@ -813,6 +813,24 @@ describe("importSessions replay resume", () => {
     expect(projDir).toBeTruthy();
   });
 
+  it("records the model that answered in the ledger, with no replay model configured", async () => {
+    const cwd = "/test/resume-answering-model";
+    const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1"]);
+    const client = makeMockClient(async (path: string) => {
+      if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
+      return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: "summary-of-s1", latestSummaryId: "sum-s1",
+        llmUsage: { provider: "openrouter", model: "vendor/flash", calls: 2, okCalls: 1, failedCalls: 1, tokensSpent: 10 } };
+    });
+    await importSessions(client, { provider: "claude", replay: true, cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+
+    const db = new DatabaseSync(join(lcmDir, "projects", projectId(cwd), "db.sqlite"));
+    try {
+      expect(db.prepare("SELECT session_id, model FROM replay_ledger").all()).toEqual([{ session_id: "s1", model: "vendor/flash" }]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("a session whose summary was rejected stays out of the ledger and is compacted by the next run", async () => {
     const cwd = "/test/resume-rejected";
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2"]);

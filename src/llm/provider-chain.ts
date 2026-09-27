@@ -31,6 +31,20 @@ export class SessionUnavailableError extends Error {
   }
 }
 
+/**
+ * No link of the chain can run: every endpoint in it references an environment
+ * variable that was unset when the config loaded. Thrown when a summary is asked
+ * for, so the rest of the daemon keeps running.
+ */
+export class SummarizerUnavailableError extends Error {
+  constructor(readonly unavailable: ReadonlyArray<{ name: string; missingEnv: readonly string[] }>) {
+    super("no summarizer can run: " +
+      unavailable.map(({ name, missingEnv }) => `${name} needs ${missingEnv.join(", ")}`).join("; ") +
+      ", unset in the daemon's environment");
+    this.name = "SummarizerUnavailableError";
+  }
+}
+
 /** Every link of the chain failed in a way that allowed the next one to run. */
 export class ProviderChainExhaustedError extends Error {
   readonly failures: ReadonlyArray<{ provider: string; error: unknown }>;

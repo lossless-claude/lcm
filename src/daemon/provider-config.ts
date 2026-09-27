@@ -2,6 +2,11 @@
  * Named summarizer endpoints: `llm.providers`, `llm.provider` naming one of them,
  * and `llm.fallback` listing the rest in order. Validated once at config load, so a
  * bad endpoint fails there rather than as an opaque HTTP error during a compaction.
+ *
+ * The one exception is an environment variable an endpoint references and the
+ * environment lacks: the daemon runs in whatever environment started it, which need
+ * not hold every key. That endpoint is marked unavailable and left out of the chain,
+ * and the rest of the config loads.
  */
 
 export type HttpEndpointType = "openai" | "anthropic";
@@ -14,6 +19,8 @@ export type HttpEndpoint = {
   apiKey?: string;
   /** Extra top-level request fields, merged under the fields lcm generates. */
   body?: Record<string, unknown>;
+  /** Variables `apiKey` or `baseURL` reference that were unset at load: the endpoint cannot run. */
+  missingEnv?: string[];
 };
 export type ProcessEndpoint = { type: ProcessEndpointType; model?: string };
 export type EndpointConfig = HttpEndpoint | ProcessEndpoint;
@@ -94,14 +101,24 @@ export function validateRequestBody(body: unknown, where: string): Record<string
   return body;
 }
 
-/** `${NAME}` interpolation; in named endpoints an unset variable is an error, not an empty key. */
-function expandApiKey(raw: unknown, where: string, env: Record<string, string | undefined>): string {
+/** `${NAME}` interpolation; an unset variable is recorded in `missing`, never sent as an empty value. */
+/** The environment `${NAME}` reads from, and the unset names found so far. */
+type Expansion = { env: Record<string, string | undefined>; missing: string[] };
+
+function expandEnv(raw: unknown, where: string, { env, missing }: Expansion): string {
   if (typeof raw !== "string") fail(`${where} must be a string`);
   return raw.replace(/\$\{(\w+)\}/g, (_: string, name: string) => {
     const value = env[name];
-    if (!value) fail(`${where} references \${${name}}, which is not set in the environment`);
-    return value;
+    if (!value && !missing.includes(name)) missing.push(name);
+    return value ?? "";
   });
+}
+
+/** Without its own key, an `anthropic` endpoint uses ANTHROPIC_API_KEY, as the flat form does. */
+function defaultApiKey(type: HttpEndpointType, { env, missing }: Expansion): string | undefined {
+  if (type !== "anthropic") return undefined;
+  if (!env.ANTHROPIC_API_KEY) missing.push("ANTHROPIC_API_KEY");
+  return env.ANTHROPIC_API_KEY || undefined;
 }
 
 function isHttpUrl(value: unknown): value is string {
@@ -128,17 +145,20 @@ function normalizeHttpEndpoint(where: string, entry: Record<string, unknown>, en
   const type = entry.type as HttpEndpointType;
   assertFields(entry, HTTP_FIELDS, (key) => `${where}.${key} is not an endpoint field; a request field goes in ${where}.body`);
   if (typeof entry.model !== "string" || !entry.model.trim()) fail(`${where}.model must name the model`);
-  if (entry.baseURL !== undefined && !isHttpUrl(entry.baseURL)) fail(`${where}.baseURL must be an http(s) URL`);
+  const missing: string[] = [];
+  const expansion: Expansion = { env, missing };
+  const baseURL = entry.baseURL === undefined ? undefined : expandEnv(entry.baseURL, `${where}.baseURL`, expansion);
+  // A URL built from an unset variable is not checked: the endpoint will not run anyway.
+  if (baseURL !== undefined && missing.length === 0 && !isHttpUrl(baseURL)) fail(`${where}.baseURL must be an http(s) URL`);
   const apiKey = entry.apiKey !== undefined
-    ? expandApiKey(entry.apiKey, `${where}.apiKey`, env)
-    : type === "anthropic"
-      ? env.ANTHROPIC_API_KEY || fail(`${where} needs an API key: set ${where}.apiKey or export ANTHROPIC_API_KEY`)
-      : undefined;
+    ? expandEnv(entry.apiKey, `${where}.apiKey`, expansion)
+    : defaultApiKey(type, expansion);
   return {
     type, model: entry.model,
-    ...(entry.baseURL !== undefined ? { baseURL: entry.baseURL as string } : {}),
+    ...(baseURL !== undefined ? { baseURL } : {}),
     ...(apiKey !== undefined ? { apiKey } : {}),
     ...(entry.body !== undefined ? { body: validateRequestBody(entry.body, `${where}.body`) } : {}),
+    ...(missing.length > 0 ? { missingEnv: missing } : {}),
   };
 }
 
@@ -215,4 +235,26 @@ export function normalizeNamedEndpoints(llm: LlmSection, env: Record<string, str
   llm.providers = providers;
   llm.fallback = fallback;
   llm.provider = provider;
+}
+
+export type UnavailableEndpoint = { name: string; missingEnv: string[] };
+
+type NamedLlm = { provider: string; providers?: Record<string, EndpointConfig>; fallback?: string[] };
+
+/** The declared endpoints that cannot run, with the variables each one lacks, in declaration order. */
+export function unavailableEndpoints(llm: Pick<NamedLlm, "providers">): UnavailableEndpoint[] {
+  return Object.entries(llm.providers ?? {}).flatMap(([name, endpoint]) =>
+    "missingEnv" in endpoint && endpoint.missingEnv ? [{ name, missingEnv: endpoint.missingEnv }] : []);
+}
+
+/**
+ * What `/health` and `lcm doctor` report: the chain as configured, which of its
+ * endpoints are left out, and whether that leaves nothing to summarize with.
+ * The flat form has no named chain and reports an empty one.
+ */
+export function summarizerAvailability(llm: NamedLlm): { chain: string[]; unavailable: UnavailableEndpoint[]; allUnavailable: boolean } {
+  if (!llm.providers) return { chain: [], unavailable: [], allUnavailable: false };
+  const chain = [...new Set([llm.provider, ...(llm.fallback ?? [])])];
+  const unavailable = unavailableEndpoints(llm).filter(({ name }) => chain.includes(name));
+  return { chain, unavailable, allUnavailable: chain.length === unavailable.length };
 }
