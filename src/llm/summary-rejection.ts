@@ -18,17 +18,25 @@ export class SummaryRejectedError extends Error {
   readonly reason: SummaryRejectionReason;
   readonly provider: string;
   readonly model?: string;
+  /** The output cap the answer stopped at, for a `length` or `max_tokens` stop. */
+  readonly maxOutputTokens?: number;
 
-  constructor(opts: { reason: SummaryRejectionReason; provider: string; model?: string; detail?: string }) {
+  constructor(opts: {
+    reason: SummaryRejectionReason; provider: string; model?: string; detail?: string; maxOutputTokens?: number;
+  }) {
     const who = opts.model ? `${opts.provider} (${opts.model})` : opts.provider;
     super(`summary rejected: ${who} ${describe(opts.reason)}${opts.detail ? ` (${opts.detail})` : ""}`);
     this.name = "SummaryRejectedError";
     this.reason = opts.reason;
     this.provider = opts.provider;
     this.model = opts.model;
+    this.maxOutputTokens = opts.maxOutputTokens;
   }
 
-  /** A length stop repeats for the same request and budget, so only an empty answer is worth retrying. */
+  /**
+   * A length stop repeats for the same request and budget, so an adapter retries only an
+   * empty answer. The provider chain retries a length stop once, with a changed request.
+   */
   get retryable(): boolean {
     return this.reason === "whitespace";
   }

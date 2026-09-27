@@ -88,16 +88,35 @@ export function extractQueryTerms(raw: string, paths?: LcmPaths, languages: read
 }
 
 /**
+ * Most terms one MATCH expression carries. FTS5 opens and seeks a segment iterator per term,
+ * and node:sqlite runs the query synchronously on the daemon's event loop, so the cost of a
+ * query grows with its term count times the index size. Callers pass whole documents (a
+ * summary is the promotion-dedup query, a pasted prompt is the prompt-search query), so an
+ * unbounded query can hold the event loop for minutes. The first terms are kept, in the
+ * input's order.
+ */
+export const MAX_QUERY_TERMS = 32;
+
+/**
+ * Longest term kept, in characters. A longer token is an encoded blob or a pasted hash chain,
+ * not a word anyone searches for; truncating it would search a token the text never had.
+ */
+export const MAX_TERM_LENGTH = 64;
+
+/**
  * Prepare a natural-language query for FTS5 MATCH.
  *
  * Returns quoted AND and OR expressions over the content terms, or null
  * when the query has no usable terms at all (e.g. empty or punctuation-only).
+ * The terms are bounded: at most MAX_QUERY_TERMS, each at most MAX_TERM_LENGTH long.
  */
 export function prepareFts5Query(raw: string, preExtracted?: readonly string[], paths?: LcmPaths): Fts5PreparedQuery | null {
   // `preExtracted` is the term set a caller already derived, and it is not the same thing as
   // extracting from `raw` again: a pivot query's union is two languages in one string, and a
   // second pass without the caller's languages keeps function words one side had dropped.
-  const terms = preExtracted ? [...preExtracted] : extractQueryTerms(raw, paths);
+  const terms = (preExtracted ? [...preExtracted] : extractQueryTerms(raw, paths))
+    .filter((term) => term.length <= MAX_TERM_LENGTH)
+    .slice(0, MAX_QUERY_TERMS);
   if (terms.length === 0) {
     return null;
   }

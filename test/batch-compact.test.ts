@@ -1,12 +1,14 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, it } from "vitest";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { closeLcmConnection, getLcmConnection } from "../src/db/connection.js";
 import { runLcmMigrations } from "../src/db/migration.js";
 import { projectId } from "../src/daemon/project.js";
 import { createLcmPaths } from "../src/lcm-paths.js";
-import { findUncompacted } from "../src/batch-compact.js";
+import { findUncompacted, batchCompact } from "../src/batch-compact.js";
 
 const tempHomes: string[] = [];
 
@@ -165,5 +167,238 @@ describe("findUncompacted", () => {
 
     const noProtectedTail = findUncompacted(paths, 10, false, cwd, false, { freshTailCount: 0 });
     expect(noProtectedTail.map((candidate) => candidate.sessionId)).toEqual(["eligible", "tail-only"]);
+  });
+});
+
+describe("batchCompact — daemon becomes unreachable mid-replay", () => {
+  let rawServer: Server | undefined;
+
+  afterEach(async () => {
+    if (rawServer) {
+      await new Promise<void>((r) => rawServer!.close(() => r()));
+      rawServer = undefined;
+    }
+  });
+
+  /** A server that answers /compact once, then tears itself down so the next
+   * connection attempt gets a genuine ECONNREFUSED — the same failure mode
+   * the daemon produces when it dies mid-run. `Connection: close` forces the
+   * client to open a fresh socket for the next request instead of reusing a
+   * kept-alive one, so the failure is deterministic rather than a race
+   * against Node's connection pool. */
+  function startOneShotServer(): Promise<number> {
+    rawServer = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        const parsed = body ? JSON.parse(body) : {};
+        res.writeHead(200, { "Content-Type": "application/json", "Connection": "close" });
+        res.end(JSON.stringify({
+          summary: "ok",
+          replayOutcome: "compacted",
+          latestSummaryContent: `summary-of-${parsed.session_id}`,
+          latestSummaryId: `sum-${parsed.session_id}`,
+          tokensBefore: 100,
+          tokensAfter: 10,
+        }));
+        res.on("finish", () => {
+          rawServer!.closeAllConnections();
+          rawServer!.close();
+        });
+      });
+    });
+    return new Promise((resolve) => {
+      rawServer!.listen(0, "127.0.0.1", () => resolve((rawServer!.address() as AddressInfo).port));
+    });
+  }
+
+  /** A server that always succeeds — used to prove a rerun resumes cleanly. */
+  function startAlwaysUpServer(): Promise<{ port: number; bodies: { session_id: string; previous_summary?: string }[] }> {
+    const bodies: { session_id: string; previous_summary?: string }[] = [];
+    rawServer = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        const parsed = body ? JSON.parse(body) : {};
+        bodies.push({ session_id: parsed.session_id, previous_summary: parsed.previous_summary });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          summary: "ok",
+          replayOutcome: "compacted",
+          latestSummaryContent: `summary-of-${parsed.session_id}`,
+          latestSummaryId: `sum-${parsed.session_id}`,
+          tokensBefore: 100,
+          tokensAfter: 10,
+        }));
+      });
+    });
+    return new Promise((resolve) => {
+      rawServer!.listen(0, "127.0.0.1", () => resolve({ port: (rawServer!.address() as AddressInfo).port, bodies }));
+    });
+  }
+
+  it("stops the run instead of failing every remaining session, and a rerun resumes the chain", async () => {
+    const { paths, cwd, db } = makeProject();
+    const s1 = createConversation(db, "session-1", "2026-01-01");
+    insertMessage(db, s1, 0, 50);
+    const s2 = createConversation(db, "session-2", "2026-01-02");
+    insertMessage(db, s2, 0, 40);
+    const s3 = createConversation(db, "session-3", "2026-01-03");
+    insertMessage(db, s3, 0, 30);
+
+    const attempted: string[] = [];
+    // Every patch that touches `current`, in order: the session it started
+    // ("session-N") or that it cleared ("cleared"). The stop patch must be
+    // the last entry and must clear session-2's `current` — otherwise the
+    // renderer's final frame keeps showing it as still processing.
+    const currentTransitions: string[] = [];
+    const port = await startOneShotServer();
+
+    const result = await batchCompact({
+      paths, minTokens: 10, dryRun: false, port, cwd, replay: true,
+      onProgress: (patch) => {
+        if (patch.current) attempted.push(patch.current.sessionId);
+        if (!("current" in patch)) return;
+        currentTransitions.push(patch.current ? patch.current.sessionId : "cleared");
+      },
+    });
+
+    // session-1 succeeded; session-2's connection was refused; session-3 was
+    // never attempted — the run stopped instead of consuming it.
+    expect(attempted).toEqual(["session-1", "session-2"]);
+    expect(currentTransitions.slice(-2)).toEqual(["session-2", "cleared"]);
+    // The stop is visible to the caller, not just discarded locally — a
+    // caller like `lcm compact` can use it to skip a post-batch step (e.g.
+    // auto-promote) that would otherwise hit the same unreachable daemon.
+    expect(result.daemonUnreachable).toBe(true);
+
+    const ledgerRows = db.prepare("SELECT session_id FROM replay_ledger").all() as { session_id: string }[];
+    expect(ledgerRows.map((r) => r.session_id)).toEqual(["session-1"]);
+
+    // The real daemon would have persisted session-1's summary as part of
+    // compacting it; the fake server only echoes what it claims to have
+    // stored, so recreate that row for the resume plan's chain lookup.
+    db.prepare(
+      "INSERT INTO summaries (summary_id, conversation_id, kind, content, token_count) VALUES ('sum-session-1', ?, 'leaf', 'summary-of-session-1', 5)",
+    ).run(s1);
+
+    // Rerun against a healthy daemon: session-2 is retried (not skipped) with
+    // session-1's summary still threaded, and session-3 follows it.
+    const { port: port2, bodies } = await startAlwaysUpServer();
+    await batchCompact({ paths, minTokens: 10, dryRun: false, port: port2, cwd, replay: true });
+
+    expect(bodies.map((b) => b.session_id)).toEqual(["session-2", "session-3"]);
+    expect(bodies[0].previous_summary).toBe("summary-of-session-1");
+    expect(bodies[1].previous_summary).toBe("summary-of-session-2");
+
+    const finalLedger = db.prepare("SELECT session_id FROM replay_ledger").all() as { session_id: string }[];
+    expect(finalLedger.map((r) => r.session_id).sort()).toEqual(["session-1", "session-2", "session-3"]);
+  });
+
+  /** A server that answers session-1's /compact normally, then resets the
+   * connection (no response, socket destroyed) for every later request — the
+   * failure mode of a daemon that is alive but wedged (event loop blocked)
+   * and RSTing everything it cannot service. `resetHealth` controls whether
+   * `/health` is one of the things it RSTs. */
+  function startWedgedServer(opts: { resetHealth: boolean }): Promise<number> {
+    let compactCount = 0;
+    rawServer = createServer((req, res) => {
+      if (req.url === "/health") {
+        if (opts.resetHealth) { req.socket.destroy(); return; }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "ok", uptime: 1 }));
+        return;
+      }
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        compactCount++;
+        if (compactCount === 1) {
+          const parsed = body ? JSON.parse(body) : {};
+          res.writeHead(200, { "Content-Type": "application/json", "Connection": "close" });
+          res.end(JSON.stringify({
+            summary: "ok",
+            replayOutcome: "compacted",
+            latestSummaryContent: `summary-of-${parsed.session_id}`,
+            latestSummaryId: `sum-${parsed.session_id}`,
+            tokensBefore: 100,
+            tokensAfter: 10,
+          }));
+        } else {
+          req.socket.destroy();
+        }
+      });
+    });
+    return new Promise((resolve) => {
+      rawServer!.listen(0, "127.0.0.1", () => resolve((rawServer!.address() as AddressInfo).port));
+    });
+  }
+
+  it("stops after one failed session when a wedged daemon also fails the health probe", async () => {
+    const { paths, cwd, db } = makeProject();
+    const s1 = createConversation(db, "session-1", "2026-01-01");
+    insertMessage(db, s1, 0, 50);
+    const s2 = createConversation(db, "session-2", "2026-01-02");
+    insertMessage(db, s2, 0, 40);
+    const s3 = createConversation(db, "session-3", "2026-01-03");
+    insertMessage(db, s3, 0, 30);
+
+    const attempted: string[] = [];
+    const stderrLines: string[] = [];
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation((...args: any[]) => {
+      stderrLines.push(args.join(" "));
+    });
+    const port = await startWedgedServer({ resetHealth: true });
+    // See the other stop test: the last two entries must be the session that
+    // was in flight when the stop happened, then its explicit clearing.
+    const currentTransitions: string[] = [];
+
+    const result = await batchCompact({
+      paths, minTokens: 10, dryRun: false, port, cwd, replay: true,
+      onProgress: (patch) => {
+        if (patch.current) attempted.push(patch.current.sessionId);
+        if (!("current" in patch)) return;
+        currentTransitions.push(patch.current ? patch.current.sessionId : "cleared");
+      },
+    });
+    consoleErrorSpy.mockRestore();
+
+    // session-3 is never attempted — the run stopped once the probe also failed.
+    expect(attempted).toEqual(["session-1", "session-2"]);
+    expect(stderrLines.some((l) => l.includes("not answering"))).toBe(true);
+    expect(currentTransitions.slice(-2)).toEqual(["session-2", "cleared"]);
+    expect(result.daemonUnreachable).toBe(true);
+
+    const ledgerRows = db.prepare("SELECT session_id FROM replay_ledger").all() as { session_id: string }[];
+    expect(ledgerRows.map((r) => r.session_id)).toEqual(["session-1"]);
+  });
+
+  it("keeps today's behaviour when the health probe answers (compact alone reset)", async () => {
+    const { paths, cwd, db } = makeProject();
+    const s1 = createConversation(db, "session-1", "2026-01-01");
+    insertMessage(db, s1, 0, 50);
+    const s2 = createConversation(db, "session-2", "2026-01-02");
+    insertMessage(db, s2, 0, 40);
+    const s3 = createConversation(db, "session-3", "2026-01-03");
+    insertMessage(db, s3, 0, 30);
+
+    const attempted: string[] = [];
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const port = await startWedgedServer({ resetHealth: false });
+
+    await batchCompact({
+      paths, minTokens: 10, dryRun: false, port, cwd, replay: true,
+      onProgress: (patch) => {
+        if (patch.current) attempted.push(patch.current.sessionId);
+      },
+    });
+    vi.restoreAllMocks();
+
+    // Every session is still attempted — the run does not stop just because
+    // the probe was needed, only when the probe itself fails.
+    expect(attempted).toEqual(["session-1", "session-2", "session-3"]);
+
+    const ledgerRows = db.prepare("SELECT session_id FROM replay_ledger").all() as { session_id: string }[];
+    expect(ledgerRows.map((r) => r.session_id)).toEqual(["session-1"]);
   });
 });

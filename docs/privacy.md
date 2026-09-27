@@ -22,15 +22,17 @@ The only component that can send data off your machine is the summarizer. Nothin
 configured out of the box, so `llm.provider` is `auto`, which means "use the CLI of the
 harness that is running" — messages go to Anthropic via the `claude` CLI in a Claude
 session (your Claude subscription), to OpenAI via `codex` in a Codex session, to GitHub via
-`copilot` in a Copilot session. Set `llm.provider` to `disabled` to keep everything local.
+`copilot` in a Copilot session, to whichever model the `omp` CLI is configured with in an
+OMP session. Set `llm.provider` to `disabled` to keep everything local.
 
 | Summarizer (`llm.provider`) | Data sent externally |
 |-----------------------------|----------------------|
-| `auto` (default) | Whatever the running harness's CLI sends: Anthropic via `claude-process`, OpenAI via `codex-process`, GitHub via `copilot-process` |
+| `auto` (default) | Whatever the running harness's CLI sends: Anthropic via `claude-process`, OpenAI via `codex-process`, GitHub via `copilot-process`, or whichever model `omp-process` is configured with |
 | `disabled` | Nothing |
 | `claude-process` | Messages sent to Anthropic via the `claude` CLI (your Claude subscription) |
 | `codex-process` | Messages sent to OpenAI via the `codex` CLI (your OpenAI subscription) |
 | `copilot-process` | Messages sent to GitHub via the `copilot` CLI (your Copilot subscription) |
+| `omp-process` | Messages sent via the `omp` CLI to whichever model it is configured with (your own OMP account and credentials) |
 | `anthropic` | Messages sent to Anthropic API (your API key) |
 | `openai` | Messages sent to OpenAI API (your API key) |
 
