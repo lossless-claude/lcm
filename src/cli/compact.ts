@@ -58,7 +58,7 @@ export function registerCompactCommand(program: Command, deps: CompactCommandDep
 
         const { configuredSummaryModel } = await import("../daemon/summarizer.js");
         const replayModel = configuredSummaryModel(config);
-        const { compacted } = await batchCompact({
+        const { compacted, daemonUnreachable } = await batchCompact({
           paths, minTokens, dryRun, port, cwd, replay, restart, verbose, tokenPath,
           replayModel,
           onBeforeSession: () => !compactRenderer.shouldStop,
@@ -79,8 +79,11 @@ export function registerCompactCommand(program: Command, deps: CompactCommandDep
           compactRenderer.printSummary();
         }
 
-        // Auto-promote after a successful compact: new summaries are prime promotion candidates.
-        if (compacted > 0 && !noPromote) {
+        // Auto-promote after a successful compact: new summaries are prime promotion
+        // candidates. Skipped when the daemon went unreachable mid-run — it would
+        // still be down (or wedged) for the POST, which DaemonClient gives no
+        // timeout, and could hang the command right after it reported stopping.
+        if (compacted > 0 && !noPromote && !daemonUnreachable) {
           const { readdirSync, existsSync } = await import("node:fs");
           const { readProjectMetaIn } = await import("../daemon/project-meta.js");
           const promoteCwds: string[] = [];

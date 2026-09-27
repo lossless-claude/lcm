@@ -166,6 +166,27 @@ the failed HTTP call. If nothing new was persisted, the previous chain link is
 kept and the session is skipped (retried by the next run). Only a
 daemon-reported failure breaks the chain at that link.
 
+A refused connection (the daemon process itself is gone, not just slow) is
+different from a client giving up: every later call would fail the same way,
+so `lcm import --replay` and `lcm compact --replay` stop the run there instead
+of marking every remaining session failed and breaking each one's chain link
+in turn. Nothing is recorded for the session in flight when this happens — no
+ledger row, no chain reset — so a plain rerun of the same command resumes
+exactly where it stopped, using the manifest/ledger already on disk. `lcm
+compact` also skips its post-batch auto-promote step in this case: `/promote`
+has no timeout, so posting it to a daemon that just proved unreachable could
+hang the command right after it reported stopping.
+
+A mid-flight socket drop (`ECONNRESET`, `EPIPE`) is ambiguous by itself: it
+looks the same whether the daemon just died or is alive but wedged — its
+event loop blocked on something slow — and RSTing every request it cannot
+service, `/health` included. The run resolves this with a short `/health`
+probe before deciding: a healthy answer means the daemon is only slow, so the
+session gets the give-up treatment above (recover its summary if one was
+persisted, otherwise skip it and keep going); no answer means the daemon
+cannot be trusted to service anything else either, so the run stops the same
+way it does for a refused connection.
+
 SIGINT/SIGTERM let the in-flight compaction settle before exiting, so a resumed
 run never duplicates or skips a half-finished session. A second signal exits
 at once.
