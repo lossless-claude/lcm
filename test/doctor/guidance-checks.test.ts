@@ -7,6 +7,12 @@ import { installConnector } from "../../src/connectors/installer.js";
 import { addHarnessGuidanceChecks, GUIDANCE_CHECK_NAMES } from "../../src/doctor/guidance-checks.js";
 import type { CheckResult, DoctorDeps } from "../../src/doctor/types.js";
 
+vi.mock("../../src/hooks/fail-open.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/hooks/fail-open.js")>()),
+  runningFromPluginBundle: vi.fn(() => false),
+}));
+import { runningFromPluginBundle } from "../../src/hooks/fail-open.js";
+
 let home: string;
 let project: string;
 let previousAgentDir: string | undefined;
@@ -90,6 +96,11 @@ describe("harness guidance checks", () => {
     const results = run(["codex"]);
     expect(results["codex-hooks"]).toMatchObject({ status: "warn", message: expect.stringContaining("never receives the learning instruction") });
     expect(results["codex-mcp"]).toMatchObject({ status: "pass", message: expect.stringContaining("optional") });
+  });
+
+  it("leaves the Codex hooks unchecked from the plugin bundle, whose CLI path the hooks never name", () => {
+    vi.mocked(runningFromPluginBundle).mockReturnValueOnce(true);
+    expect(run(["codex"])["codex-hooks"]).toMatchObject({ status: "pass", message: expect.stringContaining("npm CLI") });
   });
 
   it("passes when the Codex hooks and MCP server are installed in the project", () => {

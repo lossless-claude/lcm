@@ -2,6 +2,7 @@ import { join } from "node:path";
 import type { CheckResult, DoctorDeps } from "./types.js";
 import { diagnoseCodexHooks } from "../connectors/codex-hooks.js";
 import { diagnoseOmpHooks } from "../connectors/omp-hooks.js";
+import { runningFromPluginBundle } from "../hooks/fail-open.js";
 
 /**
  * The doctor check that verifies each guidance row of the connector registry
@@ -58,9 +59,18 @@ function mcpResult(name: string, found: string | undefined, missing: Omit<CheckR
     : { name, category: CATEGORY, ...missing };
 }
 
-function addCodexChecks(results: CheckResult[], deps: DoctorDeps, cwd: string): void {
+function codexHooksResult(deps: DoctorDeps, cwd: string): CheckResult {
+  const name = GUIDANCE_CHECK_NAMES["codex:hooks"];
+  // The hooks name the npm CLI, so compared with the plugin bundle's own path they would always differ.
+  if (runningFromPluginBundle()) {
+    return { name, category: CATEGORY, status: "pass", message: "not checked from the Claude Code plugin; run lcm doctor from the npm CLI" };
+  }
   const hookPaths = [join(deps.homedir, ".codex", "hooks.json"), join(cwd, ".codex", "hooks.json")];
-  results.push(hookResult(GUIDANCE_CHECK_NAMES["codex:hooks"], hookPaths.map((p) => diagnoseCodexHooks(p)), "lcm install"));
+  return hookResult(name, hookPaths.map((p) => diagnoseCodexHooks(p)), "lcm install  (from the npm CLI)");
+}
+
+function addCodexChecks(results: CheckResult[], deps: DoctorDeps, cwd: string): void {
+  results.push(codexHooksResult(deps, cwd));
   const configPaths = [join(deps.homedir, ".codex", "config.toml"), join(cwd, ".codex", "config.toml")];
   results.push(mcpResult(GUIDANCE_CHECK_NAMES["codex:mcp"],
     configPaths.find((p) => /^\s*\[mcp_servers\.lcm\]/m.test(readOrEmpty(deps, p))),
