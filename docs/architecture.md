@@ -208,7 +208,9 @@ that factory. A link is the live session, an HTTP endpoint (`openai`, `anthropic
 process. With `llm.providers` the links are `llm.provider` then `llm.fallback`, named
 endpoints validated once at config load (`src/daemon/provider-config.ts`); in the flat form
 they are the one configured provider, or the session followed by `llm.fallbackProvider`
-(`auto` when unset).
+(`auto` when unset). A named endpoint whose `${NAME}` was unset at load is left out of the
+chain; with none left, the first summary throws `SummarizerUnavailableError` naming each
+endpoint and variable, and `/health` and `lcm doctor` report the endpoints left out.
 
 Each link runs at most once per call, after its adapter's own retries. The next link runs
 after a session that did not answer (`SessionUnavailableError`), a `SummaryRejectedError`, a
@@ -332,7 +334,8 @@ config does:
 
 1. `llm.apiKey` in `~/.lossless-claude/config.json`, or with named endpoints each endpoint's
    own `llm.providers.<name>.apiKey` — the value may interpolate an environment variable as
-   `${NAME}`. In an endpoint, an unset variable fails config load instead of sending no key.
+   `${NAME}`. An endpoint whose variable is unset is left out of the summarizer chain instead
+   of sending no key; the rest of the config loads.
 2. `ANTHROPIC_API_KEY`, read only for an `anthropic` provider or endpoint (directly, or as the
    `session` provider's fallback) with no key configured.
 

@@ -98,7 +98,7 @@ jq -c 'select(.cwd == "/path/to/project")' ~/.lossless-claude/logs/daemon.log*
 
 - **Requests**: one `request` record per request, with its route, status and duration. `/session-end`, `/compact` and `/session-start-compact` are logged at `info`, so a `/session-end` with no `/compact` after it is visible. `/tool-event`, `/health` and `/summarize-jobs/*` are logged at `debug`. A 5xx is logged at `error`, and a 4xx at `warn`.
 - **Outcomes**: `compact.done`, `compact.skipped` (`reason`: `already-compacting`, `disabled`, `no_work`, `auto-compact-disabled`), `compact.sweep`, `promote.done` and `session_end.ingested`.
-- **Failures**: `route.failed`, `compact.failed`, `promote.failed`, `daemon_request.failed` (a follow-up request the daemon could not send to itself), `ingest.subagent_failed`, `daemon.crash` (with its scrubbed stack), and `summarizer.fallback` (the session provider did not answer, so `to_provider` summarized instead).
+- **Failures**: `route.failed`, `compact.failed`, `promote.failed`, `daemon_request.failed` (a follow-up request the daemon could not send to itself), `ingest.subagent_failed`, `daemon.crash` (with its scrubbed stack), `summarizer.fallback` (the session provider did not answer, so `to_provider` summarized instead), and `summarizer.endpoint_unavailable` at startup, once per named endpoint left out because `missing_env` is unset.
 - **Continuity**:
   - `daemon.start` records `prev`: `clean` when the previous daemon left a `daemon.stop`, `unclean` when it did not, and `none` for the first log.
   - `daemon.stop` is written on idle shutdown, SIGTERM, SIGINT and an uncaught exception. `lcm daemon stop` sends SIGTERM.
@@ -325,15 +325,16 @@ The flat fields above (`llm.model`, `llm.baseURL`, `llm.apiKey`, `llm.reasoning`
 |---|---|---|
 | `type` | every endpoint | `openai` (any OpenAI-compatible server), `anthropic`, `claude-process`, `codex-process` or `copilot-process` |
 | `model` | every endpoint | Required for `openai` and `anthropic`. Optional for the process types, which use lcm's default for that CLI without it |
-| `baseURL` | `openai`, `anthropic` | The endpoint's URL; without it, the vendor's own API |
-| `apiKey` | `openai`, `anthropic` | May interpolate an environment variable as `${NAME}`; an unset variable fails config load. `anthropic` without one reads `ANTHROPIC_API_KEY` |
+| `baseURL` | `openai`, `anthropic` | The endpoint's URL; without it, the vendor's own API. May interpolate `${NAME}` |
+| `apiKey` | `openai`, `anthropic` | May interpolate an environment variable as `${NAME}`. `anthropic` without one reads `ANTHROPIC_API_KEY` |
 | `body` | `openai`, `anthropic` | Extra request fields; see [Request body](#request-body) |
 
 A process endpoint accepts only `type` and `model`: its CLI authenticates through its own login. Any other field is rejected at config load, on every endpoint.
 
 - **Names.** An endpoint's name is what its usage is recorded under in `llm_usage_stats`, and what `llm.provider`, `llm.fallback` and `LCM_SUMMARY_PROVIDER` select it by. It is made of letters, digits, `_`, `-` and `.`; the provider values listed above are reserved.
 - **Selection.** `llm.provider` names an endpoint, or `session`, `auto` or `disabled` (`auto` when unset). `llm.fallback` names endpoints only, each once. Nothing else is added: a chain whose last link fails fails the pass.
-- **Environment.** `LCM_SUMMARY_PROVIDER` replaces `llm.provider` and keeps `llm.fallback`; an endpoint it promotes out of `llm.fallback` still runs once. It also accepts a provider type such as `openai` when exactly one endpoint has that type.
+- **Selection by environment.** `LCM_SUMMARY_PROVIDER` replaces `llm.provider` and keeps `llm.fallback`; an endpoint it promotes out of `llm.fallback` still runs once. It also accepts a provider type such as `openai` when exactly one endpoint has that type.
+- **Unset variables.** The daemon expands `${NAME}` from the environment of the process that started it, which may be any session's. An endpoint whose `apiKey` or `baseURL` names an unset variable (or an `anthropic` endpoint with no key and no `ANTHROPIC_API_KEY`) is left out of the chain, and the rest of the config loads; every other config error still stops the load. With every link of the chain left out, each summary fails with an error naming the endpoints and their variables. To see it: the daemon log's `summarizer.endpoint_unavailable` warning at startup, the `summarizer` field of the daemon's `/health` answer, and `lcm doctor`, which warns per endpoint left out and fails when none of the chain can run. Export the variable where the daemon starts, then run `lcm daemon restart`.
 - **Both forms.** With `llm.providers`, the flat `llm.model`, `llm.baseURL`, `llm.apiKey`, `llm.reasoning` and `llm.fallbackProvider` are rejected: each endpoint holds its own settings and inherits none from another. Without `llm.providers`, `llm.fallback` is rejected and the flat form works as described in this section.
 
 Each link runs at most once per summarization, after its own retries. The chain moves to the next link when the current one:
