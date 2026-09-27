@@ -12,6 +12,8 @@ Do this, in order, before reading any diff hunk:
 2. For every changed exported function, class, route or schema column, `search_graph` to locate it and `trace_path` to list its callers and callees. `trace_path` is what settles "does anything else depend on this?"; do not claim that nothing else depends on a symbol without it.
 3. `get_code_snippet` for the source you need; `query_graph` for multi-hop questions; `get_architecture` for orientation.
 
+When writing code rather than reviewing it, `trace_path` before changing any signature, return shape, or schema column.
+
 `search_code` only for literal or non-code text, or where graph coverage is thin. Fall back to built-in search only when a graph call errors, and say so.
 
 Rules that are unreliable without the graph: **#1** (a caller may own the close), **#4** (`collectStats()` is often reached indirectly), **#5** (existing tests live outside the diff), **#10** (whether a named symbol still exists).
