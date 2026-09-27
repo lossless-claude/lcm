@@ -18,6 +18,7 @@ import {
   createReplayRun,
   fingerprintFile,
   isClientGaveUpError,
+  isConnectionDroppedError,
   isDaemonUnreachableError,
   loadLatestSessionSummary,
   planReplayResume,
@@ -558,6 +559,19 @@ async function ingestSessionList(
             result.daemonUnreachable = true;
             break;
           }
+          if (isConnectionDroppedError(err) && !(await client.health())) {
+            // A mid-flight socket drop is ambiguous on its own: the daemon
+            // may have just died, or it may be alive but wedged (its event
+            // loop blocked on a slow query, say) and RSTing every request it
+            // cannot service, /health included. The probe resolves that — no
+            // answer means treat it exactly like a refused connection.
+            console.error(
+              `  ⚠️ the daemon is not answering — down or unresponsive (${err instanceof Error ? err.message : "unknown error"}); ` +
+              `stopping instead of failing every remaining session. Rerun \`lcm import${options.replay ? " --replay" : ""}\` to resume where this run left off.`,
+            );
+            result.daemonUnreachable = true;
+            break;
+          }
           // Non-fatal: import succeeded. The chain follows what was persisted:
           // when the client merely gave up (timeout/abort) the daemon may have
           // stored the summary anyway, so re-read it; when nothing is stored
@@ -617,6 +631,14 @@ async function ingestSessionList(
         // identically. Stop instead of counting the rest as failed.
         console.error(
           `  \u26a0\ufe0f the daemon is unreachable (${err instanceof Error ? err.message : "unknown error"}); ` +
+          `stopping instead of failing every remaining session. Rerun \`lcm import${options.replay ? " --replay" : ""}\` to resume where this run left off.`,
+        );
+        result.daemonUnreachable = true;
+        break;
+      }
+      if (isConnectionDroppedError(err) && !(await client.health())) {
+        console.error(
+          `  ⚠️ the daemon is not answering — down or unresponsive (${err instanceof Error ? err.message : "unknown error"}); ` +
           `stopping instead of failing every remaining session. Rerun \`lcm import${options.replay ? " --replay" : ""}\` to resume where this run left off.`,
         );
         result.daemonUnreachable = true;

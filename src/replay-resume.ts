@@ -512,19 +512,37 @@ export function planReplayResume<T extends { sessionId: string; cwd: string }>(o
   return plan;
 }
 
+/** A mid-flight socket drop: the connection was accepted but then torn down
+ * before a response arrived. Distinct from `ECONNREFUSED` (nobody was
+ * listening at all) — this can mean the daemon just died, but it can equally
+ * mean the daemon is alive and merely wedged (its event loop blocked on a
+ * slow query, say) and RSTing every request it cannot service, `/health`
+ * included. DaemonClient normalizes network failures to a TypeError whose
+ * `cause` is the original Node error carrying `.code`; undici's
+ * `UND_ERR_SOCKET` is kept for the same case from a prior fetch-based client. */
+const SOCKET_DROP_CODES = new Set(["ECONNRESET", "EPIPE", "UND_ERR_SOCKET"]);
+
+/** The original Node error's `.code`, unwrapped from DaemonClient's normalized TypeError. */
+function causeCode(err: unknown): string | undefined {
+  if (!(err instanceof Error)) return undefined;
+  const code = (err.cause as { code?: unknown } | undefined)?.code;
+  return typeof code === "string" ? code : undefined;
+}
+
 /**
  * True when the client gave up on a daemon call (timeout/abort) rather than
  * the daemon reporting a failure. DaemonClient preserves these error names.
- * A mid-flight socket drop (ECONNRESET / undici's UND_ERR_SOCKET) counts too:
- * the daemon may still be persisting the summary, so the caller should re-read
- * rather than break the chain. DaemonClient normalizes network failures to a
- * TypeError whose `cause` is the original error.
+ * A mid-flight socket drop (see `SOCKET_DROP_CODES`) counts too: the daemon
+ * may still be persisting the summary, so the caller should re-read rather
+ * than break the chain — but only once `isConnectionDroppedError` has been
+ * checked and the daemon confirmed alive; a wedged daemon RSTs every request
+ * the same way and this function alone cannot tell the two apart.
  */
 export function isClientGaveUpError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   if (err.name === "TimeoutError" || err.name === "AbortError") return true;
-  const code = (err.cause as { code?: unknown } | undefined)?.code;
-  return code === "ECONNRESET" || code === "UND_ERR_SOCKET";
+  const code = causeCode(err);
+  return code !== undefined && SOCKET_DROP_CODES.has(code);
 }
 
 /**
@@ -538,9 +556,24 @@ export function isClientGaveUpError(err: unknown): boolean {
  * original Node error carrying `.code`.
  */
 export function isDaemonUnreachableError(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  const code = (err.cause as { code?: unknown } | undefined)?.code;
-  return code === "ECONNREFUSED";
+  return causeCode(err) === "ECONNREFUSED";
+}
+
+/**
+ * True for a mid-flight socket drop whose cause is ambiguous on its own — the
+ * daemon dying and a wedged daemon RSTing every request look identical from
+ * here. A caller matching this must resolve the ambiguity itself (typically
+ * with a short `client.health()` probe) before deciding whether to keep
+ * going: a healthy answer means treat the error as an ordinary give-up
+ * (`isClientGaveUpError`); no answer means treat it like
+ * `isDaemonUnreachableError` and stop the run. TimeoutError/AbortError are
+ * deliberately excluded — those are the client's own timeout firing, not
+ * evidence the daemon is unresponsive, so they keep going through
+ * `isClientGaveUpError` unprobed as before.
+ */
+export function isConnectionDroppedError(err: unknown): boolean {
+  const code = causeCode(err);
+  return code !== undefined && SOCKET_DROP_CODES.has(code);
 }
 
 /**

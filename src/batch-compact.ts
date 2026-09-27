@@ -11,6 +11,7 @@ import {
   createReplayRun,
   fingerprintStats,
   isClientGaveUpError,
+  isConnectionDroppedError,
   isDaemonUnreachableError,
   loadLatestSessionSummary,
   planReplayResume,
@@ -448,6 +449,23 @@ export async function batchCompact(opts: {
         console.log(" stopped (daemon unreachable)");
         console.error(
           `  ⚠️ the daemon is unreachable (${errMsg}); stopping instead of failing the remaining sessions. ` +
+          `Rerun \`lcm compact${opts.replay ? " --replay" : ""}\` to resume where this run left off.`,
+        );
+        daemonUnreachable = true;
+        break;
+      }
+      if (isConnectionDroppedError(err) && !(await client.health())) {
+        // A mid-flight socket drop is ambiguous on its own: the daemon may
+        // have just died, or it may be alive but wedged (its event loop
+        // blocked on a slow query, say) and RSTing every request it cannot
+        // service, /health included. The probe resolves that — no answer
+        // means treat it exactly like a refused connection, for the same
+        // reason: waiting in-process would only retry against a daemon that
+        // cannot service the retry either.
+        const errMsg = err instanceof Error ? err.message : "unknown error";
+        console.log(" stopped (daemon not answering)");
+        console.error(
+          `  ⚠️ the daemon is not answering — down or unresponsive (${errMsg}); stopping instead of failing the remaining sessions. ` +
           `Rerun \`lcm compact${opts.replay ? " --replay" : ""}\` to resume where this run left off.`,
         );
         daemonUnreachable = true;

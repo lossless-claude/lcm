@@ -174,6 +174,16 @@ in turn. Nothing is recorded for the session in flight when this happens — no
 ledger row, no chain reset — so a plain rerun of the same command resumes
 exactly where it stopped, using the manifest/ledger already on disk.
 
+A mid-flight socket drop (`ECONNRESET`, `EPIPE`) is ambiguous by itself: it
+looks the same whether the daemon just died or is alive but wedged — its
+event loop blocked on something slow — and RSTing every request it cannot
+service, `/health` included. The run resolves this with a short `/health`
+probe before deciding: a healthy answer means the daemon is only slow, so the
+session gets the give-up treatment above (recover its summary if one was
+persisted, otherwise skip it and keep going); no answer means the daemon
+cannot be trusted to service anything else either, so the run stops the same
+way it does for a refused connection.
+
 SIGINT/SIGTERM let the in-flight compaction settle before exiting, so a resumed
 run never duplicates or skips a half-finished session. A second signal exits
 at once.
