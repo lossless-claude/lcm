@@ -147,6 +147,36 @@ describe("session summarize jobs", () => {
     expect(store.answer(job!.id, { text: "late session summary" })).toBe("discarded");
   });
 
+  it("sends a rejected session answer to the fallback like an error, keeping the session's usage", async () => {
+    fallback.mockResolvedValue("fallback summary");
+    const summarize = await sessionSummarizer();
+    const onUsage = vi.fn();
+    const onFallback = vi.fn();
+    const pending = summarize("conversation", false, { sessionId: "one", isCondensed: true, depth: 1, onUsage, onFallback });
+    const job = await store.next("one");
+    store.answer(job!.id, { text: " \n ", providerId: "session:fork",
+      usage: { input_tokens: 900, output_tokens: 700, estimated: false } });
+    await expect(pending).resolves.toBe("fallback summary");
+    expect(fallback).toHaveBeenCalledOnce();
+    // The fork charged for its answer even though it was rejected.
+    expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({ provider: "session:fork", inputTokens: 900, outputTokens: 700 }));
+    expect(onFallback).toHaveBeenCalledWith({ reason: expect.stringContaining("summary rejected"), fromProvider: "session", toProvider: "openai" });
+  });
+
+  it("does not fall back from a rejected fallback answer: both failures reach the caller", async () => {
+    const { SummaryRejectedError } = await import("../../src/llm/summary-rejection.js");
+    const rejection = new SummaryRejectedError({ reason: "length", provider: "openai" });
+    fallback.mockRejectedValue(rejection);
+    const summarize = await sessionSummarizer();
+    const pending = summarize("conversation", false, { sessionId: "one" });
+    const job = await store.next("one");
+    store.answer(job!.id, { error: "model unavailable" });
+    await expect(pending).rejects.toMatchObject({ name: "ProviderChainExhaustedError",
+      failures: [{ provider: "session", error: expect.objectContaining({ message: "model unavailable" }) },
+        { provider: "openai", error: rejection }] });
+    expect(fallback).toHaveBeenCalledOnce();
+  });
+
   it("uses the client's auto fallback without a session module", async () => {
     codexFallback.mockResolvedValue("codex summary");
     const config = loadDaemonConfig("/nonexistent", { llm: { provider: "session" } }, {});

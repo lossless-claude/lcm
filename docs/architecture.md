@@ -104,7 +104,7 @@ The **leaf pass** converts raw messages into leaf summaries:
 4. Resolve the most recent prior summary for continuity (passed as `previous_context` so the LLM avoids repeating known information).
 5. Send to the LLM with the leaf prompt.
 6. Normalize provider response blocks (Anthropic/OpenAI text, output_text, and nested content/summary shapes) into plain text.
-7. If normalization is empty, re-run it against the whole response envelope (some providers put the text in a top-level field), then retry the request once at temperature 0.05, and only then fall back to deterministic truncation, logging provider/model/block-type diagnostics.
+7. Reject an answer the model did not finish or that holds no text (see [Rejected answers](#rejected-answers)): the pass stops before anything is persisted.
 8. If the summary is larger than the input (LLM failure), retry with the aggressive prompt. If still too large, fall back to deterministic truncation.
 9. Persist the summary, link to source messages, and replace the message range in context_items.
 
@@ -115,7 +115,7 @@ The **condensed pass** merges summaries at the same depth into a higher-level su
 1. Find the shallowest depth with enough contiguous same-depth summaries (≥ `leafMinFanout` for d0, ≥ `condensedMinFanout` for d1+).
 2. Concatenate their content with time range headers.
 3. Send to the LLM with the depth-appropriate prompt (d1, d2, or d3+).
-4. Apply the same escalation strategy (normal → aggressive → truncation fallback).
+4. Apply the same answer check and escalation strategy (normal → aggressive → truncation fallback).
 5. Persist with depth = targetDepth + 1, link to parent summaries, replace the range in context_items.
 
 ### Compaction sweep
@@ -178,7 +178,56 @@ Every summarization attempt follows this escalation:
 2. **Aggressive** — Tighter prompt requesting only durable facts, temperature 0.1, lower target tokens
 3. **Fallback** — Deterministic truncation to ~512 tokens, ending in a `[Truncated from N tokens]` marker (N is the input size)
 
-This ensures compaction always makes progress, even if the LLM produces poor output.
+The fallback keeps compaction making progress when the LLM answers but does not shrink its
+input; it never stands in for a rejected answer.
+
+### Rejected answers
+
+An answer is not a summary when the model stopped at its output limit — an OpenAI-compatible
+`finish_reason: "length"`, an Anthropic `stop_reason: "max_tokens"` — or when it holds only
+whitespace. A reasoning model can spend the whole output budget thinking and return a
+readable but cut-off tail, so a length stop is rejected however the text looks. The HTTP
+adapters throw `SummaryRejectedError` (`src/llm/summary-rejection.ts`) after reporting the
+call's usage; `CompactionEngine` applies the same whitespace check to every provider's answer,
+leaf and condensed, before the escalation above. An adapter does not retry a length stop,
+since the same request with the same budget stops the same way; an empty answer is retried
+like a transient failure.
+
+A rejected answer moves the provider chain below to its next link, as an error does. With no
+link left, the rejection fails the pass: nothing from it is persisted and context is unchanged,
+while passes that finished earlier in the same compaction stay. `/compact` answers 500 naming
+the rejection and logs `compact.failed`, so a replay does not ledger the session and the next
+run retries it. The rejected call's tokens are recorded in `llm_usage_stats` as a failed call.
+
+### Provider chain
+
+Every summarization goes through one chain of links, built by `createSummarizer`
+(`src/daemon/summarizer.ts`) and run by `createProviderChain` (`src/llm/provider-chain.ts`):
+`/compact`, language detection, `lcm bench` and the summarizer eval harness all get it from
+that factory. A link is the live session, an HTTP endpoint (`openai`, `anthropic`) or a CLI
+process. With `llm.providers` the links are `llm.provider` then `llm.fallback`, named
+endpoints validated once at config load (`src/daemon/provider-config.ts`); in the flat form
+they are the one configured provider, or the session followed by `llm.fallbackProvider`
+(`auto` when unset). A named endpoint whose `${NAME}` was unset at load is left out of the
+chain; with none left, the first summary throws `SummarizerUnavailableError` naming each
+endpoint and variable, and `/health` and `lcm doctor` report the endpoints left out.
+
+Each link runs at most once per call, after its adapter's own retries. The next link runs
+after a session that did not answer (`SessionUnavailableError`), a `SummaryRejectedError`, a
+refused key (401/403), a connection failure or a transient status still failing after the
+retries (408, 429, 5xx), or a failed CLI run. Anything else — a 400/422, a cancelled request,
+a missing client library, an unclassified exception — is thrown at once, since trying the next
+link would hide it. When more than one link ran and all failed, the chain throws
+`ProviderChainExhaustedError`, naming each failure; like a rejection, it fails the pass and
+never becomes the deterministic fallback above.
+
+The chain calls `onFallback` between links, which is where `/compact` settles the abandoned
+attempt as failed before the next one reports its usage. A named endpoint's usage carries the
+endpoint's name, so one pass can record a failed `deepseek` call and an ok `openrouter` call.
+
+A link's adapter is built on first use, the first link's when the summarizer is created: a
+fallback whose client library is not installed fails only when the chain reaches it. An
+endpoint's `body` is merged into its request under the fields the adapter generates.
 
 ## Context assembly
 
@@ -283,10 +332,12 @@ A project's `meta.json` is written by routes on different sessions of the same p
 lcm needs an LLM only for summarization, and it resolves the credential the way the daemon
 config does:
 
-1. `llm.apiKey` in `~/.lossless-claude/config.json` — the value may interpolate an environment
-   variable as `${NAME}`.
-2. `ANTHROPIC_API_KEY`, read only when the effective provider is `anthropic` (directly, or as
-   the `session` provider's fallback) and no key was configured.
+1. `llm.apiKey` in `~/.lossless-claude/config.json`, or with named endpoints each endpoint's
+   own `llm.providers.<name>.apiKey` — the value may interpolate an environment variable as
+   `${NAME}`. An endpoint whose variable is unset is left out of the summarizer chain instead
+   of sending no key; the rest of the config loads.
+2. `ANTHROPIC_API_KEY`, read only for an `anthropic` provider or endpoint (directly, or as the
+   `session` provider's fallback) with no key configured.
 
 There is no profile store to consult: the process-backed providers (`claude-process`,
 `codex-process`, `copilot-process`) authenticate through their own CLI's login, so lcm never

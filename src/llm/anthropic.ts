@@ -6,18 +6,30 @@ import {
 } from "../summarize.js";
 import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "./types.js";
 import { buildSummaryPrompt } from "./prompt.js";
+import { acceptSummaryText, SummaryRejectedError } from "./summary-rejection.js";
 
 export type { LcmSummarizeFn } from "./types.js";
 
 type SummarizerOptions = {
   model: string;
   apiKey: string;
+  baseURL?: string;
+  /** Extra top-level request fields, validated at config load. */
+  body?: Record<string, unknown>;
+  /** Names this endpoint in a rejection; the provider type when unset. */
+  label?: string;
   _clientOverride?: any;
   _retryDelayMs?: number;
 };
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/** A 4xx other than a timeout or a rate limit: a refused key or request, not a transient failure. */
+function isClientError(err: any): boolean {
+  const status = err?.status;
+  return typeof status === "number" && status >= 400 && status < 500 && status !== 408 && status !== 429;
 }
 
 /**
@@ -46,7 +58,7 @@ function toUsage(response: any, fallbackModel: string): SummarizerUsage | undefi
 }
 
 export function createAnthropicSummarizer(opts: SummarizerOptions): LcmSummarizeFn {
-  const client = opts._clientOverride ?? new Anthropic({ apiKey: opts.apiKey });
+  const client = opts._clientOverride ?? new Anthropic({ apiKey: opts.apiKey, ...(opts.baseURL ? { baseURL: opts.baseURL } : {}) });
   const retryDelayMs = opts._retryDelayMs ?? 1000;
   const MAX_RETRIES = 3;
 
@@ -66,24 +78,29 @@ export function createAnthropicSummarizer(opts: SummarizerOptions): LcmSummarize
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {
         const response = await client.messages.create({
+          ...opts.body, // first, so every field generated below wins
           model: opts.model,
           max_tokens: resolveMaxOutputTokens(targetTokens),
           system: ctx.taskPrompt ?? LCM_SUMMARIZER_SYSTEM_PROMPT,
           messages: [{ role: "user", content: prompt }],
         });
 
-        // Reported before the empty-content check: those tokens were charged
+        // Reported before the answer is judged: those tokens were charged
         // even when the model returned nothing usable.
         const usage = toUsage(response, opts.model);
         if (usage) ctx.onUsage?.(usage);
 
+        // A max_tokens stop is a cut-off tail, not a summary, however readable it looks.
+        if (response.stop_reason === "max_tokens") {
+          throw new SummaryRejectedError({ reason: "max_tokens", provider: opts.label ?? "anthropic", model: usage?.model ?? opts.model });
+        }
         const textContent = response.content.find((c: any) => c.type === "text")?.text ?? "";
         // Empty content is a failure, not a summary: falling back to a slice of
         // the input would persist raw conversation text as a fake summary.
-        if (!textContent) throw new Error("summarizer returned empty content");
-        return textContent;
+        return acceptSummaryText(textContent, opts.label ?? "anthropic", usage?.model ?? opts.model);
       } catch (err: any) {
-        if (err?.status === 401) throw err; // auth error: no retry
+        if (isClientError(err)) throw err; // the same request fails the same way: no retry
+        if (err instanceof SummaryRejectedError && !err.retryable) throw err;
         lastError = err;
         if (attempt < MAX_RETRIES - 1) await sleep(retryDelayMs * Math.pow(2, attempt));
       }

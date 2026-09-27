@@ -116,6 +116,8 @@ export function registerDaemonCommands(program: Command): void {
           return;
         }
         log.start();
+        const { logUnavailableEndpoints } = await import("../daemon/summarizer.js");
+        logUnavailableEndpoints(log, config.llm);
         writeFileSync(pidFilePath, String(process.pid));
         console.log(`lcm daemon started on port ${daemon.address().port}`);
       } catch (err) {

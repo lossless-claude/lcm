@@ -21,6 +21,8 @@ import type { LogState } from "../daemon/log.js";
 import { readFunctionHookSnapshots, readOmpHookSnapshots } from "./hook-snapshots.js";
 import { readHookOutcomeLog } from "./hook-outcome-log.js";
 import { addHarnessGuidanceChecks } from "./guidance-checks.js";
+import { loadDaemonConfig } from "../daemon/config.js";
+import { summarizerAvailability } from "../daemon/provider-config.js";
 
 const COLORS = {
   green: "\x1b[0;32m",
@@ -46,6 +48,7 @@ function defaultDeps(): DoctorDeps {
     homedir: homedir(),
     lcmHome: lcmHome(),
     platform: platform(),
+    env: process.env,
   };
 }
 
@@ -155,6 +158,50 @@ function addCopilotProcessChecks(results: CheckResult[], deps: DoctorDeps): void
   }
 }
 
+
+const PROCESS_CHECKS: Record<string, (results: CheckResult[], deps: DoctorDeps) => void> = {
+  "claude-process": addClaudeProcessChecks,
+  "codex-process": addCodexProcessChecks,
+  "copilot-process": addCopilotProcessChecks,
+};
+
+/** Where loadDaemonConfig reads no file: the doctor passes the `llm` it read itself. */
+const NO_CONFIG_FILE = "/nonexistent";
+
+/** `llm` from config.json when it declares named endpoints; undefined otherwise or when unreadable. */
+function readNamedLlm(deps: DoctorDeps): Record<string, unknown> | undefined {
+  try {
+    const llm = (JSON.parse(deps.readFileSync(join(deps.lcmHome, "config.json"), "utf-8")) as { llm?: unknown }).llm;
+    return llm && typeof llm === "object" && "providers" in llm ? llm as Record<string, unknown> : undefined;
+  } catch {
+    return undefined; // the config check reports a missing or unreadable file
+  }
+}
+
+/** The chain as this shell's environment would run it, normalized by the daemon's own loader. */
+function localChain(deps: DoctorDeps, llm: Record<string, unknown>): string[] | undefined {
+  try {
+    return summarizerAvailability(loadDaemonConfig(NO_CONFIG_FILE, { llm }, deps.env ?? {}).llm).chain;
+  } catch {
+    return undefined; // an invalid config is reported by the summarizer-config check
+  }
+}
+
+/**
+ * The process types the effective named chain runs, in chain order: the chain the running
+ * daemon reports when one answers (its environment may promote another endpoint), else the
+ * one this shell's environment gives. Names map to types through the file's endpoints;
+ * `auto` may run any CLI.
+ */
+function namedChainProcessTypes(deps: DoctorDeps, llm: Record<string, unknown>, fromDaemon: Availability | undefined): string[] {
+  const chain = fromDaemon?.chain ?? localChain(deps, llm) ?? [];
+  if (chain.includes("auto")) return Object.keys(PROCESS_CHECKS);
+  const providers = (llm.providers && typeof llm.providers === "object" ? llm.providers : {}) as Record<string, { type?: unknown }>;
+  return chain.flatMap((name) => {
+    const type = Object.hasOwn(providers, name) ? providers[name]?.type : undefined;
+    return typeof type === "string" && Object.hasOwn(PROCESS_CHECKS, type) ? [type] : [];
+  });
+}
 
 export function testMcpHandshake(spawnMcp: typeof spawn = spawn): Promise<CheckResult> {
   return new Promise((resolve) => {
@@ -324,6 +371,61 @@ async function liveLogState(deps: DoctorDeps, port: number): Promise<LiveLog> {
     return h.log ?? "unsupported";
   } catch {
     return undefined; // not running
+  }
+}
+
+type Availability = ReturnType<typeof summarizerAvailability>;
+
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === "string");
+
+/** A /health `summarizer` field of the shape this build writes; anything else is ignored. */
+function isAvailability(value: unknown): value is Availability {
+  const view = value as Partial<Availability> | undefined;
+  return isStringArray(view?.chain) && typeof view?.allUnavailable === "boolean" && Array.isArray(view?.unavailable)
+    && view.unavailable.every((u) => typeof u?.name === "string" && isStringArray(u?.missingEnv));
+}
+
+/** The running daemon's own view of its endpoints: its environment is the one that summarizes. */
+async function daemonAvailability(deps: DoctorDeps, port: number): Promise<Availability | undefined> {
+  try {
+    const res = await deps.fetch(`http://127.0.0.1:${port}/health`);
+    if (!res.ok) return undefined;
+    const view = ((await res.json()) as { summarizer?: unknown }).summarizer;
+    return isAvailability(view) ? view : undefined;
+  } catch {
+    return undefined; // not running: fall back to this shell's view
+  }
+}
+
+function localAvailability(deps: DoctorDeps, llm: unknown): Availability {
+  return summarizerAvailability(loadDaemonConfig(NO_CONFIG_FILE, { llm }, deps.env ?? {}).llm);
+}
+
+/**
+ * With `llm.providers`: a warning per endpoint left out for an unset variable, and a
+ * failure when that leaves no link of the chain, as the running daemon reports it or,
+ * with no daemon up, as this shell's environment would.
+ */
+function addNamedEndpointChecks(
+  results: CheckResult[], deps: DoctorDeps, llm: Record<string, unknown>, fromDaemon: Availability | undefined,
+): void {
+  const where = fromDaemon ? "the running daemon's environment" : "this shell (no daemon answered)";
+  let availability: Availability;
+  try {
+    availability = fromDaemon ?? localAvailability(deps, llm);
+  } catch (err) {
+    results.push({ name: "summarizer-config", category: "Summarizer", status: "fail", message: err instanceof Error ? err.message : String(err) });
+    return;
+  }
+  for (const { name, missingEnv } of availability.unavailable) {
+    results.push({ name: `summarizer-endpoint-${name}`, category: "Summarizer", status: "warn",
+      message: `${name} is left out of the summarizer chain: ${missingEnv.join(", ")} unset in ${where}` });
+  }
+  if (availability.allUnavailable) {
+    const missing = [...new Set(availability.unavailable.flatMap((u) => u.missingEnv))].join(", ");
+    results.push({ name: "summarizer-chain", category: "Summarizer", status: "fail",
+      message: `no endpoint of ${availability.chain.join(" -> ")} can run, so every summary fails\n     Fix: export ${missing} in the environment that starts the daemon, then: lcm daemon restart` });
   }
 }
 
@@ -597,23 +699,24 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
   addHarnessGuidanceChecks(results, deps);
 
   // ── Summarizer (conditional) ──
-  if (config.summarizer === "auto") {
-    addClaudeProcessChecks(results, deps);
-    addCodexProcessChecks(results, deps);
-    addCopilotProcessChecks(results, deps);
-  } else if (config.summarizer === "claude-process") {
-    addClaudeProcessChecks(results, deps);
-  } else if (config.summarizer === "codex-process") {
-    addCodexProcessChecks(results, deps);
-  } else if (config.summarizer === "copilot-process") {
-    addCopilotProcessChecks(results, deps);
-  } else if (config.summarizer === "anthropic") {
+  // Each CLI once: `auto` may use any of them, a process provider its own, and a named
+  // chain every process endpoint it lists.
+  const processTypes = new Set(config.summarizer === "auto"
+    ? Object.keys(PROCESS_CHECKS)
+    : Object.hasOwn(PROCESS_CHECKS, config.summarizer) ? [config.summarizer] : []);
+  const namedLlm = readNamedLlm(deps);
+  const fromDaemon = namedLlm ? await daemonAvailability(deps, config.port) : undefined;
+  if (namedLlm) for (const type of namedChainProcessTypes(deps, namedLlm, fromDaemon)) processTypes.add(type);
+  for (const type of processTypes) PROCESS_CHECKS[type](results, deps);
+  if (config.summarizer === "anthropic") {
     if (process.env.ANTHROPIC_API_KEY) {
       results.push({ name: "anthropic-key", category: "Summarizer", status: "pass", message: "ANTHROPIC_API_KEY set" });
     } else {
       results.push({ name: "anthropic-key", category: "Summarizer", status: "warn", message: "ANTHROPIC_API_KEY not set in environment" });
     }
   }
+
+  if (namedLlm) addNamedEndpointChecks(results, deps, namedLlm, fromDaemon);
 
   // ── MCP handshake ──
   if (daemonHealthy) {

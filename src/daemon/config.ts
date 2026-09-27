@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { normalizeNamedEndpoints, type EndpointConfig } from "./provider-config.js";
 
 export interface SecurityConfig {
   /** User-defined global regex patterns (plain strings, no /.../ delimiters). */
@@ -62,7 +63,17 @@ export type DaemonConfig = {
     stalePenalty: number;
     allowStaleOnStrongMatch: boolean;
   };
-  llm: { provider: SummaryProvider; fallbackProvider?: Exclude<SummaryProvider, "session">; model: string; apiKey?: string; baseURL: string; reasoning?: Record<string, unknown> };
+  llm: {
+    /** A provider type or `session`/`auto`/`disabled`; with `providers`, an endpoint name. */
+    provider: SummaryProvider | (string & {});
+    /** Flat form only: the provider type the session provider falls back to. */
+    fallbackProvider?: Exclude<SummaryProvider, "session">;
+    model: string; apiKey?: string; baseURL: string; reasoning?: Record<string, unknown>;
+    /** Named endpoints; when present, the flat connection fields above must be unset. */
+    providers?: Record<string, EndpointConfig>;
+    /** Endpoint names tried in order after `provider` fails. */
+    fallback?: string[];
+  };
   summarizer: { mock: boolean; language?: string };
   security: SecurityConfig;
   hooks: { snapshotIntervalSec: number; disableAutoCompact: boolean };
@@ -173,11 +184,13 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
   }
   delete thresholds["mergeMaxEntries"];
   delete thresholds["confidenceDecayRate"];
+  normalizeNamedEndpoints(merged.llm, e);
+  const namedEndpoints = merged.llm.providers !== undefined;
   if (merged.llm.apiKey) merged.llm.apiKey = merged.llm.apiKey.replace(/\$\{(\w+)\}/g, (_: string, k: string) => e[k] ?? "");
 
   // Env var override: LCM_SUMMARY_PROVIDER takes precedence over config
   const VALID_PROVIDERS = new Set(["auto", "claude-process", "codex-process", "copilot-process", "anthropic", "openai", "disabled", "session"]);
-  if (e.LCM_SUMMARY_PROVIDER) {
+  if (e.LCM_SUMMARY_PROVIDER && !namedEndpoints) {
     if (!VALID_PROVIDERS.has(e.LCM_SUMMARY_PROVIDER)) {
       throw new Error(
         `[lcm] Invalid LCM_SUMMARY_PROVIDER="${e.LCM_SUMMARY_PROVIDER}". ` +
@@ -185,6 +198,13 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
       );
     }
     merged.llm.provider = e.LCM_SUMMARY_PROVIDER as DaemonConfig["llm"]["provider"];
+  }
+  // A typo here would otherwise surface only at the first summary, as an opaque error.
+  if (!namedEndpoints && !VALID_PROVIDERS.has(merged.llm.provider)) {
+    throw new Error(
+      `[lcm] Unknown summarizer provider "${merged.llm.provider}" in llm.provider. ` +
+      `Valid values: ${[...VALID_PROVIDERS].join(", ")}, or an endpoint named in llm.providers`
+    );
   }
   const fallbackProvider: unknown = merged.llm.fallbackProvider;
   if (fallbackProvider !== undefined && (
@@ -212,8 +232,9 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
   }
 
   // Session fallbacks use the same credentials as directly selected providers.
-  const usesAnthropic = merged.llm.provider === "anthropic" ||
-    (merged.llm.provider === "session" && merged.llm.fallbackProvider === "anthropic");
+  // Named endpoints resolved their own keys above.
+  const usesAnthropic = !namedEndpoints && (merged.llm.provider === "anthropic" ||
+    (merged.llm.provider === "session" && merged.llm.fallbackProvider === "anthropic"));
   if (!merged.llm.apiKey && usesAnthropic && e.ANTHROPIC_API_KEY) {
     merged.llm.apiKey = e.ANTHROPIC_API_KEY;
   }

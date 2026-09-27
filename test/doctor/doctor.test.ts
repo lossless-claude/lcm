@@ -364,3 +364,123 @@ describe("runDoctor plugin bundle", () => {
     expect(results.find((r) => r.name === "plugin-bundle")).toBeUndefined();
   });
 });
+
+describe("runDoctor summarizer endpoints", () => {
+  const namedConfig = JSON.stringify({ llm: { provider: "deepseek", fallback: ["openrouter"], providers: {
+    deepseek: { type: "openai", model: "m", apiKey: "${DEEPSEEK_API_KEY}" },
+    openrouter: { type: "openai", model: "m", apiKey: "${OPENROUTER_API_KEY}" },
+  } } });
+  const base = minimalDeps();
+  const withEnv = (env: Record<string, string>, overrides: Partial<Parameters<typeof runDoctor>[0]> = {}) => minimalDeps({
+    env,
+    readFileSync: (path: string) => path.endsWith("config.json") ? namedConfig : base.readFileSync(path),
+    ...overrides,
+  });
+  const endpointChecks = (results: Awaited<ReturnType<typeof runDoctor>>) =>
+    results.filter((r) => r.name.startsWith("summarizer-"));
+
+  it("warns for each endpoint left without its variable, and passes the chain while one remains", async () => {
+    const checks = endpointChecks(await runDoctor(withEnv({ OPENROUTER_API_KEY: "sk" })));
+    expect(checks).toEqual([
+      expect.objectContaining({ name: "summarizer-endpoint-deepseek", category: "Summarizer", status: "warn",
+        message: expect.stringMatching(/deepseek.*DEEPSEEK_API_KEY/) }),
+    ]);
+  });
+
+  it("fails when the primary and every fallback are unavailable", async () => {
+    const checks = endpointChecks(await runDoctor(withEnv({})));
+    expect(checks.map((c) => [c.name, c.status])).toEqual([
+      ["summarizer-endpoint-deepseek", "warn"],
+      ["summarizer-endpoint-openrouter", "warn"],
+      ["summarizer-chain", "fail"],
+    ]);
+  });
+
+  it("reports the running daemon's view, since the daemon's environment is the one that summarizes", async () => {
+    const health = { status: "ok", version: PKG_VERSION, summarizer: { chain: ["deepseek", "openrouter"],
+      unavailable: [{ name: "openrouter", missingEnv: ["OPENROUTER_API_KEY"] }], allUnavailable: false } };
+    const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => health });
+    const checks = endpointChecks(await runDoctor(withEnv({ DEEPSEEK_API_KEY: "a", OPENROUTER_API_KEY: "b" }, { fetch })));
+    expect(checks).toEqual([
+      expect.objectContaining({ name: "summarizer-endpoint-openrouter", status: "warn", message: expect.stringContaining("daemon") }),
+    ]);
+  });
+});
+
+describe("runDoctor named process endpoints", () => {
+  const namedConfig = JSON.stringify({ llm: { provider: "haiku", fallback: ["cx", "remote"], providers: {
+    haiku: { type: "claude-process" },
+    cx: { type: "codex-process", model: "m" },
+    remote: { type: "openai", model: "m", baseURL: "http://127.0.0.1:9/v1" },
+    unused: { type: "copilot-process" },
+  } } });
+  const base = minimalDeps();
+
+  it("checks the CLI of every process endpoint in the chain, and only those", async () => {
+    const results = await runDoctor(minimalDeps({
+      readFileSync: (path: string) => path.endsWith("config.json") ? namedConfig : base.readFileSync(path),
+      // No CLI is installed: `which` fails for each.
+      spawnSync: vi.fn(() => ({ status: 1, stdout: "", stderr: "" })),
+    }));
+    const processChecks = results.filter((r) => r.name.endsWith("-process"));
+    expect(processChecks.map((r) => [r.name, r.category, r.status])).toEqual([
+      ["claude-process", "Summarizer", "fail"],
+      ["codex-process", "Summarizer", "fail"],
+    ]);
+  });
+});
+
+describe("runDoctor process checks follow the effective chain", () => {
+  const configWith = (llm: unknown) => JSON.stringify({ llm });
+  const base = minimalDeps();
+  const processChecksFor = async (llm: unknown, env: Record<string, string> = {}) => {
+    const results = await runDoctor(minimalDeps({
+      env,
+      readFileSync: (path: string) => path.endsWith("config.json") ? configWith(llm) : base.readFileSync(path),
+      spawnSync: vi.fn(() => ({ status: 1, stdout: "", stderr: "" })),
+    }));
+    return results.filter((r) => r.name.endsWith("-process")).map((r) => r.name);
+  };
+  const endpoints = {
+    remote: { type: "openai", model: "m", baseURL: "http://127.0.0.1:9/v1" },
+    cx: { type: "codex-process", model: "m" },
+  };
+
+  it("checks the endpoint llm.provider selects by its type", async () => {
+    expect(await processChecksFor({ provider: "codex-process", providers: endpoints })).toEqual(["codex-process"]);
+  });
+
+  it("checks the endpoint LCM_SUMMARY_PROVIDER promotes by name", async () => {
+    expect(await processChecksFor({ provider: "remote", providers: endpoints }, { LCM_SUMMARY_PROVIDER: "cx" })).toEqual(["codex-process"]);
+  });
+
+  it("checks the endpoint LCM_SUMMARY_PROVIDER selects by its type", async () => {
+    expect(await processChecksFor({ provider: "remote", providers: endpoints }, { LCM_SUMMARY_PROVIDER: "codex-process" }))
+      .toEqual(["codex-process"]);
+  });
+});
+
+describe("runDoctor with a daemon reporting its own chain", () => {
+  const base = minimalDeps();
+  const llm = { provider: "remote", providers: {
+    remote: { type: "openai", model: "m", baseURL: "http://127.0.0.1:9/v1" },
+    cx: { type: "codex-process", model: "m" },
+  } };
+  const deps = (summarizer: unknown) => minimalDeps({
+    env: {},
+    readFileSync: (path: string) => path.endsWith("config.json") ? JSON.stringify({ llm }) : base.readFileSync(path),
+    spawnSync: vi.fn(() => ({ status: 1, stdout: "", stderr: "" })),
+    fetch: vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: "ok", version: PKG_VERSION, summarizer }) }),
+  });
+
+  it("checks the CLIs of the chain the daemon runs, not the one this shell would", async () => {
+    // LCM_SUMMARY_PROVIDER=cx in the daemon's environment only.
+    const results = await runDoctor(deps({ chain: ["cx"], unavailable: [], allUnavailable: false }));
+    expect(results.filter((r) => r.name.endsWith("-process")).map((r) => r.name)).toEqual(["codex-process"]);
+  });
+
+  it("does not crash on a /health payload of another shape", async () => {
+    const results = await runDoctor(deps({ chain: ["remote"], unavailable: [{ name: "remote" }], allUnavailable: false }));
+    expect(results.some((r) => r.name === "stack")).toBe(true);
+  });
+});

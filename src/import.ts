@@ -518,7 +518,8 @@ async function ingestSessionList(
               contentFingerprint: inputFingerprint,
               summaryId: compactRes.latestSummaryId ?? null,
               outcome,
-              model: options.replayModel ?? null,
+              // The model whose answer was stored; a fallback may have replaced the configured one.
+              model: compactRes.llmUsage?.model || options.replayModel || null,
             });
           }
           // Use compact's tokensBefore as the authoritative token count for this session.

@@ -38,6 +38,18 @@ describe("summarizer eval harness (offline)", () => {
     expect(result.tokensAfter).toBeLessThan(result.tokensBefore);
   }, 30_000);
 
+  it("counts output-cap hits for HTTP runs only, whatever label the usage carries", async () => {
+    // The factory labels usage with the eval endpoint's name, so the run's provider decides.
+    const summarizer: LcmSummarizeFn = async (_text, _aggressive, ctx = {}) => {
+      ctx.onUsage?.({ provider: "eval", outputTokens: 1_000_000, tokensUsed: 1_000_000 });
+      return "Files: none\nSummary\nExpand for details about: cap";
+    };
+    const run = (provider: string) =>
+      runEval({ session: buildSyntheticSession(), summarizer, model: "fake", provider, run: 1 });
+    expect((await run("claude-process")).totals.maxTokensHits).toBe(0);
+    expect((await run("openrouter")).totals.maxTokensHits).toBeGreaterThan(0);
+  }, 30_000);
+
   it("passes the corpus language through the production engine configuration", async () => {
     const languages: Array<string | undefined> = [];
     const summarizer: LcmSummarizeFn = async (_text, _aggressive, ctx) => {
@@ -158,7 +170,7 @@ describe.skipIf(!model || !corpusDir)(`summarizer eval: ${model} via ${provider}
   for (const session of sessions) {
     for (let run = 1; run <= runs; run++) {
       it(`${session.label} run ${run}`, async () => {
-        const summarizer = createEvalSummarizer(provider, model!);
+        const summarizer = await createEvalSummarizer(provider, model!);
         const result = await runEval({ session, summarizer, model: model!, provider, variant, run, language });
         const file = writeResult(RESULTS_DIR, result);
         const facts = result.plantedFacts

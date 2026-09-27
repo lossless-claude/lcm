@@ -1,4 +1,5 @@
 import { SummarizeJobStore } from "./summarize-jobs.js";
+import { summarizerAvailability } from "./provider-config.js";
 import { createNextSummarizeJobHandler, createAnswerSummarizeJobHandler } from "./routes/summarize-jobs.js";
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import { existsSync, readdirSync } from "node:fs";
@@ -138,7 +139,9 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   }
 
   routes.set("GET /health", async (_req, res) =>
-    sendJson(res, 200, { status: "ok", version: PKG_VERSION, build: BUILD_ID, pid: process.pid, uptime: Math.floor((Date.now() - startTime) / 1000), log: log.state() }));
+    sendJson(res, 200, { status: "ok", version: PKG_VERSION, build: BUILD_ID, pid: process.pid, uptime: Math.floor((Date.now() - startTime) / 1000), log: log.state(),
+      // Which named endpoints this daemon's environment left out; `lcm doctor` reports it.
+      summarizer: summarizerAvailability(config.llm) }));
   const summarizeJobs = new SummarizeJobStore();
   const answerSummarizeJob = createAnswerSummarizeJobHandler(summarizeJobs);
   routes.set("GET /summarize-jobs/next", createNextSummarizeJobHandler(summarizeJobs));

@@ -116,6 +116,15 @@ describe("daemon log", () => {
     expect(JSON.stringify(ready)).not.toContain("project-only-42");
   });
 
+  it("keeps both ends of a summarizer fallback while the project's patterns load", () => {
+    const opts = options();
+    const cwd = "/work/repo";
+    mkdirSync(opts.projectDirFor(cwd), { recursive: true });
+    writeFileSync(join(opts.projectDirFor(cwd), "sensitive-patterns.txt"), "project-only-\\d+\n");
+    openDaemonLog(opts).write("warn", "summarizer.fallback", { cwd, from_provider: "deepseek", to_provider: "openrouter" });
+    expect(readDaemonLog(opts.path, { since: EPOCH })[0]).toMatchObject({ from_provider: "deepseek", to_provider: "openrouter" });
+  });
+
   it("rotates past the size limit and prunes rotations past retention", () => {
     let now = new Date("2026-01-01T00:00:00Z");
     const opts = options({ maxSizeMB: TWO_HUNDRED_BYTES_IN_MB, now: () => now });

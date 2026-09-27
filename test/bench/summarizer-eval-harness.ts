@@ -390,7 +390,7 @@ export async function runEval(input: {
       formatPass,
       formatTotal: scoredCalls.length,
       maxTokensHits: calls.filter(
-        (c) => c.usage?.provider !== "claude-process" && (c.usage?.outputTokens ?? 0) >= resolveMaxOutputTokens(c.targetTokens),
+        (c) => provider !== "claude-process" && (c.usage?.outputTokens ?? 0) >= resolveMaxOutputTokens(c.targetTokens),
       ).length,
     },
   };

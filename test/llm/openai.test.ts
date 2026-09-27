@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { createOpenAISummarizer } from "../../src/llm/openai.js";
+import { SummaryRejectedError } from "../../src/llm/summary-rejection.js";
 
 describe("createOpenAISummarizer", () => {
   function makeClient(text = "Summary.") {
@@ -45,15 +46,19 @@ describe("createOpenAISummarizer", () => {
     expect(args.messages[0].content).toContain("Earlier the user chose SQLite over Postgres.");
   });
 
-  it("sends reasoning verbatim when configured and omits the key otherwise", async () => {
+  it("sends body fields verbatim under the generated ones, and nothing extra when unset", async () => {
     const withReasoning = makeClient("Summary.");
     await createOpenAISummarizer({
       model: "m",
       baseURL: "http://x/v1",
-      reasoning: { effort: "minimal" },
+      body: { reasoning: { effort: "minimal" }, thinking: { type: "disabled" }, model: "from-body", max_tokens: 1 },
       _clientOverride: withReasoning as any,
     })("Conversation text", false, {});
-    expect(withReasoning.chat.completions.create.mock.calls[0][0].reasoning).toEqual({ effort: "minimal" });
+    const sent = withReasoning.chat.completions.create.mock.calls[0][0];
+    expect(sent).toMatchObject({ reasoning: { effort: "minimal" }, thinking: { type: "disabled" } });
+    // Config load rejects these in a body; the adapter still lets the generated fields win.
+    expect(sent.model).toBe("m");
+    expect(sent.max_tokens).toBeGreaterThanOrEqual(1024);
 
     const without = makeClient("Summary.");
     await createOpenAISummarizer({ model: "m", baseURL: "http://x/v1", _clientOverride: without as any })(
@@ -197,5 +202,47 @@ describe("createOpenAISummarizer", () => {
     const plain = makeClient("Summary.");
     await createOpenAISummarizer({ model: "m", baseURL: "http://localhost:11435/v1", _clientOverride: plain as any })("text", false);
     expect(plain.chat.completions.create.mock.calls[0][0]).not.toHaveProperty("usage");
+  });
+
+  it("rejects a completion cut off at max_tokens after reporting its usage, without retrying it", async () => {
+    const events: string[] = [];
+    const create = vi.fn().mockImplementation(async () => {
+      events.push("request");
+      return {
+        choices: [{ finish_reason: "length", message: { content: "Chronology and main decisions:\nThe agent" } }],
+        usage: {
+          prompt_tokens: 15_000, completion_tokens: 1024, total_tokens: 16_024,
+          completion_tokens_details: { reasoning_tokens: 939 },
+        },
+      };
+    });
+    const onUsage = vi.fn(() => { events.push("usage"); });
+    const summarize = createOpenAISummarizer({
+      model: "reasoner", baseURL: "https://api.example.test",
+      _clientOverride: { chat: { completions: { create } } } as any,
+      _retryDelayMs: 0,
+    });
+    const error = await summarize("x".repeat(600), false, { onUsage }).catch((err) => err);
+    expect(error).toBeInstanceOf(SummaryRejectedError);
+    expect(error).toMatchObject({ reason: "length", provider: "openai" });
+    expect(error.message).toContain('finish_reason "length"');
+    // The same request with the same budget stops the same way: one charge, not three.
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(events).toEqual(["request", "usage"]);
+    // Reasoning tokens are already inside completion_tokens; they are not added again.
+    expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({ outputTokens: 1024, tokensUsed: 16_024 }));
+  });
+
+  it("rejects whitespace-only content as empty, retrying it like an empty answer", async () => {
+    const create = vi.fn().mockResolvedValue({ choices: [{ finish_reason: "stop", message: { content: " \n\t " } }] });
+    const summarize = createOpenAISummarizer({
+      model: "m", baseURL: "http://x/v1",
+      _clientOverride: { chat: { completions: { create } } } as any,
+      _retryDelayMs: 0,
+    });
+    const error = await summarize("x".repeat(600), false).catch((err) => err);
+    expect(error).toBeInstanceOf(SummaryRejectedError);
+    expect(error).toMatchObject({ reason: "whitespace" });
+    expect(create).toHaveBeenCalledTimes(3);
   });
 });

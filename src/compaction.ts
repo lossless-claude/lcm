@@ -4,6 +4,7 @@ import type { SummaryStore, SummaryRecord, ContextItemRecord } from "./store/sum
 import { extractFileIdsFromContent } from "./large-files.js";
 import type { ScrubEngine } from "./scrub.js";
 import { resolveLcmConfig } from "./db/config.js";
+import { acceptSummaryText } from "./llm/summary-rejection.js";
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -44,6 +45,12 @@ export interface CompactionConfig {
   language?: string;
   /** Optional scrubber to redact secrets before sending chunk text to LLM */
   scrubber?: ScrubEngine;
+  /**
+   * Called when the engine throws away the summarizer's latest answer instead of
+   * persisting it: before asking again aggressively, and before the deterministic
+   * truncation. Lets a caller attribute the stored summary to the answer it came from.
+   */
+  onAnswerDiscarded?: () => void;
 }
 
 /** Token budget the `/compact` route compacts against. */
@@ -763,6 +770,11 @@ export class CompactionEngine {
   /**
    * Run three-level summarization escalation:
    * normal -> aggressive -> deterministic fallback.
+   *
+   * Every provider answer passes the summary gate first. A rejected answer — an
+   * adapter's `SummaryRejectedError` or text that is only whitespace — throws out of
+   * the pass before anything is persisted; the deterministic fallback is reserved
+   * for accepted answers that failed to shrink, never for rejected ones.
    */
   private async summarizeWithEscalation(params: {
     sourceText: string;
@@ -782,14 +794,19 @@ export class CompactionEngine {
       ? { ...params.options, language: this.config.language.trim() }
       : params.options;
 
-    let summaryText = await params.summarize(sourceText, false, summarizeOptions);
+    const summarizeGated = async (aggressive: boolean) =>
+      acceptSummaryText(await params.summarize(sourceText, aggressive, summarizeOptions), "summarizer");
+
+    let summaryText = await summarizeGated(false);
     let level: CompactionLevel = "normal";
 
     if (estimateTokens(summaryText) >= inputTokens) {
-      summaryText = await params.summarize(sourceText, true, summarizeOptions);
+      this.config.onAnswerDiscarded?.();
+      summaryText = await summarizeGated(true);
       level = "aggressive";
 
       if (estimateTokens(summaryText) >= inputTokens) {
+        this.config.onAnswerDiscarded?.();
         const truncated =
           sourceText.length > FALLBACK_MAX_CHARS
             ? sourceText.slice(0, FALLBACK_MAX_CHARS)

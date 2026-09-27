@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "./types.js";
 import { buildSummaryPrompt } from "./prompt.js";
+import { acceptSummaryText, SummaryRejectedError } from "./summary-rejection.js";
 import {
   LCM_SUMMARIZER_SYSTEM_PROMPT,
   resolveTargetTokens,
@@ -9,9 +10,13 @@ import {
 
 type OpenAISummarizerOptions = {
   model: string;
-  baseURL: string;
+  /** Absent means the SDK's own default (OPENAI_BASE_URL, else the OpenAI API). */
+  baseURL?: string;
   apiKey?: string;
-  reasoning?: Record<string, unknown>;
+  /** Extra top-level request fields (`reasoning`, `thinking`, ...), validated at config load. */
+  body?: Record<string, unknown>;
+  /** Names this endpoint in a rejection; the provider type when unset. */
+  label?: string;
   _clientOverride?: any;
   _retryDelayMs?: number;
 };
@@ -20,12 +25,19 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/** A 4xx other than a timeout or a rate limit: a refused key or request, not a transient failure. */
+function isClientError(err: any): boolean {
+  const status = err?.status;
+  return typeof status === "number" && status >= 400 && status < 500 && status !== 408 && status !== 429;
+}
+
 /**
  * Every provider charges; OpenRouter is the only OpenAI-compatible endpoint
  * that REPORTS the charge back (`usage.cost`), and only when the request opts
  * in. Plain servers reject unknown top-level fields, so the flag is host-scoped.
  */
-function isOpenRouter(baseURL: string): boolean {
+function isOpenRouter(baseURL: string | undefined): boolean {
+  if (!baseURL) return false;
   try {
     return new URL(baseURL).hostname.endsWith("openrouter.ai");
   } catch {
@@ -58,7 +70,7 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
   const client =
     opts._clientOverride ??
     new OpenAI({
-      baseURL: opts.baseURL,
+      ...(opts.baseURL ? { baseURL: opts.baseURL } : {}),
       apiKey: opts.apiKey || "local", // many local servers require a non-empty key
     });
   const retryDelayMs = opts._retryDelayMs ?? 1000;
@@ -83,10 +95,11 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {
         const response = await client.chat.completions.create({
+          // Vendor fields absent from the OpenAI SDK types go first, so every field
+          // generated below wins. Nothing extra is sent when unset: servers that
+          // reject unknown fields keep working.
+          ...opts.body,
           model: opts.model,
-          // `reasoning` is provider-specific and absent from the OpenAI SDK types;
-          // omitted entirely when unset so servers rejecting unknown fields keep working.
-          ...(opts.reasoning !== undefined ? { reasoning: opts.reasoning } : {}),
           ...(askForCostAccounting ? { usage: { include: true } } : {}),
           max_tokens: resolveMaxOutputTokens(targetTokens),
           // Merge system content into user message for compatibility with local
@@ -96,18 +109,22 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
           ],
         });
 
-        // Reported before the empty-content check: a reasoning model that
-        // spends the whole budget thinking still charged for those tokens.
+        // Reported before the answer is judged: a reasoning model that spends
+        // the whole budget thinking still charged for those tokens.
         const usage = toUsage(response, opts.model);
         if (usage) ctx.onUsage?.(usage);
 
-        const textContent = response.choices[0]?.message?.content ?? "";
+        const choice = response.choices[0];
+        // A length stop is a cut-off tail, not a summary, however readable it looks.
+        if (choice?.finish_reason === "length") {
+          throw new SummaryRejectedError({ reason: "length", provider: opts.label ?? "openai", model: usage?.model ?? opts.model });
+        }
         // Empty content is a failure, not a summary: falling back to a slice of
         // the input would persist raw conversation text as a fake summary.
-        if (!textContent) throw new Error("summarizer returned empty content");
-        return textContent;
+        return acceptSummaryText(choice?.message?.content ?? "", opts.label ?? "openai", usage?.model ?? opts.model);
       } catch (err: any) {
-        if (err?.status === 401) throw err; // auth error: no retry
+        if (isClientError(err)) throw err; // the same request fails the same way: no retry
+        if (err instanceof SummaryRejectedError && !err.retryable) throw err;
         lastError = err;
         if (attempt < MAX_RETRIES - 1) await sleep(retryDelayMs * Math.pow(2, attempt));
       }

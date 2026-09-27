@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { createAnthropicSummarizer } from "../../src/llm/anthropic.js";
+import { SummaryRejectedError } from "../../src/llm/summary-rejection.js";
 
 describe("createAnthropicSummarizer", () => {
   it("calls Anthropic and returns text", async () => {
@@ -100,5 +101,41 @@ describe("createAnthropicSummarizer", () => {
       _clientOverride: { messages: { create: mockCreate } } as any,
     })("text", false, { onUsage });
     expect(onUsage).not.toHaveBeenCalled();
+  });
+
+  it("rejects an answer cut off at max_tokens after reporting its usage, without retrying it", async () => {
+    const events: string[] = [];
+    const mockCreate = vi.fn().mockImplementation(async () => {
+      events.push("request");
+      return {
+        stop_reason: "max_tokens",
+        content: [{ type: "text", text: "Chronology and main decisions:\nThe agent" }],
+        usage: { input_tokens: 15_000, output_tokens: 1024 },
+      };
+    });
+    const onUsage = vi.fn(() => { events.push("usage"); });
+    const summarize = createAnthropicSummarizer({
+      model: "claude-haiku-4-5-20251001", apiKey: "sk-test",
+      _clientOverride: { messages: { create: mockCreate } } as any,
+      _retryDelayMs: 0,
+    });
+    const error = await summarize("x".repeat(600), false, { onUsage }).catch((err) => err);
+    expect(error).toBeInstanceOf(SummaryRejectedError);
+    expect(error).toMatchObject({ reason: "max_tokens", provider: "anthropic" });
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    expect(events).toEqual(["request", "usage"]);
+  });
+
+  it("rejects whitespace-only text as empty, retrying it like an empty answer", async () => {
+    const mockCreate = vi.fn().mockResolvedValue({ stop_reason: "end_turn", content: [{ type: "text", text: "  \n " }] });
+    const summarize = createAnthropicSummarizer({
+      model: "claude-haiku-4-5-20251001", apiKey: "sk-test",
+      _clientOverride: { messages: { create: mockCreate } } as any,
+      _retryDelayMs: 0,
+    });
+    const error = await summarize("x".repeat(600), false).catch((err) => err);
+    expect(error).toBeInstanceOf(SummaryRejectedError);
+    expect(error).toMatchObject({ reason: "whitespace" });
+    expect(mockCreate).toHaveBeenCalledTimes(3);
   });
 });
