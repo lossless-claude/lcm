@@ -42,7 +42,7 @@ async function invoke(handler: RouteHandler, body: unknown): Promise<{ status: n
 }
 
 it("records DeepSeek's cut-off answer as failed and OpenRouter's that replaced it as ok", async () => {
-  server.answer("deepseek", completion("Cronologia e decisões principais:\nO agente", "length", "deepseek-chat"));
+  server.answer("deepseek", completion("The session began with", "length", "deepseek-chat"));
   server.answer("openrouter", completion("the stored summary", "stop", "vendor/flash"));
   const config = loadDaemonConfig("/nonexistent", { llm: { provider: "deepseek", fallback: ["openrouter"], providers: {
     deepseek: { type: "openai", model: "deepseek-chat", baseURL: `${server.base}/deepseek`, body: { thinking: { type: "disabled" } } },

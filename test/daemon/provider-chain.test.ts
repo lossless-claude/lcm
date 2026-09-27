@@ -37,7 +37,7 @@ const endpointsCalled = () => server.seen.map((request) => request.endpoint);
 
 describe("summarizer provider chain", () => {
   it("calls DeepSeek first and moves to OpenRouter when DeepSeek's answer stops at the length limit", async () => {
-    server.answer("deepseek", completion("Cronologia e decisões principais:\nO agente", "length", "deepseek-chat"));
+    server.answer("deepseek", completion("The session began with", "length", "deepseek-chat"));
     server.answer("openrouter", completion("the summary", "stop", "vendor/flash"));
     const summarize = await chain({ provider: "deepseek", fallback: ["openrouter"] });
     const onUsage = vi.fn();
