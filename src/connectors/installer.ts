@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync, rmdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
-import type { Agent, ConnectorType } from "./types.js";
+import type { Agent, ConnectorLocation, ConnectorRequest, ConnectorType } from "./types.js";
 import { requiresRestart } from "./types.js";
 import { LCM_MARKERS } from "./constants.js";
 import { generateContent } from "./template-service.js";
@@ -29,23 +29,6 @@ export interface InstallResult {
   requiresRestart: boolean;
   manual?: string;
   notice?: string;
-}
-
-/** Where a connector lives: a project's working directory, or the agent's user-level config. */
-export type ConnectorScope = 'project' | 'global';
-
-export interface ConnectorLocation {
-  /** The project directory; ignored at global scope. Defaults to the process working directory. */
-  cwd?: string;
-  /** Defaults to `project`. */
-  scope?: ConnectorScope;
-}
-
-export interface ConnectorRequest extends ConnectorLocation {
-  /** An agent id or display name from the registry. */
-  agent: string;
-  /** Defaults to the agent's default connector type. */
-  type?: ConnectorType;
 }
 
 export interface InstalledConnector {
