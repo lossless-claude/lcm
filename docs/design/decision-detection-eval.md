@@ -9,7 +9,14 @@ models on the same turns. The shipped detector finds none of the decisions in pt
 calibrated classifier ranks turns well, but its confident answers are not reliable enough to
 promote anything on their own. The category itself needs a definition first.
 
+This evaluation justifies two design constraints: `user_decision` is not a promotion signal
+until #581 defines the category and a detector meets it, and a classifier's answer only ever
+routes a turn to review (see Constraints on any integration).
+
 ## Corpus and labels
+
+The corpus is `pt-coding-turns-2026-09`, kept outside the repository because it holds a
+person's prompts.
 
 - 234 turns one pt-BR author typed in coding sessions across 15 projects: 200 drawn at
   random, 34 more flagged by either keyword list. Every turn passed through `ScrubEngine`;
@@ -49,17 +56,18 @@ pt-BR keyword list flagged 7 there, none of them a decision.
    turns. A detector needs a definition that says how they count.
 3. **A calibrated classifier is a review queue, not a promoter.** Jev ranks well, but a high
    probability did not mean a decision: none of its answers at P ≥ 0.9 in the random stratum
-   was a decision, under either label set. At 0.5 it flags about 10% of turns, and one flag in three or
-   four is a decision.
+   was a decision, under either label set. At 0.5 it flags 17 of the 176 random turns
+   (about 10%, 4 of them decisions) and 30 of the 196 evaluated turns (11 of them decisions).
 4. **Its score depends on the labels more than on the model.** On the evaluated set, Jev's
    AUROC was 0.83 against the author's first pass (199 turns) and 0.977 against the
    adjudicated labels (196 turns); on the random stratum, 0.79 and 0.97. The model's answers
    were identical in both.
 5. **A small open decision model does not work zero-shot here.** Laya says yes to almost
    every turn. It would need fine-tuning on far more positives than one corpus provides.
-6. **Jev is stable and language-neutral on this task.** Across three identical runs, the answer
-   flipped on 3 of 196 turns, and no probability moved more than 0.10. Asking the question in English
-   or in Portuguese made no difference.
+6. **Jev is stable, and insensitive to the language of the question.** Across three identical
+   runs, the answer flipped on 3 of 196 turns, and no probability moved more than 0.10. Asking
+   the question in English or in Portuguese about the same pt-BR turns made no difference;
+   other input languages were not tested.
 
 ## Constraints on any integration
 
