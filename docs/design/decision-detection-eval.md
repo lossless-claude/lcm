@@ -59,7 +59,7 @@ pt-BR keyword list flagged 7 there, none of them a decision.
 
 ## What this establishes
 
-1. **The shipped detector is English-only.** It finds 0 of 11 decisions in pt-BR. A second
+1. **The shipped detector was English-only.** It found 0 of 11 decisions in pt-BR. A second
    keyword list is not the fix: on the random stratum it found none.
 2. **"Lasting decision" is not yet a category two readers apply the same way.** Before
    adjudication, the author and the two annotators agreed at κ 0.32 on it, while the
