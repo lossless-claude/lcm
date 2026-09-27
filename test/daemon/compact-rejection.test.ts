@@ -212,6 +212,9 @@ it("names a fallback that reports no usage when its answer replaced a rejected s
 
     expect(result.status).toBe(200);
     expect(result.body.providerId).toBe("openai");
+    // The rejected session reported a model; the stored answer did not, so the run
+    // reports the configured model, not the rejected one.
+    expect(result.body.llmUsage).toMatchObject({ provider: "openai", model: "reasoner" });
   } finally {
     abort.abort();
     await serve;

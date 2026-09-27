@@ -636,8 +636,10 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           // session provider the fallback may have done the work, and the PreCompact banner
           // should say so. Several providers in one run keep the configured name.
           for (const kept of keptAnswers) for (const provider of kept.providers) answeringProviders.add(provider);
-          const storedModel = keptAnswers.at(-1)?.model;
-          if (storedModel) llmUsage.model = storedModel;
+          // The stored answer names the model; one that reported none (an unmetered
+          // fallback) gets the configured model, never a rejected attempt's.
+          const stored = keptAnswers.at(-1);
+          if (stored) llmUsage.model = stored.model ?? config.llm.model;
           const answeredBy = [...answeringProviders];
           const answeredProvider = answeredBy.length === 1 ? answeredBy[0] : effectiveProvider;
           const sessionLabels: Record<string, string> = { "session:haiku": "Live session (haiku)", "session:fork": "Live session (fork)" };
