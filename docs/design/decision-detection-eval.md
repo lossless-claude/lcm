@@ -2,7 +2,7 @@
 
 **Status:** evaluated, 2026-09-27. Decided in #581: the `user_decision` event is removed.
 
-The passive `user_decision` event (`src/hooks/extractors.ts`, `decisionPatterns`) was a
+The passive `user_decision` event (a keyword regex in `extractUserPromptEvents`) was a
 bounded judgment: does this user turn state a decision, rule or preference that should keep
 applying after the request? We measured it, a pt-BR keyword list and two external decision
 models on the same turns. The shipped detector found none of the decisions in pt-BR. A

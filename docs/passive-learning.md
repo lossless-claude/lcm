@@ -19,7 +19,7 @@ Events are written to a **sidecar SQLite database** (`~/.lossless-claude/events/
 
 | Category | Examples | Priority |
 |----------|----------|----------|
-| Decisions | User answers to AskUserQuestion, "always use TypeScript" | 1 (immediate) |
+| Decisions | User answers to AskUserQuestion | 1 (immediate) |
 | Plan approvals | EnterPlanMode / ExitPlanMode events | 1 (immediate) |
 | Errors | Bash commands that fail (isError: true) | 1 (immediate) |
 | Git operations | Commits, merges, branch switches | 2 (batch) |
