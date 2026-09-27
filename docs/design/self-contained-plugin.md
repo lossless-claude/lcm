@@ -97,6 +97,10 @@ and is closed by `claude plugin update`.
   --global`; project scope stays explicit through `lcm connectors`. Run from the
   plugin bundle it skips Codex and names the npm CLI: the hooks would otherwise
   carry a versioned plugin-cache path the next plugin update deletes.
+- Oh My Pi: when `omp` is on PATH, the global hook (`<agentDir>/hooks/post/lcm.ts`)
+  and, from the npm CLI only, the global MCP entry (`<agentDir>/mcp.json`). The hook
+  is self-contained, so it installs from the bundle too; the MCP entry names the
+  running CLI, so from the bundle the outcome names the npm CLI instead.
 - `--dry-run` performs no writes, the shared core included: every write, copy and
   removal goes through the injected service deps.
 - One outcome per harness; the CLI exits non-zero when any harness failed.

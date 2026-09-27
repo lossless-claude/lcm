@@ -15,6 +15,11 @@ export const AGENTS: Agent[] = [
       skill: '.claude/skills/',
     },
     writeMode: 'append',
+    guidance: [
+      { surface: 'learning-instruction', via: 'hook' },
+      { surface: 'memory-rules', via: 'lcm-md' },
+      { surface: 'tools', via: 'mcp' },
+    ],
   },
   {
     id: 'codex',
@@ -28,16 +33,25 @@ export const AGENTS: Agent[] = [
       mcp: '.codex/config.toml',
       skill: '.agents/skills/',
     },
+    guidance: [
+      { surface: 'learning-instruction', via: 'hooks' },
+      { surface: 'tools', via: 'mcp', manual: true },
+    ],
   },
   {
     id: 'omp',
     name: 'Oh My Pi',
     category: 'cli',
     defaultType: 'hooks',
-    supportedTypes: ['hooks'],
+    supportedTypes: ['hooks', 'mcp'],
     configPaths: {
       hooks: '.omp/hooks/post/lcm.ts',
+      mcp: '.omp/mcp.json',
     },
+    guidance: [
+      { surface: 'learning-instruction', via: 'hooks' },
+      { surface: 'tools', via: 'mcp' },
+    ],
   },
   {
     id: 'gemini-cli',

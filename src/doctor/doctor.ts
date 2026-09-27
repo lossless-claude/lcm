@@ -20,6 +20,7 @@ import { checkDaemonLog, type LiveLog } from "./daemon-log-check.js";
 import type { LogState } from "../daemon/log.js";
 import { readFunctionHookSnapshots, readOmpHookSnapshots } from "./hook-snapshots.js";
 import { readHookOutcomeLog } from "./hook-outcome-log.js";
+import { addHarnessGuidanceChecks } from "./guidance-checks.js";
 
 const COLORS = {
   green: "\x1b[0;32m",
@@ -591,6 +592,9 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
       results.push({ name: "lcm-md", category: "Settings", status: "fail", message: `lcm.md repair failed: ${err instanceof Error ? err.message : String(err)} — run: lcm install` });
     }
   }
+
+  // ── Guidance for the other native harnesses (the Claude Code rows are the checks above) ──
+  addHarnessGuidanceChecks(results, deps);
 
   // ── Summarizer (conditional) ──
   if (config.summarizer === "auto") {

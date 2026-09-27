@@ -76,6 +76,8 @@ _Avoid_: category, label
 
 **Guidance**:
 The text lcm puts in front of an agent to teach it when to search memory and what to store.
-One module renders it for every surface that carries it (`src/guidance.ts`). Distinct from
+One module renders it for every surface that carries it (`src/guidance.ts`). Which surfaces
+each harness receives, and through which connector, is the `guidance` table of the connector
+registry (`src/connectors/registry.ts`); `lcm doctor` checks every row. Distinct from
 the harness's own instructions (CLAUDE.md), which restore replays after a compaction.
 _Avoid_: orientation

@@ -7,6 +7,7 @@ import { LCM_MARKERS } from "./constants.js";
 import { generateContent } from "./template-service.js";
 import { findAgent, AGENTS, LEGACY_SKILL_PATHS } from "./registry.js";
 import { mcpServerEntry } from "../installer/mcp-server-entry.js";
+import { runningFromPluginBundle } from "../hooks/fail-open.js";
 import {
   diagnoseCodexHooks,
   installCodexHooks,
@@ -44,11 +45,12 @@ function resolveConfigPath(configPath: string, cwd: string): string {
   return join(cwd, configPath);
 }
 
-// OMP has distinct project and global roots: its project hook lives under the
-// workspace's .omp directory, while the user hook lives under agentDir.
+// OMP has distinct project and global roots: its project files live under the
+// workspace's .omp directory, while the user files live under agentDir.
 function resolveAgentConfigPath(agentId: string, connectorType: ConnectorType, configPath: string, cwd: string): string {
-  if (agentId === "omp" && connectorType === "hooks" && cwd === homedir()) {
-    return join(ompAgentDir(), "hooks", "post", "lcm.ts");
+  if (agentId === "omp" && cwd === homedir()) {
+    if (connectorType === "hooks") return join(ompAgentDir(), "hooks", "post", "lcm.ts");
+    if (connectorType === "mcp") return join(ompAgentDir(), "mcp.json");
   }
   return resolveConfigPath(configPath, cwd);
 }
@@ -77,18 +79,35 @@ function installMarkdown(content: string, filePath: string, writeMode: 'append' 
 }
 
 // Strategy 2: Structured targets (MCP JSON)
-function installMcpJson(filePath: string): void {
-  mkdirSync(dirname(filePath), { recursive: true });
-  let existing: any = {};
-  if (existsSync(filePath)) {
-    try { existing = JSON.parse(readFileSync(filePath, 'utf-8')); } catch { existing = {}; }
+function writeFileCreatingDir(path: string, data: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, data);
+}
+
+// The existing config object, or {} when the file is missing. A file that is not a
+// JSON object is refused: rewriting it would drop the servers it holds.
+function readJsonObject(filePath: string): any {
+  if (!existsSync(filePath)) return {};
+  let parsed: unknown;
+  try { parsed = JSON.parse(readFileSync(filePath, 'utf-8')); } catch { parsed = undefined; }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`Cannot register the MCP server: ${filePath} is not a JSON object; fix or remove it`);
   }
-  if (typeof existing !== 'object' || existing === null) existing = {};
+  return parsed;
+}
+
+function installMcpJson(filePath: string, options: CodexHookCommandOptions = {}): void {
+  // The entry names the running CLI; from the plugin bundle that is a versioned cache path the next plugin update deletes.
+  if (runningFromPluginBundle()) {
+    throw new Error("Cannot register the MCP server from the Claude Code plugin; run this command from the npm CLI");
+  }
+  const writeFile = options.writeFile ?? writeFileCreatingDir;
+  const existing = readJsonObject(filePath);
   if (typeof existing.mcpServers !== 'object' || existing.mcpServers === null || Array.isArray(existing.mcpServers)) {
     existing.mcpServers = {};
   }
-  existing.mcpServers.lcm = { type: 'stdio', ...mcpServerEntry() };
-  writeFileSync(filePath, JSON.stringify(existing, null, 2) + '\n');
+  existing.mcpServers.lcm = { type: 'stdio', ...mcpServerEntry({ nodePath: options.nodePath, cliPath: options.cliPath }) };
+  writeFile(filePath, JSON.stringify(existing, null, 2) + '\n');
 }
 
 // Removes the skill file (and its now-empty lcm-memory directory) at an
@@ -173,7 +192,7 @@ export function installConnector(
         manual: `Add the following to ${configPath}:\n\n[mcp_servers.lcm]\ncommand = "lcm"\nargs = ["mcp"]`,
       };
     }
-    installMcpJson(resolvedPath);
+    installMcpJson(resolvedPath, options);
     return { success: true, path: resolvedPath, requiresRestart: requiresRestart(connectorType) };
   }
 
