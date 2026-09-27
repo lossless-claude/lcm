@@ -1,8 +1,10 @@
 # Tag schema
 
 Tags are what `lcm search --tag` and the `tags` filter of `lcm_search` select on. This file
-defines the shape a tag has and the prefixes the guidance recommends. The `lcm_store`
-description and the learning instruction point here.
+defines the shape a tag has and the prefixes the guidance recommends. Every guidance
+surface (the `lcm_store` description, the learning instruction, `~/.claude/lcm.md`, connector
+rules) renders its tag advice from `src/guidance.ts`; `test/guidance.test.ts` fails when this
+file stops listing a type, prefix or reserved tag that module names.
 
 ## Shape
 

@@ -3,6 +3,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Agent, ConnectorType } from "./types.js";
 import { LCM_MARKERS, LCM_TAG } from "./constants.js";
+import { RULES_CLI, RULES_MCP } from "../guidance.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // The plugin bundle carries the templates under assets/templates next to it; dist/ and src/ keep them beside this module.
@@ -12,14 +13,6 @@ const TEMPLATES_DIR = existsSync(join(__dirname, "assets", "templates"))
 
 function loadFile(path: string): string {
   return readFileSync(join(TEMPLATES_DIR, path), "utf-8");
-}
-
-function substituteVariables(template: string, context: Record<string, string>): string {
-  let result = template;
-  for (const [key, value] of Object.entries(context)) {
-    result = result.replaceAll(`{{${key}}}`, value);
-  }
-  return result;
 }
 
 function wrapWithMarkers(content: string, agentName: string, header?: string): string {
@@ -34,20 +27,11 @@ function wrapWithMarkers(content: string, agentName: string, header?: string): s
 }
 
 export function generateRulesContent(agent: Agent): string {
-  const workflow = loadFile("sections/workflow.md");
-  const commandRef = loadFile("sections/command-reference.md");
-  const base = loadFile("base.md");
-  const content = substituteVariables(base, {
-    workflow: substituteVariables(workflow, { command_reference: commandRef }),
-  });
-  return wrapWithMarkers(content, agent.name, agent.header);
+  return wrapWithMarkers(RULES_CLI, agent.name, agent.header);
 }
 
 export function generateMcpContent(agent: Agent): string {
-  const mcpWorkflow = loadFile("sections/mcp-workflow.md");
-  const base = loadFile("mcp-base.md");
-  const content = substituteVariables(base, { mcp_workflow: mcpWorkflow });
-  return wrapWithMarkers(content, agent.name, agent.header);
+  return wrapWithMarkers(RULES_MCP, agent.name, agent.header);
 }
 
 export function generateSkillContent(_agent: Agent): string {

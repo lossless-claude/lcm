@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { generateRulesContent, generateMcpContent, generateSkillContent, generateContent } from '../../src/connectors/template-service.js';
 import { LCM_MARKERS } from '../../src/connectors/constants.js';
 import type { Agent } from '../../src/connectors/types.js';
-import { STORE_RULE_PHRASE } from '../../src/daemon/orientation.js';
+import { RULES_CLI, RULES_MCP, STORE_TYPES } from '../../src/guidance.js';
 
 const mockAgent: Agent = {
   id: 'test-agent',
@@ -129,6 +129,13 @@ describe('generateSkillContent', () => {
   });
 });
 
+describe('rules files render the guidance module', () => {
+  it('wraps the CLI and MCP guidance unchanged', () => {
+    expect(generateRulesContent(mockAgent)).toContain(RULES_CLI);
+    expect(generateMcpContent(mockAgent)).toContain(RULES_MCP);
+  });
+});
+
 describe('storing guidance is consistent across surfaces', () => {
   const surfaces = [
     ['rules', () => generateRulesContent(mockAgent)],
@@ -139,7 +146,7 @@ describe('storing guidance is consistent across surfaces', () => {
   for (const [name, render] of surfaces) {
     it(`${name} states the shared storing rule`, () => {
       const content = render();
-      expect(content).toContain(STORE_RULE_PHRASE);
+      for (const t of STORE_TYPES) expect(content).toContain(t.value);
       expect(content).toContain(name === 'mcp' ? 'lcm_store' : 'lcm store');
       expect(content).toContain('type:');
     });

@@ -33,19 +33,19 @@ const DEFAULT_TMP_DIR = "/tmp";
 const INGEST_INTERVAL_MS = 60_000;
 let lastIngestAt = 0;
 
-// Verbatim copy of src/hooks/learning-instruction.ts (the module cannot import from src/);
+// Verbatim copy of LEARNING_INSTRUCTION in src/guidance.ts (the module cannot import from src/);
 // test/hooks/learning-instruction.test.ts fails when the two drift.
 const LEARNING_INSTRUCTION = `<learning-instruction>
 When you recognize a durable insight, call lcm_store immediately:
-- decision: architectural/design choice with trade-offs
-- preference: user working style or tool preference
-- root-cause: bug cause that took effort to uncover
-- pattern: codebase convention not documented elsewhere
-- gotcha: non-obvious pitfall or footgun
-- solution: non-trivial fix worth remembering
-- workflow: multi-step process that works
+- decision: an architectural or design choice, with the trade-off that settled it
+- preference: how the user wants things done
+- root-cause: a bug cause that took effort to uncover
+- pattern: a codebase convention documented nowhere else
+- gotcha: a non-obvious pitfall
+- solution: a non-trivial fix worth remembering
+- workflow: a multi-step process that works
 
-Tag prefixes: type: | scope: | project: | source: | priority:
+Tag each store with type: plus one of project: or scope:; add source: when the origin matters for trust, and priority: rarely.
 Usage: lcm_store(text: "concise insight with why", tags: ["type:decision", "project:<repo>"])
 
 When you act on a surfaced memory (use it to inform a decision, avoid a known pitfall, or reference it in your work), emit:

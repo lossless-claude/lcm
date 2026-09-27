@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { runDoctor } from "../../src/doctor/doctor.js";
 import { REQUIRED_HOOKS } from "../../installer/install.js";
-import { LCM_MD_CONTENT } from "../../src/daemon/orientation.js";
+import { LCM_MD_CONTENT } from "../../src/guidance.js";
 import { ensureDaemon } from "../../src/daemon/lifecycle.js";
 import { PKG_VERSION } from "../../src/daemon/version.js";
 
