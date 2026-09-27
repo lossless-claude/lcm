@@ -413,6 +413,37 @@ describe("required pre-compaction capture", () => {
       await request;
     }
   });
+
+  it("rechecks verified OMP admission after summarizer setup awaits", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-omp-admission-"));
+    dirs.push(cwd);
+    const factoryEntered = Promise.withResolvers<void>();
+    const factoryReady = Promise.withResolvers<any>();
+    vi.mocked(createOpenAISummarizer).mockImplementationOnce(() => {
+      factoryEntered.resolve();
+      return factoryReady.promise as any;
+    });
+    const { res, getBody } = mockRes();
+    const request = createCompactHandler(makeConfig("openai"), paths)({} as any, res, JSON.stringify({
+      session_id: "omp-admission", cwd, client: "omp", skip_ingest: true,
+      precompact_verified: true, operation_id: "omp-admission-operation",
+    }));
+    await factoryEntered.promise;
+    const entered = Promise.withResolvers<void>();
+    const unblock = Promise.withResolvers<void>();
+    const queued = enqueue(projectId(cwd), async () => { entered.resolve(); await unblock.promise; });
+    await entered.promise;
+    factoryReady.resolve(async () => "summary");
+    try {
+      expect(await Promise.race([request.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 3000))]))
+        .toBe(true);
+      expect(getBody().skipped).toBe(true);
+    } finally {
+      unblock.resolve();
+      await queued;
+      await request;
+    }
+  });
 });
 
 async function readMessageCount(cwd: string, sessionId: string): Promise<number> {
