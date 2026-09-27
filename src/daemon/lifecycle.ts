@@ -264,6 +264,74 @@ export function findListenerPid(port: number): number | undefined {
   }
 }
 
+/** The command line of `pid`, via `ps -o command=`. Undefined when unknown or not running. */
+function processCommand(pid: number): string | undefined {
+  try {
+    const out = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf-8" });
+    return String(out.stdout ?? "").trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** True when `command` runs lcm's entry point (`lcm`, `lcm.js`, `lcm.ts`, …) as `daemon start`. */
+export function isLcmDaemonCommand(command: string): boolean {
+  return /(?:^|[\s/\\])lcm(?:\.[cm]?[jt]s)?\s+daemon\s+start(?:\s|$)/.test(command);
+}
+
+/** Who holds a port the daemon could not bind or reach. */
+export type PortHolder = { pid?: number; lcm: boolean };
+
+export type PortHolderProbe = {
+  listenerPid: (port: number) => number | undefined;
+  command: (pid: number) => string | undefined;
+};
+
+/**
+ * Identify the process listening on `port`: an lcm daemon when it is the pid the pid file
+ * records, or when its command line is lcm's `daemon start`; anything else is foreign.
+ *
+ * The command line is what identifies a daemon whose pid file is gone: a spawner that finds a
+ * recorded daemon alive but unanswering deletes the pid file before it spawns a replacement.
+ */
+export function identifyPortHolder(
+  port: number,
+  pidFilePath: string,
+  probe: PortHolderProbe = { listenerPid: findListenerPid, command: processCommand },
+): PortHolder {
+  let recorded: number | undefined;
+  try {
+    const parsed = parseInt(readFileSync(pidFilePath, "utf-8").trim(), 10);
+    if (!isNaN(parsed)) recorded = parsed;
+  } catch { /* missing */ }
+  const listener = probe.listenerPid(port);
+  const pid = listener ?? recorded;
+  if (pid === undefined) return { lcm: false };
+  if (listener !== undefined && listener === recorded) return { pid, lcm: true };
+  const command = probe.command(pid);
+  return { pid, lcm: command !== undefined && isLcmDaemonCommand(command) };
+}
+
+/** Why a daemon could not take `port`, for the holder `identifyPortHolder` found. */
+export function describePortHolder(
+  port: number,
+  holder: PortHolder,
+  paths: { configPath: string; logsDir: string },
+): string {
+  if (holder.lcm) {
+    const pid = holder.pid ?? "?";
+    // "Starting" covers a concurrent start that won the listen race and has not answered yet.
+    return `Port ${port} is already in use by an lcm daemon (pid ${pid}) that did not answer: it is starting, busy or stuck.`
+      + ` Check ${join(paths.logsDir, "daemon.log")}; to replace it, end pid ${pid} and run: lcm daemon start`;
+  }
+  return `Port ${port} is already in use by another process (not an lcm daemon). Stop it or change daemon.port in ${paths.configPath}.`;
+}
+
+/** Why a detached start failed when no process could be found on `port`. */
+export function describeUnansweredDaemon(port: number, logsDir: string): string {
+  return `lcm daemon did not answer on port ${port} within 10s — check ${join(logsDir, "daemon.log")} and ${join(logsDir, "daemon.stderr")}`;
+}
+
 export async function checkDaemonHealth(
   port: number,
   fetchFn: typeof globalThis.fetch = globalThis.fetch,
