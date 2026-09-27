@@ -72,13 +72,14 @@ function isNetworkError(error: any): boolean {
 
 /**
  * An HTTP failure worth the next endpoint: the endpoint refused this key (401/403)
- * or stayed unavailable through the adapter's retries (408, 429, 5xx, no connection).
+ * or its account cannot pay (402), or it stayed unavailable through the adapter's
+ * retries (408, 429, 5xx, no connection).
  * A 400 or 422 is a request the next endpoint would build the same way, so it stops.
  */
 function httpFailureAdvances(error: any): boolean {
   const status = error?.status;
   if (typeof status !== "number") return isNetworkError(error);
-  return status === 401 || status === 403 || status === 408 || status === 429 || status >= 500;
+  return status === 401 || status === 402 || status === 403 || status === 408 || status === 429 || status >= 500;
 }
 
 /**
