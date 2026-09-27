@@ -51,8 +51,9 @@ pt-BR keyword list flagged 7 there, none of them a decision.
    probability did not mean a decision: none of its answers at P ≥ 0.9 in the random stratum
    was a decision, under either label set. At 0.5 it flags about 10% of turns, and one flag in three or
    four is a decision.
-4. **Its score depends on the labels more than on the model.** Against the author's first
-   pass, Jev's AUROC was 0.79; against the adjudicated labels, 0.977. The model's answers
+4. **Its score depends on the labels more than on the model.** On the evaluated set, Jev's
+   AUROC was 0.83 against the author's first pass (199 turns) and 0.977 against the
+   adjudicated labels (196 turns); on the random stratum, 0.79 and 0.97. The model's answers
    were identical in both.
 5. **A small open decision model does not work zero-shot here.** Laya says yes to almost
    every turn. It would need fine-tuning on far more positives than one corpus provides.
