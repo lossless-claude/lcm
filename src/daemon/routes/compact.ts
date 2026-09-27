@@ -8,7 +8,7 @@ import { updateProjectMeta } from "../project-meta.js";
 import { projectId, projectDbPath, projectDir } from "../project.js";
 import { noopDaemonLog, type DaemonLog } from "../log.js";
 import { openProject } from "../project-group.js";
-import { enqueue, hasQueuedProjectWork } from "../project-queue.js";
+import { enqueue, hasQueuedProjectWork, withProjectMutation } from "../project-queue.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
@@ -303,20 +303,22 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         const scrubber = await ScrubEngine.forProject(
           config.security?.sensitivePatterns ?? [], projectDir(cwd, paths),
         );
-        const db = openStandaloneLcmConnection(dbPath);
-        try {
-          runLcmMigrations(db);
-          const captured = await captureTranscriptForCompact(new SessionCapture(db, projectId(cwd), scrubber), {
-            sessionId: session_id, cwd, client, transcriptPath: transcript_path,
-          }, paths, log);
-          const outcome = captured
-            ? { status: "completed" as const, messages: captured.records.length }
-            : { status: "deferred" as const, reason: "no-capture-result" as const };
-          log.write("info", "precompact.capture", { cwd, session_id, ...outcome });
-          return outcome;
-        } finally {
-          db.close();
-        }
+        return await withProjectMutation(projectId(cwd), async () => {
+          const db = openStandaloneLcmConnection(dbPath);
+          try {
+            runLcmMigrations(db);
+            const captured = await captureTranscriptForCompact(new SessionCapture(db, projectId(cwd), scrubber), {
+              sessionId: session_id, cwd, client, transcriptPath: transcript_path,
+            }, paths, log);
+            const outcome = captured
+              ? { status: "completed" as const, messages: captured.records.length }
+              : { status: "deferred" as const, reason: "no-capture-result" as const };
+            log.write("info", "precompact.capture", { cwd, session_id, ...outcome });
+            return outcome;
+          } finally {
+            db.close();
+          }
+        });
       } catch (err) {
         log.write("error", "precompact.capture_failed", { cwd, session_id, err });
         return { status: "failed" as const, reason: err instanceof TranscriptSourceError ? "invalid-source" as const : "capture-error" as const };
@@ -382,12 +384,14 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         openProject(cwd, paths);
         const llmUsage = createCompactLlmUsage(effectiveProvider, config.llm.model);
         const usageByProvider = new Map<string, CompactLlmUsage>();
+        const answeringProviders = new Set<string>();
 
         const scrubber = await ScrubEngine.forProject(
           config.security?.sensitivePatterns ?? [],
           projectDir(cwd, paths),
         );
 
+        return withProjectMutation(pid, async (lease) => {
         const db = getLcmConnection(dbPath);
         try {
           runLcmMigrations(db);
@@ -455,7 +459,8 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
 
           let language = resolveSummarizerLanguage(config, cwd, paths);
           if (language === undefined) {
-            await scheduleProjectLanguageDetection(cwd, db, config, paths, client);
+            const detection = scheduleProjectLanguageDetection(cwd, db, config, paths, client);
+            await lease.yieldWhile(() => detection);
             language = resolveSummarizerLanguage(config, cwd, paths);
           } else {
             void scheduleProjectLanguageDetection(cwd, db, config, paths, client);
@@ -468,11 +473,14 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             let sawUsage = false;
             const callUsage = new Map<string, CompactLlmUsage>();
             const finishUsage = (ok: boolean) => {
-              for (const [key, call] of callUsage) {
+              for (const call of callUsage.values()) {
+                const key = JSON.stringify([call.provider, call.model]);
                 const bucket = usageByProvider.get(key) ?? createCompactLlmUsage(call.provider, call.model);
-                bucket.calls += 1;
-                bucket.okCalls += ok ? 1 : 0;
-                bucket.failedCalls += ok ? 0 : 1;
+                const failedAttempt = call.failedCalls > 0;
+                const answeredAttempt = call.okCalls > 0;
+                bucket.calls += failedAttempt ? call.failedCalls : answeredAttempt ? call.okCalls : 1;
+                bucket.okCalls += answeredAttempt ? call.okCalls : failedAttempt ? 0 : ok ? 1 : 0;
+                bucket.failedCalls += failedAttempt ? call.failedCalls : answeredAttempt ? 0 : ok ? 0 : 1;
                 bucket.callsEstimated = (bucket.callsEstimated ?? 0) + (call.callsEstimated ?? 0);
                 addTokens(bucket, { tokens: call.tokensSpent, input: call.tokensInput,
                   cached: call.tokensCached, output: call.tokensOutput, cost: call.costUsd });
@@ -480,7 +488,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
               }
             };
             try {
-              const summary = await activeSummarize(text, aggressive, {
+              const summary = await lease.yieldWhile(() => activeSummarize(text, aggressive, {
                 ...ctx,
                 sessionId: session_id,
                 client,
@@ -490,12 +498,15 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                   // Every provider reports normalized usage; only providers
                   // whose response carries it call onUsage at all.
                   sawUsage = true;
-                  const key = JSON.stringify([usage.provider, usage.model ?? config.llm.model]);
+                  const key = JSON.stringify([usage.provider, usage.model ?? config.llm.model, usage.failed ?? "derived"]);
                   let bucket = callUsage.get(key);
                   if (!bucket) {
                     bucket = createCompactLlmUsage(usage.provider, usage.model ?? config.llm.model);
                     callUsage.set(key, bucket);
                   }
+                  if (usage.failed === true) bucket.failedCalls += 1;
+                  else if (usage.failed === false) bucket.okCalls += 1;
+                  else answeringProviders.add(usage.provider);
                   // One per estimated response, not a flag: a call that retries reports
                   // usage more than once and each estimated response counts.
                   bucket.callsEstimated = (bucket.callsEstimated ?? 0) + (usage.estimated ? 1 : 0);
@@ -510,13 +521,13 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                     callTokensSpent.cost = (callTokensSpent.cost ?? 0) + usage.costUsd;
                   }
                   const reportedModel = usage.model?.trim();
-                  if (!sawReportedUsageModel && reportedModel) {
+                  if (reportedModel && (usage.failed === undefined || !sawReportedUsageModel)) {
                     llmUsage.model = reportedModel;
                     sawReportedUsageModel = true;
                   }
                   ctx.onUsage?.(usage);
                 },
-              });
+              }));
               if (sawUsage) {
                 llmUsage.calls += 1;
                 llmUsage.okCalls += 1;
@@ -593,7 +604,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           // Name the provider that actually answered when it was a single one: with the
           // session provider the fallback may have done the work, and the PreCompact banner
           // should say so. Several providers in one run keep the configured name.
-          const answeredBy = [...new Set([...usageByProvider.values()].map((usage) => usage.provider))];
+          const answeredBy = [...answeringProviders];
           const answeredProvider = answeredBy.length === 1 ? answeredBy[0] : effectiveProvider;
           const sessionLabels: Record<string, string> = { "session:haiku": "Live session (haiku)", "session:fork": "Live session (fork)" };
           const answeredLabel = answeredProvider === effectiveProvider
@@ -630,6 +641,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           }
           closeLcmConnection(dbPath);
         }
+        });
       }); // end enqueue
 
       if (result.replayOutcome === "compacted" && "tokensBefore" in result) {

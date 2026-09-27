@@ -265,10 +265,13 @@ a file that grew or was rewritten between two runs.
 
 ## Operation serialization
 
-All mutating operations (ingest, compact) are serialized **per project** — the queue is keyed by
+Ordinary ingest and compact requests are serialized **per project** — the queue is keyed by
 `projectId(cwd)` (`src/daemon/project-queue.ts`), not by session — so two conversations of the same
 project wait on each other while different projects do not. `/compact` adds its own per-session
-guard on top, which is what keeps one session from compacting twice at once.
+guard on top, which is what keeps one session from compacting twice at once. A required PreCompact
+Capture bypasses a queue occupied by an LLM call so it can finish within the hook deadline.
+It shares a short per-project mutation lease with ingest and compact database work; compaction
+releases that lease only while awaiting the external LLM and reacquires it before writing.
 
 A project's `meta.json` is written by routes on different sessions of the same project, so the per-project queue is not what covers it; it needs no queue of its own because each update in `src/daemon/project-meta.ts` is a single synchronous read-modify-write that nothing in the process can interleave with. Writers in other processes are outside the daemon's trust boundary, as they are for the database.
 

@@ -79,7 +79,7 @@ export async function createSummarizer(
           ctx.onUsage?.({ provider: attempt.providerId, model: attempt.providerId.split(":")[1],
             inputTokens: attempt.usage.input_tokens, outputTokens: attempt.usage.output_tokens,
             tokensUsed: attempt.usage.input_tokens + attempt.usage.output_tokens,
-            estimated: attempt.usage.estimated });
+            estimated: attempt.usage.estimated, failed: attempt.failed ?? true });
         }
         if (!answer.error && answer.text?.trim()) {
           const inputTokens = answer.usage?.input_tokens ?? Math.ceil((system.length + prompt.length) / 4);

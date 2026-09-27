@@ -34,7 +34,8 @@ export function createAnswerSummarizeJobHandler(store: SummarizeJobStore): Route
     const validAttempts = answer.usageAttempts === undefined ||
       (Array.isArray(answer.usageAttempts) && answer.usageAttempts.length <= 2 &&
         answer.usageAttempts.every((attempt) => attempt &&
-          ["session:haiku", "session:fork"].includes(attempt.providerId) && validUsage(attempt.usage)));
+          ["session:haiku", "session:fork"].includes(attempt.providerId) && validUsage(attempt.usage) &&
+          (attempt.failed === undefined || typeof attempt.failed === "boolean")));
     // Require exactly one outcome and validate accounting before it reaches SQLite.
     if ((answer.text !== undefined && answer.error !== undefined) ||
         (answer.providerId !== undefined && !["session:haiku", "session:fork"].includes(answer.providerId)) ||

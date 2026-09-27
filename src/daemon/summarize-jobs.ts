@@ -11,6 +11,7 @@ export type JobAnswer = {
   usageAttempts?: Array<{
     providerId: "session:haiku" | "session:fork";
     usage: { input_tokens: number; output_tokens: number; estimated: boolean };
+    failed?: boolean;
   }>;
 };
 type Entry = {

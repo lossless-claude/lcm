@@ -49,6 +49,7 @@ import { createAnthropicSummarizer } from "../../../src/llm/anthropic.js";
 import { createOpenAISummarizer } from "../../../src/llm/openai.js";
 import { scheduleProjectLanguageDetection } from "../../../src/daemon/project-language.js";
 import { createCompactHandler, buildCompactionMessage, markCompacting } from "../../../src/daemon/routes/compact.js";
+import { createIngestHandler } from "../../../src/daemon/routes/ingest.js";
 import { enqueue } from "../../../src/daemon/project-queue.js";
 import type { DaemonConfig } from "../../../src/daemon/config.js";
 
@@ -209,6 +210,23 @@ describe("required pre-compaction capture", () => {
     }
   });
 
+  it("returns separate outcomes when busy Capture rejects an invalid source", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-busy-invalid-"));
+    dirs.push(cwd);
+    const release = markCompacting("busy-invalid", cwd);
+    try {
+      const { res, getBody } = mockRes();
+      await createCompactHandler(makeConfig("openai"), paths)({} as any, res, JSON.stringify({
+        session_id: "busy-invalid", cwd, client: "omp", capture_required: true,
+        transcript_path: join(cwd, "missing.jsonl"),
+      }));
+      expect(getBody().captureOutcome).toMatchObject({ status: "failed", reason: "invalid-source" });
+      expect(getBody().summaryOutcome).toMatchObject({ status: "skipped", reason: "busy" });
+    } finally {
+      release();
+    }
+  });
+
   it("captures while the project queue is occupied by an active summary", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-queued-"));
     dirs.push(cwd);
@@ -233,6 +251,117 @@ describe("required pre-compaction capture", () => {
       release();
     }
   });
+
+  it("captures a transcript tail while an earlier summary waits for its LLM", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-live-summary-"));
+    dirs.push(cwd);
+    const transcriptPath = join(cwd, "session.jsonl");
+    writeFileSync(transcriptPath, Array.from({ length: 20 }, (_, index) => JSON.stringify({
+      message: { role: index % 2 ? "assistant" : "user",
+        content: `message ${index} ${"content for compaction ".repeat(100)}` },
+    })).join("\n") + "\n");
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(async () => {
+      entered.resolve();
+      await resume.promise;
+      return "summary";
+    });
+    const handler = createCompactHandler(makeConfig("openai"), paths);
+    const first = mockRes();
+    const compacting = handler({} as any, first.res, JSON.stringify({
+      session_id: "live-summary", cwd, transcript_path: transcriptPath,
+    }));
+    try {
+      await Promise.race([entered.promise, compacting.then(() => { throw new Error("summary did not reach LLM"); })]);
+      appendFileSync(transcriptPath, JSON.stringify({ message: { role: "user", content: "new tail while LLM waits" } }) + "\n");
+      const second = mockRes();
+      const capture = handler({} as any, second.res, JSON.stringify({
+        session_id: "live-summary", cwd, transcript_path: transcriptPath, capture_required: true,
+      }));
+      expect(await Promise.race([capture.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 3000))]))
+        .toBe(true);
+      expect(second.getBody().captureOutcome).toMatchObject({ status: "completed", messages: 1 });
+      expect(second.getBody().summaryOutcome).toMatchObject({ status: "skipped", reason: "busy" });
+    } finally {
+      resume.resolve();
+      await compacting;
+    }
+    expect(await readMessageContents(cwd, "live-summary")).toContain("new tail while LLM waits");
+  }, 10_000);
+
+  it("captures while language detection awaits an external model", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-detect-"));
+    dirs.push(cwd);
+    const transcriptPath = join(cwd, "session.jsonl");
+    writeFileSync(transcriptPath, Array.from({ length: 20 }, (_, index) => JSON.stringify({
+      message: { role: index % 2 ? "assistant" : "user",
+        content: `message ${index} ${"content for compaction ".repeat(100)}` },
+    })).join("\n") + "\n");
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    vi.mocked(scheduleProjectLanguageDetection).mockImplementationOnce(async () => {
+      entered.resolve();
+      await resume.promise;
+    });
+    const handler = createCompactHandler(makeConfig("openai"), paths);
+    const first = mockRes();
+    const compacting = handler({} as any, first.res, JSON.stringify({
+      session_id: "detect-session", cwd, transcript_path: transcriptPath,
+    }));
+    try {
+      await Promise.race([entered.promise, compacting.then(() => { throw new Error("language detection did not start"); })]);
+      appendFileSync(transcriptPath, JSON.stringify({ message: { role: "user", content: "tail during detection" } }) + "\n");
+      const second = mockRes();
+      const capture = handler({} as any, second.res, JSON.stringify({
+        session_id: "detect-session", cwd, transcript_path: transcriptPath, capture_required: true,
+      }));
+      expect(await Promise.race([capture.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 3000))]))
+        .toBe(true);
+      expect(second.getBody().captureOutcome).toMatchObject({ status: "completed", messages: 1 });
+    } finally {
+      resume.resolve();
+      await compacting;
+    }
+  }, 10_000);
+
+  it("waits for an active ingest transaction without blocking its commit", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-ingest-lease-"));
+    dirs.push(cwd);
+    const transcriptPath = join(cwd, "session.jsonl");
+    writeFileSync(transcriptPath, JSON.stringify({ message: { role: "user", content: "capture after ingest" } }) + "\n");
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const original = ConversationStore.prototype.withTransaction;
+    const spy = vi.spyOn(ConversationStore.prototype, "withTransaction").mockImplementationOnce(function (operation) {
+      return original.call(this, async () => {
+        entered.resolve();
+        await release.promise;
+        return operation();
+      });
+    });
+    const first = mockRes();
+    const ingesting = createIngestHandler(makeConfig("disabled"), paths)({} as any, first.res, JSON.stringify({
+      session_id: "other-session", cwd,
+      messages: [{ role: "user", content: "first writer", tokenCount: 2 }],
+    }));
+    try {
+      await entered.promise;
+      const second = mockRes();
+      const capture = createCompactHandler(makeConfig("disabled"), paths)({} as any, second.res, JSON.stringify({
+        session_id: "precompact-session", cwd, transcript_path: transcriptPath, capture_required: true,
+      }));
+      expect(await Promise.race([capture.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 50))]))
+        .toBe(false);
+      release.resolve();
+      await Promise.all([ingesting, capture]);
+      expect(second.getBody().captureOutcome).toMatchObject({ status: "completed", messages: 1 });
+    } finally {
+      release.resolve();
+      spy.mockRestore();
+      await ingesting;
+    }
+  }, 10_000);
 
   it("records the OMP summary outcome after its separately confirmed capture", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-omp-"));

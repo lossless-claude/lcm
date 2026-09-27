@@ -315,6 +315,8 @@ type SummaryAnswer = {
 type UsageAttempt = {
   providerId: "session:haiku" | "session:fork";
   usage: { input_tokens: number; output_tokens: number; estimated: boolean };
+  /** Whether this call failed to provide a usable answer. */
+  failed?: boolean;
 };
 type SummaryFailure = Error & { usageAttempts?: UsageAttempt[] };
 const DEFAULT_SUMMARY_OUTPUT_CAP = 50_000;
@@ -332,9 +334,9 @@ function summaryDelay($: EngineInterface, ms: number): Promise<void> {
   return new Promise((resolve) => { $.clock.after(ms, resolve); });
 }
 
-async function completeSummary($: EngineInterface, job: SummaryJob): Promise<SummaryAnswer> {
+async function completeSummary($: EngineInterface, job: SummaryJob, remainingTokens: number): Promise<SummaryAnswer> {
   const result = await $.model.complete({
-    model: "haiku", system: job.system, prompt: job.prompt, maxTokens: job.maxTokens,
+    model: "haiku", system: job.system, prompt: job.prompt, maxTokens: Math.min(job.maxTokens, remainingTokens),
   });
   // Earlier engine builds returned the text directly; current builds return a
   // discriminated result and do not reject when the provider cannot answer.
@@ -343,7 +345,7 @@ async function completeSummary($: EngineInterface, job: SummaryJob): Promise<Sum
     failure.usageAttempts = [{ providerId: "session:haiku", usage: {
       input_tokens: result.usage.input_tokens,
       output_tokens: result.usage.output_tokens, estimated: false,
-    } }];
+    }, failed: true }];
     throw failure;
   }
   const text = typeof result === "string" ? result : result.text;
@@ -359,7 +361,7 @@ async function completeSummary($: EngineInterface, job: SummaryJob): Promise<Sum
   };
 }
 
-async function answerSummary($: EngineInterface, job: SummaryJob): Promise<SummaryAnswer> {
+async function answerSummary($: EngineInterface, job: SummaryJob, remainingTokens: number): Promise<SummaryAnswer> {
   if (job.kind === "condensed") {
     const fork = await $.model.fork({ prompt: `${job.system}\n\n${job.prompt}` }).catch(() => null);
     if (fork && "text" in fork && "usage" in fork) {
@@ -372,10 +374,16 @@ async function answerSummary($: EngineInterface, job: SummaryJob): Promise<Summa
       ? { providerId: "session:fork", usage: {
         input_tokens: fork.usage.input_tokens,
         output_tokens: fork.usage.output_tokens, estimated: false,
-      } } : undefined;
+      }, failed: true } : undefined;
+    const forkSpent = forkAttempt?.usage.output_tokens ?? 0;
+    if (forkSpent >= remainingTokens) {
+      const failure = new Error("spend cap") as SummaryFailure;
+      failure.usageAttempts = forkAttempt ? [forkAttempt] : [];
+      throw failure;
+    }
     let fallback: SummaryAnswer;
     try {
-      fallback = await completeSummary($, job);
+      fallback = await completeSummary($, job, remainingTokens - forkSpent);
     } catch (error) {
       if (forkAttempt) {
         const failure = (error instanceof Error ? error : new Error(String(error))) as SummaryFailure;
@@ -386,7 +394,7 @@ async function answerSummary($: EngineInterface, job: SummaryJob): Promise<Summa
     }
     return forkAttempt ? { ...fallback, priorUsage: [forkAttempt] } : fallback;
   }
-  return completeSummary($, job);
+  return completeSummary($, job, remainingTokens);
 }
 
 /**
@@ -467,7 +475,7 @@ async function serveSummaryJob(
   }
   let answer: SummaryAnswer;
   try {
-    answer = await answerSummary($, job);
+    answer = await answerSummary($, job, cap - spent);
   } catch (error) {
     const attempts = (error as SummaryFailure)?.usageAttempts ?? [];
     const used = attempts.reduce((sum, attempt) => sum + attempt.usage.output_tokens, 0);
@@ -476,14 +484,16 @@ async function serveSummaryJob(
     return spent + used > cap ? null : used;
   }
   const attempts: UsageAttempt[] = [...(answer.priorUsage ?? []),
-    { providerId: answer.providerId, usage: answer.usage }];
+    { providerId: answer.providerId, usage: answer.usage, failed: false }];
   const totalOutput = attempts.reduce((sum, attempt) => sum + attempt.usage.output_tokens, 0);
   if (spent + totalOutput > cap) {
     await postSummaryAnswer($, job, route, { error: "spend cap", usageAttempts: attempts });
     return null;
   }
   if (!answer.text) {
-    await postSummaryAnswer($, job, route, { error: "empty summary", usageAttempts: attempts });
+    await postSummaryAnswer($, job, route, { error: "empty summary", usageAttempts: [
+      ...(answer.priorUsage ?? []), { providerId: answer.providerId, usage: answer.usage, failed: true },
+    ] });
     return totalOutput;
   }
   const { priorUsage, ...body } = answer;

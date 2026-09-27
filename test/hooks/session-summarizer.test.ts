@@ -239,7 +239,7 @@ describe("function-hook session summarizer", () => {
       text: "summary", providerId: "session:haiku",
       usage: { input_tokens: 3, output_tokens: 2, estimated: true },
       usageAttempts: [{ providerId: "session:fork",
-        usage: { input_tokens: 40, output_tokens: 7, estimated: false } }],
+        usage: { input_tokens: 40, output_tokens: 7, estimated: false }, failed: true }],
     });
   });
 
@@ -250,10 +250,18 @@ describe("function-hook session summarizer", () => {
     await trigger();
     await done;
     expect(posts[0].body).toEqual({ error: "spend cap", usageAttempts: [
-      { providerId: "session:fork", usage: { input_tokens: 40, output_tokens: 3, estimated: false } },
-      { providerId: "session:haiku", usage: { input_tokens: 3, output_tokens: 2, estimated: true } },
+      { providerId: "session:fork", usage: { input_tokens: 40, output_tokens: 3, estimated: false }, failed: true },
     ] });
-    expect(engine.model.complete).toHaveBeenCalledTimes(1);
+    expect(engine.model.complete).not.toHaveBeenCalled();
+  });
+
+  it("limits the fallback completion to tokens remaining after a failed fork", async () => {
+    const { trigger, done, engine } = await start({ sessionSummarizerMaxOutputTokens: 10 }, [{ ...leaf, kind: "condensed" }]);
+    engine.model.fork.mockResolvedValue({ isAnswered: false, reason: "empty-reply",
+      usage: { input_tokens: 40, output_tokens: 7 } });
+    await trigger();
+    await done;
+    expect(engine.model.complete).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: 3 }));
   });
 
   it("uses forks for condensed jobs and accounts exact usage", async () => {
@@ -281,7 +289,7 @@ describe("function-hook session summarizer", () => {
     await done;
     expect(posts.map((post) => post.body)).toEqual([{ error: "unavailable" }, {
       error: "empty summary", usageAttempts: [
-        { providerId: "session:haiku", usage: { input_tokens: 3, output_tokens: 0, estimated: true } },
+        { providerId: "session:haiku", usage: { input_tokens: 3, output_tokens: 0, estimated: true }, failed: true },
       ],
     }]);
   });
@@ -295,8 +303,8 @@ describe("function-hook session summarizer", () => {
     await trigger();
     await done;
     expect(posts[0].body).toEqual({ error: "empty-reply", usageAttempts: [
-      { providerId: "session:fork", usage: { input_tokens: 40, output_tokens: 7, estimated: false } },
-      { providerId: "session:haiku", usage: { input_tokens: 3, output_tokens: 2, estimated: false } },
+      { providerId: "session:fork", usage: { input_tokens: 40, output_tokens: 7, estimated: false }, failed: true },
+      { providerId: "session:haiku", usage: { input_tokens: 3, output_tokens: 2, estimated: false }, failed: true },
     ] });
   });
 
@@ -305,7 +313,7 @@ describe("function-hook session summarizer", () => {
     trigger();
     await done;
     expect(posts[0].body).toEqual({ error: "spend cap", usageAttempts: [
-      { providerId: "session:haiku", usage: { input_tokens: 3, output_tokens: 2, estimated: true } },
+      { providerId: "session:haiku", usage: { input_tokens: 3, output_tokens: 2, estimated: true }, failed: false },
     ] });
     expect(engine.model.complete).toHaveBeenCalledTimes(1);
   });
