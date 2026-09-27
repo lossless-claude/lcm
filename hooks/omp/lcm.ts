@@ -432,9 +432,9 @@ function boundedToolContent(value: unknown): string | undefined {
 /**
  * Where this turn's learning instruction goes. OMP rebuilds the system prompt from its base
  * before every turn, so appending the instruction there reaches every turn once, hidden from
- * the user and outside the hint budget. A returned system prompt replaces the host's, so
- * without one to append to, the instruction rides in the memory message instead, and its
- * bytes come out of the hint budget.
+ * the user, and the hint budget holds back only its standing reservation. A returned system
+ * prompt replaces the host's, so without one to append to, the instruction rides in the
+ * memory message instead, and the hint budget reserves its bytes.
  */
 function placeLearningInstruction(hostPrompt: string | string[] | undefined):
   { systemPrompt?: string[]; inline?: string; inlineBytes: number } {
