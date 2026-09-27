@@ -1,75 +1,57 @@
 ---
 name: lcm-memory
-description: Lossless context management — search and store persistent memory across sessions
+description: Search and store lcm memory with the lcm CLI. Use before a code task in this project, before asking the user about something a past session may have settled, and when a durable insight (decision, preference, root-cause, pattern, gotcha, solution, workflow) surfaces.
 ---
 
-# Lossless Context Management
+# lcm memory
 
-> **Before responding to code tasks, check memory first.**
-> Code task? → `lcm search` FIRST. Durable insight? → `lcm store` before done.
+## Core Rules
 
-You have access to a persistent memory system that survives across conversations.
+- Search memory before a code task in this project, and before asking the user about anything a past session may have settled.
+- Store durable insights explicitly with `lcm store`, tagged with `type:`: one concise insight and its why per store.
+- Skip both for general programming concepts, meta tasks (run tests, build, commit, open a PR), and clarifications about a previous response.
 
-## Workflow
+## Recall
 
-Code task received → `lcm search` FIRST → Work → durable insight? → `lcm store` → Done
-Non-code task → Just respond normally
+- `lcm search`: broad recall across sessions ("how was X implemented", "the decision about Y")
+- `lcm grep`: when you hold an exact keyword, error message or function name
+- `lcm describe`: check a node's metadata before expanding it
+- `lcm expand`: recover the detail a summary compressed away
 
-## Commands
+## When to Store
 
-### 1. Search Memory
-Retrieve relevant context before starting work.
-```bash
-lcm search "How is authentication implemented?"
-```
+| Tag | Store when |
+|-----|------------|
+| `type:decision` | an architectural or design choice, with the trade-off that settled it |
+| `type:preference` | how the user wants things done |
+| `type:root-cause` | a bug cause that took effort to uncover |
+| `type:pattern` | a codebase convention documented nowhere else |
+| `type:gotcha` | a non-obvious pitfall |
+| `type:solution` | a non-trivial fix worth remembering |
+| `type:workflow` | a multi-step process that works |
 
-### 2. Grep Memory
-Regex pattern search for precise matches.
-```bash
-lcm grep "createDaemon|startMcpServer" --mode regex
-```
+Tag each store with type: plus one of project: or scope:; add source: when the origin matters for trust, and priority: rarely.
 
-### 3. Describe Memory
-Inspect a specific node returned by search or grep.
-```bash
-lcm describe sum_abc123def456
-```
+When you act on a surfaced memory (use it to inform a decision, avoid a known pitfall, or reference it in your work), emit:
+- `lcm store "Acted on memory <id> — <one-line how>" --tag signal:memory_used --tag memory_id:<id>`
 
-### 4. Expand Memory
-Recover lower-level detail from a summary node.
-```bash
-lcm expand sum_abc123def456 --depth 2
-```
+When you check a surfaced memory against current evidence, vote on it (reason is required both ways):
+- `lcm store "<what confirmed it, e.g. a file, test, or command output>" --tag signal:memory_vote --tag vote:+1 --tag memory_id:<id>`
+- `lcm store "<what contradicts it>" --tag signal:memory_vote --tag vote:-1 --tag memory_id:<id>`
 
-### 5. Store Knowledge
-Store durable insights (decision, preference, root-cause, pattern, gotcha, solution, workflow) explicitly with `lcm store`, tagged with `type:`. One concise insight and its why per store.
-```bash
-lcm store "Auth uses JWT with 24h expiry instead of server sessions: the API stays stateless across instances. See src/middleware/auth.ts" --tag type:decision --tag scope:security
-```
+"Not relevant here" is not a -1 — only a real contradiction is.
 
-### 6. Stats
-Show token savings and compression ratios.
-```bash
-lcm stats
-```
+## Examples
 
-## Decision Table
+- `lcm search "How is authentication implemented?"`
+- `lcm grep "createDaemon|startMcpServer" --mode regex`
+- `lcm describe sum_abc123def456`
+- `lcm expand sum_abc123def456 --depth 2`
+- `lcm store "Auth uses JWT with 24h expiry instead of server sessions: the API stays stateless across instances. See src/middleware/auth.ts" --tag type:decision --tag scope:security`
 
-| Task Type | Search? | Store? |
-|-----------|---------|--------|
-| Add/create/implement feature | MUST | If durable insight |
-| Fix/debug/resolve bug | MUST | If durable insight |
-| Refactor/optimize/move code | MUST | If durable insight |
-| Write/add tests | MUST | If durable insight |
-| "How does X work?" (codebase) | MUST | If durable insight |
-| General concept question | NO | NO |
-| Meta task (run tests, build) | NO | NO |
-| Git task (commit, PR, push) | NO | NO |
+## When a command fails
 
-## Error Handling
-
-- If `lcm` is not found: run `npm install -g @lossless-claude/lcm`
-- If daemon is down: run `lcm daemon start --detach`
-- If search returns nothing: memory may be empty — proceed normally
-- Check status: `lcm doctor`
-
+- `lcm` not found: `npm install -g @lossless-claude/lcm`
+- daemon down: `lcm daemon start --detach`
+- search returns nothing: memory may be empty; proceed normally
+- anything else: `lcm doctor`

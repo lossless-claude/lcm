@@ -2,7 +2,6 @@ import type { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "../config.js";
 import type { LcmPaths } from "../../lcm-paths.js";
 import { wasSessionJustCompacted } from "../../db/session-compactions.js";
-import { buildOrientationPrompt } from "../orientation.js";
 import { validateCwd } from "../validate-cwd.js";
 import { fenceOrEmpty, fitFencedText, remainingContextBudget } from "./budget.js";
 import { readCodexContext } from "./codex.js";
@@ -106,15 +105,14 @@ function isExplicitNonCompact(source: string | undefined): boolean {
  * them back would duplicate them.
  */
 async function claudeOutcome(input: NormalizedRequest, config: DaemonConfig, paths: LcmPaths): Promise<RestoreOutcome> {
-  const orientation = buildOrientationPrompt();
   const { cwd } = input;
-  if (!cwd) return { kind: "context", context: orientation };
+  if (!cwd) return { kind: "context", context: "" };
 
   // The harness says the restore follows a compaction. Replaying reads a snapshot, never
-  // creates one, so an absent project database answers with the orientation alone.
+  // creates one, so an absent project database answers with nothing.
   if (input.source === "compact") {
     const replayed = await withExistingProjectDb(cwd, paths, (db) => readInstructionsSnapshot(db));
-    return { kind: "context", context: replayed ? [orientation, replayed].filter(Boolean).join("\n\n") : orientation };
+    return { kind: "context", context: replayed ?? "" };
   }
 
   return withProjectDb(cwd, paths, async (db) => {
@@ -124,7 +122,7 @@ async function claudeOutcome(input: NormalizedRequest, config: DaemonConfig, pat
       && input.sessionId !== undefined
       && wasSessionJustCompacted(db, input.sessionId);
     if (postCompact) {
-      return { kind: "context", context: [orientation, readInstructionsSnapshot(db)].filter(Boolean).join("\n\n") };
+      return { kind: "context", context: readInstructionsSnapshot(db) ?? "" };
     }
 
     let episodic = "";
@@ -138,7 +136,7 @@ async function claudeOutcome(input: NormalizedRequest, config: DaemonConfig, pat
     const insights = readInsightsSafely(db, config);
     return {
       kind: "context",
-      context: [orientation, episodic, promoted].filter(Boolean).join("\n\n"),
+      context: [episodic, promoted].filter(Boolean).join("\n\n"),
       ...(insights.length > 0 ? { insights } : {}),
     };
   });
@@ -153,10 +151,9 @@ async function claudeOutcome(input: NormalizedRequest, config: DaemonConfig, pat
  * is left of the injection budget.
  */
 async function codexOutcome(input: NormalizedRequest, config: DaemonConfig, paths: LcmPaths): Promise<RestoreOutcome> {
-  const orientation = buildOrientationPrompt();
-  const parts = orientation ? [orientation] : [];
+  const parts: string[] = [];
   const { cwd } = input;
-  if (!cwd) return { kind: "context", context: parts.join("\n\n") };
+  if (!cwd) return { kind: "context", context: "" };
 
   return withProjectDb(cwd, paths, async (db) => {
     const budget = config.restoration.maxInjectedMemoryBytes;

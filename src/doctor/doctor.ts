@@ -572,7 +572,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
     }
   })();
 
-  const { LCM_MD_CONTENT } = await import("../daemon/orientation.js");
+  const { LCM_MD_CONTENT } = await import("../guidance.js");
   const lcmMdStale = lcmMdExists
     ? (() => { try { return deps.readFileSync(lcmMdPath, "utf-8") !== LCM_MD_CONTENT; } catch { return true; } })()
     : false;

@@ -11,15 +11,15 @@ result envelope (`resultType`, `ttlMs`, `cacheScope`, `_meta`). The entrypoints 
 
 ## Usage patterns
 
-### Escalation pattern: grep → describe → expand
+### Escalation pattern: search or grep → describe → expand
 
 Most recall tasks follow this escalation:
 
-1. **`lcm_grep`** — Find relevant summaries or messages by keyword/regex
+1. **`lcm_search`** — Broad recall across sessions; **`lcm_grep`** instead when you hold an exact keyword, error message or function name
 2. **`lcm_describe`** — Inspect a specific summary's metadata and lineage (cheap, no DAG traversal)
 3. **`lcm_expand`** — Deep recall: decompress a summary node into its full source content
 
-Start with grep. If the snippet is enough, stop. If you need metadata, use describe. If you need details that were compressed away, use expand.
+If the snippet is enough, stop. If you need metadata, use describe. If you need details that were compressed away, use expand. The guidance lcm installs for agents (`src/guidance.ts`) states the same order.
 
 ### When to search vs. grep
 
@@ -158,7 +158,7 @@ lcm_expand(nodeId: "sum_def456", depth: 2)
 
 ### lcm_store
 
-Store a memory into the promoted layer. Use to persist decisions, findings, reasoning outcomes, or any knowledge worth retrieving in future sessions.
+Store a durable insight in promoted memory: one concise insight and its why. What is worth storing, the tags a store carries, and the reserved `signal:` tags for reporting and voting on a surfaced memory are in [tag-schema.md](tag-schema.md).
 
 **Parameters:**
 

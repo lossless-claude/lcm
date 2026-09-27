@@ -1,6 +1,7 @@
 import type { Tool } from "@modelcontextprotocol/server";
 import type { PivotLanguages } from "../search/pivot-language.js";
 import { pivotQueryApplies } from "../search/pivot-language.js";
+import { STORE_TOOL_DESCRIPTION, STORE_TOOL_TAGS_DESCRIPTION } from "../guidance.js";
 
 type LocalHandler = (args: Record<string, unknown>) => Promise<string>;
 export type LocalHandlers = { stats: LocalHandler; doctor: LocalHandler };
@@ -100,7 +101,7 @@ const ENTRIES: ToolEntry[] = [
   {
     definition: {
       name: "lcm_store",
-      description: "Store a memory into the promoted layer. Use to persist decisions, findings, reasoning outcomes, or any knowledge worth retrieving in future sessions. Stored memories are searchable via lcm_search.",
+      description: STORE_TOOL_DESCRIPTION,
       inputSchema: {
         type: "object",
         properties: {
@@ -108,7 +109,7 @@ const ENTRIES: ToolEntry[] = [
           tags: {
             type: "array",
             items: { type: "string" },
-            description: "Canonical tags following the <prefix>:<value> schema (see docs/tag-schema.md). Use at least type: and one of project: or scope:. Examples: ['type:solution', 'scope:lcm', 'project:lcm', 'source:session']. Prefixes: type, scope, project, source, priority.",
+            description: STORE_TOOL_TAGS_DESCRIPTION,
           },
           metadata: {
             type: "object",
