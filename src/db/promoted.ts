@@ -124,10 +124,13 @@ export class PromotedStore {
     if (projectId) queryParams.push(projectId);
     queryParams.push(limit);
 
+    // CROSS JOIN keeps promoted_fts as the outer loop. Given a project filter, the planner
+    // otherwise walks the project's rows through promoted_project_idx and re-runs the MATCH
+    // once per row, re-seeking every term each time.
     return this.db.prepare(
       `SELECT p.id, p.content, p.tags, p.project_id, p.session_id, p.confidence, p.created_at, rank
        FROM promoted_fts fts
-       JOIN promoted p ON p.rowid = fts.rowid
+       CROSS JOIN promoted p ON p.rowid = fts.rowid
        WHERE promoted_fts MATCH ?
          AND p.archived_at IS NULL
          AND p.tags NOT LIKE '%"signal:%'

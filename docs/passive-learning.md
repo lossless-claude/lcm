@@ -94,7 +94,7 @@ When a pattern crosses the reinforcement threshold, `reinforcementBoost` is adde
 - **Promoted store**: Events promoted via `deduplicateAndInsert()` into the main LCM database
   - Tagged with `source:passive-capture` and `hook:<PostToolUse|UserPromptSubmit>`
   - Searchable via `lcm search` and `lcm grep`
-  - Deduplicated via BM25 matching
+  - Deduplicated via BM25 matching on the entry's first 32 terms (see `docs/search.md`)
 
 ## Recovery
 
