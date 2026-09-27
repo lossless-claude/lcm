@@ -16,15 +16,16 @@ export function observeHook(
   observation: HookObservation,
   paths: LcmPaths,
 ): boolean {
-  if (!cwd || cwd.length > 32 * 1024 || !observation.sessionId) return false;
-  const fields = [observation.harness, observation.hook, observation.operation,
-    observation.kind, observation.status, observation.reason ?? "", observation.failureCode ?? ""];
-  if (fields.some((value) => value.length > 80 || !FIELD.test(value))
-    || observation.sessionId.length > 160 || (observation.operationId?.length ?? 0) > 160) return false;
-  const entry = JSON.stringify({ ts: Date.now(), projectId: projectId(cwd), ...observation,
-    reason: observation.reason ?? "" }) + "\n";
-  if (Buffer.byteLength(entry) > MAX_ENTRY_BYTES) return false;
   try {
+    if (typeof cwd !== "string" || !cwd || cwd.length > 32 * 1024
+      || typeof observation.sessionId !== "string" || !observation.sessionId) return false;
+    const fields = [observation.harness, observation.hook, observation.operation,
+      observation.kind, observation.status, observation.reason ?? "", observation.failureCode ?? ""];
+    if (fields.some((value) => value.length > 80 || !FIELD.test(value))
+      || observation.sessionId.length > 160 || (observation.operationId?.length ?? 0) > 160) return false;
+    const entry = JSON.stringify({ ts: Date.now(), projectId: projectId(cwd), ...observation,
+      reason: observation.reason ?? "" }) + "\n";
+    if (Buffer.byteLength(entry) > MAX_ENTRY_BYTES) return false;
     return withHookWrite(paths, () => {
       mkdirSync(paths.logsDir, { recursive: true, mode: 0o700 });
       const path = join(paths.logsDir, "hook-outcomes.log");

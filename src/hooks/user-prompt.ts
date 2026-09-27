@@ -68,6 +68,10 @@ export async function handleUserPromptSubmit(
     observeHook(cwd, { sessionId, harness: "claude-command", hook: "UserPromptSubmit",
       operation, kind: "execution", status, reason,
       ...(status === "failed" ? { failureCode: reason } : {}) }, paths);
+  const observeDelivery = (status: "accepted" | "rejected" | "unconfirmed", reason = "") =>
+    observeHook(cwd, { sessionId, harness: "claude-command", hook: "UserPromptSubmit",
+      operation: "search", kind: "delivery", status, reason,
+      ...(status === "rejected" ? { failureCode: reason } : {}) }, paths);
 
   // The module owns this event while it holds the session: prompt.section carries the
   // instruction and prompt.submit carries the memory context, so anything printed here
@@ -106,12 +110,21 @@ export async function handleUserPromptSubmit(
       observe("prompt-extract", "failed", "extract-error");
     }
 
-    const result = await client.post<PromptSearchResponse>("/prompt-search", {
-      query: input.prompt,
-      cwd: input.cwd,
-      session_id: input.session_id,
-      learningInstructionBytes: Buffer.byteLength(LEARNING_INSTRUCTION, "utf8"),
-    }, { timeoutMs: PROMPT_SEARCH_TIMEOUT_MS });
+    let result: PromptSearchResponse;
+    try {
+      result = await client.post<PromptSearchResponse>("/prompt-search", {
+        query: input.prompt,
+        cwd: input.cwd,
+        session_id: input.session_id,
+        learningInstructionBytes: Buffer.byteLength(LEARNING_INSTRUCTION, "utf8"),
+      }, { timeoutMs: PROMPT_SEARCH_TIMEOUT_MS });
+    } catch (error) {
+      const httpStatus = (error as { status?: unknown })?.status;
+      observeDelivery(typeof httpStatus === "number" ? "rejected" : "unconfirmed",
+        typeof httpStatus === "number" ? `http-${httpStatus}` : error instanceof Error && error.name === "TimeoutError" ? "timeout" : "transport");
+      return { exitCode: 0, stdout: LEARNING_INSTRUCTION };
+    }
+    observeDelivery("accepted");
 
     if (!result.hints || result.hints.length === 0) {
       observe("search", "completed", "no-hints");

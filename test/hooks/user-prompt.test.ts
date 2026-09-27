@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { handleUserPromptSubmit } from "../../src/hooks/user-prompt.js";
+import { readHookOutcomeLog } from "../../src/doctor/hook-outcome-log.js";
 
 vi.mock("../../src/daemon/lifecycle.js", async (original) => ({
   ...await original<typeof import("../../src/daemon/lifecycle.js")>(),
@@ -41,6 +45,26 @@ describe("handleUserPromptSubmit", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).not.toBe("");
     expect(client.post).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["HTTP rejection", Object.assign(new Error("denied"), { status: 401 }), "rejected", "http-401"],
+    ["timeout", Object.assign(new Error("late"), { name: "TimeoutError" }), "unconfirmed", "timeout"],
+  ])("records %s as a delivery outcome", async (_label, error, status, reason) => {
+    const home = mkdtempSync(join(tmpdir(), "lcm-prompt-delivery-"));
+    const isolatedPaths = createLcmPaths(home);
+    try {
+      mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
+      mockExtractUserPromptEvents.mockReturnValue([]);
+      const client = { post: vi.fn().mockRejectedValue(error) };
+      const result = await handleUserPromptSubmit(JSON.stringify({ session_id: "delivery", cwd: home, prompt: "hello" }), client as any, isolatedPaths);
+      expect(result.exitCode).toBe(0);
+      expect(readHookOutcomeLog(isolatedPaths.logsDir, home).outcomes).toEqual(expect.arrayContaining([
+        expect.objectContaining({ operation: "search", kind: "delivery", status, reason }),
+      ]));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("stays silent while the function-hooks module holds the session (no double injection)", async () => {

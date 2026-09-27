@@ -167,7 +167,7 @@ describe("required pre-compaction capture", () => {
     const unblock = Promise.withResolvers<void>();
     const queued = enqueue(projectId(cwd), async () => { entered.resolve(); await unblock.promise; });
     await entered.promise;
-    const release = markCompacting("precompact-queued", cwd);
+    const release = markCompacting("another-session", cwd);
     const { res, getBody } = mockRes();
     const request = createCompactHandler(makeConfig("openai"), paths)({} as any, res, JSON.stringify({
       session_id: "precompact-queued", cwd, transcript_path: transcriptPath, capture_required: true,

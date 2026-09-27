@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { rmSync, existsSync } from "node:fs";
+import { rmSync, existsSync, mkdtempSync } from "node:fs";
 import { handleSessionStart } from "../../src/hooks/restore.js";
+import { readHookOutcomeLog } from "../../src/doctor/hook-outcome-log.js";
 
-vi.mock("../../src/daemon/lifecycle.js", () => ({
+vi.mock("../../src/daemon/lifecycle.js", async (original) => ({
+  ...await original<typeof import("../../src/daemon/lifecycle.js")>(),
   ensureDaemon: vi.fn(),
 }));
 
@@ -57,6 +59,7 @@ const SESSION_NAMES = [
   "dead-pid-test-session",
   "s-owned",
   "s-unclaimed",
+  "delivery",
 ];
 
 describe("handleSessionStart", () => {
@@ -79,6 +82,34 @@ describe("handleSessionStart", () => {
     const result = await handleSessionStart(JSON.stringify({ session_id: sid("s1"), cwd: "/proj", hook_event_name: "SessionStart" }), client as any, paths);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("<memory-orientation>");
+  });
+
+  it("fails open when the diagnostic cwd is not a string", async () => {
+    mockEnsureDaemon.mockResolvedValue({ connected: false, port: 3737, spawned: false });
+    const client = { post: vi.fn() };
+    await expect(handleSessionStart(JSON.stringify({ session_id: sid("delivery"), cwd: 42 }), client as any, paths))
+      .resolves.toEqual({ exitCode: 0, stdout: "" });
+  });
+
+  it.each([
+    ["HTTP rejection", Object.assign(new Error("denied"), { status: 500 }), "rejected", "http-500"],
+    ["timeout", Object.assign(new Error("late"), { name: "TimeoutError" }), "unconfirmed", "timeout"],
+  ])("records %s as a delivery outcome", async (_label, error, status, reason) => {
+    const home = mkdtempSync(join(tmpdir(), "lcm-restore-delivery-"));
+    const isolatedPaths = createLcmPaths(home);
+    try {
+      mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
+      const client = { post: vi.fn().mockRejectedValue(error) };
+      const result = await handleSessionStart(JSON.stringify({ session_id: sid("delivery"), cwd: home }), client as any, isolatedPaths);
+      expect(result).toEqual({ exitCode: 0, stdout: "" });
+      expect(client.post).toHaveBeenCalledTimes(1);
+      expect(existsSync(join(isolatedPaths.logsDir, "hook-outcomes.log"))).toBe(true);
+      expect(readHookOutcomeLog(isolatedPaths.logsDir, home).outcomes).toEqual(expect.arrayContaining([
+        expect.objectContaining({ operation: "restore", kind: "delivery", status, reason }),
+      ]));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("fires the session-start compact sweep after restore succeeds, excluding its own session", async () => {

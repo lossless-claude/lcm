@@ -56,6 +56,10 @@ export async function handleSessionStart(stdin: string, client: DaemonClient, pa
     observeHook(input.cwd, { sessionId, harness: "claude-command", hook: "SessionStart",
       operation: "restore", kind: "execution", status, reason,
       ...(status === "failed" ? { failureCode: reason } : {}) }, paths);
+  const observeDelivery = (status: "accepted" | "rejected" | "unconfirmed", reason = "") =>
+    observeHook(input.cwd, { sessionId, harness: "claude-command", hook: "SessionStart",
+      operation: "restore", kind: "delivery", status, reason,
+      ...(status === "rejected" ? { failureCode: reason } : {}) }, paths);
 
   // The module restores through prompt.context and scavenges through the daemon while it
   // holds the session; printing the same context here would inject it twice.
@@ -77,7 +81,16 @@ export async function handleSessionStart(stdin: string, client: DaemonClient, pa
       observe("deferred", "daemon-unavailable");
       return { exitCode: 0, stdout: "" };
     }
-    const result = await client.post<{ context: string; insights?: Array<{ content: string; confidence: number; tags: string[] }> }>("/restore", input, { timeoutMs: RESTORE_TIMEOUT_MS });
+    let result: { context: string; insights?: Array<{ content: string; confidence: number; tags: string[] }> };
+    try {
+      result = await client.post<typeof result>("/restore", input, { timeoutMs: RESTORE_TIMEOUT_MS });
+    } catch (error) {
+      const httpStatus = (error as { status?: unknown })?.status;
+      observeDelivery(typeof httpStatus === "number" ? "rejected" : "unconfirmed",
+        typeof httpStatus === "number" ? `http-${httpStatus}` : error instanceof Error && error.name === "TimeoutError" ? "timeout" : "transport");
+      return { exitCode: 0, stdout: "" };
+    }
+    observeDelivery("accepted");
     let stdout = result.context || "";
 
     if (result.insights && result.insights.length > 0) {

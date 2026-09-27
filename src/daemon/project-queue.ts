@@ -1,5 +1,9 @@
 const queues = new Map<string, { chain: Promise<void>; pending: number }>()
 
+export function hasQueuedProjectWork(projectId: string): boolean {
+  return (queues.get(projectId)?.pending ?? 0) > 0
+}
+
 export function enqueue<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
   const entry = queues.get(projectId) ?? { chain: Promise.resolve(), pending: 0 }
   entry.pending++

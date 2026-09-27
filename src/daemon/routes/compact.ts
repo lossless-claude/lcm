@@ -8,7 +8,7 @@ import { updateProjectMeta } from "../project-meta.js";
 import { projectId, projectDbPath, projectDir } from "../project.js";
 import { noopDaemonLog, type DaemonLog } from "../log.js";
 import { openProject } from "../project-group.js";
-import { enqueue } from "../project-queue.js";
+import { enqueue, hasQueuedProjectWork } from "../project-queue.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
@@ -326,8 +326,8 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
 
     // Guard must be checked and set synchronously (before any await) to prevent
     // concurrent requests from racing through the has() check before add() runs.
-    if (compactingNow.has(session_id)) {
-      log.write("info", "compact.skipped", { cwd, session_id, reason: "already-compacting" });
+    if (compactingNow.has(session_id) || (captureRequired && hasQueuedProjectWork(projectId(cwd)))) {
+      log.write("info", "compact.skipped", { cwd, session_id, reason: "project-busy" });
       const captureOutcome = captureRequired ? await captureOnly() : undefined;
       if (captureRequired) log.write("info", "precompact.summary", { cwd, session_id, status: "skipped", reason: "busy" });
       if (captureRequired && captureOutcome) recordPrecompactStages({

@@ -41,6 +41,7 @@ describe("local command-hook outcome inspection", () => {
     const observation = { sessionId: "s1", harness: "codex" as const, hook: "Stop",
       operation: "capture", kind: "delivery" as const, status: "accepted" as const };
     expect(observeHook("x".repeat(3 * 1024 * 1024), observation, paths)).toBe(false);
+    expect(observeHook(42 as unknown as string, observation, paths)).toBe(false);
     expect(existsSync(join(paths.logsDir, "hook-outcomes.log"))).toBe(false);
     expect(observeHook(dir, observation, paths)).toBe(true);
     expect(readFileSync(join(paths.logsDir, "hook-outcomes.log"), "utf8")).not.toContain(dir);
