@@ -71,3 +71,11 @@ _Avoid_: semantic memory, knowledge base
 A `<prefix>:<value>` label on a promoted memory, the only thing a filter selects on.
 `docs/tag-schema.md` lists the prefixes.
 _Avoid_: category, label
+
+### What lcm tells the agent
+
+**Guidance**:
+The text lcm puts in front of an agent to teach it when to search memory and what to store.
+One module renders it for every surface that carries it (`src/guidance.ts`). Distinct from
+the harness's own instructions (CLAUDE.md), which restore replays after a compaction.
+_Avoid_: orientation

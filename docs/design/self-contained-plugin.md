@@ -17,7 +17,7 @@ artifact:
 | `bundle/lcm.js` | the CLI: every hook command, `daemon start`, `doctor`, `install` |
 | `bundle/mcp-server.js` | the MCP server |
 | `bundle/session-start-compact-worker.js` | the daemon's off-loop SessionStart catch-up scanner |
-| `bundle/assets/` | prompt YAML, connector templates, `setup.sh` |
+| `bundle/assets/` | prompt YAML, `setup.sh` |
 
 `.claude-plugin/plugin.json` calls the bundle in exec form: `"command": "node",
 "args": ["${CLAUDE_PLUGIN_ROOT}/bundle/lcm.js", "restore"]`. No shell is involved,

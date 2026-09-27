@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { LEARNING_INSTRUCTION } from "../../src/hooks/learning-instruction.js";
+import { LEARNING_INSTRUCTION } from "../../src/guidance.js";
 
 describe("learning instruction", () => {
   it("is the same text in the command hook and in the function-hooks module", () => {

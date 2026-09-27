@@ -1,26 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Agent, ConnectorType } from "./types.js";
 import { LCM_MARKERS, LCM_TAG } from "./constants.js";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-// The plugin bundle carries the templates under assets/templates next to it; dist/ and src/ keep them beside this module.
-const TEMPLATES_DIR = existsSync(join(__dirname, "assets", "templates"))
-  ? join(__dirname, "assets", "templates")
-  : join(__dirname, "templates");
-
-function loadFile(path: string): string {
-  return readFileSync(join(TEMPLATES_DIR, path), "utf-8");
-}
-
-function substituteVariables(template: string, context: Record<string, string>): string {
-  let result = template;
-  for (const [key, value] of Object.entries(context)) {
-    result = result.replaceAll(`{{${key}}}`, value);
-  }
-  return result;
-}
+import { RULES_CLI, RULES_MCP, SKILL } from "../guidance.js";
 
 function wrapWithMarkers(content: string, agentName: string, header?: string): string {
   const parts: string[] = [];
@@ -34,24 +14,15 @@ function wrapWithMarkers(content: string, agentName: string, header?: string): s
 }
 
 export function generateRulesContent(agent: Agent): string {
-  const workflow = loadFile("sections/workflow.md");
-  const commandRef = loadFile("sections/command-reference.md");
-  const base = loadFile("base.md");
-  const content = substituteVariables(base, {
-    workflow: substituteVariables(workflow, { command_reference: commandRef }),
-  });
-  return wrapWithMarkers(content, agent.name, agent.header);
+  return wrapWithMarkers(RULES_CLI, agent.name, agent.header);
 }
 
 export function generateMcpContent(agent: Agent): string {
-  const mcpWorkflow = loadFile("sections/mcp-workflow.md");
-  const base = loadFile("mcp-base.md");
-  const content = substituteVariables(base, { mcp_workflow: mcpWorkflow });
-  return wrapWithMarkers(content, agent.name, agent.header);
+  return wrapWithMarkers(RULES_MCP, agent.name, agent.header);
 }
 
 export function generateSkillContent(_agent: Agent): string {
-  return loadFile("skill/SKILL.md"); // Skills don't need markers — they're standalone files
+  return SKILL; // Skills don't need markers — they're standalone files
 }
 
 export function generateContent(agent: Agent, type: ConnectorType): string {

@@ -377,7 +377,7 @@ async function installClaudeCode(deps: ServiceDeps): Promise<HarnessOutcome> {
   }
 
   // 5. Install lcm.md and @lcm.md reference in CLAUDE.md
-  const { LCM_MD_CONTENT } = await import("../src/daemon/orientation.js");
+  const { LCM_MD_CONTENT } = await import("../src/guidance.js");
   const { lcmMdWritten, claudeMdPatched } = ensureLcmMd(deps, LCM_MD_CONTENT);
   if (lcmMdWritten) console.log(`Installed ~/.claude/lcm.md`);
   if (claudeMdPatched) console.log(`Added @lcm.md to ~/.claude/CLAUDE.md`);

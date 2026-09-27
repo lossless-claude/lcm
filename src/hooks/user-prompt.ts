@@ -3,7 +3,7 @@ import { ensureDaemon } from "../daemon/lifecycle.js";
 import { PKG_VERSION } from "../daemon/version.js";
 import { safeLogError } from "./hook-errors.js";
 import { buildMemoryContext } from "./memory-context.js";
-import { LEARNING_INSTRUCTION } from "./learning-instruction.js";
+import { LEARNING_INSTRUCTION } from "../guidance.js";
 import { functionHooksOwnSession } from "./session-claim.js";
 import type { LcmPaths } from "../lcm-paths.js";
 import { withHookWrite } from "./write-admission.js";
