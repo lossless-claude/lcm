@@ -1,12 +1,16 @@
+import { gzipSync } from "node:zlib";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  extractOmpArchiveSessionMeta,
+  extractOmpArchiveTurnModels,
   extractOmpSessionMeta,
   extractOmpTurnModels,
   findAllOmpTranscripts,
   findOmpSessionFiles,
+  parseOmpArchiveTranscript,
   parseOmpTranscript,
   parseOmpTranscriptRecord,
 } from "../src/omp-transcript.js";
@@ -262,6 +266,19 @@ describe("findOmpSessionFiles", () => {
   it("returns nothing for a missing root", () => {
     expect(findOmpSessionFiles(join(tempDir("lcm-omp-absent-"), "sessions"))).toEqual([]);
   });
+
+  it("marks a .jsonl.gz entry archived and a .jsonl entry live", () => {
+    const root = tempDir("lcm-omp-mixed-");
+    const bucket = join(root, "-work-project");
+    writeSession(bucket, "live.jsonl", "/work/project", "sess-live");
+    mkdirSync(bucket, { recursive: true });
+    writeFileSync(join(bucket, "cold.jsonl.gz"), gzipSync(`${header("/work/project", "sess-cold")}\n`));
+
+    expect(findOmpSessionFiles(root).map((f) => [f.sessionId, f.archived]).sort()).toEqual([
+      ["sess-cold", true],
+      ["sess-live", false],
+    ]);
+  });
 });
 
 describe("findAllOmpTranscripts", () => {
@@ -290,6 +307,102 @@ describe("findAllOmpTranscripts", () => {
     writeFileSync(join(root, "sessions", "-work-project", "no-cwd.jsonl"),
       `${JSON.stringify({ type: "session", version: 3, id: "sess-x" })}\n`);
 
-    expect(findAllOmpTranscripts(root)).toEqual([{ path: expect.any(String), sessionId: "sess-x", mtime: expect.any(Number), cwd: undefined }]);
+    expect(findAllOmpTranscripts(root)).toEqual([{ path: expect.any(String), sessionId: "sess-x", mtime: expect.any(Number), cwd: undefined, archived: false }]);
+  });
+
+  it("discovers an archived .jsonl.gz session alongside live ones", () => {
+    const root = tempDir("lcm-omp-archive-");
+    const bucket = join(root, "sessions", "-work-project");
+    mkdirSync(bucket, { recursive: true });
+    const raw = `${header("/work/project", "sess-archived")}\n${message("user", [{ type: "text", text: "cold" }])}\n`;
+    writeFileSync(join(bucket, "2026-08-01T00-00-00-000Z_sess-archived.jsonl.gz"), gzipSync(raw));
+
+    const files = findAllOmpTranscripts(root);
+    expect(files).toEqual([{
+      path: expect.any(String), sessionId: "sess-archived", mtime: expect.any(Number),
+      cwd: "/work/project", archived: true,
+    }]);
+  });
+
+  it("a live .jsonl always wins over an archived .jsonl.gz for the same session id", () => {
+    const root = tempDir("lcm-omp-archive-dedup-");
+    const bucket = join(root, "sessions", "-work-project");
+    mkdirSync(bucket, { recursive: true });
+    const older = new Date("2026-08-01T00:00:00.000Z");
+    const newer = new Date("2026-09-01T00:00:00.000Z");
+
+    const gzPath = join(bucket, "archive_sess-1.jsonl.gz");
+    writeFileSync(gzPath, gzipSync(`${header("/work/project", "sess-1")}\n${message("user", [{ type: "text", text: "cold" }])}\n`));
+    utimesSync(gzPath, newer, newer); // even a newer mtime must not beat the live file
+
+    const livePath = join(bucket, "live_sess-1.jsonl");
+    writeFileSync(livePath, `${header("/work/project", "sess-1")}\n${message("user", [{ type: "text", text: "warm" }])}\n`);
+    utimesSync(livePath, older, older);
+
+    const files = findAllOmpTranscripts(root);
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatchObject({ path: livePath, archived: false });
+  });
+});
+
+describe("parseOmpArchiveTranscript", () => {
+  function gzFixture(lines: string[]): string {
+    const dir = tempDir("lcm-omp-archive-fixture-");
+    const path = join(dir, "session.jsonl.gz");
+    writeFileSync(path, gzipSync(lines.map((line) => `${line}\n`).join("")));
+    return path;
+  }
+
+  it("reads every message from a gzipped transcript, including an unterminated final record", () => {
+    const path = gzFixture([
+      header("/work/project"),
+      message("user", [{ type: "text", text: "one" }]),
+      message("assistant", [{ type: "text", text: "two" }]),
+    ]);
+    expect(parseOmpArchiveTranscript(path).map((m) => m.content)).toEqual(["one", "two"]);
+  });
+
+  it("skips malformed records rather than failing the read", () => {
+    const path = gzFixture([header("/work/project"), "{broken", message("user", [{ type: "text", text: "kept" }])]);
+    expect(parseOmpArchiveTranscript(path).map((m) => m.content)).toEqual(["kept"]);
+  });
+
+  it("returns nothing for a missing or corrupt archive", () => {
+    expect(parseOmpArchiveTranscript(join(tempDir("lcm-omp-archive-missing-"), "absent.jsonl.gz"))).toEqual([]);
+    const dir = tempDir("lcm-omp-archive-corrupt-");
+    const path = join(dir, "corrupt.jsonl.gz");
+    writeFileSync(path, "not actually gzip");
+    expect(parseOmpArchiveTranscript(path)).toEqual([]);
+  });
+});
+
+describe("extractOmpArchiveSessionMeta", () => {
+  it("reads the header from a gzipped transcript", () => {
+    const dir = tempDir("lcm-omp-archive-meta-");
+    const path = join(dir, "session.jsonl.gz");
+    writeFileSync(path, gzipSync(`${header("/work/project", "sess-a")}\n`));
+    expect(extractOmpArchiveSessionMeta(path)).toEqual({ id: "sess-a", cwd: "/work/project" });
+  });
+
+  it("returns undefined for a missing or corrupt archive", () => {
+    expect(extractOmpArchiveSessionMeta(join(tempDir("lcm-omp-archive-meta-missing-"), "absent.jsonl.gz"))).toBeUndefined();
+  });
+});
+
+describe("extractOmpArchiveTurnModels", () => {
+  it("maps each tool-call id to the model on the assistant entry that dispatched it", () => {
+    const dir = tempDir("lcm-omp-archive-models-");
+    const path = join(dir, "session.jsonl.gz");
+    const raw = [
+      header("/work/project"),
+      message("assistant", [{ type: "toolCall", id: "call_1", name: "bash" }], { model: "~z-ai/glm-flash-latest" }),
+    ].map((line) => `${line}\n`).join("");
+    writeFileSync(path, gzipSync(raw));
+
+    expect([...extractOmpArchiveTurnModels(path)]).toEqual([["call_1", "~z-ai/glm-flash-latest"]]);
+  });
+
+  it("returns an empty map for a missing or corrupt archive", () => {
+    expect(extractOmpArchiveTurnModels(join(tempDir("lcm-omp-archive-models-missing-"), "absent.jsonl.gz")).size).toBe(0);
   });
 });

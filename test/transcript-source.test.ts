@@ -1,6 +1,7 @@
 import { appendFileSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import type { CodexTranscriptCursor } from "../src/codex-transcript-reader.js";
 import {
@@ -318,6 +319,94 @@ describe("OMP transcript source", () => {
       const { cwd, path } = treeFixture([...trunk, ...wrongTurn]);
       await expect(source.read(path, stored([as("assistant", "first answer"), as("user", "first question")]), ctx(cwd)))
         .rejects.toThrow(TranscriptSourceError);
+    });
+  });
+
+  describe("an archived (.jsonl.gz) transcript", () => {
+    function archiveFixture(): { cwd: string; path: string } {
+      const cwd = tempDir("lcm-omp-archive-source-");
+      const path = join(cwd, "2026-08-01T00-00-00-000Z_session.jsonl.gz");
+      const header = JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: "2026-08-01T00:00:00.000Z", cwd });
+      writeFileSync(path, gzipSync(`${header}\n${ompMessage("user", "one")}\n${ompMessage("assistant", "two")}\n`));
+      return { cwd, path };
+    }
+
+    it("reads every message with no resume checkpoint", async () => {
+      const { cwd, path } = archiveFixture();
+      const delta = await source.read(path, undefined, ctx(cwd));
+      expect(delta.sourceOffset).toBe(0);
+      expect(delta.messages.map((m) => m.content)).toEqual(["one", "two"]);
+      expect(delta.checkpoint).toBeUndefined();
+    });
+
+    it("a second read against what is now stored adds nothing new, and still takes no checkpoint", async () => {
+      const { cwd, path } = archiveFixture();
+      const first = await source.read(path, undefined, ctx(cwd));
+      const second = await source.read(path, stored(first.messages), ctx(cwd));
+      expect(second.sourceOffset).toBe(2);
+      expect(second.messages).toEqual([]);
+      expect(second.checkpoint).toBeUndefined();
+    });
+
+    it("refuses a transcript whose header names another project or session", async () => {
+      const { cwd, path } = archiveFixture();
+      const elsewhere = tempDir("lcm-omp-archive-elsewhere-");
+      await expect(source.read(path, undefined, ctx(elsewhere)))
+        .rejects.toThrow("OMP transcript cwd does not match requested project");
+      await expect(source.read(path, undefined, ctx(cwd, { sessionId: "another" })))
+        .rejects.toThrow("OMP transcript session id does not match request");
+    });
+
+    it("refuses stored history the archive does not hold in order", async () => {
+      const { cwd, path } = archiveFixture();
+      const rewritten = [{ role: "user", content: "not one" }, { role: "assistant", content: "two" }];
+      await expect(source.read(path, stored(rewritten), ctx(cwd)))
+        .rejects.toThrow("OMP transcript does not hold the stored history in order; check the original transcript and redaction settings before retrying");
+    });
+
+    it("locates and refuses loudly the same as a live transcript", () => {
+      const { cwd, path } = archiveFixture();
+      expect(source.locate({ sessionId, cwd, transcriptPath: path })).toBe(realpathSync(path));
+      expect(() => source.locate({ sessionId, cwd, transcriptPath: join(cwd, "missing.jsonl.gz") }))
+        .toThrow("OMP transcript is unreadable");
+    });
+
+    describe("a rewind inside the archive", () => {
+      /** `[id, parentId]`: an entry's place in the tree. */
+      type At = [string, string | null];
+      const timestamp = "2026-08-01T00:00:00.000Z";
+      const say = ([id, parentId]: At, role: string, text: string) =>
+        JSON.stringify({ type: "message", id, parentId, timestamp, message: { role, content: [{ type: "text", text }] } });
+      const rewindTo = ([id, parentId]: At) => JSON.stringify({ type: "branch_summary", id, parentId, timestamp, fromId: "a2", summary: "" });
+      const trunk = [say(["u1", null], "user", "first question"), say(["a1", "u1"], "assistant", "first answer")];
+      const wrongTurn = [say(["u2", "a1"], "user", "wrong turn"), say(["a2", "u2"], "assistant", "wrong answer")];
+      const betterTurn = [rewindTo(["b1", "a1"]), say(["u3", "b1"], "user", "better question"), say(["a3", "u3"], "assistant", "better answer")];
+      const as = (role: string, content: string) => ({ role, content });
+
+      function archivedTreeFixture(lines: string[]): { cwd: string; path: string } {
+        const cwd = tempDir("lcm-omp-archive-tree-");
+        const path = join(cwd, "session.jsonl.gz");
+        const header = JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp, cwd });
+        writeFileSync(path, gzipSync(`${[header, ...lines].join("\n")}\n`));
+        return { cwd, path };
+      }
+
+      it("a fresh import of an archived rewind holds only the live path", async () => {
+        const { cwd, path } = archivedTreeFixture([...trunk, ...wrongTurn, ...betterTurn]);
+        const delta = await source.read(path, undefined, ctx(cwd));
+        expect(delta.messages.map((m) => m.content)).toEqual(["first question", "first answer", "better question", "better answer"]);
+        expect(delta.checkpoint).toBeUndefined();
+      });
+
+      it("a recovery scan keeps stored turns the archived rewind abandoned and adds only the live continuation", async () => {
+        const { cwd, path } = archivedTreeFixture([...trunk, ...wrongTurn, ...betterTurn]);
+        const storedInFileOrder = [
+          as("user", "first question"), as("assistant", "first answer"), as("user", "wrong turn"), as("assistant", "wrong answer"),
+        ];
+        const delta = await source.read(path, stored(storedInFileOrder), ctx(cwd));
+        expect(delta.sourceOffset).toBe(4);
+        expect(delta.messages.map((m) => m.content)).toEqual(["better question", "better answer"]);
+      });
     });
   });
 });

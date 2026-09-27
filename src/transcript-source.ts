@@ -6,7 +6,15 @@ import { readCodexTranscriptDelta, type CodexTranscriptCursor, type CodexTranscr
 import { loadTranscriptCursor, saveTranscriptCursor } from "./db/transcript-cursor.js";
 import { claudeTranscriptPath, isSafeTranscriptPath, projectId } from "./daemon/project.js";
 import type { EventsDb } from "./hooks/events-db.js";
-import { extractOmpTurnModels, selectOmpLiveMessages, type OmpSessionMeta, type ParsedOmpTranscriptRecord } from "./omp-transcript.js";
+import {
+  extractOmpArchiveSessionMeta,
+  extractOmpArchiveTurnModels,
+  extractOmpTurnModels,
+  parseOmpArchiveRecords,
+  selectOmpLiveMessages,
+  type OmpSessionMeta,
+  type ParsedOmpTranscriptRecord,
+} from "./omp-transcript.js";
 import { readOmpTranscriptDelta, type OmpTranscriptCursor, type OmpTranscriptDelta } from "./omp-transcript-reader.js";
 import type { SessionClient } from "./session-client.js";
 import { discoverSubagentTranscripts, type DiscoveredSubagentTranscript } from "./subagent-attribution.js";
@@ -219,6 +227,30 @@ async function ompMessagesAfterStored(
   return selectOmpLiveMessages(records.slice(boundary));
 }
 
+/**
+ * An archive is a single gzip member, not an append-only file: the
+ * byte-cursor reader's identity checks do not apply, and it carries no
+ * cursor to resume from. It is always read in full, and its live path is
+ * selected and reconciled against stored history the same way a live delta's
+ * `records` are (`selectOmpLiveMessages`, `ompMessagesAfterStored`), so an
+ * archived and a live transcript of the same session give the same stored
+ * conversation.
+ */
+async function readOmpArchive(path: string, stored: StoredTranscript | undefined, ctx: ReadContext): Promise<TranscriptDelta> {
+  const meta = extractOmpArchiveSessionMeta(path) ?? {};
+  validateOmpMetadata(meta, ctx);
+  const records = parseOmpArchiveRecords(path);
+  const backfillModels: TranscriptDelta["backfillModels"] = (events, sessionId) => {
+    if (!events.hasUnfilledModels(sessionId, "omp")) return;
+    events.backfillToolCallModels(sessionId, extractOmpArchiveTurnModels(path), "omp");
+  };
+  if (stored) {
+    const messages = await ompMessagesAfterStored(stored, records, ctx);
+    return { messages, sourceOffset: stored.storedCount, backfillModels };
+  }
+  return { messages: selectOmpLiveMessages(records), sourceOffset: 0, backfillModels };
+}
+
 const ompSource: TranscriptSource = {
   client: "omp",
   mayRecoverTail: true,
@@ -232,6 +264,8 @@ const ompSource: TranscriptSource = {
     return safe;
   },
   async read(path, stored, ctx) {
+    if (path.endsWith(".jsonl.gz")) return readOmpArchive(path, stored, ctx);
+
     // The checkpoint is this adapter's own token; the cast is the adapter boundary.
     const cursor = stored?.checkpoint as OmpTranscriptCursor | undefined;
     // A cursor is trusted only while it accounts for exactly the stored messages.
