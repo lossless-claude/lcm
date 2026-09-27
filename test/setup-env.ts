@@ -1,6 +1,8 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll } from "vitest";
 
 // Runs before every test file. The tests exercise the command hooks directly, and those
@@ -18,6 +20,49 @@ const lcmHomeDir = mkdtempSync(join(tmpdir(), "lcm-home-"));
 process.env.LCM_HOME = lcmHomeDir;
 afterAll(() => {
   rmSync(lcmHomeDir, { recursive: true, force: true });
+});
+
+// HOME moves too: lcm writes outside its own home (`~/.claude/settings.json` from ensureCore
+// and hook auto-heal), and a child whose LCM_HOME is unset falls back to
+// `$HOME/.lossless-claude`. A directory of its own, not LCM_HOME, so the two stay distinct.
+const homeDir = mkdtempSync(join(tmpdir(), "lcm-user-home-"));
+process.env.HOME = homeDir;
+afterAll(() => {
+  rmSync(homeDir, { recursive: true, force: true });
+});
+
+// The lcm home names a daemon port nobody listens on. Without it every caller resolves the
+// compiled-in default, which is where the developer's own daemon (and the CI runner's, same
+// user) listens — and `ensureDaemon` SIGTERMs a daemon there whose version differs from the
+// caller's. Reserved and released rather than held: a held port whose owner is blocked in
+// spawnSync would leave the CLI children that probe it hanging instead of refused.
+const unusedPort = await new Promise<number>((resolve, reject) => {
+  const probe = createServer();
+  probe.once("error", reject);
+  probe.listen(0, "127.0.0.1", () => {
+    const { port } = probe.address() as { port: number };
+    probe.close(() => resolve(port));
+  });
+});
+writeFileSync(join(lcmHomeDir, "config.json"), JSON.stringify({ daemon: { port: unusedPort } }));
+
+// The catch-all for a test that points LCM_HOME or HOME at a directory of its own and writes
+// no port there: the default port is refused in this worker and, through NODE_OPTIONS, in
+// every child it spawns (see setup-port-guard.mjs). A refusal fails this test file.
+const DEFAULT_DAEMON_PORT = 3737; // DEFAULTS.daemon.port in src/daemon/config.ts; test/port-guard.test.ts pins it
+const guardDir = mkdtempSync(join(tmpdir(), "lcm-port-guard-"));
+process.env.LCM_TEST_GUARDED_PORTS = String(DEFAULT_DAEMON_PORT);
+process.env.LCM_TEST_GUARD_DIR = guardDir;
+const guardModule = pathToFileURL(join(fileURLToPath(new URL(".", import.meta.url)), "setup-port-guard.mjs")).href;
+const preload = `--import=${JSON.stringify(guardModule)}`;
+if (!(process.env.NODE_OPTIONS ?? "").includes(guardModule)) {
+  process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, preload].filter(Boolean).join(" ");
+}
+await import(guardModule);
+afterAll(() => {
+  const violations = readdirSync(guardDir).map((name) => readFileSync(join(guardDir, name), "utf8").trim());
+  rmSync(guardDir, { recursive: true, force: true });
+  if (violations.length > 0) throw new Error(violations.join("\n"));
 });
 
 // Language packs live under ~/.lossless-claude/languages on a developer's machine. A test

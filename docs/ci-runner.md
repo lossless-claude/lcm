@@ -59,6 +59,14 @@ and tests use HOME and temporary directories under `runner.temp`, and plugin
 cache synchronization is disabled. This keeps test databases, Codex/Claude
 fixtures, npm data, and build hooks away from the interactive LCM installation.
 
+A temporary HOME does not isolate the loopback: the interactive daemon listens
+on the default port, and a test process that resolves that port can probe it,
+SIGTERM it or spawn over it. The test harness closes that on every machine, not
+only this one: `test/setup-env.ts` gives each test file its own HOME and an lcm
+home whose `config.json` names another port, and `test/setup-port-guard.mjs`
+refuses the default port in every Node process the suite runs, failing the test
+file that tried. `test/port-guard.test.ts` holds both in place.
+
 ## Operations
 
 The LCM instance lives in `~/actions-runner-lcm`. Use its own `svc.sh` to inspect
