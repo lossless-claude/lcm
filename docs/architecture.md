@@ -166,6 +166,14 @@ the failed HTTP call. If nothing new was persisted, the previous chain link is
 kept and the session is skipped (retried by the next run). Only a
 daemon-reported failure breaks the chain at that link.
 
+A refused connection (the daemon process itself is gone, not just slow) is
+different from a client giving up: every later call would fail the same way,
+so `lcm import --replay` and `lcm compact --replay` stop the run there instead
+of marking every remaining session failed and breaking each one's chain link
+in turn. Nothing is recorded for the session in flight when this happens — no
+ledger row, no chain reset — so a plain rerun of the same command resumes
+exactly where it stopped, using the manifest/ledger already on disk.
+
 SIGINT/SIGTERM let the in-flight compaction settle before exiting, so a resumed
 run never duplicates or skips a half-finished session. A second signal exits
 at once.

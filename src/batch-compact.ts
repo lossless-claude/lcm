@@ -11,6 +11,7 @@ import {
   createReplayRun,
   fingerprintStats,
   isClientGaveUpError,
+  isDaemonUnreachableError,
   loadLatestSessionSummary,
   planReplayResume,
   recordReplayProgress,
@@ -324,6 +325,10 @@ export async function batchCompact(opts: {
   let tokensIn = 0;
   let tokensOut = 0;
   const progressErrors: { sessionId: string; message: string }[] = [];
+  // Set when the daemon itself went away (connection refused): every later
+  // call would fail identically, so the run stops here rather than marking
+  // the rest FAILED and breaking each one's chain link.
+  let daemonUnreachable = false;
 
   for (const conv of conversations) {
     // Stop starting new work after SIGINT/SIGTERM; the renderer waits for the
@@ -433,6 +438,21 @@ export async function batchCompact(opts: {
         });
       }
     } catch (err) {
+      if (isDaemonUnreachableError(err)) {
+        // The daemon is gone, not just this session's compaction: stopping
+        // now (rather than retrying with a bounded backoff) is the simpler
+        // correct move, because replay runs are already resumable — the
+        // manifest/ledger let a plain rerun pick up exactly where this one
+        // stopped, so there is no state to preserve by waiting in-process.
+        const errMsg = err instanceof Error ? err.message : "unknown error";
+        console.log(" stopped (daemon unreachable)");
+        console.error(
+          `  ⚠️ the daemon is unreachable (${errMsg}); stopping instead of failing the remaining sessions. ` +
+          `Rerun \`lcm compact${opts.replay ? " --replay" : ""}\` to resume where this run left off.`,
+        );
+        daemonUnreachable = true;
+        break;
+      }
       const errMsg = err instanceof Error ? err.message : "unknown error";
       let chainNote = "";
       let recoveredTokensAfter: number | undefined;
@@ -496,7 +516,7 @@ export async function batchCompact(opts: {
     }
   }
 
-  if (!opts.dryRun) {
+  if (!opts.dryRun && !daemonUnreachable) {
     if (tokensIn > 0) {
       const freed = tokensIn - tokensOut;
       const pct = Math.round((freed / tokensIn) * 100);

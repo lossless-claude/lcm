@@ -528,6 +528,22 @@ export function isClientGaveUpError(err: unknown): boolean {
 }
 
 /**
+ * True when the daemon refused the connection outright — nothing is
+ * listening, as opposed to `isClientGaveUpError`'s "the call gave up, but the
+ * daemon may still be working" cases. Once this fires, every following call
+ * in the same batch will fail identically until the daemon comes back, so a
+ * replay/batch loop must stop rather than burn through the remaining
+ * sessions marking each one failed and breaking its own chain. DaemonClient
+ * normalizes connection failures to a TypeError whose `cause` is the
+ * original Node error carrying `.code`.
+ */
+export function isDaemonUnreachableError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err.cause as { code?: unknown } | undefined)?.code;
+  return code === "ECONNREFUSED";
+}
+
+/**
  * Latest persisted summary for a session, read straight from the project DB.
  *
  * Used when the client gave up on a /compact call (timeout/abort) but the

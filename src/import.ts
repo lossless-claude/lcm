@@ -18,6 +18,7 @@ import {
   createReplayRun,
   fingerprintFile,
   isClientGaveUpError,
+  isDaemonUnreachableError,
   loadLatestSessionSummary,
   planReplayResume,
   recordReplayProgress,
@@ -87,6 +88,8 @@ export interface ImportResult {
   tokensAfter: number;
   /** Present when a replay run resumed from a previous run's recorded progress */
   resumed?: { doneCount: number; totalCount: number; model?: string };
+  /** Set when the daemon refused a connection outright; the run stopped instead of failing every remaining session. Rerun the same command to resume. */
+  daemonUnreachable?: boolean;
   replayUsage?: {
     provider: string;
     model: string;
@@ -541,6 +544,20 @@ async function ingestSessionList(
             }
           }
         } catch (err) {
+          if (isDaemonUnreachableError(err)) {
+            // The daemon is gone, not just this session's compaction: every
+            // later call would fail identically, so the run stops here
+            // instead of marking the rest failed and breaking their chain.
+            // Stopping (rather than an in-process retry loop) is the simpler
+            // correct move, since replay runs are already resumable — a plain
+            // rerun picks up exactly where this one stopped.
+            console.error(
+              `  ⚠️ the daemon is unreachable (${err instanceof Error ? err.message : "unknown error"}); ` +
+              `stopping instead of failing every remaining session. Rerun \`lcm import${options.replay ? " --replay" : ""}\` to resume where this run left off.`,
+            );
+            result.daemonUnreachable = true;
+            break;
+          }
           // Non-fatal: import succeeded. The chain follows what was persisted:
           // when the client merely gave up (timeout/abort) the daemon may have
           // stored the summary anyway, so re-read it; when nothing is stored
@@ -594,6 +611,17 @@ async function ingestSessionList(
       }
       options.onProgress?.({ completed: processedBase + result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
     } catch (err) {
+      if (isDaemonUnreachableError(err)) {
+        // Same stop as the /compact case below: the daemon itself is gone,
+        // so every remaining session (including its /ingest call) would fail
+        // identically. Stop instead of counting the rest as failed.
+        console.error(
+          `  \u26a0\ufe0f the daemon is unreachable (${err instanceof Error ? err.message : "unknown error"}); ` +
+          `stopping instead of failing every remaining session. Rerun \`lcm import${options.replay ? " --replay" : ""}\` to resume where this run left off.`,
+        );
+        result.daemonUnreachable = true;
+        break;
+      }
       result.failed++;
       if (options.replay) {
         previousSummaryByCwd.set(cwd, undefined); // chain broken by ingest failure
@@ -699,6 +727,7 @@ export async function importSessions(
 
   for (const sessions of sessionLists) {
     await ingestSessionList(client, sessions, options, result, clearedCwds);
+    if (result.daemonUnreachable) break;
   }
 
   return result;
