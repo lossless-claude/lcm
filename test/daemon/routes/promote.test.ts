@@ -9,6 +9,7 @@ import { runLcmMigrations } from "../../../src/db/migration.js";
 import { ConversationStore } from "../../../src/store/conversation-store.js";
 import { SummaryStore } from "../../../src/store/summary-store.js";
 import { createPromoteHandler } from "../../../src/daemon/routes/promote.js";
+import { getPoolStats } from "../../../src/db/connection.js";
 import type { DaemonConfig } from "../../../src/daemon/config.js";
 import { lcmHome } from "../../../src/lcm-home.js";
 import { createLcmPaths } from "../../../src/lcm-paths.js";
@@ -258,6 +259,25 @@ describe("createPromoteHandler", () => {
     const rows = db.prepare("SELECT COUNT(*) AS count FROM promoted").get() as { count: number };
     db.close();
     expect(rows.count).toBe(BACKLOG);
+  });
+
+  it("opens the project db through the shared pooled connection and releases it when done", async () => {
+    const tempDir = await seedPromotable(1);
+    const dbPath = projectDbPath(tempDir, paths);
+    const handler = createPromoteHandler(makeConfig(), paths);
+    const { res, getBody } = mockRes();
+
+    await handler({} as any, res, JSON.stringify({ cwd: tempDir }));
+
+    expect(getBody().promoted).toBe(1);
+    // The pooled path applies WAL/foreign-key/busy-timeout setup that a standalone
+    // `new DatabaseSync` does not; a leaked handle would also still show up here.
+    expect(getPoolStats().connections.some((c) => c.path === dbPath)).toBe(false);
+
+    const verifyDb = new DatabaseSync(dbPath);
+    const mode = verifyDb.prepare("PRAGMA journal_mode").get() as { journal_mode: string };
+    verifyDb.close();
+    expect(mode.journal_mode).toBe("wal");
   });
 
   it("returns 400 when cwd is missing", async () => {

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "../config.js";
 import type { LcmPaths } from "../../lcm-paths.js";
 import { projectId, projectDbPath } from "../project.js";
@@ -16,6 +16,7 @@ import { deduplicateAndInsert } from "../../promotion/dedup.js";
 import { validateCwd } from "../validate-cwd.js";
 import { noopDaemonLog, type DaemonLog } from "../log.js";
 import { acquireProjectMutation, yieldToEventLoop } from "../project-queue.js";
+import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 
 export function createPromoteHandler(
   config: DaemonConfig,
@@ -53,8 +54,7 @@ export function createPromoteHandler(
     let totalConversations = 0;
 
     try {
-      db = new DatabaseSync(dbPath);
-      db.exec("PRAGMA busy_timeout = 5000");
+      db = getLcmConnection(dbPath);
       runLcmMigrations(db);
       mkdirSync(dirname(dbPath), { recursive: true });
 
@@ -132,7 +132,7 @@ export function createPromoteHandler(
       sendJson(res, 500, { error: err instanceof Error ? err.message : "promote failed" });
       return;
     } finally {
-      db?.close();
+      if (db) closeLcmConnection(dbPath);
       lease.release();
     }
 
