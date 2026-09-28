@@ -209,10 +209,12 @@ describe("printRebuildSummary", () => {
       ...run,
       sessions: [{ ...run.sessions[0], rebuilt: true, ingested: 12 }],
       backups: ["/p/db.sqlite.bak-rebuild-x"],
+      removedBackups: ["/p/db.sqlite.bak-rebuild-old"],
     }, { apply: true });
     const out = logs.join("\n");
     expect(out).toContain("rebuilt: 12 messages captured, summaries discarded");
     expect(out).toContain("Backup: /p/db.sqlite.bak-rebuild-x");
+    expect(out).toContain("Removed older backup: /p/db.sqlite.bak-rebuild-old");
     expect(out).toContain("lcm import --provider claude --replay");
   });
 });

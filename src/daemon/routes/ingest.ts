@@ -157,6 +157,7 @@ async function rebuildSession(
   const dbPath = projectDbPath(cwd, paths);
   const pid = projectId(cwd);
   let backupPath: string | undefined;
+  const removedBackups: string[] = [];
   try {
     const result = await enqueue(pid, async () => {
       openProject(cwd, paths);
@@ -166,7 +167,7 @@ async function rebuildSession(
           runLcmMigrations(db);
           if (input.backup === true) {
             try {
-              backupPath = await backupProjectDatabase(db, dbPath);
+              backupPath = await backupProjectDatabase(db, dbPath, new Date(), (path) => removedBackups.push(path));
             } catch (err) {
               throw new Error(`backup failed, nothing was rebuilt: ${err instanceof Error ? err.message : String(err)}`);
             }
@@ -180,11 +181,11 @@ async function rebuildSession(
         }
       });
     });
-    sendJson(res, 200, { ...result, ...(backupPath ? { backupPath } : {}) });
+    sendJson(res, 200, { ...result, ...(backupPath ? { backupPath, removedBackups } : {}) });
   } catch (err) {
     const status = err instanceof TranscriptSourceError ? 400 : 500;
     log.write(status === 500 ? "error" : "warn", "ingest.rebuild_failed", { cwd, session_id: input.session_id, err });
-    sendJson(res, status, { error: err instanceof Error ? err.message : "rebuild failed", ...(backupPath ? { backupPath } : {}) });
+    sendJson(res, status, { error: err instanceof Error ? err.message : "rebuild failed", ...(backupPath ? { backupPath, removedBackups } : {}) });
   }
 }
 
@@ -195,6 +196,7 @@ async function repairCutSession(
   const dbPath = projectDbPath(cwd, paths);
   const pid = projectId(cwd);
   let backupPath: string | undefined;
+  const removedBackups: string[] = [];
   try {
     const result = await enqueue(pid, async () => {
       openProject(cwd, paths);
@@ -213,7 +215,7 @@ async function repairCutSession(
           // One copy per project run, as for a Claude rebuild: the caller asks for it until one exists.
           if (input.backup === true) {
             try {
-              backupPath = await backupProjectDatabase(db, dbPath);
+              backupPath = await backupProjectDatabase(db, dbPath, new Date(), (path) => removedBackups.push(path));
             } catch (error) {
               throw new Error(`backup failed, nothing was repaired: ${error instanceof Error ? error.message : String(error)}`);
             }
@@ -224,11 +226,11 @@ async function repairCutSession(
         }
       });
     });
-    sendJson(res, 200, { ...result, ...(backupPath ? { backupPath } : {}) });
+    sendJson(res, 200, { ...result, ...(backupPath ? { backupPath, removedBackups } : {}) });
   } catch (error) {
     const status = error instanceof TranscriptSourceError ? 400 : 500;
     log.write(status === 500 ? "error" : "warn", "ingest.cut_repair_failed", { cwd, session_id: input.session_id, err: error });
-    sendJson(res, status, { error: error instanceof Error ? error.message : "cut repair failed", ...(backupPath ? { backupPath } : {}) });
+    sendJson(res, status, { error: error instanceof Error ? error.message : "cut repair failed", ...(backupPath ? { backupPath, removedBackups } : {}) });
   }
 }
 
