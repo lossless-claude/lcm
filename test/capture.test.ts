@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -139,5 +139,35 @@ describe("SessionCapture", () => {
     expect(isSessionComplete(db, "s1")).toBe(true);
     markSessionComplete(db, "s1", 6);
     expect(db.prepare("SELECT message_count FROM session_ingest_log WHERE session_id = 's1'").get()).toEqual({ message_count: 6 });
+  });
+
+  it("does not treat a session as complete once its transcript changed after completion", () => {
+    const dir = mkdtempSync(join(tmpdir(), "lcm-capture-complete-"));
+    try {
+      const transcriptPath = join(dir, "s1.jsonl");
+      writeFileSync(transcriptPath, "{}\n");
+      const minuteAgo = new Date(Date.now() - 60_000);
+      utimesSync(transcriptPath, minuteAgo, minuteAgo);
+      markSessionComplete(db, "s1", 1);
+      expect(isSessionComplete(db, "s1", transcriptPath)).toBe(true);
+
+      // Written to after the session was completed, as a resume does.
+      const minuteAhead = new Date(Date.now() + 60_000);
+      utimesSync(transcriptPath, minuteAhead, minuteAhead);
+      expect(isSessionComplete(db, "s1", transcriptPath)).toBe(false);
+      expect(isSessionComplete(db, "s1")).toBe(true);
+
+      // Completing it again moves the completion past that write.
+      utimesSync(transcriptPath, minuteAgo, minuteAgo);
+      db.prepare("UPDATE session_ingest_log SET completed_at = '2000-01-01 00:00:00' WHERE session_id = 's1'").run();
+      expect(isSessionComplete(db, "s1", transcriptPath)).toBe(false);
+      markSessionComplete(db, "s1", 2);
+      expect(isSessionComplete(db, "s1", transcriptPath)).toBe(true);
+
+      // A transcript that cannot be read is read again rather than skipped.
+      expect(isSessionComplete(db, "s1", join(dir, "missing.jsonl"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

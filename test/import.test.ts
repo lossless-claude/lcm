@@ -694,6 +694,42 @@ describe("importSessions", () => {
     expect(result.skippedEmpty).toBe(1);
     expect(result.imported).toBe(0);
   });
+
+  it("skips a completed Claude session only while its transcript is unchanged since completion", async () => {
+    const claudeProjectsDir = makeTmpDir();
+    const lcmDir = makeTmpDir();
+    const cwd = "/home/user/myproject";
+    const projectDir = join(claudeProjectsDir, claudeProjectSlug(cwd));
+    mkdirSync(projectDir, { recursive: true });
+    const transcriptPath = join(projectDir, "session-resumed.jsonl");
+    writeFileSync(transcriptPath, "");
+
+    const dbDir = join(lcmDir, "projects", projectId(cwd));
+    mkdirSync(dbDir, { recursive: true });
+    const db = new DatabaseSync(join(dbDir, "db.sqlite"));
+    runLcmMigrations(db, { fts5Available: false });
+    db.prepare("INSERT INTO session_ingest_log (session_id, message_count, completed_at) VALUES (?, ?, ?)")
+      .run("session-resumed", 1, "2026-01-01 00:00:00.000");
+    db.close();
+
+    const ingestCalls: string[] = [];
+    const client = makeMockClient(async (path, body) => {
+      if (path === "/ingest") ingestCalls.push((body as { session_id: string }).session_id);
+      return { ingested: 1, totalTokens: 12 };
+    });
+    const run = () => importSessions(client, { provider: "claude", cwd, _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir });
+
+    const beforeCompletion = new Date("2025-12-31T00:00:00Z");
+    utimesSync(transcriptPath, beforeCompletion, beforeCompletion);
+    expect((await run()).skippedEmpty).toBe(1);
+    expect(ingestCalls).toEqual([]);
+
+    // Resumed after completion: the same file grew.
+    const afterCompletion = new Date("2026-01-02T00:00:00Z");
+    utimesSync(transcriptPath, afterCompletion, afterCompletion);
+    await run();
+    expect(ingestCalls).toEqual(["session-resumed"]);
+  });
 });
 
 // --- importSessions replay resume (manifest + ledger) ---

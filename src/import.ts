@@ -272,9 +272,10 @@ function accumulateReplayUsage(result: ImportResult, usage: CompactLlmUsage | un
 
 /**
  * Checks if a session has already been recorded in session_ingest_log,
- * indicating it was fully ingested in a previous run.
+ * indicating it was fully ingested in a previous run, and its transcript
+ * was not written to since.
  */
-function isSessionAlreadyIngested(cwd: string, sessionId: string, paths: LcmPaths): boolean {
+function isSessionAlreadyIngested(cwd: string, sessionId: string, transcriptPath: string, paths: LcmPaths): boolean {
   try {
     const dbPath = projectDbPath(cwd, paths);
     if (!existsSync(dbPath)) {
@@ -283,7 +284,7 @@ function isSessionAlreadyIngested(cwd: string, sessionId: string, paths: LcmPath
     const db = new DatabaseSync(dbPath, { readOnly: true });
     try {
       db.exec("PRAGMA busy_timeout = 5000");
-      return isSessionComplete(db, sessionId);
+      return isSessionComplete(db, sessionId, transcriptPath);
     } finally {
       db.close();
     }
@@ -411,9 +412,10 @@ async function ingestSessionList(
       continue;
     }
 
-    // Claude's adapter cannot recover a tail, so a completed Claude session can skip /ingest.
+    // Claude's adapter cannot recover a tail, so a completed Claude session whose transcript
+    // has not changed since can skip /ingest; a resume appends to the same file.
     // Codex and OMP may have a final record deferred by live capture and must reach /ingest.
-    if (!options.replay && sourceClient === "claude" && options.paths && isSessionAlreadyIngested(cwd, sessionId, options.paths)) {
+    if (!options.replay && sourceClient === "claude" && options.paths && isSessionAlreadyIngested(cwd, sessionId, path, options.paths)) {
       result.skippedEmpty++;
       if (options.verbose) console.log(`  ↩️ ${sessionId}: already fully ingested`);
       options.onProgress?.({ completed: processedBase + result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
