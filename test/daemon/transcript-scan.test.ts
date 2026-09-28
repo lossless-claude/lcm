@@ -101,4 +101,34 @@ describe("periodic transcript scan", () => {
     // Nothing was captured, so no project database was ever opened.
     expect(existsSync(projectDbPath(project, paths))).toBe(false);
   });
+
+  it("yields to the event loop while walking many project directories", async () => {
+    const config = loadDaemonConfig("/nonexistent");
+    const ingest = createIngestHandler(config, paths);
+
+    // None of these can hold a transcript: no Claude project directory exists for
+    // any of them. A scan that never yields walks all of them synchronously, in
+    // one tick, so nothing else queued for that tick gets a turn before it ends.
+    for (let i = 0; i < 120; i++) {
+      const project = join(process.env.LCM_SCAN_FAKE_HOME!, `quiet-${i}`);
+      const projectEntry = join(paths.projectsDir, `quiet-${i}`);
+      mkdirSync(projectEntry, { recursive: true });
+      writeFileSync(join(projectEntry, "meta.json"), JSON.stringify({ cwd: project }));
+    }
+
+    let timerFired = false;
+    // Registered before the scan starts: a `setImmediate` callback only runs once
+    // the current synchronous stretch of work ends. If the scan never yields, this
+    // callback has to wait for the whole walk to finish before it can run at all,
+    // and by then the scan's own promise has already settled — so awaiting it can
+    // never observe `timerFired` as true. If the scan yields partway through (via
+    // its own `setImmediate`-based yield), this callback — queued first — runs
+    // ahead of the scan's continuation, and `timerFired` is true by the time the
+    // scan's promise resolves.
+    setImmediate(() => { timerFired = true; });
+
+    await scanForTranscripts(config, paths, ingest);
+
+    expect(timerFired).toBe(true);
+  });
 });

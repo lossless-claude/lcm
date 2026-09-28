@@ -2,7 +2,7 @@ import { SummarizeJobStore } from "./summarize-jobs.js";
 import { summarizerAvailability } from "./provider-config.js";
 import { createNextSummarizeJobHandler, createAnswerSummarizeJobHandler } from "./routes/summarize-jobs.js";
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
-import { existsSync, readdirSync } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -33,6 +33,7 @@ import { createSessionScavengeHandler } from "./routes/session-scavenge.js";
 import { createSessionStartCompactHandler } from "./routes/session-start-compact.js";
 import { createSessionEndHandler, invokeRoute } from "./routes/session-end.js";
 import { backfillProjectIdentities } from "./project-group.js";
+import { yieldToEventLoop } from "./project-queue.js";
 import { claudeProjectSlug } from "./project.js";
 import { PKG_VERSION, BUILD_ID } from "./version.js";
 import { lcmHome } from "../lcm-home.js";
@@ -73,20 +74,41 @@ function requestLevel(key: string, status: number): LogLevel {
   return DEBUG_ROUTES.has(key) || key.startsWith("POST /summarize-jobs/") ? "debug" : "info";
 }
 
-/** A request the daemon has accepted; `ended` is set once its response closes. */
-type InFlightRequest = { route: string; started: number; ended?: number; cwd?: string; session_id?: string };
+/** A request or daemon-initiated background task in flight; `ended` is set once it finishes. */
+export type InFlightRequest = { route: string; started: number; ended?: number; cwd?: string; session_id?: string };
 
 /**
- * One `daemon.stalled` record per request in flight at any point since the tick before
- * the stall, or one without a route when there was none; then forgets requests that ended.
+ * Routes that are always in flight by design and never the cause of a stall: a long
+ * poll (`GET /summarize-jobs/next` holds up to 25s waiting for a job). Naming one as a
+ * cause every time the event loop blocks would bury whatever actually blocked it.
  */
-function reportStall(log: DaemonLog, inFlight: Set<InFlightRequest>, stall: Stall | undefined): void {
+const LONG_POLL_ROUTES = new Set(["GET /summarize-jobs/next"]);
+
+/** Adds a name to `inFlight` for the duration of a background task, so a stall during it is attributed by name like a request would be. Returns the function that marks it ended. */
+export function beginBackgroundTask(inFlight: Set<InFlightRequest>, name: string): () => void {
+  const record: InFlightRequest = { route: name, started: Date.now() };
+  inFlight.add(record);
+  return () => { record.ended = Date.now(); };
+}
+
+/** What `beginBackgroundTask` looks like once its `inFlight` set is already bound. */
+export type BeginBackgroundTask = (name: string) => () => void;
+
+/**
+ * One `daemon.stalled` record per non-long-poll request or background task in flight at
+ * any point since the tick before the stall; then forgets requests that ended. Long polls
+ * are never named as a cause; when nothing else was in flight, one record is written
+ * without a route, carrying `longPollCount` if any were pending.
+ */
+export function reportStall(log: DaemonLog, inFlight: Set<InFlightRequest>, stall: Stall | undefined): void {
   if (stall) {
     const involved = [...inFlight].filter((r) => r.ended === undefined || r.ended >= stall.since);
-    if (involved.length === 0) log.write("warn", "daemon.stalled", { ms: stall.ms });
-    for (const r of involved) {
+    const longPollCount = involved.filter((r) => LONG_POLL_ROUTES.has(r.route)).length;
+    const causes = involved.filter((r) => !LONG_POLL_ROUTES.has(r.route));
+    for (const r of causes) {
       log.write("warn", "daemon.stalled", { ms: stall.ms, route: r.route, cwd: r.cwd, session_id: r.session_id, started_at: new Date(r.started).toISOString() });
     }
+    if (causes.length === 0) log.write("warn", "daemon.stalled", { ms: stall.ms, ...(longPollCount > 0 ? { longPollCount } : {}) });
   }
   for (const r of inFlight) if (r.ended !== undefined) inFlight.delete(r);
 }
@@ -186,11 +208,15 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   routes.set("POST /review-stale", createReviewStaleHandler(config, paths));
   // Status handler is registered after listen() when we know the actual port
 
+  // Named here (not just for HTTP requests) so a stall during either is attributed to it.
+  const inFlight = new Set<InFlightRequest>();
+
   // Periodic transcript ingestion scan
   const INGEST_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
   const ingestHandler = createIngestHandler(config, paths, log);
   const ingestInterval = setInterval(() => {
-    void scanForTranscripts(config, paths, ingestHandler);
+    const endTask = beginBackgroundTask(inFlight, "scan:transcripts");
+    void scanForTranscripts(config, paths, ingestHandler).finally(endTask);
   }, INGEST_INTERVAL_MS);
   ingestInterval.unref(); // don't prevent process exit
 
@@ -203,7 +229,6 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
     : undefined;
   identityBackfill?.unref();
 
-  const inFlight = new Set<InFlightRequest>();
   let stopStallWatch: (() => void) | undefined;
 
   const server: Server = createServer(async (req, res) => {
@@ -273,7 +298,8 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
       routes.set("POST /session-start-compact", createSessionStartCompactHandler(config, actualPort, paths, log));
       // The follow-ups call this daemon back, so they must present the token it checks.
       const sequencePaths = options?.tokenPath ? { ...paths, tokenPath: options.tokenPath } : paths;
-      routes.set("POST /session-end", createSessionEndHandler(config, actualPort, sequencePaths, ingestHandler, log));
+      routes.set("POST /session-end", createSessionEndHandler(config, actualPort, sequencePaths, ingestHandler, log,
+        (name) => beginBackgroundTask(inFlight, name)));
 
       resolve({
         address: () => addr,
@@ -295,28 +321,46 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   });
 }
 
+// A store with tens of thousands of projects walks that many directories per pass;
+// yielding this often keeps any one stretch of synchronous work (each project's
+// `meta.json` read) short enough that the event loop never visibly blocks.
+const SCAN_YIELD_EVERY = 50;
+
 /**
  * One pass of the periodic transcript scan: for every project with stored
  * memory, ingests the Claude Code transcripts under
  * `~/.claude/projects/<claudeProjectSlug(cwd)>` that live capture has not
  * reached yet. Best-effort by construction — one rejected transcript, or the
  * sweep itself, must never fault the daemon.
+ *
+ * Directory listings are read with `fs/promises`, an async syscall, instead of
+ * blocking the event loop; a directory that cannot hold transcripts (no
+ * `meta.json` cwd, or no matching Claude project directory) is skipped on that
+ * one failed read rather than probed first. The per-project `meta.json` read
+ * stays synchronous (one small file), so the outer walk also yields to the
+ * event loop every `SCAN_YIELD_EVERY` projects, as `backfillProjectIdentities` does.
  */
 export async function scanForTranscripts(config: DaemonConfig, paths: LcmPaths, ingest: RouteHandler): Promise<void> {
   try {
     const projectsDir = paths.projectsDir;
-    if (!existsSync(projectsDir)) return;
+    const entries = await readdir(projectsDir, { withFileTypes: true }).catch((err: NodeJS.ErrnoException) => {
+      if (err.code === "ENOENT") return [];
+      throw err;
+    });
 
-    for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
+    let seen = 0;
+    for (const entry of entries) {
       if (!entry.isDirectory()) continue;
+      if (++seen % SCAN_YIELD_EVERY === 0) await yieldToEventLoop();
+
       const meta = readProjectMetaIn(join(projectsDir, entry.name));
       if (!meta?.cwd) continue;
 
       // Find Claude Code session files for this project's cwd
       const sessionsDir = join(homedir(), ".claude", "projects", claudeProjectSlug(meta.cwd));
-      if (!existsSync(sessionsDir)) continue;
+      const files = await readdir(sessionsDir).catch(() => [] as string[]);
 
-      for (const file of readdirSync(sessionsDir)) {
+      for (const file of files) {
         if (!file.endsWith(".jsonl")) continue;
         const sessionId = file.replace(".jsonl", "");
         const transcriptPath = join(sessionsDir, file);
