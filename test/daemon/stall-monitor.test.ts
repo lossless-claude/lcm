@@ -39,6 +39,8 @@ describe("watchEventLoop", () => {
     expect(stall!.ms).toBe(5_100);
     // The next tick was due at 2_000, so the block began by then.
     expect(stall!.begunBy).toBe(2_000);
+    // The block can have ended before callbacks run ahead of the reporting tick.
+    expect(stall!.endedAfter).toBe(5_100);
   });
 
   it("does not report a stall for a tick that fires on schedule", () => {
