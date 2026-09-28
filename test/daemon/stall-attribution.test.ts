@@ -19,12 +19,28 @@ function fakeLog(): { log: DaemonLog; records: Array<{ level: LogLevel; event: s
 }
 
 describe("reportStall background task attribution", () => {
+  it("omits work that ended before the block could begin, even between the last tick and the block", () => {
+    const { log, records } = fakeLog();
+    const running = { route: "POST /ingest", started: 1_500 };
+    const inFlight = new Set<InFlightRequest>([
+      { route: "POST /compact", started: 100, ended: 900 },
+      // Closed after the last tick (1_000) but before the next one was due (2_000): the block had not begun.
+      { route: "POST /restore", started: 200, ended: 1_600 },
+      running,
+      // Its response closed once the block ended: it ran during it.
+      { route: "session-end:ingest", started: 500, ended: 7_000 },
+    ]);
+    reportStall(log, inFlight, { ms: 6_000, begunBy: 2_000 });
+    expect(records.map((r) => r.fields?.route)).toEqual(["POST /ingest", "session-end:ingest"]);
+    expect([...inFlight]).toEqual([running]);
+  });
+
   it("names a background task registered via beginBackgroundTask as the cause of a stall during it", () => {
     const { log, records } = fakeLog();
     const inFlight = new Set<InFlightRequest>();
     const endTask = beginBackgroundTask(inFlight, "scan:transcripts");
 
-    reportStall(log, inFlight, { ms: 6_000, since: Date.now() - 1 });
+    reportStall(log, inFlight, { ms: 6_000, begunBy: Date.now() - 1 });
 
     expect(records).toHaveLength(1);
     expect(records[0]!.fields).toMatchObject({ ms: 6_000, route: "scan:transcripts" });
@@ -40,7 +56,7 @@ describe("reportStall background task attribution", () => {
     // A tick with no stall clears finished tasks from the set, exactly as it does for requests.
     reportStall(log, inFlight, undefined);
 
-    reportStall(log, inFlight, { ms: 6_000, since: Date.now() + 1 });
+    reportStall(log, inFlight, { ms: 6_000, begunBy: Date.now() + 1 });
 
     expect(records).toHaveLength(1);
     expect(records[0]!.fields).toEqual({ ms: 6_000 });
@@ -53,7 +69,7 @@ describe("reportStall background task attribution", () => {
     inFlight.add({ route: "GET /summarize-jobs/next", started: Date.now() - 50 });
     inFlight.add({ route: "GET /summarize-jobs/next", started: Date.now() - 10 });
 
-    reportStall(log, inFlight, { ms: 6_000, since: Date.now() - 1 });
+    reportStall(log, inFlight, { ms: 6_000, begunBy: Date.now() - 1 });
 
     // One record, not one per long poll, and never blamed by route.
     expect(records).toHaveLength(1);
@@ -66,7 +82,7 @@ describe("reportStall background task attribution", () => {
     inFlight.add({ route: "GET /summarize-jobs/next", started: Date.now() - 100 });
     inFlight.add({ route: "POST /compact", cwd: "/proj", started: Date.now() - 10 });
 
-    reportStall(log, inFlight, { ms: 6_000, since: Date.now() - 1 });
+    reportStall(log, inFlight, { ms: 6_000, begunBy: Date.now() - 1 });
 
     expect(records).toHaveLength(1);
     expect(records[0]!.fields).toMatchObject({ ms: 6_000, route: "POST /compact", cwd: "/proj" });

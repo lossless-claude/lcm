@@ -355,7 +355,13 @@ stored.
    the transcript's prefix under the current redaction rules; a stored `[REDACTED]` span of a
    pattern since removed or narrowed matches the text it replaced. A conversation captured before
    role tagging (`role_tagging IS NULL`) is not compared, since today's parser cannot reproduce
-   it. On a mismatch capture stops, with nothing written: a session an earlier lcm captured
+   it. The daemon remembers in memory the prefix it last validated for each session (up to 128
+   sessions; a restart forgets them). A later capture hashes the stored prefix, together with the
+   database's and the conversations' identity, and the transcript's prefix; when both hashes and
+   the redaction rules match what it remembered, only the messages stored since are compared.
+   Anything else (fewer stored messages, a replaced database or transcript file, other redaction
+   rules, a rebuild) compares the whole prefix again. On a mismatch capture stops, with
+   nothing written: a session an earlier lcm captured
    after a compaction can hold skipped and repeated messages, and appending to it would repeat
    the damage. `lcm import --provider claude --rebuild` repairs it (see
    [Import](import.md#rebuilding-compacted-claude-code-sessions)).
