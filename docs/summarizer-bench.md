@@ -29,6 +29,7 @@ Results land in `test/bench/results/` as one JSON per model, provider, variant, 
 | `LCM_EVAL_REASONING` | HTTP providers: the JSON sent as `reasoning`, e.g. `{"enabled":false}`. |
 | `LCM_EVAL_REASONING_EFFORT` | Shorthand for `LCM_EVAL_REASONING={"effort":"<value>"}`. |
 | `LCM_EVAL_DISABLE_THINKING` | HTTP providers: `1` sends `chat_template_kwargs.enable_thinking=false`, for Qwen-style servers. |
+| `LCM_EVAL_BODY` | HTTP providers: a JSON object merged into the request body after the fields above, for anything else a server needs, e.g. `{"enable_thinking":false}` for mlx-vlm. It is validated like an endpoint's `body` and is part of the run's identity. |
 
 `openrouter` needs `OPENROUTER_API_KEY`. The provider, effective language, and
 reasoning knobs are part of a run's identity and appear in the result filename,

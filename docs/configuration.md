@@ -374,6 +374,7 @@ A model that reasons by default can spend the whole output budget thinking. Each
 | DeepSeek API | `{ "thinking": { "type": "disabled" } }` |
 | OpenRouter | `{ "reasoning": { "effort": "minimal" } }` or `{ "reasoning": { "enabled": false } }`, depending on the model |
 | Qwen behind an OpenAI-compatible server (llama.cpp, MLX, vLLM) | `{ "chat_template_kwargs": { "enable_thinking": false } }` |
+| Qwen behind mlx-vlm's server, which ignores `chat_template_kwargs` | `{ "enable_thinking": false }` |
 
 ```json
 {

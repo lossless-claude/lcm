@@ -80,6 +80,7 @@ const INTERNAL_ENV = new Set([
   "LCM_CODEX_NATIVE_RUNTIME", // test/e2e/flows/codex-native-runtime.test.ts: opts into that e2e flow
   "LCM_EVAL_API_KEY", // test/bench summarizer-eval harness: API key for the eval provider
   "LCM_EVAL_BASE_URL", // test/bench summarizer-eval harness: eval provider base URL
+  "LCM_EVAL_BODY", // test/bench summarizer-eval harness: extra JSON request-body fields
   "LCM_EVAL_CORPUS_DIR", // test/bench summarizer-eval harness: corpus directory to eval against
   "LCM_EVAL_DISABLE_THINKING", // test/bench summarizer-eval harness: disables provider thinking mode
   "LCM_EVAL_MODEL", // test/bench summarizer-eval harness: model under evaluation

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +12,7 @@ import {
   writeResult,
   type CorpusSession,
 } from "./summarizer-eval-harness.js";
-import { createEvalSummarizer, type EvalProvider } from "./summarizer-eval-providers.js";
+import { createEvalSummarizer, evalRequestBody, type EvalProvider } from "./summarizer-eval-providers.js";
 import { parseLanguageTag } from "../../src/search/language.js";
 
 const RESULTS_DIR = join(import.meta.dirname, "results");
@@ -93,6 +94,22 @@ describe("summarizer eval harness (offline)", () => {
     expect(result.calls.every((c) => c.emptyContentFallback)).toBe(true);
   }, 30_000);
 
+  it("merges LCM_EVAL_BODY into the request body and rejects anything but a JSON object", () => {
+    const saved = { body: process.env.LCM_EVAL_BODY, thinking: process.env.LCM_EVAL_DISABLE_THINKING };
+    try {
+      process.env.LCM_EVAL_DISABLE_THINKING = "1";
+      process.env.LCM_EVAL_BODY = '{"enable_thinking":false}';
+      expect(evalRequestBody()).toEqual({ chat_template_kwargs: { enable_thinking: false }, enable_thinking: false });
+      process.env.LCM_EVAL_BODY = "[1]";
+      expect(() => evalRequestBody()).toThrow(/LCM_EVAL_BODY must be a JSON object/);
+    } finally {
+      for (const [name, value] of [["LCM_EVAL_BODY", saved.body], ["LCM_EVAL_DISABLE_THINKING", saved.thinking]] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
   it("marks a run incomplete when the summarizer keeps failing", async () => {
     const failing: LcmSummarizeFn = async () => {
       throw new Error("429 rate limited");
@@ -115,6 +132,7 @@ describe("summarizer eval harness (offline)", () => {
 //   LCM_EVAL_REASONING         http providers: JSON sent as `reasoning`, e.g. {"enabled":false} (default none)
 //   LCM_EVAL_REASONING_EFFORT  shorthand for LCM_EVAL_REASONING={"effort":"<value>"}
 //   LCM_EVAL_DISABLE_THINKING  http providers: "1" sends chat_template_kwargs.enable_thinking=false (Qwen-style servers)
+//   LCM_EVAL_BODY              http providers: JSON object merged into the request body, e.g. {"enable_thinking":false}
 //   LCM_EVAL_LANGUAGE          configured or detected BCP 47 language for the corpus
 
 const EVAL_PROVIDERS: readonly EvalProvider[] = ["openrouter", "openai", "claude-process"];
@@ -149,7 +167,22 @@ if (process.env.LCM_EVAL_LANGUAGE && !language) {
 const reasoning =
   (process.env.LCM_EVAL_REASONING ? ` reasoning=${process.env.LCM_EVAL_REASONING}` : "") +
   (process.env.LCM_EVAL_REASONING_EFFORT ? ` reasoning=${process.env.LCM_EVAL_REASONING_EFFORT}` : "") +
-  (process.env.LCM_EVAL_DISABLE_THINKING === "1" ? " thinking=off" : "");
+  (process.env.LCM_EVAL_DISABLE_THINKING === "1" ? " thinking=off" : "") +
+  (process.env.LCM_EVAL_BODY ? ` body=${bodyIdentity(process.env.LCM_EVAL_BODY)}` : "");
+
+/**
+ * A readable prefix of the body plus a digest of its parsed JSON: the filename
+ * sanitizer folds punctuation, so the text alone would let distinct bodies collide.
+ */
+function bodyIdentity(raw: string): string {
+  let canonical = raw;
+  try {
+    canonical = JSON.stringify(JSON.parse(raw));
+  } catch {
+    // evalRequestBody rejects it when the run starts; keep the raw text here.
+  }
+  return `${canonical.slice(0, 40)}~${createHash("sha256").update(canonical).digest("hex").slice(0, 12)}`;
+}
 
 /** The reasoning/thinking knobs, as a filename-safe run identity. */
 const variant = reasoning.trim().replace(/\s+/g, "_") || undefined;

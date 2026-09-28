@@ -15,8 +15,10 @@ const EVAL_ENDPOINT = "eval";
  * - LCM_EVAL_REASONING: the JSON object sent as `reasoning` (e.g. {"effort":"minimal"} or {"enabled":false});
  *   LCM_EVAL_REASONING_EFFORT is the shorthand for the effort form.
  * - LCM_EVAL_DISABLE_THINKING=1: `chat_template_kwargs.enable_thinking=false`, for Qwen-style servers (vLLM, MLX).
+ * - LCM_EVAL_BODY: a JSON object merged last, for any other field a server needs; the endpoint
+ *   config validates it like any `body`.
  */
-function evalRequestBody(): Record<string, unknown> | undefined {
+export function evalRequestBody(): Record<string, unknown> | undefined {
   const reasoning: Record<string, unknown> | undefined = process.env.LCM_EVAL_REASONING
     ? (JSON.parse(process.env.LCM_EVAL_REASONING) as Record<string, unknown>)
     : process.env.LCM_EVAL_REASONING_EFFORT
@@ -25,8 +27,19 @@ function evalRequestBody(): Record<string, unknown> | undefined {
   const body = {
     ...(reasoning ? { reasoning } : {}),
     ...(process.env.LCM_EVAL_DISABLE_THINKING === "1" ? { chat_template_kwargs: { enable_thinking: false } } : {}),
+    ...extraBody(),
   };
   return Object.keys(body).length > 0 ? body : undefined;
+}
+
+function extraBody(): Record<string, unknown> {
+  const raw = process.env.LCM_EVAL_BODY;
+  if (!raw) return {};
+  const parsed: unknown = JSON.parse(raw);
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`LCM_EVAL_BODY must be a JSON object, got: ${raw}`);
+  }
+  return parsed as Record<string, unknown>;
 }
 
 function requireEnv(name: string): string {
