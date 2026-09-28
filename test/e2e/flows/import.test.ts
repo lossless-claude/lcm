@@ -46,17 +46,20 @@ describe("Flows 2-4: Import", { timeout: 60_000 }, () => {
   });
 
   it("Flow 5: skips sessions marked in session_ingest_log", async () => {
-    // Pre-mark a session as already ingested in the database
+    // Mark a session complete after its transcript was last written
+    await handle.client.post("/session-complete", {
+      session_id: "e2e-test-skip-me",
+      cwd: handle.tmpDir,
+      message_count: 42,
+    });
     const { db, close } = openProjectDb(handle.tmpDir);
     try {
-      db.prepare(
-        "INSERT INTO session_ingest_log (session_id, message_count) VALUES (?, ?)"
-      ).run("e2e-test-skip-me", 42);
+      expect(db.prepare("SELECT 1 FROM session_ingest_log WHERE session_id = ?").get("e2e-test-skip-me")).toBeDefined();
     } finally {
       close();
     }
 
-    // Try to import a transcript with that session_id
+    // Try to import that unchanged transcript with that session_id
     // The import should skip it (return ingested:0, totalTokens:0)
     const result = await handle.client.post<{ ingested: number; totalTokens: number }>("/ingest", {
       session_id: "e2e-test-skip-me",

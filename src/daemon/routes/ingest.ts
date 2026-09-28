@@ -241,11 +241,15 @@ export function createIngestHandler(
           runLcmMigrations(db);
 
           // A session already fully ingested is skipped — on the same db connection to
-          // avoid double-open overhead and lock contention. A client whose adapter may
-          // recover a deferred tail (and replay) skips this shortcut: the capture
-          // module's stored-count slice keeps those paths idempotent.
-          if (input.replay !== true && !source.mayRecoverTail && isSessionComplete(db, session_id)) {
-            return { ingested: 0, totalTokens: 0 };
+          // avoid double-open overhead and lock contention — unless its transcript was
+          // written to after completion (a resume appends to the same file). A client
+          // whose adapter may recover a deferred tail (and replay) skips this shortcut:
+          // the capture module's stored-count slice keeps those paths idempotent.
+          if (input.replay !== true && !source.mayRecoverTail) {
+            const transcriptPath = structured
+              ? undefined
+              : source.locate({ sessionId: session_id, cwd, transcriptPath: input.transcript_path, source: input.source });
+            if (isSessionComplete(db, session_id, transcriptPath)) return { ingested: 0, totalTokens: 0 };
           }
 
           const capture = new SessionCapture(db, pid, scrubber);

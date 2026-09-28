@@ -440,8 +440,8 @@ let scanInProgress = false;
  * failed or rejected ingest, a subagent transcript that could not be captured, or
  * a failed tool-call model backfill (which this call asks `/ingest` to run before
  * replying) leaves nothing recorded, so it is retried next pass. This never marks
- * a session complete; that stays `/session-complete`'s job alone (a Claude
- * `--resume` of a completed session is a separate, pre-existing gap).
+ * a session complete; that stays `/session-complete`'s job alone. A completed
+ * session whose transcript grew since (a Claude `--resume`) is read again by `/ingest`.
  */
 export async function scanForTranscripts(config: DaemonConfig, paths: LcmPaths, ingest: RouteHandler): Promise<void> {
   if (scanInProgress) return;

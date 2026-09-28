@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { statSync } from "node:fs";
 import { sep } from "node:path";
 import type { EventsDb } from "./hooks/events-db.js";
 import { upsertRedactionCounts } from "./db/redaction-stats.js";
@@ -94,14 +95,31 @@ export function attributionFromTranscriptPath(transcriptPath: string): SubagentA
   return readSubagentAttribution(transcriptPath, segments[subagentsIndex - 1]);
 }
 
-export function isSessionComplete(db: DatabaseSync, sessionId: string): boolean {
-  return db.prepare("SELECT 1 FROM session_ingest_log WHERE session_id = ?").get(sessionId) !== undefined;
+/**
+ * True when `/session-complete` recorded the session and, given its transcript, the file was
+ * not written to after that: a resumed Claude Code session appends to the same file, so a
+ * transcript modified since completion (or one that cannot be stat'd) has to be read again.
+ */
+export function isSessionComplete(db: DatabaseSync, sessionId: string, transcriptPath?: string): boolean {
+  const row = db.prepare("SELECT completed_at FROM session_ingest_log WHERE session_id = ?").get(sessionId) as
+    { completed_at: string } | undefined;
+  if (!row) return false;
+  if (transcriptPath === undefined) return true;
+  let modifiedMs: number;
+  try {
+    modifiedMs = statSync(transcriptPath).mtimeMs;
+  } catch {
+    return false;
+  }
+  // `completed_at` is SQLite UTC text; a NaN parse compares false, so the file is read.
+  return modifiedMs <= Date.parse(`${row.completed_at.replace(" ", "T")}Z`);
 }
 
+/** Records the session complete now; completing it again after a resume moves `completed_at` forward. */
 export function markSessionComplete(db: DatabaseSync, sessionId: string, messageCount: number): void {
   db.prepare(
-    "INSERT INTO session_ingest_log (session_id, message_count) VALUES (?, ?) " +
-      "ON CONFLICT(session_id) DO UPDATE SET message_count = excluded.message_count",
+    "INSERT INTO session_ingest_log (session_id, message_count, completed_at) VALUES (?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now')) " +
+      "ON CONFLICT(session_id) DO UPDATE SET message_count = excluded.message_count, completed_at = excluded.completed_at",
   ).run(sessionId, messageCount);
 }
 

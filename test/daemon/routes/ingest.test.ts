@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -480,6 +480,43 @@ describe("POST /ingest", () => {
     expect(await (await post({ session_id: "done-sess", cwd: tempDir, messages: grown, replay: true })).json()).toEqual({ ingested: 1, totalTokens: 2 });
     // Idempotent: nothing new on the next replay pass.
     expect(await (await post({ session_id: "done-sess", cwd: tempDir, messages: grown, replay: true })).json()).toEqual({ ingested: 0, totalTokens: 0 });
+  });
+
+  it("captures the turns a resumed session appends to a completed Claude transcript", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-ingest-resume-"));
+    tempDirs.push(tempDir);
+    daemon = await createDaemon(loadDaemonConfig("/nonexistent", { daemon: { port: 0 } }));
+    const base = `http://127.0.0.1:${daemon.address().port}`;
+    const post = async (route: string, body: Record<string, unknown>) =>
+      (await fetch(`${base}${route}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })).json();
+    const transcriptPath = join(tempDir, "resumed-sess.jsonl");
+    const line = (role: string, content: string) => JSON.stringify({ message: { role, content } }) + "\n";
+    const ingest = () => post("/ingest", { session_id: "resumed-sess", cwd: tempDir, transcript_path: transcriptPath });
+    const storedContents = () => {
+      const db = new DatabaseSync(projectDbPath(tempDir, paths));
+      try {
+        return (db.prepare("SELECT content FROM messages ORDER BY seq").all() as Array<{ content: string }>).map((r) => r.content);
+      } finally {
+        db.close();
+      }
+    };
+
+    writeFileSync(transcriptPath, line("user", "first question") + line("assistant", "first answer"));
+    const beforeCompletion = new Date(Date.now() - 60_000);
+    utimesSync(transcriptPath, beforeCompletion, beforeCompletion);
+    expect(await ingest()).toMatchObject({ ingested: 2 });
+    expect(await post("/session-complete", { session_id: "resumed-sess", cwd: tempDir, message_count: 2 })).toEqual({ recorded: true });
+    // Unchanged since it was completed: nothing to read.
+    expect(await ingest()).toEqual({ ingested: 0, totalTokens: 0 });
+
+    // A resume appends to the same file after the session was completed.
+    appendFileSync(transcriptPath, line("user", "resumed question") + line("assistant", "resumed answer"));
+    const afterCompletion = new Date(Date.now() + 60_000);
+    utimesSync(transcriptPath, afterCompletion, afterCompletion);
+    expect(await ingest()).toMatchObject({ ingested: 2 });
+    // Idempotent: the resumed turns are stored once.
+    expect(await ingest()).toEqual({ ingested: 0, totalTokens: 0 });
+    expect(storedContents()).toEqual(["first question", "first answer", "resumed question", "resumed answer"]);
   });
 
   it("rejects an explicitly supplied Claude transcript path outside the project", async () => {
