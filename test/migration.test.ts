@@ -2,16 +2,89 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import type { DatabaseSync } from "node:sqlite";
 import { closeLcmConnection, getLcmConnection } from "../src/db/connection.js";
 import { runLcmMigrations } from "../src/db/migration.js";
 
 const tempDirs: string[] = [];
+
+function foreignKeysWithoutLeadingIndex(db: DatabaseSync): string[] {
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+    .all() as Array<{ name: string }>;
+  const missing: string[] = [];
+  for (const { name: table } of tables) {
+    const foreignKeys = db.prepare("SELECT \"from\" FROM pragma_foreign_key_list(?)")
+      .all(table) as Array<{ from: string }>;
+    const indexes = db.prepare("SELECT name FROM pragma_index_list(?)").all(table) as Array<{ name: string }>;
+    const leadingColumns = new Set(indexes.flatMap(({ name }) => {
+      const columns = db.prepare("SELECT name FROM pragma_index_info(?) WHERE seqno = 0")
+        .all(name) as Array<{ name: string | null }>;
+      return columns.map(({ name }) => name);
+    }));
+    const primaryKey = db.prepare("SELECT name, type FROM pragma_table_info(?) WHERE pk > 0")
+      .all(table) as Array<{ name: string; type: string }>;
+    if (primaryKey.length === 1 && primaryKey[0].type.toUpperCase() === "INTEGER") {
+      leadingColumns.add(primaryKey[0].name);
+    }
+    for (const foreignKey of foreignKeys) {
+      if (!leadingColumns.has(foreignKey.from)) missing.push(`${table}.${foreignKey.from}`);
+    }
+  }
+  return missing.sort();
+}
 
 afterEach(() => {
   closeLcmConnection();
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+describe("foreign key child indexes", () => {
+  const indexNames = [
+    "summary_messages_message_idx",
+    "context_items_message_idx",
+    "context_items_summary_idx",
+    "summary_parents_parent_idx",
+  ];
+
+  it("gives every foreign key child column a leading index in a fresh database", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-claude-migration-"));
+    tempDirs.push(tempDir);
+    const db = getLcmConnection(join(tempDir, "fresh.db"));
+    runLcmMigrations(db);
+
+    expect(foreignKeysWithoutLeadingIndex(db)).toEqual([]);
+  });
+
+  it("adds the missing indexes to an existing database", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-claude-migration-"));
+    tempDirs.push(tempDir);
+    const dbPath = join(tempDir, "existing.db");
+    let db = getLcmConnection(dbPath);
+    runLcmMigrations(db);
+    for (const name of indexNames) db.exec(`DROP INDEX IF EXISTS ${name}`);
+    closeLcmConnection();
+    db = getLcmConnection(dbPath);
+
+    runLcmMigrations(db);
+
+    const createdIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'")
+      .all() as Array<{ name: string }>;
+    expect(createdIndexes.map(({ name }) => name)).toEqual(expect.arrayContaining(indexNames));
+    expect(foreignKeysWithoutLeadingIndex(db)).toEqual([]);
+  });
+
+  it("uses an index for the summary message foreign key lookup", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-claude-migration-"));
+    tempDirs.push(tempDir);
+    const db = getLcmConnection(join(tempDir, "plan.db"));
+    runLcmMigrations(db);
+
+    const plan = db.prepare("EXPLAIN QUERY PLAN SELECT rowid FROM summary_messages WHERE message_id = ?")
+      .all(1) as Array<{ detail: string }>;
+    expect(plan.map(({ detail }) => detail).join(" ")).toContain("USING COVERING INDEX summary_messages_message_idx");
+  });
 });
 
 describe("conversation session index migration", () => {

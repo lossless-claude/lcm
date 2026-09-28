@@ -822,7 +822,11 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
     CREATE INDEX IF NOT EXISTS summaries_conv_created_idx ON summaries (conversation_id, created_at);
     CREATE INDEX IF NOT EXISTS message_parts_message_idx ON message_parts (message_id);
     CREATE INDEX IF NOT EXISTS message_parts_type_idx ON message_parts (part_type);
+    CREATE INDEX IF NOT EXISTS summary_messages_message_idx ON summary_messages (message_id);
+    CREATE INDEX IF NOT EXISTS summary_parents_parent_idx ON summary_parents (parent_summary_id);
     CREATE INDEX IF NOT EXISTS context_items_conv_idx ON context_items (conversation_id, ordinal);
+    CREATE INDEX IF NOT EXISTS context_items_message_idx ON context_items (message_id);
+    CREATE INDEX IF NOT EXISTS context_items_summary_idx ON context_items (summary_id);
     CREATE INDEX IF NOT EXISTS large_files_conv_idx ON large_files (conversation_id, created_at);
   `);
 
