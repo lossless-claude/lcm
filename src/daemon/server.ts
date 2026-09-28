@@ -2,7 +2,7 @@ import { SummarizeJobStore } from "./summarize-jobs.js";
 import { summarizerAvailability } from "./provider-config.js";
 import { createNextSummarizeJobHandler, createAnswerSummarizeJobHandler } from "./routes/summarize-jobs.js";
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
-import { lstat, readdir, stat } from "node:fs/promises";
+import { lstat, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -406,17 +406,48 @@ async function transcriptFingerprint(transcriptPath: string, sessionDir: string)
   return JSON.stringify({ parent, subagents });
 }
 
-/**
- * The fingerprint recorded after each transcript path's last successful ingest, so an
- * unchanged transcript is never re-parsed. Module-scoped: a daemon restart empties it, so
- * the first pass after a restart re-ingests every transcript once, which is accepted —
- * every project's database is idempotent under a repeated ingest, this only saves the
- * work of re-parsing. Entries for a transcript no longer seen on a pass are dropped, so a
- * deleted project or session cannot grow this map without bound.
- */
+/** The fingerprint recorded after each transcript path's last successful ingest. */
 const transcriptFingerprints = new Map<string, string>();
 /** Failed Claude 400 responses need no second parse until the transcript tree changes. */
 const failed400Fingerprints = new Map<string, string>();
+
+/**
+ * A project-local sidecar of the fingerprints recorded after successful ingests, so a restart
+ * does not re-parse unchanged transcripts, without opening every project database. It is tied
+ * to the database file's identity: a database replaced (restored, deleted, recreated) makes the
+ * sidecar stale, and a stale or unreadable sidecar is ignored, so the scan re-ingests. It is tied
+ * to the package version too: an upgrade re-ingests every transcript once, which is how what a
+ * new version adds on ingest (backfills, attribution, parser-shape verification) reaches them.
+ */
+async function databaseIdentity(projectPath: string): Promise<string | undefined> {
+  try {
+    const info = await stat(join(projectPath, "db.sqlite"));
+    return `${info.dev}:${info.ino}`;
+  } catch {
+    return undefined;
+  }
+}
+
+async function readScanFingerprints(projectPath: string): Promise<Map<string, string>> {
+  try {
+    const parsed = JSON.parse(await readFile(join(projectPath, "scan-fingerprints.json"), "utf8")) as { db?: unknown; version?: unknown; fingerprints?: unknown };
+    const db = await databaseIdentity(projectPath);
+    if (db === undefined || parsed.db !== db || parsed.version !== (PKG_VERSION ?? null)) return new Map();
+    if (!parsed.fingerprints || typeof parsed.fingerprints !== "object") return new Map();
+    return new Map(Object.entries(parsed.fingerprints).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  } catch {
+    return new Map(); // missing or corrupt: re-ingest rather than skip on untrusted state
+  }
+}
+
+async function writeScanFingerprints(projectPath: string, fingerprints: Map<string, string>): Promise<void> {
+  const db = await databaseIdentity(projectPath);
+  if (db === undefined) return;
+  const path = join(projectPath, "scan-fingerprints.json");
+  const tmpPath = `${path}.${process.pid}.tmp`;
+  await writeFile(tmpPath, JSON.stringify({ db, version: PKG_VERSION ?? null, fingerprints: Object.fromEntries(fingerprints) }), "utf8");
+  await rename(tmpPath, path);
+}
 
 /** True while a pass of `scanForTranscripts` is running. */
 let scanInProgress = false;
@@ -436,6 +467,7 @@ let scanInProgress = false;
  * one failed read rather than probed first. The per-project `meta.json` read
  * stays synchronous (one small file), so the outer walk also yields to the
  * event loop every `SCAN_YIELD_EVERY` projects, as `backfillProjectIdentities` does.
+ * The inner walk yields between transcripts in the same project.
  *
  * Each session's transcript is skipped when its fingerprint (see
  * `transcriptFingerprint`) matches the one recorded for it, computed before the
@@ -464,18 +496,29 @@ export async function scanForTranscripts(config: DaemonConfig, paths: LcmPaths, 
       if (!entry.isDirectory()) continue;
       if (++seen % SCAN_YIELD_EVERY === 0) await yieldToEventLoop();
 
-      const meta = readProjectMetaIn(join(projectsDir, entry.name));
+      const projectPath = join(projectsDir, entry.name);
+      const meta = readProjectMetaIn(projectPath);
       if (!meta?.cwd) continue;
 
       // Find Claude Code session files for this project's cwd
       const sessionsDir = join(homedir(), ".claude", "projects", claudeProjectSlug(meta.cwd));
       const files = await readdir(sessionsDir).catch(() => [] as string[]);
+      if (!files.some((file) => file.endsWith(".jsonl"))) continue;
+      const seenProjectPaths = new Set<string>();
+
+      const persistedFingerprints = await readScanFingerprints(projectPath);
+      let persistedChanged = false;
+      for (const [path, fingerprint] of persistedFingerprints) {
+        if (!transcriptFingerprints.has(path)) transcriptFingerprints.set(path, fingerprint);
+      }
 
       for (const file of files) {
         if (!file.endsWith(".jsonl")) continue;
+        if (seenProjectPaths.size > 0) await yieldToEventLoop();
         const sessionId = file.replace(".jsonl", "");
         const transcriptPath = join(sessionsDir, file);
         seenTranscriptPaths.add(transcriptPath);
+        seenProjectPaths.add(transcriptPath);
 
         const fingerprint = await transcriptFingerprint(transcriptPath, join(sessionsDir, sessionId));
         if (fingerprint !== undefined &&
@@ -487,7 +530,13 @@ export async function scanForTranscripts(config: DaemonConfig, paths: LcmPaths, 
             session_id: sessionId, cwd: meta.cwd, transcript_path: transcriptPath, backfill_before_reply: true,
           });
           failed400Fingerprints.delete(transcriptPath);
-          if (fingerprint !== undefined && !result.incomplete) transcriptFingerprints.set(transcriptPath, fingerprint);
+          if (fingerprint !== undefined && !result.incomplete) {
+            transcriptFingerprints.set(transcriptPath, fingerprint);
+            if (persistedFingerprints.get(transcriptPath) !== fingerprint) {
+              persistedFingerprints.set(transcriptPath, fingerprint);
+              persistedChanged = true;
+            }
+          }
         } catch (error) {
           if (fingerprint !== undefined && error instanceof RouteHttpError && error.status === 400) {
             failed400Fingerprints.set(transcriptPath, fingerprint);
@@ -495,6 +544,14 @@ export async function scanForTranscripts(config: DaemonConfig, paths: LcmPaths, 
           continue; // one rejected transcript must not end the sweep
         }
       }
+      for (const path of persistedFingerprints.keys()) {
+        if (!seenProjectPaths.has(path)) {
+          persistedFingerprints.delete(path);
+          persistedChanged = true;
+        }
+      }
+      // Once per project: a crash mid-project only costs re-ingesting it, which is idempotent.
+      if (persistedChanged) await writeScanFingerprints(projectPath, persistedFingerprints).catch(() => {});
     }
 
     for (const path of transcriptFingerprints.keys()) {

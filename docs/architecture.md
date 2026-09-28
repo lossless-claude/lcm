@@ -85,17 +85,25 @@ Capture itself happens on `POST /ingest`, reached from `session-end`, the Stop s
 the periodic transcript scan (`scanForTranscripts` in `src/daemon/server.ts`, every 10
 minutes) that recovers a session whose `SessionEnd` never ran. The scan skips a session
 whose transcript is unchanged since its last successful ingest or a Claude 400 rejection —
-an in-memory fingerprint
-per transcript path, the parent file's `(size, mtimeMs)` plus the same for every file
+the parent file's `(size, mtimeMs)` plus the same for every file
 under its `subagents/` tree except `journal.jsonl` (each subagent transcript and its
 `.meta.json` sidecar), since a subagent transcript grows, and its attribution is filled in
 once its sidecar appears, through the parent's own `/ingest` while the parent file itself
-may not change; the fingerprint is recorded only once the ingest for that pass succeeds
+may not change. Successful fingerprints are kept in memory and atomically written to a
+small `scan-fingerprints.json` sidecar in each project directory, so a daemon restart skips
+unchanged transcripts without opening every project database. The sidecar records the
+project database's file identity and the lcm version: a missing, corrupt or stale sidecar (the
+database was replaced, restored or recreated, or lcm was upgraded) is ignored and the scan
+re-ingests, so what a new version adds on ingest reaches unchanged transcripts once; entries for
+transcripts no longer present are removed.
+The fingerprint is recorded only once the ingest for that pass succeeds
 without reporting `incomplete` — a subagent transcript that could not be captured, or a
 failed tool-call model backfill, which the scan asks `/ingest` to run before replying
 (`backfill_before_reply`) — so any of those is retried next pass. A Claude 400 rejection,
-including a prefix-guard failure, is retried when that fingerprint changes; other failures remain retryable on the next
-pass. The scan never marks a session complete. The SessionStart catch-up sweep is a
+including a prefix-guard failure, is cached only in memory and retried when that fingerprint
+changes or the daemon restarts; other failures remain retryable on the next pass. The scan
+yields to the event loop between transcripts within a project as well as during the project
+walk. The scan never marks a session complete. The SessionStart catch-up sweep is a
 different thing and never reaches `/ingest`: it finds conversations a killed session left
 uncompacted and asks `/compact` for them directly, with `skip_ingest: true`
 (`docs/configuration.md#sessionstart-catch-up-sweep`). PreCompact can Capture inside `/compact`, before lcm summarization, with
