@@ -1,5 +1,5 @@
 import { sendJson } from "../server.js";
-import type { RouteHandler } from "../server.js";
+import type { BeginBackgroundTask, RouteHandler } from "../server.js";
 import type { DaemonConfig } from "../config.js";
 import { validateCwd } from "../validate-cwd.js";
 import type { LcmPaths } from "../../lcm-paths.js";
@@ -21,6 +21,8 @@ export interface IngestResult {
   ingested?: number;
   redacted?: number;
   redactedCategories?: string[];
+  /** The parent session landed, but a subagent capture or (when asked to run first) the model backfill failed. */
+  incomplete?: true;
 }
 
 /**
@@ -140,7 +142,16 @@ function runPostIngestSequence(target: SequenceTarget, ingested: IngestResult): 
   fireSessionCompleteRequest(daemonPort, { session_id: sessionId, cwd, message_count: ingested.ingested ?? 0 }, paths, onError("/session-complete"));
 }
 
-export function createSessionEndHandler(config: DaemonConfig, daemonPort: number, paths: LcmPaths, ingest: RouteHandler, log: DaemonLog = noopDaemonLog): RouteHandler {
+export function createSessionEndHandler(
+  config: DaemonConfig,
+  daemonPort: number,
+  paths: LcmPaths,
+  ingest: RouteHandler,
+  log: DaemonLog = noopDaemonLog,
+  // The hook has already gotten its 202 and gone; this ingest keeps running in-process,
+  // so a stall during it needs its own in-flight entry, not the closed request's.
+  beginBackgroundTask: BeginBackgroundTask = () => () => {},
+): RouteHandler {
   return async (_req, res, body) => {
     const request = parseSessionEndRequest(body, res);
     if (!request) return;
@@ -151,6 +162,7 @@ export function createSessionEndHandler(config: DaemonConfig, daemonPort: number
     // Ingest sees the same identity the follow-ups do: trimmed id, real path.
     const ingestBody = { ...input, session_id: sessionId, cwd };
     let captureCompleted = false;
+    const endTask = beginBackgroundTask("session-end:ingest");
     void invokeRoute<IngestResult>(ingest, ingestBody)
       .then((ingested) => {
         captureCompleted = true;
@@ -160,6 +172,7 @@ export function createSessionEndHandler(config: DaemonConfig, daemonPort: number
         if (!captureCompleted) recordSessionEndCapture({ config, daemonPort, paths, sessionId, cwd, client, log }, "failed");
         log.write("error", "session_end.failed", { cwd, session_id: sessionId, err });
         safeLogError("session-end", err, { cwd, sessionId, paths });
-      });
+      })
+      .finally(endTask);
   };
 }

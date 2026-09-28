@@ -55,6 +55,12 @@ export interface IngestInput {
   parent_session_id?: string;
   subagent_type?: string;
   subagent_desc?: string;
+  /**
+   * Run the tool-call model backfill before replying instead of after, so its failure
+   * is reported as `incomplete`. For an in-process caller that waits on the result
+   * (the periodic transcript scan), never for a hook the host is timing.
+   */
+  backfill_before_reply?: boolean;
 }
 
 /** Attribution the request carries, or none — so the capture module may read the sidecar instead. */
@@ -119,9 +125,10 @@ async function ingestSubagentTranscripts(
 /**
  * Neither harness's hook payload carries a model (see src/hooks/post-tool.ts),
  * so tool-call events land with `model IS NULL`; the transcript holds it.
- * Best-effort, on every ingest of the session, after the response: the
- * adapter that read the transcript fills any rows still waiting. Never
- * blocks or fails the ingest response.
+ * Best-effort, on every ingest of the session, after the response (before it
+ * when the caller sets `backfill_before_reply`): the adapter that read the
+ * transcript fills any rows still waiting. Never fails the ingest response;
+ * a caller that asked to wait sees its failure as `incomplete`.
  */
 function backfillToolModels(cwd: string, captured: TranscriptCaptureResult, paths: LcmPaths): void {
   // An import-only project has no sidecar: opening one here would create and migrate
@@ -280,7 +287,9 @@ export function createIngestHandler(config: DaemonConfig, paths: LcmPaths, log: 
       // Subagent transcripts have no dispatcher of their own — this is the only
       // live path that discovers them (issue #434). Best-effort: a subagent
       // transcript problem must not turn an otherwise-successful ingest into
-      // an error response for the session that was actually asked for.
+      // an error response for the session that was actually asked for; it is
+      // reported as `incomplete` instead, so a caller can tell work is still pending.
+      let incomplete = false;
       const subagents = source.discoverSubagents?.(cwd, session_id) ?? [];
       if (subagents.length > 0) {
         try {
@@ -288,21 +297,28 @@ export function createIngestHandler(config: DaemonConfig, paths: LcmPaths, log: 
           for (const failure of failures) {
             log.write("warn", "ingest.subagent_failed", { cwd, session_id: failure.sessionId, parent_session_id: session_id, err: failure.err });
           }
+          if (failures.length > 0) incomplete = true;
         } catch (err) {
           log.write("warn", "ingest.subagents_failed", { cwd, session_id, err });
+          incomplete = true;
         }
       }
-      sendJson(res, 200, result);
+      const backfill = (read: TranscriptCaptureResult): boolean => {
+        try {
+          backfillToolModels(cwd, read, paths);
+          return true;
+        } catch (err) {
+          log.write("warn", "ingest.model_backfill_failed", { cwd, session_id, err });
+          return false;
+        }
+      };
+      const backfillFirst = input.backfill_before_reply === true;
+      if (captured && backfillFirst && !backfill(captured)) incomplete = true;
+      sendJson(res, 200, incomplete ? { ...result, incomplete: true } : result);
       // After the response: the scan is O(transcript) and the caller is waiting.
-      if (captured) {
+      if (captured && !backfillFirst) {
         const read = captured;
-        setImmediate(() => {
-          try {
-            backfillToolModels(cwd, read, paths);
-          } catch (err) {
-            log.write("warn", "ingest.model_backfill_failed", { cwd, session_id, err });
-          }
-        });
+        setImmediate(() => { backfill(read); });
       }
     } catch (err) {
       const status = err instanceof TranscriptSourceError ? 400 : 500;
