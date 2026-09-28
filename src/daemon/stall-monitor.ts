@@ -2,8 +2,11 @@
 export const STALL_THRESHOLD_MS = 5_000;
 const TICK_MS = 1_000;
 
-/** A blocked stretch: how long the gap since the tick before it lasted, and when that tick ran. */
-export type Stall = { ms: number; since: number };
+/**
+ * A blocked stretch: how long the gap since the tick before it lasted, and the latest
+ * moment the block can have begun — when the next tick was due, since it did not run.
+ */
+export type Stall = { ms: number; begunBy: number };
 
 /**
  * Ticks on an interval and compares each tick with the one before. A blocked event
@@ -21,10 +24,10 @@ export function watchEventLoop(thresholdMs: number, onTick: (stall: Stall | unde
     // cadence: a block starting right after a tick delays that whole gap, and the
     // documented threshold is measured against it, not against the excess alone.
     const elapsed = Math.round(now - last);
-    const since = lastWall;
+    const begunBy = lastWall + tickMs;
     last = now;
     lastWall = Date.now();
-    onTick(elapsed >= thresholdMs ? { ms: elapsed, since } : undefined);
+    onTick(elapsed >= thresholdMs ? { ms: elapsed, begunBy } : undefined);
   }, tickMs);
   timer.unref();
   return () => clearInterval(timer);

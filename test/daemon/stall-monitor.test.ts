@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { watchEventLoop } from "../../src/daemon/stall-monitor.js";
+import { watchEventLoop, type Stall } from "../../src/daemon/stall-monitor.js";
 
 describe("watchEventLoop", () => {
   afterEach(() => {
@@ -18,7 +18,7 @@ describe("watchEventLoop", () => {
     }) as unknown as typeof setInterval);
     vi.spyOn(global, "clearInterval").mockImplementation(() => {});
 
-    const ticks: Array<{ ms: number; since: number } | undefined> = [];
+    const ticks: Array<Stall | undefined> = [];
     const stop = watchEventLoop(5_000, (stall) => ticks.push(stall));
 
     // First tick fires exactly on schedule (the 1s cadence): no stall.
@@ -37,6 +37,8 @@ describe("watchEventLoop", () => {
     expect(stall).toBeDefined();
     expect(stall!.ms).toBeGreaterThanOrEqual(5_000);
     expect(stall!.ms).toBe(5_100);
+    // The next tick was due at 2_000, so the block began by then.
+    expect(stall!.begunBy).toBe(2_000);
   });
 
   it("does not report a stall for a tick that fires on schedule", () => {
@@ -51,7 +53,7 @@ describe("watchEventLoop", () => {
     }) as unknown as typeof setInterval);
     vi.spyOn(global, "clearInterval").mockImplementation(() => {});
 
-    const ticks: Array<{ ms: number; since: number } | undefined> = [];
+    const ticks: Array<Stall | undefined> = [];
     const stop = watchEventLoop(5_000, (stall) => ticks.push(stall));
 
     now = 1_000;
