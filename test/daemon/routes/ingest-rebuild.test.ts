@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionCapture } from "../../../src/capture.js";
 import { DaemonClient } from "../../../src/daemon/client.js";
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
@@ -134,6 +134,24 @@ describe("lcm import --provider claude --rebuild", () => {
     const again = await rebuildClaudeSessions(client, { paths, cwd, apply: true });
     expect(again.sessions).toEqual([]);
     expect(again.backups).toEqual([]);
+  });
+
+  it("fails a rebuild request before changing stored history when its backup fails", async () => {
+    await seedDamagedSession();
+    const before = storedTurns();
+    const iso = "2026-09-28T10:11:12.345Z";
+    vi.spyOn(Date.prototype, "toISOString").mockReturnValue(iso);
+    const target = `${projectDbPath(cwd, paths)}.bak-rebuild-2026-09-28T10-11-12-345Z`;
+    mkdirSync(target);
+    try {
+      const { post } = await startDaemon();
+      const response = await post({ session_id: sessionId, cwd, transcript_path: transcriptPath, rebuild: true, backup: true });
+      expect(response.status).toBe(500);
+      expect((await response.json() as { error: string }).error).toContain("backup failed, nothing was rebuilt");
+      expect(storedTurns()).toEqual(before);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 
   it("serializes a rebuild with a live capture of the same session", async () => {
