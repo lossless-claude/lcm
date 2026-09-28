@@ -490,6 +490,20 @@ describe("classifying a session for a rebuild", () => {
     expect(transcriptMessages()).toEqual(before);
   });
 
+  it("repairs an untagged session grown only by a tool call the older parse drops", async () => {
+    const path = preRoleTaggingTranscript();
+    const legacy = parseTranscript(path, "legacy");
+    await capture.write({ sessionId, messages: legacy });
+    db.prepare("UPDATE conversations SET role_tagging = NULL WHERE session_id = ?").run(sessionId);
+    writeFileSync(path, `${JSON.stringify({
+      message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_tail", name: "Bash", input: { command: "ls" } }] },
+    })}\n`, { flag: "a" });
+    expect(parseTranscript(path, "legacy")).toEqual(legacy);
+
+    expect(await planSessionRebuild(db, sessionId, parseTranscript(path), identity, () => parseTranscript(path, "legacy")))
+      .toMatchObject({ kind: "repairable" });
+  });
+
   it("leaves an untagged session ambiguous when a stored row is in no parse", async () => {
     const path = await storePreRoleTagging();
     db.prepare("UPDATE messages SET content = 'only in storage' WHERE content = 'missing file'").run();

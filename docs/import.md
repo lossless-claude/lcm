@@ -47,8 +47,8 @@ NUL characters in transcript message content become U+FFFD before storage. Compa
 
 Each session is reported as one of:
 
-- **aligned**: role-tagged stored messages are the prefix of today's parse; any uncaptured tail is ordinary backlog, and capture updates an older stamp without replacing history.
-- **repairable**: stored messages are not aligned, a row reads back cut at NUL, or the session predates role tagging, and every stored message appears in today's or the older tool-content shape. This includes a legacy prefix followed by a current-shape tail. The report counts the transcript messages missing from storage, the stored rows the current alignment could not place, and the leaf and condensed summaries a rebuild discards.
+- **aligned**: role-tagged stored messages are the prefix of today's parse; any uncaptured tail is ordinary backlog, and capture updates an older stamp without replacing history. A session that predates role tagging is aligned while it has not grown: its stored messages match the older tool-content shape row for row and the transcript holds no newer entry, a tool call included.
+- **repairable**: stored messages are not aligned, a row reads back cut at NUL, or a session that predates role tagging has grown, and every stored message appears in today's or the older tool-content shape. This includes a legacy prefix followed by a current-shape tail. The report counts the transcript messages missing from storage, the stored rows the current alignment could not place, and the leaf and condensed summaries a rebuild discards.
 - **unavailable**: no transcript file. Report only.
 - **ambiguous**: a stored message neither tool-content shape holds, or a session is stored as several conversations. A rebuild would lose content or cannot compare, so it is reported and left alone.
 

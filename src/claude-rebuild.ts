@@ -4,7 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { compareStoredMessageContent, normalizeMessageContent } from "./message-content.js";
 import { REDACTION_MARKER } from "./scrub.js";
 import { ConversationStore } from "./store/conversation-store.js";
-import { CLAUDE_PARSER_SHAPE, type ParsedMessage } from "./transcript.js";
+import { CLAUDE_PARSER_SHAPE, TOOL_ERROR_MARKER, type ParsedMessage } from "./transcript.js";
 
 /**
  * Rebuilding a Claude Code session from its transcript. Before compaction stopped counting
@@ -114,8 +114,16 @@ export async function planSessionRebuild(
   const legacyKeys = legacy.messages.map((m) => key(m.role, m.content));
   const content = (key: string) => key.slice(key.indexOf("\u0000") + 1);
   // An untagged session that has not grown is exactly its pre-role-tagging parse: capture never
-  // needs to slice it again, so rebuilding it would only discard its summaries.
-  if (untagged && have.length === legacyKeys.length && have.every((stored, index) => content(stored) === content(legacyKeys[index]))) {
+  // needs to slice it again, so rebuilding it would only discard its summaries. The legacy parse
+  // drops a tool-call-only entry, so growth by one shows only in today's parse: its last row must
+  // be the last legacy row (error markers aside), not a tool-call row appended after it.
+  const withoutMarkers = (text: string) => text.split(`${TOOL_ERROR_MARKER}\n`).join("");
+  const lastCurrent = currentKeys.at(-1);
+  const lastLegacy = legacyKeys.at(-1);
+  const grownPastLegacy = lastCurrent === undefined ? false
+    : lastLegacy === undefined || withoutMarkers(content(lastCurrent)) !== content(lastLegacy);
+  if (untagged && !grownPastLegacy && have.length === legacyKeys.length &&
+      have.every((stored, index) => content(stored) === content(legacyKeys[index]))) {
     return { ...base, kind: "aligned" };
   }
   const present = new Set((untagged ? [...currentKeys, ...legacyKeys].map(content) : [...currentKeys, ...legacyKeys]));
