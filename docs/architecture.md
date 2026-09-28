@@ -92,9 +92,10 @@ once its sidecar appears, through the parent's own `/ingest` while the parent fi
 may not change. Successful fingerprints are kept in memory and atomically written to a
 small `scan-fingerprints.json` sidecar in each project directory, so a daemon restart skips
 unchanged transcripts without opening every project database. The sidecar records the
-project database's file identity: a missing, corrupt or stale sidecar (the database was
-replaced, restored or recreated) is ignored and the scan re-ingests; entries for transcripts
-no longer present are removed.
+project database's file identity and the lcm version: a missing, corrupt or stale sidecar (the
+database was replaced, restored or recreated, or lcm was upgraded) is ignored and the scan
+re-ingests, so what a new version adds on ingest reaches unchanged transcripts once; entries for
+transcripts no longer present are removed.
 The fingerprint is recorded only once the ingest for that pass succeeds
 without reporting `incomplete` — a subagent transcript that could not be captured, or a
 failed tool-call model backfill, which the scan asks `/ingest` to run before replying
