@@ -1,5 +1,5 @@
 // test/daemon/transcript-scan.test.ts
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +13,7 @@ import { eventsDbPath } from "../../src/db/events-path.js";
 import { parseTranscript } from "../../src/transcript.js";
 import { lcmHome } from "../../src/lcm-home.js";
 import { createLcmPaths } from "../../src/lcm-paths.js";
+import * as projectQueue from "../../src/daemon/project-queue.js";
 
 // The sweep derives the Claude projects root from `homedir()`. Point it at a
 // per-test fake home so the suite never touches the developer's real
@@ -175,6 +176,91 @@ function countingHandler(real: RouteHandler): { handler: RouteHandler; count: ()
 }
 
 describe("periodic transcript scan: fingerprint dedup", () => {
+  it("skips unchanged transcripts after the scan module is loaded afresh", async () => {
+    const config = loadDaemonConfig("/nonexistent");
+    const { handler, count } = countingHandler(createIngestHandler(config, paths));
+    seedFingerprintProject("restart-unchanged", transcriptLine("hello"));
+
+    await scanForTranscripts(config, paths, handler);
+    vi.mocked(parseTranscript).mockClear();
+    vi.resetModules(); // a restarted daemon has no module-scoped fingerprint map
+    const { scanForTranscripts: restartedScan } = await import("../../src/daemon/server.js");
+    await restartedScan(config, paths, handler);
+
+    expect(count()).toBe(1);
+    expect(parseTranscript).not.toHaveBeenCalled();
+  });
+
+  it("re-reads a changed transcript after the scan module is loaded afresh", async () => {
+    const config = loadDaemonConfig("/nonexistent");
+    const { handler, count } = countingHandler(createIngestHandler(config, paths));
+    const { transcriptPath } = seedFingerprintProject("restart-changed", transcriptLine("first"));
+
+    await scanForTranscripts(config, paths, handler);
+    vi.resetModules();
+    const { scanForTranscripts: restartedScan } = await import("../../src/daemon/server.js");
+    appendFileSync(transcriptPath, transcriptLine("second"));
+    await restartedScan(config, paths, handler);
+
+    expect(count()).toBe(2);
+  });
+
+  it("retries an incomplete ingest after the scan module is loaded afresh", async () => {
+    const config = loadDaemonConfig("/nonexistent");
+    seedFingerprintProject("restart-incomplete", transcriptLine("hello"));
+    let calls = 0;
+    const handler: RouteHandler = async (_req, res) => {
+      calls++;
+      res.writeHead(200);
+      res.end(JSON.stringify({ incomplete: true }));
+    };
+
+    await scanForTranscripts(config, paths, handler);
+    vi.resetModules();
+    const { scanForTranscripts: restartedScan } = await import("../../src/daemon/server.js");
+    await restartedScan(config, paths, handler);
+
+    expect(calls).toBe(2);
+  });
+
+  it("re-ingests after a restart when the project database was replaced", async () => {
+    const config = loadDaemonConfig("/nonexistent");
+    const { handler, count } = countingHandler(createIngestHandler(config, paths));
+    const { project } = seedFingerprintProject("restart-db-replaced", transcriptLine("hello"));
+
+    await scanForTranscripts(config, paths, handler);
+    // A restore or recreate gives the database a new file identity; the recorded ingests no longer describe it.
+    const dbPath = projectDbPath(project, paths);
+    copyFileSync(dbPath, `${dbPath}.copy`);
+    renameSync(`${dbPath}.copy`, dbPath);
+    vi.resetModules();
+    const { scanForTranscripts: restartedScan } = await import("../../src/daemon/server.js");
+    await restartedScan(config, paths, handler);
+
+    expect(count()).toBe(2);
+  });
+
+  it("yields between transcripts in one project", async () => {
+    const config = loadDaemonConfig("/nonexistent");
+    const { transcriptPath } = seedFingerprintProject("many-sessions", transcriptLine("first"));
+    writeFileSync(join(transcriptPath, "..", "another-session.jsonl"), transcriptLine("second"));
+    const yieldSpy = vi.spyOn(projectQueue, "yieldToEventLoop");
+    const yieldsAtIngest: number[] = [];
+    const handler: RouteHandler = async (_req, res) => {
+      yieldsAtIngest.push(yieldSpy.mock.calls.length);
+      res.writeHead(200);
+      res.end("{}");
+    };
+
+    try {
+      await scanForTranscripts(config, paths, handler);
+      expect(yieldsAtIngest).toHaveLength(2);
+      expect(yieldsAtIngest[1]).toBeGreaterThan(yieldsAtIngest[0]);
+    } finally {
+      yieldSpy.mockRestore();
+    }
+  });
+
   it("ingests an unchanged transcript once across two passes", async () => {
     const config = loadDaemonConfig("/nonexistent");
     const { handler, count } = countingHandler(createIngestHandler(config, paths));
