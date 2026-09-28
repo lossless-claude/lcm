@@ -122,6 +122,22 @@ const transcriptMessages = (session = sessionId) =>
 const count = (sql: string, ...params: Array<string | number>) => (db.prepare(sql).get(...params) as { n: number }).n;
 
 describe("the capture guard", () => {
+  it("accepts a compacted message stored cut at its first NUL", async () => {
+    const path = transcript([["user", "first"], ["assistant", "before\u0000after"]]);
+    const conversationId = await store([["user", "first"], ["assistant", "before"]]);
+    db.prepare("UPDATE messages SET content = ? WHERE conversation_id = ? AND role = 'assistant'")
+      .run("before\u0000after", conversationId);
+    expect(transcriptMessages()[1]).toEqual(["assistant", "before"]);
+    await compact(conversationId);
+    await expect(capture.captureTranscript({ sessionId, cwd: dir, transcriptPath: path })).resolves.toBeDefined();
+  });
+
+  it("still rejects a damaged prefix when the transcript contains a NUL elsewhere", async () => {
+    const path = transcript([["user", "first"], ["assistant", "before\u0000after"]]);
+    await compact(await store([["user", "first"], ["assistant", "wrong"]]));
+    await expect(capture.captureTranscript({ sessionId, cwd: dir, transcriptPath: path })).rejects.toThrow("--rebuild");
+  });
+
   it("stalls a compacted history with a legacy prefix and a current-shape tail", async () => {
     const path = mixedToolShapeTranscript();
     await storeMixedToolShape(path);
@@ -266,6 +282,27 @@ describe("the capture guard", () => {
 describe("classifying a session for a rebuild", () => {
   const plan = async (turns: Turn[] | undefined) =>
     planSessionRebuild(db, sessionId, turns && parseTranscript(transcript(turns)), identity);
+
+  it("repairs a pre-fix tool output cut at NUL and restores its full text", async () => {
+    const path = join(dir, `${sessionId}.jsonl`);
+    const messages = [
+      { message: { role: "user", content: "first" } },
+      { message: { role: "assistant", content: "answer" } },
+      { message: { role: "user", content: [{ type: "tool_result", content: "before\u0000after" }] } },
+    ];
+    writeFileSync(path, messages.map((message) => JSON.stringify(message)).join("\n") + "\n");
+    const conversationId = await store([["user", "first"], ["assistant", "answer"]]);
+    await capture.write({ sessionId, messages: [{ role: "tool", content: "before", tokenCount: 1 }], sourceOffset: 2 });
+    db.prepare("UPDATE messages SET content = ? WHERE conversation_id = ? AND role = 'tool'")
+      .run("before\u0000after", conversationId);
+    expect(transcriptMessages()[2]).toEqual(["tool", "before"]);
+    await compact(conversationId);
+    const parsed = parseTranscript(path);
+    expect(await planSessionRebuild(db, sessionId, parsed, identity)).toMatchObject({ kind: "repairable" });
+    const rebuilt = await capture.rebuildTranscript({ sessionId, cwd: dir, transcriptPath: path });
+    expect(rebuilt).toMatchObject({ plan: { kind: "repairable" }, ingested: 3 });
+    expect(transcriptMessages()).toEqual([["user", "first"], ["assistant", "answer"], ["tool", "before\uFFFDafter"]]);
+  });
 
   it("classifies mixed tool-shape history as repairable and rebuilds today's parse", async () => {
     const path = mixedToolShapeTranscript();

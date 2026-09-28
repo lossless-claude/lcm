@@ -57,6 +57,27 @@ describe("SessionCapture", () => {
     expect(parts).toEqual([{ seq: 2, part_type: "command", tool_name: "/model", tool_input: "opus" }]);
   });
 
+  it.each(["claude", "codex"])("keeps a %s tool output after a NUL through capture and readback", async (client) => {
+    const dir = mkdtempSync(join(tmpdir(), "lcm-nul-capture-"));
+    try {
+      const path = join(dir, "session.jsonl");
+      const output = "before\u0000after";
+      const entries = client === "claude"
+        ? [{ message: { role: "user", content: [{ type: "tool_result", content: output }] } }]
+        : [
+            { type: "session_meta", payload: { id: "s1", cwd: dir } },
+            { type: "response_item", payload: { type: "function_call_output", output } },
+          ];
+      writeFileSync(path, entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+      const result = await capture.captureTranscript({ sessionId: "s1", cwd: dir, transcriptPath: path, client });
+      expect(result?.records.map((record) => record.content)).toEqual(["before\uFFFDafter"]);
+      expect(stored().messages).toEqual([{ seq: 0, role: "tool", content: "before\uFFFDafter" }]);
+      expect(db.prepare("SELECT content FROM messages_fts").get()).toEqual({ content: "before\uFFFDafter" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("replaying the full transcript writes nothing new", async () => {
     await capture.write({ sessionId: "s1", messages: conversation });
     const replay = await capture.write({ sessionId: "s1", messages: conversation });

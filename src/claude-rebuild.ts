@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
 import * as sqlite from "node:sqlite";
 import type { DatabaseSync } from "node:sqlite";
-import { REDACTION_MARKER, matchesUnderRedaction } from "./scrub.js";
+import { compareStoredMessageContent, normalizeMessageContent } from "./message-content.js";
+import { REDACTION_MARKER } from "./scrub.js";
 import { ConversationStore } from "./store/conversation-store.js";
 import type { ParsedMessage } from "./transcript.js";
 
@@ -85,15 +86,18 @@ export async function planSessionRebuild(
     return { ...base, kind: "ambiguous", reason: "captured by an earlier transcript parser" };
   }
 
-  const key = (role: string, content: string) => `${role}\u0000${scrub(content)}`;
+  const key = (role: string, content: string) => `${role}\u0000${normalizeMessageContent(scrub(content))}`;
   const have = (await new ConversationStore(db).getSessionMessages(sessionId)).map((m) => key(m.role, m.content));
   const currentKeys = transcript.map((m) => key(m.role, m.content));
-  const { gaps, extras } = align(have, currentKeys);
-  if (gaps === 0 && extras === 0) return { ...base, kind: "aligned" };
-  const legacyKeys = legacyTranscript?.()?.map((m) => key(m.role, m.content)) ?? [];
+  const current = searchable(transcript);
+  const { gaps, extras, cuts } = align(have, currentKeys, current, scrub);
+  if (gaps === 0 && extras === 0 && cuts === 0) return { ...base, kind: "aligned" };
+  const legacy = searchable(legacyTranscript?.() ?? []);
+  const legacyKeys = legacy.messages.map((m) => key(m.role, m.content));
   const present = new Set([...currentKeys, ...legacyKeys]);
   const lost = have.filter((stored) => !present.has(stored) &&
-    redactedMatch(stored, currentKeys, 0) === undefined && redactedMatch(stored, legacyKeys, 0) === undefined).length;
+    approximateMatch(stored, current, 0, transcript.length, scrub) === undefined &&
+    approximateMatch(stored, legacy, 0, legacy.messages.length, scrub) === undefined).length;
   if (lost > 0) return { ...base, gaps, extras, kind: "ambiguous", reason: `${lost} stored messages are not in the transcript` };
   return { ...base, gaps, extras, kind: "repairable" };
 }
@@ -102,10 +106,12 @@ export async function planSessionRebuild(
  * Greedy in-order alignment of stored message keys with transcript keys: each stored message
  * takes the next equal transcript message, so stored history has no gaps and no extras exactly
  * when it is a prefix of the transcript; the transcript messages it passes over are gaps, and a
- * stored message with none left to take is an extra. A stored message with no equal one falls
- * back to the guard's allowance for spans a pattern since removed redacted.
+ * stored message with none left to take is an extra. Earlier legacy cut or redacted matches
+ * take precedence over a later exact match, preserving transcript order.
  */
-function align(have: string[], want: string[]): { gaps: number; extras: number } {
+function align(
+  have: string[], want: string[], messages: Searchable, scrub: (text: string) => string,
+): { gaps: number; extras: number; cuts: number } {
   const positions = new Map<string, Candidates>();
   want.forEach((k, index) => {
     const entry = positions.get(k);
@@ -115,17 +121,21 @@ function align(have: string[], want: string[]): { gaps: number; extras: number }
   let cursor = 0;
   let gaps = 0;
   let extras = 0;
+  let cuts = 0;
   for (const k of have) {
     const candidates = positions.get(k);
-    const at = (candidates && nextCandidate(candidates, cursor)) ?? redactedMatch(k, want, cursor);
+    const exact = candidates && nextCandidate(candidates, cursor);
+    const approximate = approximateMatch(k, messages, cursor, exact ?? want.length, scrub);
+    const at = approximate?.index ?? exact;
     if (at !== undefined) {
       gaps += at - cursor;
       cursor = at + 1;
+      if (approximate?.kind === "cut") cuts++;
       continue;
     }
     extras++;
   }
-  return { gaps, extras };
+  return { gaps, extras, cuts };
 }
 
 /** One key's transcript positions, and the first of them not yet passed. */
@@ -140,13 +150,45 @@ function nextCandidate(candidates: Candidates, cursor: number): number | undefin
   return candidates.indices[candidates.next];
 }
 
-/** The first transcript key from `from` on with the stored key's role that its redacted content matches (`matchesUnderRedaction`). */
-function redactedMatch(k: string, want: string[], from: number): number | undefined {
-  if (!k.includes(REDACTION_MARKER)) return undefined;
+/** A transcript's messages, with the positions of those holding a NUL found once. */
+interface Searchable {
+  messages: ParsedMessage[];
+  nul: number[];
+}
+
+function searchable(messages: ParsedMessage[]): Searchable {
+  return { messages, nul: messages.flatMap((m, index) => (m.content.includes("\u0000") ? [index] : [])) };
+}
+
+/** Search only before an exact match, preserving the earliest in-order match for legacy cut rows. */
+function approximateMatch(
+  k: string, { messages, nul }: Searchable, from: number, until: number, scrub: (text: string) => string,
+): { index: number; kind: "full" | "cut" } | undefined {
   const role = k.slice(0, k.indexOf("\u0000") + 1);
   const content = k.slice(role.length);
-  const index = want.findIndex((w, i) => i >= from && w.startsWith(role) && matchesUnderRedaction(content, w.slice(role.length)));
-  return index === -1 ? undefined : index;
+  // Keys already compare normalized text exactly; only a redacted stored row or a transcript
+  // message holding a NUL can match any other way, so only those positions are compared.
+  const positions = content.includes(REDACTION_MARKER)
+    ? Array.from({ length: Math.max(0, until - from) }, (_, offset) => from + offset)
+    : nul.slice(lowerBound(nul, from), lowerBound(nul, until));
+  for (const index of positions) {
+    if (`${messages[index].role}\u0000` !== role) continue;
+    const kind = compareStoredMessageContent(content, messages[index].content, scrub);
+    if (kind) return { index, kind };
+  }
+  return undefined;
+}
+
+/** The first position in a sorted list not below `value`. */
+function lowerBound(sorted: number[], value: number): number {
+  let low = 0;
+  let high = sorted.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (sorted[mid] < value) low = mid + 1;
+    else high = mid;
+  }
+  return low;
 }
 
 /**
