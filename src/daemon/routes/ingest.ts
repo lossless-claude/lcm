@@ -22,6 +22,7 @@ import { scheduleProjectLanguageDetection } from "../project-language.js";
 import { noopDaemonLog, type DaemonLog } from "../log.js";
 import { enqueue, withProjectMutation } from "../project-queue.js";
 import { backupProjectDatabase } from "../../claude-rebuild.js";
+import { applyCutRowRepair, planCutRowRepair, type CutRepairClient } from "../../cut-row-repair.js";
 import { SessionCapture, STRUCTURED_INGEST_SHAPE, isSessionComplete, type CaptureInput, type CaptureResult, type TranscriptCaptureResult } from "../../capture.js";
 import type { DiscoveredSubagentTranscript } from "../../subagent-attribution.js";
 
@@ -187,6 +188,50 @@ async function rebuildSession(
   }
 }
 
+async function repairCutSession(
+  input: IngestInput & { session_id: string; client: CutRepairClient }, cwd: string,
+  scrubber: ScrubEngine, paths: LcmPaths, res: ServerResponse, log: DaemonLog,
+): Promise<void> {
+  const dbPath = projectDbPath(cwd, paths);
+  const pid = projectId(cwd);
+  let backupPath: string | undefined;
+  try {
+    const result = await enqueue(pid, async () => {
+      openProject(cwd, paths);
+      return withProjectMutation(pid, async () => {
+        const db = getLcmConnection(dbPath);
+        try {
+          runLcmMigrations(db);
+          const path = transcriptSource(input.client).locate({
+            sessionId: input.session_id, cwd, transcriptPath: input.transcript_path, source: "import",
+          });
+          const plan = await planCutRowRepair(db, {
+            sessionId: input.session_id, cwd, client: input.client, transcriptPath: path,
+            scrub: (text) => scrubber.scrubWithCounts(text).text,
+          });
+          if (plan.kind !== "repairable") return { repair: plan, repaired: 0 };
+          // One copy per project run, as for a Claude rebuild: the caller asks for it until one exists.
+          if (input.backup === true) {
+            try {
+              backupPath = await backupProjectDatabase(db, dbPath);
+            } catch (error) {
+              throw new Error(`backup failed, nothing was repaired: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          }
+          return { repair: plan, repaired: applyCutRowRepair(db, plan) };
+        } finally {
+          closeLcmConnection(dbPath);
+        }
+      });
+    });
+    sendJson(res, 200, { ...result, ...(backupPath ? { backupPath } : {}) });
+  } catch (error) {
+    const status = error instanceof TranscriptSourceError ? 400 : 500;
+    log.write(status === 500 ? "error" : "warn", "ingest.cut_repair_failed", { cwd, session_id: input.session_id, err: error });
+    sendJson(res, status, { error: error instanceof Error ? error.message : "cut repair failed", ...(backupPath ? { backupPath } : {}) });
+  }
+}
+
 export function createIngestHandler(
   config: DaemonConfig,
   paths: LcmPaths,
@@ -218,8 +263,8 @@ export function createIngestHandler(
     }
 
     const source = transcriptSource(input.client);
-    if (input.rebuild === true && (structured || source.client !== "claude")) {
-      sendJson(res, 400, { error: "rebuild reads a Claude Code transcript; it takes no messages and no other client" });
+    if (input.rebuild === true && structured) {
+      sendJson(res, 400, { error: "rebuild reads a transcript and takes no messages" });
       return;
     }
     const pid = projectId(cwd);
@@ -229,7 +274,11 @@ export function createIngestHandler(
         projectDir(cwd, paths),
       );
       if (input.rebuild === true) {
-        await rebuildSession({ ...input, session_id }, cwd, scrubber, paths, res, log);
+        if (source.client === "claude") {
+          await rebuildSession({ ...input, session_id }, cwd, scrubber, paths, res, log);
+        } else {
+          await repairCutSession({ ...input, session_id, client: source.client }, cwd, scrubber, paths, res, log);
+        }
         return;
       }
       let captured: TranscriptCaptureResult | undefined;

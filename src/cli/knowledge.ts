@@ -24,7 +24,7 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
     .option("--dry-run", "Preview without importing")
     .option("--replay", "Replay compaction for each imported session")
     .option("--restart", "Discard recorded replay progress and start from scratch")
-    .option("--rebuild", "Replace compacted Claude Code sessions' stored history with their transcripts")
+    .option("--rebuild", "Repair Claude history or historical NUL-cut Codex and OMP rows")
     .option("--yes", "With --rebuild: apply it (default: preview)")
     .option("--session <id>", "With --rebuild: only this session")
     .helpOption(false)
@@ -56,19 +56,24 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
 
       const config = loadDaemonConfig(paths.configPath);
       if (opts.rebuild) {
-        if (provider !== "claude") fail("  --rebuild applies to Claude Code sessions: add --provider claude");
+        if (provider === "all") fail("  --rebuild requires --provider claude, codex, or omp");
         if (replay || restart) fail("  --rebuild cannot be combined with --replay or --restart; replay after the rebuild");
         if (dryRun && opts.yes) fail("  --dry-run cannot be combined with --yes");
-        const { rebuildClaudeSessions } = await import("../import.js");
-        const { printRebuildSummary } = await import("../import-summary.js");
+        const { rebuildClaudeSessions, repairCutRows } = await import("../import.js");
+        const { printRebuildSummary, printCutRepairSummary } = await import("../import-summary.js");
         const apply = opts.yes === true;
         // A preview reads the project databases directly and never starts the daemon.
         const client = apply ? await createDaemonClientOrExit() : undefined;
-        const run = await rebuildClaudeSessions(client, {
-          paths, all, apply, sessionId: opts.session, sensitivePatterns: config.security?.sensitivePatterns ?? [],
-        });
-        printRebuildSummary(run, { apply });
-        if (run.failedProjects.length > 0 || run.sessions.some((s) => s.error)) exit(1);
+        const options = { paths, all, apply, sessionId: opts.session, sensitivePatterns: config.security?.sensitivePatterns ?? [] };
+        if (provider === "claude") {
+          const run = await rebuildClaudeSessions(client, options);
+          printRebuildSummary(run, { apply });
+          if (run.failedProjects.length > 0 || run.sessions.some((s) => s.error)) exit(1);
+        } else {
+          const run = await repairCutRows(client, { ...options, provider });
+          printCutRepairSummary(run, { apply, provider });
+          if (run.failedProjects.length > 0 || run.sessions.some((s) => s.error)) exit(1);
+        }
         return;
       }
       if (opts.yes || opts.session !== undefined) fail("  --yes and --session apply only with --rebuild");

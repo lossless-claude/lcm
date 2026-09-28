@@ -370,6 +370,33 @@ export class ConversationStore {
     return rows.map(toMessageRecord);
   }
 
+  /** Rewrite only verified historical NUL-cut rows and their full-text entries as one unit. */
+  repairCutMessageContent(rows: ReadonlyArray<{ messageId: number; storedContent: string; content: string }>): number {
+    if (rows.length === 0) return 0;
+    const update = this.db.prepare(
+      `UPDATE messages SET content = ? WHERE message_id = ? AND
+       (content = ? OR (instr(content, char(0)) > 0 AND substr(content, 1, instr(content, char(0)) - 1) = ?))`,
+    );
+    const hasFts = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts'").get() !== undefined;
+    const removeFts = hasFts ? this.db.prepare("DELETE FROM messages_fts WHERE rowid = ?") : undefined;
+    const addFts = hasFts ? this.db.prepare("INSERT INTO messages_fts(rowid, content) VALUES (?, ?)") : undefined;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const row of rows) {
+        if (update.run(row.content, row.messageId, row.storedContent, row.storedContent).changes !== 1) {
+          throw new Error(`cut message ${row.messageId} changed before repair`);
+        }
+        removeFts?.run(row.messageId);
+        addFts?.run(row.messageId, row.content);
+      }
+      this.db.exec("COMMIT");
+      return rows.length;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   /** Cheap identity check for a validated prefix: stream raw rows, without hydration or redaction. */
   async getSessionPrefixFingerprint(sessionId: string, count: number): Promise<string> {
     const hash = createHash("sha256");
