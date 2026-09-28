@@ -13,9 +13,13 @@ export function compareStoredMessageContent(
   if (stored === current || stored === normalizeMessageContent(current)) return "full";
   const storedNow = normalizeMessageContent(scrub(stored));
   const currentNow = normalizeMessageContent(scrub(current));
-  if (storedNow === currentNow || matchesUnderRedaction(storedNow, currentNow)) return "full";
+  if (storedNow === currentNow) return "full";
+  // A cut row is checked before the redaction allowance: a redaction marker can absorb the
+  // text after the NUL, which would pass a cut row off as whole and leave it unrepaired.
   const nul = current.indexOf("\u0000");
-  if (nul === -1) return undefined;
-  const prefix = normalizeMessageContent(scrub(current.slice(0, nul)));
-  return storedNow === prefix || matchesUnderRedaction(storedNow, prefix) ? "cut" : undefined;
+  if (nul !== -1) {
+    const prefix = normalizeMessageContent(scrub(current.slice(0, nul)));
+    if (storedNow === prefix || matchesUnderRedaction(storedNow, prefix)) return "cut";
+  }
+  return matchesUnderRedaction(storedNow, currentNow) ? "full" : undefined;
 }
