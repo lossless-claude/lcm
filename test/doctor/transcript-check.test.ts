@@ -7,7 +7,7 @@ import { checkUncapturedTranscripts, SETTLED_MS } from "../../src/doctor/transcr
 import { runLcmMigrations } from "../../src/db/migration.js";
 import { markSessionComplete } from "../../src/capture.js";
 import { createLcmPaths, type LcmPaths } from "../../src/lcm-paths.js";
-import { claudeProjectSlug, ensureProjectDir, projectDbPath } from "../../src/daemon/project.js";
+import { claudeProjectSlug, ensureProjectDir, projectDbPath, projectId } from "../../src/daemon/project.js";
 import { updateProjectMeta } from "../../src/daemon/project-meta.js";
 
 const NOW = Date.parse("2026-01-10T12:00:00Z");
@@ -129,5 +129,44 @@ describe("checkUncapturedTranscripts", () => {
     const path = transcript(cwd, "missing", HOUR_MS);
 
     expect(check(join(root, "elsewhere")).message).toContain(`${cwd}: 1 transcript, most recent ${path}`);
+  });
+
+  it("lists projects sharing one Claude Code project directory as not checked instead of blaming either", () => {
+    const first = trackedProject("a-b");
+    const second = trackedProject("a_b");
+    storeMessage(first.db, "captured-in-first");
+    first.db.close();
+    second.db.close();
+    transcript(first.cwd, "captured-in-first", HOUR_MS);
+
+    const result = check(join(root, "elsewhere"));
+    expect(result.status).toBe("warn");
+    expect(result.message).not.toContain("with nothing stored");
+    expect(result.message).toContain(`${first.cwd} (shares its Claude Code project directory)`);
+    expect(result.message).toContain(`${second.cwd} (shares its Claude Code project directory)`);
+  });
+
+  it("reports a project whose meta.json cannot be read and still checks the others", () => {
+    const broken = trackedProject("broken");
+    broken.db.close();
+    const brokenDir = join(paths.projectsDir, projectId(broken.cwd));
+    rmSync(join(brokenDir, "meta.json"));
+    mkdirSync(join(brokenDir, "meta.json"));
+    const { cwd, db } = trackedProject("a");
+    db.close();
+    const path = transcript(cwd, "missing", HOUR_MS);
+
+    const result = check(join(root, "elsewhere"));
+    expect(result.message).toContain(`${cwd}: 1 transcript, most recent ${path}`);
+    expect(result.message).toContain(`Not checked: ${brokenDir}`);
+  });
+
+  it("checks the current directory when its project directory exists without a readable meta.json", () => {
+    const { cwd, db } = trackedProject("current");
+    db.close();
+    rmSync(join(paths.projectsDir, projectId(cwd), "meta.json"));
+    const path = transcript(cwd, "missing", HOUR_MS);
+
+    expect(check(cwd).message).toContain(`${cwd}: 1 transcript, most recent ${path}`);
   });
 });

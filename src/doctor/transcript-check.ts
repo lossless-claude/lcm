@@ -8,7 +8,7 @@ import { claudeProjectSlug, projectDbPath, projectId } from "../daemon/project.j
 import { readProjectMetaIn } from "../daemon/project-meta.js";
 import { closeLcmConnection, getLcmConnection } from "../db/connection.js";
 import { findSessionFiles, type DiscoveredSessionFile } from "../import.js";
-import { isSessionComplete } from "../capture.js";
+import { completedSinceModified } from "../capture.js";
 
 /**
  * A transcript modified more recently than this is left out: its session may be in
@@ -27,29 +27,67 @@ function storedSessionIds(db: DatabaseSync): Set<string> {
   return new Set(rows.map((row) => row.id));
 }
 
+/** Every session's `completed_at`, in one query. */
+function completions(db: DatabaseSync): Map<string, string> {
+  const rows = db.prepare("SELECT session_id, completed_at FROM session_ingest_log").all() as Array<{ session_id: string; completed_at: string }>;
+  return new Map(rows.map((row) => [row.session_id, row.completed_at]));
+}
+
 /**
- * The settled transcripts of one project with no message stored and no clean completion.
- * A project without a database has stored nothing, so every settled transcript counts.
+ * The settled transcripts of one project with no message stored and no completion since
+ * the file last changed (the rule `isSessionComplete` applies). A project without a
+ * database has stored nothing, so every settled transcript counts.
  */
 function uncaptured(files: DiscoveredSessionFile[], dbPath: string): DiscoveredSessionFile[] {
   if (files.length === 0 || !existsSync(dbPath)) return files;
   const db = getLcmConnection(dbPath, { readOnly: true });
   try {
     const stored = storedSessionIds(db);
-    return files.filter((file) => !stored.has(file.sessionId) && !isSessionComplete(db, file.sessionId, file.path));
+    const completed = completions(db);
+    return files.filter((file) => {
+      if (stored.has(file.sessionId)) return false;
+      const completedAt = completed.get(file.sessionId);
+      return completedAt === undefined || !completedSinceModified(completedAt, file.mtime);
+    });
   } finally {
     closeLcmConnection(dbPath, { readOnly: true });
   }
 }
 
-/** Every project lcm tracks, by cwd, plus `cwd` itself when lcm has no project for it. */
-function projectCwds(paths: LcmPaths, cwd: string): string[] {
+/**
+ * Every project lcm tracks, by cwd, plus `cwd` itself when lcm has no readable project for
+ * it. A project directory whose `meta.json` cannot be read is reported, not fatal.
+ */
+function projectCwds(paths: LcmPaths, cwd: string): { cwds: string[]; unreadable: string[] } {
   let names: string[] = [];
   try {
     names = readdirSync(paths.projectsDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
   } catch { /* no projects yet */ }
-  const cwds = names.flatMap((name) => readProjectMetaIn(join(paths.projectsDir, name))?.cwd ?? []);
-  return names.includes(projectId(cwd)) ? cwds : [...cwds, cwd];
+  const cwds: string[] = [];
+  const unreadable: string[] = [];
+  for (const name of names) {
+    const dir = join(paths.projectsDir, name);
+    try {
+      const tracked = readProjectMetaIn(dir)?.cwd;
+      if (tracked) cwds.push(tracked);
+    } catch {
+      unreadable.push(dir);
+    }
+  }
+  const current = projectId(cwd);
+  if (!cwds.some((tracked) => projectId(tracked) === current)) cwds.push(cwd);
+  return { cwds, unreadable };
+}
+
+/**
+ * Claude Code project directories more than one tracked project maps to. The slug is lossy,
+ * so their transcripts cannot be attributed to either project (nor can `lcm import`).
+ */
+function sharedSlugs(cwds: string[]): Set<string> {
+  const seen = new Set<string>();
+  const shared = new Set<string>();
+  for (const slug of cwds.map(claudeProjectSlug)) (seen.has(slug) ? shared : seen).add(slug);
+  return shared;
 }
 
 /**
@@ -63,8 +101,13 @@ function projectCwds(paths: LcmPaths, cwd: string): string[] {
 export function checkUncapturedTranscripts(opts: { paths: LcmPaths; claudeProjectsDir: string; cwd: string; now?: number }): CheckResult {
   const settledBefore = (opts.now ?? Date.now()) - SETTLED_MS;
   const behind: Behind[] = [];
-  const unreadable: string[] = [];
-  for (const cwd of projectCwds(opts.paths, opts.cwd)) {
+  const { cwds, unreadable } = projectCwds(opts.paths, opts.cwd);
+  const shared = sharedSlugs(cwds);
+  for (const cwd of cwds) {
+    if (shared.has(claudeProjectSlug(cwd))) {
+      unreadable.push(`${cwd} (shares its Claude Code project directory)`);
+      continue;
+    }
     try {
       const settled = findSessionFiles(join(opts.claudeProjectsDir, claudeProjectSlug(cwd))).filter((file) => file.mtime < settledBefore);
       const missing = uncaptured(settled, projectDbPath(cwd, opts.paths));
@@ -75,7 +118,7 @@ export function checkUncapturedTranscripts(opts: { paths: LcmPaths; claudeProjec
     }
   }
   const base = { name: "claude-capture", category: "Capture" } as const;
-  const skipped = unreadable.length > 0 ? `\n     Not checked (unreadable): ${unreadable.join(", ")}` : "";
+  const skipped = unreadable.length > 0 ? `\n     Not checked: ${unreadable.join(", ")}` : "";
   if (behind.length === 0 && unreadable.length > 0) {
     return { ...base, status: "warn", message: `no uncaptured Claude Code transcript found in the projects checked${skipped}` };
   }
