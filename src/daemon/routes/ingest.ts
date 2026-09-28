@@ -9,7 +9,7 @@ import { updateProjectMeta } from "../project-meta.js";
 import { projectDbPath, projectDir, projectId } from "../project.js";
 import { openProject } from "../project-group.js";
 import { sendJson } from "../server.js";
-import type { RouteHandler } from "../server.js";
+import type { BeginBackgroundTask, RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import type { SubagentAttributionInput } from "../../store/conversation-store.js";
 import { TranscriptSourceError, transcriptSource } from "../../transcript-source.js";
@@ -187,7 +187,12 @@ async function rebuildSession(
   }
 }
 
-export function createIngestHandler(config: DaemonConfig, paths: LcmPaths, log: DaemonLog = noopDaemonLog): RouteHandler {
+export function createIngestHandler(
+  config: DaemonConfig,
+  paths: LcmPaths,
+  log: DaemonLog = noopDaemonLog,
+  beginBackgroundTask: BeginBackgroundTask = () => () => {},
+): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}") as IngestInput;
     const { session_id } = input;
@@ -315,10 +320,14 @@ export function createIngestHandler(config: DaemonConfig, paths: LcmPaths, log: 
       const backfillFirst = input.backfill_before_reply === true;
       if (captured && backfillFirst && !backfill(captured)) incomplete = true;
       sendJson(res, 200, incomplete ? { ...result, incomplete: true } : result);
-      // After the response: the scan is O(transcript) and the caller is waiting.
+      // After the response: the scan is O(transcript) and the caller is waiting. Named,
+      // since the request has ended by then and a stall during it would otherwise go unattributed.
       if (captured && !backfillFirst) {
         const read = captured;
-        setImmediate(() => { backfill(read); });
+        const endTask = beginBackgroundTask("ingest:backfill");
+        setImmediate(() => {
+          try { backfill(read); } finally { endTask(); }
+        });
       }
     } catch (err) {
       const status = err instanceof TranscriptSourceError ? 400 : 500;

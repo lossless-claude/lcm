@@ -127,7 +127,9 @@ async function validateClaudePrefix(path: string, stored: StoredTranscript, mess
   const prior = claudePrefixes.get(key);
   // A failed validation must never leave a previously accepted memo available.
   claudePrefixes.delete(key);
-  const stat = statSync(path);
+  // A transcript gone since the parse has no identity to remember; the full compare decides.
+  const stat = statSync(path, { throwIfNoEntry: false });
+  if (!stat) return validateTranscriptRecovery(stored, messages, ctx, "Claude");
   const file = `${stat.dev}:${stat.ino}`;
   let offset = 0;
   let storedHash: string | undefined;

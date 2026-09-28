@@ -199,7 +199,10 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   routes.set("POST /describe", createDescribeHandler(config, paths));
   routes.set("POST /store", createStoreHandler(config, paths));
   routes.set("POST /recent", createRecentHandler(config, paths));
-  routes.set("POST /ingest", createIngestHandler(config, paths, log));
+  // Named here (not just for HTTP requests) so a stall during a background task is attributed to it.
+  const inFlight = new Set<InFlightRequest>();
+  const beginTask: BeginBackgroundTask = (name) => beginBackgroundTask(inFlight, name);
+  routes.set("POST /ingest", createIngestHandler(config, paths, log, beginTask));
   routes.set("POST /prompt-search", createPromptSearchHandler(config, paths));
   routes.set("POST /session-complete", createSessionCompleteHandler(paths));
   routes.set("POST /promote-events", createPromoteEventsHandler(config, paths));
@@ -210,12 +213,9 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   routes.set("POST /review-stale", createReviewStaleHandler(config, paths));
   // Status handler is registered after listen() when we know the actual port
 
-  // Named here (not just for HTTP requests) so a stall during either is attributed to it.
-  const inFlight = new Set<InFlightRequest>();
-
   // Periodic transcript ingestion scan
   const INGEST_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
-  const ingestHandler = createIngestHandler(config, paths, log);
+  const ingestHandler = createIngestHandler(config, paths, log, beginTask);
   const ingestInterval = setInterval(() => {
     const endTask = beginBackgroundTask(inFlight, "scan:transcripts");
     void scanForTranscripts(config, paths, ingestHandler).finally(endTask);
@@ -301,7 +301,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
       // The follow-ups call this daemon back, so they must present the token it checks.
       const sequencePaths = options?.tokenPath ? { ...paths, tokenPath: options.tokenPath } : paths;
       routes.set("POST /session-end", createSessionEndHandler(config, actualPort, sequencePaths, ingestHandler, log,
-        (name) => beginBackgroundTask(inFlight, name)));
+        beginTask));
 
       resolve({
         address: () => addr,
