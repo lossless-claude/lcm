@@ -14,6 +14,37 @@ afterEach(() => {
   }
 });
 
+describe("conversation session index migration", () => {
+  it("creates the index in a fresh database", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-claude-migration-"));
+    tempDirs.push(tempDir);
+    const db = getLcmConnection(join(tempDir, "fresh.db"));
+
+    runLcmMigrations(db);
+
+    const indexes = db.prepare("PRAGMA index_list(conversations)").all() as Array<{ name: string }>;
+    expect(indexes.map((index) => index.name)).toContain("conversations_session_idx");
+  });
+
+  it("adds the index to an existing database without it", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-claude-migration-"));
+    tempDirs.push(tempDir);
+    const dbPath = join(tempDir, "existing.db");
+    let db = getLcmConnection(dbPath);
+    runLcmMigrations(db);
+    db.exec("DROP INDEX IF EXISTS conversations_session_idx");
+    db.prepare("INSERT INTO conversations (session_id) VALUES (?)").run("existing-session");
+    closeLcmConnection();
+    db = getLcmConnection(dbPath);
+
+    runLcmMigrations(db);
+
+    const indexes = db.prepare("PRAGMA index_list(conversations)").all() as Array<{ name: string }>;
+    expect(indexes.map((index) => index.name)).toContain("conversations_session_idx");
+    expect(db.prepare("SELECT session_id FROM conversations").get()).toEqual({ session_id: "existing-session" });
+  });
+});
+
 describe("runLcmMigrations summary depth backfill", () => {
   it("adds depth and metadata from summary lineage", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-claude-migration-"));

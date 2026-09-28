@@ -29,6 +29,29 @@ function makeStore(db: DatabaseSync): ConversationStore {
   return new ConversationStore(db, { fts5Available: false });
 }
 
+it("searches conversations by session for the session-prefix queries", async () => {
+  const db = makeDb();
+  const store = makeStore(db);
+  // Record the SQL the store itself sends, so the plan checked is the one production runs.
+  const sent: string[] = [];
+  const prepare = db.prepare.bind(db);
+  db.prepare = ((sql: string) => {
+    sent.push(sql);
+    return prepare(sql);
+  }) as typeof db.prepare;
+  await store.getSessionMessages("s", 0);
+  await store.getSessionPrefixFingerprint("s", 1);
+  db.prepare = prepare;
+
+  const sessionQueries = sent.filter((sql) => sql.includes("JOIN conversations c") && sql.includes("c.session_id = ?"));
+  expect(sessionQueries).toHaveLength(2);
+  for (const query of sessionQueries) {
+    const details = (db.prepare(`EXPLAIN QUERY PLAN ${query}`).all() as Array<{ detail: string }>).map((step) => step.detail);
+    expect(details).toContain("SEARCH c USING INDEX conversations_session_idx (session_id=?)");
+    expect(details.some((detail) => detail.startsWith("SCAN m"))).toBe(false);
+  }
+});
+
 // ── Finding a conversation by session ─────────────────────────────────────────
 
 describe("ConversationStore — conversations", () => {
