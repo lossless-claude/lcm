@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import type { ServerResponse } from "node:http";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
@@ -20,6 +21,7 @@ import { validateCwd } from "../validate-cwd.js";
 import { scheduleProjectLanguageDetection } from "../project-language.js";
 import { noopDaemonLog, type DaemonLog } from "../log.js";
 import { enqueue, withProjectMutation } from "../project-queue.js";
+import { backupProjectDatabase } from "../../claude-rebuild.js";
 import { SessionCapture, isSessionComplete, type CaptureInput, type CaptureResult, type TranscriptCaptureResult } from "../../capture.js";
 import type { DiscoveredSubagentTranscript } from "../../subagent-attribution.js";
 
@@ -45,6 +47,10 @@ export interface IngestInput {
   client?: SessionClient;
   source?: "live" | "import";
   replay?: boolean;
+  /** Replace a Claude Code session's stored history with its transcript (`lcm import --provider claude --rebuild --yes`). */
+  rebuild?: boolean;
+  /** With `rebuild`: back the project database up first, and rebuild nothing when that fails. */
+  backup?: boolean;
   /** Subagent attribution, carried from the transcript's `.meta.json` sidecar. */
   parent_session_id?: string;
   subagent_type?: string;
@@ -130,6 +136,50 @@ function backfillToolModels(cwd: string, captured: TranscriptCaptureResult, path
   }
 }
 
+/**
+ * Rebuilds one Claude Code session from its transcript (see `SessionCapture.rebuildTranscript`),
+ * inside the project queue and mutation lease like every capture, so a live capture of the same
+ * session runs wholly before or after it. The session-complete shortcut does not apply. With
+ * `backup`, the project database is copied first; a failed backup fails the request before
+ * anything changes. The response names the backup even when the rebuild then fails.
+ */
+async function rebuildSession(
+  input: IngestInput & { session_id: string }, cwd: string, scrubber: ScrubEngine, paths: LcmPaths, res: ServerResponse, log: DaemonLog,
+): Promise<void> {
+  const dbPath = projectDbPath(cwd, paths);
+  const pid = projectId(cwd);
+  let backupPath: string | undefined;
+  try {
+    const result = await enqueue(pid, async () => {
+      openProject(cwd, paths);
+      return withProjectMutation(pid, async () => {
+        const db = getLcmConnection(dbPath);
+        try {
+          runLcmMigrations(db);
+          if (input.backup === true) {
+            try {
+              backupPath = backupProjectDatabase(db, dbPath);
+            } catch (err) {
+              throw new Error(`backup failed, nothing was rebuilt: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+          const { plan, ingested } = await new SessionCapture(db, pid, scrubber).rebuildTranscript({
+            sessionId: input.session_id, client: input.client, cwd, transcriptPath: input.transcript_path, source: "import",
+          });
+          return { ingested, rebuild: plan };
+        } finally {
+          closeLcmConnection(dbPath);
+        }
+      });
+    });
+    sendJson(res, 200, { ...result, ...(backupPath ? { backupPath } : {}) });
+  } catch (err) {
+    const status = err instanceof TranscriptSourceError ? 400 : 500;
+    log.write(status === 500 ? "error" : "warn", "ingest.rebuild_failed", { cwd, session_id: input.session_id, err });
+    sendJson(res, status, { error: err instanceof Error ? err.message : "rebuild failed", ...(backupPath ? { backupPath } : {}) });
+  }
+}
+
 export function createIngestHandler(config: DaemonConfig, paths: LcmPaths, log: DaemonLog = noopDaemonLog): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}") as IngestInput;
@@ -156,12 +206,20 @@ export function createIngestHandler(config: DaemonConfig, paths: LcmPaths, log: 
     }
 
     const source = transcriptSource(input.client);
+    if (input.rebuild === true && (structured || source.client !== "claude")) {
+      sendJson(res, 400, { error: "rebuild reads a Claude Code transcript; it takes no messages and no other client" });
+      return;
+    }
     const pid = projectId(cwd);
     try {
       const scrubber = await ScrubEngine.forProject(
         config.security?.sensitivePatterns ?? [],
         projectDir(cwd, paths),
       );
+      if (input.rebuild === true) {
+        await rebuildSession({ ...input, session_id }, cwd, scrubber, paths, res, log);
+        return;
+      }
       let captured: TranscriptCaptureResult | undefined;
       const result = await enqueue(pid, async () => {
         openProject(cwd, paths);

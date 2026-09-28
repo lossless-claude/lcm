@@ -7,11 +7,14 @@ import { formatNumber, formatRatio } from "./stats.js";
 import { findAllCodexTranscripts } from "./codex-transcript.js";
 import { findAllOmpTranscripts, ompDiscoveryRoots } from "./omp-transcript.js";
 import type { ProgressState } from "./cli/progress-state.js";
-import { claudeProjectSlug, projectDbPath, projectId } from "./daemon/project.js";
+import { claudeProjectSlug, projectDbPath, projectDir, projectId } from "./daemon/project.js";
 import { readProjectMetaIn } from "./daemon/project-meta.js";
 import { createLcmPaths, type LcmPaths } from "./lcm-paths.js";
 import { discoverSubagentTranscripts, type SubagentAttribution } from "./subagent-attribution.js";
 import { isSessionComplete } from "./capture.js";
+import { compactedSessionIds, planSessionRebuild, type SessionRebuildPlan } from "./claude-rebuild.js";
+import { ScrubEngine } from "./scrub.js";
+import { parseTranscript } from "./transcript.js";
 import {
   appendReplayManifestSessions,
   clearReplayState,
@@ -766,4 +769,114 @@ export async function importSessions(
   }
 
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Rebuild: `lcm import --provider claude --rebuild`
+// ---------------------------------------------------------------------------
+
+export interface RebuildOptions {
+  paths: LcmPaths;
+  /** Every tracked project instead of the current one. */
+  all?: boolean;
+  cwd?: string;
+  /** Only this session. */
+  sessionId?: string;
+  /** Rebuild the repairable sessions through the daemon; without it nothing is written. */
+  apply?: boolean;
+  /** The configured global redaction patterns, applied like capture applies them. */
+  sensitivePatterns?: string[];
+  /** Override ~/.claude/projects path — used in tests only */
+  _claudeProjectsDir?: string;
+}
+
+export interface RebuildSessionReport {
+  cwd: string;
+  plan: SessionRebuildPlan;
+  transcriptPath?: string;
+  /** Set when `apply` rebuilt it. */
+  rebuilt?: boolean;
+  /** Messages captured from the transcript by the rebuild. */
+  ingested?: number;
+  error?: string;
+}
+
+export interface RebuildRunResult {
+  sessions: RebuildSessionReport[];
+  /** One backup per project a rebuild ran in. */
+  backups: string[];
+  /** Projects that could not be read, or whose backup failed so nothing in them was rebuilt. */
+  failedProjects: Array<{ cwd: string; error: string }>;
+}
+
+/**
+ * Classifies every Claude Code session compaction wrote into, per project, from the project
+ * database opened read-only and the session's transcript — no daemon. With `apply`, sends each
+ * repairable session to the daemon's `/ingest` as a rebuild, asking for a backup of the project
+ * database with the first one; a project whose backup fails is left untouched.
+ */
+export async function rebuildClaudeSessions(client: DaemonClient | undefined, options: RebuildOptions): Promise<RebuildRunResult> {
+  const result: RebuildRunResult = { sessions: [], backups: [], failedProjects: [] };
+  const claudeProjectsDir = options._claudeProjectsDir ?? join(homedir(), ".claude", "projects");
+  const cwds = options.all ? [...new Set(buildProjectMap(options.paths).values())] : [options.cwd ?? process.cwd()];
+  for (const cwd of cwds) {
+    let reports: RebuildSessionReport[];
+    try {
+      reports = await classifyProjectSessions(cwd, join(claudeProjectsDir, claudeProjectSlug(cwd)), options);
+    } catch (err) {
+      result.failedProjects.push({ cwd, error: err instanceof Error ? err.message : String(err) });
+      continue;
+    }
+    result.sessions.push(...reports);
+    if (options.apply && client) await applyProjectRebuild(client, cwd, reports, result);
+  }
+  return result;
+}
+
+async function classifyProjectSessions(cwd: string, claudeDir: string, options: RebuildOptions): Promise<RebuildSessionReport[]> {
+  const dbPath = projectDbPath(cwd, options.paths);
+  if (!existsSync(dbPath)) return [];
+  const transcripts = new Map(findSessionFiles(claudeDir).map((file) => [file.sessionId, file.path]));
+  const scrubber = await ScrubEngine.forProject(options.sensitivePatterns ?? [], projectDir(cwd, options.paths));
+  const scrub = (text: string) => scrubber.scrubWithCounts(text).text;
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+    const reports: RebuildSessionReport[] = [];
+    for (const sessionId of compactedSessionIds(db)) {
+      if (options.sessionId !== undefined && sessionId !== options.sessionId) continue;
+      const transcriptPath = transcripts.get(sessionId);
+      const plan = await planSessionRebuild(db, sessionId, transcriptPath ? parseTranscript(transcriptPath) : undefined, scrub);
+      reports.push({ cwd, plan, transcriptPath });
+    }
+    return reports;
+  } finally {
+    db.close();
+  }
+}
+
+async function applyProjectRebuild(client: DaemonClient, cwd: string, reports: RebuildSessionReport[], result: RebuildRunResult): Promise<void> {
+  let backupPath: string | undefined;
+  for (const report of reports) {
+    if (report.plan.kind !== "repairable") continue;
+    try {
+      const res = await client.post<{ ingested: number; rebuild: SessionRebuildPlan; backupPath?: string }>("/ingest", {
+        session_id: report.plan.sessionId, cwd, transcript_path: report.transcriptPath, source: "import", rebuild: true,
+        ...(backupPath ? {} : { backup: true }),
+      });
+      if (res.backupPath) result.backups.push(backupPath = res.backupPath);
+      // The daemon classifies again under the project lease; a session that changed since the preview is reported as it found it.
+      report.plan = res.rebuild;
+      report.rebuilt = res.rebuild.kind === "repairable";
+      report.ingested = res.ingested;
+    } catch (err) {
+      const recorded = (err as { body?: { backupPath?: unknown } }).body?.backupPath;
+      if (typeof recorded === "string" && !backupPath) result.backups.push(backupPath = recorded);
+      report.error = err instanceof Error ? err.message : String(err);
+      if (!backupPath) {
+        result.failedProjects.push({ cwd, error: report.error });
+        return;
+      }
+    }
+  }
 }

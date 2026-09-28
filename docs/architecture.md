@@ -59,7 +59,7 @@ The operations are shaped by what Episodic memory is asked to do:
 - **Find the conversation of a session** — `getOrCreateConversation` opens it on first capture and fills attribution in once a sidecar names a parent; `getOrOpenConversationAt` opens the one a clear starts; `getConversationBySessionId` answers the newest afterwards; `latestActiveConversation` is what a session that captured nothing yet is shown instead.
 - **Append a delta** — `createMessagesBulk` writes the messages past the stored count, `appendContextMessages` puts them at the end of the context, `createMessageParts` keeps their structure; `getMessageCount`, `getMaxSeq` and `getMessages` describe what is stored so the next delta starts after it, and `getSessionMessageCount` / `getSessionMessages` describe it across every conversation of a session. The session pair is what capture compares with a transcript, so it leaves out the event rows compaction writes itself (a message with a `compaction` part), which no transcript holds.
 - **Read the context window** — `getContextItems` for compaction's view of the whole list, `readContextWindow` for a restore's view of its end (the last N summaries and the last N user/assistant messages, with a plain-messages fallback for a conversation captured before context items were materialised), `getContextTokenCount` and `getDistinctDepthsInContext` for the compaction triggers.
-- **Replace a range with a summary** — `insertSummary`, `linkSummaryToMessages` / `linkSummaryToParents` for its lineage, then `replaceContextRangeWithSummary`; `resetConversationContext` undoes every summary of a conversation and rebuilds the context from its messages.
+- **Replace a range with a summary** — `insertSummary`, `linkSummaryToMessages` / `linkSummaryToParents` for its lineage, then `replaceContextRangeWithSummary`; `resetConversationContext` undoes every summary of a conversation and rebuilds the context from its messages. `SessionCapture.rebuildTranscript` goes further for a Claude Code session: in one transaction it deletes the conversation's summaries, context items, messages and their full-text rows and the session's replay-ledger rows (`src/claude-rebuild.ts`), then captures the transcript from its first message into the same conversation row.
 - **Read summaries** — by id, by conversation, deepest-first for a session's restore, newest-first across the project, or as a subtree under `lcm_expand`.
 - **Search** — `searchMessagesSync` / `searchSummariesSync`, full-text with a LIKE fallback, or regex.
 
@@ -337,7 +337,14 @@ stored.
 
 1. A Claude transcript is re-parsed in full and sliced past the conversation's stored message
    count (`src/transcript-source.ts`); the stored conversation is the ground truth for how
-   much of the file lcm has.
+   much of the file lcm has. Once compaction has written its event rows into the session, the
+   slice is taken only after the stored messages, oldest conversation first, are verified as
+   the transcript's prefix under the current redaction rules. A conversation captured before
+   role tagging (`role_tagging IS NULL`) is not compared, since today's parser cannot reproduce
+   it. On a mismatch capture stops, with nothing written: a session an earlier lcm captured
+   after a compaction can hold skipped and repeated messages, and appending to it would repeat
+   the damage. `lcm import --provider claude --rebuild` repairs it (see
+   [Import](import.md#rebuilding-compacted-claude-code-sessions)).
 2. A Codex transcript resumes from the byte-offset cursor persisted with the last write, and
    the cursor is trusted only while it accounts for exactly the stored messages.
 3. When the cursor cannot be trusted — a replaced, truncated or extended file — Codex re-reads

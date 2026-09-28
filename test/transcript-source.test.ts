@@ -82,6 +82,41 @@ describe("Claude transcript source", () => {
     expect(delta.messages.map((m) => m.content)).toEqual(["three"]);
   });
 
+  describe("after a compaction wrote event rows into the session", () => {
+    const compacted = (messages: Array<{ role: string; content: string }>): StoredTranscript =>
+      ({ ...stored(messages), verifyAfterCompaction: async () => true });
+
+    it("refuses a stored history that is not the transcript's prefix, naming the rebuild", async () => {
+      const { cwd, path } = fixture();
+      appendFileSync(path, `${line("user", "three")}\n`);
+      // "two" was skipped and "three" stored twice: the shape an older capture left behind.
+      const read = source.read(path, compacted([{ role: "user", content: "one" }, { role: "user", content: "three" }]), ctx(cwd));
+      await expect(read).rejects.toThrow(TranscriptSourceError);
+      await expect(read).rejects.toThrow("lcm import --provider claude --rebuild");
+    });
+
+    it("continues after a stored prefix, repeated messages included", async () => {
+      const { cwd, path } = fixture();
+      appendFileSync(path, `${line("user", "one")}\n${line("assistant", "two")}\n${line("user", "one")}\n`);
+      const prefix = [
+        { role: "user", content: "one" }, { role: "assistant", content: "two" },
+        { role: "user", content: "one" }, { role: "assistant", content: "two" },
+      ];
+      const delta = await source.read(path, compacted(prefix), ctx(cwd));
+      expect(delta.sourceOffset).toBe(4);
+      expect(delta.messages.map((m) => m.content)).toEqual(["one"]);
+    });
+
+    it("does not compare a session compaction never wrote into", async () => {
+      const { cwd, path } = fixture();
+      appendFileSync(path, `${line("user", "three")}\n`);
+      const storedMessages = vi.fn(async () => [{ role: "user", content: "different" }]);
+      const delta = await source.read(path, { storedCount: 1, storedMessages, verifyAfterCompaction: async () => false }, ctx(cwd));
+      expect(storedMessages).not.toHaveBeenCalled();
+      expect(delta.messages.map((m) => m.content)).toEqual(["two", "three"]);
+    });
+  });
+
   it("locates the caller's transcript when it lies under the project, and none when it does not", () => {
     const { cwd, path } = fixture();
     expect(source.locate({ sessionId: "claude-session", cwd, transcriptPath: path })).toBe(realpathSync(path));
