@@ -61,7 +61,7 @@ export function estimateTokens(text: string): number {
 }
 
 /** Marks a tool result the tool itself reported as failed. */
-const TOOL_ERROR_MARKER = "[tool error]";
+export const TOOL_ERROR_MARKER = "[tool error]";
 
 function blocksOf(content: string | ContentBlock[] | undefined): ContentBlock[] {
   return Array.isArray(content) ? content : [];
