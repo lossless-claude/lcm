@@ -168,6 +168,13 @@ export function findUncompacted(
         ${rawContextJoin}
         ${summaryCountJoin}
         WHERE COALESCE(${metricsAlias}.msg_count, 0) > 0
+          -- /compact reaches a session through its newest conversation, so an older one
+          -- (closed by an OMP /clear) would be listed on every run and never compacted.
+          AND NOT EXISTS (
+            SELECT 1 FROM conversations n
+            WHERE n.session_id = c.session_id
+              AND (n.created_at > c.created_at OR (n.created_at = c.created_at AND n.conversation_id > c.conversation_id))
+          )
           AND (${rawContextPredicate})
           AND COALESCE(${metricsAlias}.raw_tokens, 0) >= ?
         ORDER BY COALESCE(${metricsAlias}.raw_tokens, 0) DESC

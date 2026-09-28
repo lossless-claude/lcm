@@ -40,6 +40,8 @@ missing evidence does not prove that the harness never invoked the hook.
 
 **Session**:
 One conversation between a person and the agent, written as one transcript file.
+An OMP `/clear` keeps the file and the session id, so lcm stores each side of it as its
+own conversation under that id.
 
 **Subagent session**:
 A session a parent session dispatched. The harness writes it as its own transcript

@@ -8,6 +8,8 @@ This document describes how lcm works internally — the data model, compaction 
 
 Every Claude Code session maps to a **conversation**. The first time a session ingests a message, LCM creates a conversation record keyed by the runtime session ID.
 
+An OMP `/clear` keeps the session id and session file and appends a `reset_boundary` entry. Capture gives each side of it its own conversation under the same session id: the conversation a clear opens records the entry in `opened_by_entry_id` (NULL for a session's first), and the session's newest conversation — the one `getConversationBySessionId` returns and restore reads — holds only what followed the latest clear. A clear with nothing after it still opens its conversation, so restore never falls back to the cleared turns. Conversations stored before clears were honoured are not split. See `docs/design/omp-clear-boundary.md`.
+
 Messages are stored with:
 - **seq** — Monotonically increasing sequence number within the conversation
 - **role** — `user`, `assistant`, `system`, or `tool`
@@ -54,8 +56,8 @@ Episodic memory is reached through two stores, and only through them: `Conversat
 
 The operations are shaped by what Episodic memory is asked to do:
 
-- **Find the conversation of a session** — `getOrCreateConversation` opens it on first capture and fills attribution in once a sidecar names a parent; `getConversationBySessionId` answers it afterwards; `latestActiveConversation` is what a session that captured nothing yet is shown instead.
-- **Append a delta** — `createMessagesBulk` writes the messages past the stored count, `appendContextMessages` puts them at the end of the context, `createMessageParts` keeps their structure; `getMessageCount`, `getMaxSeq` and `getMessages` describe what is stored so the next delta starts after it.
+- **Find the conversation of a session** — `getOrCreateConversation` opens it on first capture and fills attribution in once a sidecar names a parent; `getOrOpenConversationAt` opens the one a clear starts; `getConversationBySessionId` answers the newest afterwards; `latestActiveConversation` is what a session that captured nothing yet is shown instead.
+- **Append a delta** — `createMessagesBulk` writes the messages past the stored count, `appendContextMessages` puts them at the end of the context, `createMessageParts` keeps their structure; `getMessageCount`, `getMaxSeq` and `getMessages` describe what is stored so the next delta starts after it, and `getSessionMessageCount` / `getSessionMessages` describe it across every conversation of a session. The session pair is what capture compares with a transcript, so it leaves out the event rows compaction writes itself (a message with a `compaction` part), which no transcript holds.
 - **Read the context window** — `getContextItems` for compaction's view of the whole list, `readContextWindow` for a restore's view of its end (the last N summaries and the last N user/assistant messages, with a plain-messages fallback for a conversation captured before context items were materialised), `getContextTokenCount` and `getDistinctDepthsInContext` for the compaction triggers.
 - **Replace a range with a summary** — `insertSummary`, `linkSummaryToMessages` / `linkSummaryToParents` for its lineage, then `replaceContextRangeWithSummary`; `resetConversationContext` undoes every summary of a conversation and rebuilds the context from its messages.
 - **Read summaries** — by id, by conversation, deepest-first for a session's restore, newest-first across the project, or as a subtree under `lcm_expand`.
@@ -86,7 +88,7 @@ separate outcomes for the two operations. `POST /session-end` hands the whole en
 ingest, then compact, promote and session-complete — after acknowledging with `202`, so a
 host that stops waiting for the hook cannot drop the steps behind it.
 
-Every route that lands transcript content in `messages` — `/ingest`, the subagent path inside it, and `/compact` — writes through one module, `src/capture.ts` (`SessionCapture`). It owns what "already stored" means (the delta past the conversation's message count), scrubbing, the bulk insert, `context_items`, `message_parts`, redaction counts, the Codex cursor and `session_ingest_log`. When the caller passes no attribution and the transcript is a subagent transcript, the module reads the `.meta.json` sidecar itself, so which route sees a session first does not change what is stored about it.
+Every route that lands transcript content in `messages` — `/ingest`, the subagent path inside it, and `/compact` — writes through one module, `src/capture.ts` (`SessionCapture`). It owns what "already stored" means (the delta past the message count of the session's conversations), scrubbing, the bulk insert, `context_items`, `message_parts`, redaction counts, the Codex cursor and `session_ingest_log`. When the caller passes no attribution and the transcript is a subagent transcript, the module reads the `.meta.json` sidecar itself, so which route sees a session first does not change what is stored about it.
 
 Hook operation evidence is separate from Capture: the project's events sidecar aggregates tool-capture and daemon pre-compaction outcomes by Session, harness, hook, operation, delivery or execution status, and reason. Individual failure codes are retained separately. Short-lived Claude Code command and Codex lifecycle hooks append bounded metadata to a local log without loading SQLite at startup. The Claude Code function module and OMP keep bounded local snapshots because their host adapters cannot use the sidecar write path when the daemon is unavailable; OMP forces its final shutdown snapshot. `lcm doctor -v` aggregates these sources; missing evidence never establishes that an expected hook did not run.
 
@@ -345,7 +347,10 @@ stored.
    entries on the `parentId` chain from the file's last entry. Stored history is therefore
    the file's messages in order but not always its prefix. A recovery scan continues the
    file's live path when stored history is a prefix of it; otherwise it requires that order
-   and accepts the live-path messages after the last stored one.
+   and accepts the live-path messages after the last stored one. Stored history here is every
+   conversation of the session, oldest first, and the cursor, saved against the newest, counts
+   them all. A `/clear` after the last stored message opens its conversation unless one already
+   carries it; one inside stored history is never split out.
 
 This covers a session whose messages reached the transcript while lcm was down or killed, and
 a file that grew or was rewritten between two runs.

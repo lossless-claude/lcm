@@ -618,7 +618,9 @@ of the same project (`cwd`) with enough uncovered raw context to meet
 and an uncovered raw tail. The most recent `LCM_FRESH_TAIL_COUNT` raw messages
 are excluded from this threshold, so a conversation with only its fresh tail
 left raw is not selected. It excludes the session that is starting and
-conversations already compacting.
+conversations already compacting, and considers only a session's newest
+conversation: an OMP `/clear` closes the one before it, which `/compact` cannot
+reach by session id.
 
 `compaction.autoCompactSessionStartMax` (default `2`) caps how many conversations
 one session start requests compaction for, oldest-first; a larger backlog drains

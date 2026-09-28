@@ -9,7 +9,7 @@ import type { EventsDb } from "./hooks/events-db.js";
 import {
   extractOmpTurnModels,
   loadOmpArchive,
-  selectOmpLiveMessages,
+  selectOmpLiveSegments,
   type OmpSessionMeta,
   type ParsedOmpTranscriptRecord,
 } from "./omp-transcript.js";
@@ -54,9 +54,21 @@ export interface ReadContext extends TranscriptLocator {
   scrub(text: string): string;
 }
 
+/**
+ * A point where the harness cleared the model's context inside one session file: the
+ * messages from `at` on (an index into the delta's `messages`) belong to a new conversation,
+ * opened by the transcript entry `entryId`. A clear with nothing after it sits at the end.
+ */
+export interface ConversationBoundary {
+  entryId: string;
+  at: number;
+}
+
 export interface TranscriptDelta {
   /** Messages from `sourceOffset` onwards. */
   messages: ParsedMessage[];
+  /** The clears among `messages`, in order. Absent for a client whose clear starts a new session instead. */
+  boundaries?: ConversationBoundary[];
   /** How many leading messages `messages` omits because they are stored. */
   sourceOffset: number;
   /** The adapter's resume checkpoint; persisted in the same transaction as the messages it accounts for. Opaque to capture. */
@@ -195,7 +207,8 @@ function validateOmpMetadata(meta: OmpSessionMeta, ctx: ReadContext): void {
 
 /**
  * A full OMP re-read against stored history: the live-path messages of the entries stored
- * history does not account for yet.
+ * history does not account for yet, and the clears among them. A clear inside stored history
+ * is never reported again: that history is not split after the fact.
  *
  * Stored history is each earlier delta's live path, so it holds the file's messages in order
  * but not necessarily a prefix of them: a rewind may have abandoned a stored turn, or one
@@ -207,16 +220,20 @@ function validateOmpMetadata(meta: OmpSessionMeta, ctx: ReadContext): void {
  */
 async function ompMessagesAfterStored(
   stored: StoredTranscript, records: readonly ParsedOmpTranscriptRecord[], ctx: ReadContext,
-): Promise<ParsedMessage[]> {
+): Promise<{ messages: ParsedMessage[]; boundaries: ConversationBoundary[] }> {
   const previous = await stored.storedMessages();
   if (previous.length !== stored.storedCount) throw new TranscriptSourceError("Stored OMP history changed during recovery");
   const same = (candidate: ParsedMessage, prior: { role: string; content: string }) =>
     candidate.role === prior.role && ctx.scrub(candidate.content) === ctx.scrub(prior.content);
-  const live = selectOmpLiveMessages(records);
-  if (live.length >= previous.length && previous.every((prior, index) => same(live[index], prior))) {
-    return live.slice(previous.length);
+  const live = selectOmpLiveSegments(records);
+  if (live.messages.length >= previous.length && previous.every((prior, index) => same(live.messages[index], prior))) {
+    const after = previous.length;
+    return {
+      messages: live.messages.slice(after),
+      boundaries: live.boundaries.filter(({ at }) => at >= after).map((boundary) => ({ ...boundary, at: boundary.at - after })),
+    };
   }
-  return selectOmpLiveMessages(records.slice(ompStoredBoundary(previous, records, same)));
+  return selectOmpLiveSegments(records.slice(ompStoredBoundary(previous, records, same)));
 }
 
 /** The index after the entry holding the last stored message, in the earliest in-order match. */
@@ -264,10 +281,11 @@ async function readOmpArchive(path: string, stored: StoredTranscript | undefined
     events.backfillToolCallModels(sessionId, archive?.turnModels() ?? new Map(), "omp");
   };
   if (stored) {
-    const messages = await ompMessagesAfterStored(stored, records, ctx);
-    return { messages, sourceOffset: stored.storedCount, backfillModels };
+    const { messages, boundaries } = await ompMessagesAfterStored(stored, records, ctx);
+    return { messages, boundaries, sourceOffset: stored.storedCount, backfillModels };
   }
-  return { messages: selectOmpLiveMessages(records, true), sourceOffset: 0, backfillModels };
+  const { messages, boundaries } = selectOmpLiveSegments(records, true);
+  return { messages, boundaries, sourceOffset: 0, backfillModels };
 }
 
 const ompSource: TranscriptSource = {
@@ -301,12 +319,14 @@ const ompSource: TranscriptSource = {
       events.backfillToolCallModels(sessionId, extractOmpTurnModels(path), "omp");
     };
     if (!delta.resumed && stored) {
-      const messages = await ompMessagesAfterStored(stored, delta.records ?? [], ctx);
+      const { messages, boundaries } = await ompMessagesAfterStored(stored, delta.records ?? [], ctx);
       const checkpoint = { ...delta.cursor, messageCount: stored.storedCount + messages.length };
-      return { messages, sourceOffset: stored.storedCount, checkpoint, backfillModels };
+      return { messages, boundaries, sourceOffset: stored.storedCount, checkpoint, backfillModels };
     }
     return {
       messages: delta.messages,
+      // The reader selected `messages` from these same records; this adds where the clears fall.
+      boundaries: selectOmpLiveSegments(delta.records ?? []).boundaries,
       sourceOffset: delta.resumed && prior ? prior.messageCount : 0,
       checkpoint: delta.cursor,
       backfillModels,

@@ -80,6 +80,8 @@ The hook takes the session id from OMP's `sessionManager.getSessionId()` and the
 
 A session file is an append-only tree: every entry names its parent, and a rewind or branch switch moves the leaf while the abandoned continuation stays in the file. Capture and import keep only the path the user kept — the `parentId` chain from the file's last entry, which is the leaf OMP itself resumes from. Each capture applies this to the entries appended since the previous one, so a turn abandoned before it was captured is never stored. A turn captured before a later rewind abandoned it stays in memory. A file written before OMP's tree format, whose entries carry no id, is read in file order.
 
+`/clear` keeps the session id and file and appends a `reset_boundary` entry. Capture and import store each side of a clear on the live path as its own conversation under the same session id: the turns before it stay stored and searchable, and restore reads only what followed it. With nothing said since the clear, restore answers as for a fresh session start. A clear a rewind abandoned opens nothing. After a rewind to before a stored clear, the later turns go to the conversation that clear opened. A conversation stored before clears were honoured keeps both sides.
+
 ## Import existing sessions
 
 Import OMP sessions for the current project with either spelling:
@@ -129,7 +131,7 @@ configured with, unless `llm.model` names one. See
 ## Remaining gaps
 
 1. Hook activation and trust cannot be proven from the filesystem; diagnostics report that state as unknown, as with Codex.
-2. A `/clear` boundary is not honoured, so one conversation spans two logically separate sessions ([#540](https://github.com/lossless-claude/lcm/issues/540)).
+2. The conversation a `/clear` closes is not compacted afterwards: `/compact`, `lcm compact` and the catch-up sweep reach a session only through its newest conversation, and the sweep does not select the older one. What was not summarized before the clear stays as raw messages, still searchable ([#540](https://github.com/lossless-claude/lcm/issues/540)).
 3. A turn captured before a rewind or branch switch abandoned it stays in memory and still matches `lcm search` and `lcm grep`; only turns abandoned before their capture are left out ([#539](https://github.com/lossless-claude/lcm/issues/539)). When a branch abandoned before its capture is later reopened with `/tree`, the session's continuation from it is captured but the branch's earlier turns are not.
 4. Passive learning records the OMP tools translated to extractor shapes; the harness's own memory tools and other non-durable plumbing remain intentionally silent.
 5. `*.jsonl.*.bak` recovery files (OMP falls back to these when a primary session file is missing) are not discovered.
