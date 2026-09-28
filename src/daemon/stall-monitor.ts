@@ -29,8 +29,10 @@ export function watchEventLoop(thresholdMs: number, onTick: (stall: Stall | unde
     lastWall = Date.now();
     // The reporting tick may follow callbacks queued during the block (including
     // response close and setImmediate). One tick before it is the earliest end
-    // bound: work started after that cannot have caused this reported stall.
-    const endedAfter = lastWall - tickMs;
+    // bound: work started after that cannot have caused this reported stall. With a
+    // threshold as short as the tick, that bound can fall before the block began, so it
+    // never goes below `begunBy`: work started before then may be what began the block.
+    const endedAfter = Math.max(lastWall - tickMs, begunBy);
     onTick(elapsed >= thresholdMs ? { ms: elapsed, begunBy, endedAfter } : undefined);
   }, tickMs);
   timer.unref();
