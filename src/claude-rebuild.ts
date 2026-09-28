@@ -82,7 +82,8 @@ export function claudeRebuildCandidateIds(db: DatabaseSync): string[] {
  * conversation first) with the parsed transcript, in order, comparing role and content under
  * the current redaction rules on both sides — the comparison the capture guard makes.
  * `transcript` is undefined when there is no transcript file. `legacyTranscript` yields the
- * transcript in the pre-#406 tool shape; it is read only when the session is not aligned.
+ * transcript in the pre-#406 tool-content shape; it is read only when the session is not
+ * aligned, or was captured before role tagging.
  */
 export async function planSessionRebuild(
   db: DatabaseSync, sessionId: string, transcript: ParsedMessage[] | undefined, scrub: (text: string) => string,
@@ -101,22 +102,26 @@ export async function planSessionRebuild(
   };
   if (!transcript) return { ...base, kind: "unavailable", reason: "no transcript file" };
   if (conversationId === undefined) return { ...base, kind: "ambiguous", reason: `${conversations.length} conversations` };
-  if (conversations[0].role_tagging === null) {
-    return { ...base, kind: "ambiguous", reason: "captured by an earlier transcript parser" };
-  }
+  const untagged = conversations[0].role_tagging === null;
 
   const key = (role: string, content: string) => `${role}\u0000${normalizeMessageContent(scrub(content))}`;
   const have = (await new ConversationStore(db).getSessionMessages(sessionId)).map((m) => key(m.role, m.content));
   const currentKeys = transcript.map((m) => key(m.role, m.content));
   const current = searchable(transcript);
   const { gaps, extras, cuts } = align(have, currentKeys, current, scrub);
-  if (gaps === 0 && extras === 0 && cuts === 0) return { ...base, kind: "aligned" };
+  if (!untagged && gaps === 0 && extras === 0 && cuts === 0) return { ...base, kind: "aligned" };
   const legacy = searchable(legacyTranscript?.() ?? []);
   const legacyKeys = legacy.messages.map((m) => key(m.role, m.content));
-  const present = new Set([...currentKeys, ...legacyKeys]);
-  const lost = have.filter((stored) => !present.has(stored) &&
-    approximateMatch(stored, current, 0, transcript.length, scrub) === undefined &&
-    approximateMatch(stored, legacy, 0, legacy.messages.length, scrub) === undefined).length;
+  const content = (key: string) => key.slice(key.indexOf("\u0000") + 1);
+  // An untagged session that has not grown is exactly its pre-role-tagging parse: capture never
+  // needs to slice it again, so rebuilding it would only discard its summaries.
+  if (untagged && have.length === legacyKeys.length && have.every((stored, index) => content(stored) === content(legacyKeys[index]))) {
+    return { ...base, kind: "aligned" };
+  }
+  const present = new Set((untagged ? [...currentKeys, ...legacyKeys].map(content) : [...currentKeys, ...legacyKeys]));
+  const lost = have.filter((stored) => !present.has(untagged ? content(stored) : stored) &&
+    approximateMatch(stored, current, 0, transcript.length, scrub, untagged) === undefined &&
+    approximateMatch(stored, legacy, 0, legacy.messages.length, scrub, untagged) === undefined).length;
   if (lost > 0) return { ...base, gaps, extras, kind: "ambiguous", reason: `${lost} stored messages are not in the transcript` };
   return { ...base, gaps, extras, kind: "repairable" };
 }
@@ -182,6 +187,7 @@ function searchable(messages: ParsedMessage[]): Searchable {
 /** Search only before an exact match, preserving the earliest in-order match for legacy cut rows. */
 function approximateMatch(
   k: string, { messages, nul }: Searchable, from: number, until: number, scrub: (text: string) => string,
+  ignoreRole = false,
 ): { index: number; kind: "full" | "cut" } | undefined {
   const role = k.slice(0, k.indexOf("\u0000") + 1);
   const content = k.slice(role.length);
@@ -191,7 +197,7 @@ function approximateMatch(
     ? Array.from({ length: Math.max(0, until - from) }, (_, offset) => from + offset)
     : nul.slice(lowerBound(nul, from), lowerBound(nul, until));
   for (const index of positions) {
-    if (`${messages[index].role}\u0000` !== role) continue;
+    if (!ignoreRole && `${messages[index].role}\u0000` !== role) continue;
     const kind = compareStoredMessageContent(content, messages[index].content, scrub);
     if (kind) return { index, kind };
   }
