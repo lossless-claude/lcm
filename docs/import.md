@@ -55,3 +55,18 @@ Each session is reported as one of:
 Without `--yes` nothing is written and the daemon is not started. With `--yes`, each repairable session goes to the daemon, which runs it in the project's queue so it never interleaves with a live capture or a compaction of that project. Before the first rebuild in a project, the daemon writes a consistent copy of the project database, write-ahead log included, next to it as `db.sqlite.bak-rebuild-<timestamp>`, and prints its path; if the copy fails, nothing in that project is rebuilt. On Node 22.16 and later, the copy runs in short asynchronous page batches while the project's mutation lease prevents daemon writes from interleaving; an external writer makes SQLite restart the copy rather than mix database states. Earlier supported Node 22 releases use a synchronous copy. The daemon repeats the classification before changing anything, and then, in one transaction per session, deletes the conversation's summaries, context items, messages and their full-text entries and the session's `--replay` progress, and captures the transcript from its first message. The conversation row, its subagent attribution, its large files and promoted memories stay; a failure rolls the session back. A rebuilt session has no compaction event rows left and has the current parser-shape stamp, so a second run does not select it.
 
 `--rebuild` cannot be combined with `--replay` or `--restart`. Regenerate the discarded summaries with `lcm compact`, or with threaded context through `lcm import --provider claude --replay`, which summarises the rebuilt sessions again because their replay progress was cleared.
+
+## Repairing Codex and OMP rows cut at NUL
+
+Older captures could store a transcript message with a NUL so that SQLite reads returned only the text before its first NUL. Codex and OMP read transcripts by byte cursor, so their `--rebuild` mode repairs those rows in place:
+
+```sh
+lcm import --provider codex --rebuild             # preview
+lcm import --provider omp --rebuild               # preview
+lcm import --provider codex --rebuild --yes       # back up and repair
+lcm import --provider omp --rebuild --session <id> --yes
+```
+
+Specify one provider; `--all` includes other projects. Without `--yes`, the command reads the stored messages and full transcript, lists the sessions and cut-row counts, and writes nothing. It matches rows to transcript messages by session identity, project, role, content, and position. Codex rows must match the transcript prefix. OMP rows match the live path by position; when a rewind left stored messages off that path, they must have a unique in-order match in the file. An ambiguous match is reported and left alone.
+
+With `--yes`, the daemon repeats that check in the project's queue and mutation lease. It backs up the project database before each session it changes, then atomically replaces only the verified cut rows' message content and full-text entries with the scrubbed transcript text, with NUL changed to U+FFFD. Other message rows, summaries, conversations, and byte cursors stay as they are. A second run finds no cut rows.

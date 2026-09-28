@@ -114,3 +114,22 @@ export function printRebuildSummary(run: RebuildRunResult, opts: { apply: boolea
     console.log("  Regenerate the rebuilt sessions' summaries with `lcm compact`, or threaded with `lcm import --provider claude --replay`.");
   }
 }
+
+/** Codex and OMP rebuild mode updates only verified historical NUL-cut message rows. */
+export function printCutRepairSummary(
+  run: import("./import.js").CutRepairRunResult,
+  opts: { apply: boolean; provider: "codex" | "omp" },
+): void {
+  let cutRows = 0;
+  let repaired = 0;
+  for (const report of run.sessions) {
+    cutRows += report.plan.rows.length;
+    repaired += report.repaired ?? 0;
+    const detail = report.plan.kind === "repairable" ? ` — ${report.plan.rows.length} cut rows` : "";
+    console.log(`  ${report.plan.kind.padEnd(11)} ${report.plan.sessionId}${detail}${report.plan.reason ? ` (${report.plan.reason})` : ""}${report.error ? `; failed: ${report.error}` : ""}  [${report.cwd}]`);
+    if (report.backupPath) console.log(`  Backup: ${report.backupPath}`);
+  }
+  for (const { cwd, error } of run.failedProjects) console.log(`  Not repaired in ${cwd}: ${error}`);
+  console.log(`  ${run.sessions.length} ${opts.provider} sessions checked; ${cutRows} cut rows found; ${repaired} repaired.`);
+  if (!opts.apply) console.log(cutRows ? "  No changes written; rerun with --yes to repair." : "  Nothing to repair. No changes written.");
+}

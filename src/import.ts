@@ -14,6 +14,7 @@ import { createLcmPaths, type LcmPaths } from "./lcm-paths.js";
 import { discoverSubagentTranscripts, type SubagentAttribution } from "./subagent-attribution.js";
 import { isSessionComplete } from "./capture.js";
 import { claudeRebuildCandidateIds, planSessionRebuild, type SessionRebuildPlan } from "./claude-rebuild.js";
+import { planCutRowRepair, type CutRepairClient, type CutRowRepairPlan } from "./cut-row-repair.js";
 import { ScrubEngine } from "./scrub.js";
 import { parseTranscript } from "./transcript.js";
 import {
@@ -884,4 +885,63 @@ async function applyProjectRebuild(client: DaemonClient, cwd: string, reports: R
       }
     }
   }
+}
+
+export interface CutRepairRunResult {
+  sessions: Array<{ cwd: string; transcriptPath: string; plan: CutRowRepairPlan; repaired?: number; backupPath?: string; error?: string }>;
+  failedProjects: Array<{ cwd: string; error: string }>;
+}
+
+/** Preview locally; with --yes the daemon rechecks each plan under the project lease before writing. */
+export async function repairCutRows(
+  client: DaemonClient | undefined,
+  options: RebuildOptions & { provider: CutRepairClient; _codexDir?: string; _ompDir?: string },
+): Promise<CutRepairRunResult> {
+  const result: CutRepairRunResult = { sessions: [], failedProjects: [] };
+  const target = projectId(options.cwd ?? process.cwd());
+  const files = options.provider === "codex"
+    ? findAllCodexTranscripts(options._codexDir)
+    : findAllOmpTranscripts(options._ompDir);
+  const scrubbers = new Map<string, ScrubEngine>();
+  for (const file of files) {
+    if (!file.cwd || (!options.all && projectId(file.cwd) !== target)) continue;
+    if (options.sessionId !== undefined && file.sessionId !== options.sessionId) continue;
+    const cwd = file.cwd;
+    const dbPath = projectDbPath(cwd, options.paths);
+    if (!existsSync(dbPath)) continue;
+    try {
+      let scrubber = scrubbers.get(cwd);
+      if (!scrubber) {
+        scrubber = await ScrubEngine.forProject(options.sensitivePatterns ?? [], projectDir(cwd, options.paths));
+        scrubbers.set(cwd, scrubber);
+      }
+      const db = getLcmConnection(dbPath, { readOnly: true });
+      let plan: CutRowRepairPlan;
+      try {
+        plan = await planCutRowRepair(db, {
+          sessionId: file.sessionId, cwd, client: options.provider, transcriptPath: file.path,
+          scrub: (text) => scrubber!.scrubWithCounts(text).text,
+        });
+      } finally {
+        closeLcmConnection(dbPath, { readOnly: true });
+      }
+      const report: CutRepairRunResult["sessions"][number] = { cwd, transcriptPath: file.path, plan };
+      result.sessions.push(report);
+      if (options.apply && client && plan.kind === "repairable") {
+        try {
+          const applied = await client.post<{ repair: CutRowRepairPlan; repaired: number; backupPath?: string }>("/ingest", {
+            session_id: file.sessionId, cwd, transcript_path: file.path, source: "import", client: options.provider, rebuild: true,
+          });
+          report.plan = applied.repair;
+          report.repaired = applied.repaired;
+          report.backupPath = applied.backupPath;
+        } catch (error) {
+          report.error = error instanceof Error ? error.message : String(error);
+        }
+      }
+    } catch (error) {
+      result.failedProjects.push({ cwd, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return result;
 }
