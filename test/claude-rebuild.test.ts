@@ -75,6 +75,32 @@ function mixedToolShapeTranscript(): string {
   return path;
 }
 
+function preRoleTaggingTranscript(): string {
+  const path = join(dir, `${sessionId}.jsonl`);
+  const entries = [
+    { role: "user", content: "question" },
+    { role: "assistant", content: [{ type: "tool_use", name: "Read" }] },
+    { role: "user", content: [{ type: "tool_result", is_error: true, content: "missing file" }] },
+    { role: "assistant", content: "answer" },
+  ];
+  writeFileSync(path, entries.map((message) => JSON.stringify({ message })).join("\n") + "\n");
+  return path;
+}
+
+async function storePreRoleTagging(): Promise<string> {
+  const path = preRoleTaggingTranscript();
+  const oldRows = [
+    { role: "user", content: "question", tokenCount: 2 },
+    { role: "user", content: "missing file", tokenCount: 3 },
+    { role: "assistant", content: "answer", tokenCount: 2 },
+  ];
+  expect(parseTranscript(path, "legacy").map((m) => m.content)).toEqual(oldRows.map((m) => m.content));
+  await capture.write({ sessionId, messages: oldRows });
+  db.prepare("UPDATE conversations SET role_tagging = NULL WHERE session_id = ?").run(sessionId);
+  writeFileSync(path, `${JSON.stringify({ message: { role: "user", content: "next" } })}\n`, { flag: "a" });
+  return path;
+}
+
 async function storeMixedToolShape(path: string): Promise<void> {
   const legacy = parseTranscript(path, "legacy");
   const current = parseTranscript(path);
@@ -429,6 +455,67 @@ describe("classifying a session for a rebuild", () => {
     expect(transcriptMessages()).toEqual(before);
   });
 
+  it("repairs an untagged session grown after the parser change", async () => {
+    const path = await storePreRoleTagging();
+    const before = transcriptMessages();
+    await expect(capture.captureTranscript({ sessionId, cwd: dir, transcriptPath: path })).rejects.toThrow("--rebuild");
+    expect(transcriptMessages()).toEqual(before);
+    expect(db.prepare("SELECT parser_shape FROM conversations WHERE session_id = ?").get(sessionId))
+      .toEqual({ parser_shape: null });
+
+    expect(await planSessionRebuild(db, sessionId, parseTranscript(path), identity, () => parseTranscript(path, "legacy")))
+      .toMatchObject({ kind: "repairable" });
+    expect(claudeRebuildCandidateIds(db)).toContain(sessionId);
+    expect(await capture.rebuildTranscript({ sessionId, cwd: dir, transcriptPath: path })).toMatchObject({
+      plan: { kind: "repairable" }, ingested: parseTranscript(path).length,
+    });
+    expect(transcriptMessages()).toEqual(parseTranscript(path).map((m) => [m.role, m.content]));
+    expect(db.prepare("SELECT parser_shape FROM conversations WHERE session_id = ?").get(sessionId))
+      .toEqual({ parser_shape: CLAUDE_PARSER_SHAPE });
+    await expect(capture.captureTranscript({ sessionId, cwd: dir, transcriptPath: path }))
+      .resolves.toMatchObject({ records: [] });
+  });
+
+  it("leaves an untagged session that has not grown aligned, so a rebuild keeps its summaries", async () => {
+    const path = preRoleTaggingTranscript();
+    const legacy = parseTranscript(path, "legacy");
+    await capture.write({ sessionId, messages: legacy });
+    db.prepare("UPDATE conversations SET role_tagging = NULL WHERE session_id = ?").run(sessionId);
+    const before = transcriptMessages();
+    expect(await planSessionRebuild(db, sessionId, parseTranscript(path), identity, () => parseTranscript(path, "legacy")))
+      .toMatchObject({ kind: "aligned" });
+    expect(await capture.rebuildTranscript({ sessionId, cwd: dir, transcriptPath: path })).toMatchObject({
+      plan: { kind: "aligned" }, ingested: 0,
+    });
+    expect(transcriptMessages()).toEqual(before);
+  });
+
+  it("repairs an untagged session grown only by a tool call the older parse drops", async () => {
+    const path = preRoleTaggingTranscript();
+    const legacy = parseTranscript(path, "legacy");
+    await capture.write({ sessionId, messages: legacy });
+    db.prepare("UPDATE conversations SET role_tagging = NULL WHERE session_id = ?").run(sessionId);
+    writeFileSync(path, `${JSON.stringify({
+      message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_tail", name: "Bash", input: { command: "ls" } }] },
+    })}\n`, { flag: "a" });
+    expect(parseTranscript(path, "legacy")).toEqual(legacy);
+
+    expect(await planSessionRebuild(db, sessionId, parseTranscript(path), identity, () => parseTranscript(path, "legacy")))
+      .toMatchObject({ kind: "repairable" });
+  });
+
+  it("leaves an untagged session ambiguous when a stored row is in no parse", async () => {
+    const path = await storePreRoleTagging();
+    db.prepare("UPDATE messages SET content = 'only in storage' WHERE content = 'missing file'").run();
+    const before = transcriptMessages();
+    expect(await planSessionRebuild(db, sessionId, parseTranscript(path), identity, () => parseTranscript(path, "legacy")))
+      .toMatchObject({ kind: "ambiguous", reason: "1 stored messages are not in the transcript" });
+    expect(await capture.rebuildTranscript({ sessionId, cwd: dir, transcriptPath: path })).toMatchObject({
+      plan: { kind: "ambiguous" }, ingested: 0,
+    });
+    expect(transcriptMessages()).toEqual(before);
+  });
+
   it("aligned: the stored history is a prefix of the transcript, an uncaptured tail included", async () => {
     await compact(await store(transcriptTurns.slice(0, 3)));
     expect(await plan(transcriptTurns)).toMatchObject({ kind: "aligned", gaps: 0, extras: 0 });
@@ -459,10 +546,10 @@ describe("classifying a session for a rebuild", () => {
     expect(await plan(transcriptTurns)).toMatchObject({ kind: "ambiguous" });
   });
 
-  it("ambiguous: a conversation an earlier transcript parser captured", async () => {
+  it("repairable: an untagged conversation whose stored content is still in the transcript", async () => {
     await compact(await store(damagedTurns));
     db.exec("UPDATE conversations SET role_tagging = NULL");
-    expect(await plan(transcriptTurns)).toMatchObject({ kind: "ambiguous" });
+    expect(await plan(transcriptTurns)).toMatchObject({ kind: "repairable" });
   });
 
   it("selects only sessions compaction wrote into", async () => {
