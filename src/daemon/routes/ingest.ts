@@ -210,10 +210,13 @@ async function repairCutSession(
             scrub: (text) => scrubber.scrubWithCounts(text).text,
           });
           if (plan.kind !== "repairable") return { repair: plan, repaired: 0 };
-          try {
-            backupPath = await backupProjectDatabase(db, dbPath);
-          } catch (error) {
-            throw new Error(`backup failed, nothing was repaired: ${error instanceof Error ? error.message : String(error)}`);
+          // One copy per project run, as for a Claude rebuild: the caller asks for it until one exists.
+          if (input.backup === true) {
+            try {
+              backupPath = await backupProjectDatabase(db, dbPath);
+            } catch (error) {
+              throw new Error(`backup failed, nothing was repaired: ${error instanceof Error ? error.message : String(error)}`);
+            }
           }
           return { repair: plan, repaired: applyCutRowRepair(db, plan) };
         } finally {

@@ -903,6 +903,8 @@ export async function repairCutRows(
     ? findAllCodexTranscripts(options._codexDir)
     : findAllOmpTranscripts(options._ompDir);
   const scrubbers = new Map<string, ScrubEngine>();
+  const backedUp = new Set<string>();
+  const backupFailed = new Set<string>();
   for (const file of files) {
     if (!file.cwd || (!options.all && projectId(file.cwd) !== target)) continue;
     if (options.sessionId !== undefined && file.sessionId !== options.sessionId) continue;
@@ -927,16 +929,23 @@ export async function repairCutRows(
       }
       const report: CutRepairRunResult["sessions"][number] = { cwd, transcriptPath: file.path, plan };
       result.sessions.push(report);
-      if (options.apply && client && plan.kind === "repairable") {
+      if (options.apply && client && plan.kind === "repairable" && !backupFailed.has(dbPath)) {
         try {
+          // The first repair a project applies backs its database up; later ones rely on that copy.
           const applied = await client.post<{ repair: CutRowRepairPlan; repaired: number; backupPath?: string }>("/ingest", {
             session_id: file.sessionId, cwd, transcript_path: file.path, source: "import", client: options.provider, rebuild: true,
+            ...(backedUp.has(dbPath) ? {} : { backup: true }),
           });
           report.plan = applied.repair;
           report.repaired = applied.repaired;
           report.backupPath = applied.backupPath;
+          if (applied.backupPath) backedUp.add(dbPath);
         } catch (error) {
           report.error = error instanceof Error ? error.message : String(error);
+          if (!backedUp.has(dbPath) && report.error.includes("backup failed")) {
+            backupFailed.add(dbPath);
+            result.failedProjects.push({ cwd, error: report.error });
+          }
         }
       }
     } catch (error) {
