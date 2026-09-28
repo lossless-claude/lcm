@@ -168,7 +168,7 @@ const HELP: Record<string, CommandHelp> = {
 
   import: {
     summary: "Import Claude Code, Codex or Oh My Pi session transcripts into lossless memory.",
-    usage: "lcm import [--provider claude|codex|omp|all | --codex | --omp] [--all] [--verbose] [--dry-run] [--replay] [--restart]",
+    usage: "lcm import [--provider claude|codex|omp|all | --codex | --omp] [--all] [--verbose] [--dry-run] [--replay] [--restart] [--rebuild [--yes] [--session <id>]]",
     options: [
       ["--provider <provider>", "Transcript source: claude, codex, omp, all (default: all)"],
       ["--codex", "Alias for --provider codex"],
@@ -178,6 +178,9 @@ const HELP: Record<string, CommandHelp> = {
       ["--dry-run", "Preview without importing"],
       ["--replay", "Replay compaction for each imported session (resumes where the last run stopped)"],
       ["--restart", "With --replay: discard recorded progress and all summaries in the conversations the run touches, then start from scratch"],
+      ["--rebuild", "With --provider claude: check every compacted Claude Code session against its transcript, and replace the stored history of each repairable one with the transcript (previews unless --yes)"],
+      ["--yes", "With --rebuild: apply it, after backing up each project database it changes"],
+      ["--session <id>", "With --rebuild: only this session"],
     ],
     examples: [
       ["lcm import", "Import Claude Code, Codex and Oh My Pi sessions of the current project"],
@@ -187,8 +190,10 @@ const HELP: Record<string, CommandHelp> = {
       ["lcm import --dry-run", "Preview what would be imported"],
       ["lcm import --provider codex --replay", "Import and compact current project Codex sessions"],
       ["lcm import --omp", "Import current project Oh My Pi sessions"],
+      ["lcm import --provider claude --rebuild", "Preview which compacted Claude Code sessions a rebuild would repair"],
+      ["lcm import --provider claude --rebuild --yes", "Back up, then rebuild those sessions from their transcripts"],
     ],
-    notes: "Claude transcripts come from ~/.claude/projects/; Codex transcripts from ~/.codex/sessions/ and ~/.codex/archived_sessions/; Oh My Pi session files from <agent dir>/sessions/ (PI_CODING_AGENT_DIR, default ~/.omp/agent). Codex requires session_meta.cwd and OMP requires the session header's cwd; unknown projects are skipped. Every provider is included unless --provider, --codex or --omp selects one. --all includes other projects. Dry-run never starts the daemon. Codex and OMP import share incremental ingestion with their hooks, so later transcript growth is captured without duplicating prior messages.",
+    notes: "Claude transcripts come from ~/.claude/projects/; Codex transcripts from ~/.codex/sessions/ and ~/.codex/archived_sessions/; Oh My Pi session files from <agent dir>/sessions/ (PI_CODING_AGENT_DIR, default ~/.omp/agent). Codex requires session_meta.cwd and OMP requires the session header's cwd; unknown projects are skipped. Every provider is included unless --provider, --codex or --omp selects one. --all includes other projects. Dry-run never starts the daemon. Codex and OMP import share incremental ingestion with their hooks, so later transcript growth is captured without duplicating prior messages. --rebuild repairs Claude Code sessions an earlier lcm captured after a compaction with skipped and repeated messages; capture of such a session stops until it runs. It keeps each conversation, its large files and promoted memory, discards the session's summaries, and never runs with --replay.",
   },
 
   promote: {

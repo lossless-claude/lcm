@@ -14,6 +14,7 @@ import {
   type ParsedOmpTranscriptRecord,
 } from "./omp-transcript.js";
 import { readOmpTranscriptDelta, type OmpTranscriptCursor, type OmpTranscriptDelta } from "./omp-transcript-reader.js";
+import { matchesUnderRedaction } from "./scrub.js";
 import type { SessionClient } from "./session-client.js";
 import { discoverSubagentTranscripts, type DiscoveredSubagentTranscript } from "./subagent-attribution.js";
 import { extractToolUseModels, parseTranscript, type ParsedMessage } from "./transcript.js";
@@ -22,7 +23,8 @@ import { extractToolUseModels, parseTranscript, type ParsedMessage } from "./tra
  * The transcript-source seam: one interface answering "what does this
  * transcript hold beyond what is already stored", with an adapter per session
  * client (src/session-client.ts). Each adapter owns its own delta model —
- * Claude re-parses the file and slices at the stored count; Codex resumes from
+ * Claude re-parses the file and slices at the stored count, verifying the
+ * stored prefix once compaction has written into the session; Codex resumes from
  * a byte-offset cursor and verifies the stored prefix when it cannot — its own
  * validation rules, and its own resume checkpoint, opaque to callers. It also
  * states the capabilities the ingest route forks on, so no shared code names a
@@ -47,6 +49,12 @@ export interface StoredTranscript {
   storedMessages(): Promise<Array<{ role: string; content: string }>>;
   /** The adapter's resume checkpoint as last persisted, unverified. Opaque: only the adapter that wrote it may read it. */
   checkpoint?: unknown;
+  /**
+   * True when compaction has written its event rows into the session and every conversation
+   * of it was captured by the current transcript parser: a Claude slice at the stored count is
+   * then trusted only after the stored history is verified as the transcript's prefix.
+   */
+  verifyAfterCompaction?(): Promise<boolean>;
 }
 
 export interface ReadContext extends TranscriptLocator {
@@ -112,10 +120,26 @@ const claudeSource: TranscriptSource = {
     if (!safe && suppliedPath) throw new TranscriptSourceError("Claude transcript path is not allowed");
     return safe && existsSync(safe) ? safe : undefined;
   },
-  async read(path, stored) {
+  async read(path, stored, ctx) {
     const storedCount = stored?.storedCount ?? 0;
+    const messages = parseTranscript(path);
+    // Before compaction stopped counting its own event rows, a capture after a compaction
+    // sliced past as many transcript messages as the session held event rows, and the
+    // corrected count then re-stored its tail. Such a history is not a prefix of the
+    // transcript; appending to it would repeat the damage, so capture stalls until a rebuild.
+    if (stored && await stored.verifyAfterCompaction?.()) {
+      try {
+        await validateTranscriptRecovery(stored, messages, ctx, "Claude");
+      } catch (error) {
+        if (!(error instanceof TranscriptSourceError)) throw error;
+        throw new TranscriptSourceError(
+          `${error.message}. A session captured after a compaction by an earlier lcm can hold skipped and repeated messages: ` +
+            "preview with `lcm import --provider claude --rebuild --dry-run`, then repair it with `lcm import --provider claude --rebuild --yes`",
+        );
+      }
+    }
     return {
-      messages: parseTranscript(path).slice(storedCount),
+      messages: messages.slice(storedCount),
       sourceOffset: storedCount,
       backfillModels(events, sessionId) {
         if (!events.hasUnfilledModels(sessionId, "claude")) return;
@@ -148,10 +172,18 @@ async function validateTranscriptRecovery(stored: StoredTranscript, messages: Pa
   if (previous.length !== stored.storedCount) throw new TranscriptSourceError(`Stored ${label} history changed during recovery`);
   for (const [index, prior] of previous.entries()) {
     const message = messages[index];
-    if (message.role !== prior.role || ctx.scrub(message.content) !== ctx.scrub(prior.content)) {
+    if (message.role !== prior.role || !storedContentMatches(prior.content, message.content, ctx.scrub)) {
       throw new TranscriptSourceError(`${label} transcript prefix differs from stored history; check the original transcript and redaction settings before retrying`);
     }
   }
+}
+
+/** Equal under the current redaction rules, or equal but for spans a pattern since removed had redacted. Scrubs only when the texts differ. */
+function storedContentMatches(stored: string, current: string, scrub: (text: string) => string): boolean {
+  if (stored === current) return true;
+  const storedNow = scrub(stored);
+  const currentNow = scrub(current);
+  return storedNow === currentNow || matchesUnderRedaction(storedNow, currentNow);
 }
 
 const codexSource: TranscriptSource = {

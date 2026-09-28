@@ -1,4 +1,4 @@
-import type { ImportResult } from "./import.js";
+import type { ImportResult, RebuildRunResult } from "./import.js";
 import { formatNumber, formatRatio, formatUsd } from "./stats.js";
 
 export function printImportSummary(
@@ -78,5 +78,39 @@ export function printImportSummary(
       console.log(`  ${label.padEnd(labelWidth)} : ${value}`);
     }
     console.log(`  ${border}`);
+  }
+}
+
+/** `lcm import --provider claude --rebuild`: one line per compacted session, then the totals. */
+export function printRebuildSummary(run: RebuildRunResult, opts: { apply: boolean }): void {
+  const counts = { aligned: 0, repairable: 0, unavailable: 0, ambiguous: 0 };
+  let leaf = 0;
+  let condensed = 0;
+  for (const { cwd, plan, rebuilt, ingested, error } of run.sessions) {
+    counts[plan.kind]++;
+    const summaries = `${plan.leafSummaries} leaf and ${plan.condensedSummaries} condensed summaries`;
+    if (plan.kind === "repairable") {
+      leaf += plan.leafSummaries;
+      condensed += plan.condensedSummaries;
+    }
+    const detail = plan.kind === "repairable" || plan.kind === "ambiguous"
+      ? ` — ${plan.gaps} missing, ${plan.extras} extra stored rows, ${summaries}` : "";
+    const outcome = error ? `; failed: ${error}` : rebuilt ? `; rebuilt: ${ingested} messages captured, summaries discarded` : "";
+    console.log(`  ${plan.kind.padEnd(11)} ${plan.sessionId}${detail}${plan.reason ? ` (${plan.reason})` : ""}${outcome}  [${cwd}]`);
+  }
+  console.log(
+    `  ${run.sessions.length} compacted Claude Code sessions: ${counts.aligned} aligned, ${counts.repairable} repairable, ` +
+      `${counts.unavailable} unavailable, ${counts.ambiguous} ambiguous.`,
+  );
+  for (const backup of run.backups) console.log(`  Backup: ${backup}`);
+  for (const { cwd, error } of run.failedProjects) console.log(`  Not rebuilt in ${cwd}: ${error}`);
+  if (!opts.apply) {
+    if (counts.repairable > 0) {
+      console.log(`  A rebuild would discard ${leaf} leaf and ${condensed} condensed summaries. No changes written; rerun with --yes to rebuild.`);
+    } else {
+      console.log("  Nothing to rebuild. No changes written.");
+    }
+  } else if (run.sessions.some((s) => s.rebuilt)) {
+    console.log("  Regenerate the rebuilt sessions' summaries with `lcm compact`, or threaded with `lcm import --provider claude --replay`.");
   }
 }
