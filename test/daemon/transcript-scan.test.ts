@@ -292,6 +292,40 @@ describe("periodic transcript scan: fingerprint dedup", () => {
     expect(calls).toBe(2);
   });
 
+  it("skips an unchanged guard failure and retries after the transcript changes", async () => {
+    let calls = 0;
+    const guardFailure: RouteHandler = async (_req, res) => {
+      calls++;
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "transcript rejected" }));
+    };
+    const config = loadDaemonConfig("/nonexistent");
+    const { transcriptPath } = seedFingerprintProject("guard-failure", transcriptLine("hello"));
+
+    await scanForTranscripts(config, paths, guardFailure);
+    await scanForTranscripts(config, paths, guardFailure);
+    expect(calls).toBe(1);
+
+    appendFileSync(transcriptPath, transcriptLine("changed"));
+    await scanForTranscripts(config, paths, guardFailure);
+    expect(calls).toBe(2);
+  });
+
+  it("retries a 500 even if its message resembles a prefix failure", async () => {
+    let calls = 0;
+    const failed: RouteHandler = async (_req, res) => {
+      calls++;
+      res.writeHead(500);
+      res.end(JSON.stringify({ error: "Claude transcript prefix differs from stored history" }));
+    };
+    const config = loadDaemonConfig("/nonexistent");
+    seedFingerprintProject("other-failure", transcriptLine("hello"));
+
+    await scanForTranscripts(config, paths, failed);
+    await scanForTranscripts(config, paths, failed);
+    expect(calls).toBe(2);
+  });
+
   it("does not run a second pass while one is still in flight", async () => {
     const config = loadDaemonConfig("/nonexistent");
     const { handler, count } = countingHandler(createIngestHandler(config, paths));

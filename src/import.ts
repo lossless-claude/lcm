@@ -848,7 +848,10 @@ async function classifyProjectSessions(cwd: string, claudeDir: string, options: 
     for (const sessionId of compactedSessionIds(db)) {
       if (options.sessionId !== undefined && sessionId !== options.sessionId) continue;
       const transcriptPath = transcripts.get(sessionId);
-      const plan = await planSessionRebuild(db, sessionId, transcriptPath ? parseTranscript(transcriptPath) : undefined, scrub);
+      const plan = await planSessionRebuild(
+        db, sessionId, transcriptPath ? parseTranscript(transcriptPath) : undefined, scrub,
+        transcriptPath ? parseTranscript(transcriptPath, "legacy") : undefined,
+      );
       reports.push({ cwd, plan, transcriptPath });
     }
     return reports;

@@ -32,7 +32,7 @@ import { createReviewStaleHandler } from "./routes/review-stale.js";
 import { createToolEventHandler } from "./routes/tool-event.js";
 import { createSessionScavengeHandler } from "./routes/session-scavenge.js";
 import { createSessionStartCompactHandler } from "./routes/session-start-compact.js";
-import { createSessionEndHandler, invokeRoute, type IngestResult } from "./routes/session-end.js";
+import { createSessionEndHandler, invokeRoute, RouteHttpError, type IngestResult } from "./routes/session-end.js";
 import { backfillProjectIdentities } from "./project-group.js";
 import { yieldToEventLoop } from "./project-queue.js";
 import { claudeProjectSlug } from "./project.js";
@@ -414,6 +414,8 @@ async function transcriptFingerprint(transcriptPath: string, sessionDir: string)
  * deleted project or session cannot grow this map without bound.
  */
 const transcriptFingerprints = new Map<string, string>();
+/** Failed Claude 400 responses need no second parse until the transcript tree changes. */
+const failed400Fingerprints = new Map<string, string>();
 
 /** True while a pass of `scanForTranscripts` is running. */
 let scanInProgress = false;
@@ -437,9 +439,11 @@ let scanInProgress = false;
  * Each session's transcript is skipped when its fingerprint (see
  * `transcriptFingerprint`) matches the one recorded for it, computed before the
  * ingest and recorded only once the ingest resolves without `incomplete` — a
- * failed or rejected ingest, a subagent transcript that could not be captured, or
+ * subagent transcript that could not be captured, or
  * a failed tool-call model backfill (which this call asks `/ingest` to run before
- * replying) leaves nothing recorded, so it is retried next pass. This never marks
+ * replying) leaves nothing recorded, so it is retried next pass. A Claude 400
+ * response records a separate fingerprint and is retried once the transcript
+ * tree changes; unrelated failures remain retryable next pass. This never marks
  * a session complete; that stays `/session-complete`'s job alone. A completed
  * session whose transcript grew since (a Claude `--resume`) is read again by `/ingest`.
  */
@@ -473,21 +477,30 @@ export async function scanForTranscripts(config: DaemonConfig, paths: LcmPaths, 
         seenTranscriptPaths.add(transcriptPath);
 
         const fingerprint = await transcriptFingerprint(transcriptPath, join(sessionsDir, sessionId));
-        if (fingerprint !== undefined && transcriptFingerprints.get(transcriptPath) === fingerprint) continue;
+        if (fingerprint !== undefined &&
+            (transcriptFingerprints.get(transcriptPath) === fingerprint || failed400Fingerprints.get(transcriptPath) === fingerprint)) continue;
+        failed400Fingerprints.delete(transcriptPath);
 
         try {
           const result = await invokeRoute<IngestResult>(ingest, {
             session_id: sessionId, cwd: meta.cwd, transcript_path: transcriptPath, backfill_before_reply: true,
           });
+          failed400Fingerprints.delete(transcriptPath);
           if (fingerprint !== undefined && !result.incomplete) transcriptFingerprints.set(transcriptPath, fingerprint);
-        } catch {
-          continue; // one rejected transcript must not end the sweep; unrecorded, so it is retried next pass
+        } catch (error) {
+          if (fingerprint !== undefined && error instanceof RouteHttpError && error.status === 400) {
+            failed400Fingerprints.set(transcriptPath, fingerprint);
+          }
+          continue; // one rejected transcript must not end the sweep
         }
       }
     }
 
     for (const path of transcriptFingerprints.keys()) {
       if (!seenTranscriptPaths.has(path)) transcriptFingerprints.delete(path);
+    }
+    for (const path of failed400Fingerprints.keys()) {
+      if (!seenTranscriptPaths.has(path)) failed400Fingerprints.delete(path);
     }
   } catch {
     // non-fatal: periodic scan failure shouldn't crash daemon
