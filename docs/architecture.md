@@ -368,6 +368,12 @@ An OMP pre-compaction request whose Capture was separately verified skips its lc
 the project queue is occupied, including when another request enters during awaited summarizer
 setup; admission is rechecked immediately before enqueue.
 
+`/promote` and `/promote-events` hold the same mutation lease for their whole run. They walk
+every summary or event not yet promoted, and `node:sqlite` is synchronous, so each yields to the
+event loop between items (`yieldToEventLoop`) to keep `/health` and other projects answering;
+the lease is what stops a second run from reading the not-yet-promoted set before the first
+has written it.
+
 A project's `meta.json` is written by routes on different sessions of the same project, so the per-project queue is not what covers it; it needs no queue of its own because each update in `src/daemon/project-meta.ts` is a single synchronous read-modify-write that nothing in the process can interleave with. Writers in other processes are outside the daemon's trust boundary, as they are for the database.
 
 ## Authentication

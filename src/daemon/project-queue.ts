@@ -48,6 +48,16 @@ export async function withProjectMutation<T>(
   finally { lease.release() }
 }
 
+/**
+ * Lets timers and other requests run. `node:sqlite` is synchronous, so a loop whose
+ * awaits only wrap SQLite calls never leaves the microtask queue and holds the whole
+ * daemon until it ends. A loop that mutates a project's database calls this only while
+ * holding that project's mutation lease, so another run cannot interleave at the yield.
+ */
+export function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve))
+}
+
 export function hasQueuedProjectWork(projectId: string): boolean {
   return (queues.get(projectId)?.pending ?? 0) > 0
 }

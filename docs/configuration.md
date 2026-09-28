@@ -96,13 +96,14 @@ The daemon writes one JSON record per line to `~/.lossless-claude/logs/daemon.lo
 jq -c 'select(.cwd == "/path/to/project")' ~/.lossless-claude/logs/daemon.log*
 ```
 
-- **Requests**: one `request` record per request, with its route, status and duration. `/session-end`, `/compact` and `/session-start-compact` are logged at `info`, so a `/session-end` with no `/compact` after it is visible. `/tool-event`, `/health` and `/summarize-jobs/*` are logged at `debug`. A 5xx is logged at `error`, and a 4xx at `warn`.
+- **Requests**: one `request` record per request, with its route, status and duration. `/session-end`, `/compact` and `/session-start-compact` are logged at `info`, so a `/session-end` with no `/compact` after it is visible. `/tool-event`, `/health` and `/summarize-jobs/*` are logged at `debug`. A 5xx is logged at `error`, and a 4xx at `warn`. At `debug`, each request also gets a `request.start` record (route, `cwd`, `session_id`) when its body has been read, so a request that never completes still leaves a trace.
 - **Outcomes**: `compact.done`, `compact.skipped` (`reason`: `already-compacting`, `disabled`, `no_work`, `auto-compact-disabled`), `compact.sweep`, `promote.done` and `session_end.ingested`.
 - **Failures**: `route.failed`, `compact.failed`, `promote.failed`, `daemon_request.failed` (a follow-up request the daemon could not send to itself), `ingest.subagent_failed`, `daemon.crash` (with its scrubbed stack), `summarizer.fallback` (`from_provider` produced no summary, so `to_provider` summarized instead; the same endpoint at both ends when it is asked again after stopping at the output cap), and `summarizer.endpoint_unavailable` at startup, once per named endpoint left out because `missing_env` is unset.
 - **Continuity**:
   - `daemon.start` records `prev`: `clean` when the previous daemon left a `daemon.stop`, `unclean` when it did not, and `none` for the first log.
   - `daemon.stop` is written on idle shutdown, SIGTERM, SIGINT and an uncaught exception. `lcm daemon stop` sends SIGTERM.
   - `log.gap` records how many records were dropped while appends were failing, and over what period.
+  - `daemon.stalled` (`warn`) is written once the event loop has been blocked for more than 5 seconds, when the block ends: a blocked daemon answers nothing, `/health` included, and cannot log until it is free again. `ms` is how long the block lasted. There is one record per request in flight during the block, with its `route`, `cwd`, `session_id` and `started_at`, or one record without a route when no request was; work the daemon runs in-process after answering (the ingest behind `/session-end`, the periodic transcript scan) is not named.
 
 `daemon` settings in `config.json`, read at daemon start:
 
