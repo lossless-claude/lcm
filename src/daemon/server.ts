@@ -415,7 +415,9 @@ const failed400Fingerprints = new Map<string, string>();
  * A project-local sidecar of the fingerprints recorded after successful ingests, so a restart
  * does not re-parse unchanged transcripts, without opening every project database. It is tied
  * to the database file's identity: a database replaced (restored, deleted, recreated) makes the
- * sidecar stale, and a stale or unreadable sidecar is ignored, so the scan re-ingests.
+ * sidecar stale, and a stale or unreadable sidecar is ignored, so the scan re-ingests. It is tied
+ * to the package version too: an upgrade re-ingests every transcript once, which is how what a
+ * new version adds on ingest (backfills, attribution, parser-shape verification) reaches them.
  */
 async function databaseIdentity(projectPath: string): Promise<string | undefined> {
   try {
@@ -428,9 +430,10 @@ async function databaseIdentity(projectPath: string): Promise<string | undefined
 
 async function readScanFingerprints(projectPath: string): Promise<Map<string, string>> {
   try {
-    const parsed = JSON.parse(await readFile(join(projectPath, "scan-fingerprints.json"), "utf8")) as { db?: unknown; fingerprints?: unknown };
+    const parsed = JSON.parse(await readFile(join(projectPath, "scan-fingerprints.json"), "utf8")) as { db?: unknown; version?: unknown; fingerprints?: unknown };
     const db = await databaseIdentity(projectPath);
-    if (db === undefined || parsed.db !== db || !parsed.fingerprints || typeof parsed.fingerprints !== "object") return new Map();
+    if (db === undefined || parsed.db !== db || parsed.version !== (PKG_VERSION ?? null)) return new Map();
+    if (!parsed.fingerprints || typeof parsed.fingerprints !== "object") return new Map();
     return new Map(Object.entries(parsed.fingerprints).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
   } catch {
     return new Map(); // missing or corrupt: re-ingest rather than skip on untrusted state
@@ -442,7 +445,7 @@ async function writeScanFingerprints(projectPath: string, fingerprints: Map<stri
   if (db === undefined) return;
   const path = join(projectPath, "scan-fingerprints.json");
   const tmpPath = `${path}.${process.pid}.tmp`;
-  await writeFile(tmpPath, JSON.stringify({ db, fingerprints: Object.fromEntries(fingerprints) }), "utf8");
+  await writeFile(tmpPath, JSON.stringify({ db, version: PKG_VERSION ?? null, fingerprints: Object.fromEntries(fingerprints) }), "utf8");
   await rename(tmpPath, path);
 }
 

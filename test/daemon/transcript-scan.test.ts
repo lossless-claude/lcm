@@ -1,5 +1,5 @@
 // test/daemon/transcript-scan.test.ts
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -233,6 +233,22 @@ describe("periodic transcript scan: fingerprint dedup", () => {
     const dbPath = projectDbPath(project, paths);
     copyFileSync(dbPath, `${dbPath}.copy`);
     renameSync(`${dbPath}.copy`, dbPath);
+    vi.resetModules();
+    const { scanForTranscripts: restartedScan } = await import("../../src/daemon/server.js");
+    await restartedScan(config, paths, handler);
+
+    expect(count()).toBe(2);
+  });
+
+  it("re-ingests after a restart on a different lcm version", async () => {
+    const config = loadDaemonConfig("/nonexistent");
+    const { handler, count } = countingHandler(createIngestHandler(config, paths));
+    const { project } = seedFingerprintProject("restart-upgraded", transcriptLine("hello"));
+
+    await scanForTranscripts(config, paths, handler);
+    // An upgrade: what a new version adds on ingest reaches unchanged transcripts only if they are read again.
+    const sidecar = join(projectDir(project, paths), "scan-fingerprints.json");
+    writeFileSync(sidecar, JSON.stringify({ ...JSON.parse(readFileSync(sidecar, "utf8")), version: "0.0.0-older" }));
     vi.resetModules();
     const { scanForTranscripts: restartedScan } = await import("../../src/daemon/server.js");
     await restartedScan(config, paths, handler);
