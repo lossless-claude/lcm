@@ -13,7 +13,7 @@ import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { markSessionCompacted } from "../../db/session-compactions.js";
-import { SessionCapture, type TranscriptCaptureResult } from "../../capture.js";
+import { SessionCapture, STRUCTURED_INGEST_SHAPE, type CaptureResult, type TranscriptCaptureResult } from "../../capture.js";
 import { EventsDb } from "../../hooks/events-db.js";
 import { withHookWrite } from "../../hooks/write-admission.js";
 import { eventsDbPath } from "../../db/events-path.js";
@@ -225,6 +225,20 @@ async function captureTranscriptForCompact(
   return captured;
 }
 
+async function captureForCompact(
+  capture: SessionCapture,
+  input: { sessionId: string; cwd: string; client?: string; transcriptPath?: string },
+  paths: LcmPaths,
+  log: DaemonLog,
+): Promise<CaptureResult | undefined> {
+  const existing = await capture.conversationStore.getConversationBySessionId(input.sessionId);
+  if (existing?.parserShape === STRUCTURED_INGEST_SHAPE) {
+    // Structured /ingest supplied the content to compact; its transcript may be unrelated.
+    return capture.write({ sessionId: input.sessionId, messages: [], parserShape: STRUCTURED_INGEST_SHAPE });
+  }
+  return captureTranscriptForCompact(capture, input, paths, log);
+}
+
 type PrecompactStage = {
   status: "completed" | "skipped" | "deferred" | "failed";
   reason?: string;
@@ -318,7 +332,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           const db = openStandaloneLcmConnection(dbPath);
           try {
             runLcmMigrations(db);
-            const captured = await captureTranscriptForCompact(new SessionCapture(db, projectId(cwd), scrubber), {
+            const captured = await captureForCompact(new SessionCapture(db, projectId(cwd), scrubber), {
               sessionId: session_id, cwd, client, transcriptPath: transcript_path,
             }, paths, log);
             const outcome = captured
@@ -423,10 +437,11 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           // either way, since compaction needs the row even when nothing was read.
           const capture = new SessionCapture(db, pid, scrubber);
           const { conversationStore, summaryStore } = capture;
-          let captured: TranscriptCaptureResult | undefined;
+          const structuredInput = (await conversationStore.getConversationBySessionId(session_id))?.parserShape === STRUCTURED_INGEST_SHAPE;
+          let captured: CaptureResult | undefined;
           if (!skip_ingest) {
             try {
-              captured = await captureTranscriptForCompact(capture, {
+              captured = await captureForCompact(capture, {
                 sessionId: session_id, client, cwd, transcriptPath: transcript_path,
               }, paths, log);
             } catch (err) {
@@ -692,7 +707,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             providerLabel: answeredLabel,
             ...(captureRequired ? {
               captureOutcome,
-              summaryOutcome: { status: compactResult.actionTaken ? "completed" : "skipped", reason: compactResult.actionTaken ? undefined : "no-work" },
+              summaryOutcome: { status: compactResult.actionTaken ? "completed" : "skipped", reason: compactResult.actionTaken ? undefined : structuredInput ? "structured-no-work" : "no-work" },
             } : {}),
             ...(llmUsage.calls > 0 ? { llmUsage } : {}),
           };

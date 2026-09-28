@@ -81,7 +81,7 @@ export function printImportSummary(
   }
 }
 
-/** `lcm import --provider claude --rebuild`: one line per compacted session, then the totals. */
+/** `lcm import --provider claude --rebuild`: one line per candidate session, then the totals. */
 export function printRebuildSummary(run: RebuildRunResult, opts: { apply: boolean }): void {
   const counts = { aligned: 0, repairable: 0, unavailable: 0, ambiguous: 0 };
   let leaf = 0;
@@ -99,7 +99,7 @@ export function printRebuildSummary(run: RebuildRunResult, opts: { apply: boolea
     console.log(`  ${plan.kind.padEnd(11)} ${plan.sessionId}${detail}${plan.reason ? ` (${plan.reason})` : ""}${outcome}  [${cwd}]`);
   }
   console.log(
-    `  ${run.sessions.length} compacted Claude Code sessions: ${counts.aligned} aligned, ${counts.repairable} repairable, ` +
+    `  ${run.sessions.length} Claude Code sessions checked: ${counts.aligned} aligned, ${counts.repairable} repairable, ` +
       `${counts.unavailable} unavailable, ${counts.ambiguous} ambiguous.`,
   );
   for (const backup of run.backups) console.log(`  Backup: ${backup}`);

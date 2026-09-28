@@ -105,9 +105,11 @@ host that stops waiting for the hook cannot drop the steps behind it.
 
 Every route that lands transcript content in `messages` — `/ingest`, the subagent path inside it, and `/compact` — writes through one module, `src/capture.ts` (`SessionCapture`). It owns what "already stored" means (the delta past the message count of the session's conversations), scrubbing, the bulk insert, `context_items`, `message_parts`, redaction counts, the Codex cursor and `session_ingest_log`. `/session-complete` records a session in that log, with its completion time, when the session ends. `/ingest` and `lcm import` skip a Claude Code session so recorded (Codex and OMP always reach capture, whose read may recover a deferred tail) unless its transcript file was modified after that time: a resumed session appends to the same file under the same session id, so its new turns are captured, and completing it again moves the time forward. When the caller passes no attribution and the transcript is a subagent transcript, the module reads the `.meta.json` sidecar itself, so which route sees a session first does not change what is stored about it.
 
+Claude conversations record `parser_shape` alongside `role_tagging`. The column is NULL for rows created before the stamp existed: their capture shape cannot be inferred from age or role tagging. Structured `/ingest` uses the `structured` stamp because its messages bypass the Claude parser. A `/compact` hook summarizes those stored messages directly; a later transcript capture still verifies them. Before Claude slices a fresh parse at the stored message count, an unknown or different stamp triggers a comparison of the entire stored history with today's parse under the current redaction rules. If the stored history is a prefix, capture appends the tail and stamps every conversation in the same transaction. If it differs, capture writes nothing and reports the rebuild instructions. Verification costs one full comparison per session after a parser-shape change; later captures use the matching stamp and the existing post-compaction guard and memo. A repairable rebuild replaces damaged history and stamps it. When `parseTranscript` changes the rows or fields it emits, bump `CLAUDE_PARSER_SHAPE` and add the fixture snapshot named for the new value. Codex and OMP use versioned byte cursors and their own recovery checks instead of this count-based stamp.
+
 Capture replaces NUL in scrubbed message content with U+FFFD before the message and its full-text index are written. Leaf compaction reads that same stored content. A stored row written before this rule can read back cut at its first NUL; the compacted-session guard accepts that prefix only when the transcript has a NUL at the cut, and rebuild can replace the row with the full normalized message.
 
-`lcm doctor` reports what none of those routes captured (`claude-capture`, category `Capture`, `src/doctor/transcript-check.ts`): per project lcm tracks, and for the current directory's project, the Claude Code transcripts `lcm import` would find whose session has no stored message and is not complete by the rule above, with their count and the most recent path; the fix is `lcm import --provider claude` in that project. It lists directories, stats transcripts, reads subagent `.meta.json` sidecars and reads each project database read-only, never a transcript, so its cost follows the number of transcripts, not their size. A transcript modified in the last 15 minutes is left out, since its session may be in progress and the 10-minute scan has not had a pass at it. Since it never reads a transcript, one holding no message at all, which capture stores nothing for, stays listed. It does not compare a transcript's modification time with its stored messages', because Claude Code keeps appending lines that hold no message after the last one captured; so it does not report a session captured in part, including one whose capture stalls on the compacted-session check (`docs/import.md#rebuilding-compacted-claude-code-sessions`), nor a transcript under a Claude Code project directory lcm does not track, other than the current one. Two tracked projects whose paths map to the same Claude Code project directory (the directory name replaces every non-alphanumeric character with `-`) cannot be told apart, so both are listed as not checked; so is a project whose `meta.json` cannot be read.
+`lcm doctor` reports what none of those routes captured (`claude-capture`, category `Capture`, `src/doctor/transcript-check.ts`): per project lcm tracks, and for the current directory's project, the Claude Code transcripts `lcm import` would find whose session has no stored message and is not complete by the rule above, with their count and the most recent path; the fix is `lcm import --provider claude` in that project. It lists directories, stats transcripts, reads subagent `.meta.json` sidecars and reads each project database read-only, never a transcript, so its cost follows the number of transcripts, not their size. A transcript modified in the last 15 minutes is left out, since its session may be in progress and the 10-minute scan has not had a pass at it. Since it never reads a transcript, one holding no message at all, which capture stores nothing for, stays listed. It does not compare a transcript's modification time with its stored messages', because Claude Code keeps appending lines that hold no message after the last one captured; so it does not report a session captured in part, including one whose capture stalls on the compacted-session check (`docs/import.md#rebuilding-claude-code-sessions`), nor a transcript under a Claude Code project directory lcm does not track, other than the current one. Two tracked projects whose paths map to the same Claude Code project directory (the directory name replaces every non-alphanumeric character with `-`) cannot be told apart, so both are listed as not checked; so is a project whose `meta.json` cannot be read.
 
 Hook operation evidence is separate from Capture: the project's events sidecar aggregates tool-capture and daemon pre-compaction outcomes by Session, harness, hook, operation, delivery or execution status, and reason. Individual failure codes are retained separately. Short-lived Claude Code command and Codex lifecycle hooks append bounded metadata to a local log without loading SQLite at startup. The Claude Code function module and OMP keep bounded local snapshots because their host adapters cannot use the sidecar write path when the daemon is unavailable; OMP forces its final shutdown snapshot. `lcm doctor -v` aggregates these sources; missing evidence never establishes that an expected hook did not run.
 
@@ -351,20 +353,22 @@ the content stayed reachable.
 
 ## Session reconciliation
 
-Crash recovery does not compare transcripts: the delta is arithmetic on what lcm already
-stored.
+Session reconciliation uses each transcript source's recovery checks before applying a delta.
 
-1. A Claude transcript is re-parsed in full and sliced past the conversation's stored message
-   count (`src/transcript-source.ts`); the stored conversation is the ground truth for how
-   much of the file lcm has. Once compaction has written its event rows into the session, the
+1. A Claude transcript is re-parsed in full (`src/transcript-source.ts`). An unknown or older
+   parser-shape stamp triggers a full stored-prefix comparison before the transcript is sliced
+   at the stored message count. An aligned history is restamped during capture; a mismatch stalls
+   for rebuild. The stored conversation is the ground truth for how much of the file lcm has.
+   Once compaction has written its event rows into the session, the
    slice is taken only after the stored messages, oldest conversation first, are verified as
    today's transcript parse's prefix under the current redaction rules; a stored `[REDACTED]` span of a
    pattern since removed or narrowed matches the text it replaced. A role-tagged conversation
    captured in an older tool shape also stalls when its stored prefix differs, including when
    later capture mixed older and current shapes. Rebuild classifies against both shapes and
    replaces a repairable session with today's parse. A conversation captured before
-   role tagging (`role_tagging IS NULL`) is not compared, since today's parser cannot reproduce
-   it. The daemon remembers in memory the prefix it last validated for each session (up to 128
+   role tagging (`role_tagging IS NULL`) remains ambiguous in rebuild: today's parser cannot
+   reproduce its older rows, so when its transcript grows again its capture stalls and stays
+   stalled; nothing is written to it. The daemon remembers in memory the prefix it last validated for each session (up to 128
    sessions; a restart forgets them). A later capture hashes the stored prefix, together with the
    database's and the conversations' identity, and the transcript's prefix; when both hashes and
    the redaction rules match what it remembered, only the messages stored since are compared.
@@ -373,7 +377,7 @@ stored.
    nothing written: a session an earlier lcm captured
    after a compaction can hold skipped and repeated messages, and appending to it would repeat
    the damage. `lcm import --provider claude --rebuild` repairs it (see
-   [Import](import.md#rebuilding-compacted-claude-code-sessions)).
+   [Import](import.md#rebuilding-claude-code-sessions)).
 2. A Codex transcript resumes from the byte-offset cursor persisted with the last write, and
    the cursor is trusted only while it accounts for exactly the stored messages.
 3. When the cursor cannot be trusted — a replaced, truncated or extended file — Codex re-reads

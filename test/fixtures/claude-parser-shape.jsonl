@@ -1,0 +1,11 @@
+{"message":{"role":"user","content":"hi"}}
+{"message":{"role":"assistant","content":[{"type":"tool_use","name":"Read"}]}}
+{"message":{"role":"assistant","content":[{"type":"tool_use"}]}}
+{"message":{"role":"assistant","content":[{"type":"tool_use","name":"Read"},{"type":"tool_use","name":"Glob"}]}}
+{"message":{"role":"user","content":[{"type":"tool_result","content":"found"}]}}
+{"message":{"role":"user","content":[{"type":"tool_result","is_error":true,"content":[{"type":"text","text":"missing"}]}]}}
+{"message":{"role":"user","content":[{"type":"tool_result","content":""}]}}
+{"message":{"role":"user","content":[{"type":"tool_result","content":"tool output"},{"type":"text","text":"human"}]}}
+{"message":{"role":"assistant","content":[{"type":"text","text":"will inspect"},{"type":"tool_use","name":"Read"}]}}
+{"message":{"role":"assistant","content":[{"type":"tool_use","name":"Skill","input":{"skill":"review"}}]}}
+{"message":{"role":"user","content":"<command-name>/test</command-name><command-args>all</command-args>"}}

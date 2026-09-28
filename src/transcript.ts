@@ -1,5 +1,8 @@
 import { readFileSync } from "node:fs";
 
+/** Bump when the Claude parser changes the rows or fields a transcript yields. */
+export const CLAUDE_PARSER_SHAPE = "claude-v1";
+
 interface ContentBlock {
   type?: string;
   text?: string;

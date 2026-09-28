@@ -199,7 +199,7 @@ describe("printRebuildSummary", () => {
     const out = logs.join("\n");
     expect(out).toContain("repairable  s1 — 2 missing, 2 extra stored rows, 3 leaf and 1 condensed summaries");
     expect(out).toContain("unavailable s3 (no transcript file)");
-    expect(out).toContain("3 compacted Claude Code sessions: 1 aligned, 1 repairable, 1 unavailable, 0 ambiguous.");
+    expect(out).toContain("3 Claude Code sessions checked: 1 aligned, 1 repairable, 1 unavailable, 0 ambiguous.");
     expect(out).toContain("would discard 3 leaf and 1 condensed summaries. No changes written; rerun with --yes");
   });
 
