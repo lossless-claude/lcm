@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { extractCodexTurnModels, type CodexSessionMeta } from "./codex-transcript.js";
@@ -46,7 +47,9 @@ export interface TranscriptLocator {
 export interface StoredTranscript {
   storedCount: number;
   /** The stored prefix in order, for an adapter that must verify it before trusting a full re-read. */
-  storedMessages(): Promise<Array<{ role: string; content: string }>>;
+  storedMessages(offset?: number): Promise<Array<{ role: string; content: string }>>;
+  /** Fingerprints raw stored rows and conversation identity up to `count`, excluding compaction events. */
+  prefixFingerprint?(count: number): Promise<string>;
   /** The adapter's resume checkpoint as last persisted, unverified. Opaque: only the adapter that wrote it may read it. */
   checkpoint?: unknown;
   /**
@@ -60,6 +63,8 @@ export interface StoredTranscript {
 export interface ReadContext extends TranscriptLocator {
   /** The current redaction rules, applied to both sides of a prefix comparison. */
   scrub(text: string): string;
+  /** Stable identity of the current redaction rules. Without one, prefix validation is not memoized. */
+  redactionKey?: string;
 }
 
 /**
@@ -103,6 +108,50 @@ export interface TranscriptSource {
 /** A transcript the adapter refuses to read: the caller's request is wrong, not the daemon. */
 export class TranscriptSourceError extends Error {}
 
+type ClaudePrefixMemo = { count: number; stored: string; transcript: string; file: string; redaction: string };
+// Routes reopen connections between captures; fingerprints identify the database and its rows.
+const claudePrefixes = new Map<string, ClaudePrefixMemo>();
+const MAX_CLAUDE_PREFIXES = 128;
+
+function transcriptPrefixFingerprint(messages: ParsedMessage[], count: number): string {
+  const hash = createHash("sha256");
+  for (let i = 0; i < count; i++) hash.update(JSON.stringify([messages[i].role, messages[i].content]));
+  return hash.digest("hex");
+}
+
+async function validateClaudePrefix(path: string, stored: StoredTranscript, messages: ParsedMessage[], ctx: ReadContext): Promise<void> {
+  if (!stored.prefixFingerprint || ctx.redactionKey === undefined) {
+    return validateTranscriptRecovery(stored, messages, ctx, "Claude");
+  }
+  const key = JSON.stringify([ctx.cwd, ctx.sessionId, path]);
+  const prior = claudePrefixes.get(key);
+  // A failed validation must never leave a previously accepted memo available.
+  claudePrefixes.delete(key);
+  // A transcript gone since the parse has no identity to remember; the full compare decides.
+  const stat = statSync(path, { throwIfNoEntry: false });
+  if (!stat) return validateTranscriptRecovery(stored, messages, ctx, "Claude");
+  const file = `${stat.dev}:${stat.ino}`;
+  let offset = 0;
+  let storedHash: string | undefined;
+  if (prior && prior.count <= stored.storedCount && prior.count <= messages.length &&
+      prior.file === file && prior.redaction === ctx.redactionKey &&
+      prior.transcript === transcriptPrefixFingerprint(messages, prior.count)) {
+    storedHash = await stored.prefixFingerprint(prior.count);
+    if (storedHash === prior.stored) offset = prior.count;
+  }
+  // Fingerprint before the comparison: never bless rows changed after it has read them.
+  const fingerprint = offset === stored.storedCount && storedHash !== undefined
+    ? storedHash : await stored.prefixFingerprint(stored.storedCount);
+  await validateTranscriptRecovery(stored, messages, ctx, "Claude", offset);
+  claudePrefixes.set(key, {
+    count: stored.storedCount,
+    stored: fingerprint,
+    transcript: transcriptPrefixFingerprint(messages, stored.storedCount),
+    file, redaction: ctx.redactionKey,
+  });
+  if (claudePrefixes.size > MAX_CLAUDE_PREFIXES) claudePrefixes.delete(claudePrefixes.keys().next().value!);
+}
+
 const claudeSource: TranscriptSource = {
   client: "claude",
   mayRecoverTail: false,
@@ -123,13 +172,15 @@ const claudeSource: TranscriptSource = {
   async read(path, stored, ctx) {
     const storedCount = stored?.storedCount ?? 0;
     const messages = parseTranscript(path);
+    // A fresh read, including the rebuild path, cannot reuse a pre-rebuild validation.
+    if (!stored) claudePrefixes.delete(JSON.stringify([ctx.cwd, ctx.sessionId, path]));
     // Before compaction stopped counting its own event rows, a capture after a compaction
     // sliced past as many transcript messages as the session held event rows, and the
     // corrected count then re-stored its tail. Such a history is not a prefix of the
     // transcript; appending to it would repeat the damage, so capture stalls until a rebuild.
     if (stored && await stored.verifyAfterCompaction?.()) {
       try {
-        await validateTranscriptRecovery(stored, messages, ctx, "Claude");
+        await validateClaudePrefix(path, stored, messages, ctx);
       } catch (error) {
         if (!(error instanceof TranscriptSourceError)) throw error;
         throw new TranscriptSourceError(
@@ -164,14 +215,16 @@ function validateCodexMetadata(meta: CodexSessionMeta, ctx: ReadContext): void {
  * OMP does not use it: a rewind can leave stored history that is not a prefix of the
  * file's live path (`ompMessagesAfterStored`).
  */
-async function validateTranscriptRecovery(stored: StoredTranscript, messages: ParsedMessage[], ctx: ReadContext, label: string): Promise<void> {
+async function validateTranscriptRecovery(
+  stored: StoredTranscript, messages: ParsedMessage[], ctx: ReadContext, label: string, offset = 0,
+): Promise<void> {
   if (messages.length < stored.storedCount) {
     throw new TranscriptSourceError(`${label} transcript is shorter than stored history; restore the full transcript before retrying`);
   }
-  const previous = await stored.storedMessages();
-  if (previous.length !== stored.storedCount) throw new TranscriptSourceError(`Stored ${label} history changed during recovery`);
+  const previous = await stored.storedMessages(offset);
+  if (previous.length !== stored.storedCount - offset) throw new TranscriptSourceError(`Stored ${label} history changed during recovery`);
   for (const [index, prior] of previous.entries()) {
-    const message = messages[index];
+    const message = messages[offset + index];
     if (message.role !== prior.role || !storedContentMatches(prior.content, message.content, ctx.scrub)) {
       throw new TranscriptSourceError(`${label} transcript prefix differs from stored history; check the original transcript and redaction settings before retrying`);
     }

@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { createDaemon, type DaemonInstance } from "../../../src/daemon/server.js";
+import { createIngestHandler } from "../../../src/daemon/routes/ingest.js";
+import { invokeRoute } from "../../../src/daemon/routes/session-end.js";
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { DaemonClient } from "../../../src/daemon/client.js";
 import { projectDbPath, projectId } from "../../../src/daemon/project.js";
@@ -580,6 +582,28 @@ describe("POST /ingest", () => {
     }
     expect(row?.client).toBe("claude");
     expect(row?.model).toBe("claude-sonnet-5");
+  });
+
+  it("runs the post-response model backfill as a named background task", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-ingest-backfill-task-"));
+    tempDirs.push(tempDir);
+    const transcriptPath = join(tempDir, "session.jsonl");
+    writeFileSync(transcriptPath, [
+      { message: { role: "user", content: "hello" } },
+      { message: { role: "assistant", model: "claude-sonnet-5", content: [{ type: "text", text: "hi" }] } },
+    ].map(line => JSON.stringify(line)).join("\n") + "\n");
+    const tasks: Array<{ name: string; ended: boolean }> = [];
+    const handler = createIngestHandler(loadDaemonConfig("/nonexistent"), paths, undefined, (name) => {
+      const task = { name, ended: false };
+      tasks.push(task);
+      return () => { task.ended = true; };
+    });
+
+    await invokeRoute(handler, { session_id: "backfill-task-session", cwd: tempDir, transcript_path: transcriptPath });
+    // The response has been sent; the backfill is registered and has not run yet.
+    expect(tasks).toEqual([{ name: "ingest:backfill", ended: false }]);
+    await new Promise(setImmediate);
+    expect(tasks).toEqual([{ name: "ingest:backfill", ended: true }]);
   });
 
   it("backfills model-less Codex events by their transcript turns", async () => {

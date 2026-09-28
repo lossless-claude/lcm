@@ -163,7 +163,7 @@ export class SessionCapture {
     if (!transcriptPath) return undefined;
     const stored = await this.stored(input.sessionId);
     const delta = await source.read(transcriptPath, stored && this.storedTranscript(source, input.sessionId, stored, transcriptPath), {
-      ...input, scrub: (text) => this.scrubber.scrubWithCounts(text).text,
+      ...input, scrub: (text) => this.scrubber.scrubWithCounts(text).text, redactionKey: this.scrubber.rulesKey,
     });
     if (!stored && delta.messages.length === 0 && delta.checkpoint === undefined && !delta.boundaries?.length) return undefined;
     const written = await this.write({
@@ -187,7 +187,8 @@ export class SessionCapture {
   private storedTranscript(source: TranscriptSource, sessionId: string, stored: StoredSession, transcriptPath: string): StoredTranscript {
     return {
       storedCount: stored.storedCount,
-      storedMessages: () => this.conversationStore.getSessionMessages(sessionId),
+      storedMessages: (offset = 0) => this.conversationStore.getSessionMessages(sessionId, offset),
+      prefixFingerprint: (count) => this.conversationStore.getSessionPrefixFingerprint(sessionId, count),
       checkpoint: source.loadCheckpoint?.(this.db, stored.conversationId, transcriptPath),
       verifyAfterCompaction: () => this.conversationStore.sessionComparableAfterCompaction(sessionId),
     };

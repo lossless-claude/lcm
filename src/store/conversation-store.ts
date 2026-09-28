@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { parseSqliteDate } from "../db/sqlite-date.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { statSync } from "node:fs";
 import {
   byRankThenNewest,
   prepareFts5Query,
@@ -10,6 +11,8 @@ import {
 } from "./fts5-query.js";
 import { buildLikeSearchPlan, createFallbackSnippet } from "./full-text-fallback.js";
 import { validateRegex } from "./regex-safety.js";
+
+const memoryDatabaseIds = new WeakMap<DatabaseSync, string>();
 
 export type ConversationId = number;
 export type MessageId = number;
@@ -326,17 +329,42 @@ export class ConversationStore {
   }
 
   /** Every conversation's transcript messages of the session, oldest conversation first, each in `seq` order; compaction's own event rows are left out. */
-  async getSessionMessages(sessionId: string): Promise<MessageRecord[]> {
+  async getSessionMessages(sessionId: string, offset = 0): Promise<MessageRecord[]> {
     const rows = this.db
       .prepare(
         `SELECT m.message_id, m.conversation_id, m.seq, m.role, m.content, m.token_count, m.created_at
          FROM messages m
          JOIN conversations c ON c.conversation_id = m.conversation_id
          WHERE c.session_id = ? AND ${NOT_COMPACTION_EVENT}
-         ORDER BY c.created_at, c.conversation_id, m.seq`,
+         ORDER BY c.created_at, c.conversation_id, m.seq LIMIT -1 OFFSET ?`,
       )
-      .all(sessionId) as unknown as MessageRow[];
+      .all(sessionId, offset) as unknown as MessageRow[];
     return rows.map(toMessageRecord);
+  }
+
+  /** Cheap identity check for a validated prefix: stream raw rows, without hydration or redaction. */
+  async getSessionPrefixFingerprint(sessionId: string, count: number): Promise<string> {
+    const hash = createHash("sha256");
+    const databases = this.db.prepare("PRAGMA database_list").all() as Array<{ name: string; file: string }>;
+    const file = databases.find((entry) => entry.name === "main")!.file;
+    if (file) {
+      const stat = statSync(file);
+      hash.update(JSON.stringify([file, stat.dev, stat.ino]));
+    } else {
+      if (!memoryDatabaseIds.has(this.db)) memoryDatabaseIds.set(this.db, randomUUID());
+      hash.update(memoryDatabaseIds.get(this.db)!);
+    }
+    // Conversation identity/order/parser changes invalidate even when the message count stays put.
+    for (const row of this.db.prepare(
+      "SELECT conversation_id, created_at, role_tagging FROM conversations WHERE session_id = ? ORDER BY created_at, conversation_id",
+    ).iterate(sessionId)) hash.update(JSON.stringify(row));
+    for (const row of this.db.prepare(
+      `SELECT m.message_id, m.conversation_id, m.seq, m.role, m.content
+       FROM messages m JOIN conversations c ON c.conversation_id = m.conversation_id
+       WHERE c.session_id = ? AND ${NOT_COMPACTION_EVENT}
+       ORDER BY c.created_at, c.conversation_id, m.seq LIMIT ?`,
+    ).iterate(sessionId, count)) hash.update(JSON.stringify(row));
+    return hash.digest("hex");
   }
 
   /**
