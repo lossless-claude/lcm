@@ -265,12 +265,15 @@ export async function backupProjectDatabase(db: DatabaseSync, dbPath: string, no
     // node:sqlite added backup() in Node 22.16; package.json also supports older 22.x.
     db.prepare("VACUUM INTO ?").run(target);
   }
-  // Retain the completed copy before touching any older rebuild backup.
+  // Only once the new copy is complete: keep it and the oldest copy, the database as it was
+  // before any rebuild, and remove the ones in between. Timestamped names sort oldest first.
   const prefix = `${basename(dbPath)}.bak-rebuild-`;
-  for (const entry of readdirSync(dirname(dbPath), { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-    if (!entry.isFile() || !entry.name.startsWith(prefix)) continue;
-    const path = join(dirname(dbPath), entry.name);
-    if (entry.name === basename(target)) continue;
+  const older = readdirSync(dirname(dbPath), { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.startsWith(prefix) && entry.name !== basename(target))
+    .map((entry) => entry.name)
+    .sort();
+  for (const name of older.slice(1)) {
+    const path = join(dirname(dbPath), name);
     rmSync(path);
     onRemoved?.(path);
   }
