@@ -57,6 +57,34 @@ function transcript(turns: Turn[], name = `${sessionId}.jsonl`): string {
   return path;
 }
 
+function mixedToolShapeTranscript(): string {
+  const entries = [
+    { role: "user", content: "question" },
+    { role: "assistant", content: [{ type: "tool_use", name: "Read" }] },
+    { role: "user", content: [{ type: "tool_result", is_error: true, content: "missing file" }] },
+    { role: "assistant", content: [{ type: "tool_use", name: "Glob" }] },
+    { role: "user", content: [{ type: "tool_result", content: "found files" }] },
+    { role: "assistant", content: [{ type: "tool_use", name: "Read" }] },
+    { role: "user", content: [{ type: "tool_result", content: "read result" }] },
+    { role: "assistant", content: "answer" },
+    { role: "assistant", content: [{ type: "tool_use", name: "StructuredOutput" }] },
+    { role: "user", content: [{ type: "tool_result", content: "ack" }] },
+  ];
+  const path = join(dir, `${sessionId}.jsonl`);
+  writeFileSync(path, entries.map((message) => JSON.stringify({ message })).join("\n") + "\n");
+  return path;
+}
+
+async function storeMixedToolShape(path: string): Promise<void> {
+  const legacy = parseTranscript(path, "legacy");
+  const current = parseTranscript(path);
+  expect(legacy.map((m) => m.content)).toEqual(["question", "missing file", "found files", "read result", "answer", "ack"]);
+  expect(current.map((m) => m.content).at(-4)).toBe("read result");
+  const written = await capture.write({ sessionId, messages: legacy });
+  await compact(written.conversationId);
+  await capture.write({ sessionId, messages: current.slice(legacy.length), sourceOffset: legacy.length });
+}
+
 async function store(turns: Turn[], session = sessionId): Promise<number> {
   const written = await capture.write({
     sessionId: session,
@@ -94,6 +122,15 @@ const transcriptMessages = (session = sessionId) =>
 const count = (sql: string, ...params: Array<string | number>) => (db.prepare(sql).get(...params) as { n: number }).n;
 
 describe("the capture guard", () => {
+  it("stalls a compacted history with a legacy prefix and a current-shape tail", async () => {
+    const path = mixedToolShapeTranscript();
+    await storeMixedToolShape(path);
+    const before = transcriptMessages();
+
+    await expect(capture.captureTranscript({ sessionId, cwd: dir, transcriptPath: path })).rejects.toThrow("--rebuild");
+    expect(transcriptMessages()).toEqual(before);
+  });
+
   it("validates a long compacted prefix once, then loads only the newly stored overlap", async () => {
     const turns: Turn[] = Array.from({ length: 5_000 }, (_, i) => [i % 2 ? "assistant" : "user", `turn ${i}`]);
     await compact(await store(turns));
@@ -229,6 +266,44 @@ describe("the capture guard", () => {
 describe("classifying a session for a rebuild", () => {
   const plan = async (turns: Turn[] | undefined) =>
     planSessionRebuild(db, sessionId, turns && parseTranscript(transcript(turns)), identity);
+
+  it("classifies mixed tool-shape history as repairable and rebuilds today's parse", async () => {
+    const path = mixedToolShapeTranscript();
+    await storeMixedToolShape(path);
+    const current = parseTranscript(path);
+    const legacy = parseTranscript(path, "legacy");
+    expect(transcriptMessages()).toEqual([...legacy, ...current.slice(legacy.length)].map((m) => [m.role, m.content]));
+    expect(await planSessionRebuild(db, sessionId, current, identity, () => legacy)).toMatchObject({
+      kind: "repairable", gaps: 5, extras: 5, leafSummaries: 1, condensedSummaries: 1,
+    });
+
+    const rebuilt = await capture.rebuildTranscript({ sessionId, cwd: dir, transcriptPath: path });
+    expect(rebuilt.plan.kind).toBe("repairable");
+    expect(rebuilt.ingested).toBe(current.length);
+    expect(transcriptMessages()).toEqual(current.map((message) => [message.role, message.content]));
+  });
+
+  it("reads the legacy shape only for a session that is not aligned", async () => {
+    let legacyReads = 0;
+    const legacy = () => { legacyReads++; return []; };
+    await compact(await store(transcriptTurns.slice(0, 3)));
+    expect(await planSessionRebuild(db, sessionId, parseTranscript(transcript(transcriptTurns)), identity, legacy))
+      .toMatchObject({ kind: "aligned" });
+    expect(legacyReads).toBe(0);
+  });
+
+  it("leaves mixed history ambiguous when a stored message is absent from both parses", async () => {
+    const path = mixedToolShapeTranscript();
+    await storeMixedToolShape(path);
+    db.prepare("UPDATE messages SET content = 'only in storage' WHERE content = 'found files'").run();
+    const before = transcriptMessages();
+    const plan = await planSessionRebuild(db, sessionId, parseTranscript(path), identity, () => parseTranscript(path, "legacy"));
+    expect(plan).toMatchObject({ kind: "ambiguous", reason: "1 stored messages are not in the transcript" });
+    expect(await capture.rebuildTranscript({ sessionId, cwd: dir, transcriptPath: path })).toMatchObject({
+      plan: { kind: "ambiguous" }, ingested: 0,
+    });
+    expect(transcriptMessages()).toEqual(before);
+  });
 
   it("aligned: the stored history is a prefix of the transcript, an uncaptured tail included", async () => {
     await compact(await store(transcriptTurns.slice(0, 3)));

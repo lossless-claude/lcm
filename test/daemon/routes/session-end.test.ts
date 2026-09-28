@@ -194,4 +194,11 @@ describe("invokeRoute", () => {
     const ingest = ingestStub({ error: "nope" }, { status: 500 });
     await expect(invokeRoute(ingest.handler, {})).rejects.toThrow("HTTP 500");
   });
+
+  it("preserves a route status for in-process callers", async () => {
+    const ingest = ingestStub({ error: "rejected" }, { status: 400 });
+    await expect(invokeRoute(ingest.handler, {})).rejects.toMatchObject({
+      status: 400,
+    });
+  });
 });

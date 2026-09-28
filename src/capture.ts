@@ -14,7 +14,7 @@ import {
 } from "./store/conversation-store.js";
 import { SummaryStore } from "./store/summary-store.js";
 import { readSubagentAttribution } from "./subagent-attribution.js";
-import type { MessagePart, ParsedMessage } from "./transcript.js";
+import { parseTranscript, type MessagePart, type ParsedMessage } from "./transcript.js";
 import { clearConversationForRebuild, planSessionRebuild, type SessionRebuildPlan } from "./claude-rebuild.js";
 import {
   transcriptSource,
@@ -228,8 +228,10 @@ export class SessionCapture {
     const scrub = (text: string) => this.scrubber.scrubWithCounts(text).text;
     const transcriptPath = source.locate(input);
     const delta = transcriptPath ? await source.read(transcriptPath, undefined, { ...input, scrub }) : undefined;
+    // Parsed before the transaction takes the write lock; the plan reads it only when not aligned.
+    const legacy = transcriptPath ? parseTranscript(transcriptPath, "legacy") : undefined;
     return this.conversationStore.withTransaction(async () => {
-      const plan = await planSessionRebuild(this.db, input.sessionId, delta?.messages, scrub);
+      const plan = await planSessionRebuild(this.db, input.sessionId, delta?.messages, scrub, () => legacy);
       if (plan.kind !== "repairable" || plan.conversationId === undefined || !delta) return { plan, ingested: 0 };
       clearConversationForRebuild(this.db, plan.conversationId, input.sessionId);
       const written = await this.writeInTransaction({

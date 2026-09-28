@@ -84,7 +84,8 @@ PostToolUseFailure); the function-hooks module speaks the same routes through
 Capture itself happens on `POST /ingest`, reached from `session-end`, the Stop snapshot, and
 the periodic transcript scan (`scanForTranscripts` in `src/daemon/server.ts`, every 10
 minutes) that recovers a session whose `SessionEnd` never ran. The scan skips a session
-whose transcript is unchanged since its last successful ingest — an in-memory fingerprint
+whose transcript is unchanged since its last successful ingest or a Claude 400 rejection —
+an in-memory fingerprint
 per transcript path, the parent file's `(size, mtimeMs)` plus the same for every file
 under its `subagents/` tree except `journal.jsonl` (each subagent transcript and its
 `.meta.json` sidecar), since a subagent transcript grows, and its attribution is filled in
@@ -92,8 +93,9 @@ once its sidecar appears, through the parent's own `/ingest` while the parent fi
 may not change; the fingerprint is recorded only once the ingest for that pass succeeds
 without reporting `incomplete` — a subagent transcript that could not be captured, or a
 failed tool-call model backfill, which the scan asks `/ingest` to run before replying
-(`backfill_before_reply`) — so any of those is retried next pass, and the scan never
-marks a session complete. The SessionStart catch-up sweep is a
+(`backfill_before_reply`) — so any of those is retried next pass. A Claude 400 rejection,
+including a prefix-guard failure, is retried when that fingerprint changes; other failures remain retryable on the next
+pass. The scan never marks a session complete. The SessionStart catch-up sweep is a
 different thing and never reaches `/ingest`: it finds conversations a killed session left
 uncompacted and asks `/compact` for them directly, with `skip_ingest: true`
 (`docs/configuration.md#sessionstart-catch-up-sweep`). PreCompact can Capture inside `/compact`, before lcm summarization, with
@@ -354,8 +356,11 @@ stored.
    count (`src/transcript-source.ts`); the stored conversation is the ground truth for how
    much of the file lcm has. Once compaction has written its event rows into the session, the
    slice is taken only after the stored messages, oldest conversation first, are verified as
-   the transcript's prefix under the current redaction rules; a stored `[REDACTED]` span of a
-   pattern since removed or narrowed matches the text it replaced. A conversation captured before
+   today's transcript parse's prefix under the current redaction rules; a stored `[REDACTED]` span of a
+   pattern since removed or narrowed matches the text it replaced. A role-tagged conversation
+   captured in an older tool shape also stalls when its stored prefix differs, including when
+   later capture mixed older and current shapes. Rebuild classifies against both shapes and
+   replaces a repairable session with today's parse. A conversation captured before
    role tagging (`role_tagging IS NULL`) is not compared, since today's parser cannot reproduce
    it. The daemon remembers in memory the prefix it last validated for each session (up to 128
    sessions; a restart forgets them). A later capture hashes the stored prefix, together with the

@@ -54,8 +54,8 @@ export interface StoredTranscript {
   checkpoint?: unknown;
   /**
    * True when compaction has written its event rows into the session and every conversation
-   * of it was captured by the current transcript parser: a Claude slice at the stored count is
-   * then trusted only after the stored history is verified as the transcript's prefix.
+   * of it has role tagging: a Claude slice at the stored count is then trusted only after
+   * the stored history is verified against the current transcript parse.
    */
   verifyAfterCompaction?(): Promise<boolean>;
 }

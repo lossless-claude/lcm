@@ -25,6 +25,13 @@ export interface IngestResult {
   incomplete?: true;
 }
 
+/** An in-process route response, with its status preserved for callers that handle 4xx differently. */
+export class RouteHttpError extends Error {
+  constructor(readonly status: number, body: string) {
+    super(`HTTP ${status}: ${body}`);
+  }
+}
+
 /**
  * Invoke a route handler in-process and return its JSON body — the daemon calling
  * one of its own routes without a socket. Rejects on a 4xx/5xx status, as
@@ -39,7 +46,7 @@ export async function invokeRoute<T>(handler: RouteHandler, body: Record<string,
     end: (data: string) => { raw = data; },
   } as unknown as Parameters<RouteHandler>[1];
   await handler({} as Parameters<RouteHandler>[0], res, JSON.stringify(body));
-  if (status >= 400) throw new Error(`HTTP ${status}: ${raw}`);
+  if (status >= 400) throw new RouteHttpError(status, raw);
   return JSON.parse(raw || "{}") as T;
 }
 

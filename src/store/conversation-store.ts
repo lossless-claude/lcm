@@ -369,9 +369,9 @@ export class ConversationStore {
 
   /**
    * Whether compaction has written its event rows into the session while every conversation of
-   * it carries the current parser's role tagging — the state in which stored history must be
-   * the transcript's prefix. A conversation from an earlier parser cannot be compared with a
-   * fresh parse of its transcript.
+   * it carries role tagging — the state in which stored history must be the current transcript's
+   * prefix. A conversation from before role tagging cannot
+   * be compared with a fresh parse of its transcript.
    */
   async sessionComparableAfterCompaction(sessionId: string): Promise<boolean> {
     const row = this.db

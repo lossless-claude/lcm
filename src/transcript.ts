@@ -94,16 +94,16 @@ function roleOf(entryRole: string, content: string | ContentBlock[] | undefined)
  * into memory. A `tool_result` carries the output, which is worth keeping, and
  * its failure flag is recorded as a searchable marker.
  */
-function toolContent(blocks: ContentBlock[]): string {
+function toolContent(blocks: ContentBlock[], legacyToolShape = false): string {
   const lines: string[] = [];
   for (const block of blocks) {
     if (block.type === "tool_use") {
-      lines.push(typeof block.name === "string" && block.name ? block.name : "tool_use");
+      if (!legacyToolShape) lines.push(typeof block.name === "string" && block.name ? block.name : "tool_use");
       continue;
     }
     if (block.type !== "tool_result") continue;
     const output = extractText(block.content);
-    lines.push(block.is_error ? `${TOOL_ERROR_MARKER}\n${output}` : output);
+    lines.push(block.is_error && !legacyToolShape ? `${TOOL_ERROR_MARKER}\n${output}` : output);
   }
   return lines.filter(line => line.trim() !== "").join("\n");
 }
@@ -174,7 +174,7 @@ export function extractToolUseModels(transcriptPath: string): Map<string, string
   return models;
 }
 
-export function parseTranscript(transcriptPath: string): ParsedMessage[] {
+export function parseTranscript(transcriptPath: string, toolShape: "current" | "legacy" = "current"): ParsedMessage[] {
   let raw: string;
   try {
     raw = readFileSync(transcriptPath, "utf-8");
@@ -194,7 +194,7 @@ export function parseTranscript(transcriptPath: string): ParsedMessage[] {
       // turn into several would break the sequence every reader depends on.
       const blocks = blocksOf(obj.message?.content);
       const role = roleOf(entryRole, obj.message?.content);
-      const content = role === "tool" ? toolContent(blocks) : extractText(obj.message?.content);
+      const content = role === "tool" ? toolContent(blocks, toolShape === "legacy") : extractText(obj.message?.content);
       if (!content.trim()) continue;
       const parts = [...extractSkillParts(blocks), ...extractCommandParts(content)];
       messages.push({ role, content, tokenCount: estimateTokens(content), ...(parts.length ? { parts } : {}) });
