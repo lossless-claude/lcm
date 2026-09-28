@@ -29,7 +29,11 @@ function messagesInFileOrder(records: readonly ParsedOmpTranscriptRecord[]): Par
 }
 
 function matches(stored: MessageRecord, current: ParsedMessage, scrub: (text: string) => string): boolean {
-  return stored.role === current.role && compareStoredMessageContent(stored.content, current.content, scrub) !== undefined;
+  if (stored.role !== current.role) return false;
+  if (stored.content === current.content || stored.content === normalizeMessageContent(current.content)) return true;
+  const nul = current.content.indexOf("\u0000");
+  if (nul !== -1 && stored.content === current.content.slice(0, nul)) return true;
+  return compareStoredMessageContent(stored.content, current.content, scrub) !== undefined;
 }
 
 /** Match a stored prefix by position; a rewind's non-live history needs an unambiguous in-order match. */
@@ -90,11 +94,18 @@ export async function planCutRowRepair(db: DatabaseSync, input: RepairInput): Pr
   if (!meta.cwd || projectId(meta.cwd) !== projectId(input.cwd)) {
     return { ...base, rows: [], kind: "ambiguous", reason: "transcript project differs" };
   }
+  const hasNul = live.some((message) => message.content.includes("\u0000"))
+    || records?.some(({ message }) => Array.isArray(message)
+      ? message.some((part) => part.content.includes("\u0000"))
+      : message?.content.includes("\u0000"));
+  if (!hasNul) {
+    return { ...base, rows: [], kind: "aligned" };
+  }
   const aligned = align(stored, live, records, input.scrub);
   if (!aligned) return { ...base, rows: [], kind: "ambiguous", reason: "stored messages cannot be matched uniquely to transcript positions" };
   const rows = stored.flatMap((row, index) => {
     const message = aligned[index];
-    return compareStoredMessageContent(row.content, message.content, input.scrub) === "cut"
+    return message.content.includes("\u0000") && compareStoredMessageContent(row.content, message.content, input.scrub) === "cut"
       ? [{ messageId: row.messageId, storedContent: row.content, content: normalizeMessageContent(input.scrub(message.content)) }]
       : [];
   });
