@@ -1,8 +1,8 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionCapture } from "../src/capture.js";
 import { backupProjectDatabase, compactedSessionIds, planSessionRebuild } from "../src/claude-rebuild.js";
 import { runLcmMigrations } from "../src/db/migration.js";
@@ -45,6 +45,7 @@ beforeEach(() => {
   capture = new SessionCapture(db, "proj", new ScrubEngine([], []));
 });
 afterEach(() => {
+  vi.restoreAllMocks();
   db.close();
   rmSync(dir, { recursive: true, force: true });
 });
@@ -92,6 +93,91 @@ const transcriptMessages = (session = sessionId) =>
 const count = (sql: string, ...params: Array<string | number>) => (db.prepare(sql).get(...params) as { n: number }).n;
 
 describe("the capture guard", () => {
+  it("validates a long compacted prefix once, then loads only the newly stored overlap", async () => {
+    const turns: Turn[] = Array.from({ length: 5_000 }, (_, i) => [i % 2 ? "assistant" : "user", `turn ${i}`]);
+    await compact(await store(turns));
+    const reads = vi.spyOn(ConversationStore.prototype, "getSessionMessages");
+    const path = transcript([...turns, ["user", "next"]]);
+    await capture.captureTranscript({ sessionId, cwd: dir, transcriptPath: path });
+    expect((await reads.mock.results[0].value).length).toBe(5_000);
+    reads.mockClear();
+
+    transcript([...turns, ["user", "next"], ["assistant", "answer"]]);
+    // Routes release their connection and construct a fresh capture and scrubber per request.
+    db.close();
+    db = new DatabaseSync(dbPath);
+    const next = new SessionCapture(db, "proj", new ScrubEngine([], []));
+    const result = await next.captureTranscript({ sessionId, cwd: dir, transcriptPath: path });
+    expect(result?.records.map((r) => r.content)).toEqual(["answer"]);
+    expect(reads).toHaveBeenCalledExactlyOnceWith(sessionId, 5_000);
+    expect((await reads.mock.results[0].value).length).toBe(1);
+  });
+
+  it.each(["stored content", "transcript prefix", "conversation", "redaction rules", "path", "count decrease", "database replacement"])(
+    "revalidates the full prefix after a change to %s", async (change) => {
+      await compact(await store(transcriptTurns));
+      let path = transcript(transcriptTurns);
+      await capture.captureTranscript({ sessionId, cwd: dir, transcriptPath: path });
+      const reads = vi.spyOn(ConversationStore.prototype, "getSessionMessages");
+      if (change === "stored content") db.exec("UPDATE messages SET content = 'damaged' WHERE seq = 0");
+      if (change === "transcript prefix") transcript([["user", "rewritten"], ...transcriptTurns.slice(1)]);
+      if (change === "conversation") db.exec("UPDATE conversations SET created_at = '2020-01-01 00:00:00'");
+      if (change === "redaction rules") capture = new SessionCapture(db, "proj", new ScrubEngine(["q1"], []));
+      if (change === "path") path = transcript(transcriptTurns, "replacement.jsonl");
+      if (change === "count decrease") {
+        db.exec("DELETE FROM context_items WHERE message_id IN (SELECT message_id FROM messages WHERE seq = 5); DELETE FROM messages WHERE seq = 5");
+        transcript(transcriptTurns.slice(0, -1));
+      }
+      if (change === "database replacement") {
+        db.close();
+        copyFileSync(dbPath, `${dbPath}.replacement`);
+        renameSync(`${dbPath}.replacement`, dbPath);
+        db = new DatabaseSync(dbPath);
+        capture = new SessionCapture(db, "proj", new ScrubEngine([], []));
+      }
+      const result = capture.captureTranscript({ sessionId, cwd: dir, transcriptPath: path });
+      if (change === "stored content" || change === "transcript prefix") {
+        await expect(result).rejects.toThrow("--rebuild");
+      } else {
+        await result;
+      }
+      expect(reads).toHaveBeenCalledExactlyOnceWith(sessionId, 0);
+    },
+  );
+
+  it("still stalls when the newly stored overlap is damaged, without appending a tail", async () => {
+    await compact(await store(transcriptTurns));
+    const path = transcript(transcriptTurns);
+    await capture.captureTranscript({ sessionId, cwd: dir, transcriptPath: path });
+    await store([...transcriptTurns, ["user", "wrong tail"]]);
+    transcript([...transcriptTurns, ["user", "right tail"], ["assistant", "new answer"]]);
+    const before = transcriptMessages();
+    await expect(capture.captureTranscript({ sessionId, cwd: dir, transcriptPath: path })).rejects.toThrow("--rebuild");
+    expect(transcriptMessages()).toEqual(before);
+  });
+
+  it("does not memoize the uncaptured tail when its write rolls back", async () => {
+    await compact(await store(transcriptTurns));
+    const path = transcript([...transcriptTurns, ["user", "next"]]);
+    const write = vi.spyOn(ConversationStore.prototype, "createMessagesBulk").mockRejectedValueOnce(new Error("write failed"));
+    await expect(capture.captureTranscript({ sessionId, cwd: dir, transcriptPath: path })).rejects.toThrow("write failed");
+    write.mockRestore();
+    const result = await capture.captureTranscript({ sessionId, cwd: dir, transcriptPath: path });
+    expect(result?.records.map((r) => r.content)).toEqual(["next"]);
+    expect(transcriptMessages()).toEqual([...transcriptTurns, ["user", "next"]]);
+  });
+
+  it("discards a warm memo when a rebuild reads the full transcript, even for an aligned session", async () => {
+    await compact(await store(transcriptTurns));
+    const path = transcript(transcriptTurns);
+    const input = { sessionId, cwd: dir, transcriptPath: path };
+    await capture.captureTranscript(input);
+    expect((await capture.rebuildTranscript(input)).plan.kind).toBe("aligned");
+    const reads = vi.spyOn(ConversationStore.prototype, "getSessionMessages");
+    await capture.captureTranscript(input);
+    expect(reads).toHaveBeenCalledExactlyOnceWith(sessionId, 0);
+  });
+
   it("stalls a compacted session whose stored history is not the transcript's prefix, writing nothing", async () => {
     await compact(await store(damagedTurns));
     const path = transcript([...transcriptTurns, ["user", "q4"]]);

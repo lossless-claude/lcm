@@ -134,6 +134,8 @@ export interface ScrubCounts {
 }
 
 export class ScrubEngine {
+  /** Stable across request-scoped engines; changes when the effective user rules change. */
+  readonly rulesKey: string;
   private readonly spanningPatterns: Array<{ source: string; regex: RegExp }> = [];
   private readonly tokenPatterns: Array<{ source: string; regex: RegExp }> = [];
   /**
@@ -152,6 +154,7 @@ export class ScrubEngine {
   readonly invalidPatterns: string[] = [];
 
   constructor(globalPatterns: string[], projectPatterns: string[]) {
+    this.rulesKey = JSON.stringify([globalPatterns, projectPatterns]);
     this._gitleaksCount = GITLEAKS_PATTERNS.length;
     this._nativeCount = NATIVE_PATTERNS.length;
     this._globalPatternCount = globalPatterns.length;
