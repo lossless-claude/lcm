@@ -46,6 +46,55 @@ describe("conversation session index migration", () => {
 });
 
 describe("runLcmMigrations summary depth backfill", () => {
+  it("does not update summaries on a second migration run", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-claude-migration-"));
+    tempDirs.push(tempDir);
+    const db = getLcmConnection(join(tempDir, "repeat.db"));
+    runLcmMigrations(db, { fts5Available: false });
+    db.prepare("INSERT INTO conversations (session_id) VALUES ('repeat')").run();
+    db.prepare("INSERT INTO summaries (summary_id, conversation_id, kind, content, token_count) VALUES ('leaf', 1, 'leaf', 'text', 1)").run();
+    db.exec(`
+      CREATE TABLE summary_update_audit (count INTEGER NOT NULL DEFAULT 0);
+      INSERT INTO summary_update_audit DEFAULT VALUES;
+      CREATE TRIGGER audit_summary_update AFTER UPDATE ON summaries BEGIN
+        UPDATE summary_update_audit SET count = count + 1;
+      END;
+    `);
+
+    runLcmMigrations(db, { fts5Available: false });
+
+    expect(db.prepare("SELECT count FROM summary_update_audit").get()).toEqual({ count: 0 });
+  });
+
+  it("backfills an existing database without a completion marker only once", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-claude-migration-"));
+    tempDirs.push(tempDir);
+    const db = getLcmConnection(join(tempDir, "upgrade.db"));
+    runLcmMigrations(db, { fts5Available: false });
+    db.prepare("INSERT INTO conversations (session_id) VALUES ('upgrade')").run();
+    db.prepare("INSERT INTO messages (conversation_id, seq, role, content, token_count, created_at) VALUES (1, 1, 'user', 'source', 7, '2026-01-01T10:00:00.000Z')").run();
+    db.prepare("INSERT INTO summaries (summary_id, conversation_id, kind, content, token_count, depth) VALUES ('old', 1, 'leaf', 'text', 1, 3)").run();
+    db.prepare("INSERT INTO summary_messages (summary_id, message_id, ordinal) VALUES ('old', 1, 0)").run();
+    db.exec("DROP TABLE IF EXISTS summary_backfill");
+    db.exec(`
+      CREATE TABLE summary_update_audit (count INTEGER NOT NULL DEFAULT 0);
+      INSERT INTO summary_update_audit DEFAULT VALUES;
+      CREATE TRIGGER audit_summary_update AFTER UPDATE ON summaries BEGIN
+        UPDATE summary_update_audit SET count = count + 1;
+      END;
+    `);
+
+    runLcmMigrations(db, { fts5Available: false });
+    const firstUpdateCount = (db.prepare("SELECT count FROM summary_update_audit").get() as { count: number }).count;
+    expect(firstUpdateCount).toBeGreaterThan(0);
+    expect(db.prepare("SELECT depth, source_message_token_count, earliest_at FROM summaries WHERE summary_id = 'old'").get())
+      .toEqual({ depth: 0, source_message_token_count: 7, earliest_at: "2026-01-01T10:00:00.000Z" });
+    expect(db.prepare("SELECT id FROM summary_backfill").get()).toEqual({ id: 1 });
+
+    runLcmMigrations(db, { fts5Available: false });
+    expect(db.prepare("SELECT count FROM summary_update_audit").get()).toEqual({ count: firstUpdateCount });
+  });
+
   it("adds depth and metadata from summary lineage", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-claude-migration-"));
     tempDirs.push(tempDir);
@@ -95,6 +144,12 @@ describe("runLcmMigrations summary depth backfill", () => {
         ordinal INTEGER NOT NULL,
         PRIMARY KEY (summary_id, parent_summary_id)
       );
+
+      CREATE TABLE summary_backfill (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        completed_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO summary_backfill (id) VALUES (1);
     `);
 
     db.prepare(`INSERT INTO conversations (conversation_id, session_id) VALUES (?, ?)`).run(
