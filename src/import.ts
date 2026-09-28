@@ -13,7 +13,7 @@ import { readProjectMetaIn } from "./daemon/project-meta.js";
 import { createLcmPaths, type LcmPaths } from "./lcm-paths.js";
 import { discoverSubagentTranscripts, type SubagentAttribution } from "./subagent-attribution.js";
 import { isSessionComplete } from "./capture.js";
-import { compactedSessionIds, planSessionRebuild, type SessionRebuildPlan } from "./claude-rebuild.js";
+import { claudeRebuildCandidateIds, planSessionRebuild, type SessionRebuildPlan } from "./claude-rebuild.js";
 import { ScrubEngine } from "./scrub.js";
 import { parseTranscript } from "./transcript.js";
 import {
@@ -813,7 +813,7 @@ export interface RebuildRunResult {
 }
 
 /**
- * Classifies every Claude Code session compaction wrote into, per project, from the project
+ * Classifies Claude Code sessions with compaction events or an unknown parser shape, per project, from the project
  * database opened read-only and the session's transcript — no daemon. With `apply`, sends each
  * repairable session to the daemon's `/ingest` as a rebuild, asking for a backup of the project
  * database with the first one; a project whose backup fails is left untouched.
@@ -845,7 +845,7 @@ async function classifyProjectSessions(cwd: string, claudeDir: string, options: 
   const db = getLcmConnection(dbPath, { readOnly: true });
   try {
     const reports: RebuildSessionReport[] = [];
-    for (const sessionId of compactedSessionIds(db)) {
+    for (const sessionId of claudeRebuildCandidateIds(db)) {
       if (options.sessionId !== undefined && sessionId !== options.sessionId) continue;
       const transcriptPath = transcripts.get(sessionId);
       const plan = await planSessionRebuild(

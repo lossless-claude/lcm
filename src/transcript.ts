@@ -1,5 +1,8 @@
 import { readFileSync } from "node:fs";
 
+/** Bump when the Claude parser changes the rows or fields a transcript yields. */
+export const CLAUDE_PARSER_SHAPE = "claude-v1";
+
 interface ContentBlock {
   type?: string;
   text?: string;
@@ -58,7 +61,7 @@ export function estimateTokens(text: string): number {
 }
 
 /** Marks a tool result the tool itself reported as failed. */
-const TOOL_ERROR_MARKER = "[tool error]";
+export const TOOL_ERROR_MARKER = "[tool error]";
 
 function blocksOf(content: string | ContentBlock[] | undefined): ContentBlock[] {
   return Array.isArray(content) ? content : [];

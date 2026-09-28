@@ -4,7 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { compareStoredMessageContent, normalizeMessageContent } from "./message-content.js";
 import { REDACTION_MARKER } from "./scrub.js";
 import { ConversationStore } from "./store/conversation-store.js";
-import type { ParsedMessage } from "./transcript.js";
+import { CLAUDE_PARSER_SHAPE, TOOL_ERROR_MARKER, type ParsedMessage } from "./transcript.js";
 
 /**
  * Rebuilding a Claude Code session from its transcript. Before compaction stopped counting
@@ -13,7 +13,7 @@ import type { ParsedMessage } from "./transcript.js";
  * rebuild replaces the session's stored history with its transcript, captured from the start;
  * it keeps the conversation row, its large files, and promoted memory.
  *
- * Only a session compaction wrote into can carry that damage, so only those are selected. The
+ * Compacted sessions and sessions with an unknown parser shape can carry that damage. The
  * classification here is read-only: the dry run uses it on a read-only connection, and the
  * daemon repeats it inside the rebuild's transaction before changing anything.
  */
@@ -58,12 +58,32 @@ export function compactedSessionIds(db: DatabaseSync): string[] {
   return rows.map((row) => row.session_id);
 }
 
+/** Compacted sessions and count-based sessions whose parser shape needs verification or repair. */
+export function claudeRebuildCandidateIds(db: DatabaseSync): string[] {
+  const ids = new Set(compactedSessionIds(db));
+  const hasCursors = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'codex_ingest_cursors'").get();
+  // The dry run reads a database the daemon may not have migrated yet: without the column,
+  // no conversation has a known shape.
+  const hasShape = (db.prepare("PRAGMA table_info(conversations)").all() as Array<{ name: string }>)
+    .some((column) => column.name === "parser_shape");
+  const conditions = [
+    ...(hasShape ? ["(c.parser_shape IS NULL OR c.parser_shape <> ?)"] : []),
+    ...(hasCursors ? ["NOT EXISTS (SELECT 1 FROM codex_ingest_cursors k JOIN conversations kc ON kc.conversation_id = k.conversation_id WHERE kc.session_id = c.session_id)"] : []),
+  ];
+  const rows = db.prepare(
+    `SELECT DISTINCT c.session_id FROM conversations c${conditions.length ? ` WHERE ${conditions.join(" AND ")}` : ""}`,
+  ).all(...(hasShape ? [CLAUDE_PARSER_SHAPE] : [])) as Array<{ session_id: string }>;
+  for (const row of rows) ids.add(row.session_id);
+  return [...ids].sort();
+}
+
 /**
  * Aligns the session's stored transcript messages (compaction's event rows excluded, oldest
  * conversation first) with the parsed transcript, in order, comparing role and content under
  * the current redaction rules on both sides — the comparison the capture guard makes.
  * `transcript` is undefined when there is no transcript file. `legacyTranscript` yields the
- * transcript in the pre-#406 tool shape; it is read only when the session is not aligned.
+ * transcript in the pre-#406 tool-content shape; it is read only when the session is not
+ * aligned, or was captured before role tagging.
  */
 export async function planSessionRebuild(
   db: DatabaseSync, sessionId: string, transcript: ParsedMessage[] | undefined, scrub: (text: string) => string,
@@ -82,22 +102,34 @@ export async function planSessionRebuild(
   };
   if (!transcript) return { ...base, kind: "unavailable", reason: "no transcript file" };
   if (conversationId === undefined) return { ...base, kind: "ambiguous", reason: `${conversations.length} conversations` };
-  if (conversations[0].role_tagging === null) {
-    return { ...base, kind: "ambiguous", reason: "captured by an earlier transcript parser" };
-  }
+  const untagged = conversations[0].role_tagging === null;
 
   const key = (role: string, content: string) => `${role}\u0000${normalizeMessageContent(scrub(content))}`;
   const have = (await new ConversationStore(db).getSessionMessages(sessionId)).map((m) => key(m.role, m.content));
   const currentKeys = transcript.map((m) => key(m.role, m.content));
   const current = searchable(transcript);
   const { gaps, extras, cuts } = align(have, currentKeys, current, scrub);
-  if (gaps === 0 && extras === 0 && cuts === 0) return { ...base, kind: "aligned" };
+  if (!untagged && gaps === 0 && extras === 0 && cuts === 0) return { ...base, kind: "aligned" };
   const legacy = searchable(legacyTranscript?.() ?? []);
   const legacyKeys = legacy.messages.map((m) => key(m.role, m.content));
-  const present = new Set([...currentKeys, ...legacyKeys]);
-  const lost = have.filter((stored) => !present.has(stored) &&
-    approximateMatch(stored, current, 0, transcript.length, scrub) === undefined &&
-    approximateMatch(stored, legacy, 0, legacy.messages.length, scrub) === undefined).length;
+  const content = (key: string) => key.slice(key.indexOf("\u0000") + 1);
+  // An untagged session that has not grown is exactly its pre-role-tagging parse: capture never
+  // needs to slice it again, so rebuilding it would only discard its summaries. The legacy parse
+  // drops a tool-call-only entry, so growth by one shows only in today's parse: its last row must
+  // be the last legacy row (error markers aside), not a tool-call row appended after it.
+  const withoutMarkers = (text: string) => text.split(`${TOOL_ERROR_MARKER}\n`).join("");
+  const lastCurrent = currentKeys.at(-1);
+  const lastLegacy = legacyKeys.at(-1);
+  const grownPastLegacy = lastCurrent === undefined ? false
+    : lastLegacy === undefined || withoutMarkers(content(lastCurrent)) !== content(lastLegacy);
+  if (untagged && !grownPastLegacy && have.length === legacyKeys.length &&
+      have.every((stored, index) => content(stored) === content(legacyKeys[index]))) {
+    return { ...base, kind: "aligned" };
+  }
+  const present = new Set((untagged ? [...currentKeys, ...legacyKeys].map(content) : [...currentKeys, ...legacyKeys]));
+  const lost = have.filter((stored) => !present.has(untagged ? content(stored) : stored) &&
+    approximateMatch(stored, current, 0, transcript.length, scrub, untagged) === undefined &&
+    approximateMatch(stored, legacy, 0, legacy.messages.length, scrub, untagged) === undefined).length;
   if (lost > 0) return { ...base, gaps, extras, kind: "ambiguous", reason: `${lost} stored messages are not in the transcript` };
   return { ...base, gaps, extras, kind: "repairable" };
 }
@@ -163,6 +195,7 @@ function searchable(messages: ParsedMessage[]): Searchable {
 /** Search only before an exact match, preserving the earliest in-order match for legacy cut rows. */
 function approximateMatch(
   k: string, { messages, nul }: Searchable, from: number, until: number, scrub: (text: string) => string,
+  ignoreRole = false,
 ): { index: number; kind: "full" | "cut" } | undefined {
   const role = k.slice(0, k.indexOf("\u0000") + 1);
   const content = k.slice(role.length);
@@ -172,7 +205,7 @@ function approximateMatch(
     ? Array.from({ length: Math.max(0, until - from) }, (_, offset) => from + offset)
     : nul.slice(lowerBound(nul, from), lowerBound(nul, until));
   for (const index of positions) {
-    if (`${messages[index].role}\u0000` !== role) continue;
+    if (!ignoreRole && `${messages[index].role}\u0000` !== role) continue;
     const kind = compareStoredMessageContent(content, messages[index].content, scrub);
     if (kind) return { index, kind };
   }

@@ -77,6 +77,7 @@ export type SubagentAttributionInput = {
 export type CreateConversationInput = {
   sessionId: string;
   title?: string;
+  parserShape?: string | null;
   /** The transcript entry whose clear opens this conversation; absent for a session's first. */
   openedByEntryId?: string;
 } & SubagentAttributionInput;
@@ -90,6 +91,8 @@ export type ConversationRecord = {
   updatedAt: Date;
   /** "tagged" when the rows separate tool output from human text; null when unknown. */
   roleTagging: "tagged" | null;
+  /** Claude parser output shape, or null when it cannot be established. */
+  parserShape: string | null;
   parentSessionId: string | null;
   subagentType: string | null;
   subagentDesc: string | null;
@@ -125,6 +128,7 @@ interface ConversationRow {
   created_at: string;
   updated_at: string;
   role_tagging: string | null;
+  parser_shape: string | null;
   parent_session_id: string | null;
   subagent_type: string | null;
   subagent_desc: string | null;
@@ -158,7 +162,7 @@ interface MaxSeqRow {
 }
 
 const CONVERSATION_SELECT_COLUMNS = `SELECT conversation_id, session_id, title, bootstrapped_at, created_at, updated_at,
-       role_tagging, parent_session_id, subagent_type, subagent_desc`;
+       role_tagging, parser_shape, parent_session_id, subagent_type, subagent_desc`;
 
 // ── Row mappers ───────────────────────────────────────────────────────────────
 
@@ -171,6 +175,7 @@ function toConversationRecord(row: ConversationRow): ConversationRecord {
     createdAt: parseSqliteDate(row.created_at),
     updatedAt: parseSqliteDate(row.updated_at),
     roleTagging: row.role_tagging === "tagged" ? "tagged" : null,
+    parserShape: row.parser_shape,
     parentSessionId: row.parent_session_id,
     subagentType: row.subagent_type,
     subagentDesc: row.subagent_desc,
@@ -243,12 +248,13 @@ export class ConversationStore {
       // parser. Older ones keep NULL, which reads as unknown; they are never
       // re-tagged, so the marker states what is known rather than guessing.
       .prepare(
-        `INSERT INTO conversations (session_id, title, role_tagging, parent_session_id, subagent_type, subagent_desc, opened_by_entry_id)
-         VALUES (?, ?, 'tagged', ?, ?, ?, ?)`,
+        `INSERT INTO conversations (session_id, title, role_tagging, parser_shape, parent_session_id, subagent_type, subagent_desc, opened_by_entry_id)
+         VALUES (?, ?, 'tagged', ?, ?, ?, ?, ?)`,
       )
       .run(
         input.sessionId,
         input.title ?? null,
+        input.parserShape ?? null,
         input.parentSessionId ?? null,
         input.subagentType ?? null,
         input.subagentDesc ?? null,
@@ -292,12 +298,13 @@ export class ConversationStore {
     sessionId: string,
     title?: string,
     attribution?: SubagentAttributionInput,
+    parserShape?: string | null,
   ): Promise<ConversationRecord> {
     const existing = await this.getConversationBySessionId(sessionId);
     if (existing) {
       return this.backfillAttribution(existing, attribution);
     }
-    return this.createConversation({ sessionId, title, ...attribution });
+    return this.createConversation({ sessionId, title, parserShape, ...attribution });
   }
 
   /**
@@ -309,11 +316,32 @@ export class ConversationStore {
     sessionId: string,
     entryId: string,
     attribution?: SubagentAttributionInput,
+    parserShape?: string | null,
   ): Promise<ConversationRecord> {
     const row = this.db
       .prepare(`${CONVERSATION_SELECT_COLUMNS} FROM conversations WHERE session_id = ? AND opened_by_entry_id = ?`)
       .get(sessionId, entryId) as unknown as ConversationRow | undefined;
-    return row ? toConversationRecord(row) : this.createConversation({ sessionId, openedByEntryId: entryId, ...attribution });
+    return row ? toConversationRecord(row) : this.createConversation({ sessionId, openedByEntryId: entryId, parserShape, ...attribution });
+  }
+
+  /** A Claude count can be reused only if every conversation used today's parser. */
+  async sessionHasParserShape(sessionId: string, parserShape: string): Promise<boolean> {
+    const row = this.db.prepare(
+      "SELECT COUNT(*) AS n FROM conversations WHERE session_id = ? AND (parser_shape IS NULL OR parser_shape <> ?)",
+    ).get(sessionId, parserShape) as { n: number };
+    return row.n === 0;
+  }
+
+  /** Restamp a freshly rebuilt Claude conversation in the rebuild transaction. */
+  setParserShape(conversationId: number, parserShape: string): void {
+    this.db.prepare("UPDATE conversations SET parser_shape = ? WHERE conversation_id = ? AND parser_shape IS NOT ?")
+      .run(parserShape, conversationId, parserShape);
+  }
+
+  /** Stamp every conversation after capture verified the session's stored prefix. */
+  setSessionParserShape(sessionId: string, parserShape: string): void {
+    this.db.prepare("UPDATE conversations SET parser_shape = ? WHERE session_id = ? AND parser_shape IS NOT ?")
+      .run(parserShape, sessionId, parserShape);
   }
 
   /** Transcript messages stored across every conversation of the session; compaction's own event rows are not counted. */
@@ -356,7 +384,7 @@ export class ConversationStore {
     }
     // Conversation identity/order/parser changes invalidate even when the message count stays put.
     for (const row of this.db.prepare(
-      "SELECT conversation_id, created_at, role_tagging FROM conversations WHERE session_id = ? ORDER BY created_at, conversation_id",
+      "SELECT conversation_id, created_at, role_tagging, parser_shape FROM conversations WHERE session_id = ? ORDER BY created_at, conversation_id",
     ).iterate(sessionId)) hash.update(JSON.stringify(row));
     for (const row of this.db.prepare(
       `SELECT m.message_id, m.conversation_id, m.seq, m.role, m.content

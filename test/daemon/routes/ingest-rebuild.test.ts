@@ -93,6 +93,26 @@ async function startDaemon(): Promise<{ client: DaemonClient; post: (body: objec
 }
 
 describe("lcm import --provider claude --rebuild", () => {
+  it("repairs an unstamped uncompacted session whose stored history is not a prefix", async () => {
+    mkdirSync(projectDir(cwd, paths), { recursive: true });
+    const db = new DatabaseSync(projectDbPath(cwd, paths));
+    try {
+      runLcmMigrations(db);
+      await new SessionCapture(db, "proj", new ScrubEngine([], [])).write({
+        sessionId, messages: damagedTurns.map(([role, content]) => ({ role, content, tokenCount: 1 })), parserShape: null,
+      });
+    } finally {
+      db.close();
+    }
+
+    const preview = await rebuildClaudeSessions(undefined, { paths, cwd });
+    expect(preview.sessions.map((s) => s.plan.kind)).toEqual(["repairable"]);
+    const { client } = await startDaemon();
+    const run = await rebuildClaudeSessions(client, { paths, cwd, apply: true });
+    expect(run.sessions).toEqual([expect.objectContaining({ rebuilt: true, ingested: 6 })]);
+    expect(storedTurns()).toEqual(transcriptTurns);
+  });
+
   it("previews each compacted session without a daemon and without writing", async () => {
     await seedDamagedSession();
     const before = storedTurns();

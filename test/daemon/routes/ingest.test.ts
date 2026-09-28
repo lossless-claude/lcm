@@ -330,6 +330,13 @@ describe("POST /ingest", () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ingested: 2, totalTokens: 2 });
+    const db = new DatabaseSync(projectDbPath(tempDir, paths));
+    try {
+      expect(db.prepare("SELECT parser_shape FROM conversations WHERE session_id = ?").get("codex-test-1"))
+        .toEqual({ parser_shape: "structured" });
+    } finally {
+      db.close();
+    }
   });
 
   it("accepts tool messages in structured ingestion mode", async () => {

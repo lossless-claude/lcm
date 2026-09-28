@@ -5,13 +5,13 @@ import * as sqlite from "node:sqlite";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionCapture } from "../src/capture.js";
-import { backupProjectDatabase, compactedSessionIds, planSessionRebuild } from "../src/claude-rebuild.js";
+import { backupProjectDatabase, claudeRebuildCandidateIds, compactedSessionIds, planSessionRebuild } from "../src/claude-rebuild.js";
 import { runLcmMigrations } from "../src/db/migration.js";
 import { ScrubEngine } from "../src/scrub.js";
 import { ConversationStore } from "../src/store/conversation-store.js";
 import { SummaryStore } from "../src/store/summary-store.js";
 import { TranscriptSourceError } from "../src/transcript-source.js";
-import { parseTranscript } from "../src/transcript.js";
+import { CLAUDE_PARSER_SHAPE, parseTranscript } from "../src/transcript.js";
 
 /**
  * Before compaction stopped counting its own event rows, a Claude capture after a compaction
@@ -75,20 +75,48 @@ function mixedToolShapeTranscript(): string {
   return path;
 }
 
+function preRoleTaggingTranscript(): string {
+  const path = join(dir, `${sessionId}.jsonl`);
+  const entries = [
+    { role: "user", content: "question" },
+    { role: "assistant", content: [{ type: "tool_use", name: "Read" }] },
+    { role: "user", content: [{ type: "tool_result", is_error: true, content: "missing file" }] },
+    { role: "assistant", content: "answer" },
+  ];
+  writeFileSync(path, entries.map((message) => JSON.stringify({ message })).join("\n") + "\n");
+  return path;
+}
+
+async function storePreRoleTagging(): Promise<string> {
+  const path = preRoleTaggingTranscript();
+  const oldRows = [
+    { role: "user", content: "question", tokenCount: 2 },
+    { role: "user", content: "missing file", tokenCount: 3 },
+    { role: "assistant", content: "answer", tokenCount: 2 },
+  ];
+  expect(parseTranscript(path, "legacy").map((m) => m.content)).toEqual(oldRows.map((m) => m.content));
+  await capture.write({ sessionId, messages: oldRows });
+  db.prepare("UPDATE conversations SET role_tagging = NULL WHERE session_id = ?").run(sessionId);
+  writeFileSync(path, `${JSON.stringify({ message: { role: "user", content: "next" } })}\n`, { flag: "a" });
+  return path;
+}
+
 async function storeMixedToolShape(path: string): Promise<void> {
   const legacy = parseTranscript(path, "legacy");
   const current = parseTranscript(path);
   expect(legacy.map((m) => m.content)).toEqual(["question", "missing file", "found files", "read result", "answer", "ack"]);
   expect(current.map((m) => m.content).at(-4)).toBe("read result");
-  const written = await capture.write({ sessionId, messages: legacy });
+  const written = await capture.write({ sessionId, messages: legacy, parserShape: CLAUDE_PARSER_SHAPE });
   await compact(written.conversationId);
-  await capture.write({ sessionId, messages: current.slice(legacy.length), sourceOffset: legacy.length });
+  await capture.write({ sessionId, messages: current.slice(legacy.length), sourceOffset: legacy.length, parserShape: CLAUDE_PARSER_SHAPE });
 }
 
+/** Stores turns as a Claude capture by today's parser would. */
 async function store(turns: Turn[], session = sessionId): Promise<number> {
   const written = await capture.write({
     sessionId: session,
     messages: turns.map(([role, content]) => ({ role, content, tokenCount: 1 })),
+    parserShape: CLAUDE_PARSER_SHAPE,
   });
   return written.conversationId;
 }
@@ -122,6 +150,91 @@ const transcriptMessages = (session = sessionId) =>
 const count = (sql: string, ...params: Array<string | number>) => (db.prepare(sql).get(...params) as { n: number }).n;
 
 describe("the capture guard", () => {
+  it("verifies an unstamped prefix, captures its tail, and stamps the session", async () => {
+    const path = transcript(transcriptTurns.slice(0, 3));
+    await capture.write({ sessionId, messages: parseTranscript(path).slice(0, 2), parserShape: null });
+
+    expect((await capture.captureTranscript({ sessionId, cwd: dir, transcriptPath: path }))?.records.map((row) => row.content))
+      .toEqual(["q2"]);
+    expect(transcriptMessages()).toEqual(transcriptTurns.slice(0, 3));
+    expect(db.prepare("SELECT parser_shape FROM conversations WHERE session_id = ?").get(sessionId))
+      .toEqual({ parser_shape: "claude-v1" });
+  });
+
+  it("stalls an unstamped legacy prefix followed by current-shape rows", async () => {
+    const path = mixedToolShapeTranscript();
+    const legacy = parseTranscript(path, "legacy");
+    const current = parseTranscript(path);
+    await capture.write({ sessionId, messages: [...legacy.slice(0, 4), ...current.slice(-2)], parserShape: null });
+    const before = transcriptMessages();
+
+    await expect(capture.captureTranscript({ sessionId, cwd: dir, transcriptPath: path })).rejects.toThrow("--rebuild");
+    expect(transcriptMessages()).toEqual(before);
+    expect(db.prepare("SELECT parser_shape FROM conversations WHERE session_id = ?").get(sessionId))
+      .toEqual({ parser_shape: null });
+  });
+
+  it("verifies and restamps a matching history with an older shape", async () => {
+    const path = transcript(transcriptTurns.slice(0, 3));
+    await capture.write({ sessionId, messages: parseTranscript(path).slice(0, 2), parserShape: "claude-old" });
+
+    expect((await capture.captureTranscript({ sessionId, cwd: dir, transcriptPath: path }))?.records.map((row) => row.content))
+      .toEqual(["q2"]);
+    expect(db.prepare("SELECT parser_shape FROM conversations WHERE session_id = ?").get(sessionId))
+      .toEqual({ parser_shape: "claude-v1" });
+  });
+
+  it("leaves a conversation opened without a known shape unstamped", async () => {
+    // /compact's no-ingest fallback opens the row for any client.
+    await capture.write({ sessionId, messages: [] });
+    expect(db.prepare("SELECT parser_shape FROM conversations WHERE session_id = ?").get(sessionId))
+      .toEqual({ parser_shape: null });
+  });
+
+  it("selects rebuild candidates from a database migrated before the stamp existed", async () => {
+    await capture.write({ sessionId, messages: [], parserShape: "claude-v1" });
+    db.exec("ALTER TABLE conversations DROP COLUMN parser_shape");
+    expect(claudeRebuildCandidateIds(db)).toEqual([sessionId]);
+  });
+
+  it("invalidates an existing Claude stamp when structured ingestion appends", async () => {
+    const path = transcript(transcriptTurns.slice(0, 2));
+    await capture.captureTranscript({ sessionId, cwd: dir, transcriptPath: path });
+    await capture.write({
+      sessionId, messages: [...parseTranscript(path), { role: "user", content: "structured only", tokenCount: 1 }],
+      parserShape: "structured",
+    });
+    expect(db.prepare("SELECT parser_shape FROM conversations WHERE session_id = ?").get(sessionId))
+      .toEqual({ parser_shape: "structured" });
+
+    transcript(transcriptTurns.slice(0, 3));
+    await expect(capture.captureTranscript({ sessionId, cwd: dir, transcriptPath: path })).rejects.toThrow("--rebuild");
+  });
+
+  it("stalls a second capture when the stored Claude parser shape has changed", async () => {
+    const path = mixedToolShapeTranscript();
+    const input = { sessionId, cwd: dir, transcriptPath: path };
+    const legacy = parseTranscript(path, "legacy");
+    await capture.write({ sessionId, messages: legacy });
+    // Slicing today's parse at the old count would repeat an already stored tool result.
+    expect(parseTranscript(path).slice(legacy.length)[0].content).toBe("read result");
+    const before = transcriptMessages();
+    db.prepare("UPDATE conversations SET parser_shape = 'claude-before-tool-rows' WHERE session_id = ?").run(sessionId);
+
+    writeFileSync(path, `${JSON.stringify({ message: { role: "user", content: "next" } })}\n`, { flag: "a" });
+    await expect(capture.captureTranscript(input)).rejects.toThrow("--rebuild");
+    expect(transcriptMessages()).toEqual(before);
+  });
+
+  it("continues a second capture when the parser stamp matches", async () => {
+    const path = transcript(transcriptTurns.slice(0, 2));
+    const input = { sessionId, cwd: dir, transcriptPath: path };
+    await capture.captureTranscript(input);
+    transcript(transcriptTurns.slice(0, 3));
+    expect((await capture.captureTranscript(input))?.records.map((row) => row.content)).toEqual(["q2"]);
+    expect(transcriptMessages()).toEqual(transcriptTurns.slice(0, 3));
+  });
+
   it("accepts a compacted message stored cut at its first NUL", async () => {
     const path = transcript([["user", "first"], ["assistant", "before\u0000after"]]);
     const conversationId = await store([["user", "first"], ["assistant", "before"]]);
@@ -342,6 +455,67 @@ describe("classifying a session for a rebuild", () => {
     expect(transcriptMessages()).toEqual(before);
   });
 
+  it("repairs an untagged session grown after the parser change", async () => {
+    const path = await storePreRoleTagging();
+    const before = transcriptMessages();
+    await expect(capture.captureTranscript({ sessionId, cwd: dir, transcriptPath: path })).rejects.toThrow("--rebuild");
+    expect(transcriptMessages()).toEqual(before);
+    expect(db.prepare("SELECT parser_shape FROM conversations WHERE session_id = ?").get(sessionId))
+      .toEqual({ parser_shape: null });
+
+    expect(await planSessionRebuild(db, sessionId, parseTranscript(path), identity, () => parseTranscript(path, "legacy")))
+      .toMatchObject({ kind: "repairable" });
+    expect(claudeRebuildCandidateIds(db)).toContain(sessionId);
+    expect(await capture.rebuildTranscript({ sessionId, cwd: dir, transcriptPath: path })).toMatchObject({
+      plan: { kind: "repairable" }, ingested: parseTranscript(path).length,
+    });
+    expect(transcriptMessages()).toEqual(parseTranscript(path).map((m) => [m.role, m.content]));
+    expect(db.prepare("SELECT parser_shape FROM conversations WHERE session_id = ?").get(sessionId))
+      .toEqual({ parser_shape: CLAUDE_PARSER_SHAPE });
+    await expect(capture.captureTranscript({ sessionId, cwd: dir, transcriptPath: path }))
+      .resolves.toMatchObject({ records: [] });
+  });
+
+  it("leaves an untagged session that has not grown aligned, so a rebuild keeps its summaries", async () => {
+    const path = preRoleTaggingTranscript();
+    const legacy = parseTranscript(path, "legacy");
+    await capture.write({ sessionId, messages: legacy });
+    db.prepare("UPDATE conversations SET role_tagging = NULL WHERE session_id = ?").run(sessionId);
+    const before = transcriptMessages();
+    expect(await planSessionRebuild(db, sessionId, parseTranscript(path), identity, () => parseTranscript(path, "legacy")))
+      .toMatchObject({ kind: "aligned" });
+    expect(await capture.rebuildTranscript({ sessionId, cwd: dir, transcriptPath: path })).toMatchObject({
+      plan: { kind: "aligned" }, ingested: 0,
+    });
+    expect(transcriptMessages()).toEqual(before);
+  });
+
+  it("repairs an untagged session grown only by a tool call the older parse drops", async () => {
+    const path = preRoleTaggingTranscript();
+    const legacy = parseTranscript(path, "legacy");
+    await capture.write({ sessionId, messages: legacy });
+    db.prepare("UPDATE conversations SET role_tagging = NULL WHERE session_id = ?").run(sessionId);
+    writeFileSync(path, `${JSON.stringify({
+      message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_tail", name: "Bash", input: { command: "ls" } }] },
+    })}\n`, { flag: "a" });
+    expect(parseTranscript(path, "legacy")).toEqual(legacy);
+
+    expect(await planSessionRebuild(db, sessionId, parseTranscript(path), identity, () => parseTranscript(path, "legacy")))
+      .toMatchObject({ kind: "repairable" });
+  });
+
+  it("leaves an untagged session ambiguous when a stored row is in no parse", async () => {
+    const path = await storePreRoleTagging();
+    db.prepare("UPDATE messages SET content = 'only in storage' WHERE content = 'missing file'").run();
+    const before = transcriptMessages();
+    expect(await planSessionRebuild(db, sessionId, parseTranscript(path), identity, () => parseTranscript(path, "legacy")))
+      .toMatchObject({ kind: "ambiguous", reason: "1 stored messages are not in the transcript" });
+    expect(await capture.rebuildTranscript({ sessionId, cwd: dir, transcriptPath: path })).toMatchObject({
+      plan: { kind: "ambiguous" }, ingested: 0,
+    });
+    expect(transcriptMessages()).toEqual(before);
+  });
+
   it("aligned: the stored history is a prefix of the transcript, an uncaptured tail included", async () => {
     await compact(await store(transcriptTurns.slice(0, 3)));
     expect(await plan(transcriptTurns)).toMatchObject({ kind: "aligned", gaps: 0, extras: 0 });
@@ -372,10 +546,10 @@ describe("classifying a session for a rebuild", () => {
     expect(await plan(transcriptTurns)).toMatchObject({ kind: "ambiguous" });
   });
 
-  it("ambiguous: a conversation an earlier transcript parser captured", async () => {
+  it("repairable: an untagged conversation whose stored content is still in the transcript", async () => {
     await compact(await store(damagedTurns));
     db.exec("UPDATE conversations SET role_tagging = NULL");
-    expect(await plan(transcriptTurns)).toMatchObject({ kind: "ambiguous" });
+    expect(await plan(transcriptTurns)).toMatchObject({ kind: "repairable" });
   });
 
   it("selects only sessions compaction wrote into", async () => {

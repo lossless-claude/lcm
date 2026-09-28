@@ -15,6 +15,19 @@ afterEach(() => {
 });
 
 describe("conversation session index migration", () => {
+  it("leaves pre-stamp conversations unknown when adding the parser-shape column", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-claude-migration-"));
+    tempDirs.push(tempDir);
+    const db = getLcmConnection(join(tempDir, "legacy.db"));
+    runLcmMigrations(db);
+    db.exec("ALTER TABLE conversations DROP COLUMN parser_shape");
+    db.prepare("INSERT INTO conversations (session_id, role_tagging) VALUES (?, 'tagged')").run("old-session");
+
+    runLcmMigrations(db);
+    expect(db.prepare("SELECT parser_shape FROM conversations WHERE session_id = ?").get("old-session"))
+      .toEqual({ parser_shape: null });
+  });
+
   it("creates the index in a fresh database", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-claude-migration-"));
     tempDirs.push(tempDir);

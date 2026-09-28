@@ -25,7 +25,7 @@ import { extractToolUseModels, parseTranscript, type ParsedMessage } from "./tra
  * transcript hold beyond what is already stored", with an adapter per session
  * client (src/session-client.ts). Each adapter owns its own delta model —
  * Claude re-parses the file and slices at the stored count, verifying the
- * stored prefix once compaction has written into the session; Codex resumes from
+ * stored prefix after compaction or when its parser shape changes; Codex resumes from
  * a byte-offset cursor and verifies the stored prefix when it cannot — its own
  * validation rules, and its own resume checkpoint, opaque to callers. It also
  * states the capabilities the ingest route forks on, so no shared code names a
@@ -46,6 +46,8 @@ export interface TranscriptLocator {
 /** What is already stored for the session, as an adapter needs it to find the delta. */
 export interface StoredTranscript {
   storedCount: number;
+  /** Whether every Claude conversation uses the current parser output shape. */
+  parserShapeMatches(): Promise<boolean>;
   /** The stored prefix in order, for an adapter that must verify it before trusting a full re-read. */
   storedMessages(offset?: number): Promise<Array<{ role: string; content: string }>>;
   /** Fingerprints raw stored rows and conversation identity up to `count`, excluding compaction events. */
@@ -84,6 +86,8 @@ export interface TranscriptDelta {
   boundaries?: ConversationBoundary[];
   /** How many leading messages `messages` omits because they are stored. */
   sourceOffset: number;
+  /** Claude stored history was verified against today's full parse before its count was reused. */
+  restampParserShape?: boolean;
   /** The adapter's resume checkpoint; persisted in the same transaction as the messages it accounts for. Opaque to capture. */
   checkpoint?: unknown;
   /** Fills the model on the session's events whose hook payload could not carry one; scans the transcript only when rows wait. */
@@ -172,15 +176,22 @@ const claudeSource: TranscriptSource = {
   async read(path, stored, ctx) {
     const storedCount = stored?.storedCount ?? 0;
     const messages = parseTranscript(path);
+    const key = JSON.stringify([ctx.cwd, ctx.sessionId, path]);
     // A fresh read, including the rebuild path, cannot reuse a pre-rebuild validation.
-    if (!stored) claudePrefixes.delete(JSON.stringify([ctx.cwd, ctx.sessionId, path]));
+    if (!stored) claudePrefixes.delete(key);
+    const restampParserShape = stored !== undefined && !(await stored.parserShapeMatches());
     // Before compaction stopped counting its own event rows, a capture after a compaction
     // sliced past as many transcript messages as the session held event rows, and the
     // corrected count then re-stored its tail. Such a history is not a prefix of the
     // transcript; appending to it would repeat the damage, so capture stalls until a rebuild.
-    if (stored && await stored.verifyAfterCompaction?.()) {
+    if (stored && (restampParserShape || await stored.verifyAfterCompaction?.())) {
       try {
-        await validateClaudePrefix(path, stored, messages, ctx);
+        if (restampParserShape) {
+          claudePrefixes.delete(key);
+          await validateTranscriptRecovery(stored, messages, ctx, "Claude");
+        } else {
+          await validateClaudePrefix(path, stored, messages, ctx);
+        }
       } catch (error) {
         if (!(error instanceof TranscriptSourceError)) throw error;
         throw new TranscriptSourceError(
@@ -192,6 +203,7 @@ const claudeSource: TranscriptSource = {
     return {
       messages: messages.slice(storedCount),
       sourceOffset: storedCount,
+      restampParserShape,
       backfillModels(events, sessionId) {
         if (!events.hasUnfilledModels(sessionId, "claude")) return;
         events.backfillToolCallModels(sessionId, extractToolUseModels(path), "claude");
