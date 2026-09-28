@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionCapture } from "../src/capture.js";
 import { planCutRowRepair, applyCutRowRepair } from "../src/cut-row-repair.js";
 import { runLcmMigrations } from "../src/db/migration.js";
@@ -14,6 +14,61 @@ afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: tru
 
 for (const client of ["codex", "omp"] as const) {
   describe(`${client} cut-row repair`, () => {
+    it("does not scrub or align a transcript without NUL", async () => {
+      const cwd = mkdtempSync(join(tmpdir(), "lcm-cut-repair-"));
+      dirs.push(cwd);
+      const db = new DatabaseSync(join(cwd, "db.sqlite"));
+      try {
+        runLcmMigrations(db);
+        const sessionId = `${client}-no-cut`;
+        const path = join(cwd, "transcript.jsonl");
+        const records = client === "codex" ? [
+          { type: "session_meta", payload: { id: sessionId, cwd } },
+          { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "current" }] } },
+        ] : [
+          { type: "session", id: sessionId, cwd },
+          { type: "message", id: "entry-0", parentId: null, message: { role: "user", content: [{ type: "text", text: "current" }] } },
+        ];
+        writeFileSync(path, records.map((row) => JSON.stringify(row)).join("\n") + "\n");
+        const capture = new SessionCapture(db, "test-project", new ScrubEngine([], []));
+        await capture.write({ sessionId, messages: [{ role: "user", content: "legacy", tokenCount: 2 }] });
+        const scrub = vi.fn((text: string) => text);
+
+        expect(await planCutRowRepair(db, { sessionId, cwd, client, transcriptPath: path, scrub })).toMatchObject({ kind: "aligned", rows: [] });
+        expect(scrub).not.toHaveBeenCalled();
+      } finally { db.close(); }
+    });
+
+    it("scrubs only the one matched cut row when other rows match exactly", async () => {
+      const cwd = mkdtempSync(join(tmpdir(), "lcm-cut-repair-"));
+      dirs.push(cwd);
+      const db = new DatabaseSync(join(cwd, "db.sqlite"));
+      try {
+        runLcmMigrations(db);
+        const sessionId = `${client}-one-cut`;
+        const path = join(cwd, "transcript.jsonl");
+        const turns = ["before", "cut\u0000after", "after"];
+        const records = client === "codex" ? [
+          { type: "session_meta", payload: { id: sessionId, cwd } },
+          ...turns.map((text) => ({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text }] } })),
+        ] : [
+          { type: "session", id: sessionId, cwd },
+          ...turns.map((text, i) => ({ type: "message", id: `entry-${i}`, parentId: i ? `entry-${i - 1}` : null, message: { role: "user", content: [{ type: "text", text }] } })),
+        ];
+        writeFileSync(path, records.map((row) => JSON.stringify(row)).join("\n") + "\n");
+        const capture = new SessionCapture(db, "test-project", new ScrubEngine([], []));
+        await capture.write({ sessionId, messages: turns.map((content) => ({ role: "user", content, tokenCount: 2 })) });
+        const stored = await new ConversationStore(db).getSessionMessages(sessionId);
+        db.prepare("UPDATE messages SET content = ? WHERE message_id = ?").run("cut", stored[1].messageId);
+        const scrub = vi.fn((text: string) => text);
+
+        expect(await planCutRowRepair(db, { sessionId, cwd, client, transcriptPath: path, scrub })).toMatchObject({
+          kind: "repairable", rows: [{ messageId: stored[1].messageId }],
+        });
+        expect(scrub).toHaveBeenCalledTimes(4);
+      } finally { db.close(); }
+    });
+
     it("previews a cut row, restores its content and FTS, and leaves other rows untouched", async () => {
       const cwd = mkdtempSync(join(tmpdir(), "lcm-cut-repair-"));
       dirs.push(cwd);
