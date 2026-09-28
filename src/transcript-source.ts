@@ -14,6 +14,7 @@ import {
   type ParsedOmpTranscriptRecord,
 } from "./omp-transcript.js";
 import { readOmpTranscriptDelta, type OmpTranscriptCursor, type OmpTranscriptDelta } from "./omp-transcript-reader.js";
+import { matchesUnderRedaction } from "./scrub.js";
 import type { SessionClient } from "./session-client.js";
 import { discoverSubagentTranscripts, type DiscoveredSubagentTranscript } from "./subagent-attribution.js";
 import { extractToolUseModels, parseTranscript, type ParsedMessage } from "./transcript.js";
@@ -171,10 +172,18 @@ async function validateTranscriptRecovery(stored: StoredTranscript, messages: Pa
   if (previous.length !== stored.storedCount) throw new TranscriptSourceError(`Stored ${label} history changed during recovery`);
   for (const [index, prior] of previous.entries()) {
     const message = messages[index];
-    if (message.role !== prior.role || ctx.scrub(message.content) !== ctx.scrub(prior.content)) {
+    if (message.role !== prior.role || !storedContentMatches(prior.content, message.content, ctx.scrub)) {
       throw new TranscriptSourceError(`${label} transcript prefix differs from stored history; check the original transcript and redaction settings before retrying`);
     }
   }
+}
+
+/** Equal under the current redaction rules, or equal but for spans a pattern since removed had redacted. Scrubs only when the texts differ. */
+function storedContentMatches(stored: string, current: string, scrub: (text: string) => string): boolean {
+  if (stored === current) return true;
+  const storedNow = scrub(stored);
+  const currentNow = scrub(current);
+  return storedNow === currentNow || matchesUnderRedaction(storedNow, currentNow);
 }
 
 const codexSource: TranscriptSource = {

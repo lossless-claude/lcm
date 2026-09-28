@@ -200,7 +200,7 @@ export function createIngestHandler(config: DaemonConfig, paths: LcmPaths, log: 
 
     const dbPath = projectDbPath(cwd, paths);
     const structured = Array.isArray(input.messages) ? input.messages.filter(isParsedMessage) : undefined;
-    if (structured && structured.length === 0) {
+    if (input.rebuild !== true && structured && structured.length === 0) {
       sendJson(res, 200, { ingested: 0, totalTokens: 0 });
       return;
     }

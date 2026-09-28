@@ -339,7 +339,8 @@ stored.
    count (`src/transcript-source.ts`); the stored conversation is the ground truth for how
    much of the file lcm has. Once compaction has written its event rows into the session, the
    slice is taken only after the stored messages, oldest conversation first, are verified as
-   the transcript's prefix under the current redaction rules. A conversation captured before
+   the transcript's prefix under the current redaction rules; a stored `[REDACTED]` span of a
+   pattern since removed or narrowed matches the text it replaced. A conversation captured before
    role tagging (`role_tagging IS NULL`) is not compared, since today's parser cannot reproduce
    it. On a mismatch capture stops, with nothing written: a session an earlier lcm captured
    after a compaction can hold skipped and repeated messages, and appending to it would repeat
@@ -349,7 +350,8 @@ stored.
    the cursor is trusted only while it accounts for exactly the stored messages.
 3. When the cursor cannot be trusted — a replaced, truncated or extended file — Codex re-reads
    the whole file and the capture verifies the stored prefix, after current redaction rules
-   have been applied to both sides, before accepting the suffix.
+   have been applied to both sides (the same allowance for a removed pattern's `[REDACTED]`
+   spans), before accepting the suffix.
 4. An OMP transcript uses the same cursor, but its file is a tree: each read keeps only the
    entries on the `parentId` chain from the file's last entry. Stored history is therefore
    the file's messages in order but not always its prefix. A recovery scan continues the

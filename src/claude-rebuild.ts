@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { REDACTION_MARKER, matchesUnderRedaction } from "./scrub.js";
 import { ConversationStore } from "./store/conversation-store.js";
 import type { ParsedMessage } from "./transcript.js";
 
@@ -93,14 +94,15 @@ export async function planSessionRebuild(
  * takes the next equal transcript message, so stored history has no gaps and no extras exactly
  * when it is a prefix of the transcript; the transcript messages it passes over are gaps, and a
  * stored message with none left to take is an extra. `lost` counts stored messages the
- * transcript does not hold anywhere, which a rebuild could not restore.
+ * transcript does not hold anywhere, which a rebuild could not restore. A stored message with
+ * no equal one falls back to the guard's allowance for spans a pattern since removed redacted.
  */
 function align(have: string[], want: string[]): { gaps: number; extras: number; lost: number } {
-  const positions = new Map<string, number[]>();
+  const positions = new Map<string, Candidates>();
   want.forEach((k, index) => {
-    const list = positions.get(k);
-    if (list) list.push(index);
-    else positions.set(k, [index]);
+    const entry = positions.get(k);
+    if (entry) entry.indices.push(index);
+    else positions.set(k, { indices: [index], next: 0 });
   });
   let cursor = 0;
   let gaps = 0;
@@ -108,16 +110,38 @@ function align(have: string[], want: string[]): { gaps: number; extras: number; 
   let lost = 0;
   for (const k of have) {
     const candidates = positions.get(k);
-    if (!candidates) lost++;
-    const at = candidates?.find((index) => index >= cursor);
-    if (at === undefined) {
-      extras++;
+    const at = (candidates && nextCandidate(candidates, cursor)) ?? redactedMatch(k, want, cursor);
+    if (at !== undefined) {
+      gaps += at - cursor;
+      cursor = at + 1;
       continue;
     }
-    gaps += at - cursor;
-    cursor = at + 1;
+    extras++;
+    // Nothing matched from the cursor on, so a redacted match anywhere lies before it.
+    if (!candidates && redactedMatch(k, want, 0) === undefined) lost++;
   }
   return { gaps, extras, lost };
+}
+
+/** One key's transcript positions, and the first of them not yet passed. */
+interface Candidates {
+  indices: number[];
+  next: number;
+}
+
+/** The first candidate at or after the cursor. The cursor only moves forward, so `next` does too. */
+function nextCandidate(candidates: Candidates, cursor: number): number | undefined {
+  while (candidates.next < candidates.indices.length && candidates.indices[candidates.next] < cursor) candidates.next++;
+  return candidates.indices[candidates.next];
+}
+
+/** The first transcript key from `from` on with the stored key's role that its redacted content matches (`matchesUnderRedaction`). */
+function redactedMatch(k: string, want: string[], from: number): number | undefined {
+  if (!k.includes(REDACTION_MARKER)) return undefined;
+  const role = k.slice(0, k.indexOf("\u0000") + 1);
+  const content = k.slice(role.length);
+  const index = want.findIndex((w, i) => i >= from && w.startsWith(role) && matchesUnderRedaction(content, w.slice(role.length)));
+  return index === -1 ? undefined : index;
 }
 
 /**

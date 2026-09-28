@@ -107,6 +107,15 @@ describe("Claude transcript source", () => {
       expect(delta.messages.map((m) => m.content)).toEqual(["one"]);
     });
 
+    it("matches a stored message redacted by a pattern since removed, and only the text around it", async () => {
+      const { cwd, path } = fixture();
+      writeFileSync(path, `${line("user", "key sk-123 and sk-456 done")}\n${line("assistant", "two")}\n`);
+      const redacted = [{ role: "user", content: "key [REDACTED] and [REDACTED] done" }, { role: "assistant", content: "two" }];
+      expect((await source.read(path, compacted(redacted), ctx(cwd))).sourceOffset).toBe(2);
+      const other = [{ role: "user", content: "key [REDACTED] and [REDACTED] later" }, { role: "assistant", content: "two" }];
+      await expect(source.read(path, compacted(other), ctx(cwd))).rejects.toThrow(TranscriptSourceError);
+    });
+
     it("does not compare a session compaction never wrote into", async () => {
       const { cwd, path } = fixture();
       appendFileSync(path, `${line("user", "three")}\n`);

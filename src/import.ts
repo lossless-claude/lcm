@@ -3,6 +3,7 @@ import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import type { DaemonClient } from "./daemon/client.js";
+import { closeLcmConnection, getLcmConnection } from "./db/connection.js";
 import { formatNumber, formatRatio } from "./stats.js";
 import { findAllCodexTranscripts } from "./codex-transcript.js";
 import { findAllOmpTranscripts, ompDiscoveryRoots } from "./omp-transcript.js";
@@ -839,9 +840,8 @@ async function classifyProjectSessions(cwd: string, claudeDir: string, options: 
   const transcripts = new Map(findSessionFiles(claudeDir).map((file) => [file.sessionId, file.path]));
   const scrubber = await ScrubEngine.forProject(options.sensitivePatterns ?? [], projectDir(cwd, options.paths));
   const scrub = (text: string) => scrubber.scrubWithCounts(text).text;
-  const db = new DatabaseSync(dbPath, { readOnly: true });
+  const db = getLcmConnection(dbPath, { readOnly: true });
   try {
-    db.exec("PRAGMA busy_timeout = 5000");
     const reports: RebuildSessionReport[] = [];
     for (const sessionId of compactedSessionIds(db)) {
       if (options.sessionId !== undefined && sessionId !== options.sessionId) continue;
@@ -851,7 +851,7 @@ async function classifyProjectSessions(cwd: string, claudeDir: string, options: 
     }
     return reports;
   } finally {
-    db.close();
+    closeLcmConnection(dbPath, { readOnly: true });
   }
 }
 

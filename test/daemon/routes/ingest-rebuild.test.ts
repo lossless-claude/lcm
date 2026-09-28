@@ -157,6 +157,7 @@ describe("lcm import --provider claude --rebuild", () => {
     const { post } = await startDaemon();
     expect((await post({ session_id: sessionId, cwd, transcript_path: transcriptPath, rebuild: true, client: "codex" })).status).toBe(400);
     expect((await post({ session_id: sessionId, cwd, rebuild: true, messages: [{ role: "user", content: "x", tokenCount: 1 }] })).status).toBe(400);
+    expect((await post({ session_id: sessionId, cwd, rebuild: true, messages: [] })).status).toBe(400);
     expect(existsSync(projectDbPath(cwd, paths))).toBe(true);
     expect(storedTurns()).toEqual(damagedTurns);
   });

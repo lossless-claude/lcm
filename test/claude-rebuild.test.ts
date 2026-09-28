@@ -125,6 +125,18 @@ describe("the capture guard", () => {
     const result = await capture.captureTranscript({ sessionId, cwd: dir, transcriptPath: path });
     expect(result?.records.map((r) => r.content)).toEqual(["continue"]);
   });
+
+  it("continues a compacted session after a redaction pattern that matched in it is removed", async () => {
+    const turns: Turn[] = [["user", "use tok-ABC123 here"], ["assistant", "ok"]];
+    await new SessionCapture(db, "proj", new ScrubEngine(["tok-[A-Z0-9]+"], [])).write({
+      sessionId, messages: turns.map(([role, content]) => ({ role, content, tokenCount: 1 })),
+    });
+    await compact((db.prepare("SELECT conversation_id FROM conversations WHERE session_id = ?").get(sessionId) as { conversation_id: number }).conversation_id);
+    expect(transcriptMessages()[0]).toEqual(["user", "use [REDACTED] here"]);
+    const path = transcript([...turns, ["user", "q4"]]);
+    const result = await capture.captureTranscript({ sessionId, cwd: dir, transcriptPath: path });
+    expect(result?.records.map((r) => r.content)).toEqual(["q4"]);
+  });
 });
 
 describe("classifying a session for a rebuild", () => {
@@ -143,6 +155,12 @@ describe("classifying a session for a rebuild", () => {
       kind: "repairable", gaps: 1, extras: 1, leafSummaries: 1, condensedSummaries: 1,
     });
     expect(count("SELECT total_changes() AS n")).toBe(changes);
+  });
+
+  it("repairable: a stored message redacted by a pattern since removed is still found in the transcript", async () => {
+    const withSecret: Turn[] = [["user", "q1 tok-ABC123"], ...transcriptTurns.slice(1)];
+    await compact(await store([["user", "q1 [REDACTED]"], ...damagedTurns.slice(1)]));
+    expect(await plan(withSecret)).toMatchObject({ kind: "repairable", gaps: 1, extras: 1 });
   });
 
   it("unavailable: no transcript to rebuild from", async () => {
