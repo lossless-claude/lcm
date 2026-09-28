@@ -1,6 +1,7 @@
 import { copyFileSync, existsSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as sqlite from "node:sqlite";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionCapture } from "../src/capture.js";
@@ -428,7 +429,7 @@ describe("rebuilding a session from its transcript", () => {
 describe("backing a project database up before a rebuild", () => {
   it("writes a consistent copy that holds what the write-ahead log has not checkpointed", async () => {
     await compact(await store(damagedTurns));
-    const target = backupProjectDatabase(db, dbPath, new Date("2026-09-28T10:11:12.345Z"));
+    const target = await backupProjectDatabase(db, dbPath, new Date("2026-09-28T10:11:12.345Z"));
     expect(target).toBe(`${dbPath}.bak-rebuild-2026-09-28T10-11-12-345Z`);
     expect(existsSync(target)).toBe(true);
     const copy = new DatabaseSync(target, { readOnly: true });
@@ -441,9 +442,21 @@ describe("backing a project database up before a rebuild", () => {
     }
   });
 
+  it.skipIf(typeof sqlite.backup !== "function")("lets a timer run before a multi-step backup completes", async () => {
+    db.exec("CREATE TABLE backup_payload (data BLOB)");
+    db.prepare("INSERT INTO backup_payload (data) VALUES (?)").run(new Uint8Array(4 * 1024 * 1024));
+    let timerFired = false;
+    const timer = new Promise<void>((resolve) => setTimeout(() => { timerFired = true; resolve(); }, 0));
+
+    await backupProjectDatabase(db, dbPath);
+
+    expect(timerFired).toBe(true);
+    await timer;
+  });
+
   it("refuses to overwrite an earlier backup", async () => {
     const at = new Date("2026-09-28T10:11:12.345Z");
-    backupProjectDatabase(db, dbPath, at);
-    expect(() => backupProjectDatabase(db, dbPath, at)).toThrow();
+    await backupProjectDatabase(db, dbPath, at);
+    await expect(backupProjectDatabase(db, dbPath, at)).rejects.toThrow();
   });
 });

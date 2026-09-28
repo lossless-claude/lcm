@@ -165,7 +165,7 @@ async function rebuildSession(
           runLcmMigrations(db);
           if (input.backup === true) {
             try {
-              backupPath = backupProjectDatabase(db, dbPath);
+              backupPath = await backupProjectDatabase(db, dbPath);
             } catch (err) {
               throw new Error(`backup failed, nothing was rebuilt: ${err instanceof Error ? err.message : String(err)}`);
             }

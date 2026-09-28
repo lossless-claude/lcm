@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import * as sqlite from "node:sqlite";
 import type { DatabaseSync } from "node:sqlite";
 import { REDACTION_MARKER, matchesUnderRedaction } from "./scrub.js";
 import { ConversationStore } from "./store/conversation-store.js";
@@ -172,11 +174,19 @@ export function clearConversationForRebuild(db: DatabaseSync, conversationId: nu
 
 /**
  * A consistent copy of the project database, write-ahead log included, next to it:
- * `<db>.bak-rebuild-<timestamp>`. `VACUUM INTO` reads one snapshot, so a concurrent writer
- * cannot tear it, and it refuses a target that already exists. Must not run inside a transaction.
+ * `<db>.bak-rebuild-<timestamp>`. The caller holds the project's mutation lease through
+ * the backup, so no daemon write can interleave with its steps. External writers make
+ * SQLite's backup restart; either way, the finished copy is consistent.
  */
-export function backupProjectDatabase(db: DatabaseSync, dbPath: string, now: Date = new Date()): string {
+export async function backupProjectDatabase(db: DatabaseSync, dbPath: string, now: Date = new Date()): Promise<string> {
   const target = `${dbPath}.bak-rebuild-${now.toISOString().replace(/[:.]/g, "-")}`;
-  db.prepare("VACUUM INTO ?").run(target);
+  if (existsSync(target)) throw new Error("output file already exists");
+  if (typeof sqlite.backup === "function") {
+    // Common 4 KiB pages make each 16-page step about 64 KiB of synchronous work.
+    await sqlite.backup(db, target, { rate: 16 });
+  } else {
+    // node:sqlite added backup() in Node 22.16; package.json also supports older 22.x.
+    db.prepare("VACUUM INTO ?").run(target);
+  }
   return target;
 }

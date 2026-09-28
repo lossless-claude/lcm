@@ -98,13 +98,14 @@ export type BeginBackgroundTask = (name: string) => () => void;
 /**
  * One `daemon.stalled` record per non-long-poll request or background task in flight during
  * the block; then forgets requests that ended. Nothing ends while the loop is blocked, so work
- * that ended by the time the block can have begun did not run during it. Long polls
+ * that ended by the time the block can have begun did not run during it. Work
+ * started after the earliest possible end did not run during it either. Long polls
  * are never named as a cause; when nothing else was in flight, one record is written
  * without a route, carrying `longPollCount` if any were pending.
  */
 export function reportStall(log: DaemonLog, inFlight: Set<InFlightRequest>, stall: Stall | undefined): void {
   if (stall) {
-    const involved = [...inFlight].filter((r) => r.ended === undefined || r.ended > stall.begunBy);
+    const involved = [...inFlight].filter((r) => r.started < stall.endedAfter && (r.ended === undefined || r.ended > stall.begunBy));
     const longPollCount = involved.filter((r) => LONG_POLL_ROUTES.has(r.route)).length;
     const causes = involved.filter((r) => !LONG_POLL_ROUTES.has(r.route));
     for (const r of causes) {
