@@ -1,5 +1,5 @@
 // test/daemon/transcript-scan.test.ts
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,7 +8,9 @@ import { scanForTranscripts } from "../../src/daemon/server.js";
 import type { RouteHandler } from "../../src/daemon/server.js";
 import { createIngestHandler } from "../../src/daemon/routes/ingest.js";
 import { loadDaemonConfig } from "../../src/daemon/config.js";
-import { claudeProjectSlug, projectDbPath } from "../../src/daemon/project.js";
+import { claudeProjectSlug, projectDbPath, projectDir } from "../../src/daemon/project.js";
+import { eventsDbPath } from "../../src/db/events-path.js";
+import { parseTranscript } from "../../src/transcript.js";
 import { lcmHome } from "../../src/lcm-home.js";
 import { createLcmPaths } from "../../src/lcm-paths.js";
 
@@ -23,6 +25,13 @@ vi.mock("node:os", async (importOriginal) => {
     ...actual,
     homedir: () => process.env.LCM_SCAN_FAKE_HOME ?? actual.homedir(),
   };
+});
+
+// Only parseTranscript is wrapped, so one test can make a single subagent capture fail;
+// every other transcript passes straight through to the real implementation.
+vi.mock("../../src/transcript.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/transcript.js")>();
+  return { ...actual, parseTranscript: vi.fn(actual.parseTranscript) };
 });
 
 const paths = createLcmPaths(lcmHome());
@@ -135,11 +144,14 @@ describe("periodic transcript scan", () => {
 });
 
 /** Registers a project with one transcript under its real slug; returns the paths a test needs to grow it. */
-function seedFingerprintProject(name: string, content: string): { transcriptPath: string; sessionDir: string } {
+function seedFingerprintProject(name: string, content: string): { transcriptPath: string; sessionDir: string; project: string } {
   const fakeHome = process.env.LCM_SCAN_FAKE_HOME!;
-  const project = join(fakeHome, "fp", name);
-  mkdirSync(project, { recursive: true });
-  const projectEntry = join(paths.projectsDir, `fp-${name}`);
+  mkdirSync(join(fakeHome, "fp", name), { recursive: true });
+  // `/ingest` resolves the cwd before it looks for subagent transcripts under that cwd's
+  // slug, so the fixture lays the session out under the resolved path's slug too.
+  const project = realpathSync(join(fakeHome, "fp", name));
+  // The entry `/ingest` itself registers the project under, so the scan finds each session once.
+  const projectEntry = projectDir(project, paths);
   mkdirSync(projectEntry, { recursive: true });
   writeFileSync(join(projectEntry, "meta.json"), JSON.stringify({ cwd: project }));
   const sessionsDir = join(fakeHome, ".claude", "projects", claudeProjectSlug(project));
@@ -147,7 +159,7 @@ function seedFingerprintProject(name: string, content: string): { transcriptPath
   const sessionId = `fp-session-${name}`;
   const transcriptPath = join(sessionsDir, `${sessionId}.jsonl`);
   writeFileSync(transcriptPath, content);
-  return { transcriptPath, sessionDir: join(sessionsDir, sessionId) };
+  return { transcriptPath, sessionDir: join(sessionsDir, sessionId), project };
 }
 
 const transcriptLine = (text: string): string => `${JSON.stringify({ message: { role: "user", content: text } })}\n`;
@@ -199,6 +211,66 @@ describe("periodic transcript scan: fingerprint dedup", () => {
     // The parent transcript itself is untouched; only the subagent transcript grows,
     // exactly the case a parent-only fingerprint would miss.
     appendFileSync(subagentPath, transcriptLine("subagent turn 2"));
+    await scanForTranscripts(config, paths, handler);
+
+    expect(count()).toBe(2);
+  });
+
+  it("re-ingests a session whose subagent sidecar appeared after the subagent was captured", async () => {
+    const config = loadDaemonConfig("/nonexistent");
+    const { handler, count } = countingHandler(createIngestHandler(config, paths));
+    const { sessionDir } = seedFingerprintProject("sidecar-late", transcriptLine("parent turn"));
+    const subagentsDir = join(sessionDir, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    writeFileSync(join(subagentsDir, "agent-1.jsonl"), transcriptLine("subagent turn"));
+
+    await scanForTranscripts(config, paths, handler);
+    // Every transcript is untouched; only the attribution sidecar the next /ingest backfills from appears.
+    writeFileSync(join(subagentsDir, "agent-1.meta.json"), JSON.stringify({ agentType: "general-purpose" }));
+    await scanForTranscripts(config, paths, handler);
+
+    expect(count()).toBe(2);
+  });
+
+  it("retries a session whose subagent capture failed although its parent ingest succeeded", async () => {
+    const config = loadDaemonConfig("/nonexistent");
+    const { handler, count } = countingHandler(createIngestHandler(config, paths));
+    const { sessionDir, project } = seedFingerprintProject("subagent-failure", transcriptLine("parent turn"));
+    const subagentsDir = join(sessionDir, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    const subagentPath = join(subagentsDir, "agent-1.jsonl");
+    writeFileSync(subagentPath, transcriptLine("subagent Obsidianite turn"));
+
+    const parse = vi.mocked(parseTranscript);
+    const real = parse.getMockImplementation()!;
+    parse.mockImplementation((path) => {
+      if (path === realpathSync(subagentPath)) throw new Error("simulated subagent parse failure");
+      return real(path);
+    });
+    try {
+      await scanForTranscripts(config, paths, handler);
+    } finally {
+      parse.mockImplementation(real);
+    }
+    await scanForTranscripts(config, paths, handler);
+    await scanForTranscripts(config, paths, handler);
+
+    // The failed pass recorded nothing; the next one captured the subagent and was recorded, so the third skipped.
+    expect(count()).toBe(2);
+    expect(storedMessages(project, "agent-1").map((row) => row.content))
+      .toContain("subagent Obsidianite turn");
+  });
+
+  it("retries a session whose tool-call model backfill failed", async () => {
+    const config = loadDaemonConfig("/nonexistent");
+    const { handler, count } = countingHandler(createIngestHandler(config, paths));
+    const { project } = seedFingerprintProject("backfill-failure", transcriptLine("parent turn"));
+    // A directory where the events database belongs: the backfill finds it, and opening it throws.
+    const eventsPath = eventsDbPath(project, paths);
+    mkdirSync(eventsPath, { recursive: true });
+    tempDirs.push(eventsPath);
+
+    await scanForTranscripts(config, paths, handler);
     await scanForTranscripts(config, paths, handler);
 
     expect(count()).toBe(2);

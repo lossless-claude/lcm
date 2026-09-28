@@ -21,6 +21,8 @@ export interface IngestResult {
   ingested?: number;
   redacted?: number;
   redactedCategories?: string[];
+  /** The parent session landed, but a subagent capture or (when asked to run first) the model backfill failed. */
+  incomplete?: true;
 }
 
 /**

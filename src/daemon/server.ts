@@ -32,7 +32,7 @@ import { createReviewStaleHandler } from "./routes/review-stale.js";
 import { createToolEventHandler } from "./routes/tool-event.js";
 import { createSessionScavengeHandler } from "./routes/session-scavenge.js";
 import { createSessionStartCompactHandler } from "./routes/session-start-compact.js";
-import { createSessionEndHandler, invokeRoute } from "./routes/session-end.js";
+import { createSessionEndHandler, invokeRoute, type IngestResult } from "./routes/session-end.js";
 import { backfillProjectIdentities } from "./project-group.js";
 import { yieldToEventLoop } from "./project-queue.js";
 import { claudeProjectSlug } from "./project.js";
@@ -330,11 +330,12 @@ const SCAN_YIELD_EVERY = 50;
 /** One file's identity for change detection: not its content, just enough to notice it moved. */
 type FileFingerprint = { name: string; size: number; mtimeMs: number };
 
-// Matches `isSubagentTranscriptFile` in src/subagent-attribution.ts: the same rule
-// (a `.jsonl` file, `journal.jsonl` excluded by name) applied to fingerprinting instead
-// of attribution, so a subagent transcript that counts for one counts for the other.
-function isSubagentTranscriptFile(entry: Dirent): boolean {
-  return entry.isFile() && entry.name !== "journal.jsonl" && entry.name.endsWith(".jsonl");
+// Every file `/ingest` reads under `subagents/`: each transcript and its `.meta.json`
+// attribution sidecar, which can appear after the transcript was first captured and is
+// then backfilled by the next ingest. Only `journal.jsonl`, a workflow run's own log that
+// no ingest reads, is left out (`discoverSubagentTranscripts` in src/subagent-attribution.ts).
+function isSubagentIngestInput(entry: Dirent): boolean {
+  return entry.isFile() && entry.name !== "journal.jsonl";
 }
 
 /** `undefined` when `path` vanished between its directory's listing and this stat; not fingerprinted, so the next pass tries again. */
@@ -348,11 +349,11 @@ async function statFingerprint(path: string): Promise<FileFingerprint | undefine
 }
 
 /**
- * Every subagent transcript under a session's `subagents/` directory (recursively — a
- * workflow run nests its own subagents further, as `discoverSubagentTranscripts` in
- * `src/subagent-attribution.ts` does for the real ingest), stat'd for its fingerprint.
- * Mirrors that module's file filter and its symlink refusal, but only to notice change,
- * not to attribute or capture anything.
+ * Every subagent transcript and sidecar under a session's `subagents/` directory
+ * (recursively — a workflow run nests its own subagents further, as
+ * `discoverSubagentTranscripts` in `src/subagent-attribution.ts` does for the real
+ * ingest), stat'd for its fingerprint. Mirrors that module's symlink refusal, but only
+ * to notice change, not to attribute or capture anything.
  */
 async function subagentFingerprints(dir: string): Promise<FileFingerprint[]> {
   const out: FileFingerprint[] = [];
@@ -369,7 +370,7 @@ async function subagentFingerprints(dir: string): Promise<FileFingerprint[]> {
       out.push(...await subagentFingerprints(full));
       continue;
     }
-    if (!isSubagentTranscriptFile(entry)) continue;
+    if (!isSubagentIngestInput(entry)) continue;
     const fingerprint = await statFingerprint(full);
     if (fingerprint) out.push(fingerprint);
   }
@@ -378,9 +379,10 @@ async function subagentFingerprints(dir: string): Promise<FileFingerprint[]> {
 
 /**
  * A cheap signature for "might this session's stored content be stale": the parent
- * transcript's `(size, mtimeMs)`, plus the same for every subagent transcript under
- * `<sessionDir>/subagents/`. The parent alone is not enough — a subagent transcript is
- * discovered and grows through the parent's own `/ingest` (`ingestSubagentTranscripts` in
+ * transcript's `(size, mtimeMs)`, plus the same for every subagent transcript and
+ * `.meta.json` sidecar under `<sessionDir>/subagents/`. The parent alone is not enough — a
+ * subagent transcript is discovered and grows, and its attribution is filled in once its
+ * sidecar appears, through the parent's own `/ingest` (`ingestSubagentTranscripts` in
  * `src/daemon/routes/ingest.ts`) while the parent file itself may go untouched.
  * `undefined` when the parent file could not be stat'd (vanished mid-walk): the caller
  * then always attempts the ingest, which fails the same way and is retried next pass.
@@ -433,8 +435,10 @@ let scanInProgress = false;
  *
  * Each session's transcript is skipped when its fingerprint (see
  * `transcriptFingerprint`) matches the one recorded for it, computed before the
- * ingest and recorded only once the ingest resolves — a failed or rejected
- * ingest leaves nothing recorded, so it is retried next pass. This never marks
+ * ingest and recorded only once the ingest resolves without `incomplete` — a
+ * failed or rejected ingest, a subagent transcript that could not be captured, or
+ * a failed tool-call model backfill (which this call asks `/ingest` to run before
+ * replying) leaves nothing recorded, so it is retried next pass. This never marks
  * a session complete; that stays `/session-complete`'s job alone (a Claude
  * `--resume` of a completed session is a separate, pre-existing gap).
  */
@@ -471,8 +475,10 @@ export async function scanForTranscripts(config: DaemonConfig, paths: LcmPaths, 
         if (fingerprint !== undefined && transcriptFingerprints.get(transcriptPath) === fingerprint) continue;
 
         try {
-          await invokeRoute(ingest, { session_id: sessionId, cwd: meta.cwd, transcript_path: transcriptPath });
-          if (fingerprint !== undefined) transcriptFingerprints.set(transcriptPath, fingerprint);
+          const result = await invokeRoute<IngestResult>(ingest, {
+            session_id: sessionId, cwd: meta.cwd, transcript_path: transcriptPath, backfill_before_reply: true,
+          });
+          if (fingerprint !== undefined && !result.incomplete) transcriptFingerprints.set(transcriptPath, fingerprint);
         } catch {
           continue; // one rejected transcript must not end the sweep; unrecorded, so it is retried next pass
         }
