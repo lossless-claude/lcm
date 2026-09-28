@@ -15,7 +15,7 @@ import {
 } from "./store/conversation-store.js";
 import { SummaryStore } from "./store/summary-store.js";
 import { readSubagentAttribution } from "./subagent-attribution.js";
-import { parseTranscript, type MessagePart, type ParsedMessage } from "./transcript.js";
+import { CLAUDE_PARSER_SHAPE, parseTranscript, type MessagePart, type ParsedMessage } from "./transcript.js";
 import { clearConversationForRebuild, planSessionRebuild, type SessionRebuildPlan } from "./claude-rebuild.js";
 import {
   transcriptSource,
@@ -39,6 +39,9 @@ import {
 
 export type RedactionCounts = { gitleaks: number; builtIn: number; global: number; project: number };
 
+/** Structured messages have no Claude parser provenance; a later transcript capture must verify them. */
+export const STRUCTURED_INGEST_SHAPE = "structured";
+
 export interface StoredSession {
   /** The session's newest conversation: the one a clear opened last, or its only one. */
   conversationId: number;
@@ -50,6 +53,10 @@ export interface CaptureInput {
   sessionId: string;
   /** Transcript messages, from the first one or from `sourceOffset` onwards. Whatever is already stored is skipped. */
   messages: ParsedMessage[];
+  /** Cursor sources use NULL, structured ingestion uses its own marker, and Claude uses the current parser shape. */
+  parserShape?: string | null;
+  /** The Claude adapter verified all stored messages against today's parse. */
+  restampParserShape?: boolean;
   /** How many leading messages `messages` already omits (an adapter checkpoint resume). */
   sourceOffset?: number;
   /** Clears among `messages`: each opens a new conversation for the messages from its position on. */
@@ -175,6 +182,8 @@ export class SessionCapture {
     const written = await this.write({
       sessionId: input.sessionId,
       messages: delta.messages,
+      parserShape: source.client === "claude" ? CLAUDE_PARSER_SHAPE : null,
+      restampParserShape: delta.restampParserShape,
       sourceOffset: delta.sourceOffset,
       boundaries: delta.boundaries,
       transcriptPath,
@@ -196,6 +205,7 @@ export class SessionCapture {
       storedMessages: (offset = 0) => this.conversationStore.getSessionMessages(sessionId, offset),
       prefixFingerprint: (count) => this.conversationStore.getSessionPrefixFingerprint(sessionId, count),
       checkpoint: source.loadCheckpoint?.(this.db, stored.conversationId, transcriptPath),
+      parserShapeMatches: () => this.conversationStore.sessionHasParserShape(sessionId, CLAUDE_PARSER_SHAPE),
       verifyAfterCompaction: () => this.conversationStore.sessionComparableAfterCompaction(sessionId),
     };
   }
@@ -236,8 +246,10 @@ export class SessionCapture {
       if (plan.kind !== "repairable" || plan.conversationId === undefined || !delta) return { plan, ingested: 0 };
       clearConversationForRebuild(this.db, plan.conversationId, input.sessionId);
       const written = await this.writeInTransaction({
-        sessionId: input.sessionId, messages: delta.messages, transcriptPath, attribution: input.attribution,
+        sessionId: input.sessionId, messages: delta.messages, parserShape: CLAUDE_PARSER_SHAPE,
+        transcriptPath, attribution: input.attribution,
       });
+      this.conversationStore.setParserShape(plan.conversationId, CLAUDE_PARSER_SHAPE);
       return { plan, ingested: written.records.length };
     });
   }
@@ -245,7 +257,8 @@ export class SessionCapture {
   private async writeInTransaction(input: CaptureInput): Promise<CaptureResult> {
     const attribution = input.attribution
       ?? (input.transcriptPath ? attributionFromTranscriptPath(input.transcriptPath) : undefined);
-    const conversation = await this.conversationStore.getOrCreateConversation(input.sessionId, undefined, attribution);
+    const parserShape = input.parserShape === undefined ? CLAUDE_PARSER_SHAPE : input.parserShape;
+    const conversation = await this.conversationStore.getOrCreateConversation(input.sessionId, undefined, attribution, parserShape);
     const storedCount = await this.conversationStore.getSessionMessageCount(input.sessionId);
     // A resumed read may skip only an already-stored prefix; new content begins at the stored count.
     let start = Math.max(0, storedCount - (input.sourceOffset ?? 0));
@@ -255,10 +268,12 @@ export class SessionCapture {
     for (const { entryId, at } of input.boundaries ?? []) {
       if (at < start) continue;
       records.push(...await this.append(input.sessionId, conversationId, input.messages.slice(start, at), totalCounts));
-      conversationId = (await this.conversationStore.getOrOpenConversationAt(input.sessionId, entryId, attribution)).conversationId;
+      conversationId = (await this.conversationStore.getOrOpenConversationAt(input.sessionId, entryId, attribution, parserShape)).conversationId;
       start = at;
     }
     records.push(...await this.append(input.sessionId, conversationId, input.messages.slice(start), totalCounts));
+    if (input.restampParserShape) this.conversationStore.setSessionParserShape(input.sessionId, CLAUDE_PARSER_SHAPE);
+    else if (parserShape === STRUCTURED_INGEST_SHAPE) this.conversationStore.setSessionParserShape(input.sessionId, STRUCTURED_INGEST_SHAPE);
     if (records.length > 0) upsertRedactionCounts(this.db, this.projectId, totalCounts);
     if (input.checkpoint !== undefined) input.persistCheckpoint?.(this.db, conversationId);
     return { conversationId, records, totalCounts };

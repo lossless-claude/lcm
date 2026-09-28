@@ -892,6 +892,11 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
   if (!taggingColumns.some((col) => col.name === "role_tagging")) {
     db.exec(`ALTER TABLE conversations ADD COLUMN role_tagging TEXT DEFAULT NULL`);
   }
+  // Existing rows may have been captured before or after a parser shape change.
+  // Neither age nor role tagging establishes which count their rows represent.
+  if (!taggingColumns.some((col) => col.name === "parser_shape")) {
+    db.exec(`ALTER TABLE conversations ADD COLUMN parser_shape TEXT DEFAULT NULL`);
+  }
 
   ensureSubagentAttributionColumns(db);
   ensureConversationBoundaryColumn(db);

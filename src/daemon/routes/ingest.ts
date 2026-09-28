@@ -22,7 +22,7 @@ import { scheduleProjectLanguageDetection } from "../project-language.js";
 import { noopDaemonLog, type DaemonLog } from "../log.js";
 import { enqueue, withProjectMutation } from "../project-queue.js";
 import { backupProjectDatabase } from "../../claude-rebuild.js";
-import { SessionCapture, isSessionComplete, type CaptureInput, type CaptureResult, type TranscriptCaptureResult } from "../../capture.js";
+import { SessionCapture, STRUCTURED_INGEST_SHAPE, isSessionComplete, type CaptureInput, type CaptureResult, type TranscriptCaptureResult } from "../../capture.js";
 import type { DiscoveredSubagentTranscript } from "../../subagent-attribution.js";
 
 type ParsedMessage = CaptureInput["messages"][number];
@@ -257,7 +257,7 @@ export function createIngestHandler(
           let written: CaptureResult | undefined;
           if (structured) {
             // Structured mode carries the messages themselves and names no transcript.
-            written = await capture.write({ sessionId: session_id, messages: structured, attribution });
+            written = await capture.write({ sessionId: session_id, messages: structured, parserShape: STRUCTURED_INGEST_SHAPE, attribution });
           } else {
             captured = await capture.captureTranscript({
               sessionId: session_id, client: input.client, cwd, transcriptPath: input.transcript_path,

@@ -4,7 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { compareStoredMessageContent, normalizeMessageContent } from "./message-content.js";
 import { REDACTION_MARKER } from "./scrub.js";
 import { ConversationStore } from "./store/conversation-store.js";
-import type { ParsedMessage } from "./transcript.js";
+import { CLAUDE_PARSER_SHAPE, type ParsedMessage } from "./transcript.js";
 
 /**
  * Rebuilding a Claude Code session from its transcript. Before compaction stopped counting
@@ -13,7 +13,7 @@ import type { ParsedMessage } from "./transcript.js";
  * rebuild replaces the session's stored history with its transcript, captured from the start;
  * it keeps the conversation row, its large files, and promoted memory.
  *
- * Only a session compaction wrote into can carry that damage, so only those are selected. The
+ * Compacted sessions and sessions with an unknown parser shape can carry that damage. The
  * classification here is read-only: the dry run uses it on a read-only connection, and the
  * daemon repeats it inside the rebuild's transaction before changing anything.
  */
@@ -56,6 +56,19 @@ export function compactedSessionIds(db: DatabaseSync): string[] {
      ORDER BY c.session_id`,
   ).all() as Array<{ session_id: string }>;
   return rows.map((row) => row.session_id);
+}
+
+/** Compacted sessions and count-based sessions whose parser shape needs verification or repair. */
+export function claudeRebuildCandidateIds(db: DatabaseSync): string[] {
+  const ids = new Set(compactedSessionIds(db));
+  const hasCursors = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'codex_ingest_cursors'").get();
+  const rows = db.prepare(
+    `SELECT DISTINCT c.session_id FROM conversations c
+     WHERE (c.parser_shape IS NULL OR c.parser_shape <> ?)
+     ${hasCursors ? "AND NOT EXISTS (SELECT 1 FROM codex_ingest_cursors k JOIN conversations kc ON kc.conversation_id = k.conversation_id WHERE kc.session_id = c.session_id)" : ""}`,
+  ).all(CLAUDE_PARSER_SHAPE) as Array<{ session_id: string }>;
+  for (const row of rows) ids.add(row.session_id);
+  return [...ids].sort();
 }
 
 /**

@@ -45,7 +45,7 @@ function tempDir(prefix: string): string {
 
 /** A stored state that mirrors what the adapter's own earlier answer would have written. */
 function stored(messages: Array<{ role: string; content: string }>, checkpoint?: CodexTranscriptCursor): StoredTranscript {
-  return { storedCount: messages.length, storedMessages: async () => messages, checkpoint };
+  return { storedCount: messages.length, storedMessages: async () => messages, parserShapeMatches: async () => true, checkpoint };
 }
 
 describe("Claude transcript source", () => {
@@ -120,7 +120,7 @@ describe("Claude transcript source", () => {
       const { cwd, path } = fixture();
       appendFileSync(path, `${line("user", "three")}\n`);
       const storedMessages = vi.fn(async () => [{ role: "user", content: "different" }]);
-      const delta = await source.read(path, { storedCount: 1, storedMessages, verifyAfterCompaction: async () => false }, ctx(cwd));
+      const delta = await source.read(path, { storedCount: 1, storedMessages, parserShapeMatches: async () => true, verifyAfterCompaction: async () => false }, ctx(cwd));
       expect(storedMessages).not.toHaveBeenCalled();
       expect(delta.messages.map((m) => m.content)).toEqual(["two", "three"]);
     });
