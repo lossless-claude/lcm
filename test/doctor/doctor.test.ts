@@ -77,6 +77,15 @@ describe("runDoctor security section", () => {
   });
 });
 
+describe("runDoctor capture section", () => {
+  it("reports whether Claude Code transcripts hold sessions with nothing stored", async () => {
+    const results = await runDoctor(minimalDeps({ cwd: "/tmp/nonexistent-project-xyz" }));
+    const capture = results.find((r) => r.name === "claude-capture");
+    expect(capture?.category).toBe("Capture");
+    expect(capture?.status).toBe("pass");
+  });
+});
+
 describe("runDoctor guidance checks", () => {
   it("runs the check for every guidance row when every harness CLI is on PATH", async () => {
     const results = await runDoctor(minimalDeps({ cwd: "/tmp/nonexistent-project-xyz" }));

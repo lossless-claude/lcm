@@ -111,8 +111,13 @@ export function isSessionComplete(db: DatabaseSync, sessionId: string, transcrip
   } catch {
     return false;
   }
+  return completedSinceModified(row.completed_at, modifiedMs);
+}
+
+/** Whether a `session_ingest_log.completed_at` is no earlier than the transcript's last modification. */
+export function completedSinceModified(completedAt: string, modifiedMs: number): boolean {
   // `completed_at` is SQLite UTC text; a NaN parse compares false, so the file is read.
-  return modifiedMs <= Date.parse(`${row.completed_at.replace(" ", "T")}Z`);
+  return modifiedMs <= Date.parse(`${completedAt.replace(" ", "T")}Z`);
 }
 
 /** Records the session complete now; completing it again after a resume moves `completed_at` forward. */

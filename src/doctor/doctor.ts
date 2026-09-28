@@ -21,6 +21,7 @@ import type { LogState } from "../daemon/log.js";
 import { readFunctionHookSnapshots, readOmpHookSnapshots } from "./hook-snapshots.js";
 import { readHookOutcomeLog } from "./hook-outcome-log.js";
 import { addHarnessGuidanceChecks } from "./guidance-checks.js";
+import { checkUncapturedTranscripts } from "./transcript-check.js";
 import { loadDaemonConfig } from "../daemon/config.js";
 import { summarizerAvailability } from "../daemon/provider-config.js";
 
@@ -803,6 +804,11 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
       message: `User patterns:  ${globalUserPatternCount} global, 0 project`,
     });
   }
+
+  // ── Capture ──
+  results.push(checkUncapturedTranscripts({
+    paths: createLcmPaths(deps.lcmHome), claudeProjectsDir: join(deps.homedir, ".claude", "projects"), cwd,
+  }));
 
   // ── Passive Learning ──
   const hooksInstalled = results.some(
