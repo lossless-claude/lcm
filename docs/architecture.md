@@ -82,8 +82,17 @@ PostToolUseFailure); the function-hooks module speaks the same routes through
 `tool.call`. `docs/hook-protocol.md` is the contract for their payloads and deadlines.
 
 Capture itself happens on `POST /ingest`, reached from `session-end`, the Stop snapshot, and
-the SessionStart catch-up sweep the daemon runs for conversations a killed session left
-uncompacted. PreCompact can Capture inside `/compact`, before lcm summarization, with
+the periodic transcript scan (`scanForTranscripts` in `src/daemon/server.ts`, every 10
+minutes) that recovers a session whose `SessionEnd` never ran. The scan skips a session
+whose transcript is unchanged since its last successful ingest — an in-memory fingerprint
+per transcript path, the parent file's `(size, mtimeMs)` plus the same for every subagent
+transcript under its `subagents/` tree, since a subagent transcript grows through the
+parent's own `/ingest` while the parent file itself may not change; the fingerprint is
+recorded only once the ingest for that pass succeeds, so a failed one is retried next
+pass, and the scan never marks a session complete. The SessionStart catch-up sweep is a
+different thing and never reaches `/ingest`: it finds conversations a killed session left
+uncompacted and asks `/compact` for them directly, with `skip_ingest: true`
+(`docs/configuration.md#sessionstart-catch-up-sweep`). PreCompact can Capture inside `/compact`, before lcm summarization, with
 separate outcomes for the two operations. `POST /session-end` hands the whole end-of-session sequence to the daemon —
 ingest, then compact, promote and session-complete — after acknowledging with `202`, so a
 host that stops waiting for the hook cannot drop the steps behind it.

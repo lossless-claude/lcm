@@ -1,10 +1,11 @@
 // test/daemon/transcript-scan.test.ts
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { scanForTranscripts } from "../../src/daemon/server.js";
+import type { RouteHandler } from "../../src/daemon/server.js";
 import { createIngestHandler } from "../../src/daemon/routes/ingest.js";
 import { loadDaemonConfig } from "../../src/daemon/config.js";
 import { claudeProjectSlug, projectDbPath } from "../../src/daemon/project.js";
@@ -130,5 +131,107 @@ describe("periodic transcript scan", () => {
     await scanForTranscripts(config, paths, ingest);
 
     expect(timerFired).toBe(true);
+  });
+});
+
+/** Registers a project with one transcript under its real slug; returns the paths a test needs to grow it. */
+function seedFingerprintProject(name: string, content: string): { transcriptPath: string; sessionDir: string } {
+  const fakeHome = process.env.LCM_SCAN_FAKE_HOME!;
+  const project = join(fakeHome, "fp", name);
+  mkdirSync(project, { recursive: true });
+  const projectEntry = join(paths.projectsDir, `fp-${name}`);
+  mkdirSync(projectEntry, { recursive: true });
+  writeFileSync(join(projectEntry, "meta.json"), JSON.stringify({ cwd: project }));
+  const sessionsDir = join(fakeHome, ".claude", "projects", claudeProjectSlug(project));
+  mkdirSync(sessionsDir, { recursive: true });
+  const sessionId = `fp-session-${name}`;
+  const transcriptPath = join(sessionsDir, `${sessionId}.jsonl`);
+  writeFileSync(transcriptPath, content);
+  return { transcriptPath, sessionDir: join(sessionsDir, sessionId) };
+}
+
+const transcriptLine = (text: string): string => `${JSON.stringify({ message: { role: "user", content: text } })}\n`;
+
+/** Wraps a route handler with a call counter, so a test can tell whether the scan actually invoked `/ingest` for a session, independent of what that ingest did to the database. */
+function countingHandler(real: RouteHandler): { handler: RouteHandler; count: () => number } {
+  let calls = 0;
+  const handler: RouteHandler = async (req, res, body) => {
+    calls++;
+    await real(req, res, body);
+  };
+  return { handler, count: () => calls };
+}
+
+describe("periodic transcript scan: fingerprint dedup", () => {
+  it("ingests an unchanged transcript once across two passes", async () => {
+    const config = loadDaemonConfig("/nonexistent");
+    const { handler, count } = countingHandler(createIngestHandler(config, paths));
+    seedFingerprintProject("unchanged", transcriptLine("hello"));
+
+    await scanForTranscripts(config, paths, handler);
+    await scanForTranscripts(config, paths, handler);
+
+    expect(count()).toBe(1);
+  });
+
+  it("re-ingests a session whose parent transcript was appended to between passes", async () => {
+    const config = loadDaemonConfig("/nonexistent");
+    const { handler, count } = countingHandler(createIngestHandler(config, paths));
+    const { transcriptPath } = seedFingerprintProject("appended", transcriptLine("first"));
+
+    await scanForTranscripts(config, paths, handler);
+    appendFileSync(transcriptPath, transcriptLine("second"));
+    await scanForTranscripts(config, paths, handler);
+
+    expect(count()).toBe(2);
+  });
+
+  it("re-ingests a session whose parent is unchanged but a subagent transcript grew", async () => {
+    const config = loadDaemonConfig("/nonexistent");
+    const { handler, count } = countingHandler(createIngestHandler(config, paths));
+    const { sessionDir } = seedFingerprintProject("subagent-growth", transcriptLine("parent turn"));
+    const subagentsDir = join(sessionDir, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    const subagentPath = join(subagentsDir, "agent-1.jsonl");
+    writeFileSync(subagentPath, transcriptLine("subagent turn 1"));
+
+    await scanForTranscripts(config, paths, handler);
+    // The parent transcript itself is untouched; only the subagent transcript grows,
+    // exactly the case a parent-only fingerprint would miss.
+    appendFileSync(subagentPath, transcriptLine("subagent turn 2"));
+    await scanForTranscripts(config, paths, handler);
+
+    expect(count()).toBe(2);
+  });
+
+  it("retries a session whose ingest failed on the previous pass", async () => {
+    let calls = 0;
+    const alwaysFails: RouteHandler = async () => {
+      calls++;
+      throw new Error("simulated ingest failure");
+    };
+    const config = loadDaemonConfig("/nonexistent");
+    seedFingerprintProject("retry", transcriptLine("hello"));
+
+    await scanForTranscripts(config, paths, alwaysFails);
+    await scanForTranscripts(config, paths, alwaysFails);
+
+    // Never having recorded a fingerprint for a failed attempt, the second pass tries again.
+    expect(calls).toBe(2);
+  });
+
+  it("does not run a second pass while one is still in flight", async () => {
+    const config = loadDaemonConfig("/nonexistent");
+    const { handler, count } = countingHandler(createIngestHandler(config, paths));
+    seedFingerprintProject("overlap", transcriptLine("hello"));
+
+    // Called back to back, with no await between: the second call must see the first
+    // pass's in-progress flag already set (a function call's synchronous prefix always
+    // runs to completion before control returns to the caller) and return at once.
+    const first = scanForTranscripts(config, paths, handler);
+    const second = scanForTranscripts(config, paths, handler);
+    await Promise.all([first, second]);
+
+    expect(count()).toBe(1);
   });
 });

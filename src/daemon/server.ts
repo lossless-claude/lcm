@@ -2,7 +2,8 @@ import { SummarizeJobStore } from "./summarize-jobs.js";
 import { summarizerAvailability } from "./provider-config.js";
 import { createNextSummarizeJobHandler, createAnswerSummarizeJobHandler } from "./routes/summarize-jobs.js";
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
-import { readdir } from "node:fs/promises";
+import { lstat, readdir, stat } from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -326,12 +327,102 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
 // `meta.json` read) short enough that the event loop never visibly blocks.
 const SCAN_YIELD_EVERY = 50;
 
+/** One file's identity for change detection: not its content, just enough to notice it moved. */
+type FileFingerprint = { name: string; size: number; mtimeMs: number };
+
+// Matches `isSubagentTranscriptFile` in src/subagent-attribution.ts: the same rule
+// (a `.jsonl` file, `journal.jsonl` excluded by name) applied to fingerprinting instead
+// of attribution, so a subagent transcript that counts for one counts for the other.
+function isSubagentTranscriptFile(entry: Dirent): boolean {
+  return entry.isFile() && entry.name !== "journal.jsonl" && entry.name.endsWith(".jsonl");
+}
+
+/** `undefined` when `path` vanished between its directory's listing and this stat; not fingerprinted, so the next pass tries again. */
+async function statFingerprint(path: string): Promise<FileFingerprint | undefined> {
+  try {
+    const st = await stat(path);
+    return { name: path, size: st.size, mtimeMs: st.mtimeMs };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Every subagent transcript under a session's `subagents/` directory (recursively — a
+ * workflow run nests its own subagents further, as `discoverSubagentTranscripts` in
+ * `src/subagent-attribution.ts` does for the real ingest), stat'd for its fingerprint.
+ * Mirrors that module's file filter and its symlink refusal, but only to notice change,
+ * not to attribute or capture anything.
+ */
+async function subagentFingerprints(dir: string): Promise<FileFingerprint[]> {
+  const out: FileFingerprint[] = [];
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return out; // no subagents directory, or unreadable
+  }
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) continue;
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      out.push(...await subagentFingerprints(full));
+      continue;
+    }
+    if (!isSubagentTranscriptFile(entry)) continue;
+    const fingerprint = await statFingerprint(full);
+    if (fingerprint) out.push(fingerprint);
+  }
+  return out;
+}
+
+/**
+ * A cheap signature for "might this session's stored content be stale": the parent
+ * transcript's `(size, mtimeMs)`, plus the same for every subagent transcript under
+ * `<sessionDir>/subagents/`. The parent alone is not enough — a subagent transcript is
+ * discovered and grows through the parent's own `/ingest` (`ingestSubagentTranscripts` in
+ * `src/daemon/routes/ingest.ts`) while the parent file itself may go untouched.
+ * `undefined` when the parent file could not be stat'd (vanished mid-walk): the caller
+ * then always attempts the ingest, which fails the same way and is retried next pass.
+ */
+async function transcriptFingerprint(transcriptPath: string, sessionDir: string): Promise<string | undefined> {
+  let parent: FileFingerprint;
+  try {
+    const st = await stat(transcriptPath);
+    parent = { name: transcriptPath, size: st.size, mtimeMs: st.mtimeMs };
+  } catch {
+    return undefined;
+  }
+  const subagentsDir = join(sessionDir, "subagents");
+  let subagentsDirIsReal = false;
+  try { subagentsDirIsReal = (await lstat(subagentsDir)).isDirectory(); } catch { /* no subagents directory */ }
+  const subagents = subagentsDirIsReal
+    ? (await subagentFingerprints(subagentsDir)).sort((a, b) => a.name.localeCompare(b.name))
+    : [];
+  return JSON.stringify({ parent, subagents });
+}
+
+/**
+ * The fingerprint recorded after each transcript path's last successful ingest, so an
+ * unchanged transcript is never re-parsed. Module-scoped: a daemon restart empties it, so
+ * the first pass after a restart re-ingests every transcript once, which is accepted —
+ * every project's database is idempotent under a repeated ingest, this only saves the
+ * work of re-parsing. Entries for a transcript no longer seen on a pass are dropped, so a
+ * deleted project or session cannot grow this map without bound.
+ */
+const transcriptFingerprints = new Map<string, string>();
+
+/** True while a pass of `scanForTranscripts` is running. */
+let scanInProgress = false;
+
 /**
  * One pass of the periodic transcript scan: for every project with stored
  * memory, ingests the Claude Code transcripts under
  * `~/.claude/projects/<claudeProjectSlug(cwd)>` that live capture has not
  * reached yet. Best-effort by construction — one rejected transcript, or the
- * sweep itself, must never fault the daemon.
+ * sweep itself, must never fault the daemon. A pass still running when the
+ * next one is asked for is left alone; the new call is a no-op, so a slow
+ * pass and the next scheduled tick never run concurrently.
  *
  * Directory listings are read with `fs/promises`, an async syscall, instead of
  * blocking the event loop; a directory that cannot hold transcripts (no
@@ -339,8 +430,18 @@ const SCAN_YIELD_EVERY = 50;
  * one failed read rather than probed first. The per-project `meta.json` read
  * stays synchronous (one small file), so the outer walk also yields to the
  * event loop every `SCAN_YIELD_EVERY` projects, as `backfillProjectIdentities` does.
+ *
+ * Each session's transcript is skipped when its fingerprint (see
+ * `transcriptFingerprint`) matches the one recorded for it, computed before the
+ * ingest and recorded only once the ingest resolves — a failed or rejected
+ * ingest leaves nothing recorded, so it is retried next pass. This never marks
+ * a session complete; that stays `/session-complete`'s job alone (a Claude
+ * `--resume` of a completed session is a separate, pre-existing gap).
  */
 export async function scanForTranscripts(config: DaemonConfig, paths: LcmPaths, ingest: RouteHandler): Promise<void> {
+  if (scanInProgress) return;
+  scanInProgress = true;
+  const seenTranscriptPaths = new Set<string>();
   try {
     const projectsDir = paths.projectsDir;
     const entries = await readdir(projectsDir, { withFileTypes: true }).catch((err: NodeJS.ErrnoException) => {
@@ -364,15 +465,26 @@ export async function scanForTranscripts(config: DaemonConfig, paths: LcmPaths, 
         if (!file.endsWith(".jsonl")) continue;
         const sessionId = file.replace(".jsonl", "");
         const transcriptPath = join(sessionsDir, file);
+        seenTranscriptPaths.add(transcriptPath);
+
+        const fingerprint = await transcriptFingerprint(transcriptPath, join(sessionsDir, sessionId));
+        if (fingerprint !== undefined && transcriptFingerprints.get(transcriptPath) === fingerprint) continue;
 
         try {
           await invokeRoute(ingest, { session_id: sessionId, cwd: meta.cwd, transcript_path: transcriptPath });
+          if (fingerprint !== undefined) transcriptFingerprints.set(transcriptPath, fingerprint);
         } catch {
-          continue; // one rejected transcript must not end the sweep
+          continue; // one rejected transcript must not end the sweep; unrecorded, so it is retried next pass
         }
       }
     }
+
+    for (const path of transcriptFingerprints.keys()) {
+      if (!seenTranscriptPaths.has(path)) transcriptFingerprints.delete(path);
+    }
   } catch {
     // non-fatal: periodic scan failure shouldn't crash daemon
+  } finally {
+    scanInProgress = false;
   }
 }
