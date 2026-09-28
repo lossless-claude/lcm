@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -167,7 +168,21 @@ const reasoning =
   (process.env.LCM_EVAL_REASONING ? ` reasoning=${process.env.LCM_EVAL_REASONING}` : "") +
   (process.env.LCM_EVAL_REASONING_EFFORT ? ` reasoning=${process.env.LCM_EVAL_REASONING_EFFORT}` : "") +
   (process.env.LCM_EVAL_DISABLE_THINKING === "1" ? " thinking=off" : "") +
-  (process.env.LCM_EVAL_BODY ? ` body=${process.env.LCM_EVAL_BODY}` : "");
+  (process.env.LCM_EVAL_BODY ? ` body=${bodyIdentity(process.env.LCM_EVAL_BODY)}` : "");
+
+/**
+ * A readable prefix of the body plus a digest of its parsed JSON: the filename
+ * sanitizer folds punctuation, so the text alone would let distinct bodies collide.
+ */
+function bodyIdentity(raw: string): string {
+  let canonical = raw;
+  try {
+    canonical = JSON.stringify(JSON.parse(raw));
+  } catch {
+    // evalRequestBody rejects it when the run starts; keep the raw text here.
+  }
+  return `${canonical.slice(0, 40)}~${createHash("sha256").update(canonical).digest("hex").slice(0, 12)}`;
+}
 
 /** The reasoning/thinking knobs, as a filename-safe run identity. */
 const variant = reasoning.trim().replace(/\s+/g, "_") || undefined;
