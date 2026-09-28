@@ -340,6 +340,24 @@ export class ConversationStore {
   }
 
   /**
+   * Whether compaction has written its event rows into the session while every conversation of
+   * it carries the current parser's role tagging — the state in which stored history must be
+   * the transcript's prefix. A conversation from an earlier parser cannot be compared with a
+   * fresh parse of its transcript.
+   */
+  async sessionComparableAfterCompaction(sessionId: string): Promise<boolean> {
+    const row = this.db
+      .prepare(
+        `SELECT
+           EXISTS (SELECT 1 FROM messages m JOIN conversations c ON c.conversation_id = m.conversation_id
+                   WHERE c.session_id = ? AND NOT ${NOT_COMPACTION_EVENT}) AS compacted,
+           EXISTS (SELECT 1 FROM conversations WHERE session_id = ? AND role_tagging IS NULL) AS untagged`,
+      )
+      .get(sessionId, sessionId) as unknown as { compacted: number; untagged: number };
+    return row.compacted === 1 && row.untagged === 0;
+  }
+
+  /**
    * Fills a still-null attribution on an already-created row — the row was
    * captured before its `.meta.json` sidecar existed, or before whichever
    * caller passed attribution ran. Guarded by `parent_session_id IS NULL` so

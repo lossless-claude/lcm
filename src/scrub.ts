@@ -98,6 +98,33 @@ function isSpanningPattern(source: string): boolean {
   return false;
 }
 
+/** What a redacted span is replaced with. */
+export const REDACTION_MARKER = "[REDACTED]";
+
+/**
+ * True when `current` is what `stored` held before its redactions: the text around each
+ * marker appears in `current` in order, anchored at both ends. A stored message keeps the
+ * markers of a pattern since removed or narrowed, while its source, scrubbed under the new
+ * rules, keeps the text; adding a pattern needs no allowance, because scrubbing is idempotent.
+ */
+export function matchesUnderRedaction(stored: string, current: string): boolean {
+  if (!stored.includes(REDACTION_MARKER)) return false;
+  const segments = stored.split(REDACTION_MARKER);
+  const first = segments[0];
+  const last = segments[segments.length - 1];
+  const end = current.length - last.length;
+  if (end < first.length || !current.startsWith(first) || !current.endsWith(last)) return false;
+  // Placing each literal segment at its leftmost occurrence is exact between unrestricted gaps.
+  const middle = current.slice(0, end);
+  let at = first.length;
+  for (const segment of segments.slice(1, -1)) {
+    const found = middle.indexOf(segment, at);
+    if (found === -1) return false;
+    at = found + segment.length;
+  }
+  return true;
+}
+
 export interface ScrubCounts {
   text: string;
   gitleaks: number;
@@ -240,7 +267,7 @@ export class ScrubEngine {
     let result = "";
     let pos = 0;
     for (const { range: [s, e] } of merged) {
-      result += text.slice(pos, s) + "[REDACTED]";
+      result += text.slice(pos, s) + REDACTION_MARKER;
       pos = e;
     }
     result += text.slice(pos);

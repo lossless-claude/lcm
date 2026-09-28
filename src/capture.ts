@@ -14,8 +14,10 @@ import {
 import { SummaryStore } from "./store/summary-store.js";
 import { readSubagentAttribution } from "./subagent-attribution.js";
 import type { MessagePart, ParsedMessage } from "./transcript.js";
+import { clearConversationForRebuild, planSessionRebuild, type SessionRebuildPlan } from "./claude-rebuild.js";
 import {
   transcriptSource,
+  TranscriptSourceError,
   type ConversationBoundary,
   type StoredTranscript,
   type TranscriptLocator,
@@ -169,6 +171,7 @@ export class SessionCapture {
       storedCount: stored.storedCount,
       storedMessages: () => this.conversationStore.getSessionMessages(sessionId),
       checkpoint: source.loadCheckpoint?.(this.db, stored.conversationId, transcriptPath),
+      verifyAfterCompaction: () => this.conversationStore.sessionComparableAfterCompaction(sessionId),
     };
   }
 
@@ -185,28 +188,53 @@ export class SessionCapture {
    * result and the checkpoint belong to the last conversation written.
    */
   async write(input: CaptureInput): Promise<CaptureResult> {
+    return this.conversationStore.withTransaction(() => this.writeInTransaction(input));
+  }
+
+  /**
+   * Replaces a Claude Code session's stored history with its transcript, captured from the
+   * start, when the transcript holds everything stored but stored history is not its prefix
+   * (src/claude-rebuild.ts). The classification is repeated here, inside the same transaction
+   * as the clear and the capture, so what it saw is what is replaced; any failure rolls the
+   * whole session back. Aligned, ambiguous and unavailable sessions are left untouched.
+   */
+  async rebuildTranscript(input: TranscriptCaptureInput): Promise<{ plan: SessionRebuildPlan; ingested: number }> {
+    const source = transcriptSource(input.client);
+    if (source.client !== "claude") throw new TranscriptSourceError("Only Claude Code sessions can be rebuilt from their transcript");
+    const scrub = (text: string) => this.scrubber.scrubWithCounts(text).text;
+    const transcriptPath = source.locate(input);
+    const delta = transcriptPath ? await source.read(transcriptPath, undefined, { ...input, scrub }) : undefined;
+    return this.conversationStore.withTransaction(async () => {
+      const plan = await planSessionRebuild(this.db, input.sessionId, delta?.messages, scrub);
+      if (plan.kind !== "repairable" || plan.conversationId === undefined || !delta) return { plan, ingested: 0 };
+      clearConversationForRebuild(this.db, plan.conversationId, input.sessionId);
+      const written = await this.writeInTransaction({
+        sessionId: input.sessionId, messages: delta.messages, transcriptPath, attribution: input.attribution,
+      });
+      return { plan, ingested: written.records.length };
+    });
+  }
+
+  private async writeInTransaction(input: CaptureInput): Promise<CaptureResult> {
     const attribution = input.attribution
       ?? (input.transcriptPath ? attributionFromTranscriptPath(input.transcriptPath) : undefined);
-
-    return this.conversationStore.withTransaction(async () => {
-      const conversation = await this.conversationStore.getOrCreateConversation(input.sessionId, undefined, attribution);
-      const storedCount = await this.conversationStore.getSessionMessageCount(input.sessionId);
-      // A resumed read may skip only an already-stored prefix; new content begins at the stored count.
-      let start = Math.max(0, storedCount - (input.sourceOffset ?? 0));
-      let conversationId = conversation.conversationId;
-      const records: MessageRecord[] = [];
-      const totalCounts: RedactionCounts = { gitleaks: 0, builtIn: 0, global: 0, project: 0 };
-      for (const { entryId, at } of input.boundaries ?? []) {
-        if (at < start) continue;
-        records.push(...await this.append(input.sessionId, conversationId, input.messages.slice(start, at), totalCounts));
-        conversationId = (await this.conversationStore.getOrOpenConversationAt(input.sessionId, entryId, attribution)).conversationId;
-        start = at;
-      }
-      records.push(...await this.append(input.sessionId, conversationId, input.messages.slice(start), totalCounts));
-      if (records.length > 0) upsertRedactionCounts(this.db, this.projectId, totalCounts);
-      if (input.checkpoint !== undefined) input.persistCheckpoint?.(this.db, conversationId);
-      return { conversationId, records, totalCounts };
-    });
+    const conversation = await this.conversationStore.getOrCreateConversation(input.sessionId, undefined, attribution);
+    const storedCount = await this.conversationStore.getSessionMessageCount(input.sessionId);
+    // A resumed read may skip only an already-stored prefix; new content begins at the stored count.
+    let start = Math.max(0, storedCount - (input.sourceOffset ?? 0));
+    let conversationId = conversation.conversationId;
+    const records: MessageRecord[] = [];
+    const totalCounts: RedactionCounts = { gitleaks: 0, builtIn: 0, global: 0, project: 0 };
+    for (const { entryId, at } of input.boundaries ?? []) {
+      if (at < start) continue;
+      records.push(...await this.append(input.sessionId, conversationId, input.messages.slice(start, at), totalCounts));
+      conversationId = (await this.conversationStore.getOrOpenConversationAt(input.sessionId, entryId, attribution)).conversationId;
+      start = at;
+    }
+    records.push(...await this.append(input.sessionId, conversationId, input.messages.slice(start), totalCounts));
+    if (records.length > 0) upsertRedactionCounts(this.db, this.projectId, totalCounts);
+    if (input.checkpoint !== undefined) input.persistCheckpoint?.(this.db, conversationId);
+    return { conversationId, records, totalCounts };
   }
 
   /** Appends messages after what the conversation already stores, with their context items and parts. */

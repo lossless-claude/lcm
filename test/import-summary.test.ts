@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { printImportSummary } from "../src/import-summary.js";
-import type { ImportResult } from "../src/import.js";
+import { printImportSummary, printRebuildSummary } from "../src/import-summary.js";
+import type { ImportResult, RebuildRunResult } from "../src/import.js";
+import type { SessionRebuildPlan } from "../src/claude-rebuild.js";
 
 describe("printImportSummary", () => {
   const logs: string[] = [];
@@ -170,5 +171,48 @@ describe("printImportSummary", () => {
       { replay: true },
     );
     expect(logs.find((l) => l.includes("Cost"))).toContain("3 of 10 calls priced");
+  });
+});
+
+describe("printRebuildSummary", () => {
+  const logs: string[] = [];
+  const origLog = console.log;
+  afterEach(() => {
+    console.log = origLog;
+    logs.length = 0;
+  });
+  const plan = (sessionId: string, kind: SessionRebuildPlan["kind"], extra: Partial<SessionRebuildPlan> = {}): SessionRebuildPlan =>
+    ({ sessionId, kind, gaps: 0, extras: 0, leafSummaries: 0, condensedSummaries: 0, ...extra });
+  const run: RebuildRunResult = {
+    sessions: [
+      { cwd: "/p", plan: plan("s1", "repairable", { gaps: 2, extras: 2, leafSummaries: 3, condensedSummaries: 1 }) },
+      { cwd: "/p", plan: plan("s2", "aligned") },
+      { cwd: "/p", plan: plan("s3", "unavailable", { reason: "no transcript file" }) },
+    ],
+    backups: [],
+    failedProjects: [],
+  };
+
+  it("previews each session, the totals, and the summaries a rebuild would discard", () => {
+    console.log = vi.fn((...args: unknown[]) => { logs.push(args.map(String).join(" ")); });
+    printRebuildSummary(run, { apply: false });
+    const out = logs.join("\n");
+    expect(out).toContain("repairable  s1 — 2 missing, 2 extra stored rows, 3 leaf and 1 condensed summaries");
+    expect(out).toContain("unavailable s3 (no transcript file)");
+    expect(out).toContain("3 compacted Claude Code sessions: 1 aligned, 1 repairable, 1 unavailable, 0 ambiguous.");
+    expect(out).toContain("would discard 3 leaf and 1 condensed summaries. No changes written; rerun with --yes");
+  });
+
+  it("reports what a rebuild changed and where the backup is", () => {
+    console.log = vi.fn((...args: unknown[]) => { logs.push(args.map(String).join(" ")); });
+    printRebuildSummary({
+      ...run,
+      sessions: [{ ...run.sessions[0], rebuilt: true, ingested: 12 }],
+      backups: ["/p/db.sqlite.bak-rebuild-x"],
+    }, { apply: true });
+    const out = logs.join("\n");
+    expect(out).toContain("rebuilt: 12 messages captured, summaries discarded");
+    expect(out).toContain("Backup: /p/db.sqlite.bak-rebuild-x");
+    expect(out).toContain("lcm import --provider claude --replay");
   });
 });
