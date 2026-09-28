@@ -89,14 +89,15 @@ export async function planSessionRebuild(
   const key = (role: string, content: string) => `${role}\u0000${normalizeMessageContent(scrub(content))}`;
   const have = (await new ConversationStore(db).getSessionMessages(sessionId)).map((m) => key(m.role, m.content));
   const currentKeys = transcript.map((m) => key(m.role, m.content));
-  const { gaps, extras, cuts } = align(have, currentKeys, transcript, scrub);
+  const current = searchable(transcript);
+  const { gaps, extras, cuts } = align(have, currentKeys, current, scrub);
   if (gaps === 0 && extras === 0 && cuts === 0) return { ...base, kind: "aligned" };
-  const legacy = legacyTranscript?.() ?? [];
-  const legacyKeys = legacy.map((m) => key(m.role, m.content));
+  const legacy = searchable(legacyTranscript?.() ?? []);
+  const legacyKeys = legacy.messages.map((m) => key(m.role, m.content));
   const present = new Set([...currentKeys, ...legacyKeys]);
   const lost = have.filter((stored) => !present.has(stored) &&
-    approximateMatch(stored, transcript, 0, transcript.length, scrub) === undefined &&
-    approximateMatch(stored, legacy, 0, legacy.length, scrub) === undefined).length;
+    approximateMatch(stored, current, 0, transcript.length, scrub) === undefined &&
+    approximateMatch(stored, legacy, 0, legacy.messages.length, scrub) === undefined).length;
   if (lost > 0) return { ...base, gaps, extras, kind: "ambiguous", reason: `${lost} stored messages are not in the transcript` };
   return { ...base, gaps, extras, kind: "repairable" };
 }
@@ -109,7 +110,7 @@ export async function planSessionRebuild(
  * take precedence over a later exact match, preserving transcript order.
  */
 function align(
-  have: string[], want: string[], messages: ParsedMessage[], scrub: (text: string) => string,
+  have: string[], want: string[], messages: Searchable, scrub: (text: string) => string,
 ): { gaps: number; extras: number; cuts: number } {
   const positions = new Map<string, Candidates>();
   want.forEach((k, index) => {
@@ -149,22 +150,45 @@ function nextCandidate(candidates: Candidates, cursor: number): number | undefin
   return candidates.indices[candidates.next];
 }
 
+/** A transcript's messages, with the positions of those holding a NUL found once. */
+interface Searchable {
+  messages: ParsedMessage[];
+  nul: number[];
+}
+
+function searchable(messages: ParsedMessage[]): Searchable {
+  return { messages, nul: messages.flatMap((m, index) => (m.content.includes("\u0000") ? [index] : [])) };
+}
+
 /** Search only before an exact match, preserving the earliest in-order match for legacy cut rows. */
 function approximateMatch(
-  k: string, messages: ParsedMessage[], from: number, until: number, scrub: (text: string) => string,
+  k: string, { messages, nul }: Searchable, from: number, until: number, scrub: (text: string) => string,
 ): { index: number; kind: "full" | "cut" } | undefined {
   const role = k.slice(0, k.indexOf("\u0000") + 1);
   const content = k.slice(role.length);
   // Keys already compare normalized text exactly; only a redacted stored row or a transcript
-  // message holding a NUL can match any other way, so skip the scrub for everything else.
-  const redacted = content.includes(REDACTION_MARKER);
-  for (let index = from; index < until; index++) {
+  // message holding a NUL can match any other way, so only those positions are compared.
+  const positions = content.includes(REDACTION_MARKER)
+    ? Array.from({ length: Math.max(0, until - from) }, (_, offset) => from + offset)
+    : nul.slice(lowerBound(nul, from), lowerBound(nul, until));
+  for (const index of positions) {
     if (`${messages[index].role}\u0000` !== role) continue;
-    if (!redacted && !messages[index].content.includes("\u0000")) continue;
     const kind = compareStoredMessageContent(content, messages[index].content, scrub);
     if (kind) return { index, kind };
   }
   return undefined;
+}
+
+/** The first position in a sorted list not below `value`. */
+function lowerBound(sorted: number[], value: number): number {
+  let low = 0;
+  let high = sorted.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (sorted[mid] < value) low = mid + 1;
+    else high = mid;
+  }
+  return low;
 }
 
 /**
