@@ -679,4 +679,53 @@ describe("backing a project database up before a rebuild", () => {
     await backupProjectDatabase(db, dbPath, at);
     await expect(backupProjectDatabase(db, dbPath, at)).rejects.toThrow();
   });
+
+  it("keeps the completed copy and the oldest one, and reports each backup removed in between", async () => {
+    const oldest = `${dbPath}.bak-rebuild-2026-09-24T00-00-00-000Z`;
+    const older = `${dbPath}.bak-rebuild-2026-09-25T00-00-00-000Z`;
+    const old = `${dbPath}.bak-rebuild-2026-09-26T00-00-00-000Z`;
+    const unrelated = `${dbPath}.backup`;
+    for (const path of [old, oldest, older, unrelated]) writeFileSync(path, "old");
+    const removed: string[] = [];
+
+    const latest = await backupProjectDatabase(db, dbPath, new Date("2026-09-28T00:00:00Z"), (path) => removed.push(path));
+
+    expect(existsSync(latest)).toBe(true);
+    expect(existsSync(oldest)).toBe(true);
+    expect(removed).toEqual([older, old]);
+    expect(existsSync(older)).toBe(false);
+    expect(existsSync(old)).toBe(false);
+    expect(existsSync(unrelated)).toBe(true);
+  });
+
+  it("keeps a single earlier backup: it is the oldest", async () => {
+    const earlier = `${dbPath}.bak-rebuild-2026-09-25T00-00-00-000Z`;
+    writeFileSync(earlier, "old");
+    const removed: string[] = [];
+    await backupProjectDatabase(db, dbPath, new Date("2026-09-28T00:00:00Z"), (path) => removed.push(path));
+    expect(removed).toEqual([]);
+    expect(existsSync(earlier)).toBe(true);
+  });
+
+  it("leaves earlier backups when the new backup cannot be created", async () => {
+    const old = `${dbPath}.bak-rebuild-2026-09-26T00-00-00-000Z`;
+    writeFileSync(old, "old");
+    const at = new Date("2026-09-28T00:00:00Z");
+    writeFileSync(`${dbPath}.bak-rebuild-2026-09-28T00-00-00-000Z`, "collision");
+    const removed: string[] = [];
+
+    await expect(backupProjectDatabase(db, dbPath, at, (path) => removed.push(path))).rejects.toThrow();
+    expect(existsSync(old)).toBe(true);
+    expect(removed).toEqual([]);
+  });
+
+  it("leaves earlier backups when SQLite cannot copy the database", async () => {
+    const old = `${dbPath}.bak-rebuild-2026-09-26T00-00-00-000Z`;
+    writeFileSync(old, "old");
+    const closed = new DatabaseSync(join(dir, "closed.sqlite"));
+    closed.close();
+
+    await expect(backupProjectDatabase(closed, dbPath, new Date("2026-09-28T00:00:00Z"))).rejects.toThrow();
+    expect(existsSync(old)).toBe(true);
+  });
 });

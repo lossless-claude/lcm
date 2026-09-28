@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, rmSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import * as sqlite from "node:sqlite";
 import type { DatabaseSync } from "node:sqlite";
 import { compareStoredMessageContent, normalizeMessageContent } from "./message-content.js";
@@ -254,7 +255,7 @@ export function clearConversationForRebuild(db: DatabaseSync, conversationId: nu
  * the backup, so no daemon write can interleave with its steps. External writers make
  * SQLite's backup restart; either way, the finished copy is consistent.
  */
-export async function backupProjectDatabase(db: DatabaseSync, dbPath: string, now: Date = new Date()): Promise<string> {
+export async function backupProjectDatabase(db: DatabaseSync, dbPath: string, now: Date = new Date(), onRemoved?: (path: string) => void): Promise<string> {
   const target = `${dbPath}.bak-rebuild-${now.toISOString().replace(/[:.]/g, "-")}`;
   if (existsSync(target)) throw new Error("output file already exists");
   if (typeof sqlite.backup === "function") {
@@ -263,6 +264,18 @@ export async function backupProjectDatabase(db: DatabaseSync, dbPath: string, no
   } else {
     // node:sqlite added backup() in Node 22.16; package.json also supports older 22.x.
     db.prepare("VACUUM INTO ?").run(target);
+  }
+  // Only once the new copy is complete: keep it and the oldest copy, the database as it was
+  // before any rebuild, and remove the ones in between. Timestamped names sort oldest first.
+  const prefix = `${basename(dbPath)}.bak-rebuild-`;
+  const older = readdirSync(dirname(dbPath), { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.startsWith(prefix) && entry.name !== basename(target))
+    .map((entry) => entry.name)
+    .sort();
+  for (const name of older.slice(1)) {
+    const path = join(dirname(dbPath), name);
+    rmSync(path);
+    onRemoved?.(path);
   }
   return target;
 }
