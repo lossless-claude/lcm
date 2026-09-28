@@ -197,6 +197,15 @@ function toSearchResult(row: MessageSearchRow): MessageSearchResult {
   };
 }
 
+/**
+ * Excludes, from a query over `messages m`, the rows compaction writes itself: no transcript
+ * holds them, so what capture compares with a transcript leaves them out. The discriminator is
+ * the message part, not role='system' — genuine transcript messages carry that role too.
+ */
+const NOT_COMPACTION_EVENT = `NOT EXISTS (
+  SELECT 1 FROM message_parts p WHERE p.message_id = m.message_id AND p.part_type = 'compaction'
+)`;
+
 // ── ConversationStore ─────────────────────────────────────────────────────────
 
 export class ConversationStore {
@@ -304,26 +313,26 @@ export class ConversationStore {
     return row ? toConversationRecord(row) : this.createConversation({ sessionId, openedByEntryId: entryId, ...attribution });
   }
 
-  /** Messages stored across every conversation of the session. */
+  /** Transcript messages stored across every conversation of the session; compaction's own event rows are not counted. */
   async getSessionMessageCount(sessionId: string): Promise<number> {
     const row = this.db
       .prepare(
         `SELECT COUNT(*) AS count FROM messages m
          JOIN conversations c ON c.conversation_id = m.conversation_id
-         WHERE c.session_id = ?`,
+         WHERE c.session_id = ? AND ${NOT_COMPACTION_EVENT}`,
       )
       .get(sessionId) as unknown as CountRow | undefined;
     return row?.count ?? 0;
   }
 
-  /** Every conversation's messages of the session, oldest conversation first, each in `seq` order. */
+  /** Every conversation's transcript messages of the session, oldest conversation first, each in `seq` order; compaction's own event rows are left out. */
   async getSessionMessages(sessionId: string): Promise<MessageRecord[]> {
     const rows = this.db
       .prepare(
         `SELECT m.message_id, m.conversation_id, m.seq, m.role, m.content, m.token_count, m.created_at
          FROM messages m
          JOIN conversations c ON c.conversation_id = m.conversation_id
-         WHERE c.session_id = ?
+         WHERE c.session_id = ? AND ${NOT_COMPACTION_EVENT}
          ORDER BY c.created_at, c.conversation_id, m.seq`,
       )
       .all(sessionId) as unknown as MessageRow[];

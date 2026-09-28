@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SessionCapture } from "../src/capture.js";
 import { runLcmMigrations } from "../src/db/migration.js";
 import { ScrubEngine } from "../src/scrub.js";
+import { ConversationStore } from "../src/store/conversation-store.js";
 
 /**
  * An OMP `/clear` appends a `reset_boundary` entry to the same session file under the same
@@ -181,6 +182,52 @@ describe("an OMP /clear starts a new stored conversation", () => {
     expect(conversations()).toEqual([
       { openedBy: null, messages: ["first question", "first answer", "fresh start", "fresh answer"] },
     ]);
+  });
+
+  describe("after compaction wrote its event rows", () => {
+    /** Writes the row compaction records for a pass: a system message carrying a `compaction` part. */
+    async function compactionEvent(conversationId: number): Promise<void> {
+      const store = new ConversationStore(db, { fts5Available: false });
+      const event = await store.createMessage({
+        conversationId, seq: (await store.getMaxSeq(conversationId)) + 1,
+        role: "system", content: "LCM compaction leaf pass (normal): 100 -> 10", tokenCount: 1,
+      });
+      await store.createMessageParts(event.messageId, [{ sessionId, partType: "compaction", ordinal: 0 }]);
+    }
+    /** Every conversation's transcript messages, oldest first, without compaction's own rows. */
+    const transcript = () => (db.prepare(
+      "SELECT conversation_id FROM conversations WHERE session_id = ? ORDER BY conversation_id",
+    ).all(sessionId) as Array<{ conversation_id: number }>).map(({ conversation_id }) => (db.prepare(
+      `SELECT content FROM messages m WHERE conversation_id = ? AND NOT EXISTS (
+         SELECT 1 FROM message_parts p WHERE p.message_id = m.message_id AND p.part_type = 'compaction')
+       ORDER BY seq`,
+    ).all(conversation_id) as Array<{ content: string }>).map(({ content }) => content));
+    const newest = () => db.prepare("SELECT MAX(conversation_id) AS id FROM conversations").get()!.id as number;
+
+    it("a later delta resumes from the cursor", async () => {
+      const file = sessionFile([...trunk, clear(["r1", "a1"]), say(["u2", "r1"], "user", "fresh start")]);
+      await captureFile(file);
+      await compactionEvent(newest());
+      append(file.path, [say(["a2", "u2"], "assistant", "after compaction")]);
+
+      const result = await captureFile(file);
+      expect(result?.records.map((r) => r.content)).toEqual(["after compaction"]);
+      expect(transcript()).toEqual([["first question", "first answer"], ["fresh start", "after compaction"]]);
+      expect(cursorCount()).toBe(4);
+    });
+
+    it("a recovery rescan continues after the stored transcript messages", async () => {
+      const file = sessionFile([...trunk, clear(["r1", "a1"]), say(["u2", "r1"], "user", "fresh start")]);
+      await captureFile(file);
+      await compactionEvent(newest());
+      db.exec("DELETE FROM codex_ingest_cursors");
+      append(file.path, [say(["a2", "u2"], "assistant", "after compaction")]);
+
+      const result = await captureFile(file);
+      expect(result?.records.map((r) => r.content)).toEqual(["after compaction"]);
+      expect(transcript()).toEqual([["first question", "first answer"], ["fresh start", "after compaction"]]);
+      expect(cursorCount()).toBe(4);
+    });
   });
 
   it("a clear a rewind abandoned before capture opens nothing", async () => {
