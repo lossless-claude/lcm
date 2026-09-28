@@ -809,6 +809,7 @@ export interface RebuildRunResult {
   sessions: RebuildSessionReport[];
   /** One backup per project a rebuild ran in. */
   backups: string[];
+  removedBackups?: string[];
   /** Projects that could not be read, or whose backup failed so nothing in them was rebuilt. */
   failedProjects: Array<{ cwd: string; error: string }>;
 }
@@ -820,7 +821,7 @@ export interface RebuildRunResult {
  * database with the first one; a project whose backup fails is left untouched.
  */
 export async function rebuildClaudeSessions(client: DaemonClient | undefined, options: RebuildOptions): Promise<RebuildRunResult> {
-  const result: RebuildRunResult = { sessions: [], backups: [], failedProjects: [] };
+  const result: RebuildRunResult = { sessions: [], backups: [], removedBackups: [], failedProjects: [] };
   const claudeProjectsDir = options._claudeProjectsDir ?? join(homedir(), ".claude", "projects");
   const cwds = options.all ? [...new Set(buildProjectMap(options.paths).values())] : [options.cwd ?? process.cwd()];
   for (const cwd of cwds) {
@@ -866,17 +867,20 @@ async function applyProjectRebuild(client: DaemonClient, cwd: string, reports: R
   for (const report of reports) {
     if (report.plan.kind !== "repairable") continue;
     try {
-      const res = await client.post<{ ingested: number; rebuild: SessionRebuildPlan; backupPath?: string }>("/ingest", {
+      const res = await client.post<{ ingested: number; rebuild: SessionRebuildPlan; backupPath?: string; removedBackups?: string[] }>("/ingest", {
         session_id: report.plan.sessionId, cwd, transcript_path: report.transcriptPath, source: "import", rebuild: true,
         ...(backupPath ? {} : { backup: true }),
       });
       if (res.backupPath) result.backups.push(backupPath = res.backupPath);
+      result.removedBackups?.push(...(res.removedBackups ?? []));
       // The daemon classifies again under the project lease; a session that changed since the preview is reported as it found it.
       report.plan = res.rebuild;
       report.rebuilt = res.rebuild.kind === "repairable";
       report.ingested = res.ingested;
     } catch (err) {
-      const recorded = (err as { body?: { backupPath?: unknown } }).body?.backupPath;
+      const body = (err as { body?: { backupPath?: unknown; removedBackups?: string[] } }).body;
+      const recorded = body?.backupPath;
+      result.removedBackups?.push(...(body?.removedBackups ?? []));
       if (typeof recorded === "string" && !backupPath) result.backups.push(backupPath = recorded);
       report.error = err instanceof Error ? err.message : String(err);
       if (!backupPath) {
@@ -888,7 +892,7 @@ async function applyProjectRebuild(client: DaemonClient, cwd: string, reports: R
 }
 
 export interface CutRepairRunResult {
-  sessions: Array<{ cwd: string; transcriptPath: string; plan: CutRowRepairPlan; repaired?: number; backupPath?: string; error?: string }>;
+  sessions: Array<{ cwd: string; transcriptPath: string; plan: CutRowRepairPlan; repaired?: number; backupPath?: string; removedBackups?: string[]; error?: string }>;
   failedProjects: Array<{ cwd: string; error: string }>;
 }
 
@@ -932,13 +936,14 @@ export async function repairCutRows(
       if (options.apply && client && plan.kind === "repairable" && !backupFailed.has(dbPath)) {
         try {
           // The first repair a project applies backs its database up; later ones rely on that copy.
-          const applied = await client.post<{ repair: CutRowRepairPlan; repaired: number; backupPath?: string }>("/ingest", {
+          const applied = await client.post<{ repair: CutRowRepairPlan; repaired: number; backupPath?: string; removedBackups?: string[] }>("/ingest", {
             session_id: file.sessionId, cwd, transcript_path: file.path, source: "import", client: options.provider, rebuild: true,
             ...(backedUp.has(dbPath) ? {} : { backup: true }),
           });
           report.plan = applied.repair;
           report.repaired = applied.repaired;
           report.backupPath = applied.backupPath;
+          report.removedBackups = applied.removedBackups;
           if (applied.backupPath) backedUp.add(dbPath);
         } catch (error) {
           report.error = error instanceof Error ? error.message : String(error);

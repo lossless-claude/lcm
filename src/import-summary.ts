@@ -103,6 +103,7 @@ export function printRebuildSummary(run: RebuildRunResult, opts: { apply: boolea
       `${counts.unavailable} unavailable, ${counts.ambiguous} ambiguous.`,
   );
   for (const backup of run.backups) console.log(`  Backup: ${backup}`);
+  for (const removed of run.removedBackups ?? []) console.log(`  Removed older backup: ${removed}`);
   for (const { cwd, error } of run.failedProjects) console.log(`  Not rebuilt in ${cwd}: ${error}`);
   if (!opts.apply) {
     if (counts.repairable > 0) {
@@ -128,6 +129,7 @@ export function printCutRepairSummary(
     const detail = report.plan.kind === "repairable" ? ` — ${report.plan.rows.length} cut rows` : "";
     console.log(`  ${report.plan.kind.padEnd(11)} ${report.plan.sessionId}${detail}${report.plan.reason ? ` (${report.plan.reason})` : ""}${report.error ? `; failed: ${report.error}` : ""}  [${report.cwd}]`);
     if (report.backupPath) console.log(`  Backup: ${report.backupPath}`);
+    for (const removed of report.removedBackups ?? []) console.log(`  Removed older backup: ${removed}`);
   }
   for (const { cwd, error } of run.failedProjects) console.log(`  Not repaired in ${cwd}: ${error}`);
   console.log(`  ${run.sessions.length} ${opts.provider} sessions checked; ${cutRows} cut rows found; ${repaired} repaired.`);
