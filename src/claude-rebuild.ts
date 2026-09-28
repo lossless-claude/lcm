@@ -61,11 +61,12 @@ export function compactedSessionIds(db: DatabaseSync): string[] {
  * Aligns the session's stored transcript messages (compaction's event rows excluded, oldest
  * conversation first) with the parsed transcript, in order, comparing role and content under
  * the current redaction rules on both sides — the comparison the capture guard makes.
- * `transcript` is undefined when there is no transcript file.
+ * `transcript` is undefined when there is no transcript file. `legacyTranscript` yields the
+ * transcript in the pre-#406 tool shape; it is read only when the session is not aligned.
  */
 export async function planSessionRebuild(
   db: DatabaseSync, sessionId: string, transcript: ParsedMessage[] | undefined, scrub: (text: string) => string,
-  legacyTranscript?: ParsedMessage[],
+  legacyTranscript?: () => ParsedMessage[] | undefined,
 ): Promise<SessionRebuildPlan> {
   const conversations = db.prepare("SELECT conversation_id, role_tagging FROM conversations WHERE session_id = ?")
     .all(sessionId) as Array<{ conversation_id: number; role_tagging: string | null }>;
@@ -87,9 +88,9 @@ export async function planSessionRebuild(
   const key = (role: string, content: string) => `${role}\u0000${scrub(content)}`;
   const have = (await new ConversationStore(db).getSessionMessages(sessionId)).map((m) => key(m.role, m.content));
   const currentKeys = transcript.map((m) => key(m.role, m.content));
-  const legacyKeys = legacyTranscript?.map((m) => key(m.role, m.content)) ?? [];
   const { gaps, extras } = align(have, currentKeys);
   if (gaps === 0 && extras === 0) return { ...base, kind: "aligned" };
+  const legacyKeys = legacyTranscript?.()?.map((m) => key(m.role, m.content)) ?? [];
   const present = new Set([...currentKeys, ...legacyKeys]);
   const lost = have.filter((stored) => !present.has(stored) &&
     redactedMatch(stored, currentKeys, 0) === undefined && redactedMatch(stored, legacyKeys, 0) === undefined).length;

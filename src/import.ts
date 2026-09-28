@@ -850,7 +850,7 @@ async function classifyProjectSessions(cwd: string, claudeDir: string, options: 
       const transcriptPath = transcripts.get(sessionId);
       const plan = await planSessionRebuild(
         db, sessionId, transcriptPath ? parseTranscript(transcriptPath) : undefined, scrub,
-        transcriptPath ? parseTranscript(transcriptPath, "legacy") : undefined,
+        () => transcriptPath ? parseTranscript(transcriptPath, "legacy") : undefined,
       );
       reports.push({ cwd, plan, transcriptPath });
     }

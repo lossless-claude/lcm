@@ -228,11 +228,10 @@ export class SessionCapture {
     const scrub = (text: string) => this.scrubber.scrubWithCounts(text).text;
     const transcriptPath = source.locate(input);
     const delta = transcriptPath ? await source.read(transcriptPath, undefined, { ...input, scrub }) : undefined;
+    // Parsed before the transaction takes the write lock; the plan reads it only when not aligned.
+    const legacy = transcriptPath ? parseTranscript(transcriptPath, "legacy") : undefined;
     return this.conversationStore.withTransaction(async () => {
-      const plan = await planSessionRebuild(
-        this.db, input.sessionId, delta?.messages, scrub,
-        transcriptPath ? parseTranscript(transcriptPath, "legacy") : undefined,
-      );
+      const plan = await planSessionRebuild(this.db, input.sessionId, delta?.messages, scrub, () => legacy);
       if (plan.kind !== "repairable" || plan.conversationId === undefined || !delta) return { plan, ingested: 0 };
       clearConversationForRebuild(this.db, plan.conversationId, input.sessionId);
       const written = await this.writeInTransaction({

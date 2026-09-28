@@ -273,7 +273,7 @@ describe("classifying a session for a rebuild", () => {
     const current = parseTranscript(path);
     const legacy = parseTranscript(path, "legacy");
     expect(transcriptMessages()).toEqual([...legacy, ...current.slice(legacy.length)].map((m) => [m.role, m.content]));
-    expect(await planSessionRebuild(db, sessionId, current, identity, legacy)).toMatchObject({
+    expect(await planSessionRebuild(db, sessionId, current, identity, () => legacy)).toMatchObject({
       kind: "repairable", gaps: 5, extras: 5, leafSummaries: 1, condensedSummaries: 1,
     });
 
@@ -283,12 +283,21 @@ describe("classifying a session for a rebuild", () => {
     expect(transcriptMessages()).toEqual(current.map((message) => [message.role, message.content]));
   });
 
+  it("reads the legacy shape only for a session that is not aligned", async () => {
+    let legacyReads = 0;
+    const legacy = () => { legacyReads++; return []; };
+    await compact(await store(transcriptTurns.slice(0, 3)));
+    expect(await planSessionRebuild(db, sessionId, parseTranscript(transcript(transcriptTurns)), identity, legacy))
+      .toMatchObject({ kind: "aligned" });
+    expect(legacyReads).toBe(0);
+  });
+
   it("leaves mixed history ambiguous when a stored message is absent from both parses", async () => {
     const path = mixedToolShapeTranscript();
     await storeMixedToolShape(path);
     db.prepare("UPDATE messages SET content = 'only in storage' WHERE content = 'found files'").run();
     const before = transcriptMessages();
-    const plan = await planSessionRebuild(db, sessionId, parseTranscript(path), identity, parseTranscript(path, "legacy"));
+    const plan = await planSessionRebuild(db, sessionId, parseTranscript(path), identity, () => parseTranscript(path, "legacy"));
     expect(plan).toMatchObject({ kind: "ambiguous", reason: "1 stored messages are not in the transcript" });
     expect(await capture.rebuildTranscript({ sessionId, cwd: dir, transcriptPath: path })).toMatchObject({
       plan: { kind: "ambiguous" }, ingested: 0,
