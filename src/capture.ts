@@ -3,6 +3,7 @@ import { statSync } from "node:fs";
 import { sep } from "node:path";
 import type { EventsDb } from "./hooks/events-db.js";
 import { upsertRedactionCounts } from "./db/redaction-stats.js";
+import { normalizeMessageContent } from "./message-content.js";
 import type { ScrubEngine } from "./scrub.js";
 import {
   ConversationStore,
@@ -285,7 +286,7 @@ export class SessionCapture {
       totalCounts.builtIn += builtIn;
       totalCounts.global += globalCount;
       totalCounts.project += project;
-      return { conversationId, seq: storedCount + i, role: m.role as MessageRole, content: text, tokenCount: m.tokenCount };
+      return { conversationId, seq: storedCount + i, role: m.role as MessageRole, content: normalizeMessageContent(text), tokenCount: m.tokenCount };
     });
   }
 

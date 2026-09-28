@@ -15,7 +15,7 @@ import {
   type ParsedOmpTranscriptRecord,
 } from "./omp-transcript.js";
 import { readOmpTranscriptDelta, type OmpTranscriptCursor, type OmpTranscriptDelta } from "./omp-transcript-reader.js";
-import { matchesUnderRedaction } from "./scrub.js";
+import { compareStoredMessageContent } from "./message-content.js";
 import type { SessionClient } from "./session-client.js";
 import { discoverSubagentTranscripts, type DiscoveredSubagentTranscript } from "./subagent-attribution.js";
 import { extractToolUseModels, parseTranscript, type ParsedMessage } from "./transcript.js";
@@ -231,12 +231,9 @@ async function validateTranscriptRecovery(
   }
 }
 
-/** Equal under the current redaction rules, or equal but for spans a pattern since removed had redacted. Scrubs only when the texts differ. */
+/** Compare normalized content under current redaction rules, including legacy rows cut at NUL. */
 function storedContentMatches(stored: string, current: string, scrub: (text: string) => string): boolean {
-  if (stored === current) return true;
-  const storedNow = scrub(stored);
-  const currentNow = scrub(current);
-  return storedNow === currentNow || matchesUnderRedaction(storedNow, currentNow);
+  return compareStoredMessageContent(stored, current, scrub) !== undefined;
 }
 
 const codexSource: TranscriptSource = {
@@ -309,7 +306,7 @@ async function ompMessagesAfterStored(
   const previous = await stored.storedMessages();
   if (previous.length !== stored.storedCount) throw new TranscriptSourceError("Stored OMP history changed during recovery");
   const same = (candidate: ParsedMessage, prior: { role: string; content: string }) =>
-    candidate.role === prior.role && ctx.scrub(candidate.content) === ctx.scrub(prior.content);
+    candidate.role === prior.role && compareStoredMessageContent(prior.content, candidate.content, ctx.scrub) !== undefined;
   const live = selectOmpLiveSegments(records);
   if (live.messages.length >= previous.length && previous.every((prior, index) => same(live.messages[index], prior))) {
     const after = previous.length;

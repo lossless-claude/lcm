@@ -39,10 +39,14 @@ lcm import --provider claude --rebuild --yes      # back up, then rebuild
 lcm import --provider claude --rebuild --session <id> --yes
 ```
 
-`--rebuild` checks every Claude Code session compaction wrote into, in the current project or with `--all` every tracked project, and aligns its stored messages with today's transcript parse in order, comparing role and content under the current redaction rules, with the same allowance for a removed pattern's `[REDACTED]` spans as capture. A stored message counts as lost only when it is absent from both today's parse and the older role-tagged tool shape, which omitted tool-call name rows and `[tool error]` prefixes. Gaps and extra stored rows are counted against today's parse, which is what the rebuild stores. Each session is reported as one of:
+`--rebuild` checks every Claude Code session compaction wrote into, in the current project or with `--all` every tracked project, and aligns its stored messages with today's transcript parse in order, comparing role and content under the current redaction rules, with the same allowance for a removed pattern's `[REDACTED]` spans as capture. A stored message counts as lost only when it is absent from both today's parse and the older role-tagged tool shape, which omitted tool-call name rows and `[tool error]` prefixes. Gaps and extra stored rows are counted against today's parse, which is what the rebuild stores.
+
+NUL characters in transcript message content become U+FFFD before storage. Comparison applies that normalization on both sides and accepts a stored row cut exactly at the transcript's first NUL, as older SQLite reads returned it. Such a cut row is repairable even when the rest of the session is aligned; rebuilding restores its full normalized text. A different prefix remains a mismatch.
+
+Each session is reported as one of:
 
 - **aligned**: stored messages are the prefix of today's parse; any uncaptured tail is ordinary backlog.
-- **repairable**: they are not, and every stored message appears in today's or the older tool shape. This includes a legacy prefix followed by a current-shape tail. The report counts the transcript messages missing from storage, the stored rows the current alignment could not place, and the leaf and condensed summaries a rebuild discards.
+- **repairable**: stored messages are not aligned, or a row reads back cut at NUL, and every stored message appears in today's or the older tool shape. This includes a legacy prefix followed by a current-shape tail. The report counts the transcript messages missing from storage, the stored rows the current alignment could not place, and the leaf and condensed summaries a rebuild discards.
 - **unavailable**: no transcript file. Report only.
 - **ambiguous**: a stored message neither tool shape holds, a session stored as several conversations, or a conversation captured before role tagging. A rebuild would lose content or cannot compare, so it is reported and left alone.
 
