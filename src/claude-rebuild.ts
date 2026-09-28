@@ -62,11 +62,17 @@ export function compactedSessionIds(db: DatabaseSync): string[] {
 export function claudeRebuildCandidateIds(db: DatabaseSync): string[] {
   const ids = new Set(compactedSessionIds(db));
   const hasCursors = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'codex_ingest_cursors'").get();
+  // The dry run reads a database the daemon may not have migrated yet: without the column,
+  // no conversation has a known shape.
+  const hasShape = (db.prepare("PRAGMA table_info(conversations)").all() as Array<{ name: string }>)
+    .some((column) => column.name === "parser_shape");
+  const conditions = [
+    ...(hasShape ? ["(c.parser_shape IS NULL OR c.parser_shape <> ?)"] : []),
+    ...(hasCursors ? ["NOT EXISTS (SELECT 1 FROM codex_ingest_cursors k JOIN conversations kc ON kc.conversation_id = k.conversation_id WHERE kc.session_id = c.session_id)"] : []),
+  ];
   const rows = db.prepare(
-    `SELECT DISTINCT c.session_id FROM conversations c
-     WHERE (c.parser_shape IS NULL OR c.parser_shape <> ?)
-     ${hasCursors ? "AND NOT EXISTS (SELECT 1 FROM codex_ingest_cursors k JOIN conversations kc ON kc.conversation_id = k.conversation_id WHERE kc.session_id = c.session_id)" : ""}`,
-  ).all(CLAUDE_PARSER_SHAPE) as Array<{ session_id: string }>;
+    `SELECT DISTINCT c.session_id FROM conversations c${conditions.length ? ` WHERE ${conditions.join(" AND ")}` : ""}`,
+  ).all(...(hasShape ? [CLAUDE_PARSER_SHAPE] : [])) as Array<{ session_id: string }>;
   for (const row of rows) ids.add(row.session_id);
   return [...ids].sort();
 }

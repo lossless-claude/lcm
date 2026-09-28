@@ -5,13 +5,13 @@ import * as sqlite from "node:sqlite";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionCapture } from "../src/capture.js";
-import { backupProjectDatabase, compactedSessionIds, planSessionRebuild } from "../src/claude-rebuild.js";
+import { backupProjectDatabase, claudeRebuildCandidateIds, compactedSessionIds, planSessionRebuild } from "../src/claude-rebuild.js";
 import { runLcmMigrations } from "../src/db/migration.js";
 import { ScrubEngine } from "../src/scrub.js";
 import { ConversationStore } from "../src/store/conversation-store.js";
 import { SummaryStore } from "../src/store/summary-store.js";
 import { TranscriptSourceError } from "../src/transcript-source.js";
-import { parseTranscript } from "../src/transcript.js";
+import { CLAUDE_PARSER_SHAPE, parseTranscript } from "../src/transcript.js";
 
 /**
  * Before compaction stopped counting its own event rows, a Claude capture after a compaction
@@ -80,15 +80,17 @@ async function storeMixedToolShape(path: string): Promise<void> {
   const current = parseTranscript(path);
   expect(legacy.map((m) => m.content)).toEqual(["question", "missing file", "found files", "read result", "answer", "ack"]);
   expect(current.map((m) => m.content).at(-4)).toBe("read result");
-  const written = await capture.write({ sessionId, messages: legacy });
+  const written = await capture.write({ sessionId, messages: legacy, parserShape: CLAUDE_PARSER_SHAPE });
   await compact(written.conversationId);
-  await capture.write({ sessionId, messages: current.slice(legacy.length), sourceOffset: legacy.length });
+  await capture.write({ sessionId, messages: current.slice(legacy.length), sourceOffset: legacy.length, parserShape: CLAUDE_PARSER_SHAPE });
 }
 
+/** Stores turns as a Claude capture by today's parser would. */
 async function store(turns: Turn[], session = sessionId): Promise<number> {
   const written = await capture.write({
     sessionId: session,
     messages: turns.map(([role, content]) => ({ role, content, tokenCount: 1 })),
+    parserShape: CLAUDE_PARSER_SHAPE,
   });
   return written.conversationId;
 }
@@ -154,6 +156,19 @@ describe("the capture guard", () => {
       .toEqual(["q2"]);
     expect(db.prepare("SELECT parser_shape FROM conversations WHERE session_id = ?").get(sessionId))
       .toEqual({ parser_shape: "claude-v1" });
+  });
+
+  it("leaves a conversation opened without a known shape unstamped", async () => {
+    // /compact's no-ingest fallback opens the row for any client.
+    await capture.write({ sessionId, messages: [] });
+    expect(db.prepare("SELECT parser_shape FROM conversations WHERE session_id = ?").get(sessionId))
+      .toEqual({ parser_shape: null });
+  });
+
+  it("selects rebuild candidates from a database migrated before the stamp existed", async () => {
+    await capture.write({ sessionId, messages: [], parserShape: "claude-v1" });
+    db.exec("ALTER TABLE conversations DROP COLUMN parser_shape");
+    expect(claudeRebuildCandidateIds(db)).toEqual([sessionId]);
   });
 
   it("invalidates an existing Claude stamp when structured ingestion appends", async () => {

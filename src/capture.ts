@@ -257,7 +257,8 @@ export class SessionCapture {
   private async writeInTransaction(input: CaptureInput): Promise<CaptureResult> {
     const attribution = input.attribution
       ?? (input.transcriptPath ? attributionFromTranscriptPath(input.transcriptPath) : undefined);
-    const parserShape = input.parserShape === undefined ? CLAUDE_PARSER_SHAPE : input.parserShape;
+    // Only a caller that knows the provenance stamps it; an unknown one is verified on its next Claude capture.
+    const parserShape = input.parserShape ?? null;
     const conversation = await this.conversationStore.getOrCreateConversation(input.sessionId, undefined, attribution, parserShape);
     const storedCount = await this.conversationStore.getSessionMessageCount(input.sessionId);
     // A resumed read may skip only an already-stored prefix; new content begins at the stored count.

@@ -367,7 +367,8 @@ Session reconciliation uses each transcript source's recovery checks before appl
    later capture mixed older and current shapes. Rebuild classifies against both shapes and
    replaces a repairable session with today's parse. A conversation captured before
    role tagging (`role_tagging IS NULL`) remains ambiguous in rebuild: today's parser cannot
-   reproduce its older rows. The daemon remembers in memory the prefix it last validated for each session (up to 128
+   reproduce its older rows, so when its transcript grows again its capture stalls and stays
+   stalled; nothing is written to it. The daemon remembers in memory the prefix it last validated for each session (up to 128
    sessions; a restart forgets them). A later capture hashes the stored prefix, together with the
    database's and the conversations' identity, and the transcript's prefix; when both hashes and
    the redaction rules match what it remembered, only the messages stored since are compared.
