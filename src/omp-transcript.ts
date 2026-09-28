@@ -14,7 +14,8 @@
  *   { type: "session", version, id, cwd, ... }                                  — header
  *   { type: "message", message: { role: "user"|"assistant"|"toolResult"|..., content } }
  *   { type: "title", ... } | { type: "title_change", ... }                       — titles
- *   { type: "compaction" | "reset_boundary" | "custom" | "custom_message" | ... } — state
+ *   { type: "compaction" | "custom" | "custom_message" | ... }                   — state
+ *   { type: "reset_boundary", id, parentId }                                     — `/clear`
  *
  * The physical first line may be a fixed-width 256-byte title slot; it parses
  * like any other non-message record. Entries are appended only at runtime;
@@ -97,6 +98,14 @@ export interface ParsedOmpTranscriptRecord {
   sessionMeta?: OmpSessionMeta;
   /** Every entry with an id has one; state entries are links in the parent chain too. */
   node?: OmpTreeNode;
+  /** A `reset_boundary` entry: OMP's `/clear`, which hides everything before it from the model. */
+  boundary?: { entryId: string };
+}
+
+/** A live `/clear`: the messages from `at` on, among those selected, belong to a new conversation. */
+export interface OmpBoundary {
+  entryId: string;
+  at: number;
 }
 
 /** Marks a tool result the tool itself reported as failed. */
@@ -186,6 +195,7 @@ export function parseOmpTranscriptRecord(record: string): ParsedOmpTranscriptRec
   const parsed: ParsedOmpTranscriptRecord = {};
   if (typeof entry.id === "string" && entry.id) {
     parsed.node = { id: entry.id, parentId: typeof entry.parentId === "string" ? entry.parentId : null };
+    if (entry.type === "reset_boundary") parsed.boundary = { entryId: entry.id };
   }
   if (entry.type !== "message" || !entry.message) return parsed;
   const messages = parseOmpMessageEntry(entry.message);
@@ -208,14 +218,29 @@ export function parseOmpTranscriptRecord(record: string): ParsedOmpTranscriptRec
  * history before the break.
  */
 export function selectOmpLiveMessages(records: readonly ParsedOmpTranscriptRecord[], wholeFile = false): ParsedMessage[] {
+  return selectOmpLiveSegments(records, wholeFile).messages;
+}
+
+/**
+ * {@link selectOmpLiveMessages}, plus where each `/clear` on the live path falls among
+ * those messages. A boundary a rewind abandoned opens nothing, like the messages beside it;
+ * when a whole-file chain breaks, every boundary counts, in file order. A live entry follows
+ * its parent in the file, so file order among live entries is chain order.
+ */
+export function selectOmpLiveSegments(
+  records: readonly ParsedOmpTranscriptRecord[], wholeFile = false,
+): { messages: ParsedMessage[]; boundaries: OmpBoundary[] } {
   const live = ompLivePath(records, wholeFile);
   const messages: ParsedMessage[] = [];
-  for (const { node, message } of records) {
-    if (!message || (node && live?.has(node.id) === false)) continue;
+  const boundaries: OmpBoundary[] = [];
+  for (const { node, message, boundary } of records) {
+    if (node && live?.has(node.id) === false) continue;
+    if (boundary) boundaries.push({ entryId: boundary.entryId, at: messages.length });
+    if (!message) continue;
     if (Array.isArray(message)) messages.push(...message);
     else messages.push(message);
   }
-  return messages;
+  return { messages, boundaries };
 }
 
 /** The ids on the chain from the last entry; undefined when a whole-file chain breaks. */

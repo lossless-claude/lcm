@@ -720,3 +720,28 @@ Full skill prompt follows...', 5)`,
     db.close();
   });
 });
+
+describe("conversation boundary column", () => {
+  it("adds opened_by_entry_id to a database created without it; existing conversations read NULL", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "lossless-claude-boundary-column-"));
+    tempDirs.push(tempDir);
+    const db = getLcmConnection(join(tempDir, "legacy.db"));
+    db.exec(`
+      CREATE TABLE conversations (
+        conversation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        title TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO conversations (session_id) VALUES ('omp-session');
+    `);
+    runLcmMigrations(db, { fts5Available: false, claudeProjectsDir: tempDir });
+    runLcmMigrations(db, { fts5Available: false, claudeProjectsDir: tempDir });
+
+    const columns = (db.prepare(`PRAGMA table_info(conversations)`).all() as Array<{ name: string }>).map((c) => c.name);
+    expect(columns).toContain("opened_by_entry_id");
+    expect(db.prepare("SELECT opened_by_entry_id FROM conversations").all()).toEqual([{ opened_by_entry_id: null }]);
+    db.close();
+  });
+});

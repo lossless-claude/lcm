@@ -14,6 +14,7 @@ import {
   parseOmpArchiveTranscript,
   parseOmpTranscript,
   parseOmpTranscriptRecord,
+  selectOmpLiveSegments,
 } from "../src/omp-transcript.js";
 
 /**
@@ -83,7 +84,6 @@ describe("parseOmpTranscriptRecord", () => {
       entry("custom", { customType: "tool_execution_start", data: { toolName: "bash" } }),
       entry("custom_message", { customType: "lcm-memory", content: "injected context", attribution: "agent" }),
       entry("compaction", { summary: "collapsed history", firstKeptEntryId: "e9" }),
-      entry("reset_boundary"),
       entry("mode_change", { mode: "plan" }),
       entry("model_change", { model: "openai/gpt-5" }),
       entry("ttsr_injection", { injectedRules: ["a"] }),
@@ -92,6 +92,14 @@ describe("parseOmpTranscriptRecord", () => {
     ]) {
       expect(parseOmpTranscriptRecord(record).message).toBeUndefined();
     }
+  });
+
+  it("marks a /clear: a reset boundary carries no memory but names the entry that opens a new conversation", () => {
+    const parsed = parseOmpTranscriptRecord(entry("reset_boundary", { id: "r1", parentId: "a1" }));
+    expect(parsed.message).toBeUndefined();
+    expect(parsed.node).toEqual({ id: "r1", parentId: "a1" });
+    expect(parsed.boundary).toEqual({ entryId: "r1" });
+    expect(parseOmpTranscriptRecord(entry("compaction", { summary: "" })).boundary).toBeUndefined();
   });
 
   it("places every entry with an id in the session tree, state entries included", () => {
@@ -193,6 +201,41 @@ describe("parseOmpTranscript", () => {
         "{broken",
         say(["u3", "x1"], "user", "after the broken record"),
       ])).toEqual(["first question", "first answer", "wrong turn", "wrong answer", "after the broken record"]);
+    });
+
+    describe("a /clear on the live path opens a new conversation", () => {
+      const clear = (at: At) => node("reset_boundary", at);
+      const segments = (lines: string[], wholeFile = false) => {
+        const { messages, boundaries } = selectOmpLiveSegments(lines.map((line) => parseOmpTranscriptRecord(line)), wholeFile);
+        return { messages: messages.map((m) => m.content), boundaries };
+      };
+      const before = trunk.slice(0, 2);
+
+      it("reports where each live boundary falls among the messages it selects", () => {
+        expect(segments([
+          ...before, clear(["r1", "a1"]), say(["u2", "r1"], "user", "after one"),
+          clear(["r2", "u2"]), say(["u3", "r2"], "user", "after two"),
+        ])).toEqual({
+          messages: ["first question", "first answer", "after one", "after two"],
+          boundaries: [{ entryId: "r1", at: 2 }, { entryId: "r2", at: 3 }],
+        });
+      });
+
+      it("a boundary with nothing after it still opens a conversation, at the end", () => {
+        expect(segments([...before, clear(["r1", "a1"])]).boundaries).toEqual([{ entryId: "r1", at: 2 }]);
+      });
+
+      it("a boundary a rewind abandoned opens nothing", () => {
+        expect(segments([
+          ...before, clear(["r1", "a1"]), say(["u2", "r1"], "user", "cleared turn"),
+          node("branch_summary", ["b1", "a1"], { fromId: "u2", summary: "" }), say(["u3", "b1"], "user", "back before the clear"),
+        ])).toEqual({ messages: ["first question", "first answer", "back before the clear"], boundaries: [] });
+      });
+
+      it("a whole-file read whose chain breaks keeps every boundary in file order", () => {
+        expect(segments([...before, clear(["r1", "a1"]), say(["u2", "x9"], "user", "after the break")], true))
+          .toEqual({ messages: ["first question", "first answer", "after the break"], boundaries: [{ entryId: "r1", at: 2 }] });
+      });
     });
 
     it("entries without ids predate the tree format and stay in file order", () => {

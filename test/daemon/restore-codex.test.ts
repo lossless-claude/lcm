@@ -12,6 +12,9 @@ import { runLcmMigrations } from "../../src/db/migration.js";
 import { PromotedStore } from "../../src/db/promoted.js";
 import { ConversationStore } from "../../src/store/conversation-store.js";
 import { SummaryStore } from "../../src/store/summary-store.js";
+import { SessionCapture } from "../../src/capture.js";
+import { ScrubEngine } from "../../src/scrub.js";
+import type { ConversationBoundary } from "../../src/transcript-source.js";
 
 const paths = createLcmPaths(lcmHome());
 
@@ -324,5 +327,49 @@ describe("restore (Codex)", () => {
       expect(body.context).not.toContain("<recent-project-context>");
       expect(body.context).toContain("durable project knowledge remains enabled");
     }
+  });
+
+  describe("OMP, after a /clear in the same session file", () => {
+    /** What capture stores for an OMP session whose transcript holds a clear. */
+    async function captureOmp(cwd: string, sessionId: string, contents: string[], boundaries: ConversationBoundary[]): Promise<void> {
+      const dbPath = projectDbPath(cwd, paths);
+      mkdirSync(dirname(dbPath), { recursive: true });
+      const db = new DatabaseSync(dbPath);
+      try {
+        runLcmMigrations(db);
+        await new SessionCapture(db, "proj", new ScrubEngine([], [])).write({
+          sessionId,
+          messages: contents.map((content, index) => ({ role: index % 2 ? "assistant" : "user", content, tokenCount: 20 })),
+          boundaries,
+        });
+      } finally {
+        db.close();
+      }
+    }
+
+    async function ompRestore(cwd: string, sessionId: string): Promise<string> {
+      const outcome = await codexRestore(cwd)({ client: "omp", sessionId, cwd, source: "startup" });
+      if (outcome.kind !== "context") throw new Error(`restore ${outcome.kind}: ${outcome.message}`);
+      return outcome.context;
+    }
+
+    it("restores only what followed the clear", async () => {
+      const cwd = makeProject();
+      await captureOmp(cwd, "omp-cleared", ["CLEARED question", "CLEARED answer", "fresh start"], [{ entryId: "r1", at: 2 }]);
+      const context = await ompRestore(cwd, "omp-cleared");
+      expect(context).toContain("<recent-session-context>");
+      expect(context).toContain("fresh start");
+      expect(context).not.toContain("CLEARED");
+    });
+
+    it("with nothing said since the clear, restores as a fresh start: never the cleared turns", async () => {
+      const cwd = makeProject();
+      await seedConversation({ cwd, sessionId: "omp-other", messages: [{ role: "user", content: "another session's work" }] });
+      await captureOmp(cwd, "omp-cleared", ["CLEARED question", "CLEARED answer"], [{ entryId: "r1", at: 2 }]);
+      const context = await ompRestore(cwd, "omp-cleared");
+      expect(context).not.toContain("CLEARED");
+      expect(context).not.toContain("<recent-session-context>");
+      expect(context).toContain("another session's work");
+    });
   });
 });

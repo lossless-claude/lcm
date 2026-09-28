@@ -168,6 +168,24 @@ describe("findUncompacted", () => {
     const noProtectedTail = findUncompacted(paths, 10, false, cwd, false, { freshTailCount: 0 });
     expect(noProtectedTail.map((candidate) => candidate.sessionId)).toEqual(["eligible", "tail-only"]);
   });
+
+  it("lists only a session's newest conversation: /compact reaches a session through it", () => {
+    const { paths, cwd, db } = makeProject();
+
+    // An OMP /clear closed the first conversation and opened the second under the same session id.
+    const closed = createConversation(db, "cleared", "2026-01-01");
+    insertContextItem(db, closed, 0, "message", insertMessage(db, closed, 0, 50));
+    const current = createConversation(db, "cleared", "2026-01-01");
+    insertContextItem(db, current, 0, "message", insertMessage(db, current, 0, 20));
+
+    for (const candidates of [
+      findUncompacted(paths, 10, false, cwd),
+      findUncompacted(paths, 10, false, cwd, false, { freshTailCount: 0 }),
+      findUncompacted(paths, 10, true, cwd, true),
+    ]) {
+      expect(candidates.map((candidate) => candidate.conversationId)).toEqual([current]);
+    }
+  });
 });
 
 describe("batchCompact — daemon becomes unreachable mid-replay", () => {
