@@ -186,7 +186,7 @@ Every hook bounds its daemon call so a wedged daemon can never hold the session 
 
 A client deadline longer than the host timeout is dead code — the host kills the hook first. PreCompact is the only hook that declares a matching host `timeout`, and the two must stay in sync.
 
-SessionEnd additionally passes `noSpawn: true`, so it never starts a daemon just to ingest: if none is running the hook exits 0, and the `SessionSnapshot` hook's incremental ingest plus the SessionStart catch-up sweep are the fallback.
+SessionEnd additionally passes `noSpawn: true`, so it never starts a daemon just to ingest: if none is running the hook exits 0, and the `SessionSnapshot` hook's incremental ingest, the periodic transcript scan (`docs/architecture.md#ingestion`), and the SessionStart catch-up sweep — which compacts what those already captured, never ingests itself — are the fallback.
 
 ## Auto-heal
 
