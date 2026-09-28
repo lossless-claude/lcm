@@ -86,15 +86,16 @@ function ensureLlmUsageBreakdownColumns(db: DatabaseSync): void {
   }
 }
 
-function ensureSummaryDepthColumn(db: DatabaseSync): void {
+function ensureSummaryDepthColumn(db: DatabaseSync): boolean {
   const summaryColumns = db.prepare(`PRAGMA table_info(summaries)`).all() as SummaryColumnInfo[];
   const hasDepth = summaryColumns.some((col) => col.name === "depth");
   if (!hasDepth) {
     db.exec(`ALTER TABLE summaries ADD COLUMN depth INTEGER NOT NULL DEFAULT 0`);
   }
+  return !hasDepth;
 }
 
-function ensureSummaryMetadataColumns(db: DatabaseSync): void {
+function ensureSummaryMetadataColumns(db: DatabaseSync): boolean {
   const summaryColumns = db.prepare(`PRAGMA table_info(summaries)`).all() as SummaryColumnInfo[];
   const hasEarliestAt = summaryColumns.some((col) => col.name === "earliest_at");
   const hasLatestAt = summaryColumns.some((col) => col.name === "latest_at");
@@ -119,6 +120,8 @@ function ensureSummaryMetadataColumns(db: DatabaseSync): void {
   if (!hasSourceMessageTokenCount) {
     db.exec(`ALTER TABLE summaries ADD COLUMN source_message_token_count INTEGER NOT NULL DEFAULT 0`);
   }
+  return !hasEarliestAt || !hasLatestAt || !hasDescendantCount ||
+    !hasDescendantTokenCount || !hasSourceMessageTokenCount;
 }
 
 /** conversations.parent_session_id / subagent_type / subagent_desc — see docs/design/subagent-attribution-from-sidecar.md. */
@@ -498,6 +501,21 @@ function backfillSummaryMetadata(db: DatabaseSync): void {
   }
 }
 
+/** Recompute legacy summaries once; new summary writers persist these fields on insert. */
+function backfillSummaryFieldsOnce(db: DatabaseSync, columnsAdded: boolean): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS summary_backfill (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      completed_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  if (!columnsAdded && db.prepare(`SELECT 1 FROM summary_backfill WHERE id = 1`).get()) return;
+
+  backfillSummaryDepths(db);
+  backfillSummaryMetadata(db);
+  db.prepare(`INSERT OR REPLACE INTO summary_backfill (id) VALUES (1)`).run();
+}
+
 /**
  * `message_parts.part_type` gained `'skill'` and `'command'` in #421. A fresh
  * database is created with both already in its `CHECK`; this rebuilds an
@@ -817,10 +835,9 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
     db.exec(`ALTER TABLE conversations ADD COLUMN bootstrapped_at TEXT`);
   }
 
-  ensureSummaryDepthColumn(db);
-  ensureSummaryMetadataColumns(db);
-  backfillSummaryDepths(db);
-  backfillSummaryMetadata(db);
+  const depthAdded = ensureSummaryDepthColumn(db);
+  const metadataAdded = ensureSummaryMetadataColumns(db);
+  backfillSummaryFieldsOnce(db, depthAdded || metadataAdded);
   ensureMessagePartsSkillCommandTypes(db);
 
   // Redaction stats (counts of secrets scrubbed per project per category).

@@ -116,8 +116,8 @@ export function fingerprintStats(messages: number, tokens: number): string {
   return `db:${messages}:${tokens}`;
 }
 
-// runLcmMigrations includes unconditional summary backfills, so run it at most
-// once per process per database instead of on every ledger write.
+// A replay only needs one schema sweep per database per process; later ledger
+// writes use the schema already established by the first open.
 const migratedDbPaths = new Set<string>();
 
 function openProjectDb(dbPath: string): ProjectDbOpenResult {

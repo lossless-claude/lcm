@@ -52,6 +52,62 @@ async function conversationWithMessages() {
 }
 
 describe("CompactionEngine summary gate", () => {
+  it("writes leaf and condensed depth and metadata before another migration", async () => {
+    const { db, compact } = await conversationWithMessages();
+    db.exec("UPDATE messages SET created_at = '2026-01-01T10:00:00.000Z'");
+    let leaves = 0;
+    await compact(async (_text, _aggressive, options) =>
+      options?.isCondensed
+        ? `Condensed summary ${"durable fact ".repeat(20)}`
+        : `Leaf summary ${++leaves}: ${"durable fact ".repeat(20)}`,
+    );
+
+    const summaries = db.prepare(`
+      SELECT summary_id, kind, depth, token_count, earliest_at, latest_at,
+             descendant_count, descendant_token_count, source_message_token_count
+      FROM summaries ORDER BY depth, summary_id
+    `).all() as Array<{
+      summary_id: string; kind: string; depth: number; token_count: number;
+      earliest_at: string | null; latest_at: string | null;
+      descendant_count: number; descendant_token_count: number; source_message_token_count: number;
+    }>;
+    const leafRows = summaries.filter((summary) => summary.kind === "leaf");
+    const condensedRows = summaries.filter((summary) => summary.kind === "condensed");
+    expect(leafRows.length).toBeGreaterThan(1);
+    expect(condensedRows.length).toBeGreaterThan(0);
+
+    for (const leaf of leafRows) {
+      const source = db.prepare(`
+        SELECT MIN(m.created_at) AS earliest_at, MAX(m.created_at) AS latest_at,
+               SUM(m.token_count) AS token_count
+        FROM summary_messages sm JOIN messages m ON m.message_id = sm.message_id
+        WHERE sm.summary_id = ?
+      `).get(leaf.summary_id) as { earliest_at: string; latest_at: string; token_count: number };
+      expect(leaf).toMatchObject({
+        depth: 0, descendant_count: 0, descendant_token_count: 0,
+        source_message_token_count: source.token_count,
+        earliest_at: new Date(source.earliest_at).toISOString(),
+        latest_at: new Date(source.latest_at).toISOString(),
+      });
+    }
+
+    const byId = new Map(summaries.map((summary) => [summary.summary_id, summary]));
+    for (const condensed of condensedRows) {
+      const parents = db.prepare("SELECT parent_summary_id FROM summary_parents WHERE summary_id = ? ORDER BY ordinal")
+        .all(condensed.summary_id) as Array<{ parent_summary_id: string }>;
+      const children = parents.map((parent) => byId.get(parent.parent_summary_id)!);
+      expect(children.length).toBeGreaterThan(0);
+      expect(condensed).toMatchObject({
+        depth: Math.max(...children.map((child) => child.depth)) + 1,
+        earliest_at: new Date(Math.min(...children.map((child) => new Date(child.earliest_at!).getTime()))).toISOString(),
+        latest_at: new Date(Math.max(...children.map((child) => new Date(child.latest_at!).getTime()))).toISOString(),
+        descendant_count: children.reduce((sum, child) => sum + child.descendant_count + 1, 0),
+        descendant_token_count: children.reduce((sum, child) => sum + child.descendant_token_count + child.token_count, 0),
+        source_message_token_count: children.reduce((sum, child) => sum + child.source_message_token_count, 0),
+      });
+    }
+  });
+
   it("a rejected leaf answer persists nothing: no summary, no links, context unchanged", async () => {
     const { db, snapshot, compact } = await conversationWithMessages();
     const before = snapshot();
