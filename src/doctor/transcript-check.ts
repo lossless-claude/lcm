@@ -19,7 +19,7 @@ export const SETTLED_MS = 15 * 60 * 1000;
 
 type Behind = { cwd: string; count: number; newest: DiscoveredSessionFile };
 
-/** Session ids with at least one stored message: one pass over `conversations`, which has no index on `session_id`. */
+/** Session ids with at least one stored message: one pass over `conversations`. */
 function storedSessionIds(db: DatabaseSync): Set<string> {
   const rows = db.prepare(
     "SELECT DISTINCT c.session_id AS id FROM conversations c WHERE EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.conversation_id)",
