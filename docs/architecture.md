@@ -184,7 +184,9 @@ wiping a project, the CLI sends `/replay-reset` to the daemon. The route holds
 each replay session's compaction guard, waiting for any summary already in
 flight, then resets under the project queue and mutation lease. The guard
 remains held until every touched conversation and the replay ledger are reset,
-so a new compaction cannot enter between the wait and the wipe. Only a refused
+so a new compaction cannot enter between the wait and the wipe. A session that
+another replay adds to the manifest while the guards are taken holds no guard,
+so the route answers 409 and clears nothing; the reset can be retried. Only a refused
 connection (`ECONNREFUSED`) establishes that no daemon is listening; then the
 CLI resets the project database directly. Other daemon errors stop the reset
 without a local write.
