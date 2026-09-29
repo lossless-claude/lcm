@@ -104,9 +104,8 @@ function compactionKey(cwd: string, sessionId: string): string {
 }
 
 /**
- * Session ids currently being compacted for a project. Lets CLI callers detect
- * an in-flight daemon compaction before a `--restart` wipes the project's
- * summaries; detection only, the check-then-wipe is not atomic.
+ * Session ids currently guarded by a compaction or same-session replacement.
+ * Reported by `/status` for callers observing project work.
  */
 export function compactingSessionsFor(cwd: string): string[] {
   const id = projectId(cwd);
@@ -131,7 +130,7 @@ export function markCompacting(sessionId: string, cwd: string): () => void {
 
 /**
  * Waits out the session's in-flight compaction, then holds its guard until the returned release.
- * A rebuild replaces the rows that a summary waiting on its model would cite.
+ * A rebuild or replay reset replaces rows that a summary waiting on its model would cite.
  */
 export async function holdSessionCompaction(sessionId: string, cwd: string): Promise<() => void> {
   const key = compactionKey(cwd, sessionId);

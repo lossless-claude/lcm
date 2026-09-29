@@ -16,7 +16,6 @@ import {
   loadLatestSessionSummary,
   planReplayResume,
   recordReplayProgress,
-  refuseRestartDuringCompaction,
 } from "./replay-resume.js";
 import type { LcmPaths } from "./lcm-paths.js";
 
@@ -235,13 +234,13 @@ export async function batchCompact(opts: {
   const client = new DaemonClient(`http://127.0.0.1:${opts.port}`, opts.tokenPath);
   if (opts.replay && !opts.dryRun && opts.restart) {
     const projects = findProjects(opts.paths, opts.cwd);
-    await refuseRestartDuringCompaction(client, projects.map((p) => p.cwd));
     let clearFailed = false;
     for (const { cwd } of projects) {
       const ok = await clearReplayState({
         cwd,
         paths: opts.paths,
         command: "compact",
+        client,
         onSummaryCount: (count) => {
           if (count > 0) {
             console.error(`  ⚠️ [replay] --restart discards ${count} summaries in ${cwd}; they will be regenerated`);

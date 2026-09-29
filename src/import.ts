@@ -28,7 +28,6 @@ import {
   loadLatestSessionSummary,
   planReplayResume,
   recordReplayProgress,
-  refuseRestartDuringCompaction,
 } from "./replay-resume.js";
 
 export type ImportProvider = "claude" | "codex" | "omp" | "all";
@@ -320,11 +319,7 @@ async function ingestSessionList(
 
   if (options.replay && !options.dryRun && sessions.length > 0) {
     if (options.restart) {
-      // importSessions refuses the whole run up front, but that check can be
-      // minutes stale by the time a later list reaches its own clear, so
-      // re-check immediately before wiping this list's projects.
       const cwdsToClear = [...new Set(sessions.map((s) => s.cwd))].filter((cwd) => !clearedCwds.has(cwd));
-      await refuseRestartDuringCompaction(client, new Set(cwdsToClear));
       let clearFailed = false;
       for (const cwd of cwdsToClear) {
         clearedCwds.add(cwd);
@@ -332,6 +327,7 @@ async function ingestSessionList(
           cwd,
           paths: options.paths,
           command: "import",
+          client,
           onSummaryCount: (count) => {
             if (count > 0) {
               console.error(`  ⚠️ [replay] --restart discards ${count} summaries in ${cwd}; they will be regenerated`);
@@ -756,15 +752,6 @@ export async function importSessions(
     }
     // Keep replay context inside one project when importing all projects.
     sessionLists.push(...projects.values());
-  }
-
-  // A `replay && restart` refusal must happen before any wipe: with
-  // `provider all`, refusing only when a later list runs would leave earlier
-  // lists already wiped and regenerated, and a retry would re-wipe them.
-  // Check every project the import will touch first (batch-compact does the
-  // same for its single pass over all projects).
-  if (options.replay && options.restart && !options.dryRun) {
-    await refuseRestartDuringCompaction(client, new Set(sessionLists.flat().map((s) => s.cwd)));
   }
 
   for (const sessions of sessionLists) {

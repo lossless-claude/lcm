@@ -5,12 +5,14 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { createDaemon, type DaemonInstance } from "../../../src/daemon/server.js";
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
-import { projectDbPath, projectId, projectMetaPath } from "../../../src/daemon/project.js";
+import { projectDbPath, projectDir, projectId, projectMetaPath } from "../../../src/daemon/project.js";
 import { runLcmMigrations } from "../../../src/db/migration.js";
 import { ConversationStore } from "../../../src/store/conversation-store.js";
 import { SummaryStore } from "../../../src/store/summary-store.js";
 import { lcmHome } from "../../../src/lcm-home.js";
 import { createLcmPaths } from "../../../src/lcm-paths.js";
+import { DaemonClient } from "../../../src/daemon/client.js";
+import { clearReplayState, createReplayRun } from "../../../src/replay-resume.js";
 import { EventsDb } from "../../../src/hooks/events-db.js";
 import { eventsDbPath } from "../../../src/db/events-path.js";
 
@@ -1636,4 +1638,50 @@ describe("POST /compact — Codex transcript capture (#505)", () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "Codex transcript cwd does not match requested project" });
   });
+});
+
+describe("replay restart during compaction", () => {
+  it("waits for a same-session summary and leaves only the reset message context", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-replay-restart-"));
+    const sessionId = "replay-session";
+    const config = makeConfig("openai");
+    config.daemon.port = 0;
+    const daemon = await createDaemon(config);
+    const url = `http://127.0.0.1:${daemon.address().port}`;
+    const client = new DaemonClient(url);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let compacting: Promise<unknown> | undefined;
+    try {
+      const messages = Array.from({ length: 20 }, (_, i) => ({
+        role: i % 2 ? "assistant" : "user",
+        content: `message ${i} ${"context ".repeat(100)}`,
+        tokenCount: 200,
+      }));
+      await client.post("/ingest", { cwd, session_id: sessionId, messages });
+      createReplayRun({ cwd, paths, command: "import", runId: "restart-run", sessions: [{ sessionId }] });
+      vi.mocked(createOpenAISummarizer).mockReturnValueOnce(async () => {
+        entered.resolve();
+        await release.promise;
+        return "summary of interrupted compaction";
+      });
+
+      compacting = client.post("/compact", { cwd, session_id: sessionId, skip_ingest: true });
+      await entered.promise;
+      const resetting = clearReplayState({ cwd, paths, command: "import", client });
+      expect(await Promise.race([resetting.then(() => "done"), new Promise<string>((resolve) => setTimeout(() => resolve("waiting"), 50))]))
+        .toBe("waiting");
+      release.resolve();
+      await compacting;
+      expect(await resetting).toBe(true);
+      expect(await readSummaryCount(cwd, sessionId)).toBe(0);
+      expect(await readContextMessageContents(cwd, sessionId)).toEqual(messages.map((m) => m.content));
+    } finally {
+      release.resolve();
+      await compacting;
+      await daemon.stop();
+      rmSync(cwd, { recursive: true, force: true });
+      rmSync(projectDir(cwd, paths), { recursive: true, force: true });
+    }
+  }, 10_000);
 });

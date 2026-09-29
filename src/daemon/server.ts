@@ -31,6 +31,7 @@ import { createPoolStatsHandler } from "./routes/pool-stats.js";
 import { createReviewStaleHandler } from "./routes/review-stale.js";
 import { createToolEventHandler } from "./routes/tool-event.js";
 import { createSessionScavengeHandler } from "./routes/session-scavenge.js";
+import { createReplayResetHandler } from "./routes/replay-reset.js";
 import { createSessionStartCompactHandler } from "./routes/session-start-compact.js";
 import { createSessionEndHandler, invokeRoute, RouteHttpError, type IngestResult } from "./routes/session-end.js";
 import { backfillProjectIdentities } from "./project-group.js";
@@ -192,6 +193,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   const answerSummarizeJob = createAnswerSummarizeJobHandler(summarizeJobs);
   routes.set("GET /summarize-jobs/next", createNextSummarizeJobHandler(summarizeJobs));
   routes.set("POST /compact", createCompactHandler(config, paths, summarizeJobs, log));
+  routes.set("POST /replay-reset", createReplayResetHandler(paths));
   routes.set("POST /promote", createPromoteHandler(config, paths, log));
   routes.set("POST /restore", createRestoreHandler(config, paths));
   routes.set("POST /grep", createGrepHandler(config, paths));
