@@ -411,16 +411,34 @@ a file that grew or was rewritten between two runs.
 
 ## Operation serialization
 
-Ordinary ingest and compact requests are serialized **per project** — the queue is keyed by
-`projectId(cwd)` (`src/daemon/project-queue.ts`), not by session — so two conversations of the same
-project wait on each other while different projects do not. `/compact` adds its own per-session
-guard on top, which is what keeps one session from compacting twice at once. A required PreCompact
-Capture bypasses a queue occupied by an LLM call so it can finish within the hook deadline.
-It shares a short per-project mutation lease with ingest and compact database work; compaction
-releases that lease only while awaiting the external LLM and reacquires it before writing.
+Ordinary ingest and compact requests enter a **per-project** queue keyed by `projectId(cwd)`
+(`src/daemon/project-queue.ts`), not by session. Each queue turn runs exclusively, but compaction
+yields its turn while awaiting external language detection or summarization. Other captures can
+then finish without waiting for that model call. Compaction reenters the queue before reacquiring
+its per-project mutation lease and resuming database work. The lease serializes database mutations
+while a queue turn is yielded; a yielded compaction still counts as pending project work. Queue
+turns remain FIFO, though independent compactions can finish in a different order when their
+model calls take different times. Replay retains its session order because it awaits each ingest
+and compact response before advancing. `/compact` also guards each `(projectId(cwd), session_id)`
+through the whole request, including model waits. A second direct request for that session waits
+for the first to finish, then reads the current context; deadline-bound PreCompact requests and
+`skip_ingest` callers (including replay and `lcm compact`) receive the existing busy/skip outcome.
+The guard uses the session because `/compact` resolves its newest conversation only after admission;
+an OMP clear can open another conversation under the same session id. Different sessions of one
+project can still summarize concurrently. A required PreCompact Capture bypasses an occupied queue
+and takes the mutation lease directly so it can finish within the hook deadline. A same-session
+`/ingest` can likewise append while a summary waits: the pending model call uses message IDs
+selected before the capture, and newly captured messages remain in context for a later selection.
+A Claude rebuild of that session (`/ingest` with `rebuild`) replaces those messages instead, so it
+waits for the compaction to finish and holds the session guard until the rebuild is written.
 An OMP pre-compaction request whose Capture was separately verified skips its lcm summary if
-the project queue is occupied, including when another request enters during awaited summarizer
-setup; admission is rechecked immediately before enqueue.
+the project queue has work that has not yielded, or a mutation lease is outstanding, including
+when another request enters during awaited summarizer setup; admission is rechecked immediately
+before enqueue. A required PreCompact request uses the same busy check before summarizer setup.
+Another session's compaction waiting on an external model has yielded both its queue turn and
+mutation lease, so it does not make PreCompact busy. The same session's in-flight compaction
+always makes its PreCompact summary busy. `hasQueuedProjectWork` still reports all pending queue
+requests, including yielded ones; admission uses `hasBlockingProjectWork` instead.
 
 `/promote` and `/promote-events` hold the same mutation lease for their whole run. They walk
 every summary or event not yet promoted, and `node:sqlite` is synchronous, so each yields to the

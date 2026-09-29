@@ -1,14 +1,17 @@
 import { describe, it, expect } from "vitest";
-import { acquireProjectMutation, enqueue } from "../../src/daemon/project-queue.js";
+import { acquireProjectMutation, enqueue, hasBlockingProjectWork, hasQueuedProjectWork } from "../../src/daemon/project-queue.js";
 
 describe("enqueue", () => {
   it("lets a local mutation run during an external wait and reacquires before resuming", async () => {
     const first = await acquireProjectMutation("proj-mutation");
+    expect(hasBlockingProjectWork("proj-mutation")).toBe(true);
     const external = Promise.withResolvers<void>();
     const waiting = Promise.withResolvers<void>();
     const outside = first.yieldWhile(async () => { waiting.resolve(); await external.promise; });
     await waiting.promise;
+    expect(hasBlockingProjectWork("proj-mutation")).toBe(false);
     const second = await acquireProjectMutation("proj-mutation");
+    expect(hasBlockingProjectWork("proj-mutation")).toBe(true);
     let resumed = false;
     void outside.then(() => { resumed = true; });
     external.resolve();
@@ -18,6 +21,7 @@ describe("enqueue", () => {
     await outside;
     expect(resumed).toBe(true);
     first.release();
+    expect(hasBlockingProjectWork("proj-mutation")).toBe(false);
   });
 
   it("returns the result of fn", async () => {
@@ -38,6 +42,31 @@ describe("enqueue", () => {
 
     await Promise.all([first, second]);
     expect(order).toEqual([1, 2]);
+  });
+
+  it("lets the next queued operation run during an external wait, then reenters the queue", async () => {
+    const waiting = Promise.withResolvers<void>();
+    const external = Promise.withResolvers<void>();
+    const order: string[] = [];
+    const first = enqueue("proj-yield", async (turn) => {
+      order.push("first started");
+      await turn.yieldWhile(async () => { waiting.resolve(); await external.promise; });
+      order.push("first resumed");
+    });
+    await waiting.promise;
+    expect(hasQueuedProjectWork("proj-yield")).toBe(true);
+    expect(hasBlockingProjectWork("proj-yield")).toBe(false);
+    await enqueue("proj-yield", async () => {
+      expect(hasBlockingProjectWork("proj-yield")).toBe(true);
+      order.push("second completed");
+    });
+    expect(order).toEqual(["first started", "second completed"]);
+    expect(hasBlockingProjectWork("proj-yield")).toBe(false);
+    external.resolve();
+    await first;
+    expect(order).toEqual(["first started", "second completed", "first resumed"]);
+    expect(hasQueuedProjectWork("proj-yield")).toBe(false);
+    expect(hasBlockingProjectWork("proj-yield")).toBe(false);
   });
 
   it("operations on different projectIds run in parallel", async () => {
