@@ -205,11 +205,11 @@ describe("required pre-compaction capture", () => {
       expect(hook.getBody().summaryOutcome).toMatchObject({ status: "skipped", reason: "busy" });
       expect(hook.getBody().summary).toBe("");
 
-      const ordinary = mockRes();
-      await createCompactHandler(makeConfig("openai"), paths)({} as any, ordinary.res, JSON.stringify({
-        session_id: "precompact-busy-no-source", cwd,
+      const replay = mockRes();
+      await createCompactHandler(makeConfig("openai"), paths)({} as any, replay.res, JSON.stringify({
+        session_id: "precompact-busy-no-source", cwd, skip_ingest: true,
       }));
-      expect(ordinary.getBody().summary).toContain("already in progress");
+      expect(replay.getBody().summary).toContain("already in progress");
     } finally {
       release();
     }
@@ -293,6 +293,309 @@ describe("required pre-compaction capture", () => {
       await compacting;
     }
     expect(await readMessageContents(cwd, "live-summary")).toContain("new tail while LLM waits");
+  }, 10_000);
+
+  it("admits another session's PreCompact while a summary waits, but skips the same session", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-yielded-summary-"));
+    dirs.push(cwd);
+    const firstTranscript = join(cwd, "first.jsonl");
+    const secondTranscript = join(cwd, "second.jsonl");
+    writeFileSync(firstTranscript, Array.from({ length: 20 }, (_, index) => JSON.stringify({
+      message: { role: index % 2 ? "assistant" : "user",
+        content: `message ${index} ${"content for compaction ".repeat(100)}` },
+    })).join("\n") + "\n");
+    writeFileSync(secondTranscript, JSON.stringify({ message: { role: "user", content: "second session captured" } }) + "\n");
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(async () => {
+      entered.resolve();
+      await resume.promise;
+      return "summary";
+    });
+    const handler = createCompactHandler(makeConfig("openai"), paths);
+    const first = mockRes();
+    const compacting = handler({} as any, first.res, JSON.stringify({
+      session_id: "first-session", cwd, transcript_path: firstTranscript,
+    }));
+    try {
+      await Promise.race([entered.promise, compacting.then(() => { throw new Error("summary did not reach LLM"); })]);
+      const same = mockRes();
+      await handler({} as any, same.res, JSON.stringify({
+        session_id: "first-session", cwd, transcript_path: firstTranscript, capture_required: true,
+      }));
+      expect(same.getBody().summaryOutcome).toMatchObject({ status: "skipped", reason: "busy" });
+
+      const other = mockRes();
+      const precompact = handler({} as any, other.res, JSON.stringify({
+        session_id: "second-session", cwd, transcript_path: secondTranscript, capture_required: true,
+      }));
+      expect(await Promise.race([precompact.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 3000))]))
+        .toBe(true);
+      expect(other.getBody().skipped).not.toBe(true);
+      expect(other.getBody().captureOutcome).toMatchObject({ status: "completed", messages: 1 });
+      expect(await readMessageContents(cwd, "second-session")).toContain("second session captured");
+    } finally {
+      resume.resolve();
+      await compacting;
+    }
+  }, 10_000);
+
+  it("waits for the same session's summary before a second direct /compact", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-same-session-summary-"));
+    dirs.push(cwd);
+    const transcriptPath = join(cwd, "session.jsonl");
+    writeFileSync(transcriptPath, Array.from({ length: 20 }, (_, index) => JSON.stringify({
+      message: { role: index % 2 ? "assistant" : "user",
+        content: `message ${index} ${"content for compaction ".repeat(100)}` },
+    })).join("\n") + "\n");
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const summarize = vi.fn(async () => {
+      entered.resolve();
+      await resume.promise;
+      return "summary";
+    });
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(summarize);
+    const handler = createCompactHandler(makeConfig("openai"), paths);
+    const first = mockRes();
+    const firstRequest = handler({} as any, first.res, JSON.stringify({
+      session_id: "same-session", cwd, transcript_path: transcriptPath,
+    }));
+    let secondRequest: Promise<void> | undefined;
+    try {
+      await entered.promise;
+      const second = mockRes();
+      secondRequest = handler({} as any, second.res, JSON.stringify({
+        session_id: "same-session", cwd, transcript_path: transcriptPath,
+      }));
+      expect(await Promise.race([
+        secondRequest.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 100)),
+      ])).toBe(false);
+      const replay = mockRes();
+      await handler({} as any, replay.res, JSON.stringify({
+        session_id: "same-session", cwd, skip_ingest: true,
+      }));
+      expect(replay.getBody().replayOutcome).toBe("skipped");
+      resume.resolve();
+      await firstRequest;
+      const summariesAfterFirst = await readSummaryCount(cwd, "same-session");
+      expect(summariesAfterFirst).toBeGreaterThan(0);
+      await secondRequest;
+      expect(first.getBody().replayOutcome).toBe("compacted");
+      expect(second.getBody().replayOutcome).toBe("no_work");
+      expect(await readSummaryCount(cwd, "same-session")).toBe(summariesAfterFirst);
+      expect(summarize).toHaveBeenCalledTimes(1);
+    } finally {
+      resume.resolve();
+      await firstRequest;
+      await secondRequest;
+    }
+  }, 10_000);
+
+  it("captures the compacting session through /ingest while its summary waits", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-same-session-ingest-"));
+    dirs.push(cwd);
+    const ingestHandler = createIngestHandler(makeConfig("disabled"), paths);
+    const seed = mockRes();
+    const messages = Array.from({ length: 20 }, (_, index) => ({
+      role: index % 2 ? "assistant" : "user",
+      content: `message ${index} ${"content for compaction ".repeat(100)}`,
+      tokenCount: 600,
+    }));
+    await ingestHandler({} as any, seed.res, JSON.stringify({
+      session_id: "capturing-session", cwd, messages,
+    }));
+    expect(seed.getBody()).toMatchObject({ ingested: 20 });
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const summarize = vi.fn(async () => {
+      entered.resolve();
+      await resume.promise;
+      return "summary";
+    });
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(summarize);
+    const compact = mockRes();
+    const compacting = createCompactHandler(makeConfig("openai"), paths)({} as any, compact.res, JSON.stringify({
+      session_id: "capturing-session", cwd, skip_ingest: true,
+    }));
+    try {
+      await entered.promise;
+      const tail = mockRes();
+      const capturing = ingestHandler({} as any, tail.res, JSON.stringify({
+        session_id: "capturing-session", cwd,
+        messages: [...messages, { role: "user", content: "new tail while summary waits", tokenCount: 7 }],
+      }));
+      expect(await Promise.race([
+        capturing.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 3000)),
+      ])).toBe(true);
+      expect(tail.getBody()).toMatchObject({ ingested: 1 });
+    } finally {
+      resume.resolve();
+      await compacting;
+    }
+    expect(compact.getBody().replayOutcome).toBe("compacted");
+    expect(await readMessageContents(cwd, "capturing-session")).toContain("new tail while summary waits");
+    expect(await readContextMessageContents(cwd, "capturing-session")).toContain("new tail while summary waits");
+    expect(summarize.mock.calls.every(([text]) => !String(text).includes("new tail while summary waits"))).toBe(true);
+  }, 10_000);
+
+  it("lets two sessions of one project summarize at the same time", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-two-summaries-"));
+    dirs.push(cwd);
+    const requests = ["first-session", "second-session"].map((sessionId) => {
+      const transcriptPath = join(cwd, `${sessionId}.jsonl`);
+      writeFileSync(transcriptPath, Array.from({ length: 20 }, (_, index) => JSON.stringify({
+        message: { role: index % 2 ? "assistant" : "user",
+          content: `message ${index} ${"content for compaction ".repeat(100)}` },
+      })).join("\n") + "\n");
+      return { sessionId, transcriptPath, response: mockRes() };
+    });
+    const firstEntered = Promise.withResolvers<void>();
+    const bothEntered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    let calls = 0;
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(async () => {
+      calls++;
+      if (calls === 1) firstEntered.resolve();
+      if (calls === 2) bothEntered.resolve();
+      await resume.promise;
+      return "summary";
+    });
+    const handler = createCompactHandler(makeConfig("openai"), paths);
+    const run = (request: typeof requests[number]) => handler({} as any, request.response.res, JSON.stringify({
+      session_id: request.sessionId, cwd, transcript_path: request.transcriptPath,
+    }));
+    const first = run(requests[0]!);
+    let second: Promise<void> | undefined;
+    try {
+      await firstEntered.promise;
+      second = run(requests[1]!);
+      expect(await Promise.race([
+        bothEntered.promise.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 3000)),
+      ])).toBe(true);
+    } finally {
+      resume.resolve();
+      await first;
+      await second;
+    }
+    expect(requests.map((request) => request.response.getBody().replayOutcome)).toEqual(["compacted", "compacted"]);
+  }, 10_000);
+
+  it("does not block the same session id in another project", async () => {
+    const projects = [0, 1].map(() => mkdtempSync(join(tmpdir(), "lcm-shared-session-id-")));
+    dirs.push(...projects);
+    const entered = Promise.withResolvers<void>();
+    const bothEntered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    let calls = 0;
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(async () => {
+      calls++;
+      if (calls === 1) entered.resolve();
+      if (calls === 2) bothEntered.resolve();
+      await resume.promise;
+      return "summary";
+    });
+    const handler = createCompactHandler(makeConfig("openai"), paths);
+    const run = (cwd: string, response: ReturnType<typeof mockRes>) => {
+      const transcriptPath = join(cwd, "session.jsonl");
+      writeFileSync(transcriptPath, Array.from({ length: 20 }, (_, index) => JSON.stringify({
+        message: { role: index % 2 ? "assistant" : "user",
+          content: `message ${index} ${"content for compaction ".repeat(100)}` },
+      })).join("\n") + "\n");
+      return handler({} as any, response.res, JSON.stringify({
+        session_id: "shared-session", cwd, transcript_path: transcriptPath,
+      }));
+    };
+    const responses = [mockRes(), mockRes()];
+    const first = run(projects[0]!, responses[0]!);
+    let second: Promise<void> | undefined;
+    try {
+      await entered.promise;
+      second = run(projects[1]!, responses[1]!);
+      expect(await Promise.race([
+        bothEntered.promise.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 3000)),
+      ])).toBe(true);
+    } finally {
+      resume.resolve();
+      await first;
+      await second;
+    }
+    expect(responses.map((response) => response.getBody().replayOutcome)).toEqual(["compacted", "compacted"]);
+  }, 10_000);
+
+  it("completes another session's /ingest while a summary waits for its LLM", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-ingest-during-summary-"));
+    dirs.push(cwd);
+    const transcriptPath = join(cwd, "summary.jsonl");
+    writeFileSync(transcriptPath, Array.from({ length: 20 }, (_, index) => JSON.stringify({
+      message: { role: index % 2 ? "assistant" : "user",
+        content: `message ${index} ${"content for compaction ".repeat(100)}` },
+    })).join("\n") + "\n");
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(async () => {
+      entered.resolve();
+      await resume.promise;
+      return "summary";
+    });
+    const compact = mockRes();
+    const compacting = createCompactHandler(makeConfig("openai"), paths)({} as any, compact.res, JSON.stringify({
+      session_id: "summary-session", cwd, transcript_path: transcriptPath,
+    }));
+    try {
+      await Promise.race([entered.promise, compacting.then(() => { throw new Error("summary did not reach LLM"); })]);
+      const ingest = mockRes();
+      const capturing = createIngestHandler(makeConfig("disabled"), paths)({} as any, ingest.res, JSON.stringify({
+        session_id: "live-session", cwd,
+        messages: [{ role: "user", content: "captured during summary", tokenCount: 3 }],
+      }));
+      expect(await Promise.race([capturing.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 3000))]))
+        .toBe(true);
+      expect(ingest.getBody()).toMatchObject({ ingested: 1 });
+    } finally {
+      resume.resolve();
+      await compacting;
+    }
+  }, 10_000);
+
+  it("captures another /compact session while a summary waits for its LLM", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-compact-during-summary-"));
+    dirs.push(cwd);
+    const firstTranscript = join(cwd, "first.jsonl");
+    const secondTranscript = join(cwd, "second.jsonl");
+    writeFileSync(firstTranscript, Array.from({ length: 20 }, (_, index) => JSON.stringify({
+      message: { role: index % 2 ? "assistant" : "user",
+        content: `message ${index} ${"content for compaction ".repeat(100)}` },
+    })).join("\n") + "\n");
+    writeFileSync(secondTranscript, JSON.stringify({ message: { role: "user", content: "another capture" } }) + "\n");
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(async () => {
+      entered.resolve();
+      await resume.promise;
+      return "summary";
+    });
+    const first = mockRes();
+    const compacting = createCompactHandler(makeConfig("openai"), paths)({} as any, first.res, JSON.stringify({
+      session_id: "first-session", cwd, transcript_path: firstTranscript,
+    }));
+    try {
+      await Promise.race([entered.promise, compacting.then(() => { throw new Error("summary did not reach LLM"); })]);
+      const second = mockRes();
+      const capturing = createCompactHandler(makeConfig("openai"), paths)({} as any, second.res, JSON.stringify({
+        session_id: "second-session", cwd, transcript_path: secondTranscript,
+      }));
+      expect(await Promise.race([capturing.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 3000))]))
+        .toBe(true);
+      expect(await readMessageContents(cwd, "second-session")).toContain("another capture");
+    } finally {
+      resume.resolve();
+      await compacting;
+    }
   }, 10_000);
 
   it("captures while language detection awaits an external model", async () => {
@@ -471,6 +774,33 @@ async function readMessageContents(cwd: string, sessionId: string): Promise<stri
     const conversation = await conversationStore.getOrCreateConversation(sessionId);
     const messages = await conversationStore.getMessages(conversation.conversationId);
     return messages.map((m) => m.content);
+  } finally {
+    db.close();
+  }
+}
+
+async function readSummaryCount(cwd: string, sessionId: string): Promise<number> {
+  const db = new DatabaseSync(projectDbPath(cwd, paths));
+  try {
+    const conversationStore = new ConversationStore(db);
+    const summaryStore = new SummaryStore(db);
+    const conversation = await conversationStore.getOrCreateConversation(sessionId);
+    return (await summaryStore.getSummariesByConversation(conversation.conversationId)).length;
+  } finally {
+    db.close();
+  }
+}
+
+async function readContextMessageContents(cwd: string, sessionId: string): Promise<string[]> {
+  const db = new DatabaseSync(projectDbPath(cwd, paths));
+  try {
+    const conversationStore = new ConversationStore(db);
+    const summaryStore = new SummaryStore(db);
+    const conversation = await conversationStore.getOrCreateConversation(sessionId);
+    const items = await summaryStore.getContextItems(conversation.conversationId);
+    const messages = await Promise.all(items.filter((item) => item.messageId !== null)
+      .map((item) => conversationStore.getMessageById(item.messageId!)));
+    return messages.flatMap((message) => message ? [message.content] : []);
   } finally {
     db.close();
   }

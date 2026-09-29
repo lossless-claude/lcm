@@ -1,4 +1,5 @@
-const queues = new Map<string, { chain: Promise<void>; pending: number }>()
+type QueueEntry = { chain: Promise<void>; pending: number; yielded: number }
+const queues = new Map<string, QueueEntry>()
 const mutationTails = new Map<string, Promise<void>>()
 
 async function acquireMutation(projectId: string): Promise<() => void> {
@@ -62,21 +63,50 @@ export function hasQueuedProjectWork(projectId: string): boolean {
   return (queues.get(projectId)?.pending ?? 0) > 0
 }
 
-export function enqueue<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
-  const entry = queues.get(projectId) ?? { chain: Promise.resolve(), pending: 0 }
+/** Work that would make a new project request wait, excluding yielded model calls. */
+export function hasBlockingProjectWork(projectId: string): boolean {
+  const entry = queues.get(projectId)
+  return (entry !== undefined && entry.pending > entry.yielded) || mutationTails.has(projectId)
+}
+
+function reserveQueueTurn(entry: QueueEntry): { wait: Promise<void>; release: () => void } {
+  const wait = entry.chain
+  let release!: () => void
+  entry.chain = new Promise<void>((resolve) => { release = resolve })
+  return { wait, release }
+}
+
+export function enqueue<T>(
+  projectId: string,
+  fn: (turn: { yieldWhile<U>(work: () => Promise<U>): Promise<U> }) => Promise<T>,
+): Promise<T> {
+  const entry = queues.get(projectId) ?? { chain: Promise.resolve(), pending: 0, yielded: 0 }
   entry.pending++
   queues.set(projectId, entry)
 
-  const result = entry.chain.then(fn, fn) // run fn regardless of previous result
-  entry.chain = result.then(() => {}, () => {}) // swallow for chain continuity
-
-  // Clean up when all pending operations complete (swallow rejection to avoid unhandled promise)
-  entry.chain.then(() => {
-    entry.pending--
-    if (entry.pending === 0) {
-      queues.delete(projectId)
+  let turn = reserveQueueTurn(entry)
+  let held = true
+  return turn.wait.then(async () => {
+    try {
+      return await fn({
+        async yieldWhile<U>(work: () => Promise<U>): Promise<U> {
+          if (!held) throw new Error("project queue turn is not held")
+          held = false
+          entry.yielded++
+          turn.release()
+          try { return await work() }
+          finally {
+            entry.yielded--
+            turn = reserveQueueTurn(entry)
+            await turn.wait
+            held = true
+          }
+        },
+      })
+    } finally {
+      if (held) turn.release()
+      entry.pending--
+      if (entry.pending === 0) queues.delete(projectId)
     }
   })
-
-  return result
 }
