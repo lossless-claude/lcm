@@ -25,7 +25,9 @@ import { backupProjectDatabase } from "../../claude-rebuild.js";
 import { applyCutRowRepair, planCutRowRepair, type CutRepairClient } from "../../cut-row-repair.js";
 import { SessionCapture, STRUCTURED_INGEST_SHAPE, isSessionComplete, type CaptureInput, type CaptureResult, type TranscriptCaptureResult } from "../../capture.js";
 import type { DiscoveredSubagentTranscript } from "../../subagent-attribution.js";
-import { forgetSubagentGuard, rememberSubagentGuard, skipUnchangedSubagentGuard, subagentGuardFingerprint } from "../subagent-guard-failures.js";
+import {
+  forgetSubagentGuard, forgetSubagentGuardSession, rememberSubagentGuard, skipUnchangedSubagentGuard, subagentGuardFingerprint,
+} from "../subagent-guard-failures.js";
 
 type ParsedMessage = CaptureInput["messages"][number];
 
@@ -184,6 +186,8 @@ async function rebuildSession(
           const { plan, ingested } = await new SessionCapture(db, pid, scrubber).rebuildTranscript({
             sessionId: input.session_id, client: input.client, cwd, transcriptPath: input.transcript_path, source: "import",
           });
+          // A rebuilt subagent session no longer fails its guard; its recorded failure would keep it skipped and listed.
+          if (plan.kind === "repairable") forgetSubagentGuardSession(cwd, paths, input.session_id);
           return { ingested, rebuild: plan };
         } finally {
           closeLcmConnection(dbPath);

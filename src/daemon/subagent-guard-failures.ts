@@ -100,6 +100,16 @@ export function forgetSubagentGuard(cwd: string, paths: LcmPaths, path: string):
   writeRecords(cwd, paths, current);
 }
 
+/** Drops every failure recorded for a session, whatever path discovery gave its transcript: a rebuild replaced its stored history. */
+export function forgetSubagentGuardSession(cwd: string, paths: LcmPaths, sessionId: string): void {
+  for (const [path, failure] of failed) if (failure.sessionId === sessionId) failed.delete(path);
+  const current = records(cwd, paths);
+  const stale = Object.keys(current).filter((path) => current[path]?.sessionId === sessionId);
+  if (stale.length === 0) return;
+  for (const path of stale) delete current[path];
+  writeRecords(cwd, paths, current);
+}
+
 /** Doctor reads the sidecar in its own process and verifies that each file still matches. */
 export function stalledSubagentGuards(cwd: string, paths: LcmPaths): Array<{ path: string; failure: Failure }> {
   return Object.entries(readRecords(cwd, paths))
