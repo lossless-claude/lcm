@@ -243,6 +243,22 @@ async function startDaemon($: EngineInterface): Promise<boolean> {
 
 type PostOutcome = { body: Record<string, unknown> | null; connectionFailed: boolean; httpStatus?: number };
 
+/** A refused connection fails at once; a listener that is busy fails only after a wait. */
+const REFUSED_WITHIN_MS = 1_000;
+
+/**
+ * Whether a call started at `startedAt` failed for lack of a listener, which a start and a
+ * retry can fix. The error comes from the host's realm, so its fields are read rather than
+ * trusted to `instanceof`; one that names no refusal is judged by how long it took.
+ */
+function isDaemonUnreachableError(error: unknown, startedAt: number): boolean {
+  const fields = (value: unknown) =>
+    (typeof value === "object" && value !== null ? value : {}) as { code?: unknown; message?: unknown; cause?: unknown };
+  const failure = fields(error);
+  const text = [failure.code, fields(failure.cause).code, failure.message].map(String).join(" ");
+  return /ECONNREFUSED|connection refused/i.test(text) || Date.now() - startedAt < REFUSED_WITHIN_MS;
+}
+
 function delivery(outcome: PostOutcome): ["accepted" | "rejected" | "unconfirmed", string] {
   return outcome.body ? ["accepted", ""]
     : outcome.httpStatus !== undefined ? ["rejected", `http-${outcome.httpStatus}`]
@@ -257,33 +273,45 @@ function logMissingRoute($: EngineInterface, route: string, consequence: string)
 }
 
 async function postOnce($: EngineInterface, route: string, body: unknown): Promise<PostOutcome> {
+  let startedAt = Date.now();
+  let res: Awaited<ReturnType<EngineInterface["http"]["fetch"]>>;
   try {
     const { port, token } = await readHostEnv($);
-    const res = await $.http.fetch(`http://127.0.0.1:${port}${route}`, {
+    startedAt = Date.now();
+    res = await $.http.fetch(`http://127.0.0.1:${port}${route}`, {
       method: "POST",
       headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify(body),
     });
-    if (res.status === 404) {
-      // Not "the command hooks still record": they stand down while this module holds the
-      // session, so an older daemon means the call is simply lost.
-      logMissingRoute($, route, "this call is dropped until the daemon is upgraded");
-      return { body: null, connectionFailed: false, httpStatus: res.status };
-    }
-    if (!res.ok) {
-      $.ui.log(`[lcm] ${route}: daemon answered ${res.status}`);
-      return { body: null, connectionFailed: false, httpStatus: res.status };
-    }
+  } catch (error) {
+    if (isDaemonUnreachableError(error, startedAt)) return { body: null, connectionFailed: true };
+    // A timed-out or dropped call may still complete. The next Stop snapshot or scan
+    // captures the turn, so starting another daemon or retrying now adds no safety.
+    $.ui.log(`[lcm] ${route}: daemon busy, did not answer; the next capture will retry`);
+    return { body: null, connectionFailed: false };
+  }
+  if (res.status === 404) {
+    // Not "the command hooks still record": they stand down while this module holds the
+    // session, so an older daemon means the call is simply lost.
+    logMissingRoute($, route, "this call is dropped until the daemon is upgraded");
+    return { body: null, connectionFailed: false, httpStatus: res.status };
+  }
+  if (!res.ok) {
+    $.ui.log(`[lcm] ${route}: daemon answered ${res.status}`);
+    return { body: null, connectionFailed: false, httpStatus: res.status };
+  }
+  try {
     return { body: JSON.parse(res.text) as Record<string, unknown>, connectionFailed: false };
   } catch {
-    // No listener on the port: the daemon idled out or was never started.
-    return { body: null, connectionFailed: true };
+    // A listener answered, so neither a start nor a retry applies.
+    $.ui.log(`[lcm] ${route}: daemon answered ${res.status} with a body that is not JSON`);
+    return { body: null, connectionFailed: false };
   }
 }
 
 /**
  * POST `body` to the daemon; resolves to the parsed JSON, or null when the daemon lacks the
- * route or cannot be reached. On a connection failure it starts the daemon and retries once.
+ * route or cannot be reached. Only a refused connection starts the daemon and retries once.
  */
 async function postDaemonOutcome($: EngineInterface, route: string, body: unknown): Promise<PostOutcome> {
   const first = await postOnce($, route, body);
@@ -422,11 +450,11 @@ type PollOutcome =
   | { job: SummaryJob }
   | { wait: number; shortPoll?: true };
 
-function fetchNextJob($: EngineInterface, sessionId: string, shortPoll: boolean) {
-  return readHostEnv($).then(({ port, token }) => $.http.fetch(
+function fetchNextJob($: EngineInterface, { port, token }: HostEnv, sessionId: string, shortPoll: boolean) {
+  return $.http.fetch(
     `http://127.0.0.1:${port}/summarize-jobs/next?session_id=${encodeURIComponent(sessionId)}${shortPoll ? "&wait_ms=0" : ""}`,
     { headers: token ? { authorization: `Bearer ${token}` } : {} },
-  ));
+  );
 }
 
 /** Turns a non-job response into how long to wait before asking again. */
@@ -447,16 +475,26 @@ async function nextSummaryJob(
   $: EngineInterface, sessionId: string, shortPoll: boolean,
 ): Promise<PollOutcome> {
   let job: SummaryJob | undefined;
+  let startedAt = Date.now();
+  let response: Awaited<ReturnType<typeof fetchNextJob>>;
   try {
-    const response = await fetchNextJob($, sessionId, shortPoll);
-    if (!response.ok || response.status === 204) return classifyPollResponse($, response.status);
-    // The parse stays inside the try: a malformed 200 backs off and respawns the
-    // daemon like any other transport failure, instead of stopping the poller.
+    const host = await readHostEnv($);
+    // Timed from the request alone: a slow host-environment read is not the daemon's wait.
+    startedAt = Date.now();
+    response = await fetchNextJob($, host, sessionId, shortPoll);
+  } catch (error) {
+    // Some hosts cap HTTP request duration below the daemon's 25-second hold.
+    if (isDaemonUnreachableError(error, startedAt)) {
+      await startDaemon($);
+      hostEnv = null; // A restarted daemon may have a new bearer token.
+    }
+    return { wait: POLL_BACKOFF_MS, shortPoll: true };
+  }
+  if (!response.ok || response.status === 204) return classifyPollResponse($, response.status);
+  try {
     job = JSON.parse(response.text).job as SummaryJob;
   } catch {
-    // Some hosts cap HTTP request duration below the daemon's 25-second hold.
-    await startDaemon($);
-    hostEnv = null; // A restarted daemon may have a new bearer token.
+    // A malformed 200 backs off like a transport failure instead of stopping the poller.
     return { wait: POLL_BACKOFF_MS, shortPoll: true };
   }
   // Do not run a prompt belonging to another session, even on a malformed response.
@@ -553,8 +591,11 @@ function registerSessionStart(on: On, summaryCap: number): void {
     noteHook(sessionId, "session.start", "claim", "execution", claimed ? "completed" : "failed",
       claimed ? "" : "write-failed");
     await flushHookObservations($, sessionId);
-    void readHostEnv($).then(({ port }) =>
-      $.http.fetch(`http://127.0.0.1:${port}/health`).then(() => undefined, () => startDaemon($)));
+    void readHostEnv($).then(({ port }) => {
+      const startedAt = Date.now();
+      return $.http.fetch(`http://127.0.0.1:${port}/health`).then(() => undefined,
+        (error: unknown) => isDaemonUnreachableError(error, startedAt) ? startDaemon($) : undefined);
+    });
     // The housekeeping the SessionStart command hook awaited. Nothing reads its result,
     // and the session has no reason to wait for a prune.
     void $.session.cwd().then((cwd) => postDaemon($, "/session-scavenge", { cwd }));

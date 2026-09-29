@@ -7,6 +7,7 @@ import {
 import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "./types.js";
 import { buildSummaryPrompt } from "./prompt.js";
 import { acceptSummaryText, SummaryRejectedError } from "./summary-rejection.js";
+import { DEFAULT_HTTP_TIMEOUT_MS, isRequestTimeout, withRequestDeadline } from "./http-timeout.js";
 
 export type { LcmSummarizeFn } from "./types.js";
 
@@ -18,6 +19,7 @@ type SummarizerOptions = {
   body?: Record<string, unknown>;
   /** Names this endpoint in a rejection; the provider type when unset. */
   label?: string;
+  timeoutMs?: number;
   _clientOverride?: any;
   _retryDelayMs?: number;
 };
@@ -58,7 +60,7 @@ function toUsage(response: any, fallbackModel: string): SummarizerUsage | undefi
 }
 
 export function createAnthropicSummarizer(opts: SummarizerOptions): LcmSummarizeFn {
-  const client = opts._clientOverride ?? new Anthropic({ apiKey: opts.apiKey, ...(opts.baseURL ? { baseURL: opts.baseURL } : {}) });
+  const client = opts._clientOverride ?? new Anthropic({ apiKey: opts.apiKey, ...(opts.baseURL ? { baseURL: opts.baseURL } : {}), maxRetries: 0 });
   const retryDelayMs = opts._retryDelayMs ?? 1000;
   const MAX_RETRIES = 3;
 
@@ -78,13 +80,13 @@ export function createAnthropicSummarizer(opts: SummarizerOptions): LcmSummarize
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {
-        const response = await client.messages.create({
+        const response = await withRequestDeadline<any>(opts.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS, (options) => client.messages.create({
           ...opts.body, // first, so every field generated below wins
           model: opts.model,
           max_tokens: maxOutputTokens,
           system: ctx.taskPrompt ?? LCM_SUMMARIZER_SYSTEM_PROMPT,
           messages: [{ role: "user", content: prompt }],
-        });
+        }, options));
 
         // Reported before the answer is judged: those tokens were charged
         // even when the model returned nothing usable.
@@ -102,6 +104,7 @@ export function createAnthropicSummarizer(opts: SummarizerOptions): LcmSummarize
         // the input would persist raw conversation text as a fake summary.
         return acceptSummaryText(textContent, opts.label ?? "anthropic", usage?.model ?? opts.model);
       } catch (err: any) {
+        if (isRequestTimeout(err)) throw err;
         if (isClientError(err)) throw err; // the same request fails the same way: no retry
         if (err instanceof SummaryRejectedError && !err.retryable) throw err;
         lastError = err;

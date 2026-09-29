@@ -53,6 +53,16 @@ describe("llm.providers", () => {
       .toThrow(/llm\.providers\.claude\.apiKey does not apply to claude-process/);
   });
 
+  it("accepts a positive HTTP deadline and rejects invalid deadlines", () => {
+    const endpoint = (value: string) => `{ "provider": "local", "providers": { "local": { "type": "openai", "model": "m", "timeoutMs": ${value} } } }`;
+    expect(load(endpoint("250")).llm.providers?.local).toMatchObject({ timeoutMs: 250 });
+    for (const value of ["0", "-1", "1.5", '"250"', "null"]) {
+      expect(() => load(endpoint(value))).toThrow(/timeoutMs must be a positive integer/);
+    }
+    expect(() => load(`{ "provider": "cli", "providers": { "cli": { "type": "claude-process", "timeoutMs": 250 } } }`))
+      .toThrow(/timeoutMs does not apply to claude-process/);
+  });
+
   it("rejects an unknown endpoint field, pointing at body", () => {
     expect(() => load(`{ "provider": "deepseek", "providers": { "deepseek": { "type": "openai", "model": "m", "temperature": 0 } } }`))
       .toThrow(/temperature.*body/);

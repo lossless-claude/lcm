@@ -332,9 +332,12 @@ The flat fields above (`llm.model`, `llm.baseURL`, `llm.apiKey`, `llm.reasoning`
 | `model` | every endpoint | Required for `openai` and `anthropic`. Optional for the process types, which use lcm's default for that CLI without it |
 | `baseURL` | `openai`, `anthropic` | The endpoint's URL; without it, the vendor's own API. May interpolate `${NAME}` |
 | `apiKey` | `openai`, `anthropic` | May interpolate an environment variable as `${NAME}`. `anthropic` without one reads `ANTHROPIC_API_KEY` |
+| `timeoutMs` | `openai`, `anthropic` | Deadline for one HTTP request, in positive integer milliseconds. Default: 600000 (10 minutes), the SDKs' own default: a slow local model can take minutes over one summary. Set it lower for an endpoint that should fail over sooner. |
 | `body` | `openai`, `anthropic` | Extra request fields; see [Request body](#request-body) |
 
 A process endpoint accepts only `type` and `model`: its CLI authenticates through its own login. Any other field is rejected at config load, on every endpoint.
+
+The same default deadline applies to the flat `openai` and `anthropic` providers. lcm owns HTTP retries; SDK retries are disabled. A timed-out request skips further retries of that endpoint and advances the chain, because a server that accepted a request but never answered is unlikely to answer the same request on retry. Other transient HTTP failures still use lcm's retry loop.
 
 - **Names.** An endpoint's name is what its usage is recorded under in `llm_usage_stats`, and what `llm.provider`, `llm.fallback` and `LCM_SUMMARY_PROVIDER` select it by. It is made of letters, digits, `_`, `-` and `.`; the provider values listed above are reserved.
 - **Selection.** `llm.provider` names an endpoint, or `session`, `auto` or `disabled` (`auto` when unset). `llm.fallback` names endpoints only, each once. Nothing else is added: a chain whose last link fails fails the pass.
@@ -347,7 +350,7 @@ Each link is tried once per summarization, after its own retries, plus one retry
 - is the session and does not answer (no module loaded, session gone, timeout, error);
 - returns an answer lcm rejects (see [Cut-off and empty answers](#cut-off-and-empty-answers));
 - refuses the key (401 or 403, not retried), or its account cannot pay (402, not retried);
-- cannot be reached, or is still unavailable after its retries (408, 429, 5xx);
+- cannot be reached, times out, or is still unavailable after its retries (408, 429, 5xx);
 - is a process provider whose CLI run fails.
 
 Anything else fails the pass without trying the next link: a request the endpoint refuses as invalid (400, 422) — except the retry of a cut-off answer, whose larger cap may exceed the model's output limit —, a cancelled request, a client library that is not installed, or any error lcm does not recognise. When every link fails, the pass fails with one error naming each link's failure; it never falls back to storing raw text. Every attempt is recorded under its endpoint's name, so an answer DeepSeek cut off counts as a failed `deepseek` call even when OpenRouter's answer is the one stored. An HTTP or process attempt that failed before any usage came back (a refused key, a failed CLI run) is recorded as a failed call with no tokens, and an answer that carried no usage is still attributed to the endpoint that gave it, with that endpoint's configured model. `lcm doctor` checks the CLI of every process endpoint the chain lists.
