@@ -274,30 +274,37 @@ function logMissingRoute($: EngineInterface, route: string, consequence: string)
 
 async function postOnce($: EngineInterface, route: string, body: unknown): Promise<PostOutcome> {
   let startedAt = Date.now();
+  let res: Awaited<ReturnType<EngineInterface["http"]["fetch"]>>;
   try {
     const { port, token } = await readHostEnv($);
     startedAt = Date.now();
-    const res = await $.http.fetch(`http://127.0.0.1:${port}${route}`, {
+    res = await $.http.fetch(`http://127.0.0.1:${port}${route}`, {
       method: "POST",
       headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify(body),
     });
-    if (res.status === 404) {
-      // Not "the command hooks still record": they stand down while this module holds the
-      // session, so an older daemon means the call is simply lost.
-      logMissingRoute($, route, "this call is dropped until the daemon is upgraded");
-      return { body: null, connectionFailed: false, httpStatus: res.status };
-    }
-    if (!res.ok) {
-      $.ui.log(`[lcm] ${route}: daemon answered ${res.status}`);
-      return { body: null, connectionFailed: false, httpStatus: res.status };
-    }
-    return { body: JSON.parse(res.text) as Record<string, unknown>, connectionFailed: false };
   } catch (error) {
     if (isDaemonUnreachableError(error, startedAt)) return { body: null, connectionFailed: true };
     // A timed-out or dropped call may still complete. The next Stop snapshot or scan
     // captures the turn, so starting another daemon or retrying now adds no safety.
     $.ui.log(`[lcm] ${route}: daemon busy, did not answer; the next capture will retry`);
+    return { body: null, connectionFailed: false };
+  }
+  if (res.status === 404) {
+    // Not "the command hooks still record": they stand down while this module holds the
+    // session, so an older daemon means the call is simply lost.
+    logMissingRoute($, route, "this call is dropped until the daemon is upgraded");
+    return { body: null, connectionFailed: false, httpStatus: res.status };
+  }
+  if (!res.ok) {
+    $.ui.log(`[lcm] ${route}: daemon answered ${res.status}`);
+    return { body: null, connectionFailed: false, httpStatus: res.status };
+  }
+  try {
+    return { body: JSON.parse(res.text) as Record<string, unknown>, connectionFailed: false };
+  } catch {
+    // A listener answered, so neither a start nor a retry applies.
+    $.ui.log(`[lcm] ${route}: daemon answered ${res.status} with a body that is not JSON`);
     return { body: null, connectionFailed: false };
   }
 }
@@ -443,11 +450,11 @@ type PollOutcome =
   | { job: SummaryJob }
   | { wait: number; shortPoll?: true };
 
-function fetchNextJob($: EngineInterface, sessionId: string, shortPoll: boolean) {
-  return readHostEnv($).then(({ port, token }) => $.http.fetch(
+function fetchNextJob($: EngineInterface, { port, token }: HostEnv, sessionId: string, shortPoll: boolean) {
+  return $.http.fetch(
     `http://127.0.0.1:${port}/summarize-jobs/next?session_id=${encodeURIComponent(sessionId)}${shortPoll ? "&wait_ms=0" : ""}`,
     { headers: token ? { authorization: `Bearer ${token}` } : {} },
-  ));
+  );
 }
 
 /** Turns a non-job response into how long to wait before asking again. */
@@ -468,10 +475,13 @@ async function nextSummaryJob(
   $: EngineInterface, sessionId: string, shortPoll: boolean,
 ): Promise<PollOutcome> {
   let job: SummaryJob | undefined;
-  const startedAt = Date.now();
+  let startedAt = Date.now();
   let response: Awaited<ReturnType<typeof fetchNextJob>>;
   try {
-    response = await fetchNextJob($, sessionId, shortPoll);
+    const host = await readHostEnv($);
+    // Timed from the request alone: a slow host-environment read is not the daemon's wait.
+    startedAt = Date.now();
+    response = await fetchNextJob($, host, sessionId, shortPoll);
   } catch (error) {
     // Some hosts cap HTTP request duration below the daemon's 25-second hold.
     if (isDaemonUnreachableError(error, startedAt)) {

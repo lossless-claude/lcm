@@ -26,6 +26,55 @@ async function harness(failure: Error) {
   return { engine, fire, completeTurn };
 }
 
+/** A scripted answer: an HTTP status, or a failure that arrives after `afterMs`. */
+type Answer = { status: number } | { error: unknown; afterMs?: number };
+const refused = { error: { code: "ECONNREFUSED", message: "fetch failed" } };
+const heldUntilTimeout = { error: new DOMException("timed out", "TimeoutError"), afterMs: HOST_REQUEST_CAP_MS };
+
+/**
+ * session.start with a scripted `/health` probe and `/summarize-jobs/next` polls; the poller
+ * parks once its script runs out. `hostEnvMs` is how long each host-environment read takes.
+ */
+async function startSession(script: { health: Answer; polls: Answer[]; hostEnvMs?: number }) {
+  const handlers = new Map<string, (...args: any[]) => any>();
+  let elapsed = 0;
+  const realNow = Date.now.bind(Date);
+  vi.spyOn(Date, "now").mockImplementation(() => realNow() + elapsed);
+  const answer = async (step: Answer) => {
+    if ("status" in step) return { ok: step.status < 300, status: step.status, text: "" };
+    elapsed += step.afterMs ?? 0;
+    throw step.error;
+  };
+  let parked!: () => void;
+  const pollerParked = new Promise<void>((resolve) => { parked = resolve; });
+  const engine = {
+    session: { id: vi.fn(async () => "session-1"), cwd: vi.fn(async () => "/proj") },
+    process: { run: vi.fn(async (args: string[]) => {
+      if (!args[2].includes("__CONFIG__")) return { stdout: "", stderr: "", exitCode: 0 };
+      elapsed += script.hostEnvMs ?? 0;
+      return { stdout: "\n__CONFIG__\n{}\n__TMPDIR__\n/tmp", exitCode: 0 };
+    }) },
+    fs: { write: vi.fn(async () => undefined) },
+    clock: { after: vi.fn((_ms: number, callback: () => void) => callback()), sleep: vi.fn(async () => undefined) },
+    ui: { log: vi.fn() },
+    http: { fetch: vi.fn(async (url: string) => {
+      if (url.endsWith("/health")) return answer(script.health);
+      if (!url.includes("/summarize-jobs/next")) return { ok: true, status: 200, text: "{}" };
+      const step = script.polls.shift();
+      if (step) return answer(step);
+      parked();
+      return new Promise(() => {});
+    }) },
+  };
+  const { register } = await import("../../hooks/lcm-hooks.js");
+  register(((event: string, ...args: any[]) => handlers.set(event, args.at(-1))) as any, {});
+  await handlers.get("session.start")!(engine, {}, vi.fn(async (event: unknown) => event));
+  await pollerParked;
+  // The health probe is fire-and-forget; let its failure handler finish.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  return engine.process.run.mock.calls.filter(([args]) => args[2].includes("lcm daemon start")).length;
+}
+
 describe("function-hook daemon transport failures", () => {
   beforeEach(() => vi.resetModules());
   afterEach(() => vi.restoreAllMocks());
@@ -90,5 +139,33 @@ describe("function-hook daemon transport failures", () => {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+
+  it("neither starts nor retries after a listener answers 200 with a body that is not JSON", async () => {
+    const { engine, fire } = await harness(new Error("unused"));
+    engine.http.fetch.mockReset().mockResolvedValue({ ok: true, status: 200, text: "not json" });
+    await fire();
+    expect(engine.http.fetch).toHaveBeenCalledTimes(1);
+    expect(engine.process.run).toHaveBeenCalledTimes(1); // host environment only
+  });
+
+  it.each([
+    ["starts the daemon after a refused health probe", refused, 1],
+    ["leaves a health probe that timed out on a listener", heldUntilTimeout, 0],
+  ])("session.start %s", async (_label, health, starts) => {
+    expect(await startSession({ health, polls: [] })).toBe(starts);
+  });
+
+  it.each([
+    ["starts the daemon after a refused poll", refused, 1],
+    ["leaves a poll that timed out on a listener", heldUntilTimeout, 0],
+  ])("the summary poller %s", async (_label, poll, starts) => {
+    expect(await startSession({ health: { status: 200 }, polls: [poll] })).toBe(starts);
+  });
+
+  it("times a poll from its request, not from a slow host-environment read", async () => {
+    // A 401 clears the cached environment, so the next poll reads it again first.
+    const polls = [{ status: 401 }, { error: new Error("fetch failed") }];
+    expect(await startSession({ health: { status: 200 }, polls, hostEnvMs: HOST_REQUEST_CAP_MS })).toBe(1);
   });
 });
