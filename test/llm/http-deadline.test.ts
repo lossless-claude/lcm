@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadDaemonConfig } from "../../src/daemon/config.js";
 import { createSummarizer, resolveEffectiveProvider } from "../../src/daemon/summarizer.js";
 import { createAnthropicSummarizer } from "../../src/llm/anthropic.js";
+import { withRequestDeadline } from "../../src/llm/http-timeout.js";
 import { createOpenAISummarizer } from "../../src/llm/openai.js";
 
 const DEADLINE_MS = 50;
@@ -75,6 +76,13 @@ describe("HTTP summarizer deadlines", () => {
     await expect(summarizer(create, 1_200_000)("conversation", false)).rejects.toBe(timeout);
     expect(create).toHaveBeenCalledTimes(1);
     expect(create.mock.calls[0]).toEqual([expect.anything(), expect.objectContaining({ timeout: 1_200_000 })]);
+  });
+
+  it("reports the deadline, not the abort, when the transport rejects as soon as it is aborted", async () => {
+    const request = ({ signal }: { signal: AbortSignal }) => new Promise<never>((_, reject) => {
+      signal.addEventListener("abort", () => reject(new Error("aborted")));
+    });
+    await expect(withRequestDeadline(DEADLINE_MS, request)).rejects.toMatchObject({ name: "APIConnectionTimeoutError" });
   });
 
   it("bounds a silent Anthropic request without SDK retries", async () => {

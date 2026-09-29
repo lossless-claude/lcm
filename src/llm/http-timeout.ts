@@ -26,10 +26,11 @@ export async function withRequestDeadline<T>(
       request({ signal: controller.signal, timeout: timeoutMs }),
       new Promise<T>((_, reject) => {
         timer = setTimeout(() => {
-          controller.abort();
           const error = new Error(`request timed out after ${timeoutMs}ms`);
           error.name = "APIConnectionTimeoutError";
+          // Settled before the abort, whose listener may reject the request synchronously.
           reject(error);
+          controller.abort();
         }, timeoutMs);
       }),
     ]);
