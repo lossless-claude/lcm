@@ -342,6 +342,8 @@ The same default deadline applies to the flat `openai` and `anthropic` providers
 
 When `maxConcurrent` is set, extra calls wait in FIFO order before sending a request. The limit is shared by every project and session using that endpoint name, including separate summarizer instances. A caller waits at most `timeoutMs` (or its 600000 ms default) for a slot; if that wait expires, the chain can try its next endpoint. Once admitted, the HTTP request gets its full, separate deadline. PreCompact's 120-second hook deadline still bounds how long the hook waits for `/compact`; replay's `/compact` call has no overall client timeout and each endpoint attempt retains its own slot-wait and request bounds.
 
+A timed-out request frees its slot when lcm abandons it, but a server that keeps generating after the client disconnects is still busy, so the next admitted request overlaps it. Set `timeoutMs` well above the time the server needs for one summary, so timeouts stay rare.
+
 A local server that processes one generation at a time can use one slot:
 
 ```json
