@@ -18,7 +18,7 @@ import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { projectId } from "./daemon/project.js";
-import { closeLcmConnection, getLcmConnection } from "./db/connection.js";
+import { closeLcmConnection, getLcmConnection, openStandaloneLcmConnection } from "./db/connection.js";
 import { runLcmMigrations } from "./db/migration.js";
 import { SummaryStore } from "./store/summary-store.js";
 import type { DaemonClient } from "./daemon/client.js";
@@ -700,40 +700,17 @@ export function recordReplayProgress(opts: {
   finally { closeDb(opened); }
 }
 
-/**
- * Refuse `--restart` while the daemon is compacting a conversation in any of
- * the projects about to be wiped: the daemon's in-flight guard is per-process,
- * so a CLI-side wipe would race it. Detection only, the check-then-wipe is not
- * atomic. A daemon that cannot be reached (no process listening) is treated as
- * idle: nothing can be compacting. A daemon that answers `/status` with an
- * error (401/403 token mismatch, 5xx) is not: the check cannot confirm it is
- * idle, so the wipe is refused rather than proceeding blind.
- */
-export async function refuseRestartDuringCompaction(
-  client: Pick<DaemonClient, "post">,
-  cwds: Iterable<string>,
-): Promise<void> {
-  const busy: string[] = [];
-  for (const cwd of cwds) {
-    let sessions: string[] = [];
-    try {
-      const status = await client.post<{ project?: { compactingSessions?: string[] } }>("/status", { cwd });
-      sessions = status.project?.compactingSessions ?? [];
-    } catch (err) {
-      const httpStatus = (err as { status?: unknown }).status;
-      if (typeof httpStatus !== "number") continue; // network failure: no daemon to be busy
-      throw new Error(
-        `--restart refused: could not confirm the daemon is idle for ${cwd} ` +
-          `(/status returned HTTP ${httpStatus}: ${err instanceof Error ? err.message : String(err)}). ` +
-          "Fix or stop the daemon, then retry.",
-      );
-    }
-    for (const sessionId of sessions) busy.push(`${sessionId} in ${cwd}`);
-  }
-  if (busy.length > 0) {
-    throw new Error(
-      `--restart refused: the daemon is still compacting ${busy.join(", ")}. Wait for it to finish, then retry.`,
-    );
+/** Read the sessions whose compaction guards a daemon replay reset must hold. */
+export function replaySessionsToClear(cwd: string, paths: LcmPaths, command: ReplayCommand): string[] {
+  const dbPath = projectDbPathFor(cwd, paths);
+  if (!existsSync(dbPath)) return [];
+  const db = openStandaloneLcmConnection(dbPath, { readOnly: true });
+  try {
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'replay_manifest'").get()) return [];
+    return (db.prepare("SELECT DISTINCT session_id FROM replay_manifest WHERE command = ? ORDER BY session_id")
+      .all(command) as { session_id: string }[]).map((row) => row.session_id);
+  } finally {
+    db.close();
   }
 }
 
@@ -757,9 +734,23 @@ export async function clearReplayState(opts: {
   paths?: LcmPaths;
   lcmDir?: string;
   command: ReplayCommand;
-  /** Called with the number of summaries about to be discarded, before any are. */
+  /** Route through the daemon when one is available. */
+  client?: Pick<DaemonClient, "post">;
+  /** Reports the number of summaries discarded (before the local reset, after a daemon reset). */
   onSummaryCount?: (count: number) => void;
 }): Promise<boolean> {
+  if (opts.client) {
+    try {
+      const result = await opts.client.post<{ cleared: boolean; summaryCount: number }>("/replay-reset", {
+        cwd: opts.cwd, command: opts.command,
+      });
+      opts.onSummaryCount?.(result.summaryCount);
+      return result.cleared;
+    } catch (err) {
+      // Only a refused connection proves that no daemon can be compacting.
+      if (!isDaemonUnreachableError(err)) throw err;
+    }
+  }
   const opened = openProjectDb(projectDbPathFor(opts.cwd, replayPaths(opts)));
   if (opened.kind === "missing") return true; // nothing to clear
   if (opened.kind === "error") return false; // existing DB could not be opened

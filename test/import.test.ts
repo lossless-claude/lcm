@@ -8,6 +8,7 @@ import { findSessionFiles, importSessions } from "../src/import.js";
 import type { DaemonClient } from "../src/daemon/client.js";
 import { runLcmMigrations } from "../src/db/migration.js";
 import { claudeProjectSlug, projectId } from "../src/daemon/project.js";
+import { clearReplayState } from "../src/replay-resume.js";
 
 // --- claudeProjectSlug ---
 
@@ -1004,6 +1005,7 @@ describe("importSessions replay resume", () => {
 
     const compactCalls: string[] = [];
     const second = makeMockClient(async (path: string, body: any) => {
+      if (path === "/replay-reset") return { cleared: await clearReplayState({ cwd, lcmDir, command: body.command }), summaryCount: 0 };
       if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
       if (path === "/compact") {
         compactCalls.push(body.session_id);
@@ -1019,7 +1021,7 @@ describe("importSessions replay resume", () => {
     expect(r2.resumed).toBeUndefined();
   });
 
-  it("restart is refused while the daemon is compacting a session in the project", async () => {
+  it("routes restart through the daemon before re-running the session", async () => {
     const cwd = "/test/resume-restart-busy";
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1"]);
 
@@ -1032,26 +1034,25 @@ describe("importSessions replay resume", () => {
 
     const compactCalls: string[] = [];
     const busy = makeMockClient(async (path: string, body: any) => {
-      if (path === "/status") return { project: { compactingSessions: ["s1"] } };
+      if (path === "/replay-reset") return { cleared: await clearReplayState({ cwd, lcmDir, command: body.command }), summaryCount: 1 };
       if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
       if (path === "/compact") { compactCalls.push(body.session_id); return { summary: "ok", replayOutcome: "compacted" }; }
     });
-    await expect(importSessions(busy, {
+    await importSessions(busy, {
       provider: "claude", replay: true, restart: true, cwd,
       _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir,
-    })).rejects.toThrow(/--restart refused.*s1/);
+    });
 
-    // Nothing was wiped or re-run.
-    expect(compactCalls).toEqual([]);
+    expect(compactCalls).toEqual(["s1"]);
     const db = new DatabaseSync(join(lcmDir, "projects", projectId(cwd), "db.sqlite"));
     const summaries = db.prepare("SELECT COUNT(*) AS n FROM summaries").get() as { n: number };
     const ledger = db.prepare("SELECT COUNT(*) AS n FROM replay_ledger").get() as { n: number };
     db.close();
-    expect(summaries.n).toBe(1);
+    expect(summaries.n).toBe(0);
     expect(ledger.n).toBe(1);
   });
 
-  it("restart is refused when /status answers with an HTTP error, but not when the daemon is unreachable", async () => {
+  it("restart rejects a daemon reset error, but resets locally after connection refusal", async () => {
     const cwd = "/test/resume-restart-status-error";
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1"]);
 
@@ -1069,9 +1070,9 @@ describe("importSessions replay resume", () => {
       return row.n;
     };
 
-    // Reachable daemon that rejects the token: the guard cannot confirm idleness, so it refuses.
+    // A reachable daemon rejecting the reset must not trigger a local write.
     const unauthorized = makeMockClient(async (path: string) => {
-      if (path === "/status") {
+      if (path === "/replay-reset") {
         const e = new Error("unauthorized") as Error & { status?: number };
         e.status = 401;
         throw e;
@@ -1082,12 +1083,21 @@ describe("importSessions replay resume", () => {
     await expect(importSessions(unauthorized, {
       provider: "claude", replay: true, restart: true, cwd,
       _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir,
-    })).rejects.toThrow(/--restart refused: could not confirm.*HTTP 401/);
+    })).rejects.toThrow(/unauthorized/);
+    expect(countSummaries()).toBe(1);
+
+    const dropped = makeMockClient(async (path: string) => {
+      if (path === "/replay-reset") throw Object.assign(new TypeError("socket dropped"), { cause: { code: "ECONNRESET" } });
+    });
+    await expect(importSessions(dropped, {
+      provider: "claude", replay: true, restart: true, cwd,
+      _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir,
+    })).rejects.toThrow(/socket dropped/);
     expect(countSummaries()).toBe(1);
 
     // No daemon listening at all: nothing can be compacting, so the wipe proceeds.
     const unreachable = makeMockClient(async (path: string) => {
-      if (path === "/status") throw new TypeError("fetch failed: ECONNREFUSED");
+      if (path === "/replay-reset") throw Object.assign(new TypeError("connection refused"), { cause: { code: "ECONNREFUSED" } });
       if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
       if (path === "/compact") return { summary: "ok", replayOutcome: "compacted" };
     });
@@ -1506,7 +1516,7 @@ describe("importSessions replay resume", () => {
     expect(result.daemonUnreachable).toBeUndefined();
   });
 
-  it("restart refusal checks every provider list before any state is wiped", async () => {
+  it("routes each provider project's restart reset through the daemon", async () => {
     // Claude project dir for cwd A, codex rollout for cwd B; A imports first.
     const claudeProjectsDir = makeTmpDir();
     const lcmDir = makeTmpDir();
@@ -1524,27 +1534,23 @@ describe("importSessions replay resume", () => {
     writeFileSync(join(archivedDir, "rollout-b1.jsonl"), makeCodexSessionMetaLine("b1", cwdB));
 
     const ingested: string[] = [];
-    const statusCalls: string[] = [];
+    const resetCalls: string[] = [];
     const client = makeMockClient(async (path: string, body: any) => {
-      if (path === "/status") {
-        statusCalls.push(body.cwd);
-        // The codex list (checked after the claude one) is still compacting.
-        if (body.cwd === cwdB) return { project: { compactingSessions: ["b1"] } };
-        return { project: { compactingSessions: [] } };
+      if (path === "/replay-reset") {
+        resetCalls.push(body.cwd);
+        return { cleared: true, summaryCount: 0 };
       }
       if (path === "/ingest") { ingested.push(body.session_id); return { ingested: 1, totalTokens: 10 }; }
       if (path === "/compact") return { summary: "ok", replayOutcome: "compacted" };
     });
 
-    await expect(importSessions(client, {
+    await importSessions(client, {
       provider: "all", replay: true, restart: true, all: true,
       _claudeProjectsDir: claudeProjectsDir, _lcmDir: lcmDir, _codexDir: codexDir, _ompDir: "/nonexistent/omp/dir",
-    })).rejects.toThrow(/--restart refused.*b1/);
+    });
 
-    // Every project was checked before anything ran, so no ingest/compact
-    // started and nothing was wiped.
-    expect(statusCalls.sort()).toEqual([cwdA, cwdB].sort());
-    expect(ingested).toEqual([]);
+    expect(resetCalls.sort()).toEqual([cwdA, cwdB].sort());
+    expect(ingested).toEqual(["a1", "b1"]);
   });
 
   it("imports every source when no provider is given", async () => {
