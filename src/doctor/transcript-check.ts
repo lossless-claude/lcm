@@ -9,6 +9,7 @@ import { readProjectMetaIn } from "../daemon/project-meta.js";
 import { closeLcmConnection, getLcmConnection } from "../db/connection.js";
 import { findSessionFiles, type DiscoveredSessionFile } from "../import.js";
 import { completedSinceModified } from "../capture.js";
+import { stalledSubagentGuards } from "../daemon/subagent-guard-failures.js";
 
 /**
  * A transcript modified more recently than this is left out: its session may be in
@@ -132,5 +133,33 @@ export function checkUncapturedTranscripts(opts: { paths: LcmPaths; claudeProjec
     status: "warn",
     message: `${total} Claude Code transcript${total === 1 ? "" : "s"} with nothing stored:\n${lines.join("\n")}${skipped}\n` +
       "     Fix: run `lcm import --provider claude` in each project above",
+  };
+}
+
+/** Guard failures still attached to unchanged subagent transcripts in tracked projects. */
+export function checkStalledSubagentCaptures(paths: LcmPaths): CheckResult {
+  const base = { name: "claude-subagent-guards", category: "Capture" } as const;
+  const stalled: string[] = [];
+  let projects;
+  try {
+    projects = readdirSync(paths.projectsDir, { withFileTypes: true });
+  } catch {
+    return { ...base, status: "pass", message: "no stalled Claude Code subagent captures" };
+  }
+  for (const project of projects) {
+    if (!project.isDirectory()) continue;
+    let cwd: string | undefined;
+    try { cwd = readProjectMetaIn(join(paths.projectsDir, project.name))?.cwd; } catch { continue; }
+    if (!cwd) continue;
+    for (const { path, failure } of stalledSubagentGuards(cwd, paths)) {
+      stalled.push(`     ${cwd}: ${failure.sessionId} (parent ${failure.parentSessionId}), ${path}: ${failure.message}`);
+    }
+  }
+  if (stalled.length === 0) return { ...base, status: "pass", message: "no stalled Claude Code subagent captures" };
+  return {
+    ...base, status: "warn",
+    message: `${stalled.length} Claude Code subagent capture${stalled.length === 1 ? "" : "s"} stalled by transcript guards:\n${stalled.join("\n")}\n` +
+      "     Fix: preview with `lcm import --provider claude --rebuild --session <id>`, then apply a repairable one with `--yes`;\n" +
+      "     an ambiguous one needs its original transcript restored first",
   };
 }

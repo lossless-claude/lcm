@@ -21,7 +21,7 @@ import type { LogState } from "../daemon/log.js";
 import { readFunctionHookSnapshots, readOmpHookSnapshots } from "./hook-snapshots.js";
 import { readHookOutcomeLog } from "./hook-outcome-log.js";
 import { addHarnessGuidanceChecks } from "./guidance-checks.js";
-import { checkUncapturedTranscripts } from "./transcript-check.js";
+import { checkStalledSubagentCaptures, checkUncapturedTranscripts } from "./transcript-check.js";
 import { checkRebuildBackups } from "./rebuild-backup-check.js";
 import { loadDaemonConfig } from "../daemon/config.js";
 import { summarizerAvailability } from "../daemon/provider-config.js";
@@ -810,6 +810,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
   results.push(checkUncapturedTranscripts({
     paths: createLcmPaths(deps.lcmHome), claudeProjectsDir: join(deps.homedir, ".claude", "projects"), cwd,
   }));
+  results.push(checkStalledSubagentCaptures(createLcmPaths(deps.lcmHome)));
   results.push(checkRebuildBackups(createLcmPaths(deps.lcmHome)));
 
   // ── Passive Learning ──

@@ -25,6 +25,9 @@ import { backupProjectDatabase } from "../../claude-rebuild.js";
 import { applyCutRowRepair, planCutRowRepair, type CutRepairClient } from "../../cut-row-repair.js";
 import { SessionCapture, STRUCTURED_INGEST_SHAPE, isSessionComplete, type CaptureInput, type CaptureResult, type TranscriptCaptureResult } from "../../capture.js";
 import type { DiscoveredSubagentTranscript } from "../../subagent-attribution.js";
+import {
+  forgetSubagentGuard, forgetSubagentGuardSession, rememberSubagentGuard, skipUnchangedSubagentGuard, subagentGuardFingerprint,
+} from "../subagent-guard-failures.js";
 
 type ParsedMessage = CaptureInput["messages"][number];
 
@@ -80,11 +83,15 @@ type SubagentFailure = { sessionId: string; err: unknown };
 
 async function ingestAllSubagents(
   db: DatabaseSync, cwd: string, pid: string, scrubber: ScrubEngine, subagents: DiscoveredSubagentTranscript[],
+  parentSessionId: string, paths: LcmPaths,
 ): Promise<SubagentFailure[]> {
   runLcmMigrations(db);
   const capture = new SessionCapture(db, pid, scrubber);
   const failures: SubagentFailure[] = [];
   for (const sub of subagents) {
+    const fingerprint = subagentGuardFingerprint(sub.path);
+    if (skipUnchangedSubagentGuard(cwd, paths, sub.path, fingerprint)) continue;
+    forgetSubagentGuard(cwd, paths, sub.path);
     try {
       await capture.captureTranscript({
         sessionId: sub.sessionId,
@@ -93,6 +100,9 @@ async function ingestAllSubagents(
         attribution: sub.attribution,
       });
     } catch (err) {
+      if (err instanceof TranscriptSourceError) {
+        rememberSubagentGuard(cwd, paths, sub.path, fingerprint, sub.sessionId, parentSessionId, err.message);
+      }
       failures.push({ sessionId: sub.sessionId, err });
     }
   }
@@ -107,6 +117,7 @@ async function ingestAllSubagents(
  */
 async function ingestSubagentTranscripts(
   cwd: string, dbPath: string, pid: string, subagents: DiscoveredSubagentTranscript[], scrubber: ScrubEngine, paths: LcmPaths,
+  parentSessionId: string,
 ): Promise<SubagentFailure[]> {
   if (subagents.length === 0) return [];
 
@@ -115,7 +126,7 @@ async function ingestSubagentTranscripts(
     return withProjectMutation(pid, async () => {
       const db = getLcmConnection(dbPath);
       try {
-        return await ingestAllSubagents(db, cwd, pid, scrubber, subagents);
+        return await ingestAllSubagents(db, cwd, pid, scrubber, subagents, parentSessionId, paths);
       } finally {
         closeLcmConnection(dbPath);
       }
@@ -175,6 +186,8 @@ async function rebuildSession(
           const { plan, ingested } = await new SessionCapture(db, pid, scrubber).rebuildTranscript({
             sessionId: input.session_id, client: input.client, cwd, transcriptPath: input.transcript_path, source: "import",
           });
+          // A rebuilt subagent session no longer fails its guard; its recorded failure would keep it skipped and listed.
+          if (plan.kind === "repairable") forgetSubagentGuardSession(cwd, paths, input.session_id);
           return { ingested, rebuild: plan };
         } finally {
           closeLcmConnection(dbPath);
@@ -353,7 +366,7 @@ export function createIngestHandler(
       const subagents = source.discoverSubagents?.(cwd, session_id) ?? [];
       if (subagents.length > 0) {
         try {
-          const failures = await ingestSubagentTranscripts(cwd, dbPath, pid, subagents, scrubber, paths);
+          const failures = await ingestSubagentTranscripts(cwd, dbPath, pid, subagents, scrubber, paths, session_id);
           for (const failure of failures) {
             log.write("warn", "ingest.subagent_failed", { cwd, session_id: failure.sessionId, parent_session_id: session_id, err: failure.err });
           }

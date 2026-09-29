@@ -7,10 +7,13 @@ import { DatabaseSync } from "node:sqlite";
 import { scanForTranscripts } from "../../src/daemon/server.js";
 import type { RouteHandler } from "../../src/daemon/server.js";
 import { createIngestHandler } from "../../src/daemon/routes/ingest.js";
+import { noopDaemonLog } from "../../src/daemon/log.js";
 import { loadDaemonConfig } from "../../src/daemon/config.js";
 import { claudeProjectSlug, projectDbPath, projectDir } from "../../src/daemon/project.js";
 import { eventsDbPath } from "../../src/db/events-path.js";
 import { parseTranscript } from "../../src/transcript.js";
+import { TranscriptSourceError } from "../../src/transcript-source.js";
+import { checkStalledSubagentCaptures } from "../../src/doctor/transcript-check.js";
 import { lcmHome } from "../../src/lcm-home.js";
 import { createLcmPaths } from "../../src/lcm-paths.js";
 import * as projectQueue from "../../src/daemon/project-queue.js";
@@ -176,6 +179,67 @@ function countingHandler(real: RouteHandler): { handler: RouteHandler; count: ()
 }
 
 describe("periodic transcript scan: fingerprint dedup", () => {
+  it("settles an unchanged subagent guard failure and retries when its transcript or sidecar changes", async () => {
+    const config = loadDaemonConfig("/nonexistent");
+    const log = { ...noopDaemonLog, write: vi.fn() };
+    const { handler, count } = countingHandler(createIngestHandler(config, paths, log));
+    const { sessionDir, project } = seedFingerprintProject("subagent-guard", transcriptLine("parent"));
+    const subagentDir = join(sessionDir, "subagents");
+    mkdirSync(subagentDir, { recursive: true });
+    const subagentPath = join(subagentDir, "agent-stalled.jsonl");
+    const sidecarPath = join(subagentDir, "agent-stalled.meta.json");
+    writeFileSync(subagentPath, transcriptLine("child"));
+    const parse = vi.mocked(parseTranscript);
+    const actual = parse.getMockImplementation()!;
+    let childReads = 0;
+    parse.mockImplementation((path: string) => {
+      if (path.endsWith("/agent-stalled.jsonl")) {
+        childReads++;
+        throw new TranscriptSourceError("Claude transcript prefix differs from stored history");
+      }
+      return actual(path);
+    });
+    try {
+      await scanForTranscripts(config, paths, handler);
+      expect(count()).toBe(1);
+      expect(childReads).toBe(1);
+      expect(existsSync(join(projectDir(project, paths), "subagent-guard-failures.json"))).toBe(true);
+      const stalled = checkStalledSubagentCaptures(paths);
+      expect(stalled.status).toBe("warn");
+      expect(stalled.message).toContain("agent-stalled");
+      await scanForTranscripts(config, paths, handler);
+      await scanForTranscripts(config, paths, handler);
+      expect(count()).toBe(2);
+      expect(childReads).toBe(1);
+      expect(log.write.mock.calls.filter((call) => call[1] === "ingest.subagent_failed")).toHaveLength(1);
+
+      writeFileSync(sidecarPath, JSON.stringify({ agentType: "worker" }));
+      await scanForTranscripts(config, paths, handler);
+      expect(count()).toBe(3);
+      expect(childReads).toBe(2);
+      await scanForTranscripts(config, paths, handler);
+      await scanForTranscripts(config, paths, handler);
+      expect(count()).toBe(4);
+      expect(log.write.mock.calls.filter((call) => call[1] === "ingest.subagent_failed")).toHaveLength(2);
+
+      appendFileSync(subagentPath, transcriptLine("changed"));
+      expect(checkStalledSubagentCaptures(paths).status).toBe("pass");
+      await scanForTranscripts(config, paths, handler);
+      expect(count()).toBe(5);
+      expect(childReads).toBe(3);
+      expect(log.write.mock.calls.filter((call) => call[1] === "ingest.subagent_failed")).toHaveLength(3);
+
+      parse.mockImplementation(actual);
+      appendFileSync(subagentPath, transcriptLine("repaired"));
+      await scanForTranscripts(config, paths, handler);
+      await scanForTranscripts(config, paths, handler);
+      expect(count()).toBe(6);
+      expect(storedMessages(project, "agent-stalled").map((row) => row.content)).toContain("repaired");
+      expect(checkStalledSubagentCaptures(paths).status).toBe("pass");
+    } finally {
+      parse.mockImplementation(actual);
+    }
+  });
   it("skips unchanged transcripts after the scan module is loaded afresh", async () => {
     const config = loadDaemonConfig("/nonexistent");
     const { handler, count } = countingHandler(createIngestHandler(config, paths));

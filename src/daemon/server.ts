@@ -471,11 +471,11 @@ let scanInProgress = false;
  *
  * Each session's transcript is skipped when its fingerprint (see
  * `transcriptFingerprint`) matches the one recorded for it, computed before the
- * ingest and recorded only once the ingest resolves without `incomplete` — a
- * subagent transcript that could not be captured, or
- * a failed tool-call model backfill (which this call asks `/ingest` to run before
- * replying) leaves nothing recorded, so it is retried next pass. A Claude 400
- * response records a separate fingerprint and is retried once the transcript
+ * ingest and recorded only once the ingest resolves without `incomplete`. An unchanged
+ * subagent `TranscriptSourceError` is skipped on the next pass, allowing that parent
+ * fingerprint to settle; other subagent failures and failed tool-call model backfills
+ * (which this call asks `/ingest` to run before replying) keep the parent retryable.
+ * A Claude 400 response records a separate fingerprint and is retried once the transcript
  * tree changes; unrelated failures remain retryable next pass. This never marks
  * a session complete; that stays `/session-complete`'s job alone. A completed
  * session whose transcript grew since (a Claude `--resume`) is read again by `/ingest`.
