@@ -8,7 +8,7 @@ import { updateProjectMeta } from "../project-meta.js";
 import { projectId, projectDbPath, projectDir } from "../project.js";
 import { noopDaemonLog, type DaemonLog } from "../log.js";
 import { openProject } from "../project-group.js";
-import { enqueue, hasQueuedProjectWork, withProjectMutation } from "../project-queue.js";
+import { enqueue, hasBlockingProjectWork, withProjectMutation } from "../project-queue.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
@@ -95,8 +95,13 @@ export function buildCompactionMessage(p: {
 }
 
 
-// Guard against concurrent compactions for the same session (session_id → cwd)
-const compactingNow = new Map<string, string>();
+// A session's compaction remains in flight while its project queue turn is yielded.
+type InFlightCompaction = { sessionId: string; projectId: string; finished: Promise<void> };
+const compactingNow = new Map<string, InFlightCompaction>();
+
+function compactionKey(cwd: string, sessionId: string): string {
+  return JSON.stringify([projectId(cwd), sessionId]);
+}
 
 /**
  * Session ids currently being compacted for a project. Lets CLI callers detect
@@ -105,13 +110,33 @@ const compactingNow = new Map<string, string>();
  */
 export function compactingSessionsFor(cwd: string): string[] {
   const id = projectId(cwd);
-  return [...compactingNow].filter(([, c]) => projectId(c) === id).map(([sessionId]) => sessionId);
+  return [...compactingNow.values()].filter((entry) => entry.projectId === id).map((entry) => entry.sessionId);
 }
 
 /** Register an in-flight compaction; returns the release function. */
 export function markCompacting(sessionId: string, cwd: string): () => void {
-  compactingNow.set(sessionId, cwd);
-  return () => { compactingNow.delete(sessionId); };
+  const key = compactionKey(cwd, sessionId);
+  let finish!: () => void;
+  const entry = {
+    sessionId,
+    projectId: projectId(cwd),
+    finished: new Promise<void>((resolve) => { finish = resolve; }),
+  };
+  compactingNow.set(key, entry);
+  return () => {
+    if (compactingNow.get(key) === entry) compactingNow.delete(key);
+    finish();
+  };
+}
+
+/**
+ * Waits out the session's in-flight compaction, then holds its guard until the returned release.
+ * A rebuild replaces the rows that a summary waiting on its model would cite.
+ */
+export async function holdSessionCompaction(sessionId: string, cwd: string): Promise<() => void> {
+  const key = compactionKey(cwd, sessionId);
+  while (compactingNow.has(key)) await compactingNow.get(key)!.finished;
+  return markCompacting(sessionId, cwd);
 }
 
 export type CompactLlmUsage = {
@@ -370,12 +395,21 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       });
     };
 
-    // Guard must be checked and set synchronously (before any await) to prevent
-    // concurrent requests from racing through the has() check before add() runs.
-    if (compactingNow.has(session_id) || ((captureRequired || precompactVerified) && hasQueuedProjectWork(projectId(cwd)))) {
+    // Direct requests wait for this session's in-flight result. Deadline-bound
+    // hooks and replay callers retain the busy outcome; required Capture still runs.
+    const key = compactionKey(cwd, session_id);
+    while (compactingNow.has(key)) {
+      if (captureRequired || precompactVerified || skip_ingest) {
+        await skipBusy();
+        return;
+      }
+      await compactingNow.get(key)!.finished;
+    }
+    if ((captureRequired || precompactVerified) && hasBlockingProjectWork(projectId(cwd))) {
       await skipBusy();
       return;
     }
+    // Check and mark have no await between them, including after a waiter wakes.
     const releaseCompacting = markCompacting(session_id, cwd);
 
     const effectiveProvider = resolveEffectiveProvider(config, client);
@@ -411,11 +445,11 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       const pid = projectId(cwd);
       // Summarizer setup awaited above, so another request may have entered the
       // queue since the first admission check. Recheck without awaiting before enqueue.
-      if (precompactVerified && hasQueuedProjectWork(pid)) {
+      if (precompactVerified && hasBlockingProjectWork(pid)) {
         await skipBusy();
         return;
       }
-      const result = await enqueue(pid, async () => {
+      const result = await enqueue(pid, async (turn) => {
         const dbPath = projectDbPath(cwd, paths);
         openProject(cwd, paths);
         const llmUsage = createCompactLlmUsage(effectiveProvider, config.llm.model);
@@ -497,7 +531,8 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           let language = resolveSummarizerLanguage(config, cwd, paths);
           if (language === undefined) {
             const detection = scheduleProjectLanguageDetection(cwd, db, config, paths, client);
-            await lease.yieldWhile(() => detection);
+            // Reacquire the queue before the mutation lease, as queued writers do.
+            await lease.yieldWhile(() => turn.yieldWhile(() => detection));
             language = resolveSummarizerLanguage(config, cwd, paths);
           } else {
             void scheduleProjectLanguageDetection(cwd, db, config, paths, client);
@@ -565,7 +600,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
               sawUsage = false;
             };
             try {
-              const answer = await lease.yieldWhile(() => activeSummarize(text, aggressive, {
+              const answer = await lease.yieldWhile(() => turn.yieldWhile(() => activeSummarize(text, aggressive, {
                 ...ctx,
                 sessionId: session_id,
                 client,
@@ -612,7 +647,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                   }
                   ctx.onUsage?.(usage);
                 },
-              }));
+              })));
               // The engine gates every answer too; judging it here as well keeps an answer
               // the engine will reject from being counted as a successful call.
               const summary = acceptSummaryText(answer, effectiveProvider);
