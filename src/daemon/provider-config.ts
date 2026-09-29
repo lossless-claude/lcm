@@ -18,6 +18,7 @@ export type HttpEndpoint = {
   baseURL?: string;
   apiKey?: string;
   timeoutMs?: number;
+  maxConcurrent?: number;
   /** Extra top-level request fields, merged under the fields lcm generates. */
   body?: Record<string, unknown>;
   /** Variables `apiKey` or `baseURL` reference that were unset at load: the endpoint cannot run. */
@@ -34,7 +35,7 @@ const PROTOTYPE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const RESERVED_NAMES = new Set([...SELECTORS, ...HTTP_TYPES, ...PROCESS_TYPES, "claude-cli", ...PROTOTYPE_KEYS]);
 const ENDPOINT_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 
-const HTTP_FIELDS = new Set(["type", "model", "baseURL", "apiKey", "body", "timeoutMs"]);
+const HTTP_FIELDS = new Set(["type", "model", "baseURL", "apiKey", "body", "timeoutMs", "maxConcurrent"]);
 const PROCESS_FIELDS = new Set(["type", "model"]);
 
 /**
@@ -158,6 +159,9 @@ function normalizeHttpEndpoint(where: string, entry: Record<string, unknown>, en
   if (entry.timeoutMs !== undefined && (!Number.isSafeInteger(entry.timeoutMs) || (entry.timeoutMs as number) <= 0)) {
     fail(`${where}.timeoutMs must be a positive integer of milliseconds`);
   }
+  if (entry.maxConcurrent !== undefined && (!Number.isSafeInteger(entry.maxConcurrent) || (entry.maxConcurrent as number) <= 0)) {
+    fail(`${where}.maxConcurrent must be a positive integer`);
+  }
   const missing: string[] = [];
   const expansion: Expansion = { env, missing };
   const baseURL = entry.baseURL === undefined ? undefined : expandEnv(entry.baseURL, `${where}.baseURL`, expansion);
@@ -172,6 +176,7 @@ function normalizeHttpEndpoint(where: string, entry: Record<string, unknown>, en
     ...(baseURL !== undefined ? { baseURL } : {}),
     ...(apiKey !== undefined ? { apiKey } : {}),
     ...(entry.timeoutMs !== undefined ? { timeoutMs: entry.timeoutMs as number } : {}),
+    ...(entry.maxConcurrent !== undefined ? { maxConcurrent: entry.maxConcurrent as number } : {}),
     ...(entry.body !== undefined ? { body: validateRequestBody(entry.body, `${where}.body`) } : {}),
     ...(missing.length > 0 ? { missingEnv: missing } : {}),
   };

@@ -110,11 +110,11 @@ async function createEndpointSummarizer(endpoint: EndpointConfig, label?: string
       return createOmpProcessSummarizer({ model: endpoint.model });
     case "openai": {
       const { createOpenAISummarizer } = await import("../llm/openai.js");
-      return createOpenAISummarizer({ model: endpoint.model, baseURL: endpoint.baseURL || undefined, apiKey: endpoint.apiKey, body: endpoint.body, label, timeoutMs: endpoint.timeoutMs });
+      return createOpenAISummarizer({ model: endpoint.model, baseURL: endpoint.baseURL || undefined, apiKey: endpoint.apiKey, body: endpoint.body, label, timeoutMs: endpoint.timeoutMs, maxConcurrent: endpoint.maxConcurrent });
     }
     case "anthropic": {
       const { createAnthropicSummarizer } = await import("../llm/anthropic.js");
-      return createAnthropicSummarizer({ model: endpoint.model, apiKey: endpoint.apiKey ?? "", baseURL: endpoint.baseURL, body: endpoint.body, label, timeoutMs: endpoint.timeoutMs });
+      return createAnthropicSummarizer({ model: endpoint.model, apiKey: endpoint.apiKey ?? "", baseURL: endpoint.baseURL, body: endpoint.body, label, timeoutMs: endpoint.timeoutMs, maxConcurrent: endpoint.maxConcurrent });
     }
   }
 }

@@ -333,11 +333,32 @@ The flat fields above (`llm.model`, `llm.baseURL`, `llm.apiKey`, `llm.reasoning`
 | `baseURL` | `openai`, `anthropic` | The endpoint's URL; without it, the vendor's own API. May interpolate `${NAME}` |
 | `apiKey` | `openai`, `anthropic` | May interpolate an environment variable as `${NAME}`. `anthropic` without one reads `ANTHROPIC_API_KEY` |
 | `timeoutMs` | `openai`, `anthropic` | Deadline for one HTTP request, in positive integer milliseconds. Default: 600000 (10 minutes), the SDKs' own default: a slow local model can take minutes over one summary. Set it lower for an endpoint that should fail over sooner. |
+| `maxConcurrent` | `openai`, `anthropic` | Maximum simultaneous HTTP requests to this named endpoint across the daemon, as a positive integer. Unset means unlimited. |
 | `body` | `openai`, `anthropic` | Extra request fields; see [Request body](#request-body) |
 
 A process endpoint accepts only `type` and `model`: its CLI authenticates through its own login. Any other field is rejected at config load, on every endpoint.
 
 The same default deadline applies to the flat `openai` and `anthropic` providers. lcm owns HTTP retries; SDK retries are disabled. A timed-out request skips further retries of that endpoint and advances the chain, because a server that accepted a request but never answered is unlikely to answer the same request on retry. Other transient HTTP failures still use lcm's retry loop.
+
+When `maxConcurrent` is set, extra calls wait in FIFO order before sending a request. The limit is shared by every project and session using that endpoint name, including separate summarizer instances. A caller waits at most `timeoutMs` (or its 600000 ms default) for a slot; if that wait expires, the chain can try its next endpoint. Once admitted, the HTTP request gets its full, separate deadline. PreCompact's 120-second hook deadline still bounds how long the hook waits for `/compact`; replay's `/compact` call has no overall client timeout and each endpoint attempt retains its own slot-wait and request bounds.
+
+A local server that processes one generation at a time can use one slot:
+
+```json
+{
+  "llm": {
+    "provider": "local",
+    "providers": {
+      "local": {
+        "type": "openai",
+        "model": "<local-model>",
+        "baseURL": "http://localhost:8080/v1",
+        "maxConcurrent": 1
+      }
+    }
+  }
+}
+```
 
 - **Names.** An endpoint's name is what its usage is recorded under in `llm_usage_stats`, and what `llm.provider`, `llm.fallback` and `LCM_SUMMARY_PROVIDER` select it by. It is made of letters, digits, `_`, `-` and `.`; the provider values listed above are reserved.
 - **Selection.** `llm.provider` names an endpoint, or `session`, `auto` or `disabled` (`auto` when unset). `llm.fallback` names endpoints only, each once. Nothing else is added: a chain whose last link fails fails the pass.
