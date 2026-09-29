@@ -429,7 +429,8 @@ for the first to finish, then reads the current context; deadline-bound PreCompa
 `skip_ingest` callers (including replay and `lcm compact`) receive the existing busy/skip outcome.
 The guard uses the session because `/compact` resolves its newest conversation only after admission;
 an OMP clear can open another conversation under the same session id. Different sessions of one
-project can still summarize concurrently. A required PreCompact Capture bypasses an occupied queue
+project can still summarize concurrently, subject to a named endpoint's `maxConcurrent` limit.
+A required PreCompact Capture bypasses an occupied queue
 and takes the mutation lease directly so it can finish within the hook deadline. A same-session
 `/ingest` can likewise append while a summary waits: the pending model call uses message IDs
 selected before the capture, and newly captured messages remain in context for a later selection.

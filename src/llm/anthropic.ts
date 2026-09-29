@@ -8,6 +8,7 @@ import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "./types.
 import { buildSummaryPrompt } from "./prompt.js";
 import { acceptSummaryText, SummaryRejectedError } from "./summary-rejection.js";
 import { DEFAULT_HTTP_TIMEOUT_MS, isRequestTimeout, withRequestDeadline } from "./http-timeout.js";
+import { withEndpointSlot } from "./endpoint-concurrency.js";
 
 export type { LcmSummarizeFn } from "./types.js";
 
@@ -20,6 +21,7 @@ type SummarizerOptions = {
   /** Names this endpoint in a rejection; the provider type when unset. */
   label?: string;
   timeoutMs?: number;
+  maxConcurrent?: number;
   _clientOverride?: any;
   _retryDelayMs?: number;
 };
@@ -80,13 +82,14 @@ export function createAnthropicSummarizer(opts: SummarizerOptions): LcmSummarize
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {
-        const response = await withRequestDeadline<any>(opts.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS, (options) => client.messages.create({
+        const timeoutMs = opts.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS;
+        const response = await withEndpointSlot(opts.label ?? "anthropic", opts.maxConcurrent, timeoutMs, () => withRequestDeadline<any>(timeoutMs, (options) => client.messages.create({
           ...opts.body, // first, so every field generated below wins
           model: opts.model,
           max_tokens: maxOutputTokens,
           system: ctx.taskPrompt ?? LCM_SUMMARIZER_SYSTEM_PROMPT,
           messages: [{ role: "user", content: prompt }],
-        }, options));
+        }, options)));
 
         // Reported before the answer is judged: those tokens were charged
         // even when the model returned nothing usable.

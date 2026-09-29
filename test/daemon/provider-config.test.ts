@@ -63,6 +63,16 @@ describe("llm.providers", () => {
       .toThrow(/timeoutMs does not apply to claude-process/);
   });
 
+  it("accepts a positive endpoint concurrency limit and rejects invalid limits", () => {
+    const endpoint = (value: string) => `{ "provider": "local", "providers": { "local": { "type": "openai", "model": "m", "maxConcurrent": ${value} } } }`;
+    expect(load(endpoint("1")).llm.providers?.local).toMatchObject({ maxConcurrent: 1 });
+    for (const value of ["0", "-1", "1.5", '"1"', "null"]) {
+      expect(() => load(endpoint(value))).toThrow(/maxConcurrent must be a positive integer/);
+    }
+    expect(() => load(`{ "provider": "cli", "providers": { "cli": { "type": "claude-process", "maxConcurrent": 1 } } }`))
+      .toThrow(/maxConcurrent does not apply to claude-process/);
+  });
+
   it("rejects an unknown endpoint field, pointing at body", () => {
     expect(() => load(`{ "provider": "deepseek", "providers": { "deepseek": { "type": "openai", "model": "m", "temperature": 0 } } }`))
       .toThrow(/temperature.*body/);

@@ -3,6 +3,7 @@ import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "./types.
 import { buildSummaryPrompt } from "./prompt.js";
 import { acceptSummaryText, SummaryRejectedError } from "./summary-rejection.js";
 import { DEFAULT_HTTP_TIMEOUT_MS, isRequestTimeout, withRequestDeadline } from "./http-timeout.js";
+import { withEndpointSlot } from "./endpoint-concurrency.js";
 import {
   LCM_SUMMARIZER_SYSTEM_PROMPT,
   resolveTargetTokens,
@@ -19,6 +20,7 @@ type OpenAISummarizerOptions = {
   /** Names this endpoint in a rejection; the provider type when unset. */
   label?: string;
   timeoutMs?: number;
+  maxConcurrent?: number;
   _clientOverride?: any;
   _retryDelayMs?: number;
 };
@@ -98,7 +100,8 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {
-        const response = await withRequestDeadline<any>(opts.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS, (options) => client.chat.completions.create({
+        const timeoutMs = opts.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS;
+        const response = await withEndpointSlot(opts.label ?? "openai", opts.maxConcurrent, timeoutMs, () => withRequestDeadline<any>(timeoutMs, (options) => client.chat.completions.create({
           // Vendor fields absent from the OpenAI SDK types go first, so every field
           // generated below wins. Nothing extra is sent when unset: servers that
           // reject unknown fields keep working.
@@ -111,7 +114,7 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
           messages: [
             { role: "user", content: `${ctx.taskPrompt ?? LCM_SUMMARIZER_SYSTEM_PROMPT}\n\n${prompt}` },
           ],
-        }, options));
+        }, options)));
 
         // Reported before the answer is judged: a reasoning model that spends
         // the whole budget thinking still charged for those tokens.
