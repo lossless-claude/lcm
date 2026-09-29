@@ -180,12 +180,16 @@ version. `--restart` is the way to rebuild that chain.
 conversations the run touched, hook-written ones included, rebuilding each
 conversation's context from its messages before starting from scratch. Ledger
 rows of the other replay command for those sessions are dropped too. Before
-wiping anything it asks the daemon (`/status`) whether it is still compacting
-a session in those projects and refuses with an error if so. A daemon that is
-not running counts as idle; one that answers `/status` with an error (bad
-token, 5xx) makes `--restart` refuse, since it cannot confirm idleness. The
-check is not atomic with the wipe, so a compaction that starts after it can
-still race.
+wiping a project, the CLI sends `/replay-reset` to the daemon. The route holds
+each replay session's compaction guard, waiting for any summary already in
+flight, then resets under the project queue and mutation lease. The guard
+remains held until every touched conversation and the replay ledger are reset,
+so a new compaction cannot enter between the wait and the wipe. A session that
+another replay adds to the manifest while the guards are taken holds no guard,
+so the route answers 409 and clears nothing; the reset can be retried. Only a refused
+connection (`ECONNREFUSED`) establishes that no daemon is listening; then the
+CLI resets the project database directly. Other daemon errors stop the reset
+without a local write.
 
 The chain follows what the daemon persisted, not whether the HTTP call
 returned in time. When the client gives up on a `/compact` call (timeout,
@@ -431,6 +435,8 @@ and takes the mutation lease directly so it can finish within the hook deadline.
 selected before the capture, and newly captured messages remain in context for a later selection.
 A Claude rebuild of that session (`/ingest` with `rebuild`) replaces those messages instead, so it
 waits for the compaction to finish and holds the session guard until the rebuild is written.
+Replay `--restart` uses the same guard for every session in its manifest, then
+clears their summaries and context under the queue and mutation lease.
 An OMP pre-compaction request whose Capture was separately verified skips its lcm summary if
 the project queue has work that has not yielded, or a mutation lease is outstanding, including
 when another request enters during awaited summarizer setup; admission is rechecked immediately
