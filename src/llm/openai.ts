@@ -98,7 +98,7 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {
-        const response = await withRequestDeadline<any>(opts.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS, (signal) => client.chat.completions.create({
+        const response = await withRequestDeadline<any>(opts.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS, (options) => client.chat.completions.create({
           // Vendor fields absent from the OpenAI SDK types go first, so every field
           // generated below wins. Nothing extra is sent when unset: servers that
           // reject unknown fields keep working.
@@ -111,7 +111,7 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
           messages: [
             { role: "user", content: `${ctx.taskPrompt ?? LCM_SUMMARIZER_SYSTEM_PROMPT}\n\n${prompt}` },
           ],
-        }, { signal }));
+        }, options));
 
         // Reported before the answer is judged: a reasoning model that spends
         // the whole budget thinking still charged for those tokens.

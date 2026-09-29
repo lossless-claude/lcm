@@ -80,13 +80,13 @@ export function createAnthropicSummarizer(opts: SummarizerOptions): LcmSummarize
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {
-        const response = await withRequestDeadline<any>(opts.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS, (signal) => client.messages.create({
+        const response = await withRequestDeadline<any>(opts.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS, (options) => client.messages.create({
           ...opts.body, // first, so every field generated below wins
           model: opts.model,
           max_tokens: maxOutputTokens,
           system: ctx.taskPrompt ?? LCM_SUMMARIZER_SYSTEM_PROMPT,
           messages: [{ role: "user", content: prompt }],
-        }, { signal }));
+        }, options));
 
         // Reported before the answer is judged: those tokens were charged
         // even when the model returned nothing usable.

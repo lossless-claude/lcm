@@ -1,9 +1,12 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadDaemonConfig } from "../../src/daemon/config.js";
 import { createSummarizer, resolveEffectiveProvider } from "../../src/daemon/summarizer.js";
 import { createAnthropicSummarizer } from "../../src/llm/anthropic.js";
+import { createOpenAISummarizer } from "../../src/llm/openai.js";
 
 const DEADLINE_MS = 50;
 
@@ -57,6 +60,21 @@ describe("HTTP summarizer deadlines", () => {
     expect(Date.now() - started).toBeLessThan(700);
     expect(requests.filter((path) => path.startsWith("/silent/"))).toHaveLength(1);
     expect(requests.filter((path) => path.startsWith("/next/"))).toHaveLength(1);
+  });
+
+  it.each([
+    ["OpenAI", (create: any, timeoutMs?: number) => createOpenAISummarizer({
+      model: "m", timeoutMs, _retryDelayMs: 0, _clientOverride: { chat: { completions: { create } } },
+    }), new OpenAI.APIConnectionTimeoutError()],
+    ["Anthropic", (create: any, timeoutMs?: number) => createAnthropicSummarizer({
+      model: "m", apiKey: "test", timeoutMs, _retryDelayMs: 0, _clientOverride: { messages: { create } },
+    }), new Anthropic.APIConnectionTimeoutError()],
+  ])("gives the %s SDK the configured deadline and does not retry its own timeout", async (_label, summarizer, timeout) => {
+    const create = vi.fn(async () => { throw timeout; });
+    // Above the SDKs' 10-minute default, which would otherwise cut the request first.
+    await expect(summarizer(create, 1_200_000)("conversation", false)).rejects.toBe(timeout);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0]).toEqual([expect.anything(), expect.objectContaining({ timeout: 1_200_000 })]);
   });
 
   it("bounds a silent Anthropic request without SDK retries", async () => {
