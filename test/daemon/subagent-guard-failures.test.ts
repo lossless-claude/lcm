@@ -31,4 +31,21 @@ describe("subagent guard failures", () => {
     expect(skipUnchangedSubagentGuard(cwd, paths, transcript, fingerprint)).toBe(false);
     expect(stalledSubagentGuards(cwd, paths)).toEqual([]);
   });
+
+  it("keeps retrying a failure it could not record for doctor", () => {
+    const root = mkdtempSync(join(tmpdir(), "lcm-subagent-guard-"));
+    roots.push(root);
+    const paths = createLcmPaths(join(root, "lcm"));
+    const cwd = join(root, "work");
+    mkdirSync(projectDir(cwd, paths), { recursive: true });
+    writeFileSync(projectDbPath(cwd, paths), "");
+    // The sidecar path is a directory, so the atomic rename cannot replace it.
+    mkdirSync(join(projectDir(cwd, paths), "subagent-guard-failures.json"));
+    const transcript = join(root, "agent-2.jsonl");
+    writeFileSync(transcript, "{}\n");
+    const fingerprint = subagentGuardFingerprint(transcript);
+
+    rememberSubagentGuard(cwd, paths, transcript, fingerprint, "agent-2", "parent", "prefix differs");
+    expect(skipUnchangedSubagentGuard(cwd, paths, transcript, fingerprint)).toBe(false);
+  });
 });

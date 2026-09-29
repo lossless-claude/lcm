@@ -159,6 +159,7 @@ export function checkStalledSubagentCaptures(paths: LcmPaths): CheckResult {
   return {
     ...base, status: "warn",
     message: `${stalled.length} Claude Code subagent capture${stalled.length === 1 ? "" : "s"} stalled by transcript guards:\n${stalled.join("\n")}\n` +
-      "     Fix: restore the transcript or run `lcm import --provider claude --rebuild` after reviewing the stored history",
+      "     Fix: preview with `lcm import --provider claude --rebuild --session <id>`, then apply a repairable one with `--yes`;\n" +
+      "     an ambiguous one needs its original transcript restored first",
   };
 }

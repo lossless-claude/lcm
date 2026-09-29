@@ -63,15 +63,19 @@ function records(cwd: string, paths: LcmPaths): Record<string, Failure> {
   return current.failures;
 }
 
-function writeRecords(cwd: string, paths: LcmPaths, current: Record<string, Failure>): void {
+/** Whether the sidecar now holds `current`; capture stays best effort when diagnostic storage is unavailable. */
+function writeRecords(cwd: string, paths: LcmPaths, current: Record<string, Failure>): boolean {
   const db = dbIdentity(cwd, paths);
-  if (!db) return;
+  if (!db) return false;
   const path = sidecarPath(cwd, paths);
   const tmp = `${path}.${process.pid}.tmp`;
   try {
     writeFileSync(tmp, JSON.stringify({ db, version: PKG_VERSION ?? null, failures: current }));
     renameSync(tmp, path);
-  } catch { /* capture remains best effort when diagnostic storage is unavailable */ }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function skipUnchangedSubagentGuard(cwd: string, paths: LcmPaths, path: string, fingerprint: string | undefined): boolean {
@@ -86,10 +90,11 @@ export function rememberSubagentGuard(
   const db = dbIdentity(cwd, paths);
   if (fingerprint === undefined || db === undefined) return;
   const failure = { fingerprint, db, sessionId, parentSessionId, message };
-  failed.set(path, failure);
   const current = records(cwd, paths);
   current[path] = failure;
-  writeRecords(cwd, paths, current);
+  // Skip only what doctor can list: an unrecorded failure stays retried every pass.
+  if (writeRecords(cwd, paths, current)) failed.set(path, failure);
+  else delete current[path];
 }
 
 export function forgetSubagentGuard(cwd: string, paths: LcmPaths, path: string): void {
