@@ -21,6 +21,7 @@ import { validateCwd } from "../validate-cwd.js";
 import { scheduleProjectLanguageDetection } from "../project-language.js";
 import { noopDaemonLog, type DaemonLog } from "../log.js";
 import { enqueue, withProjectMutation } from "../project-queue.js";
+import { holdSessionCompaction } from "./compact.js";
 import { backupProjectDatabase } from "../../claude-rebuild.js";
 import { applyCutRowRepair, planCutRowRepair, type CutRepairClient } from "../../cut-row-repair.js";
 import { SessionCapture, STRUCTURED_INGEST_SHAPE, isSessionComplete, type CaptureInput, type CaptureResult, type TranscriptCaptureResult } from "../../capture.js";
@@ -158,9 +159,11 @@ function backfillToolModels(cwd: string, captured: TranscriptCaptureResult, path
 /**
  * Rebuilds one Claude Code session from its transcript (see `SessionCapture.rebuildTranscript`),
  * inside the project queue and mutation lease like every capture, so a live capture of the same
- * session runs wholly before or after it. The session-complete shortcut does not apply. With
- * `backup`, the project database is copied first; a failed backup fails the request before
- * anything changes. The response names the backup even when the rebuild then fails.
+ * session runs wholly before or after it. It also holds the session's compaction guard: a
+ * compaction yields the queue while its model works, and must not resume onto replaced rows.
+ * The session-complete shortcut does not apply. With `backup`, the project database is copied
+ * first; a failed backup fails the request before anything changes. The response names the
+ * backup even when the rebuild then fails.
  */
 async function rebuildSession(
   input: IngestInput & { session_id: string }, cwd: string, scrubber: ScrubEngine, paths: LcmPaths, res: ServerResponse, log: DaemonLog,
@@ -169,6 +172,7 @@ async function rebuildSession(
   const pid = projectId(cwd);
   let backupPath: string | undefined;
   const removedBackups: string[] = [];
+  const releaseSession = await holdSessionCompaction(input.session_id, cwd);
   try {
     const result = await enqueue(pid, async () => {
       openProject(cwd, paths);
@@ -199,6 +203,8 @@ async function rebuildSession(
     const status = err instanceof TranscriptSourceError ? 400 : 500;
     log.write(status === 500 ? "error" : "warn", "ingest.rebuild_failed", { cwd, session_id: input.session_id, err });
     sendJson(res, status, { error: err instanceof Error ? err.message : "rebuild failed", ...(backupPath ? { backupPath, removedBackups } : {}) });
+  } finally {
+    releaseSession();
   }
 }
 

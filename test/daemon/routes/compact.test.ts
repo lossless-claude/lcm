@@ -441,6 +441,54 @@ describe("required pre-compaction capture", () => {
     expect(summarize.mock.calls.every(([text]) => !String(text).includes("new tail while summary waits"))).toBe(true);
   }, 10_000);
 
+  it("holds a rebuild of the compacting session until its summary is written", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-same-session-rebuild-"));
+    dirs.push(cwd);
+    const ingestHandler = createIngestHandler(makeConfig("disabled"), paths);
+    const messages = Array.from({ length: 20 }, (_, index) => ({
+      role: index % 2 ? "assistant" : "user",
+      content: `message ${index} ${"content for compaction ".repeat(100)}`,
+      tokenCount: 600,
+    }));
+    const seed = mockRes();
+    await ingestHandler({} as any, seed.res, JSON.stringify({ session_id: "rebuilt-session", cwd, messages }));
+    expect(seed.getBody()).toMatchObject({ ingested: 20 });
+    // The transcript holds a message the stored history skipped, so the rebuild rewrites every row.
+    const transcriptPath = join(cwd, "rebuilt-session.jsonl");
+    const transcript = [...messages.slice(0, 10), { role: "user", content: "skipped by the stored history" }, ...messages.slice(10)];
+    writeFileSync(transcriptPath, transcript.map(({ role, content }) => JSON.stringify({ message: { role, content } })).join("\n") + "\n");
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(async () => {
+      entered.resolve();
+      await resume.promise;
+      return "summary";
+    });
+    const compact = mockRes();
+    const compacting = createCompactHandler(makeConfig("openai"), paths)({} as any, compact.res, JSON.stringify({
+      session_id: "rebuilt-session", cwd, skip_ingest: true,
+    }));
+    const rebuild = mockRes();
+    let rebuilding: Promise<void> | undefined;
+    try {
+      await entered.promise;
+      rebuilding = ingestHandler({} as any, rebuild.res, JSON.stringify({
+        session_id: "rebuilt-session", cwd, client: "claude", transcript_path: transcriptPath, rebuild: true,
+      }));
+      expect(await Promise.race([
+        rebuilding.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 100)),
+      ])).toBe(false);
+    } finally {
+      resume.resolve();
+      await compacting;
+      await rebuilding;
+    }
+    expect(compact.getBody().replayOutcome).toBe("compacted");
+    expect(rebuild.getBody()).toMatchObject({ rebuild: { kind: "repairable" } });
+    expect(await readMessageContents(cwd, "rebuilt-session")).toContain("skipped by the stored history");
+  }, 10_000);
+
   it("lets two sessions of one project summarize at the same time", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-two-summaries-"));
     dirs.push(cwd);

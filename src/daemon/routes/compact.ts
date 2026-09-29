@@ -129,6 +129,16 @@ export function markCompacting(sessionId: string, cwd: string): () => void {
   };
 }
 
+/**
+ * Waits out the session's in-flight compaction, then holds its guard until the returned release.
+ * A rebuild replaces the rows that a summary waiting on its model would cite.
+ */
+export async function holdSessionCompaction(sessionId: string, cwd: string): Promise<() => void> {
+  const key = compactionKey(cwd, sessionId);
+  while (compactingNow.has(key)) await compactingNow.get(key)!.finished;
+  return markCompacting(sessionId, cwd);
+}
+
 export type CompactLlmUsage = {
   provider: string;
   model: string;

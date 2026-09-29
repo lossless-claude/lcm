@@ -429,6 +429,8 @@ project can still summarize concurrently. A required PreCompact Capture bypasses
 and takes the mutation lease directly so it can finish within the hook deadline. A same-session
 `/ingest` can likewise append while a summary waits: the pending model call uses message IDs
 selected before the capture, and newly captured messages remain in context for a later selection.
+A Claude rebuild of that session (`/ingest` with `rebuild`) replaces those messages instead, so it
+waits for the compaction to finish and holds the session guard until the rebuild is written.
 An OMP pre-compaction request whose Capture was separately verified skips its lcm summary if
 the project queue has work that has not yielded, or a mutation lease is outstanding, including
 when another request enters during awaited summarizer setup; admission is rechecked immediately
