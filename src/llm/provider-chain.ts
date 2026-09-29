@@ -66,7 +66,7 @@ const NETWORK_CODES = new Set(["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "ETIME
 const CONNECTION_ERRORS = new Set(["APIConnectionError", "APIConnectionTimeoutError"]);
 
 function isNetworkError(error: any): boolean {
-  if (CONNECTION_ERRORS.has(error?.constructor?.name)) return true;
+  if (CONNECTION_ERRORS.has(error?.name) || CONNECTION_ERRORS.has(error?.constructor?.name)) return true;
   return NETWORK_CODES.has(error?.code) || NETWORK_CODES.has(error?.cause?.code);
 }
 

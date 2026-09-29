@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "./types.js";
 import { buildSummaryPrompt } from "./prompt.js";
 import { acceptSummaryText, SummaryRejectedError } from "./summary-rejection.js";
+import { DEFAULT_HTTP_TIMEOUT_MS, isRequestTimeout, withRequestDeadline } from "./http-timeout.js";
 import {
   LCM_SUMMARIZER_SYSTEM_PROMPT,
   resolveTargetTokens,
@@ -17,6 +18,7 @@ type OpenAISummarizerOptions = {
   body?: Record<string, unknown>;
   /** Names this endpoint in a rejection; the provider type when unset. */
   label?: string;
+  timeoutMs?: number;
   _clientOverride?: any;
   _retryDelayMs?: number;
 };
@@ -72,6 +74,7 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
     new OpenAI({
       ...(opts.baseURL ? { baseURL: opts.baseURL } : {}),
       apiKey: opts.apiKey || "local", // many local servers require a non-empty key
+      maxRetries: 0,
     });
   const retryDelayMs = opts._retryDelayMs ?? 1000;
   const MAX_RETRIES = 3;
@@ -95,7 +98,7 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {
-        const response = await client.chat.completions.create({
+        const response = await withRequestDeadline<any>(opts.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS, (signal) => client.chat.completions.create({
           // Vendor fields absent from the OpenAI SDK types go first, so every field
           // generated below wins. Nothing extra is sent when unset: servers that
           // reject unknown fields keep working.
@@ -108,7 +111,7 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
           messages: [
             { role: "user", content: `${ctx.taskPrompt ?? LCM_SUMMARIZER_SYSTEM_PROMPT}\n\n${prompt}` },
           ],
-        });
+        }, { signal }));
 
         // Reported before the answer is judged: a reasoning model that spends
         // the whole budget thinking still charged for those tokens.
@@ -126,6 +129,7 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
         // the input would persist raw conversation text as a fake summary.
         return acceptSummaryText(choice?.message?.content ?? "", opts.label ?? "openai", usage?.model ?? opts.model);
       } catch (err: any) {
+        if (isRequestTimeout(err)) throw err;
         if (isClientError(err)) throw err; // the same request fails the same way: no retry
         if (err instanceof SummaryRejectedError && !err.retryable) throw err;
         lastError = err;

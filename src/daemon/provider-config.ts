@@ -17,6 +17,7 @@ export type HttpEndpoint = {
   model: string;
   baseURL?: string;
   apiKey?: string;
+  timeoutMs?: number;
   /** Extra top-level request fields, merged under the fields lcm generates. */
   body?: Record<string, unknown>;
   /** Variables `apiKey` or `baseURL` reference that were unset at load: the endpoint cannot run. */
@@ -33,7 +34,7 @@ const PROTOTYPE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const RESERVED_NAMES = new Set([...SELECTORS, ...HTTP_TYPES, ...PROCESS_TYPES, "claude-cli", ...PROTOTYPE_KEYS]);
 const ENDPOINT_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 
-const HTTP_FIELDS = new Set(["type", "model", "baseURL", "apiKey", "body"]);
+const HTTP_FIELDS = new Set(["type", "model", "baseURL", "apiKey", "body", "timeoutMs"]);
 const PROCESS_FIELDS = new Set(["type", "model"]);
 
 /**
@@ -154,6 +155,9 @@ function normalizeHttpEndpoint(where: string, entry: Record<string, unknown>, en
   const type = entry.type as HttpEndpointType;
   assertFields(entry, HTTP_FIELDS, (key) => `${where}.${key} is not an endpoint field; a request field goes in ${where}.body`);
   if (typeof entry.model !== "string" || !entry.model.trim()) fail(`${where}.model must name the model`);
+  if (entry.timeoutMs !== undefined && (!Number.isSafeInteger(entry.timeoutMs) || (entry.timeoutMs as number) <= 0)) {
+    fail(`${where}.timeoutMs must be a positive integer of milliseconds`);
+  }
   const missing: string[] = [];
   const expansion: Expansion = { env, missing };
   const baseURL = entry.baseURL === undefined ? undefined : expandEnv(entry.baseURL, `${where}.baseURL`, expansion);
@@ -167,6 +171,7 @@ function normalizeHttpEndpoint(where: string, entry: Record<string, unknown>, en
     type, model: entry.model,
     ...(baseURL !== undefined ? { baseURL } : {}),
     ...(apiKey !== undefined ? { apiKey } : {}),
+    ...(entry.timeoutMs !== undefined ? { timeoutMs: entry.timeoutMs as number } : {}),
     ...(entry.body !== undefined ? { body: validateRequestBody(entry.body, `${where}.body`) } : {}),
     ...(missing.length > 0 ? { missingEnv: missing } : {}),
   };
