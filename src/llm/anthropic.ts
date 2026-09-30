@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import Anthropic, { type ClientOptions } from "@anthropic-ai/sdk";
 import {
   LCM_SUMMARIZER_SYSTEM_PROMPT,
   resolveTargetTokens,
@@ -8,6 +8,7 @@ import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "./types.
 import { buildSummaryPrompt } from "./prompt.js";
 import { acceptSummaryText, SummaryRejectedError } from "./summary-rejection.js";
 import { DEFAULT_HTTP_TIMEOUT_MS, isRequestTimeout, withRequestDeadline } from "./http-timeout.js";
+import { completionFetch } from "./http-fetch.js";
 import { withEndpointSlot } from "./endpoint-concurrency.js";
 
 export type { LcmSummarizeFn } from "./types.js";
@@ -62,7 +63,8 @@ function toUsage(response: any, fallbackModel: string): SummarizerUsage | undefi
 }
 
 export function createAnthropicSummarizer(opts: SummarizerOptions): LcmSummarizeFn {
-  const client = opts._clientOverride ?? new Anthropic({ apiKey: opts.apiKey, ...(opts.baseURL ? { baseURL: opts.baseURL } : {}), maxRetries: 0 });
+  // This SDK version types fetch with node-fetch shims; JSON requests use the web API.
+  const client = opts._clientOverride ?? new Anthropic({ apiKey: opts.apiKey, ...(opts.baseURL ? { baseURL: opts.baseURL } : {}), maxRetries: 0, fetch: completionFetch as unknown as ClientOptions["fetch"] });
   const retryDelayMs = opts._retryDelayMs ?? 1000;
   const MAX_RETRIES = 3;
 

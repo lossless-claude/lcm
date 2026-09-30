@@ -3,6 +3,7 @@ import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "./types.
 import { buildSummaryPrompt } from "./prompt.js";
 import { acceptSummaryText, SummaryRejectedError } from "./summary-rejection.js";
 import { DEFAULT_HTTP_TIMEOUT_MS, isRequestTimeout, withRequestDeadline } from "./http-timeout.js";
+import { completionFetch } from "./http-fetch.js";
 import { withEndpointSlot } from "./endpoint-concurrency.js";
 import {
   LCM_SUMMARIZER_SYSTEM_PROMPT,
@@ -77,6 +78,7 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
       ...(opts.baseURL ? { baseURL: opts.baseURL } : {}),
       apiKey: opts.apiKey || "local", // many local servers require a non-empty key
       maxRetries: 0,
+      fetch: completionFetch,
     });
   const retryDelayMs = opts._retryDelayMs ?? 1000;
   const MAX_RETRIES = 3;
