@@ -65,7 +65,7 @@ export function resolveEffectiveProvider(config: DaemonConfig, client?: CompactC
  * answer is a `SessionUnavailableError`, and a rejected answer a `SummaryRejectedError`:
  * the chain hands both to the next link.
  */
-function createSessionSummarizer(jobs?: SummarizeJobStore, pool = false): LcmSummarizeFn {
+function createSessionSummarizer(jobs?: Pick<SummarizeJobStore, "enqueue">, pool = false): LcmSummarizeFn {
   return async (text, aggressive, ctx = {}) => {
     if (!jobs || !ctx.sessionId) throw new SessionUnavailableError("no live session job queue");
     const targetTokens = ctx.targetTokens ?? resolveTargetTokens({
@@ -141,7 +141,7 @@ class LinkFactory {
   private readonly session: LcmSummarizeFn;
   private readonly pool: LcmSummarizeFn;
 
-  constructor(private readonly config: DaemonConfig, jobs?: SummarizeJobStore) {
+  constructor(private readonly config: DaemonConfig, jobs?: Pick<SummarizeJobStore, "enqueue">) {
     this.session = createSessionSummarizer(jobs);
     this.pool = createSessionSummarizer(jobs, true);
   }
@@ -205,7 +205,7 @@ function chainOf(provider: EffectiveProvider, config: DaemonConfig, links: LinkF
 export async function createSummarizer(
   provider: EffectiveProvider,
   config: DaemonConfig,
-  jobs?: SummarizeJobStore,
+  jobs?: Pick<SummarizeJobStore, "enqueue">,
 ): Promise<LcmSummarizeFn | null> {
   const configuredLanguage = configuredSummarizerLanguage(config);
   const withConfiguredLanguage = (summarizer: LcmSummarizeFn): LcmSummarizeFn => {

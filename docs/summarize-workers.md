@@ -1,7 +1,7 @@
-# Run replay with summarize workers
+# Run replay and evaluation with summarize workers
 
 Dedicated interactive Claude Code and Oh My Pi sessions can summarize stored
-sessions from any project. Keep them open while replay runs. Each worker claims
+sessions from any project. Keep them open while replay or summarizer evaluation runs. Each worker claims
 one pool job at a time; ordinary sessions continue serving only their own jobs.
 
 ## Start workers
@@ -64,6 +64,23 @@ flat configuration uses `llm.fallbackProvider`, or `auto` when it is unset. To
 fail an unavailable pool without invoking a process fallback, set the flat
 `llm.fallbackProvider` to `disabled`, or leave the named fallback list empty.
 See [configuration](configuration.md#summarize-worker-pool).
+
+## Compare workers with endpoints
+
+With the daemon and one or more workers running, evaluate a stored session:
+
+```sh
+lcm eval summarizer --session <id> --models session-pool,local --out ./comparison
+```
+
+`local` names an endpoint in `llm.providers`; `session-pool` needs no endpoint
+entry. Evaluation sends isolated pool jobs through the authenticated daemon
+route, keeping compaction in the eval process and the project database read-only.
+Unlike replay, it never falls back: no claim within 20 s fails the pool candidate
+with worker startup instructions, while other candidates complete. Claimed jobs
+have 3 minutes to answer. Reports attribute usage to `session-pool:<model>`.
+The live `session` provider is rejected. See
+[compare summarizers](summarizer-compare.md) for report details.
 
 ## Transcript hygiene and hosts
 
