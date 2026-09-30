@@ -3,8 +3,9 @@ import { Option } from "commander";
 import type { Command } from "commander";
 import type { DaemonClient } from "../daemon/client.js";
 import { lcmHome } from "../lcm-home.js";
+import { replayParallelism } from "../replay-projects.js";
 import { createLcmPaths } from "../lcm-paths.js";
-import { readStdin, showHelpAndExit } from "./support.js";
+import { fail, readStdin, showHelpAndExit } from "./support.js";
 
 export interface CompactCommandDeps {
   createDaemonClientOrExit: (spawnTimeoutMs?: number) => Promise<DaemonClient>;
@@ -20,6 +21,8 @@ export function registerCompactCommand(program: Command, deps: CompactCommandDep
     .option("--all", "Compact all tracked projects")
     .option("--dry-run", "Show what would be compacted without writing")
     .option("--replay", "Compact sequentially with threaded context")
+    .option("--parallel <N>", "With --replay: process N projects concurrently", "1")
+    .option("--replay-provider <provider>", "With --replay: use session-pool without changing live compactions")
     .option("--restart", "Discard recorded replay progress and start from scratch")
     .option("--no-promote", "Skip the automatic promote step")
     .option("-v, --verbose", "Show per-session token details")
@@ -33,6 +36,10 @@ export function registerCompactCommand(program: Command, deps: CompactCommandDep
       const verbose: boolean = opts.verbose ?? false;
       const replay: boolean = opts.replay ?? false;
       const restart: boolean = opts.restart ?? false;
+      const parallel = /^\d+$/.test(opts.parallel) ? Number(opts.parallel) : NaN;
+      const replayProvider = opts.replayProvider as "session-pool" | undefined;
+      try { replayParallelism({ replay, parallel, replayProvider }); }
+      catch (error) { fail(error instanceof Error ? error.message : String(error)); }
       // Hook dispatch only when --hook is explicit; all other invocations go to batch.
       const hook: boolean = opts.hook ?? false;
       if (!hook) {
@@ -57,10 +64,10 @@ export function registerCompactCommand(program: Command, deps: CompactCommandDep
         compactRenderer.start();
 
         const { configuredSummaryModel } = await import("../daemon/summarizer.js");
-        const replayModel = configuredSummaryModel(config);
+        const replayModel = configuredSummaryModel(config, replayProvider ?? config.llm.provider);
         const { compacted, daemonUnreachable } = await batchCompact({
           paths, minTokens, dryRun, port, cwd, replay, restart, verbose, tokenPath,
-          replayModel,
+          replayModel, parallel, replayProvider,
           onBeforeSession: () => !compactRenderer.shouldStop,
           trackInFlight: () => compactRenderer.trackInFlight(),
           onProgress: (patch) => {

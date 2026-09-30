@@ -316,6 +316,11 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
     const { session_id, transcript_path, skip_ingest, client, previous_summary } = input;
+    if (input.replay_provider !== undefined &&
+        (input.replay_provider !== "session-pool" || skip_ingest !== true || input.capture_required === true || input.precompact_verified === true)) {
+      sendJson(res, 400, { error: "replay_provider requires session-pool and skip_ingest, without live PreCompact capture" });
+      return;
+    }
     const captureRequired = input.capture_required === true;
     const precompactVerified = input.precompact_verified === true && client === "omp" && skip_ingest === true;
     const operationId = typeof input.operation_id === "string" && input.operation_id.length <= 140
@@ -411,7 +416,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     // Check and mark have no await between them, including after a waiter wakes.
     const releaseCompacting = markCompacting(session_id, cwd);
 
-    const effectiveProvider = resolveEffectiveProvider(config, client);
+    const effectiveProvider = input.replay_provider ?? resolveEffectiveProvider(config, client);
     const providerLabels: Record<EffectiveProvider, string> = {
       "claude-process": "Claude (process)",
       "codex-process": "Codex (process)",
@@ -421,6 +426,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       "openai": "OpenAI API",
       "disabled": "Disabled",
       "session": "Live session",
+      "session-pool": "Summarize worker pool",
     };
     const providerLabel = providerLabels[effectiveProvider] ?? effectiveProvider;
 

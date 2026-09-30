@@ -1,3 +1,4 @@
+import { replayParallelism, runReplayProjects } from "./replay-projects.js";
 import { readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { readProjectMetaIn } from "./daemon/project-meta.js";
@@ -221,6 +222,8 @@ export async function batchCompact(opts: {
   tokenPath?: string;
   /** Replay only: model label recorded in the ledger (shown on resume) */
   replayModel?: string;
+  parallel?: number;
+  replayProvider?: "session-pool";
   /** Called with state patches as each session is processed — used by the ninja renderer */
   onProgress?: (patch: Partial<ProgressState>) => void;
   /** Called before each conversation starts; return false to stop the run (e.g. after SIGINT/SIGTERM) */
@@ -231,6 +234,7 @@ export async function batchCompact(opts: {
   // --restart clears every tracked project, not only those with eligible
   // conversations: recorded state must go even when nothing currently passes
   // the token threshold.
+  const parallel = replayParallelism(opts);
   const client = new DaemonClient(`http://127.0.0.1:${opts.port}`, opts.tokenPath);
   if (opts.replay && !opts.dryRun && opts.restart) {
     const projects = findProjects(opts.paths, opts.cwd);
@@ -337,210 +341,215 @@ export async function batchCompact(opts: {
   // the rest FAILED and breaking each one's chain link.
   let daemonUnreachable = false;
 
-  for (const conv of conversations) {
-    // Stop starting new work after SIGINT/SIGTERM; the renderer waits for the
-    // in-flight compaction to settle before exiting.
-    if (opts.onBeforeSession && !opts.onBeforeSession()) break;
+  await runReplayProjects(conversations, (conv) => conv.cwd, parallel, async (ordered) => {
+    for (const conv of ordered) {
+      if (daemonUnreachable) break;
+      // Stop starting new work after SIGINT/SIGTERM; the renderer waits for the
+      // in-flight compaction to settle before exiting.
+      if (opts.onBeforeSession && !opts.onBeforeSession()) break;
 
-    const label = `${conv.cwd} conv #${conv.conversationId} (${conv.messages} msgs, ${(conv.tokens / 1000).toFixed(1)}k tokens)`;
+      const label = `${conv.cwd} conv #${conv.conversationId} (${conv.messages} msgs, ${(conv.tokens / 1000).toFixed(1)}k tokens)`;
 
-    if (opts.dryRun) {
-      console.log(`  [dry-run] would compact: ${label}`);
-      doneCount++;
-      onProgress?.({ completed: doneCount });
-      continue;
-    }
-
-    const sessionStart = Date.now();
-    onProgress?.({ current: { sessionId: conv.sessionId, messages: conv.messages, tokens: conv.tokens, startedAt: sessionStart } });
-    process.stdout.write(`  compacting: ${label}...`);
-    const releaseInFlight = opts.trackInFlight ? opts.trackInFlight() : null;
-    // Captured before the call so a timed-out compact only recovers a summary
-    // persisted after this moment — a stale one from an earlier run is not
-    // mistaken for the in-flight call's result.
-    const compactStartedAt = Date.now();
-    try {
-      const data = await client.post<{
-        summary?: string;
-        skipped?: boolean;
-        replayOutcome?: "disabled" | "skipped" | "compacted" | "no_work";
-        tokensBefore?: number;
-        tokensAfter?: number;
-        providerLabel?: string;
-        latestSummaryContent?: string;
-        latestSummaryId?: string;
-        latestSummaryIds?: string[];
-        llmUsage?: { model?: string };
-      }>("/compact", {
-        session_id: conv.sessionId,
-        cwd: conv.cwd,
-        skip_ingest: true,
-        client: "claude",
-        ...(previousSummaryByCwd.get(conv.cwd) !== undefined ? { previous_summary: previousSummaryByCwd.get(conv.cwd) } : {}),
-      });
-      if (data.latestSummaryContent !== undefined) {
-        previousSummaryByCwd.set(conv.cwd, data.latestSummaryContent);
+      if (opts.dryRun) {
+        console.log(`  [dry-run] would compact: ${label}`);
+        doneCount++;
+        onProgress?.({ completed: doneCount });
+        continue;
       }
 
-      // A row is written only for a session the daemon reports as finished.
-      // A skipped (already-in-progress) or disabled compaction records nothing
-      // — the next run retries it.
-      const run = replayRuns?.get(conv.cwd);
-      const outcome =
-        data.replayOutcome === "compacted" || data.replayOutcome === "no_work"
-          ? data.replayOutcome
-          : null;
-      if (run && outcome) {
-        recordReplayProgress({
+      const sessionStart = Date.now();
+      onProgress?.({ current: { sessionId: conv.sessionId, messages: conv.messages, tokens: conv.tokens, startedAt: sessionStart } });
+      process.stdout.write(`  compacting: ${label}...`);
+      const releaseInFlight = opts.trackInFlight ? opts.trackInFlight() : null;
+      // Captured before the call so a timed-out compact only recovers a summary
+      // persisted after this moment — a stale one from an earlier run is not
+      // mistaken for the in-flight call's result.
+      const compactStartedAt = Date.now();
+      try {
+        const data = await client.post<{
+          summary?: string;
+          skipped?: boolean;
+          replayOutcome?: "disabled" | "skipped" | "compacted" | "no_work";
+          tokensBefore?: number;
+          tokensAfter?: number;
+          providerLabel?: string;
+          latestSummaryContent?: string;
+          latestSummaryId?: string;
+          latestSummaryIds?: string[];
+          llmUsage?: { model?: string };
+        }>("/compact", {
+          session_id: conv.sessionId,
           cwd: conv.cwd,
-          paths: opts.paths,
-          runId: run.runId,
-          sessionId: conv.sessionId,
-          position: run.positions.get(conv.sessionId) ?? 0,
-          contentFingerprint: fingerprintStats(conv.sourceMessages, conv.sourceTokens),
-          summaryId: data.latestSummaryId ?? null,
-          outcome,
-          // The model whose answer was stored; a fallback may have replaced the configured one.
-          model: data.llmUsage?.model || opts.replayModel || null,
+          skip_ingest: true,
+          ...(opts.replayProvider ? { replay_provider: opts.replayProvider } : {}),
+          client: "claude",
+          ...(previousSummaryByCwd.get(conv.cwd) !== undefined ? { previous_summary: previousSummaryByCwd.get(conv.cwd) } : {}),
         });
-      }
-
-      doneCount++;
-      if (data.skipped) {
-        console.log(" skipped (already in progress)");
-        onProgress?.({
-          completed: doneCount,
-          current: undefined,
-          lastResult: { sessionId: conv.sessionId, messages: conv.messages, tokensBefore: conv.tokens, elapsed: Date.now() - sessionStart },
-        });
-      } else {
-        const before = typeof data.tokensBefore === "number" ? data.tokensBefore : 0;
-        const after = typeof data.tokensAfter === "number" ? data.tokensAfter : 0;
-        tokensIn += before;
-        tokensOut += after;
-        if (opts.verbose && before > 0) {
-          const pct = before > 0 ? Math.round((1 - after / before) * 100) : 0;
-          console.log(` done  (${(before / 1000).toFixed(1)}k → ${(after / 1000).toFixed(1)}k tokens, ${pct}% reduction)`);
-        } else {
-          console.log(" done");
+        if (data.latestSummaryContent !== undefined) {
+          previousSummaryByCwd.set(conv.cwd, data.latestSummaryContent);
         }
-        compacted++;
-        messagesIn += conv.messages;
-        tokensIn += data.tokensBefore ?? conv.tokens;
-        tokensOut += data.tokensAfter ?? 0;
+
+        // A row is written only for a session the daemon reports as finished.
+        // A skipped (already-in-progress) or disabled compaction records nothing
+        // — the next run retries it.
+        const run = replayRuns?.get(conv.cwd);
+        const outcome =
+          data.replayOutcome === "compacted" || data.replayOutcome === "no_work"
+            ? data.replayOutcome
+            : null;
+        if (run && outcome) {
+          recordReplayProgress({
+            cwd: conv.cwd,
+            paths: opts.paths,
+            runId: run.runId,
+            sessionId: conv.sessionId,
+            position: run.positions.get(conv.sessionId) ?? 0,
+            contentFingerprint: fingerprintStats(conv.sourceMessages, conv.sourceTokens),
+            summaryId: data.latestSummaryId ?? null,
+            outcome,
+            // The model whose answer was stored; a fallback may have replaced the configured one.
+            model: data.llmUsage?.model || opts.replayModel || null,
+          });
+        }
+
+        doneCount++;
+        if (data.skipped) {
+          console.log(" skipped (already in progress)");
+          onProgress?.({
+            completed: doneCount,
+            current: undefined,
+            lastResult: { sessionId: conv.sessionId, messages: conv.messages, tokensBefore: conv.tokens, elapsed: Date.now() - sessionStart },
+          });
+        } else {
+          const before = typeof data.tokensBefore === "number" ? data.tokensBefore : 0;
+          const after = typeof data.tokensAfter === "number" ? data.tokensAfter : 0;
+          tokensIn += before;
+          tokensOut += after;
+          if (opts.verbose && before > 0) {
+            const pct = before > 0 ? Math.round((1 - after / before) * 100) : 0;
+            console.log(` done  (${(before / 1000).toFixed(1)}k → ${(after / 1000).toFixed(1)}k tokens, ${pct}% reduction)`);
+          } else {
+            console.log(" done");
+          }
+          compacted++;
+          messagesIn += conv.messages;
+          tokensIn += data.tokensBefore ?? conv.tokens;
+          tokensOut += data.tokensAfter ?? 0;
+          onProgress?.({
+            completed: doneCount,
+            messagesIn,
+            tokensIn,
+            tokensOut,
+            current: undefined,
+            lastResult: {
+              sessionId: conv.sessionId,
+              messages: conv.messages,
+              tokensBefore: data.tokensBefore ?? conv.tokens,
+              tokensAfter: data.tokensAfter,
+              provider: data.providerLabel,
+              elapsed: Date.now() - sessionStart,
+            },
+          });
+        }
+      } catch (err) {
+        if (isDaemonUnreachableError(err)) {
+          // The daemon is gone, not just this session's compaction: stopping
+          // now (rather than retrying with a bounded backoff) is the simpler
+          // correct move, because replay runs are already resumable — the
+          // manifest/ledger let a plain rerun pick up exactly where this one
+          // stopped, so there is no state to preserve by waiting in-process.
+          const errMsg = err instanceof Error ? err.message : "unknown error";
+          console.log(" stopped (daemon unreachable)");
+          console.error(
+            `  ⚠️ the daemon is unreachable (${errMsg}); stopping instead of failing the remaining sessions. ` +
+            `Rerun the same \`lcm compact\` command to resume where this run left off.`,
+          );
+          daemonUnreachable = true;
+          onProgress?.({ current: undefined });
+          break;
+        }
+        if (isConnectionDroppedError(err) && !(await client.health())) {
+          // A mid-flight socket drop is ambiguous on its own: the daemon may
+          // have just died, or it may be alive but wedged (its event loop
+          // blocked on a slow query, say) and RSTing every request it cannot
+          // service, /health included. The probe resolves that — no answer
+          // means treat it exactly like a refused connection, for the same
+          // reason: waiting in-process would only retry against a daemon that
+          // cannot service the retry either.
+          const errMsg = err instanceof Error ? err.message : "unknown error";
+          console.log(" stopped (daemon not answering)");
+          console.error(
+            `  ⚠️ the daemon is not answering — down or unresponsive (${errMsg}); stopping instead of failing the remaining sessions. ` +
+            `Rerun the same \`lcm compact\` command to resume where this run left off.`,
+          );
+          daemonUnreachable = true;
+          onProgress?.({ current: undefined });
+          break;
+        }
+        const errMsg = err instanceof Error ? err.message : "unknown error";
+        let chainNote = "";
+        let recoveredTokensAfter: number | undefined;
+        if (opts.replay) {
+          // The chain follows what was persisted: when the client merely gave up
+          // (timeout/abort) the daemon may have stored the summary anyway, so
+          // re-read it; when nothing is stored yet keep the previous link. A real
+          // daemon failure breaks the chain at this link.
+          const gaveUp = isClientGaveUpError(err);
+          const recovered = gaveUp
+            ? await loadLatestSessionSummary({ cwd: conv.cwd, paths: opts.paths, sessionId: conv.sessionId, notBefore: compactStartedAt })
+            : null;
+          if (recovered) {
+            previousSummaryByCwd.set(conv.cwd, recovered.content);
+            const run = replayRuns?.get(conv.cwd);
+            if (run) {
+              recordReplayProgress({
+                cwd: conv.cwd,
+                paths: opts.paths,
+                runId: run.runId,
+                sessionId: conv.sessionId,
+                position: run.positions.get(conv.sessionId) ?? 0,
+                contentFingerprint: fingerprintStats(conv.sourceMessages, conv.sourceTokens),
+                summaryId: recovered.summaryId,
+                outcome: "compacted",
+                model: opts.replayModel ?? null,
+              });
+            }
+            // The ledger records this as compacted, so the run summary must
+            // count it too — otherwise ledger and summary disagree.
+            compacted++;
+            messagesIn += conv.messages;
+            // recovered.sourceMessageTokenCount is only the tokens folded into this
+            // one summary, not the conversation's total context before compaction;
+            // conv.tokens (raw_tokens) is the same proxy used for tokensBefore on
+            // the success path above.
+            tokensIn += conv.tokens;
+            tokensOut += recovered.contextTokenCount;
+            recoveredTokensAfter = recovered.contextTokenCount;
+            chainNote = "; summary was stored, chain continues";
+          } else if (gaveUp) {
+            chainNote = "; no summary found, chain skips this session";
+          } else {
+            previousSummaryByCwd.set(conv.cwd, undefined);
+          }
+        }
+        doneCount++;
+        console.log(` FAILED (${errMsg}${chainNote})`);
+        progressErrors.push({ sessionId: conv.sessionId, message: `${errMsg}${chainNote}` });
         onProgress?.({
           completed: doneCount,
           messagesIn,
           tokensIn,
           tokensOut,
           current: undefined,
-          lastResult: {
-            sessionId: conv.sessionId,
-            messages: conv.messages,
-            tokensBefore: data.tokensBefore ?? conv.tokens,
-            tokensAfter: data.tokensAfter,
-            provider: data.providerLabel,
-            elapsed: Date.now() - sessionStart,
-          },
+          errors: progressErrors,
+          lastResult: { sessionId: conv.sessionId, messages: conv.messages, tokensBefore: conv.tokens, tokensAfter: recoveredTokensAfter, elapsed: Date.now() - sessionStart },
         });
+      } finally {
+        releaseInFlight?.();
       }
-    } catch (err) {
-      if (isDaemonUnreachableError(err)) {
-        // The daemon is gone, not just this session's compaction: stopping
-        // now (rather than retrying with a bounded backoff) is the simpler
-        // correct move, because replay runs are already resumable — the
-        // manifest/ledger let a plain rerun pick up exactly where this one
-        // stopped, so there is no state to preserve by waiting in-process.
-        const errMsg = err instanceof Error ? err.message : "unknown error";
-        console.log(" stopped (daemon unreachable)");
-        console.error(
-          `  ⚠️ the daemon is unreachable (${errMsg}); stopping instead of failing the remaining sessions. ` +
-          `Rerun the same \`lcm compact\` command to resume where this run left off.`,
-        );
-        daemonUnreachable = true;
-        onProgress?.({ current: undefined });
-        break;
-      }
-      if (isConnectionDroppedError(err) && !(await client.health())) {
-        // A mid-flight socket drop is ambiguous on its own: the daemon may
-        // have just died, or it may be alive but wedged (its event loop
-        // blocked on a slow query, say) and RSTing every request it cannot
-        // service, /health included. The probe resolves that — no answer
-        // means treat it exactly like a refused connection, for the same
-        // reason: waiting in-process would only retry against a daemon that
-        // cannot service the retry either.
-        const errMsg = err instanceof Error ? err.message : "unknown error";
-        console.log(" stopped (daemon not answering)");
-        console.error(
-          `  ⚠️ the daemon is not answering — down or unresponsive (${errMsg}); stopping instead of failing the remaining sessions. ` +
-          `Rerun the same \`lcm compact\` command to resume where this run left off.`,
-        );
-        daemonUnreachable = true;
-        onProgress?.({ current: undefined });
-        break;
-      }
-      const errMsg = err instanceof Error ? err.message : "unknown error";
-      let chainNote = "";
-      let recoveredTokensAfter: number | undefined;
-      if (opts.replay) {
-        // The chain follows what was persisted: when the client merely gave up
-        // (timeout/abort) the daemon may have stored the summary anyway, so
-        // re-read it; when nothing is stored yet keep the previous link. A real
-        // daemon failure breaks the chain at this link.
-        const gaveUp = isClientGaveUpError(err);
-        const recovered = gaveUp
-          ? await loadLatestSessionSummary({ cwd: conv.cwd, paths: opts.paths, sessionId: conv.sessionId, notBefore: compactStartedAt })
-          : null;
-        if (recovered) {
-          previousSummaryByCwd.set(conv.cwd, recovered.content);
-          const run = replayRuns?.get(conv.cwd);
-          if (run) {
-            recordReplayProgress({
-              cwd: conv.cwd,
-              paths: opts.paths,
-              runId: run.runId,
-              sessionId: conv.sessionId,
-              position: run.positions.get(conv.sessionId) ?? 0,
-              contentFingerprint: fingerprintStats(conv.sourceMessages, conv.sourceTokens),
-              summaryId: recovered.summaryId,
-              outcome: "compacted",
-              model: opts.replayModel ?? null,
-            });
-          }
-          // The ledger records this as compacted, so the run summary must
-          // count it too — otherwise ledger and summary disagree.
-          compacted++;
-          messagesIn += conv.messages;
-          // recovered.sourceMessageTokenCount is only the tokens folded into this
-          // one summary, not the conversation's total context before compaction;
-          // conv.tokens (raw_tokens) is the same proxy used for tokensBefore on
-          // the success path above.
-          tokensIn += conv.tokens;
-          tokensOut += recovered.contextTokenCount;
-          recoveredTokensAfter = recovered.contextTokenCount;
-          chainNote = "; summary was stored, chain continues";
-        } else if (gaveUp) {
-          chainNote = "; no summary found, chain skips this session";
-        } else {
-          previousSummaryByCwd.set(conv.cwd, undefined);
-        }
-      }
-      doneCount++;
-      console.log(` FAILED (${errMsg}${chainNote})`);
-      progressErrors.push({ sessionId: conv.sessionId, message: `${errMsg}${chainNote}` });
-      onProgress?.({
-        completed: doneCount,
-        messagesIn,
-        tokensIn,
-        tokensOut,
-        current: undefined,
-        errors: progressErrors,
-        lastResult: { sessionId: conv.sessionId, messages: conv.messages, tokensBefore: conv.tokens, tokensAfter: recoveredTokensAfter, elapsed: Date.now() - sessionStart },
-      });
-    } finally {
-      releaseInFlight?.();
     }
-  }
+
+  });
 
   if (!opts.dryRun && !daemonUnreachable) {
     if (tokensIn > 0) {

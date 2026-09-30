@@ -3,7 +3,7 @@ import { acceptSummaryText, SummaryRejectedError } from "./summary-rejection.js"
 
 /**
  * How a link reaches its model, which decides what counts as "try the next one":
- * - `session`: the live session's own client, through the function-hooks module.
+ * - `session`: an interactive client, serving its own session or an explicit worker pool.
  * - `http`: an OpenAI-compatible or Anthropic endpoint, through its client library.
  * - `process`: a CLI run as a child process, authenticated by its own login.
  */

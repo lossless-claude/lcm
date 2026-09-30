@@ -333,15 +333,16 @@ type SummaryJob = {
   system: string;
   prompt: string;
   maxTokens: number;
+  pool?: true;
 };
 type SummaryAnswer = {
   text: string;
-  providerId: "session:haiku" | "session:fork";
+  providerId: "session:haiku" | "session:fork" | "session-pool:haiku" | "session-pool:sonnet";
   usage: { input_tokens: number; output_tokens: number; estimated: boolean };
   priorUsage?: UsageAttempt[];
 };
 type UsageAttempt = {
-  providerId: "session:haiku" | "session:fork";
+  providerId: "session:haiku" | "session:fork" | "session-pool:haiku" | "session-pool:sonnet";
   usage: { input_tokens: number; output_tokens: number; estimated: boolean };
   /** Whether this call failed to provide a usable answer. */
   failed?: boolean;
@@ -362,15 +363,18 @@ function summaryDelay($: EngineInterface, ms: number): Promise<void> {
   return new Promise((resolve) => { $.clock.after(ms, resolve); });
 }
 
-async function completeSummary($: EngineInterface, job: SummaryJob, remainingTokens: number): Promise<SummaryAnswer> {
+type WorkerModel = "haiku" | "sonnet";
+
+async function completeSummary($: EngineInterface, job: SummaryJob, remainingTokens: number, workerModel?: WorkerModel): Promise<SummaryAnswer> {
+  const providerId = workerModel ? `session-pool:${workerModel}` as const : "session:haiku";
   const result = await $.model.complete({
-    model: "haiku", system: job.system, prompt: job.prompt, maxTokens: Math.min(job.maxTokens, remainingTokens),
+    model: workerModel ?? "haiku", system: job.system, prompt: job.prompt, maxTokens: Math.min(job.maxTokens, remainingTokens),
   });
   // Earlier engine builds returned the text directly; current builds return a
   // discriminated result and do not reject when the provider cannot answer.
   if (typeof result !== "string" && !result.isAnswered) {
     const failure = new Error(result.reason) as SummaryFailure;
-    failure.usageAttempts = [{ providerId: "session:haiku", usage: {
+    failure.usageAttempts = [{ providerId, usage: {
       input_tokens: result.usage.input_tokens,
       output_tokens: result.usage.output_tokens, estimated: false,
     }, failed: true }];
@@ -383,7 +387,7 @@ async function completeSummary($: EngineInterface, job: SummaryJob, remainingTok
   if (typeof text !== "string") {
     const failure = new Error("model.complete: answer text was not a string") as SummaryFailure;
     if (typeof result !== "string") {
-      failure.usageAttempts = [{ providerId: "session:haiku", usage: {
+      failure.usageAttempts = [{ providerId, usage: {
         input_tokens: result.usage.input_tokens,
         output_tokens: result.usage.output_tokens, estimated: false,
       }, failed: true }];
@@ -397,7 +401,7 @@ async function completeSummary($: EngineInterface, job: SummaryJob, remainingTok
     : { input_tokens: result.usage.input_tokens,
         output_tokens: result.usage.output_tokens, estimated: false };
   return {
-    text: trimmed, providerId: "session:haiku",
+    text: trimmed, providerId,
     usage,
   };
 }
@@ -450,9 +454,9 @@ type PollOutcome =
   | { job: SummaryJob }
   | { wait: number; shortPoll?: true };
 
-function fetchNextJob($: EngineInterface, { port, token }: HostEnv, sessionId: string, shortPoll: boolean) {
+function fetchNextJob($: EngineInterface, { port, token }: HostEnv, sessionId: string, shortPoll: boolean, worker = false) {
   return $.http.fetch(
-    `http://127.0.0.1:${port}/summarize-jobs/next?session_id=${encodeURIComponent(sessionId)}${shortPoll ? "&wait_ms=0" : ""}`,
+    `http://127.0.0.1:${port}/summarize-jobs/next?${worker ? "worker_id" : "session_id"}=${encodeURIComponent(sessionId)}${shortPoll ? "&wait_ms=0" : ""}`,
     { headers: token ? { authorization: `Bearer ${token}` } : {} },
   );
 }
@@ -472,7 +476,7 @@ function classifyPollResponse($: EngineInterface, status: number): { wait: numbe
 }
 
 async function nextSummaryJob(
-  $: EngineInterface, sessionId: string, shortPoll: boolean,
+  $: EngineInterface, sessionId: string, shortPoll: boolean, worker = false,
 ): Promise<PollOutcome> {
   let job: SummaryJob | undefined;
   let startedAt = Date.now();
@@ -481,7 +485,7 @@ async function nextSummaryJob(
     const host = await readHostEnv($);
     // Timed from the request alone: a slow host-environment read is not the daemon's wait.
     startedAt = Date.now();
-    response = await fetchNextJob($, host, sessionId, shortPoll);
+    response = await fetchNextJob($, host, sessionId, shortPoll, worker);
   } catch (error) {
     // Some hosts cap HTTP request duration below the daemon's 25-second hold.
     if (isDaemonUnreachableError(error, startedAt)) {
@@ -498,7 +502,7 @@ async function nextSummaryJob(
     return { wait: POLL_BACKOFF_MS, shortPoll: true };
   }
   // Do not run a prompt belonging to another session, even on a malformed response.
-  if (!job || job.session_id !== sessionId) {
+  if (!job || (worker ? job.pool !== true : job.pool === true || job.session_id !== sessionId)) {
     $.ui.log("[lcm] discarded summary job for a different session");
     return { wait: POLL_BACKOFF_MS };
   }
@@ -508,20 +512,21 @@ async function nextSummaryJob(
 type SummaryBudget = { spent: number; cap: number };
 
 async function postSummaryAnswer($: EngineInterface, job: SummaryJob, route: string, body: unknown): Promise<void> {
+  const sessionId = job.pool ? await $.session.id() : job.session_id;
   try {
     const outcome = await postDaemonOutcome($, route, body);
-    noteHook(job.session_id, "session.start", "summary-answer", "delivery", ...delivery(outcome));
+    noteHook(sessionId, "session.start", "summary-answer", "delivery", ...delivery(outcome));
   } catch (error) {
-    noteHook(job.session_id, "session.start", "summary-answer", "delivery", "unconfirmed", "transport");
+    noteHook(sessionId, "session.start", "summary-answer", "delivery", "unconfirmed", "transport");
     throw error;
   } finally {
-    await flushHookObservations($, job.session_id);
+    await flushHookObservations($, sessionId);
   }
 }
 
 /** Answers one job. Returns the output tokens it spent, or null when the cap was hit. */
 async function serveSummaryJob(
-  $: EngineInterface, job: SummaryJob, { spent, cap }: SummaryBudget,
+  $: EngineInterface, job: SummaryJob, { spent, cap }: SummaryBudget, workerModel?: WorkerModel,
 ): Promise<number | null> {
   const route = `/summarize-jobs/${encodeURIComponent(job.id)}`;
   if (spent >= cap) {
@@ -530,7 +535,8 @@ async function serveSummaryJob(
   }
   let answer: SummaryAnswer;
   try {
-    answer = await answerSummary($, job, cap - spent);
+    answer = workerModel ? await completeSummary($, job, cap - spent, workerModel)
+      : await answerSummary($, job, cap - spent);
   } catch (error) {
     const attempts = (error as SummaryFailure)?.usageAttempts ?? [];
     const used = attempts.reduce((sum, attempt) => sum + attempt.usage.output_tokens, 0);
@@ -557,21 +563,45 @@ async function serveSummaryJob(
 }
 
 /** One request at a time also serializes jobs from concurrent daemon compactions. */
-async function pollSummaries($: EngineInterface, cap: number): Promise<void> {
+async function pollSummaries($: EngineInterface, configuredCap: number): Promise<void> {
+  let cap = configuredCap;
+  let worker = false;
+  let workerModel: WorkerModel | undefined;
+  try { worker = await $.env.get("LCM_SUMMARIZE_WORKER") === "1"; }
+  catch { /* Older hosts without env.get retain normal-session serving. */ }
+  if (worker) {
+    const model = await $.env.get("LCM_SUMMARIZE_WORKER_MODEL") ?? "haiku";
+    if (model !== "haiku" && model !== "sonnet") {
+      $.ui.log("[lcm] worker model must be haiku or sonnet; worker stopped");
+      return;
+    }
+    workerModel = model;
+    const configuredWorkerCap = await $.env.get("LCM_SUMMARIZE_WORKER_MAX_OUTPUT_TOKENS");
+    if (configuredWorkerCap !== undefined) {
+      const workerCap = Number(configuredWorkerCap);
+      if (!Number.isSafeInteger(workerCap) || workerCap < 0) {
+        $.ui.log("[lcm] worker output cap must be a non-negative integer; worker stopped");
+        return;
+      }
+      cap = workerCap;
+    }
+  }
+  if (cap === 0) return;
   const sessionId = await $.session.id();
   let spent = 0;
   let shortPoll = false;
   while (true) {
     if (shortPoll) await summaryDelay($, SHORT_POLL_PAUSE_MS);
-    const outcome = await nextSummaryJob($, sessionId, shortPoll);
+    const outcome = await nextSummaryJob($, sessionId, shortPoll, worker);
     if ("wait" in outcome) {
       shortPoll = outcome.shortPoll ?? shortPoll;
       if (outcome.wait > 0) await summaryDelay($, outcome.wait);
       continue;
     }
-    const spentNow = await serveSummaryJob($, outcome.job, { spent, cap });
+    const spentNow = await serveSummaryJob($, outcome.job, { spent, cap }, workerModel);
     if (spentNow === null) return;
     spent += spentNow;
+    if (worker && spent >= cap) return;
   }
 }
 
@@ -603,7 +633,7 @@ function registerSessionStart(on: On, summaryCap: number): void {
     // uncompacted (it ended without SessionEnd). The daemon selects, caps and
     // fires the actual compaction requests; this call only triggers it.
     void $.session.cwd().then((cwd) => postDaemon($, "/session-start-compact", { cwd, session_id: sessionId }));
-    if (summaryCap > 0 && !summaryPollerStarted) {
+    if (!summaryPollerStarted) {
       summaryPollerStarted = true;
       void pollSummaries($, summaryCap).catch((error) => {
         $.ui.log(`[lcm] session summarizer stopped: ${String(error)}`);

@@ -9,6 +9,7 @@ import { request as httpRequest } from "node:http";
 import { Buffer } from "node:buffer";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { pathToFileURL } from "node:url";
 
 const DEFAULT_PORT = 3737;
 const DEFAULT_TIMEOUT_MS = 1_500;
@@ -49,6 +50,10 @@ export interface HookContext {
   cwd?: string;
   hasUI?: boolean;
   model?: unknown;
+  modelRegistry?: {
+    getAll: () => Array<{ id: string; provider: string }>;
+    getApiKey: (model: unknown) => Promise<string | undefined>;
+  };
   sessionManager?: {
     getSessionId?: () => string | undefined;
     getSessionFile?: () => string | undefined;
@@ -86,6 +91,8 @@ export interface PostOptions {
 }
 
 export interface TransportRequest {
+  method?: "GET" | "POST";
+  signal?: AbortSignal;
   path: string;
   body: Record<string, unknown>;
   port: number;
@@ -199,20 +206,24 @@ function clearTimer(timer: ReturnType<typeof setTimeout>): void {
 const nodeTransport: Transport = (request) => new Promise<unknown | undefined>((resolve) => {
   let json: string;
   try {
-    json = JSON.stringify(request.body);
+    json = request.method === "GET" ? "" : JSON.stringify(request.body);
   } catch {
     resolve(undefined);
     return;
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), request.timeoutMs);
+  const abort = () => controller.abort();
+  request.signal?.addEventListener("abort", abort, { once: true });
+  if (request.signal?.aborted) controller.abort();
+  const timeout = setTimeout(abort, request.timeoutMs);
   timeout.unref?.();
   let settled = false;
   const finish = (value: unknown | undefined): void => {
     if (settled) return;
     settled = true;
     clearTimer(timeout);
+    request.signal?.removeEventListener("abort", abort);
     resolve(value);
   };
 
@@ -222,7 +233,7 @@ const nodeTransport: Transport = (request) => new Promise<unknown | undefined>((
       hostname: "127.0.0.1",
       port: request.port,
       path: request.path,
-      method: "POST",
+      method: request.method ?? "POST",
       headers: {
         "Content-Type": "application/json",
         "Content-Length": Buffer.byteLength(json),
@@ -261,6 +272,7 @@ const nodeTransport: Transport = (request) => new Promise<unknown | undefined>((
     req.destroy(new Error("daemon request timed out"));
   };
   controller.signal.addEventListener("abort", onAbort, { once: true });
+  if (controller.signal.aborted) onAbort();
   req.on("error", () => finish(undefined));
   req.setTimeout(request.timeoutMs, () => controller.abort());
   if (request.fireAndForget) {
@@ -648,10 +660,97 @@ function contextFromResponse(response: unknown): string | undefined {
   return response.context;
 }
 
+type WorkerCompletion = (
+  model: unknown,
+  context: { systemPrompt: string; messages: { role: "user"; content: string; timestamp: number }[] },
+  options: { apiKey: string; maxTokens: number; signal: AbortSignal },
+) => Promise<{ content: { type: string; text?: string }[]; usage: { input: number; output: number }; stopReason: string }>;
+
+const hostWorkerCompletion: WorkerCompletion = async (model, context, options) => {
+  // OMP resolves this host-owned SDK when it loads the installed hook.
+  const packageName = "@oh-my-pi/pi-ai";
+  // Installed hooks live away from OMP's node_modules; resolve from its entrypoint.
+  const entrypoint = process.argv[1];
+  const bun = (globalThis as unknown as { Bun?: { resolveSync: (name: string, from: string) => string } }).Bun;
+  if (!bun || !entrypoint) throw new Error("OMP worker requires the Bun host resolver");
+  const sdkPath = bun.resolveSync(packageName, entrypoint);
+  const sdk = await import(sdkPath.startsWith("/") ? pathToFileURL(sdkPath).href : sdkPath);
+  return sdk.complete(model, context, options);
+};
+let workerCompletion = hostWorkerCompletion;
+
+export function __setWorkerCompletionForTests(complete?: WorkerCompletion): void {
+  workerCompletion = complete ?? hostWorkerCompletion;
+}
+
+function workerDelay(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => { clearTimeout(timer); signal.removeEventListener("abort", done); resolve(); };
+    const timer = setTimeout(done, 2_000);
+    timer.unref?.();
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
+
+async function pollWorkerJob(workerId: string, signal: AbortSignal): Promise<unknown> {
+  const daemon = resolveDaemon();
+  return activeTransport({
+    path: `/summarize-jobs/next?worker_id=${encodeURIComponent(workerId)}`,
+    method: "GET", body: {}, port: daemon.port, token: daemon.token,
+    timeoutMs: 30_000, fireAndForget: false, signal,
+  });
+}
+
+async function runOmpWorker(ctx: HookContext, workerId: string, signal: AbortSignal): Promise<void> {
+  const alias = process.env.LCM_SUMMARIZE_WORKER_MODEL ?? "haiku";
+  const cap = Number(process.env.LCM_SUMMARIZE_WORKER_MAX_OUTPUT_TOKENS ?? "50000");
+  if (alias !== "haiku" && alias !== "sonnet") throw new Error("worker model must be haiku or sonnet");
+  if (!Number.isSafeInteger(cap) || cap < 0) throw new Error("worker output cap must be a non-negative integer");
+  if (cap === 0) return;
+  const registry = ctx.modelRegistry;
+  const model = registry?.getAll().filter((candidate) =>
+    candidate.provider === "anthropic" && candidate.id.includes(alias))
+    .sort((left, right) => right.id.localeCompare(left.id, "en", { numeric: true }))[0];
+  if (!model || !registry) throw new Error(`no ${alias} model in the OMP model registry`);
+  const apiKey = await registry.getApiKey(model);
+  if (!apiKey) throw new Error(`no OMP credentials for ${model.provider}`);
+  let spent = 0;
+  while (!signal.aborted && spent < cap) {
+    const response = await pollWorkerJob(workerId, signal).catch(() => undefined);
+    const job = isRecord(response) && isRecord(response.job) ? response.job : undefined;
+    if (signal.aborted) return;
+    if (!job || job.pool !== true || typeof job.id !== "string" || typeof job.system !== "string" ||
+        typeof job.prompt !== "string" || !Number.isSafeInteger(job.maxTokens) || Number(job.maxTokens) < 1) {
+      await workerDelay(signal);
+      continue;
+    }
+    const remaining = cap - spent;
+    let answer: Record<string, unknown>;
+    try {
+      const result = await workerCompletion(model, {
+        systemPrompt: job.system, messages: [{ role: "user", content: job.prompt, timestamp: Date.now() }],
+      }, { apiKey, maxTokens: Math.min(Number(job.maxTokens), remaining), signal });
+      spent += result.usage.output;
+      const usage = { input_tokens: result.usage.input, output_tokens: result.usage.output, estimated: false };
+      const providerId = `session-pool:${alias}`;
+      const text = result.content.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n").trim();
+      const failed = !text || result.stopReason === "error" || result.stopReason === "aborted";
+      answer = spent > cap || failed
+        ? { error: spent > cap ? "spend cap" : "empty or failed completion", usageAttempts: [{ providerId, usage, failed }] }
+        : { text, providerId, usage };
+    } catch (error) {
+      answer = { error: error instanceof Error ? error.message : String(error) };
+    }
+    await post(`/summarize-jobs/${encodeURIComponent(job.id)}`, answer, { timeoutMs: 5_000 });
+  }
+}
+
 /** Register OMP's hooks while making each host callback fail-open. */
 export default function lcm(pi: HookApi): void {
   let restoreContext = "";
   let firstPrompt = true;
+  let workerController: AbortController | undefined;
   type Observation = { hook: string; operation: string; kind: "delivery" | "execution"; status: string; reason: string; count: number };
   const observations = new Map<string, { cwd: string; counts: Map<string, Observation>; failures: { hook: string; operation: string; code: string; at: number }[]; seq: number; truncated: boolean; lastFlush: number }>();
   const generation = Date.now();
@@ -764,6 +863,11 @@ export default function lcm(pi: HookApi): void {
       note(ctx, "session_start", "restore", "execution", "deferred", "missing-identity");
       flush(ctx, true);
       return undefined;
+    }
+    if (process.env.LCM_SUMMARIZE_WORKER === "1" && !workerController) {
+      workerController = new AbortController();
+      void runOmpWorker(ctx, identity.sessionId, workerController.signal)
+        .catch((error) => logError(pi, "summarize worker stopped", error));
     }
     const base = identityBody(identity);
     // Capture before restore, and wait for it: restore reads the stored conversation,
@@ -905,6 +1009,7 @@ export default function lcm(pi: HookApi): void {
   });
 
   register("session_shutdown", "session_shutdown", async (_rawEvent, ctx) => {
+    workerController?.abort();
     fireIngest(ctx, "session_shutdown", SHUTDOWN_TIMEOUT_MS);
     return undefined;
   });

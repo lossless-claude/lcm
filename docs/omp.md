@@ -135,3 +135,7 @@ configured with, unless `llm.model` names one. See
 3. A turn captured before a rewind or branch switch abandoned it stays in memory and still matches `lcm search` and `lcm grep`; only turns abandoned before their capture are left out ([#539](https://github.com/lossless-claude/lcm/issues/539)). When a branch abandoned before its capture is later reopened with `/tree`, the session's continuation from it is captured but the branch's earlier turns are not.
 4. Passive learning records the OMP tools translated to extractor shapes; the harness's own memory tools and other non-durable plumbing remain intentionally silent.
 5. `*.jsonl.*.bak` recovery files (OMP falls back to these when a primary session file is missing) are not discovered.
+
+## Summarize worker
+
+Launch a dedicated OMP session with `LCM_SUMMARIZE_WORKER=1` to serve the shared summary pool. The hook uses `ctx.modelRegistry` to select an Anthropic Haiku or Sonnet model and resolve its credentials, then calls the host SDK's `complete` with only the rendered job prompt. OMP's [custom compaction hook example](https://github.com/can1357/oh-my-pi/blob/main/packages/coding-agent/examples/hooks/custom-compaction.ts) establishes this API. No `sendMessage` or session-entry append carries pool content; shutdown aborts the poll and current completion. See [summarize workers](summarize-workers.md) for the per-worker cap and replay commands.

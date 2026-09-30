@@ -30,6 +30,7 @@
     "docs/configuration.md",
     "docs/hook-protocol.md",
     "docs/import.md",
+    "docs/summarize-workers.md",
     "docs/privacy.md",
     "docs/tag-schema.md",
     "docs/vscode-codex.md",

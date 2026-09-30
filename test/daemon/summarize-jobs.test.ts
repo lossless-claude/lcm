@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SummarizeJobStore } from "../../src/daemon/summarize-jobs.js";
+import { POOL_COMPLETION_MS, SummarizeJobStore } from "../../src/daemon/summarize-jobs.js";
 import { createSummarizer } from "../../src/daemon/summarizer.js";
 import { loadDaemonConfig } from "../../src/daemon/config.js";
 import { buildSummaryPrompt } from "../../src/llm/prompt.js";
@@ -42,6 +42,24 @@ describe("session summarize jobs", () => {
     await expect(current).resolves.toMatchObject(input);
   });
 
+  it("claims pool jobs exactly once, with one in flight per worker and no normal-session delivery", async () => {
+    const first = store.nextWorker("worker-1");
+    const second = store.nextWorker("worker-2");
+    const answers = [store.enqueue({ ...input, pool: true }), store.enqueue({ ...input, pool: true, prompt: "second" })];
+    const jobs = await Promise.all([first, second]);
+    expect(new Set(jobs.map((job) => job!.id)).size).toBe(2);
+    expect(jobs.map((job) => job!.prompt)).toEqual(["prompt", "second"]);
+    const third = store.enqueue({ ...input, pool: true, prompt: "third" });
+    await expect(store.nextWorker("worker-1", undefined, false)).resolves.toBeNull();
+    await expect(store.next("one", undefined, false)).resolves.toBeNull();
+    jobs.forEach((job) => store.answer(job!.id, { text: "summary" }));
+    const next = await store.nextWorker("worker-1");
+    expect(next!.prompt).toBe("third");
+    expect(store.answer(jobs[0]!.id, { text: "duplicate" })).toBe("discarded");
+    store.answer(next!.id, { text: "third summary" });
+    await expect(Promise.all([...answers, third])).resolves.toHaveLength(3);
+  });
+
   it("expires queued jobs and removes finished entries after a minute", async () => {
     const pending = store.enqueue(input);
     await vi.advanceTimersByTimeAsync(20_000);
@@ -74,6 +92,33 @@ describe("session summarize jobs", () => {
     const config = loadDaemonConfig("/nonexistent", overrides, {});
     return (await createSummarizer("session", config, store))!;
   }
+
+  it("gives a claimed pool job the completion deadline, so a slow worker answer is still used", async () => {
+    const answer = store.enqueue({ ...input, pool: true });
+    const job = await store.nextWorker("worker-1");
+    await vi.advanceTimersByTimeAsync(POOL_COMPLETION_MS / 3);
+    expect(store.answer(job!.id, { text: "slow summary" })).toBe("accepted");
+    await expect(answer).resolves.toEqual({ text: "slow summary" });
+    const stuck = store.enqueue({ ...input, pool: true, prompt: "stuck" });
+    await store.nextWorker("worker-1");
+    await vi.advanceTimersByTimeAsync(POOL_COMPLETION_MS);
+    await expect(stuck).resolves.toEqual({ error: "job timeout" });
+  });
+
+  it("routes session-pool to any worker and falls along the chain when nobody claims it", async () => {
+    const config = loadDaemonConfig("/nonexistent", { llm: { provider: "session", fallbackProvider: "openai" } }, {});
+    const summarize = (await createSummarizer("session-pool", config, store))!;
+    const pending = summarize("foreign conversation", false, { sessionId: "closed-session", isCondensed: true });
+    const job = await store.nextWorker("worker");
+    expect(job).toMatchObject({ session_id: "closed-session", pool: true, kind: "condensed" });
+    store.answer(job!.id, { text: "worker summary", providerId: "session-pool:sonnet" });
+    await expect(pending).resolves.toBe("worker summary");
+    fallback.mockResolvedValueOnce("fallback summary");
+    const unclaimed = summarize("next conversation", false, { sessionId: "another-closed-session" });
+    await vi.advanceTimersByTimeAsync(20_000);
+    await expect(unclaimed).resolves.toBe("fallback summary");
+    expect(fallback).toHaveBeenCalledOnce();
+  });
 
   it.each([false, true])("renders prompts and records the answering session model (condensed=%s)", async (isCondensed) => {
     const summarize = await sessionSummarizer();

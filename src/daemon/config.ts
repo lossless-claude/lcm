@@ -13,7 +13,7 @@ export interface SecurityConfig {
   notify_on_filter?: boolean;
 }
 
-export type SummaryProvider = "auto" | "claude-process" | "codex-process" | "copilot-process" | "omp-process" | "anthropic" | "openai" | "disabled" | "session";
+export type SummaryProvider = "auto" | "claude-process" | "codex-process" | "copilot-process" | "omp-process" | "anthropic" | "openai" | "disabled" | "session" | "session-pool";
 
 export type DaemonConfig = {
   version: number;
@@ -67,7 +67,7 @@ export type DaemonConfig = {
     /** A provider type or `session`/`auto`/`disabled`; with `providers`, an endpoint name. */
     provider: SummaryProvider | (string & {});
     /** Flat form only: the provider type the session provider falls back to. */
-    fallbackProvider?: Exclude<SummaryProvider, "session">;
+    fallbackProvider?: Exclude<SummaryProvider, "session" | "session-pool">;
     model: string; apiKey?: string; baseURL: string; reasoning?: Record<string, unknown>;
     /** Named endpoints; when present, the flat connection fields above must be unset. */
     providers?: Record<string, EndpointConfig>;
@@ -189,7 +189,7 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
   if (merged.llm.apiKey) merged.llm.apiKey = merged.llm.apiKey.replace(/\$\{(\w+)\}/g, (_: string, k: string) => e[k] ?? "");
 
   // Env var override: LCM_SUMMARY_PROVIDER takes precedence over config
-  const VALID_PROVIDERS = new Set(["auto", "claude-process", "codex-process", "copilot-process", "omp-process", "anthropic", "openai", "disabled", "session"]);
+  const VALID_PROVIDERS = new Set(["auto", "claude-process", "codex-process", "copilot-process", "omp-process", "anthropic", "openai", "disabled", "session", "session-pool"]);
   if (e.LCM_SUMMARY_PROVIDER && !namedEndpoints) {
     if (!VALID_PROVIDERS.has(e.LCM_SUMMARY_PROVIDER)) {
       throw new Error(
@@ -208,9 +208,9 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
   }
   const fallbackProvider: unknown = merged.llm.fallbackProvider;
   if (fallbackProvider !== undefined && (
-    typeof fallbackProvider !== "string" || fallbackProvider === "session" || !VALID_PROVIDERS.has(fallbackProvider)
+    typeof fallbackProvider !== "string" || (fallbackProvider === "session" || fallbackProvider === "session-pool") || !VALID_PROVIDERS.has(fallbackProvider)
   )) {
-    throw new Error("[lcm] Invalid llm.fallbackProvider. Expected a summary provider other than 'session'.");
+    throw new Error("[lcm] Invalid llm.fallbackProvider. Expected a summary provider other than 'session' or 'session-pool'.");
   }
 
   // Migrate old config names to new names for backward compatibility
@@ -234,7 +234,7 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
   // Session fallbacks use the same credentials as directly selected providers.
   // Named endpoints resolved their own keys above.
   const usesAnthropic = !namedEndpoints && (merged.llm.provider === "anthropic" ||
-    (merged.llm.provider === "session" && merged.llm.fallbackProvider === "anthropic"));
+    (["session", "session-pool"].includes(merged.llm.provider) && merged.llm.fallbackProvider === "anthropic"));
   if (!merged.llm.apiKey && usesAnthropic && e.ANTHROPIC_API_KEY) {
     merged.llm.apiKey = e.ANTHROPIC_API_KEY;
   }
