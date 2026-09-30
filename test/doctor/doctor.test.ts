@@ -88,6 +88,7 @@ it("doctor identifies copied-claim recovery with a short id and cwd for reviewin
   const { SessionCapture } = await import("../../src/capture.js");
   const { ScrubEngine } = await import("../../src/scrub.js");
   const { parseClaudeTranscriptRecord } = await import("../../src/transcript.js");
+  const { WorkerStore } = await import("../../src/store/worker-store.js");
   const home = mkdtempSync(join(tmpdir(), "lcm-claim-doctor-"));
   const cwd = process.cwd(); const paths = createLcmPaths(home);
   const sessionId = "copied-claim-full-session-id-685";
@@ -99,9 +100,10 @@ it("doctor identifies copied-claim recovery with a short id and cwd for reviewin
       runLcmMigrations(db);
       const capture = new SessionCapture(db, projectId(cwd), new ScrubEngine([], []), paths);
       await capture.write({ sessionId, cwd, messages: [{ role: "user", content: "retained history", tokenCount: 1 }] });
+      new WorkerStore(db).recordIssuedJob("job-issued");
       await capture.write({ sessionId, cwd, messages: [
         { message: { role: "assistant", content: [{ type: "tool_use", id: "claim", name: "lcm_summarize_claim", input: {} }] } },
-        { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "claim", content: JSON.stringify({ job: { prompt: "payload", system: "system" } }) }] } },
+        { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "claim", content: JSON.stringify({ job: { id: "job-issued", prompt: "payload", system: "system" } }) }] } },
       ].map(record => parseClaudeTranscriptRecord(JSON.stringify(record)).message!) });
       expect(db.prepare("SELECT content FROM messages").all()).toEqual([{ content: "retained history" }]);
     } finally { closeLcmConnection(path); }

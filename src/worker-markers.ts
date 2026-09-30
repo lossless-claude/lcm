@@ -25,16 +25,22 @@ function invokesSummarizeClaim(command: string): boolean {
   return false;
 }
 
-export function containsWorkerPayload(output: unknown): boolean {
+/**
+ * The ids of the jobs a successful claim result carries. Only the id makes it a payload: the
+ * daemon records every job it issues, so output merely shaped like a job is not one.
+ */
+export function workerPayloadJobIds(output: unknown): string[] {
   if (typeof output === "string") {
-    try { return containsWorkerPayload(JSON.parse(output)); } catch { return false; }
+    try { return workerPayloadJobIds(JSON.parse(output)); } catch { return []; }
   }
-  if (Array.isArray(output)) return output.some(containsWorkerPayload);
-  if (!output || typeof output !== "object") return false;
+  if (Array.isArray(output)) return output.flatMap(workerPayloadJobIds);
+  if (!output || typeof output !== "object") return [];
   const object = output as Record<string, unknown>;
-  if (object.isError === true || object.is_error === true || typeof object.error === "string") return false;
+  if (object.isError === true || object.is_error === true || typeof object.error === "string") return [];
   const job = object.job as Record<string, unknown> | undefined;
-  if (job && typeof job.prompt === "string" && typeof job.system === "string") return true;
-  return typeof object.text === "string" && containsWorkerPayload(object.text) ||
-    Array.isArray(object.content) && containsWorkerPayload(object.content);
+  if (job && typeof job.id === "string" && job.id && typeof job.prompt === "string" && typeof job.system === "string") return [job.id];
+  return [
+    ...(typeof object.text === "string" ? workerPayloadJobIds(object.text) : []),
+    ...(Array.isArray(object.content) ? workerPayloadJobIds(object.content) : []),
+  ];
 }

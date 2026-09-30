@@ -934,6 +934,10 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
   db.exec(`CREATE TABLE IF NOT EXISTS worker_claim_markers (
     session_id TEXT NOT NULL, call_id TEXT NOT NULL, PRIMARY KEY(session_id, call_id)
   );`);
+  // Jobs handed to this project's workers: only their ids make a claim result a copied claim.
+  db.exec(`CREATE TABLE IF NOT EXISTS worker_issued_jobs (
+    job_id TEXT PRIMARY KEY, issued_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );`);
 
   // A worker's exclusion is permanent; only its admission can be revoked.
   db.exec(`CREATE TABLE IF NOT EXISTS summarize_workers (

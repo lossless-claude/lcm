@@ -1,6 +1,13 @@
 import { realpathSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { clearConversationForRebuild } from "../claude-rebuild.js";
+import type { WorkerPayload } from "../transcript.js";
+
+/**
+ * How long an issued job id still marks a copied claim: past Claude Code's default 30-day
+ * transcript cleanup, so a resumed or forked worker transcript is recognized while it exists.
+ */
+export const ISSUED_JOB_RETENTION_DAYS = 90;
 
 export { WORKER_WARNING } from "../worker-warning.js";
 export type WorkerEnrollment = {
@@ -99,16 +106,27 @@ export class WorkerStore {
     }
   }
 
-  /** `record` keeps this batch's claims for a later payload; only the session's own transcript records. */
-  detectCopiedClaim(sessionId: string, messages: Array<{ workerClaims?: string[]; workerPayloads?: string[] }>, record = true): boolean {
+  /**
+   * A copied claim is a claim call whose paired result carries a job this daemon issued.
+   * `record` keeps this batch's claims for a later result; only the session's own transcript records.
+   */
+  detectCopiedClaim(sessionId: string, messages: Array<{ workerClaims?: string[]; workerPayloads?: WorkerPayload[] }>, record = true): boolean {
     const claims = new Set(messages.flatMap(message => message.workerClaims ?? []));
     if (record) for (const id of claims) {
       this.db.prepare("INSERT OR IGNORE INTO worker_claim_markers(session_id, call_id) VALUES (?, ?)").run(sessionId, id);
     }
-    for (const message of messages) for (const id of message.workerPayloads ?? []) {
-      if (claims.has(id) || this.db.prepare("SELECT 1 FROM worker_claim_markers WHERE session_id = ? AND call_id = ?").get(sessionId, id)) return true;
-    }
-    return false;
+    return messages.some(message => (message.workerPayloads ?? []).some(({ callId, jobId }) => this.issuedJob(jobId) &&
+      (claims.has(callId) || Boolean(this.db.prepare("SELECT 1 FROM worker_claim_markers WHERE session_id = ? AND call_id = ?").get(sessionId, callId)))));
+  }
+
+  /** Records a job handed to a worker, and forgets jobs older than the retention bound. */
+  recordIssuedJob(jobId: string): void {
+    this.db.prepare(`DELETE FROM worker_issued_jobs WHERE issued_at < datetime('now', '-${ISSUED_JOB_RETENTION_DAYS} days')`).run();
+    this.db.prepare("INSERT OR IGNORE INTO worker_issued_jobs(job_id) VALUES (?)").run(jobId);
+  }
+
+  issuedJob(jobId: string): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM worker_issued_jobs WHERE job_id = ?").get(jobId));
   }
 
   /** Caller holds a write transaction; refusal preserves history unless disk discovery permits cleanup. */

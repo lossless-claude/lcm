@@ -77,9 +77,9 @@ native hook requires a fresh session that `isSessionOnDisk()` reports as false;
 resume and clears that retain the id cannot enroll. Finishing or abandonment never
 re-enables capture. Status, doctor and stats show a shortened worker id, enrollment
 state and last activity. A copied successful MCP or CLI claim result carrying a
-job payload stops future capture while preserving already stored history; it never
-authorizes a claim or deletion. A refused claim or bare command invocation does
-not exclude an ordinary session. `lcm doctor` reports copied-claim detection with
+job the daemon issued stops future capture while preserving already stored history;
+it never authorizes a claim or deletion. A refused claim, a bare command invocation,
+or output merely shaped like a job does not exclude an ordinary session. `lcm doctor` reports copied-claim detection with
 the short worker id and cwd so the user can review retained history and decide
 whether to remove it. Only descendants
 discovered on disk under an enrolled worker's own Claude `subagents/` transcript

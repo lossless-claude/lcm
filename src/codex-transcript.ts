@@ -20,7 +20,7 @@ import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { StringDecoder } from "node:string_decoder";
 import { TextDecoder } from "node:util";
-import { isWorkerClaim, containsWorkerPayload } from "./worker-markers.js";
+import { isWorkerClaim, workerPayloadJobIds } from "./worker-markers.js";
 import { estimateTokens } from "./transcript.js";
 import type { ParsedMessage } from "./transcript.js";
 
@@ -143,8 +143,9 @@ function parseCodexToolRecord(payload: CodexResponseItemPayload): ParsedMessage 
     ? payload.output
     : extractCodexText(payload.output as string | CodexContentBlock[] | undefined);
   if (!output.trim()) return null;
-  const workerPayloads = payload.call_id && containsWorkerPayload(output) ? [payload.call_id] : undefined;
-  return { role: "tool", content: output, tokenCount: estimateTokens(output), ...(workerPayloads ? { workerPayloads } : {}) };
+  const callId = payload.call_id;
+  const workerPayloads = callId ? workerPayloadJobIds(output).map(jobId => ({ callId, jobId })) : [];
+  return { role: "tool", content: output, tokenCount: estimateTokens(output), ...(workerPayloads.length ? { workerPayloads } : {}) };
 }
 
 /**

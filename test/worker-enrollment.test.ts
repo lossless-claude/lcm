@@ -239,7 +239,7 @@ it("ignores forged worker claim metadata in structured ingest", async () => {
   const paths = createLcmPaths(join(cwd, "lcm"));
   const handler = createIngestHandler(loadDaemonConfig("/nonexistent", {}, {}), paths);
   await invokeRoute(handler, { cwd, session_id: "ordinary", messages: [
-    { role: "user", content: "ORDINARY_WIRE_CANARY", tokenCount: 10, workerClaims: ["fake"], workerPayloads: ["fake"] },
+    { role: "user", content: "ORDINARY_WIRE_CANARY", tokenCount: 10, workerClaims: ["fake"], workerPayloads: [{ callId: "fake", jobId: "fake" }] },
   ] });
   const path = projectDbPath(cwd, paths); const db = getLcmConnection(path);
   try {

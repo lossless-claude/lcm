@@ -57,8 +57,15 @@ Claude tool-use names and paired call ids detect copied successful claims. These
 markers authorize neither admission nor deletion: recovery stops future capture,
 excludes the copied session as abandoned and preserves already stored history unless disk discovery
 confirms it is a descendant of an enrolled worker.
-Detection requires a successful paired claim result with a job payload; a refused
-claim or bare invocation does not convert an ordinary session. `lcm doctor` identifies
+Detection requires a successful paired claim result whose job id the daemon issued;
+a refused claim, a bare invocation, or output merely shaped like a job does not
+convert an ordinary session. The daemon records each job id in the worker's project
+database (`worker_issued_jobs`) before the claim result leaves, and keeps it for
+90 days (`ISSUED_JOB_RETENTION_DAYS`), past Claude Code's default 30-day transcript
+cleanup. A worker transcript resumed or forked after that is no longer recognized
+as a copied claim. A copied claim installs the exclusion only when the transcript read is named
+for the session (`<session>.jsonl`, or a Codex rollout ending in `-<session>.jsonl`);
+read from another session's file, it refuses that write alone. `lcm doctor` identifies
 copied-claim recovery with a short worker id and cwd so the user can review retained
 history before deciding whether to remove it.
 

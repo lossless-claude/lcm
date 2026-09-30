@@ -1,4 +1,4 @@
-import { isWorkerClaim, containsWorkerPayload } from "./worker-markers.js";
+import { isWorkerClaim, workerPayloadJobIds } from "./worker-markers.js";
 import { readFileSync } from "node:fs";
 
 /** Bump when the Claude parser changes the rows or fields a transcript yields. */
@@ -42,8 +42,11 @@ export interface ParsedMessage {
   tokenCount: number;
   parts?: MessagePart[];
   workerClaims?: string[];
-  workerPayloads?: string[];
+  /** A successful claim's result: the call it answers and the job id it carries. */
+  workerPayloads?: WorkerPayload[];
 }
+
+export type WorkerPayload = { callId: string; jobId: string };
 
 function extractText(content: string | ContentBlock[] | unknown): string {
   if (typeof content === "string") return content;
@@ -200,8 +203,8 @@ export function parseClaudeTranscriptRecord(record: string, toolShape: "current"
     const parts = [...extractSkillParts(blocks), ...extractCommandParts(content)];
     const workerClaims = blocks.filter(block => block.type === "tool_use" && isWorkerClaim(block.name, block.input))
       .map(block => block.id).filter((id): id is string => Boolean(id));
-    const workerPayloads = blocks.filter(block => block.type === "tool_result" && !block.is_error && containsWorkerPayload(block.content))
-      .map(block => block.tool_use_id).filter((id): id is string => Boolean(id));
+    const workerPayloads = blocks.filter(block => block.type === "tool_result" && !block.is_error && block.tool_use_id)
+      .flatMap(block => workerPayloadJobIds(block.content).map(jobId => ({ callId: block.tool_use_id!, jobId })));
     return { message: { role, content, tokenCount: estimateTokens(content), ...(parts.length ? { parts } : {}),
       ...(workerClaims.length ? { workerClaims } : {}), ...(workerPayloads.length ? { workerPayloads } : {}) }, toolUseModels: models };
   } catch {

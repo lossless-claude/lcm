@@ -13,7 +13,7 @@ export function workerBinding(cwd: string, client: string, sessionId: string): s
 }
 
 type Admission = { binding: string; sessionId: string; cwd: string; client: string };
-export async function admitWorker(paths: LcmPaths | undefined, input: Record<string, unknown>, onAdmitted?: (admission: Admission) => void): Promise<Admission> {
+export async function admitWorker(paths: LcmPaths | undefined, input: Record<string, unknown>, onAdmitted?: (admission: Admission, store: WorkerStore) => void): Promise<Admission> {
   const { caller_session_id: sessionId, client, transport } = input;
   const verified = client === "claude" && ["cli", "mcp", "hook"].includes(String(transport)) ||
     client === "codex" && transport === "cli" || client === "omp" && transport === "hook";
@@ -51,7 +51,7 @@ export async function admitWorker(paths: LcmPaths | undefined, input: Record<str
       const store = new WorkerStore(db);
       if (!store.live(sessionId, cwd, String(client))) throw new Error("Use a dedicated live worker session; this admission was revoked");
       store.touch(sessionId);
-      onAdmitted?.({ cwd, sessionId, client: String(client), binding: workerBinding(cwd, String(client), sessionId) });
+      onAdmitted?.({ cwd, sessionId, client: String(client), binding: workerBinding(cwd, String(client), sessionId) }, store);
     }
     finally { closeLcmConnection(dbPath); }
     return { cwd, sessionId, client, binding: workerBinding(cwd, client, sessionId) };

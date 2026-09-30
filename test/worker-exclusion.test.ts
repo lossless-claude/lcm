@@ -25,6 +25,7 @@ describe("permanent worker exclusion", () => {
     runLcmMigrations(db, { claudeProjectsDir: "/nonexistent" });
     capture = new SessionCapture(db, "project", new ScrubEngine([], []));
     workers = new WorkerStore(db);
+    workers.recordIssuedJob("job-issued");
   });
   afterEach(() => db.close());
 
@@ -45,7 +46,7 @@ describe("permanent worker exclusion", () => {
     const before = tables.map(table => db.prepare(`SELECT * FROM ${table}`).all());
     const copied = [
       { message: { role: "assistant", content: [{ type: "tool_use", id: "cleanup", name: "lcm_summarize_claim", input: {} }] } },
-      { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "cleanup", content: JSON.stringify({ job: { prompt: canary, system: "system" } }) }] } },
+      { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "cleanup", content: JSON.stringify({ job: { id: "job-issued", prompt: canary, system: "system" } }) }] } },
     ];
     await capture.write({ sessionId: "worker", messages: copied.map(record => parseClaudeTranscriptRecord(JSON.stringify(record)).message!) });
     expect(workers.live("worker", "/project", "claude")).toBe(false);
@@ -65,10 +66,21 @@ describe("permanent worker exclusion", () => {
     expect((await capture.write({ sessionId: "grandchild", messages, transcriptPath: "/transcripts/old/subagents/workflows/agent-grandchild.jsonl" })).records).toEqual([]);
     expect(db.prepare("SELECT * FROM messages").all()).toEqual([]);
   });
+  it("counts a copied claim only when the daemon issued its job", async () => {
+    const claim = (id: string, jobId: string) => [
+      { message: { role: "assistant", content: [{ type: "tool_use", id, name: "Bash", input: { command: "cat job.json # lcm summarize-claim" } }] } },
+      { message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: JSON.stringify({ job: { id: jobId, prompt: canary, system: "system" } }) }] } },
+    ].map(record => parseClaudeTranscriptRecord(JSON.stringify(record)).message!);
+    expect((await capture.write({ sessionId: "ordinary", messages: claim("lookalike", "never-issued") })).records.length).toBeGreaterThan(0);
+    expect(workers.excluded("ordinary")).toBe(false);
+    expect((await capture.write({ sessionId: "fork", messages: claim("copied", "job-issued") })).records).toEqual([]);
+    expect(workers.excluded("fork")).toBe(true);
+  });
+
   it("detects a copied successful claim by its tool name and paired id, without admitting the fork", async () => {
     const records = [
       { message: { role: "assistant", content: [{ type: "tool_use", id: "claim-1", name: "mcp__lcm__lcm_summarize_claim", input: {} }] } },
-      { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "claim-1", content: JSON.stringify({ job: { prompt: canary, system: "system" } }) }] } },
+      { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "claim-1", content: JSON.stringify({ job: { id: "job-issued", prompt: canary, system: "system" } }) }] } },
     ];
     const copied = records.map(record => parseClaudeTranscriptRecord(JSON.stringify(record)).message!);
     expect((await capture.write({ sessionId: "fork", messages: copied })).records).toEqual([]);
@@ -80,7 +92,7 @@ describe("permanent worker exclusion", () => {
   it("detects a copied Codex CLI claim through the native call id and paired output", async () => {
     const records = [
       { type: "response_item", payload: { type: "function_call", name: "exec_command", call_id: "claim", arguments: JSON.stringify({ cmd: "lcm summarize-claim" }) } },
-      { type: "response_item", payload: { type: "function_call_output", call_id: "claim", output: JSON.stringify({ job: { system: "system", prompt: canary } }) } },
+      { type: "response_item", payload: { type: "function_call_output", call_id: "claim", output: JSON.stringify({ job: { id: "job-issued", system: "system", prompt: canary } }) } },
     ];
     const copied = records.map(record => parseCodexTranscriptRecord(JSON.stringify(record)).message!);
     expect((await capture.write({ sessionId: "codex-fork", messages: copied })).records).toEqual([]);
@@ -91,8 +103,8 @@ describe("permanent worker exclusion", () => {
     const history: Parameters<SessionCapture["write"]>[0]["messages"] = [...messages];
     await capture.write({ sessionId: "ordinary", messages: history });
     for (const result of [{ error: "undeclared worker" }, { job: null },
-      { isError: true, content: [{ type: "text", text: JSON.stringify({ job: { system: "system", prompt: canary } }) }] },
-      { error: "claim refused", job: { system: "system", prompt: canary } }]) {
+      { isError: true, content: [{ type: "text", text: JSON.stringify({ job: { id: "job-issued", system: "system", prompt: canary } }) }] },
+      { error: "claim refused", job: { id: "job-issued", system: "system", prompt: canary } }]) {
       const id = `refused-${JSON.stringify(result)}`;
       const records = client === "claude" ? [
         { message: { role: "assistant", content: [{ type: "tool_use", id, name: "lcm_summarize_claim", input: {} }] } },
@@ -121,7 +133,7 @@ describe("permanent worker exclusion", () => {
   it.each(["lcm summarize-claim", "/opt/bin/lcm summarize-claim", '"/opt/bin/lcm" summarize-claim', "node /opt/package/lcm.js summarize-claim", "node --no-warnings /opt/package/lcm.js summarize-claim"])("detects a copied claim through its invocation: %s", async command => {
     const records = [
       { message: { role: "assistant", content: [{ type: "tool_use", id: "copied", name: "Bash", input: { command } }] } },
-      { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "copied", content: JSON.stringify({ job: { prompt: canary, system: "system" } }) }] } },
+      { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "copied", content: JSON.stringify({ job: { id: "job-issued", prompt: canary, system: "system" } }) }] } },
     ];
     expect((await capture.write({ sessionId: "fork", messages: records.map(record => parseClaudeTranscriptRecord(JSON.stringify(record)).message!) })).records).toEqual([]);
     expect(workers.excluded("fork")).toBe(true);
@@ -132,7 +144,7 @@ describe("permanent worker exclusion", () => {
     const old = await capture.write({ sessionId: "worker", messages });
     await capture.write({ sessionId: "worker", messages: [
       parseClaudeTranscriptRecord(JSON.stringify({ message: { role: "assistant", content: [{ type: "tool_use", id: "late", name: "lcm_summarize_claim", input: {} }] } })).message!,
-      parseClaudeTranscriptRecord(JSON.stringify({ message: { role: "user", content: [{ type: "tool_result", tool_use_id: "late", content: JSON.stringify({ job: { prompt: canary, system: "system" } }) }] } })).message!,
+      parseClaudeTranscriptRecord(JSON.stringify({ message: { role: "user", content: [{ type: "tool_result", tool_use_id: "late", content: JSON.stringify({ job: { id: "job-issued", prompt: canary, system: "system" } }) }] } })).message!,
     ] });
     await expect(capture.summaryStore.insertSummary({ summaryId: "sum_late", conversationId: old.conversationId,
       kind: "leaf", depth: 0, content: canary, tokenCount: 10 })).rejects.toThrow("excluded");
@@ -185,6 +197,7 @@ describe("worker gate on transcript reads", () => {
     runLcmMigrations(db, { claudeProjectsDir: "/nonexistent" });
     capture = new SessionCapture(db, "project", new ScrubEngine([], []));
     workers = new WorkerStore(db);
+    workers.recordIssuedJob("job-issued");
   });
   afterEach(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
 

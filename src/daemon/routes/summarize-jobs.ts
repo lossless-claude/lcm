@@ -33,8 +33,10 @@ export function createNextSummarizeJobHandler(store: SummarizeJobStore, paths?: 
         : await store.next(sessionId!, controller.signal, wait);
       if (res.destroyed) { if (job) store.releaseClaim(job.id, workerId ?? undefined); return; }
       if (workerId) {
-        try { await admitWorker(paths, boundInput, () => {
+        try { await admitWorker(paths, boundInput, (_admission, workers) => {
           if (res.destroyed) { if (job) store.releaseClaim(job.id, workerId); return; }
+          // Recorded before the payload leaves: a copy of this result in a transcript is then a copied claim.
+          if (job) workers.recordIssuedJob(job.id);
           sendJson(res, 200, { ...(job ? { job } : {}), worker_id: workerId, warning: WORKER_WARNING, guidance: WORKER_JOB_GUIDANCE });
         }); }
         catch (error) {
