@@ -87,6 +87,41 @@ function makeConfig(provider: DaemonConfig["llm"]["provider"]): DaemonConfig {
   } as unknown as DaemonConfig;
 }
 
+describe("compaction endpoint work class", () => {
+  const dirs: string[] = [];
+  afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+
+  it.each([
+    ["direct live session", {}, "live"],
+    ["PreCompact capture", { capture_required: true }, "live"],
+    ["OMP PreCompact", { client: "omp", skip_ingest: true, precompact_verified: true }, "live"],
+    ["SessionEnd", { skip_ingest: true, work_class: "live" }, "live"],
+    ["SessionStart catch-up", { skip_ingest: true, work_class: "live" }, "live"],
+    ["import replay and batch compact", { skip_ingest: true }, "background"],
+    ["explicit replay", { replay: true }, "background"],
+  ])("passes %s's class through the provider chain to the HTTP adapter", async (_source, input, workClass) => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-compact-class-"));
+    dirs.push(cwd);
+    const config = makeConfig("openai");
+    const ingest = mockRes();
+    await createIngestHandler(config, paths)({} as any, ingest.res, JSON.stringify({
+      cwd, session_id: "work-class", messages: Array.from({ length: 20 }, (_, i) => ({
+        role: i % 2 ? "assistant" : "user", content: `message ${i} ${"content ".repeat(500)}`, tokenCount: 1000,
+      })),
+    }));
+    const summarize = vi.fn().mockResolvedValue("short summary");
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(summarize);
+    const compact = mockRes();
+
+    await createCompactHandler(config, paths)({} as any, compact.res, JSON.stringify({
+      cwd, session_id: "work-class", ...input,
+    }));
+
+    expect(compact.res.writeHead).toHaveBeenCalledWith(200, expect.anything());
+    expect(summarize).toHaveBeenCalledWith(expect.any(String), expect.any(Boolean), expect.objectContaining({ workClass }));
+  });
+});
+
 describe("required pre-compaction capture", () => {
   const dirs: string[] = [];
   afterEach(() => {

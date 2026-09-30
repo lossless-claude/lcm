@@ -91,7 +91,7 @@ export function createAnthropicSummarizer(opts: SummarizerOptions): LcmSummarize
           max_tokens: maxOutputTokens,
           system: ctx.taskPrompt ?? LCM_SUMMARIZER_SYSTEM_PROMPT,
           messages: [{ role: "user", content: prompt }],
-        }, options)));
+        }, options)), ctx.workClass);
 
         // Reported before the answer is judged: those tokens were charged
         // even when the model returned nothing usable.

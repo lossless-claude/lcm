@@ -48,7 +48,7 @@ describe("HTTP summarizer deadlines", () => {
     }
   }
 
-  it("moves from a silent OpenAI endpoint to the next endpoint after one bounded request", async () => {
+  it.each(["live", "background"] as const)("moves %s work from a silent OpenAI endpoint to the next after one bounded request", async (workClass) => {
     const { base, requests } = await silentServer();
     const config = loadDaemonConfig("/nonexistent", { llm: {
       provider: "silent", fallback: ["next"], providers: {
@@ -58,7 +58,7 @@ describe("HTTP summarizer deadlines", () => {
     } }, {});
     const summarize = (await createSummarizer(resolveEffectiveProvider(config), config))!;
 
-    await expect(withinBound(summarize("conversation", false))).resolves.toBe("fallback summary");
+    await expect(withinBound(summarize("conversation", false, { workClass }))).resolves.toBe("fallback summary");
     expect(requests.filter((path) => path.startsWith("/silent/"))).toHaveLength(1);
     expect(requests.filter((path) => path.startsWith("/next/"))).toHaveLength(1);
   });
@@ -104,10 +104,10 @@ describe("HTTP summarizer deadlines", () => {
     await expect(summarize("conversation", false)).resolves.toBe("delayed summary");
   });
 
-  it("bounds a silent Anthropic request without SDK retries", async () => {
+  it.each(["live", "background"] as const)("bounds a silent Anthropic %s request without SDK retries", async (workClass) => {
     const { base, requests } = await silentServer();
     const summarize = createAnthropicSummarizer({ model: "m", apiKey: "test", baseURL: `${base}/anthropic`, timeoutMs: DEADLINE_MS });
-    await expect(withinBound(summarize("conversation", false))).rejects.toMatchObject({ name: "APIConnectionTimeoutError" });
+    await expect(withinBound(summarize("conversation", false, { workClass }))).rejects.toMatchObject({ name: "APIConnectionTimeoutError" });
     expect(requests).toHaveLength(1);
   });
 });
