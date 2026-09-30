@@ -14,12 +14,12 @@ describe("Flow 6: Promote", { timeout: 60_000 }, () => {
 
     // Prerequisite: ingest and compact so there are summaries to promote
     await handle.client.post("/ingest", {
-      session_id: "e2e-promote-session",
+      session_id: "session-main",
       cwd: handle.tmpDir,
       transcript_path: handle.fixturePath,
     });
     await handle.client.post("/compact", {
-      session_id: "e2e-promote-session",
+      session_id: "session-main",
       cwd: handle.tmpDir,
       client: "claude",
     });

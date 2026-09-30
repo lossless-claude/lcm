@@ -279,18 +279,28 @@ export function createIngestHandler(
       return;
     }
 
+    const source = transcriptSource(input.client);
+    const structured = Array.isArray(input.messages) ? input.messages.filter(isParsedMessage).map(({ workerClaims: _claims, workerPayloads: _payloads, ...message }) => message) : undefined;
+    // Reject an unbound Claude file before opening storage, checking worker ancestry,
+    // taking a completion shortcut or backing up a rebuild. Import uses filename ids too.
+    if (source.client === "claude" && !structured) {
+      try {
+        source.locate({ sessionId: session_id, cwd, transcriptPath: input.transcript_path, source: input.source });
+      } catch (err) {
+        sendJson(res, 400, { error: err instanceof Error ? err.message : "invalid transcript" });
+        return;
+      }
+    }
     const dbPath = projectDbPath(cwd, paths);
     const excluded = workerExcluded(cwd, session_id, paths, input.transcript_path);
     if (excluded && input.rebuild === true) {
       sendJson(res, 200, { ingested: 0, totalTokens: 0, excluded: true }); return;
     }
-    const structured = Array.isArray(input.messages) ? input.messages.filter(isParsedMessage).map(({ workerClaims: _claims, workerPayloads: _payloads, ...message }) => message) : undefined;
     if (!excluded && input.rebuild !== true && structured && structured.length === 0) {
       sendJson(res, 200, { ingested: 0, totalTokens: 0 });
       return;
     }
 
-    const source = transcriptSource(input.client);
     if (input.rebuild === true && structured) {
       sendJson(res, 400, { error: "rebuild reads a transcript and takes no messages" });
       return;

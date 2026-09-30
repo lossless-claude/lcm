@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as sqlite from "node:sqlite";
@@ -290,7 +290,10 @@ describe("the capture guard", () => {
       if (change === "transcript prefix") transcript([["user", "rewritten"], ...transcriptTurns.slice(1)]);
       if (change === "conversation") db.exec("UPDATE conversations SET created_at = '2020-01-01 00:00:00'");
       if (change === "redaction rules") capture = new SessionCapture(db, "proj", new ScrubEngine(["q1"], []));
-      if (change === "path") path = transcript(transcriptTurns, "replacement.jsonl");
+      if (change === "path") {
+        mkdirSync(join(dir, "moved"));
+        path = transcript(transcriptTurns, `moved/${sessionId}.jsonl`);
+      }
       if (change === "count decrease") {
         db.exec("DELETE FROM context_items WHERE message_id IN (SELECT message_id FROM messages WHERE seq = 5); DELETE FROM messages WHERE seq = 5");
         transcript(transcriptTurns.slice(0, -1));

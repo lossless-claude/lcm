@@ -82,6 +82,21 @@ function storedMessages(cwd: string, sessionId: string): Array<{ content: string
 }
 
 describe("periodic transcript scan", () => {
+  it("identifies a renamed transcript by removing only its final .jsonl suffix", async () => {
+    const cwd = join(process.env.LCM_SCAN_FAKE_HOME!, "renamed-project");
+    const sessionId = "renamed.jsonl-copy";
+    seedProject(cwd, claudeProjectSlug(cwd), sessionId);
+    const config = loadDaemonConfig("/nonexistent", { llm: { provider: "disabled" } }, {});
+    const ingest = createIngestHandler(config, paths);
+    const requestedIds: string[] = [];
+    await scanForTranscripts(config, paths, async (...args) => {
+      requestedIds.push(JSON.parse(args[2]).session_id);
+      return ingest(...args);
+    });
+    expect(requestedIds).toEqual([sessionId]);
+    expect(storedMessages(cwd, sessionId)).toHaveLength(1);
+  });
+
   it("ingests a transcript found under the real project slug and not one under the old slash-only name", async () => {
     const project = join(process.env.LCM_SCAN_FAKE_HOME!, "proj.with_underscores");
     tempDirs.push(project);

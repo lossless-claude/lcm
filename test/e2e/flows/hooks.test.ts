@@ -72,7 +72,7 @@ describe("Flow 14: SessionEnd hook", { timeout: 60_000 }, () => {
     const h = handle!;
     const client = new DaemonClient(`http://127.0.0.1:${h.daemonPort}`);
     const stdinData = JSON.stringify({
-      session_id: "e2e-session-end-test",
+      session_id: "session-main",
       cwd: h.tmpDir,
       transcript_path: h.fixturePath,
     });
@@ -83,7 +83,7 @@ describe("Flow 14: SessionEnd hook", { timeout: 60_000 }, () => {
     expect(result.exitCode).toBe(0);
 
     // The hook gets a 202; the daemon ingests after answering.
-    const rows = await pollRows(h.tmpDir, "e2e-session-end-test");
+    const rows = await pollRows(h.tmpDir, "session-main");
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.some((r) => r.content.includes("storing conversation messages"))).toBe(true);
 
@@ -91,7 +91,7 @@ describe("Flow 14: SessionEnd hook", { timeout: 60_000 }, () => {
     const completed = await pollUntil(() => {
       const { db, close } = openProjectDb(h.tmpDir);
       try {
-        return db.prepare("SELECT 1 FROM session_ingest_log WHERE session_id = ?").get("e2e-session-end-test") !== undefined;
+        return db.prepare("SELECT 1 FROM session_ingest_log WHERE session_id = ?").get("session-main") !== undefined;
       } finally {
         close();
       }

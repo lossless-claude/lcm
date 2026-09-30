@@ -145,14 +145,14 @@ describe("Flow 20: hooks via `node dist/bin/lcm.js` with piped stdin", { timeout
 
   it("session-snapshot exits 0 with a real transcript", async () => {
     const h = handle!;
-    const r = await runHook(["session-snapshot"], payload({ transcript_path: h.syntheticFixturePath }));
+    const r = await runHook(["session-snapshot"], payload({ session_id: "synthetic-session", transcript_path: h.syntheticFixturePath }));
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).toBe("");
   });
 
   it("session-end exits 0 with a real transcript", async () => {
     const h = handle!;
-    const session_id = "e2e-proc-session-end";
+    const session_id = "synthetic-session";
     const r = await runHook(
       ["session-end"],
       payload({ session_id, transcript_path: h.syntheticFixturePath, reason: "exit" }),

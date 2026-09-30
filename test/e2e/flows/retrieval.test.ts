@@ -16,12 +16,12 @@ describe("Flows 8-10: Retrieval", { timeout: 60_000 }, () => {
 
     // Prerequisite: ingest and compact so retrieval has data
     await handle.client.post("/ingest", {
-      session_id: "e2e-retrieval-session",
+      session_id: "session-main",
       cwd: handle.tmpDir,
       transcript_path: handle.fixturePath,
     });
     await handle.client.post("/compact", {
-      session_id: "e2e-retrieval-session",
+      session_id: "session-main",
       cwd: handle.tmpDir,
       client: "claude",
     });

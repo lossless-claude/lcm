@@ -60,7 +60,7 @@ describe("SessionCapture", () => {
   it.each(["claude", "codex"])("keeps a %s tool output after a NUL through capture and readback", async (client) => {
     const dir = mkdtempSync(join(tmpdir(), "lcm-nul-capture-"));
     try {
-      const path = join(dir, "session.jsonl");
+      const path = join(dir, "s1.jsonl");
       const output = "before\u0000after";
       const entries = client === "claude"
         ? [{ message: { role: "user", content: [{ type: "tool_result", content: output }] } }]

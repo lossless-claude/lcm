@@ -14,7 +14,7 @@ describe("Flow 5: Compact", { timeout: 60_000 }, () => {
 
     // Prerequisite: ingest so there is data to compact
     await handle.client.post("/ingest", {
-      session_id: "e2e-compact-session",
+      session_id: "session-main",
       cwd: handle.tmpDir,
       transcript_path: handle.fixturePath,
     });
@@ -26,7 +26,7 @@ describe("Flow 5: Compact", { timeout: 60_000 }, () => {
 
   it("creates DAG summary nodes", async () => {
     const result = await handle.client.post<{ summary: string; skipped?: boolean }>("/compact", {
-      session_id: "e2e-compact-session",
+      session_id: "session-main",
       cwd: handle.tmpDir,
       client: "claude",
     });

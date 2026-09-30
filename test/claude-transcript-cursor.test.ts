@@ -1,4 +1,4 @@
-import { appendFileSync, copyFileSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -253,7 +253,8 @@ it("keeps a validated session guarded when its transcript path changes", async (
   writeFileSync(io.path, line("one") + line("two"));
   await capture.captureTranscript(input);
   // Another transcript whose prefix differs from the stored history, plus a tail.
-  const other = join(dir, "other.jsonl");
+  mkdirSync(join(dir, "moved"));
+  const other = join(dir, "moved", "session.jsonl");
   writeFileSync(other, line("different") + line("two") + line("tail"));
   await expect(capture.captureTranscript({ ...input, transcriptPath: other })).rejects.toThrow("--rebuild");
   expect(await capture.conversationStore.getSessionMessageCount("session")).toBe(2);

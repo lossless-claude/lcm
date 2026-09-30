@@ -19,7 +19,7 @@ describe("Flow 7: Curate", { timeout: 60_000 }, () => {
 
   it("step 1: ingests main fixture with a fresh session", async () => {
     const result = await handle.client.post<{ ingested: number; totalTokens: number }>("/ingest", {
-      session_id: "e2e-curate-session",
+      session_id: "session-main",
       cwd: handle.tmpDir,
       transcript_path: handle.fixturePath,
     });
@@ -29,7 +29,7 @@ describe("Flow 7: Curate", { timeout: 60_000 }, () => {
 
   it("step 2: compacts the session", async () => {
     const result = await handle.client.post<{ summary: string; skipped?: boolean }>("/compact", {
-      session_id: "e2e-curate-session",
+      session_id: "session-main",
       cwd: handle.tmpDir,
       client: "claude",
     });
