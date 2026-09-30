@@ -4,8 +4,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SummarizeJobStore } from "../../../src/daemon/summarize-jobs.js";
-import { createNextSummarizeJobHandler, createAnswerSummarizeJobHandler } from "../../../src/daemon/routes/summarize-jobs.js";
+import { SESSION_COMPLETION_MS, SummarizeJobStore } from "../../../src/daemon/summarize-jobs.js";
+import { createNextSummarizeJobHandler, createAnswerSummarizeJobHandler, createPoolSummarizeJobHandler } from "../../../src/daemon/routes/summarize-jobs.js";
 import { createDaemon } from "../../../src/daemon/server.js";
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { ensureAuthToken, readAuthToken } from "../../../src/daemon/auth.js";
@@ -20,6 +20,29 @@ describe("summarize job routes", () => {
   let store: SummarizeJobStore;
   beforeEach(() => { vi.useFakeTimers(); store = new SummarizeJobStore(); });
   afterEach(() => { store.close(); vi.useRealTimers(); });
+
+  it("forces submitted jobs into the worker pool, ignoring caller-owned ids and state", async () => {
+    const res = response();
+    const pending = createPoolSummarizeJobHandler(store)(request("/summarize-jobs/pool"), res as unknown as ServerResponse,
+      JSON.stringify({ ...input, pool: false, id: "caller-id", state: "done" }));
+    expect(await store.next("one", undefined, false)).toBeNull();
+    const job = await store.nextWorker("worker", undefined, false);
+    expect(job).toMatchObject({ ...input, pool: true });
+    expect(job?.id).not.toBe("caller-id");
+    expect(job).not.toHaveProperty("state");
+    store.answer(job!.id, { text: "summary", providerId: "session-pool:haiku" });
+    await pending;
+    expect(JSON.parse(res.end.mock.calls[0]![0])).toEqual({ text: "summary", providerId: "session-pool:haiku" });
+  });
+
+  it.each(["not JSON", "null", "[]", "{}", JSON.stringify({ ...input, maxTokens: -1 }),
+    JSON.stringify({ ...input, kind: "unknown" }), JSON.stringify({ ...input, prompt: " " })])
+  ("rejects malformed pool jobs without enqueueing: %s", async (body) => {
+    const res = response();
+    await createPoolSummarizeJobHandler(store)(request("/summarize-jobs/pool"), res as unknown as ServerResponse, body);
+    expect(res.writeHead).toHaveBeenCalledWith(400, expect.anything());
+    expect(await store.nextWorker("worker", undefined, false)).toBeNull();
+  });
 
   it("holds an empty poll for 25 seconds, then answers 204", async () => {
     const res = response();
@@ -98,7 +121,7 @@ describe("summarize job routes", () => {
     expect(JSON.parse(duplicate.end.mock.calls[0]![0])).toEqual({ discarded: true });
     void store.enqueue(input);
     const expiredJob = await store.next("one");
-    await vi.advanceTimersByTimeAsync(20_000);
+    await vi.advanceTimersByTimeAsync(SESSION_COMPLETION_MS);
     const late = response();
     await handler(request(`/summarize-jobs/${expiredJob!.id}`), late as unknown as ServerResponse, '{"text":"late"}');
     expect(late.writeHead).toHaveBeenCalledWith(200, expect.anything());

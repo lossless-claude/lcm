@@ -26,9 +26,12 @@ type Entry = {
 /** How long a worker has to answer a pool job once claimed; replay chunks take a model longer than a claim. */
 export const POOL_COMPLETION_MS = 180_000;
 
+/** Leaf answers need more than the claim window; leave room within the 120-second PreCompact bound. */
+export const SESSION_COMPLETION_MS = 60_000;
+
 /**
- * Process-local FIFO. A session job's deadline includes time spent waiting to be claimed;
- * a pool job has that long to be claimed, then POOL_COMPLETION_MS to be answered.
+ * Process-local FIFO. Jobs have a claim window, then a separate completion deadline
+ * for the session or pool provider.
  */
 export class SummarizeJobStore {
   private jobs = new Map<string, Entry>();
@@ -39,6 +42,7 @@ export class SummarizeJobStore {
   constructor(
     private deadlineMs = 20_000, private holdMs = 25_000, private retentionMs = 60_000,
     private poolCompletionMs = POOL_COMPLETION_MS,
+    private sessionCompletionMs = SESSION_COMPLETION_MS,
   ) {}
 
   enqueue(input: Omit<SummarizeJob, "id" | "createdAt">): Promise<JobAnswer> {
@@ -67,10 +71,8 @@ export class SummarizeJobStore {
           entry.workerId = workerId;
           this.activeWorkers.set(workerId, entry.job.id);
         }
-        if (entry.job.pool) {
-          clearTimeout(entry.timer);
-          entry.timer = this.expireAfter(entry.job.id, this.poolCompletionMs);
-        }
+        clearTimeout(entry.timer);
+        entry.timer = this.expireAfter(entry.job.id, entry.job.pool ? this.poolCompletionMs : this.sessionCompletionMs);
         return entry.job;
       }
     }

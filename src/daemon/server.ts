@@ -1,6 +1,6 @@
 import { SummarizeJobStore } from "./summarize-jobs.js";
 import { summarizerAvailability } from "./provider-config.js";
-import { createNextSummarizeJobHandler, createAnswerSummarizeJobHandler } from "./routes/summarize-jobs.js";
+import { createNextSummarizeJobHandler, createAnswerSummarizeJobHandler, createPoolSummarizeJobHandler } from "./routes/summarize-jobs.js";
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import { lstat, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import type { Dirent } from "node:fs";
@@ -192,6 +192,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   const summarizeJobs = new SummarizeJobStore();
   const answerSummarizeJob = createAnswerSummarizeJobHandler(summarizeJobs);
   routes.set("GET /summarize-jobs/next", createNextSummarizeJobHandler(summarizeJobs));
+  routes.set("POST /summarize-jobs/pool", createPoolSummarizeJobHandler(summarizeJobs));
   routes.set("POST /compact", createCompactHandler(config, paths, summarizeJobs, log));
   routes.set("POST /replay-reset", createReplayResetHandler(paths));
   routes.set("POST /promote", createPromoteHandler(config, paths, log));
