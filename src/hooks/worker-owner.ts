@@ -29,5 +29,5 @@ export function workerHookOwner(client: "claude" | "codex", read: ReadProcess = 
       pid = identity.parent;
     }
   } catch { /* An unreadable process cannot establish a live owner. */ }
-  throw new Error("Worker hook process ownership is unverified. Use the native harness with lcm hooks; Claude Code can use function hooks for enrollment.");
+  throw new Error("Worker hook process ownership is unverified. Use the native harness with lcm command hooks; function hooks require command-hook enrollment.");
 }

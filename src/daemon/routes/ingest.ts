@@ -280,11 +280,12 @@ export function createIngestHandler(
     }
 
     const dbPath = projectDbPath(cwd, paths);
-    if (workerExcluded(cwd, session_id, paths, input.transcript_path)) {
+    const excluded = workerExcluded(cwd, session_id, paths, input.transcript_path);
+    if (excluded && input.rebuild === true) {
       sendJson(res, 200, { ingested: 0, totalTokens: 0, excluded: true }); return;
     }
     const structured = Array.isArray(input.messages) ? input.messages.filter(isParsedMessage).map(({ workerClaims: _claims, workerPayloads: _payloads, ...message }) => message) : undefined;
-    if (input.rebuild !== true && structured && structured.length === 0) {
+    if (!excluded && input.rebuild !== true && structured && structured.length === 0) {
       sendJson(res, 200, { ingested: 0, totalTokens: 0 });
       return;
     }
@@ -316,6 +317,13 @@ export function createIngestHandler(
         try {
           runLcmMigrations(db);
 
+          const capture = new SessionCapture(db, pid, scrubber, paths);
+          const attribution = requestAttribution(input);
+          if (workerExcluded(cwd, session_id, paths, input.transcript_path)) {
+            await capture.write({ sessionId: session_id, messages: [], transcriptPath: input.transcript_path, attribution });
+            return { ingested: 0, totalTokens: 0, excluded: true };
+          }
+
           // A session already fully ingested is skipped — on the same db connection to
           // avoid double-open overhead and lock contention — unless its transcript was
           // written to after completion (a resume appends to the same file). A client
@@ -328,8 +336,6 @@ export function createIngestHandler(
             if (isSessionComplete(db, session_id, transcriptPath)) return { ingested: 0, totalTokens: 0 };
           }
 
-          const capture = new SessionCapture(db, pid, scrubber, paths);
-          const attribution = requestAttribution(input);
           let written: CaptureResult | undefined;
           if (structured) {
             // Structured mode carries the messages themselves and names no transcript.

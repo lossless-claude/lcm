@@ -10,11 +10,22 @@ export function createWorkerSessionHandler(paths: LcmPaths, jobs?: SummarizeJobS
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
     if (input.declared !== true || !["claude", "codex", "omp"].includes(input.client) ||
-        typeof input.session_id !== "string" || !input.session_id.trim() ||
-        typeof input.owner !== "string" || !input.owner.trim()) {
+        typeof input.session_id !== "string" || !input.session_id.trim()) {
       sendJson(res, 403, { error: "Start a dedicated session with LCM_SUMMARIZE_WORKER=1; Agent transports cannot enroll sessions." }); return;
     }
     const cwd = validateCwd(input.cwd);
+    if (input.action === "check") {
+      const enrolled = workerEnrollments(cwd, paths).some(worker => worker.session_id === input.session_id &&
+        worker.client === input.client && worker.state === "active" && worker.owner);
+      const { WORKER_WARNING } = await import("../../worker-warning.js");
+      sendJson(res, 200, enrolled ? { enrolled: true, warning: WORKER_WARNING } : {
+        enrolled: false, reason: "No live command-hook enrollment was found; use a fresh dedicated session with a verifiable native harness owner.",
+      });
+      return;
+    }
+    if (typeof input.owner !== "string" || !input.owner.trim()) {
+      sendJson(res, 403, { error: "Worker enrollment requires a verified native harness owner." }); return;
+    }
     if (input.action === "finish") {
       const enrolled = workerEnrollments(cwd, paths).find(worker => worker.session_id === input.session_id && worker.owner === input.owner);
       if (!enrolled) { sendJson(res, 403, { error: "worker owner does not match" }); return; }

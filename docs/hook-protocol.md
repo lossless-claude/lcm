@@ -207,10 +207,15 @@ The completion deadline is `llm.poolCompletionMs`, overridden by
 `LCM_POOL_COMPLETION_MS`, default 180000 ms after claim. Claude command SessionEnd and OMP shutdown mark enrollment finished; exclusion remains.
 Reaching a completion allowance stops polling. A function-hook reload does not
 register a new owner. Codex owners include `CODEX_THREAD_ID`, preserving admission
-for another thread in the same app-server process.
+for another thread in the same app-server process. Enrollment is refused without
+that thread id.
 
 Command-hook worker enrollment requires a verifiable native harness ancestor
 (executable name and start time). A transient shell PID is not an owner. When
 ownership cannot be established, enrollment refuses with guidance. Function
-hooks use the command hook's enrollment. Hook callbacks never read process arguments
+hooks use `POST /worker-session` with `action: "check"`, their native session id
+and cwd to confirm the command hook's live enrollment without registering an
+owner. They show the exclusion warning and start worker polling only after
+confirmation; otherwise they report that worker mode was refused and why.
+Hook callbacks never read process arguments
 or environment to identify that owner.

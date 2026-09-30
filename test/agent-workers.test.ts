@@ -103,13 +103,17 @@ describe("agent worker transports", () => {
     } finally { await daemon.stop(); }
   });
 
-  it("Codex hooks revoke stale ids on clear and refuse child enrollment", async () => {
+  it.each(["native-thread", undefined, ""])("Codex hooks derive the clear owner from the native thread and refuse missing identity (%s)", async threadId => {
     const f = await fixture(); vi.stubEnv("LCM_SUMMARIZE_WORKER", "1");
-    const deps = { workerOwner: () => "codex-native-owner", paths: f.paths, enabled: true, client: { post: vi.fn() }, connect: vi.fn() };
+    vi.stubEnv("CODEX_THREAD_ID", threadId);
+    vi.spyOn(await import("../src/hooks/worker-owner.js"), "workerHookOwner").mockReturnValue("codex-native-owner");
+    const deps = { paths: f.paths, enabled: true, client: { post: vi.fn() }, connect: vi.fn() };
     for (const [id, source] of [["old", "startup"], ["new", "clear"], ["child", "subagent"]]) {
       await dispatchCodexHook(JSON.stringify({ hook_event_name: "SessionStart", session_id: id, cwd: f.cwd, source }), deps);
     }
-    expect(workerEnrollments(f.cwd, f.paths).map(worker => [worker.session_id, worker.state])).toEqual([["new", "active"], ["old", "finished"]]);
+    expect(workerEnrollments(f.cwd, f.paths).map(worker => [worker.session_id, worker.owner, worker.state])).toEqual(threadId
+      ? [["new", "codex-native-owner:thread:native-thread", "active"], ["old", "codex-native-owner:thread:native-thread", "finished"]]
+      : []);
     await expect(createAgentWorkerTransport(f.client, "cli", { CODEX_THREAD_ID: "child" }, f.cwd).claim()).rejects.toThrow("dedicated");
   });
 
@@ -148,7 +152,7 @@ describe("agent worker transports", () => {
         process: { run: async () => ({ stdout: "fake-token\n__CONFIG__\n{}\n__TMPDIR__/tmp", exitCode: 0 }) },
         fs: { write: vi.fn(async () => {}) }, ui: { log: vi.fn() }, clock: { after: vi.fn() },
         http: { fetch: async (url: string, init: any) => {
-          if (new URL(url).pathname === "/worker-session" && JSON.parse(init.body).action !== "finish") registrations.push(JSON.parse(init.body));
+          if (new URL(url).pathname === "/worker-session" && !["finish", "check"].includes(JSON.parse(init.body).action)) registrations.push(JSON.parse(init.body));
           return { ok: true, status: 200, text: "{}" };
         } },
       };

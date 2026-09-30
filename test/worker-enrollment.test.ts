@@ -2,7 +2,6 @@ import { CompactionEngine, compactEngineConfig } from "../src/compaction.js";
 import { createPromoteHandler } from "../src/daemon/routes/promote.js";
 import { createWorkerSessionHandler } from "../src/daemon/routes/worker-session.js";
 import { dispatchCodexHook } from "../src/hooks/codex.js";
-import { parseClaudeTranscriptRecord } from "../src/transcript.js";
 import { SessionCapture } from "../src/capture.js";
 import { ScrubEngine } from "../src/scrub.js";
 import { createIngestHandler } from "../src/daemon/routes/ingest.js";
@@ -13,17 +12,18 @@ import { createStatusHandler } from "../src/daemon/routes/status.js";
 import { loadDaemonConfig } from "../src/daemon/config.js";
 import { invokeRoute } from "../src/daemon/routes/session-end.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createLcmPaths } from "../src/lcm-paths.js";
 import { registerWorkerSession } from "../src/worker-session.js";
 import { recordPostToolEvents } from "../src/hooks/tool-events.js";
 import { EventsDb } from "../src/hooks/events-db.js";
 import { eventsDbPath } from "../src/db/events-path.js";
 import { getLcmConnection, closeLcmConnection } from "../src/db/connection.js";
-import { projectDbPath } from "../src/daemon/project.js";
+import { claudeTranscriptPath, projectDbPath } from "../src/daemon/project.js";
 import { WorkerStore } from "../src/store/worker-store.js";
+import { PromotedStore } from "../src/db/promoted.js";
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach(dir => rmSync(dir, { recursive: true, force: true })));
@@ -58,6 +58,20 @@ it("reports durable enrollment and last activity even when the excluded project 
   expect(status.project.workerWarning).toContain("transcript stays on disk");
 });
 
+it("checks command-hook enrollment without registering a function-hook owner", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "lcm-worker-check-")); dirs.push(cwd);
+  const paths = createLcmPaths(join(cwd, "lcm"));
+  const check = createWorkerSessionHandler(paths);
+  const input = { cwd, session_id: "worker", client: "claude", declared: true, action: "check" };
+  expect(await invokeRoute(check, input)).toMatchObject({ enrolled: false, reason: expect.stringContaining("command-hook enrollment") });
+  expect(collectStats(paths).workers).toEqual([]);
+  await registerWorkerSession(paths, { sessionId: "worker", cwd, client: "claude", owner: "native-owner" });
+  expect(await invokeRoute(check, input)).toMatchObject({ enrolled: true, warning: expect.stringContaining("not recorded by lcm") });
+  expect(await invokeRoute(check, { ...input, client: "codex" })).toMatchObject({ enrolled: false });
+  await (await import("../src/worker-session.js")).finishWorkerSession(paths, cwd, "worker");
+  expect(await invokeRoute(check, input)).toMatchObject({ enrolled: false });
+});
+
 it("a capture racing registration cannot write a foreign-content canary", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "lcm-worker-race-")); dirs.push(cwd);
   const paths = createLcmPaths(join(cwd, "lcm"));
@@ -75,15 +89,15 @@ it("a capture racing registration cannot write a foreign-content canary", async 
   } finally { closeLcmConnection(path); }
 });
 
-it("structural recovery also removes a copied worker history's sidecar canary", async () => {
+it("disk-discovered worker descendants lose captured history and sidecar canaries", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "lcm-worker-recovery-")); dirs.push(cwd);
   const paths = createLcmPaths(join(cwd, "lcm"));
   await registerWorkerSession(paths, { sessionId: "root", cwd, client: "claude", owner: "hook" });
-  recordPostToolEvents({ cwd, session_id: "fork", tool_name: "Bash", tool_input: { command: 'git commit -m "FOREIGN_RECOVERY_CANARY_685"' } }, paths);
+  recordPostToolEvents({ cwd, session_id: "agent-fork", tool_name: "Bash", tool_input: { command: 'git commit -m "FOREIGN_RECOVERY_CANARY_685"' } }, paths);
   const path = projectDbPath(cwd, paths); const db = getLcmConnection(path);
   try {
     const capture = new SessionCapture(db, projectId(cwd), new ScrubEngine([], []), paths);
-    const old = await capture.write({ sessionId: "fork", messages: [{ role: "assistant", content: "FOREIGN_RECOVERY_CANARY_685", tokenCount: 100,
+    const old = await capture.write({ sessionId: "agent-fork", messages: [{ role: "assistant", content: "FOREIGN_RECOVERY_CANARY_685", tokenCount: 100,
       parts: [{ type: "text", text: "FOREIGN_RECOVERY_CANARY_685" }] }] });
     const compacted = await new CompactionEngine(capture.conversationStore, capture.summaryStore,
       { ...compactEngineConfig({ env: {} }), freshTailCount: 0, leafMinFanout: 1 }).compact({
@@ -94,11 +108,13 @@ it("structural recovery also removes a copied worker history's sidecar canary", 
       { compaction: { promotionThresholds: { minDepth: 0 } } }, {}), paths), { cwd });
     expect(promoted.promoted).toBeGreaterThan(0);
     expect(db.prepare("SELECT * FROM message_parts").all().length).toBeGreaterThan(0);
-    const records = [
-      { message: { role: "assistant", content: [{ type: "tool_use", id: "claim", name: "lcm_summarize_claim", input: {} }] } },
-      { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "claim", content: JSON.stringify({ job: { prompt: "FOREIGN_RECOVERY_CANARY_685", system: "system" } }) }] } },
-    ];
-    await capture.write({ sessionId: "fork", messages: records.map(record => parseClaudeTranscriptRecord(JSON.stringify(record)).message!) });
+    const root = claudeTranscriptPath(realpathSync(cwd), "root")!;
+    const childDir = join(dirname(root), "root", "subagents", "workflows");
+    mkdirSync(childDir, { recursive: true });
+    writeFileSync(join(childDir, "agent-fork.jsonl"), "{}\n");
+    await invokeRoute(createIngestHandler(loadDaemonConfig("/nonexistent", {}, {}), paths), {
+      cwd, session_id: "agent-fork", messages: [{ role: "user", content: "new content", tokenCount: 1 }],
+    });
     for (const table of ["messages", "message_parts", "summaries", "messages_fts", "summaries_fts", "promoted", "promoted_fts"]) {
       expect(db.prepare(`SELECT * FROM ${table}`).all(), table).toEqual([]);
     }
@@ -121,6 +137,41 @@ it.each(["startup", "resume", "compact", "clear"])("never lets wire enrollment p
   try {
     expect(db.prepare("SELECT content FROM messages").all()).toEqual([{ content: "ORDINARY_RESUME_CANARY" }]);
     expect(new WorkerStore(db).excluded("ordinary")).toBe(false);
+  } finally { closeLcmConnection(path); }
+});
+
+it.each(["worker", "excluded-child"])("wire ancestry naming %s refuses capture without deleting a victim's history", async parentSessionId => {
+  const cwd = mkdtempSync(join(tmpdir(), "lcm-worker-parent-")); dirs.push(cwd);
+  const paths = createLcmPaths(join(cwd, "lcm"));
+  const ingest = createIngestHandler(loadDaemonConfig("/nonexistent", {}, {}), paths);
+  await invokeRoute(ingest, { cwd, session_id: "victim", messages: [
+    { role: "user", content: "VICTIM_HISTORY", tokenCount: 100, parts: [{ type: "text", text: "VICTIM_HISTORY" }] },
+  ] });
+  recordPostToolEvents({ cwd, session_id: "victim", tool_name: "Bash", tool_input: { command: 'git commit -m "VICTIM_HISTORY"' } }, paths);
+  const path = projectDbPath(cwd, paths); const db = getLcmConnection(path);
+  try {
+    const capture = new SessionCapture(db, projectId(cwd), new ScrubEngine([], []), paths);
+    const stored = await capture.stored("victim");
+    await new CompactionEngine(capture.conversationStore, capture.summaryStore,
+      { ...compactEngineConfig({ env: {} }), freshTailCount: 0, leafMinFanout: 1 }).compact({
+        conversationId: stored!.conversationId, tokenBudget: 100, force: true, summarize: async () => "VICTIM_HISTORY",
+      });
+    const summary = db.prepare("SELECT summary_id FROM summaries").get() as { summary_id: string };
+    new PromotedStore(db).insert({ content: "VICTIM_HISTORY", projectId: projectId(cwd), sourceSummaryId: summary.summary_id });
+    await registerWorkerSession(paths, { sessionId: "worker", cwd, client: "claude", owner: "owner" });
+    if (parentSessionId === "excluded-child") await capture.write({ sessionId: parentSessionId, messages: [], attribution: { parentSessionId: "worker" } });
+    const tables = ["messages", "message_parts", "summaries", "context_items", "messages_fts", "summaries_fts", "promoted", "promoted_fts"];
+    const before = tables.map(table => db.prepare(`SELECT * FROM ${table}`).all());
+    const events = new EventsDb(eventsDbPath(cwd, paths));
+    try {
+      const oldEvents = events.getUnprocessed();
+      expect(oldEvents).toHaveLength(1);
+      expect(await invokeRoute(ingest, { cwd, session_id: "victim", parent_session_id: parentSessionId, messages: [
+        { role: "user", content: "new capture", tokenCount: 1 },
+      ] })).toMatchObject({ ingested: 0 });
+      expect(tables.map(table => db.prepare(`SELECT * FROM ${table}`).all())).toEqual(before);
+      expect(events.getUnprocessed()).toEqual(oldEvents);
+    } finally { events.close(); }
   } finally { closeLcmConnection(path); }
 });
 

@@ -61,13 +61,22 @@ the worker environment is not detectable as a worker operation. Harness environm
 ids provide cooperative identity, not authentication against local processes.
 
 A new id after Claude `/clear` revokes the preceding id under the stable native
-process owner. Function-hook reloads do not change that enrollment. Codex owners
-include the native thread id so another app-server thread stays active. OMP's
+process owner. Function-hook reloads do not change that enrollment. Function hooks
+confirm live command-hook enrollment before displaying the exclusion warning or
+polling for worker jobs; an unconfirmed enrollment reports refusal with its reason.
+Two npm-installed Claude workers nested under one native `claude` process share
+that owner, so a `/clear` in either ends both workers' admission. This is denial
+of service, not a leak: permanent capture exclusion remains in place.
+Codex owners require the native thread id, refusing enrollment when it is absent,
+so another app-server thread stays active. OMP's
 native hook requires a fresh session that `isSessionOnDisk()` reports as false;
 resume and clears that retain the id cannot enroll. Finishing or abandonment never
 re-enables capture. Status, doctor and stats show a shortened worker id, enrollment
 state and last activity. Copied successful MCP or CLI claim markers trigger
-recovery exclusion and cleanup; they never authorize a claim. Recovery removes
+recovery exclusion; they never authorize a claim or deletion. Only descendants
+discovered on disk under an enrolled worker's own Claude `subagents/` transcript
+location permit cleanup. Request or stored ancestry and arbitrary transcript paths
+may refuse new capture while preserving existing history. Descendant cleanup removes
 messages and parts, context items, summaries and links, full-text rows, events
 and provenanced promotions. Promotions without provenance remain unattributable.
 See [the design](design/agent-summarize-workers.md).

@@ -95,10 +95,14 @@ export class WorkerStore {
     return false;
   }
 
-  /** Caller holds a write transaction; detection never grants admission. */
-  exclude(sessionId: string, cwd = "", client = "claude"): void {
+  /** Caller holds a write transaction; refusal preserves history unless disk discovery permits cleanup. */
+  exclude(sessionId: string, cwd = "", client = "claude", purgeHistory = false): void {
     this.db.prepare(`INSERT OR IGNORE INTO summarize_workers(session_id, cwd, client, state)
       VALUES (?, ?, ?, 'abandoned')`).run(sessionId, cwd, client);
+    if (!purgeHistory) {
+      this.db.prepare("INSERT OR IGNORE INTO session_ingest_log(session_id) VALUES (?)").run(sessionId);
+      return;
+    }
     this.db.prepare(`DELETE FROM promoted_fts WHERE rowid IN (SELECT rowid FROM promoted
       WHERE session_id = ? OR source_summary_id IN (SELECT summary_id FROM summaries
         JOIN conversations USING(conversation_id) WHERE session_id = ?))`).run(sessionId, sessionId);

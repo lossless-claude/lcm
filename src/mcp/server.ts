@@ -1,6 +1,6 @@
 import { excludedWorkerContext } from "../worker-session.js";
 import { createAgentWorkerTransport, type AgentSubmission } from "../agent-worker-transport.js";
-import { WORKER_WARNING, workerRefusal } from "../worker-warning.js";
+import { WORKER_WARNING, workerDisplayId, workerRefusal } from "../worker-warning.js";
 import { Server } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { cliEntrypoint } from "../cli-entrypoint.js";
@@ -26,7 +26,7 @@ function localTools(paths: LcmPaths): LocalHandlers { return {
 
     if (stats.workers?.length) {
       lines.push(WORKER_WARNING);
-      for (const worker of stats.workers) lines.push(`Worker ${worker.session_id}: ${worker.state}; last activity ${worker.last_activity}`);
+      for (const worker of stats.workers) lines.push(`Worker ${workerDisplayId(worker.session_id)}: ${worker.state}; last activity ${worker.last_activity}`);
     }
     // Memory section
     lines.push("## 🧠 Memory");

@@ -208,12 +208,12 @@ export class EventsDb {
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
 
-  excludeSessions(sessionIds: string[]): void {
+  excludeSessions(sessionIds: string[], purgeHistory = false): void {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       for (const id of sessionIds) {
         this.db.prepare("INSERT OR IGNORE INTO excluded_worker_sessions(session_id) VALUES (?)").run(id);
-        this.db.prepare("DELETE FROM events WHERE session_id = ?").run(id);
+        if (purgeHistory) this.db.prepare("DELETE FROM events WHERE session_id = ?").run(id);
       }
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }

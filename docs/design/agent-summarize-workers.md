@@ -16,8 +16,14 @@ transaction for its history check across processes. Existing messages, summaries
 provenanced promotions and tool events refuse enrollment without deletion. The
 sidecar gate and main-store tombstone are installed before admission. A capture
 that wins the race requires a fresh worker id, preserving the captured conversation.
-Destructive cleanup belongs to parser-confirmed copied-claim recovery. It removes
-attributable content and retains promotions without provenance.
+Nothing deletes history that existed before a worker's enrollment, except
+descendants discovered on disk under the enrolled worker's own Claude
+`subagents/` transcript location. Request ancestry, stored ancestry, an arbitrary
+path naming a worker and copied-claim markers may refuse new capture, but never
+authorize deletion. Discovery uses the enrolled worker's cwd and native transcript
+walker (`src/worker-session.ts:discoveredWorkerDescendant`); exclusion without a
+verified owner cannot establish a discovery root. Cleanup removes attributable
+content and retains promotions without provenance.
 
 `SessionCapture.writeInTransaction` gates writes and rebuild writes. Transcript
 capture and `/ingest` also gate excluded sessions before parsing. Descendants
@@ -31,13 +37,19 @@ provenance. `/compact` checks at entry and after yielded work; the compaction
 engine and summary writer also refuse excluded sessions. Scan, import and replay
 share these capture and compaction gates.
 
+Function hooks confirm live command-hook enrollment through the read-only
+`action: "check"` on `POST /worker-session` before warning or polling. A failed
+confirmation reports refused worker mode and its reason.
+
 The warning states that this session and its subagents are not recorded by lcm,
 that the harness's own transcript stays on disk, and that a dedicated session
 should be used. Registration, claims and status carry it. Status, doctor and
 stats expose enrollment state and last activity without re-enabling capture.
 
 Claude tool-use names and paired call ids detect copied successful claims. These
-markers authorize nothing: recovery excludes the copied session as abandoned.
+markers authorize neither admission nor deletion: recovery excludes the copied
+session as abandoned and preserves its stored history unless disk discovery
+confirms it is a descendant of an enrolled worker.
 A refused claim without a payload does not convert an ordinary session.
 
 ## Harness evidence
@@ -83,7 +95,8 @@ Claim markers are structural parser metadata, keyed by tool-call id across captu
 deltas. Structured `/ingest` ignores wire-supplied marker fields. Native parsing
 recognizes MCP claims and CLI invocations by basename, including absolute paths
 and `node …/lcm.js`. A parser-shape change forces historical checkpoints to be verified before
-recovery. Recovery cleans the main store and event sidecar and grants no admission.
+recovery. Only discovered descendants permit cleanup of the main store and event
+sidecar; recovery grants no admission.
 
 Pool provider ids accept a validated model suffix. Missing usage is estimated from
 the system, prompt and answer. `llm.poolCompletionMs` / `LCM_POOL_COMPLETION_MS`
@@ -101,7 +114,8 @@ unverified by these fakes and remains the supplied external contract.
 Command hooks identify the native harness ancestor by executable name and process
 start time, rather than the transient shell parent. An unverifiable owner refuses
 enrollment. No process arguments or foreign process environment are read. Codex
-adds its own `CODEX_THREAD_ID` to the owner so app-server threads are independent;
+requires its own `CODEX_THREAD_ID` in the owner so app-server threads are independent;
+an unavailable thread id refuses enrollment rather than using the new session id.
 OMP owners include the native session id. Claude command hooks keep the native
 process owner across function-hook reloads. Distinct owner scopes in the same cwd
 remain independent. Codex cursor fingerprints change when claim decoding changes.

@@ -621,10 +621,16 @@ function registerSessionStart(on: On, summaryCap: number): void {
     const sessionId = await $.session.id();
     let declaredWorker = false;
     try { declaredWorker = await $.env.get("LCM_SUMMARIZE_WORKER") === "1"; } catch { /* An unavailable declaration cannot enroll a worker. */ }
+    let workerEnrolled = false;
     if (declaredWorker) {
       // SessionStart command hooks are the sole registrar: they receive the native
       // start reason and keep a stable process owner across function-hook reloads.
-      $.ui.log("[lcm] This session and its subagents are not recorded by lcm. The harness's own transcript stays on disk. Use a dedicated session; forking a worker session is unsupported.");
+      const enrollment = await postDaemon($, "/worker-session", {
+        session_id: sessionId, cwd: await $.session.cwd(), client: "claude", declared: true, action: "check",
+      }).catch(() => null);
+      workerEnrolled = enrollment?.enrolled === true && typeof enrollment.warning === "string";
+      if (workerEnrolled) $.ui.log(`[lcm] ${enrollment!.warning}`);
+      else $.ui.log(`[lcm] worker mode refused: ${enrollment?.reason ?? "command-hook enrollment could not be confirmed"}`);
     }
     let claimed = true;
     await claimSession($, sessionId).catch((error: unknown) => {
@@ -646,7 +652,7 @@ function registerSessionStart(on: On, summaryCap: number): void {
     // uncompacted (it ended without SessionEnd). The daemon selects, caps and
     // fires the actual compaction requests; this call only triggers it.
     void $.session.cwd().then((cwd) => postDaemon($, "/session-start-compact", { cwd, session_id: sessionId }));
-    if (!summaryPollerStarted) {
+    if (!summaryPollerStarted && (!declaredWorker || workerEnrolled)) {
       summaryPollerStarted = true;
       void pollSummaries($, summaryCap).catch((error) => {
         $.ui.log(`[lcm] session summarizer stopped: ${String(error)}`);

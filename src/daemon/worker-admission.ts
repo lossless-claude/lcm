@@ -35,9 +35,9 @@ export async function admitWorker(paths: LcmPaths | undefined, input: Record<str
         const dbPath = projectDbPath(cwd, paths); const db = getLcmConnection(dbPath);
         const events = new EventsDb(eventsDbPath(cwd, paths));
         try {
-          events.excludeSessions([sessionId]);
+          events.excludeSessions([sessionId], true);
           const store = new WorkerStore(db);
-          store.exclude(sessionId, cwd, "claude"); store.admitChild(sessionId, cwd, root.owner!);
+          store.exclude(sessionId, cwd, "claude", true); store.admitChild(sessionId, cwd, root.owner!);
           enrolled = store.list().find(worker => worker.session_id === sessionId);
         } finally { events.close(); closeLcmConnection(dbPath); }
         break;

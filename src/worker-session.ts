@@ -20,6 +20,16 @@ export function workerEnrollments(cwd: string, paths: LcmPaths): WorkerEnrollmen
   finally { closeLcmConnection(path, { readOnly: true }); }
 }
 
+/** Only the native transcript walker can establish a descendant whose history may be removed. */
+export function discoveredWorkerDescendant(store: WorkerStore, sessionId: string): boolean {
+  return store.list().some(worker => {
+    if (!worker.owner || worker.client !== "claude") return false;
+    const root = claudeTranscriptPath(worker.cwd, worker.session_id);
+    return Boolean(root && discoverSubagentTranscripts(join(dirname(root), worker.session_id))
+      .some(sub => sub.sessionId === sessionId));
+  });
+}
+
 export function workerExcluded(cwd: string, sessionId: string, paths: LcmPaths, transcriptPath?: string): boolean {
   const path = projectDbPath(cwd, paths);
   if (!existsSync(path)) return false;
@@ -30,12 +40,7 @@ export function workerExcluded(cwd: string, sessionId: string, paths: LcmPaths, 
     const segments = transcriptPath?.split(sep) ?? [];
     const at = segments.indexOf("subagents");
     if (at > 0 && store.excluded(segments[at - 1])) return true;
-    if (!sessionId.startsWith("agent-")) return false;
-    return store.list().some(worker => {
-      const root = claudeTranscriptPath(cwd, worker.session_id);
-      return root && discoverSubagentTranscripts(join(dirname(root), worker.session_id))
-        .some(sub => sub.sessionId === sessionId);
-    });
+    return discoveredWorkerDescendant(store, sessionId);
   } finally { closeLcmConnection(path, { readOnly: true }); }
 }
 

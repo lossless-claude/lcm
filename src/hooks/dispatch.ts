@@ -41,7 +41,7 @@ export async function dispatchHook(
         await finishWorkerSession(paths, input.cwd, input.session_id);
       }
     } catch {
-      console.error("[lcm] worker enrollment refused; no pool payload can be claimed. Use the native harness with lcm hooks, or Claude Code function hooks.");
+      console.error("[lcm] worker enrollment refused; no pool payload can be claimed. Use the native harness with lcm command hooks; function hooks require command-hook enrollment.");
     }
     return { exitCode: 0, stdout: "" };
   }

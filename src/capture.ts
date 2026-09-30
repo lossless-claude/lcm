@@ -1,4 +1,5 @@
 import { WorkerStore } from "./store/worker-store.js";
+import { discoveredWorkerDescendant } from "./worker-session.js";
 import type { DatabaseSync } from "node:sqlite";
 import { statSync } from "node:fs";
 import { sep } from "node:path";
@@ -177,7 +178,11 @@ export class SessionCapture {
    * since the last write reaches its attribution.
    */
   async captureTranscript(input: TranscriptCaptureInput): Promise<TranscriptCaptureResult | undefined> {
-    if (new WorkerStore(this.db).excluded(input.sessionId, input.attribution?.parentSessionId)) return undefined;
+    const workers = new WorkerStore(this.db);
+    if (workers.excluded(input.sessionId, input.attribution?.parentSessionId) || discoveredWorkerDescendant(workers, input.sessionId)) {
+      await this.write({ sessionId: input.sessionId, messages: [], transcriptPath: input.transcriptPath, attribution: input.attribution });
+      return undefined;
+    }
     const source = transcriptSource(input.client);
     const transcriptPath = source.locate(input);
     if (!transcriptPath) return undefined;
@@ -283,13 +288,16 @@ export class SessionCapture {
     const pathSegments = input.transcriptPath?.split(sep) ?? [];
     const rootIndex = pathSegments.indexOf("subagents");
     const directoryParent = rootIndex > 0 ? pathSegments[rootIndex - 1] : undefined;
-    if (workers.excluded(input.sessionId, attribution?.parentSessionId) ||
-        (directoryParent && workers.excluded(directoryParent)) || workers.detectCopiedClaim(input.sessionId, input.messages)) {
+    const ancestryExcluded = workers.excluded(input.sessionId, attribution?.parentSessionId) ||
+      Boolean(directoryParent && workers.excluded(directoryParent));
+    const copiedClaim = !ancestryExcluded && workers.detectCopiedClaim(input.sessionId, input.messages);
+    const discovered = discoveredWorkerDescendant(workers, input.sessionId);
+    if (ancestryExcluded || copiedClaim || discovered) {
       if (this.paths) {
         const events = new EventsDb(eventsDbPathForProject(this.projectId, this.paths));
-        try { events.excludeSessions([input.sessionId]); } finally { events.close(); }
+        try { events.excludeSessions([input.sessionId], discovered); } finally { events.close(); }
       }
-      workers.exclude(input.sessionId);
+      workers.exclude(input.sessionId, "", "claude", discovered);
       return { conversationId: 0, records: [], totalCounts: { gitleaks: 0, builtIn: 0, global: 0, project: 0 } };
     }
     // Only a caller that knows the provenance stamps it; an unknown one is verified on its next Claude capture.

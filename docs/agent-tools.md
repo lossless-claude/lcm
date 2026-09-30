@@ -303,4 +303,5 @@ and `lcm summarize-submit`; Codex supports that pair through `CODEX_THREAD_ID`.
 The `lcm_store` / `lcm store` refusal for declared or excluded workers is a
 client-side guard. A command without the worker environment cannot be detected.
 Environment ids are cooperative identity, not authentication against local processes.
-Worker enrollment and last activity also appear in `lcm_stats` and `lcm_doctor`.
+Worker enrollment and last activity also appear in `lcm_stats` and `lcm_doctor`,
+using the same eight-character hashed worker id as status and CLI stats.

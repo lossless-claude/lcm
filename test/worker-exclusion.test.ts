@@ -23,7 +23,7 @@ describe("permanent worker exclusion", () => {
   });
   afterEach(() => db.close());
 
-  it("cleans captured content and provenanced promotions, preserves the tombstone and unrelated session", async () => {
+  it("copied claims refuse new capture while preserving history outside a discovered worker directory", async () => {
     const old = await capture.write({ sessionId: "worker", messages });
     await capture.write({ sessionId: "ordinary", messages: [{ ...messages[0], content: "ordinary", parts: [] }] });
     const compacted = await new CompactionEngine(capture.conversationStore, capture.summaryStore,
@@ -36,20 +36,18 @@ describe("permanent worker exclusion", () => {
     new PromotedStore(db).insert({ content: "unknown provenance", projectId: "project" });
     expect(db.prepare("SELECT * FROM promoted").all()).toHaveLength(2);
     expect(db.prepare("SELECT * FROM message_parts").all().length).toBeGreaterThan(0);
+    const tables = ["messages", "message_parts", "summaries", "context_items", "messages_fts", "summaries_fts", "promoted", "promoted_fts"];
+    const before = tables.map(table => db.prepare(`SELECT * FROM ${table}`).all());
     const copied = [
       { message: { role: "assistant", content: [{ type: "tool_use", id: "cleanup", name: "lcm_summarize_claim", input: {} }] } },
       { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "cleanup", content: JSON.stringify({ job: { prompt: canary, system: "system" } }) }] } },
     ];
     await capture.write({ sessionId: "worker", messages: copied.map(record => parseClaudeTranscriptRecord(JSON.stringify(record)).message!) });
     expect(workers.live("worker", "/project", "claude")).toBe(false);
-    expect(db.prepare("SELECT content FROM promoted").all()).toEqual([{ content: "unknown provenance" }]);
-    expect(db.prepare("SELECT * FROM message_parts").all()).toEqual([]);
-    for (const table of ["messages", "summaries", "messages_fts", "summaries_fts", "promoted", "promoted_fts"]) {
-      expect(db.prepare(`SELECT 1 FROM ${table} WHERE content LIKE ?`).get(`%${canary}%`), table).toBeUndefined();
-    }
+    expect(tables.map(table => db.prepare(`SELECT * FROM ${table}`).all())).toEqual(before);
     expect(db.prepare("SELECT * FROM session_ingest_log WHERE session_id = 'worker'").get()).toBeDefined();
     expect((await capture.write({ sessionId: "worker", messages })).records).toEqual([]);
-    expect(db.prepare("SELECT content FROM messages").all()).toEqual([{ content: "ordinary" }]);
+    expect(tables.map(table => db.prepare(`SELECT * FROM ${table}`).all())).toEqual(before);
   });
 
   it("revokes the previous id on clear but permanently excludes resumed history and descendants", async () => {
