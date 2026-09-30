@@ -8,6 +8,10 @@ import { WorkerStore } from "../src/store/worker-store.js";
 import { SessionCapture } from "../src/capture.js";
 import { ScrubEngine } from "../src/scrub.js";
 import { PromotedStore } from "../src/db/promoted.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CLAUDE_PARSER_SHAPE } from "../src/transcript.js";
 
 const canary = "FOREIGN_WORKER_CONTENT_685";
 const messages = [{ role: "user" as const, content: canary, tokenCount: 10, parts: [{ type: "text" as const, text: canary }] }];
@@ -138,5 +142,62 @@ describe("permanent worker exclusion", () => {
     workers.register({ sessionId: "parent", cwd: "/project", client: "claude", owner: "hook" });
     expect((await capture.write({ sessionId: "agent-child", messages,
       transcriptPath: "/transcripts/parent/subagents/workflows/agent-child.jsonl" })).records).toEqual([]);
+  });
+});
+
+describe("worker gate on transcript reads", () => {
+  let dir: string;
+  let db: DatabaseSync;
+  let capture: SessionCapture;
+  let workers: WorkerStore;
+  const claimPair = (command: string) => [
+    { message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_claim", name: "Bash", input: { command } }] } },
+    { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_claim",
+      content: JSON.stringify({ job: { id: "job-issued", prompt: canary, system: "system" } }) }] } },
+  ];
+  const writeTranscript = (name: string, records: unknown[]) => {
+    const path = join(dir, `${name}.jsonl`);
+    writeFileSync(path, records.map((record) => JSON.stringify(record)).join("\n") + "\n");
+    return path;
+  };
+  const count = (table: string, sessionId: string) => (db.prepare(
+    `SELECT count(*) AS n FROM ${table} JOIN conversations USING(conversation_id) WHERE session_id = ?`,
+  ).get(sessionId) as { n: number }).n;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "lcm-worker-gate-"));
+    db = new DatabaseSync(join(dir, "db.sqlite"));
+    runLcmMigrations(db, { claudeProjectsDir: "/nonexistent" });
+    capture = new SessionCapture(db, "project", new ScrubEngine([], []));
+    workers = new WorkerStore(db);
+  });
+  afterEach(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
+
+  it("keeps a repairable session's history when its rebuild meets a copied claim", async () => {
+    const turns = [["user", "q1"], ["assistant", "r1"], ["user", "q2"], ["assistant", "r2"]] as const;
+    // Stored history that is not the transcript's prefix, so the session is repairable.
+    await capture.write({ sessionId: "ordinary", parserShape: CLAUDE_PARSER_SHAPE, messages: [
+      { role: "user", content: "q1", tokenCount: 1 }, { role: "assistant", content: "r2", tokenCount: 1 },
+      { role: "user", content: "q2", tokenCount: 1 }, { role: "user", content: "q2", tokenCount: 1 },
+    ] });
+    const path = writeTranscript("ordinary", [
+      ...turns.map(([role, content]) => ({ message: { role, content } })), ...claimPair("lcm summarize-claim"),
+    ]);
+    const before = count("messages", "ordinary");
+
+    const rebuilt = await capture.rebuildTranscript({ sessionId: "ordinary", cwd: dir, transcriptPath: path });
+
+    expect(rebuilt).toMatchObject({ plan: { kind: "unavailable" }, ingested: 0 });
+    expect(count("messages", "ordinary")).toBe(before);
+    expect(workers.get("ordinary")?.exclusion_reason).toBe("copied-claim");
+  });
+
+  it("refuses without excluding a session whose request names another session's transcript", async () => {
+    const path = writeTranscript("worker-session", [{ message: { role: "user", content: "work" } }, ...claimPair("lcm summarize-claim")]);
+
+    const result = await capture.captureTranscript({ sessionId: "victim", cwd: dir, transcriptPath: path });
+
+    expect(result?.records ?? []).toEqual([]);
+    expect(count("messages", "victim")).toBe(0);
+    expect(workers.excluded("victim")).toBe(false);
   });
 });

@@ -99,12 +99,14 @@ export class WorkerStore {
     }
   }
 
-  detectCopiedClaim(sessionId: string, messages: Array<{ workerClaims?: string[]; workerPayloads?: string[] }>): boolean {
-    for (const message of messages) for (const id of message.workerClaims ?? []) {
+  /** `record` keeps this batch's claims for a later payload; only the session's own transcript records. */
+  detectCopiedClaim(sessionId: string, messages: Array<{ workerClaims?: string[]; workerPayloads?: string[] }>, record = true): boolean {
+    const claims = new Set(messages.flatMap(message => message.workerClaims ?? []));
+    if (record) for (const id of claims) {
       this.db.prepare("INSERT OR IGNORE INTO worker_claim_markers(session_id, call_id) VALUES (?, ?)").run(sessionId, id);
     }
     for (const message of messages) for (const id of message.workerPayloads ?? []) {
-      if (this.db.prepare("SELECT 1 FROM worker_claim_markers WHERE session_id = ? AND call_id = ?").get(sessionId, id)) return true;
+      if (claims.has(id) || this.db.prepare("SELECT 1 FROM worker_claim_markers WHERE session_id = ? AND call_id = ?").get(sessionId, id)) return true;
     }
     return false;
   }

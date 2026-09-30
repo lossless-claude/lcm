@@ -2,7 +2,7 @@ import { WorkerStore } from "./store/worker-store.js";
 import { discoverWorkerDescendant, discoveredWorkerDescendant } from "./worker-session.js";
 import type { DatabaseSync } from "node:sqlite";
 import { statSync } from "node:fs";
-import { sep } from "node:path";
+import { basename, sep } from "node:path";
 import { EventsDb } from "./hooks/events-db.js";
 import { eventsDbPathForProject } from "./db/events-path.js";
 import type { LcmPaths } from "./lcm-paths.js";
@@ -108,6 +108,12 @@ export function attributionFromTranscriptPath(transcriptPath: string): SubagentA
   const subagentsIndex = segments.lastIndexOf("subagents");
   if (subagentsIndex < 1) return undefined;
   return readSubagentAttribution(transcriptPath, segments[subagentsIndex - 1]);
+}
+
+/** A Claude transcript is `<session>.jsonl`; a Codex rollout ends in `-<session>.jsonl`. */
+function transcriptNamesSession(transcriptPath: string, sessionId: string): boolean {
+  const name = basename(transcriptPath);
+  return name === `${sessionId}.jsonl` || name.endsWith(`-${sessionId}.jsonl`);
 }
 
 /**
@@ -282,17 +288,27 @@ export class SessionCapture {
       invalidateClaudeTranscriptCursor(this.db, input.sessionId);
       const plan = await planSessionRebuild(this.db, input.sessionId, delta?.messages, scrub, () => legacy);
       if (plan.kind !== "repairable" || plan.conversationId === undefined || !delta) return { plan, ingested: 0 };
-      clearConversationForRebuild(this.db, plan.conversationId, input.sessionId);
-      const written = await this.writeInTransaction({
+      const rebuild: CaptureInput = {
         sessionId: input.sessionId, messages: delta.messages, parserShape: CLAUDE_PARSER_SHAPE,
         transcriptPath, attribution: input.attribution,
-      }, discoveredCwd);
+      };
+      // The gate runs before the clear: a session it refuses keeps its stored history.
+      if (this.refusedByWorkerGate(rebuild, discoveredCwd)) return {
+        plan: { kind: "unavailable", sessionId: input.sessionId, reason: "Worker session is excluded" } as SessionRebuildPlan, ingested: 0,
+      };
+      clearConversationForRebuild(this.db, plan.conversationId, input.sessionId);
+      const written = await this.writeInTransaction(rebuild, discoveredCwd);
       this.conversationStore.setParserShape(plan.conversationId, CLAUDE_PARSER_SHAPE);
       return { plan, ingested: written.records.length };
     });
   }
 
-  private async writeInTransaction(input: CaptureInput, discoveredCwd?: string): Promise<CaptureResult> {
+  /**
+   * The worker gate every write passes; true when it refuses the write. A copied claim in the
+   * session's own transcript, or disk discovery, installs the permanent exclusion. Supplied
+   * ancestry, or a claim read from a transcript named for another session, only refuses.
+   */
+  private refusedByWorkerGate(input: CaptureInput, discoveredCwd?: string): boolean {
     const attribution = input.attribution
       ?? (input.transcriptPath ? attributionFromTranscriptPath(input.transcriptPath) : undefined);
     const workers = new WorkerStore(this.db);
@@ -301,19 +317,26 @@ export class SessionCapture {
     const directoryParent = rootIndex > 0 ? pathSegments[rootIndex - 1] : undefined;
     const ancestryExcluded = workers.excluded(input.sessionId, attribution?.parentSessionId) ||
       Boolean(directoryParent && workers.excluded(directoryParent));
-    const copiedClaim = !ancestryExcluded && workers.detectCopiedClaim(input.sessionId, input.messages);
+    const ownTranscript = !input.transcriptPath || transcriptNamesSession(input.transcriptPath, input.sessionId);
+    const copiedClaim = !ancestryExcluded && workers.detectCopiedClaim(input.sessionId, input.messages, ownTranscript);
     const discovered = discoveredCwd !== undefined || discoveredWorkerDescendant(workers, input.sessionId);
-    if (ancestryExcluded || copiedClaim || discovered) {
-      // Supplied ancestry can refuse this write, but cannot install a permanent gate.
-      if (copiedClaim || discovered) {
-        if (this.paths) {
-          const events = new EventsDb(eventsDbPathForProject(this.projectId, this.paths));
-          try { events.excludeSessions([input.sessionId], discovered); } finally { events.close(); }
-        }
-        workers.exclude(input.sessionId, discoveredCwd ?? workers.get(input.sessionId)?.cwd ?? input.cwd ?? "", "claude", discovered, copiedClaim);
+    if (!ancestryExcluded && !copiedClaim && !discovered) return false;
+    if ((copiedClaim && ownTranscript) || discovered) {
+      if (this.paths) {
+        const events = new EventsDb(eventsDbPathForProject(this.projectId, this.paths));
+        try { events.excludeSessions([input.sessionId], discovered); } finally { events.close(); }
       }
+      workers.exclude(input.sessionId, discoveredCwd ?? workers.get(input.sessionId)?.cwd ?? input.cwd ?? "", "claude", discovered, copiedClaim && ownTranscript);
+    }
+    return true;
+  }
+
+  private async writeInTransaction(input: CaptureInput, discoveredCwd?: string): Promise<CaptureResult> {
+    if (this.refusedByWorkerGate(input, discoveredCwd)) {
       return { conversationId: 0, records: [], totalCounts: { gitleaks: 0, builtIn: 0, global: 0, project: 0 } };
     }
+    const attribution = input.attribution
+      ?? (input.transcriptPath ? attributionFromTranscriptPath(input.transcriptPath) : undefined);
     // Only a caller that knows the provenance stamps it; an unknown one is verified on its next Claude capture.
     const parserShape = input.parserShape ?? null;
     const conversation = await this.conversationStore.getOrCreateConversation(input.sessionId, undefined, attribution, parserShape);
