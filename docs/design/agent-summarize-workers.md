@@ -73,7 +73,7 @@ recovery. Recovery cleans the main store and event sidecar and grants no admissi
 Pool provider ids accept a validated model suffix. Missing usage is estimated from
 the system, prompt and answer. `llm.poolCompletionMs` / `LCM_POOL_COMPLETION_MS`
 bounds completion after claim, default 180000 ms. The queue claim deadline remains
-20000 ms, and session-owned jobs retain their total deadline. Pool expiry records
+20000 ms, and session-owned jobs get a fresh 60000 ms completion deadline after claim. Pool expiry records
 abandoned enrollment without removing exclusion; late answers are discarded and
 the provider chain handles unanswered work.
 

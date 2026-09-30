@@ -39,7 +39,7 @@ function invoke(handler: ReturnType<typeof createNextSummarizeJobHandler>, url: 
 async function fixture(completionMs = 180_000) {
   const cwd = mkdtempSync(join(tmpdir(), "lcm-agent-worker-")); dirs.push(cwd);
   const paths = createLcmPaths(join(cwd, "lcm"));
-  const store = new SummarizeJobStore(10000, 0, 60000, completionMs, binding => abandonWorker(paths, binding)); stores.push(store);
+  const store = new SummarizeJobStore(10000, 0, 60000, completionMs, undefined, { onWorkerExpired: binding => abandonWorker(paths, binding) }); stores.push(store);
   const next = createNextSummarizeJobHandler(store, paths);
   const answer = createAnswerSummarizeJobHandler(store, paths);
   const client = {

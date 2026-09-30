@@ -1,4 +1,4 @@
-# Run replay with summarize workers
+# Run replay and evaluation with summarize workers
 
 Dedicated interactive sessions can summarize replay work from any project through
 lcm's existing pool. Claude Code and OMP also have isolated completion hooks.
@@ -121,8 +121,8 @@ configured provider unless the pool is explicitly selected there too.
 A queued job has 20 seconds to be claimed. After claim, `llm.poolCompletionMs`
 sets the completion deadline, default 180000 ms (3 minutes).
 `LCM_POOL_COMPLETION_MS` overrides it in the daemon's environment. It applies to
-all pool transports and isolated hook workers; a session-owned job retains its
-20-second total deadline. Expiry falls along the configured provider chain, marks
+all pool transports and isolated hook workers; a session-owned job gets a fresh
+60-second completion deadline after claim. Expiry falls along the configured provider chain, marks
 that worker abandoned, and discards late submissions. Exclusion stays permanent.
 
 Run at least as many workers as concurrent projects. Named configuration uses
@@ -130,6 +130,25 @@ Run at least as many workers as concurrent projects. Named configuration uses
 unset. To fail an unavailable pool without a process fallback, use flat
 `llm.fallbackProvider: "disabled"`, or an empty named fallback list. See
 [configuration](configuration.md#summarize-worker-pool).
+
+## Compare workers with endpoints
+
+With the daemon and one or more workers running, evaluate a stored session:
+
+```sh
+lcm eval summarizer --session <id> --models session-pool,local --out ./comparison
+```
+
+`local` names an endpoint in `llm.providers`; `session-pool` needs no endpoint
+entry. Evaluation sends isolated pool jobs through the authenticated daemon
+route, keeping compaction in the eval process and the project database read-only.
+Unlike replay, it never falls back: no claim within 20 s fails the pool candidate
+with worker startup instructions, while other candidates complete. Claimed jobs
+have 3 minutes to answer. Reports attribute usage to `session-pool:<model>`.
+The live `session` provider is rejected. See
+[compare summarizers](summarizer-compare.md) for report details.
+
+## Transcript hygiene and hosts
 
 The pool round-trip tests use the real provider, job store, routes and hook modules
 with fake completions. Canary tests cover capture, events, promotions, restart,

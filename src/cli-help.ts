@@ -303,7 +303,7 @@ const HELP: Record<string, CommandHelp> = {
     usage: "lcm eval summarizer --session <id> --models <endpoint>,<endpoint> [options]",
     options: [
       ["--session <id>", "Stored session id (latest conversation after a clear)"],
-      ["--models <endpoints>", "Comma-separated named endpoints from llm.providers; run sequentially"],
+      ["--models <endpoints>", "Comma-separated names from llm.providers or session-pool; run sequentially"],
       ["--project <path>", "Project directory (default: cwd)"],
       ["--runs <n>", "Positive number of repeats per session and endpoint (default: 1)"],
       ["--out <dir>", "Local directory for report.json and report.html (default: summarizer-report)"],
@@ -312,8 +312,9 @@ const HELP: Record<string, CommandHelp> = {
     examples: [
       ["lcm eval summarizer --session <id> --models local,hosted --out ./comparison", "Compare two configured endpoints"],
       ["lcm eval summarizer --session <id> --models local --runs 3 --no-planted", "Repeat on the stored session only"],
+      ["lcm eval summarizer --session <id> --models session-pool,local", "Compare a dedicated worker with an endpoint"],
     ],
-    notes: "Calls the configured endpoints and may incur their normal charges. Reports contain conversation content already scrubbed at capture: keep them local. Compaction uses production settings and effective project language in memory. Unsupported details are a deterministic hint, not proof of hallucination. Unknown cost is null, never free. A live session provider cannot be evaluated here.",
+    notes: "Calls the configured endpoints and may incur their normal charges. Reports contain conversation content already scrubbed at capture: keep them local. Compaction uses production settings and effective project language in memory. Unsupported details are a deterministic hint, not proof of hallucination. Unknown cost is null, never free. For session-pool, keep the daemon and a dedicated worker running: CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 LCM_SUMMARIZE_WORKER=1 LCM_SUMMARIZE_WORKER_MODEL=haiku claude (or LCM_SUMMARIZE_WORKER=1 LCM_SUMMARIZE_WORKER_MODEL=haiku omp). See docs/summarize-workers.md. Pool calls use daemon authentication, have no fallback, and fail if no worker claims within 20 s. Usage names the answering session-pool:<model>. The session provider stays rejected.",
   },
 
   sensitive: {

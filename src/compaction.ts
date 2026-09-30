@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { ConversationStore, CreateMessagePartInput } from "./store/conversation-store.js";
 import type { SummaryStore, SummaryRecord, ContextItemRecord } from "./store/summary-store.js";
 import { extractFileIdsFromContent } from "./large-files.js";
@@ -163,12 +163,12 @@ function shortTzAbbr(value: Date, timezone: string): string {
   }
 }
 
-/** Generate a deterministic summary ID from content + timestamp. */
+/** A summary id; unique even for identical content summarized in the same millisecond. */
 function generateSummaryId(content: string): string {
   return (
     "sum_" +
     createHash("sha256")
-      .update(content + Date.now().toString())
+      .update(content + Date.now().toString() + randomUUID())
       .digest("hex")
       .slice(0, 16)
   );
