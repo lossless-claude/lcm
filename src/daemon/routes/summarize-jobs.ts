@@ -1,5 +1,5 @@
 import { sendJson, type RouteHandler } from "../server.js";
-import { SummarizeJobStore, type JobAnswer } from "../summarize-jobs.js";
+import { SummarizeJobStore, type SummarizeJob, type JobAnswer } from "../summarize-jobs.js";
 
 export function createNextSummarizeJobHandler(store: SummarizeJobStore): RouteHandler {
   return async (req, res) => {
@@ -52,5 +52,28 @@ export function createAnswerSummarizeJobHandler(store: SummarizeJobStore): Route
     const result = store.answer(id, { ...answer, text: answer.text?.trim() });
     sendJson(res, result === "missing" ? 404 : 200,
       result === "missing" ? { error: "job not found" } : { discarded: result === "discarded" });
+  };
+}
+
+/** Submit an isolated pool call; no project store or compaction is opened here. */
+export function createPoolSummarizeJobHandler(store: SummarizeJobStore): RouteHandler {
+  return async (_req, res, body) => {
+    let input: Partial<SummarizeJob> | null;
+    try { input = JSON.parse(body); } catch { sendJson(res, 400, { error: "invalid JSON" }); return; }
+    if (!input || typeof input !== "object" ||
+        typeof input.session_id !== "string" || !input.session_id.trim() ||
+        (input.kind !== "leaf" && input.kind !== "condensed") ||
+        typeof input.system !== "string" || !input.system.trim() ||
+        typeof input.prompt !== "string" || !input.prompt.trim() ||
+        !Number.isSafeInteger(input.depth) || input.depth! < 0 ||
+        !Number.isSafeInteger(input.targetTokens) || input.targetTokens! <= 0 ||
+        !Number.isSafeInteger(input.maxTokens) || input.maxTokens! <= 0) {
+      sendJson(res, 400, { error: "invalid pool job" }); return;
+    }
+    const answer = await store.enqueue({
+      session_id: input.session_id, kind: input.kind, depth: input.depth!,
+      system: input.system, prompt: input.prompt, targetTokens: input.targetTokens!, maxTokens: input.maxTokens!, pool: true,
+    });
+    sendJson(res, 200, answer);
   };
 }

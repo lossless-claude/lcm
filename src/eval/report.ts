@@ -71,6 +71,7 @@ export function renderComparison(report: ComparisonReport): string {
       <div class="call-meta">Call ${callIndex + 1}${call.aggressive ? " · aggressive" : ""} · ${number(call.latencyMs)} ms · ${call.unsupportedDetails.length} unsupported
       <br>Prefill / decode: ${number(call.prefillMs ?? null)} / ${number(call.decodeMs ?? null)} ms</div>
       ${call.attempts.map((attempt, index) => `<div class="call-meta">Attempt ${index + 1} · ${number(attempt.latencyMs)} ms${attempt.error ? ` · ${escapeHtml(attempt.error)}` : ""}</div>`).join("")}
+      ${call.usages.map((usage) => `<div class="call-meta">Usage · ${escapeHtml(usage.provider)} · ${number(usage.inputTokens ?? null)} / ${number(usage.outputTokens ?? null)} tokens${usage.failed ? " · failed" : ""}</div>`).join("")}
       ${call.error ? `<p class="error">${escapeHtml(call.error)}</p>` : ""}
       <pre>${highlight(call.output ?? "No summary returned.", call.unsupportedDetails)}</pre>`).join("")}</article>`).join("")}</div>
     </section>`).join("");
