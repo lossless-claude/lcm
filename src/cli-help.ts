@@ -277,6 +277,24 @@ const HELP: Record<string, CommandHelp> = {
     notes: "Codex defaults to native lifecycle hooks; review their trust in Codex /hooks after installation. Installation alone does not prove activation. Optional types: 'rules' (instructions), 'mcp' (server), 'skill' (guidance). Codex MCP setup remains manual. GitHub Copilot defaults to a repo-local skill. Oh My Pi defaults to a hook module written to <agent dir>/hooks/post/lcm.ts or <project>/.omp/hooks/post/lcm.ts; OMP loads it for every session of that agent directory, and its activation cannot be confirmed from the filesystem either.",
   },
 
+  eval: {
+    summary: "Compare summarizer endpoints on a stored session without writing its database.",
+    usage: "lcm eval summarizer --session <id> --models <endpoint>,<endpoint> [options]",
+    options: [
+      ["--session <id>", "Stored session id (latest conversation after a clear)"],
+      ["--models <endpoints>", "Comma-separated named endpoints from llm.providers; run sequentially"],
+      ["--project <path>", "Project directory (default: cwd)"],
+      ["--runs <n>", "Positive number of repeats per session and endpoint (default: 1)"],
+      ["--out <dir>", "Local directory for report.json and report.html (default: summarizer-report)"],
+      ["--no-planted", "Omit the default synthetic planted-facts session"],
+    ],
+    examples: [
+      ["lcm eval summarizer --session <id> --models local,hosted --out ./comparison", "Compare two configured endpoints"],
+      ["lcm eval summarizer --session <id> --models local --runs 3 --no-planted", "Repeat on the stored session only"],
+    ],
+    notes: "Calls the configured endpoints and may incur their normal charges. Reports contain conversation content already scrubbed at capture: keep them local. Compaction uses production settings and effective project language in memory. Unsupported details are a deterministic hint, not proof of hallucination. Unknown cost is null, never free. A live session provider cannot be evaluated here.",
+  },
+
   sensitive: {
     summary: "Manage sensitive patterns for automatic redaction before memory storage.",
     usage: "lcm sensitive <list|add|remove|test|purge> [options]",
@@ -418,6 +436,7 @@ const GROUPS = [
       { name: "daemon start|stop|restart", summary: "Manage the context daemon" },
       { name: "status [--json]", summary: "Daemon status and project memory stats" },
       { name: "doctor", summary: "Diagnostics: daemon, hooks, MCP, summarizer" },
+      { name: "eval summarizer", summary: "Compare summarizers in a local JSON and HTML report" },
       { name: "mcp", summary: "Start the MCP server (stdio transport)" },
     ],
   },

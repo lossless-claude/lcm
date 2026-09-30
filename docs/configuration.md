@@ -253,6 +253,16 @@ Captured messages and existing summaries are never rewritten or regenerated.
 
 ## Model selection
 
+Use [the summarizer comparison command](summarizer-compare.md) to compare named
+endpoints on one stored session before selecting a model. It writes local JSON
+and HTML reports using production compaction in memory; the project database is
+read-only.
+
+```sh
+lcm eval summarizer --session <id> --models local,hosted --runs 2 --out ./comparison
+lcm eval summarizer --session <id> --models local --project /path/to/project --no-planted
+```
+
 LCM defaults to `LCM_SUMMARY_PROVIDER=auto`.
 
 - In Claude sessions, `auto` resolves to `claude-process`
