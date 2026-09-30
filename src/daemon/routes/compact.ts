@@ -317,8 +317,9 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     const input = JSON.parse(body || "{}");
     const { session_id, transcript_path, skip_ingest, client, previous_summary } = input;
     if (input.replay_provider !== undefined &&
-        (input.replay_provider !== "session-pool" || skip_ingest !== true || input.capture_required === true || input.precompact_verified === true)) {
-      sendJson(res, 400, { error: "replay_provider requires session-pool and skip_ingest, without live PreCompact capture" });
+        (input.replay_provider !== "session-pool" || skip_ingest !== true || input.capture_required === true
+          || input.precompact_verified === true || input.work_class === "live")) {
+      sendJson(res, 400, { error: "replay_provider requires session-pool and skip_ingest, without live work" });
       return;
     }
     const captureRequired = input.capture_required === true;

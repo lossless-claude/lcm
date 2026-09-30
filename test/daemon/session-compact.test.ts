@@ -89,6 +89,7 @@ it.each([
   { skip_ingest: false },
   { skip_ingest: true, capture_required: true },
   { skip_ingest: true, precompact_verified: true },
+  { skip_ingest: true, work_class: "live" },
 ])("rejects a replay pool override on live capture requests: %j", async (flags) => {
   const config = loadDaemonConfig("/x", {}, {});
   const handler = createCompactHandler(config, paths);

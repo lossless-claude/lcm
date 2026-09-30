@@ -42,8 +42,8 @@ provider-chain fallback; no persistent queue or additional endpoint semaphore is
 needed, because each polling worker already serializes its calls.
 
 `--replay-provider session-pool` on import or batch compact sends the provider
-selection on only those `/compact` requests. Hook capture paths reject that
-selection. `--parallel N` bounds concurrent projects; `runReplayProjects` keeps
+selection on only those `/compact` requests. Hook capture paths and requests
+marked `work_class: "live"` reject that selection. `--parallel N` bounds concurrent projects; `runReplayProjects` keeps
 each project's ordered sessions serial. Project grouping uses the daemon's
 canonical project id, so path aliases stay serialized. Import also serializes
 separate host lists belonging to the same project, retaining their existing manifests and
