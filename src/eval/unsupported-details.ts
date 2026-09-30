@@ -9,14 +9,16 @@ export type UnsupportedDetail = {
 export function findUnsupportedDetails(source: string, summary: string): UnsupportedDetail[] {
   const patterns: Array<[UnsupportedDetail["kind"], RegExp]> = [
     ["quoted", /"[^"\n]+"|(?<!\w)'[^'\n]+'(?!\w)|`[^`\n]+`|“[^”\n]+”/g],
-    ["path", /(?:[A-Za-z]:\\|(?:\.{1,2}|~)?\/)[\w.\-/\\]+|\b[\w.-]+(?:\/[\w.-]+)+|\b[\w-]+\.(?:ts|tsx|js|jsx|json|yaml|yml|md|py|go|rs|sqlite|sql|txt)\b/g],
-    ["identifier", /\b(?:[a-zA-Z_$][\w$]*[_$][\w$]+|[a-z]+[A-Z][\w$]*|[A-Z][a-z]+[A-Z][\w$]*|[A-Z]{2,}[\w$]*|[a-zA-Z]+(?:-[a-zA-Z]+)+)\b/g],
+    ["path", /(?<![\w.-])(?:[A-Za-z]:\\|(?:\.{1,2}|~)?\/)[\w.\-/\\]+|\b[\w.-]+(?:\/[\w.-]+)+|\b[\w-]+\.(?:ts|tsx|js|jsx|json|yaml|yml|md|py|go|rs|sqlite|sql|txt)\b/g],
+    ["identifier", /(?<![\w-])--[a-zA-Z][\w-]*|\b[a-zA-Z_$][\w$]*(?:\.[a-zA-Z_$][\w$]*)+\b|\b[a-zA-Z_$][\w$]*(?=\()|\b(?:[a-zA-Z_$][\w$]*[_$][\w$]+|[a-z]+[A-Z][\w$]*|[A-Z][a-z]+[A-Z][\w$]*|[A-Z]{2,}[\w$]*)\b/g],
     ["number", /(?<![\w$])(?:0x[\da-fA-F]+|\d+(?:\.\d+)?)(?![\w$])/g],
   ];
   const occupied: Array<{ start: number; end: number }> = [];
   const unsupported: UnsupportedDetail[] = [];
   for (const [kind, pattern] of patterns) {
     for (const match of summary.matchAll(pattern)) {
+      if (kind === "path" && match[0].includes("/")
+        && match[0].split("/").every((segment) => /^[A-Za-z]+(?:-[A-Za-z]+)*$/.test(segment))) continue;
       const start = match.index;
       const end = start + match[0].length;
       if (occupied.some((span) => start < span.end && end > span.start)) continue;

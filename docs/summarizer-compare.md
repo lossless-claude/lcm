@@ -91,7 +91,12 @@ Per run, the comparison records:
 - Unsupported details: numbers, paths, code-shaped identifiers and quoted strings
   absent from that call's source chunk, highlighted in the HTML.
 
-The unsupported-detail count is a deterministic hint, not proof of hallucination.
+The unsupported-detail count includes numbers, quoted strings, paths with an
+extension, a leading `/`, `./`, `../` or `~` (or a Windows drive prefix), or a
+segment that is not a plain word, and code-shaped identifiers: underscores,
+camelCase, dotted members, calls and flags such as `--no-planted`. Plain hyphenated
+words and slash-joined plain words are excluded, including capitalized variants.
+The count is a deterministic hint, not proof of hallucination.
 It compares exact text, is case-sensitive, and counts non-overlapping occurrences.
 A path or quoted span is counted once rather than counting its internal numbers
 and identifiers again. Paraphrases can lose a match; continuity from the preceding
