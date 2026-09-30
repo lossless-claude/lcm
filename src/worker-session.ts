@@ -1,6 +1,6 @@
 import { validateCwd } from "./daemon/validate-cwd.js";
-import { existsSync } from "node:fs";
-import { dirname, join, sep } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { dirname, join, resolve, sep } from "node:path";
 import type { LcmPaths } from "./lcm-paths.js";
 import { getLcmConnection, closeLcmConnection } from "./db/connection.js";
 import { runLcmMigrations } from "./db/migration.js";
@@ -20,14 +20,30 @@ export function workerEnrollments(cwd: string, paths: LcmPaths): WorkerEnrollmen
   finally { closeLcmConnection(path, { readOnly: true }); }
 }
 
-/** Only the native transcript walker can establish a descendant whose history may be removed. */
+/** The hot path consults only discovery already recorded in the enrollment table. */
 export function discoveredWorkerDescendant(store: WorkerStore, sessionId: string): boolean {
-  return store.list().some(worker => {
-    if (!worker.owner || worker.client !== "claude") return false;
-    const root = claudeTranscriptPath(worker.cwd, worker.session_id);
-    return Boolean(root && discoverSubagentTranscripts(join(dirname(root), worker.session_id))
-      .some(sub => sub.sessionId === sessionId));
-  });
+  return store.get(sessionId)?.exclusion_reason === "discovered-descendant";
+}
+
+/** Native discovery is scoped to the supplied file's enrolled root, before a write transaction. */
+export function discoverWorkerDescendant(store: WorkerStore, sessionId: string, transcriptPath?: string): string | undefined {
+  const existing = store.get(sessionId);
+  if (existing?.exclusion_reason === "discovered-descendant") return existing.cwd;
+  if (!transcriptPath) return undefined;
+  let path: string;
+  try { path = realpathSync(resolve(transcriptPath)); } catch { return undefined; }
+  const segments = path.split(sep);
+  const at = segments.indexOf("subagents");
+  if (at < 1) return undefined;
+  const worker = store.get(segments[at - 1]);
+  if (!worker?.owner || worker.client !== "claude") return undefined;
+  const root = claudeTranscriptPath(worker.cwd, worker.session_id);
+  if (!root) return undefined;
+  let sessionDir: string;
+  try { sessionDir = realpathSync(join(dirname(root), worker.session_id)); } catch { return undefined; }
+  if (!path.startsWith(join(sessionDir, "subagents") + sep)) return undefined;
+  return discoverSubagentTranscripts(sessionDir).some(sub => sub.sessionId === sessionId && sub.path === path)
+    ? worker.cwd : undefined;
 }
 
 export function workerExcluded(cwd: string, sessionId: string, paths: LcmPaths, transcriptPath?: string): boolean {
@@ -40,7 +56,7 @@ export function workerExcluded(cwd: string, sessionId: string, paths: LcmPaths, 
     const segments = transcriptPath?.split(sep) ?? [];
     const at = segments.indexOf("subagents");
     if (at > 0 && store.excluded(segments[at - 1])) return true;
-    return discoveredWorkerDescendant(store, sessionId);
+    return false;
   } finally { closeLcmConnection(path, { readOnly: true }); }
 }
 

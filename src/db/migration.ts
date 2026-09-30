@@ -939,8 +939,13 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
   db.exec(`CREATE TABLE IF NOT EXISTS summarize_workers (
     session_id TEXT PRIMARY KEY, cwd TEXT NOT NULL, client TEXT NOT NULL,
     owner TEXT, state TEXT NOT NULL CHECK(state IN ('active', 'finished', 'abandoned')),
+    exclusion_reason TEXT,
     last_activity TEXT NOT NULL DEFAULT (datetime('now'))
   );`);
+  const workerColumns = db.prepare("PRAGMA table_info(summarize_workers)").all() as Array<{ name: string }>;
+  if (!workerColumns.some(column => column.name === "exclusion_reason")) {
+    db.exec("ALTER TABLE summarize_workers ADD COLUMN exclusion_reason TEXT");
+  }
 
   // Session ingest log — tracks which sessions are fully ingested
   db.exec(`

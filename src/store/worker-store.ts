@@ -6,6 +6,7 @@ export { WORKER_WARNING } from "../worker-warning.js";
 export type WorkerEnrollment = {
   session_id: string; cwd: string; client: string; owner: string | null;
   state: "active" | "finished" | "abandoned"; last_activity: string;
+  exclusion_reason: "copied-claim" | "discovered-descendant" | null;
 };
 
 /** Admission is live; capture exclusion is permanent, including recovered descendants. */
@@ -14,7 +15,20 @@ export class WorkerStore {
 
   list(): WorkerEnrollment[] {
     if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'summarize_workers'").get()) return [];
-    return this.db.prepare("SELECT session_id, cwd, client, owner, state, last_activity FROM summarize_workers ORDER BY session_id").all() as WorkerEnrollment[];
+    return this.db.prepare(`SELECT session_id, cwd, client, owner, state, last_activity, ${this.reasonColumn()}
+      FROM summarize_workers ORDER BY session_id`).all() as WorkerEnrollment[];
+  }
+
+  get(sessionId: string): WorkerEnrollment | undefined {
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'summarize_workers'").get()) return undefined;
+    return this.db.prepare(`SELECT session_id, cwd, client, owner, state, last_activity, ${this.reasonColumn()}
+      FROM summarize_workers WHERE session_id = ?`).get(sessionId) as WorkerEnrollment | undefined;
+  }
+
+  /** Diagnostic reads also support a database not yet migrated by this version. */
+  private reasonColumn(): string {
+    const columns = this.db.prepare("PRAGMA table_info(summarize_workers)").all() as Array<{ name: string }>;
+    return columns.some(column => column.name === "exclusion_reason") ? "exclusion_reason" : "NULL AS exclusion_reason";
   }
 
   excluded(sessionId: string, parentSessionId?: string | null): boolean {
@@ -96,9 +110,13 @@ export class WorkerStore {
   }
 
   /** Caller holds a write transaction; refusal preserves history unless disk discovery permits cleanup. */
-  exclude(sessionId: string, cwd = "", client = "claude", purgeHistory = false): void {
+  exclude(sessionId: string, cwd = "", client = "claude", purgeHistory = false, copiedClaim = false): void {
     this.db.prepare(`INSERT OR IGNORE INTO summarize_workers(session_id, cwd, client, state)
       VALUES (?, ?, ?, 'abandoned')`).run(sessionId, cwd, client);
+    if (purgeHistory || copiedClaim) {
+      this.db.prepare("UPDATE summarize_workers SET exclusion_reason = ?, cwd = ? WHERE session_id = ?")
+        .run(purgeHistory ? "discovered-descendant" : "copied-claim", cwd, sessionId);
+    }
     if (!purgeHistory) {
       this.db.prepare("INSERT OR IGNORE INTO session_ingest_log(session_id) VALUES (?)").run(sessionId);
       return;

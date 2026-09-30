@@ -63,20 +63,32 @@ ids provide cooperative identity, not authentication against local processes.
 A new id after Claude `/clear` revokes the preceding id under the stable native
 process owner. Function-hook reloads do not change that enrollment. Function hooks
 confirm live command-hook enrollment before displaying the exclusion warning or
-polling for worker jobs; an unconfirmed enrollment reports refusal with its reason.
+polling for worker jobs. Confirmation retries with a short backoff for about 30 seconds
+to allow the command hook to register; an unconfirmed enrollment reports refusal with its reason.
 Two npm-installed Claude workers nested under one native `claude` process share
 that owner, so a `/clear` in either ends both workers' admission. This is denial
 of service, not a leak: permanent capture exclusion remains in place.
 Codex owners require the native thread id, refusing enrollment when it is absent,
-so another app-server thread stays active. OMP's
+so another app-server thread stays active. Codex `/clear` revocation assumes
+`CODEX_THREAD_ID` stays stable across a clear; this host behavior is unverified.
+Codex shell commands read the current thread id on every claim and submission,
+and Codex MCP is refused, so a stale id has no supported transport. OMP's
 native hook requires a fresh session that `isSessionOnDisk()` reports as false;
 resume and clears that retain the id cannot enroll. Finishing or abandonment never
 re-enables capture. Status, doctor and stats show a shortened worker id, enrollment
-state and last activity. Copied successful MCP or CLI claim markers trigger
-recovery exclusion; they never authorize a claim or deletion. Only descendants
+state and last activity. A copied successful MCP or CLI claim result carrying a
+job payload stops future capture while preserving already stored history; it never
+authorizes a claim or deletion. A refused claim or bare command invocation does
+not exclude an ordinary session. `lcm doctor` reports copied-claim detection with
+the short worker id and cwd so the user can review retained history and decide
+whether to remove it. Only descendants
 discovered on disk under an enrolled worker's own Claude `subagents/` transcript
 location permit cleanup. Request or stored ancestry and arbitrary transcript paths
-may refuse new capture while preserving existing history. Descendant cleanup removes
+may refuse the current write while preserving existing history. A request-supplied
+parent never changes enrollment, installs a permanent exclusion or prevents later
+ordinary capture. Scan and transcript capture record verified descendants; hot-path
+checks consult those records and enrollment without walking worker directories.
+Native discovery runs before the write transaction. Descendant cleanup removes
 messages and parts, context items, summaries and links, full-text rows, events
 and provenanced promotions. Promotions without provenance remain unattributable.
 See [the design](design/agent-summarize-workers.md).

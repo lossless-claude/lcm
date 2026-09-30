@@ -24,6 +24,9 @@ import { getLcmConnection, closeLcmConnection } from "../src/db/connection.js";
 import { claudeTranscriptPath, projectDbPath } from "../src/daemon/project.js";
 import { WorkerStore } from "../src/store/worker-store.js";
 import { PromotedStore } from "../src/db/promoted.js";
+import * as subagentDiscovery from "../src/subagent-attribution.js";
+import { discoverWorkerDescendant, workerExcluded } from "../src/worker-session.js";
+import { scanForTranscripts } from "../src/daemon/server.js";
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach(dir => rmSync(dir, { recursive: true, force: true })));
@@ -89,7 +92,7 @@ it("a capture racing registration cannot write a foreign-content canary", async 
   } finally { closeLcmConnection(path); }
 });
 
-it("disk-discovered worker descendants lose captured history and sidecar canaries", async () => {
+it.each(["ingest", "scan"])("disk-discovered worker descendants lose captured history and sidecar canaries through %s", async source => {
   const cwd = mkdtempSync(join(tmpdir(), "lcm-worker-recovery-")); dirs.push(cwd);
   const paths = createLcmPaths(join(cwd, "lcm"));
   await registerWorkerSession(paths, { sessionId: "root", cwd, client: "claude", owner: "hook" });
@@ -111,16 +114,52 @@ it("disk-discovered worker descendants lose captured history and sidecar canarie
     const root = claudeTranscriptPath(realpathSync(cwd), "root")!;
     const childDir = join(dirname(root), "root", "subagents", "workflows");
     mkdirSync(childDir, { recursive: true });
+    writeFileSync(root, "{}\n");
     writeFileSync(join(childDir, "agent-fork.jsonl"), "{}\n");
-    await invokeRoute(createIngestHandler(loadDaemonConfig("/nonexistent", {}, {}), paths), {
-      cwd, session_id: "agent-fork", messages: [{ role: "user", content: "new content", tokenCount: 1 }],
+    expect(discoverWorkerDescendant(new WorkerStore(db), "agent-fork", join(childDir, "agent-fork.jsonl"))).toBe(realpathSync(cwd));
+    const nativeDiscovery = subagentDiscovery.discoverSubagentTranscripts;
+    const discovery = vi.spyOn(subagentDiscovery, "discoverSubagentTranscripts");
+    discovery.mockImplementation((...args) => {
+      expect(db.isTransaction).toBe(false);
+      return nativeDiscovery(...args);
     });
+    try {
+      const config = loadDaemonConfig("/nonexistent", {}, {});
+      const ingest = createIngestHandler(config, paths);
+      if (source === "scan") await scanForTranscripts(config, paths, ingest);
+      else expect(await invokeRoute(ingest, { cwd, session_id: "root", messages: [{ role: "user", content: "ignored", tokenCount: 1 }] }))
+        .toMatchObject({ ingested: 0 });
+      expect(discovery).toHaveBeenCalled();
+      expect(new WorkerStore(db).excluded("agent-fork")).toBe(true);
+      discovery.mockClear();
+      expect(workerExcluded(cwd, "agent-fork", paths)).toBe(true);
+      expect((await capture.write({ sessionId: "agent-fork", messages: [{ role: "user", content: "new content", tokenCount: 1 }] })).records)
+        .toEqual([]);
+      expect(discovery).not.toHaveBeenCalled();
+    } finally { discovery.mockRestore(); }
     for (const table of ["messages", "message_parts", "summaries", "messages_fts", "summaries_fts", "promoted", "promoted_fts"]) {
       expect(db.prepare(`SELECT * FROM ${table}`).all(), table).toEqual([]);
     }
   } finally { closeLcmConnection(path); }
   const events = new EventsDb(eventsDbPath(cwd, paths));
   try { expect(events.getUnprocessed()).toEqual([]); } finally { events.close(); }
+});
+
+it("unrelated capture and tool events never walk enrolled worker directories", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "lcm-worker-lookup-")); dirs.push(cwd);
+  const paths = createLcmPaths(join(cwd, "lcm"));
+  await registerWorkerSession(paths, { sessionId: "worker", cwd, client: "claude", owner: "hook" });
+  const discovery = vi.spyOn(subagentDiscovery, "discoverSubagentTranscripts");
+  const path = projectDbPath(cwd, paths); const db = getLcmConnection(path);
+  try {
+    expect(workerExcluded(cwd, "ordinary", paths)).toBe(false);
+    await new SessionCapture(db, projectId(cwd), new ScrubEngine([], []), paths).write({
+      sessionId: "ordinary", messages: [{ role: "user", content: "ordinary", tokenCount: 1 }],
+      transcriptPath: join(cwd, "ordinary.jsonl"),
+    });
+    recordPostToolEvents({ cwd, session_id: "ordinary", tool_name: "Bash", tool_input: { command: "git status" } }, paths);
+    expect(discovery).not.toHaveBeenCalled();
+  } finally { discovery.mockRestore(); closeLcmConnection(path); }
 });
 
 
@@ -159,7 +198,8 @@ it.each(["worker", "excluded-child"])("wire ancestry naming %s refuses capture w
     const summary = db.prepare("SELECT summary_id FROM summaries").get() as { summary_id: string };
     new PromotedStore(db).insert({ content: "VICTIM_HISTORY", projectId: projectId(cwd), sourceSummaryId: summary.summary_id });
     await registerWorkerSession(paths, { sessionId: "worker", cwd, client: "claude", owner: "owner" });
-    if (parentSessionId === "excluded-child") await capture.write({ sessionId: parentSessionId, messages: [], attribution: { parentSessionId: "worker" } });
+    if (parentSessionId === "excluded-child") new WorkerStore(db).exclude(parentSessionId);
+    const enrollment = db.prepare("SELECT * FROM summarize_workers").all();
     const tables = ["messages", "message_parts", "summaries", "context_items", "messages_fts", "summaries_fts", "promoted", "promoted_fts"];
     const before = tables.map(table => db.prepare(`SELECT * FROM ${table}`).all());
     const events = new EventsDb(eventsDbPath(cwd, paths));
@@ -171,6 +211,13 @@ it.each(["worker", "excluded-child"])("wire ancestry naming %s refuses capture w
       ] })).toMatchObject({ ingested: 0 });
       expect(tables.map(table => db.prepare(`SELECT * FROM ${table}`).all())).toEqual(before);
       expect(events.getUnprocessed()).toEqual(oldEvents);
+      expect(db.prepare("SELECT * FROM summarize_workers").all()).toEqual(enrollment);
+      expect(db.prepare("SELECT * FROM session_ingest_log WHERE session_id = 'victim'").get()).toBeUndefined();
+      expect(await invokeRoute(ingest, { cwd, session_id: "victim", messages: [
+        { role: "user", content: "VICTIM_HISTORY", tokenCount: 100 },
+        { role: "user", content: "ordinary later capture", tokenCount: 1 },
+      ] })).toMatchObject({ ingested: 1 });
+      expect(db.prepare("SELECT content FROM messages WHERE content = 'ordinary later capture'").get()).toBeDefined();
     } finally { events.close(); }
   } finally { closeLcmConnection(path); }
 });

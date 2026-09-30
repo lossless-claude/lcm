@@ -85,6 +85,28 @@ describe("function-hook session summarizer", () => {
     expect(harness.engine.http.fetch.mock.calls.some(([url]) => url.includes("/summarize-jobs/next"))).toBe(false);
     await harness.handlers.get("turn.complete")!(harness.engine, {}, vi.fn((event) => event));
     expect(harness.engine.http.fetch.mock.calls.some(([url]) => url.endsWith("/ingest"))).toBe(true);
+    const checks = harness.engine.http.fetch.mock.calls.filter(([url]) => url.endsWith("/worker-session"));
+    expect(checks.length).toBeGreaterThan(1);
+    const delays = harness.engine.clock.after.mock.calls.map(([ms]) => ms).filter(ms => ms < 60_000);
+    expect(delays.reduce((total, ms) => total + ms, 0)).toBeLessThanOrEqual(30_000);
+  });
+
+  it("starts a worker when command-hook enrollment arrives after the first check", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 4 }, [{ ...leaf, pool: true }], { LCM_SUMMARIZE_WORKER: "1" });
+    const fetch = harness.engine.http.fetch.getMockImplementation()!;
+    let checks = 0;
+    harness.engine.http.fetch.mockImplementation(async (url, init) => {
+      if (url.endsWith("/worker-session") && ++checks === 1) return { ok: true, status: 200,
+        text: JSON.stringify({ enrolled: false, reason: "No command-hook enrollment was found" }) };
+      return fetch(url, init);
+    });
+    harness.engine.model.complete.mockResolvedValue({ isAnswered: true, text: "summary", usage: { input_tokens: 9, output_tokens: 4 } });
+    await harness.trigger();
+    await vi.waitFor(() => expect(harness.posts).toHaveLength(1), { timeout: 200 });
+    expect(checks).toBe(2);
+    expect(harness.engine.clock.after).toHaveBeenCalledWith(expect.any(Number), expect.any(Function));
+    expect(harness.engine.ui.log).toHaveBeenCalledWith(`[lcm] ${WORKER_WARNING}`);
+    expect(harness.engine.ui.log.mock.calls.flat().join("\n")).not.toContain("worker mode refused");
   });
 
   it("serves foreign pool jobs with complete only and stops polling at the worker cap", async () => {

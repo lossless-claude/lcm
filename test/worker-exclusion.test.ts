@@ -57,7 +57,7 @@ describe("permanent worker exclusion", () => {
     expect(workers.live("new", "/project", "claude")).toBe(true);
     expect((await capture.write({ sessionId: "old", messages })).records).toEqual([]);
     expect((await capture.write({ sessionId: "child", messages, attribution: { parentSessionId: "old" } })).records).toEqual([]);
-    expect((await capture.write({ sessionId: "grandchild", messages, attribution: { parentSessionId: "child" } })).records).toEqual([]);
+    expect((await capture.write({ sessionId: "grandchild", messages, transcriptPath: "/transcripts/old/subagents/workflows/agent-grandchild.jsonl" })).records).toEqual([]);
     expect(db.prepare("SELECT * FROM messages").all()).toEqual([]);
   });
   it("detects a copied successful claim by its tool name and paired id, without admitting the fork", async () => {
@@ -80,6 +80,37 @@ describe("permanent worker exclusion", () => {
     const copied = records.map(record => parseCodexTranscriptRecord(JSON.stringify(record)).message!);
     expect((await capture.write({ sessionId: "codex-fork", messages: copied })).records).toEqual([]);
     expect(workers.live("codex-fork", "/project", "codex")).toBe(false);
+  });
+
+  it.each(["claude", "codex"])("a refused %s claim leaves ordinary capture and enrollment unchanged", async client => {
+    const history: Parameters<SessionCapture["write"]>[0]["messages"] = [...messages];
+    await capture.write({ sessionId: "ordinary", messages: history });
+    for (const result of [{ error: "undeclared worker" }, { job: null },
+      { isError: true, content: [{ type: "text", text: JSON.stringify({ job: { system: "system", prompt: canary } }) }] },
+      { error: "claim refused", job: { system: "system", prompt: canary } }]) {
+      const id = `refused-${JSON.stringify(result)}`;
+      const records = client === "claude" ? [
+        { message: { role: "assistant", content: [{ type: "tool_use", id, name: "lcm_summarize_claim", input: {} }] } },
+        { message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: JSON.stringify(result) }] } },
+      ].map(record => parseClaudeTranscriptRecord(JSON.stringify(record)).message!) : [
+        { type: "response_item", payload: { type: "function_call", name: "exec_command", call_id: id, arguments: JSON.stringify({ cmd: "lcm summarize-claim" }) } },
+        { type: "response_item", payload: { type: "function_call_output", call_id: id, output: JSON.stringify(result) } },
+      ].map(record => parseCodexTranscriptRecord(JSON.stringify(record)).message!);
+      history.push(...records);
+      expect((await capture.write({ sessionId: "ordinary", messages: history })).records.length).toBeGreaterThan(0);
+      expect(workers.excluded("ordinary")).toBe(false);
+      expect(workers.list()).toEqual([]);
+    }
+    expect((await capture.write({ sessionId: "ordinary", messages: [...history, { role: "user", content: "later ordinary capture", tokenCount: 1 }] })).records)
+      .toHaveLength(1);
+  });
+
+  it("a bare claim invocation does not exclude an ordinary session", async () => {
+    const invocation = parseClaudeTranscriptRecord(JSON.stringify({ message: { role: "assistant", content: [
+      { type: "tool_use", id: "bare", name: "Bash", input: { command: "lcm summarize-claim" } },
+    ] } })).message!;
+    expect((await capture.write({ sessionId: "ordinary", messages: [invocation] })).records).toHaveLength(1);
+    expect(workers.list()).toEqual([]);
   });
 
   it.each(["lcm summarize-claim", "/opt/bin/lcm summarize-claim", '"/opt/bin/lcm" summarize-claim', "node /opt/package/lcm.js summarize-claim", "node --no-warnings /opt/package/lcm.js summarize-claim"])("detects a copied claim through its invocation: %s", async command => {

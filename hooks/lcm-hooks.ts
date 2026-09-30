@@ -625,10 +625,21 @@ function registerSessionStart(on: On, summaryCap: number): void {
     if (declaredWorker) {
       // SessionStart command hooks are the sole registrar: they receive the native
       // start reason and keep a stable process owner across function-hook reloads.
-      const enrollment = await postDaemon($, "/worker-session", {
-        session_id: sessionId, cwd: await $.session.cwd(), client: "claude", declared: true, action: "check",
-      }).catch(() => null);
-      workerEnrolled = enrollment?.enrolled === true && typeof enrollment.warning === "string";
+      const cwd = await $.session.cwd();
+      let enrollment: Record<string, unknown> | null = null;
+      let waited = 0;
+      let delay = 250;
+      do {
+        enrollment = await postDaemon($, "/worker-session", {
+          session_id: sessionId, cwd, client: "claude", declared: true, action: "check",
+        }).catch(() => null);
+        workerEnrolled = enrollment?.enrolled === true && typeof enrollment.warning === "string";
+        if (workerEnrolled || waited >= 30_000) break;
+        const pause = Math.min(delay, 30_000 - waited);
+        await summaryDelay($, pause);
+        waited += pause;
+        delay = Math.min(delay * 2, 2_000);
+      } while (true);
       if (workerEnrolled) $.ui.log(`[lcm] ${enrollment!.warning}`);
       else $.ui.log(`[lcm] worker mode refused: ${enrollment?.reason ?? "command-hook enrollment could not be confirmed"}`);
     }

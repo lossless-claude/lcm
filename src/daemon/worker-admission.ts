@@ -1,5 +1,5 @@
 import type { LcmPaths } from "../lcm-paths.js";
-import { workerEnrollments, workerExcluded } from "../worker-session.js";
+import { workerEnrollments } from "../worker-session.js";
 import { validateCwd } from "./validate-cwd.js";
 import { projectDbPath, projectId } from "./project.js";
 import { getLcmConnection, closeLcmConnection } from "../db/connection.js";
@@ -24,7 +24,7 @@ export async function admitWorker(paths: LcmPaths | undefined, input: Record<str
   return withProjectMutation(projectId(cwd), async () => {
     const enrollments = workerEnrollments(cwd, paths);
     let enrolled = enrollments.find(worker => worker.session_id === sessionId && worker.client === client && worker.state === "active" && worker.owner);
-    if (!enrolled && client === "claude" && sessionId.startsWith("agent-") && workerExcluded(cwd, sessionId, paths)) {
+    if (!enrolled && client === "claude" && sessionId.startsWith("agent-")) {
       // A child must be discovered under a live declared root, not just carry a marker.
       for (const root of enrollments.filter(worker => worker.state === "active" && worker.owner && worker.client === "claude")) {
         const { claudeTranscriptPath } = await import("./project.js");

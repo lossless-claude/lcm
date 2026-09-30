@@ -13,6 +13,7 @@ export function containsWorkerPayload(output: unknown): boolean {
   if (Array.isArray(output)) return output.some(containsWorkerPayload);
   if (!output || typeof output !== "object") return false;
   const object = output as Record<string, unknown>;
+  if (object.isError === true || object.is_error === true || typeof object.error === "string") return false;
   const job = object.job as Record<string, unknown> | undefined;
   if (job && typeof job.prompt === "string" && typeof job.system === "string") return true;
   return typeof object.text === "string" && containsWorkerPayload(object.text) ||

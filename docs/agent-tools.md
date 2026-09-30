@@ -305,3 +305,5 @@ client-side guard. A command without the worker environment cannot be detected.
 Environment ids are cooperative identity, not authentication against local processes.
 Worker enrollment and last activity also appear in `lcm_stats` and `lcm_doctor`,
 using the same eight-character hashed worker id as status and CLI stats.
+For copied successful claim payloads, doctor also identifies the detection and cwd:
+future capture stops and stored history is preserved for the user's review.

@@ -1,5 +1,4 @@
 import { abandonWorker } from "./worker-admission.js";
-import { workerExcluded } from "../worker-session.js";
 import { createWorkerSessionHandler } from "./routes/worker-session.js";
 import { SummarizeJobStore } from "./summarize-jobs.js";
 import { summarizerAvailability } from "./provider-config.js";
@@ -521,7 +520,6 @@ export async function scanForTranscripts(config: DaemonConfig, paths: LcmPaths, 
 
       for (const file of files) {
         if (!file.endsWith(".jsonl")) continue;
-        if (workerExcluded(meta.cwd, file.slice(0, -6), paths)) continue;
         if (seenProjectPaths.size > 0) await yieldToEventLoop();
         const sessionId = file.replace(".jsonl", "");
         const transcriptPath = join(sessionsDir, file);

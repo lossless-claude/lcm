@@ -18,10 +18,16 @@ sidecar gate and main-store tombstone are installed before admission. A capture
 that wins the race requires a fresh worker id, preserving the captured conversation.
 Nothing deletes history that existed before a worker's enrollment, except
 descendants discovered on disk under the enrolled worker's own Claude
-`subagents/` transcript location. Request ancestry, stored ancestry, an arbitrary
-path naming a worker and copied-claim markers may refuse new capture, but never
-authorize deletion. Discovery uses the enrolled worker's cwd and native transcript
-walker (`src/worker-session.ts:discoveredWorkerDescendant`); exclusion without a
+`subagents/` transcript location. Request ancestry and an arbitrary
+path naming a worker may refuse the current write, but never authorize deletion
+or persist enrollment or exclusion. Later ordinary capture remains possible.
+Stored ancestry also gates capture but never authorizes history cleanup.
+Discovery uses the enrolled worker's cwd and native transcript
+walker (`src/worker-session.ts:discoverWorkerDescendant`), scoped to a file under
+that worker's directory and run before the write transaction. Verified descendants
+are recorded with `exclusion_reason` in `summarize_workers`;
+`discoveredWorkerDescendant` and ordinary hot-path gates use database lookups only.
+Scan processes enrolled roots to discover newly created descendants. Exclusion without a
 verified owner cannot establish a discovery root. Cleanup removes attributable
 content and retains promotions without provenance.
 
@@ -38,7 +44,8 @@ engine and summary writer also refuse excluded sessions. Scan, import and replay
 share these capture and compaction gates.
 
 Function hooks confirm live command-hook enrollment through the read-only
-`action: "check"` on `POST /worker-session` before warning or polling. A failed
+`action: "check"` on `POST /worker-session` before warning or polling. Confirmation
+retries with bounded backoff for about 30 seconds to allow command-hook registration. A failed
 confirmation reports refused worker mode and its reason.
 
 The warning states that this session and its subagents are not recorded by lcm,
@@ -47,10 +54,13 @@ should be used. Registration, claims and status carry it. Status, doctor and
 stats expose enrollment state and last activity without re-enabling capture.
 
 Claude tool-use names and paired call ids detect copied successful claims. These
-markers authorize neither admission nor deletion: recovery excludes the copied
-session as abandoned and preserves its stored history unless disk discovery
+markers authorize neither admission nor deletion: recovery stops future capture,
+excludes the copied session as abandoned and preserves already stored history unless disk discovery
 confirms it is a descendant of an enrolled worker.
-A refused claim without a payload does not convert an ordinary session.
+Detection requires a successful paired claim result with a job payload; a refused
+claim or bare invocation does not convert an ordinary session. `lcm doctor` identifies
+copied-claim recovery with a short worker id and cwd so the user can review retained
+history before deciding whether to remove it.
 
 ## Harness evidence
 
@@ -62,7 +72,10 @@ A refused claim without a payload does not convert an ordinary session.
   unverified by repository code. It is the supplied harness contract; fake
   transport tests can verify binding, not prove a host's environment export.
 - Codex exports `CODEX_THREAD_ID` to shell commands: unverified by repository
-  code. Codex MCP environment propagation is unverified and refused.
+  code. Revocation across Codex `/clear` assumes this thread id stays stable across
+  a clear, also unverified. `src/agent-worker-transport.ts:createAgentWorkerTransport`
+  reads the current thread id on every shell claim and submission. Codex MCP
+  environment propagation is unverified and refused, leaving a stale id no supported transport.
 - OMP passes `PI_SESSION_FILE` to tool runtimes: unverified by repository code.
   Its shell and MCP identities are unverified and refused.
 - Codex and OMP lack verified subagent discovery here. Child-context claims are
