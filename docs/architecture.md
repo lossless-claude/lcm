@@ -457,7 +457,7 @@ each class, and leaves running requests to finish. `/compact` classifies PreComp
 from `capture_required` or OMP's `precompact_verified`; SessionEnd (including the legacy
 hook fallback) and SessionStart catch-up send `work_class: "live"` because they also use
 `skip_ingest`. Other `skip_ingest` callers, including import replay and batch compact with
-or without replay, are background; an explicit `replay: true` also selects background.
+or without replay, are background.
 Direct compactions default to live. `SummarizeContext.workClass` carries that choice through
 the provider chain, retries and fallback to the OpenAI and Anthropic adapters.
 

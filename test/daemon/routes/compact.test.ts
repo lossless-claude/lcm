@@ -98,7 +98,6 @@ describe("compaction endpoint work class", () => {
     ["SessionEnd", { skip_ingest: true, work_class: "live" }, "live"],
     ["SessionStart catch-up", { skip_ingest: true, work_class: "live" }, "live"],
     ["import replay and batch compact", { skip_ingest: true }, "background"],
-    ["explicit replay", { replay: true }, "background"],
   ])("passes %s's class through the provider chain to the HTTP adapter", async (_source, input, workClass) => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-compact-class-"));
     dirs.push(cwd);

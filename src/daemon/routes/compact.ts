@@ -319,8 +319,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     const captureRequired = input.capture_required === true;
     const precompactVerified = input.precompact_verified === true && client === "omp" && skip_ingest === true;
     // skip_ingest also serves post-capture live hooks, which mark their class explicitly.
-    const workClass = input.replay === true || (skip_ingest && !precompactVerified && input.work_class !== "live")
-      ? "background" : "live";
+    const workClass = skip_ingest && !precompactVerified && input.work_class !== "live" ? "background" : "live";
     const operationId = typeof input.operation_id === "string" && input.operation_id.length <= 140
       ? input.operation_id : undefined;
     const MAX_PREVIOUS_SUMMARY_LENGTH = 50_000;
