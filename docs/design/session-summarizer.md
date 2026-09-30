@@ -25,7 +25,7 @@ Why: it removes the `claude` CLI process spawn per chunk that `claude-process` p
 | 11 | Opt-in | `llm.provider: "session"`. Also accepted by `LCM_SUMMARY_PROVIDER`. |
 | 12 | Spend cap | Plugin `userConfig` key `sessionSummarizerMaxOutputTokens`, default `50000`, `0` disables serving jobs. Per job `maxTokens = max(1024, 2 × targetTokens)`, computed by the daemon and carried in the job. Haiku completion is capped to the Session's remaining output tokens; a fork that spends the remainder cannot start a Haiku fallback. The host's `fork` API has no output-token limit, so the fork itself may exceed the remaining cap before its usage is reported. Cap reached → the module answers `{error: "spend cap"}`. Workers stop polling at the cap, with `LCM_SUMMARIZE_WORKER_MAX_OUTPUT_TOKENS` overriding the plugin cap; OMP workers default to 50000. |
 | 13 | Usage accounting | Into `llm_usage_stats` as today. `fork` reports exact usage; current hosts also report exact `complete` usage, while older text-only results are estimated as `ceil(len/4)`. Prior attempts carry whether they failed to answer, so a failed `session:fork` call remains separate from the successful Haiku answer in usage counters. Both attempts count toward the session output-token cap. Workers report `session-pool:haiku` or `session-pool:sonnet` usage and count failed completions toward their own cap. |
-| 14 | Prompts | Rendered by the daemon with the same code the other providers use (`buildSummaryPrompt` / `buildSummaryPromptWithSystem`, `src/llm/prompt.ts`). The module never knows a prompt. |
+| 14 | Prompts | Rendered by the provider, in the daemon for live compaction and replay or in the eval process for isolated pool evaluation, with the same code the other providers use (`buildSummaryPrompt` / `buildSummaryPromptWithSystem`, `src/llm/prompt.ts`). The module never knows a prompt. |
 
 ## Dedicated workers and replay
 
@@ -55,6 +55,34 @@ SDK, so the OMP module also serves the pool. Codex command/MCP hooks do not
 expose the interactive client's isolated completion and have no worker.
 Transcript persistence evidence and launch instructions are in
 [summarize workers](../summarize-workers.md#transcript-hygiene-and-hosts).
+
+## Isolated pool evaluation
+
+`src/eval/compare.ts:runSummarizerComparison` accepts `session-pool` beside
+named endpoints, while rejecting `session`. It opens the project database
+read-only and closes it before any summarizer call. `src/eval/engine.ts:runEval`
+keeps production compaction and all resulting summaries in an independent
+in-memory database.
+
+The transport seam is the existing provider's `enqueue` dependency, narrowed to
+`Pick<SummarizeJobStore, "enqueue">` in `src/daemon/summarizer.ts:createSummarizer`.
+For evaluation, that dependency posts a rendered job through `DaemonClient` to
+`POST /summarize-jobs/pool`. This is smaller than moving the eval engine into the
+daemon or serializing compaction context: only the job and `JobAnswer` cross the
+process boundary, and prompt construction, answer validation and usage accounting
+reuse the production provider. It adds one authenticated producer route;
+`src/daemon/server.ts:createDaemon` applies the normal bearer authentication and
+body-size limit. `src/daemon/routes/summarize-jobs.ts:createPoolSummarizeJobHandler`
+validates the job, forces `pool: true`, and opens no project store.
+
+Workers claim through the existing `nextWorker` path, with the same 20-second
+claim window and 3-minute completion window. Eval supplies an isolated session
+label and disables both named and flat fallback chains, irrespective of daemon
+configuration. Timeout instructions name `LCM_SUMMARIZE_WORKER=1` and the worker
+documentation; other candidates continue. Usage retains the answering worker's
+`session-pool:<model>` label, including reported prior attempts. Live compactions
+and replay still pass the daemon's real `SummarizeJobStore` directly to the
+provider; their selection and fallback rules are unchanged.
 
 ## Daemon
 

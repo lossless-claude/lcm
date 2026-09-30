@@ -2,6 +2,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { openStandaloneLcmConnection } from "../db/connection.js";
 import { loadDaemonConfig, type DaemonConfig } from "../daemon/config.js";
+import { DaemonClient } from "../daemon/client.js";
+import type { SummarizeJobStore, JobAnswer } from "../daemon/summarize-jobs.js";
 import { projectDbPath } from "../daemon/project.js";
 import { createSummarizer, resolveSummarizerLanguage } from "../daemon/summarizer.js";
 import type { LcmPaths } from "../lcm-paths.js";
@@ -42,6 +44,8 @@ function validateCandidates(config: DaemonConfig, names: string[]): void {
   if (names.length === 0) throw new Error("--models must name at least one endpoint in llm.providers");
   if (new Set(names).size !== names.length) throw new Error("--models must not repeat an endpoint name");
   for (const name of names) {
+    if (name === "session-pool") continue;
+    if (name === "session") throw new Error("session cannot be evaluated; use session-pool with a dedicated worker");
     if (!config.llm.providers || !Object.hasOwn(config.llm.providers, name)) {
       throw new Error(`Unknown summarizer endpoint "${name}"; declare it in llm.providers`);
     }
@@ -64,17 +68,28 @@ export async function runSummarizerComparison(options: ComparisonOptions): Promi
   if (options.planted !== false) sessions.push(buildSyntheticSession());
   const results: Array<EvalRunResult & { endpoint: string }> = [];
   for (const name of models) {
-    const endpoint = config.llm.providers![name];
+    const endpoint = name === "session-pool" ? undefined : config.llm.providers![name];
     const candidateConfig: DaemonConfig = {
       ...config,
-      llm: { ...config.llm, provider: name, providers: { [name]: endpoint }, fallback: [] },
+      llm: { ...config.llm, provider: name, providers: endpoint ? { [name]: endpoint } : undefined, fallback: [], fallbackProvider: "disabled" },
       summarizer: { ...config.summarizer, mock: false },
     };
-    const summarizer = await createSummarizer(name, candidateConfig);
+    const client = new DaemonClient(`http://127.0.0.1:${config.daemon.port}`, paths.tokenPath);
+    const jobs = name === "session-pool" ? { enqueue: async (job: Parameters<SummarizeJobStore["enqueue"]>[0]) => {
+      const answer = await client.post<JobAnswer>("/summarize-jobs/pool", job);
+      if (answer.error === "job timeout") {
+        return { ...answer, error: "session-pool job timed out; start a dedicated worker with LCM_SUMMARIZE_WORKER=1 (see docs/summarize-workers.md)" };
+      }
+      return answer;
+    } } : undefined;
+    const summarizer = await createSummarizer(name, candidateConfig, jobs);
     if (!summarizer) throw new Error(`Endpoint "${name}" produced no summarizer`);
     for (const session of sessions) {
       for (let run = 1; run <= runs; run++) {
-        const result = await runEval({ session, summarizer, model: endpoint.model ?? "default", provider: endpoint.type, language, run });
+        const result = await runEval({ session,
+          summarizer: name === "session-pool" ? (text, aggressive, ctx) =>
+            summarizer(text, aggressive, { ...ctx, sessionId: `eval-${session.label}` }) : summarizer,
+          model: endpoint?.model ?? (name === "session-pool" ? "worker-selected" : "default"), provider: endpoint?.type ?? "session-pool", language, run });
         results.push({ ...result, endpoint: name });
       }
     }
@@ -82,7 +97,8 @@ export async function runSummarizerComparison(options: ComparisonOptions): Promi
   const report: ComparisonReport = {
     version: 1, createdAt: new Date().toISOString(), sessionId, language,
     settings: { ...compactEngineConfig({ language }), tokenBudget: COMPACT_TOKEN_BUDGET },
-    candidates: models.map((name) => ({ name, type: config.llm.providers![name].type, model: config.llm.providers![name].model ?? "default" })),
+    candidates: models.map((name) => ({ name, type: name === "session-pool" ? "session-pool" : config.llm.providers![name].type,
+      model: name === "session-pool" ? "worker-selected" : config.llm.providers![name].model ?? "default" })),
     results, chunks: comparisonChunks(results, models),
     notice: "Contains conversation content already scrubbed at capture. Unsupported details are a deterministic hint, not proof of hallucination. Unknown cost is null, never free.",
   };

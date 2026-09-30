@@ -10,9 +10,9 @@ export function registerEvalCommands(program: Command, paths: LcmPaths): void {
     printHelp("eval");
   });
   evalCommand.command("summarizer")
-    .description("Compare named endpoints using in-memory production compaction")
+    .description("Compare endpoints and session-pool using in-memory production compaction")
     .requiredOption("--session <id>", "Stored session id in this project")
-    .requiredOption("--models <endpoints>", "Comma-separated names from llm.providers")
+    .requiredOption("--models <endpoints>", "Comma-separated names from llm.providers or session-pool")
     .option("--project <path>", "Project directory (default: cwd)")
     .option("--runs <n>", "Repeats per session and endpoint", "1")
     .option("--out <dir>", "Local report directory", "summarizer-report")
