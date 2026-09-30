@@ -62,7 +62,7 @@ describe("Continuous Learning", { timeout: 60_000 }, () => {
 
   it("first ingest of synthetic session stores messages", async () => {
     const result = await handle.client.post<{ ingested: number; totalTokens: number }>("/ingest", {
-      session_id: "cl-synthetic-session",
+      session_id: "synthetic-session",
       cwd: handle.tmpDir,
       transcript_path: handle.syntheticFixturePath,
     });
@@ -71,7 +71,7 @@ describe("Continuous Learning", { timeout: 60_000 }, () => {
 
   it("second ingest of same session returns ingested:0 (no duplicates)", async () => {
     const result = await handle.client.post<{ ingested: number; totalTokens: number }>("/ingest", {
-      session_id: "cl-synthetic-session",
+      session_id: "synthetic-session",
       cwd: handle.tmpDir,
       transcript_path: handle.syntheticFixturePath,
     });

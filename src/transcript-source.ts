@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { extractCodexTurnModels, type CodexSessionMeta } from "./codex-transcript.js";
 import { readCodexTranscriptDelta, type CodexTranscriptCursor, type CodexTranscriptDelta } from "./codex-transcript-reader.js";
@@ -180,6 +180,16 @@ const claudeSource: TranscriptSource = {
     if (!path) return undefined;
     const safe = isSafeTranscriptPath(path, input.cwd, "claude");
     if (!safe && suppliedPath) throw new TranscriptSourceError("Claude transcript path is not allowed");
+    if (safe && basename(safe) !== `${input.sessionId}.jsonl`) {
+      // Discovery/import use the full agent-<id> filename as the session id;
+      // an unprefixed id is accepted only within an owning session's subagents tree.
+      const segments = safe.split(sep);
+      const subagents = segments.lastIndexOf("subagents");
+      if (basename(safe) !== `agent-${input.sessionId}.jsonl` || subagents < 2 ||
+          !/^[A-Za-z0-9_-]+$/.test(segments[subagents - 1])) {
+        throw new TranscriptSourceError("Claude transcript session id does not match request");
+      }
+    }
     return safe && existsSync(safe) ? safe : undefined;
   },
   async read(path, stored, ctx) {

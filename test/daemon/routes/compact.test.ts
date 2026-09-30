@@ -130,7 +130,7 @@ describe("required pre-compaction capture", () => {
   it("captures before reporting a disabled summarizer", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-disabled-"));
     dirs.push(cwd);
-    const transcriptPath = join(cwd, "session.jsonl");
+    const transcriptPath = join(cwd, "precompact-disabled.jsonl");
     writeFileSync(transcriptPath, JSON.stringify({ message: { role: "user", content: "captured before disabled summary" } }) + "\n");
     const { res, getBody } = mockRes();
 
@@ -211,7 +211,7 @@ describe("required pre-compaction capture", () => {
   it("captures even when another summary for the session is busy", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-busy-"));
     dirs.push(cwd);
-    const transcriptPath = join(cwd, "session.jsonl");
+    const transcriptPath = join(cwd, "precompact-busy.jsonl");
     writeFileSync(transcriptPath, JSON.stringify({ message: { role: "user", content: "captured while busy" } }) + "\n");
     const release = markCompacting("precompact-busy", cwd);
     const { res, getBody } = mockRes();
@@ -272,7 +272,7 @@ describe("required pre-compaction capture", () => {
   it("captures while the project queue is occupied by an active summary", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-queued-"));
     dirs.push(cwd);
-    const transcriptPath = join(cwd, "session.jsonl");
+    const transcriptPath = join(cwd, "precompact-queued.jsonl");
     writeFileSync(transcriptPath, JSON.stringify({ message: { role: "user", content: "tail while LLM waits" } }) + "\n");
     const entered = Promise.withResolvers<void>();
     const unblock = Promise.withResolvers<void>();
@@ -297,7 +297,7 @@ describe("required pre-compaction capture", () => {
   it("captures a transcript tail while an earlier summary waits for its LLM", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-live-summary-"));
     dirs.push(cwd);
-    const transcriptPath = join(cwd, "session.jsonl");
+    const transcriptPath = join(cwd, "live-summary.jsonl");
     writeFileSync(transcriptPath, Array.from({ length: 20 }, (_, index) => JSON.stringify({
       message: { role: index % 2 ? "assistant" : "user",
         content: `message ${index} ${"content for compaction ".repeat(100)}` },
@@ -335,8 +335,8 @@ describe("required pre-compaction capture", () => {
   it("admits another session's PreCompact while a summary waits, but skips the same session", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-yielded-summary-"));
     dirs.push(cwd);
-    const firstTranscript = join(cwd, "first.jsonl");
-    const secondTranscript = join(cwd, "second.jsonl");
+    const firstTranscript = join(cwd, "first-session.jsonl");
+    const secondTranscript = join(cwd, "second-session.jsonl");
     writeFileSync(firstTranscript, Array.from({ length: 20 }, (_, index) => JSON.stringify({
       message: { role: index % 2 ? "assistant" : "user",
         content: `message ${index} ${"content for compaction ".repeat(100)}` },
@@ -380,7 +380,7 @@ describe("required pre-compaction capture", () => {
   it("waits for the same session's summary before a second direct /compact", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-same-session-summary-"));
     dirs.push(cwd);
-    const transcriptPath = join(cwd, "session.jsonl");
+    const transcriptPath = join(cwd, "same-session.jsonl");
     writeFileSync(transcriptPath, Array.from({ length: 20 }, (_, index) => JSON.stringify({
       message: { role: index % 2 ? "assistant" : "user",
         content: `message ${index} ${"content for compaction ".repeat(100)}` },
@@ -585,7 +585,7 @@ describe("required pre-compaction capture", () => {
     });
     const handler = createCompactHandler(makeConfig("openai"), paths);
     const run = (cwd: string, response: ReturnType<typeof mockRes>) => {
-      const transcriptPath = join(cwd, "session.jsonl");
+      const transcriptPath = join(cwd, "shared-session.jsonl");
       writeFileSync(transcriptPath, Array.from({ length: 20 }, (_, index) => JSON.stringify({
         message: { role: index % 2 ? "assistant" : "user",
           content: `message ${index} ${"content for compaction ".repeat(100)}` },
@@ -615,7 +615,7 @@ describe("required pre-compaction capture", () => {
   it("completes another session's /ingest while a summary waits for its LLM", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-ingest-during-summary-"));
     dirs.push(cwd);
-    const transcriptPath = join(cwd, "summary.jsonl");
+    const transcriptPath = join(cwd, "summary-session.jsonl");
     writeFileSync(transcriptPath, Array.from({ length: 20 }, (_, index) => JSON.stringify({
       message: { role: index % 2 ? "assistant" : "user",
         content: `message ${index} ${"content for compaction ".repeat(100)}` },
@@ -650,8 +650,8 @@ describe("required pre-compaction capture", () => {
   it("captures another /compact session while a summary waits for its LLM", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-compact-during-summary-"));
     dirs.push(cwd);
-    const firstTranscript = join(cwd, "first.jsonl");
-    const secondTranscript = join(cwd, "second.jsonl");
+    const firstTranscript = join(cwd, "first-session.jsonl");
+    const secondTranscript = join(cwd, "second-session.jsonl");
     writeFileSync(firstTranscript, Array.from({ length: 20 }, (_, index) => JSON.stringify({
       message: { role: index % 2 ? "assistant" : "user",
         content: `message ${index} ${"content for compaction ".repeat(100)}` },
@@ -686,7 +686,7 @@ describe("required pre-compaction capture", () => {
   it("captures while language detection awaits an external model", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-detect-"));
     dirs.push(cwd);
-    const transcriptPath = join(cwd, "session.jsonl");
+    const transcriptPath = join(cwd, "detect-session.jsonl");
     writeFileSync(transcriptPath, Array.from({ length: 20 }, (_, index) => JSON.stringify({
       message: { role: index % 2 ? "assistant" : "user",
         content: `message ${index} ${"content for compaction ".repeat(100)}` },
@@ -721,7 +721,7 @@ describe("required pre-compaction capture", () => {
   it("waits for an active ingest transaction without blocking its commit", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-ingest-lease-"));
     dirs.push(cwd);
-    const transcriptPath = join(cwd, "session.jsonl");
+    const transcriptPath = join(cwd, "precompact-session.jsonl");
     writeFileSync(transcriptPath, JSON.stringify({ message: { role: "user", content: "capture after ingest" } }) + "\n");
     const entered = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
@@ -1143,7 +1143,7 @@ describe("createCompactHandler — summarizer branching", () => {
     const root = mkdtempSync(join(tmpdir(), "lcm-compact-language-root-"));
     const cwd = mkdtempSync(join(tmpdir(), "lcm-compact-language-project-"));
     const scopedPaths = createLcmPaths(root);
-    const transcriptPath = join(cwd, "session.jsonl");
+    const transcriptPath = join(cwd, "first-summary-language.jsonl");
     writeFileSync(
       transcriptPath,
       Array.from({ length: 20 }, (_, index) => JSON.stringify({
@@ -1416,7 +1416,7 @@ describe("POST /compact", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-compact-redact-"));
     tempDirs.push(tempDir);
 
-    const transcriptPath = join(tempDir, "session.jsonl");
+    const transcriptPath = join(tempDir, "compact-redact-stats.jsonl");
     writeFileSync(
       transcriptPath,
       [
@@ -1551,7 +1551,7 @@ describe("POST /compact — scrub redaction during transcript ingestion", () => 
     tempDirs.push(tempDir);
 
     const secret = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-    const transcriptPath = join(tempDir, "session.jsonl");
+    const transcriptPath = join(tempDir, "scrub-compact-session.jsonl");
     writeFileSync(
       transcriptPath,
       [

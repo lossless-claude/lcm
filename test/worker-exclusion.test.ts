@@ -223,9 +223,8 @@ describe("worker gate on transcript reads", () => {
   it("refuses without excluding a session whose request names another session's transcript", async () => {
     const path = writeTranscript("worker-session", [{ message: { role: "user", content: "work" } }, ...claimPair("lcm summarize-claim")]);
 
-    const result = await capture.captureTranscript({ sessionId: "victim", cwd: dir, transcriptPath: path });
-
-    expect(result?.records ?? []).toEqual([]);
+    await expect(capture.captureTranscript({ sessionId: "victim", cwd: dir, transcriptPath: path }))
+      .rejects.toThrow("Claude transcript session id does not match request");
     expect(count("messages", "victim")).toBe(0);
     expect(workers.excluded("victim")).toBe(false);
   });

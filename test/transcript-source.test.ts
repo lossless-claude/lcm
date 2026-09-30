@@ -128,8 +128,8 @@ describe("Claude transcript source", () => {
 
   it("locates the caller's transcript when it lies under the project, and none when it does not", () => {
     const { cwd, path } = fixture();
-    expect(source.locate({ sessionId: "claude-session", cwd, transcriptPath: path })).toBe(realpathSync(path));
-    expect(source.locate({ sessionId: "claude-session", cwd, transcriptPath: join(cwd, "missing.jsonl") })).toBeUndefined();
+    expect(source.locate({ sessionId: "session", cwd, transcriptPath: path })).toBe(realpathSync(path));
+    expect(source.locate({ sessionId: "missing", cwd, transcriptPath: join(cwd, "missing.jsonl") })).toBeUndefined();
     const elsewhere = tempDir("lcm-claude-elsewhere-");
     writeFileSync(join(elsewhere, "other.jsonl"), line("user", "x"));
     expect(() => source.locate({ sessionId: "claude-session", cwd, transcriptPath: join(elsewhere, "other.jsonl") }))

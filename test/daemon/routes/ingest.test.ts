@@ -548,7 +548,7 @@ describe("POST /ingest", () => {
   it("backfills the model on a Claude tool-call event whose hook payload could not carry one", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-ingest-model-backfill-"));
     tempDirs.push(tempDir);
-    const transcriptPath = join(tempDir, "session.jsonl");
+    const transcriptPath = join(tempDir, "backfill-session.jsonl");
     writeFileSync(transcriptPath, [
       { message: { role: "user", content: "commit this" } },
       {
@@ -594,7 +594,7 @@ describe("POST /ingest", () => {
   it("runs the post-response model backfill as a named background task", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lossless-ingest-backfill-task-"));
     tempDirs.push(tempDir);
-    const transcriptPath = join(tempDir, "session.jsonl");
+    const transcriptPath = join(tempDir, "backfill-task-session.jsonl");
     writeFileSync(transcriptPath, [
       { message: { role: "user", content: "hello" } },
       { message: { role: "assistant", model: "claude-sonnet-5", content: [{ type: "text", text: "hi" }] } },

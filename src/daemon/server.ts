@@ -521,7 +521,7 @@ export async function scanForTranscripts(config: DaemonConfig, paths: LcmPaths, 
       for (const file of files) {
         if (!file.endsWith(".jsonl")) continue;
         if (seenProjectPaths.size > 0) await yieldToEventLoop();
-        const sessionId = file.replace(".jsonl", "");
+        const sessionId = file.slice(0, -".jsonl".length);
         const transcriptPath = join(sessionsDir, file);
         seenTranscriptPaths.add(transcriptPath);
         seenProjectPaths.add(transcriptPath);
