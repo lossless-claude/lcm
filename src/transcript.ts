@@ -1,3 +1,4 @@
+import { isWorkerClaim, containsWorkerPayload } from "./worker-markers.js";
 import { readFileSync } from "node:fs";
 
 /** Bump when the Claude parser changes the rows or fields a transcript yields. */
@@ -10,7 +11,8 @@ interface ContentBlock {
   is_error?: boolean;
   content?: string | ContentBlock[];
   /** `tool_use` input — only read when `name === "Skill"`, for the skill's name and args. */
-  input?: { skill?: unknown; args?: unknown };
+  input?: Record<string, unknown>;
+  tool_use_id?: string;
   /** `tool_use` id — the same id a PostToolUse hook payload carries as `tool_use_id`. */
   id?: string;
 }
@@ -39,6 +41,8 @@ export interface ParsedMessage {
   content: string;
   tokenCount: number;
   parts?: MessagePart[];
+  workerClaims?: string[];
+  workerPayloads?: string[];
 }
 
 function extractText(content: string | ContentBlock[] | unknown): string {
@@ -194,7 +198,12 @@ export function parseClaudeTranscriptRecord(record: string, toolShape: "current"
     const content = role === "tool" ? toolContent(blocks, toolShape === "legacy") : extractText(obj.message?.content);
     if (!content.trim()) return { toolUseModels: models };
     const parts = [...extractSkillParts(blocks), ...extractCommandParts(content)];
-    return { message: { role, content, tokenCount: estimateTokens(content), ...(parts.length ? { parts } : {}) }, toolUseModels: models };
+    const workerClaims = blocks.filter(block => block.type === "tool_use" && isWorkerClaim(block.name, block.input))
+      .map(block => block.id).filter((id): id is string => Boolean(id));
+    const workerPayloads = blocks.filter(block => block.type === "tool_result" && !block.is_error && containsWorkerPayload(block.content))
+      .map(block => block.tool_use_id).filter((id): id is string => Boolean(id));
+    return { message: { role, content, tokenCount: estimateTokens(content), ...(parts.length ? { parts } : {}),
+      ...(workerClaims.length ? { workerClaims } : {}), ...(workerPayloads.length ? { workerPayloads } : {}) }, toolUseModels: models };
   } catch {
     // Claude's existing full parser skips malformed entries.
     return { toolUseModels: new Map() };

@@ -328,6 +328,19 @@ export async function dispatchCodexHook(
   try {
     const input = parseInput(stdin);
     if (!input) return EMPTY;
+    if (process.env.LCM_SUMMARIZE_WORKER === "1") {
+      if (input.hook_event_name === "SessionStart" && input.source !== "subagent") {
+        const { registerWorkerSession } = await import("../worker-session.js");
+        const result = await registerWorkerSession(paths, { sessionId: input.session_id, cwd: input.cwd,
+          client: "codex", owner: `codex-hook:${process.ppid}` });
+        console.error(`[lcm] ${result.warning} Promotions without provenance: ${result.unprovenanced}.`);
+      }
+      if (input.hook_event_name === "SessionEnd") {
+        const { finishWorkerSession } = await import("../worker-session.js");
+        await finishWorkerSession(paths, input.cwd, input.session_id);
+      }
+      return EMPTY;
+    }
     observedInput = input;
     const shortDeadline = input.hook_event_name === "Interrupt" || input.hook_event_name === "SessionEnd";
     const compacting = input.hook_event_name === "PreCompact";

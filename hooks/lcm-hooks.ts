@@ -613,6 +613,14 @@ function registerSessionStart(on: On, summaryCap: number): void {
     // Awaited, unlike the health probe: a command hook that runs before the claim lands
     // would record the same events this module is about to record.
     const sessionId = await $.session.id();
+    let declaredWorker = false;
+    try { declaredWorker = await $.env.get("LCM_SUMMARIZE_WORKER") === "1"; } catch { /* An unavailable declaration cannot enroll a worker. */ }
+    if (declaredWorker) {
+      const registration = await postDaemon($, "/worker-session", { session_id: sessionId,
+        cwd: await $.session.cwd(), client: "claude", declared: true, owner: `claude-function:${hookSnapshotGeneration}` });
+      if (!registration) { $.ui.log("[lcm] worker registration failed; no pool payload will be requested"); return next(e); }
+      $.ui.log(`[lcm] ${registration.warning} Promotions without provenance: ${registration.unprovenanced}.`);
+    }
     let claimed = true;
     await claimSession($, sessionId).catch((error: unknown) => {
       claimed = false;

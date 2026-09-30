@@ -94,3 +94,7 @@ hook module with fake completions. It verifies concurrent claims, completion
 only, and diagnostic writes without source content. Separate tests cover
 OMP's isolated completion and the cap. Fakes establish lcm's behavior; the host
 implementation evidence above establishes transcript persistence behavior.
+
+## Declared agent sessions
+
+Claude Code and Codex hooks register sessions started with `LCM_SUMMARIZE_WORKER=1` as dedicated workers. Their entire history and subagents stay out of lcm permanently, including after resume or `/clear`; the harness transcript stays on disk. Registration cleans already captured messages, summaries, full-text rows, events and provenanced promoted memories under the project lease. Promotions without provenance are reported rather than claimed removed. Status, doctor and stats report enrollment state and last activity. Forking worker sessions is unsupported. See [the design](design/agent-summarize-workers.md).

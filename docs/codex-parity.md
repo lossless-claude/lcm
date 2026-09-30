@@ -88,3 +88,7 @@ See [setup and runtime limits](vscode-codex.md) for activation requirements.
 ## Summarize workers
 
 The [native hooks contract](https://developers.openai.com/codex/hooks) exposes command and MCP-tool handlers, with JSON input and output. It does not expose an isolated completion through the interactive session's model client. `src/hooks/codex.ts` therefore has no pool worker; launching `codex-process` would be the existing process provider, not an interactive worker. Codex transcripts can still be replayed through Claude Code or OMP workers with `--replay-provider session-pool`; see [summarize workers](summarize-workers.md).
+
+## Dedicated summarize worker enrollment
+
+Codex SessionStart enrolls a dedicated session launched with `LCM_SUMMARIZE_WORKER=1`. SessionEnd marks it finished; exclusion remains permanent. A new id on the same hook process revokes the old admission. Codex child-context claims and MCP session identity are unverified and unsupported. See [worker design](design/agent-summarize-workers.md).

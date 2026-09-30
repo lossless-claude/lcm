@@ -1,3 +1,5 @@
+import { WorkerStore } from "../../store/worker-store.js";
+import { workerExcluded } from "../../worker-session.js";
 import { existsSync } from "node:fs";
 import type { ServerResponse } from "node:http";
 import { dirname, join } from "node:path";
@@ -223,6 +225,7 @@ async function repairCutSession(
         const db = getLcmConnection(dbPath);
         try {
           runLcmMigrations(db);
+          if (new WorkerStore(db).excluded(input.session_id)) return { repaired: 0, excluded: true };
           const path = transcriptSource(input.client).locate({
             sessionId: input.session_id, cwd, transcriptPath: input.transcript_path, source: "import",
           });
@@ -277,6 +280,9 @@ export function createIngestHandler(
     }
 
     const dbPath = projectDbPath(cwd, paths);
+    if (workerExcluded(cwd, session_id, paths, input.transcript_path)) {
+      sendJson(res, 200, { ingested: 0, totalTokens: 0, excluded: true }); return;
+    }
     const structured = Array.isArray(input.messages) ? input.messages.filter(isParsedMessage) : undefined;
     if (input.rebuild !== true && structured && structured.length === 0) {
       sendJson(res, 200, { ingested: 0, totalTokens: 0 });

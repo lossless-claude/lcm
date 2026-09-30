@@ -193,3 +193,7 @@ SessionEnd additionally passes `noSpawn: true`, so it never starts a daemon just
 ## Auto-heal
 
 Every lcm hook except `post-tool` self-repairs on each invocation: before dispatching, `validateAndFixHooks()` removes any lcm hook entries that leaked into `~/.claude/settings.json`. lcm hooks are owned by `.claude-plugin/plugin.json`, so a copy in `settings.json` would make every hook fire twice; a stale `lcm compact` command there is rewritten to `lcm compact --hook` instead. `post-tool` runs on every tool call and returns before this repair, deliberately, to stay inside its deadline.
+
+## Declared worker enrollment
+
+With `LCM_SUMMARIZE_WORKER=1`, Claude command and function hooks and Codex SessionStart hooks enroll the native session id and cwd. A repeated start after `/clear` revokes the preceding id owned by that hook process; exclusion of both histories remains permanent. SessionEnd marks command-hook workers finished. Registration warns that the session and its subagents are not recorded by lcm, the harness transcript stays on disk, and a dedicated session is required. An enrollment failure must prevent tool workers from receiving pool payloads. See [agent worker design](design/agent-summarize-workers.md).

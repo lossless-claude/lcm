@@ -1,3 +1,4 @@
+import { WorkerStore } from "./store/worker-store.js";
 import type { DatabaseSync } from "node:sqlite";
 import { statSync } from "node:fs";
 import { sep } from "node:path";
@@ -173,6 +174,7 @@ export class SessionCapture {
    * since the last write reaches its attribution.
    */
   async captureTranscript(input: TranscriptCaptureInput): Promise<TranscriptCaptureResult | undefined> {
+    if (new WorkerStore(this.db).excluded(input.sessionId, input.attribution?.parentSessionId)) return undefined;
     const source = transcriptSource(input.client);
     const transcriptPath = source.locate(input);
     if (!transcriptPath) return undefined;
@@ -255,6 +257,9 @@ export class SessionCapture {
     // Parsed before the transaction takes the write lock; the plan reads it only when not aligned.
     const legacy = transcriptPath ? parseTranscript(transcriptPath, "legacy") : undefined;
     return this.conversationStore.withTransaction(async () => {
+      if (new WorkerStore(this.db).excluded(input.sessionId)) return {
+        plan: { kind: "unavailable", sessionId: input.sessionId, reason: "Worker session is excluded" } as SessionRebuildPlan, ingested: 0,
+      };
       invalidateClaudeTranscriptCursor(this.db, input.sessionId);
       const plan = await planSessionRebuild(this.db, input.sessionId, delta?.messages, scrub, () => legacy);
       if (plan.kind !== "repairable" || plan.conversationId === undefined || !delta) return { plan, ingested: 0 };
@@ -271,6 +276,15 @@ export class SessionCapture {
   private async writeInTransaction(input: CaptureInput): Promise<CaptureResult> {
     const attribution = input.attribution
       ?? (input.transcriptPath ? attributionFromTranscriptPath(input.transcriptPath) : undefined);
+    const workers = new WorkerStore(this.db);
+    const pathSegments = input.transcriptPath?.split(sep) ?? [];
+    const rootIndex = pathSegments.indexOf("subagents");
+    const directoryParent = rootIndex > 0 ? pathSegments[rootIndex - 1] : undefined;
+    if (workers.excluded(input.sessionId, attribution?.parentSessionId) ||
+        (directoryParent && workers.excluded(directoryParent)) || workers.detectCopiedClaim(input.sessionId, input.messages)) {
+      workers.exclude(input.sessionId);
+      return { conversationId: 0, records: [], totalCounts: { gitleaks: 0, builtIn: 0, global: 0, project: 0 } };
+    }
     // Only a caller that knows the provenance stamps it; an unknown one is verified on its next Claude capture.
     const parserShape = input.parserShape ?? null;
     const conversation = await this.conversationStore.getOrCreateConversation(input.sessionId, undefined, attribution, parserShape);

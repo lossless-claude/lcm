@@ -509,3 +509,7 @@ config does:
 There is no profile store to consult: the process-backed providers (`claude-process`,
 `codex-process`, `copilot-process`, `omp-process`) authenticate through their own CLI's login, so
 lcm never sees their credentials.
+
+### Declared agent summarize workers
+
+Declared Claude Code and Codex workers have durable whole-session capture exclusion in `summarize_workers`. Registration holds the project mutation lease, removes captured content and provenanced promotions, and keeps an ingest tombstone. Sidecar events have their own transactional exclusion. Finishing or resuming never lifts exclusion. Capture, rebuild, scan, import, replay and compaction check the permanent gate. See [the design](design/agent-summarize-workers.md).

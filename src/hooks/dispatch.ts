@@ -20,6 +20,21 @@ export async function dispatchHook(
   // The storage root, resolved once here and threaded to every handler below.
   const paths = createLcmPaths(lcmHome());
 
+  if (process.env.LCM_SUMMARIZE_WORKER === "1") {
+    const input = JSON.parse(stdinText || "{}");
+    if (input.session_id && input.cwd && command === "restore" && !input.session_id.startsWith("agent-")) {
+      const { registerWorkerSession } = await import("../worker-session.js");
+      const result = await registerWorkerSession(paths, { sessionId: input.session_id, cwd: input.cwd,
+        client: "claude", owner: `claude-command:${process.ppid}` });
+      console.error(`[lcm] ${result.warning} Promotions without provenance: ${result.unprovenanced}.`);
+    }
+    if (command === "session-end" && input.session_id && input.cwd) {
+      const { finishWorkerSession } = await import("../worker-session.js");
+      await finishWorkerSession(paths, input.cwd, input.session_id);
+    }
+    return { exitCode: 0, stdout: "" };
+  }
+
   // Early return for post-tool — runs on EVERY tool call, must skip bootstrap for performance
   if (command === "post-tool") {
     const { handlePostToolUse } = await import("./post-tool.js");

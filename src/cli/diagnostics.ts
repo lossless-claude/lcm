@@ -59,6 +59,10 @@ export function registerDiagnosticsCommands(program: Command, deps: DiagnosticsC
           console.log(`  Provider: ${providerDisplay}`);
           console.log();
           console.log("Project:");
+          if (statusData.project.workers?.length) {
+            console.log(statusData.project.workerWarning);
+            for (const worker of statusData.project.workers) console.log(`  Worker ${worker.session_id}: ${worker.state}; last activity ${worker.last_activity}`);
+          }
           console.log(`  Messages: ${statusData.project.messageCount}`);
           console.log(`  Summaries: ${statusData.project.summaryCount}`);
           console.log(`  Promoted: ${statusData.project.promotedCount}`);

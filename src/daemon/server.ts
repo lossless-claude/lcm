@@ -1,3 +1,5 @@
+import { workerExcluded } from "../worker-session.js";
+import { createWorkerSessionHandler } from "./routes/worker-session.js";
 import { SummarizeJobStore } from "./summarize-jobs.js";
 import { summarizerAvailability } from "./provider-config.js";
 import { createNextSummarizeJobHandler, createAnswerSummarizeJobHandler } from "./routes/summarize-jobs.js";
@@ -189,6 +191,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
     sendJson(res, 200, { status: "ok", version: PKG_VERSION, build: BUILD_ID, pid: process.pid, uptime: Math.floor((Date.now() - startTime) / 1000), log: log.state(),
       // Which named endpoints this daemon's environment left out; `lcm doctor` reports it.
       summarizer: summarizerAvailability(config.llm) }));
+  routes.set("POST /worker-session", createWorkerSessionHandler(paths));
   const summarizeJobs = new SummarizeJobStore();
   const answerSummarizeJob = createAnswerSummarizeJobHandler(summarizeJobs);
   routes.set("GET /summarize-jobs/next", createNextSummarizeJobHandler(summarizeJobs));
@@ -516,6 +519,7 @@ export async function scanForTranscripts(config: DaemonConfig, paths: LcmPaths, 
 
       for (const file of files) {
         if (!file.endsWith(".jsonl")) continue;
+        if (workerExcluded(meta.cwd, file.slice(0, -6), paths)) continue;
         if (seenProjectPaths.size > 0) await yieldToEventLoop();
         const sessionId = file.replace(".jsonl", "");
         const transcriptPath = join(sessionsDir, file);

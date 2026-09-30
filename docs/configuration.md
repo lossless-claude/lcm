@@ -706,3 +706,7 @@ one session start requests compaction for, oldest-first; a larger backlog drains
 across successive starts instead of bursting the summarizer. Set `hooks.disableAutoCompact`
 to turn the sweep off entirely. The request is fire-and-forget, so session start's
 latency is unaffected regardless of how large the backlog is.
+
+### Agent worker exclusion
+
+`LCM_SUMMARIZE_WORKER=1` declares a dedicated worker at harness startup. Claude Code and Codex hooks persist enrollment before agent transports may claim. Capture exclusion is permanent for that session and its descendants. `lcm status`, `lcm doctor` and `lcm stats` report active, finished or abandoned enrollment and last activity. Forking worker sessions is unsupported; use a fresh dedicated session. OMP agent enrollment is unverified.
