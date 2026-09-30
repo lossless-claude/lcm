@@ -12,6 +12,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLAUDE_PARSER_SHAPE } from "../src/transcript.js";
+import { isWorkerClaim } from "../src/worker-markers.js";
 
 const canary = "FOREIGN_WORKER_CONTENT_685";
 const messages = [{ role: "user" as const, content: canary, tokenCount: 10, parts: [{ type: "text" as const, text: canary }] }];
@@ -142,6 +143,21 @@ describe("permanent worker exclusion", () => {
     workers.register({ sessionId: "parent", cwd: "/project", client: "claude", owner: "hook" });
     expect((await capture.write({ sessionId: "agent-child", messages,
       transcriptPath: "/transcripts/parent/subagents/workflows/agent-child.jsonl" })).records).toEqual([]);
+  });
+});
+
+describe("claim invocation markers", () => {
+  const run = ";".repeat(200_000);
+  it.each([
+    ["lcm summarize-claim", true],
+    [`echo ${run} && lcm summarize-claim`, true],
+    [`echo x${run}`, false],
+    [`echo ${"a|".repeat(100_000)}lcm`, false],
+    ["lcm summarize-claim;echo", false],
+    ["lcm;summarize-claim", false],
+    ["notlcm summarize-claim", false],
+  ])("reads %# without backtracking over separator runs", (command, claim) => {
+    expect(isWorkerClaim("Bash", { command })).toBe(claim);
   });
 });
 
