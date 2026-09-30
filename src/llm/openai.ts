@@ -60,8 +60,10 @@ function toUsage(response: any, fallbackModel: string): SummarizerUsage | undefi
   const inputTokens = usage.prompt_tokens;
   const outputTokens = usage.completion_tokens;
   const choice = response.choices?.[0];
+  const content = choice?.message?.content;
+  // The same judgement acceptSummaryText makes: content that is not text is no answer.
   const rejectionReason = choice?.finish_reason === "length" ? "length"
-    : !choice?.message?.content?.trim() ? "whitespace" : undefined;
+    : typeof content !== "string" || !content.trim() ? "whitespace" : undefined;
   const timing = (value: unknown): number | undefined =>
     typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
   return {

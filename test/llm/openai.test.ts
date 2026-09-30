@@ -252,4 +252,23 @@ describe("createOpenAISummarizer", () => {
     expect(error).toMatchObject({ reason: "whitespace" });
     expect(create).toHaveBeenCalledTimes(3);
   });
+
+  it.each([
+    ["whitespace content", { content: " \n " }, "stop", "whitespace"],
+    ["non-string content", { content: [{ type: "text", text: "Summary." }] }, "stop", "whitespace"],
+    ["a length stop", { content: "Cut off mid" }, "length", "length"],
+  ])("reports %s as a billed, failed call before rejecting it", async (_case, message, finish_reason, reason) => {
+    const create = vi.fn().mockResolvedValue({
+      choices: [{ finish_reason, message }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+    });
+    const onUsage = vi.fn();
+    const summarize = createOpenAISummarizer({
+      model: "m", _clientOverride: { chat: { completions: { create } } } as any, _retryDelayMs: 0,
+    });
+    const error = await summarize("text", false, { onUsage }).catch((err) => err);
+    expect(error).toBeInstanceOf(SummaryRejectedError);
+    expect(error).toMatchObject({ reason });
+    expect(onUsage).toHaveBeenCalledTimes(create.mock.calls.length);
+    expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({ tokensUsed: 15, failed: true, rejectionReason: reason }));
+  });
 });
