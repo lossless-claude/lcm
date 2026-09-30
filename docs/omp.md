@@ -146,5 +146,8 @@ OMP isolated completion hooks remain supported. Agent shell and MCP pool claims 
 
 OMP's isolated hook worker binds claims through
 `hooks/omp/lcm.ts:sessionIdentity`'s native `sessionManager.getSessionId()`. Its session-start hook
-registers durable enrollment before polling; shutdown finishes enrollment.
+registers durable enrollment before polling only when `isSessionOnDisk()` reports
+false. Resume, continue, fork and clears that retain the id cannot enroll; shutdown
+finishes enrollment. The owner includes the native session id so sessions sharing
+a host process remain independent.
 This verifies the hook path, not shell or MCP propagation of `PI_SESSION_FILE`.

@@ -1,3 +1,4 @@
+import { workerDisplayId } from "../../worker-warning.js";
 import { workerEnrollments } from "../../worker-session.js";
 import { WORKER_WARNING } from "../../store/worker-store.js";
 import { existsSync } from "node:fs";
@@ -76,7 +77,9 @@ export function createStatusHandler(config: DaemonConfig, paths: LcmPaths, start
           port,
         },
         project: {
-          workers: workerEnrollments(cwd, paths),
+          workers: workerEnrollments(cwd, paths).map(worker => ({
+            session_id: workerDisplayId(worker.session_id), client: worker.client, state: worker.state, last_activity: worker.last_activity,
+          })),
           workerWarning: WORKER_WARNING,
           messageCount,
           summaryCount,

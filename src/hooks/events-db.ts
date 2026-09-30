@@ -194,6 +194,20 @@ export class EventsDb {
     }
   }
 
+  /** Enrollment never deletes sidecar history, including processed events. */
+  enrollSessions(sessionIds: string[]): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const id of sessionIds) {
+        if (this.db.prepare("SELECT 1 FROM events WHERE session_id = ? LIMIT 1").get(id)) {
+          throw new Error("Worker enrollment refuses existing tool events. Start a fresh dedicated session.");
+        }
+        this.db.prepare("INSERT OR IGNORE INTO excluded_worker_sessions(session_id) VALUES (?)").run(id);
+      }
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+
   excludeSessions(sessionIds: string[]): void {
     this.db.exec("BEGIN IMMEDIATE");
     try {

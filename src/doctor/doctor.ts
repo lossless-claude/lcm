@@ -1,3 +1,4 @@
+import { workerDisplayId } from "../worker-warning.js";
 import { workerEnrollments } from "../worker-session.js";
 import { WORKER_WARNING } from "../store/worker-store.js";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -447,7 +448,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
   const results: CheckResult[] = [];
   const config = loadConfig(deps);
   for (const worker of workerEnrollments(process.cwd(), createLcmPaths(deps.lcmHome))) {
-    results.push({ name: `summarize-worker-${worker.session_id}`, category: "Summarizer", status: "warn",
+    results.push({ name: `summarize-worker-${workerDisplayId(worker.session_id)}`, category: "Summarizer", status: "warn",
       message: `${worker.state}; last activity ${worker.last_activity}. ${WORKER_WARNING}` });
   }
 

@@ -22,10 +22,22 @@ export function createWorkerSessionHandler(paths: LcmPaths, jobs?: SummarizeJobS
       jobs?.revokeIdentity(workerBinding(cwd, input.client, input.session_id));
       sendJson(res, 200, { finished: true }); return;
     }
-    const result = await registerWorkerSession(paths, { sessionId: input.session_id, cwd, client: input.client, owner: input.owner });
-    for (const worker of workerEnrollments(cwd, paths)) if (worker.state !== "active") {
-      jobs?.revokeIdentity(workerBinding(cwd, worker.client, worker.session_id));
+    if (input.source !== "startup" && input.source !== "clear") {
+      if (input.source !== "compact") {
+        await finishWorkerSession(paths, cwd, input.session_id);
+        jobs?.revokeIdentity(workerBinding(cwd, input.client, input.session_id));
+      }
+      sendJson(res, 403, { error: "Worker enrollment requires a new session id from startup or clear; resume, compact, continue and fork are unsupported." }); return;
     }
+    const revokeFinished = () => {
+      for (const worker of workerEnrollments(cwd, paths)) if (worker.state !== "active") {
+        jobs?.revokeIdentity(workerBinding(cwd, worker.client, worker.session_id));
+      }
+    };
+    let result;
+    try { result = await registerWorkerSession(paths, { sessionId: input.session_id, cwd, client: input.client, owner: input.owner, source: input.source }); }
+    catch (error) { revokeFinished(); sendJson(res, 403, { error: (error as Error).message }); return; }
+    revokeFinished();
     sendJson(res, 200, result);
   };
 }

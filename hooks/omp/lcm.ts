@@ -11,6 +11,8 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
+export const WORKER_WARNING = "This session and its subagents are not recorded by lcm. The harness's own transcript stays on disk. Use a dedicated session; forking a worker session is unsupported.";
+
 const DEFAULT_PORT = 3737;
 const DEFAULT_TIMEOUT_MS = 1_500;
 const SHUTDOWN_TIMEOUT_MS = 250;
@@ -859,7 +861,7 @@ export default function lcm(pi: HookApi): void {
     flush(ctx, forceFlush, identity);
   };
 
-  register("session_start", "session_start", async (_rawEvent, ctx) => {
+  register("session_start", "session_start", async (rawEvent, ctx) => {
     restoreContext = "";
     firstPrompt = true;
     const identity = sessionIdentity(ctx);
@@ -869,10 +871,17 @@ export default function lcm(pi: HookApi): void {
       return undefined;
     }
     if (process.env.LCM_SUMMARIZE_WORKER === "1") {
+      const source = (rawEvent as { source?: string } | null)?.source;
+      if ((source !== undefined && source !== "startup") || ctx.sessionManager?.isSessionOnDisk?.() !== false) {
+        await post("/worker-session", { session_id: identity.sessionId, cwd: identity.cwd,
+          client: "omp", declared: true, source: "resume", owner: `omp-hook:${process.pid}:${identity.sessionId}` });
+        logError(pi, "worker enrollment refused", new Error("Start a fresh dedicated session; resume, continue, fork and clears that keep the session id are unsupported."));
+        return undefined;
+      }
       const registration = await post("/worker-session", { session_id: identity.sessionId, cwd: identity.cwd,
-        client: "omp", declared: true, owner: `omp-hook:${generation}` });
+        client: "omp", declared: true, source: "startup", owner: `omp-hook:${process.pid}:${identity.sessionId}` });
       if (registration === undefined) { logError(pi, "worker enrollment failed", new Error("No pool payload will be requested")); return undefined; }
-      console.error("[lcm] This session and its subagents are not recorded by lcm. The harness's own transcript stays on disk. Use a dedicated session; forking workers is unsupported.");
+      console.error(`[lcm] ${WORKER_WARNING}`);
     }
     if (process.env.LCM_SUMMARIZE_WORKER === "1" && !workerController) {
       workerController = new AbortController();
@@ -1022,7 +1031,7 @@ export default function lcm(pi: HookApi): void {
     workerController?.abort();
     const identity = sessionIdentity(ctx);
     if (identity && process.env.LCM_SUMMARIZE_WORKER === "1") await post("/worker-session", {
-      session_id: identity.sessionId, cwd: identity.cwd, client: "omp", declared: true, owner: `omp-hook:${generation}`, action: "finish",
+      session_id: identity.sessionId, cwd: identity.cwd, client: "omp", declared: true, owner: `omp-hook:${process.pid}:${identity.sessionId}`, action: "finish",
     });
     fireIngest(ctx, "session_shutdown", SHUTDOWN_TIMEOUT_MS);
     return undefined;

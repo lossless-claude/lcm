@@ -1,3 +1,4 @@
+import { WORKER_JOB_GUIDANCE } from "../worker-warning.js";
 import type { Tool } from "@modelcontextprotocol/server";
 import type { PivotLanguages } from "../search/pivot-language.js";
 import { pivotQueryApplies } from "../search/pivot-language.js";
@@ -36,7 +37,7 @@ const ENTRIES: ToolEntry[] = [
   {
     definition: {
       name: "lcm_summarize_claim",
-      description: "Claim one pool job in a dedicated declared worker. Claude Code stdio MCP only; identity is read from the harness environment. The session and its subagents are permanently excluded from lcm; the harness transcript stays on disk. Use a dedicated session.",
+      description: "Claim one pool job in a dedicated declared worker. Claude Code stdio MCP only; identity is read from the harness environment. The session and its subagents are permanently excluded from lcm; the harness transcript stays on disk. Use a dedicated session. " + WORKER_JOB_GUIDANCE,
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
     },
     destination: { kind: "worker", action: "claim" },

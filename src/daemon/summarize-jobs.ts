@@ -147,6 +147,25 @@ export class SummarizeJobStore {
     return "accepted";
   }
 
+  /** A disconnected client has not received the payload and must not abandon its session. */
+  releaseClaim(id: string, workerId?: string): void {
+    const entry = this.jobs.get(id);
+    if (!entry || entry.state !== "claimed" || entry.workerId !== workerId) return;
+    clearTimeout(entry.timer);
+    if (entry.workerId) {
+      this.activeWorkers.delete(entry.workerId);
+      this.workerIdentities.delete(entry.workerId);
+    }
+    entry.workerId = undefined;
+    entry.workerIdentity = undefined;
+    entry.state = "queued";
+    entry.timer = this.expireAfter(id, Math.max(1, this.deadlineMs - (Date.now() - entry.job.createdAt)));
+    const key = entry.job.pool ? "pool" : `session:${entry.job.session_id}`;
+    this.queues.set(key, [id, ...(this.queues.get(key) ?? [])]);
+    if (entry.job.pool) this.wakeWorkers();
+    else this.waiters.get(key)?.(this.claim(key));
+  }
+
   revokeIdentity(identity: string): void {
     for (const [id, entry] of this.jobs) if (entry.workerIdentity === identity) this.finish(id, { error: "worker admission revoked" }, "failed");
     for (const [workerId, bound] of this.workerIdentities) if (bound === identity) {

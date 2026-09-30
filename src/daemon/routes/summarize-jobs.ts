@@ -1,3 +1,4 @@
+import { WORKER_JOB_GUIDANCE } from "../../worker-warning.js";
 import { sendJson, type RouteHandler } from "../server.js";
 import type { LcmPaths } from "../../lcm-paths.js";
 import { WORKER_WARNING } from "../../store/worker-store.js";
@@ -20,16 +21,21 @@ export function createNextSummarizeJobHandler(store: SummarizeJobStore, paths?: 
       catch (error) { sendJson(res, 403, { error: (error as Error).message, warning: WORKER_WARNING }); return; }
     }
     const controller = new AbortController();
-    const abort = () => controller.abort();
+    let job: SummarizeJob | null = null;
+    const abort = () => {
+      controller.abort();
+      if (job && !res.writableFinished) store.releaseClaim(job.id, workerId ?? undefined);
+    };
     res.once("close", abort);
     try {
       const wait = query.get("wait_ms") !== "0";
-      const job = workerId ? await store.nextWorker(workerId, controller.signal, wait, admission!.binding)
+      job = workerId ? await store.nextWorker(workerId, controller.signal, wait, admission!.binding)
         : await store.next(sessionId!, controller.signal, wait);
-      if (res.destroyed) return;
+      if (res.destroyed) { if (job) store.releaseClaim(job.id, workerId ?? undefined); return; }
       if (workerId) {
         try { await admitWorker(paths, boundInput, () => {
-          sendJson(res, 200, { ...(job ? { job } : {}), worker_id: workerId, warning: WORKER_WARNING });
+          if (res.destroyed) { if (job) store.releaseClaim(job.id, workerId); return; }
+          sendJson(res, 200, { ...(job ? { job } : {}), worker_id: workerId, warning: WORKER_WARNING, guidance: WORKER_JOB_GUIDANCE });
         }); }
         catch (error) {
           store.revokeIdentity(admission!.binding);
@@ -39,7 +45,7 @@ export function createNextSummarizeJobHandler(store: SummarizeJobStore, paths?: 
       }
       if (job) sendJson(res, 200, { job });
       else { res.writeHead(204); res.end(); }
-    } finally { res.off("close", abort); }
+    } finally { if (!job || res.writableFinished || res.destroyed) res.off("close", abort); }
   };
 }
 

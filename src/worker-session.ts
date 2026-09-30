@@ -40,7 +40,7 @@ export function workerExcluded(cwd: string, sessionId: string, paths: LcmPaths, 
 }
 
 export async function registerWorkerSession(paths: LcmPaths, input: {
-  sessionId: string; cwd: string; client: "claude" | "codex" | "omp"; owner: string;
+  sessionId: string; cwd: string; client: "claude" | "codex" | "omp"; owner: string; source?: "startup" | "clear";
 }): Promise<{ warning: string; unprovenanced: number }> {
   input = { ...input, cwd: validateCwd(input.cwd) };
   return withProjectMutation(projectId(input.cwd), async () => {
@@ -50,14 +50,11 @@ export async function registerWorkerSession(paths: LcmPaths, input: {
     const events = new EventsDb(eventsDbPath(input.cwd, paths));
     try {
       runLcmMigrations(db);
-      // Sidecar exclusion lands first: a command hook either writes before this cleanup
-      // or sees the permanent sidecar gate. A failed main cleanup cannot release a job.
-      const root = input.client === "claude" ? claudeTranscriptPath(input.cwd, input.sessionId) : null;
-      const children = root ? discoverSubagentTranscripts(join(dirname(root), input.sessionId)) : [];
-      events.excludeSessions([input.sessionId, ...children.map(sub => sub.sessionId)]);
-      const result = new WorkerStore(db).register(input);
-      events.excludeSessions(result.sessions);
-      for (const child of children) new WorkerStore(db).exclude(child.sessionId, input.cwd, input.client);
+      // SQLite protects the history check across processes. Sidecar enrollment only
+      // installs a gate and refuses existing events; it cannot purge ordinary history.
+      const store = new WorkerStore(db);
+      if (input.source === "clear") store.finishOwner(input.owner);
+      const result = store.register(input, () => events.enrollSessions([input.sessionId]));
       return { warning: WORKER_WARNING, unprovenanced: result.unprovenanced };
     } finally { events.close(); closeLcmConnection(dbPath); }
   });

@@ -606,8 +606,6 @@ async function pollSummaries($: EngineInterface, configuredCap: number): Promise
     if (spentNow === null) return;
     spent += spentNow;
     if (worker && spent >= cap) {
-      await postDaemon($, "/worker-session", { session_id: await $.session.id(), cwd: await $.session.cwd(),
-        client: "claude", declared: true, owner: `claude-function:${hookSnapshotGeneration}`, action: "finish" });
       return;
     }
   }
@@ -624,10 +622,9 @@ function registerSessionStart(on: On, summaryCap: number): void {
     let declaredWorker = false;
     try { declaredWorker = await $.env.get("LCM_SUMMARIZE_WORKER") === "1"; } catch { /* An unavailable declaration cannot enroll a worker. */ }
     if (declaredWorker) {
-      const registration = await postDaemon($, "/worker-session", { session_id: sessionId,
-        cwd: await $.session.cwd(), client: "claude", declared: true, owner: `claude-function:${hookSnapshotGeneration}` });
-      if (!registration) { $.ui.log("[lcm] worker registration failed; no pool payload will be requested"); return next(e); }
-      $.ui.log(`[lcm] ${registration.warning} Promotions without provenance: ${registration.unprovenanced}.`);
+      // SessionStart command hooks are the sole registrar: they receive the native
+      // start reason and keep a stable process owner across function-hook reloads.
+      $.ui.log("[lcm] This session and its subagents are not recorded by lcm. The harness's own transcript stays on disk. Use a dedicated session; forking a worker session is unsupported.");
     }
     let claimed = true;
     await claimSession($, sessionId).catch((error: unknown) => {

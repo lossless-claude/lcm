@@ -1,3 +1,4 @@
+import { CompactionEngine, compactEngineConfig } from "../src/compaction.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parseCodexTranscriptRecord } from "../src/codex-transcript.js";
 import { parseClaudeTranscriptRecord } from "../src/transcript.js";
@@ -9,7 +10,7 @@ import { ScrubEngine } from "../src/scrub.js";
 import { PromotedStore } from "../src/db/promoted.js";
 
 const canary = "FOREIGN_WORKER_CONTENT_685";
-const messages = [{ role: "user" as const, content: canary, tokenCount: 10 }];
+const messages = [{ role: "user" as const, content: canary, tokenCount: 10, parts: [{ type: "text" as const, text: canary }] }];
 describe("permanent worker exclusion", () => {
   let db: DatabaseSync;
   let capture: SessionCapture;
@@ -24,13 +25,25 @@ describe("permanent worker exclusion", () => {
 
   it("cleans captured content and provenanced promotions, preserves the tombstone and unrelated session", async () => {
     const old = await capture.write({ sessionId: "worker", messages });
-    await capture.write({ sessionId: "ordinary", messages: [{ ...messages[0], content: "ordinary" }] });
-    await capture.summaryStore.insertSummary({ summaryId: "sum_worker", conversationId: old.conversationId,
-      kind: "leaf", depth: 0, content: canary, tokenCount: 10 });
+    await capture.write({ sessionId: "ordinary", messages: [{ ...messages[0], content: "ordinary", parts: [] }] });
+    const compacted = await new CompactionEngine(capture.conversationStore, capture.summaryStore,
+      { ...compactEngineConfig({ env: {} }), freshTailCount: 0, leafMinFanout: 1 }).compact({
+        conversationId: old.conversationId, tokenBudget: 100, force: true, summarize: async () => canary,
+      });
+    expect(compacted.actionTaken).toBe(true);
+    expect(db.prepare("SELECT * FROM summaries").all()).toHaveLength(1);
     new PromotedStore(db).insert({ content: canary, projectId: "project", sessionId: "worker" });
     new PromotedStore(db).insert({ content: "unknown provenance", projectId: "project" });
-    const result = workers.register({ sessionId: "worker", cwd: "/project", client: "claude", owner: "hook" });
-    expect(result.unprovenanced).toBe(1);
+    expect(db.prepare("SELECT * FROM promoted").all()).toHaveLength(2);
+    expect(db.prepare("SELECT * FROM message_parts").all().length).toBeGreaterThan(0);
+    const copied = [
+      { message: { role: "assistant", content: [{ type: "tool_use", id: "cleanup", name: "lcm_summarize_claim", input: {} }] } },
+      { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "cleanup", content: JSON.stringify({ job: { prompt: canary, system: "system" } }) }] } },
+    ];
+    await capture.write({ sessionId: "worker", messages: copied.map(record => parseClaudeTranscriptRecord(JSON.stringify(record)).message!) });
+    expect(workers.live("worker", "/project", "claude")).toBe(false);
+    expect(db.prepare("SELECT content FROM promoted").all()).toEqual([{ content: "unknown provenance" }]);
+    expect(db.prepare("SELECT * FROM message_parts").all()).toEqual([]);
     for (const table of ["messages", "summaries", "messages_fts", "summaries_fts", "promoted", "promoted_fts"]) {
       expect(db.prepare(`SELECT 1 FROM ${table} WHERE content LIKE ?`).get(`%${canary}%`), table).toBeUndefined();
     }
@@ -41,7 +54,7 @@ describe("permanent worker exclusion", () => {
 
   it("revokes the previous id on clear but permanently excludes resumed history and descendants", async () => {
     workers.register({ sessionId: "old", cwd: "/project", client: "claude", owner: "hook" });
-    workers.register({ sessionId: "new", cwd: "/project", client: "claude", owner: "hook" });
+    workers.register({ sessionId: "new", cwd: "/project", client: "claude", owner: "hook", replaceOwner: true });
     expect(workers.live("old", "/project", "claude")).toBe(false);
     expect(workers.live("new", "/project", "claude")).toBe(true);
     expect((await capture.write({ sessionId: "old", messages })).records).toEqual([]);
@@ -71,9 +84,22 @@ describe("permanent worker exclusion", () => {
     expect(workers.live("codex-fork", "/project", "codex")).toBe(false);
   });
 
+  it.each(["lcm summarize-claim", "/opt/bin/lcm summarize-claim", '"/opt/bin/lcm" summarize-claim', "node /opt/package/lcm.js summarize-claim", "node --no-warnings /opt/package/lcm.js summarize-claim"])("detects a copied claim through its invocation: %s", async command => {
+    const records = [
+      { message: { role: "assistant", content: [{ type: "tool_use", id: "copied", name: "Bash", input: { command } }] } },
+      { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "copied", content: JSON.stringify({ job: { prompt: canary, system: "system" } }) }] } },
+    ];
+    expect((await capture.write({ sessionId: "fork", messages: records.map(record => parseClaudeTranscriptRecord(JSON.stringify(record)).message!) })).records).toEqual([]);
+    expect(workers.excluded("fork")).toBe(true);
+    expect(db.prepare("SELECT * FROM message_parts").all()).toEqual([]);
+  });
+
   it("refuses new summaries after exclusion, including an answer already in flight", async () => {
     const old = await capture.write({ sessionId: "worker", messages });
-    workers.register({ sessionId: "worker", cwd: "/project", client: "claude", owner: "hook" });
+    await capture.write({ sessionId: "worker", messages: [
+      parseClaudeTranscriptRecord(JSON.stringify({ message: { role: "assistant", content: [{ type: "tool_use", id: "late", name: "lcm_summarize_claim", input: {} }] } })).message!,
+      parseClaudeTranscriptRecord(JSON.stringify({ message: { role: "user", content: [{ type: "tool_result", tool_use_id: "late", content: JSON.stringify({ job: { prompt: canary, system: "system" } }) }] } })).message!,
+    ] });
     await expect(capture.summaryStore.insertSummary({ summaryId: "sum_late", conversationId: old.conversationId,
       kind: "leaf", depth: 0, content: canary, tokenCount: 10 })).rejects.toThrow("excluded");
     expect(db.prepare("SELECT * FROM summaries_fts").all()).toEqual([]);

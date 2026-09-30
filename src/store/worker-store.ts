@@ -45,10 +45,25 @@ export class WorkerStore {
     this.db.prepare("UPDATE summarize_workers SET state = ?, last_activity = datetime('now') WHERE session_id = ?").run(state, sessionId);
   }
 
-  register(input: { sessionId: string; cwd: string; client: string; owner: string }): { sessions: string[]; unprovenanced: number } {
+  /** A clear revokes the old owner before replacement enrollment, even if that fails. */
+  finishOwner(owner: string): void {
+    this.db.prepare("UPDATE summarize_workers SET state = 'finished', last_activity = datetime('now') WHERE owner = ?").run(owner);
+  }
+
+  register(input: { sessionId: string; cwd: string; client: string; owner: string; replaceOwner?: boolean }, beforeCommit?: () => void): { sessions: string[]; unprovenanced: number } {
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      this.db.prepare(`UPDATE summarize_workers SET state = 'finished', last_activity = datetime('now')
+      const existing = this.list().find(worker => worker.session_id === input.sessionId);
+      if (existing && (existing.state !== "active" || existing.owner !== input.owner || existing.client !== input.client || existing.cwd !== input.cwd)) {
+        throw new Error("Worker enrollment cannot resume, reactivate or change an existing session owner. Start a fresh dedicated session.");
+      }
+      const history = this.db.prepare(`WITH RECURSIVE sessions(id) AS (
+        SELECT ? UNION SELECT session_id FROM conversations JOIN sessions ON parent_session_id = sessions.id
+      ) SELECT 1 FROM messages JOIN conversations USING(conversation_id) JOIN sessions ON session_id = sessions.id
+        UNION ALL SELECT 1 FROM summaries JOIN conversations USING(conversation_id) JOIN sessions ON session_id = sessions.id
+        UNION ALL SELECT 1 FROM promoted JOIN sessions ON session_id = sessions.id LIMIT 1`).get(input.sessionId);
+      if (history) throw new Error("Worker enrollment refuses an existing conversation. Start a fresh dedicated session; do not resume, continue or fork.");
+      if (input.replaceOwner) this.db.prepare(`UPDATE summarize_workers SET state = 'finished', last_activity = datetime('now')
         WHERE owner = ? AND session_id != ?`).run(input.owner, input.sessionId);
       this.db.prepare(`INSERT INTO summarize_workers(session_id, cwd, client, owner, state)
         VALUES (?, ?, ?, ?, 'active') ON CONFLICT(session_id) DO UPDATE SET
@@ -56,7 +71,11 @@ export class WorkerStore {
       const sessions = this.db.prepare(`WITH RECURSIVE descendants(id) AS (
         SELECT ? UNION SELECT session_id FROM conversations JOIN descendants ON parent_session_id = descendants.id
       ) SELECT id FROM descendants`).all(input.sessionId) as { id: string }[];
-      for (const { id } of sessions) this.exclude(id, input.cwd, input.client);
+      for (const { id } of sessions) {
+        this.db.prepare("INSERT OR IGNORE INTO summarize_workers(session_id, cwd, client, state) VALUES (?, ?, ?, 'abandoned')").run(id, input.cwd, input.client);
+        this.db.prepare("INSERT OR IGNORE INTO session_ingest_log(session_id) VALUES (?)").run(id);
+      }
+      beforeCommit?.();
       const { n } = this.db.prepare("SELECT count(*) AS n FROM promoted WHERE session_id IS NULL AND source_summary_id IS NULL").get() as { n: number };
       this.db.exec("COMMIT");
       return { sessions: sessions.map(row => row.id), unprovenanced: n };

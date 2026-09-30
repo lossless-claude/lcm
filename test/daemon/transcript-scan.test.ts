@@ -1,3 +1,5 @@
+import { registerWorkerSession } from "../../src/worker-session.js";
+import { projectId } from "../../src/daemon/project.js";
 // test/daemon/transcript-scan.test.ts
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -101,6 +103,29 @@ describe("periodic transcript scan", () => {
     expect(stored).toContain("scan fixture Zephyrite transcript");
     // The directory the old convention created holds a transcript the fixed sweep never reads.
     expect(storedMessages(project, "scan-fixture-old")).toEqual([]);
+  });
+
+  it("a real transcript scan racing enrollment cannot capture a worker canary", async () => {
+    const cwd = join(process.env.LCM_SCAN_FAKE_HOME!, "worker-project");
+    seedProject(cwd, claudeProjectSlug(cwd), "worker");
+    const config = loadDaemonConfig("/nonexistent", { llm: { provider: "disabled" } }, {});
+    const lease = await projectQueue.acquireProjectMutation(projectId(cwd));
+    const registration = registerWorkerSession(paths, { sessionId: "worker", cwd, client: "claude", owner: "hook" });
+    const beganIngest = Promise.withResolvers<void>();
+    const ingest = createIngestHandler(config, paths);
+    const scan = scanForTranscripts(config, paths, async (...args) => {
+      beganIngest.resolve();
+      return ingest(...args);
+    });
+    try {
+      await beganIngest.promise;
+    } finally { lease.release(); }
+    await registration; await scan;
+    expect(storedMessages(cwd, "worker")).toEqual([]);
+    const db = new DatabaseSync(projectDbPath(cwd, paths));
+    try {
+      for (const table of ["messages_fts", "message_parts", "summaries", "promoted"]) expect(db.prepare(`SELECT * FROM ${table}`).all(), table).toEqual([]);
+    } finally { db.close(); }
   });
 
   it("is silent when a project has no Claude transcript directory", async () => {

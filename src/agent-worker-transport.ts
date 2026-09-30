@@ -5,7 +5,7 @@ import type { SummarizeJob, JobAnswer } from "./daemon/summarize-jobs.js";
 import { validPoolModel } from "./daemon/summarize-jobs.js";
 
 export type WorkerIdentity = { caller_session_id: string; cwd: string; client: "claude" | "codex"; transport: "cli" | "mcp" };
-export type AgentClaim = { job?: SummarizeJob; worker_id: string; warning: string };
+export type AgentClaim = { job?: SummarizeJob; worker_id: string; warning: string; guidance: string };
 export type AgentSubmission = {
   jobId: string; workerId: string; model: string; text?: string; error?: string; usage?: JobAnswer["usage"];
 };

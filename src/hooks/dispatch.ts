@@ -23,12 +23,18 @@ export async function dispatchHook(
   if (process.env.LCM_SUMMARIZE_WORKER === "1") {
     try {
       const input = JSON.parse(stdinText || "{}");
-      const { functionHooksOwnSession } = await import("./session-claim.js");
-      if (input.session_id && input.cwd && command === "restore" && !input.session_id.startsWith("agent-") && !functionHooksOwnSession(input.session_id)) {
+      if (input.session_id && input.cwd && command === "restore" && (input.source === "startup" || input.source === "clear") && !input.session_id.startsWith("agent-")) {
         const { registerWorkerSession } = await import("../worker-session.js");
         const result = await registerWorkerSession(paths, { sessionId: input.session_id, cwd: input.cwd,
-          client: "claude", owner: (await import("./worker-owner.js")).workerHookOwner("claude") });
+          client: "claude", source: input.source, owner: (await import("./worker-owner.js")).workerHookOwner("claude") });
         console.error(`[lcm] ${result.warning} Promotions without provenance: ${result.unprovenanced}.`);
+      }
+      if (command === "restore" && input.source !== "startup" && input.source !== "clear") {
+        console.error("[lcm] worker enrollment refused; start a fresh dedicated session. Resume, compact, continue and fork cannot enroll.");
+        if (input.source !== "compact" && input.session_id && input.cwd) {
+          const { finishWorkerSession } = await import("../worker-session.js");
+          await finishWorkerSession(paths, input.cwd, input.session_id);
+        }
       }
       if (command === "session-end" && input.session_id && input.cwd) {
         const { finishWorkerSession } = await import("../worker-session.js");

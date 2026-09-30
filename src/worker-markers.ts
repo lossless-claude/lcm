@@ -3,7 +3,7 @@ export function isWorkerClaim(name: unknown, input?: Record<string, unknown>): b
   if (typeof name !== "string") return false;
   if (/(?:^|__)lcm_summarize_claim$/.test(name)) return true;
   const command = input?.command ?? input?.cmd;
-  return ["Bash", "exec_command"].includes(name) && typeof command === "string" && /(?:^|\s)lcm\s+summarize-claim(?:\s|$)/.test(command);
+  return ["Bash", "exec_command"].includes(name) && typeof command === "string" && /(?:^|[\s;&|])["']?(?:[^\s"']*[\/\\])?lcm(?:\.(?:m?js|cjs))?["']?\s+summarize-claim(?:\s|$)/.test(command);
 }
 
 export function containsWorkerPayload(output: unknown): boolean {

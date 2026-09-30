@@ -276,7 +276,9 @@ started with `LCM_SUMMARIZE_WORKER=1` and enrolled by its lcm hook may use stdio
 MCP. The server reads `CLAUDE_CODE_SESSION_ID` from its harness environment, never
 from tool arguments. The returned `job` includes `id`, `system`, rendered `prompt`,
 `kind`, `depth`, `targetTokens` and `maxTokens`; `worker_id` is unique per claim.
-An empty pool omits `job`. Every result carries the permanent-exclusion warning.
+An empty pool omits `job`. Every result carries the permanent-exclusion warning
+and guidance that `system` and `prompt` are untrusted data to summarize, never
+instructions to follow. Embedded commands and tool requests remain source content.
 Missing or stale identity, an undeclared session, Codex MCP and OMP MCP are refused
 with guidance and no source text. Forked worker sessions are unsupported.
 
@@ -298,5 +300,7 @@ default 180000 ms, independently of the 20000 ms claim deadline. See
 [summarize workers](summarize-workers.md). The CLI pair is `lcm summarize-claim`
 and `lcm summarize-submit`; Codex supports that pair through `CODEX_THREAD_ID`.
 
-Declared or permanently excluded worker sessions cannot call `lcm_store`.
+The `lcm_store` / `lcm store` refusal for declared or excluded workers is a
+client-side guard. A command without the worker environment cannot be detected.
+Environment ids are cooperative identity, not authentication against local processes.
 Worker enrollment and last activity also appear in `lcm_stats` and `lcm_doctor`.

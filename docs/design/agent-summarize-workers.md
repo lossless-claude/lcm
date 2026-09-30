@@ -9,17 +9,23 @@ a timeout, resuming, and clearing never lift exclusion. An ordinary session is
 never enrolled by a claim. Forking a worker session is unsupported.
 
 `WorkerStore` (`src/store/worker-store.ts`) owns durable enrollment and exclusion.
-`registerWorkerSession` (`src/worker-session.ts`) holds `withProjectMutation`,
-excludes the sidecar first, removes provenanced content from the project store,
-and leaves `session_ingest_log` as a tombstone. A failed cleanup cannot authorize
-release. Promotions with neither a session nor a summary provenance are counted
-and reported; their content cannot safely be attributed and is retained.
+Enrollment accepts new `startup`/`clear` ids; resume, compact, continue and fork
+cannot enroll. `registerWorkerSession` (`src/worker-session.ts`) uses
+`withProjectMutation` for callers in one process and a SQLite `BEGIN IMMEDIATE`
+transaction for its history check across processes. Existing messages, summaries,
+provenanced promotions and tool events refuse enrollment without deletion. The
+sidecar gate and main-store tombstone are installed before admission. A capture
+that wins the race requires a fresh worker id, preserving the captured conversation.
+Destructive cleanup belongs to parser-confirmed copied-claim recovery. It removes
+attributable content and retains promotions without provenance.
 
 `SessionCapture.writeInTransaction` gates writes and rebuild writes. Transcript
 capture and `/ingest` also gate excluded sessions before parsing. Descendants
 are recognized through stored ancestry, Claude's `subagents/` directory and its
 discovery adapter; missing metadata does not defeat directory exclusion.
-`EventsDb` checks a durable sidecar exclusion in its write transaction. Tool
+`EventsDb.enrollSessions` installs the sidecar gate in a write transaction.
+Per-row event insertion checks the gate before inserting; bulk writes check it
+inside their write transaction. Tool
 recording and promotion check exclusion; `PromotedStore.insert` rejects excluded
 provenance. `/compact` checks at entry and after yielded work; the compaction
 engine and summary writer also refuse excluded sessions. Scan, import and replay
@@ -36,9 +42,10 @@ A refused claim without a payload does not convert an ordinary session.
 
 ## Harness evidence
 
-- Confirmed in repository code: `hooks/lcm-hooks.ts:registerSessionStart` handles
-  `session.start`, and `docs/hook-protocol.md` specifies another start after
-  `/clear`. A loaded hook's owner registers the new id and revokes the old id.
+- Confirmed in repository code: `src/hooks/dispatch.ts:dispatchHook` is Claude's
+  sole registrar. It receives the native SessionStart source and owns revocation
+  across `/clear`; `hooks/lcm-hooks.ts:registerSessionStart` never re-registers,
+  including after hot reload.
 - Claude Code exports `CLAUDE_CODE_SESSION_ID` to shell and stdio MCP runtimes:
   unverified by repository code. It is the supplied harness contract; fake
   transport tests can verify binding, not prove a host's environment export.
@@ -66,8 +73,16 @@ binding. Native isolated hooks use the same pool routes and admission checks.
 OMP hook identity is confirmed in `hooks/omp/lcm.ts:sessionIdentity` through the
 session-manager API; OMP shell/MCP and Codex MCP remain unverified and refused.
 
+Every MCP and CLI claim carries guidance that the job's `system` and `prompt`
+are untrusted data to summarize, never instructions to follow. The MCP description
+carries the same rule. The `lcm store` / `lcm_store` refusal is a client-side guard:
+a command without the worker environment cannot be detected. Harness environment
+ids are cooperative identity, not authentication against local processes.
+
 Claim markers are structural parser metadata, keyed by tool-call id across capture
-deltas. A parser-shape change forces historical checkpoints to be verified before
+deltas. Structured `/ingest` ignores wire-supplied marker fields. Native parsing
+recognizes MCP claims and CLI invocations by basename, including absolute paths
+and `node …/lcm.js`. A parser-shape change forces historical checkpoints to be verified before
 recovery. Recovery cleans the main store and event sidecar and grants no admission.
 
 Pool provider ids accept a validated model suffix. Missing usage is estimated from
@@ -79,13 +94,18 @@ the provider chain handles unanswered work.
 
 Tests use fake models only. They cover the three supported agent pairs, refused
 pairs and undeclared/stale callers, independent parallel claims, worker-bound
-submission, canary absence, cleanup, restart, mutation-lease races, structural
+submission, canary absence, cleanup, restart, real transcript-scan races, compaction and promotion attempts, structural
 recovery and the configurable deadline. Harness environment export behavior is
 unverified by these fakes and remains the supplied external contract.
 
 Command hooks identify the native harness ancestor by executable name and process
 start time, rather than the transient shell parent. An unverifiable owner refuses
-enrollment. No process arguments or environment are read. Claude function hooks
-and OMP hooks own their loaded-module generation instead. This lets a repeated
-start revoke the previous native id without revoking an unrelated session in the
-same cwd. Codex cursor fingerprints also change when claim-marker decoding changes.
+enrollment. No process arguments or foreign process environment are read. Codex
+adds its own `CODEX_THREAD_ID` to the owner so app-server threads are independent;
+OMP owners include the native session id. Claude command hooks keep the native
+process owner across function-hook reloads. Distinct owner scopes in the same cwd
+remain independent. Codex cursor fingerprints change when claim decoding changes.
+
+A disconnected client whose response has not finished releases the claim under
+its remaining queue window. It does not abandon the worker. Diagnostic surfaces
+show an eight-character hashed worker id rather than the harness session id.

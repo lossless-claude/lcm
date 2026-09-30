@@ -283,7 +283,7 @@ export function createIngestHandler(
     if (workerExcluded(cwd, session_id, paths, input.transcript_path)) {
       sendJson(res, 200, { ingested: 0, totalTokens: 0, excluded: true }); return;
     }
-    const structured = Array.isArray(input.messages) ? input.messages.filter(isParsedMessage) : undefined;
+    const structured = Array.isArray(input.messages) ? input.messages.filter(isParsedMessage).map(({ workerClaims: _claims, workerPayloads: _payloads, ...message }) => message) : undefined;
     if (input.rebuild !== true && structured && structured.length === 0) {
       sendJson(res, 200, { ingested: 0, totalTokens: 0 });
       return;

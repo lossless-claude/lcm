@@ -196,7 +196,7 @@ Every lcm hook except `post-tool` self-repairs on each invocation: before dispat
 
 ## Declared worker enrollment
 
-With `LCM_SUMMARIZE_WORKER=1`, Claude command and function hooks, Codex SessionStart hooks and OMP native session-start hooks enroll the native session id and cwd. A repeated start after `/clear` revokes the preceding id owned by that hook process; exclusion of both histories remains permanent. SessionEnd marks command-hook workers finished. Registration warns that the session and its subagents are not recorded by lcm, the harness transcript stays on disk, and a dedicated session is required. An enrollment failure must prevent tool workers from receiving pool payloads. See [agent worker design](design/agent-summarize-workers.md).
+With `LCM_SUMMARIZE_WORKER=1`, Claude's SessionStart command hook is its sole registrar; function hooks serve jobs under that enrollment. Claude and Codex accept only `startup` or `clear` with a new session id. Resume, compact, continue and fork refuse enrollment with guidance; a resume revokes retained admission while preserving exclusion. OMP requires the native session manager to report a fresh, unpersisted session. Retained conversation content or tool events refuse enrollment without deletion. A repeated start after `/clear` revokes the preceding id owned by that hook process; exclusion of both histories remains permanent. SessionEnd marks command-hook workers finished. Registration warns that the session and its subagents are not recorded by lcm, the harness transcript stays on disk, and a dedicated session is required. An enrollment failure must prevent tool workers from receiving pool payloads. See [agent worker design](design/agent-summarize-workers.md).
 
 Pool claim and submission routes carry `caller_session_id`, `cwd`, `client` and
 `transport` beside each `worker_id`. Hook workers bind identity from their native
@@ -204,11 +204,13 @@ session API; agent adapters use Claude's `CLAUDE_CODE_SESSION_ID` or Codex shell
 `CODEX_THREAD_ID`. Codex MCP and OMP agent transports are unverified and refused.
 A poll rechecks live admission immediately before release, including after waiting.
 The completion deadline is `llm.poolCompletionMs`, overridden by
-`LCM_POOL_COMPLETION_MS`, default 180000 ms after claim. Claude workers finishing
-their allowance and OMP shutdown hooks mark enrollment finished; exclusion remains.
+`LCM_POOL_COMPLETION_MS`, default 180000 ms after claim. Claude command SessionEnd and OMP shutdown mark enrollment finished; exclusion remains.
+Reaching a completion allowance stops polling. A function-hook reload does not
+register a new owner. Codex owners include `CODEX_THREAD_ID`, preserving admission
+for another thread in the same app-server process.
 
 Command-hook worker enrollment requires a verifiable native harness ancestor
 (executable name and start time). A transient shell PID is not an owner. When
-ownership cannot be established, enrollment refuses with guidance; Claude Code
-function hooks provide an alternative. Hook callbacks never read process arguments
+ownership cannot be established, enrollment refuses with guidance. Function
+hooks use the command hook's enrollment. Hook callbacks never read process arguments
 or environment to identify that owner.

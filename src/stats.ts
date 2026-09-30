@@ -1,3 +1,4 @@
+import { workerDisplayId } from "./worker-warning.js";
 import { WorkerStore, WORKER_WARNING, type WorkerEnrollment } from "./store/worker-store.js";
 import { DatabaseSync } from "node:sqlite";
 import { readdirSync, existsSync } from "node:fs";
@@ -418,7 +419,7 @@ export function printStats(stats: OverallStats, verbose: boolean): void {
 
   if (stats.workers?.length) {
     console.log(WORKER_WARNING);
-    for (const worker of stats.workers) console.log(`    Worker ${worker.session_id}: ${worker.state}; last activity ${worker.last_activity}`);
+    for (const worker of stats.workers) console.log(`    Worker ${workerDisplayId(worker.session_id)}: ${worker.state}; last activity ${worker.last_activity}`);
   }
   // Memory section
   console.log(sectionHeader("Memory"));
