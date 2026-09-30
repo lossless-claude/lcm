@@ -127,6 +127,7 @@ describe("handleSessionEnd", () => {
     // compact, promote, promote-events, session-complete follow, in order, fire-and-forget.
     const firedPaths = vi.mocked(request).mock.calls.map((c) => (c[0] as { path: string }).path);
     expect(firedPaths).toEqual(["/compact", "/promote", "/promote-events", "/session-complete"]);
+    expect(JSON.parse(vi.mocked(mockHttpReq.write).mock.calls[0][0])).toMatchObject({ skip_ingest: true, work_class: "live" });
     expect(request).toHaveBeenCalledWith(expect.objectContaining({
       path: "/session-complete", method: "POST", port: 3737,
       headers: expect.objectContaining({ Authorization: "Bearer test-token-abc" }),

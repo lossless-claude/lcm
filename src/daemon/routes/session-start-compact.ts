@@ -82,6 +82,7 @@ export function createSessionStartCompactHandler(config: DaemonConfig, daemonPor
           session_id: conv.sessionId,
           cwd: conv.cwd,
           skip_ingest: true,
+          work_class: "live",
           // The sweep cannot see a conversation's own client (conversations carry
           // none); the caller's is the only signal, and it only picks the summarizer.
           client,

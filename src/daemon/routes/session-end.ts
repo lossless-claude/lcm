@@ -141,7 +141,7 @@ function runPostIngestSequence(target: SequenceTarget, ingested: IngestResult): 
   if (config.hooks?.disableAutoCompact) {
     log.write("info", "compact.skipped", { cwd, session_id: sessionId, reason: "auto-compact-disabled" });
   } else {
-    fireCompactRequest(daemonPort, { session_id: sessionId, cwd, skip_ingest: true, client }, paths, onError("/compact"));
+    fireCompactRequest(daemonPort, { session_id: sessionId, cwd, skip_ingest: true, work_class: "live", client }, paths, onError("/compact"));
   }
   firePromoteRequest(daemonPort, { cwd }, paths, onError("/promote"));
   firePromoteEventsRequest(daemonPort, { cwd }, paths, onError("/promote-events"));

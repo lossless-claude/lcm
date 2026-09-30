@@ -126,7 +126,7 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
           messages: [
             { role: "user", content: `${ctx.taskPrompt ?? LCM_SUMMARIZER_SYSTEM_PROMPT}\n\n${prompt}` },
           ],
-        }, options)));
+        }, options)), ctx.workClass);
 
         // Reported before the answer is judged: a reasoning model that spends
         // the whole budget thinking still charged for those tokens.

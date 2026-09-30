@@ -49,6 +49,8 @@ export type SummarizerUsage = {
 };
 
 export type SummarizeContext = {
+  /** Endpoint slot admission; live by default, background for bulk compaction. */
+  workClass?: "live" | "background";
   /** Internal alternate task: send text verbatim with this system instruction. */
   taskPrompt?: string;
   /** BCP 47 language tag for generated summary text, when configured or detected. */
