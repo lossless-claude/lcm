@@ -56,17 +56,17 @@ describe("Flow 11: MCP transport", { timeout: 60_000 }, () => {
     expect(store).toBeDefined();
   });
 
-  it("MCP tool definitions expose exactly 7 tools", async () => {
+  it("MCP tool definitions expose exactly 9 tools", async () => {
     const { getMcpToolDefinitions } = await import("../../../src/mcp/server.js");
     const tools = getMcpToolDefinitions();
-    expect(tools).toHaveLength(7);
+    expect(tools).toHaveLength(9);
   });
 
   it("MCP tool definitions include all expected tool names", async () => {
     const { getMcpToolDefinitions } = await import("../../../src/mcp/server.js");
     const tools = getMcpToolDefinitions();
     const names = tools.map((t: { name: string }) => t.name).sort();
-    expect(names).toEqual(["lcm_describe", "lcm_doctor", "lcm_expand", "lcm_grep", "lcm_search", "lcm_stats", "lcm_store"]);
+    expect(names).toEqual(["lcm_describe", "lcm_doctor", "lcm_expand", "lcm_grep", "lcm_search", "lcm_stats", "lcm_store", "lcm_summarize_claim", "lcm_summarize_submit"]);
   });
 });
 

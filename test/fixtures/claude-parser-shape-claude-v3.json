@@ -1,0 +1,66 @@
+[
+  {
+    "role": "user",
+    "content": "hi",
+    "tokenCount": 1
+  },
+  {
+    "role": "tool",
+    "content": "Read",
+    "tokenCount": 1
+  },
+  {
+    "role": "tool",
+    "content": "tool_use",
+    "tokenCount": 2
+  },
+  {
+    "role": "tool",
+    "content": "Read\nGlob",
+    "tokenCount": 3
+  },
+  {
+    "role": "tool",
+    "content": "found",
+    "tokenCount": 2
+  },
+  {
+    "role": "tool",
+    "content": "[tool error]\nmissing",
+    "tokenCount": 5
+  },
+  {
+    "role": "user",
+    "content": "tool output\nhuman",
+    "tokenCount": 5
+  },
+  {
+    "role": "assistant",
+    "content": "will inspect",
+    "tokenCount": 3
+  },
+  {
+    "role": "tool",
+    "content": "Skill",
+    "tokenCount": 2,
+    "parts": [
+      {
+        "type": "skill",
+        "name": "review",
+        "args": null
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": "<command-name>/test</command-name><command-args>all</command-args>",
+    "tokenCount": 17,
+    "parts": [
+      {
+        "type": "command",
+        "name": "/test",
+        "args": "all"
+      }
+    ]
+  }
+]

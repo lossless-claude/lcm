@@ -509,3 +509,7 @@ config does:
 There is no profile store to consult: the process-backed providers (`claude-process`,
 `codex-process`, `copilot-process`, `omp-process`) authenticate through their own CLI's login, so
 lcm never sees their credentials.
+
+### Declared agent summarize workers
+
+Declared Claude Code, Codex and OMP hook workers have durable whole-session capture exclusion in `summarize_workers`. Enrollment installs gates and a tombstone and refuses retained conversation content or tool events without deleting them. Its project lease serializes one process; SQLite's write transaction protects the history check across processes. The sidecar enrollment gate is transactional, and per-row event insertion checks it before inserting. Parser-confirmed copied successful claim payloads stop future capture while preserving stored history, with the recovery reason retained for doctor. Only descendants discovered on disk under an enrolled worker's own Claude transcript directory permit history cleanup. Discovery runs before the write transaction and is recorded in `summarize_workers`; hot-path gates use database lookups. Request-supplied ancestry may refuse the current write but never persists exclusion or changes enrollment. Finishing or resuming never lifts permanent exclusion. Capture, rebuild, scan, import, replay and compaction check the permanent gate. See [the design](design/agent-summarize-workers.md).

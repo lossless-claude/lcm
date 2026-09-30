@@ -1,3 +1,6 @@
+import { excludedWorkerContext } from "../worker-session.js";
+import { createAgentWorkerTransport, type AgentSubmission } from "../agent-worker-transport.js";
+import { WORKER_WARNING, workerDisplayId, workerRefusal } from "../worker-warning.js";
 import { Server } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { cliEntrypoint } from "../cli-entrypoint.js";
@@ -21,6 +24,10 @@ function localTools(paths: LcmPaths): LocalHandlers { return {
     const verbose = args.verbose === true;
     const lines: string[] = [];
 
+    if (stats.workers?.length) {
+      lines.push(WORKER_WARNING);
+      for (const worker of stats.workers) lines.push(`Worker ${workerDisplayId(worker.session_id)}: ${worker.state}; last activity ${worker.last_activity}`);
+    }
     // Memory section
     lines.push("## 🧠 Memory");
     lines.push("");
@@ -202,6 +209,17 @@ export async function handleDaemonRequest(
   return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
 }
 
+export async function handleAgentWorkerTool(
+  client: Pick<DaemonClient, "get" | "post">, action: "claim" | "submit", args: Record<string, unknown>,
+  env: NodeJS.ProcessEnv = process.env, cwd = process.cwd(),
+): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
+  try {
+    const worker = createAgentWorkerTransport(client, "mcp", env, cwd);
+    const result = action === "claim" ? await worker.claim() : await worker.submit(args as AgentSubmission);
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  } catch (error) { return { isError: true, content: [{ type: "text", text: workerRefusal(error).message }] }; }
+}
+
 export async function startMcpServer(): Promise<void> {
   const paths = createLcmPaths(lcmHome());
   const catalog = createToolCatalog(localTools(paths));
@@ -235,6 +253,9 @@ export async function startMcpServer(): Promise<void> {
 
   server.setRequestHandler("tools/call", async (req) => {
     if (incompatibleNotice) return { content: [{ type: "text", text: incompatibleNotice }], isError: true };
+    if (req.params.name === "lcm_store" && excludedWorkerContext(paths)) {
+      return { isError: true, content: [{ type: "text", text: `Worker sessions cannot store promoted memory. ${WORKER_WARNING}` }] };
+    }
     const rawArgs = req.params.arguments ?? {};
     // Guard: ensure rawArgs is a plain object
     if (typeof rawArgs !== "object" || rawArgs === null || Array.isArray(rawArgs)) {
@@ -265,6 +286,7 @@ export async function startMcpServer(): Promise<void> {
     }
 
     if (!resolved) return { content: [{ type: "text", text: `Unknown tool: ${req.params.name}` }], isError: true };
+    if (resolved.destination.kind === "worker") return handleAgentWorkerTool(client, resolved.destination.action, resolved.args);
     if (resolved.destination.kind !== "daemon") throw new Error("Unreachable local tool destination");
     const body = { ...resolved.args, cwd: process.env.PWD ?? process.cwd() };
     return handleDaemonRequest(client, resolved.destination.route, body, {

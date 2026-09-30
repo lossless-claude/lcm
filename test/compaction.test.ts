@@ -17,6 +17,7 @@ function makeMinimalStores(): { conversationStore: ConversationStore; summarySto
   } as unknown as SummaryStore;
 
   const conversationStore = {
+    isWorkerExcluded: () => false,
     getConversation: vi.fn().mockResolvedValue({ conversationId: 1, sessionId: "sess-1" }),
     getMaxSeq: vi.fn().mockResolvedValue(0),
     createMessage: vi.fn().mockResolvedValue({ messageId: 1 }),

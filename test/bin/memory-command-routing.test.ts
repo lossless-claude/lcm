@@ -1,3 +1,4 @@
+import { createLcmPaths } from "../../src/lcm-paths.js";
 import { describe, it, expect } from "vitest";
 import { Command } from "commander";
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -6,7 +7,7 @@ import { join } from "node:path";
 import { shouldRunMain } from "../../bin/lcm.js";
 import { registerMemoryCommands } from "../../src/cli/memory.js";
 
-const memoryDeps = { createDaemonClientOrExit: async () => { throw new Error("not used in this test"); } };
+const memoryDeps = { paths: createLcmPaths("/unused"), createDaemonClientOrExit: async () => { throw new Error("not used in this test"); } };
 
 describe("memory command registration", () => {
   it("registers all daemon-backed memory commands", () => {

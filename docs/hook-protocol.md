@@ -141,7 +141,7 @@ A daemon that answers 404 (an older lcm build without these routes) is logged on
 
 **Summarize jobs:** with `llm.provider: "session"` (see `docs/configuration.md`), the module also serves the daemon's summarization jobs for its own session. From `session.start` it holds one `GET /summarize-jobs/next?session_id=…` open (the daemon answers a job or `204` after 25 s) and answers each job on `POST /summarize-jobs/:id` with `{ text, providerId, usage }` or `{ error }`. Each answer POST records accepted, rejected, or unconfirmed delivery in the Session snapshot. An unanswered fork can also carry `usageAttempts`, so its spent tokens count separately from a later fallback answer and toward the session output-token cap. Leaf jobs run `$.model.complete` with `haiku`; condensed jobs run `$.model.fork`, then `complete` when the fork does not answer. The poller stops for the session once the plugin's `sessionSummarizerMaxOutputTokens` cap is reached. A daemon that answers 404 (an older build, or a daemon swapped mid-session) does not stop it: the module logs that once and keeps polling every minute, so a later respawn with the route is picked up. Design: `docs/design/session-summarizer.md`.
 
-Setting `LCM_SUMMARIZE_WORKER=1` before launch changes only summary serving to `GET /summarize-jobs/next?worker_id=…`. The module accepts only jobs marked `pool`, uses `complete` for both kinds, and stops polling at its per-worker cap. The normal mode retains the own-session rule. Worker responses and diagnostic snapshots are attributed to the worker session, while summaries remain in the source project. See [summarize workers](summarize-workers.md).
+Setting `LCM_SUMMARIZE_WORKER=1` before launch changes summary serving to `GET /summarize-jobs/next?worker_id=…`. Before warning or polling, the module confirms command-hook enrollment through the read-only `/worker-session` check, retrying with bounded backoff for about 30 seconds. Unconfirmed enrollment logs worker-mode refusal with its reason and starts no worker poller. The module accepts only jobs marked `pool`, uses `complete` for both kinds, and stops polling at its per-worker cap. The normal mode retains the own-session rule. Worker responses and diagnostic snapshots are attributed to the worker session, while summaries remain in the source project. See [summarize workers](summarize-workers.md).
 
 **Daemon lifecycle:** the daemon exits when idle, and the command hooks bring it back through `ensureDaemon`. The module does the same when a connection is refused (the error names `ECONNREFUSED`, or the call failed within a second, which only a missing listener does): it runs `lcm daemon start --detach` through the host (at most once per minute) and retries the request once. A call that failed only after a wait met a listener that did not answer, so the daemon is still working; the module reports it as busy, leaves delivery unconfirmed, and waits for the next capture instead of starting or immediately retrying. `session.start` checks `/health` before the first prompt. This needs an `lcm` binary on PATH (the npm CLI); without one the module logs it once and events are lost until a command hook (SessionStart, Stop, SessionEnd), which runs from the bundle and needs no binary, restarts the daemon.
 
@@ -193,3 +193,29 @@ SessionEnd additionally passes `noSpawn: true`, so it never starts a daemon just
 ## Auto-heal
 
 Every lcm hook except `post-tool` self-repairs on each invocation: before dispatching, `validateAndFixHooks()` removes any lcm hook entries that leaked into `~/.claude/settings.json`. lcm hooks are owned by `.claude-plugin/plugin.json`, so a copy in `settings.json` would make every hook fire twice; a stale `lcm compact` command there is rewritten to `lcm compact --hook` instead. `post-tool` runs on every tool call and returns before this repair, deliberately, to stay inside its deadline.
+
+## Declared worker enrollment
+
+With `LCM_SUMMARIZE_WORKER=1`, Claude's SessionStart command hook is its sole registrar; function hooks serve jobs under that enrollment. Claude and Codex accept only `startup` or `clear` with a new session id. Resume, compact, continue and fork refuse enrollment with guidance; a resume revokes retained admission while preserving exclusion. OMP requires the native session manager to report a fresh, unpersisted session. Retained conversation content or tool events refuse enrollment without deletion. A repeated start after `/clear` revokes the preceding id owned by that hook process; exclusion of both histories remains permanent. SessionEnd marks command-hook workers finished. Registration warns that the session and its subagents are not recorded by lcm, the harness transcript stays on disk, and a dedicated session is required. An enrollment failure must prevent tool workers from receiving pool payloads. See [agent worker design](design/agent-summarize-workers.md).
+
+Pool claim and submission routes carry `caller_session_id`, `cwd`, `client` and
+`transport` beside each `worker_id`. Hook workers bind identity from their native
+session API; agent adapters use Claude's `CLAUDE_CODE_SESSION_ID` or Codex shell's
+`CODEX_THREAD_ID`. Codex MCP and OMP agent transports are unverified and refused.
+A poll rechecks live admission immediately before release, including after waiting.
+The completion deadline is `llm.poolCompletionMs`, overridden by
+`LCM_POOL_COMPLETION_MS`, default 180000 ms after claim. Claude command SessionEnd and OMP shutdown mark enrollment finished; exclusion remains.
+Reaching a completion allowance stops polling. A function-hook reload does not
+register a new owner. Codex owners include `CODEX_THREAD_ID`, preserving admission
+for another thread in the same app-server process. Enrollment is refused without
+that thread id.
+
+Command-hook worker enrollment requires a verifiable native harness ancestor
+(executable name and start time). A transient shell PID is not an owner. When
+ownership cannot be established, enrollment refuses with guidance. Function
+hooks use `POST /worker-session` with `action: "check"`, their native session id
+and cwd to confirm the command hook's live enrollment without registering an
+owner. They show the exclusion warning and start worker polling only after
+confirmation; otherwise they report that worker mode was refused and why.
+Hook callbacks never read process arguments
+or environment to identify that owner.

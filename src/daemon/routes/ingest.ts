@@ -1,3 +1,5 @@
+import { WorkerStore } from "../../store/worker-store.js";
+import { workerExcluded } from "../../worker-session.js";
 import { existsSync } from "node:fs";
 import type { ServerResponse } from "node:http";
 import { dirname, join } from "node:path";
@@ -87,7 +89,7 @@ async function ingestAllSubagents(
   parentSessionId: string, paths: LcmPaths,
 ): Promise<SubagentFailure[]> {
   runLcmMigrations(db);
-  const capture = new SessionCapture(db, pid, scrubber);
+  const capture = new SessionCapture(db, pid, scrubber, paths);
   const failures: SubagentFailure[] = [];
   for (const sub of subagents) {
     const fingerprint = subagentGuardFingerprint(sub.path);
@@ -187,7 +189,7 @@ async function rebuildSession(
               throw new Error(`backup failed, nothing was rebuilt: ${err instanceof Error ? err.message : String(err)}`);
             }
           }
-          const { plan, ingested } = await new SessionCapture(db, pid, scrubber).rebuildTranscript({
+          const { plan, ingested } = await new SessionCapture(db, pid, scrubber, paths).rebuildTranscript({
             sessionId: input.session_id, client: input.client, cwd, transcriptPath: input.transcript_path, source: "import",
           });
           // A rebuilt subagent session no longer fails its guard; its recorded failure would keep it skipped and listed.
@@ -223,6 +225,7 @@ async function repairCutSession(
         const db = getLcmConnection(dbPath);
         try {
           runLcmMigrations(db);
+          if (new WorkerStore(db).excluded(input.session_id)) return { repaired: 0, excluded: true };
           const path = transcriptSource(input.client).locate({
             sessionId: input.session_id, cwd, transcriptPath: input.transcript_path, source: "import",
           });
@@ -277,8 +280,12 @@ export function createIngestHandler(
     }
 
     const dbPath = projectDbPath(cwd, paths);
-    const structured = Array.isArray(input.messages) ? input.messages.filter(isParsedMessage) : undefined;
-    if (input.rebuild !== true && structured && structured.length === 0) {
+    const excluded = workerExcluded(cwd, session_id, paths, input.transcript_path);
+    if (excluded && input.rebuild === true) {
+      sendJson(res, 200, { ingested: 0, totalTokens: 0, excluded: true }); return;
+    }
+    const structured = Array.isArray(input.messages) ? input.messages.filter(isParsedMessage).map(({ workerClaims: _claims, workerPayloads: _payloads, ...message }) => message) : undefined;
+    if (!excluded && input.rebuild !== true && structured && structured.length === 0) {
       sendJson(res, 200, { ingested: 0, totalTokens: 0 });
       return;
     }
@@ -310,6 +317,13 @@ export function createIngestHandler(
         try {
           runLcmMigrations(db);
 
+          const capture = new SessionCapture(db, pid, scrubber, paths);
+          const attribution = requestAttribution(input);
+          if (workerExcluded(cwd, session_id, paths, input.transcript_path)) {
+            await capture.write({ sessionId: session_id, messages: [], transcriptPath: input.transcript_path, attribution });
+            return { ingested: 0, totalTokens: 0, excluded: true };
+          }
+
           // A session already fully ingested is skipped — on the same db connection to
           // avoid double-open overhead and lock contention — unless its transcript was
           // written to after completion (a resume appends to the same file). A client
@@ -322,8 +336,6 @@ export function createIngestHandler(
             if (isSessionComplete(db, session_id, transcriptPath)) return { ingested: 0, totalTokens: 0 };
           }
 
-          const capture = new SessionCapture(db, pid, scrubber);
-          const attribution = requestAttribution(input);
           let written: CaptureResult | undefined;
           if (structured) {
             // Structured mode carries the messages themselves and names no transcript.

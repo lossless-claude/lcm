@@ -98,7 +98,7 @@ describe("session summarize jobs", () => {
     const job = await store.nextWorker("worker-1");
     await vi.advanceTimersByTimeAsync(POOL_COMPLETION_MS / 3);
     expect(store.answer(job!.id, { text: "slow summary" })).toBe("accepted");
-    await expect(answer).resolves.toEqual({ text: "slow summary" });
+    await expect(answer).resolves.toMatchObject({ text: "slow summary", usage: { estimated: true } });
     const stuck = store.enqueue({ ...input, pool: true, prompt: "stuck" });
     await store.nextWorker("worker-1");
     await vi.advanceTimersByTimeAsync(POOL_COMPLETION_MS);
@@ -126,6 +126,22 @@ describe("session summarize jobs", () => {
     await vi.advanceTimersByTimeAsync(1);
     await expect(answer).resolves.toEqual({ error: "job timeout" });
     expect(store.answer(job!.id, { text: "late" })).toBe("discarded");
+  });
+
+  it("keeps the session deadline separate from the worker expiration callback", async () => {
+    store.close();
+    const expired = vi.fn(async () => {});
+    store = new SummarizeJobStore(20_000, 25_000, 60_000, 180_000, 60_000, { onWorkerExpired: expired });
+    const session = store.enqueue(input);
+    const job = await store.next("one");
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(store.answer(job!.id, { text: "session summary" })).toBe("accepted");
+    await expect(session).resolves.toEqual({ text: "session summary" });
+    const pool = store.enqueue({ ...input, pool: true });
+    await store.nextWorker("worker", undefined, false, "binding");
+    await vi.advanceTimersByTimeAsync(180_000);
+    await expect(pool).resolves.toEqual({ error: "job timeout" });
+    expect(expired).toHaveBeenCalledWith("binding");
   });
 
   it("routes session-pool to any worker and falls along the chain when nobody claims it", async () => {

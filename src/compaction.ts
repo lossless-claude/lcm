@@ -219,6 +219,9 @@ export class CompactionEngine {
     previousSummaryContent?: string;
   }): Promise<CompactionResult> {
     const { conversationId, tokenBudget, summarize, force, hardTrigger } = input;
+    if (this.conversationStore.isWorkerExcluded(conversationId)) {
+      return { actionTaken: false, tokensBefore: 0, tokensAfter: 0, condensed: false };
+    }
 
     const tokensBefore = await this.summaryStore.getContextTokenCount(conversationId);
     const threshold = Math.floor(this.config.contextThreshold * tokenBudget);

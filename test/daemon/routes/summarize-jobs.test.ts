@@ -32,7 +32,7 @@ describe("summarize job routes", () => {
     expect(job).not.toHaveProperty("state");
     store.answer(job!.id, { text: "summary", providerId: "session-pool:haiku" });
     await pending;
-    expect(JSON.parse(res.end.mock.calls[0]![0])).toEqual({ text: "summary", providerId: "session-pool:haiku" });
+    expect(JSON.parse(res.end.mock.calls[0]![0])).toMatchObject({ text: "summary", providerId: "session-pool:haiku", usage: { estimated: true } });
   });
 
   it.each(["not JSON", "null", "[]", "{}", JSON.stringify({ ...input, maxTokens: -1 }),

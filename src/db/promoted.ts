@@ -1,3 +1,4 @@
+import { WorkerStore } from "../store/worker-store.js";
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import {
@@ -46,6 +47,9 @@ export class PromotedStore {
   constructor(private db: DatabaseSync) {}
 
   insert(params: InsertParams): string {
+    const sessionId = params.sessionId ?? (params.sourceSummaryId
+      ? (this.db.prepare("SELECT session_id FROM summaries JOIN conversations USING(conversation_id) WHERE summary_id = ?").get(params.sourceSummaryId) as { session_id: string } | undefined)?.session_id : undefined);
+    if (sessionId && new WorkerStore(this.db).excluded(sessionId)) throw new Error("Worker session is excluded from promoted memory");
     const id = randomUUID();
     const tags = JSON.stringify(params.tags ?? []);
 

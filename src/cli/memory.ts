@@ -1,9 +1,11 @@
 import { stdout } from "node:process";
 import type { Command } from "commander";
+import type { LcmPaths } from "../lcm-paths.js";
 import type { DaemonClient } from "../daemon/client.js";
 import { fail, parsePositiveInteger, showHelpAndExit } from "./support.js";
 
 export interface MemoryCommandDeps {
+  paths: LcmPaths;
   createDaemonClientOrExit: (spawnTimeoutMs?: number) => Promise<DaemonClient>;
 }
 
@@ -100,6 +102,8 @@ export function registerMemoryCommands(program: Command, deps: MemoryCommandDeps
     .option("-h, --help", "Show help")
     .action(async (text: string, opts) => {
       if (opts.help) await showHelpAndExit("store");
+      const { excludedWorkerContext } = await import("../worker-session.js");
+      if (excludedWorkerContext(deps.paths)) fail("Worker sessions cannot store promoted memory; use a dedicated ordinary session.");
 
       const client = await createDaemonClientOrExit();
       const result = await client.post("/store", {

@@ -181,6 +181,7 @@ export class EventsDb {
     this.db = getLcmConnection(dbPath);
     if (!_migratedPaths.has(dbPath)) {
       try {
+        this.db.exec("CREATE TABLE IF NOT EXISTS excluded_worker_sessions(session_id TEXT PRIMARY KEY)");
         this.migrate();
       } catch (e) {
         // Migration failed — release the pooled connection so the ref-count
@@ -191,6 +192,31 @@ export class EventsDb {
       }
       _migratedPaths.add(dbPath);
     }
+  }
+
+  /** Enrollment never deletes sidecar history, including processed events. */
+  enrollSessions(sessionIds: string[]): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const id of sessionIds) {
+        if (this.db.prepare("SELECT 1 FROM events WHERE session_id = ? LIMIT 1").get(id)) {
+          throw new Error("Worker enrollment refuses existing tool events. Start a fresh dedicated session.");
+        }
+        this.db.prepare("INSERT OR IGNORE INTO excluded_worker_sessions(session_id) VALUES (?)").run(id);
+      }
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  excludeSessions(sessionIds: string[], purgeHistory = false): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const id of sessionIds) {
+        this.db.prepare("INSERT OR IGNORE INTO excluded_worker_sessions(session_id) VALUES (?)").run(id);
+        if (purgeHistory) this.db.prepare("DELETE FROM events WHERE session_id = ?").run(id);
+      }
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
 
   /** Rows written before the column existed have no key and never dedup against. */
@@ -319,6 +345,7 @@ export class EventsDb {
     sessionId: string, event: ExtractedEvent, sourceHook: string,
     keys: { toolUseId?: string; turnId?: string; promptHash?: string; client?: SessionClient; model?: string | null } = {},
   ): number {
+    if (this.db.prepare("SELECT 1 FROM excluded_worker_sessions WHERE session_id = ?").get(sessionId)) return 0;
     const stmt = this.db.prepare(`
       INSERT INTO events (session_id, seq, type, category, data, priority, source_hook, tool_use_id, turn_id, prompt_hash, client, model)
       VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE session_id = ?),
@@ -368,6 +395,9 @@ export class EventsDb {
     }
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      if (this.db.prepare("SELECT 1 FROM excluded_worker_sessions WHERE session_id = ?").get(sessionId)) {
+        this.db.exec("COMMIT"); return 0;
+      }
       const recorded = this.writeToolCallEvents(sessionId, events, sourceHook, toolUseId, client, model, turnId);
       this.db.exec("COMMIT");
       return recorded;
@@ -394,6 +424,9 @@ export class EventsDb {
   }): number {
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      if (this.db.prepare("SELECT 1 FROM excluded_worker_sessions WHERE session_id = ?").get(input.sessionId)) {
+        this.db.exec("COMMIT"); return 0;
+      }
       const recorded = this.writeToolCallEvents(input.sessionId, input.events, input.sourceHook,
         input.toolUseId, input.client, input.model, input.turnId);
       this.writeHookObservation({

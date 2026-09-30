@@ -158,7 +158,7 @@ describe("the capture guard", () => {
       .toEqual(["q2"]);
     expect(transcriptMessages()).toEqual(transcriptTurns.slice(0, 3));
     expect(db.prepare("SELECT parser_shape FROM conversations WHERE session_id = ?").get(sessionId))
-      .toEqual({ parser_shape: "claude-v1" });
+      .toEqual({ parser_shape: "claude-v4" });
   });
 
   it("stalls an unstamped legacy prefix followed by current-shape rows", async () => {
@@ -181,7 +181,7 @@ describe("the capture guard", () => {
     expect((await capture.captureTranscript({ sessionId, cwd: dir, transcriptPath: path }))?.records.map((row) => row.content))
       .toEqual(["q2"]);
     expect(db.prepare("SELECT parser_shape FROM conversations WHERE session_id = ?").get(sessionId))
-      .toEqual({ parser_shape: "claude-v1" });
+      .toEqual({ parser_shape: "claude-v4" });
   });
 
   it("leaves a conversation opened without a known shape unstamped", async () => {
@@ -192,7 +192,7 @@ describe("the capture guard", () => {
   });
 
   it("selects rebuild candidates from a database migrated before the stamp existed", async () => {
-    await capture.write({ sessionId, messages: [], parserShape: "claude-v1" });
+    await capture.write({ sessionId, messages: [], parserShape: "claude-v2" });
     db.exec("ALTER TABLE conversations DROP COLUMN parser_shape");
     expect(claudeRebuildCandidateIds(db)).toEqual([sessionId]);
   });

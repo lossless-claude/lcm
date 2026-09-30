@@ -239,13 +239,21 @@ describe("session-pool comparison through the daemon", () => {
     const client = new DaemonClient(`http://127.0.0.1:${daemon.address().port}`, paths.tokenPath);
     const controller = new AbortController();
     const jobs: SummarizeJob[] = [];
+    const workerCwd = join(dir, "worker");
+    mkdirSync(workerCwd);
+    const binding = { caller_session_id: "eval-worker", cwd: workerCwd, client: "claude", transport: "hook", worker_id: "fake" };
+    if (available) {
+      const { registerWorkerSession } = await import("../src/worker-session.js");
+      await registerWorkerSession(paths, { sessionId: "eval-worker", cwd: workerCwd, client: "claude", owner: "fake-native-owner" });
+    }
     const worker = available ? (async () => {
       while (!controller.signal.aborted) {
-        const result = await client.get<{ job?: SummarizeJob }>("/summarize-jobs/next?worker_id=fake", { signal: controller.signal });
+        const result = await client.get<{ job?: SummarizeJob }>(`/summarize-jobs/next?${new URLSearchParams(binding)}`, { signal: controller.signal });
         if (!result.job) continue;
         const job = result.job;
         jobs.push(job);
         await client.post(`/summarize-jobs/${job.id}`, {
+          ...binding,
           text: "Files: none\nKeep ristretto allocator ledger-writer.ts backfill verticality 7331 ULID.\nExpand for details about: decisions",
           providerId: "session-pool:sonnet", usage: { input_tokens: 33, output_tokens: 17, estimated: false },
           usageAttempts: [{ providerId: "session-pool:haiku", usage: { input_tokens: 2, output_tokens: 3, estimated: false }, failed: true }],

@@ -1,3 +1,6 @@
+import { workerDisplayId } from "../worker-warning.js";
+import { workerEnrollments } from "../worker-session.js";
+import { WORKER_WARNING } from "../store/worker-store.js";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { lcmHome } from "../lcm-home.js";
@@ -444,6 +447,13 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
   const deps = { ...defaultDeps(), ...overrides };
   const results: CheckResult[] = [];
   const config = loadConfig(deps);
+  for (const worker of workerEnrollments(process.cwd(), createLcmPaths(deps.lcmHome))) {
+    const recovery = worker.exclusion_reason === "copied-claim"
+      ? `Copied successful claim detected in ${worker.cwd || process.cwd()}; capture is excluded and stored history is preserved. Review retained history before deciding whether to remove it. `
+      : "";
+    results.push({ name: `summarize-worker-${workerDisplayId(worker.session_id)}`, category: "Summarizer", status: "warn",
+      message: `${recovery}${worker.state}; last activity ${worker.last_activity}. ${WORKER_WARNING}` });
+  }
 
   // ── Stack info ──
   results.push({

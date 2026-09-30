@@ -1,3 +1,4 @@
+import { workerExcluded } from "../../worker-session.js";
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "../config.js";
@@ -242,6 +243,7 @@ export function createPromptSearchHandler(config: DaemonConfig, paths: LcmPaths)
       return;
     }
 
+    if (session_id && workerExcluded(validatedCwd, session_id, paths)) { sendJson(res, 200, { hints: [] }); return; }
     // Before any early return: the prompt's events are worth recording even when this
     // project has no memory to search yet.
     if (recordEvents && session_id) {

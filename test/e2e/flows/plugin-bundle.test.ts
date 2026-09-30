@@ -143,7 +143,7 @@ describe("Flow 21: the installed plugin runs from bundle/ with no npm cache", { 
     }
   });
 
-  it("runs the MCP server from plugin.json's entry and lists the seven tools", async () => {
+  it("runs the MCP server from plugin.json's entry and lists the nine tools", async () => {
     const manifest = JSON.parse(readFileSync(join(pluginRoot, ".claude-plugin", "plugin.json"), "utf8"));
     const request = {
       jsonrpc: "2.0", id: 1, method: "tools/list",
@@ -157,7 +157,7 @@ describe("Flow 21: the installed plugin runs from bundle/ with no npm cache", { 
     const reply = r.stdout.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => JSON.parse(l)).find((m) => m.id === 1);
     expect(reply, r.stderr).toBeDefined();
     expect(reply.result.tools.map((t: { name: string }) => t.name).sort()).toEqual([
-      "lcm_describe", "lcm_doctor", "lcm_expand", "lcm_grep", "lcm_search", "lcm_stats", "lcm_store",
+      "lcm_describe", "lcm_doctor", "lcm_expand", "lcm_grep", "lcm_search", "lcm_stats", "lcm_store", "lcm_summarize_claim", "lcm_summarize_submit",
     ]);
   });
 

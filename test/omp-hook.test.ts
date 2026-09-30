@@ -22,6 +22,7 @@ function context(overrides: Partial<HookContext> = {}): HookContext {
     sessionManager: {
       getSessionId: () => "omp-session",
       getSessionFile: () => "/workspace/omp-session.jsonl",
+      isSessionOnDisk: () => true,
     },
     ...overrides,
   };
@@ -82,9 +83,14 @@ describe("OMP lcm hook", () => {
     const { handlers, pi } = hook();
     pi.sendMessage = vi.fn();
     const model = { id: "claude-haiku-4-5", provider: "anthropic" };
-    const ctx = context({ modelRegistry: { getAll: () => [model], getApiKey: async () => "fake-key" } });
+    const ctx = context({ modelRegistry: { getAll: () => [model], getApiKey: async () => "fake-key" },
+      sessionManager: { getSessionId: () => "omp-session", getSessionFile: () => "/workspace/omp-session.jsonl", isSessionOnDisk: () => false } });
     await getHandler(handlers, "session_start")({}, ctx);
     await vi.waitFor(() => expect(requests.some((request) => request.path === "/summarize-jobs/pool-job")).toBe(true));
+    const registrationIndex = requests.findIndex(request => request.path === "/worker-session");
+    expect(registrationIndex).toBeGreaterThanOrEqual(0);
+    expect(registrationIndex).toBeLessThan(requests.findIndex(request => request.method === "GET"));
+    expect(requests[registrationIndex].body).toMatchObject({ session_id: "omp-session", client: "omp", declared: true });
     expect(complete).toHaveBeenCalledExactlyOnceWith(model, {
       systemPrompt: "system", messages: [{ role: "user", content: "foreign prompt", timestamp: expect.any(Number) }],
     }, { apiKey: "fake-key", maxTokens: 4, signal: expect.any(AbortSignal) });
@@ -93,6 +99,19 @@ describe("OMP lcm hook", () => {
     expect(requests.find((request) => request.method === "GET")!.path).toContain("worker_id=omp-session");
     expect(requests.find((request) => request.path === "/summarize-jobs/pool-job")!.body).toMatchObject({ text: "summary", providerId: "session-pool:haiku" });
     await getHandler(handlers, "session_shutdown")({}, ctx);
+  });
+
+  it("refuses worker enrollment when OMP resumes a persisted session", async () => {
+    vi.stubEnv("LCM_SUMMARIZE_WORKER", "1");
+    __setTransportForTests(request => { requests.push(request); return {}; });
+    const { handlers, loggerError } = hook();
+    await getHandler(handlers, "session_start")({ source: "resume" }, context({ sessionManager: {
+      getSessionId: () => "ordinary", getSessionFile: () => "/workspace/ordinary.jsonl", isSessionOnDisk: () => true,
+    } }));
+    expect(requests).toHaveLength(1);
+    expect(requests[0].body).toMatchObject({ source: "resume", session_id: "ordinary" });
+    expect(requests.some(request => request.method === "GET")).toBe(false);
+    expect(loggerError).toHaveBeenCalledWith(expect.stringContaining("fresh dedicated session"));
   });
 
   it("waits for the capture before restoring, so restore cannot read a session that is still landing", async () => {

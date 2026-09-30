@@ -11,6 +11,8 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
+export const WORKER_WARNING = "This session and its subagents are not recorded by lcm. The harness's own transcript stays on disk. Use a dedicated session; forking a worker session is unsupported.";
+
 const DEFAULT_PORT = 3737;
 const DEFAULT_TIMEOUT_MS = 1_500;
 const SHUTDOWN_TIMEOUT_MS = 250;
@@ -693,10 +695,10 @@ function workerDelay(signal: AbortSignal): Promise<void> {
   });
 }
 
-async function pollWorkerJob(workerId: string, signal: AbortSignal): Promise<unknown> {
+async function pollWorkerJob(workerId: string, signal: AbortSignal, identity: SessionIdentity): Promise<unknown> {
   const daemon = resolveDaemon();
   return activeTransport({
-    path: `/summarize-jobs/next?worker_id=${encodeURIComponent(workerId)}`,
+    path: `/summarize-jobs/next?${new URLSearchParams({ worker_id: workerId, caller_session_id: identity.sessionId, cwd: identity.cwd, client: "omp", transport: "hook" })}`,
     method: "GET", body: {}, port: daemon.port, token: daemon.token,
     timeoutMs: 30_000, fireAndForget: false, signal,
   });
@@ -717,7 +719,9 @@ async function runOmpWorker(ctx: HookContext, workerId: string, signal: AbortSig
   if (!apiKey) throw new Error(`no OMP credentials for ${model.provider}`);
   let spent = 0;
   while (!signal.aborted && spent < cap) {
-    const response = await pollWorkerJob(workerId, signal).catch(() => undefined);
+    const identity = sessionIdentity(ctx);
+    if (!identity) throw new Error("OMP worker session identity is unavailable");
+    const response = await pollWorkerJob(workerId, signal, identity).catch(() => undefined);
     const job = isRecord(response) && isRecord(response.job) ? response.job : undefined;
     if (signal.aborted) return;
     if (!job || job.pool !== true || typeof job.id !== "string" || typeof job.system !== "string" ||
@@ -742,7 +746,9 @@ async function runOmpWorker(ctx: HookContext, workerId: string, signal: AbortSig
     } catch (error) {
       answer = { error: error instanceof Error ? error.message : String(error) };
     }
-    await post(`/summarize-jobs/${encodeURIComponent(job.id)}`, answer, { timeoutMs: 5_000 });
+    await post(`/summarize-jobs/${encodeURIComponent(job.id)}`, { ...answer,
+      worker_id: workerId, caller_session_id: identity.sessionId, cwd: identity.cwd, client: "omp", transport: "hook", providerId: `session-pool:${alias}`,
+    }, { timeoutMs: 5_000 });
   }
 }
 
@@ -855,7 +861,7 @@ export default function lcm(pi: HookApi): void {
     flush(ctx, forceFlush, identity);
   };
 
-  register("session_start", "session_start", async (_rawEvent, ctx) => {
+  register("session_start", "session_start", async (rawEvent, ctx) => {
     restoreContext = "";
     firstPrompt = true;
     const identity = sessionIdentity(ctx);
@@ -863,6 +869,19 @@ export default function lcm(pi: HookApi): void {
       note(ctx, "session_start", "restore", "execution", "deferred", "missing-identity");
       flush(ctx, true);
       return undefined;
+    }
+    if (process.env.LCM_SUMMARIZE_WORKER === "1") {
+      const source = (rawEvent as { source?: string } | null)?.source;
+      if ((source !== undefined && source !== "startup") || ctx.sessionManager?.isSessionOnDisk?.() !== false) {
+        await post("/worker-session", { session_id: identity.sessionId, cwd: identity.cwd,
+          client: "omp", declared: true, source: "resume", owner: `omp-hook:${process.pid}:${identity.sessionId}` });
+        logError(pi, "worker enrollment refused", new Error("Start a fresh dedicated session; resume, continue, fork and clears that keep the session id are unsupported."));
+        return undefined;
+      }
+      const registration = await post("/worker-session", { session_id: identity.sessionId, cwd: identity.cwd,
+        client: "omp", declared: true, source: "startup", owner: `omp-hook:${process.pid}:${identity.sessionId}` });
+      if (registration === undefined) { logError(pi, "worker enrollment failed", new Error("No pool payload will be requested")); return undefined; }
+      console.error(`[lcm] ${WORKER_WARNING}`);
     }
     if (process.env.LCM_SUMMARIZE_WORKER === "1" && !workerController) {
       workerController = new AbortController();
@@ -1010,6 +1029,10 @@ export default function lcm(pi: HookApi): void {
 
   register("session_shutdown", "session_shutdown", async (_rawEvent, ctx) => {
     workerController?.abort();
+    const identity = sessionIdentity(ctx);
+    if (identity && process.env.LCM_SUMMARIZE_WORKER === "1") await post("/worker-session", {
+      session_id: identity.sessionId, cwd: identity.cwd, client: "omp", declared: true, owner: `omp-hook:${process.pid}:${identity.sessionId}`, action: "finish",
+    });
     fireIngest(ctx, "session_shutdown", SHUTDOWN_TIMEOUT_MS);
     return undefined;
   });

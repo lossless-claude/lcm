@@ -1,3 +1,4 @@
+import { WorkerStore } from "./worker-store.js";
 import type { DatabaseSync } from "node:sqlite";
 import { parseSqliteDate } from "../db/sqlite-date.js";
 import {
@@ -271,6 +272,8 @@ export class SummaryStore {
   // ── Summary CRUD ──────────────────────────────────────────────────────────
 
   async insertSummary(input: CreateSummaryInput): Promise<SummaryRecord> {
+    const conversation = this.db.prepare("SELECT session_id FROM conversations WHERE conversation_id = ?").get(input.conversationId) as { session_id: string } | undefined;
+    if (conversation && new WorkerStore(this.db).excluded(conversation.session_id)) throw new Error("Worker session is excluded from compaction");
     const fileIds = JSON.stringify(input.fileIds ?? []);
     const earliestAt = input.earliestAt instanceof Date ? input.earliestAt.toISOString() : null;
     const latestAt = input.latestAt instanceof Date ? input.latestAt.toISOString() : null;
