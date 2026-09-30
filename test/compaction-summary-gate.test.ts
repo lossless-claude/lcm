@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompactionEngine, type CompactionConfig, type CompactionSummarizeFn } from "../src/compaction.js";
 import { runLcmMigrations } from "../src/db/migration.js";
 import { createOpenAISummarizer } from "../src/llm/openai.js";
@@ -176,5 +176,20 @@ describe("CompactionEngine summary gate", () => {
     expect(snapshot()).toEqual(leafState);
     const kinds = db.prepare("SELECT kind, COUNT(*) AS n FROM summaries GROUP BY kind").all();
     expect(kinds).toEqual([{ kind: "leaf", n: expect.any(Number) }]);
+  });
+});
+
+describe("CompactionEngine summary ids", () => {
+  it("gives identical summaries created in the same millisecond distinct ids", async () => {
+    const { db, compact } = await conversationWithMessages();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-01-01T00:00:00Z"));
+    try {
+      await compact(async () => `Identical summary ${"durable fact ".repeat(20)}`);
+    } finally {
+      clock.mockRestore();
+    }
+    const ids = (db.prepare("SELECT summary_id FROM summaries").all() as Array<{ summary_id: string }>).map((row) => row.summary_id);
+    expect(ids.length).toBeGreaterThan(1);
+    expect(new Set(ids).size).toBe(ids.length);
   });
 });
