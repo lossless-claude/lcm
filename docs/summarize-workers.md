@@ -37,7 +37,8 @@ Optional `--usage` accepts JSON with `input_tokens`, `output_tokens` and
 `estimated`. Missing usage is estimated from the rendered prompt and answer.
 The provider id is a validated `session-pool:<model>`.
 
-An empty pool returns no job. Every claim generates its own worker id, allowing
+An empty pool returns no job and the hook waits for the next poll without reporting
+a discarded job. Every claim generates its own worker id, allowing
 parallel tasks in one worker session. Each worker id has one job in flight.
 Claude subagents may claim only when their native transcript is discoverable
 under a live declared root; Codex and OMP child-context claims are unsupported.
@@ -64,7 +65,10 @@ A new id after Claude `/clear` revokes the preceding id under the stable native
 process owner. Function-hook reloads do not change that enrollment. Function hooks
 confirm live command-hook enrollment before displaying the exclusion warning or
 polling for worker jobs. Confirmation retries with a short backoff for about 30 seconds
-to allow the command hook to register; an unconfirmed enrollment reports refusal with its reason.
+to allow the command hook to register; an unconfirmed enrollment reports refusal
+with its reason and keeps checking every 5 seconds in the background. Command
+hooks retry database contention up to three times and report the underlying error.
+Identity and retained-history refusals still require a fresh, verifiable session.
 Two npm-installed Claude workers nested under one native `claude` process share
 that owner, so a `/clear` in either ends both workers' admission. This is denial
 of service, not a leak: permanent capture exclusion remains in place.
@@ -76,7 +80,10 @@ and Codex MCP is refused, so a stale id has no supported transport. OMP's
 native hook requires a fresh session that `isSessionOnDisk()` reports as false;
 resume and clears that retain the id cannot enroll. Finishing or abandonment never
 re-enables capture. Status, doctor and stats show a shortened worker id, enrollment
-state and last activity. A copied successful MCP or CLI claim result carrying a
+state and last activity. Abandonment of a bound worker describes inactivity, not
+revocation: polling with the same owner, cwd and client binding restores active
+state. Finished bindings and copied-claim exclusion without an owner remain
+refused. A copied successful MCP or CLI claim result carrying a
 job the daemon issued stops future capture while preserving already stored history;
 it never authorizes a claim or deletion. A refused claim, a bare command invocation,
 or output merely shaped like a job does not exclude an ordinary session. `lcm doctor` reports copied-claim detection with
@@ -117,7 +124,10 @@ this does not verify identity propagation to shell or MCP runtimes.
 
 Requests use the smaller of the job budget and the worker's remaining output
 allowance. Reported usage from failed answers consumes the allowance too. At the
-cap the worker stops polling. A fresh worker starts a fresh allowance; `0` disables
+cap the worker stops polling. Claude hook workers retry a rejected or unconfirmed
+pool answer up to three times, 5 seconds apart, for transport failures, HTTP 401,
+429 and server errors. The hook reuses its completion and refreshes the bearer after 401.
+A fresh worker starts a fresh allowance; `0` disables
 serving. The default is Claude's plugin `sessionSummarizerMaxOutputTokens`, or
 50000 for OMP. This hook budget does not measure agent-produced summaries.
 
@@ -154,10 +164,12 @@ A queued job has 20 seconds to be claimed. After claim, `llm.poolCompletionMs`
 sets the completion deadline, default 180000 ms (3 minutes).
 `LCM_POOL_COMPLETION_MS` overrides it in the daemon's environment. It applies to
 all pool transports and isolated hook workers; a session-owned job gets a fresh
-60-second completion deadline after claim. Expiry falls along the configured provider chain, marks
-a claimed worker abandoned, and discards late submissions. A client disconnect
-before response delivery returns its claim to the queue under the remaining claim
-window. Exclusion stays permanent.
+60-second completion deadline after claim. Expiry falls along the configured
+provider chain and discards late submissions; it does not change worker admission.
+A slow completion or a lost answer can consume this window, but the worker can
+claim again once the job expires. Every failure after claiming and before delivery,
+including a failed admission recheck or client disconnect, returns the claim to
+the queue under the remaining claim window. Exclusion stays permanent.
 
 Run at least as many workers as concurrent projects. Named configuration uses
 `llm.fallback`; flat configuration uses `llm.fallbackProvider`, or `auto` when

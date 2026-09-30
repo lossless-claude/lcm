@@ -16,7 +16,7 @@ export function createWorkerSessionHandler(paths: LcmPaths, jobs?: SummarizeJobS
     const cwd = validateCwd(input.cwd);
     if (input.action === "check") {
       const enrolled = workerEnrollments(cwd, paths).some(worker => worker.session_id === input.session_id &&
-        worker.client === input.client && worker.state === "active" && worker.owner);
+        worker.client === input.client && worker.state !== "finished" && worker.owner);
       const { WORKER_WARNING } = await import("../../worker-warning.js");
       sendJson(res, 200, enrolled ? { enrolled: true, warning: WORKER_WARNING } : {
         enrolled: false, reason: "No live command-hook enrollment was found; use a fresh dedicated session with a verifiable native harness owner.",
@@ -41,7 +41,7 @@ export function createWorkerSessionHandler(paths: LcmPaths, jobs?: SummarizeJobS
       sendJson(res, 403, { error: "Worker enrollment requires a new session id from startup or clear; resume, compact, continue and fork are unsupported." }); return;
     }
     const revokeFinished = () => {
-      for (const worker of workerEnrollments(cwd, paths)) if (worker.state !== "active") {
+      for (const worker of workerEnrollments(cwd, paths)) if (worker.state === "finished") {
         jobs?.revokeIdentity(workerBinding(cwd, worker.client, worker.session_id));
       }
     };

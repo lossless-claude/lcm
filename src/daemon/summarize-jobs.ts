@@ -52,7 +52,6 @@ export class SummarizeJobStore {
     private deadlineMs = 20_000, private holdMs = 25_000, private retentionMs = 60_000,
     private poolCompletionMs = POOL_COMPLETION_MS,
     private sessionCompletionMs = SESSION_COMPLETION_MS,
-    private options: { onWorkerExpired?: (identity: string) => Promise<void> } = {},
   ) {}
 
   enqueue(input: Omit<SummarizeJob, "id" | "createdAt">): Promise<JobAnswer> {
@@ -178,10 +177,6 @@ export class SummarizeJobStore {
     if (!entry || (entry.state !== "queued" && entry.state !== "claimed")) return;
     clearTimeout(entry.timer);
     entry.state = state;
-    if (state === "expired" && entry.workerIdentity && this.options.onWorkerExpired) {
-      void this.options.onWorkerExpired(entry.workerIdentity).then(() => this.revokeIdentity(entry.workerIdentity!))
-        .catch(() => { /* Admission still rejects the expired job; exclusion stays permanent. */ });
-    }
     const key = entry.job.pool ? "pool" : `session:${entry.job.session_id}`;
     const queue = this.queues.get(key)?.filter((queued) => queued !== id);
     if (queue?.length) this.queues.set(key, queue);

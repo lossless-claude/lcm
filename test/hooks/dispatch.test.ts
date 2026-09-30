@@ -69,6 +69,21 @@ import { handlePostToolUse } from "../../src/hooks/post-tool.js";
 import { loadDaemonConfig } from "../../src/daemon/config.js";
 
 describe("dispatchHook", () => {
+  it.each(["database is locked", "native harness owner is unverified"])("reports worker enrollment failures and retries only contention: %s", async reason => {
+    vi.stubEnv("LCM_SUMMARIZE_WORKER", "1");
+    const enrollment = vi.spyOn(await import("../../src/worker-session.js"), "registerWorkerSession")
+      .mockRejectedValueOnce(new Error(reason)).mockResolvedValue({ warning: "worker excluded", unprovenanced: 0 });
+    vi.spyOn(await import("../../src/hooks/worker-owner.js"), "workerHookOwner").mockReturnValue("native-owner");
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(dispatchHook("restore", JSON.stringify({
+        session_id: "worker", cwd: process.cwd(), source: "startup",
+      }))).resolves.toEqual({ exitCode: 0, stdout: "" });
+      expect(log.mock.calls.flat().join("\n")).toContain(reason);
+      expect(enrollment).toHaveBeenCalledTimes(reason === "database is locked" ? 2 : 1);
+    } finally { vi.restoreAllMocks(); vi.unstubAllEnvs(); }
+  });
+
   it("calls validateAndFixHooks before every handler", async () => {
     const callOrder: string[] = [];
     vi.mocked(validateAndFixHooks).mockImplementation(() => { callOrder.push("heal"); });

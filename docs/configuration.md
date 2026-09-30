@@ -724,6 +724,9 @@ no supported transport.
 maximum 2147483647. `LCM_POOL_COMPLETION_MS` overrides it when the daemon loads
 configuration. It bounds time after claim for every pool transport. Jobs have a
 20000 ms queue claim window; session-owned jobs have a fresh 60000 ms completion
-window after claim. Pool expiry marks enrollment abandoned, revokes admission and discards late answers; it never
-re-enables capture. Agent transports are described in
+window after claim. Pool expiry falls along the provider chain and discards late
+answers without changing worker admission or permanent capture exclusion. An
+abandoned worker with a valid owner, cwd and client binding becomes active on its
+next poll; finished bindings and ownerless exclusions cannot regain admission.
+Agent transports are described in
 [summarize workers](summarize-workers.md).
