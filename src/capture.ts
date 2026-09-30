@@ -2,7 +2,9 @@ import { WorkerStore } from "./store/worker-store.js";
 import type { DatabaseSync } from "node:sqlite";
 import { statSync } from "node:fs";
 import { sep } from "node:path";
-import type { EventsDb } from "./hooks/events-db.js";
+import { EventsDb } from "./hooks/events-db.js";
+import { eventsDbPathForProject } from "./db/events-path.js";
+import type { LcmPaths } from "./lcm-paths.js";
 import { upsertRedactionCounts } from "./db/redaction-stats.js";
 import { invalidateClaudeTranscriptCursor } from "./db/transcript-cursor.js";
 import { openStandaloneLcmConnection } from "./db/connection.js";
@@ -152,6 +154,7 @@ export class SessionCapture {
     private readonly db: DatabaseSync,
     private readonly projectId: string,
     private readonly scrubber: ScrubEngine,
+    private readonly paths?: LcmPaths,
   ) {
     this.conversationStore = new ConversationStore(db);
     this.summaryStore = new SummaryStore(db);
@@ -282,6 +285,10 @@ export class SessionCapture {
     const directoryParent = rootIndex > 0 ? pathSegments[rootIndex - 1] : undefined;
     if (workers.excluded(input.sessionId, attribution?.parentSessionId) ||
         (directoryParent && workers.excluded(directoryParent)) || workers.detectCopiedClaim(input.sessionId, input.messages)) {
+      if (this.paths) {
+        const events = new EventsDb(eventsDbPathForProject(this.projectId, this.paths));
+        try { events.excludeSessions([input.sessionId]); } finally { events.close(); }
+      }
       workers.exclude(input.sessionId);
       return { conversationId: 0, records: [], totalCounts: { gitleaks: 0, builtIn: 0, global: 0, project: 0 } };
     }

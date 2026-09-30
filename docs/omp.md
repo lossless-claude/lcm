@@ -143,3 +143,8 @@ Launch a dedicated OMP session with `LCM_SUMMARIZE_WORKER=1` to serve the shared
 ## Agent worker identity
 
 OMP isolated completion hooks remain supported. Agent shell and MCP pool claims require a verified native session identity; `PI_SESSION_FILE` propagation for those transports is unverified, so OMP agent claims are refused. See [worker design](design/agent-summarize-workers.md).
+
+OMP's isolated hook worker binds claims through
+`hooks/omp/lcm.ts:sessionIdentity`'s native `sessionManager.getSessionId()`. Its session-start hook
+registers durable enrollment before polling; shutdown finishes enrollment.
+This verifies the hook path, not shell or MCP propagation of `PI_SESSION_FILE`.

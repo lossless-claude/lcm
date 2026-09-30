@@ -101,7 +101,7 @@ describe("MCP 2026-07-28 over stdio", () => {
       _meta: { "io.modelcontextprotocol/serverInfo": { name: "lcm", version: "9.9.9-test" } },
     });
     expect(result.tools.map((tool: { name: string }) => tool.name).sort()).toEqual([
-      "lcm_describe", "lcm_doctor", "lcm_expand", "lcm_grep", "lcm_search", "lcm_stats", "lcm_store",
+      "lcm_describe", "lcm_doctor", "lcm_expand", "lcm_grep", "lcm_search", "lcm_stats", "lcm_store", "lcm_summarize_claim", "lcm_summarize_submit",
     ]);
   });
 
@@ -178,7 +178,7 @@ describe("MCP 2026-07-28 over stdio", () => {
 
     const listed = await request("tools/list", {}, false);
     expect(listed.error).toBeUndefined();
-    expect(listed.result.tools).toHaveLength(7);
+    expect(listed.result.tools).toHaveLength(9);
 
     const called = await request("tools/call", { name: "lcm_search", arguments: { query: "hello" } }, false);
     expect(called.error).toBeUndefined();
@@ -188,7 +188,7 @@ describe("MCP 2026-07-28 over stdio", () => {
   it("serves a 2026-era client, and only that one carries the modern envelope", async () => {
     const listed = await request("tools/list");
     expect(listed.error).toBeUndefined();
-    expect(listed.result.tools).toHaveLength(7);
+    expect(listed.result.tools).toHaveLength(9);
     expect(listed.result).toMatchObject({ resultType: "complete", ttlMs: 0, cacheScope: "private" });
     expect(listed.result._meta).toMatchObject({
       "io.modelcontextprotocol/serverInfo": { name: "lcm", version: "9.9.9-test" },

@@ -11,7 +11,7 @@ import { decodeCodexTranscriptUtf8, parseCodexTranscriptRecord } from "./codex-t
 import type { ParsedMessage } from "./transcript.js";
 import { readJsonlTranscriptDelta, type JsonlTranscriptCursor, type ReadJsonlTranscriptDeltaOptions } from "./jsonl-transcript-reader.js";
 
-export const CODEX_FINGERPRINT_VERSION = "codex-transcript-prefix-v1";
+export const CODEX_FINGERPRINT_VERSION = "codex-transcript-prefix-v2";
 
 export type CodexTranscriptCursor = JsonlTranscriptCursor;
 export type ReadCodexTranscriptDeltaOptions = ReadJsonlTranscriptDeltaOptions;

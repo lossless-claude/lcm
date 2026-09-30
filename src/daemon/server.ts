@@ -1,3 +1,4 @@
+import { abandonWorker } from "./worker-admission.js";
 import { workerExcluded } from "../worker-session.js";
 import { createWorkerSessionHandler } from "./routes/worker-session.js";
 import { SummarizeJobStore } from "./summarize-jobs.js";
@@ -191,10 +192,10 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
     sendJson(res, 200, { status: "ok", version: PKG_VERSION, build: BUILD_ID, pid: process.pid, uptime: Math.floor((Date.now() - startTime) / 1000), log: log.state(),
       // Which named endpoints this daemon's environment left out; `lcm doctor` reports it.
       summarizer: summarizerAvailability(config.llm) }));
-  routes.set("POST /worker-session", createWorkerSessionHandler(paths));
-  const summarizeJobs = new SummarizeJobStore();
-  const answerSummarizeJob = createAnswerSummarizeJobHandler(summarizeJobs);
-  routes.set("GET /summarize-jobs/next", createNextSummarizeJobHandler(summarizeJobs));
+  const summarizeJobs = new SummarizeJobStore(20_000, 25_000, 60_000, config.llm.poolCompletionMs, binding => abandonWorker(paths, binding));
+  routes.set("POST /worker-session", createWorkerSessionHandler(paths, summarizeJobs));
+  const answerSummarizeJob = createAnswerSummarizeJobHandler(summarizeJobs, paths);
+  routes.set("GET /summarize-jobs/next", createNextSummarizeJobHandler(summarizeJobs, paths));
   routes.set("POST /compact", createCompactHandler(config, paths, summarizeJobs, log));
   routes.set("POST /replay-reset", createReplayResetHandler(paths));
   routes.set("POST /promote", createPromoteHandler(config, paths, log));

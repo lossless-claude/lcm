@@ -98,7 +98,7 @@ describe("session summarize jobs", () => {
     const job = await store.nextWorker("worker-1");
     await vi.advanceTimersByTimeAsync(POOL_COMPLETION_MS / 3);
     expect(store.answer(job!.id, { text: "slow summary" })).toBe("accepted");
-    await expect(answer).resolves.toEqual({ text: "slow summary" });
+    await expect(answer).resolves.toMatchObject({ text: "slow summary", usage: { estimated: true } });
     const stuck = store.enqueue({ ...input, pool: true, prompt: "stuck" });
     await store.nextWorker("worker-1");
     await vi.advanceTimersByTimeAsync(POOL_COMPLETION_MS);

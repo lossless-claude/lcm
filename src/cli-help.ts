@@ -18,6 +18,23 @@ interface CommandHelp {
 }
 
 const HELP: Record<string, CommandHelp> = {
+  "summarize-claim": {
+    summary: "Claim one pool job in a declared dedicated worker session.",
+    usage: "lcm summarize-claim",
+    notes: "Start Claude Code or Codex with LCM_SUMMARIZE_WORKER=1 and lcm hooks enabled. Identity comes from the harness environment. Returns job, worker_id and the permanent-exclusion warning; an empty pool returns no job. OMP CLI is unverified and refused.",
+  },
+  "summarize-submit": {
+    summary: "Submit a summary or error for a claimed pool job.",
+    usage: "lcm summarize-submit <job-id> --worker-id <id> --model <model> [--text <summary> | --error <message>] [--usage <json>]",
+    options: [
+      ["--worker-id <id>", "Worker id returned by summarize-claim"],
+      ["--model <model>", "Model that produced the summary; recorded as session-pool:<model>"],
+      ["--text <summary>", "Summary text (otherwise stdin)"],
+      ["--error <message>", "Report a failed completion instead of a summary"],
+      ["--usage <json>", "Optional input_tokens, output_tokens and estimated; defaults to estimated"],
+    ],
+    notes: "The same live enrolled session must submit. Late answers are discarded. Pool completion uses llm.poolCompletionMs (LCM_POOL_COMPLETION_MS), default 180000 ms from claim; the 20000 ms claim deadline stays separate.",
+  },
   install: {
     summary: "Set up lcm for every harness on this machine: Claude Code (settings, MCP server, /memory skill, lcm.md, doctor) and, when `codex` is on PATH, the global Codex hooks, and when `omp` is on PATH the global Oh My Pi hook. Reports one outcome per harness and exits non-zero on any failure.",
     usage: "lcm install [--dry-run]",
@@ -455,6 +472,8 @@ const GROUPS = [
       { name: "compact [--all] [--dry-run] [--replay] [--parallel <N>] [--replay-provider session-pool] [--restart] [--no-promote]", summary: "Compact conversations into DAG summaries (auto-promotes after)" },
       { name: "import [--provider claude|codex|omp|all] [--all] [--verbose] [--dry-run] [--replay] [--parallel <N>] [--replay-provider session-pool] [--restart]", summary: "Import Claude Code, Codex or Oh My Pi session transcripts" },
       { name: "promote [--all] [--verbose] [--dry-run]", summary: "Promote insights to long-term memory" },
+      { name: "summarize-claim", summary: "Claim pool work in a dedicated worker session" },
+      { name: "summarize-submit <job-id>", summary: "Submit a claimed pool summary or error" },
       { name: "stats [-v]", summary: "Memory inventory and compression ratios" },
       { name: "diagnose [--all] [--days N] [--verbose] [--json]", summary: "Scan sessions for hook failures and issues" },
     ],

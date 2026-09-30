@@ -196,4 +196,19 @@ Every lcm hook except `post-tool` self-repairs on each invocation: before dispat
 
 ## Declared worker enrollment
 
-With `LCM_SUMMARIZE_WORKER=1`, Claude command and function hooks and Codex SessionStart hooks enroll the native session id and cwd. A repeated start after `/clear` revokes the preceding id owned by that hook process; exclusion of both histories remains permanent. SessionEnd marks command-hook workers finished. Registration warns that the session and its subagents are not recorded by lcm, the harness transcript stays on disk, and a dedicated session is required. An enrollment failure must prevent tool workers from receiving pool payloads. See [agent worker design](design/agent-summarize-workers.md).
+With `LCM_SUMMARIZE_WORKER=1`, Claude command and function hooks, Codex SessionStart hooks and OMP native session-start hooks enroll the native session id and cwd. A repeated start after `/clear` revokes the preceding id owned by that hook process; exclusion of both histories remains permanent. SessionEnd marks command-hook workers finished. Registration warns that the session and its subagents are not recorded by lcm, the harness transcript stays on disk, and a dedicated session is required. An enrollment failure must prevent tool workers from receiving pool payloads. See [agent worker design](design/agent-summarize-workers.md).
+
+Pool claim and submission routes carry `caller_session_id`, `cwd`, `client` and
+`transport` beside each `worker_id`. Hook workers bind identity from their native
+session API; agent adapters use Claude's `CLAUDE_CODE_SESSION_ID` or Codex shell's
+`CODEX_THREAD_ID`. Codex MCP and OMP agent transports are unverified and refused.
+A poll rechecks live admission immediately before release, including after waiting.
+The completion deadline is `llm.poolCompletionMs`, overridden by
+`LCM_POOL_COMPLETION_MS`, default 180000 ms after claim. Claude workers finishing
+their allowance and OMP shutdown hooks mark enrollment finished; exclusion remains.
+
+Command-hook worker enrollment requires a verifiable native harness ancestor
+(executable name and start time). A transient shell PID is not an owner. When
+ownership cannot be established, enrollment refuses with guidance; Claude Code
+function hooks provide an alternative. Hook callbacks never read process arguments
+or environment to identify that owner.

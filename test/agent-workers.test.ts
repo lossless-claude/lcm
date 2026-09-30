@@ -1,0 +1,193 @@
+import { createDaemon } from "../src/daemon/server.js";
+import { dispatchCodexHook } from "../src/hooks/codex.js";
+import { workerEnrollments } from "../src/worker-session.js";
+import { Command } from "commander";
+import { registerAgentWorkerCommands } from "../src/cli/agent-workers.js";
+import { handleAgentWorkerTool } from "../src/mcp/server.js";
+import { recordPostToolEvents } from "../src/hooks/tool-events.js";
+import { EventsDb } from "../src/hooks/events-db.js";
+import { eventsDbPath } from "../src/db/events-path.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { EventEmitter } from "node:events";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { createLcmPaths } from "../src/lcm-paths.js";
+import { loadDaemonConfig } from "../src/daemon/config.js";
+import { abandonWorker } from "../src/daemon/worker-admission.js";
+import { WorkerStore } from "../src/store/worker-store.js";
+import { registerWorkerSession } from "../src/worker-session.js";
+import { SummarizeJobStore } from "../src/daemon/summarize-jobs.js";
+import { createNextSummarizeJobHandler, createAnswerSummarizeJobHandler } from "../src/daemon/routes/summarize-jobs.js";
+import { createAgentWorkerTransport } from "../src/agent-worker-transport.js";
+import { SessionCapture } from "../src/capture.js";
+import { ScrubEngine } from "../src/scrub.js";
+import { getLcmConnection, closeLcmConnection } from "../src/db/connection.js";
+import { projectDbPath } from "../src/daemon/project.js";
+
+const canary = "FOREIGN_TRANSPORT_CANARY_685";
+const dirs: string[] = [];
+const stores: SummarizeJobStore[] = [];
+afterEach(() => { stores.splice(0).forEach(store => store.close()); dirs.splice(0).forEach(dir => rmSync(dir, { recursive: true, force: true })); vi.restoreAllMocks(); vi.unstubAllEnvs(); });
+function invoke(handler: ReturnType<typeof createNextSummarizeJobHandler>, url: string, body = "") {
+  const response = Object.assign(new EventEmitter(), { destroyed: false, writeHead: vi.fn(), end: vi.fn() });
+  return handler({ url } as IncomingMessage, response as unknown as ServerResponse, body).then(() => ({
+    status: response.writeHead.mock.calls[0][0], data: JSON.parse(response.end.mock.calls[0][0] || "{}"),
+  }));
+}
+async function fixture(completionMs = 180_000) {
+  const cwd = mkdtempSync(join(tmpdir(), "lcm-agent-worker-")); dirs.push(cwd);
+  const paths = createLcmPaths(join(cwd, "lcm"));
+  const store = new SummarizeJobStore(10000, 0, 60000, completionMs, binding => abandonWorker(paths, binding)); stores.push(store);
+  const next = createNextSummarizeJobHandler(store, paths);
+  const answer = createAnswerSummarizeJobHandler(store, paths);
+  const client = {
+    get: async <T>(url: string): Promise<T> => { const result = await invoke(next, url); if (result.status >= 400) throw new Error(result.data.error); return result.data as T; },
+    post: async <T>(url: string, body: unknown): Promise<T> => { const result = await invoke(answer, url, JSON.stringify(body)); if (result.status >= 400) throw new Error(result.data.error); return result.data as T; },
+  };
+  return { cwd, paths, store, client, next };
+}
+const job = { session_id: "foreign", kind: "leaf" as const, depth: 0, system: "system", prompt: canary, targetTokens: 10, maxTokens: 100, pool: true as const };
+
+describe("agent worker transports", () => {
+  it.each([ ["claude", "cli"], ["claude", "mcp"], ["codex", "cli"] ] as const)("binds %s/%s claims and keeps canaries out of every captured layer", async (clientName, transport) => {
+    const f = await fixture();
+    await registerWorkerSession(f.paths, { sessionId: "worker", cwd: f.cwd, client: clientName, owner: "hook" });
+    const env = { LCM_SUMMARIZE_WORKER: "1", [clientName === "claude" ? "CLAUDE_CODE_SESSION_ID" : "CODEX_THREAD_ID"]: "worker" };
+    const worker = createAgentWorkerTransport(f.client, transport, env, f.cwd);
+    const pending = f.store.enqueue(job);
+    const claimed = await worker.claim();
+    expect(claimed.job?.prompt).toBe(canary);
+    expect(claimed.warning).toContain("transcript stays on disk");
+    expect(recordPostToolEvents({ session_id: "worker", cwd: f.cwd, client: clientName,
+      tool_name: "Bash", tool_input: { command: `git commit -m ${canary}` } }, f.paths).recorded).toBe(0);
+    const events = new EventsDb(eventsDbPath(f.cwd, f.paths));
+    try { expect(events.getUnprocessed()).toEqual([]); } finally { events.close(); }
+    const dbPath = projectDbPath(f.cwd, f.paths); const db = getLcmConnection(dbPath);
+    try {
+      await new SessionCapture(db, "project", new ScrubEngine([], [])).write({ sessionId: "worker", messages: [{ role: "tool", content: canary, tokenCount: 10 }] });
+      for (const table of ["messages", "summaries", "messages_fts", "summaries_fts", "promoted", "promoted_fts"]) expect(db.prepare(`SELECT * FROM ${table}`).all(), table).toEqual([]);
+    } finally { closeLcmConnection(dbPath); }
+    await worker.submit({ jobId: claimed.job!.id, workerId: claimed.worker_id, model: "custom-model-1", text: "summary" });
+    expect(await pending).toMatchObject({ providerId: "session-pool:custom-model-1", usage: { estimated: true } });
+  });
+
+  it.each([{}, { CLAUDE_CODE_SESSION_ID: "ordinary" }, { CODEX_THREAD_ID: "ordinary" }, { PI_SESSION_FILE: "/session" }])("refuses missing or undeclared identities without any source text: %j", async env => {
+    const f = await fixture(); void f.store.enqueue(job);
+    const worker = createAgentWorkerTransport(f.client, "cli", env, f.cwd);
+    await expect(worker.claim()).rejects.toThrow(/dedicated|identity|unverified/);
+  });
+
+  it("refuses Codex MCP even when a matching worker is enrolled", async () => {
+    const f = await fixture();
+    await registerWorkerSession(f.paths, { sessionId: "worker", cwd: f.cwd, client: "codex", owner: "hook" });
+    void f.store.enqueue(job);
+    await expect(createAgentWorkerTransport(f.client, "mcp", { CODEX_THREAD_ID: "worker" }, f.cwd).claim()).rejects.toThrow("unverified");
+  });
+
+  it("refuses a stale id after clear and an unrelated session in the same cwd", async () => {
+    const f = await fixture();
+    await registerWorkerSession(f.paths, { sessionId: "old", cwd: f.cwd, client: "claude", owner: "hook" });
+    await registerWorkerSession(f.paths, { sessionId: "new", cwd: f.cwd, client: "claude", owner: "hook" });
+    void f.store.enqueue(job);
+    for (const id of ["old", "ordinary"]) await expect(createAgentWorkerTransport(f.client, "cli", { CLAUDE_CODE_SESSION_ID: id }, f.cwd).claim()).rejects.toThrow("dedicated");
+  });
+
+  it("a refused CLI claim carries the required transcript warning and no foreign content", async () => {
+    const f = await fixture();
+    await expect(createAgentWorkerTransport(f.client, "cli", {}, f.cwd).claim()).rejects.toThrow("The harness's own transcript stays on disk");
+  });
+
+  it("daemon restart preserves worker exclusion and admission", async () => {
+    const f = await fixture();
+    const config = loadDaemonConfig("/nonexistent", { daemon: { port: 0, idleTimeoutMs: 0 }, llm: { provider: "disabled" } }, {});
+    let daemon = await createDaemon(config, { paths: f.paths });
+    try {
+      await registerWorkerSession(f.paths, { sessionId: "worker", cwd: f.cwd, client: "claude", owner: "hook" });
+      await daemon.stop(); daemon = await createDaemon(config, { paths: f.paths });
+      const query = new URLSearchParams({ caller_session_id: "worker", worker_id: "after-restart", cwd: f.cwd, client: "claude", transport: "cli", wait_ms: "0" });
+      const result = await fetch(`http://127.0.0.1:${daemon.address().port}/summarize-jobs/next?${query}`);
+      expect(result.status).toBe(200); expect(await result.json()).toMatchObject({ worker_id: "after-restart", warning: expect.any(String) });
+      const path = projectDbPath(f.cwd, f.paths); const db = getLcmConnection(path);
+      try { expect(new WorkerStore(db).excluded("worker")).toBe(true); } finally { closeLcmConnection(path); }
+    } finally { await daemon.stop(); }
+  });
+
+  it("Codex hooks revoke stale ids on clear and refuse child enrollment", async () => {
+    const f = await fixture(); vi.stubEnv("LCM_SUMMARIZE_WORKER", "1");
+    const deps = { workerOwner: () => "codex-native-owner", paths: f.paths, enabled: true, client: { post: vi.fn() }, connect: vi.fn() };
+    for (const [id, source] of [["old", "startup"], ["new", "clear"], ["child", "subagent"]]) {
+      await dispatchCodexHook(JSON.stringify({ hook_event_name: "SessionStart", session_id: id, cwd: f.cwd, source }), deps);
+    }
+    expect(workerEnrollments(f.cwd, f.paths).map(worker => [worker.session_id, worker.state])).toEqual([["new", "active"], ["old", "finished"]]);
+    await expect(createAgentWorkerTransport(f.client, "cli", { CODEX_THREAD_ID: "child" }, f.cwd).claim()).rejects.toThrow("dedicated");
+  });
+
+  it("the MCP handler reads identity from its environment and ignores agent-supplied session ids", async () => {
+    const f = await fixture(); await registerWorkerSession(f.paths, { sessionId: "worker", cwd: f.cwd, client: "claude", owner: "hook" });
+    void f.store.enqueue(job);
+    const result = await handleAgentWorkerTool(f.client, "claim", { sessionId: "ordinary", cwd: "/wrong" }, { CLAUDE_CODE_SESSION_ID: "worker" }, f.cwd);
+    expect(result.isError).toBeUndefined(); expect(JSON.parse(result.content[0].text).job.prompt).toBe(canary);
+  });
+
+  it("the CLI pair uses the harness identity and returned worker id over the pool routes", async () => {
+    const f = await fixture();
+    await registerWorkerSession(f.paths, { sessionId: "worker", cwd: process.cwd(), client: "claude", owner: "hook" });
+    vi.stubEnv("CLAUDE_CODE_SESSION_ID", "worker"); vi.stubEnv("CODEX_THREAD_ID", undefined); vi.stubEnv("PI_SESSION_FILE", undefined);
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const command = new Command();
+    registerAgentWorkerCommands(command, { createDaemonClientOrExit: async () => f.client as any });
+    const pending = f.store.enqueue(job);
+    await command.parseAsync(["summarize-claim"], { from: "user" });
+    const claim = JSON.parse(output.mock.calls.at(-1)![0]);
+    expect(claim.job.prompt).toBe(canary);
+    await command.parseAsync(["summarize-submit", claim.job.id, "--worker-id", claim.worker_id, "--model", "custom", "--text", "summary"], { from: "user" });
+    expect(await pending).toMatchObject({ text: "summary", providerId: "session-pool:custom" });
+  });
+
+  it("issues independent worker ids for parallel claims and refuses a different caller's submit", async () => {
+    const f = await fixture();
+    await registerWorkerSession(f.paths, { sessionId: "worker", cwd: f.cwd, client: "claude", owner: "hook" });
+    const worker = createAgentWorkerTransport(f.client, "cli", { CLAUDE_CODE_SESSION_ID: "worker" }, f.cwd);
+    const answers = [f.store.enqueue(job), f.store.enqueue(job)];
+    const [one, two] = await Promise.all([worker.claim(), worker.claim()]);
+    expect(one.worker_id).not.toBe(two.worker_id); expect(one.job!.id).not.toBe(two.job!.id);
+    const forged = await f.client.post<{ discarded: boolean }>(`/summarize-jobs/${one.job!.id}`, {
+      caller_session_id: "worker", client: "claude", transport: "cli", cwd: f.cwd,
+      worker_id: two.worker_id, text: "forged", providerId: "session-pool:custom-model",
+    });
+    expect(forged.discarded).toBe(true);
+    await worker.submit({ jobId: one.job!.id, workerId: one.worker_id, model: "custom-model", text: "one" });
+    await worker.submit({ jobId: two.job!.id, workerId: two.worker_id, model: "custom-model", text: "two" });
+    expect((await Promise.all(answers)).map(answer => answer.text)).toEqual(["one", "two"]);
+  });
+
+  it("marks a timed-out worker abandoned, revokes claims and keeps capture permanently excluded", async () => {
+    vi.useFakeTimers();
+    try {
+      const f = await fixture(100);
+      await registerWorkerSession(f.paths, { sessionId: "worker", cwd: f.cwd, client: "claude", owner: "hook" });
+      const worker = createAgentWorkerTransport(f.client, "cli", { CLAUDE_CODE_SESSION_ID: "worker" }, f.cwd);
+      const pending = f.store.enqueue(job); const claimed = await worker.claim();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await pending).toMatchObject({ error: "job timeout" });
+      const path = projectDbPath(f.cwd, f.paths); const db = getLcmConnection(path);
+      try { expect(new WorkerStore(db).list()[0].state).toBe("abandoned"); expect(new WorkerStore(db).excluded("worker")).toBe(true); }
+      finally { closeLcmConnection(path); }
+      await expect(worker.submit({ jobId: claimed.job!.id, workerId: claimed.worker_id, model: "custom", text: canary })).rejects.toThrow("dedicated");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("reads and validates the configured completion deadline", () => {
+    expect(loadDaemonConfig("/nonexistent", {}, { LCM_POOL_COMPLETION_MS: "75000" }).llm.poolCompletionMs).toBe(75000);
+    for (const value of ["0", "-1", "bad", "1.5", "2147483648"]) expect(() => loadDaemonConfig("/nonexistent", {}, { LCM_POOL_COMPLETION_MS: value })).toThrow("completion");
+  });
+
+  it("does not release a payload through the raw worker route without binding", async () => {
+    const f = await fixture(); void f.store.enqueue(job);
+    const result = await invoke(f.next, "/summarize-jobs/next?worker_id=forged&wait_ms=0");
+    expect(result.status).toBe(403);
+    expect(JSON.stringify(result.data)).not.toContain(canary);
+  });
+});

@@ -85,6 +85,10 @@ describe("OMP lcm hook", () => {
     const ctx = context({ modelRegistry: { getAll: () => [model], getApiKey: async () => "fake-key" } });
     await getHandler(handlers, "session_start")({}, ctx);
     await vi.waitFor(() => expect(requests.some((request) => request.path === "/summarize-jobs/pool-job")).toBe(true));
+    const registrationIndex = requests.findIndex(request => request.path === "/worker-session");
+    expect(registrationIndex).toBeGreaterThanOrEqual(0);
+    expect(registrationIndex).toBeLessThan(requests.findIndex(request => request.method === "GET"));
+    expect(requests[registrationIndex].body).toMatchObject({ session_id: "omp-session", client: "omp", declared: true });
     expect(complete).toHaveBeenCalledExactlyOnceWith(model, {
       systemPrompt: "system", messages: [{ role: "user", content: "foreign prompt", timestamp: expect.any(Number) }],
     }, { apiKey: "fake-key", maxTokens: 4, signal: expect.any(AbortSignal) });

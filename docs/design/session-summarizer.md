@@ -36,7 +36,7 @@ it is answered or expires. Session and worker queues and waiters are disjoint.
 `GET /summarize-jobs/next?worker_id=…` selects pool work; `session_id=…` retains
 decision 8 for ordinary sessions. Pool jobs carry `pool: true`, which both worker
 hosts validate before running a prompt. A pool job has the 20-second deadline to
-be claimed, then `POOL_COMPLETION_MS` (3 minutes) to be answered: a replay chunk
+be claimed, then `llm.poolCompletionMs` / `LCM_POOL_COMPLETION_MS` (default `POOL_COMPLETION_MS`, 3 minutes) to be answered: a replay chunk
 takes a model longer than the live-session deadline. Expiry uses the same
 provider-chain fallback; no persistent queue or additional endpoint semaphore is
 needed, because each polling worker already serializes its calls.

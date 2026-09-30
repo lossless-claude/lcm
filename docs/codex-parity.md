@@ -92,3 +92,9 @@ The [native hooks contract](https://developers.openai.com/codex/hooks) exposes c
 ## Dedicated summarize worker enrollment
 
 Codex SessionStart enrolls a dedicated session launched with `LCM_SUMMARIZE_WORKER=1`. SessionEnd marks it finished; exclusion remains permanent. A new id on the same hook process revokes the old admission. Codex child-context claims and MCP session identity are unverified and unsupported. See [worker design](design/agent-summarize-workers.md).
+
+A dedicated Codex session may use `lcm summarize-claim` and
+`lcm summarize-submit`. The CLI reads `CODEX_THREAD_ID` from the shell environment
+and the daemon requires that exact live enrolled id and cwd. An ordinary, stale
+or child-context claim is refused. Codex MCP claims are unverified and refused;
+use the CLI. See [summarize workers](summarize-workers.md).

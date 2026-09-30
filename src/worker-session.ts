@@ -1,3 +1,4 @@
+import { validateCwd } from "./daemon/validate-cwd.js";
 import { existsSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 import type { LcmPaths } from "./lcm-paths.js";
@@ -39,8 +40,9 @@ export function workerExcluded(cwd: string, sessionId: string, paths: LcmPaths, 
 }
 
 export async function registerWorkerSession(paths: LcmPaths, input: {
-  sessionId: string; cwd: string; client: "claude" | "codex"; owner: string;
+  sessionId: string; cwd: string; client: "claude" | "codex" | "omp"; owner: string;
 }): Promise<{ warning: string; unprovenanced: number }> {
+  input = { ...input, cwd: validateCwd(input.cwd) };
   return withProjectMutation(projectId(input.cwd), async () => {
     openProject(input.cwd, paths);
     const dbPath = projectDbPath(input.cwd, paths);
@@ -69,4 +71,10 @@ export async function finishWorkerSession(paths: LcmPaths, cwd: string, sessionI
     try { new WorkerStore(db).finish(sessionId); }
     finally { closeLcmConnection(path); }
   });
+}
+
+export function excludedWorkerContext(paths: LcmPaths, env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): boolean {
+  if (env.LCM_SUMMARIZE_WORKER === "1") return true;
+  const id = env.CLAUDE_CODE_SESSION_ID || env.CODEX_THREAD_ID;
+  return Boolean(id && workerExcluded(cwd, id, paths));
 }

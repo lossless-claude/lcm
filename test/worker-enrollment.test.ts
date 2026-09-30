@@ -1,3 +1,6 @@
+import { parseClaudeTranscriptRecord } from "../src/transcript.js";
+import { SessionCapture } from "../src/capture.js";
+import { ScrubEngine } from "../src/scrub.js";
 import { createIngestHandler } from "../src/daemon/routes/ingest.js";
 import { acquireProjectMutation } from "../src/daemon/project-queue.js";
 import { projectId } from "../src/daemon/project.js";
@@ -23,7 +26,7 @@ afterEach(() => dirs.splice(0).forEach(dir => rmSync(dir, { recursive: true, for
 it("registration removes sidecar canaries, gates later calls, and persists after reopening", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "lcm-worker-test-")); dirs.push(cwd);
   const paths = createLcmPaths(join(cwd, "lcm"));
-  const event = { session_id: "worker", cwd, tool_name: "Bash", tool_input: { command: "git commit -m FOREIGN_CANARY_685" } };
+  const event = { session_id: "worker", cwd, tool_name: "Bash", tool_input: { command: 'git commit -m "FOREIGN_CANARY_685"' } };
   expect(recordPostToolEvents(event, paths).recorded).toBeGreaterThan(0);
   await registerWorkerSession(paths, { sessionId: "worker", cwd, client: "claude", owner: "hook" });
   expect(recordPostToolEvents(event, paths).recorded).toBe(0);
@@ -65,4 +68,21 @@ it("a capture racing registration cannot write a foreign-content canary", async 
     expect(db.prepare("SELECT * FROM messages").all()).toEqual([]);
     expect(db.prepare("SELECT * FROM messages_fts").all()).toEqual([]);
   } finally { closeLcmConnection(path); }
+});
+
+it("structural recovery also removes a copied worker history's sidecar canary", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "lcm-worker-recovery-")); dirs.push(cwd);
+  const paths = createLcmPaths(join(cwd, "lcm"));
+  await registerWorkerSession(paths, { sessionId: "root", cwd, client: "claude", owner: "hook" });
+  recordPostToolEvents({ cwd, session_id: "fork", tool_name: "Bash", tool_input: { command: 'git commit -m "FOREIGN_RECOVERY_CANARY_685"' } }, paths);
+  const path = projectDbPath(cwd, paths); const db = getLcmConnection(path);
+  try {
+    const records = [
+      { message: { role: "assistant", content: [{ type: "tool_use", id: "claim", name: "lcm_summarize_claim", input: {} }] } },
+      { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "claim", content: JSON.stringify({ job: { prompt: "FOREIGN_RECOVERY_CANARY_685", system: "system" } }) }] } },
+    ];
+    await new SessionCapture(db, projectId(cwd), new ScrubEngine([], []), paths).write({ sessionId: "fork", messages: records.map(record => parseClaudeTranscriptRecord(JSON.stringify(record)).message!) });
+  } finally { closeLcmConnection(path); }
+  const events = new EventsDb(eventsDbPath(cwd, paths));
+  try { expect(events.getUnprocessed()).toEqual([]); } finally { events.close(); }
 });

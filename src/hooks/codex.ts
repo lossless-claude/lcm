@@ -183,6 +183,7 @@ export interface CodexHookDeps {
   enabled: boolean;
   /** The storage root both branches write under, so an injected dependency isolates both. */
   paths: LcmPaths;
+  workerOwner?: () => string;
 }
 
 function parseInput(stdin: string): CodexInput | null {
@@ -332,7 +333,7 @@ export async function dispatchCodexHook(
       if (input.hook_event_name === "SessionStart" && input.source !== "subagent") {
         const { registerWorkerSession } = await import("../worker-session.js");
         const result = await registerWorkerSession(paths, { sessionId: input.session_id, cwd: input.cwd,
-          client: "codex", owner: `codex-hook:${process.ppid}` });
+          client: "codex", owner: dependencies?.workerOwner?.() ?? (await import("./worker-owner.js")).workerHookOwner("codex") });
         console.error(`[lcm] ${result.warning} Promotions without provenance: ${result.unprovenanced}.`);
       }
       if (input.hook_event_name === "SessionEnd") {

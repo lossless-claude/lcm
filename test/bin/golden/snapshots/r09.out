@@ -23,6 +23,8 @@
     compact [--all] [--dry-run] [--replay] [--parallel <N>] [--replay-provider session-pool] [--restart] [--no-promote]                                Compact conversations into DAG summaries (auto-promotes after)
     import [--provider claude|codex|omp|all] [--all] [--verbose] [--dry-run] [--replay] [--parallel <N>] [--replay-provider session-pool] [--restart]  Import Claude Code, Codex or Oh My Pi session transcripts
     promote [--all] [--verbose] [--dry-run]                                                                                                            Promote insights to long-term memory
+    summarize-claim                                                                                                                                    Claim pool work in a dedicated worker session
+    summarize-submit <job-id>                                                                                                                          Submit a claimed pool summary or error
     stats [-v]                                                                                                                                         Memory inventory and compression ratios
     diagnose [--all] [--days N] [--verbose] [--json]                                                                                                   Scan sessions for hook failures and issues
 

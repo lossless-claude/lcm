@@ -55,3 +55,37 @@ Stretch exclusion cannot prevent later reasoning, retries, host compaction or
 handbacks from carrying foreign source content. Permanent exclusion sacrifices
 worker-session memory to prevent cross-project capture. Verified context reset
 and content-free handbacks are prerequisites for any narrower exclusion.
+
+## Transports and accounting
+
+The MCP catalog and CLI pair share `createAgentWorkerTransport`, which reads native
+identity from the harness environment. `admitWorker` checks live enrollment and
+canonical cwd before each claim and submit, and again after a held poll. A unique
+worker id per agent claim allows parallel work; submissions also match the stored
+binding. Native isolated hooks use the same pool routes and admission checks.
+OMP hook identity is confirmed in `hooks/omp/lcm.ts:sessionIdentity` through the
+session-manager API; OMP shell/MCP and Codex MCP remain unverified and refused.
+
+Claim markers are structural parser metadata, keyed by tool-call id across capture
+deltas. A parser-shape change forces historical checkpoints to be verified before
+recovery. Recovery cleans the main store and event sidecar and grants no admission.
+
+Pool provider ids accept a validated model suffix. Missing usage is estimated from
+the system, prompt and answer. `llm.poolCompletionMs` / `LCM_POOL_COMPLETION_MS`
+bounds completion after claim, default 180000 ms. The queue claim deadline remains
+20000 ms, and session-owned jobs retain their total deadline. Pool expiry records
+abandoned enrollment without removing exclusion; late answers are discarded and
+the provider chain handles unanswered work.
+
+Tests use fake models only. They cover the three supported agent pairs, refused
+pairs and undeclared/stale callers, independent parallel claims, worker-bound
+submission, canary absence, cleanup, restart, mutation-lease races, structural
+recovery and the configurable deadline. Harness environment export behavior is
+unverified by these fakes and remains the supplied external contract.
+
+Command hooks identify the native harness ancestor by executable name and process
+start time, rather than the transient shell parent. An unverifiable owner refuses
+enrollment. No process arguments or environment are read. Claude function hooks
+and OMP hooks own their loaded-module generation instead. This lets a repeated
+start revoke the previous native id without revoking an unrelated session in the
+same cwd. Codex cursor fingerprints also change when claim-marker decoding changes.

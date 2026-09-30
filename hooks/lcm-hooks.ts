@@ -454,9 +454,10 @@ type PollOutcome =
   | { job: SummaryJob }
   | { wait: number; shortPoll?: true };
 
-function fetchNextJob($: EngineInterface, { port, token }: HostEnv, sessionId: string, shortPoll: boolean, worker = false) {
+async function fetchNextJob($: EngineInterface, { port, token }: HostEnv, sessionId: string, shortPoll: boolean, worker = false) {
+  const binding = worker ? `&caller_session_id=${encodeURIComponent(sessionId)}&cwd=${encodeURIComponent(await $.session.cwd())}&client=claude&transport=hook` : "";
   return $.http.fetch(
-    `http://127.0.0.1:${port}/summarize-jobs/next?${worker ? "worker_id" : "session_id"}=${encodeURIComponent(sessionId)}${shortPoll ? "&wait_ms=0" : ""}`,
+    `http://127.0.0.1:${port}/summarize-jobs/next?${worker ? "worker_id" : "session_id"}=${encodeURIComponent(sessionId)}${binding}${shortPoll ? "&wait_ms=0" : ""}`,
     { headers: token ? { authorization: `Bearer ${token}` } : {} },
   );
 }
@@ -514,7 +515,11 @@ type SummaryBudget = { spent: number; cap: number };
 async function postSummaryAnswer($: EngineInterface, job: SummaryJob, route: string, body: unknown): Promise<void> {
   const sessionId = job.pool ? await $.session.id() : job.session_id;
   try {
-    const outcome = await postDaemonOutcome($, route, body);
+    const boundBody = job.pool ? { ...(body as Record<string, unknown>),
+      worker_id: sessionId, caller_session_id: sessionId, cwd: await $.session.cwd(), client: "claude", transport: "hook",
+      providerId: (body as Record<string, unknown>).providerId ?? `session-pool:${await $.env.get("LCM_SUMMARIZE_WORKER_MODEL") || "haiku"}`,
+    } : body;
+    const outcome = await postDaemonOutcome($, route, boundBody);
     noteHook(sessionId, "session.start", "summary-answer", "delivery", ...delivery(outcome));
   } catch (error) {
     noteHook(sessionId, "session.start", "summary-answer", "delivery", "unconfirmed", "transport");
@@ -587,12 +592,11 @@ async function pollSummaries($: EngineInterface, configuredCap: number): Promise
     }
   }
   if (cap === 0) return;
-  const sessionId = await $.session.id();
   let spent = 0;
   let shortPoll = false;
   while (true) {
     if (shortPoll) await summaryDelay($, SHORT_POLL_PAUSE_MS);
-    const outcome = await nextSummaryJob($, sessionId, shortPoll, worker);
+    const outcome = await nextSummaryJob($, await $.session.id(), shortPoll, worker);
     if ("wait" in outcome) {
       shortPoll = outcome.shortPoll ?? shortPoll;
       if (outcome.wait > 0) await summaryDelay($, outcome.wait);
@@ -601,7 +605,11 @@ async function pollSummaries($: EngineInterface, configuredCap: number): Promise
     const spentNow = await serveSummaryJob($, outcome.job, { spent, cap }, workerModel);
     if (spentNow === null) return;
     spent += spentNow;
-    if (worker && spent >= cap) return;
+    if (worker && spent >= cap) {
+      await postDaemon($, "/worker-session", { session_id: await $.session.id(), cwd: await $.session.cwd(),
+        client: "claude", declared: true, owner: `claude-function:${hookSnapshotGeneration}`, action: "finish" });
+      return;
+    }
   }
 }
 

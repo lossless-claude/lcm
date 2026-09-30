@@ -1,3 +1,8 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createLcmPaths } from "../../src/lcm-paths.js";
+import { createWorkerSessionHandler } from "../../src/daemon/routes/worker-session.js";
 import { EventEmitter } from "node:events";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { expect, it, vi } from "vitest";
@@ -7,9 +12,12 @@ import { loadDaemonConfig } from "../../src/daemon/config.js";
 import { createNextSummarizeJobHandler, createAnswerSummarizeJobHandler } from "../../src/daemon/routes/summarize-jobs.js";
 
 it("round-trips K concurrent pool jobs through the provider, routes and K Claude workers", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "lcm-pool-workers-"));
+  const paths = createLcmPaths(join(directory, "lcm"));
   const store = new SummarizeJobStore();
-  const nextJob = createNextSummarizeJobHandler(store);
-  const answer = createAnswerSummarizeJobHandler(store);
+  const registration = createWorkerSessionHandler(paths, store);
+  const nextJob = createNextSummarizeJobHandler(store, paths);
+  const answer = createAnswerSummarizeJobHandler(store, paths);
   const gate = Promise.withResolvers<void>();
   const workers: any[] = [];
   try {
@@ -18,7 +26,7 @@ it("round-trips K concurrent pool jobs through the provider, routes and K Claude
       const handlers = new Map<string, any>();
       const engine = {
         env: { get: async (name: string) => name === "LCM_SUMMARIZE_WORKER" ? "1" : undefined },
-        session: { id: async () => id, cwd: async () => "/worker-project" },
+        session: { id: async () => id, cwd: async () => directory },
         process: { run: async () => ({ stdout: "fake-token\n__CONFIG__\n{}\n__TMPDIR__/tmp", exitCode: 0 }) },
         fs: { write: vi.fn(async () => undefined) },
         ui: { log: vi.fn() },
@@ -29,10 +37,10 @@ it("round-trips K concurrent pool jobs through the provider, routes and K Claude
         },
         http: { fetch: async (url: string, init?: any) => {
           const path = new URL(url).pathname;
-          if (!path.startsWith("/summarize-jobs/")) return { ok: true, status: 200, text: "{}" };
+          if (path !== "/worker-session" && !path.startsWith("/summarize-jobs/")) return { ok: true, status: 200, text: "{}" };
           const res = Object.assign(new EventEmitter(), { destroyed: false, writeHead: vi.fn(), end: vi.fn() });
-          const req = { url: url.slice(url.indexOf("/summarize-jobs/")) } as IncomingMessage;
-          await (init?.method === "POST" ? answer : nextJob)(req, res as unknown as ServerResponse, init?.body ?? "");
+          const req = { url: new URL(url).pathname + new URL(url).search } as IncomingMessage;
+          await (path === "/worker-session" ? registration : init?.method === "POST" ? answer : nextJob)(req, res as unknown as ServerResponse, init?.body ?? "");
           const status = res.writeHead.mock.calls[0][0];
           return { ok: status >= 200 && status < 300, status, text: res.end.mock.calls[0][0] ?? "" };
         } },
@@ -57,5 +65,5 @@ it("round-trips K concurrent pool jobs through the provider, routes and K Claude
       expect(JSON.stringify(worker.fs.write.mock.calls)).not.toContain("private source");
       expect(worker.model.complete).toHaveBeenCalledOnce();
     }
-  } finally { gate.resolve(); store.close(); }
+  } finally { gate.resolve(); store.close(); rmSync(directory, { recursive: true, force: true }); }
 });

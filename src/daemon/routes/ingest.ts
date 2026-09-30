@@ -89,7 +89,7 @@ async function ingestAllSubagents(
   parentSessionId: string, paths: LcmPaths,
 ): Promise<SubagentFailure[]> {
   runLcmMigrations(db);
-  const capture = new SessionCapture(db, pid, scrubber);
+  const capture = new SessionCapture(db, pid, scrubber, paths);
   const failures: SubagentFailure[] = [];
   for (const sub of subagents) {
     const fingerprint = subagentGuardFingerprint(sub.path);
@@ -189,7 +189,7 @@ async function rebuildSession(
               throw new Error(`backup failed, nothing was rebuilt: ${err instanceof Error ? err.message : String(err)}`);
             }
           }
-          const { plan, ingested } = await new SessionCapture(db, pid, scrubber).rebuildTranscript({
+          const { plan, ingested } = await new SessionCapture(db, pid, scrubber, paths).rebuildTranscript({
             sessionId: input.session_id, client: input.client, cwd, transcriptPath: input.transcript_path, source: "import",
           });
           // A rebuilt subagent session no longer fails its guard; its recorded failure would keep it skipped and listed.
@@ -328,7 +328,7 @@ export function createIngestHandler(
             if (isSessionComplete(db, session_id, transcriptPath)) return { ingested: 0, totalTokens: 0 };
           }
 
-          const capture = new SessionCapture(db, pid, scrubber);
+          const capture = new SessionCapture(db, pid, scrubber, paths);
           const attribution = requestAttribution(input);
           let written: CaptureResult | undefined;
           if (structured) {

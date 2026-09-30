@@ -68,6 +68,7 @@ export type DaemonConfig = {
     provider: SummaryProvider | (string & {});
     /** Flat form only: the provider type the session provider falls back to. */
     fallbackProvider?: Exclude<SummaryProvider, "session" | "session-pool">;
+    poolCompletionMs?: number;
     model: string; apiKey?: string; baseURL: string; reasoning?: Record<string, unknown>;
     /** Named endpoints; when present, the flat connection fields above must be unset. */
     providers?: Record<string, EndpointConfig>;
@@ -133,7 +134,7 @@ const DEFAULTS: DaemonConfig = {
     stalePenalty: 0.5,
     allowStaleOnStrongMatch: true,
   },
-  llm: { provider: "auto", model: "", apiKey: "", baseURL: "" },
+  llm: { provider: "auto", model: "", apiKey: "", baseURL: "", poolCompletionMs: 180_000 },
   summarizer: { mock: false },
   security: {
     sensitivePatterns: [],
@@ -175,6 +176,11 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
   const withFile = deepMerge(structuredClone(DEFAULTS) as Record<string, unknown>, fileConfig);
   const merged = deepMerge(withFile, overrides ?? {}) as DaemonConfig;
   if (!merged.daemon.socketPath) merged.daemon.socketPath = join(dirname(configPath), "daemon.sock");
+  if (e.LCM_POOL_COMPLETION_MS !== undefined) merged.llm.poolCompletionMs = Number(e.LCM_POOL_COMPLETION_MS);
+  const completionMs = merged.llm.poolCompletionMs;
+  if (!Number.isSafeInteger(completionMs) || completionMs! <= 0 || completionMs! > 2_147_483_647) {
+    throw new Error("Pool completion deadline must be a positive integer no greater than 2147483647 ms");
+  }
   // Migrate legacy provider names from v0.3.0
   if ((merged.llm.provider as string) === "claude-cli") merged.llm.provider = "claude-process";
   // Migrate legacy mergeMaxEntries (renamed to dedupCandidateLimit)

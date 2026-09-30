@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { parseCodexTranscriptRecord } from "../src/codex-transcript.js";
 import { parseClaudeTranscriptRecord } from "../src/transcript.js";
 import { DatabaseSync } from "node:sqlite";
 import { runLcmMigrations } from "../src/db/migration.js";
@@ -58,6 +59,16 @@ describe("permanent worker exclusion", () => {
     expect(workers.excluded("fork")).toBe(true);
     expect(workers.live("fork", "/project", "claude")).toBe(false);
     expect(db.prepare("SELECT * FROM messages_fts").all()).toEqual([]);
+  });
+
+  it("detects a copied Codex CLI claim through the native call id and paired output", async () => {
+    const records = [
+      { type: "response_item", payload: { type: "function_call", name: "exec_command", call_id: "claim", arguments: JSON.stringify({ cmd: "lcm summarize-claim" }) } },
+      { type: "response_item", payload: { type: "function_call_output", call_id: "claim", output: JSON.stringify({ job: { system: "system", prompt: canary } }) } },
+    ];
+    const copied = records.map(record => parseCodexTranscriptRecord(JSON.stringify(record)).message!);
+    expect((await capture.write({ sessionId: "codex-fork", messages: copied })).records).toEqual([]);
+    expect(workers.live("codex-fork", "/project", "codex")).toBe(false);
   });
 
   it("refuses new summaries after exclusion, including an answer already in flight", async () => {

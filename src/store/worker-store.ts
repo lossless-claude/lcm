@@ -1,7 +1,8 @@
+import { realpathSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { clearConversationForRebuild } from "../claude-rebuild.js";
 
-export const WORKER_WARNING = "This session and its subagents are not recorded by lcm. The harness's own transcript stays on disk. Use a dedicated session; forking a worker session is unsupported.";
+export { WORKER_WARNING } from "../worker-warning.js";
 export type WorkerEnrollment = {
   session_id: string; cwd: string; client: string; owner: string | null;
   state: "active" | "finished" | "abandoned"; last_activity: string;
@@ -26,8 +27,14 @@ export class WorkerStore {
   }
 
   live(sessionId: string, cwd: string, client: string): boolean {
+    try { cwd = realpathSync(cwd); } catch { /* In-memory stores can name a non-filesystem project. */ }
     return Boolean(this.db.prepare(`SELECT 1 FROM summarize_workers
       WHERE session_id = ? AND cwd = ? AND client = ? AND state = 'active' AND owner IS NOT NULL`).get(sessionId, cwd, client));
+  }
+
+  admitChild(sessionId: string, cwd: string, owner: string): void {
+    this.db.prepare("UPDATE summarize_workers SET cwd = ?, client = 'claude', owner = ?, state = 'active', last_activity = datetime('now') WHERE session_id = ?")
+      .run(cwd, owner, sessionId);
   }
 
   touch(sessionId: string): void {

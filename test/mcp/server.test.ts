@@ -30,10 +30,10 @@ vi.mock("../../src/daemon/version.js", () => ({
 }));
 
 describe("MCP tool definitions", () => {
-  it("exposes exactly 7 tools", () => {
+  it("exposes exactly 9 tools", () => {
     const tools = getMcpToolDefinitions();
-    expect(tools).toHaveLength(7);
-    expect(tools.map((t: any) => t.name).sort()).toEqual(["lcm_describe", "lcm_doctor", "lcm_expand", "lcm_grep", "lcm_search", "lcm_stats", "lcm_store"]);
+    expect(tools).toHaveLength(9);
+    expect(tools.map((t: any) => t.name).sort()).toEqual(["lcm_describe", "lcm_doctor", "lcm_expand", "lcm_grep", "lcm_search", "lcm_stats", "lcm_store", "lcm_summarize_claim", "lcm_summarize_submit"]);
   });
 
   it("each tool has name, description, inputSchema", () => {

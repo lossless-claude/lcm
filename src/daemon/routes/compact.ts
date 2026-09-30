@@ -369,7 +369,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           const db = openStandaloneLcmConnection(dbPath);
           try {
             runLcmMigrations(db);
-            const captured = await captureForCompact(new SessionCapture(db, projectId(cwd), scrubber), {
+            const captured = await captureForCompact(new SessionCapture(db, projectId(cwd), scrubber, paths), {
               sessionId: session_id, cwd, client, transcriptPath: transcript_path,
             }, paths, log);
             const outcome = captured
@@ -483,7 +483,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           // Capture what the transcript holds past the stored count, through the same
           // module `/ingest` reads and writes with; the conversation exists after this
           // either way, since compaction needs the row even when nothing was read.
-          const capture = new SessionCapture(db, pid, scrubber);
+          const capture = new SessionCapture(db, pid, scrubber, paths);
           const { conversationStore, summaryStore } = capture;
           const structuredInput = (await conversationStore.getConversationBySessionId(session_id))?.parserShape === STRUCTURED_INGEST_SHAPE;
           let captured: CaptureResult | undefined;

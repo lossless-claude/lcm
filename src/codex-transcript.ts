@@ -20,6 +20,7 @@ import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { StringDecoder } from "node:string_decoder";
 import { TextDecoder } from "node:util";
+import { isWorkerClaim, containsWorkerPayload } from "./worker-markers.js";
 import { estimateTokens } from "./transcript.js";
 import type { ParsedMessage } from "./transcript.js";
 
@@ -40,6 +41,8 @@ interface CodexResponseItemPayload {
   name?: string;
   /** Tool output on a `*_output` record. */
   output?: unknown;
+  arguments?: unknown;
+  call_id?: string;
 }
 
 export interface CodexSessionMeta {
@@ -129,7 +132,10 @@ function parseCodexToolRecord(payload: CodexResponseItemPayload): ParsedMessage 
 
   if (TOOL_CALL_TYPES.has(type)) {
     const content = typeof payload.name === "string" && payload.name ? payload.name : type;
-    return { role: "tool", content, tokenCount: estimateTokens(content) };
+    let input: Record<string, unknown> | undefined;
+    try { input = typeof payload.arguments === "string" ? JSON.parse(payload.arguments) : payload.arguments as Record<string, unknown>; } catch { /* An undecodable call is not a claim marker. */ }
+    const workerClaims = payload.call_id && isWorkerClaim(payload.name, input) ? [payload.call_id] : undefined;
+    return { role: "tool", content, tokenCount: estimateTokens(content), ...(workerClaims ? { workerClaims } : {}) };
   }
 
   if (!TOOL_OUTPUT_TYPES.has(type)) return null;
@@ -137,7 +143,8 @@ function parseCodexToolRecord(payload: CodexResponseItemPayload): ParsedMessage 
     ? payload.output
     : extractCodexText(payload.output as string | CodexContentBlock[] | undefined);
   if (!output.trim()) return null;
-  return { role: "tool", content: output, tokenCount: estimateTokens(output) };
+  const workerPayloads = payload.call_id && containsWorkerPayload(output) ? [payload.call_id] : undefined;
+  return { role: "tool", content: output, tokenCount: estimateTokens(output), ...(workerPayloads ? { workerPayloads } : {}) };
 }
 
 /**

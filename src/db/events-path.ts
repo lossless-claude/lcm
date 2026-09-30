@@ -6,6 +6,10 @@ export function eventsDir(paths: LcmPaths): string {
   return paths.eventsDir;
 }
 
+export function eventsDbPathForProject(id: string, paths: LcmPaths): string {
+  return join(eventsDir(paths), `${id}.db`);
+}
+
 export function eventsDbPath(cwd: string, paths: LcmPaths): string {
-  return join(eventsDir(paths), `${projectId(cwd)}.db`);
+  return eventsDbPathForProject(projectId(cwd), paths);
 }
