@@ -41,9 +41,16 @@ export type SummarizerUsage = {
   costUsd?: number;
   /** Copilot CLI only — GitHub's billing unit, not a token count. */
   premiumRequests?: number;
+  /** Endpoint-reported phase durations, in milliseconds. */
+  prefillMs?: number;
+  decodeMs?: number;
+  /** The billed answer was rejected, even if an adapter later recovered. */
+  rejectionReason?: "length" | "max_tokens" | "whitespace";
 };
 
 export type SummarizeContext = {
+  /** Endpoint slot admission; live by default, background for bulk compaction. */
+  workClass?: "live" | "background";
   /** Internal alternate task: send text verbatim with this system instruction. */
   taskPrompt?: string;
   /** BCP 47 language tag for generated summary text, when configured or detected. */

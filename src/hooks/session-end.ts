@@ -64,7 +64,7 @@ async function runLegacyFallback(
       safeLogError("session-end:redaction-notice", `filtered sensitive data from history (pattern: ${categories})`, { cwd, sessionId, paths });
     }
     if (!config.hooks?.disableAutoCompact) {
-      fireCompactRequest(daemonPort, { session_id: sessionId, cwd, skip_ingest: true, client: "claude" }, paths);
+      fireCompactRequest(daemonPort, { session_id: sessionId, cwd, skip_ingest: true, work_class: "live", client: "claude" }, paths);
     }
     firePromoteRequest(daemonPort, { cwd }, paths);
     firePromoteEventsRequest(daemonPort, { cwd }, paths);

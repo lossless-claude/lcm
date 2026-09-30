@@ -431,6 +431,8 @@ describe("importSessions", () => {
     });
 
     // Both sessions were compacted, in mtime order
+    expect(vi.mocked(client.post).mock.calls.filter(([path]) => path === "/compact")
+      .map(([, body]) => (body as { skip_ingest?: boolean }).skip_ingest)).toEqual([true, true]);
     expect(compactBodies).toHaveLength(2);
     expect(compactBodies[0].session_id).toBe("session-1");
     expect(compactBodies[0].previous_summary).toBeUndefined();

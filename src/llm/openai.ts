@@ -59,6 +59,13 @@ function toUsage(response: any, fallbackModel: string): SummarizerUsage | undefi
   if (!usage) return undefined;
   const inputTokens = usage.prompt_tokens;
   const outputTokens = usage.completion_tokens;
+  const choice = response.choices?.[0];
+  const content = choice?.message?.content;
+  // The same judgement acceptSummaryText makes: content that is not text is no answer.
+  const rejectionReason = choice?.finish_reason === "length" ? "length"
+    : typeof content !== "string" || !content.trim() ? "whitespace" : undefined;
+  const timing = (value: unknown): number | undefined =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
   return {
     provider: "openai",
     model: response.model || fallbackModel,
@@ -68,6 +75,9 @@ function toUsage(response: any, fallbackModel: string): SummarizerUsage | undefi
     tokensUsed: usage.total_tokens ?? (inputTokens ?? 0) + (outputTokens ?? 0),
     // Absent stays absent: a consumer must read it as "unknown", not "free".
     costUsd: typeof usage.cost === "number" ? usage.cost : undefined,
+    prefillMs: timing(response.timings?.prompt_ms),
+    decodeMs: timing(response.timings?.predicted_ms),
+    ...(rejectionReason ? { failed: true, rejectionReason } : {}),
   };
 }
 
@@ -116,7 +126,7 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
           messages: [
             { role: "user", content: `${ctx.taskPrompt ?? LCM_SUMMARIZER_SYSTEM_PROMPT}\n\n${prompt}` },
           ],
-        }, options)));
+        }, options)), ctx.workClass);
 
         // Reported before the answer is judged: a reasoning model that spends
         // the whole budget thinking still charged for those tokens.

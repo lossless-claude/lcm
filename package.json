@@ -28,6 +28,7 @@
     "hooks/",
     "docs/agent-tools.md",
     "docs/configuration.md",
+    "docs/summarizer-compare.md",
     "docs/hook-protocol.md",
     "docs/import.md",
     "docs/summarize-workers.md",

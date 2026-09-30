@@ -8,6 +8,7 @@ import { lcmHome } from "../src/lcm-home.js";
 import { createLcmPaths } from "../src/lcm-paths.js";
 import { registerMemoryCommands } from "../src/cli/memory.js";
 import { registerBenchCommands } from "../src/cli/bench.js";
+import { registerEvalCommands } from "../src/cli/eval.js";
 import { registerConnectorsCommands } from "../src/cli/connectors.js";
 import { registerDiagnosticsCommands, registerDiagnoseCommand } from "../src/cli/diagnostics.js";
 import { registerHookCommands } from "../src/cli/hooks.js";
@@ -121,6 +122,7 @@ async function main() {
   registerImportCommand(program, { createDaemonClientOrExit });
 
   registerBenchCommands(program, { admitCliDatabaseWork });
+  registerEvalCommands(program, createLcmPaths(lcmHome()));
 
   registerKnowledgeCommands(program, { admitCliDatabaseWork, createDaemonClientOrExit });
 

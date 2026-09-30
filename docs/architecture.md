@@ -451,6 +451,24 @@ for the first to finish, then reads the current context; deadline-bound PreCompa
 The guard uses the session because `/compact` resolves its newest conversation only after admission;
 an OMP clear can open another conversation under the same session id. Different sessions of one
 project can still summarize concurrently, subject to a named endpoint's `maxConcurrent` limit.
+The endpoint semaphore (`src/llm/endpoint-concurrency.ts`) is shared across all projects
+and summarizer instances using that name. It admits live before background, FIFO within
+each class, and leaves running requests to finish. `/compact` classifies PreCompact as live
+from `capture_required` or OMP's `precompact_verified`; SessionEnd (including the legacy
+hook fallback) and SessionStart catch-up send `work_class: "live"` because they also use
+`skip_ingest`. Other `skip_ingest` callers, including import replay and batch compact with
+or without replay, are background.
+Direct compactions default to live. `SummarizeContext.workClass` carries that choice through
+the provider chain, retries and fallback to the OpenAI and Anthropic adapters.
+
+Live slot waits expire after the endpoint's `timeoutMs` (default 600000 ms), allowing
+fallback even when the daemon continues after PreCompact's 120-second client deadline.
+Background slot waits have no deadline; each admitted HTTP request still has a fresh
+`timeoutMs` deadline. Background is admitted whenever the live queue is empty. Lifecycle
+compactions arrive in finite bursts, with SessionStart catch-up capped by
+`compaction.autoCompactSessionStartMax`, so replay progresses in the gaps. Continuous live
+saturation can defer background indefinitely under this strict priority rule.
+
 A required PreCompact Capture bypasses an occupied queue
 and takes the mutation lease directly so it can finish within the hook deadline. A same-session
 `/ingest` can likewise append while a summary waits: the pending model call uses message IDs

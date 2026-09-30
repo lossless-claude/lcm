@@ -1,0 +1,167 @@
+import { describe, expect, it } from "vitest";
+import { findUnsupportedDetails } from "../src/eval/unsupported-details.js";
+import { createServer } from "node:http";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { runLcmMigrations } from "../src/db/migration.js";
+import { ConversationStore } from "../src/store/conversation-store.js";
+import { createLcmPaths } from "../src/lcm-paths.js";
+import { projectDbPath, projectMetaPath } from "../src/daemon/project.js";
+import { buildSyntheticSession } from "../test/bench/summarizer-eval-harness.js";
+import { runSummarizerComparison } from "../src/eval/compare.js";
+import { Command } from "commander";
+import { registerEvalCommands } from "../src/cli/eval.js";
+import { runEval } from "../src/eval/engine.js";
+import { createOpenAISummarizer } from "../src/llm/openai.js";
+import { createProviderChain } from "../src/llm/provider-chain.js";
+
+describe("unsupported summary details", () => {
+  it("finds absent numbers, paths, identifiers and quoted strings without overlapping counts", () => {
+    const source = 'Batch 42 uses src/ledger.ts and LedgerStore; the label is "ready".';
+    const summary = 'Batch 42 uses src/ledger.ts and LedgerStore, then 7331 in src/missing.ts via MissingStore with "invented detail".';
+    expect(findUnsupportedDetails(source, summary).map(({ kind, text }) => ({ kind, text }))).toEqual([
+      { kind: "number", text: "7331" },
+      { kind: "path", text: "src/missing.ts" },
+      { kind: "identifier", text: "MissingStore" },
+      { kind: "quoted", text: '"invented detail"' },
+    ]);
+    expect(findUnsupportedDetails("142 preLedgerStore", "42 LedgerStore").map((d) => d.text)).toEqual(["42", "LedgerStore"]);
+  });
+
+  it("keeps contractions separate from single-quoted details", () => {
+    expect(findUnsupportedDetails("Use the existing label.", "Don't use 'invented detail'.").map((detail) => detail.text))
+      .toEqual(["'invented detail'"]);
+  });
+});
+
+describe("summarizer comparison", () => {
+  it("keeps cost unknown when a priced rejected answer is retried without usage", async () => {
+    let requests = 0;
+    const adapter = createOpenAISummarizer({ model: "fake", _retryDelayMs: 0, _clientOverride: {
+      chat: { completions: { create: async () => {
+        const request = requests++;
+        return {
+          choices: [{ finish_reason: request === 0 ? "length" : "stop", message: {
+            content: "Files: none\nA concise summary.\nExpand for details about: decisions",
+          } }],
+          ...(request === 1 ? {} : { usage: { prompt_tokens: 11, completion_tokens: 22, cost: 0.01 } }),
+        };
+      } } },
+    } });
+    const summarizer = createProviderChain([() => ({ name: "candidate", kind: "http", summarizer: async () => adapter })]);
+    const result = await runEval({ session: buildSyntheticSession(), summarizer, model: "fake", provider: "openai", run: 1 });
+    expect(result.incomplete).toBe(false);
+    expect(result.totals.costUsd).toBeNull();
+    expect(result.totals.maxTokensHits).toBe(1);
+    expect(result.totals.rejectedCalls).toBe(1);
+    expect(result.calls[0].attempts).toHaveLength(2);
+    expect(result.calls[0].attempts.every((attempt) => attempt.latencyMs >= 0)).toBe(true);
+  });
+
+  it("rejects an unknown named endpoint through the CLI before opening any project database", async () => {
+    const dir = mkdtempSync(join(import.meta.dirname, ".eval-unknown-"));
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ llm: { provider: "local", providers: {
+      local: { type: "openai", model: "fake", baseURL: "http://127.0.0.1:1/v1", apiKey: "fake" },
+    } } }));
+    try {
+      const program = new Command();
+      registerEvalCommands(program, createLcmPaths(dir));
+      await expect(program.parseAsync(["eval", "summarizer", "--session", "missing", "--models", "local,unknown",
+        "--project", dir, "--no-planted", "--runs", "2"], { from: "user" })).rejects.toThrow('Unknown summarizer endpoint "unknown"');
+      expect(readdirSync(dir).sort()).toEqual(["config.json"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("runs named endpoints sequentially and writes source-aligned reports without changing the project database", async () => {
+    const dir = mkdtempSync(join(import.meta.dirname, ".eval-test-"));
+    const paths = createLcmPaths(join(dir, "memory"));
+    const cwd = join(dir, "project");
+    mkdirSync(cwd);
+    const dbPath = projectDbPath(cwd, paths);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    db.exec("PRAGMA journal_mode = WAL");
+    runLcmMigrations(db);
+    const store = new ConversationStore(db);
+    const conversation = await store.getOrCreateConversation("test-session");
+    await store.createMessagesBulk(buildSyntheticSession().messages.map((message) => ({
+      ...message, conversationId: conversation.conversationId,
+    })));
+    db.close();
+    writeFileSync(projectMetaPath(cwd, paths), JSON.stringify({ language: "pt-BR" }));
+    const before = readFileSync(dbPath);
+    const beforeMtime = statSync(dbPath).mtimeMs;
+    const seen: string[] = [];
+    let cutOff = false;
+    const server = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const body = JSON.parse(Buffer.concat(chunks).toString());
+      seen.push(body.model);
+      expect(body.enable_thinking).toBe(false);
+      expect(body.messages[0].content).toContain("pt-BR");
+      const length = body.model === "unknown" && !cutOff;
+      if (length) cutOff = true;
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify({
+        model: body.model,
+        choices: [{ finish_reason: length ? "length" : "stop", message: {
+          content: 'Files: none\nKeep ristretto allocator ledger-writer.ts backfill verticality 7331 ULID; invented MissingStore. <script>alert("x")</script>\nExpand for details about: decisions',
+        } }],
+        usage: { prompt_tokens: 111, completion_tokens: length ? 8192 : 22, total_tokens: length ? 8303 : 133,
+          ...(body.model === "priced" ? { cost: 0.01 } : {}),
+        },
+        timings: { prompt_ms: 12, predicted_ms: 34 },
+      }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing fake endpoint address");
+    const endpoint = (model: string) => ({ type: "openai", model, apiKey: "fake", baseURL: `http://127.0.0.1:${address.port}/v1`,
+      timeoutMs: 5000, maxConcurrent: 1, body: { enable_thinking: false } });
+    writeFileSync(paths.configPath, JSON.stringify({ llm: { provider: "first", providers: {
+      first: endpoint("priced"), second: endpoint("unknown"), fallback: endpoint("unused"),
+    }, fallback: ["fallback"] }, summarizer: { mock: true } }));
+    try {
+      const result = await runSummarizerComparison({ cwd, paths, sessionId: "test-session", models: ["first", "second"], out: join(dir, "report") });
+      const report = JSON.parse(readFileSync(result.jsonPath, "utf-8"));
+      expect(report.results.map((run: { endpoint: string; label: string }) => [run.endpoint, run.label])).toEqual([
+        ["first", "test-session"], ["first", "synthetic-planted"], ["second", "test-session"], ["second", "synthetic-planted"],
+      ]);
+      expect(seen).not.toContain("unused");
+      expect(seen.slice(seen.indexOf("unknown")).every((model) => model === "unknown")).toBe(true);
+      const first = report.results[0];
+      expect(first.totals.inputTokens).toBe(first.totals.calls * 111);
+      expect(first.totals.outputTokens).toBe(first.totals.calls * 22);
+      expect(first.totals.costUsd).toBeCloseTo(first.totals.calls * 0.01);
+      expect(first.totals.formatPass).toBe(first.totals.calls);
+      expect(first.totals.unsupportedDetails).toBeGreaterThan(0);
+      expect(first.calls[0]).toMatchObject({ source: expect.any(String), latencyMs: expect.any(Number), prefillMs: 12, decodeMs: 34 });
+      expect(report.results[1].plantedFacts.every((fact: { survived: boolean }) => fact.survived)).toBe(true);
+      expect(report.results[2].totals).toMatchObject({ costUsd: null, maxTokensHits: 1, rejectedCalls: 1 });
+      expect(report.results[2].totals.inputTokens).toBe((report.results[2].totals.calls + 1) * 111);
+      expect(report.chunks.length).toBeGreaterThanOrEqual(6);
+      expect(report.chunks.every((chunk: { source: string; entries: Array<{ endpoint: string }> }) =>
+        chunk.source.length > 0 && chunk.entries.map((entry) => entry.endpoint).join(",") === "first,second")).toBe(true);
+      const html = readFileSync(result.htmlPath, "utf-8");
+      expect(html).toContain("<details>");
+      expect(html).toContain("<mark");
+      expect(html).toContain("deterministic hint, not proof");
+      expect(html).toContain("conversation content");
+      expect(html).not.toContain("<script>");
+      expect(html).toContain("&lt;script&gt;");
+      const onlyStored = await runSummarizerComparison({ cwd, paths, sessionId: "test-session", models: ["first"], runs: 2,
+        planted: false, out: join(dir, "stored-only") });
+      expect(onlyStored.report.results.map(({ label, run }) => [label, run])).toEqual([["test-session", 1], ["test-session", 2]]);
+      expect(readFileSync(dbPath)).toEqual(before);
+      expect(statSync(dbPath).mtimeMs).toBe(beforeMtime);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
