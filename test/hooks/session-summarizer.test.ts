@@ -205,10 +205,10 @@ describe("function-hook session summarizer", () => {
     const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
     harness.engine.session.cwd.mockImplementationOnce(() => { throw new Error("cwd unavailable"); });
     await expect(harness.trigger()).resolves.toEqual({});
-    expect(harness.engine.ui.log).toHaveBeenCalledWith(expect.stringContaining("snapshot could not be written"));
+    expect(harness.engine.ui.log).not.toHaveBeenCalled();
   });
 
-  it("bounds a stalled diagnostic write without delaying session start", async () => {
+  it("bounds a slow diagnostic write that later succeeds without reporting a failure", async () => {
     const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
     harness.engine.clock.sleep.mockResolvedValue(undefined);
     const blocked = Promise.withResolvers<void>();
@@ -218,6 +218,7 @@ describe("function-hook session summarizer", () => {
       return ++snapshotWrites === 1 ? blocked.promise : Promise.resolve();
     });
     await expect(harness.trigger()).resolves.toEqual({});
+    expect(harness.engine.ui.log).not.toHaveBeenCalled();
     for (let turn = 0; turn < 20; turn++) {
       await harness.handlers.get("turn.complete")!(harness.engine, {}, vi.fn((event) => event));
     }
@@ -229,7 +230,39 @@ describe("function-hook session summarizer", () => {
     await harness.handlers.get("turn.complete")!(harness.engine, {}, vi.fn((event) => event));
     expect(snapshotWrites).toBe(2);
     expect(harness.engine.clock.sleep).toHaveBeenCalledWith(250);
-    expect(harness.engine.ui.log).toHaveBeenCalledWith(expect.stringContaining("snapshot could not be written"));
+    expect(harness.engine.ui.log).not.toHaveBeenCalled();
+  });
+
+  it.each(["rejected", "late rejection", "thrown"])("reports a %s snapshot write once per session", async (failure) => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
+    const blocked = Promise.withResolvers<void>();
+    if (failure === "late rejection") harness.engine.clock.sleep.mockResolvedValue(undefined);
+    let snapshotWrites = 0;
+    harness.engine.fs.write.mockImplementation((path: string) => {
+      if (!path.includes("lcm-hook-observe-")) return Promise.resolve();
+      snapshotWrites++;
+      if (failure === "thrown") throw new Error("read-only fs");
+      return failure === "late rejection" && snapshotWrites === 1
+        ? blocked.promise : Promise.reject(new Error("read-only fs"));
+    });
+    await expect(harness.trigger()).resolves.toEqual({});
+    if (failure === "late rejection") {
+      expect(harness.engine.ui.log).not.toHaveBeenCalled();
+      blocked.reject(new Error("read-only fs"));
+    }
+    await vi.waitFor(() => expect(harness.engine.ui.log).toHaveBeenCalledExactlyOnceWith(
+      "[lcm] hook observation snapshot could not be written",
+    ));
+    await harness.handlers.get("turn.complete")!(harness.engine, {}, vi.fn((event) => event));
+    expect(snapshotWrites).toBe(2);
+    expect(harness.engine.ui.log).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not report a snapshot write failure when the wait throws", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
+    harness.engine.clock.sleep.mockImplementation(() => { throw new Error("clock unavailable"); });
+    await expect(harness.trigger()).resolves.toEqual({});
+    expect(harness.engine.ui.log).not.toHaveBeenCalled();
   });
 
   it("records an HTTP rejection as rejected with its status", async () => {
