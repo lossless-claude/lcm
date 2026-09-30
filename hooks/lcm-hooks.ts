@@ -136,21 +136,24 @@ async function flushHookObservations($: EngineInterface, sessionId: string): Pro
       updatedAt: Date.now(), truncated: snapshot.truncated,
       observations: [...snapshot.counts.values()], failures: snapshot.failures,
     });
-    await $.fs.write(path, content);
+    try {
+      await $.fs.write(path, content);
+    } catch {
+      if (!failedHookSnapshotWrites.has(sessionId)) {
+        failedHookSnapshotWrites.add(sessionId);
+        try { $.ui.log("[lcm] hook observation snapshot could not be written"); } catch { /* diagnostic only */ }
+      }
+    }
   };
-  const pending = write().finally(() => { snapshot.writing = false; });
+  const pending = write().catch(() => { /* diagnostic preparation is best-effort */ })
+    .finally(() => { snapshot.writing = false; });
   try {
-    const outcome = await Promise.race([
-      pending.then(() => "written" as const, () => "failed" as const),
-      $.clock.sleep(250).then(() => "timeout" as const, () => "failed" as const),
+    await Promise.race([
+      pending,
+      $.clock.sleep(250),
     ]);
-    if (outcome === "written") return;
   } catch {
     // Host calls may throw before returning a promise.
-  }
-  if (!failedHookSnapshotWrites.has(sessionId)) {
-    failedHookSnapshotWrites.add(sessionId);
-    try { $.ui.log("[lcm] hook observation snapshot could not be written"); } catch { /* diagnostic only */ }
   }
 }
 
