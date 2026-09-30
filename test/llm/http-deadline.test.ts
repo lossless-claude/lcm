@@ -85,6 +85,25 @@ describe("HTTP summarizer deadlines", () => {
     await expect(withRequestDeadline(DEADLINE_MS, request)).rejects.toMatchObject({ name: "APIConnectionTimeoutError" });
   });
 
+  it.each(["openai", "anthropic"])("accepts delayed headers and body through the real %s SDK", async (provider) => {
+    const responseDelayMs = 30;
+    const server = createServer((_req, res) => {
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.write("{");
+        setTimeout(() => res.end(JSON.stringify(provider === "openai"
+          ? { choices: [{ message: { content: "delayed summary" } }] }
+          : { content: [{ type: "text", text: "delayed summary" }], stop_reason: "end_turn" }
+        ).slice(1)), responseDelayMs);
+      }, responseDelayMs);
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const opts = { model: "m", apiKey: "test", baseURL: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, timeoutMs: 1000 };
+    const summarize = provider === "openai" ? createOpenAISummarizer(opts) : createAnthropicSummarizer(opts);
+    await expect(summarize("conversation", false)).resolves.toBe("delayed summary");
+  });
+
   it("bounds a silent Anthropic request without SDK retries", async () => {
     const { base, requests } = await silentServer();
     const summarize = createAnthropicSummarizer({ model: "m", apiKey: "test", baseURL: `${base}/anthropic`, timeoutMs: DEADLINE_MS });

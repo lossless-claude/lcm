@@ -340,6 +340,8 @@ A process endpoint accepts only `type` and `model`: its CLI authenticates throug
 
 The same default deadline applies to the flat `openai` and `anthropic` providers. lcm owns HTTP retries; SDK retries are disabled. A timed-out request skips further retries of that endpoint and advances the chain, because a server that accepted a request but never answered is unlikely to answer the same request on retry. Other transient HTTP failures still use lcm's retry loop.
 
+OpenAI and Anthropic requests use a buffered Node HTTP transport: there is no separate 300-second headers or body timeout. HTTPS uses Node’s default certificate trust, including private CAs supplied through `NODE_EXTRA_CA_CERTS`. Proxy routing is not supported by this transport.
+
 When `maxConcurrent` is set, extra calls wait in FIFO order before sending a request. The limit is shared by every project and session using that endpoint name, including separate summarizer instances. A caller waits at most `timeoutMs` (or its 600000 ms default) for a slot; if that wait expires, the chain can try its next endpoint. Once admitted, the HTTP request gets its full, separate deadline. PreCompact's 120-second hook deadline still bounds how long the hook waits for `/compact`; replay's `/compact` call has no overall client timeout and each endpoint attempt retains its own slot-wait and request bounds.
 
 A timed-out request frees its slot when lcm abandons it, but a server that keeps generating after the client disconnects is still busy, so the next admitted request overlaps it. Set `timeoutMs` well above the time the server needs for one summary, so timeouts stay rare.
