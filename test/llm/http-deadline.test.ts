@@ -57,10 +57,8 @@ describe("HTTP summarizer deadlines", () => {
       },
     } }, {});
     const summarize = (await createSummarizer(resolveEffectiveProvider(config), config))!;
-    const started = Date.now();
 
     await expect(withinBound(summarize("conversation", false))).resolves.toBe("fallback summary");
-    expect(Date.now() - started).toBeLessThan(BOUND_MS);
     expect(requests.filter((path) => path.startsWith("/silent/"))).toHaveLength(1);
     expect(requests.filter((path) => path.startsWith("/next/"))).toHaveLength(1);
   });
