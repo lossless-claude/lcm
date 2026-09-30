@@ -128,10 +128,7 @@ describe("session summarize jobs", () => {
     expect(store.answer(job!.id, { text: "late" })).toBe("discarded");
   });
 
-  it("keeps the session deadline separate from the worker expiration callback", async () => {
-    store.close();
-    const expired = vi.fn(async () => {});
-    store = new SummarizeJobStore(20_000, 25_000, 60_000, 180_000, 60_000, { onWorkerExpired: expired });
+  it("keeps the session deadline separate from pool completion and lets a worker claim after expiry", async () => {
     const session = store.enqueue(input);
     const job = await store.next("one");
     await vi.advanceTimersByTimeAsync(20_000);
@@ -141,7 +138,10 @@ describe("session summarize jobs", () => {
     await store.nextWorker("worker", undefined, false, "binding");
     await vi.advanceTimersByTimeAsync(180_000);
     await expect(pool).resolves.toEqual({ error: "job timeout" });
-    expect(expired).toHaveBeenCalledWith("binding");
+    const nextAnswer = store.enqueue({ ...input, pool: true });
+    const nextJob = await store.nextWorker("worker", undefined, false, "binding");
+    expect(store.answer(nextJob!.id, { text: "next summary" }, "worker", "binding")).toBe("accepted");
+    await expect(nextAnswer).resolves.toMatchObject({ text: "next summary" });
   });
 
   it("routes session-pool to any worker and falls along the chain when nobody claims it", async () => {
@@ -156,6 +156,22 @@ describe("session summarize jobs", () => {
     const unclaimed = summarize("next conversation", false, { sessionId: "another-closed-session" });
     await vi.advanceTimersByTimeAsync(20_000);
     await expect(unclaimed).resolves.toBe("fallback summary");
+    expect(fallback).toHaveBeenCalledOnce();
+  });
+
+  it("falls along the provider chain after a claimed pool job expires and accepts the worker's next answer", async () => {
+    const config = loadDaemonConfig("/nonexistent", { llm: { fallbackProvider: "openai" } }, {});
+    const summarize = (await createSummarizer("session-pool", config, store))!;
+    fallback.mockResolvedValueOnce("fallback summary");
+    const slow = summarize("slow conversation", false, { sessionId: "foreign" });
+    const expired = await store.nextWorker("worker", undefined, true, "binding");
+    await vi.advanceTimersByTimeAsync(POOL_COMPLETION_MS);
+    await expect(slow).resolves.toBe("fallback summary");
+    expect(store.answer(expired!.id, { text: "late answer" }, "worker", "binding")).toBe("discarded");
+    const pending = summarize("next conversation", false, { sessionId: "foreign" });
+    const next = await store.nextWorker("worker", undefined, true, "binding");
+    expect(store.answer(next!.id, { text: "worker summary", providerId: "session-pool:haiku" }, "worker", "binding")).toBe("accepted");
+    await expect(pending).resolves.toBe("worker summary");
     expect(fallback).toHaveBeenCalledOnce();
   });
 

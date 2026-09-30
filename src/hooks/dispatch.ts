@@ -2,6 +2,10 @@ import { validateAndFixHooks } from "./auto-heal.js";
 import { lcmHome } from "../lcm-home.js";
 import { createLcmPaths } from "../lcm-paths.js";
 import { resolveLcmConfig } from "../db/config.js";
+import { setTimeout as delay } from "node:timers/promises";
+
+const WORKER_ENROLLMENT_ATTEMPTS = 3;
+const WORKER_ENROLLMENT_RETRY_MS = 100;
 
 export const HOOK_COMMANDS = ["compact", "post-tool", "restore", "session-end", "session-snapshot", "user-prompt"] as const;
 export type HookCommand = typeof HOOK_COMMANDS[number];
@@ -25,9 +29,21 @@ export async function dispatchHook(
       const input = JSON.parse(stdinText || "{}");
       if (input.session_id && input.cwd && command === "restore" && (input.source === "startup" || input.source === "clear") && !input.session_id.startsWith("agent-")) {
         const { registerWorkerSession } = await import("../worker-session.js");
-        const result = await registerWorkerSession(paths, { sessionId: input.session_id, cwd: input.cwd,
-          client: "claude", source: input.source, owner: (await import("./worker-owner.js")).workerHookOwner("claude") });
-        console.error(`[lcm] ${result.warning} Promotions without provenance: ${result.unprovenanced}.`);
+        const owner = (await import("./worker-owner.js")).workerHookOwner("claude");
+        for (let attempt = 0; attempt < WORKER_ENROLLMENT_ATTEMPTS; attempt++) {
+          try {
+            const result = await registerWorkerSession(paths, { sessionId: input.session_id, cwd: input.cwd,
+              client: "claude", source: input.source, owner });
+            console.error(`[lcm] ${result.warning} Promotions without provenance: ${result.unprovenanced}.`);
+            break;
+          } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            if (!/SQLITE_BUSY|SQLITE_LOCKED|database (?:is )?(?:locked|busy)/i.test(reason) ||
+                attempt + 1 === WORKER_ENROLLMENT_ATTEMPTS) throw error;
+            console.error(`[lcm] worker enrollment delayed: ${reason}; retrying.`);
+            await delay(WORKER_ENROLLMENT_RETRY_MS * (attempt + 1));
+          }
+        }
       }
       if (command === "restore" && input.source !== "startup" && input.source !== "clear") {
         console.error("[lcm] worker enrollment refused; start a fresh dedicated session. Resume, compact, continue and fork cannot enroll.");
@@ -40,8 +56,8 @@ export async function dispatchHook(
         const { finishWorkerSession } = await import("../worker-session.js");
         await finishWorkerSession(paths, input.cwd, input.session_id);
       }
-    } catch {
-      console.error("[lcm] worker enrollment refused; no pool payload can be claimed. Use the native harness with lcm command hooks; function hooks require command-hook enrollment.");
+    } catch (error) {
+      console.error(`[lcm] worker enrollment refused: ${error instanceof Error ? error.message : String(error)}; no pool payload can be claimed. Use the native harness with lcm command hooks; function hooks require command-hook enrollment.`);
     }
     return { exitCode: 0, stdout: "" };
   }

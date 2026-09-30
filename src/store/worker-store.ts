@@ -50,7 +50,7 @@ export class WorkerStore {
   live(sessionId: string, cwd: string, client: string): boolean {
     try { cwd = realpathSync(cwd); } catch { /* In-memory stores can name a non-filesystem project. */ }
     return Boolean(this.db.prepare(`SELECT 1 FROM summarize_workers
-      WHERE session_id = ? AND cwd = ? AND client = ? AND state = 'active' AND owner IS NOT NULL`).get(sessionId, cwd, client));
+      WHERE session_id = ? AND cwd = ? AND client = ? AND state IN ('active', 'abandoned') AND owner IS NOT NULL`).get(sessionId, cwd, client));
   }
 
   admitChild(sessionId: string, cwd: string, owner: string): void {
@@ -59,7 +59,10 @@ export class WorkerStore {
   }
 
   touch(sessionId: string): void {
-    this.db.prepare("UPDATE summarize_workers SET last_activity = datetime('now') WHERE session_id = ?").run(sessionId);
+    // Polling restores activity only on an existing binding; exclusion-only rows
+    // have no owner and finished bindings remain revoked.
+    this.db.prepare(`UPDATE summarize_workers SET state = 'active', last_activity = datetime('now')
+      WHERE session_id = ? AND state IN ('active', 'abandoned') AND owner IS NOT NULL`).run(sessionId);
   }
 
   finish(sessionId: string, state: "finished" | "abandoned" = "finished"): void {

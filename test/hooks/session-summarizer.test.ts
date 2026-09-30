@@ -74,6 +74,10 @@ describe("function-hook session summarizer", () => {
     { ok: false, status: 404, text: "" },
   ])("reports refused worker mode without promising exclusion when enrollment is unconfirmed: %j", async response => {
     const harness = await start({ sessionSummarizerMaxOutputTokens: 4 }, [{ ...leaf, pool: true }], { LCM_SUMMARIZE_WORKER: "1" });
+    harness.engine.clock.after.mockImplementation((ms, callback) => {
+      if (ms === 5_000) harness.retries.push(callback);
+      else callback();
+    });
     const fetch = harness.engine.http.fetch.getMockImplementation()!;
     harness.engine.http.fetch.mockImplementation(async (url, init) => url.endsWith("/worker-session") ? response : fetch(url, init));
     await harness.trigger();
@@ -87,8 +91,9 @@ describe("function-hook session summarizer", () => {
     expect(harness.engine.http.fetch.mock.calls.some(([url]) => url.endsWith("/ingest"))).toBe(true);
     const checks = harness.engine.http.fetch.mock.calls.filter(([url]) => url.endsWith("/worker-session"));
     expect(checks.length).toBeGreaterThan(1);
-    const delays = harness.engine.clock.after.mock.calls.map(([ms]) => ms).filter(ms => ms < 60_000);
+    const delays = harness.engine.clock.after.mock.calls.map(([ms]) => ms).filter(ms => ms < 5_000);
     expect(delays.reduce((total, ms) => total + ms, 0)).toBeLessThanOrEqual(30_000);
+    expect(harness.retries).toHaveLength(1);
   });
 
   it("starts a worker when command-hook enrollment arrives after the first check", async () => {
@@ -109,6 +114,39 @@ describe("function-hook session summarizer", () => {
     expect(harness.engine.ui.log.mock.calls.flat().join("\n")).not.toContain("worker mode refused");
   });
 
+  it("keeps retrying enrollment for ten workers after the startup wait ends", async () => {
+    const workers = [];
+    let enrolled = false;
+    for (let i = 0; i < 10; i++) {
+      vi.resetModules();
+      const harness = await start({ sessionSummarizerMaxOutputTokens: 4 }, [{ ...leaf, pool: true }], {
+        LCM_SUMMARIZE_WORKER: "1",
+      });
+      const fetch = harness.engine.http.fetch.getMockImplementation()!;
+      harness.engine.http.fetch.mockImplementation(async (url, init) => url.endsWith("/worker-session") && !enrolled
+        ? { ok: true, status: 200, text: JSON.stringify({ enrolled: false, reason: "command hook still registering" }) }
+        : fetch(url, init));
+      const after = harness.engine.clock.after.getMockImplementation()!;
+      harness.engine.clock.after.mockImplementation((ms, callback) => {
+        if (ms === 5_000 && !enrolled) harness.retries.push(callback);
+        else after(ms, callback);
+      });
+      harness.engine.model.complete.mockResolvedValue({
+        isAnswered: true, text: "summary", usage: { input_tokens: 9, output_tokens: 4 },
+      });
+      workers.push(harness);
+    }
+    await Promise.all(workers.map(worker => worker.trigger()));
+    for (const worker of workers) {
+      expect(worker.engine.ui.log).toHaveBeenCalledWith(expect.stringContaining("command hook still registering"));
+      expect(worker.retries).toHaveLength(1);
+      expect(worker.posts).toHaveLength(0);
+    }
+    enrolled = true;
+    workers.forEach(worker => worker.retries[0]());
+    await vi.waitFor(() => expect(workers.map(worker => worker.posts.length)).toEqual(Array(10).fill(1)));
+  });
+
   it("serves foreign pool jobs with complete only and stops polling at the worker cap", async () => {
     const foreign = { ...leaf, pool: true, session_id: "closed-session", kind: "condensed" };
     const harness = await start({ sessionSummarizerMaxOutputTokens: 4 }, [foreign, foreign], {
@@ -126,6 +164,17 @@ describe("function-hook session summarizer", () => {
     expect(polls[0][0]).toContain("worker_id=session%2Fone");
     const snapshots = harness.engine.fs.write.mock.calls.filter(([path]) => String(path).includes("lcm-hook-observe-"));
     expect(snapshots.every(([, body]) => JSON.parse(body).sessionId === sessionId)).toBe(true);
+  });
+
+  it("treats a worker 200 without a job as an empty poll", async () => {
+    const harness = await start({}, [undefined, { ...leaf, pool: true, session_id: "foreign" }], {
+      LCM_SUMMARIZE_WORKER: "1",
+    });
+    await harness.trigger();
+    await harness.done;
+    expect(harness.engine.model.complete).toHaveBeenCalledOnce();
+    expect(harness.posts).toHaveLength(1);
+    expect(harness.engine.ui.log.mock.calls.flat().join("\n")).not.toContain("discarded summary job");
   });
 
   it("lets an explicit worker cap override a disabled normal-session summarizer", async () => {
@@ -345,6 +394,43 @@ describe("function-hook session summarizer", () => {
       expect.objectContaining({ hook: "session.start", operation: "summary-answer", kind: "delivery",
         status: "rejected", reason: "http-500" }),
     ]));
+  });
+
+  it.each(["lost response", "server error", "stale bearer"])("retries a worker answer after a %s without repeating completion", async failure => {
+    const harness = await start({}, [{ ...leaf, pool: true, session_id: "foreign" }], { LCM_SUMMARIZE_WORKER: "1" });
+    const fetch = harness.engine.http.fetch.getMockImplementation()!;
+    let attempts = 0;
+    harness.engine.http.fetch.mockImplementation(async (url, init) => {
+      if (init?.method === "POST" && url.includes("/summarize-jobs/") && ++attempts === 1) {
+        if (failure === "lost response") throw new Error("request timeout");
+        return { ok: false, status: failure === "stale bearer" ? 401 : 500, text: "{}" };
+      }
+      return fetch(url, init);
+    });
+    await harness.trigger();
+    await harness.done;
+    expect(attempts).toBe(2);
+    expect(harness.engine.model.complete).toHaveBeenCalledOnce();
+    expect(harness.posts).toHaveLength(1);
+    expect(harness.posts[0].body.text).toBe("summary");
+    if (failure === "stale bearer") expect(harness.engine.process.run).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([403, 500])("bounds answer retries after HTTP %s and keeps polling", async status => {
+    const harness = await start({}, [{ ...leaf, pool: true, session_id: "foreign" }], { LCM_SUMMARIZE_WORKER: "1" });
+    const fetch = harness.engine.http.fetch.getMockImplementation()!;
+    let attempts = 0;
+    harness.engine.http.fetch.mockImplementation(async (url, init) => {
+      if (init?.method === "POST" && url.includes("/summarize-jobs/")) {
+        attempts++;
+        return { ok: false, status, text: "{}" };
+      }
+      return fetch(url, init);
+    });
+    await harness.trigger();
+    await harness.done;
+    expect(attempts).toBe(status === 403 ? 1 : 3);
+    expect(harness.engine.model.complete).toHaveBeenCalledOnce();
   });
 
   it("accepts the current model completion result shape", async () => {

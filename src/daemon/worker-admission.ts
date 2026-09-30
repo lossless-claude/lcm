@@ -23,10 +23,10 @@ export async function admitWorker(paths: LcmPaths | undefined, input: Record<str
   const cwd = validateCwd(input.cwd);
   return withProjectMutation(projectId(cwd), async () => {
     const enrollments = workerEnrollments(cwd, paths);
-    let enrolled = enrollments.find(worker => worker.session_id === sessionId && worker.client === client && worker.state === "active" && worker.owner);
+    let enrolled = enrollments.find(worker => worker.session_id === sessionId && worker.client === client && worker.state !== "finished" && worker.owner);
     if (!enrolled && client === "claude" && sessionId.startsWith("agent-")) {
       // A child must be discovered under a live declared root, not just carry a marker.
-      for (const root of enrollments.filter(worker => worker.state === "active" && worker.owner && worker.client === "claude")) {
+      for (const root of enrollments.filter(worker => worker.state !== "finished" && worker.owner && worker.client === "claude")) {
         const { claudeTranscriptPath } = await import("./project.js");
         const { discoverSubagentTranscripts } = await import("../subagent-attribution.js");
         const { dirname, join } = await import("node:path");
@@ -55,17 +55,5 @@ export async function admitWorker(paths: LcmPaths | undefined, input: Record<str
     }
     finally { closeLcmConnection(dbPath); }
     return { cwd, sessionId, client, binding: workerBinding(cwd, client, sessionId) };
-  });
-}
-
-/** Expiry revokes admission, never the permanent capture gate. */
-export async function abandonWorker(paths: LcmPaths, binding: string): Promise<void> {
-  const [pid, , sessionId] = JSON.parse(binding) as [string, string, string];
-  const { join } = await import("node:path");
-  const dbPath = join(paths.projectsDir, pid, "db.sqlite");
-  await withProjectMutation(pid, async () => {
-    const db = getLcmConnection(dbPath);
-    try { new WorkerStore(db).finish(sessionId, "abandoned"); }
-    finally { closeLcmConnection(dbPath); }
   });
 }

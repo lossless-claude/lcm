@@ -13,7 +13,6 @@ import { EventEmitter } from "node:events";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createLcmPaths } from "../src/lcm-paths.js";
 import { loadDaemonConfig } from "../src/daemon/config.js";
-import { abandonWorker } from "../src/daemon/worker-admission.js";
 import { WorkerStore } from "../src/store/worker-store.js";
 import { registerWorkerSession } from "../src/worker-session.js";
 import { SummarizeJobStore } from "../src/daemon/summarize-jobs.js";
@@ -35,7 +34,7 @@ function invoke(handler: ReturnType<typeof createNextSummarizeJobHandler>, url: 
 async function fixture(completionMs = 180_000) {
   const cwd = mkdtempSync(join(tmpdir(), "lcm-agent-worker-")); dirs.push(cwd);
   const paths = createLcmPaths(join(cwd, "lcm"));
-  const store = new SummarizeJobStore(10000, 0, 60000, completionMs, undefined, { onWorkerExpired: binding => abandonWorker(paths, binding) }); stores.push(store);
+  const store = new SummarizeJobStore(10000, 0, 60000, completionMs); stores.push(store);
   const next = createNextSummarizeJobHandler(store, paths);
   const answer = createAnswerSummarizeJobHandler(store, paths);
   const client = {
@@ -81,6 +80,32 @@ describe("agent worker transports", () => {
     await registerWorkerSession(f.paths, { sessionId: "new", cwd: f.cwd, client: "claude", owner: "hook", source: "clear" });
     void f.store.enqueue(job);
     for (const id of ["old", "ordinary"]) await expect(createAgentWorkerTransport(f.client, "cli", { CLAUDE_CODE_SESSION_ID: id }, f.cwd).claim()).rejects.toThrow("dedicated");
+  });
+
+  it("readmits polling on an abandoned live binding while refusing finished and copied sessions", async () => {
+    const f = await fixture();
+    await registerWorkerSession(f.paths, { sessionId: "worker", cwd: f.cwd, client: "claude", owner: "native-owner" });
+    await registerWorkerSession(f.paths, { sessionId: "finished", cwd: f.cwd, client: "claude", owner: "finished-owner" });
+    const path = projectDbPath(f.cwd, f.paths); const db = getLcmConnection(path);
+    try {
+      const store = new WorkerStore(db);
+      store.finish("worker", "abandoned");
+      store.finish("finished");
+      store.exclude("copied", f.cwd, "claude", false, true);
+    } finally { closeLcmConnection(path); }
+    const worker = createAgentWorkerTransport(f.client, "cli", { CLAUDE_CODE_SESSION_ID: "worker" }, f.cwd);
+    const pending = f.store.enqueue(job);
+    const claimed = await worker.claim();
+    expect(claimed.job?.prompt).toBe(canary);
+    expect(workerEnrollments(f.cwd, f.paths).find(enrollment => enrollment.session_id === "worker")?.state).toBe("active");
+    for (const id of ["finished", "copied"]) {
+      await expect(createAgentWorkerTransport(f.client, "cli", { CLAUDE_CODE_SESSION_ID: id }, f.cwd).claim()).rejects.toThrow("dedicated");
+    }
+    await worker.submit({ jobId: claimed.job!.id, workerId: claimed.worker_id, model: "custom", text: "summary" });
+    await expect(pending).resolves.toMatchObject({ text: "summary" });
+    const read = getLcmConnection(path);
+    try { expect(["worker", "finished", "copied"].every(id => new WorkerStore(read).excluded(id))).toBe(true); }
+    finally { closeLcmConnection(path); }
   });
 
   it("a refused CLI claim carries the required transcript warning and no foreign content", async () => {
@@ -244,19 +269,60 @@ describe("agent worker transports", () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it("marks a timed-out worker abandoned, revokes claims and keeps capture permanently excluded", async () => {
+  it.each(["revoked admission", "issued-job write"])("releases a claimed job after %s fails", async failure => {
+    const f = await fixture();
+    await Promise.all(["worker", "replacement"].map(sessionId => registerWorkerSession(f.paths, {
+      sessionId, cwd: f.cwd, client: "claude", owner: sessionId,
+    })));
+    const pending = f.store.enqueue(job);
+    if (failure === "revoked admission") {
+      vi.spyOn(WorkerStore.prototype, "live").mockReturnValueOnce(true).mockReturnValueOnce(false);
+    } else {
+      vi.spyOn(WorkerStore.prototype, "recordIssuedJob").mockImplementationOnce(() => { throw new Error("database is locked"); });
+    }
+    const refused = await invoke(f.next, `/summarize-jobs/next?${new URLSearchParams({
+      caller_session_id: "worker", worker_id: "claim", cwd: f.cwd, client: "claude", transport: "hook", wait_ms: "0",
+    })}`);
+    expect(refused.status).toBe(403);
+    const replacement = createAgentWorkerTransport(f.client, "cli", { CLAUDE_CODE_SESSION_ID: "replacement" }, f.cwd);
+    const retry = await replacement.claim();
+    expect(retry.job?.prompt).toBe(canary);
+    await replacement.submit({ jobId: retry.job!.id, workerId: retry.worker_id, model: "custom", text: "retried summary" });
+    await expect(pending).resolves.toMatchObject({ text: "retried summary" });
+    expect(workerEnrollments(f.cwd, f.paths).every(worker => worker.state === "active")).toBe(true);
+  });
+
+  it("keeps ten concurrently enrolled workers live after one slow answer expires", async () => {
     vi.useFakeTimers();
     try {
       const f = await fixture(100);
-      await registerWorkerSession(f.paths, { sessionId: "worker", cwd: f.cwd, client: "claude", owner: "hook" });
-      const worker = createAgentWorkerTransport(f.client, "cli", { CLAUDE_CODE_SESSION_ID: "worker" }, f.cwd);
-      const pending = f.store.enqueue(job); const claimed = await worker.claim();
+      const ids = Array.from({ length: 10 }, (_, i) => `worker-${i}`);
+      for (const sessionId of ids) await emptyWorkerConversation(f.cwd, sessionId, f.paths);
+      await Promise.all(ids.map(sessionId => registerWorkerSession(f.paths, {
+        sessionId, cwd: f.cwd, client: "claude", owner: `owner-${sessionId}`,
+      })));
+      const workers = ids.map(id => createAgentWorkerTransport(f.client, "cli", { CLAUDE_CODE_SESSION_ID: id }, f.cwd));
+      const pending = workers.map(() => f.store.enqueue(job));
+      const claimed = await Promise.all(workers.map(worker => worker.claim()));
+      expect(new Set(claimed.map(claim => claim.job!.id)).size).toBe(10);
+      await Promise.all(workers.slice(1).map((worker, i) => worker.submit({
+        jobId: claimed[i + 1].job!.id, workerId: claimed[i + 1].worker_id, model: "custom", text: "summary",
+      })));
       await vi.advanceTimersByTimeAsync(100);
-      expect(await pending).toMatchObject({ error: "job timeout" });
-      const path = projectDbPath(f.cwd, f.paths); const db = getLcmConnection(path);
-      try { expect(new WorkerStore(db).list()[0].state).toBe("abandoned"); expect(new WorkerStore(db).excluded("worker")).toBe(true); }
-      finally { closeLcmConnection(path); }
-      await expect(worker.submit({ jobId: claimed.job!.id, workerId: claimed.worker_id, model: "custom", text: canary })).rejects.toThrow("dedicated");
+      expect(await pending[0]).toMatchObject({ error: "job timeout" });
+      expect(workerEnrollments(f.cwd, f.paths).every(worker => worker.state === "active")).toBe(true);
+      await expect(workers[0].submit({
+        jobId: claimed[0].job!.id, workerId: claimed[0].worker_id, model: "custom", text: canary,
+      })).resolves.toEqual({ discarded: true });
+      const nextAnswers = workers.map(() => f.store.enqueue(job));
+      const nextClaims = await Promise.all(workers.map(worker => worker.claim()));
+      expect(new Set(nextClaims.map(claim => claim.job!.id)).size).toBe(10);
+      await Promise.all(workers.map((worker, i) => worker.submit({
+        jobId: nextClaims[i].job!.id, workerId: nextClaims[i].worker_id, model: "custom", text: "next summary",
+      })));
+      expect((await Promise.all(nextAnswers)).every(answer => answer.text === "next summary")).toBe(true);
+      vi.useRealTimers();
+      for (const sessionId of ids) await assertWorkerCanaryAbsent({ cwd: f.cwd, sessionId, paths: f.paths, canary });
     } finally { vi.useRealTimers(); }
   });
 

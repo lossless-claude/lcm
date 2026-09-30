@@ -360,6 +360,7 @@ const SHORT_POLL_PAUSE_MS = 2_000;
 const MISSING_ROUTE_RETRY_MS = 60_000;
 /** The daemon answered but not with a job: back off before asking again. */
 const POLL_BACKOFF_MS = 5_000;
+const WORKER_ANSWER_ATTEMPTS = 3;
 let summaryPollerStarted = false;
 
 function summaryDelay($: EngineInterface, ms: number): Promise<void> {
@@ -505,6 +506,7 @@ async function nextSummaryJob(
     // A malformed 200 backs off like a transport failure instead of stopping the poller.
     return { wait: POLL_BACKOFF_MS, shortPoll: true };
   }
+  if (worker && !job) return { wait: 0 };
   // Do not run a prompt belonging to another session, even on a malformed response.
   if (!job || (worker ? job.pool !== true : job.pool === true || job.session_id !== sessionId)) {
     $.ui.log("[lcm] discarded summary job for a different session");
@@ -522,8 +524,17 @@ async function postSummaryAnswer($: EngineInterface, job: SummaryJob, route: str
       worker_id: sessionId, caller_session_id: sessionId, cwd: await $.session.cwd(), client: "claude", transport: "hook",
       providerId: (body as Record<string, unknown>).providerId ?? `session-pool:${await $.env.get("LCM_SUMMARIZE_WORKER_MODEL") || "haiku"}`,
     } : body;
-    const outcome = await postDaemonOutcome($, route, boundBody);
-    noteHook(sessionId, "session.start", "summary-answer", "delivery", ...delivery(outcome));
+    for (let attempt = 0; attempt < WORKER_ANSWER_ATTEMPTS; attempt++) {
+      const outcome = await postDaemonOutcome($, route, boundBody);
+      noteHook(sessionId, "session.start", "summary-answer", "delivery", ...delivery(outcome));
+      // Submissions are idempotent: a delivered answer with a lost response is
+      // discarded on retry. Reuse the answer rather than spending on completion again.
+      if (outcome.body || !job.pool || outcome.httpStatus !== undefined &&
+          outcome.httpStatus < 500 && outcome.httpStatus !== 401 && outcome.httpStatus !== 429) return;
+      if (attempt + 1 === WORKER_ANSWER_ATTEMPTS) return;
+      if (outcome.httpStatus === 401) hostEnv = null;
+      await summaryDelay($, POLL_BACKOFF_MS);
+    }
   } catch (error) {
     noteHook(sessionId, "session.start", "summary-answer", "delivery", "unconfirmed", "transport");
     throw error;
@@ -616,6 +627,31 @@ async function pollSummaries($: EngineInterface, configuredCap: number): Promise
 
 type On = Parameters<Register>[0];
 
+function startSummaryPoller($: EngineInterface, summaryCap: number): void {
+  if (summaryPollerStarted) return;
+  summaryPollerStarted = true;
+  void pollSummaries($, summaryCap).catch((error) => {
+    $.ui.log(`[lcm] session summarizer stopped: ${String(error)}`);
+  });
+}
+
+/** Keep checking late command-hook registration without holding session.start open. */
+async function retryWorkerEnrollment($: EngineInterface, sessionId: string, cwd: string, summaryCap: number): Promise<void> {
+  while (!summaryPollerStarted) {
+    await summaryDelay($, POLL_BACKOFF_MS);
+    if (await $.session.id() !== sessionId) return;
+    const enrollment = await postDaemon($, "/worker-session", {
+      session_id: sessionId, cwd, client: "claude", declared: true, action: "check",
+    }).catch(() => null);
+    if (enrollment?.enrolled === true && typeof enrollment.warning === "string") {
+      $.ui.log(`[lcm] ${enrollment.warning}`);
+      startSummaryPoller($, summaryCap);
+      return;
+    }
+    $.ui.log(`[lcm] worker mode refused: ${enrollment?.reason ?? "command-hook enrollment could not be confirmed"}; retrying`);
+  }
+}
+
 /** Read the daemon's address and make sure it is listening before the first prompt. */
 function registerSessionStart(on: On, summaryCap: number): void {
   on("session.start", async ($, e, next) => {
@@ -644,7 +680,12 @@ function registerSessionStart(on: On, summaryCap: number): void {
         delay = Math.min(delay * 2, 2_000);
       } while (true);
       if (workerEnrolled) $.ui.log(`[lcm] ${enrollment!.warning}`);
-      else $.ui.log(`[lcm] worker mode refused: ${enrollment?.reason ?? "command-hook enrollment could not be confirmed"}`);
+      else {
+        $.ui.log(`[lcm] worker mode refused: ${enrollment?.reason ?? "command-hook enrollment could not be confirmed"}; retrying`);
+        void retryWorkerEnrollment($, sessionId, cwd, summaryCap).catch((error) => {
+          $.ui.log(`[lcm] worker enrollment retry stopped: ${String(error)}`);
+        });
+      }
     }
     let claimed = true;
     await claimSession($, sessionId).catch((error: unknown) => {
@@ -666,12 +707,7 @@ function registerSessionStart(on: On, summaryCap: number): void {
     // uncompacted (it ended without SessionEnd). The daemon selects, caps and
     // fires the actual compaction requests; this call only triggers it.
     void $.session.cwd().then((cwd) => postDaemon($, "/session-start-compact", { cwd, session_id: sessionId }));
-    if (!summaryPollerStarted && (!declaredWorker || workerEnrolled)) {
-      summaryPollerStarted = true;
-      void pollSummaries($, summaryCap).catch((error) => {
-        $.ui.log(`[lcm] session summarizer stopped: ${String(error)}`);
-      });
-    }
+    if (!declaredWorker || workerEnrolled) startSummaryPoller($, summaryCap);
     return next(e);
   });
 }

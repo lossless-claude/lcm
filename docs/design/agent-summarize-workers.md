@@ -4,7 +4,10 @@
 
 A declared worker is a dedicated session launched with `LCM_SUMMARIZE_WORKER=1`.
 Its hook enrolls its session id and cwd before an agent may receive pool work.
-Admission is live; capture exclusion is whole-session and permanent. Finishing,
+Admission is live; capture exclusion is whole-session and permanent. A job timeout
+never revokes its worker. An abandoned enrollment with its original owner, cwd
+and client binding becomes active on its next admitted poll; finished bindings and
+ownerless exclusion records stay refused. Finishing,
 a timeout, resuming, and clearing never lift exclusion. An ordinary session is
 never enrolled by a claim. Forking a worker session is unsupported.
 
@@ -46,7 +49,10 @@ share these capture and compaction gates.
 Function hooks confirm live command-hook enrollment through the read-only
 `action: "check"` on `POST /worker-session` before warning or polling. Confirmation
 retries with bounded backoff for about 30 seconds to allow command-hook registration. A failed
-confirmation reports refused worker mode and its reason.
+confirmation reports refused worker mode and its reason, then keeps checking every
+5 seconds without holding startup open. Command hooks retry SQLite contention up
+to three times and report the underlying error; identity and history refusals are
+not retried.
 
 The warning states that this session and its subagents are not recorded by lcm,
 that the harness's own transcript stays on disk, and that a dedicated session
@@ -122,8 +128,12 @@ Pool provider ids accept a validated model suffix. Missing usage is estimated fr
 the system, prompt and answer. `llm.poolCompletionMs` / `LCM_POOL_COMPLETION_MS`
 bounds completion after claim, default 180000 ms. The queue claim deadline remains
 20000 ms, and session-owned jobs get a fresh 60000 ms completion deadline after claim. Pool expiry records
-abandoned enrollment without removing exclusion; late answers are discarded and
-the provider chain handles unanswered work.
+only a job failure; it leaves worker admission and permanent exclusion intact.
+Late answers are discarded and the provider chain handles unanswered work.
+A slow host completion or an unacknowledged answer POST can leave a job claimed
+until that deadline. Claude hook workers retry unconfirmed delivery, HTTP 401,
+429 and server errors up to three times, 5 seconds apart, reusing the completion
+and refreshing the bearer after 401. Each attempt retains its delivery outcome.
 
 Tests use fake models only. They cover the three supported agent pairs, refused
 pairs and undeclared/stale callers, independent parallel claims, worker-bound
@@ -140,6 +150,10 @@ OMP owners include the native session id. Claude command hooks keep the native
 process owner across function-hook reloads. Distinct owner scopes in the same cwd
 remain independent. Codex cursor fingerprints change when claim decoding changes.
 
-A disconnected client whose response has not finished releases the claim under
-its remaining queue window. It does not abandon the worker. Diagnostic surfaces
+Any failure after a claim, including failed admission recheck, issued-job recording
+or response delivery, releases the claim under its remaining queue window. A
+client disconnected before response completion does the same. These failures do
+not abandon the worker or revoke other claims on its binding. An empty worker
+poll keeps its warning and guidance but carries no job; hooks treat it as empty.
+Diagnostic surfaces
 show an eight-character hashed worker id rather than the harness session id.
