@@ -4,6 +4,12 @@ Scores a candidate summarizer model on the work lcm actually asks of it. The ben
 
 It is opt-in. With no `LCM_EVAL_*` variables set, only the offline tests run and no API is called.
 
+For installed lcm users, [the summarizer comparison command](summarizer-compare.md)
+runs several configured endpoints and adds a self-contained HTML view. Both use
+the shared corpus, instrumentation, scoring and compaction engine in
+`src/eval/engine.ts`. The developer harness keeps corpus-file loading and per-run
+JSON writing under `test/bench/`.
+
 ## Running it
 
 ```bash
@@ -61,9 +67,19 @@ Per run, in `totals`:
 - **`formatPass` / `formatTotal`** — calls whose summary honoured the prompt contract: a `Files:` line on leaf summaries, an `Expand for details about:` trailer on all of them.
 - **`maxTokensHits`** — calls whose output reached the production output cap, meaning the summary was cut off.
 - **`inputTokens` / `outputTokens` / `latencyMs`** — totals across every call.
-- **`costUsd`** — the real charged cost, or `null` when the provider reports no cost figure. `null` means *unknown*, never *free* — the call was still charged; only OpenRouter and the Claude CLI report the number today.
+- **`costUsd`** — the charged cost when every observed attempt reports priced usage, or `null` if any attempt has no usage or any usage is unpriced. `null` means *unknown*, never *free*.
 - **`failedCalls`** and the top-level `incomplete`, set when the engine itself errored. An incomplete run reports no fact survival, because chunks were left un-summarized and the score would be meaningless.
 - **`plantedFacts`** — which of the synthetic session's planted facts survived into the post-compaction context.
+- **`rejectedCalls` / `unsupportedDetails`** — rejected answers, including recovered retries, and non-overlapping details absent from their source. Unsupported details are a deterministic hint, not proof of hallucination.
+- **`prefillMs` / `decodeMs`** — endpoint-reported phase totals in milliseconds, or `null` when unreported.
+
+Calls retain their source text, output and all usage reports, so billed retries
+remain included in token and cost totals. Leaf outputs remain visible even when
+the engine later condenses them.
+
+Calls count engine invocations. Their `attempts` record each provider-chain
+attempt's duration, including cap retries; an adapter's internal retries are
+included in that duration.
 
 ## Parity with production
 

@@ -52,6 +52,8 @@ function toUsage(response: any, fallbackModel: string): SummarizerUsage | undefi
     (usage.cache_read_input_tokens ?? 0) +
     (usage.cache_creation_input_tokens ?? 0);
   const outputTokens = usage.output_tokens ?? 0;
+  const rejectionReason = response.stop_reason === "max_tokens" ? "max_tokens"
+    : !response.content?.find((part: any) => part.type === "text")?.text?.trim() ? "whitespace" : undefined;
   return {
     provider: "anthropic",
     model: response.model || fallbackModel,
@@ -59,6 +61,7 @@ function toUsage(response: any, fallbackModel: string): SummarizerUsage | undefi
     cachedInputTokens: usage.cache_read_input_tokens,
     outputTokens,
     tokensUsed: inputTokens + outputTokens,
+    ...(rejectionReason ? { failed: true, rejectionReason } : {}),
   };
 }
 

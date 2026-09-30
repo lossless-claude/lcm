@@ -41,6 +41,11 @@ export type SummarizerUsage = {
   costUsd?: number;
   /** Copilot CLI only — GitHub's billing unit, not a token count. */
   premiumRequests?: number;
+  /** Endpoint-reported phase durations, in milliseconds. */
+  prefillMs?: number;
+  decodeMs?: number;
+  /** The billed answer was rejected, even if an adapter later recovered. */
+  rejectionReason?: "length" | "max_tokens" | "whitespace";
 };
 
 export type SummarizeContext = {
