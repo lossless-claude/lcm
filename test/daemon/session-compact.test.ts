@@ -38,6 +38,67 @@ async function invoke(handler: RouteHandler, body: unknown) {
   return result;
 }
 
+it.each([false, true])("keeps live jobs session-owned while replay can select the pool (pool=%s)", async (pool) => {
+  const cwd = mkdtempSync(join(tmpdir(), "lcm-worker-compact-"));
+  const jobs = new SummarizeJobStore();
+  const abort = new AbortController();
+  const config = loadDaemonConfig("/x", { llm: { provider: "session", fallbackProvider: "disabled" } }, {});
+  const sessionId = "closed-source-session";
+  let served = 0;
+  const serve = (async () => {
+    while (!abort.signal.aborted) {
+      const job = pool ? await jobs.nextWorker("dedicated-worker", abort.signal)
+        : await jobs.next(sessionId, abort.signal);
+      if (!job) continue;
+      expect(job.session_id).toBe(sessionId);
+      expect(job.pool === true).toBe(pool);
+      served++;
+      jobs.answer(job.id, { text: "isolated summary", providerId: pool ? "session-pool:sonnet" : "session:haiku",
+        usage: { input_tokens: 10, output_tokens: 4, estimated: false } });
+    }
+  })();
+  try {
+    await invoke(createIngestHandler(config, paths), { cwd, session_id: sessionId,
+      messages: Array.from({ length: 40 }, (_, i) => ({ role: i % 2 ? "assistant" : "user",
+        content: `source message ${i}`, tokenCount: 300 })),
+    });
+    const result = await invoke(createCompactHandler(config, paths, jobs), {
+      cwd, session_id: sessionId, skip_ingest: true,
+      ...(pool ? { replay_provider: "session-pool" } : {}),
+    });
+    expect(result.replayOutcome).toBe("compacted");
+    expect(served).toBeGreaterThan(0);
+    expect(result.providerId).toBe(pool ? "session-pool:sonnet" : "session:haiku");
+    expect(config.llm.provider).toBe("session");
+    const db = new DatabaseSync(projectDbPath(cwd, paths));
+    try {
+      expect(db.prepare("SELECT content FROM summaries WHERE content = 'isolated summary'").all().length).toBeGreaterThan(0);
+      expect(db.prepare("SELECT provider, calls_ok FROM llm_usage_stats").all()).toEqual([
+        { provider: pool ? "session-pool:sonnet" : "session:haiku", calls_ok: served },
+      ]);
+    } finally { db.close(); }
+  } finally {
+    abort.abort();
+    await serve;
+    jobs.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  { skip_ingest: false },
+  { skip_ingest: true, capture_required: true },
+  { skip_ingest: true, precompact_verified: true },
+  { skip_ingest: true, work_class: "live" },
+])("rejects a replay pool override on live capture requests: %j", async (flags) => {
+  const config = loadDaemonConfig("/x", {}, {});
+  const handler = createCompactHandler(config, paths);
+  const res = { writeHead: vi.fn(), end: vi.fn() };
+  await handler({} as any, res as any, JSON.stringify({ replay_provider: "session-pool", ...flags }));
+  expect(res.writeHead).toHaveBeenCalledWith(400, expect.anything());
+  expect(JSON.parse(res.end.mock.calls[0][0])).toMatchObject({ error: expect.stringContaining("replay_provider") });
+});
+
 it("compacts through the session queue and persists actual provider and estimated usage", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "lcm-session-roundtrip-"));
   const jobs = new SummarizeJobStore();

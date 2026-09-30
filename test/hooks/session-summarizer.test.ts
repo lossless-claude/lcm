@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const sessionId = "session/one";
 const leaf = { id: "job-1", session_id: sessionId, kind: "leaf", system: "system", prompt: "prompt", maxTokens: 1024 };
 
-async function start(options: Record<string, number> = {}, jobs: unknown[] = [leaf]) {
+async function start(options: Record<string, number> = {}, jobs: unknown[] = [leaf], env: Record<string, string> = {}) {
   const handlers = new Map<string, (...args: any[]) => any>();
   const posts: { url: string; body: Record<string, any> }[] = [];
   // The poller's one-minute wait after a 404 is parked here instead of firing: the harness
@@ -12,6 +12,7 @@ async function start(options: Record<string, number> = {}, jobs: unknown[] = [le
   let finish!: () => void;
   const done = new Promise<void>((resolve) => { finish = resolve; });
   const engine = {
+    env: { get: vi.fn(async (name: string) => env[name]) },
     session: { id: vi.fn(async () => sessionId), cwd: vi.fn(async () => "/proj") },
     process: { run: vi.fn(async () => ({ stdout: "secret\n__CONFIG__\n{}\n__TMPDIR__/tmp", exitCode: 0 })) },
     fs: { write: vi.fn(async () => undefined) },
@@ -54,6 +55,48 @@ async function start(options: Record<string, number> = {}, jobs: unknown[] = [le
 
 describe("function-hook session summarizer", () => {
   beforeEach(() => vi.resetModules());
+
+  it("serves foreign pool jobs with complete only and stops polling at the worker cap", async () => {
+    const foreign = { ...leaf, pool: true, session_id: "closed-session", kind: "condensed" };
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 4 }, [foreign, foreign], {
+      LCM_SUMMARIZE_WORKER: "1", LCM_SUMMARIZE_WORKER_MODEL: "sonnet",
+    });
+    harness.engine.model.complete.mockResolvedValue({ isAnswered: true, text: "summary", usage: { input_tokens: 9, output_tokens: 4 } });
+    await harness.trigger();
+    await vi.waitFor(() => expect(harness.posts).toHaveLength(1));
+    expect(harness.engine.model.complete).toHaveBeenCalledExactlyOnceWith({ model: "sonnet", system: "system", prompt: "prompt", maxTokens: 4 });
+    expect(harness.engine.model.fork).not.toHaveBeenCalled();
+    expect(harness.posts[0].body.providerId).toBe("session-pool:sonnet");
+    expect(harness.jobs).toHaveLength(1);
+    const polls = harness.engine.http.fetch.mock.calls.filter(([url]) => url.includes("/summarize-jobs/next"));
+    expect(polls).toHaveLength(1);
+    expect(polls[0][0]).toContain("worker_id=session%2Fone");
+    const snapshots = harness.engine.fs.write.mock.calls.filter(([path]) => String(path).includes("lcm-hook-observe-"));
+    expect(snapshots.every(([, body]) => JSON.parse(body).sessionId === sessionId)).toBe(true);
+  });
+
+  it("lets an explicit worker cap override a disabled normal-session summarizer", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 0 }, [{ ...leaf, pool: true }], {
+      LCM_SUMMARIZE_WORKER: "1", LCM_SUMMARIZE_WORKER_MAX_OUTPUT_TOKENS: "4",
+    });
+    harness.engine.model.complete.mockResolvedValue({ isAnswered: true, text: "summary", usage: { input_tokens: 9, output_tokens: 4 } });
+    await harness.trigger();
+    await vi.waitFor(() => expect(harness.posts).toHaveLength(1));
+    expect(harness.engine.model.complete).toHaveBeenCalledExactlyOnceWith({ model: "haiku", system: "system", prompt: "prompt", maxTokens: 4 });
+  });
+
+  it("stops a worker when a failed completion consumes its remaining allowance", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 4 }, [{ ...leaf, pool: true }, { ...leaf, pool: true }], {
+      LCM_SUMMARIZE_WORKER: "1",
+    });
+    harness.engine.model.complete.mockResolvedValue({ isAnswered: false, reason: "empty-reply", usage: { input_tokens: 9, output_tokens: 4 } });
+    await harness.trigger();
+    await vi.waitFor(() => expect(harness.posts).toHaveLength(1));
+    expect(harness.posts[0].body).toMatchObject({ error: "empty-reply", usageAttempts: [{ providerId: "session-pool:haiku", failed: true }] });
+    expect(harness.engine.model.complete).toHaveBeenCalledOnce();
+    expect(harness.engine.model.fork).not.toHaveBeenCalled();
+    expect(harness.jobs).toHaveLength(1);
+  });
 
   it("claims the session but starts no poller when the summarizer is disabled", async () => {
     const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });

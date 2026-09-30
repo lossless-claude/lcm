@@ -19,13 +19,42 @@ Why: it removes the `claude` CLI process spawn per chunk that `claude-process` p
 | 5 | Transport daemon → module | The module long-polls `GET /summarize-jobs/next`; the daemon holds the request up to 25 s. One pending request per module at a time. If `$.http.fetch` cannot hold a 25 s request, fall back to polling every 2 s. |
 | 6 | Job timeout and fallback | The provider waits 20 s per job. On timeout or `{error}` it delegates to the fallback provider. A late answer is discarded. |
 | 7 | Fallback provider | `llm.fallbackProvider` when set; otherwise whatever today's `auto` resolution yields for the client. Never force `claude-process`. The user's configured provider is respected always: a config that names `openai`, `anthropic`, `codex-process`, … never routes through the module. |
-| 8 | Which module may serve a job | Only the module whose `$.session.id()` equals the job's `session_id`. |
-| 9 | Routing by node kind | leaf → `$.model.complete({ model: "haiku", system, prompt, maxTokens })`; condensed (depth ≥ 1) → `$.model.fork({ prompt })` with the rendered system + prompt as the one user message, so the model also sees the transcript. |
+| 8 | Which module may serve a job | Normal `session` jobs: only the module whose `$.session.id()` equals the job's `session_id`. Explicit workers (`LCM_SUMMARIZE_WORKER=1`) instead claim only `session-pool` jobs from the shared pool. |
+| 9 | Routing by node kind | leaf → `$.model.complete({ model: "haiku", system, prompt, maxTokens })`; condensed (depth ≥ 1) → `$.model.fork({ prompt })` with the rendered system + prompt as the one user message, so the model also sees the transcript. Workers use `complete` for both kinds, with Haiku by default or Sonnet explicitly selected; never `fork`. |
 | 10 | Fork returns `null` (cold cache, API error) | Try `complete` with `haiku`; if that fails too, answer `{error}`. |
 | 11 | Opt-in | `llm.provider: "session"`. Also accepted by `LCM_SUMMARY_PROVIDER`. |
-| 12 | Spend cap | Plugin `userConfig` key `sessionSummarizerMaxOutputTokens`, default `50000`, `0` disables serving jobs. Per job `maxTokens = max(1024, 2 × targetTokens)`, computed by the daemon and carried in the job. Haiku completion is capped to the Session's remaining output tokens; a fork that spends the remainder cannot start a Haiku fallback. The host's `fork` API has no output-token limit, so the fork itself may exceed the remaining cap before its usage is reported. Cap reached → the module answers `{error: "spend cap"}`. |
-| 13 | Usage accounting | Into `llm_usage_stats` as today. `fork` reports exact usage; current hosts also report exact `complete` usage, while older text-only results are estimated as `ceil(len/4)`. Prior attempts carry whether they failed to answer, so a failed `session:fork` call remains separate from the successful Haiku answer in usage counters. Both attempts count toward the session output-token cap. |
+| 12 | Spend cap | Plugin `userConfig` key `sessionSummarizerMaxOutputTokens`, default `50000`, `0` disables serving jobs. Per job `maxTokens = max(1024, 2 × targetTokens)`, computed by the daemon and carried in the job. Haiku completion is capped to the Session's remaining output tokens; a fork that spends the remainder cannot start a Haiku fallback. The host's `fork` API has no output-token limit, so the fork itself may exceed the remaining cap before its usage is reported. Cap reached → the module answers `{error: "spend cap"}`. Workers stop polling at the cap, with `LCM_SUMMARIZE_WORKER_MAX_OUTPUT_TOKENS` overriding the plugin cap; OMP workers default to 50000. |
+| 13 | Usage accounting | Into `llm_usage_stats` as today. `fork` reports exact usage; current hosts also report exact `complete` usage, while older text-only results are estimated as `ceil(len/4)`. Prior attempts carry whether they failed to answer, so a failed `session:fork` call remains separate from the successful Haiku answer in usage counters. Both attempts count toward the session output-token cap. Workers report `session-pool:haiku` or `session-pool:sonnet` usage and count failed completions toward their own cap. |
 | 14 | Prompts | Rendered by the daemon with the same code the other providers use (`buildSummaryPrompt` / `buildSummaryPromptWithSystem`, `src/llm/prompt.ts`). The module never knows a prompt. |
+
+## Dedicated workers and replay
+
+`session-pool` is a separate provider link, using the same rendered-prompt and
+usage protocol as `session`. `SummarizeJobStore.nextWorker` claims the pool FIFO
+atomically, records one active claim per worker id, and releases the claim when
+it is answered or expires. Session and worker queues and waiters are disjoint.
+`GET /summarize-jobs/next?worker_id=…` selects pool work; `session_id=…` retains
+decision 8 for ordinary sessions. Pool jobs carry `pool: true`, which both worker
+hosts validate before running a prompt. A pool job has the 20-second deadline to
+be claimed, then `POOL_COMPLETION_MS` (3 minutes) to be answered: a replay chunk
+takes a model longer than the live-session deadline. Expiry uses the same
+provider-chain fallback; no persistent queue or additional endpoint semaphore is
+needed, because each polling worker already serializes its calls.
+
+`--replay-provider session-pool` on import or batch compact sends the provider
+selection on only those `/compact` requests. Hook capture paths and requests
+marked `work_class: "live"` reject that selection. `--parallel N` bounds concurrent projects; `runReplayProjects` keeps
+each project's ordered sessions serial. Project grouping uses the daemon's
+canonical project id, so path aliases stay serialized. Import also serializes
+separate host lists belonging to the same project, retaining their existing manifests and
+ledger positions. The daemon project queue and per-session guard are unchanged.
+
+Claude workers use the function-hooks `complete` operation. OMP hooks expose
+`modelRegistry` credential resolution and can call the host `pi-ai.complete`
+SDK, so the OMP module also serves the pool. Codex command/MCP hooks do not
+expose the interactive client's isolated completion and have no worker.
+Transcript persistence evidence and launch instructions are in
+[summarize workers](../summarize-workers.md#transcript-hygiene-and-hosts).
 
 ## Daemon
 

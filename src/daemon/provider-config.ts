@@ -29,7 +29,7 @@ export type EndpointConfig = HttpEndpoint | ProcessEndpoint;
 
 const HTTP_TYPES: ReadonlySet<string> = new Set<HttpEndpointType>(["openai", "anthropic"]);
 const PROCESS_TYPES: ReadonlySet<string> = new Set<ProcessEndpointType>(["claude-process", "codex-process", "copilot-process", "omp-process"]);
-const SELECTORS = new Set(["session", "auto", "disabled"]);
+const SELECTORS = new Set(["session", "session-pool", "auto", "disabled"]);
 const PROTOTYPE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 /** Names that already mean something as a provider value, so an endpoint cannot take them. */
 const RESERVED_NAMES = new Set([...SELECTORS, ...HTTP_TYPES, ...PROCESS_TYPES, "claude-cli", ...PROTOTYPE_KEYS]);

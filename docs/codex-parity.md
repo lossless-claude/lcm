@@ -84,3 +84,7 @@ The test uses Codex's automation-only trust bypass solely for its own disposable
 - What event ordering occurs around compaction, and which event reliably accepts restoration context?
 
 See [setup and runtime limits](vscode-codex.md) for activation requirements.
+
+## Summarize workers
+
+The [native hooks contract](https://developers.openai.com/codex/hooks) exposes command and MCP-tool handlers, with JSON input and output. It does not expose an isolated completion through the interactive session's model client. `src/hooks/codex.ts` therefore has no pool worker; launching `codex-process` would be the existing process provider, not an interactive worker. Codex transcripts can still be replayed through Claude Code or OMP workers with `--replay-provider session-pool`; see [summarize workers](summarize-workers.md).

@@ -2,6 +2,7 @@ import { exit } from "node:process";
 import type { Command } from "commander";
 import type { DaemonClient } from "../daemon/client.js";
 import { lcmHome } from "../lcm-home.js";
+import { replayParallelism } from "../replay-projects.js";
 import { createLcmPaths } from "../lcm-paths.js";
 import { fail, showHelpAndExit } from "./support.js";
 
@@ -23,6 +24,8 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
     .option("--verbose", "Show per-session import detail")
     .option("--dry-run", "Preview without importing")
     .option("--replay", "Replay compaction for each imported session")
+    .option("--parallel <N>", "With --replay: process N projects concurrently", "1")
+    .option("--replay-provider <provider>", "With --replay: use session-pool without changing live compactions")
     .option("--restart", "Discard recorded replay progress and start from scratch")
     .option("--rebuild", "Repair Claude history or historical NUL-cut Codex and OMP rows")
     .option("--yes", "With --rebuild: apply it (default: preview)")
@@ -36,6 +39,10 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
       const dryRun: boolean = opts.dryRun ?? false;
       const replay: boolean = opts.replay ?? false;
       const restart: boolean = opts.restart ?? false;
+      const parallel = /^\d+$/.test(opts.parallel) ? Number(opts.parallel) : NaN;
+      const replayProvider = opts.replayProvider as "session-pool" | undefined;
+      try { replayParallelism({ replay, parallel, replayProvider }); }
+      catch (error) { fail(error instanceof Error ? error.message : String(error)); }
 
       const { DaemonClient } = await import("../daemon/client.js");
       const { loadDaemonConfig } = await import("../daemon/config.js");
@@ -107,7 +114,8 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
 
       const result = await importSessions(client, {
         paths, all, verbose, dryRun, replay, restart, provider,
-        replayModel: configuredSummaryModel(config),
+        parallel, replayProvider,
+        replayModel: configuredSummaryModel(config, replayProvider ?? config.llm.provider),
         onBeforeSession: () => !renderer.shouldStop,
         trackInFlight: () => renderer.trackInFlight(),
         onProgress: (patch) => {

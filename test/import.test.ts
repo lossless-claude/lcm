@@ -52,6 +52,56 @@ describe("findSessionFiles", () => {
     return dir;
   }
 
+  it("replays projects concurrently while keeping each project's session and ledger order", async () => {
+    const root = makeTmpDir();
+    const claudeProjectsDir = makeTmpDir();
+    const projects = ["a", "b"].map((name) => {
+      const cwd = `/test/${name}`;
+      const dir = join(root, "projects", projectId(cwd));
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "meta.json"), JSON.stringify({ cwd }));
+      const db = new DatabaseSync(join(dir, "db.sqlite"));
+      runLcmMigrations(db, { fts5Available: false });
+      const transcripts = join(claudeProjectsDir, claudeProjectSlug(cwd));
+      mkdirSync(transcripts, { recursive: true });
+      for (const index of [1, 2]) {
+        const path = join(transcripts, `${name}-${index}.jsonl`);
+        writeFileSync(path, "");
+        utimesSync(path, index, index);
+      }
+      return { cwd, db };
+    });
+    const gate = Promise.withResolvers<void>();
+    const calls: any[] = [];
+    const client = makeMockClient(async (route, body: any) => {
+      if (route === "/ingest") return { ingested: 1, totalTokens: 100 };
+      calls.push(body);
+      await gate.promise;
+      return { replayOutcome: "compacted", latestSummaryId: `sum-${body.session_id}`, latestSummaryContent: `summary-${body.session_id}` };
+    });
+    const run = importSessions(client, { provider: "claude", all: true, replay: true, parallel: 2,
+      replayProvider: "session-pool", _lcmDir: root, _claudeProjectsDir: claudeProjectsDir });
+    try {
+      await vi.waitFor(() => expect(calls).toHaveLength(2));
+      expect(new Set(calls.map((body) => body.cwd)).size).toBe(2);
+      gate.resolve();
+      await expect(run).resolves.toMatchObject({ imported: 4 });
+      for (const { cwd, db } of projects) {
+        const projectCalls = calls.filter((body) => body.cwd === cwd);
+        expect(projectCalls.map((body) => body.session_id)).toEqual([`${cwd.slice(-1)}-1`, `${cwd.slice(-1)}-2`]);
+        expect(projectCalls[1].previous_summary).toBe(`summary-${projectCalls[0].session_id}`);
+        expect(projectCalls.every((body) => body.replay_provider === "session-pool")).toBe(true);
+        expect(db.prepare("SELECT session_id, position FROM replay_ledger ORDER BY position").all()).toEqual([
+          { session_id: `${cwd.slice(-1)}-1`, position: 0 }, { session_id: `${cwd.slice(-1)}-2`, position: 1 },
+        ]);
+      }
+    } finally {
+      gate.resolve();
+      await run;
+      projects.forEach(({ db }) => db.close());
+    }
+  });
+
   it("returns empty array for nonexistent directory", () => {
     const result = findSessionFiles("/nonexistent/path/that/does/not/exist");
     expect(result).toEqual([]);

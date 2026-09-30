@@ -293,6 +293,7 @@ Valid provider values are:
 - `openai`
 - `disabled`
 - `session` (early access, see below)
+- `session-pool` (dedicated interactive workers, see below)
 
 Any other value fails config load, unless it names an endpoint in `llm.providers` (see below).
 
@@ -402,10 +403,45 @@ Anything else fails the pass without trying the next link: a request the endpoin
 { "llm": { "provider": "session", "fallbackProvider": "claude-process" } }
 ```
 
-- `llm.fallbackProvider` answers a job the session does not serve within 20 s (no module loaded, session gone, spend cap reached, an error, or an answer holding only whitespace). Any provider except `session` is valid. When absent, the `auto` resolution above applies. A provider you name explicitly in `llm.provider` is never replaced by the session path.
+- `llm.fallbackProvider` answers a job the session does not serve within 20 s (no module loaded, session gone, spend cap reached, an error, or an answer holding only whitespace). Any provider except `session` and `session-pool` is valid. When absent, the `auto` resolution above applies. A provider you name explicitly in `llm.provider` is never replaced by the session path.
 - With `llm.providers`, the session is the first link of the chain above and `llm.fallback` replaces `llm.fallbackProvider`; there is no implicit `auto` fallback.
 - The module stops serving jobs when recorded output reaches `sessionSummarizerMaxOutputTokens`; set it in the plugin's `userConfig` (default 50000, 0 disables serving jobs). `$.model.complete` is limited to the remaining allowance, but `$.model.fork` has no output-token limit and can overshoot on its final call.
 - Usage is recorded as `session:haiku` or `session:fork`; current hosts report exact `complete` usage, while older text-only results use estimated token counts recorded in `llm_usage_stats.calls_estimated`.
+
+### Summarize worker pool
+
+`session-pool` sends the same rendered prompts to dedicated interactive workers. It
+uses a separate FIFO from `session`: an ordinary session can claim only its own
+jobs, and a worker can claim only pool jobs, one at a time. A job no worker claims
+within 20 s, or a claimed job not answered within 3 minutes, falls along the
+configured provider chain; late replies are discarded. With flat configuration it uses `llm.fallbackProvider` (or `auto` when
+unset); with named endpoints it uses `llm.fallback`. Set `fallbackProvider` to
+`disabled` to fail an unavailable pool job without starting a process provider.
+
+Prefer `lcm import --replay --replay-provider session-pool` or
+`lcm compact --replay --replay-provider session-pool` to select the pool for replay
+alone. These commands leave the configured live compaction provider unchanged.
+`llm.provider: "session-pool"` and `LCM_SUMMARY_PROVIDER=session-pool` select it
+for every compaction explicitly. `--parallel N` on either replay command runs at
+most N projects concurrently (default 1); each project's session order, previous
+summary, manifest and ledger retain their existing behavior.
+
+| Worker setting | Meaning |
+|---|---|
+| `LCM_SUMMARIZE_WORKER=1` | Opt the launched Claude Code or OMP session into pool serving. |
+| `LCM_SUMMARIZE_WORKER_MODEL` | `haiku` (default) or `sonnet`. Claude resolves the alias through its allowlist; OMP selects the newest matching Anthropic model id in its registry. |
+| `LCM_SUMMARIZE_WORKER_MAX_OUTPUT_TOKENS` | Per-worker output cap. Defaults to Claude's plugin `sessionSummarizerMaxOutputTokens`, or 50000 for OMP. A non-negative integer; 0 disables serving. |
+
+Claude workers require function hooks. They use `$.model.complete` for both leaf
+and condensed jobs, never `fork`. OMP workers use the host's `pi-ai.complete` and
+`modelRegistry` credentials. They send no messages to the worker's conversation.
+Usage is recorded as `session-pool:haiku` or `session-pool:sonnet`. Requests are
+limited to the remaining cap; accounted usage from failed answers also reduces
+it, and reaching the cap stops polling. Cap state lasts for the module's loaded
+lifetime; a fresh worker starts a new allowance.
+
+See [Run replay with summarize workers](summarize-workers.md) for launch commands,
+fallback setup, transcript hygiene evidence and host limitations.
 
 ### Request body
 

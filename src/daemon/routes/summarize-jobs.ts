@@ -5,12 +5,18 @@ export function createNextSummarizeJobHandler(store: SummarizeJobStore): RouteHa
   return async (req, res) => {
     const query = new URL(req.url!, "http://localhost").searchParams;
     const sessionId = query.get("session_id");
-    if (!sessionId?.trim()) { sendJson(res, 400, { error: "session_id is required" }); return; }
+    const workerId = query.get("worker_id");
+    if (workerId !== null && (!workerId.trim() || sessionId !== null)) {
+      sendJson(res, 400, { error: "provide worker_id or session_id" }); return;
+    }
+    if (!workerId && !sessionId?.trim()) { sendJson(res, 400, { error: "session_id is required" }); return; }
     const controller = new AbortController();
     const abort = () => controller.abort();
     res.once("close", abort);
     try {
-      const job = await store.next(sessionId, controller.signal, query.get("wait_ms") !== "0");
+      const wait = query.get("wait_ms") !== "0";
+      const job = workerId ? await store.nextWorker(workerId, controller.signal, wait)
+        : await store.next(sessionId!, controller.signal, wait);
       if (res.destroyed) return;
       if (job) sendJson(res, 200, { job });
       else { res.writeHead(204); res.end(); }
@@ -34,11 +40,11 @@ export function createAnswerSummarizeJobHandler(store: SummarizeJobStore): Route
     const validAttempts = answer.usageAttempts === undefined ||
       (Array.isArray(answer.usageAttempts) && answer.usageAttempts.length <= 2 &&
         answer.usageAttempts.every((attempt) => attempt &&
-          ["session:haiku", "session:fork"].includes(attempt.providerId) && validUsage(attempt.usage) &&
+          ["session:haiku", "session:fork", "session-pool:haiku", "session-pool:sonnet"].includes(attempt.providerId) && validUsage(attempt.usage) &&
           (attempt.failed === undefined || typeof attempt.failed === "boolean")));
     // Require exactly one outcome and validate accounting before it reaches SQLite.
     if ((answer.text !== undefined && answer.error !== undefined) ||
-        (answer.providerId !== undefined && !["session:haiku", "session:fork"].includes(answer.providerId)) ||
+        (answer.providerId !== undefined && !["session:haiku", "session:fork", "session-pool:haiku", "session-pool:sonnet"].includes(answer.providerId)) ||
         (answer.usage !== undefined && !validUsage(answer.usage)) || !validAttempts) {
       sendJson(res, 400, { error: "invalid answer or usage" }); return;
     }

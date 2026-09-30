@@ -1,20 +1,22 @@
 
   lcm import — Import Claude Code, Codex or Oh My Pi session transcripts into lossless memory.
 
-  Usage: lcm import [--provider claude|codex|omp|all | --codex | --omp] [--all] [--verbose] [--dry-run] [--replay] [--restart] [--rebuild [--yes] [--session <id>]]
+  Usage: lcm import [--provider claude|codex|omp|all | --codex | --omp] [--all] [--verbose] [--dry-run] [--replay] [--parallel <N>] [--replay-provider session-pool] [--restart] [--rebuild [--yes] [--session <id>]]
 
   Options:
-    --provider <provider>  Transcript source: claude, codex, omp, all (default: all)
-    --codex                Alias for --provider codex
-    --omp                  Alias for --provider omp
-    --all                  Import all projects (default: current project only)
-    --verbose              Show per-session import detail
-    --dry-run              Preview without importing
-    --replay               Replay compaction for each imported session (resumes where the last run stopped)
-    --restart              With --replay: discard recorded progress and all summaries in the conversations the run touches, then start from scratch
-    --rebuild              With --provider claude: replace repairable stored history; with --provider codex|omp: repair only verified rows cut at NUL (previews unless --yes)
-    --yes                  With --rebuild: apply it, after backing up each project database it changes
-    --session <id>         With --rebuild: only this session
+    --provider <provider>         Transcript source: claude, codex, omp, all (default: all)
+    --codex                       Alias for --provider codex
+    --omp                         Alias for --provider omp
+    --all                         Import all projects (default: current project only)
+    --verbose                     Show per-session import detail
+    --dry-run                     Preview without importing
+    --replay                      Replay compaction for each imported session (resumes where the last run stopped)
+    --parallel <N>                With --replay: process N projects concurrently (default 1), retaining order within each project
+    --replay-provider <provider>  With --replay: use session-pool; live compactions keep their configured provider
+    --restart                     With --replay: discard recorded progress and all summaries in the conversations the run touches, then start from scratch
+    --rebuild                     With --provider claude: replace repairable stored history; with --provider codex|omp: repair only verified rows cut at NUL (previews unless --yes)
+    --yes                         With --rebuild: apply it, after backing up each project database it changes
+    --session <id>                With --rebuild: only this session
 
   Examples:
     lcm import                                    Import Claude Code, Codex and Oh My Pi sessions of the current project

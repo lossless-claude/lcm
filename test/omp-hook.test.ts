@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   __setTransportForTests,
+  __setWorkerCompletionForTests,
   type HookApi,
   type HookContext,
   type HookHandler,
@@ -60,9 +61,38 @@ describe("OMP lcm hook", () => {
   });
 
   afterEach(() => {
+    __setWorkerCompletionForTests();
+    vi.unstubAllEnvs();
     __setTransportForTests();
     delete process.env.LCM_HOME;
     rmSync(home, { recursive: true, force: true });
+  });
+
+  it("serves foreign pool prompts through the OMP completion API without sending session messages, stopping at its cap", async () => {
+    vi.stubEnv("LCM_SUMMARIZE_WORKER", "1");
+    vi.stubEnv("LCM_SUMMARIZE_WORKER_MAX_OUTPUT_TOKENS", "4");
+    const complete = vi.fn(async () => ({ content: [{ type: "text", text: "summary" }], usage: { input: 9, output: 4 }, stopReason: "stop" }));
+    __setWorkerCompletionForTests(complete);
+    const job = { id: "pool-job", session_id: "closed-session", pool: true, kind: "condensed", system: "system", prompt: "foreign prompt", maxTokens: 20 };
+    __setTransportForTests((request) => {
+      requests.push(request);
+      if (request.method === "GET") return { job };
+      return {};
+    });
+    const { handlers, pi } = hook();
+    pi.sendMessage = vi.fn();
+    const model = { id: "claude-haiku-4-5", provider: "anthropic" };
+    const ctx = context({ modelRegistry: { getAll: () => [model], getApiKey: async () => "fake-key" } });
+    await getHandler(handlers, "session_start")({}, ctx);
+    await vi.waitFor(() => expect(requests.some((request) => request.path === "/summarize-jobs/pool-job")).toBe(true));
+    expect(complete).toHaveBeenCalledExactlyOnceWith(model, {
+      systemPrompt: "system", messages: [{ role: "user", content: "foreign prompt", timestamp: expect.any(Number) }],
+    }, { apiKey: "fake-key", maxTokens: 4, signal: expect.any(AbortSignal) });
+    expect(pi.sendMessage).not.toHaveBeenCalled();
+    expect(requests.filter((request) => request.method === "GET")).toHaveLength(1);
+    expect(requests.find((request) => request.method === "GET")!.path).toContain("worker_id=omp-session");
+    expect(requests.find((request) => request.path === "/summarize-jobs/pool-job")!.body).toMatchObject({ text: "summary", providerId: "session-pool:haiku" });
+    await getHandler(handlers, "session_shutdown")({}, ctx);
   });
 
   it("waits for the capture before restoring, so restore cannot read a session that is still landing", async () => {

@@ -9,8 +9,61 @@ import { runLcmMigrations } from "../src/db/migration.js";
 import { projectId } from "../src/daemon/project.js";
 import { createLcmPaths } from "../src/lcm-paths.js";
 import { findUncompacted, batchCompact } from "../src/batch-compact.js";
+import { DaemonClient } from "../src/daemon/client.js";
 
 const tempHomes: string[] = [];
+
+it("replays at most N projects concurrently, preserving each project's chain and ledger order", async () => {
+  const { paths } = makeProject();
+  const projects = ["a", "b", "c"].map((name) => {
+    const cwd = join(paths.home, name);
+    const dir = join(paths.projectsDir, projectId(cwd));
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "meta.json"), JSON.stringify({ cwd }));
+    const db = getLcmConnection(join(dir, "db.sqlite"));
+    runLcmMigrations(db, { fts5Available: false });
+    for (const [index, id] of [`${name}-1`, `${name}-2`].entries()) {
+      const conv = createConversation(db, id, `2026-01-0${index + 1}`);
+      const message = insertMessage(db, conv, 0, 100);
+      insertContextItem(db, conv, 0, "message", message);
+    }
+    return { cwd, db };
+  });
+  const gate = Promise.withResolvers<void>();
+  const active = new Set<string>();
+  let peak = 0;
+  const calls: any[] = [];
+  const post = vi.spyOn(DaemonClient.prototype, "post").mockImplementation(async (_route, body: any) => {
+    expect(active.has(body.cwd)).toBe(false);
+    active.add(body.cwd);
+    peak = Math.max(peak, active.size);
+    calls.push(body);
+    await gate.promise;
+    active.delete(body.cwd);
+    return { replayOutcome: "compacted", latestSummaryId: `sum-${body.session_id}`, latestSummaryContent: `summary-${body.session_id}` } as any;
+  });
+  const run = batchCompact({ paths, minTokens: 0, dryRun: false, port: 1, replay: true, parallel: 2, replayProvider: "session-pool" });
+  try {
+    await vi.waitFor(() => expect(peak).toBe(2), { timeout: 300 });
+    expect(calls).toHaveLength(2);
+    gate.resolve();
+    await expect(run).resolves.toMatchObject({ compacted: 6 });
+    expect(peak).toBe(2);
+    for (const { cwd, db } of projects) {
+      const projectCalls = calls.filter((body) => body.cwd === cwd);
+      expect(projectCalls.map((body) => body.session_id)).toEqual([`${cwd.slice(-1)}-1`, `${cwd.slice(-1)}-2`]);
+      expect(projectCalls[1].previous_summary).toBe(`summary-${projectCalls[0].session_id}`);
+      expect(projectCalls.every((body) => body.replay_provider === "session-pool")).toBe(true);
+      expect(db.prepare("SELECT session_id, position FROM replay_ledger ORDER BY position").all()).toEqual([
+        { session_id: `${cwd.slice(-1)}-1`, position: 0 }, { session_id: `${cwd.slice(-1)}-2`, position: 1 },
+      ]);
+    }
+  } finally {
+    gate.resolve();
+    await run;
+    post.mockRestore();
+  }
+});
 
 afterEach(() => {
   closeLcmConnection();

@@ -1,3 +1,4 @@
+import { replayParallelism, runReplayProjects } from "./replay-projects.js";
 import { readdirSync, existsSync, lstatSync, type Dirent } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
@@ -66,6 +67,8 @@ interface ImportOptions {
   restart?: boolean;
   /** Replay only: model label recorded in the ledger (shown on resume) */
   replayModel?: string;
+  parallel?: number;
+  replayProvider?: "session-pool";
   /** Which transcript provider to import from; resolved by `resolveImportProvider` (default: "all") */
   provider?: ImportProvider;
   /** Called with state patches as each session is processed — used by the ninja renderer */
@@ -395,6 +398,7 @@ async function ingestSessionList(
   const processedBase = doneCount;
 
   for (const { path, sessionId, cwd, client: sourceClient = "claude", attribution } of sessions) {
+    if (result.daemonUnreachable) break;
     // Stop starting new work after SIGINT/SIGTERM; the renderer waits for the
     // in-flight session to settle before exiting.
     if (options.onBeforeSession && !options.onBeforeSession()) break;
@@ -502,6 +506,7 @@ async function ingestSessionList(
             session_id: sessionId,
             cwd,
             skip_ingest: true,
+            ...(options.replayProvider ? { replay_provider: options.replayProvider } : {}),
             client: sourceClient,
             ...(previousSummaryByCwd.get(cwd) !== undefined ? { previous_summary: previousSummaryByCwd.get(cwd) } : {}),
           });
@@ -671,6 +676,7 @@ export async function importSessions(
   client: DaemonClient,
   options: ImportOptions,
 ): Promise<ImportResult> {
+  const parallel = replayParallelism(options);
   const paths = options.paths ?? (options._lcmDir ? createLcmPaths(options._lcmDir) : undefined);
   if (paths) options.paths = paths;
   const provider = resolveImportProvider({ provider: options.provider });
@@ -754,10 +760,12 @@ export async function importSessions(
     sessionLists.push(...projects.values());
   }
 
-  for (const sessions of sessionLists) {
-    await ingestSessionList(client, sessions, options, result, clearedCwds);
-    if (result.daemonUnreachable) break;
-  }
+  await runReplayProjects(sessionLists, (sessions) => sessions[0]?.cwd ?? "", parallel, async (ordered) => {
+    for (const sessions of ordered) {
+      if (result.daemonUnreachable) break;
+      await ingestSessionList(client, sessions, options, result, clearedCwds);
+    }
+  });
 
   return result;
 }

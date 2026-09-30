@@ -65,7 +65,7 @@ export function resolveEffectiveProvider(config: DaemonConfig, client?: CompactC
  * answer is a `SessionUnavailableError`, and a rejected answer a `SummaryRejectedError`:
  * the chain hands both to the next link.
  */
-function createSessionSummarizer(jobs?: SummarizeJobStore): LcmSummarizeFn {
+function createSessionSummarizer(jobs?: SummarizeJobStore, pool = false): LcmSummarizeFn {
   return async (text, aggressive, ctx = {}) => {
     if (!jobs || !ctx.sessionId) throw new SessionUnavailableError("no live session job queue");
     const targetTokens = ctx.targetTokens ?? resolveTargetTokens({
@@ -77,7 +77,8 @@ function createSessionSummarizer(jobs?: SummarizeJobStore): LcmSummarizeFn {
     const answer = await jobs.enqueue({
       session_id: ctx.sessionId, kind: ctx.isCondensed ? "condensed" : "leaf",
       depth: ctx.depth ?? (ctx.isCondensed ? 1 : 0), system, prompt, targetTokens,
-      maxTokens: resolveMaxOutputTokens(targetTokens),
+      maxTokens: pool && ctx.maxOutputTokens !== undefined ? ctx.maxOutputTokens : resolveMaxOutputTokens(targetTokens),
+      ...(pool ? { pool: true as const } : {}),
     });
     for (const attempt of answer.usageAttempts ?? []) {
       ctx.onUsage?.({ provider: attempt.providerId, model: attempt.providerId.split(":")[1],
@@ -89,7 +90,7 @@ function createSessionSummarizer(jobs?: SummarizeJobStore): LcmSummarizeFn {
     const summary = answer.text ?? "";
     const inputTokens = answer.usage?.input_tokens ?? Math.ceil((system.length + prompt.length) / 4);
     const outputTokens = answer.usage?.output_tokens ?? Math.ceil(summary.length / 4);
-    const provider = answer.providerId ?? (ctx.isCondensed ? "session:fork" : "session:haiku");
+    const provider = answer.providerId ?? (pool ? "session-pool:haiku" : ctx.isCondensed ? "session:fork" : "session:haiku");
     // Reported before the answer is judged: a rejected answer was still charged.
     ctx.onUsage?.({ provider, model: provider.split(":")[1], inputTokens, outputTokens,
       tokensUsed: inputTokens + outputTokens, estimated: answer.usage?.estimated ?? true });
@@ -138,14 +139,16 @@ function kindOf(type: ConcreteType): ProviderLinkKind {
 class LinkFactory {
   private readonly adapters = new Map<string, Promise<LcmSummarizeFn>>();
   private readonly session: LcmSummarizeFn;
+  private readonly pool: LcmSummarizeFn;
 
   constructor(private readonly config: DaemonConfig, jobs?: SummarizeJobStore) {
     this.session = createSessionSummarizer(jobs);
+    this.pool = createSessionSummarizer(jobs, true);
   }
 
   link(name: string): ProviderLink {
-    if (name === "session") {
-      return () => ({ name, kind: "session", summarizer: async () => this.session });
+    if (name === "session" || name === "session-pool") {
+      return () => ({ name, kind: "session", summarizer: async () => name === "session-pool" ? this.pool : this.session });
     }
     // Resolved per call, from the client that asked, as `auto` is everywhere else.
     if (name === "auto") return (ctx) => this.link(autoProvider(ctx.client))(ctx);
@@ -194,9 +197,9 @@ function namedChain(provider: EffectiveProvider, config: DaemonConfig): string[]
  */
 function chainOf(provider: EffectiveProvider, config: DaemonConfig, links: LinkFactory): ProviderLink[] {
   if (config.llm.providers) return namedChain(provider, config).map((name) => links.link(name));
-  if (provider !== "session") return [links.link(provider)];
+  if (provider !== "session" && provider !== "session-pool") return [links.link(provider)];
   const fallback = config.llm.fallbackProvider ?? "auto";
-  return fallback === "disabled" ? [links.link("session")] : [links.link("session"), links.link(fallback)];
+  return fallback === "disabled" ? [links.link(provider)] : [links.link(provider), links.link(fallback)];
 }
 
 export async function createSummarizer(

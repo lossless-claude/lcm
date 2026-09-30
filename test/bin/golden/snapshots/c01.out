@@ -1,15 +1,17 @@
 
   lcm compact — Compact conversation context into DAG summary nodes.
 
-  Usage: lcm compact [--all] [--dry-run] [--replay] [--restart] [--no-promote] [-v]
+  Usage: lcm compact [--all] [--dry-run] [--replay] [--parallel <N>] [--replay-provider session-pool] [--restart] [--no-promote] [-v]
 
   Options:
-    --all          Compact all tracked projects (default: current project only)
-    --dry-run      Show what would be compacted without writing anything
-    --replay       Compact sequentially, threading each summary through the prior context (resumes where the last run stopped)
-    --restart      With --replay: discard recorded progress and all summaries in the conversations the run touches, then start from scratch
-    --no-promote   Skip the automatic promote step that runs after compaction
-    -v, --verbose  Show per-session token details
+    --all                         Compact all tracked projects (default: current project only)
+    --dry-run                     Show what would be compacted without writing anything
+    --replay                      Compact each project sequentially, threading each summary through the prior context (resumes where the last run stopped)
+    --parallel <N>                With --replay: process N projects concurrently (default 1), retaining order within each project
+    --replay-provider <provider>  With --replay: use session-pool; live compactions keep their configured provider
+    --restart                     With --replay: discard recorded progress and all summaries in the conversations the run touches, then start from scratch
+    --no-promote                  Skip the automatic promote step that runs after compaction
+    -v, --verbose                 Show per-session token details
 
   Examples:
     lcm compact                 Compact current project
