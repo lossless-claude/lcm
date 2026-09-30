@@ -1,3 +1,4 @@
+import { WORKER_JOB_GUIDANCE } from "../worker-warning.js";
 import type { Tool } from "@modelcontextprotocol/server";
 import type { PivotLanguages } from "../search/pivot-language.js";
 import { pivotQueryApplies } from "../search/pivot-language.js";
@@ -8,12 +9,13 @@ export type LocalHandlers = { stats: LocalHandler; doctor: LocalHandler };
 
 type Destination =
   | { kind: "daemon"; route: string }
-  | { kind: "local"; handler: keyof LocalHandlers };
+  | { kind: "local"; handler: keyof LocalHandlers }
+  | { kind: "worker"; action: "claim" | "submit" };
 
 type ToolEntry = { definition: Tool; destination: Destination };
 
 type ResolvedTool = {
-  destination: { kind: "daemon"; route: string } | { kind: "local"; handler: LocalHandler };
+  destination: { kind: "daemon"; route: string } | { kind: "local"; handler: LocalHandler } | { kind: "worker"; action: "claim" | "submit" };
   args: Record<string, unknown>;
 };
 
@@ -32,6 +34,33 @@ const PROJECT_ID_DESCRIPTION =
   "The `project.id` of the search result the node came from. Required whenever the node did not come from this project, since node ids are only unique within one project.";
 
 const ENTRIES: ToolEntry[] = [
+  {
+    definition: {
+      name: "lcm_summarize_claim",
+      description: "Claim one pool job in a dedicated declared worker. Claude Code stdio MCP only; identity is read from the harness environment. The session and its subagents are permanently excluded from lcm; the harness transcript stays on disk. Use a dedicated session. " + WORKER_JOB_GUIDANCE,
+      inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    },
+    destination: { kind: "worker", action: "claim" },
+  },
+  {
+    definition: {
+      name: "lcm_summarize_submit",
+      description: "Submit a summary or completion error for a claimed pool job. Must use the returned workerId and the same enrolled session. Optional usage defaults to estimated.",
+      inputSchema: { type: "object", additionalProperties: false,
+        properties: {
+          jobId: { type: "string", description: "Claimed job id" },
+          workerId: { type: "string", description: "worker_id returned by the claim" },
+          model: { type: "string", description: "Model that produced the answer; validated as session-pool:<model>" },
+          text: { type: "string", description: "Summary text; provide text or error" },
+          error: { type: "string", description: "Completion error; provide error or text" },
+          usage: { type: "object", properties: {
+            input_tokens: { type: "integer", minimum: 0 }, output_tokens: { type: "integer", minimum: 0 }, estimated: { type: "boolean" },
+          }, required: ["input_tokens", "output_tokens", "estimated"], additionalProperties: false },
+        }, required: ["jobId", "workerId", "model"],
+      },
+    },
+    destination: { kind: "worker", action: "submit" },
+  },
   {
     definition: {
       name: "lcm_grep",

@@ -1,0 +1,14 @@
+
+  lcm summarize-submit — Submit a summary or error for a claimed pool job.
+
+  Usage: lcm summarize-submit <job-id> --worker-id <id> --model <model> [--text <summary> | --error <message>] [--usage <json>]
+
+  Options:
+    --worker-id <id>   Worker id returned by summarize-claim
+    --model <model>    Model that produced the summary; recorded as session-pool:<model>
+    --text <summary>   Summary text (otherwise stdin)
+    --error <message>  Report a failed completion instead of a summary
+    --usage <json>     Optional input_tokens, output_tokens and estimated; defaults to estimated
+
+  Note: The same live enrolled session must submit. Late answers are discarded. Pool completion uses llm.poolCompletionMs (LCM_POOL_COMPLETION_MS), default 180000 ms from claim; the 20000 ms claim deadline stays separate.
+

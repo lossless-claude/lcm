@@ -6,6 +6,7 @@ import { Command } from "commander";
 import { DaemonClient } from "../src/daemon/client.js";
 import { lcmHome } from "../src/lcm-home.js";
 import { createLcmPaths } from "../src/lcm-paths.js";
+import { registerAgentWorkerCommands } from "../src/cli/agent-workers.js";
 import { registerMemoryCommands } from "../src/cli/memory.js";
 import { registerBenchCommands } from "../src/cli/bench.js";
 import { registerEvalCommands } from "../src/cli/eval.js";
@@ -111,7 +112,8 @@ async function main() {
 
   registerDiagnosticsCommands(program, { createDaemonClientOrExit });
 
-  registerMemoryCommands(program, { createDaemonClientOrExit });
+  registerMemoryCommands(program, { createDaemonClientOrExit, paths: createLcmPaths(lcmHome()) });
+  registerAgentWorkerCommands(program, { createDaemonClientOrExit });
 
   registerDiagnoseCommand(program);
 

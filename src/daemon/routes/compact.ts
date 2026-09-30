@@ -1,3 +1,5 @@
+import { WorkerStore } from "../../store/worker-store.js";
+import { workerExcluded } from "../../worker-session.js";
 import type { SummarizeJobStore } from "../summarize-jobs.js";
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
@@ -351,6 +353,9 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       return;
     }
 
+    if (workerExcluded(cwd, session_id, paths, transcript_path)) {
+      sendJson(res, 200, { summary: "", replayOutcome: "skipped", reason: "worker-excluded" }); return;
+    }
     const captureOnly = async () => {
       try {
         // A summary for this session may own the project's queue while waiting on
@@ -364,7 +369,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           const db = openStandaloneLcmConnection(dbPath);
           try {
             runLcmMigrations(db);
-            const captured = await captureForCompact(new SessionCapture(db, projectId(cwd), scrubber), {
+            const captured = await captureForCompact(new SessionCapture(db, projectId(cwd), scrubber, paths), {
               sessionId: session_id, cwd, client, transcriptPath: transcript_path,
             }, paths, log);
             const outcome = captured
@@ -473,11 +478,12 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         const db = getLcmConnection(dbPath);
         try {
           runLcmMigrations(db);
+          if (new WorkerStore(db).excluded(session_id)) return { summary: "", replayOutcome: "skipped", reason: "worker-excluded" };
 
           // Capture what the transcript holds past the stored count, through the same
           // module `/ingest` reads and writes with; the conversation exists after this
           // either way, since compaction needs the row even when nothing was read.
-          const capture = new SessionCapture(db, pid, scrubber);
+          const capture = new SessionCapture(db, pid, scrubber, paths);
           const { conversationStore, summaryStore } = capture;
           const structuredInput = (await conversationStore.getConversationBySessionId(session_id))?.parserShape === STRUCTURED_INGEST_SHAPE;
           let captured: CaptureResult | undefined;
@@ -546,6 +552,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             void scheduleProjectLanguageDetection(cwd, db, config, paths, client);
           }
 
+          if (new WorkerStore(db).excluded(session_id)) return { summary: "", replayOutcome: "skipped", reason: "worker-excluded" };
           let sawReportedUsageModel = false;
           // Each answer the summarizer gave and the engine kept, in order; the engine drops
           // the latest when it discards it (see onAnswerDiscarded below).
@@ -615,7 +622,8 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                 client,
                 onAttempt: (next) => { attempt = next; },
                 onFallback: ({ reason, fromProvider, toProvider }) => {
-                  settleAttempt(false); // the abandoned attempt was charged but answered nothing usable
+                  if (new WorkerStore(db).excluded(session_id)) throw new Error("Worker session excluded during compaction");
+              settleAttempt(false); // the abandoned attempt was charged but answered nothing usable
                   // The next attempt is the fallback's, even when it reports no usage.
                   attemptAnswering.add(toProvider);
                   log.write("warn", "summarizer.fallback", { cwd, session_id, reason, from_provider: fromProvider, to_provider: toProvider });
@@ -657,6 +665,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                   ctx.onUsage?.(usage);
                 },
               })));
+              if (new WorkerStore(db).excluded(session_id)) throw new Error("Worker session excluded during compaction");
               // The engine gates every answer too; judging it here as well keeps an answer
               // the engine will reject from being counted as a successful call.
               const summary = acceptSummaryText(answer, effectiveProvider);

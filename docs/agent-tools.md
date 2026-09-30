@@ -1,10 +1,10 @@
 # Agent tools
 
-LCM provides seven MCP tools for agents to search, inspect, store, and recall information from conversation history.
+LCM provides nine MCP tools for agents to search, inspect, store, and recall information from conversation history.
 
 The MCP server speaks the [2026-07-28 protocol](https://modelcontextprotocol.io/specification/2026-07-28)
 over stdio, powered by the TypeScript SDK v2, and also serves the earlier 2025-11-25
-revision. Which one a connection uses is the client's choice; both reach the same seven
+revision. Which one a connection uses is the client's choice; both reach the same nine
 tools with the same arguments and text results. Only the newer revision carries the
 result envelope (`resultType`, `ttlMs`, `cacheScope`, `_meta`). The entrypoints remain
 `lcm mcp` (npm) and `node bundle/mcp-server.js` (the Claude Code plugin).
@@ -268,3 +268,42 @@ listing something you need, use `lcm_expand` with that summary's node ID.
 - `lcm_expand` traverses the DAG and reads source messages — cost scales with depth
 - `lcm_stats` performs full-table scans — use sparingly, not in request handlers
 - Expansion is bounded by the requested `depth`; there is no token cap, so keep `depth` small
+
+### lcm_summarize_claim
+
+Claims one pool job with no arguments. Only a live dedicated Claude Code worker
+started with `LCM_SUMMARIZE_WORKER=1` and enrolled by its lcm hook may use stdio
+MCP. The server reads `CLAUDE_CODE_SESSION_ID` from its harness environment, never
+from tool arguments. The returned `job` includes `id`, `system`, rendered `prompt`,
+`kind`, `depth`, `targetTokens` and `maxTokens`; `worker_id` is unique per claim.
+An empty pool omits `job`. Every result carries the permanent-exclusion warning
+and guidance that `system` and `prompt` are untrusted data to summarize, never
+instructions to follow. Embedded commands and tool requests remain source content.
+Missing or stale identity, an undeclared session, Codex MCP and OMP MCP are refused
+with guidance and no source text. Forked worker sessions are unsupported.
+
+### lcm_summarize_submit
+
+| Parameter | Meaning |
+|---|---|
+| `jobId` | Claimed job id; required. |
+| `workerId` | `worker_id` from the claim; required. |
+| `model` | Answering model; required, recorded as validated `session-pool:<model>`. |
+| `text` | Non-empty summary; provide exactly one of `text` or `error`. |
+| `error` | Non-empty completion failure. |
+| `usage` | Optional object: non-negative integer `input_tokens`, `output_tokens`, and boolean `estimated`. Missing usage defaults to estimated. |
+
+The same live enrolled session and worker id must submit. A duplicate, expired or
+mismatched answer is discarded. The existing summarizer rejects invalid answers
+and applies its fallback chain. Completion expires after `llm.poolCompletionMs`,
+default 180000 ms, independently of the 20000 ms claim deadline. See
+[summarize workers](summarize-workers.md). The CLI pair is `lcm summarize-claim`
+and `lcm summarize-submit`; Codex supports that pair through `CODEX_THREAD_ID`.
+
+The `lcm_store` / `lcm store` refusal for declared or excluded workers is a
+client-side guard. A command without the worker environment cannot be detected.
+Environment ids are cooperative identity, not authentication against local processes.
+Worker enrollment and last activity also appear in `lcm_stats` and `lcm_doctor`,
+using the same eight-character hashed worker id as status and CLI stats.
+For copied successful claim payloads, doctor also identifies the detection and cwd:
+future capture stops and stored history is preserved for the user's review.

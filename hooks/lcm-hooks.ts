@@ -457,9 +457,10 @@ type PollOutcome =
   | { job: SummaryJob }
   | { wait: number; shortPoll?: true };
 
-function fetchNextJob($: EngineInterface, { port, token }: HostEnv, sessionId: string, shortPoll: boolean, worker = false) {
+async function fetchNextJob($: EngineInterface, { port, token }: HostEnv, sessionId: string, shortPoll: boolean, worker = false) {
+  const binding = worker ? `&caller_session_id=${encodeURIComponent(sessionId)}&cwd=${encodeURIComponent(await $.session.cwd())}&client=claude&transport=hook` : "";
   return $.http.fetch(
-    `http://127.0.0.1:${port}/summarize-jobs/next?${worker ? "worker_id" : "session_id"}=${encodeURIComponent(sessionId)}${shortPoll ? "&wait_ms=0" : ""}`,
+    `http://127.0.0.1:${port}/summarize-jobs/next?${worker ? "worker_id" : "session_id"}=${encodeURIComponent(sessionId)}${binding}${shortPoll ? "&wait_ms=0" : ""}`,
     { headers: token ? { authorization: `Bearer ${token}` } : {} },
   );
 }
@@ -517,7 +518,11 @@ type SummaryBudget = { spent: number; cap: number };
 async function postSummaryAnswer($: EngineInterface, job: SummaryJob, route: string, body: unknown): Promise<void> {
   const sessionId = job.pool ? await $.session.id() : job.session_id;
   try {
-    const outcome = await postDaemonOutcome($, route, body);
+    const boundBody = job.pool ? { ...(body as Record<string, unknown>),
+      worker_id: sessionId, caller_session_id: sessionId, cwd: await $.session.cwd(), client: "claude", transport: "hook",
+      providerId: (body as Record<string, unknown>).providerId ?? `session-pool:${await $.env.get("LCM_SUMMARIZE_WORKER_MODEL") || "haiku"}`,
+    } : body;
+    const outcome = await postDaemonOutcome($, route, boundBody);
     noteHook(sessionId, "session.start", "summary-answer", "delivery", ...delivery(outcome));
   } catch (error) {
     noteHook(sessionId, "session.start", "summary-answer", "delivery", "unconfirmed", "transport");
@@ -590,12 +595,11 @@ async function pollSummaries($: EngineInterface, configuredCap: number): Promise
     }
   }
   if (cap === 0) return;
-  const sessionId = await $.session.id();
   let spent = 0;
   let shortPoll = false;
   while (true) {
     if (shortPoll) await summaryDelay($, SHORT_POLL_PAUSE_MS);
-    const outcome = await nextSummaryJob($, sessionId, shortPoll, worker);
+    const outcome = await nextSummaryJob($, await $.session.id(), shortPoll, worker);
     if ("wait" in outcome) {
       shortPoll = outcome.shortPoll ?? shortPoll;
       if (outcome.wait > 0) await summaryDelay($, outcome.wait);
@@ -604,7 +608,9 @@ async function pollSummaries($: EngineInterface, configuredCap: number): Promise
     const spentNow = await serveSummaryJob($, outcome.job, { spent, cap }, workerModel);
     if (spentNow === null) return;
     spent += spentNow;
-    if (worker && spent >= cap) return;
+    if (worker && spent >= cap) {
+      return;
+    }
   }
 }
 
@@ -616,6 +622,30 @@ function registerSessionStart(on: On, summaryCap: number): void {
     // Awaited, unlike the health probe: a command hook that runs before the claim lands
     // would record the same events this module is about to record.
     const sessionId = await $.session.id();
+    let declaredWorker = false;
+    try { declaredWorker = await $.env.get("LCM_SUMMARIZE_WORKER") === "1"; } catch { /* An unavailable declaration cannot enroll a worker. */ }
+    let workerEnrolled = false;
+    if (declaredWorker) {
+      // SessionStart command hooks are the sole registrar: they receive the native
+      // start reason and keep a stable process owner across function-hook reloads.
+      const cwd = await $.session.cwd();
+      let enrollment: Record<string, unknown> | null = null;
+      let waited = 0;
+      let delay = 250;
+      do {
+        enrollment = await postDaemon($, "/worker-session", {
+          session_id: sessionId, cwd, client: "claude", declared: true, action: "check",
+        }).catch(() => null);
+        workerEnrolled = enrollment?.enrolled === true && typeof enrollment.warning === "string";
+        if (workerEnrolled || waited >= 30_000) break;
+        const pause = Math.min(delay, 30_000 - waited);
+        await summaryDelay($, pause);
+        waited += pause;
+        delay = Math.min(delay * 2, 2_000);
+      } while (true);
+      if (workerEnrolled) $.ui.log(`[lcm] ${enrollment!.warning}`);
+      else $.ui.log(`[lcm] worker mode refused: ${enrollment?.reason ?? "command-hook enrollment could not be confirmed"}`);
+    }
     let claimed = true;
     await claimSession($, sessionId).catch((error: unknown) => {
       claimed = false;
@@ -636,7 +666,7 @@ function registerSessionStart(on: On, summaryCap: number): void {
     // uncompacted (it ended without SessionEnd). The daemon selects, caps and
     // fires the actual compaction requests; this call only triggers it.
     void $.session.cwd().then((cwd) => postDaemon($, "/session-start-compact", { cwd, session_id: sessionId }));
-    if (!summaryPollerStarted) {
+    if (!summaryPollerStarted && (!declaredWorker || workerEnrolled)) {
       summaryPollerStarted = true;
       void pollSummaries($, summaryCap).catch((error) => {
         $.ui.log(`[lcm] session summarizer stopped: ${String(error)}`);

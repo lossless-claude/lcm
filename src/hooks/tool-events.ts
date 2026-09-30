@@ -1,4 +1,5 @@
 // src/hooks/tool-events.ts
+import { workerExcluded } from "../worker-session.js";
 import { extractPostToolEvents } from "./extractors.js";
 import { EventsDb } from "./events-db.js";
 import { eventsDbPath } from "../db/events-path.js";
@@ -14,6 +15,7 @@ import { createHash } from "node:crypto";
  * payload into this shape before recording.
  */
 export interface PostToolPayload {
+  transcript_path?: string;
   session_id: string;
   cwd: string;
   tool_name: string;
@@ -50,6 +52,9 @@ export interface RecordedPostTool {
  */
 export function recordPostToolEvents(payload: PostToolPayload, paths: LcmPaths): RecordedPostTool {
   const sourceHook = payload.hook_event_name === "PostToolUseFailure" ? "PostToolUseFailure" : "PostToolUse";
+  if (workerExcluded(payload.cwd, payload.session_id, paths, payload.transcript_path)) {
+    return { recorded: 0, hasPriority1: false, sourceHook };
+  }
   const events = extractPostToolEvents({
     tool_name: payload.tool_name,
     tool_input: payload.tool_input ?? {},

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { WORKER_WARNING } from "../../src/worker-warning.js";
 
 const sessionId = "session/one";
 const leaf = { id: "job-1", session_id: sessionId, kind: "leaf", system: "system", prompt: "prompt", maxTokens: 1024 };
@@ -29,6 +30,8 @@ async function start(options: Record<string, number> = {}, jobs: unknown[] = [le
       fetch: vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
         if (init?.method === "POST") {
           const body = JSON.parse(init.body!);
+          if (url.endsWith("/worker-session") && body.action === "check") return { ok: true, status: 200,
+            text: JSON.stringify({ enrolled: true, warning: WORKER_WARNING }) };
           // session.start also fires /session-scavenge; these tests are about job answers.
           if (url.includes("/summarize-jobs/")) posts.push({ url, body });
           if (body.error === "spend cap") finish();
@@ -55,6 +58,56 @@ async function start(options: Record<string, number> = {}, jobs: unknown[] = [le
 
 describe("function-hook session summarizer", () => {
   beforeEach(() => vi.resetModules());
+
+  it("warns about exclusion only after confirmed command-hook enrollment", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 0 }, [], { LCM_SUMMARIZE_WORKER: "1" });
+    await harness.trigger();
+    expect(harness.engine.ui.log).toHaveBeenCalledWith(`[lcm] ${WORKER_WARNING}`);
+    expect(harness.engine.http.fetch.mock.calls.filter(([url]) => url.endsWith("/worker-session")))
+      .toEqual([[expect.any(String), expect.objectContaining({ body: JSON.stringify({
+        session_id: sessionId, cwd: "/proj", client: "claude", declared: true, action: "check",
+      }) })]]);
+  });
+
+  it.each([
+    { ok: true, status: 200, text: JSON.stringify({ enrolled: false, reason: "No command-hook enrollment was found" }) },
+    { ok: false, status: 404, text: "" },
+  ])("reports refused worker mode without promising exclusion when enrollment is unconfirmed: %j", async response => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 4 }, [{ ...leaf, pool: true }], { LCM_SUMMARIZE_WORKER: "1" });
+    const fetch = harness.engine.http.fetch.getMockImplementation()!;
+    harness.engine.http.fetch.mockImplementation(async (url, init) => url.endsWith("/worker-session") ? response : fetch(url, init));
+    await harness.trigger();
+    expect(harness.engine.ui.log.mock.calls.flat().join("\n")).not.toContain("not recorded by lcm");
+    expect(harness.engine.ui.log).toHaveBeenCalledWith(expect.stringContaining("worker mode refused"));
+    expect(harness.engine.ui.log).toHaveBeenCalledWith(expect.stringContaining(response.ok
+      ? "No command-hook enrollment was found" : "enrollment could not be confirmed"));
+    expect(harness.engine.model.complete).not.toHaveBeenCalled();
+    expect(harness.engine.http.fetch.mock.calls.some(([url]) => url.includes("/summarize-jobs/next"))).toBe(false);
+    await harness.handlers.get("turn.complete")!(harness.engine, {}, vi.fn((event) => event));
+    expect(harness.engine.http.fetch.mock.calls.some(([url]) => url.endsWith("/ingest"))).toBe(true);
+    const checks = harness.engine.http.fetch.mock.calls.filter(([url]) => url.endsWith("/worker-session"));
+    expect(checks.length).toBeGreaterThan(1);
+    const delays = harness.engine.clock.after.mock.calls.map(([ms]) => ms).filter(ms => ms < 60_000);
+    expect(delays.reduce((total, ms) => total + ms, 0)).toBeLessThanOrEqual(30_000);
+  });
+
+  it("starts a worker when command-hook enrollment arrives after the first check", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 4 }, [{ ...leaf, pool: true }], { LCM_SUMMARIZE_WORKER: "1" });
+    const fetch = harness.engine.http.fetch.getMockImplementation()!;
+    let checks = 0;
+    harness.engine.http.fetch.mockImplementation(async (url, init) => {
+      if (url.endsWith("/worker-session") && ++checks === 1) return { ok: true, status: 200,
+        text: JSON.stringify({ enrolled: false, reason: "No command-hook enrollment was found" }) };
+      return fetch(url, init);
+    });
+    harness.engine.model.complete.mockResolvedValue({ isAnswered: true, text: "summary", usage: { input_tokens: 9, output_tokens: 4 } });
+    await harness.trigger();
+    await vi.waitFor(() => expect(harness.posts).toHaveLength(1), { timeout: 200 });
+    expect(checks).toBe(2);
+    expect(harness.engine.clock.after).toHaveBeenCalledWith(expect.any(Number), expect.any(Function));
+    expect(harness.engine.ui.log).toHaveBeenCalledWith(`[lcm] ${WORKER_WARNING}`);
+    expect(harness.engine.ui.log.mock.calls.flat().join("\n")).not.toContain("worker mode refused");
+  });
 
   it("serves foreign pool jobs with complete only and stops polling at the worker cap", async () => {
     const foreign = { ...leaf, pool: true, session_id: "closed-session", kind: "condensed" };

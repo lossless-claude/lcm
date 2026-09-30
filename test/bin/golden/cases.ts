@@ -115,6 +115,8 @@ export const GOLDEN_CASES: GoldenCase[] = [
   { id: "c04", argv: ["compact", "--no-promote", "-h"], creates: [], removes: [] },
 
   // ─── hook commands ─────────────────────────────────────────────────────────
+  { id: "w01", argv: ["summarize-claim", "--help"], creates: [], removes: [] },
+  { id: "w02", argv: ["summarize-submit", "--help"], creates: [], removes: [] },
   { id: "h01", argv: ["codex-hook", "-h"], creates: [], removes: [] },
   { id: "h02", argv: ["codex-hook"], stdin: "", creates: [], removes: [] },
   { id: "h03", argv: ["codex-hook"], stdin: "{}", creates: [], removes: [] },

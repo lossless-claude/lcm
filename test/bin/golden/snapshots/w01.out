@@ -1,0 +1,7 @@
+
+  lcm summarize-claim — Claim one pool job in a declared dedicated worker session.
+
+  Usage: lcm summarize-claim
+
+  Note: Start Claude Code or Codex with LCM_SUMMARIZE_WORKER=1 and lcm hooks enabled. Identity comes from the harness environment. Returns job, worker_id and the permanent-exclusion warning; an empty pool returns no job. OMP CLI is unverified and refused.
+

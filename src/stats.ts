@@ -1,3 +1,5 @@
+import { workerDisplayId } from "./worker-warning.js";
+import { WorkerStore, WORKER_WARNING, type WorkerEnrollment } from "./store/worker-store.js";
 import { DatabaseSync } from "node:sqlite";
 import { readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -154,6 +156,7 @@ export interface SubagentStats {
 }
 
 interface OverallStats {
+  workers?: WorkerEnrollment[];
   projects: number;
   conversations: number;
   subagent: SubagentStats;
@@ -351,6 +354,7 @@ function queryProjectStats(
       },
       promotionCandidates,
       contested,
+      workers: new WorkerStore(db).list(),
     };
   } finally {
     db.close();
@@ -413,6 +417,10 @@ export function printStats(stats: OverallStats, verbose: boolean): void {
   console.log(`    ${bold}${cyan}🧠 lossless-claude${reset}`);
   console.log();
 
+  if (stats.workers?.length) {
+    console.log(WORKER_WARNING);
+    for (const worker of stats.workers) console.log(`    Worker ${workerDisplayId(worker.session_id)}: ${worker.state}; last activity ${worker.last_activity}`);
+  }
   // Memory section
   console.log(sectionHeader("Memory"));
   console.log();
@@ -651,6 +659,7 @@ export function collectStats(paths: LcmPaths): OverallStats {
       llmUsage: { calls: 0, okCalls: 0, failedCalls: 0, tokensSpent: 0, tokensInput: 0, tokensCached: 0, tokensOutput: 0, costUsd: null, callsWithCost: 0 },
       promotionCandidates: [],
       contested: [],
+      workers: [],
     };
   }
 
@@ -673,6 +682,7 @@ export function collectStats(paths: LcmPaths): OverallStats {
   const totalLlmUsage: LlmUsageStats = { calls: 0, okCalls: 0, failedCalls: 0, tokensSpent: 0, tokensInput: 0, tokensCached: 0, tokensOutput: 0, costUsd: null, callsWithCost: 0 };
   const allPromotionCandidates: PromotionCandidate[] = [];
   const allContested: ContestedMemory[] = [];
+  const workers: WorkerEnrollment[] = [];
 
   // Load stale + promotion config once for all projects
   let staleCfg = { staleAfterDays: 90, staleSurfacingWithoutUseLimit: 5, enforcementThreshold: 3 };
@@ -723,6 +733,7 @@ export function collectStats(paths: LcmPaths): OverallStats {
       // vote records without any conversation of its own — a fresh checkout using lcm_store.
       allPromotionCandidates.push(...projStats.promotionCandidates);
       allContested.push(...projStats.contested);
+      workers.push(...projStats.workers ?? []);
       // Only count projects with stored messages
       if (projStats.messages === 0) continue;
       totalProjects++;
@@ -806,5 +817,6 @@ export function collectStats(paths: LcmPaths): OverallStats {
     llmUsage: totalLlmUsage,
     promotionCandidates: allPromotionCandidates,
     contested: allContested,
+    workers,
   };
 }

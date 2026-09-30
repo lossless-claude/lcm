@@ -1,3 +1,4 @@
+import { WorkerStore } from "../../store/worker-store.js";
 import { EventsDb, type EventRow, type PatternReinforcementStats } from "../../hooks/events-db.js";
 import { eventsDbPath } from "../../db/events-path.js";
 import { PromotedStore } from "../../db/promoted.js";
@@ -152,6 +153,7 @@ export function createPromoteEventsHandler(config: DaemonConfig, paths: LcmPaths
           const processedIds: number[] = [];
 
           for (const event of events) {
+            if (new WorkerStore(db).excluded(event.session_id)) { processedIds.push(event.event_id); result.skipped++; continue; }
             await yieldToEventLoop();
             try {
               const autoTag = (event as EventRow & { auto_tag?: string }).auto_tag;

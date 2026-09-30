@@ -1,3 +1,4 @@
+import { WorkerStore } from "./worker-store.js";
 import type { DatabaseSync } from "node:sqlite";
 import { parseSqliteDate } from "../db/sqlite-date.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -266,6 +267,11 @@ export class ConversationStore {
       .get(Number(result.lastInsertRowid)) as unknown as ConversationRow;
 
     return toConversationRecord(row);
+  }
+
+  isWorkerExcluded(conversationId: number): boolean {
+    const conversation = this.getConversationSync(conversationId);
+    return Boolean(conversation && new WorkerStore(this.db).excluded(conversation.sessionId));
   }
 
   async getConversation(conversationId: ConversationId): Promise<ConversationRecord | null> {

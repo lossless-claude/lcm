@@ -11,7 +11,7 @@
  * Requires a fresh `npm run build`. The plugin runs the same code from bundle/lcm.js; plugin-bundle.test.ts covers that entry.
  */
 
-import { beforeAll, afterAll, describe, expect, it } from "vitest";
+import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -162,15 +162,18 @@ describe("Flow 20: hooks via `node dist/bin/lcm.js` with piped stdin", { timeout
 
     const { db, close } = openProjectDb(h.tmpDir);
     try {
-      const rows = db
-        .prepare(
-          `SELECT m.content FROM messages m
-           JOIN conversations c ON c.conversation_id = m.conversation_id
-           WHERE c.session_id = ?`,
-        )
-        .all(session_id) as { content: string }[];
-      expect(rows.length).toBeGreaterThan(0);
-      expect(rows.some((row) => row.content.includes("good morning"))).toBe(true);
+      // SessionEnd acknowledges before capture completes.
+      await vi.waitFor(() => {
+        const rows = db
+          .prepare(
+            `SELECT m.content FROM messages m
+             JOIN conversations c ON c.conversation_id = m.conversation_id
+             WHERE c.session_id = ?`,
+          )
+          .all(session_id) as { content: string }[];
+        expect(rows.length).toBeGreaterThan(0);
+        expect(rows.some((row) => row.content.includes("good morning"))).toBe(true);
+      }, { timeout: 5000 });
     } finally {
       close();
     }

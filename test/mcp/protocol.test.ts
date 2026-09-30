@@ -3,11 +3,13 @@ import { createInterface } from "node:readline";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StdioServerTransport, type StdioServerHandle } from "@modelcontextprotocol/server/stdio";
 import { startMcpServer } from "../../src/mcp/server.js";
+import { workerDisplayId } from "../../src/worker-warning.js";
 
 const state = vi.hoisted(() => ({
   post: vi.fn(),
   transport: undefined as StdioServerTransport | undefined,
   handle: undefined as StdioServerHandle | undefined,
+  stats: undefined as Record<string, unknown> | undefined,
   languages: { authorLanguage: "en", pivotLanguage: "en" } as { authorLanguage?: string; pivotLanguage: string },
 }));
 
@@ -28,7 +30,7 @@ vi.mock("../../src/search/pivot-language.js", async (importOriginal) => ({
 }));
 vi.mock("../../src/stats.js", () => ({
   formatSubagentShare: String,
-  collectStats: () => { throw new Error("stats unavailable"); },
+  collectStats: () => { if (state.stats) return state.stats; throw new Error("stats unavailable"); },
   formatNumber: String,
 }));
 vi.mock("../../src/doctor/doctor.js", () => ({
@@ -61,6 +63,7 @@ describe("MCP 2026-07-28 over stdio", () => {
     state.transport = new StdioServerTransport(input, output);
     state.post.mockReset().mockResolvedValue({ matches: ["remembered"] });
     state.languages = { authorLanguage: "en", pivotLanguage: "en" };
+    state.stats = undefined;
     id = 0;
     await startMcpServer();
   });
@@ -101,7 +104,7 @@ describe("MCP 2026-07-28 over stdio", () => {
       _meta: { "io.modelcontextprotocol/serverInfo": { name: "lcm", version: "9.9.9-test" } },
     });
     expect(result.tools.map((tool: { name: string }) => tool.name).sort()).toEqual([
-      "lcm_describe", "lcm_doctor", "lcm_expand", "lcm_grep", "lcm_search", "lcm_stats", "lcm_store",
+      "lcm_describe", "lcm_doctor", "lcm_expand", "lcm_grep", "lcm_search", "lcm_stats", "lcm_store", "lcm_summarize_claim", "lcm_summarize_submit",
     ]);
   });
 
@@ -146,6 +149,18 @@ describe("MCP 2026-07-28 over stdio", () => {
     expect(state.post).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])("lcm_stats uses the same short worker id as status and CLI diagnostics (verbose=%s)", async verbose => {
+    const sessionId = "worker-session-unique-full-identity-685";
+    state.stats = { workers: [{ session_id: sessionId, state: "active", last_activity: "2026-01-01 00:00:00" }],
+      projects: 1, conversations: 0, messages: 0, summaries: 0, maxDepth: 0, promotedCount: 0,
+      eventsCaptured: 0, redactionCounts: { total: 0 }, promotionCandidates: [], contested: [] };
+    const { result } = await request("tools/call", { name: "lcm_stats", arguments: { verbose } });
+    expect(result.isError).toBeUndefined();
+    const text = result.content[0].text;
+    expect(text).not.toContain(sessionId);
+    expect(text).toContain(`Worker ${workerDisplayId(sessionId)}: active; last activity 2026-01-01 00:00:00`);
+  });
+
   it("preserves daemon and unknown-tool errors", async () => {
     state.post.mockRejectedValueOnce(new Error("HTTP 422"));
     expect((await request("tools/call", { name: "lcm_search", arguments: { query: "hello" } })).result).toMatchObject({
@@ -178,7 +193,7 @@ describe("MCP 2026-07-28 over stdio", () => {
 
     const listed = await request("tools/list", {}, false);
     expect(listed.error).toBeUndefined();
-    expect(listed.result.tools).toHaveLength(7);
+    expect(listed.result.tools).toHaveLength(9);
 
     const called = await request("tools/call", { name: "lcm_search", arguments: { query: "hello" } }, false);
     expect(called.error).toBeUndefined();
@@ -188,7 +203,7 @@ describe("MCP 2026-07-28 over stdio", () => {
   it("serves a 2026-era client, and only that one carries the modern envelope", async () => {
     const listed = await request("tools/list");
     expect(listed.error).toBeUndefined();
-    expect(listed.result.tools).toHaveLength(7);
+    expect(listed.result.tools).toHaveLength(9);
     expect(listed.result).toMatchObject({ resultType: "complete", ttlMs: 0, cacheScope: "private" });
     expect(listed.result._meta).toMatchObject({
       "io.modelcontextprotocol/serverInfo": { name: "lcm", version: "9.9.9-test" },

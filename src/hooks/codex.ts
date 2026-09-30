@@ -183,6 +183,7 @@ export interface CodexHookDeps {
   enabled: boolean;
   /** The storage root both branches write under, so an injected dependency isolates both. */
   paths: LcmPaths;
+  workerOwner?: () => string;
 }
 
 function parseInput(stdin: string): CodexInput | null {
@@ -328,6 +329,28 @@ export async function dispatchCodexHook(
   try {
     const input = parseInput(stdin);
     if (!input) return EMPTY;
+    if (process.env.LCM_SUMMARIZE_WORKER === "1") {
+      if (input.hook_event_name === "SessionStart" && (input.source === "startup" || input.source === "clear")) {
+        const threadId = process.env.CODEX_THREAD_ID;
+        if (!threadId) throw new Error("Worker enrollment refused: CODEX_THREAD_ID is unavailable; the native thread owner cannot be verified.");
+        const { registerWorkerSession } = await import("../worker-session.js");
+        const result = await registerWorkerSession(paths, { sessionId: input.session_id, cwd: input.cwd,
+          client: "codex", source: input.source, owner: dependencies?.workerOwner?.() ?? `${(await import("./worker-owner.js")).workerHookOwner("codex")}:thread:${threadId}` });
+        console.error(`[lcm] ${result.warning} Promotions without provenance: ${result.unprovenanced}.`);
+      }
+      if (input.hook_event_name === "SessionStart" && input.source !== "startup" && input.source !== "clear") {
+        console.error("[lcm] worker enrollment refused; start a fresh dedicated session. Resume, compact, continue, fork and subagents cannot enroll.");
+        if (input.source !== "compact") {
+          const { finishWorkerSession } = await import("../worker-session.js");
+          await finishWorkerSession(paths, input.cwd, input.session_id);
+        }
+      }
+      if (input.hook_event_name === "SessionEnd") {
+        const { finishWorkerSession } = await import("../worker-session.js");
+        await finishWorkerSession(paths, input.cwd, input.session_id);
+      }
+      return EMPTY;
+    }
     observedInput = input;
     const shortDeadline = input.hook_event_name === "Interrupt" || input.hook_event_name === "SessionEnd";
     const compacting = input.hook_event_name === "PreCompact";

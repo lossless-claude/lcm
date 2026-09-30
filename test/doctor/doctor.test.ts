@@ -58,6 +58,64 @@ function minimalDeps(overrides: Partial<Parameters<typeof runDoctor>[0]> = {}) {
   };
 }
 
+it("doctor exposes a shortened worker id", async () => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { registerWorkerSession } = await import("../../src/worker-session.js");
+  const { createLcmPaths } = await import("../../src/lcm-paths.js");
+  const home = mkdtempSync(join(tmpdir(), "lcm-worker-doctor-"));
+  const sessionId = "worker-session-unique-full-identity-685";
+  try {
+    await registerWorkerSession(createLcmPaths(home), { sessionId, cwd: process.cwd(), client: "claude", owner: "hook" });
+    const results = await runDoctor(minimalDeps({ lcmHome: home }));
+    const workers = results.filter(result => result.name.startsWith("summarize-worker-"));
+    expect(workers).toHaveLength(1);
+    expect(JSON.stringify(workers)).not.toContain(sessionId);
+    expect(workers[0].name).toMatch(/^summarize-worker-[a-f0-9]{8}$/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+it("doctor identifies copied-claim recovery with a short id and cwd for reviewing retained history", async () => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { createLcmPaths } = await import("../../src/lcm-paths.js");
+  const { projectDbPath, projectId } = await import("../../src/daemon/project.js");
+  const { openProject } = await import("../../src/daemon/project-group.js");
+  const { getLcmConnection, closeLcmConnection } = await import("../../src/db/connection.js");
+  const { runLcmMigrations } = await import("../../src/db/migration.js");
+  const { SessionCapture } = await import("../../src/capture.js");
+  const { ScrubEngine } = await import("../../src/scrub.js");
+  const { parseClaudeTranscriptRecord } = await import("../../src/transcript.js");
+  const { WorkerStore } = await import("../../src/store/worker-store.js");
+  const home = mkdtempSync(join(tmpdir(), "lcm-claim-doctor-"));
+  const cwd = process.cwd(); const paths = createLcmPaths(home);
+  const sessionId = "copied-claim-full-session-id-685";
+  const path = projectDbPath(cwd, paths);
+  try {
+    openProject(cwd, paths);
+    const db = getLcmConnection(path);
+    try {
+      runLcmMigrations(db);
+      const capture = new SessionCapture(db, projectId(cwd), new ScrubEngine([], []), paths);
+      await capture.write({ sessionId, cwd, messages: [{ role: "user", content: "retained history", tokenCount: 1 }] });
+      new WorkerStore(db).recordIssuedJob("job-issued");
+      await capture.write({ sessionId, cwd, messages: [
+        { message: { role: "assistant", content: [{ type: "tool_use", id: "claim", name: "lcm_summarize_claim", input: {} }] } },
+        { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "claim", content: JSON.stringify({ job: { id: "job-issued", prompt: "payload", system: "system" } }) }] } },
+      ].map(record => parseClaudeTranscriptRecord(JSON.stringify(record)).message!) });
+      expect(db.prepare("SELECT content FROM messages").all()).toEqual([{ content: "retained history" }]);
+    } finally { closeLcmConnection(path); }
+    const result = (await runDoctor(minimalDeps({ lcmHome: home }))).find(result => result.name.startsWith("summarize-worker-"))!;
+    expect(result.name).toMatch(/^summarize-worker-[a-f0-9]{8}$/);
+    expect(JSON.stringify(result)).not.toContain(sessionId);
+    expect(result.message).toContain(cwd);
+    expect(result.message).toContain("Copied successful claim");
+    expect(result.message).toContain("stored history is preserved");
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
 describe("runDoctor security section", () => {
   it("shows gitleaks + native pattern counts as pass when generated-patterns.ts exists", async () => {
     const results = await runDoctor(minimalDeps({ cwd: "/tmp/nonexistent-project-xyz" }));

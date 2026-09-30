@@ -414,7 +414,7 @@ Anything else fails the pass without trying the next link: a request the endpoin
 `session-pool` sends the same rendered prompts to dedicated interactive workers. It
 uses a separate FIFO from `session`: an ordinary session can claim only its own
 jobs, and a worker can claim only pool jobs, one at a time. A job no worker claims
-within 20 s, or a claimed job not answered within 3 minutes, falls along the
+within 20 s, or a claimed job not answered within `llm.poolCompletionMs` (default 180000 ms), falls along the
 configured provider chain; late replies are discarded. With flat configuration it uses `llm.fallbackProvider` (or `auto` when
 unset); with named endpoints it uses `llm.fallback`. Set `fallbackProvider` to
 `disabled` to fail an unavailable pool job without starting a process provider.
@@ -436,7 +436,7 @@ summary, manifest and ledger retain their existing behavior.
 Claude workers require function hooks. They use `$.model.complete` for both leaf
 and condensed jobs, never `fork`. OMP workers use the host's `pi-ai.complete` and
 `modelRegistry` credentials. They send no messages to the worker's conversation.
-Usage is recorded as `session-pool:haiku` or `session-pool:sonnet`. Requests are
+Hook usage is recorded as `session-pool:haiku` or `session-pool:sonnet`; agent submissions use a validated `session-pool:<model>`, with missing usage estimated. Requests are
 limited to the remaining cap; accounted usage from failed answers also reduces
 it, and reaching the cap stops polling. Cap state lasts for the module's loaded
 lifetime; a fresh worker starts a new allowance.
@@ -707,3 +707,23 @@ one session start requests compaction for, oldest-first; a larger backlog drains
 across successive starts instead of bursting the summarizer. Set `hooks.disableAutoCompact`
 to turn the sweep off entirely. The request is fire-and-forget, so session start's
 latency is unaffected regardless of how large the backlog is.
+
+### Agent worker exclusion
+
+`LCM_SUMMARIZE_WORKER=1` declares a dedicated worker at harness startup. Claude's SessionStart command hook and Codex hooks persist enrollment before agent transports may claim. Only a new `startup` or `clear` session id may enroll; resume, compact, continue and fork refuse. Retained history refuses enrollment without deletion. Capture exclusion is permanent for that session and its descendants. `lcm status`, `lcm doctor` and `lcm stats` report active, finished or abandoned enrollment and last activity. Forking worker sessions is unsupported; use a fresh dedicated session. OMP hook enrollment uses its native session-manager API; its shell and MCP identities remain unverified and refused.
+
+Function hooks retry enrollment confirmation with bounded backoff for about 30 seconds
+before reporting refusal. Request-supplied ancestry never installs exclusion or changes
+enrollment. Copied successful claim payloads stop future capture while preserving stored
+history; doctor shows the short id and cwd for review. Codex `/clear` revocation assumes
+`CODEX_THREAD_ID` stays stable across a clear, which is unverified. Shell claims and
+submissions read the current id on every call; Codex MCP is refused, so a stale id has
+no supported transport.
+
+`llm.poolCompletionMs` is a positive integer in milliseconds, default 180000,
+maximum 2147483647. `LCM_POOL_COMPLETION_MS` overrides it when the daemon loads
+configuration. It bounds time after claim for every pool transport. Jobs have a
+20000 ms queue claim window; session-owned jobs have a fresh 60000 ms completion
+window after claim. Pool expiry marks enrollment abandoned, revokes admission and discards late answers; it never
+re-enables capture. Agent transports are described in
+[summarize workers](summarize-workers.md).

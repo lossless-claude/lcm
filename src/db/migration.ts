@@ -931,6 +931,26 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
     db.exec(`ALTER TABLE promoted ADD COLUMN archived_at TEXT DEFAULT NULL`);
   }
 
+  db.exec(`CREATE TABLE IF NOT EXISTS worker_claim_markers (
+    session_id TEXT NOT NULL, call_id TEXT NOT NULL, PRIMARY KEY(session_id, call_id)
+  );`);
+  // Jobs handed to this project's workers: only their ids make a claim result a copied claim.
+  db.exec(`CREATE TABLE IF NOT EXISTS worker_issued_jobs (
+    job_id TEXT PRIMARY KEY, issued_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );`);
+
+  // A worker's exclusion is permanent; only its admission can be revoked.
+  db.exec(`CREATE TABLE IF NOT EXISTS summarize_workers (
+    session_id TEXT PRIMARY KEY, cwd TEXT NOT NULL, client TEXT NOT NULL,
+    owner TEXT, state TEXT NOT NULL CHECK(state IN ('active', 'finished', 'abandoned')),
+    exclusion_reason TEXT,
+    last_activity TEXT NOT NULL DEFAULT (datetime('now'))
+  );`);
+  const workerColumns = db.prepare("PRAGMA table_info(summarize_workers)").all() as Array<{ name: string }>;
+  if (!workerColumns.some(column => column.name === "exclusion_reason")) {
+    db.exec("ALTER TABLE summarize_workers ADD COLUMN exclusion_reason TEXT");
+  }
+
   // Session ingest log — tracks which sessions are fully ingested
   db.exec(`
     CREATE TABLE IF NOT EXISTS session_ingest_log (
