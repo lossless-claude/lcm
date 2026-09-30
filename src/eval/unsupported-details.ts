@@ -9,19 +9,24 @@ export type UnsupportedDetail = {
 export function findUnsupportedDetails(source: string, summary: string): UnsupportedDetail[] {
   const patterns: Array<[UnsupportedDetail["kind"], RegExp]> = [
     ["quoted", /"[^"\n]+"|(?<!\w)'[^'\n]+'(?!\w)|`[^`\n]+`|“[^”\n]+”/g],
-    ["path", /(?:[A-Za-z]:\\|(?:\.{1,2}|~)?\/)[\w.\-/\\]+|\b[\w.-]+(?:\/[\w.-]+)+|\b[\w-]+\.(?:ts|tsx|js|jsx|json|yaml|yml|md|py|go|rs|sqlite|sql|txt)\b/g],
-    ["identifier", /\b(?:[a-zA-Z_$][\w$]*[_$][\w$]+|[a-z]+[A-Z][\w$]*|[A-Z][a-z]+[A-Z][\w$]*|[A-Z]{2,}[\w$]*|[a-zA-Z]+(?:-[a-zA-Z]+)+)\b/g],
+    ["path", /(?<![\w.-])(?:[A-Za-z]:\\|(?:\.{1,2}|~)?\/)[\w.\-/\\]+|\b[\w.-]+(?:\/[\w.-]+)+|\b[\w-]+\.(?:ts|tsx|js|jsx|json|yaml|yml|md|py|go|rs|sqlite|sql|txt)\b/g],
+    // Dotted members need two characters per part, so e.g., i.e. and U.S. stay prose; a call is not
+    // a plural "(s)".
+    ["identifier", /(?<![\w-])--[a-zA-Z][\w-]*|\b[a-zA-Z_$][\w$]+(?:\.[a-zA-Z_$][\w$]+)+\b|\b[a-zA-Z_$][\w$]*(?=\((?!s\)))|\b(?:[a-zA-Z_$][\w$]*[_$][\w$]+|[a-z]+[A-Z][\w$]*|[A-Z][a-z]+[A-Z][\w$]*|[A-Z]{2,}[\w$]*)\b/g],
     ["number", /(?<![\w$])(?:0x[\da-fA-F]+|\d+(?:\.\d+)?)(?![\w$])/g],
   ];
   const occupied: Array<{ start: number; end: number }> = [];
   const unsupported: UnsupportedDetail[] = [];
   for (const [kind, pattern] of patterns) {
     for (const match of summary.matchAll(pattern)) {
+      // A sentence's full stop is not part of the path before it.
+      const text = kind === "path" ? match[0].replace(/(?<=\w)\.+$/, "") : match[0];
+      if (kind === "path" && text.includes("/")
+        && text.split("/").every((segment) => /^[A-Za-z]+(?:-[A-Za-z]+)*$/.test(segment))) continue;
       const start = match.index;
-      const end = start + match[0].length;
+      const end = start + text.length;
       if (occupied.some((span) => start < span.end && end > span.start)) continue;
       occupied.push({ start, end });
-      const text = match[0];
       const value = kind === "quoted" ? text.slice(1, -1) : text;
       const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const present = kind === "quoted"

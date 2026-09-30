@@ -107,7 +107,7 @@ export async function runSummarizerComparison(options: ComparisonOptions): Promi
     candidates: models.map((name) => ({ name, type: name === "session-pool" ? "session-pool" : config.llm.providers![name].type,
       model: name === "session-pool" ? "worker-selected" : config.llm.providers![name].model ?? "default" })),
     results, chunks: comparisonChunks(results, models),
-    notice: "Contains conversation content already scrubbed at capture. Unsupported details are a deterministic hint, not proof of hallucination. Unknown cost is null, never free.",
+    notice: "Contains conversation content already scrubbed at capture. Unsupported details count absent numbers, quoted strings, paths with an extension, an explicit prefix or a non-word segment, and code-shaped identifiers (underscores, camelCase, dotted members, calls and flags); plain hyphenated or slash-joined words are excluded. This is a deterministic hint, not proof of hallucination. Unknown cost is null, never free.",
   };
   const out = resolve(options.out ?? "summarizer-report");
   mkdirSync(out, { recursive: true });

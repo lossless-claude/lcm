@@ -34,6 +34,37 @@ describe("unsupported summary details", () => {
     expect(findUnsupportedDetails("142 preLedgerStore", "42 LedgerStore").map((d) => d.text)).toEqual(["42", "LedgerStore"]);
   });
 
+  it.each([
+    "deep-dive", "end-to-end", "case-by-case", "Two-tier",
+    "indexing/replay", "normal/post-compact", "daemon/database",
+    "e.g. a guard", "i.e. one budget", "U.S. dates", "the file(s) touched", "moved into docs/design.",
+  ])("ignores plain prose %s", (summary) => {
+    expect(findUnsupportedDetails("A two-tier system.", summary)).toEqual([]);
+  });
+
+  it("matches a path at the end of a sentence without its full stop", () => {
+    expect(findUnsupportedDetails("Edited src/present.ts today.", "Edited src/present.ts.")).toEqual([]);
+    expect(findUnsupportedDetails("No matching details.", "Edited src/missing.ts.")).toEqual([
+      { kind: "path", text: "src/missing.ts", start: 7, end: 21 },
+    ]);
+  });
+
+  it.each([
+    ["path", "/var/cache"], ["path", "./cache"], ["path", "../cache"],
+    ["path", "~/cache"], ["path", "src/missing.ts"], ["path", "missing.json"],
+    ["path", "cache_v2/entries"], ["path", "cache/entry42"],
+    ["identifier", "snake_case"], ["identifier", "camelCase"],
+    ["identifier", "store.close"], ["identifier", "close()"],
+    ["identifier", "--no-planted"], ["number", "7331"],
+    ["quoted", '"invented detail"'],
+  ])("counts absent %s detail %s once with exact offsets", (kind, summary) => {
+    const text = summary === "close()" ? "close" : summary;
+    expect(findUnsupportedDetails("No matching details.", `Use ${summary} now.`)).toEqual([
+      { kind, text, start: 4, end: 4 + text.length },
+    ]);
+    expect(findUnsupportedDetails(summary, summary)).toEqual([]);
+  });
+
   it("keeps contractions separate from single-quoted details", () => {
     expect(findUnsupportedDetails("Use the existing label.", "Don't use 'invented detail'.").map((detail) => detail.text))
       .toEqual(["'invented detail'"]);
