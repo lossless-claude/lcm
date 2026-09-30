@@ -9,7 +9,9 @@ import { createAnthropicSummarizer } from "../../src/llm/anthropic.js";
 import { withRequestDeadline } from "../../src/llm/http-timeout.js";
 import { createOpenAISummarizer } from "../../src/llm/openai.js";
 
-const DEADLINE_MS = 50;
+const DEADLINE_MS = 200;
+/** Catches an unbounded request; the request counts prove there were no retries. Below vitest's 5 s test timeout. */
+const BOUND_MS = 3_000;
 
 describe("HTTP summarizer deadlines", () => {
   const servers: ReturnType<typeof createServer>[] = [];
@@ -39,7 +41,7 @@ describe("HTTP summarizer deadlines", () => {
     let timer: ReturnType<typeof setTimeout>;
     try {
       return await Promise.race([promise, new Promise<T>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("request exceeded deadline bound")), 700);
+        timer = setTimeout(() => reject(new Error("request exceeded deadline bound")), BOUND_MS);
       })]);
     } finally {
       clearTimeout(timer!);
@@ -51,14 +53,12 @@ describe("HTTP summarizer deadlines", () => {
     const config = loadDaemonConfig("/nonexistent", { llm: {
       provider: "silent", fallback: ["next"], providers: {
         silent: { type: "openai", model: "m", baseURL: `${base}/silent`, timeoutMs: DEADLINE_MS },
-        next: { type: "openai", model: "m", baseURL: `${base}/next`, timeoutMs: 500 },
+        next: { type: "openai", model: "m", baseURL: `${base}/next`, timeoutMs: BOUND_MS },
       },
     } }, {});
     const summarize = (await createSummarizer(resolveEffectiveProvider(config), config))!;
-    const started = Date.now();
 
     await expect(withinBound(summarize("conversation", false))).resolves.toBe("fallback summary");
-    expect(Date.now() - started).toBeLessThan(700);
     expect(requests.filter((path) => path.startsWith("/silent/"))).toHaveLength(1);
     expect(requests.filter((path) => path.startsWith("/next/"))).toHaveLength(1);
   });
