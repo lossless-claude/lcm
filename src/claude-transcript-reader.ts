@@ -1,4 +1,6 @@
-import { readJsonlTranscriptDelta, type JsonlTranscriptCursor, type ReadJsonlTranscriptDeltaOptions } from "./jsonl-transcript-reader.js";
+import {
+  readJsonlTranscriptDelta, type JsonlTranscriptCursor, type JsonlTranscriptDelta, type ReadJsonlTranscriptDeltaOptions,
+} from "./jsonl-transcript-reader.js";
 import { CLAUDE_PARSER_SHAPE, parseClaudeTranscriptRecord } from "./transcript.js";
 
 export interface ClaudeTranscriptCursor extends JsonlTranscriptCursor {
@@ -14,8 +16,13 @@ export interface ClaudeTranscriptCursor extends JsonlTranscriptCursor {
   pendingFingerprint?: string;
 }
 
+/** The shared reader's delta, plus the tool-use models decoded from the records it read. */
+export type ClaudeTranscriptDelta = JsonlTranscriptDelta<unknown, ReturnType<typeof parseClaudeTranscriptRecord>> & {
+  toolUseModels: Map<string, string>;
+};
+
 /** Claude's parser over the common byte reader, including its best-effort malformed-line filtering. */
-export async function readClaudeTranscriptDelta(path: string, options: ReadJsonlTranscriptDeltaOptions) {
+export async function readClaudeTranscriptDelta(path: string, options: ReadJsonlTranscriptDeltaOptions): Promise<ClaudeTranscriptDelta> {
   const models = new Map<string, string>();
   const delta = await readJsonlTranscriptDelta(path, {
     label: "Claude",

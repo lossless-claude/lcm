@@ -382,7 +382,9 @@ Session reconciliation uses each transcript source's recovery checks before appl
    edits outside the samples are outside the shared reader's stable-prefix contract.
    Claude Code's in-place rewrite behavior is unconfirmed; recovery never depends on it
    being unable to replace or truncate a file. A missing or invalid checkpoint causes a
-   full read. An unknown or older parser-shape stamp triggers a full stored-prefix comparison before the transcript is sliced
+   full read. A session validated once stays guarded when its database or transcript path
+   changes: its checkpoint no longer resumes, and a stored history that is not a prefix of the
+   transcript stalls capture instead of falling back to count-based capture. An unknown or older parser-shape stamp triggers a full stored-prefix comparison before the transcript is sliced
    at the stored message count. An aligned history is restamped during capture; a mismatch stalls
    for rebuild. The stored conversation is the ground truth for how much of the file lcm has.
    Once compaction has written its event rows into the session, the

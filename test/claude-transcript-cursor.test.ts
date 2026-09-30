@@ -1,4 +1,4 @@
-import { appendFileSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -246,4 +246,30 @@ it("revalidates the stored prefix when built-in redaction rules change", async (
   } finally {
     NATIVE_PATTERNS.pop();
   }
+});
+
+it("keeps a validated session guarded when its transcript path changes", async () => {
+  const { input, capture } = fixture();
+  writeFileSync(io.path, line("one") + line("two"));
+  await capture.captureTranscript(input);
+  // Another transcript whose prefix differs from the stored history, plus a tail.
+  const other = join(dir, "other.jsonl");
+  writeFileSync(other, line("different") + line("two") + line("tail"));
+  await expect(capture.captureTranscript({ ...input, transcriptPath: other })).rejects.toThrow("--rebuild");
+  expect(await capture.conversationStore.getSessionMessageCount("session")).toBe(2);
+});
+
+it("keeps a validated session guarded when its database is copied", async () => {
+  const { input, capture } = fixture();
+  writeFileSync(io.path, line("one") + line("two"));
+  await capture.captureTranscript(input);
+  db.close();
+  const copy = join(dir, "copy.sqlite");
+  copyFileSync(join(dir, "db.sqlite"), copy);
+  db = new DatabaseSync(copy);
+  // The same path now holds a different prefix plus a tail.
+  writeFileSync(io.path, line("different") + line("two") + line("tail"));
+  const reopened = new SessionCapture(db, "proj", new ScrubEngine([], []));
+  await expect(reopened.captureTranscript(input)).rejects.toThrow("--rebuild");
+  expect(await reopened.conversationStore.getSessionMessageCount("session")).toBe(2);
 });

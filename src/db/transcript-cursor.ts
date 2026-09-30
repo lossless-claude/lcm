@@ -80,15 +80,20 @@ function databaseIdentity(db: DatabaseSync): string {
   return memoryIdentities.get(db)!;
 }
 
-/** Claude checkpoints additionally bind a successful prefix validation to its database and redaction rules. */
+/**
+ * Claude checkpoints additionally bind a successful prefix validation to its database and redaction rules.
+ * A session validated once stays guarded: another database or transcript path only withholds the
+ * fingerprint, so the read cannot resume and must validate the stored prefix again.
+ */
 export function loadClaudeTranscriptCursor(db: DatabaseSync, conversationId: number, path: string): ClaudeTranscriptCursor | undefined {
-  const row = db.prepare(`SELECT claude_redaction_key, claude_database_identity, claude_validated_count, claude_pending_fingerprint
-    FROM codex_ingest_cursors WHERE conversation_id = ?`)
-    .get(conversationId) as { claude_redaction_key: string | null; claude_database_identity: string | null;
+  const row = db.prepare(`SELECT transcript_path, claude_redaction_key, claude_database_identity, claude_validated_count,
+    claude_pending_fingerprint FROM codex_ingest_cursors WHERE conversation_id = ?`)
+    .get(conversationId) as { transcript_path: string; claude_redaction_key: string | null; claude_database_identity: string | null;
       claude_validated_count: number | null; claude_pending_fingerprint: string | null } | undefined;
-  if (!row || row.claude_redaction_key === null || row.claude_database_identity !== databaseIdentity(db)) return undefined;
-  const cursor = loadTranscriptCursor(db, conversationId, path);
-  return cursor && { ...cursor, redactionKey: row.claude_redaction_key,
+  if (!row || row.claude_redaction_key === null) return undefined;
+  const cursor = loadTranscriptCursor(db, conversationId, row.transcript_path)!;
+  const trusted = row.transcript_path === path && row.claude_database_identity === databaseIdentity(db);
+  return { ...cursor, ...(trusted ? {} : { fingerprint: undefined }), redactionKey: row.claude_redaction_key,
     validatedCount: row.claude_validated_count ?? undefined, pendingFingerprint: row.claude_pending_fingerprint ?? undefined };
 }
 
