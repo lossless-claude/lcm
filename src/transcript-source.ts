@@ -4,7 +4,8 @@ import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { extractCodexTurnModels, type CodexSessionMeta } from "./codex-transcript.js";
 import { readCodexTranscriptDelta, type CodexTranscriptCursor, type CodexTranscriptDelta } from "./codex-transcript-reader.js";
-import { loadTranscriptCursor, saveTranscriptCursor } from "./db/transcript-cursor.js";
+import { loadClaudeToolUseModels, loadClaudeTranscriptCursor, loadTranscriptCursor, saveClaudeTranscriptCursor, saveTranscriptCursor } from "./db/transcript-cursor.js";
+import { readClaudeTranscriptDelta, type ClaudeTranscriptCursor } from "./claude-transcript-reader.js";
 import { claudeTranscriptPath, isSafeTranscriptPath, projectId } from "./daemon/project.js";
 import type { EventsDb } from "./hooks/events-db.js";
 import {
@@ -15,16 +16,16 @@ import {
   type ParsedOmpTranscriptRecord,
 } from "./omp-transcript.js";
 import { readOmpTranscriptDelta, type OmpTranscriptCursor, type OmpTranscriptDelta } from "./omp-transcript-reader.js";
-import { compareStoredMessageContent } from "./message-content.js";
+import { compareStoredMessageContent, normalizeMessageContent } from "./message-content.js";
 import type { SessionClient } from "./session-client.js";
 import { discoverSubagentTranscripts, type DiscoveredSubagentTranscript } from "./subagent-attribution.js";
-import { extractToolUseModels, parseTranscript, type ParsedMessage } from "./transcript.js";
+import { parseTranscript, type ParsedMessage } from "./transcript.js";
 
 /**
  * The transcript-source seam: one interface answering "what does this
  * transcript hold beyond what is already stored", with an adapter per session
  * client (src/session-client.ts). Each adapter owns its own delta model —
- * Claude re-parses the file and slices at the stored count, verifying the
+ * Claude resumes from a validated durable byte cursor or verifies a full read's
  * stored prefix after compaction or when its parser shape changes; Codex resumes from
  * a byte-offset cursor and verifies the stored prefix when it cannot — its own
  * validation rules, and its own resume checkpoint, opaque to callers. It also
@@ -107,6 +108,8 @@ export interface TranscriptSource {
   loadCheckpoint?(db: DatabaseSync, conversationId: number, transcriptPath: string): unknown;
   /** Persists a delta's checkpoint. Called by capture inside the message-append transaction, so a crash leaves neither behind. */
   saveCheckpoint?(db: DatabaseSync, conversationId: number, transcriptPath: string, checkpoint: unknown): void;
+  /** Backfill from metadata persisted with capture, when this adapter keeps an index. */
+  backfillModels?(db: DatabaseSync, conversationId: number, events: EventsDb, sessionId: string): void;
 }
 
 /** A transcript the adapter refuses to read: the caller's request is wrong, not the daemon. */
@@ -120,6 +123,12 @@ const MAX_CLAUDE_PREFIXES = 128;
 function transcriptPrefixFingerprint(messages: ParsedMessage[], count: number): string {
   const hash = createHash("sha256");
   for (let i = 0; i < count; i++) hash.update(JSON.stringify([messages[i].role, messages[i].content]));
+  return hash.digest("hex");
+}
+
+function capturedFingerprint(messages: ReadonlyArray<{ role: string; content: string }>, scrub: (text: string) => string): string {
+  const hash = createHash("sha256");
+  for (const message of messages) hash.update(JSON.stringify([message.role, normalizeMessageContent(scrub(message.content))]));
   return hash.digest("hex");
 }
 
@@ -175,40 +184,84 @@ const claudeSource: TranscriptSource = {
   },
   async read(path, stored, ctx) {
     const storedCount = stored?.storedCount ?? 0;
-    const messages = parseTranscript(path);
     const key = JSON.stringify([ctx.cwd, ctx.sessionId, path]);
     // A fresh read, including the rebuild path, cannot reuse a pre-rebuild validation.
     if (!stored) claudePrefixes.delete(key);
     const restampParserShape = stored !== undefined && !(await stored.parserShapeMatches());
+    const cursor = stored?.checkpoint as ClaudeTranscriptCursor | undefined;
+    let prior = cursor && cursor.fingerprint && !restampParserShape && ctx.redactionKey !== undefined &&
+      cursor.redactionKey === ctx.redactionKey && cursor.messageCount === storedCount ? cursor : undefined;
+    // Enrollment in a pre-cursor session validates its old rows before appending. Check
+    // only that enrollment's newly stored overlap once, including across a restart.
+    if (prior && stored && prior.validatedCount !== undefined && prior.validatedCount < storedCount) {
+      const overlap = await stored.storedMessages(prior.validatedCount);
+      if (overlap.length !== storedCount - prior.validatedCount ||
+          capturedFingerprint(overlap, ctx.scrub) !== prior.pendingFingerprint) prior = undefined;
+    }
+    let delta: Awaited<ReturnType<typeof readClaudeTranscriptDelta>>;
+    try {
+      delta = await readClaudeTranscriptDelta(path, { cursor: prior, includeTrailingRecord: true });
+    } catch (error) {
+      throw new TranscriptSourceError(error instanceof Error ? error.message : "invalid transcript");
+    }
+    const messages = delta.resumed ? delta.messages : parseTranscript(path, "current", delta.messages);
+    const guarded = stored !== undefined && (restampParserShape || await stored.verifyAfterCompaction?.() || cursor !== undefined);
+    let validated = delta.resumed || stored === undefined;
     // Before compaction stopped counting its own event rows, a capture after a compaction
     // sliced past as many transcript messages as the session held event rows, and the
     // corrected count then re-stored its tail. Such a history is not a prefix of the
     // transcript; appending to it would repeat the damage, so capture stalls until a rebuild.
-    if (stored && (restampParserShape || await stored.verifyAfterCompaction?.())) {
+    if (!delta.resumed && stored && (guarded || ctx.redactionKey !== undefined)) {
       try {
         if (restampParserShape) {
           claudePrefixes.delete(key);
           await validateTranscriptRecovery(stored, messages, ctx, "Claude");
-        } else {
+        } else if (await stored.verifyAfterCompaction?.()) {
           await validateClaudePrefix(path, stored, messages, ctx);
+        } else {
+          await validateTranscriptRecovery(stored, messages, ctx, "Claude");
         }
+        validated = true;
       } catch (error) {
         if (!(error instanceof TranscriptSourceError)) throw error;
-        throw new TranscriptSourceError(
-          `${error.message}. A session captured after a compaction by an earlier lcm can hold skipped and repeated messages: ` +
-            "preview with `lcm import --provider claude --rebuild --dry-run`, then repair it with `lcm import --provider claude --rebuild --yes`",
-        );
+        // Retain legacy count-only capture for histories the existing guard cannot
+        // compare, but never bless such a history with a resumable cursor.
+        if (!guarded) {
+          validated = false;
+        } else {
+          throw new TranscriptSourceError(
+            `${error.message}. A session captured after a compaction by an earlier lcm can hold skipped and repeated messages: ` +
+              "preview with `lcm import --provider claude --rebuild --dry-run`, then repair it with `lcm import --provider claude --rebuild --yes`",
+          );
+        }
       }
     }
     return {
-      messages: messages.slice(storedCount),
+      messages: delta.resumed ? messages : messages.slice(storedCount),
       sourceOffset: storedCount,
       restampParserShape,
+      // Without a stable redaction identity, the next capture must compare the prefix again.
+      checkpoint: validated && ctx.redactionKey !== undefined && (stored || messages.length > 0)
+        ? { ...delta.cursor, redactionKey: ctx.redactionKey, toolUseModels: delta.toolUseModels, replaceToolUseModels: !delta.resumed,
+            validatedCount: !delta.resumed && stored ? storedCount : delta.cursor.messageCount,
+            pendingFingerprint: !delta.resumed && stored ? capturedFingerprint(messages.slice(storedCount), ctx.scrub) : undefined }
+        : undefined,
       backfillModels(events, sessionId) {
         if (!events.hasUnfilledModels(sessionId, "claude")) return;
-        events.backfillToolCallModels(sessionId, extractToolUseModels(path), "claude");
+        events.backfillToolCallModels(sessionId, delta.toolUseModels, "claude");
       },
     };
+  },
+  loadCheckpoint(db, conversationId, path) {
+    return loadClaudeTranscriptCursor(db, conversationId, path);
+  },
+  saveCheckpoint(db, conversationId, path, checkpoint) {
+    saveClaudeTranscriptCursor(db, conversationId, path, checkpoint as ClaudeTranscriptCursor);
+  },
+  backfillModels(db, conversationId, events, sessionId) {
+    const ids = events.unfilledToolUseIds(sessionId, "claude");
+    if (!ids.length) return;
+    events.backfillToolCallModels(sessionId, loadClaudeToolUseModels(db, conversationId, ids), "claude");
   },
 };
 

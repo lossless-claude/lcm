@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { readFileSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GITLEAKS_PATTERNS } from "./generated-patterns.js";
@@ -134,7 +135,7 @@ export interface ScrubCounts {
 }
 
 export class ScrubEngine {
-  /** Stable across request-scoped engines; changes when the effective user rules change. */
+  /** Stable digest of every rule; safe to persist even when a user pattern contains a literal secret. */
   readonly rulesKey: string;
   private readonly spanningPatterns: Array<{ source: string; regex: RegExp }> = [];
   private readonly tokenPatterns: Array<{ source: string; regex: RegExp }> = [];
@@ -154,7 +155,9 @@ export class ScrubEngine {
   readonly invalidPatterns: string[] = [];
 
   constructor(globalPatterns: string[], projectPatterns: string[]) {
-    this.rulesKey = JSON.stringify([globalPatterns, projectPatterns]);
+    this.rulesKey = createHash("sha256").update(JSON.stringify([
+      GITLEAKS_PATTERNS.map(pattern => [pattern.regex, pattern.flags]), NATIVE_PATTERNS, globalPatterns, projectPatterns,
+    ])).digest("hex");
     this._gitleaksCount = GITLEAKS_PATTERNS.length;
     this._nativeCount = NATIVE_PATTERNS.length;
     this._globalPatternCount = globalPatterns.length;

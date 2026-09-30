@@ -3,6 +3,8 @@ import { statSync } from "node:fs";
 import { sep } from "node:path";
 import type { EventsDb } from "./hooks/events-db.js";
 import { upsertRedactionCounts } from "./db/redaction-stats.js";
+import { invalidateClaudeTranscriptCursor } from "./db/transcript-cursor.js";
+import { openStandaloneLcmConnection } from "./db/connection.js";
 import { normalizeMessageContent } from "./message-content.js";
 import type { ScrubEngine } from "./scrub.js";
 import {
@@ -196,7 +198,18 @@ export class SessionCapture {
           }
         : {}),
     });
-    return { ...written, transcriptPath, backfillModels: (events) => delta.backfillModels(events, input.sessionId) };
+    const databases = this.db.prepare("PRAGMA database_list").all() as Array<{ name: string; file: string }>;
+    const dbPath = databases.find(row => row.name === "main")!.file;
+    return { ...written, transcriptPath, backfillModels: (events) => {
+      if (!source.backfillModels || delta.checkpoint === undefined) return delta.backfillModels(events, input.sessionId);
+      // /ingest replies and releases its connection before running this callback.
+      const db = dbPath ? openStandaloneLcmConnection(dbPath, { readOnly: true }) : this.db;
+      try {
+        source.backfillModels(db, written.conversationId, events, input.sessionId);
+      } finally {
+        if (dbPath) db.close();
+      }
+    } };
   }
 
   private storedTranscript(source: TranscriptSource, sessionId: string, stored: StoredSession, transcriptPath: string): StoredTranscript {
@@ -238,10 +251,11 @@ export class SessionCapture {
     if (source.client !== "claude") throw new TranscriptSourceError("Only Claude Code sessions can be rebuilt from their transcript");
     const scrub = (text: string) => this.scrubber.scrubWithCounts(text).text;
     const transcriptPath = source.locate(input);
-    const delta = transcriptPath ? await source.read(transcriptPath, undefined, { ...input, scrub }) : undefined;
+    const delta = transcriptPath ? await source.read(transcriptPath, undefined, { ...input, source: "import", scrub }) : undefined;
     // Parsed before the transaction takes the write lock; the plan reads it only when not aligned.
     const legacy = transcriptPath ? parseTranscript(transcriptPath, "legacy") : undefined;
     return this.conversationStore.withTransaction(async () => {
+      invalidateClaudeTranscriptCursor(this.db, input.sessionId);
       const plan = await planSessionRebuild(this.db, input.sessionId, delta?.messages, scrub, () => legacy);
       if (plan.kind !== "repairable" || plan.conversationId === undefined || !delta) return { plan, ingested: 0 };
       clearConversationForRebuild(this.db, plan.conversationId, input.sessionId);

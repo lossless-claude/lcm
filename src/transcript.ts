@@ -162,14 +162,7 @@ export function extractToolUseModels(transcriptPath: string): Map<string, string
     const trimmed = line.trim();
     if (!trimmed) continue;
     try {
-      const obj: TranscriptLine = JSON.parse(trimmed);
-      const model = obj.message?.model;
-      if (obj.message?.role !== "assistant" || typeof model !== "string" || !model) continue;
-      for (const block of blocksOf(obj.message?.content)) {
-        if (block.type === "tool_use" && typeof block.id === "string" && block.id) {
-          models.set(block.id, model);
-        }
-      }
+      for (const [id, model] of toolUseModels(JSON.parse(trimmed))) models.set(id, model);
     } catch {
       // skip malformed lines
     }
@@ -177,7 +170,42 @@ export function extractToolUseModels(transcriptPath: string): Map<string, string
   return models;
 }
 
-export function parseTranscript(transcriptPath: string, toolShape: "current" | "legacy" = "current"): ParsedMessage[] {
+function toolUseModels(obj: TranscriptLine): Map<string, string> {
+  const models = new Map<string, string>();
+  const model = obj.message?.model;
+  if (obj.message?.role !== "assistant" || typeof model !== "string" || !model) return models;
+  for (const block of blocksOf(obj.message.content)) {
+    if (block.type === "tool_use" && typeof block.id === "string" && block.id) models.set(block.id, model);
+  }
+  return models;
+}
+
+/** One Claude JSONL entry; full and incremental readers use exactly the same filtering and shape. */
+export function parseClaudeTranscriptRecord(record: string, toolShape: "current" | "legacy" = "current"):
+  { message?: ParsedMessage; toolUseModels: Map<string, string> } {
+  try {
+    const obj: TranscriptLine = JSON.parse(record);
+    const models = toolUseModels(obj);
+    const entryRole = obj.message?.role;
+    if (!entryRole || !["user", "assistant", "system"].includes(entryRole)) return { toolUseModels: models };
+    // One transcript entry stays one message, whatever it holds.
+    const blocks = blocksOf(obj.message?.content);
+    const role = roleOf(entryRole, obj.message?.content);
+    const content = role === "tool" ? toolContent(blocks, toolShape === "legacy") : extractText(obj.message?.content);
+    if (!content.trim()) return { toolUseModels: models };
+    const parts = [...extractSkillParts(blocks), ...extractCommandParts(content)];
+    return { message: { role, content, tokenCount: estimateTokens(content), ...(parts.length ? { parts } : {}) }, toolUseModels: models };
+  } catch {
+    // Claude's existing full parser skips malformed entries.
+    return { toolUseModels: new Map() };
+  }
+}
+
+/** A full byte-reader snapshot reuses this seam without reading or decoding the file twice. */
+export function parseTranscript(
+  transcriptPath: string, toolShape: "current" | "legacy" = "current", snapshot?: ParsedMessage[],
+): ParsedMessage[] {
+  if (toolShape === "current" && snapshot !== undefined) return snapshot;
   let raw: string;
   try {
     raw = readFileSync(transcriptPath, "utf-8");
@@ -189,21 +217,8 @@ export function parseTranscript(transcriptPath: string, toolShape: "current" | "
   for (const line of raw.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    try {
-      const obj: TranscriptLine = JSON.parse(trimmed);
-      const entryRole = obj.message?.role;
-      if (!entryRole || !["user", "assistant", "system"].includes(entryRole)) continue;
-      // One transcript entry stays one message, whatever it holds. Splitting a
-      // turn into several would break the sequence every reader depends on.
-      const blocks = blocksOf(obj.message?.content);
-      const role = roleOf(entryRole, obj.message?.content);
-      const content = role === "tool" ? toolContent(blocks, toolShape === "legacy") : extractText(obj.message?.content);
-      if (!content.trim()) continue;
-      const parts = [...extractSkillParts(blocks), ...extractCommandParts(content)];
-      messages.push({ role, content, tokenCount: estimateTokens(content), ...(parts.length ? { parts } : {}) });
-    } catch {
-      // skip malformed lines
-    }
+    const { message } = parseClaudeTranscriptRecord(trimmed, toolShape);
+    if (message) messages.push(message);
   }
   return messages;
 }
