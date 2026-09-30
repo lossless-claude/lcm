@@ -8,8 +8,8 @@
  * supported append-only stable-prefix contract.
  *
  * The byte machinery is shared; each client's transcript module supplies its
- * record decoder ({@link JsonlTranscriptFormat}). Codex and OMP adapters live
- * beside their parsers (codex-transcript-reader.ts, omp-transcript-reader.ts).
+ * record decoder ({@link JsonlTranscriptFormat}). Claude, Codex and OMP adapters
+ * live beside their parsers (*-transcript-reader.ts).
  */
 
 import { createHash } from "node:crypto";
@@ -44,14 +44,18 @@ export interface JsonlTranscriptRecord<M> {
 
 /** The per-format surface the byte reader needs: decode and decode records. */
 export interface JsonlTranscriptFormat<M, R extends JsonlTranscriptRecord<M> = JsonlTranscriptRecord<M>> {
-  /** Human-readable format name used verbatim in errors ("Codex", "OMP"). */
+  /** Human-readable format name used verbatim in errors ("Claude", "Codex", "OMP"). */
   readonly label: string;
   /** Domain separator inside the prefix fingerprint; changing it invalidates every existing cursor. */
   readonly fingerprintVersion: string;
+  /** False for a format without a session header; avoids a redundant bounded header scan. */
+  readonly hasSessionMeta?: boolean;
   /** Strict UTF-8 decode of one record's bytes. */
   decodeUtf8(bytes: Uint8Array, byteOffset?: number): string;
   /** Parse one decoded record. Invalid JSON throws; valid non-message records return no message. */
   parseRecord(record: string): R;
+  /** Best-effort formats can defer an incomplete historical EOF instead of consuming it. */
+  isCompleteTrailingRecord?(record: string): boolean;
   /**
    * Chooses the messages a delta keeps from every record it read, in file order.
    * Absent, each record's messages are kept as read.
@@ -242,9 +246,12 @@ async function scanRecords<M, R extends JsonlTranscriptRecord<M>>(
   }
 
   if (pendingLength > 0 && includeTrailingRecord && position === snapshotSize) {
-    take(parseCompleteRecord(format, decodeRecord(format, pending, pendingLength, pendingOffset), pendingOffset));
-    committedOffset = position;
-    recordBoundary = false;
+    const record = decodeRecord(format, pending, pendingLength, pendingOffset);
+    if (!format.isCompleteTrailingRecord || format.isCompleteTrailingRecord(record)) {
+      take(parseCompleteRecord(format, record, pendingOffset));
+      committedOffset = position;
+      recordBoundary = false;
+    }
   }
 
   if (!format.selectMessages) return { messages, offset: committedOffset, recordBoundary };
@@ -307,8 +314,8 @@ async function readSessionMeta<M, R extends JsonlTranscriptRecord<M>>(handle: Fi
 /**
  * Read only the suffix added after a durable cursor.
  *
- * Completed records are strict: malformed JSON rejects with a sanitized byte
- * offset. Live incomplete tails are deferred and do not advance the cursor;
+ * Formats decide whether malformed completed records are ignored or reject with
+ * a sanitized byte offset. Live incomplete tails do not advance the cursor;
  * historical imports include a valid final record without a newline. Invalid
  * cursors cause a full scan and return `resumed: false`. Session metadata is
  * whatever the format's parser extracts from the bounded header scan; the
@@ -339,7 +346,7 @@ export async function readJsonlTranscriptDelta<M, R extends JsonlTranscriptRecor
     const guardFingerprint = resumed
       ? options.cursor!.fingerprint!
       : await fingerprintPrefix(handle, guardOffset, format);
-    const sessionMeta = await readSessionMeta(handle, format, snapshotSize);
+    const sessionMeta = format.hasSessionMeta === false ? undefined : await readSessionMeta(handle, format, snapshotSize);
     const startOffset = resumed ? options.cursor!.offset : 0;
 
     const scan = await scanRecords(

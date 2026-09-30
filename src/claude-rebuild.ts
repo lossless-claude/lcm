@@ -43,6 +43,12 @@ export interface SessionRebuildPlan {
   condensedSummaries: number;
 }
 
+/** Older read-only databases have no Claude marker; their cursors still identify Codex/OMP. */
+function otherClientCursor(db: DatabaseSync): string {
+  const columns = db.prepare("PRAGMA table_info(codex_ingest_cursors)").all() as Array<{ name: string }>;
+  return columns.some(column => column.name === "claude_redaction_key") ? " AND k.claude_redaction_key IS NULL" : "";
+}
+
 /**
  * Sessions whose conversations hold at least one compaction event row, excluding sessions a
  * transcript cursor reads (Codex and OMP), which recover by their own rules.
@@ -53,7 +59,7 @@ export function compactedSessionIds(db: DatabaseSync): string[] {
     `SELECT DISTINCT c.session_id FROM conversations c
      JOIN messages m ON m.conversation_id = c.conversation_id
      JOIN message_parts p ON p.message_id = m.message_id AND p.part_type = 'compaction'
-     ${hasCursors ? "WHERE NOT EXISTS (SELECT 1 FROM codex_ingest_cursors k JOIN conversations kc ON kc.conversation_id = k.conversation_id WHERE kc.session_id = c.session_id)" : ""}
+     ${hasCursors ? `WHERE NOT EXISTS (SELECT 1 FROM codex_ingest_cursors k JOIN conversations kc ON kc.conversation_id = k.conversation_id WHERE kc.session_id = c.session_id${otherClientCursor(db)})` : ""}
      ORDER BY c.session_id`,
   ).all() as Array<{ session_id: string }>;
   return rows.map((row) => row.session_id);
@@ -69,7 +75,7 @@ export function claudeRebuildCandidateIds(db: DatabaseSync): string[] {
     .some((column) => column.name === "parser_shape");
   const conditions = [
     ...(hasShape ? ["(c.parser_shape IS NULL OR c.parser_shape <> ?)"] : []),
-    ...(hasCursors ? ["NOT EXISTS (SELECT 1 FROM codex_ingest_cursors k JOIN conversations kc ON kc.conversation_id = k.conversation_id WHERE kc.session_id = c.session_id)"] : []),
+    ...(hasCursors ? [`NOT EXISTS (SELECT 1 FROM codex_ingest_cursors k JOIN conversations kc ON kc.conversation_id = k.conversation_id WHERE kc.session_id = c.session_id${otherClientCursor(db)})`] : []),
   ];
   const rows = db.prepare(
     `SELECT DISTINCT c.session_id FROM conversations c${conditions.length ? ` WHERE ${conditions.join(" AND ")}` : ""}`,

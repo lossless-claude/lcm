@@ -423,6 +423,14 @@ export class EventsDb {
     return row !== undefined;
   }
 
+  /** Only call ids still awaiting a model; the transcript index can answer without a file scan. */
+  unfilledToolUseIds(sessionId: string, client: SessionClient): string[] {
+    const rows = this.db.prepare(`SELECT DISTINCT tool_use_id FROM events
+      WHERE session_id = ? AND model IS NULL AND tool_use_id IS NOT NULL AND client = ?`)
+      .all(sessionId, client) as Array<{ tool_use_id: string }>;
+    return rows.map(row => row.tool_use_id);
+  }
+
   /** The `turn_id`-keyed shape, used where the transcript records a per-turn model (Codex). */
   hasUnfilledTurnModels(sessionId: string, client: SessionClient = "codex"): boolean {
     const row = this.db.prepare(
