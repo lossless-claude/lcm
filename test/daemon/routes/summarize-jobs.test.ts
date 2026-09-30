@@ -4,7 +4,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SummarizeJobStore } from "../../../src/daemon/summarize-jobs.js";
+import { SESSION_COMPLETION_MS, SummarizeJobStore } from "../../../src/daemon/summarize-jobs.js";
 import { createNextSummarizeJobHandler, createAnswerSummarizeJobHandler, createPoolSummarizeJobHandler } from "../../../src/daemon/routes/summarize-jobs.js";
 import { createDaemon } from "../../../src/daemon/server.js";
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
@@ -121,7 +121,7 @@ describe("summarize job routes", () => {
     expect(JSON.parse(duplicate.end.mock.calls[0]![0])).toEqual({ discarded: true });
     void store.enqueue(input);
     const expiredJob = await store.next("one");
-    await vi.advanceTimersByTimeAsync(20_000);
+    await vi.advanceTimersByTimeAsync(SESSION_COMPLETION_MS);
     const late = response();
     await handler(request(`/summarize-jobs/${expiredJob!.id}`), late as unknown as ServerResponse, '{"text":"late"}');
     expect(late.writeHead).toHaveBeenCalledWith(200, expect.anything());

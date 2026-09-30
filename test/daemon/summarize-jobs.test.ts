@@ -105,6 +105,29 @@ describe("session summarize jobs", () => {
     await expect(stuck).resolves.toEqual({ error: "job timeout" });
   });
 
+  it.each([false, true])("gives a session job a fresh 60-second completion window after claim (waiting poller=%s)", async (waitingPoller) => {
+    const polling = waitingPoller ? store.next("one") : undefined;
+    const answer = store.enqueue(input);
+    if (!waitingPoller) await vi.advanceTimersByTimeAsync(19_000);
+    const job = await (polling ?? store.next("one"));
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(store.answer(job!.id, { text: "slow session summary" })).toBe("accepted");
+    await expect(answer).resolves.toEqual({ text: "slow session summary" });
+  });
+
+  it("expires a claimed session job at its completion deadline and discards late answers", async () => {
+    const answer = store.enqueue(input);
+    await vi.advanceTimersByTimeAsync(19_000);
+    const job = await store.next("one");
+    const settled = vi.fn();
+    void answer.then(settled);
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(settled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(answer).resolves.toEqual({ error: "job timeout" });
+    expect(store.answer(job!.id, { text: "late" })).toBe("discarded");
+  });
+
   it("routes session-pool to any worker and falls along the chain when nobody claims it", async () => {
     const config = loadDaemonConfig("/nonexistent", { llm: { provider: "session", fallbackProvider: "openai" } }, {});
     const summarize = (await createSummarizer("session-pool", config, store))!;
@@ -128,6 +151,7 @@ describe("session summarize jobs", () => {
     const job = await store.next("one");
     expect(job).toMatchObject({ system: LCM_SUMMARIZER_SYSTEM_PROMPT, prompt: buildSummaryPrompt("conversation", false, ctx),
       targetTokens: 1200, maxTokens: resolveMaxOutputTokens(1200), kind: isCondensed ? "condensed" : "leaf", depth: ctx.depth });
+    await vi.advanceTimersByTimeAsync(23_000);
     store.answer(job!.id, { text: "  summary  ", providerId: isCondensed ? "session:fork" : "session:haiku",
       usage: { input_tokens: 123, output_tokens: 12, estimated: !isCondensed } });
     await expect(pending).resolves.toBe("summary");
@@ -184,7 +208,7 @@ describe("session summarize jobs", () => {
     const ctx = { sessionId: "one", onUsage: vi.fn() };
     const pending = summarize("conversation", true, ctx);
     const job = await store.next("one");
-    if (outcome === "timeout") await vi.advanceTimersByTimeAsync(20_000);
+    if (outcome === "timeout") await vi.advanceTimersByTimeAsync(60_000);
     else store.answer(job!.id, { error: "model unavailable" });
     await expect(pending).resolves.toBe("fallback summary");
     expect(fallback).toHaveBeenCalledWith("conversation", true, ctx);
