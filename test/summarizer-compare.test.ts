@@ -37,8 +37,16 @@ describe("unsupported summary details", () => {
   it.each([
     "deep-dive", "end-to-end", "case-by-case", "Two-tier",
     "indexing/replay", "normal/post-compact", "daemon/database",
+    "e.g. a guard", "i.e. one budget", "U.S. dates", "the file(s) touched", "moved into docs/design.",
   ])("ignores plain prose %s", (summary) => {
     expect(findUnsupportedDetails("A two-tier system.", summary)).toEqual([]);
+  });
+
+  it("matches a path at the end of a sentence without its full stop", () => {
+    expect(findUnsupportedDetails("Edited src/present.ts today.", "Edited src/present.ts.")).toEqual([]);
+    expect(findUnsupportedDetails("No matching details.", "Edited src/missing.ts.")).toEqual([
+      { kind: "path", text: "src/missing.ts", start: 7, end: 21 },
+    ]);
   });
 
   it.each([
