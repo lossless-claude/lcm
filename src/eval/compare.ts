@@ -76,7 +76,14 @@ export async function runSummarizerComparison(options: ComparisonOptions): Promi
     };
     const client = new DaemonClient(`http://127.0.0.1:${config.daemon.port}`, paths.tokenPath);
     const jobs = name === "session-pool" ? { enqueue: async (job: Parameters<SummarizeJobStore["enqueue"]>[0]) => {
-      const answer = await client.post<JobAnswer>("/summarize-jobs/pool", job);
+      let answer: JobAnswer;
+      try {
+        answer = await client.post<JobAnswer>("/summarize-jobs/pool", job);
+      } catch (error) {
+        // DaemonClient reports a failed connection as a TypeError; an HTTP error answer is an Error with a status.
+        if (!(error instanceof TypeError)) throw error;
+        return { error: `lcm daemon is not running on port ${config.daemon.port} (${error.message}); start it with lcm daemon start --detach` };
+      }
       if (answer.error === "job timeout") {
         return { ...answer, error: "session-pool job timed out; start a dedicated worker with LCM_SUMMARIZE_WORKER=1 (see docs/summarize-workers.md)" };
       }

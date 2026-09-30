@@ -71,7 +71,8 @@ job may be answered by a different worker; inspect each call's usage for its mod
 There is no fallback for pool evaluation, even if the daemon or CLI configuration
 has fallback endpoints. A chunk no worker claims within 20 s fails that candidate
 with instructions to start a worker; a claimed job has 3 minutes to answer.
-Other candidates still run, and the partial report is written with exit status 1.
+The command does not start the daemon: when it is not running, the pool candidate
+fails with instructions to run `lcm daemon start --detach`. Other candidates still run, and the partial report is written with exit status 1.
 Live compactions and replay keep their existing provider paths and fallback rules.
 
 ## Read-only measurement

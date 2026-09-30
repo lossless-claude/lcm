@@ -265,4 +265,35 @@ describe("session-pool comparison through the daemon", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it("says how to start the daemon when it is not running", async () => {
+    const dir = mkdtempSync(join(import.meta.dirname, ".eval-pool-down-"));
+    const paths = createLcmPaths(join(dir, "memory"));
+    const cwd = join(dir, "project");
+    mkdirSync(cwd);
+    const dbPath = projectDbPath(cwd, paths);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    runLcmMigrations(db);
+    const store = new ConversationStore(db);
+    const conversation = await store.getOrCreateConversation("stored");
+    await store.createMessagesBulk(buildSyntheticSession().messages.map((message) => ({
+      ...message, conversationId: conversation.conversationId,
+    })));
+    db.close();
+    const closed = createServer();
+    await new Promise<void>((resolve) => closed.listen(0, "127.0.0.1", resolve));
+    const { port } = closed.address() as { port: number };
+    await new Promise<void>((resolve) => closed.close(() => resolve()));
+    writeFileSync(paths.configPath, JSON.stringify({ daemon: { port }, llm: { provider: "session-pool" }, summarizer: { mock: true } }));
+    try {
+      const { report } = await runSummarizerComparison({ cwd, paths, sessionId: "stored",
+        models: ["session-pool"], planted: false, out: join(dir, "report") });
+      expect(report.results[0].incomplete).toBe(true);
+      expect(report.results[0].error).toContain(`lcm daemon is not running on port ${port}`);
+      expect(report.results[0].error).toContain("lcm daemon start --detach");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
