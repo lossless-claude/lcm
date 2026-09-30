@@ -65,14 +65,18 @@ describe("full-text candidate fill", () => {
     const conversations = new ConversationStore(db);
     const summaries = new SummaryStore(db);
     engine = new RetrievalEngine(conversations, summaries);
-    for (const [index, content] of [
-      "Only the lantern is mentioned here.",
-      "Both the lantern and the compass appear here.",
-      "Only the compass is mentioned here.",
+    // The two any-term matches tie on rank, and the tie goes to the newer row: pin the times
+    // so conversation 1 is newer than conversation 3 instead of relying on inserts sharing a second.
+    for (const [index, [content, date]] of [
+      ["Only the lantern is mentioned here.", "2026-01-03T00:00:00Z"],
+      ["Both the lantern and the compass appear here.", "2026-01-02T00:00:00Z"],
+      ["Only the compass is mentioned here.", "2026-01-01T00:00:00Z"],
     ].entries()) {
       const conversation = await conversations.getOrCreateConversation(`session-${index}`);
       await conversations.createMessage({ conversationId: conversation.conversationId, seq: 0, role: "user", content, tokenCount: 10 });
       await summaries.insertSummary({ summaryId: `summary-${index}`, conversationId: conversation.conversationId, kind: "leaf", content, tokenCount: 10 });
+      db.prepare("UPDATE messages SET created_at = ? WHERE conversation_id = ?").run(date, conversation.conversationId);
+      db.prepare("UPDATE summaries SET created_at = ? WHERE conversation_id = ?").run(date, conversation.conversationId);
     }
   });
 
