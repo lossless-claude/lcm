@@ -158,8 +158,8 @@ describe("POST /session-start-compact", () => {
     expect(out.body).toEqual({ queued: "scheduled" });
     await settled();
     expect(fireCompactRequest).toHaveBeenCalledTimes(2);
-    expect(fireCompactRequest).toHaveBeenNthCalledWith(1, 4242, expect.objectContaining({ session_id: "oldest" }), paths, expect.any(Function));
-    expect(fireCompactRequest).toHaveBeenNthCalledWith(2, 4242, expect.objectContaining({ session_id: "middle" }), paths, expect.any(Function));
+    expect(fireCompactRequest).toHaveBeenNthCalledWith(1, 4242, expect.objectContaining({ session_id: "oldest", work_class: "live" }), paths, expect.any(Function));
+    expect(fireCompactRequest).toHaveBeenNthCalledWith(2, 4242, expect.objectContaining({ session_id: "middle", work_class: "live" }), paths, expect.any(Function));
   });
 
   it("answers before the worker scan completes", async () => {

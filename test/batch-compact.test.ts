@@ -231,14 +231,14 @@ describe("batchCompact — daemon becomes unreachable mid-replay", () => {
   }
 
   /** A server that always succeeds — used to prove a rerun resumes cleanly. */
-  function startAlwaysUpServer(): Promise<{ port: number; bodies: { session_id: string; previous_summary?: string }[] }> {
-    const bodies: { session_id: string; previous_summary?: string }[] = [];
+  function startAlwaysUpServer(): Promise<{ port: number; bodies: { session_id: string; skip_ingest?: boolean; previous_summary?: string }[] }> {
+    const bodies: { session_id: string; skip_ingest?: boolean; previous_summary?: string }[] = [];
     rawServer = createServer((req, res) => {
       let body = "";
       req.on("data", (c) => (body += c));
       req.on("end", () => {
         const parsed = body ? JSON.parse(body) : {};
-        bodies.push({ session_id: parsed.session_id, previous_summary: parsed.previous_summary });
+        bodies.push({ session_id: parsed.session_id, skip_ingest: parsed.skip_ingest, previous_summary: parsed.previous_summary });
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({
           summary: "ok",
@@ -306,6 +306,7 @@ describe("batchCompact — daemon becomes unreachable mid-replay", () => {
     await batchCompact({ paths, minTokens: 10, dryRun: false, port: port2, cwd, replay: true });
 
     expect(bodies.map((b) => b.session_id)).toEqual(["session-2", "session-3"]);
+    expect(bodies.map((b) => b.skip_ingest)).toEqual([true, true]);
     expect(bodies[0].previous_summary).toBe("summary-of-session-1");
     expect(bodies[1].previous_summary).toBe("summary-of-session-2");
 
