@@ -24,6 +24,7 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
     .option("--verbose", "Show per-session import detail")
     .option("--dry-run", "Preview without importing")
     .option("--replay", "Replay compaction for each imported session")
+    .option("--no-promote", "Skip the automatic promote step after compaction")
     .option("--parallel <N>", "With --replay: process N projects concurrently", "1")
     .option("--replay-provider <provider>", "With --replay: use session-pool without changing live compactions")
     .option("--restart", "Discard recorded replay progress and start from scratch")
@@ -113,7 +114,7 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
       renderer.start();
 
       const result = await importSessions(client, {
-        paths, all, verbose, dryRun, replay, restart, provider,
+        paths, all, verbose, dryRun, replay, restart, provider, noPromote: !opts.promote,
         parallel, replayProvider,
         replayModel: configuredSummaryModel(config, replayProvider ?? config.llm.provider),
         onBeforeSession: () => !renderer.shouldStop,
