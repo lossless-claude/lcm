@@ -45,6 +45,27 @@ describe("PromotedStore", () => {
     expect(JSON.parse(row!.tags)).toContain("decision");
   });
 
+  it.each(['["type:decision"]', "type:decision", ["type:decision", 7]])(
+    "rejects non-array or non-string tags before insert: %j", (tags) => {
+      const store = new PromotedStore(makeDb());
+      expect(() => store.insert({ content: "Invalid tags", projectId: "p1", tags: tags as string[] }))
+        .toThrow("tags must be an array of strings");
+      expect(store.count()).toBe(0);
+    },
+  );
+
+  it.each([false, true])("rejects serialized tags before any update (content update: %s)", (changeContent) => {
+    const store = new PromotedStore(makeDb());
+    const id = store.insert({ content: "Original observation", tags: ["type:decision"], projectId: "p1" });
+    const before = store.getById(id);
+    expect(() => store.update(id, {
+      tags: '["type:pattern"]' as unknown as string[], confidence: 0.2,
+      ...(changeContent ? { content: "Replacement observation" } : {}),
+    })).toThrow("tags must be an array of strings");
+    expect(store.getById(id)).toEqual(before);
+    expect(store.search("Original observation", 10, ["type:decision"]).map((row) => row.id)).toEqual([id]);
+  });
+
   it("searches via FTS5", () => {
     const db = makeDb();
     const store = new PromotedStore(db);

@@ -119,6 +119,37 @@ describe("promote-events route", () => {
     expect(call.tags).toContain("source:passive-capture");
   });
 
+  it.each([
+    ["decision", "type:preference"],
+    ["error", "type:gotcha"],
+    ["plan", "type:decision"],
+    ["role", "type:user-context"],
+    ["git", "type:workflow"],
+    ["env", "type:environment"],
+    ["file", "type:pattern"],
+    ["mcp", "type:pattern"],
+    ["skill", "type:pattern"],
+    ["subagent", "type:pattern"],
+    ["intent", "type:workflow"],
+    ["task", "type:workflow"],
+    ["security", "type:workflow"],
+    ["context", "type:user-context"],
+    ["future-category", "type:pattern"],
+  ])("maps passive %s events to %s without category tags", async (category, typeTag) => {
+    const edb = new EventsDb(sidecarPath);
+    edb.insertEvent("s1", { type: "test_event", category, data: `observation ${category}`, priority: 2 }, "PostToolUse");
+    edb.close();
+    setupProjectDb(dir).close();
+
+    const { res, getBody } = mockRes();
+    await createPromoteEventsHandler(makeConfig(), paths)({} as any, res, JSON.stringify({ cwd: dir }));
+
+    expect(getBody().promoted).toBe(1);
+    expect(vi.mocked(deduplicateAndInsert).mock.calls[0][0].tags).toEqual([
+      typeTag, "source:passive-capture", "hook:PostToolUse",
+    ]);
+  });
+
   it("correlates error→fix pairs within session", async () => {
     const edb = new EventsDb(sidecarPath);
     edb.insertEvent("s1", { type: "error_tool", category: "error", data: "Bash error: npm install", priority: 1 }, "PostToolUse");

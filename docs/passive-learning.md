@@ -45,6 +45,26 @@ Events are promoted to cross-session memory at session boundaries (session-end, 
 
 **Tier 3 — Pattern reinforcement** (priority 3): File access and tool usage events start as low-confidence signals. A one-off event is skipped unless it matches an existing entry in the promoted store. To bootstrap a new promotion without a seed, the same pattern must appear at least three times across at least two distinct sessions in recent sidecar history. That reinforcement boost only applies on the insert path for a new memory, not when re-confirming an already-promoted entry.
 
+### Promotion tags
+
+Every passive promotion carries a `type:` tag. The event category maps to the type below;
+unknown categories use `type:pattern`. No `category:` tag is written: event categories
+remain in the sidecar database, and promoted-memory filters select on `type:`.
+
+| Event category | Promoted tag |
+|----------------|--------------|
+| `decision` (user answer) | `type:preference` |
+| `plan` | `type:decision` |
+| `error` | `type:gotcha` |
+| `role`, `context` | `type:user-context` |
+| `env` | `type:environment` |
+| `git`, `intent`, `task`, `security` | `type:workflow` |
+| `file`, `mcp`, `skill`, `subagent`, unknown | `type:pattern` |
+
+Error→fix correlation overrides the successful event's mapped type with `type:solution`.
+These tags classify observations; they do not change promotion priorities or reinforcement
+requirements.
+
 ### Error→Fix Correlation
 
 When a tool error is followed by a successful command with a matching prefix (within 20 events), the system correlates them as an error→fix pair. These are tagged `type:solution` (overriding the `type:gotcha` an error event would otherwise take) and promoted with higher priority.
@@ -95,6 +115,14 @@ When a pattern crosses the reinforcement threshold, `reinforcementBoost` is adde
   - Tagged with `source:passive-capture` and `hook:<PostToolUse|UserPromptSubmit>`
   - Searchable via `lcm search` and `lcm grep`
   - Deduplicated via BM25 matching on the entry's first 32 terms (see `docs/search.md`)
+
+Existing promoted memories are normalized once when their project database opens: a JSON
+string containing an array is decoded into that array, and a single string tag becomes a
+one-element array. Passive-capture rows gain the mapped type when they have none, and their
+legacy `category:` tags are removed. Existing types (including `type:solution`) and other
+metadata are preserved. Archived rows stay archived; active search-index tags are updated
+with the row. Unparseable tags are preserved rather than discarded. Promoted-memory insert
+and update writers reject tags that are not arrays of strings.
 
 ## Recovery
 
