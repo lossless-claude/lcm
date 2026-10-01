@@ -196,6 +196,12 @@ the project database the memory is stored in, including the owning sibling check
 for a memory use or vote. Explicit `metadata.sessionId` and `metadata.projectId`
 values passed to `lcm_store` take precedence independently.
 
+Active memories still attributed to `"manual"` can be traced from raw Claude/Codex
+store calls with the preview-first CLI command `lcm doctor --repair-manual-attribution`.
+Only a unique matching session is eligible for explicit offline apply, which
+retains a database backup and changes only `session_id`. See
+[manual memory attribution repair](configuration.md#manual-memory-attribution-repair).
+
 The database destination and its project record remain keyed by the supplied cwd
 (or the owning sibling for memory feedback). Explicit `metadata.projectId` changes
 the row's provenance; it does not create a separate store under that id.

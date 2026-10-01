@@ -141,14 +141,21 @@ export function registerDiagnosticsCommands(program: Command, deps: DiagnosticsC
     .option("-v, --verbose", "Show full store and event details")
     .description("Run diagnostics: daemon, hooks, MCP, summarizer")
     .option("--cleanup-stale-projects", "Preview trashing stores for missing temporary or test directories")
-    .option("--dry-run", "Preview cleanup without writing (the cleanup default)")
-    .option("--apply", "Apply the reviewed cleanup while the daemon is held offline")
+    .option("--repair-manual-attribution", "Preview attributing manual memories from transcript store calls")
+    .option("--dry-run", "Preview cleanup or attribution repair without writing (the default)")
+    .option("--apply", "Apply the reviewed cleanup or attribution repair while the daemon is held offline")
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
       if (opts.help) await showHelpAndExit("doctor");
       if (opts.apply && opts.dryRun) fail("--apply and --dry-run cannot be combined");
-      if ((opts.apply || opts.dryRun) && !opts.cleanupStaleProjects) fail("--apply and --dry-run require --cleanup-stale-projects");
+      if (opts.cleanupStaleProjects && opts.repairManualAttribution) fail("--cleanup-stale-projects and --repair-manual-attribution cannot be combined");
+      if ((opts.apply || opts.dryRun) && !opts.cleanupStaleProjects && !opts.repairManualAttribution) fail("--apply and --dry-run require --cleanup-stale-projects or --repair-manual-attribution");
+      if (opts.repairManualAttribution) {
+        const { repairManualAttribution } = await import("../doctor/manual-attribution.js");
+        console.log(await repairManualAttribution(createLcmPaths(lcmHome()), Boolean(opts.apply)));
+        return;
+      }
       if (opts.cleanupStaleProjects) {
         const { cleanupStaleProjectStores } = await import("../doctor/store-hygiene.js");
         console.log(cleanupStaleProjectStores(createLcmPaths(lcmHome()), Boolean(opts.apply)));

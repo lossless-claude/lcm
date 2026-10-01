@@ -141,6 +141,52 @@ in stores without a project record. Unreadable or unsupported databases are
 reported as not checked. It offers no automatic repair
 and preserves summaries and context.
 
+### Manual memory attribution repair
+
+`lcm doctor --repair-manual-attribution` previews attribution for every active
+promoted memory whose `session_id` is `"manual"` in existing project stores.
+It scans raw Claude Code project transcripts, including discovered subagents,
+and Codex sessions and archives. Only tool calls whose name ends in `lcm_store`
+count: Claude `tool_use` inputs and Codex `function_call` arguments or
+`custom_tool_call` inputs, with a string `text` or `content` argument.
+Stored message mentions are not evidence. Matching replaces NUL with U+FFFD,
+normalizes Unicode to NFC, collapses whitespace and trims both texts.
+
+A matching call counts for a memory only when the store holding that memory captured
+the call's session (`conversations.session_id`). Exactly one such session is
+**attributable**; repeated calls or transcript copies of that session count once.
+Several such sessions are **ambiguous**. A call found only in sessions other stores
+captured is **matched outside this store**, and no matching call anywhere is
+**unmatched**. These three outcomes leave the memory unchanged. A store that cannot be
+read or written is reported as skipped, and the other stores are still processed.
+The session is the one named by the transcript file that holds the call: a call made
+inside a subagent's transcript is attributed to that subagent's session, whereas a
+live `lcm_store` records the parent's `CLAUDE_CODE_SESSION_ID`.
+Archived memories and memories already attributed to a session are left alone.
+
+```bash
+lcm doctor --repair-manual-attribution             # preview; --dry-run is optional
+lcm daemon stop --hold
+lcm doctor --repair-manual-attribution --apply
+lcm daemon start
+```
+
+The preview opens databases read-only, performs no migrations or repair writes,
+and neither changes project records nor starts a daemon. Apply requires an active
+offline hold and refuses a running daemon or live CLI database activity. Before
+changing each store, it retains a consistent full database backup, WAL data
+included, at the printed `db.sqlite.bak-manual-attribution-*` path. Updates are
+transactional per store and change only `session_id`; content, tags, confidence,
+timestamps, depth, project and summary provenance and the full-text index stay
+as they were. Repeating apply does not select repaired memories or create a backup
+for a store with no unique matches. Backups are not automatically deleted.
+
+To revert, hold the daemon offline, replace that store's `db.sqlite` with its
+printed backup and remove its `db.sqlite-wal` and `db.sqlite-shm` before restarting.
+This restores the whole project database, including its old session attribution;
+later writes would also be reverted. Attribution repair cannot be combined with
+`--cleanup-stale-projects`, and `--apply` cannot be combined with `--dry-run`.
+
 The test harness isolates both `LCM_HOME` and `HOME`, retains the OS user's real
 lcm home independently of those variables, rejects a temporary base inside that
 protected home before allocating test directories, and refuses that home whenever lcm

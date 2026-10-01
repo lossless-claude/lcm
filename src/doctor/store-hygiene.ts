@@ -121,8 +121,8 @@ export function checkStaleProjectStores(paths: LcmPaths, verbose = false): Check
   };
 }
 
-function requireOffline(paths: LcmPaths): void {
-  if (!readHold(paths.pidPath)) throw new Error("Cleanup requires an offline hold: lcm daemon stop --hold");
+export function requireOffline(paths: LcmPaths): void {
+  if (!readHold(paths.pidPath)) throw new Error("Requires an offline hold: lcm daemon stop --hold");
   for (const dir of [paths.tmpDir, paths.home]) {
     let names: string[];
     try { names = readdirSync(dir); } catch (error) {

@@ -80,6 +80,27 @@ does not apply to memories with recorded provenance, so shared content prefixes
 on those rows do not suppress different summaries. Existing rows with NULL
 provenance are not backfilled.
 
+### Manual memory session attribution
+
+`lcm doctor --repair-manual-attribution` (`src/doctor/manual-attribution.ts`)
+reads active `manual` memories through `PromotedStore` and matches normalized
+content against raw Claude and Codex store-call `text`/`content` arguments.
+It scans across transcript projects, but a match counts for a store only when that
+store captured the matching session; ordinary stored message mentions do not
+establish attribution. One such session permits attribution, several are
+ambiguous, a match only in sessions other stores captured is left as "matched
+outside this store", and none anywhere is unmatched. A store that fails is reported
+as skipped without stopping the others. Preview uses read-only database
+connections without migrations or project-record writes.
+
+Explicit `--apply` uses the same offline hold and database-activity guard as store
+cleanup, rechecking it before each store's writes. A consistent full database
+backup, WAL data included, precedes the store's transaction.
+`PromotedStore.attributeManual` updates only `session_id` on still-active manual
+rows. Other fields and full-text rows are preserved. The printed
+`db.sqlite.bak-manual-attribution-*` backup retains the old attribution for
+reversion; see [the repair workflow](configuration.md#manual-memory-attribution-repair).
+
 ### The project record
 
 Beside each project's database sits `meta.json`, the project record: `cwd`, the git identity (`git`), the detected author `language` and `languageDetectedAt`, and the `lastIngest`, `lastCompact` and `lastPromote` timestamps. `src/daemon/project-meta.ts` is its only reader and writer: every other module reads through `readProjectMeta` / `readProjectMetaIn` and updates by key through `updateProjectMeta` / `updateProjectMetaIn`, which merge a patch into the current record in one synchronous read-modify-write and land it through a temporary file and a rename, so a crash mid-write cannot leave a torn file. The cwd-keyed update always re-asserts `cwd`, so a record is never left without the key that enumeration (`lcm export --all`, `lcm compact --all`, the compaction sweep, stats) selects on.
