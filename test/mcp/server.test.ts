@@ -50,6 +50,12 @@ describe("MCP tool definitions", () => {
     expect(tool!.description).toContain("conversation history");
   });
 
+  it("advertises summary_id for deterministic grep scope", () => {
+    const tool = getMcpToolDefinitions().find(t => t.name === "lcm_grep")!;
+    expect(tool.inputSchema.properties).toHaveProperty("summary_id", expect.objectContaining({ type: "string" }));
+    expect(tool.inputSchema.required).not.toContain("summary_id");
+  });
+
   it("lcm_search description mentions episodic", () => {
     const tool = getMcpToolDefinitions().find((t: any) => t.name === "lcm_search");
     expect(tool!.description).toContain("episodic");

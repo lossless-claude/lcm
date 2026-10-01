@@ -23,7 +23,7 @@ export async function readEpisodicContext(db: DatabaseSync, sessionId: string | 
   if (!conversation) return "";
   const rows = await new SummaryStore(db).summariesDeepestFirst(conversation.conversationId, limit);
   if (rows.length === 0) return "";
-  return fenceContent(rows.map((r) => r.content).join("\n\n"), "recent-session-context");
+  return fenceContent(rows.map((r) => `Summary [${r.summaryId}]:\n${r.content}`).join("\n\n"), "recent-session-context");
 }
 
 /** The project's promoted memories, recent enough to still be worth restoring. */

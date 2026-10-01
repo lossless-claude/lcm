@@ -36,6 +36,14 @@ Summaries are lossy by design. The "Expand for details about:" footer at the end
 - Tool call sequences and their outputs
 - Verbatim quotes or specific data points
 
+### Restored summary ids
+
+Restored summaries begin with `Summary [<summaryId>]:` on its own line before the
+stored summary text. This deterministic header is supplied by lcm, independently
+of what the summarizer wrote, for Claude Code, Codex and OMP. Use its id with
+`lcm_describe` or `lcm_expand`, or pass it as `summary_id` to `lcm_grep` to search
+the original messages covered by that summary.
+
 ### The `<memory-context>` block
 
 Every prompt can carry a `<memory-context>` block of memories surfaced for that prompt, ending
@@ -102,15 +110,28 @@ Search conversation history by keyword or regex across raw messages and summarie
 | `query` | string | ✅ | — | Keyword, phrase, or regex to search |
 | `scope` | string | | `"all"` | `"messages"`, `"summaries"`, or `"all"` |
 | `sessionId` | string | | — | Filter to a specific session |
+| `summary_id` | string | | — | Restrict to the selected summary, its recursive source summaries, and their linked messages |
 | `since` | string | | — | ISO datetime lower bound |
 
-**Returns:** Array of matches with content snippet, type (message or summary), and session ID.
+**Returns:** `messages`, `summaries`, and `totalMatches`. Each message match carries
+`messageId`, `conversationId`, `role`, `snippet`, `createdAt`, and `summaryIds`: all
+covering leaf and condensed summaries, ordered by depth then id (empty for an
+unsummarized message). Summary matches carry their own `summaryId`.
+
+`summary_id` intersects the session and time filters and applies before result
+limits in full-text, fallback, and regex searches. An unknown id returns no
+matches. With `scope: "messages"`, it searches only the original linked messages;
+with `scope: "summaries"`, it searches the selected summary and its recursive
+source summaries; the default `"all"` searches both.
 
 **Examples:**
 
 ```
 # Search for an error message across all history
 lcm_grep(query: "ECONNREFUSED")
+
+# Search the original messages covered by a restored summary
+lcm_grep(query: "ECONNREFUSED", summary_id: "sum_abc123", scope: "messages")
 
 # Search only summaries for a specific term
 lcm_grep(query: "config\\.threshold", scope: "summaries")

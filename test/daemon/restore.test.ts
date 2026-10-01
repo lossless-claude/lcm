@@ -10,6 +10,8 @@ import { createRestore, type Insight, type Restore, type RestoreRequest } from "
 import { lcmHome } from "../../src/lcm-home.js";
 import { createLcmPaths } from "../../src/lcm-paths.js";
 import { runLcmMigrations } from "../../src/db/migration.js";
+import { ConversationStore } from "../../src/store/conversation-store.js";
+import { SummaryStore } from "../../src/store/summary-store.js";
 import { PromotedStore } from "../../src/db/promoted.js";
 import { closeLcmConnection, getLcmConnection, getPoolStats } from "../../src/db/connection.js";
 import { markSessionCompacted } from "../../src/db/session-compactions.js";
@@ -36,6 +38,30 @@ function restoreFor(projectDir: string, overrides?: Record<string, unknown>): Re
 }
 
 describe("restore (Claude Code)", () => {
+  it("restores stable summary ids outside generated content", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "restore-summary-ids-"));
+    const dbPath = projectDbPath(cwd, paths);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    try {
+      runLcmMigrations(db);
+      const conversation = await new ConversationStore(db).getOrCreateConversation("retrievable");
+      const summaries = new SummaryStore(db);
+      for (const [summaryId, depth, content] of [
+        ["sum_leaf", 0, "Leaf detail with no generated id."],
+        ["sum_root", 1, "Condensed detail with no generated id."],
+      ] as const) {
+        await summaries.insertSummary({ summaryId, depth, content,
+          conversationId: conversation.conversationId, kind: depth ? "condensed" : "leaf", tokenCount: 10 });
+      }
+      const body = await assemble(restoreFor(cwd), { sessionId: "retrievable", cwd, source: "resume" });
+      expect(body.context).toContain("Summary [sum_root]:\nCondensed detail with no generated id.\n\nSummary [sum_leaf]:\nLeaf detail with no generated id.");
+    } finally {
+      db.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("returns empty context for first-ever session (orientation now lives in ~/.claude/lcm.md)", async () => {
     const isolatedDir = mkdtempSync(join(tmpdir(), "restore-first-session-"));
     try {

@@ -1,3 +1,4 @@
+import { SUMMARY_SOURCE_IDS_SQL } from "./summary-lineage.js";
 import { WorkerStore } from "./worker-store.js";
 import type { DatabaseSync } from "node:sqlite";
 import { parseSqliteDate } from "../db/sqlite-date.js";
@@ -63,6 +64,7 @@ export type ContextItemRecord = {
 
 /** One item of the context as a restore reads it: the text, and who said it when it is a message. */
 export type ContextWindowItem = {
+  summaryId: string | null;
   ordinal: number;
   itemType: ContextItemType;
   role: "user" | "assistant" | null;
@@ -70,6 +72,7 @@ export type ContextWindowItem = {
 };
 
 export type SummarySearchInput = {
+  summaryId?: string;
   conversationId?: number;
   query: string;
   mode: "regex" | "full_text";
@@ -135,6 +138,7 @@ interface ContextItemRow {
 }
 
 interface ContextWindowRow {
+  summary_id: string | null;
   ordinal: number;
   item_type: ContextItemType;
   role: "user" | "assistant" | null;
@@ -230,7 +234,7 @@ function toContextItemRecord(row: ContextItemRow): ContextItemRecord {
 }
 
 function toContextWindowItem(row: ContextWindowRow): ContextWindowItem {
-  return { ordinal: row.ordinal, itemType: row.item_type, role: row.role, content: row.content };
+  return { ordinal: row.ordinal, itemType: row.item_type, role: row.role, content: row.content, summaryId: row.summary_id };
 }
 
 function toSearchResult(row: SummarySearchRow): SummarySearchResult {
@@ -267,6 +271,30 @@ export class SummaryStore {
     options?: { fts5Available?: boolean },
   ) {
     this.fts5Available = options?.fts5Available ?? true;
+  }
+
+  /** Covering leaf and condensed summaries for a bounded set of grep matches. */
+  coveringSummaryIds(messageIds: number[]): Map<number, string[]> {
+    const result = new Map<number, string[]>();
+    if (messageIds.length === 0) return result;
+    const rows = this.db.prepare(`
+      WITH RECURSIVE coverage(message_id, summary_id) AS (
+        SELECT message_id, summary_id FROM summary_messages
+        WHERE message_id IN (SELECT value FROM json_each(?))
+        UNION
+        SELECT coverage.message_id, sp.summary_id FROM coverage
+        JOIN summary_parents sp ON sp.parent_summary_id = coverage.summary_id
+      )
+      SELECT coverage.message_id, coverage.summary_id FROM coverage
+      JOIN summaries s ON s.summary_id = coverage.summary_id
+      ORDER BY s.depth, coverage.summary_id
+    `).all(JSON.stringify(messageIds)) as Array<{ message_id: number; summary_id: string }>;
+    for (const row of rows) {
+      const ids = result.get(row.message_id) ?? [];
+      ids.push(row.summary_id);
+      result.set(row.message_id, ids);
+    }
+    return result;
   }
 
   // ── Summary CRUD ──────────────────────────────────────────────────────────
@@ -588,7 +616,7 @@ export class SummaryStore {
     const contextRows = this.db
       .prepare(
         `WITH ranked AS (
-           SELECT ci.ordinal, ci.item_type, m.role, COALESCE(m.content, s.content) AS content,
+           SELECT ci.ordinal, ci.item_type, ci.summary_id, m.role, COALESCE(m.content, s.content) AS content,
                   ROW_NUMBER() OVER (PARTITION BY ci.item_type ORDER BY ci.ordinal DESC) AS item_rank
            FROM context_items ci
            LEFT JOIN messages m ON ci.item_type = 'message' AND m.message_id = ci.message_id
@@ -597,7 +625,7 @@ export class SummaryStore {
              AND ((ci.item_type = 'summary' AND s.content IS NOT NULL)
                OR (ci.item_type = 'message' AND m.role IN ('user', 'assistant') AND m.content IS NOT NULL))
          )
-         SELECT ordinal, item_type, role, content
+         SELECT ordinal, item_type, summary_id, role, content
          FROM ranked
          WHERE item_rank <= ?
          ORDER BY ordinal`,
@@ -607,7 +635,7 @@ export class SummaryStore {
 
     const messageRows = this.db
       .prepare(
-        `SELECT seq AS ordinal, 'message' AS item_type, role, content
+        `SELECT seq AS ordinal, 'message' AS item_type, NULL AS summary_id, role, content
          FROM messages
          WHERE conversation_id = ? AND role IN ('user', 'assistant')
          ORDER BY seq DESC
@@ -890,6 +918,7 @@ export class SummaryStore {
             input.since,
             input.before,
             input.terms,
+            input.summaryId,
           );
         } catch {
           return this.searchLike(
@@ -898,12 +927,13 @@ export class SummaryStore {
             input.conversationId,
             input.since,
             input.before,
+            input.summaryId,
           );
         }
       }
-      return this.searchLike(input.query, limit, input.conversationId, input.since, input.before);
+      return this.searchLike(input.query, limit, input.conversationId, input.since, input.before, input.summaryId);
     }
-    return this.searchRegex(input.query, limit, input.conversationId, input.since, input.before);
+    return this.searchRegex(input.query, limit, input.conversationId, input.since, input.before, input.summaryId);
   }
 
   private searchFullText(
@@ -913,6 +943,7 @@ export class SummaryStore {
     since?: Date,
     before?: Date,
     terms?: readonly string[],
+    summaryId?: string,
   ): SummarySearchResult[] {
     // Natural-language questions ANDed term-by-term almost never match, so
     // prepare the query first: drop stopwords, then take AND matches (precise),
@@ -923,13 +954,13 @@ export class SummaryStore {
     if (!prepared) {
       return [];
     }
-    const rows = this.runFullTextMatch(prepared.and, limit, conversationId, since, before);
+    const rows = this.runFullTextMatch(prepared.and, limit, conversationId, since, before, summaryId);
     if (!shouldRetryWithLike(prepared)) {
       return rows;
     }
     if (rows.length < limit) {
       const seen = new Set(rows.map((row) => row.summaryId));
-      for (const row of this.runFullTextMatch(prepared.or, limit, conversationId, since, before)) {
+      for (const row of this.runFullTextMatch(prepared.or, limit, conversationId, since, before, summaryId)) {
         if (rows.length >= limit) break;
         if (!seen.has(row.summaryId)) rows.push(row);
       }
@@ -937,7 +968,7 @@ export class SummaryStore {
     if (rows.length > 0) {
       return rows;
     }
-    return this.searchLikeTerms(prepared, limit, conversationId, since, before);
+    return this.searchLikeTerms(prepared, limit, conversationId, since, before, summaryId);
   }
 
   private runFullTextMatch(
@@ -946,9 +977,14 @@ export class SummaryStore {
     conversationId?: number,
     since?: Date,
     before?: Date,
+    summaryId?: string,
   ): SummarySearchResult[] {
     const where: string[] = ["summaries_fts MATCH ?"];
     const args: Array<string | number> = [ftsExpression];
+    if (summaryId !== undefined) {
+      where.push(`s.summary_id IN (${SUMMARY_SOURCE_IDS_SQL})`);
+      args.push(summaryId);
+    }
     if (conversationId != null) {
       where.push("s.conversation_id = ?");
       args.push(conversationId);
@@ -986,6 +1022,7 @@ export class SummaryStore {
     conversationId?: number,
     since?: Date,
     before?: Date,
+    summaryId?: string,
   ): SummarySearchResult[] {
     const plan = likePlanForPreparedQuery("content", prepared);
     if (plan.terms.length === 0) {
@@ -994,6 +1031,10 @@ export class SummaryStore {
 
     const where: string[] = [`(${plan.where.join(" OR ")})`];
     const args: Array<string | number> = [...plan.args];
+    if (summaryId !== undefined) {
+      where.push(`summary_id IN (${SUMMARY_SOURCE_IDS_SQL})`);
+      args.push(summaryId);
+    }
     if (conversationId != null) {
       where.push("conversation_id = ?");
       args.push(conversationId);
@@ -1036,6 +1077,7 @@ export class SummaryStore {
     conversationId?: number,
     since?: Date,
     before?: Date,
+    summaryId?: string,
   ): SummarySearchResult[] {
     const plan = buildLikeSearchPlan("content", query);
     if (plan.terms.length === 0) {
@@ -1044,6 +1086,10 @@ export class SummaryStore {
 
     const where: string[] = [...plan.where];
     const args: Array<string | number> = [...plan.args];
+    if (summaryId !== undefined) {
+      where.push(`summary_id IN (${SUMMARY_SOURCE_IDS_SQL})`);
+      args.push(summaryId);
+    }
     if (conversationId != null) {
       where.push("conversation_id = ?");
       args.push(conversationId);
@@ -1087,11 +1133,16 @@ export class SummaryStore {
     conversationId?: number,
     since?: Date,
     before?: Date,
+    summaryId?: string,
   ): SummarySearchResult[] {
     const re = validateRegex(pattern);
 
     const where: string[] = [];
     const args: Array<string | number> = [];
+    if (summaryId !== undefined) {
+      where.push(`summary_id IN (${SUMMARY_SOURCE_IDS_SQL})`);
+      args.push(summaryId);
+    }
     if (conversationId != null) {
       where.push("conversation_id = ?");
       args.push(conversationId);

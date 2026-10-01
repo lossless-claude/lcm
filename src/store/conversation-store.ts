@@ -1,3 +1,4 @@
+import { SUMMARY_SOURCE_IDS_SQL } from "./summary-lineage.js";
 import { WorkerStore } from "./worker-store.js";
 import type { DatabaseSync } from "node:sqlite";
 import { parseSqliteDate } from "../db/sqlite-date.js";
@@ -100,6 +101,7 @@ export type ConversationRecord = {
 };
 
 export type MessageSearchInput = {
+  summaryId?: string;
   conversationId?: ConversationId;
   query: string;
   mode: "regex" | "full_text";
@@ -687,6 +689,7 @@ export class ConversationStore {
             input.since,
             input.before,
             input.terms,
+            input.summaryId,
           );
         } catch {
           return this.searchLike(
@@ -695,12 +698,13 @@ export class ConversationStore {
             input.conversationId,
             input.since,
             input.before,
+            input.summaryId,
           );
         }
       }
-      return this.searchLike(input.query, limit, input.conversationId, input.since, input.before);
+      return this.searchLike(input.query, limit, input.conversationId, input.since, input.before, input.summaryId);
     }
-    return this.searchRegex(input.query, limit, input.conversationId, input.since, input.before);
+    return this.searchRegex(input.query, limit, input.conversationId, input.since, input.before, input.summaryId);
   }
 
   private indexMessageForFullText(messageId: MessageId, content: string): void {
@@ -723,6 +727,7 @@ export class ConversationStore {
     since?: Date,
     before?: Date,
     terms?: readonly string[],
+    summaryId?: string,
   ): MessageSearchResult[] {
     // Natural-language questions ANDed term-by-term almost never match, so
     // prepare the query first: drop stopwords, then take AND matches (precise),
@@ -733,13 +738,13 @@ export class ConversationStore {
     if (!prepared) {
       return [];
     }
-    const rows = this.runFullTextMatch(prepared.and, limit, conversationId, since, before);
+    const rows = this.runFullTextMatch(prepared.and, limit, conversationId, since, before, summaryId);
     if (!shouldRetryWithLike(prepared)) {
       return rows;
     }
     if (rows.length < limit) {
       const seen = new Set(rows.map((row) => row.messageId));
-      for (const row of this.runFullTextMatch(prepared.or, limit, conversationId, since, before)) {
+      for (const row of this.runFullTextMatch(prepared.or, limit, conversationId, since, before, summaryId)) {
         if (rows.length >= limit) break;
         if (!seen.has(row.messageId)) rows.push(row);
       }
@@ -747,7 +752,7 @@ export class ConversationStore {
     if (rows.length > 0) {
       return rows;
     }
-    return this.searchLikeTerms(prepared, limit, conversationId, since, before);
+    return this.searchLikeTerms(prepared, limit, conversationId, since, before, summaryId);
   }
 
   private runFullTextMatch(
@@ -756,9 +761,14 @@ export class ConversationStore {
     conversationId?: ConversationId,
     since?: Date,
     before?: Date,
+    summaryId?: string,
   ): MessageSearchResult[] {
     const where: string[] = ["messages_fts MATCH ?"];
     const args: Array<string | number> = [ftsExpression];
+    if (summaryId !== undefined) {
+      where.push(`m.message_id IN (SELECT message_id FROM summary_messages WHERE summary_id IN (${SUMMARY_SOURCE_IDS_SQL}))`);
+      args.push(summaryId);
+    }
     if (conversationId != null) {
       where.push("m.conversation_id = ?");
       args.push(conversationId);
@@ -796,6 +806,7 @@ export class ConversationStore {
     conversationId?: ConversationId,
     since?: Date,
     before?: Date,
+    summaryId?: string,
   ): MessageSearchResult[] {
     const plan = likePlanForPreparedQuery("content", prepared);
     if (plan.terms.length === 0) {
@@ -804,6 +815,10 @@ export class ConversationStore {
 
     const where: string[] = [`(${plan.where.join(" OR ")})`];
     const args: Array<string | number> = [...plan.args];
+    if (summaryId !== undefined) {
+      where.push(`message_id IN (SELECT message_id FROM summary_messages WHERE summary_id IN (${SUMMARY_SOURCE_IDS_SQL}))`);
+      args.push(summaryId);
+    }
     if (conversationId != null) {
       where.push("conversation_id = ?");
       args.push(conversationId);
@@ -844,6 +859,7 @@ export class ConversationStore {
     conversationId?: ConversationId,
     since?: Date,
     before?: Date,
+    summaryId?: string,
   ): MessageSearchResult[] {
     const plan = buildLikeSearchPlan("content", query);
     if (plan.terms.length === 0) {
@@ -852,6 +868,10 @@ export class ConversationStore {
 
     const where: string[] = [...plan.where];
     const args: Array<string | number> = [...plan.args];
+    if (summaryId !== undefined) {
+      where.push(`message_id IN (SELECT message_id FROM summary_messages WHERE summary_id IN (${SUMMARY_SOURCE_IDS_SQL}))`);
+      args.push(summaryId);
+    }
     if (conversationId != null) {
       where.push("conversation_id = ?");
       args.push(conversationId);
@@ -893,12 +913,17 @@ export class ConversationStore {
     conversationId?: ConversationId,
     since?: Date,
     before?: Date,
+    summaryId?: string,
   ): MessageSearchResult[] {
     // SQLite has no native POSIX regex; fetch candidates and filter in JS
     const re = validateRegex(pattern);
 
     const where: string[] = [];
     const args: Array<string | number> = [];
+    if (summaryId !== undefined) {
+      where.push(`message_id IN (SELECT message_id FROM summary_messages WHERE summary_id IN (${SUMMARY_SOURCE_IDS_SQL}))`);
+      args.push(summaryId);
+    }
     if (conversationId != null) {
       where.push("conversation_id = ?");
       args.push(conversationId);

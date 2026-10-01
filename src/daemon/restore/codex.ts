@@ -40,7 +40,7 @@ export async function readCodexContext(
 
   const speaker = (role: string | null) => (role === "assistant" ? "Assistant" : "User");
   const items = rows.map((row) => row.itemType === "summary"
-    ? `Summary:\n${row.content}`
+    ? `Summary [${row.summaryId}]:\n${row.content}`
     : `${speaker(row.role)}:\n${row.content}`);
   const tag = isCurrentSession ? "recent-session-context" : "recent-project-context";
   return fitRecentContextItems(items, tag, byteBudget);
