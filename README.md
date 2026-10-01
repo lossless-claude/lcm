@@ -198,7 +198,8 @@ flowchart LR
 # Setup & diagnostics
 lcm install                # setup wizard
 lcm uninstall              # remove hooks, MCP, and config
-lcm doctor                 # diagnostics, stale project stores, orphan summaries
+lcm doctor                 # diagnostics, bounded store lists and orphan-summary ids
+lcm doctor --verbose       # complete store lists, orphan ids and event details
 lcm diagnose               # scan recent sessions for hook failures
 lcm status                 # daemon + summarizer mode
 lcm -V                     # version

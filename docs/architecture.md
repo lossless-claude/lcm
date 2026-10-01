@@ -93,7 +93,9 @@ from records with an absolute cwd in stores named by a project id. It retains th
 id from the store directory: re-hashing a vanished cwd cannot recover a former
 symlink's realpath. Ordinary missing checkouts
 are retained because they may be temporarily unmounted. Unreadable or invalid
-records are listed as not checked. Cleanup is a separate CLI path that defaults
+records are counted as not checked, with their complete list in the cleanup preview.
+Doctor bounds per-store lists to 20 entries followed by the remaining count;
+verbose diagnostics show the complete lists. Cleanup is a separate CLI path that defaults
 to a read-only preview; explicit apply requires a stopped daemon under an active
 hold and no retained live database activity marker. It rechecks eligibility before
 moving complete project directories and
@@ -103,11 +105,14 @@ in one transaction. A failed move or index update rolls back index changes and
 attempts to restore every moved file; files remain in trash if restoration fails.
 No stored data is deleted or automatically purged.
 
-Doctor reads existing databases without migrations and reports orphan summary
+Doctor reads existing databases without migrations and skips an empty `summaries`
+table with a `SELECT 1 FROM summaries LIMIT 1` query before querying orphan
+relationships. Stores without project records still receive this check. It reports orphan summary
 ids per store through `SummaryStore.getOrphanSummaryIds`: a summary is orphaned
 when no context item references it and no other summary uses it as a source
 (`summary_parents.parent_summary_id`). Both leaf and condensed summaries can be
-orphaned. This check diagnoses the DAG without repairing it.
+orphaned. Normal output bounds ids per store to 20, with the remaining count;
+`lcm doctor --verbose` reports every id. This check diagnoses the DAG without repairing it.
 
 Test setup records the OS user's real lcm home before isolating `HOME`, validates
 the temporary base before allocating directories, asserts the resolved test home

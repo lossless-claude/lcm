@@ -5,11 +5,14 @@ import { LCM_MD_CONTENT } from "../../src/guidance.js";
 import { ensureDaemon } from "../../src/daemon/lifecycle.js";
 import { PKG_VERSION } from "../../src/daemon/version.js";
 import { GUIDANCE_CHECK_NAMES } from "../../src/doctor/guidance-checks.js";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createLcmPaths } from "../../src/lcm-paths.js";
-import { projectDir } from "../../src/daemon/project.js";
+import { rememberSubagentGuard, subagentGuardFingerprint } from "../../src/daemon/subagent-guard-failures.js";
+import { claudeProjectSlug, projectDir } from "../../src/daemon/project.js";
+import { cleanupStaleProjectStores } from "../../src/doctor/store-hygiene.js";
 import { updateProjectMeta } from "../../src/daemon/project-meta.js";
 
 vi.mock("../../src/daemon/lifecycle.js", async (importOriginal) => ({
@@ -111,6 +114,111 @@ it("doctor lists a bounded sample of stale stores and only the stores that hold 
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
+it("doctor aggregates stores without usable project records and leaves the full list in cleanup preview", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lcm-doctor-unchecked-"));
+  const paths = createLcmPaths(home);
+  try {
+    const stores = Array.from({ length: 25 }, (_, i) => join(paths.projectsDir, `no-record-${i}`));
+    for (const dir of stores) mkdirSync(dir, { recursive: true });
+    const result = (await runDoctor(minimalDeps({ lcmHome: home }))).find(r => r.name === "stale-project-stores");
+    expect(result?.status).toBe("warn");
+    expect(result?.message).toContain("25 stores not checked (unreadable or invalid project record)");
+    expect(result?.message).toContain("lcm doctor --cleanup-stale-projects --dry-run");
+    for (const dir of stores) expect(result?.message).not.toContain(dir);
+    const preview = cleanupStaleProjectStores(paths);
+    for (const dir of stores) expect(preview).toContain(dir);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+it("doctor bounds orphan stores, summary ids and database errors and exposes full verbose details", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lcm-doctor-orphan-lists-"));
+  const paths = createLcmPaths(home);
+  try {
+    const stores = Array.from({ length: 25 }, (_, i) => join(paths.projectsDir, `orphan-store-${i}`));
+    const broken = Array.from({ length: 25 }, (_, i) => join(paths.projectsDir, `z-broken-store-${i}`));
+    for (const dir of stores) {
+      mkdirSync(dir, { recursive: true });
+      const db = new DatabaseSync(join(dir, "db.sqlite"));
+      try {
+        db.exec("CREATE TABLE summaries (summary_id TEXT); CREATE TABLE context_items (summary_id TEXT); CREATE TABLE summary_parents (parent_summary_id TEXT)");
+        for (let i = 0; i < 25; i++) db.prepare("INSERT INTO summaries VALUES (?)").run(`orphan-${String(i).padStart(2, "0")}`);
+      } finally { db.close(); }
+    }
+    for (const dir of broken) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "db.sqlite"), "unreadable database");
+    }
+    const result = (await runDoctor(minimalDeps({ lcmHome: home }))).find(r => r.name === "orphan-summaries");
+    expect(result?.status).toBe("warn");
+    expect(result?.message).toContain("625 orphan summaries");
+    expect(result?.message).toContain("25 stores not checked");
+    expect(result?.message).toContain("… and ");
+    expect(result?.message).toContain("lcm doctor --verbose");
+    expect((result?.message.match(/: (?:25 orphan summaries|not checked)/g) ?? []).length).toBeLessThanOrEqual(20);
+    expect(result?.message).toContain("orphan-19, … and 5 more");
+    expect(result?.message).not.toContain("orphan-24");
+    const full = (await runDoctor(minimalDeps({ lcmHome: home }), true)).find(r => r.name === "orphan-summaries");
+    for (const dir of [...stores, ...broken]) expect(full?.message).toContain(dir);
+    expect(full?.message).toContain("orphan-24");
+    expect(full?.message).not.toContain("… and ");
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+it("doctor skips orphan lineage queries for empty summaries even without a project record", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lcm-doctor-empty-summaries-"));
+  const paths = createLcmPaths(home);
+  const dir = join(paths.projectsDir, "no-project-record");
+  mkdirSync(dir, { recursive: true });
+  const db = new DatabaseSync(join(dir, "db.sqlite"));
+  try {
+    // Deliberately omit lineage tables: reaching the orphan query would fail.
+    db.exec("CREATE TABLE summaries (summary_id TEXT)");
+    const empty = (await runDoctor(minimalDeps({ lcmHome: home }))).find(r => r.name === "orphan-summaries");
+    expect(empty?.status).toBe("pass");
+    expect(empty?.message).toContain("0 orphan summaries");
+    db.prepare("INSERT INTO summaries VALUES (?)").run("requires-lineage-check");
+    const populated = (await runDoctor(minimalDeps({ lcmHome: home }))).find(r => r.name === "orphan-summaries");
+    expect(populated?.status).toBe("warn");
+    expect(populated?.message).toContain("unsupported schema");
+  } finally { db.close(); rmSync(home, { recursive: true, force: true }); }
+});
+
+it("doctor bounds backup and capture lists across projects and keeps their full verbose review", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lcm-doctor-project-lists-"));
+  const paths = createLcmPaths(home);
+  const { runLcmMigrations } = await import("../../src/db/migration.js");
+  try {
+    const cwds = Array.from({ length: 25 }, (_, i) => join(home, `project-${i}`));
+    for (const [i, cwd] of cwds.entries()) {
+      mkdirSync(cwd);
+      updateProjectMeta(cwd, paths, { cwd });
+      const db = new DatabaseSync(join(projectDir(cwd, paths), "db.sqlite"));
+      try { runLcmMigrations(db); } finally { db.close(); }
+      writeFileSync(join(projectDir(cwd, paths), "db.sqlite.bak-rebuild-fixture"), "backup");
+      const transcripts = join(home, ".claude", "projects", claudeProjectSlug(cwd));
+      mkdirSync(transcripts, { recursive: true });
+      const transcript = join(transcripts, `session-${i}.jsonl`);
+      writeFileSync(transcript, JSON.stringify({ type: "user", message: { role: "user", content: "retained" } }) + "\n");
+      const old = new Date(Date.now() - 86_400_000);
+      utimesSync(transcript, old, old);
+      rememberSubagentGuard(cwd, paths, transcript, subagentGuardFingerprint(transcript), `session-${i}`, "parent", "prefix differs");
+    }
+    const deps = minimalDeps({ lcmHome: home, homedir: home, cwd: home });
+    const normal = await runDoctor(deps);
+    const full = await runDoctor(deps, true);
+    for (const name of ["rebuild-backups", "claude-capture", "claude-subagent-guards"]) {
+      const message = normal.find(r => r.name === name)?.message ?? "";
+      expect(message).toContain("… and 5 more");
+      expect(message).toContain("lcm doctor --verbose");
+      const locations = name === "rebuild-backups" ? cwds.map(cwd => projectDir(cwd, paths)) : cwds;
+      expect(message.split("\n").filter(line => locations.some(location => line.includes(location)))).toHaveLength(20);
+      const review = full.find(r => r.name === name)?.message ?? "";
+      for (const location of locations) expect(review).toContain(location);
+      expect(review).not.toContain("… and ");
+    }
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
 it("doctor reports orphan summaries per store without repairing context or dropping summaries", async () => {
   const { openStandaloneLcmConnection } = await import("../../src/db/connection.js");
   const { runLcmMigrations } = await import("../../src/db/migration.js");
@@ -160,7 +268,8 @@ it("doctor reports invalid project records and unsupported summary databases as 
     for (const name of ["stale-project-stores", "orphan-summaries"]) {
       const result = results.find(result => result.name === name);
       expect(result?.status).toBe("warn");
-      expect(result?.message).toContain(dir);
+      if (name === "orphan-summaries") expect(result?.message).toContain(dir);
+      else expect(result?.message).toContain("1 stores not checked");
       expect(result?.message).toContain("not checked");
       expect(result?.fixApplied).not.toBe(true);
     }

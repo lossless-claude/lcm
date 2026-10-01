@@ -2,6 +2,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { doctorList } from "./bounded-list.js";
 import type { CheckResult } from "./types.js";
 import type { LcmPaths } from "../lcm-paths.js";
 import { claudeProjectSlug, projectDbPath, projectId } from "../daemon/project.js";
@@ -99,7 +100,7 @@ function sharedSlugs(cwds: string[]): Set<string> {
  * never reads a transcript. A transcript's modification time is not compared
  * with the stored messages', since Claude Code keeps appending lines that hold no message.
  */
-export function checkUncapturedTranscripts(opts: { paths: LcmPaths; claudeProjectsDir: string; cwd: string; now?: number }): CheckResult {
+export function checkUncapturedTranscripts(opts: { paths: LcmPaths; claudeProjectsDir: string; cwd: string; now?: number; verbose?: boolean }): CheckResult {
   const settledBefore = (opts.now ?? Date.now()) - SETTLED_MS;
   const behind: Behind[] = [];
   const { cwds, unreadable } = projectCwds(opts.paths, opts.cwd);
@@ -119,7 +120,7 @@ export function checkUncapturedTranscripts(opts: { paths: LcmPaths; claudeProjec
     }
   }
   const base = { name: "claude-capture", category: "Capture" } as const;
-  const skipped = unreadable.length > 0 ? `\n     Not checked: ${unreadable.join(", ")}` : "";
+  const skipped = unreadable.length > 0 ? `\n${doctorList(unreadable, opts.verbose ?? false, cwd => `     Not checked: ${cwd}`).join("\n")}` : "";
   if (behind.length === 0 && unreadable.length > 0) {
     return { ...base, status: "warn", message: `no uncaptured Claude Code transcript found in the projects checked${skipped}` };
   }
@@ -127,7 +128,7 @@ export function checkUncapturedTranscripts(opts: { paths: LcmPaths; claudeProjec
     return { ...base, status: "pass", message: `every Claude Code transcript not modified in the last ${SETTLED_MS / 60_000} min is captured` };
   }
   const total = behind.reduce((sum, project) => sum + project.count, 0);
-  const lines = behind.map(({ cwd, count, newest }) => `     ${cwd}: ${count} transcript${count === 1 ? "" : "s"}, most recent ${newest.path}`);
+  const lines = doctorList(behind, opts.verbose ?? false, ({ cwd, count, newest }) => `     ${cwd}: ${count} transcript${count === 1 ? "" : "s"}, most recent ${newest.path}`);
   return {
     ...base,
     status: "warn",
@@ -137,7 +138,7 @@ export function checkUncapturedTranscripts(opts: { paths: LcmPaths; claudeProjec
 }
 
 /** Unchanged Claude subagent guards and terminal Codex recovery failures in tracked projects. */
-export function checkStalledSubagentCaptures(paths: LcmPaths): CheckResult {
+export function checkStalledSubagentCaptures(paths: LcmPaths, verbose = false): CheckResult {
   const base = { name: "claude-subagent-guards", category: "Capture" } as const;
   const stalled: string[] = [];
   const terminal: string[] = [];
@@ -162,12 +163,12 @@ export function checkStalledSubagentCaptures(paths: LcmPaths): CheckResult {
   }
   if (stalled.length === 0 && terminal.length === 0) return { ...base, status: "pass", message: "no stalled Claude Code subagent captures" };
   const codex = terminal.length > 0
-    ? `${terminal.length} Codex capture${terminal.length === 1 ? "" : "s"} terminally blocked by paginated transcript recovery:\n${terminal.join("\n")}\n` +
+    ? `${terminal.length} Codex capture${terminal.length === 1 ? "" : "s"} terminally blocked by paginated transcript recovery:\n${doctorList(terminal, verbose, line => line).join("\n")}\n` +
       "     Stored history is preserved; automatic retries and NUL-cut repair cannot prove alignment."
     : "";
   return {
     ...base, status: "warn",
-    message: (stalled.length > 0 ? `${stalled.length} Claude Code subagent capture${stalled.length === 1 ? "" : "s"} stalled by transcript guards:\n${stalled.join("\n")}\n` +
+    message: (stalled.length > 0 ? `${stalled.length} Claude Code subagent capture${stalled.length === 1 ? "" : "s"} stalled by transcript guards:\n${doctorList(stalled, verbose, line => line).join("\n")}\n` +
       "     Fix: preview with `lcm import --provider claude --rebuild --session <id>`, then apply a repairable one with `--yes`;\n" +
       "     an ambiguous one needs its original transcript restored first" + (codex ? "\n" : "") : "") + codex,
   };
