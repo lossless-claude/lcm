@@ -15,7 +15,9 @@ function fixture() {
   const root = mkdtempSync(join(tmpdir(), "lcm-import-promotion-"));
   roots.push(root);
   const transcripts = join(root, "transcripts");
-  for (const cwd of ["/promotion/a", "/promotion/b", "/promotion/skipped"]) {
+  const cwds = ["a", "b", "skipped"].map(name => join(root, name));
+  for (const cwd of cwds) {
+    mkdirSync(cwd);
     const project = join(root, "projects", projectId(cwd));
     mkdirSync(project, { recursive: true });
     writeFileSync(join(project, "meta.json"), JSON.stringify({ cwd }));
@@ -33,17 +35,17 @@ function fixture() {
     throw new Error(`Unexpected route ${route}`);
   });
   return {
-    client: { post } as unknown as DaemonClient, post,
+    client: { post } as unknown as DaemonClient, post, cwds,
     options: { provider: "claude" as const, all: true, replay: true, _lcmDir: root, _claudeProjectsDir: transcripts },
   };
 }
 
 it("promotes once per compacted project after import replay finishes", async () => {
-  const { client, post, options } = fixture();
+  const { client, post, options, cwds } = fixture();
   await importSessions(client, options);
   const promotions = post.mock.calls.filter(([route]) => route === "/promote");
   expect(promotions.map(([, body]) => body)).toEqual([
-    { cwd: "/promotion/a", dry_run: false }, { cwd: "/promotion/b", dry_run: false },
+    { cwd: cwds[0], dry_run: false }, { cwd: cwds[1], dry_run: false },
   ]);
   expect(post.mock.calls.slice(-2).map(([route]) => route)).toEqual(["/promote", "/promote"]);
 });
@@ -112,7 +114,7 @@ it("continues promotion for other projects after a promotion failure", async () 
   const { client, post, options } = fixture();
   const handler = post.getMockImplementation()!;
   post.mockImplementation(async (route, body) => {
-    if (route === "/promote" && body.cwd === "/promotion/a") throw new Error("promotion failed");
+    if (route === "/promote" && body.cwd.endsWith("/a")) throw new Error("promotion failed");
     return handler(route, body);
   });
   await expect(importSessions(client, options)).resolves.toMatchObject({ imported: 6, failed: 0 });

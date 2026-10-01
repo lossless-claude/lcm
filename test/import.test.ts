@@ -56,7 +56,8 @@ describe("findSessionFiles", () => {
     const root = makeTmpDir();
     const claudeProjectsDir = makeTmpDir();
     const projects = ["a", "b"].map((name) => {
-      const cwd = `/test/${name}`;
+      const cwd = join(root, name);
+      mkdirSync(cwd);
       const dir = join(root, "projects", projectId(cwd));
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, "meta.json"), JSON.stringify({ cwd }));
@@ -304,7 +305,7 @@ describe("importSessions", () => {
 
   it("does not call client.post on dry-run", async () => {
     const claudeProjectsDir = makeTmpDir();
-    const cwd = "/home/user/myproject";
+    const cwd = makeTmpDir();
     const projectHash = claudeProjectSlug(cwd);
     const projectDir = join(claudeProjectsDir, projectHash);
     mkdirSync(projectDir, { recursive: true });
@@ -327,7 +328,7 @@ describe("importSessions", () => {
 
   it("calls /ingest with transcript_path and counts imported", async () => {
     const claudeProjectsDir = makeTmpDir();
-    const cwd = "/home/user/myproject";
+    const cwd = makeTmpDir();
     const projectHash = claudeProjectSlug(cwd);
     const projectDir = join(claudeProjectsDir, projectHash);
     mkdirSync(projectDir, { recursive: true });
@@ -360,7 +361,7 @@ describe("importSessions", () => {
 
   it("counts empty transcripts as skippedEmpty (ingested=0, totalTokens=0)", async () => {
     const claudeProjectsDir = makeTmpDir();
-    const cwd = "/home/user/emptyproject";
+    const cwd = makeTmpDir();
     const projectHash = claudeProjectSlug(cwd);
     const projectDir = join(claudeProjectsDir, projectHash);
     mkdirSync(projectDir, { recursive: true });
@@ -382,7 +383,7 @@ describe("importSessions", () => {
 
   it("counts failed ingest calls", async () => {
     const claudeProjectsDir = makeTmpDir();
-    const cwd = "/home/user/failproject";
+    const cwd = makeTmpDir();
     const projectHash = claudeProjectSlug(cwd);
     const projectDir = join(claudeProjectsDir, projectHash);
     mkdirSync(projectDir, { recursive: true });
@@ -404,7 +405,7 @@ describe("importSessions", () => {
 
   it("replay mode calls compact after each session in mtime order, threading latestSummaryContent", async () => {
     const claudeProjectsDir = makeTmpDir();
-    const cwd = "/test/project";
+    const cwd = makeTmpDir();
     const hash = claudeProjectSlug(cwd);
     const projDir = join(claudeProjectsDir, hash);
     mkdirSync(projDir, { recursive: true });
@@ -446,7 +447,7 @@ describe("importSessions", () => {
 
   it("replay mode accumulates totalTokens and tokensAfter from compact responses", async () => {
     const claudeProjectsDir = makeTmpDir();
-    const cwd = "/test/token-stats";
+    const cwd = makeTmpDir();
     const hash = claudeProjectSlug(cwd);
     const projDir = join(claudeProjectsDir, hash);
     mkdirSync(projDir, { recursive: true });
@@ -504,7 +505,7 @@ describe("importSessions", () => {
     // Covers the case where /ingest returns { ingested: 0, totalTokens: 0 } (already ingested)
     // but /compact returns real token counts. The final result should reflect the compact tokens.
     const claudeProjectsDir = makeTmpDir();
-    const cwd = "/test/already-ingested";
+    const cwd = makeTmpDir();
     const hash = claudeProjectSlug(cwd);
     const projDir = join(claudeProjectsDir, hash);
     mkdirSync(projDir, { recursive: true });
@@ -540,7 +541,7 @@ describe("importSessions", () => {
 
   it("replay mode: compact failure warns unconditionally and falls back to ingest tokens", async () => {
     const claudeProjectsDir = makeTmpDir();
-    const cwd = "/test/compact-fail";
+    const cwd = makeTmpDir();
     const hash = claudeProjectSlug(cwd);
     const projDir = join(claudeProjectsDir, hash);
     mkdirSync(projDir, { recursive: true });
@@ -664,7 +665,7 @@ describe("importSessions", () => {
 
   it("replay mode resets previousSummary when ingest fails, breaking the compact chain", async () => {
     const claudeProjectsDir = makeTmpDir();
-    const cwd = "/test/project";
+    const cwd = makeTmpDir();
     const hash = claudeProjectSlug(cwd);
     const projDir = join(claudeProjectsDir, hash);
     mkdirSync(projDir, { recursive: true });
@@ -724,7 +725,7 @@ describe("importSessions", () => {
     // importSessions counts it as skippedEmpty and doesn't call /ingest multiple times.
     // The full idempotency check is tested in the e2e test.
     const claudeProjectsDir = makeTmpDir();
-    const cwd = "/home/user/myproject";
+    const cwd = makeTmpDir();
     const projectHash = claudeProjectSlug(cwd);
     const projectDir = join(claudeProjectsDir, projectHash);
     mkdirSync(projectDir, { recursive: true });
@@ -755,7 +756,7 @@ describe("importSessions", () => {
   it("skips a completed Claude session only while its transcript is unchanged since completion", async () => {
     const claudeProjectsDir = makeTmpDir();
     const lcmDir = makeTmpDir();
-    const cwd = "/home/user/myproject";
+    const cwd = makeTmpDir();
     const projectDir = join(claudeProjectsDir, claudeProjectSlug(cwd));
     mkdirSync(projectDir, { recursive: true });
     const transcriptPath = join(projectDir, "session-resumed.jsonl");
@@ -852,7 +853,7 @@ describe("importSessions replay resume", () => {
   }
 
   it("second run skips sessions already done in the first run", async () => {
-    const cwd = "/test/resume-skip";
+    const cwd = makeTmpDir();
     const { claudeProjectsDir, lcmDir, projDir } = setup(cwd, ["s1", "s2", "s3"]);
 
     // First run: s3 fails (simulating a crash/usage-limit before its compact)
@@ -910,7 +911,7 @@ describe("importSessions replay resume", () => {
   });
 
   it("records the model that answered in the ledger, with no replay model configured", async () => {
-    const cwd = "/test/resume-answering-model";
+    const cwd = makeTmpDir();
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1"]);
     const client = makeMockClient(async (path: string) => {
       if (path === "/ingest") return { ingested: 1, totalTokens: 100 };
@@ -928,7 +929,7 @@ describe("importSessions replay resume", () => {
   });
 
   it("a session whose summary was rejected stays out of the ledger and is compacted by the next run", async () => {
-    const cwd = "/test/resume-rejected";
+    const cwd = makeTmpDir();
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2"]);
     // The shape /compact answers a rejected summary with: a 500 naming the rejection, carrying its usage.
     const rejected = Object.assign(new Error('summary rejected: openai (reasoner) stopped at the output token limit (finish_reason "length")'), {
@@ -968,7 +969,7 @@ describe("importSessions replay resume", () => {
   });
 
   it("first-ever replay into a project with no database still records its manifest", async () => {
-    const cwd = "/test/resume-fresh-db";
+    const cwd = makeTmpDir();
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2"]);
     const dbPath = join(lcmDir, "projects", projectId(cwd), "db.sqlite");
     rmSync(dbPath);
@@ -1005,7 +1006,7 @@ describe("importSessions replay resume", () => {
   });
 
   it("keeps the manifest pending past an empty first ingest that creates no database", async () => {
-    const cwd = "/test/resume-empty-first";
+    const cwd = makeTmpDir();
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2"]);
     const dbPath = join(lcmDir, "projects", projectId(cwd), "db.sqlite");
     rmSync(dbPath);
@@ -1033,7 +1034,7 @@ describe("importSessions replay resume", () => {
   });
 
   it("replay asks /ingest to re-read completed sessions", async () => {
-    const cwd = "/test/replay-ingest-flag";
+    const cwd = makeTmpDir();
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1"]);
     const ingestBodies: Record<string, unknown>[] = [];
     const client = makeMockClient(async (path: string, body: any) => {
@@ -1051,7 +1052,7 @@ describe("importSessions replay resume", () => {
   });
 
   it("restart forces a full re-run and clears recorded progress", async () => {
-    const cwd = "/test/resume-restart";
+    const cwd = makeTmpDir();
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1"]);
 
     const first = makeMockClient(async (path: string) => {
@@ -1079,7 +1080,7 @@ describe("importSessions replay resume", () => {
   });
 
   it("routes restart through the daemon before re-running the session", async () => {
-    const cwd = "/test/resume-restart-busy";
+    const cwd = makeTmpDir();
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1"]);
 
     const first = makeMockClient(async (path: string) => {
@@ -1110,7 +1111,7 @@ describe("importSessions replay resume", () => {
   });
 
   it("restart rejects a daemon reset error, but resets locally after connection refusal", async () => {
-    const cwd = "/test/resume-restart-status-error";
+    const cwd = makeTmpDir();
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1"]);
 
     const first = makeMockClient(async (path: string) => {
@@ -1166,7 +1167,7 @@ describe("importSessions replay resume", () => {
   });
 
   it("dry-run replay does not write manifests or ledgers", async () => {
-    const cwd = "/test/resume-dryrun";
+    const cwd = makeTmpDir();
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1"]);
 
     const client = makeMockClient(async () => ({ ingested: 0, totalTokens: 0 }));
@@ -1184,7 +1185,7 @@ describe("importSessions replay resume", () => {
   });
 
   it("stops starting new sessions when onBeforeSession returns false", async () => {
-    const cwd = "/test/resume-abort";
+    const cwd = makeTmpDir();
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2", "s3"]);
 
     const compacted: string[] = [];
@@ -1232,7 +1233,7 @@ describe("importSessions replay resume", () => {
   }
 
   it("a timed-out compact whose summary was stored keeps the chain and records the ledger row", async () => {
-    const cwd = "/test/timeout-stored";
+    const cwd = makeTmpDir();
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2", "s3"]);
     const stderrLines: string[] = [];
     vi.spyOn(console, "error").mockImplementation((...args: any[]) => { stderrLines.push(args.join(" ")); });
@@ -1262,7 +1263,7 @@ describe("importSessions replay resume", () => {
   });
 
   it("a timed-out compact with no stored summary keeps the previous link instead of blanking it", async () => {
-    const cwd = "/test/timeout-missing";
+    const cwd = makeTmpDir();
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2", "s3"]);
     const stderrLines: string[] = [];
     vi.spyOn(console, "error").mockImplementation((...args: any[]) => { stderrLines.push(args.join(" ")); });
@@ -1288,7 +1289,7 @@ describe("importSessions replay resume", () => {
   });
 
   it("a timed-out compact does not mistake a pre-existing summary for its result", async () => {
-    const cwd = "/test/timeout-stale";
+    const cwd = makeTmpDir();
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2"]);
     const stderrLines: string[] = [];
     vi.spyOn(console, "error").mockImplementation((...args: any[]) => { stderrLines.push(args.join(" ")); });
@@ -1322,7 +1323,7 @@ describe("importSessions replay resume", () => {
   });
 
   it("a timed-out compact whose fresh summary was stored counts its tokens", async () => {
-    const cwd = "/test/timeout-tokens";
+    const cwd = makeTmpDir();
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1"]);
     const stderrLines: string[] = [];
     vi.spyOn(console, "error").mockImplementation((...args: any[]) => { stderrLines.push(args.join(" ")); });
@@ -1346,7 +1347,7 @@ describe("importSessions replay resume", () => {
   });
 
   it("a recovered summary with sourceMessageTokenCount=0 falls back to ingest's totalTokens", async () => {
-    const cwd = "/test/timeout-tokens-zero-source";
+    const cwd = makeTmpDir();
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1"]);
     const stderrLines: string[] = [];
     vi.spyOn(console, "error").mockImplementation((...args: any[]) => { stderrLines.push(args.join(" ")); });
@@ -1368,7 +1369,7 @@ describe("importSessions replay resume", () => {
   });
 
   it("stops the run when the daemon becomes unreachable, instead of failing every remaining session", async () => {
-    const cwd = "/test/daemon-unreachable";
+    const cwd = makeTmpDir();
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2", "s3"]);
     const stderrLines: string[] = [];
     vi.spyOn(console, "error").mockImplementation((...args: any[]) => { stderrLines.push(args.join(" ")); });
@@ -1426,7 +1427,7 @@ describe("importSessions replay resume", () => {
     // blocked on a slow query) and RSTing every request it cannot service,
     // /health included. Probing and getting nothing back resolves that the
     // same way as a refused connection.
-    const cwd = "/test/daemon-wedged-health-down";
+    const cwd = makeTmpDir();
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2", "s3"]);
     const stderrLines: string[] = [];
     vi.spyOn(console, "error").mockImplementation((...args: any[]) => { stderrLines.push(args.join(" ")); });
@@ -1461,7 +1462,7 @@ describe("importSessions replay resume", () => {
   });
 
   it("keeps today's give-up behaviour for a socket drop when the health probe answers", async () => {
-    const cwd = "/test/daemon-blip-health-up";
+    const cwd = makeTmpDir();
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2", "s3"]);
     vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -1494,7 +1495,7 @@ describe("importSessions replay resume", () => {
   });
 
   it("stops the run when /ingest itself refuses the connection", async () => {
-    const cwd = "/test/ingest-daemon-unreachable";
+    const cwd = makeTmpDir();
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2", "s3"]);
     const stderrLines: string[] = [];
     vi.spyOn(console, "error").mockImplementation((...args: any[]) => { stderrLines.push(args.join(" ")); });
@@ -1519,7 +1520,7 @@ describe("importSessions replay resume", () => {
   });
 
   it("stops the run when /ingest drops the socket and the health probe also fails", async () => {
-    const cwd = "/test/ingest-wedged-health-down";
+    const cwd = makeTmpDir();
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2", "s3"]);
     const stderrLines: string[] = [];
     vi.spyOn(console, "error").mockImplementation((...args: any[]) => { stderrLines.push(args.join(" ")); });
@@ -1547,7 +1548,7 @@ describe("importSessions replay resume", () => {
   });
 
   it("keeps today's per-session failure when /ingest drops the socket but the health probe answers", async () => {
-    const cwd = "/test/ingest-blip-health-up";
+    const cwd = makeTmpDir();
     const { claudeProjectsDir, lcmDir } = setup(cwd, ["s1", "s2", "s3"]);
     vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -1577,7 +1578,7 @@ describe("importSessions replay resume", () => {
     // Claude project dir for cwd A, codex rollout for cwd B; A imports first.
     const claudeProjectsDir = makeTmpDir();
     const lcmDir = makeTmpDir();
-    const cwdA = "/test/multi-a";
+    const cwdA = makeTmpDir();
     const cwdB = makeTmpDir();
     mkdirSync(join(lcmDir, "projects", projectId(cwdA)), { recursive: true });
     writeFileSync(join(lcmDir, "projects", projectId(cwdA), "meta.json"), JSON.stringify({ cwd: cwdA }));
