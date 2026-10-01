@@ -274,7 +274,10 @@ listing something you need, use `lcm_expand` with that summary's node ID.
 - `lcm_search`, `lcm_grep`, and `lcm_describe` are fast (direct database queries)
 - `lcm_expand` traverses the DAG and reads source messages — cost scales with depth
 - `lcm_stats` performs full-table scans — use sparingly, not in request handlers
-- Expansion is bounded by the requested `depth`; there is no token cap, so keep `depth` small
+- Expansion is bounded by the requested `depth`. The retrieval engine honors an optional
+  `tokenCap` and sets `truncated` when adding a child summary or source message would exceed
+  it; the expansion orchestrator propagates that flag. The daemon's `lcm_expand` path
+  currently supplies no cap, and its MCP parameters expose none, so keep `depth` small.
 
 ### lcm_summarize_claim
 

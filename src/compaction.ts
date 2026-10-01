@@ -3,7 +3,7 @@ import type { ConversationStore, CreateMessagePartInput } from "./store/conversa
 import type { SummaryStore, SummaryRecord, ContextItemRecord } from "./store/summary-store.js";
 import { extractFileIdsFromContent } from "./large-files.js";
 import type { ScrubEngine } from "./scrub.js";
-import { resolveLcmConfig } from "./db/config.js";
+import { LCM_CONFIG_DEFAULTS, resolveLcmConfig } from "./db/config.js";
 import { acceptSummaryText } from "./llm/summary-rejection.js";
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -33,8 +33,6 @@ export interface CompactionConfig {
   leafMinFanout: number;
   /** Minimum number of depth>=1 summaries needed for condensation. */
   condensedMinFanout: number;
-  /** Relaxed minimum fanout for hard-trigger sweeps. */
-  condensedMinFanoutHard: number;
   /** Max source tokens to compact per leaf/condensed chunk (default 20000) */
   leafChunkTokens?: number;
   /** Target tokens for condensed summaries (default 900) */
@@ -77,7 +75,6 @@ export function compactEngineConfig(opts: {
     freshTailCount: knobs.freshTailCount,
     leafMinFanout: knobs.leafMinFanout,
     condensedMinFanout: knobs.condensedMinFanout,
-    condensedMinFanoutHard: knobs.condensedMinFanoutHard,
     leafChunkTokens: knobs.leafChunkTokens,
     condensedTargetTokens: knobs.condensedTargetTokens,
     language: opts.language,
@@ -214,11 +211,10 @@ export class CompactionEngine {
     tokenBudget: number;
     summarize: CompactionSummarizeFn;
     force?: boolean;
-    hardTrigger?: boolean;
     /** Seed context from a prior session's final summary (used in replay import). */
     previousSummaryContent?: string;
   }): Promise<CompactionResult> {
-    const { conversationId, tokenBudget, summarize, force, hardTrigger } = input;
+    const { conversationId, tokenBudget, summarize, force } = input;
     if (this.conversationStore.isWorkerExcluded(conversationId)) {
       return { actionTaken: false, tokensBefore: 0, tokensAfter: 0, condensed: false };
     }
@@ -304,7 +300,6 @@ export class CompactionEngine {
     while (true) {
       const candidate = await this.selectShallowestCondensationCandidate({
         conversationId,
-        hardTrigger: hardTrigger === true,
       });
       if (!candidate) {
         break;
@@ -591,7 +586,7 @@ export class CompactionEngine {
     ) {
       return Math.floor(this.config.leafMinFanout);
     }
-    return 8;
+    return LCM_CONFIG_DEFAULTS.leafMinFanout;
   }
 
   private resolveCondensedMinFanout(): number {
@@ -602,24 +597,10 @@ export class CompactionEngine {
     ) {
       return Math.floor(this.config.condensedMinFanout);
     }
-    return 4;
+    return LCM_CONFIG_DEFAULTS.condensedMinFanout;
   }
 
-  private resolveCondensedMinFanoutHard(): number {
-    if (
-      typeof this.config.condensedMinFanoutHard === "number" &&
-      Number.isFinite(this.config.condensedMinFanoutHard) &&
-      this.config.condensedMinFanoutHard > 0
-    ) {
-      return Math.floor(this.config.condensedMinFanoutHard);
-    }
-    return 2;
-  }
-
-  private resolveFanoutForDepth(targetDepth: number, hardTrigger: boolean): number {
-    if (hardTrigger) {
-      return this.resolveCondensedMinFanoutHard();
-    }
+  private resolveFanoutForDepth(targetDepth: number): number {
     if (targetDepth === 0) {
       return this.resolveLeafMinFanout();
     }
@@ -638,9 +619,8 @@ export class CompactionEngine {
    */
   private async selectShallowestCondensationCandidate(params: {
     conversationId: number;
-    hardTrigger: boolean;
   }): Promise<CondensedPhaseCandidate | null> {
-    const { conversationId, hardTrigger } = params;
+    const { conversationId } = params;
     const contextItems = await this.summaryStore.getContextItems(conversationId);
     const freshTailOrdinal = this.resolveFreshTailOrdinal(contextItems);
     const minChunkTokens = this.resolveCondensedMinChunkTokens();
@@ -649,7 +629,7 @@ export class CompactionEngine {
     });
 
     for (const targetDepth of depthLevels) {
-      const fanout = this.resolveFanoutForDepth(targetDepth, hardTrigger);
+      const fanout = this.resolveFanoutForDepth(targetDepth);
       const chunk = await this.selectOldestChunkAtDepth(
         conversationId,
         targetDepth,
