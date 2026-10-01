@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { importSessions } from "../src/import.js";
@@ -9,7 +9,7 @@ import * as fs from "node:fs";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  return { ...actual, existsSync: vi.fn(actual.existsSync) };
+  return { ...actual, statSync: vi.fn(actual.statSync) };
 });
 
 describe("import with missing working directories", () => {
@@ -39,8 +39,8 @@ describe("import with missing working directories", () => {
     const post = vi.fn().mockResolvedValue({ ingested: 0, totalTokens: 0 });
     const client = { post } as unknown as DaemonClient;
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
-    const exists = vi.mocked(fs.existsSync);
-    exists.mockClear();
+    const stat = vi.mocked(fs.statSync);
+    stat.mockClear();
     const options = {
       all: true, replay, verbose: true,
       _claudeProjectsDir: join(root, "claude"),
@@ -50,7 +50,7 @@ describe("import with missing working directories", () => {
     const result = await importSessions(client, options);
 
     expect(post).not.toHaveBeenCalled();
-    expect(exists.mock.calls.filter(([path]) => path === cwd)).toHaveLength(1);
+    expect(stat.mock.calls.filter(([path]) => path === cwd)).toHaveLength(1);
     expect(result).toMatchObject({ imported: 0, skippedCwdMissing: 2, failed: 0 });
     expect(log).not.toHaveBeenCalled();
     printImportSummary(result, { replay });
@@ -61,9 +61,38 @@ describe("import with missing working directories", () => {
     mkdirSync(cwd);
     const restored = await importSessions(client, { ...options, replay: false });
     expect(restored).toMatchObject({ skippedCwdMissing: 0, failed: 0 });
-    expect(exists.mock.calls.filter(([path]) => path === cwd)).toHaveLength(2);
+    expect(stat.mock.calls.filter(([path]) => path === cwd)).toHaveLength(2);
     expect(post.mock.calls.map(([route, body]) => [route, body.client]))
       .toEqual([["/ingest", "codex"], ["/ingest", "omp"]]);
+  });
+
+  it.skipIf(process.getuid?.() === 0)("posts a session whose cwd exists but cannot be read, so the daemon reports it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "lcm-import-missing-cwd-"));
+    roots.push(root);
+    const locked = join(root, "locked");
+    const cwd = join(locked, "worktree");
+    const codexDir = join(root, "codex");
+    const codexSessions = join(codexDir, "sessions");
+    mkdirSync(cwd, { recursive: true });
+    mkdirSync(codexSessions, { recursive: true });
+    writeFileSync(join(codexSessions, "codex.jsonl"), JSON.stringify({
+      type: "session_meta", payload: { id: "codex", cwd },
+    }) + "\n");
+    const post = vi.fn().mockResolvedValue({ ingested: 0, totalTokens: 0 });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    chmodSync(locked, 0o000);
+    try {
+      const result = await importSessions({ post } as unknown as DaemonClient, {
+        all: true, verbose: true,
+        _claudeProjectsDir: join(root, "claude"),
+        _codexDir: codexDir, _ompDir: join(root, "omp"), _lcmDir: join(root, "lcm"),
+      });
+
+      expect(result).toMatchObject({ skippedCwdMissing: 0 });
+      expect(post.mock.calls.map(([route, body]) => [route, body.client])).toEqual([["/ingest", "codex"]]);
+    } finally {
+      chmodSync(locked, 0o755);
+    }
   });
 
   it.each([{ dryRun: true, isTTY: false }, { dryRun: false, isTTY: true }])

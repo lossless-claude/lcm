@@ -1,5 +1,5 @@
 import { replayParallelism, runReplayProjects } from "./replay-projects.js";
-import { readdirSync, existsSync, lstatSync, type Dirent } from "node:fs";
+import { readdirSync, existsSync, lstatSync, statSync, type Dirent } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
@@ -688,15 +688,22 @@ export async function importSessions(
   if (paths) options.paths = paths;
   const provider = resolveImportProvider({ provider: options.provider });
   const result: ImportResult = { imported: 0, skippedEmpty: 0, skippedCwdMissing: 0, failed: 0, totalMessages: 0, totalTokens: 0, tokensAfter: 0 };
-  const cwdExists = new Map<string, boolean>();
+  const cwdMissing = new Map<string, boolean>();
   const skipMissingCwd = (cwd: string): boolean => {
-    let exists = cwdExists.get(cwd);
-    if (exists === undefined) {
-      exists = existsSync(cwd);
-      cwdExists.set(cwd, exists);
+    let missing = cwdMissing.get(cwd);
+    if (missing === undefined) {
+      // Only an absent path is skipped: a cwd that exists but cannot be read still reaches the daemon, which reports it.
+      try {
+        statSync(cwd);
+        missing = false;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        missing = code === "ENOENT" || code === "ENOTDIR";
+      }
+      cwdMissing.set(cwd, missing);
     }
-    if (!exists) result.skippedCwdMissing = (result.skippedCwdMissing ?? 0) + 1;
-    return !exists;
+    if (missing) result.skippedCwdMissing = (result.skippedCwdMissing ?? 0) + 1;
+    return missing;
   };
   // One --restart clear per project for the whole import, however many session
   // lists reach that project.
