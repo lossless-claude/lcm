@@ -10,12 +10,10 @@ import { readHold } from "../daemon/hold.js";
 import { openStandaloneLcmConnection } from "../db/connection.js";
 import { SummaryStore } from "../store/summary-store.js";
 import type { LcmPaths } from "../lcm-paths.js";
+import { doctorList, DOCTOR_LIST_LIMIT } from "./bounded-list.js";
 import type { CheckResult } from "./types.js";
 
 type ProjectStore = { id: string; dir: string; cwd: string };
-
-/** Doctor runs over every store, test leftovers included; its lines stay readable. */
-const DOCTOR_LIST_LIMIT = 20;
 
 function temporaryOrTestCwd(cwd: string): boolean {
   const path = resolve(cwd);
@@ -59,13 +57,13 @@ function staleProjectStores(paths: LcmPaths): { stale: ProjectStore[]; unchecked
 }
 
 /** Read-only: a missing ordinary checkout may be an unmounted disk and is retained. */
-export function checkStaleProjectStores(paths: LcmPaths): CheckResult {
+export function checkStaleProjectStores(paths: LcmPaths, verbose = false): CheckResult {
   const { stale, unchecked } = staleProjectStores(paths);
   // The full list belongs to the cleanup preview; doctor shows enough to recognise the pattern.
-  const lines = stale.slice(0, DOCTOR_LIST_LIMIT).map(store => `     ${store.id}: ${store.cwd}`);
-  if (stale.length > DOCTOR_LIST_LIMIT) lines.push(`     … and ${stale.length - DOCTOR_LIST_LIMIT} more`);
-  for (const dir of unchecked) lines.push(`     ${dir}: not checked (unreadable or invalid project record)`);
-  if (stale.length) lines.push("     Preview cleanup: lcm doctor --cleanup-stale-projects --dry-run");
+  const lines = doctorList(stale, verbose, store => `     ${store.id}: ${store.cwd}`);
+  if (verbose) lines.push(...unchecked.map(dir => `     ${dir}: not checked (unreadable or invalid project record)`));
+  if (unchecked.length) lines.push(`     ${unchecked.length} stores not checked (unreadable or invalid project record)`);
+  if (stale.length || unchecked.length) lines.push("     Preview cleanup: lcm doctor --cleanup-stale-projects --dry-run");
   return {
     name: "stale-project-stores", category: "Storage",
     status: stale.length || unchecked.length ? "warn" : "pass",
@@ -168,10 +166,12 @@ export function cleanupStaleProjectStores(paths: LcmPaths, apply = false): strin
 }
 
 /** Read existing databases without migrations. Orphans are diagnostic evidence, not garbage. */
-export function checkOrphanSummaries(paths: LcmPaths): CheckResult {
+export function checkOrphanSummaries(paths: LcmPaths, verbose = false): CheckResult {
   const lines: string[] = [];
   let total = 0;
   let unchecked = 0;
+  // A store line can shorten its own id list even when doctorList shows every line.
+  let idsCut = false;
   let projects: Dirent[];
   try { projects = readdirSync(paths.projectsDir, { withFileTypes: true }); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -191,10 +191,13 @@ export function checkOrphanSummaries(paths: LcmPaths): CheckResult {
       }
       const db = openStandaloneLcmConnection(path, { readOnly: true });
       try {
+        if (!db.prepare("SELECT 1 FROM summaries LIMIT 1").get()) continue;
         const ids = new SummaryStore(db).getOrphanSummaryIds();
         total += ids.length;
         if (ids.length) {
-          const shown = ids.slice(0, DOCTOR_LIST_LIMIT).join(", ") + (ids.length > DOCTOR_LIST_LIMIT ? ", …" : "");
+          if (!verbose && ids.length > DOCTOR_LIST_LIMIT) idsCut = true;
+          const shown = (verbose ? ids : ids.slice(0, DOCTOR_LIST_LIMIT)).join(", ") +
+            (!verbose && ids.length > DOCTOR_LIST_LIMIT ? `, … and ${ids.length - DOCTOR_LIST_LIMIT} more` : "");
           lines.push(`     ${dir}: ${ids.length} orphan summaries (${shown})`);
         }
       } finally { db.close(); }
@@ -206,6 +209,8 @@ export function checkOrphanSummaries(paths: LcmPaths): CheckResult {
   return {
     name: "orphan-summaries", category: "Storage", status: total || unchecked ? "warn" : "pass",
     message: `${total} orphan summaries (not in context or condensed by another summary)` +
-      (lines.length ? `\n${lines.join("\n")}` : "") + (total ? "\n     Report only; no summaries or context were changed" : ""),
+      (unchecked ? `\n     ${unchecked} stores not checked (unreadable database or unsupported schema)` : "") +
+      (lines.length ? `\n${doctorList(lines, verbose, line => line).join("\n")}` : "") +
+      (idsCut && lines.length <= DOCTOR_LIST_LIMIT ? "\n     Full details: lcm doctor --verbose" : "") + (total ? "\n     Report only; no summaries or context were changed" : ""),
   };
 }

@@ -97,7 +97,10 @@ was under a system temporary directory (under its path or its resolved real path
 such as macOS `/private/var/folders`), or has an `e2e-test-*` or
 `lossless-ingest-*`, `lossless-compact-*`, or `lossless-status-*` path component.
 Existing directories and ordinary missing checkouts are retained. Invalid or
-unreadable project records are reported as not checked and skipped by cleanup.
+unreadable project records are counted as not checked and skipped by cleanup;
+the cleanup preview lists each one. Normal doctor output shows at most 20 entries
+per store list, followed by “... and N more”. Use `lcm doctor --verbose` (or `-v`)
+to review every store and all reported orphan-summary ids.
 
 Review the cleanup preview, then hold the daemon offline before applying it:
 
@@ -123,8 +126,10 @@ group-index references.
 
 Doctor also reports orphan-summary counts and ids per store. An orphan is a
 summary that is absent from context and is not a source of another summary.
-The check opens existing databases read-only without migrations and reports
-unreadable or unsupported databases as not checked. It offers no automatic repair
+The check opens existing databases read-only without migrations. One cheap query
+skips an empty `summaries` table before inspecting orphan relationships, including
+in stores without a project record. Unreadable or unsupported databases are
+reported as not checked. It offers no automatic repair
 and preserves summaries and context.
 
 The test harness isolates both `LCM_HOME` and `HOME`, retains the OS user's real

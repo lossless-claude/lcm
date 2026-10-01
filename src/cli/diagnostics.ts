@@ -138,6 +138,7 @@ export function registerDiagnosticsCommands(program: Command, deps: DiagnosticsC
   // ─── doctor ────────────────────────────────────────────────────────────────
   program
     .command("doctor")
+    .option("-v, --verbose", "Show full store and event details")
     .description("Run diagnostics: daemon, hooks, MCP, summarizer")
     .option("--cleanup-stale-projects", "Preview trashing stores for missing temporary or test directories")
     .option("--dry-run", "Preview cleanup without writing (the cleanup default)")
@@ -154,7 +155,7 @@ export function registerDiagnosticsCommands(program: Command, deps: DiagnosticsC
         return;
       }
       const { runDoctor, printResults } = await import("../doctor/doctor.js");
-      const results = await runDoctor();
+      const results = await runDoctor(undefined, Boolean(opts.verbose));
       printResults(results);
       const failures = results.filter((r: { status: string }) => r.status === "fail");
       exit(failures.length > 0 ? 1 : 0);

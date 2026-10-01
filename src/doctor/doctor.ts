@@ -819,12 +819,12 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
 
   // ── Capture ──
   results.push(checkUncapturedTranscripts({
-    paths: createLcmPaths(deps.lcmHome), claudeProjectsDir: join(deps.homedir, ".claude", "projects"), cwd,
+    paths: createLcmPaths(deps.lcmHome), claudeProjectsDir: join(deps.homedir, ".claude", "projects"), cwd, verbose,
   }));
-  results.push(checkStalledSubagentCaptures(createLcmPaths(deps.lcmHome)));
-  results.push(checkRebuildBackups(createLcmPaths(deps.lcmHome)));
-  results.push(checkStaleProjectStores(createLcmPaths(deps.lcmHome)));
-  results.push(checkOrphanSummaries(createLcmPaths(deps.lcmHome)));
+  results.push(checkStalledSubagentCaptures(createLcmPaths(deps.lcmHome), verbose));
+  results.push(checkRebuildBackups(createLcmPaths(deps.lcmHome), verbose));
+  results.push(checkStaleProjectStores(createLcmPaths(deps.lcmHome), verbose));
+  results.push(checkOrphanSummaries(createLcmPaths(deps.lcmHome), verbose));
 
   // ── Passive Learning ──
   const hooksInstalled = results.some(

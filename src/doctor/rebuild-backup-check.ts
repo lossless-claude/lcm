@@ -1,13 +1,14 @@
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { LcmPaths } from "../lcm-paths.js";
+import { doctorList } from "./bounded-list.js";
 import type { CheckResult } from "./types.js";
 
 /** Copies a rebuild keeps per project database: the oldest and the newest. */
 const MAX_KEPT = 2;
 
 /** Read-only inventory of rebuild copies beside each project database. */
-export function checkRebuildBackups(paths: LcmPaths): CheckResult {
+export function checkRebuildBackups(paths: LcmPaths, verbose = false): CheckResult {
   const base = { name: "rebuild-backups", category: "Storage" } as const;
   let projects;
   try {
@@ -20,7 +21,7 @@ export function checkRebuildBackups(paths: LcmPaths): CheckResult {
     .map((project) => projectBackups(join(paths.projectsDir, project.name)))
     .filter((entry) => entry !== undefined);
   if (found.length === 0) return { ...base, status: "pass", message: "No rebuild backups found" };
-  const lines = found.map((entry) => entry.line);
+  const lines = doctorList(found, verbose, entry => entry.line);
   // A rebuild keeps the oldest and the newest copy per project; more than that predates the retention.
   return {
     ...base, status: found.some((entry) => entry.extra) ? "warn" : "pass",
