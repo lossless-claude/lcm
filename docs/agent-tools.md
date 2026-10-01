@@ -187,7 +187,14 @@ Store a durable insight in promoted memory: one concise insight and its why. Wha
 |-------|------|----------|---------|-------------|
 | `text` | string | ✅ | — | The content to store |
 | `tags` | string[] | | — | Canonical tags (see [tag-schema.md](tag-schema.md)) |
-| `metadata` | object | | — | Optional key/value metadata |
+| `metadata` | object | | — | Optional key/value metadata; explicit `sessionId` and `projectId` override inferred provenance |
+
+`lcm_store` and `lcm store` record the caller's session id from
+`CLAUDE_CODE_SESSION_ID`, then `CODEX_THREAD_ID` when the first is absent or empty.
+Without either, the session id is `"manual"`. The project id defaults to the id of
+the project database the memory is stored in, including the owning sibling checkout
+for a memory use or vote. Explicit `metadata.sessionId` and `metadata.projectId`
+values passed to `lcm_store` take precedence independently.
 
 **Examples:**
 
@@ -288,7 +295,10 @@ listing something you need, use `lcm_expand` with that summary's node ID.
 - `lcm_search`, `lcm_grep`, and `lcm_describe` are fast (direct database queries)
 - `lcm_expand` traverses the DAG and reads source messages — cost scales with depth
 - `lcm_stats` performs full-table scans — use sparingly, not in request handlers
-- Expansion is bounded by the requested `depth`; there is no token cap, so keep `depth` small
+- Expansion is bounded by the requested `depth`. The retrieval engine honors an optional
+  `tokenCap` and sets `truncated` when adding a child summary or source message would exceed
+  it; the expansion orchestrator propagates that flag. The daemon's `lcm_expand` path
+  currently supplies no cap, and its MCP parameters expose none, so keep `depth` small.
 
 ### lcm_summarize_claim
 

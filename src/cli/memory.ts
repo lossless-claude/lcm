@@ -110,7 +110,7 @@ export function registerMemoryCommands(program: Command, deps: MemoryCommandDeps
         cwd: process.cwd(),
         text,
         tags: normalizeStringList(opts.tag) ?? [],
-        metadata: {},
+        metadata: { sessionId: process.env.CLAUDE_CODE_SESSION_ID || process.env.CODEX_THREAD_ID || "manual" },
       });
       printJson(result);
     });

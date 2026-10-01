@@ -185,7 +185,9 @@ For most use cases, 0.75 is a good balance.
 
 ### Condensed fanout
 
-`LCM_CONDENSED_MIN_FANOUT` (default `2`) controls how many same-depth summaries accumulate before they're condensed into a higher-level summary. `LCM_CONDENSED_MIN_FANOUT_HARD` (default `1`) is the relaxed minimum a hard-trigger (full) sweep uses instead.
+`LCM_LEAF_MIN_FANOUT` (default `3`) also sets the minimum number of depth-0 summaries for condensation. `LCM_CONDENSED_MIN_FANOUT` (default `2`) sets the minimum for summaries at depth 1 and above.
+
+Non-positive or non-finite fanout values use these same defaults (`3` and `2`), replacing the older engine fallbacks of `8` and `4`. The unused hard-trigger fanout setting has been removed: no route selected that mode, and forced sweeps use the same depth-based fanout as other sweeps.
 
 - Lower values create deeper DAGs with more levels of abstraction.
 - Higher values keep the DAG shallower but with more nodes at each level.

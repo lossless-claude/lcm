@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, statSync } from "node:fs";
 import { closeLcmConnection, getLcmConnection } from "../../db/connection.js";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { projectDbPath, projectDir } from "../project.js";
+import { projectDbPath, projectDir, projectId } from "../project.js";
 import { openProject, projectGroup } from "../project-group.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
@@ -222,7 +222,7 @@ export function createStoreHandler(config: DaemonConfig, paths: LcmPaths): Route
       const insert = () => store.insert({
         content: scrubbedText,
         tags,
-        projectId: metadata.projectId ?? "manual",
+        projectId: metadata.projectId ?? projectId(targetPath),
         sessionId: metadata.sessionId ?? "manual",
         depth: metadata.depth ?? 0,
         confidence: 1.0,
