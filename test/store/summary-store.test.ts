@@ -122,15 +122,17 @@ describe("SummaryStore — lineage", () => {
     const { store, convId } = await makeFixture();
     await store.insertSummary({ summaryId: "root", conversationId: convId, kind: "condensed", content: "root", tokenCount: 5 });
     await store.insertSummary({ summaryId: "child", conversationId: convId, kind: "leaf", content: "child", tokenCount: 10 });
-    await store.linkSummaryToParents("child", []);
-    expect(await store.getSummaryParents("child")).toEqual([]);
+    await store.linkSummaryToParents("root", []);
+    expect(await store.getSummaryParents("root")).toEqual([]);
 
-    await store.linkSummaryToParents("child", ["root"]);
-    expect((await store.getSummaryParents("child")).map((s) => s.summaryId)).toEqual(["root"]);
-    expect((await store.getSummaryChildren("root")).map((s) => s.summaryId)).toEqual(["child"]);
+    // As compaction links them: a condensed summary names the summaries it was condensed from.
+    await store.linkSummaryToParents("root", ["child"]);
+    expect((await store.getSummaryParents("root")).map((s) => s.summaryId)).toEqual(["child"]);
+    expect((await store.getSummaryChildren("child")).map((s) => s.summaryId)).toEqual(["root"]);
 
     const subtree = await store.getSummarySubtree("root");
-    expect(subtree.map((n) => [n.summaryId, n.depthFromRoot, n.parentSummaryId])).toEqual([["root", 0, null], ["child", 1, "root"]]);
+    expect(subtree.map((n) => [n.summaryId, n.depthFromRoot, n.parentSummaryId, n.childCount]))
+      .toEqual([["root", 0, null, 1], ["child", 1, "root", 0]]);
     expect(await store.getSummarySubtree("child")).toHaveLength(1);
   });
 });
