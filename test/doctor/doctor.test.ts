@@ -164,6 +164,23 @@ it("doctor bounds orphan stores, summary ids and database errors and exposes ful
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
+it("doctor points to verbose orphan details only when something was left out", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lcm-doctor-orphan-short-"));
+  const paths = createLcmPaths(home);
+  try {
+    const dir = join(paths.projectsDir, "orphan-store");
+    mkdirSync(dir, { recursive: true });
+    const db = new DatabaseSync(join(dir, "db.sqlite"));
+    try {
+      db.exec("CREATE TABLE summaries (summary_id TEXT); CREATE TABLE context_items (summary_id TEXT); CREATE TABLE summary_parents (parent_summary_id TEXT)");
+      for (const id of ["orphan-a", "orphan-b"]) db.prepare("INSERT INTO summaries VALUES (?)").run(id);
+    } finally { db.close(); }
+    const result = (await runDoctor(minimalDeps({ lcmHome: home }))).find(r => r.name === "orphan-summaries");
+    expect(result?.message).toContain("2 orphan summaries (orphan-a, orphan-b)");
+    expect(result?.message).not.toContain("lcm doctor --verbose");
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
 it("doctor skips orphan lineage queries for empty summaries even without a project record", async () => {
   const home = mkdtempSync(join(tmpdir(), "lcm-doctor-empty-summaries-"));
   const paths = createLcmPaths(home);

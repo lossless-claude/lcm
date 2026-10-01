@@ -170,6 +170,8 @@ export function checkOrphanSummaries(paths: LcmPaths, verbose = false): CheckRes
   const lines: string[] = [];
   let total = 0;
   let unchecked = 0;
+  // A store line can shorten its own id list even when doctorList shows every line.
+  let idsCut = false;
   let projects: Dirent[];
   try { projects = readdirSync(paths.projectsDir, { withFileTypes: true }); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -193,6 +195,7 @@ export function checkOrphanSummaries(paths: LcmPaths, verbose = false): CheckRes
         const ids = new SummaryStore(db).getOrphanSummaryIds();
         total += ids.length;
         if (ids.length) {
+          if (!verbose && ids.length > DOCTOR_LIST_LIMIT) idsCut = true;
           const shown = (verbose ? ids : ids.slice(0, DOCTOR_LIST_LIMIT)).join(", ") +
             (!verbose && ids.length > DOCTOR_LIST_LIMIT ? `, … and ${ids.length - DOCTOR_LIST_LIMIT} more` : "");
           lines.push(`     ${dir}: ${ids.length} orphan summaries (${shown})`);
@@ -208,6 +211,6 @@ export function checkOrphanSummaries(paths: LcmPaths, verbose = false): CheckRes
     message: `${total} orphan summaries (not in context or condensed by another summary)` +
       (unchecked ? `\n     ${unchecked} stores not checked (unreadable database or unsupported schema)` : "") +
       (lines.length ? `\n${doctorList(lines, verbose, line => line).join("\n")}` : "") +
-      (lines.length && lines.length <= DOCTOR_LIST_LIMIT && !verbose ? "\n     Full details: lcm doctor --verbose" : "") + (total ? "\n     Report only; no summaries or context were changed" : ""),
+      (idsCut && lines.length <= DOCTOR_LIST_LIMIT ? "\n     Full details: lcm doctor --verbose" : "") + (total ? "\n     Report only; no summaries or context were changed" : ""),
   };
 }
