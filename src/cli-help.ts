@@ -92,19 +92,22 @@ const HELP: Record<string, CommandHelp> = {
 
   doctor: {
     summary: "Run diagnostics — daemon, hooks, MCP, summarizer, stale project stores and orphan summaries.",
-    usage: "lcm doctor [--verbose] [--cleanup-stale-projects [--dry-run | --apply]]",
+    usage: "lcm doctor [--verbose] [--cleanup-stale-projects | --repair-manual-attribution] [--dry-run | --apply]",
     options: [
       ["-v, --verbose", "Show full store and event details"],
       ["--cleanup-stale-projects", "Preview trashing stores for missing temporary or test directories"],
-      ["--dry-run", "Read-only cleanup preview (the default for cleanup)"],
-      ["--apply", "Move reviewed candidates to lcm's trash; requires a stopped, held daemon"],
+      ["--repair-manual-attribution", "Trace active manual memories to Claude/Codex transcript store calls"],
+      ["--dry-run", "Read-only cleanup or attribution preview (the default)"],
+      ["--apply", "Apply cleanup or attribution repair; requires a stopped, held daemon"],
     ],
     examples: [
       ["lcm doctor", "Run all diagnostic checks"],
       ["lcm doctor --cleanup-stale-projects --dry-run", "Review stale stores without changing them"],
       ["lcm doctor --cleanup-stale-projects --apply", "Trash reviewed stores after lcm daemon stop --hold"],
+      ["lcm doctor --repair-manual-attribution", "Preview session attribution from raw store calls"],
+      ["lcm doctor --repair-manual-attribution --apply", "Back up and attribute unique matches after lcm daemon stop --hold"],
     ],
-    notes: "Exits with code 1 if any check fails. Cleanup runs separately from normal diagnostics and defaults to a dry run. Apply moves stores and event sidecars to <lcm-home>/trash/projects/<batch> and removes their group-index references; it never deletes their data. Run lcm daemon start afterwards. Store lists and orphan ids show at most 20 entries followed by the remaining count; --verbose shows the full lists. Invalid project records are counted; cleanup preview lists them individually. Orphan summaries are reported without repair.",
+    notes: "Exits with code 1 if any check fails. Cleanup and attribution repair are separate, mutually exclusive modes and default to a dry run. Cleanup apply moves stores and event sidecars to <lcm-home>/trash/projects/<batch> and removes their group-index references; it never deletes their data. Attribution repair scans raw Claude/Codex transcripts across projects, matching normalized text/content arguments of calls whose name ends in lcm_store. Only one matching session permits a session_id update; ambiguous and unmatched memories stay unchanged. Apply retains each changed store's full database at the printed db.sqlite.bak-manual-attribution-* path. To revert, keep the daemon held offline, replace db.sqlite with its backup and remove db.sqlite-wal/db.sqlite-shm; this restores the entire database. Run lcm daemon start afterwards. Store lists and orphan ids show at most 20 entries followed by the remaining count; --verbose shows the full lists. Invalid project records are counted; cleanup preview lists them individually. Orphan summaries are reported without repair.",
   },
 
   search: {

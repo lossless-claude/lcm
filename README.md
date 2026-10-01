@@ -200,6 +200,7 @@ lcm install                # setup wizard
 lcm uninstall              # remove hooks, MCP, and config
 lcm doctor                 # diagnostics, bounded store lists (stale, record-less) and orphan-summary ids
 lcm doctor --verbose       # complete store lists, orphan ids and event details
+lcm doctor --repair-manual-attribution # preview manual memory session attribution; explicit --apply requires an offline hold and backs up each changed store
 lcm diagnose               # scan recent sessions for hook failures
 lcm status                 # daemon + summarizer mode
 lcm -V                     # version

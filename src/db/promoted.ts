@@ -89,6 +89,13 @@ export class PromotedStore {
     return (this.db.prepare("SELECT * FROM promoted WHERE id = ?").get(id) as PromotedRow) ?? null;
   }
 
+  /** Repair an active manual memory's session without changing its other fields or full-text index. */
+  attributeManual(id: string, sessionId: string): boolean {
+    return this.db.prepare(
+      "UPDATE promoted SET session_id = ? WHERE id = ? AND session_id = 'manual' AND archived_at IS NULL"
+    ).run(sessionId, id).changes === 1;
+  }
+
   /** Every row, archived and signal rows included. */
   count(): number {
     const row = this.db.prepare("SELECT COUNT(*) AS count FROM promoted").get() as { count: number } | undefined;
