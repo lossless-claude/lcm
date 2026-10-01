@@ -9,11 +9,52 @@ import { groupIndexPath } from "../daemon/project-group.js";
 import { readHold } from "../daemon/hold.js";
 import { openStandaloneLcmConnection } from "../db/connection.js";
 import { SummaryStore } from "../store/summary-store.js";
+import { PromotedStore } from "../db/promoted.js";
 import type { LcmPaths } from "../lcm-paths.js";
 import { doctorList, DOCTOR_LIST_LIMIT } from "./bounded-list.js";
 import type { CheckResult } from "./types.js";
 
 type ProjectStore = { id: string; dir: string; cwd: string };
+type RecordlessStore = { id: string; dir: string; promoted: boolean | null };
+
+function inspectRecordlessStore(id: string, dir: string): RecordlessStore {
+  let promoted: boolean | null = null;
+  try {
+    const db = openStandaloneLcmConnection(join(dir, "db.sqlite"), { readOnly: true });
+    try {
+      promoted = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'promoted'").get()
+        && new PromotedStore(db).count() > 0;
+    } finally { db.close(); }
+  } catch { /* An unreadable database cannot establish whether it holds memories. */ }
+  return { id, dir, promoted };
+}
+
+/** Row evidence is a recovery suggestion, never permission to relocate a store. */
+function recoverableCwd(store: RecordlessStore, paths: LcmPaths): string | undefined {
+  try {
+    const db = openStandaloneLcmConnection(join(store.dir, "db.sqlite"), { readOnly: true });
+    try {
+      const candidates = new Set<string>();
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[];
+      for (const table of tables) {
+        const quotedTable = `"${table.name.replaceAll('"', '""')}"`;
+        const columns = db.prepare(`PRAGMA table_info(${quotedTable})`).all() as { name: string }[];
+        for (const field of ["cwd", "project_id"]) {
+          if (!columns.some(column => column.name === field)) continue;
+          const rows = db.prepare(`SELECT DISTINCT "${field}" AS value FROM ${quotedTable}`).all() as { value: unknown }[];
+          for (const { value } of rows) {
+            if (typeof value !== "string") continue;
+            if (isAbsolute(value)) { candidates.add(value); continue; }
+            if (field !== "project_id" || !/^[a-f0-9]{64}$/.test(value)) continue;
+            const cwd = readProjectMetaIn(join(paths.projectsDir, value))?.cwd;
+            if (typeof cwd === "string" && isAbsolute(cwd)) candidates.add(cwd);
+          }
+        }
+      }
+      return candidates.size === 1 ? [...candidates][0] : undefined;
+    } finally { db.close(); }
+  } catch { return undefined; }
+}
 
 function temporaryOrTestCwd(cwd: string): boolean {
   const path = resolve(cwd);
@@ -26,13 +67,14 @@ function temporaryOrTestCwd(cwd: string): boolean {
     || path.split(sep).some(part => /^(?:e2e-test-|lossless-(?:ingest|compact|status)-)/.test(part));
 }
 
-function staleProjectStores(paths: LcmPaths): { stale: ProjectStore[]; unchecked: string[] } {
+function staleProjectStores(paths: LcmPaths): { stale: ProjectStore[]; unchecked: string[]; recordless: RecordlessStore[] } {
   const stale: ProjectStore[] = [];
   const unchecked: string[] = [];
+  const recordless: RecordlessStore[] = [];
   let entries;
   try { entries = readdirSync(paths.projectsDir, { withFileTypes: true }); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") unchecked.push(paths.projectsDir);
-    return { stale, unchecked };
+    return { stale, unchecked, recordless };
   }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
@@ -43,6 +85,9 @@ function staleProjectStores(paths: LcmPaths): { stale: ProjectStore[]; unchecked
       // so an alias can no longer reproduce the id used when the store was created.
       if (typeof cwd !== "string" || !isAbsolute(cwd) || !/^[a-f0-9]{64}$/.test(entry.name)) {
         unchecked.push(dir);
+        if ((typeof cwd !== "string" || !isAbsolute(cwd)) && existsSync(join(dir, "db.sqlite"))) {
+          recordless.push(inspectRecordlessStore(entry.name, dir));
+        }
         continue;
       }
       if (!temporaryOrTestCwd(cwd)) continue;
@@ -53,16 +98,21 @@ function staleProjectStores(paths: LcmPaths): { stale: ProjectStore[]; unchecked
       }
     } catch { unchecked.push(dir); }
   }
-  return { stale, unchecked };
+  return { stale, unchecked, recordless };
 }
 
 /** Read-only: a missing ordinary checkout may be an unmounted disk and is retained. */
 export function checkStaleProjectStores(paths: LcmPaths, verbose = false): CheckResult {
-  const { stale, unchecked } = staleProjectStores(paths);
+  const { stale, unchecked, recordless } = staleProjectStores(paths);
   // The full list belongs to the cleanup preview; doctor shows enough to recognise the pattern.
   const lines = doctorList(stale, verbose, store => `     ${store.id}: ${store.cwd}`);
   if (verbose) lines.push(...unchecked.map(dir => `     ${dir}: not checked (unreadable or invalid project record)`));
   if (unchecked.length) lines.push(`     ${unchecked.length} stores not checked (unreadable or invalid project record)`);
+  if (recordless.length) {
+    lines.push(`     ${recordless.length} record-less project stores; ${recordless.filter(store => store.promoted).length} hold promoted memories`);
+    const unknown = recordless.filter(store => store.promoted === null).length;
+    if (unknown) lines.push(`     Promoted memories not checked in ${unknown} unreadable databases`);
+  }
   if (stale.length || unchecked.length) lines.push("     Preview cleanup: lcm doctor --cleanup-stale-projects --dry-run");
   return {
     name: "stale-project-stores", category: "Storage",
@@ -103,10 +153,14 @@ function processAlive(pid: number): boolean {
 
 /** Defaults to a read-only preview. Apply preserves the complete store in lcm's trash. */
 export function cleanupStaleProjectStores(paths: LcmPaths, apply = false): string {
-  const { stale, unchecked } = staleProjectStores(paths);
+  const { stale, unchecked, recordless } = staleProjectStores(paths);
   const lines = stale.map(store => `     ${store.id}: ${store.cwd}`);
   for (const dir of unchecked) lines.push(`     ${dir}: skipped (unreadable or invalid project record)`);
   if (!apply) {
+    for (const store of recordless) {
+      const cwd = recoverableCwd(store, paths);
+      if (cwd) lines.push(`     ${store.id}: recoverable cwd ${cwd}; review and restore the project record manually`);
+    }
     return `[dry-run] Would trash ${stale.length} project stores and their event sidecars\n${lines.join("\n")}\n` +
       "After review: lcm daemon stop --hold; lcm doctor --cleanup-stale-projects --apply; lcm daemon start";
   }

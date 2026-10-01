@@ -196,6 +196,10 @@ the project database the memory is stored in, including the owning sibling check
 for a memory use or vote. Explicit `metadata.sessionId` and `metadata.projectId`
 values passed to `lcm_store` take precedence independently.
 
+The database destination and its project record remain keyed by the supplied cwd
+(or the owning sibling for memory feedback). Explicit `metadata.projectId` changes
+the row's provenance; it does not create a separate store under that id.
+
 **Examples:**
 
 ```
@@ -266,7 +270,7 @@ checkout.
 
 ### lcm_doctor
 
-Run diagnostics on the lcm installation. Checks daemon, hooks, MCP config, and summarizer health, and reports stale temporary/test project stores and orphan-summary counts and ids per store. Per-store lists and orphan ids are bounded to 20 entries with a remaining count. Stores without usable project records are counted as not checked; review their full list in the cleanup preview or use `lcm doctor --verbose` for complete diagnostic lists. These storage checks preserve stored data. Stale-store cleanup is an explicit CLI operation described in [configuration.md](configuration.md#project-store-hygiene); the tool does not apply it or repair orphan summaries.
+Run diagnostics on the lcm installation. Checks daemon, hooks, MCP config, and summarizer health, and reports stale temporary/test project stores, counts of record-less stores and those holding promoted memories, and orphan-summary counts and ids per store. Per-store lists and orphan ids are bounded to 20 entries with a remaining count; `lcm doctor --verbose` shows complete diagnostic lists. Unreadable databases have unknown memory contents. These storage checks preserve stored data. Stale-store cleanup is an explicit CLI operation described in [configuration.md](configuration.md#project-store-hygiene); its preview lists record-less stores and offers cwd recovery suggestions from structured rows or known project ids, while retaining them. The tool does not apply cleanup or repair records or orphan summaries.
 
 **Parameters:** none.
 

@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { closeLcmConnection, getLcmConnection } from "../../db/connection.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { projectDbPath } from "../project.js";
+import { openProject } from "../project-group.js";
 import type { LcmPaths } from "../../lcm-paths.js";
 
 /**
@@ -20,6 +21,7 @@ import type { LcmPaths } from "../../lcm-paths.js";
  * some.
  */
 export async function withProjectDb<T>(cwd: string, paths: LcmPaths, fn: (db: DatabaseSync) => T | Promise<T>): Promise<T> {
+  openProject(cwd, paths);
   const dbPath = projectDbPath(cwd, paths);
   const db = getLcmConnection(dbPath);
   try {

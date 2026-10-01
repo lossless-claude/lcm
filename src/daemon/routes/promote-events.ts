@@ -7,6 +7,7 @@ import { deduplicateAndInsert } from "../../promotion/dedup.js";
 import { sendJson, type RouteHandler } from "../server.js";
 import { validateCwd } from "../validate-cwd.js";
 import { projectId, projectDbPath } from "../project.js";
+import { openProject } from "../project-group.js";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import type { DaemonConfig } from "../config.js";
@@ -111,6 +112,7 @@ export function createPromoteEventsHandler(config: DaemonConfig, paths: LcmPaths
 
         // Open main project DB for promotion
         const pid = projectId(cwd);
+        openProject(cwd, paths);
         const dbPath = projectDbPath(cwd, paths);
         const db = getLcmConnection(dbPath);
         try {

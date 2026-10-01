@@ -5,6 +5,7 @@ import type { DaemonConfig } from "../config.js";
 import type { LcmPaths } from "../../lcm-paths.js";
 import { projectId, projectDbPath } from "../project.js";
 import { updateProjectMeta } from "../project-meta.js";
+import { openProject } from "../project-group.js";
 import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
@@ -54,6 +55,7 @@ export function createPromoteHandler(
     let totalConversations = 0;
 
     try {
+      if (!dry_run) openProject(cwd, paths);
       db = getLcmConnection(dbPath);
       runLcmMigrations(db);
       mkdirSync(dirname(dbPath), { recursive: true });
