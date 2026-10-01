@@ -85,6 +85,70 @@ function storedMessages(cwd: string, sessionId: string): Array<{ content: string
 }
 
 describe("periodic transcript scan", () => {
+  it("reports missing-cwd sessions in one debug entry per scan", async () => {
+    const cwd = join(process.env.LCM_SCAN_FAKE_HOME!, "missing");
+    seedProject(cwd, claudeProjectSlug(cwd), "missing-one");
+    seedProject(cwd, claudeProjectSlug(cwd), "missing-two");
+    rmSync(cwd, { recursive: true });
+    const config = loadDaemonConfig("/nonexistent", { llm: { provider: "disabled" } }, {});
+    const log = { ...noopDaemonLog, write: vi.fn() };
+    const ingest = vi.fn(createIngestHandler(config, paths, log));
+    await scanForTranscripts(config, paths, ingest, log);
+    expect(ingest).not.toHaveBeenCalled();
+    expect(log.write.mock.calls).toEqual([["debug", "scan.missing_cwd", { sessions: 2 }]]);
+  });
+
+  it.each(["claude", "codex"])("skips a missing %s cwd without warnings and captures when it returns", async (client) => {
+    mkdirSync(process.env.LCM_SCAN_FAKE_HOME!, { recursive: true });
+    const cwd = join(realpathSync(process.env.LCM_SCAN_FAKE_HOME!), "vanished-project");
+    const sessionId = "vanished-session";
+    seedProject(cwd, claudeProjectSlug(cwd), sessionId);
+    if (client === "codex") {
+      const sessions = join(process.env.LCM_SCAN_FAKE_HOME!, ".codex", "sessions");
+      mkdirSync(sessions, { recursive: true });
+      const transcript = join(sessions, "rollout.jsonl");
+      writeFileSync(transcript, `${JSON.stringify({ type: "session_meta", payload: { id: sessionId, cwd } })}\n${JSON.stringify({
+        type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "returned" }] },
+      })}\n`);
+      const dir = projectDir(cwd, paths);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "meta.json"), JSON.stringify({ cwd }));
+      const db = new DatabaseSync(projectDbPath(cwd, paths));
+      runLcmMigrations(db);
+      db.close();
+      const { statSync } = await import("node:fs");
+      const identity = statSync(projectDbPath(cwd, paths));
+      writeFileSync(join(dir, "subagent-guard-failures.json"), JSON.stringify({
+        db: `${identity.dev}:${identity.ino}`, version: "old", failures: {
+          [transcript]: { db: `${identity.dev}:${identity.ino}`, fingerprint: "", sessionId,
+            message: "old recovery rule", client, terminal: true, recoveryRuleVersion: 0 },
+        },
+      }));
+      // This fixture exercises only the retained Codex recovery path.
+      rmSync(join(paths.projectsDir, "entry"), { recursive: true });
+      rmSync(join(process.env.LCM_SCAN_FAKE_HOME!, ".claude"), { recursive: true });
+    }
+    rmSync(cwd, { recursive: true });
+    const config = loadDaemonConfig("/nonexistent", { llm: { provider: "disabled" } }, {});
+    const log = { ...noopDaemonLog, write: vi.fn() };
+    const ingest = vi.fn(createIngestHandler(config, paths, log));
+    await scanForTranscripts(config, paths, ingest, log);
+    vi.resetModules();
+    const { scanForTranscripts: restartedScan } = await import("../../src/daemon/server.js");
+    await restartedScan(config, paths, ingest, log);
+    expect(ingest).not.toHaveBeenCalled();
+    expect(log.write.mock.calls.filter(call => call[0] === "warn")).toEqual([]);
+    expect(log.write.mock.calls).toEqual([
+      ["debug", "scan.missing_cwd", { sessions: 1 }],
+      ["debug", "scan.missing_cwd", { sessions: 1 }],
+    ]);
+
+    mkdirSync(cwd, { recursive: true });
+    await restartedScan(config, paths, ingest);
+    expect(ingest).toHaveBeenCalledTimes(1);
+    expect(storedMessages(cwd, sessionId)).toHaveLength(1);
+  });
+
   it.each(["restored", "mismatch"])("retries an older Codex guard once on scan with no Claude transcripts: %s", async (outcome) => {
     const cwd = join(process.env.LCM_SCAN_FAKE_HOME!, "codex-project");
     const sessionId = "codex-child";
