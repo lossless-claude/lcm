@@ -326,9 +326,13 @@ What a session starts with is one block of text, and `POST /restore` is the only
 builds it.
 
 1. Read the session's recent summaries deepest-first, and the project's promoted memory.
-2. Render each block as plain text and fence it — summaries join their stored `content` and
-   are returned as one `<recent-session-context>` block, promoted memories as their own
-   fenced block, passive-capture insights beside them.
+2. Render each block as plain text and fence it. Each restored summary begins with
+   `Summary [<summaryId>]:` on its own line, followed by its stored `content`. The header
+   comes from the database id, independently of generated text, and can be passed to
+   `lcm_describe` or `lcm_expand`. Claude Code joins these entries in one
+   `<recent-session-context>` block; Codex and OMP preserve the same header in their
+   context window (including the `<recent-project-context>` startup fallback). Promoted
+   memories have their own fenced block, passive-capture insights beside them.
 3. Fit the result to the byte budget the caller's client implies; a section that cannot be
    read contributes nothing rather than failing the call.
 
@@ -348,6 +352,13 @@ conversation's context window under a byte budget and never reads, replays or wr
 snapshot. Every block is fenced before it is returned, insights ride beside the context
 rather than inside it, a section that cannot be read contributes nothing instead of failing
 the restore, and one project-database connection serves the whole call.
+
+`lcm_grep` can restrict retrieval to `summary_id`: the selected summary, the source
+summaries it replaced recursively, and their linked messages. The scope follows
+`summary_parents` and `summary_messages`, rather than timestamps, and applies before
+search limits. Message matches name all covering leaf and condensed summaries in
+`summaryIds`, ordered by depth then id; an unsummarized message has an empty list.
+Summary matches carry their own `summaryId`.
 
 ## Expansion system
 

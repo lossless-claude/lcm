@@ -61,6 +61,7 @@ export interface DescribeResult {
 }
 
 export interface GrepInput {
+  summaryId?: string;
   query: string;
   mode: "regex" | "full_text";
   scope: "messages" | "summaries" | "both";
@@ -73,7 +74,7 @@ export interface GrepInput {
 }
 
 export interface GrepResult {
-  messages: MessageSearchResult[];
+  messages: Array<MessageSearchResult & { summaryIds: string[] }>;
   summaries: SummarySearchResult[];
   totalMatches: number;
 }
@@ -228,9 +229,9 @@ export class RetrievalEngine {
   }
 
   grepSync(input: GrepInput): GrepResult {
-    const { query, mode, scope, conversationId, since, before, limit, terms } = input;
+    const { query, mode, scope, conversationId, since, before, limit, terms, summaryId } = input;
 
-    const searchInput = { query, mode, conversationId, since, before, limit, terms };
+    const searchInput = { query, mode, conversationId, since, before, limit, terms, summaryId };
 
     let messages: MessageSearchResult[] = [];
     let summaries: SummarySearchResult[] = [];
@@ -251,8 +252,9 @@ export class RetrievalEngine {
       summaries.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
     }
 
+    const coverage = this.summaryStore.coveringSummaryIds(messages.map(m => m.messageId));
     return {
-      messages,
+      messages: messages.map(m => ({ ...m, summaryIds: coverage.get(m.messageId) ?? [] })),
       summaries,
       totalMatches: messages.length + summaries.length,
     };

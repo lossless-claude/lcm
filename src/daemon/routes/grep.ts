@@ -54,7 +54,9 @@ export function createGrepHandler(_config: DaemonConfig, paths: LcmPaths): Route
         query,
         mode: searchMode,
         scope: scope ?? "both",
-        since,
+        summaryId: input.summary_id,
+        conversationId: input.sessionId ? (await convStore.getConversationBySessionId(input.sessionId))?.conversationId ?? -1 : undefined,
+        since: since ? new Date(since) : undefined,
         terms: searchMode === "full_text" ? extractQueryTerms(query, paths, languageList(projectAuthorLanguage(cwd, paths))) : undefined,
       });
       db.close();

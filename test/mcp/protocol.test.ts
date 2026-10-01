@@ -125,7 +125,7 @@ describe("MCP 2026-07-28 over stdio", () => {
   });
 
   it.each([
-    ["lcm_grep", "/grep", { query: "hello" }],
+    ["lcm_grep", "/grep", { query: "hello", summary_id: "sum_1", scope: "messages" }],
     ["lcm_search", "/search", { query: "hello" }],
     ["lcm_describe", "/describe", { nodeId: "sum_1" }],
     ["lcm_expand", "/expand", { nodeId: "sum_1" }],

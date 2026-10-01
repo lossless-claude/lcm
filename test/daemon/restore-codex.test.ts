@@ -121,7 +121,7 @@ describe("restore (Codex)", () => {
     }
   });
 
-  it("restores the current summary and unsummarized tail on resume and after compaction", async () => {
+  it.each(["codex", "omp"])("restores retrievable summaries and the unsummarized tail for %s", async (client) => {
     const cwd = makeProject();
     await seedConversation({
       cwd,
@@ -135,7 +135,9 @@ describe("restore (Codex)", () => {
     const project = codexRestore(cwd);
 
     for (const source of ["resume", "compact"]) {
-      const body = await restore(project, cwd, "codex-current", source);
+      const body = await project({ client, cwd, sessionId: "codex-current", source });
+      if (body.kind !== "context") throw new Error(body.message);
+      expect(body.context).toContain("Summary [codex-current-summary]:\nEarlier work selected the durable cursor design.");
       expect(body.context).toContain("<recent-session-context>");
       expect(body.context).toContain("durable cursor design");
       expect(body.context).toContain("Keep the restore route project-scoped.");
