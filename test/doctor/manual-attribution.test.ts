@@ -107,7 +107,9 @@ it("leaves memories without a matching store call unchanged, ignoring mentions a
     ] },
   }) + "\n");
   const before = row(id);
-  expect(command()).toContain(`${id}: unmatched`);
+  const output = command();
+  expect(output).toContain(`${dbPath}: 1 unmatched`);
+  expect(output).not.toContain(id);
   expect(row(id)).toEqual(before);
 });
 
@@ -146,7 +148,7 @@ it("explicit apply changes only the unique memory's session id, retaining a reve
   const output = command("--apply");
   expect(output).toContain("Applied 1 memory attribution");
   expect(output).toContain(`${ambiguous}: ambiguous -> session-a, session-b`);
-  expect(output).toContain(`${unmatched}: unmatched`);
+  expect(output).toContain(`${dbPath}: 1 unmatched`);
   expect(output).not.toContain(archived);
   expect(output).not.toContain(attributed);
   expect(row(id)).toEqual({ ...before, session_id: "unique-session" });

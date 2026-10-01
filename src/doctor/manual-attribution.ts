@@ -58,6 +58,8 @@ async function storeCalls(files: DiscoveredSessionFile[]): Promise<Map<string, S
     const lines = createInterface({ input: createReadStream(file.path), crlfDelay: Infinity });
     try {
       for await (const line of lines) {
+        // Transcripts run to gigabytes; only a line naming the tool can hold a store call.
+        if (!line.includes("lcm_store")) continue;
         let record: TranscriptRecord;
         try { record = JSON.parse(line); } catch { continue; }
         const calls = record?.type === "assistant" && Array.isArray(record.message?.content)
@@ -94,10 +96,12 @@ export async function repairManualAttribution(paths: LcmPaths, apply = false): P
     if (!existsSync(dbPath)) continue;
     const db = openStandaloneLcmConnection(dbPath, { readOnly: true });
     const repairs: Array<{ id: string; sessionId: string }> = [];
+    let unmatched = 0;
     try {
-      for (const row of new PromotedStore(db).getAll().filter(row => row.session_id === "manual")) {
+      // Only rows apply can change: active memories still attributed to "manual".
+      for (const row of new PromotedStore(db).getAll().filter(row => row.session_id === "manual" && !row.archived_at)) {
         const sessions = [...(matches.get(normalized(row.content)) ?? [])].sort();
-        if (sessions.length === 0) output.push(`${dbPath} ${row.id}: unmatched`);
+        if (sessions.length === 0) unmatched++;
         if (sessions.length === 1) {
           output.push(`${dbPath} ${row.id}: attributable -> ${sessions[0]}`);
           repairs.push({ id: row.id, sessionId: sessions[0] });
@@ -105,6 +109,7 @@ export async function repairManualAttribution(paths: LcmPaths, apply = false): P
         if (sessions.length > 1) output.push(`${dbPath} ${row.id}: ambiguous -> ${sessions.join(", ")}`);
       }
     } finally { db.close(); }
+    if (unmatched) output.push(`${dbPath}: ${unmatched} unmatched (no store call found)`);
     if (!apply || repairs.length === 0) continue;
     requireOffline(paths);
     const writable = new DatabaseSync(dbPath);
