@@ -136,10 +136,11 @@ export function checkUncapturedTranscripts(opts: { paths: LcmPaths; claudeProjec
   };
 }
 
-/** Guard failures still attached to unchanged subagent transcripts in tracked projects. */
+/** Unchanged Claude subagent guards and terminal Codex recovery failures in tracked projects. */
 export function checkStalledSubagentCaptures(paths: LcmPaths): CheckResult {
   const base = { name: "claude-subagent-guards", category: "Capture" } as const;
   const stalled: string[] = [];
+  const terminal: string[] = [];
   let projects;
   try {
     projects = readdirSync(paths.projectsDir, { withFileTypes: true });
@@ -152,14 +153,22 @@ export function checkStalledSubagentCaptures(paths: LcmPaths): CheckResult {
     try { cwd = readProjectMetaIn(join(paths.projectsDir, project.name))?.cwd; } catch { continue; }
     if (!cwd) continue;
     for (const { path, failure } of stalledSubagentGuards(cwd, paths)) {
-      stalled.push(`     ${cwd}: ${failure.sessionId} (parent ${failure.parentSessionId}), ${path}: ${failure.message}`);
+      if (failure.client === "codex" && failure.terminal) {
+        terminal.push(`     ${cwd}: ${failure.sessionId}${failure.parentSessionId ? ` (parent ${failure.parentSessionId})` : ""}, ${path}: ${failure.message}`);
+      } else {
+        stalled.push(`     ${cwd}: ${failure.sessionId} (parent ${failure.parentSessionId}), ${path}: ${failure.message}`);
+      }
     }
   }
-  if (stalled.length === 0) return { ...base, status: "pass", message: "no stalled Claude Code subagent captures" };
+  if (stalled.length === 0 && terminal.length === 0) return { ...base, status: "pass", message: "no stalled Claude Code subagent captures" };
+  const codex = terminal.length > 0
+    ? `${terminal.length} Codex capture${terminal.length === 1 ? "" : "s"} terminally blocked by paginated transcript recovery:\n${terminal.join("\n")}\n` +
+      "     Stored history is preserved; automatic retries and NUL-cut repair cannot prove alignment."
+    : "";
   return {
     ...base, status: "warn",
-    message: `${stalled.length} Claude Code subagent capture${stalled.length === 1 ? "" : "s"} stalled by transcript guards:\n${stalled.join("\n")}\n` +
+    message: (stalled.length > 0 ? `${stalled.length} Claude Code subagent capture${stalled.length === 1 ? "" : "s"} stalled by transcript guards:\n${stalled.join("\n")}\n` +
       "     Fix: preview with `lcm import --provider claude --rebuild --session <id>`, then apply a repairable one with `--yes`;\n" +
-      "     an ambiguous one needs its original transcript restored first",
+      "     an ambiguous one needs its original transcript restored first" + (codex ? "\n" : "") : "") + codex,
   };
 }

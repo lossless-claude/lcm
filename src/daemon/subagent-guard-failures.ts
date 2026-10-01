@@ -4,7 +4,10 @@ import type { LcmPaths } from "../lcm-paths.js";
 import { projectDbPath, projectDir } from "./project.js";
 import { PKG_VERSION } from "./version.js";
 
-type Failure = { fingerprint: string; db: string; sessionId: string; parentSessionId: string; message: string };
+type Failure = {
+  fingerprint: string; db: string; sessionId: string; parentSessionId?: string; message: string;
+  client?: "codex"; terminal?: boolean;
+};
 const failed = new Map<string, Failure>();
 const projectRecords = new Map<string, { db: string | undefined; failures: Record<string, Failure> }>();
 
@@ -44,9 +47,10 @@ function readRecords(cwd: string, paths: LcmPaths): Record<string, Failure> {
       db?: unknown; version?: unknown; failures?: Record<string, Failure>;
     };
     const db = dbIdentity(cwd, paths);
-    if (db === undefined || parsed.db !== db || parsed.version !== (PKG_VERSION ?? null)) return {};
+    if (db === undefined || parsed.db !== db) return {};
     if (!parsed.failures || typeof parsed.failures !== "object") return {};
-    return parsed.failures;
+    return parsed.version === (PKG_VERSION ?? null) ? parsed.failures :
+      Object.fromEntries(Object.entries(parsed.failures).filter(([, failure]) => failure?.terminal === true));
   } catch {
     return {};
   }
@@ -83,13 +87,21 @@ export function skipUnchangedSubagentGuard(cwd: string, paths: LcmPaths, path: s
   return fingerprint !== undefined && prior?.fingerprint === fingerprint && prior.db === dbIdentity(cwd, paths);
 }
 
+/** Terminal Codex failures survive transcript growth, path changes and daemon restarts. */
+export function terminalTranscriptGuard(cwd: string, paths: LcmPaths, sessionId: string): Failure | undefined {
+  return Object.values(records(cwd, paths)).find(failure => failure?.terminal === true && failure.client === "codex" &&
+    failure.sessionId === sessionId && failure.db === dbIdentity(cwd, paths) && typeof failure.message === "string");
+}
+
 export function rememberSubagentGuard(
   cwd: string, paths: LcmPaths, path: string, fingerprint: string | undefined,
-  sessionId: string, parentSessionId: string, message: string,
+  sessionId: string, parentSessionId: string | undefined, message: string,
+  options: { client?: "codex"; terminal?: boolean } = {},
 ): void {
   const db = dbIdentity(cwd, paths);
-  if (fingerprint === undefined || db === undefined) return;
-  const failure = { fingerprint, db, sessionId, parentSessionId, message };
+  if ((fingerprint === undefined && !options.terminal) || db === undefined) return;
+  if (options.terminal && terminalTranscriptGuard(cwd, paths, sessionId)) return;
+  const failure = { fingerprint: fingerprint ?? "", db, sessionId, parentSessionId, message, ...options };
   const current = records(cwd, paths);
   current[path] = failure;
   // Skip only what doctor can list: an unrecorded failure stays retried every pass.
@@ -115,10 +127,11 @@ export function forgetSubagentGuardSession(cwd: string, paths: LcmPaths, session
   writeRecords(cwd, paths, current);
 }
 
-/** Doctor reads the sidecar in its own process and verifies that each file still matches. */
+/** Doctor verifies unchanged-file guards and lists terminal failures independently of file growth. */
 export function stalledSubagentGuards(cwd: string, paths: LcmPaths): Array<{ path: string; failure: Failure }> {
   return Object.entries(readRecords(cwd, paths))
     .filter(([path, failure]) => failure && typeof failure.fingerprint === "string" &&
-      failure.db === dbIdentity(cwd, paths) && subagentGuardFingerprint(path) === failure.fingerprint)
+      failure.db === dbIdentity(cwd, paths) &&
+      (failure.terminal === true || subagentGuardFingerprint(path) === failure.fingerprint))
     .map(([path, failure]) => ({ path, failure }));
 }

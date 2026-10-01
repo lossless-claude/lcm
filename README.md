@@ -141,7 +141,7 @@ lcm connectors install codex
 lcm connectors doctor codex
 ```
 
-The default connector installs native hooks for automatic restore, prompt recall, incremental turn capture, and compaction continuity. Review and trust them in Codex `/hooks`; connector diagnostics distinguish configuration from activation. See [Codex setup](docs/vscode-codex.md).
+The default connector installs native hooks for automatic restore, prompt recall, incremental turn capture, and compaction continuity. Review and trust them in Codex `/hooks`; connector diagnostics distinguish configuration from activation. See [Codex setup](docs/vscode-codex.md). Paginated rollout rewrites resume capture only for a proven subagent tail match; other paginated recovery mismatches remain blocked and are reported by `lcm doctor`. Stored history is preserved.
 
 Import older Codex or Oh My Pi sessions, or replay all supported history:
 

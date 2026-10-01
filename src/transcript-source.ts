@@ -112,8 +112,12 @@ export interface TranscriptSource {
   backfillModels?(db: DatabaseSync, conversationId: number, events: EventsDb, sessionId: string): void;
 }
 
-/** A transcript the adapter refuses to read: the caller's request is wrong, not the daemon. */
-export class TranscriptSourceError extends Error {}
+/** A refused transcript; terminal recovery mismatches keep the session's capture blocked. */
+export class TranscriptSourceError extends Error {
+  constructor(message: string, readonly terminal = false, readonly parentSessionId?: string) {
+    super(message);
+  }
+}
 
 type ClaudePrefixMemo = { count: number; stored: string; transcript: string; file: string; redaction: string };
 // Routes reopen connections between captures; fingerprints identify the database and its rows.
@@ -311,6 +315,22 @@ function storedContentMatches(stored: string, current: string, scrub: (text: str
   return compareStoredMessageContent(stored, current, scrub) !== undefined;
 }
 
+/** A removed inherited prefix is proved only by exact equality of the entire parsed file with the stored tail. */
+async function codexStoredTailMatches(stored: StoredTranscript, delta: CodexTranscriptDelta, ctx: ReadContext): Promise<boolean> {
+  const meta = delta.sessionMeta;
+  const parent = meta.parent_thread_id ?? meta.forked_from_id;
+  if (meta.history_mode !== "paginated" || meta.subagent_history_start_ordinal === undefined ||
+      !parent || parent === ctx.sessionId || delta.messages.length === 0 || delta.messages.length >= stored.storedCount) return false;
+  const previous = await stored.storedMessages();
+  if (previous.length !== stored.storedCount) return false;
+  const offset = previous.length - delta.messages.length;
+  return delta.messages.every((message, index) => {
+    const prior = previous[offset + index];
+    return message.role === prior.role &&
+      normalizeMessageContent(ctx.scrub(message.content)) === normalizeMessageContent(ctx.scrub(prior.content));
+  });
+}
+
 const codexSource: TranscriptSource = {
   client: "codex",
   mayRecoverTail: true,
@@ -333,11 +353,23 @@ const codexSource: TranscriptSource = {
       throw new TranscriptSourceError(error instanceof Error ? error.message : "invalid transcript");
     }
     validateCodexMetadata(delta.sessionMeta, ctx);
-    if (!delta.resumed && stored) await validateTranscriptRecovery(stored, delta.messages, ctx, "Codex");
+    let reanchored = false;
+    if (!delta.resumed && stored) {
+      if (await codexStoredTailMatches(stored, delta, ctx)) reanchored = true;
+      else {
+        try {
+          await validateTranscriptRecovery(stored, delta.messages, ctx, "Codex");
+        } catch (error) {
+          if (!(error instanceof TranscriptSourceError) || delta.sessionMeta.history_mode !== "paginated") throw error;
+          throw new TranscriptSourceError("Codex paginated transcript cannot be aligned with stored history; capture is blocked",
+            true, delta.sessionMeta.parent_thread_id ?? delta.sessionMeta.forked_from_id);
+        }
+      }
+    }
     return {
-      messages: delta.messages,
-      sourceOffset: delta.resumed && prior ? prior.messageCount : 0,
-      checkpoint: delta.cursor,
+      messages: reanchored ? [] : delta.messages,
+      sourceOffset: reanchored ? stored!.storedCount : delta.resumed && prior ? prior.messageCount : 0,
+      checkpoint: reanchored ? { ...delta.cursor, messageCount: stored!.storedCount } : delta.cursor,
       backfillModels(events, sessionId) {
         if (!events.hasUnfilledTurnModels(sessionId, "codex")) return;
         events.backfillTurnModels(sessionId, extractCodexTurnModels(path), "codex");
