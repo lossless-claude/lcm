@@ -43,6 +43,7 @@ describe("deduplicateAndInsert", () => {
     const results = store.search("PostgreSQL database", 10);
     expect(results.length).toBe(1);
     expect(results[0].confidence).toBe(0.8);
+    expect(store.getById(results[0].id)?.source_summary_id).toBeNull();
   });
 
   it("does not apply new-entry boost when deduping against an existing canonical", async () => {
@@ -107,6 +108,38 @@ describe("deduplicateAndInsert", () => {
     expect(results[0].confidence).toBe(0.9);
     // Returned ID should match canonical
     expect(results[0].id).toBe(canonical);
+  });
+
+  it.each(["sum_original", undefined])("keeps canonical provenance %s and archives incoming summary provenance", async (sourceSummaryId) => {
+    const db = makeDb();
+    const store = new PromotedStore(db);
+    const canonical = store.insert({
+      content: "Decided to use PostgreSQL for the database layer",
+      tags: ["decision"],
+      projectId: "p1",
+      sourceSummaryId,
+      confidence: 0.9,
+    });
+
+    const id = await deduplicateAndInsert({
+      store,
+      content: "Confirmed PostgreSQL as the database choice after benchmarks",
+      tags: ["architecture"],
+      projectId: "p1",
+      sessionId: "s1",
+      sourceSummaryId: "sum_incoming",
+      depth: 2,
+      confidence: 0.8,
+      thresholds: { dedupBm25Threshold: 0.000001, dedupCandidateLimit: 3 },
+    });
+
+    expect(id).toBe(canonical);
+    expect(store.getById(canonical)?.source_summary_id).toBe(sourceSummaryId ?? null);
+    const incoming = db.prepare("SELECT id FROM promoted WHERE id != ?").get(canonical) as { id: string };
+    expect(store.getById(incoming.id)).toMatchObject({
+      source_summary_id: "sum_incoming",
+      archived_at: expect.any(String),
+    });
   });
 
   it("archives weaker duplicates when multiple exist above threshold", async () => {

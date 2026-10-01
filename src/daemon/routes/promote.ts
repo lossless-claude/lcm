@@ -64,9 +64,8 @@ export function createPromoteHandler(
 
       // Get summary IDs that have already been promoted (to avoid re-promoting)
       const promotedStore = new PromotedStore(db);
-      const alreadyPromotedContent = new Set(
-        promotedStore.listContentPrefixes(10000).map((c) => c.slice(0, 100)),
-      );
+      const alreadyPromotedSummaryIds = new Set(promotedStore.listSourceSummaryIds());
+      const legacyContentPrefixes = new Set(promotedStore.listLegacyContentPrefixes());
 
       const conversations = await convStore.listConversations();
       totalConversations = conversations.length;
@@ -76,9 +75,10 @@ export function createPromoteHandler(
         const summaries = await summStore.getSummariesByConversation(conversation.conversationId);
 
         for (const summary of summaries) {
-          // Skip summaries whose content prefix is already in the promoted store
+          // Skip recorded summary IDs (including archived inputs) or legacy content prefixes.
           // This prevents re-promoting on repeated runs (which would decay confidence)
-          if (alreadyPromotedContent.has(summary.content.slice(0, 100))) continue;
+          if (alreadyPromotedSummaryIds.has(summary.summaryId)
+            || legacyContentPrefixes.has(summary.content.slice(0, 100))) continue;
 
           processed++;
           await yieldToEventLoop();
@@ -105,6 +105,7 @@ export function createPromoteHandler(
                 tags: promotionResult.tags,
                 projectId: pid,
                 sessionId: conversation.sessionId,
+                sourceSummaryId: summary.summaryId,
                 depth: summary.depth,
                 confidence: promotionResult.confidence,
                 thresholds: {

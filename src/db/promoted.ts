@@ -203,11 +203,20 @@ export class PromotedStore {
     return rows;
   }
 
-  listContentPrefixes(limit: number): string[] {
+  /** Includes archived incoming rows so deduped summaries are not promoted again. */
+  listSourceSummaryIds(): string[] {
     const rows = this.db.prepare(
-      "SELECT content FROM promoted WHERE archived_at IS NULL LIMIT ?"
-    ).all(limit) as Array<{ content: string }>;
-    return rows.map((r) => r.content);
+      "SELECT DISTINCT source_summary_id FROM promoted WHERE source_summary_id IS NOT NULL"
+    ).all() as Array<{ source_summary_id: string }>;
+    return rows.map((r) => r.source_summary_id);
+  }
+
+  /** Legacy promotion used the first 100 characters of active memories. */
+  listLegacyContentPrefixes(): string[] {
+    const rows = this.db.prepare(
+      "SELECT content FROM promoted WHERE archived_at IS NULL AND source_summary_id IS NULL"
+    ).all() as Array<{ content: string }>;
+    return rows.map((r) => r.content.slice(0, 100));
   }
 
   archive(id: string): void {

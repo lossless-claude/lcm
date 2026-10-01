@@ -2,7 +2,7 @@
  * Extended PromotedStore tests covering untested methods and edge cases:
  *   - getById returning null for unknown id
  *   - getAll with no options, projectId filter, since filter, tags filter
- *   - listContentPrefixes
+ *   - listSourceSummaryIds
  *   - update tags-only path (no content change)
  *   - update confidence-only path
  *   - search filtered by projectId
@@ -106,39 +106,32 @@ describe("PromotedStore extended", () => {
     expect(rows[0].content).toBe("Has both tags");
   });
 
-  // ── listContentPrefixes ──────────────────────────────────────────────────
+  // ── listSourceSummaryIds ──────────────────────────────────────────────────
 
-  it("listContentPrefixes returns content strings up to the specified limit", () => {
+  it("listSourceSummaryIds returns distinct summary ids and excludes memories from other sources", () => {
     const db = makeDb();
     const store = new PromotedStore(db);
 
-    store.insert({ content: "First insight", tags: [], projectId: "p1" });
-    store.insert({ content: "Second insight", tags: [], projectId: "p1" });
-    store.insert({ content: "Third insight", tags: [], projectId: "p1" });
+    store.insert({ content: "First insight", sourceSummaryId: "sum_first", projectId: "p1" });
+    store.insert({ content: "Repeated insight", sourceSummaryId: "sum_first", projectId: "p1" });
+    store.insert({ content: "Second insight", sourceSummaryId: "sum_second", projectId: "p1" });
+    store.insert({ content: "Explicit memory", projectId: "p1" });
 
-    const prefixes = store.listContentPrefixes(2);
-    expect(prefixes).toHaveLength(2);
-    // All returned values must be from the inserted contents
-    for (const prefix of prefixes) {
-      expect(["First insight", "Second insight", "Third insight"]).toContain(prefix);
-    }
+    expect(store.listSourceSummaryIds().sort()).toEqual(["sum_first", "sum_second"]);
   });
 
-  it("listContentPrefixes returns empty array when table is empty", () => {
+  it("listSourceSummaryIds returns empty array when table is empty", () => {
     const db = makeDb();
     const store = new PromotedStore(db);
-    expect(store.listContentPrefixes(10)).toEqual([]);
+    expect(store.listSourceSummaryIds()).toEqual([]);
   });
 
-  it("listContentPrefixes excludes archived rows", () => {
+  it("listSourceSummaryIds includes archived rows", () => {
     const db = makeDb();
     const store = new PromotedStore(db);
-
-    const id = store.insert({ content: "Will be archived", tags: [], projectId: "p1" });
+    const id = store.insert({ content: "Will be archived", sourceSummaryId: "sum_archived", projectId: "p1" });
     store.archive(id);
-
-    const prefixes = store.listContentPrefixes(10);
-    expect(prefixes).not.toContain("Will be archived");
+    expect(store.listSourceSummaryIds()).toEqual(["sum_archived"]);
   });
 
   // ── update ───────────────────────────────────────────────────────────────

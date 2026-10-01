@@ -11,6 +11,7 @@ type DedupParams = {
   tags: string[];
   projectId: string;
   sessionId?: string;
+  sourceSummaryId?: string;
   depth: number;
   confidence: number;
   newEntryConfidence?: number;
@@ -18,7 +19,7 @@ type DedupParams = {
 };
 
 export async function deduplicateAndInsert(params: DedupParams): Promise<string> {
-  const { store, content, tags, projectId, sessionId, depth, confidence, newEntryConfidence, thresholds } = params;
+  const { store, content, tags, projectId, sessionId, sourceSummaryId, depth, confidence, newEntryConfidence, thresholds } = params;
   const insertConfidence = newEntryConfidence ?? confidence;
 
   // Search for duplicates using FTS5, scoped to this project at the SQL level
@@ -30,7 +31,7 @@ export async function deduplicateAndInsert(params: DedupParams): Promise<string>
   );
 
   if (duplicates.length === 0) {
-    return store.insert({ content, tags, projectId, sessionId, depth, confidence: insertConfidence });
+    return store.insert({ content, tags, projectId, sessionId, sourceSummaryId, depth, confidence: insertConfidence });
   }
 
   // Structural convergence: pick best BM25 match as canonical
@@ -53,7 +54,7 @@ export async function deduplicateAndInsert(params: DedupParams): Promise<string>
     }
 
     // Insert incoming as archived for recoverability of complementary info
-    store.archive(store.insert({ content, tags, projectId, sessionId, depth, confidence }));
+    store.archive(store.insert({ content, tags, projectId, sessionId, sourceSummaryId, depth, confidence }));
   });
 
   return canonical.id;
