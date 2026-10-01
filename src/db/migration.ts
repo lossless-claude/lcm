@@ -1,4 +1,5 @@
 import { passiveTypeTag } from "../promotion/passive-tags.js";
+import { decodeLegacyTags } from "./votes.js";
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
@@ -692,17 +693,7 @@ function backfillMessagePartsSkillCommand(db: DatabaseSync): void {
 
 function legacyPromotedTags(stored: string): string[] | null {
   try {
-    let tags: unknown = JSON.parse(stored);
-    if (typeof tags === "string") {
-      const text = tags;
-      try {
-        const decoded: unknown = JSON.parse(text);
-        tags = Array.isArray(decoded) ? decoded : [text];
-      } catch {
-        tags = [text];
-      }
-    }
-    return Array.isArray(tags) && tags.every((tag) => typeof tag === "string") ? tags : null;
+    return decodeLegacyTags(JSON.parse(stored));
   } catch {
     return null;
   }
