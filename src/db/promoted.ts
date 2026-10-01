@@ -43,15 +43,22 @@ export type SearchResult = {
   rank: number;
 };
 
+function serializeTags(tags: string[]): string {
+  if (!Array.isArray(tags) || !tags.every((tag) => typeof tag === "string")) {
+    throw new Error("tags must be an array of strings");
+  }
+  return JSON.stringify(tags);
+}
+
 export class PromotedStore {
   constructor(private db: DatabaseSync) {}
 
   insert(params: InsertParams): string {
+    const tags = serializeTags(params.tags ?? []);
     const sessionId = params.sessionId ?? (params.sourceSummaryId
       ? (this.db.prepare("SELECT session_id FROM summaries JOIN conversations USING(conversation_id) WHERE summary_id = ?").get(params.sourceSummaryId) as { session_id: string } | undefined)?.session_id : undefined);
     if (sessionId && new WorkerStore(this.db).excluded(sessionId)) throw new Error("Worker session is excluded from promoted memory");
     const id = randomUUID();
-    const tags = JSON.stringify(params.tags ?? []);
 
     this.db.prepare(
       `INSERT INTO promoted (id, content, tags, source_summary_id, project_id, session_id, depth, confidence)
@@ -228,13 +235,14 @@ export class PromotedStore {
   }
 
   update(id: string, fields: { content?: string; confidence?: number; tags?: string[] }): void {
+    const serializedTags = fields.tags === undefined ? undefined : serializeTags(fields.tags);
     const row = this.db.prepare("SELECT rowid, content, tags FROM promoted WHERE id = ?").get(id) as
       | { rowid: number; content: string; tags: string }
       | undefined;
     if (!row) return;
 
     if (fields.content !== undefined) {
-      const newTags = fields.tags !== undefined ? JSON.stringify(fields.tags) : row.tags;
+      const newTags = serializedTags ?? row.tags;
       this.db.prepare(
         "UPDATE promoted SET content = ?, confidence = COALESCE(?, confidence), tags = ? WHERE id = ?"
       ).run(fields.content, fields.confidence ?? null, newTags, id);
@@ -250,7 +258,7 @@ export class PromotedStore {
         this.db.prepare("UPDATE promoted SET confidence = ? WHERE id = ?").run(fields.confidence, id);
       }
       if (fields.tags !== undefined) {
-        const newTags = JSON.stringify(fields.tags);
+        const newTags = serializedTags!;
         this.db.prepare("UPDATE promoted SET tags = ? WHERE id = ?").run(newTags, id);
         // Re-sync FTS5 tags
         this.db.prepare("DELETE FROM promoted_fts WHERE rowid = ?").run(row.rowid);
