@@ -282,8 +282,20 @@ export function recoverTimelineAdmission(db: DatabaseSync): void {
   });
 }
 
+/** Stores with an owner get the archive lookups indexed once, so each migration stays a point read. */
+function indexTimelinePromotionLookups(db: DatabaseSync): void {
+  for (const [name, column] of [["promoted_session_idx", "session_id"], ["promoted_source_summary_idx", "source_summary_id"]]) {
+    const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(name);
+    if (!exists) db.exec(`CREATE INDEX ${name} ON promoted(${column})`);
+  }
+}
+
 /** Timeline-derived promoted memories violate owner isolation, including after downgrade. */
 function archiveTimelinePromotions(db: DatabaseSync): void {
+  // Every request migrates. Without an owner there is nothing to archive, so a store that never
+  // enabled the timeline pays one indexed point lookup; teardown --remove-nodes keeps the owner.
+  if (!db.prepare("SELECT 1 FROM conversations WHERE is_timeline = 1").get()) return;
+  indexTimelinePromotionLookups(db);
   const rows = db.prepare(`SELECT p.id, p.rowid FROM promoted p WHERE p.archived_at IS NULL
     AND (p.session_id = ? OR p.source_summary_id IN (
       SELECT s.summary_id FROM summaries s JOIN conversations c USING(conversation_id) WHERE c.is_timeline = 1))`)

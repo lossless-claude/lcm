@@ -331,6 +331,29 @@ it.each([false, true])("migration archives only timeline-derived promoted memori
   expect(db.prepare("SELECT total_changes() n").get()).toEqual(changes);
 });
 
+it("a store without a timeline owner skips the promoted-memory archive scan", () => {
+  const db = new DatabaseSync(":memory:");
+  handles.push(db);
+  runLcmMigrations(db, { fts5Available: false });
+  const statements: string[] = [];
+  const prepare = db.prepare.bind(db);
+  db.prepare = ((sql: string) => { statements.push(sql); return prepare(sql); }) as typeof db.prepare;
+  runLcmMigrations(db, { fts5Available: false });
+  db.prepare = prepare;
+  expect(statements.filter(sql => /FROM promoted p/.test(sql))).toEqual([]);
+  expect(db.prepare("SELECT name FROM sqlite_master WHERE name IN ('promoted_session_idx', 'promoted_source_summary_idx')").all()).toEqual([]);
+});
+
+it("a store with a timeline owner finds timeline-derived memories through indexes", () => {
+  const db = fixture();
+  node(db);
+  runLcmMigrations(db, { fts5Available: false });
+  const plan = (db.prepare(`EXPLAIN QUERY PLAN SELECT p.id FROM promoted p WHERE p.archived_at IS NULL
+    AND (p.session_id = 'lcm:project-timeline' OR p.source_summary_id IN (SELECT summary_id FROM summaries))`).all() as Array<{ detail: string }>)
+    .map(row => row.detail).join("\n");
+  expect(plan).not.toMatch(/SCAN p\b/);
+});
+
 it("archived timeline memories leave full-text search after a re-upgrade", () => {
   const db = new DatabaseSync(":memory:");
   handles.push(db);
