@@ -125,6 +125,7 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
       const preview = await importSessions(previewClient, { paths, all, provider, dryRun: true, verbose: dryRun && verbose, replay });
       if (dryRun) {
         console.log(`  [dry-run] ${preview.imported} ${provider} sessions selected (${all ? "all projects" : "current project"})${replay ? "; would compact each session" : ""}. No changes written.`);
+        if (preview.skippedCwdMissing) console.log(`  Skipped (cwd missing): ${preview.skippedCwdMissing}`);
         if (preview.ompRootsScanned) console.log(`  OMP roots scanned: ${preview.ompRootsScanned.join(", ")}`);
         if (preview.ompDuplicatesSkipped) console.log(`  OMP duplicates skipped (session id also in another root): ${preview.ompDuplicatesSkipped.join(", ")}`);
         return;
@@ -169,6 +170,7 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
       if (isTTY && !verbose) {
         state.phases[0].status = "done";
         renderer.printSummary();
+        if (result.skippedCwdMissing) console.log(`  Skipped (cwd missing): ${result.skippedCwdMissing}`);
       } else {
         const { printImportSummary } = await import("../import-summary.js");
         if (dryRun) console.log("  [dry-run] No changes written.\n");

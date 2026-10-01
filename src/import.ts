@@ -92,6 +92,8 @@ interface ImportOptions {
 export interface ImportResult {
   imported: number;
   skippedEmpty: number;
+  /** Codex and OMP sessions skipped because their working directory no longer exists. */
+  skippedCwdMissing?: number;
   failed: number;
   totalMessages: number;
   totalTokens: number;
@@ -685,7 +687,17 @@ export async function importSessions(
   const paths = options.paths ?? (options._lcmDir ? createLcmPaths(options._lcmDir) : undefined);
   if (paths) options.paths = paths;
   const provider = resolveImportProvider({ provider: options.provider });
-  const result: ImportResult = { imported: 0, skippedEmpty: 0, failed: 0, totalMessages: 0, totalTokens: 0, tokensAfter: 0 };
+  const result: ImportResult = { imported: 0, skippedEmpty: 0, skippedCwdMissing: 0, failed: 0, totalMessages: 0, totalTokens: 0, tokensAfter: 0 };
+  const cwdExists = new Map<string, boolean>();
+  const skipMissingCwd = (cwd: string): boolean => {
+    let exists = cwdExists.get(cwd);
+    if (exists === undefined) {
+      exists = existsSync(cwd);
+      cwdExists.set(cwd, exists);
+    }
+    if (!exists) result.skippedCwdMissing = (result.skippedCwdMissing ?? 0) + 1;
+    return !exists;
+  };
   // One --restart clear per project for the whole import, however many session
   // lists reach that project.
   const clearedCwds = new Set<string>();
@@ -732,6 +744,7 @@ export async function importSessions(
       if (!transcript.cwd) continue;
       const id = projectId(transcript.cwd);
       if (!options.all && id !== targetProject) continue;
+      if (skipMissingCwd(transcript.cwd)) continue;
       const sessions = projects.get(id) ?? [];
       sessions.push({ ...transcript, cwd: transcript.cwd, client: "codex" });
       projects.set(id, sessions);
@@ -758,6 +771,7 @@ export async function importSessions(
       if (!transcript.cwd) continue;
       const id = projectId(transcript.cwd);
       if (!options.all && id !== targetProject) continue;
+      if (skipMissingCwd(transcript.cwd)) continue;
       const sessions = projects.get(id) ?? [];
       sessions.push({ ...transcript, cwd: transcript.cwd, client: "omp" });
       projects.set(id, sessions);

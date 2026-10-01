@@ -1578,7 +1578,7 @@ describe("importSessions replay resume", () => {
     const claudeProjectsDir = makeTmpDir();
     const lcmDir = makeTmpDir();
     const cwdA = "/test/multi-a";
-    const cwdB = "/test/multi-b";
+    const cwdB = makeTmpDir();
     mkdirSync(join(lcmDir, "projects", projectId(cwdA)), { recursive: true });
     writeFileSync(join(lcmDir, "projects", projectId(cwdA), "meta.json"), JSON.stringify({ cwd: cwdA }));
     const projDirA = join(claudeProjectsDir, claudeProjectSlug(cwdA));
@@ -1611,7 +1611,7 @@ describe("importSessions replay resume", () => {
   });
 
   it("imports every source when no provider is given", async () => {
-    const cwd = "/test/default-all";
+    const cwd = makeTmpDir();
     const claudeProjectsDir = makeTmpDir();
     const projDir = join(claudeProjectsDir, claudeProjectSlug(cwd));
     mkdirSync(projDir, { recursive: true });
@@ -1680,7 +1680,9 @@ describe("importSessions — provider: codex", () => {
     const codexDir = makeTmpDir();
     const dated = join(codexDir, "sessions", "2026", "09", "07");
     mkdirSync(dated, { recursive: true });
-    for (const [id, cwd] of [["a", "/project-a"], ["b", "/project-b"], ["c", "/project-a"]]) {
+    const cwdA = makeTmpDir();
+    const cwdB = makeTmpDir();
+    for (const [id, cwd] of [["a", cwdA], ["b", cwdB], ["c", cwdA]]) {
       writeFileSync(join(dated, `rollout-${id}.jsonl`), makeCodexSessionMetaLine(id, cwd));
     }
     const calls: { path: string; body: any }[] = [];
@@ -1690,7 +1692,7 @@ describe("importSessions — provider: codex", () => {
         ? { latestSummaryContent: `summary-${(body as { session_id: string }).session_id}` }
         : { ingested: 1, totalTokens: 10 };
     });
-    const scoped = await importSessions(client, { provider: "codex", cwd: "/project-a", _codexDir: codexDir });
+    const scoped = await importSessions(client, { provider: "codex", cwd: cwdA, _codexDir: codexDir });
     expect(scoped.imported).toBe(2);
     expect(calls.map(c => c.body.session_id).sort()).toEqual(["a", "c"]);
     calls.length = 0;
@@ -1699,7 +1701,7 @@ describe("importSessions — provider: codex", () => {
     expect(compacts).toHaveLength(3);
     expect(compacts.every(c => c.client === "codex")).toBe(true);
     expect(compacts.find(c => c.session_id === "b").previous_summary).toBeUndefined();
-    expect(compacts.filter(c => c.cwd === "/project-a")[1].previous_summary).toBeDefined();
+    expect(compacts.filter(c => c.cwd === cwdA)[1].previous_summary).toBeDefined();
   });
 
   it("imports Codex sessions from _codexDir/archived_sessions/", async () => {
@@ -1707,7 +1709,7 @@ describe("importSessions — provider: codex", () => {
     const archivedDir = join(codexDir, "archived_sessions");
     mkdirSync(archivedDir, { recursive: true });
 
-    const cwd = "/workspace/myproject";
+    const cwd = makeTmpDir();
     const sessionId = "rollout-2026-01-01-session-abc";
     const content = [
       makeCodexSessionMetaLine(sessionId, cwd),
@@ -1780,14 +1782,15 @@ describe("importSessions — provider: codex", () => {
     const codexDir = makeTmpDir();
     const archivedDir = join(codexDir, "archived_sessions");
     mkdirSync(archivedDir, { recursive: true });
-    writeFileSync(join(archivedDir, "session-x.jsonl"), makeCodexSessionMetaLine("session-x", "/ws"));
+    const cwd = makeTmpDir();
+    writeFileSync(join(archivedDir, "session-x.jsonl"), makeCodexSessionMetaLine("session-x", cwd));
 
     const client = makeMockClient(async () => ({ ingested: 1, totalTokens: 100 }));
 
     const result = await importSessions(client, {
       provider: "codex",
       dryRun: true,
-      cwd: "/ws",
+      cwd,
       _codexDir: codexDir,
     });
 
@@ -1798,7 +1801,7 @@ describe("importSessions — provider: codex", () => {
   it("provider all imports from both Claude and Codex", async () => {
     // Claude project dir
     const claudeProjectsDir = makeTmpDir();
-    const cwd = "/home/user/claudeproject";
+    const cwd = makeTmpDir();
     const hash = claudeProjectSlug(cwd);
     const claudeProjDir = join(claudeProjectsDir, hash);
     mkdirSync(claudeProjDir, { recursive: true });
@@ -1868,7 +1871,7 @@ describe("importSessions — provider: omp", () => {
 
   it("discovers session files and filters them to the requested cwd", async () => {
     const ompDir = makeTmpDir();
-    const target = "/project-a";
+    const target = makeTmpDir();
     const targetPath = writeOmpSession(ompDir, "omp-a", target);
     writeOmpSession(ompDir, "omp-b", "/project-b");
 
@@ -1931,8 +1934,9 @@ describe("importSessions — provider: omp", () => {
     vi.stubEnv("HOME", home);
     vi.stubEnv("PI_CODING_AGENT_DIR", "");
     try {
-      const keptPath = writeOmpSession(join(home, ".omp", "agent"), "omp-shared", "/project-a");
-      const skippedPath = writeOmpSession(join(home, ".omp", "profiles", "work", "agent"), "omp-shared", "/project-a");
+      const cwd = makeTmpDir();
+      const keptPath = writeOmpSession(join(home, ".omp", "agent"), "omp-shared", cwd);
+      const skippedPath = writeOmpSession(join(home, ".omp", "profiles", "work", "agent"), "omp-shared", cwd);
       const old = new Date("2026-09-20T10:00:00.000Z");
       utimesSync(skippedPath, old, old);
 
@@ -1941,7 +1945,7 @@ describe("importSessions — provider: omp", () => {
         calls.push({ path, body });
         return { ingested: 1, totalTokens: 12 };
       });
-      const result = await importSessions(client, { provider: "omp", cwd: "/project-a" });
+      const result = await importSessions(client, { provider: "omp", cwd });
 
       expect(calls.map((c) => (c.body as { transcript_path: string }).transcript_path)).toEqual([keptPath]);
       expect(result.ompDuplicatesSkipped).toEqual([skippedPath]);
@@ -1968,7 +1972,7 @@ describe("importSessions — provider: omp", () => {
   it("does not use the completed-session shortcut for OMP", async () => {
     const ompDir = makeTmpDir();
     const lcmDir = makeTmpDir();
-    const cwd = "/project-a";
+    const cwd = makeTmpDir();
     writeOmpSession(ompDir, "omp-tail", cwd);
 
     const dbPath = join(lcmDir, "projects", projectId(cwd), "db.sqlite");
