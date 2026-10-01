@@ -90,6 +90,16 @@ const HELP: Record<string, CommandHelp> = {
     ],
   },
 
+  "capture-retry": {
+    summary: "Clear terminal Codex capture guards for the current project.",
+    usage: "lcm capture-retry --session <id> | --all",
+    options: [
+      ["--session <id>", "Clear one session's terminal guard"],
+      ["--all", "Clear every terminal Codex guard in the current project"],
+    ],
+    notes: "Stored messages and summaries are preserved. The next capture rechecks alignment under current recovery and redaction rules; a mismatch is blocked again and recorded once. Recovery-rule changes automatically retry older guards once, including legacy guards without a rule version. Unrelated upgrades keep guards. Uses the daemon's project queue and mutation lease.",
+  },
+
   doctor: {
     summary: "Run diagnostics — daemon, hooks, MCP, summarizer, stale project stores and orphan summaries.",
     usage: "lcm doctor [--verbose] [--cleanup-stale-projects [--dry-run | --apply]]",
@@ -467,6 +477,7 @@ const GROUPS = [
       { name: "daemon start|stop|restart", summary: "Manage the context daemon" },
       { name: "status [--json]", summary: "Daemon status and project memory stats" },
       { name: "doctor", summary: "Diagnostics: daemon, hooks, MCP, summarizer" },
+      { name: "capture-retry", summary: "Clear terminal Codex capture guards" },
       { name: "eval summarizer", summary: "Compare summarizers in a local JSON and HTML report" },
       { name: "mcp", summary: "Start the MCP server (stdio transport)" },
     ],

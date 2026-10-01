@@ -511,8 +511,15 @@ Session reconciliation uses each transcript source's recovery checks before appl
    messages and summaries are preserved. Other paginated recovery mismatches become
    terminal per-session guards in the existing `subagent-guard-failures.json` sidecar.
    Capture skips them before reading the transcript, even after restart, file growth or
-   an lcm upgrade. Doctor reports the retained reason without requiring a matching file
-   fingerprint. The guard is tied to the project database identity. See
+   an unrelated lcm upgrade. Each guard records `CODEX_RECOVERY_RULE_VERSION` from
+   `src/transcript-source.ts`; changing that recovery rule retries older guards once
+   on the next capture, including legacy guards without a rule version. Doctor reports
+   the retained reason without requiring a matching file fingerprint and names
+   `lcm capture-retry --session <id>` or `lcm capture-retry --all` in the affected project.
+   The command clears only terminal Codex guards through `/capture-retry`, under the
+   project queue and mutation lease. The next capture rechecks alignment under current
+   redaction rules; a remaining mismatch is blocked again and recorded once. Messages,
+   summaries and cursors are preserved. The guard is tied to the project database identity. See
    [the design and upstream evidence](design/codex-paginated-history.md).
 4. An OMP transcript uses the same cursor, but its file is a tree: each read keeps only the
    entries on the `parentId` chain from the file's last entry. Stored history is therefore

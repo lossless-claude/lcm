@@ -11,6 +11,7 @@
     daemon start|stop|restart  Manage the context daemon
     status [--json]            Daemon status and project memory stats
     doctor                     Diagnostics: daemon, hooks, MCP, summarizer
+    capture-retry              Clear terminal Codex capture guards
     eval summarizer            Compare summarizers in a local JSON and HTML report
     mcp                        Start the MCP server (stdio transport)
 

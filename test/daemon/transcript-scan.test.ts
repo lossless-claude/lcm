@@ -14,6 +14,9 @@ import { loadDaemonConfig } from "../../src/daemon/config.js";
 import { claudeProjectSlug, projectDbPath, projectDir } from "../../src/daemon/project.js";
 import { eventsDbPath } from "../../src/db/events-path.js";
 import { parseTranscript } from "../../src/transcript.js";
+import { SessionCapture } from "../../src/capture.js";
+import { ScrubEngine } from "../../src/scrub.js";
+import { runLcmMigrations } from "../../src/db/migration.js";
 import { TranscriptSourceError } from "../../src/transcript-source.js";
 import { checkStalledSubagentCaptures } from "../../src/doctor/transcript-check.js";
 import { lcmHome } from "../../src/lcm-home.js";
@@ -82,6 +85,50 @@ function storedMessages(cwd: string, sessionId: string): Array<{ content: string
 }
 
 describe("periodic transcript scan", () => {
+  it.each(["restored", "mismatch"])("retries an older Codex guard once on scan with no Claude transcripts: %s", async (outcome) => {
+    const cwd = join(process.env.LCM_SCAN_FAKE_HOME!, "codex-project");
+    const sessionId = "codex-child";
+    mkdirSync(cwd, { recursive: true });
+    mkdirSync(projectDir(cwd, paths), { recursive: true });
+    tempDirs.push(projectDir(cwd, paths));
+    writeFileSync(join(projectDir(cwd, paths), "meta.json"), JSON.stringify({ cwd }));
+    const transcript = join(cwd, "rollout.jsonl");
+    const line = (role: string, text: string) => JSON.stringify({ type: "response_item", payload: {
+      type: "message", role, content: [{ type: "input_text", text }],
+    } });
+    const meta = JSON.stringify({ type: "session_meta", payload: { id: sessionId, cwd } });
+    writeFileSync(transcript, `${meta}\n${line("user", "one")}\n${line("assistant", "two")}\n`);
+    const dbPath = projectDbPath(cwd, paths);
+    const db = new DatabaseSync(dbPath);
+    try {
+      runLcmMigrations(db);
+      await new SessionCapture(db, projectId(cwd), new ScrubEngine([], [])).captureTranscript({
+        sessionId, cwd, client: "codex", transcriptPath: transcript,
+      });
+    } finally { db.close(); }
+    const { statSync } = await import("node:fs");
+    const identity = statSync(dbPath);
+    const guardPath = join(projectDir(cwd, paths), "subagent-guard-failures.json");
+    writeFileSync(guardPath, JSON.stringify({ db: `${identity.dev}:${identity.ino}`, version: "old", failures: {
+      [transcript]: { db: `${identity.dev}:${identity.ino}`, fingerprint: "", sessionId,
+        message: "old recovery rule", client: "codex", terminal: true, recoveryRuleVersion: 0 },
+    } }));
+    if (outcome === "restored") appendFileSync(transcript, `${line("assistant", "new")}\n`);
+    else writeFileSync(transcript, `${JSON.stringify({ type: "session_meta", payload: {
+      id: sessionId, cwd, history_mode: "paginated",
+    } })}\n${line("user", "different")}\n`);
+    const config = loadDaemonConfig("/nonexistent", { llm: { provider: "disabled" } }, {});
+    const ingest = vi.fn(createIngestHandler(config, paths));
+    await scanForTranscripts(config, paths, ingest);
+    expect(ingest).toHaveBeenCalledTimes(1);
+    expect(storedMessages(cwd, sessionId).map(row => row.content)).toEqual(outcome === "restored" ? ["one", "two", "new"] : ["one", "two"]);
+    const record = readFileSync(guardPath, "utf8");
+    expect(Object.keys(JSON.parse(record).failures)).toHaveLength(outcome === "restored" ? 0 : 1);
+    await scanForTranscripts(config, paths, ingest);
+    expect(ingest).toHaveBeenCalledTimes(1);
+    expect(readFileSync(guardPath, "utf8")).toBe(record);
+  });
+
   it("identifies a renamed transcript by removing only its final .jsonl suffix", async () => {
     const cwd = join(process.env.LCM_SCAN_FAKE_HOME!, "renamed-project");
     const sessionId = "renamed.jsonl-copy";

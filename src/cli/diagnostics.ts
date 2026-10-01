@@ -12,6 +12,25 @@ export interface DiagnosticsCommandDeps {
 export function registerDiagnosticsCommands(program: Command, deps: DiagnosticsCommandDeps): void {
   const { createDaemonClientOrExit } = deps;
 
+  program
+    .command("capture-retry")
+    .description("Clear terminal Codex capture guards for the current project")
+    .option("--session <id>", "Retry one session")
+    .option("--all", "Retry every terminal Codex guard in this project")
+    .helpOption(false)
+    .option("-h, --help", "Show help")
+    .action(async (opts) => {
+      if (opts.help) await showHelpAndExit("capture-retry");
+      if (Boolean(opts.session) === Boolean(opts.all) || (opts.session && !opts.session.trim())) {
+        fail("Usage: lcm capture-retry --session <id> | --all");
+      }
+      const client = await createDaemonClientOrExit();
+      const result = await client.post<{ cleared: number }>("/capture-retry", {
+        cwd: process.cwd(), ...(opts.all ? { all: true } : { session_id: opts.session }),
+      });
+      console.log(`Cleared ${result.cleared} terminal Codex guards; the next capture will recheck alignment.`);
+    });
+
   // ─── status ────────────────────────────────────────────────────────────────
   program
     .command("status")
