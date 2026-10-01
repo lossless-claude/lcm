@@ -85,9 +85,12 @@ provenance are not backfilled.
 `lcm doctor --repair-manual-attribution` (`src/doctor/manual-attribution.ts`)
 reads active `manual` memories through `PromotedStore` and matches normalized
 content against raw Claude and Codex store-call `text`/`content` arguments.
-It scans across transcript projects; ordinary stored message mentions do not
-establish attribution. One distinct matching session permits attribution,
-several are ambiguous, and none are unmatched. Preview uses read-only database
+It scans across transcript projects, but a match counts for a store only when that
+store captured the matching session; ordinary stored message mentions do not
+establish attribution. One such session permits attribution, several are
+ambiguous, a match only in sessions other stores captured is left as "matched
+outside this store", and none anywhere is unmatched. A store that fails is reported
+as skipped without stopping the others. Preview uses read-only database
 connections without migrations or project-record writes.
 
 Explicit `--apply` uses the same offline hold and database-activity guard as store

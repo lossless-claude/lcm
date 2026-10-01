@@ -46,7 +46,14 @@ function row(id: string, path = dbPath) {
   try { return new PromotedStore(db).getById(id); } finally { db.close(); }
 }
 
-function claude(sessionId: string, text: string) {
+/** A store only accepts evidence from sessions it captured. */
+function captured(sessionId: string, path = dbPath) {
+  const db = openStandaloneLcmConnection(path);
+  try { db.prepare("INSERT INTO conversations (session_id) VALUES (?)").run(sessionId); } finally { db.close(); }
+}
+
+function claude(sessionId: string, text: string, capturedHere = true) {
+  if (capturedHere) captured(sessionId);
   const dir = join(userHome, ".claude", "projects", claudeProjectSlug(cwd));
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, `${sessionId}.jsonl`), JSON.stringify({
@@ -120,6 +127,7 @@ it.each(["function_call", "custom_tool_call"])("traces Codex %s arguments to the
   const payload = type === "function_call"
     ? { type, name: "mcp__lcm__lcm_store", arguments: JSON.stringify({ text: "Use deterministic fixtures." }) }
     : { type, name: "lcm_store", input: JSON.stringify({ content: "Use deterministic fixtures." }) };
+  captured("codex-session");
   writeFileSync(join(dir, "rollout-codex-session.jsonl"), [
     { type: "session_meta", payload: { id: "codex-session", cwd } },
     { type: "response_item", payload },
@@ -184,6 +192,64 @@ it("rejects conflicting repair and cleanup flags before touching a store", () =>
   expect(() => command("--cleanup-stale-projects")).toThrow("cannot be combined");
   expect(() => command("--apply", "--dry-run")).toThrow("cannot be combined");
   expect(snapshot(root)).toEqual(before);
+});
+
+it("leaves a memory unchanged when its only matching session was captured by another store", () => {
+  const id = memory("Same text, another project.");
+  claude("foreign-session", "Same text, another project.", false);
+  const before = row(id);
+  const output = command();
+  expect(output).toContain(`${dbPath}: 1 matched outside this store`);
+  expect(output).not.toContain(`${id}: attributable`);
+  expect(row(id)).toEqual(before);
+});
+
+it("attributes shared text only in the store that captured the surviving session", () => {
+  const paths = createLcmPaths(home);
+  const otherCwd = join(root, "other-checkout");
+  mkdirSync(otherCwd);
+  updateProjectMeta(otherCwd, paths, {});
+  const otherDb = join(projectDir(otherCwd, paths), "db.sqlite");
+  const db = openStandaloneLcmConnection(otherDb);
+  let other: string;
+  try {
+    runLcmMigrations(db);
+    other = new PromotedStore(db).insert({ content: "Shared manual text.", projectId: projectId(otherCwd), sessionId: "manual", tags: [], confidence: 0.7, depth: 2 });
+  } finally { db.close(); }
+  const here = memory("Shared manual text.");
+  claude("surviving-session", "Shared manual text.");
+  const output = command();
+  expect(output).toContain(`${here}: attributable -> surviving-session`);
+  expect(output).toContain(`${otherDb}: 1 matched outside this store`);
+  expect(output).not.toContain(`${other}: attributable`);
+});
+
+it("reports a broken store as skipped and still processes the stores around it", () => {
+  const paths = createLcmPaths(home);
+  const otherCwd = join(root, "second-checkout");
+  mkdirSync(otherCwd);
+  updateProjectMeta(otherCwd, paths, {});
+  const otherDb = join(projectDir(otherCwd, paths), "db.sqlite");
+  const db = openStandaloneLcmConnection(otherDb);
+  let second: string;
+  try {
+    runLcmMigrations(db);
+    db.prepare("INSERT INTO conversations (session_id) VALUES (?)").run("second-session");
+    second = new PromotedStore(db).insert({ content: "Second store memory.", projectId: projectId(otherCwd), sessionId: "manual", tags: [], confidence: 0.7, depth: 2 });
+  } finally { db.close(); }
+  const first = memory("First store memory.");
+  claude("first-session", "First store memory.");
+  claude("second-session", "Second store memory.", false);
+  // Directory names sort; the broken store lands between the two good ones.
+  const [low, high] = [projectDir(cwd, paths), projectDir(otherCwd, paths)].sort();
+  const broken = `${low}~`;
+  expect(broken < high).toBe(true);
+  mkdirSync(broken);
+  writeFileSync(join(broken, "db.sqlite"), "not a database");
+  const output = command();
+  expect(output).toContain(`${join(broken, "db.sqlite")}: skipped (`);
+  expect(output).toContain(`${first}: attributable -> first-session`);
+  expect(output).toContain(`${second}: attributable -> second-session`);
 });
 
 it("finds a store call in a nested Claude transcript even when its flat copy lacks it", () => {

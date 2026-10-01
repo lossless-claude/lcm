@@ -80,6 +80,55 @@ async function storeCalls(files: DiscoveredSessionFile[]): Promise<Map<string, S
   return matches;
 }
 
+/**
+ * A store call counts as evidence only for a session this store captured: the same text may
+ * have been stored in several projects while only one of their transcripts survives.
+ */
+type Repair = { id: string; sessionId: string };
+
+function planStore(dbPath: string, matches: Map<string, Set<string>>, output: string[]): Repair[] {
+  const db = openStandaloneLcmConnection(dbPath, { readOnly: true });
+  const repairs: Repair[] = [];
+  let unmatched = 0;
+  let elsewhere = 0;
+  try {
+    const captured = new Set((db.prepare("SELECT DISTINCT session_id FROM conversations").all() as Array<{ session_id: string }>)
+      .map(row => row.session_id));
+    // Only rows apply can change: active memories still attributed to "manual".
+    for (const row of new PromotedStore(db).getAll().filter(row => row.session_id === "manual" && !row.archived_at)) {
+      const anywhere = [...(matches.get(normalized(row.content)) ?? [])];
+      const sessions = anywhere.filter(session => captured.has(session)).sort();
+      if (anywhere.length === 0) unmatched++;
+      else if (sessions.length === 0) elsewhere++;
+      else if (sessions.length > 1) output.push(`${dbPath} ${row.id}: ambiguous -> ${sessions.join(", ")}`);
+      else {
+        output.push(`${dbPath} ${row.id}: attributable -> ${sessions[0]}`);
+        repairs.push({ id: row.id, sessionId: sessions[0] });
+      }
+    }
+  } finally { db.close(); }
+  if (elsewhere) output.push(`${dbPath}: ${elsewhere} matched outside this store (left unchanged)`);
+  if (unmatched) output.push(`${dbPath}: ${unmatched} unmatched (no store call found)`);
+  return repairs;
+}
+
+function applyStore(dbPath: string, repairs: Repair[], output: string[]): number {
+  const writable = new DatabaseSync(dbPath);
+  let applied = 0;
+  try {
+    const backup = `${dbPath}.bak-manual-attribution-${randomUUID()}`;
+    writable.prepare("VACUUM INTO ?").run(backup);
+    output.push(`Backup: ${backup}`);
+    const store = new PromotedStore(writable);
+    store.transaction(() => {
+      for (const repair of repairs) {
+        if (store.attributeManual(repair.id, repair.sessionId)) applied++;
+      }
+    });
+  } finally { writable.close(); }
+  return applied;
+}
+
 /** Raw store-call evidence; preview is read-only and explicit apply requires held offline stores. */
 export async function repairManualAttribution(paths: LcmPaths, apply = false): Promise<string> {
   if (apply) requireOffline(paths);
@@ -94,36 +143,15 @@ export async function repairManualAttribution(paths: LcmPaths, apply = false): P
   for (const dir of directories(paths.projectsDir)) {
     const dbPath = join(dir, "db.sqlite");
     if (!existsSync(dbPath)) continue;
-    const db = openStandaloneLcmConnection(dbPath, { readOnly: true });
-    const repairs: Array<{ id: string; sessionId: string }> = [];
-    let unmatched = 0;
+    // One unreadable or full store must not hide the others' outcomes or applied backups.
     try {
-      // Only rows apply can change: active memories still attributed to "manual".
-      for (const row of new PromotedStore(db).getAll().filter(row => row.session_id === "manual" && !row.archived_at)) {
-        const sessions = [...(matches.get(normalized(row.content)) ?? [])].sort();
-        if (sessions.length === 0) unmatched++;
-        if (sessions.length === 1) {
-          output.push(`${dbPath} ${row.id}: attributable -> ${sessions[0]}`);
-          repairs.push({ id: row.id, sessionId: sessions[0] });
-        }
-        if (sessions.length > 1) output.push(`${dbPath} ${row.id}: ambiguous -> ${sessions.join(", ")}`);
-      }
-    } finally { db.close(); }
-    if (unmatched) output.push(`${dbPath}: ${unmatched} unmatched (no store call found)`);
-    if (!apply || repairs.length === 0) continue;
-    requireOffline(paths);
-    const writable = new DatabaseSync(dbPath);
-    try {
-      const backup = `${dbPath}.bak-manual-attribution-${randomUUID()}`;
-      writable.prepare("VACUUM INTO ?").run(backup);
-      output.push(`Backup: ${backup}`);
-      const store = new PromotedStore(writable);
-      store.transaction(() => {
-        for (const repair of repairs) {
-          if (store.attributeManual(repair.id, repair.sessionId)) applied++;
-        }
-      });
-    } finally { writable.close(); }
+      const repairs = planStore(dbPath, matches, output);
+      if (!apply || repairs.length === 0) continue;
+      requireOffline(paths);
+      applied += applyStore(dbPath, repairs, output);
+    } catch (error) {
+      output.push(`${dbPath}: skipped (${error instanceof Error ? error.message : String(error)})`);
+    }
   }
   output.push(apply ? `Applied ${applied} memory attribution(s).` : "Preview only; use --apply while the daemon is held offline.");
   return output.join("\n");

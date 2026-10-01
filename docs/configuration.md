@@ -152,10 +152,16 @@ count: Claude `tool_use` inputs and Codex `function_call` arguments or
 Stored message mentions are not evidence. Matching replaces NUL with U+FFFD,
 normalizes Unicode to NFC, collapses whitespace and trims both texts.
 
-Exactly one distinct matching session is **attributable**. Repeated calls or
-transcript copies of that session count once. Several sessions are **ambiguous**;
-no matching call is **unmatched**. Both remain unchanged. The command scans across
-projects so a matching call in another project also contributes to ambiguity.
+A matching call counts for a memory only when the store holding that memory captured
+the call's session (`conversations.session_id`). Exactly one such session is
+**attributable**; repeated calls or transcript copies of that session count once.
+Several such sessions are **ambiguous**. A call found only in sessions other stores
+captured is **matched outside this store**, and no matching call anywhere is
+**unmatched**. These three outcomes leave the memory unchanged. A store that cannot be
+read or written is reported as skipped, and the other stores are still processed.
+The session is the one named by the transcript file that holds the call: a call made
+inside a subagent's transcript is attributed to that subagent's session, whereas a
+live `lcm_store` records the parent's `CLAUDE_CODE_SESSION_ID`.
 Archived memories and memories already attributed to a session are left alone.
 
 ```bash
