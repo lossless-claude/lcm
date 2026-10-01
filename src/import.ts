@@ -92,7 +92,7 @@ interface ImportOptions {
 export interface ImportResult {
   imported: number;
   skippedEmpty: number;
-  /** Codex and OMP sessions skipped because their working directory no longer exists. */
+  /** Sessions skipped because their working directory no longer exists. */
   skippedCwdMissing?: number;
   failed: number;
   totalMessages: number;
@@ -738,7 +738,7 @@ export async function importSessions(
     }
 
     for (const { dir, cwd } of projectDirs) {
-      sessionLists.push(findSessionFiles(dir).map(f => ({ ...f, cwd })));
+      sessionLists.push(findSessionFiles(dir).filter(() => !skipMissingCwd(cwd)).map(f => ({ ...f, cwd })));
     }
   }
 
