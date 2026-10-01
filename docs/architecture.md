@@ -86,6 +86,35 @@ Beside each project's database sits `meta.json`, the project record: `cwd`, the 
 
 One corrupt-file policy, whichever code path meets the file first: a read treats an unparsable file as absent; an update moves it aside as `meta.json.corrupt-<timestamp>` and starts again from the caller's keys. The alternatives both lose something silently — refusing to write leaves the project invisible to every enumeration until someone deletes the file by hand, and overwriting in place discards the evidence — while moving aside heals the project on its next write and keeps the bad bytes for inspection.
 
+### Store hygiene
+
+`src/doctor/store-hygiene.ts` reports missing temporary or test working directories
+from records with an absolute cwd in stores named by a project id. It retains the
+id from the store directory: re-hashing a vanished cwd cannot recover a former
+symlink's realpath. Ordinary missing checkouts
+are retained because they may be temporarily unmounted. Unreadable or invalid
+records are listed as not checked. Cleanup is a separate CLI path that defaults
+to a read-only preview; explicit apply requires a stopped daemon under an active
+hold and no retained live database activity marker. It rechecks eligibility before
+moving complete project directories and
+their event sidecars to `<lcm-home>/trash/projects/<batch>/`. The selected
+`project_identity` and `project_remote` rows in `group-index.sqlite` are removed
+in one transaction. A failed move or index update rolls back index changes and
+attempts to restore every moved file; files remain in trash if restoration fails.
+No stored data is deleted or automatically purged.
+
+Doctor reads existing databases without migrations and reports orphan summary
+ids per store through `SummaryStore.getOrphanSummaryIds`: a summary is orphaned
+when no context item references it and no other summary uses it as a source
+(`summary_parents.parent_summary_id`). Both leaf and condensed summaries can be
+orphaned. This check diagnoses the DAG without repairing it.
+
+Test setup records the OS user's real lcm home before isolating `HOME`, validates
+the temporary base before allocating directories, asserts the resolved test home
+before writing, and retains the guard in CLI children.
+Both `lcmHome` and `createLcmPaths` refuse that protected root and its descendants,
+including symlinked ancestors, while the guard is active.
+
 ## Compaction lifecycle
 
 ### Ingestion

@@ -5,6 +5,12 @@ import { LCM_MD_CONTENT } from "../../src/guidance.js";
 import { ensureDaemon } from "../../src/daemon/lifecycle.js";
 import { PKG_VERSION } from "../../src/daemon/version.js";
 import { GUIDANCE_CHECK_NAMES } from "../../src/doctor/guidance-checks.js";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createLcmPaths } from "../../src/lcm-paths.js";
+import { projectDir } from "../../src/daemon/project.js";
+import { updateProjectMeta } from "../../src/daemon/project-meta.js";
 
 vi.mock("../../src/daemon/lifecycle.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/daemon/lifecycle.js")>()),
@@ -57,6 +63,109 @@ function minimalDeps(overrides: Partial<Parameters<typeof runDoctor>[0]> = {}) {
     ...overrides,
   };
 }
+
+it("doctor reports missing temporary and test project stores without changing them", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lcm-store-doctor-"));
+  const paths = createLcmPaths(home);
+  const missingTemp = join(home, "lossless-ingest-gone");
+  const missingTest = "/workspace/e2e-test-doctor-gone";
+  const normal = "/workspace/retained-repository";
+  const active = join(home, "e2e-test-active");
+  mkdirSync(active);
+  try {
+    for (const cwd of [missingTemp, missingTest, normal, active]) updateProjectMeta(cwd, paths, { cwd });
+    const result = (await runDoctor(minimalDeps({ lcmHome: home }))).find(r => r.name === "stale-project-stores");
+    expect(result?.status).toBe("warn");
+    expect(result?.category).toBe("Storage");
+    expect(result?.message).toContain("2 stale project stores");
+    expect(result?.message).toContain(missingTemp);
+    expect(result?.message).toContain(missingTest);
+    expect(result?.message).not.toContain(normal);
+    expect(result?.message).not.toContain(active);
+    expect(result?.message).toContain("lcm doctor --cleanup-stale-projects --dry-run");
+    for (const cwd of [missingTemp, missingTest, normal, active]) expect(existsSync(projectDir(cwd, paths))).toBe(true);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+it("doctor lists a bounded sample of stale stores and only the stores that hold orphans", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lcm-store-doctor-many-"));
+  const paths = createLcmPaths(home);
+  try {
+    const { openStandaloneLcmConnection } = await import("../../src/db/connection.js");
+    const { runLcmMigrations } = await import("../../src/db/migration.js");
+    const gone = Array.from({ length: 25 }, (_, i) => join(home, `lossless-ingest-gone-${i}`));
+    for (const cwd of gone) updateProjectMeta(cwd, paths, { cwd });
+    const clean = join(home, "clean-project");
+    mkdirSync(clean);
+    updateProjectMeta(clean, paths, { cwd: clean });
+    const db = openStandaloneLcmConnection(join(projectDir(clean, paths), "db.sqlite"));
+    try { runLcmMigrations(db); } finally { db.close(); }
+    const results = await runDoctor(minimalDeps({ lcmHome: home }));
+    const stale = results.find(r => r.name === "stale-project-stores")?.message ?? "";
+    expect(stale).toContain("25 stale project stores");
+    expect(stale).toContain("… and 5 more");
+    expect(gone.filter(cwd => stale.includes(`${cwd}\n`) || stale.endsWith(cwd))).toHaveLength(20);
+    const orphans = results.find(r => r.name === "orphan-summaries");
+    expect(orphans?.status).toBe("pass");
+    expect(orphans?.message).not.toContain(projectDir(clean, paths));
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+it("doctor reports orphan summaries per store without repairing context or dropping summaries", async () => {
+  const { openStandaloneLcmConnection } = await import("../../src/db/connection.js");
+  const { runLcmMigrations } = await import("../../src/db/migration.js");
+  const { ConversationStore } = await import("../../src/store/conversation-store.js");
+  const { SummaryStore } = await import("../../src/store/summary-store.js");
+  const home = mkdtempSync(join(tmpdir(), "lcm-orphan-doctor-"));
+  const paths = createLcmPaths(home);
+  const cwd = join(home, "active-project");
+  mkdirSync(cwd);
+  updateProjectMeta(cwd, paths, { cwd });
+  const db = openStandaloneLcmConnection(join(projectDir(cwd, paths), "db.sqlite"));
+  try {
+    runLcmMigrations(db);
+    const conversations = new ConversationStore(db);
+    const summaries = new SummaryStore(db);
+    const conversationId = (await conversations.getOrCreateConversation("orphan-session")).conversationId;
+    const messages = await conversations.createMessagesBulk([0, 1].map(seq => ({ conversationId, seq, role: "user" as const, content: "retained", tokenCount: 1 })));
+    await summaries.appendContextMessages(conversationId, messages.map(message => message.messageId));
+    for (const [summaryId, kind] of [["in-context", "leaf"], ["source", "leaf"], ["root", "condensed"], ["orphan-leaf", "leaf"], ["orphan-condensed", "condensed"]] as const) {
+      await summaries.insertSummary({ summaryId, conversationId, kind, content: "private summary text", tokenCount: 1 });
+    }
+    await summaries.linkSummaryToParents("root", ["source"]);
+    await summaries.replaceContextRangeWithSummary({ conversationId, startOrdinal: 0, endOrdinal: 0, summaryId: "in-context" });
+    await summaries.replaceContextRangeWithSummary({ conversationId, startOrdinal: 1, endOrdinal: 1, summaryId: "root" });
+    const before = await summaries.getContextItems(conversationId);
+    const result = (await runDoctor(minimalDeps({ lcmHome: home }))).find(r => r.name === "orphan-summaries");
+    expect(result?.status).toBe("warn");
+    expect(result?.category).toBe("Storage");
+    expect(result?.message).toContain(`${projectDir(cwd, paths)}: 2 orphan summaries`);
+    expect(result?.message).toContain("orphan-leaf");
+    expect(result?.message).toContain("orphan-condensed");
+    expect(result?.message).not.toContain("private summary text");
+    expect(result?.fixApplied).not.toBe(true);
+    expect(await summaries.getContextItems(conversationId)).toEqual(before);
+    for (const id of ["in-context", "source", "root", "orphan-leaf", "orphan-condensed"]) expect(await summaries.getSummary(id)).not.toBeNull();
+  } finally { db.close(); rmSync(home, { recursive: true, force: true }); }
+});
+
+it("doctor reports invalid project records and unsupported summary databases as not checked", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lcm-unchecked-doctor-"));
+  const dir = join(createLcmPaths(home).projectsDir, "invalid-record");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "meta.json"), "invalid json");
+  writeFileSync(join(dir, "db.sqlite"), "unsupported database");
+  try {
+    const results = await runDoctor(minimalDeps({ lcmHome: home }));
+    for (const name of ["stale-project-stores", "orphan-summaries"]) {
+      const result = results.find(result => result.name === name);
+      expect(result?.status).toBe("warn");
+      expect(result?.message).toContain(dir);
+      expect(result?.message).toContain("not checked");
+      expect(result?.fixApplied).not.toBe(true);
+    }
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
 
 it("doctor exposes a shortened worker id", async () => {
   const { mkdtempSync, rmSync } = await import("node:fs");
