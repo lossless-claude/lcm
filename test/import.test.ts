@@ -75,6 +75,7 @@ describe("findSessionFiles", () => {
     const calls: any[] = [];
     const client = makeMockClient(async (route, body: any) => {
       if (route === "/ingest") return { ingested: 1, totalTokens: 100 };
+      if (route === "/promote") return { processed: 0, promoted: 0 };
       calls.push(body);
       await gate.promise;
       return { replayOutcome: "compacted", latestSummaryId: `sum-${body.session_id}`, latestSummaryContent: `summary-${body.session_id}` };
@@ -955,6 +956,7 @@ describe("importSessions replay resume", () => {
     const compacted: string[] = [];
     const second = makeMockClient(async (path: string, body: any) => {
       if (path === "/ingest") return { ingested: 0, totalTokens: 0 };
+      if (path === "/promote") return { processed: 0, promoted: 0 };
       compacted.push(body.session_id);
       return { summary: "ok", replayOutcome: "compacted", latestSummaryContent: "summary-of-s2", latestSummaryId: "sum-s2" };
     });
