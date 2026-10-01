@@ -64,6 +64,7 @@ export const GOLDEN_CASES: GoldenCase[] = [
   { id: "e01", argv: ["help", "eval"], creates: [], removes: [] },
 
   // ─── memory ────────────────────────────────────────────────────────────────
+  { id: "m24", argv: ["timeline", "settle", "--help"], creates: [], removes: [] },
   { id: "m01", argv: ["search"], creates: [], removes: [] },
   { id: "m02", argv: ["search", "-h"], creates: [], removes: [] },
   { id: "m03", argv: ["search", "--help"], creates: [], removes: [] },

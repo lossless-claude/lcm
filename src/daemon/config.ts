@@ -76,6 +76,7 @@ export type DaemonConfig = {
     fallback?: string[];
   };
   summarizer: { mock: boolean; language?: string };
+  timeline: { generationEnabled: boolean };
   security: SecurityConfig;
   hooks: { snapshotIntervalSec: number; disableAutoCompact: boolean };
   promotion: {
@@ -136,6 +137,7 @@ const DEFAULTS: DaemonConfig = {
   },
   llm: { provider: "auto", model: "", apiKey: "", baseURL: "", poolCompletionMs: 180_000 },
   summarizer: { mock: false },
+  timeline: { generationEnabled: false },
   security: {
     sensitivePatterns: [],
   },
@@ -175,6 +177,7 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
   // Precedence: DEFAULTS < fileConfig < overrides.
   const withFile = deepMerge(structuredClone(DEFAULTS) as Record<string, unknown>, fileConfig);
   const merged = deepMerge(withFile, overrides ?? {}) as DaemonConfig;
+  if (typeof merged.timeline.generationEnabled !== "boolean") throw new Error("timeline.generationEnabled must be a boolean");
   if (!merged.daemon.socketPath) merged.daemon.socketPath = join(dirname(configPath), "daemon.sock");
   if (e.LCM_POOL_COMPLETION_MS !== undefined) merged.llm.poolCompletionMs = Number(e.LCM_POOL_COMPLETION_MS);
   const completionMs = merged.llm.poolCompletionMs;

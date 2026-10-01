@@ -44,7 +44,7 @@ function fuseByReciprocalRank(lists: NativeHistoryHit[][], limit: number): Nativ
  */
 export async function searchHistoryGroup(
   cwd: string,
-  input: { query: string; limit: number; terms?: readonly string[] },
+  input: { query: string; limit: number; terms?: readonly string[]; includeStale?: boolean },
   paths: LcmPaths,
 ): Promise<NativeHistoryHit[]> {
   const lists: NativeHistoryHit[][] = [];
@@ -58,6 +58,7 @@ export async function searchHistoryGroup(
         query: input.query,
         limit: input.limit,
         terms: input.terms,
+        includeStale: input.includeStale,
         project: projectRef(member.cwd),
       });
       if (found.length > 0) lists.push(found);

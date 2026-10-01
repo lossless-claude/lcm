@@ -87,6 +87,7 @@ describe("findSessionFiles", () => {
       expect(new Set(calls.map((body) => body.cwd)).size).toBe(2);
       gate.resolve();
       await expect(run).resolves.toMatchObject({ imported: 4 });
+      expect(vi.mocked(client.post).mock.calls.every(([route]) => route !== "/timeline")).toBe(true);
       for (const { cwd, db } of projects) {
         const projectCalls = calls.filter((body) => body.cwd === cwd);
         expect(projectCalls.map((body) => body.session_id)).toEqual([`${cwd.slice(-1)}-1`, `${cwd.slice(-1)}-2`]);
@@ -277,7 +278,9 @@ function makeMockClient(
   healthImpl?: () => Promise<{ status: string; uptime: number } | null>,
 ): DaemonClient {
   return {
-    post: vi.fn().mockImplementation(postImpl),
+    post: vi.fn().mockImplementation((route, body) => route === "/timeline"
+      ? Promise.resolve({ generated: 0, stale: 0, pending: 0, calls: 0, stopped: "complete", failed: [] })
+      : postImpl(route, body)),
     health: vi.fn().mockImplementation(healthImpl ?? (async () => null)),
   } as unknown as DaemonClient;
 }

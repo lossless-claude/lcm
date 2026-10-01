@@ -34,6 +34,7 @@ it("replays at most N projects concurrently, preserving each project's chain and
   let peak = 0;
   const calls: any[] = [];
   const post = vi.spyOn(DaemonClient.prototype, "post").mockImplementation(async (_route, body: any) => {
+    expect(_route).toBe("/compact");
     expect(active.has(body.cwd)).toBe(false);
     active.add(body.cwd);
     peak = Math.max(peak, active.size);
@@ -49,6 +50,7 @@ it("replays at most N projects concurrently, preserving each project's chain and
     gate.resolve();
     await expect(run).resolves.toMatchObject({ compacted: 6 });
     expect(peak).toBe(2);
+    expect(post.mock.calls.every(([route]) => route !== "/timeline")).toBe(true);
     for (const { cwd, db } of projects) {
       const projectCalls = calls.filter((body) => body.cwd === cwd);
       expect(projectCalls.map((body) => body.session_id)).toEqual([`${cwd.slice(-1)}-1`, `${cwd.slice(-1)}-2`]);
@@ -259,6 +261,12 @@ describe("batchCompact — daemon becomes unreachable mid-replay", () => {
    * against Node's connection pool. */
   function startOneShotServer(): Promise<number> {
     rawServer = createServer((req, res) => {
+      if (req.url === "/timeline") {
+        req.resume();
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ generated: 0, stale: 0, pending: 0, calls: 0, stopped: "complete", failed: [] }));
+        return;
+      }
       let body = "";
       req.on("data", (c) => (body += c));
       req.on("end", () => {
@@ -287,6 +295,12 @@ describe("batchCompact — daemon becomes unreachable mid-replay", () => {
   function startAlwaysUpServer(): Promise<{ port: number; bodies: { session_id: string; skip_ingest?: boolean; previous_summary?: string }[] }> {
     const bodies: { session_id: string; skip_ingest?: boolean; previous_summary?: string }[] = [];
     rawServer = createServer((req, res) => {
+      if (req.url === "/timeline") {
+        req.resume();
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ generated: 0, stale: 0, pending: 0, calls: 0, stopped: "complete", failed: [] }));
+        return;
+      }
       let body = "";
       req.on("data", (c) => (body += c));
       req.on("end", () => {
@@ -375,6 +389,12 @@ describe("batchCompact — daemon becomes unreachable mid-replay", () => {
   function startWedgedServer(opts: { resetHealth: boolean }): Promise<number> {
     let compactCount = 0;
     rawServer = createServer((req, res) => {
+      if (req.url === "/timeline") {
+        req.resume();
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ generated: 0, stale: 0, pending: 0, calls: 0, stopped: "complete", failed: [] }));
+        return;
+      }
       if (req.url === "/health") {
         if (opts.resetHealth) { req.socket.destroy(); return; }
         res.writeHead(200, { "Content-Type": "application/json" });

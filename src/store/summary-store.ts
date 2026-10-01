@@ -265,12 +265,14 @@ function toLargeFileRecord(row: LargeFileRow): LargeFileRecord {
 
 export class SummaryStore {
   private readonly fts5Available: boolean;
+  private readonly includeStale: boolean;
 
   constructor(
     private db: DatabaseSync,
-    options?: { fts5Available?: boolean },
+    options?: { fts5Available?: boolean; includeStale?: boolean },
   ) {
     this.fts5Available = options?.fts5Available ?? true;
+    this.includeStale = options?.includeStale ?? true;
   }
 
   /** Covering leaf and condensed summaries for a bounded set of grep matches. */
@@ -301,9 +303,11 @@ export class SummaryStore {
 
   /** Summaries neither present in context nor used as source by another summary. */
   getOrphanSummaryIds(): string[] {
+    const hasTimeline = (this.db.prepare("PRAGMA table_info(conversations)").all() as Array<{ name: string }>).some(column => column.name === "is_timeline");
     const rows = this.db.prepare(`
       SELECT s.summary_id FROM summaries s
-       WHERE NOT EXISTS (SELECT 1 FROM context_items c WHERE c.summary_id = s.summary_id)
+       WHERE ${hasTimeline ? "NOT EXISTS (SELECT 1 FROM conversations owner WHERE owner.conversation_id = s.conversation_id AND owner.is_timeline = 1)" : "1"}
+         AND NOT EXISTS (SELECT 1 FROM context_items c WHERE c.summary_id = s.summary_id)
          AND NOT EXISTS (SELECT 1 FROM summary_parents p WHERE p.parent_summary_id = s.summary_id)
        ORDER BY s.summary_id
     `).all() as Array<{ summary_id: string }>;
@@ -311,6 +315,10 @@ export class SummaryStore {
   }
 
   async insertSummary(input: CreateSummaryInput): Promise<SummaryRecord> {
+    return this.insertSummarySync(input);
+  }
+
+  insertSummarySync(input: CreateSummaryInput): SummaryRecord {
     const conversation = this.db.prepare("SELECT session_id FROM conversations WHERE conversation_id = ?").get(input.conversationId) as { session_id: string } | undefined;
     if (conversation && new WorkerStore(this.db).excluded(conversation.session_id)) throw new Error("Worker session is excluded from compaction");
     const fileIds = JSON.stringify(input.fileIds ?? []);
@@ -465,6 +473,10 @@ export class SummaryStore {
   // ── Lineage ───────────────────────────────────────────────────────────────
 
   async linkSummaryToMessages(summaryId: string, messageIds: number[]): Promise<void> {
+    this.linkSummaryToMessagesSync(summaryId, messageIds);
+  }
+
+  linkSummaryToMessagesSync(summaryId: string, messageIds: number[]): void {
     if (messageIds.length === 0) {
       return;
     }
@@ -481,6 +493,10 @@ export class SummaryStore {
   }
 
   async linkSummaryToParents(summaryId: string, parentSummaryIds: string[]): Promise<void> {
+    this.linkSummaryToParentsSync(summaryId, parentSummaryIds);
+  }
+
+  linkSummaryToParentsSync(summaryId: string, parentSummaryIds: string[]): void {
     if (parentSummaryIds.length === 0) {
       return;
     }
@@ -690,11 +706,13 @@ export class SummaryStore {
     return rows.map((row) => row.depth);
   }
 
-  /** How many summaries a conversation holds, or every conversation when none is named. */
+  /** How many summaries a conversation holds, or session summaries when none is named. */
   async countSummaries(conversationId?: number): Promise<number> {
     const row = (
       conversationId == null
-        ? this.db.prepare(`SELECT COUNT(*) AS n FROM summaries`).get()
+        ? this.db.prepare((this.db.prepare("PRAGMA table_info(conversations)").all() as Array<{ name: string }>).some(column => column.name === "is_timeline")
+          ? "SELECT COUNT(*) AS n FROM summaries WHERE conversation_id IN (SELECT conversation_id FROM conversations WHERE is_timeline = 0)"
+          : "SELECT COUNT(*) AS n FROM summaries").get()
         : this.db.prepare(`SELECT COUNT(*) AS n FROM summaries WHERE conversation_id = ?`).get(conversationId)
     ) as unknown as { n: number };
     return row.n;
@@ -982,6 +1000,10 @@ export class SummaryStore {
     return this.searchLikeTerms(prepared, limit, conversationId, since, before, summaryId);
   }
 
+  private timelinePredicate(column = "summary_id"): string[] {
+    return this.includeStale ? [] : [`NOT EXISTS (SELECT 1 FROM timeline_nodes tn WHERE tn.summary_id = ${column} AND tn.stale_reason IS NOT NULL)`];
+  }
+
   private runFullTextMatch(
     ftsExpression: string,
     limit: number,
@@ -990,7 +1012,7 @@ export class SummaryStore {
     before?: Date,
     summaryId?: string,
   ): SummarySearchResult[] {
-    const where: string[] = ["summaries_fts MATCH ?"];
+    const where: string[] = ["summaries_fts MATCH ?", ...this.timelinePredicate("s.summary_id")];
     const args: Array<string | number> = [ftsExpression];
     if (summaryId !== undefined) {
       where.push(`s.summary_id IN (${SUMMARY_SOURCE_IDS_SQL})`);
@@ -1040,7 +1062,7 @@ export class SummaryStore {
       return [];
     }
 
-    const where: string[] = [`(${plan.where.join(" OR ")})`];
+    const where: string[] = [`(${plan.where.join(" OR ")})`, ...this.timelinePredicate("summaries.summary_id")];
     const args: Array<string | number> = [...plan.args];
     if (summaryId !== undefined) {
       where.push(`summary_id IN (${SUMMARY_SOURCE_IDS_SQL})`);
@@ -1095,7 +1117,7 @@ export class SummaryStore {
       return [];
     }
 
-    const where: string[] = [...plan.where];
+    const where: string[] = [...plan.where, ...this.timelinePredicate("summaries.summary_id")];
     const args: Array<string | number> = [...plan.args];
     if (summaryId !== undefined) {
       where.push(`summary_id IN (${SUMMARY_SOURCE_IDS_SQL})`);
@@ -1148,7 +1170,7 @@ export class SummaryStore {
   ): SummarySearchResult[] {
     const re = validateRegex(pattern);
 
-    const where: string[] = [];
+    const where: string[] = [...this.timelinePredicate("summaries.summary_id")];
     const args: Array<string | number> = [];
     if (summaryId !== undefined) {
       where.push(`summary_id IN (${SUMMARY_SOURCE_IDS_SQL})`);

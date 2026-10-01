@@ -1,0 +1,15 @@
+
+  lcm timeline — Reconcile and generate the current project's timeline within a call budget.
+
+  Usage: lcm timeline <enable|disable|teardown|settle> [--calls N] [--reconcile journal|full]
+
+  Options:
+    --calls N                 Maximum summarizer calls (default 10); zero reconciles without generation
+    --reconcile journal|full  Explicit full reconciliation repairs tracking and checks aggregates
+
+  Examples:
+    lcm timeline settle --calls 0   Report pending and stale nodes without model calls
+    lcm timeline settle --calls 10  Generate up to ten pending timeline nodes
+
+  Note: Enable tracking with lcm timeline enable. Generation requires timeline.generationEnabled: true (default false) and bounded HTTP endpoint admission. Disable retains tracking; teardown removes references and triggers. Automatic work is debounced and runs one unit per tick. Status and doctor read persisted counts without reconciliation. Replacements preserve historical nodes by id.
+

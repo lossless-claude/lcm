@@ -1,4 +1,5 @@
 import { SUMMARY_SOURCE_IDS_SQL } from "./summary-lineage.js";
+import { TIMELINE_SESSION_ID } from "../db/project-timeline.js";
 import { WorkerStore } from "./worker-store.js";
 import type { DatabaseSync } from "node:sqlite";
 import { parseSqliteDate } from "../db/sqlite-date.js";
@@ -229,6 +230,11 @@ export class ConversationStore {
     this.fts5Available = options?.fts5Available ?? true;
   }
 
+  private sessionFilter(alias = ""): string {
+    const exists = (this.db.prepare("PRAGMA table_info(conversations)").all() as Array<{ name: string }>).some(column => column.name === "is_timeline");
+    return exists ? `${alias}is_timeline = 0` : "1";
+  }
+
   // ── Transaction helpers ──────────────────────────────────────────────────
 
   async withTransaction<T>(operation: () => Promise<T> | T): Promise<T> {
@@ -246,6 +252,7 @@ export class ConversationStore {
   // ── Conversation operations ───────────────────────────────────────────────
 
   private async createConversation(input: CreateConversationInput): Promise<ConversationRecord> {
+    if (input.sessionId === TIMELINE_SESSION_ID) throw new Error("Reserved project timeline session");
     const result = this.db
       // Every conversation opened from here on is parsed by the tagging
       // parser. Older ones keep NULL, which reads as unknown; they are never
@@ -293,7 +300,7 @@ export class ConversationStore {
       .prepare(
         `${CONVERSATION_SELECT_COLUMNS}
        FROM conversations
-       WHERE session_id = ?
+       WHERE session_id = ? AND ${this.sessionFilter()}
        ORDER BY created_at DESC, conversation_id DESC
        LIMIT 1`,
       )
@@ -385,6 +392,11 @@ export class ConversationStore {
       `UPDATE messages SET content = ? WHERE message_id = ? AND
        (content = ? OR (instr(content, char(0)) > 0 AND substr(content, 1, instr(content, char(0)) - 1) = ?))`,
     );
+    const timelineTracking = this.db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'timeline_state'").get()
+      && Boolean((this.db.prepare("SELECT tracking FROM timeline_state WHERE id = 1").get() as { tracking: number })?.tracking);
+    const markDirty = timelineTracking ? this.db.prepare(`INSERT INTO timeline_dirty(session_id, rev)
+      SELECT c.session_id, 1 FROM messages m JOIN conversations c ON c.conversation_id = m.conversation_id WHERE m.message_id = ?
+      ON CONFLICT(session_id) DO UPDATE SET rev = rev + 1, dirty = 1, bumped_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`) : undefined;
     const hasFts = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts'").get() !== undefined;
     const removeFts = hasFts ? this.db.prepare("DELETE FROM messages_fts WHERE rowid = ?") : undefined;
     const addFts = hasFts ? this.db.prepare("INSERT INTO messages_fts(rowid, content) VALUES (?, ?)") : undefined;
@@ -394,6 +406,7 @@ export class ConversationStore {
         if (update.run(row.content, row.messageId, row.storedContent, row.storedContent).changes !== 1) {
           throw new Error(`cut message ${row.messageId} changed before repair`);
         }
+        markDirty?.run(row.messageId);
         removeFts?.run(row.messageId);
         addFts?.run(row.messageId, row.content);
       }
@@ -474,7 +487,7 @@ export class ConversationStore {
     const rows = this.db
       .prepare(
         `${CONVERSATION_SELECT_COLUMNS}
-       FROM conversations
+       FROM conversations WHERE ${this.sessionFilter()}
        ORDER BY created_at`,
       )
       .all() as unknown as ConversationRow[];
@@ -491,7 +504,7 @@ export class ConversationStore {
       .prepare(
         `${CONVERSATION_SELECT_COLUMNS}
        FROM conversations c
-       WHERE c.session_id != ?
+       WHERE c.session_id != ? AND ${this.sessionFilter("c.")}
          AND (EXISTS (
            SELECT 1 FROM messages m
            WHERE m.conversation_id = c.conversation_id AND m.role IN ('user', 'assistant')
@@ -654,11 +667,13 @@ export class ConversationStore {
     }
   }
 
-  /** Messages in one conversation, or in every conversation when none is named. */
+  /** Messages in one conversation, or in session conversations when none is named. */
   async getMessageCount(conversationId?: ConversationId): Promise<number> {
     const row = (
       conversationId == null
-        ? this.db.prepare(`SELECT COUNT(*) AS count FROM messages`).get()
+        ? this.db.prepare((this.db.prepare("PRAGMA table_info(conversations)").all() as Array<{ name: string }>).some(column => column.name === "is_timeline")
+          ? "SELECT COUNT(*) AS count FROM messages WHERE conversation_id IN (SELECT conversation_id FROM conversations WHERE is_timeline = 0)"
+          : "SELECT COUNT(*) AS count FROM messages").get()
         : this.db.prepare(`SELECT COUNT(*) AS count FROM messages WHERE conversation_id = ?`).get(conversationId)
     ) as unknown as CountRow;
     return row?.count ?? 0;

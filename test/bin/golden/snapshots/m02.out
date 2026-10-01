@@ -1,12 +1,13 @@
 
   lcm search — Search memory across episodic and promoted layers for the current project.
 
-  Usage: lcm search <query> [--limit N] [--layer episodic|promoted] [--tag <tag>]
+  Usage: lcm search <query> [--limit N] [--layer episodic|promoted] [--tag <tag>] [--include-stale]
 
   Options:
-    --limit N       Max results per layer (default: 5)
-    --layer <name>  Layer to search: episodic or promoted (repeatable)
-    --tag <tag>     Filter to entries that include all specified tags (repeatable)
+    --limit N        Max results per layer (default: 5)
+    --include-stale  Include stale timeline nodes with their periods and reasons
+    --layer <name>   Layer to search: episodic or promoted (repeatable)
+    --tag <tag>      Filter to entries that include all specified tags (repeatable)
 
   Examples:
     lcm search "authentication decision"            Search both memory layers for auth-related context

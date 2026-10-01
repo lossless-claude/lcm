@@ -192,7 +192,7 @@ function querySubagentStats(db: DatabaseSync, conversationColumns: Set<string>):
   const row = db.prepare(
     `SELECT COALESCE(${byName}, 0) as byName,
             COALESCE(${attributedNotByName}, 0) as attributedNotByName
-       FROM conversations`,
+       FROM conversations ${conversationColumns.has("is_timeline") ? "WHERE is_timeline = 0" : ""}`,
   ).get() as { byName: number; attributedNotByName: number };
   return { byName: row.byName, attributedNotByName: row.attributedNotByName };
 }
@@ -212,16 +212,17 @@ function queryProjectStats(
       (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((row) => row.name),
     );
     const summaryColumns = columns("summaries");
+    const ownerFilter = columns("conversations").has("is_timeline") ? " WHERE conversation_id IN (SELECT conversation_id FROM conversations WHERE is_timeline = 0)" : "";
     const summaryDepth = summaryColumns.has("depth") ? "depth" : "0";
     const promotedColumns = columns("promoted");
     const usageColumns = columns("llm_usage_stats");
     const usageSum = (column: string, fallback = "0") => usageColumns.has(column) ? `SUM(${column})` : fallback;
     const msgStats = db.prepare(
-      `SELECT COUNT(*) as count, COALESCE(SUM(token_count), 0) as tokens FROM messages`
+      `SELECT COUNT(*) as count, COALESCE(SUM(token_count), 0) as tokens FROM messages${ownerFilter}`
     ).get() as { count: number; tokens: number };
 
     const sumStats = db.prepare(
-      `SELECT COUNT(*) as count, COALESCE(SUM(token_count), 0) as tokens, COALESCE(MAX(${summaryDepth}), 0) as maxDepth FROM summaries`
+      `SELECT COUNT(*) as count, COALESCE(SUM(token_count), 0) as tokens, COALESCE(MAX(${summaryDepth}), 0) as maxDepth FROM summaries${ownerFilter}`
     ).get() as { count: number; tokens: number; maxDepth: number };
 
     const promoted = promotedColumns.size ? db.prepare(
@@ -274,6 +275,7 @@ function queryProjectStats(
         SELECT conversation_id, COUNT(*) as sum_count, SUM(token_count) as sum_tokens, MAX(${summaryDepth}) as max_depth
         FROM summaries GROUP BY conversation_id
       ) s ON s.conversation_id = c.conversation_id
+      ${columns("conversations").has("is_timeline") ? "WHERE c.is_timeline = 0" : ""}
       ORDER BY c.conversation_id DESC
     `).all() as { conversation_id: number; messages: number; summaries: number; max_depth: number; raw_tokens: number; summary_tokens: number }[];
 

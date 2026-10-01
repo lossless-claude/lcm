@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { getLcmDbFeatures } from "./features.js";
 import { ensureTranscriptCursorTable } from "./transcript-cursor.js";
+import { installProjectTimeline } from "./project-timeline.js";
 import { walkSubagentTranscripts } from "../subagent-attribution.js";
 import { extractCommandParts, type MessagePart } from "../transcript.js";
 
@@ -1075,6 +1076,7 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
   `);
   ensureReplayLedgerOutcomeColumn(db);
   ensureTranscriptCursorTable(db);
+  installProjectTimeline(db);
 
   const fts5Available = options?.fts5Available ?? getLcmDbFeatures(db).fts5Available;
   if (!fts5Available) {

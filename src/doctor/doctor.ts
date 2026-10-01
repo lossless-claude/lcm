@@ -28,6 +28,7 @@ import { checkStalledSubagentCaptures, checkUncapturedTranscripts } from "./tran
 import { checkRebuildBackups } from "./rebuild-backup-check.js";
 import { checkOrphanSummaries, checkStaleProjectStores } from "./store-hygiene.js";
 import { loadDaemonConfig } from "../daemon/config.js";
+import { checkProjectTimeline } from "./timeline-check.js";
 import { summarizerAvailability } from "../daemon/provider-config.js";
 
 const COLORS = {
@@ -825,6 +826,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
   results.push(checkRebuildBackups(createLcmPaths(deps.lcmHome), verbose));
   results.push(checkStaleProjectStores(createLcmPaths(deps.lcmHome), verbose));
   results.push(checkOrphanSummaries(createLcmPaths(deps.lcmHome), verbose));
+  results.push(await checkProjectTimeline(deps, config.port));
 
   // ── Passive Learning ──
   const hooksInstalled = results.some(

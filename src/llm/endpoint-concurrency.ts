@@ -1,5 +1,5 @@
 type Waiter = { resolve: () => void; timer?: ReturnType<typeof setTimeout> };
-type Semaphore = { limit: number; active: number; live: Waiter[]; background: Waiter[] };
+type Semaphore = { limit: number; active: number; live: Waiter[]; background: Waiter[]; timeline: Waiter[] };
 
 // Named endpoints are daemon-wide resources even when callers build separate summarizers.
 const semaphores = new Map<string, Semaphore>();
@@ -7,17 +7,17 @@ const semaphores = new Map<string, Semaphore>();
 /** Live goes first; only live slot waits expire. The request gets its own deadline. */
 export async function withEndpointSlot<T>(
   name: string, maxConcurrent: number | undefined, waitMs: number, request: () => Promise<T>,
-  workClass: "live" | "background" = "live",
+  workClass: "live" | "background" | "timeline" = "live",
 ): Promise<T> {
   if (maxConcurrent === undefined) return request();
   let semaphore = semaphores.get(name);
   if (!semaphore) {
-    semaphore = { limit: maxConcurrent, active: 0, live: [], background: [] };
+    semaphore = { limit: maxConcurrent, active: 0, live: [], background: [], timeline: [] };
     semaphores.set(name, semaphore);
   }
   const gate = semaphore;
   const waiting = gate[workClass];
-  if (gate.active < gate.limit && gate.live.length === 0 && gate.background.length === 0) {
+  if (gate.active < gate.limit && gate.live.length === 0 && gate.background.length === 0 && gate.timeline.length === 0) {
     gate.active++;
   } else {
     await new Promise<void>((resolve, reject) => {
@@ -36,7 +36,7 @@ export async function withEndpointSlot<T>(
   try {
     return await request();
   } finally {
-    const next = gate.live.shift() ?? gate.background.shift();
+    const next = gate.live.shift() ?? gate.background.shift() ?? gate.timeline.shift();
     if (next) {
       clearTimeout(next.timer);
       next.resolve();

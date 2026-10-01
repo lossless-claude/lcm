@@ -12,8 +12,9 @@ import { SummaryStore } from "../../store/summary-store.js";
 import { RetrievalEngine } from "../../retrieval.js";
 import { validateCwd } from "../validate-cwd.js";
 import { resolveSourceCwd } from "../project-group.js";
+import { daemonTimeline } from "../project-timeline.js";
 
-export function createDescribeHandler(_config: DaemonConfig, paths: LcmPaths): RouteHandler {
+export function createDescribeHandler(config: DaemonConfig, paths: LcmPaths): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
     const { nodeId } = input;
@@ -55,8 +56,9 @@ export function createDescribeHandler(_config: DaemonConfig, paths: LcmPaths): R
       const summStore = new SummaryStore(db);
       const engine = new RetrievalEngine(convStore, summStore);
       const result = await engine.describe(nodeId);
+      const timeline = daemonTimeline(db, source, config, paths).describe(nodeId);
       db.close();
-      sendJson(res, 200, { node: result });
+      sendJson(res, 200, { node: result && timeline ? { ...result, timeline } : result });
     } catch (err) {
       sendJson(res, 200, { node: null, error: err instanceof Error ? err.message : "describe failed" });
     }

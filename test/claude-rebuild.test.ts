@@ -12,6 +12,7 @@ import { ConversationStore } from "../src/store/conversation-store.js";
 import { SummaryStore } from "../src/store/summary-store.js";
 import { TranscriptSourceError } from "../src/transcript-source.js";
 import { CLAUDE_PARSER_SHAPE, parseTranscript } from "../src/transcript.js";
+import { ensureTimelineOwner, TIMELINE_SESSION_ID } from "../src/db/project-timeline.js";
 
 /**
  * Before compaction stopped counting its own event rows, a Claude capture after a compaction
@@ -36,6 +37,13 @@ let dbPath: string;
 let db: DatabaseSync;
 let capture: SessionCapture;
 const identity = (text: string) => text;
+
+it("rebuild candidates exclude the timeline owner with an unknown parser shape", () => {
+  ensureTimelineOwner(db);
+  db.exec("INSERT INTO conversations(session_id) VALUES ('ordinary')");
+  expect(claudeRebuildCandidateIds(db)).toEqual(["ordinary"]);
+  expect(claudeRebuildCandidateIds(db)).not.toContain(TIMELINE_SESSION_ID);
+});
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "lcm-claude-rebuild-"));

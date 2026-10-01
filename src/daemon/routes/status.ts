@@ -16,6 +16,7 @@ import { compactingSessionsFor } from "./compact.js";
 import { PromotedStore } from "../../db/promoted.js";
 import { ConversationStore } from "../../store/conversation-store.js";
 import { SummaryStore } from "../../store/summary-store.js";
+import type { SettleReport } from "../../project-timeline.js";
 
 export function createStatusHandler(config: DaemonConfig, paths: LcmPaths, startTime: number, actualPort?: number): RouteHandler {
   return async (_req, res, body) => {
@@ -42,24 +43,27 @@ export function createStatusHandler(config: DaemonConfig, paths: LcmPaths, start
       const port = actualPort ?? config.daemon.port;
 
       // Query project database for stats
-      let messageCount = 0;
-      let summaryCount = 0;
-      let promotedCount = 0;
+      let messageCount: number | null = 0;
+      let summaryCount: number | null = 0;
+      let promotedCount: number | null = 0;
+      let timeline: SettleReport | undefined;
 
       const dbPath = projectDbPath(cwd, paths);
       if (existsSync(dbPath)) {
-        const db = new DatabaseSync(dbPath);
+        const db = new DatabaseSync(dbPath, { readOnly: true });
+        const count = async (query: () => number | Promise<number>): Promise<number | null> => {
+          try { return await query(); } catch { return null; }
+        };
         try {
-          db.exec("PRAGMA busy_timeout = 5000");
-
-          messageCount = await new ConversationStore(db).getMessageCount();
-          summaryCount = await new SummaryStore(db).countSummaries();
-          promotedCount = new PromotedStore(db).count();
-        } catch {
-          // If database query fails, return zeros
-          messageCount = 0;
-          summaryCount = 0;
-          promotedCount = 0;
+          messageCount = await count(() => new ConversationStore(db).getMessageCount());
+          summaryCount = await count(() => new SummaryStore(db).countSummaries());
+          promotedCount = await count(() => new PromotedStore(db).count());
+          try {
+            const pending = db.prepare("SELECT (SELECT COUNT(*) FROM timeline_units WHERE month NOT IN (SELECT month FROM timeline_months WHERE replan = 1)) + (SELECT COUNT(*) FROM timeline_months WHERE replan = 1) n").get() as { n: number };
+            const dirty = db.prepare("SELECT COUNT(*) n FROM timeline_dirty WHERE dirty = 1").get() as { n: number };
+            const stale = db.prepare("SELECT COUNT(*) n FROM timeline_nodes WHERE active = 1 AND stale_reason IS NOT NULL").get() as { n: number };
+            timeline = { generated: 0, calls: 0, pending: pending.n, stale: stale.n, dirty: dirty.n, stopped: "complete", failed: [] };
+          } catch { /* Older stores or unavailable timeline counts leave that field absent. */ }
         } finally {
           db.close();
         }
@@ -84,6 +88,7 @@ export function createStatusHandler(config: DaemonConfig, paths: LcmPaths, start
           messageCount,
           summaryCount,
           promotedCount,
+          timeline,
           lastIngest,
           lastCompact,
           lastPromote,

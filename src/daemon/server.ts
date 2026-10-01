@@ -1,6 +1,8 @@
 import { CODEX_RECOVERY_RULE_VERSION } from "../transcript-source.js";
 import { stalledSubagentGuards } from "./subagent-guard-failures.js";
 import { createWorkerSessionHandler } from "./routes/worker-session.js";
+import { sweepTimelines } from "./timeline-sweep.js";
+import { createTimelineHandler } from "./routes/timeline.js";
 import { SummarizeJobStore } from "./summarize-jobs.js";
 import { summarizerAvailability } from "./provider-config.js";
 import { createNextSummarizeJobHandler, createAnswerSummarizeJobHandler, createPoolSummarizeJobHandler } from "./routes/summarize-jobs.js";
@@ -200,6 +202,8 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   routes.set("POST /summarize-jobs/pool", createPoolSummarizeJobHandler(summarizeJobs));
   routes.set("POST /compact", createCompactHandler(config, paths, summarizeJobs, log));
   routes.set("POST /replay-reset", createReplayResetHandler(paths));
+  const timelineHandler = createTimelineHandler(config, paths, summarizeJobs);
+  routes.set("POST /timeline", timelineHandler);
   routes.set("POST /promote", createPromoteHandler(config, paths, log));
   routes.set("POST /restore", createRestoreHandler(config, paths));
   routes.set("POST /grep", createGrepHandler(config, paths));
@@ -231,6 +235,16 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
     void scanForTranscripts(config, paths, ingestHandler).finally(endTask);
   }, INGEST_INTERVAL_MS);
   ingestInterval.unref(); // don't prevent process exit
+
+  let timelineSweep = false;
+  const timelineInterval = setInterval(() => {
+    if (timelineSweep || !config.timeline.generationEnabled) return;
+    timelineSweep = true;
+    const endTask = beginBackgroundTask(inFlight, "timeline:tick");
+    void sweepTimelines(config, paths, summarizeJobs).catch(() => { /* Next tick resumes durable work. */ })
+      .finally(() => { timelineSweep = false; endTask(); });
+  }, 30_000);
+  timelineInterval.unref();
 
   // Group every project already on disk, shortly after the daemon is serving so
   // the git calls never delay startup. Refreshes are throttled per project, so
@@ -293,6 +307,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   return new Promise((resolve, reject) => {
     server.once("error", (err) => {
       clearInterval(ingestInterval);
+      clearInterval(timelineInterval);
       stopStallWatch?.();
       if (identityBackfill) clearTimeout(identityBackfill);
       if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
@@ -318,6 +333,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
         stop: async () => {
           summarizeJobs.close();
           clearInterval(ingestInterval);
+      clearInterval(timelineInterval);
           stopStallWatch?.();
           if (identityBackfill) clearTimeout(identityBackfill);
           if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }

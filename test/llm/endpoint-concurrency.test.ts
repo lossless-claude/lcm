@@ -8,6 +8,16 @@ const TIMEOUT_MS = 10;
 const WAIT_PAST_DEADLINE_MS = 30;
 
 describe("endpoint slot admission", () => {
+  it("admits replay background work before an earlier queued timeline request", async () => {
+    let release!: () => void;
+    const held = withEndpointSlot("timeline-priority", 1, 1000, () => new Promise<void>(resolve => { release = resolve; }));
+    const admitted: string[] = [];
+    const timeline = withEndpointSlot("timeline-priority", 1, 1000, async () => { admitted.push("timeline"); }, "timeline");
+    const replay = withEndpointSlot("timeline-priority", 1, 1000, async () => { admitted.push("replay"); }, "background");
+    release();
+    await Promise.all([held, timeline, replay]);
+    expect(admitted).toEqual(["replay", "timeline"]);
+  });
   it("admits queued live work first and keeps FIFO within each class", async () => {
     let release!: () => void;
     const held = withEndpointSlot("priority", 1, ADMISSION_TIMEOUT_MS, () => new Promise<void>((resolve) => { release = resolve; }));

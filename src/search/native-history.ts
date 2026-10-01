@@ -8,8 +8,9 @@ import { prepareFts5Query } from "../store/fts5-query.js";
 const MAX_SNIPPET_CHARS = 1000;
 /** Reciprocal-rank offset: small enough that a top position still outweighs one corroborating source further down. */
 const FUSION_RANK_OFFSET = 10;
+type TimelineHitInfo = { period: { from: string; to: string }; stale: null | { reason: string; since: string } };
 type HistoryHit = MessageSearchResult | SummarySearchResult;
-export type RankedHistoryHit = HistoryHit & { sessionId: string | null };
+export type RankedHistoryHit = HistoryHit & { sessionId: string | null; timeline?: TimelineHitInfo };
 type SourceContext = {
   snippet: string;
   span: { start: number; end: number };
@@ -212,17 +213,17 @@ export function fuseHistoryBySession(
 /** Rank one request's history candidates without loading source context. */
 export async function rankNativeHistory(
   db: DatabaseSync,
-  input: { query: string; limit: number; terms?: readonly string[] },
+  input: { query: string; limit: number; terms?: readonly string[]; includeStale?: boolean },
 ): Promise<RankedHistoryHit[]> {
   return rankNativeHistorySync(db, input);
 }
 
 function rankNativeHistorySync(
   db: DatabaseSync,
-  input: { query: string; limit: number; terms?: readonly string[] },
+  input: { query: string; limit: number; terms?: readonly string[]; includeStale?: boolean },
 ): RankedHistoryHit[] {
   const messages = new ConversationStore(db);
-  const summaries = new SummaryStore(db);
+  const summaries = new SummaryStore(db, { includeStale: input.includeStale ?? false });
   const engine = new RetrievalEngine(messages, summaries);
   const result = engine.grepSync({ query: input.query, mode: "full_text", scope: "both", terms: input.terms });
   const sessionOf = new Map<number, string | null>();
@@ -232,7 +233,12 @@ function rankNativeHistorySync(
       if (!sessionOf.has(hit.conversationId)) {
         sessionOf.set(hit.conversationId, messages.getConversationSync(hit.conversationId)?.sessionId ?? null);
       }
-      ranked.push({ ...hit, sessionId: sessionOf.get(hit.conversationId) ?? null });
+      const timeline = "summaryId" in hit ? db.prepare("SELECT period_from, period_to, stale_reason, stale_since FROM timeline_nodes WHERE summary_id = ?")
+        .get(hit.summaryId) as { period_from: string; period_to: string; stale_reason: string | null; stale_since: string | null } | undefined : undefined;
+      ranked.push({ ...hit, sessionId: sessionOf.get(hit.conversationId) ?? null, ...(timeline ? { timeline: {
+        period: { from: timeline.period_from, to: timeline.period_to },
+        stale: timeline.stale_reason ? { reason: timeline.stale_reason, since: timeline.stale_since! } : null,
+      } } : {}) });
     }
     return ranked;
   };
@@ -312,10 +318,10 @@ function sessionSizes(
 /** Read one request's ranked history and bounded source context inside a savepoint on the caller's connection. */
 export async function searchNativeHistory(
   db: DatabaseSync,
-  input: { query: string; limit: number; project: ProjectRef; terms?: readonly string[] },
+  input: { query: string; limit: number; project: ProjectRef; terms?: readonly string[]; includeStale?: boolean },
 ): Promise<NativeHistoryHit[]> {
   const messages = new ConversationStore(db);
-  const summaries = new SummaryStore(db);
+  const summaries = new SummaryStore(db, { includeStale: input.includeStale ?? false });
   // Every read below must remain synchronous until RELEASE so one pooled
   // connection cannot mix ranking and source context from different snapshots.
   db.exec("SAVEPOINT native_history_read");

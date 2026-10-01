@@ -167,7 +167,7 @@ export function findUncompacted(
         ) src ON src.conversation_id = c.conversation_id
         ${rawContextJoin}
         ${summaryCountJoin}
-        WHERE COALESCE(${metricsAlias}.msg_count, 0) > 0
+        WHERE c.session_id <> 'lcm:project-timeline' AND COALESCE(${metricsAlias}.msg_count, 0) > 0
           -- /compact reaches a session through its newest conversation, so an older one
           -- (closed by an OMP /clear) would be listed on every run and never compacted.
           AND NOT EXISTS (
