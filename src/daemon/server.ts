@@ -232,7 +232,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   const ingestHandler = createIngestHandler(config, paths, log, beginTask);
   const ingestInterval = setInterval(() => {
     const endTask = beginBackgroundTask(inFlight, "scan:transcripts");
-    void scanForTranscripts(config, paths, ingestHandler).finally(endTask);
+    void scanForTranscripts(config, paths, ingestHandler, log).finally(endTask);
   }, INGEST_INTERVAL_MS);
   ingestInterval.unref(); // don't prevent process exit
 
@@ -493,6 +493,8 @@ let scanInProgress = false;
  * stays synchronous (one small file), so the outer walk also yields to the
  * event loop every `SCAN_YIELD_EVERY` projects, as `backfillProjectIdentities` does.
  * The inner walk yields between transcripts in the same project.
+ * A vanished cwd skips capture without settling any fingerprint. Skipped candidates
+ * are counted in one debug entry per pass and retried when the cwd returns.
  *
  * Each session's transcript is skipped when its fingerprint (see
  * `transcriptFingerprint`) matches the one recorded for it, computed before the
@@ -505,10 +507,11 @@ let scanInProgress = false;
  * a session complete; that stays `/session-complete`'s job alone. A completed
  * session whose transcript grew since (a Claude `--resume`) is read again by `/ingest`.
  */
-export async function scanForTranscripts(config: DaemonConfig, paths: LcmPaths, ingest: RouteHandler): Promise<void> {
+export async function scanForTranscripts(config: DaemonConfig, paths: LcmPaths, ingest: RouteHandler, log: DaemonLog = noopDaemonLog): Promise<void> {
   if (scanInProgress) return;
   scanInProgress = true;
   const seenTranscriptPaths = new Set<string>();
+  let missingCwdSessions = 0;
   try {
     const projectsDir = paths.projectsDir;
     const entries = await readdir(projectsDir, { withFileTypes: true }).catch((err: NodeJS.ErrnoException) => {
@@ -524,10 +527,22 @@ export async function scanForTranscripts(config: DaemonConfig, paths: LcmPaths, 
       const projectPath = join(projectsDir, entry.name);
       const meta = readProjectMetaIn(projectPath);
       if (!meta?.cwd) continue;
+      const codexRetries = stalledSubagentGuards(meta.cwd, paths).filter(({ failure }) =>
+        failure.client === "codex" && failure.terminal && failure.recoveryRuleVersion !== CODEX_RECOVERY_RULE_VERSION);
+      const sessionsDir = join(homedir(), ".claude", "projects", claudeProjectSlug(meta.cwd));
+      try {
+        await stat(meta.cwd);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "ENOTDIR") {
+          const files = await readdir(sessionsDir).catch(() => [] as string[]);
+          missingCwdSessions += files.filter(file => file.endsWith(".jsonl")).length + codexRetries.length;
+          continue;
+        }
+      }
 
       // Retained Codex guard paths need no Claude transcript directory to retry a new rule.
-      for (const { path, failure } of stalledSubagentGuards(meta.cwd, paths)) {
-        if (failure.client !== "codex" || !failure.terminal || failure.recoveryRuleVersion === CODEX_RECOVERY_RULE_VERSION) continue;
+      for (const { path, failure } of codexRetries) {
         try {
           await invokeRoute<IngestResult>(ingest, {
             client: "codex", session_id: failure.sessionId, cwd: meta.cwd, transcript_path: path,
@@ -537,7 +552,6 @@ export async function scanForTranscripts(config: DaemonConfig, paths: LcmPaths, 
       }
 
       // Find Claude Code session files for this project's cwd
-      const sessionsDir = join(homedir(), ".claude", "projects", claudeProjectSlug(meta.cwd));
       const files = await readdir(sessionsDir).catch(() => [] as string[]);
       if (!files.some((file) => file.endsWith(".jsonl"))) continue;
       const seenProjectPaths = new Set<string>();
@@ -600,5 +614,6 @@ export async function scanForTranscripts(config: DaemonConfig, paths: LcmPaths, 
     // non-fatal: periodic scan failure shouldn't crash daemon
   } finally {
     scanInProgress = false;
+    if (missingCwdSessions > 0) log.write("debug", "scan.missing_cwd", { sessions: missingCwdSessions });
   }
 }

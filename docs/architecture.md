@@ -241,6 +241,11 @@ PostToolUseFailure); the function-hooks module speaks the same routes through
 Capture itself happens on `POST /ingest`, reached from `session-end`, the Stop snapshot, and
 the periodic transcript scan (`scanForTranscripts` in `src/daemon/server.ts`, every 10
 minutes) that recovers a session whose `SessionEnd` never ran. The scan skips a session
+whose cwd no longer exists, including retained Codex recovery-guard retries, before
+calling `/ingest`. One `scan.missing_cwd` debug entry counts skipped session candidates
+per pass, without per-session warnings. The cwd is checked afresh on each pass, so a
+directory that returns is eligible for capture again without changing its transcript.
+The scan also skips a session
 whose transcript is unchanged since its last successful ingest or a Claude 400 rejection —
 the parent file's `(size, mtimeMs)` plus the same for every file
 under its `subagents/` tree except `journal.jsonl` (each subagent transcript and its
