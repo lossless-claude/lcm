@@ -14,6 +14,9 @@ import type { CheckResult } from "./types.js";
 
 type ProjectStore = { id: string; dir: string; cwd: string };
 
+/** Doctor runs over every store, test leftovers included; its lines stay readable. */
+const DOCTOR_LIST_LIMIT = 20;
+
 function temporaryOrTestCwd(cwd: string): boolean {
   const path = resolve(cwd);
   const roots = [tmpdir(), "/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp"].map(root => resolve(root));
@@ -54,7 +57,9 @@ function staleProjectStores(paths: LcmPaths): { stale: ProjectStore[]; unchecked
 /** Read-only: a missing ordinary checkout may be an unmounted disk and is retained. */
 export function checkStaleProjectStores(paths: LcmPaths): CheckResult {
   const { stale, unchecked } = staleProjectStores(paths);
-  const lines = stale.map(store => `     ${store.id}: ${store.cwd}`);
+  // The full list belongs to the cleanup preview; doctor shows enough to recognise the pattern.
+  const lines = stale.slice(0, DOCTOR_LIST_LIMIT).map(store => `     ${store.id}: ${store.cwd}`);
+  if (stale.length > DOCTOR_LIST_LIMIT) lines.push(`     … and ${stale.length - DOCTOR_LIST_LIMIT} more`);
   for (const dir of unchecked) lines.push(`     ${dir}: not checked (unreadable or invalid project record)`);
   if (stale.length) lines.push("     Preview cleanup: lcm doctor --cleanup-stale-projects --dry-run");
   return {
@@ -184,7 +189,10 @@ export function checkOrphanSummaries(paths: LcmPaths): CheckResult {
       try {
         const ids = new SummaryStore(db).getOrphanSummaryIds();
         total += ids.length;
-        lines.push(`     ${dir}: ${ids.length} orphan summaries${ids.length ? ` (${ids.join(", ")})` : ""}`);
+        if (ids.length) {
+          const shown = ids.slice(0, DOCTOR_LIST_LIMIT).join(", ") + (ids.length > DOCTOR_LIST_LIMIT ? ", …" : "");
+          lines.push(`     ${dir}: ${ids.length} orphan summaries (${shown})`);
+        }
       } finally { db.close(); }
     } catch {
       unchecked++;

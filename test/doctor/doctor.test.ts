@@ -87,6 +87,30 @@ it("doctor reports missing temporary and test project stores without changing th
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
+it("doctor lists a bounded sample of stale stores and only the stores that hold orphans", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lcm-store-doctor-many-"));
+  const paths = createLcmPaths(home);
+  try {
+    const { openStandaloneLcmConnection } = await import("../../src/db/connection.js");
+    const { runLcmMigrations } = await import("../../src/db/migration.js");
+    const gone = Array.from({ length: 25 }, (_, i) => join(home, `lossless-ingest-gone-${i}`));
+    for (const cwd of gone) updateProjectMeta(cwd, paths, { cwd });
+    const clean = join(home, "clean-project");
+    mkdirSync(clean);
+    updateProjectMeta(clean, paths, { cwd: clean });
+    const db = openStandaloneLcmConnection(join(projectDir(clean, paths), "db.sqlite"));
+    try { runLcmMigrations(db); } finally { db.close(); }
+    const results = await runDoctor(minimalDeps({ lcmHome: home }));
+    const stale = results.find(r => r.name === "stale-project-stores")?.message ?? "";
+    expect(stale).toContain("25 stale project stores");
+    expect(stale).toContain("… and 5 more");
+    expect(gone.filter(cwd => stale.includes(`${cwd}\n`) || stale.endsWith(cwd))).toHaveLength(20);
+    const orphans = results.find(r => r.name === "orphan-summaries");
+    expect(orphans?.status).toBe("pass");
+    expect(orphans?.message).not.toContain(projectDir(clean, paths));
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
 it("doctor reports orphan summaries per store without repairing context or dropping summaries", async () => {
   const { openStandaloneLcmConnection } = await import("../../src/db/connection.js");
   const { runLcmMigrations } = await import("../../src/db/migration.js");
