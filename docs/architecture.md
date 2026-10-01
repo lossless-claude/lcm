@@ -63,6 +63,23 @@ The operations are shaped by what Episodic memory is asked to do:
 - **Read summaries** — by id, by conversation, deepest-first for a session's restore, newest-first across the project, or as a subtree under `lcm_expand`.
 - **Search** — `searchMessagesSync` / `searchSummariesSync`, full-text with a LIKE fallback, or regex.
 
+### Summary promotion provenance
+
+`POST /promote` records the originating summary's id in `source_summary_id` for
+both a new promoted memory and an incoming memory archived by deduplication.
+Deduplication preserves the canonical memory's existing provenance, including
+NULL; the archived incoming row retains the new summary's provenance. Memories
+stored explicitly or promoted from events keep NULL.
+
+Re-promotion checks summary ids across all promoted rows, including archived
+rows, without a row limit. Changing a summary's content prefix does not make it
+eligible again. For active memories with NULL provenance, promotion also skips
+summaries matching the first 100 characters of the memory's content, preserving
+the legacy guard against re-promotion and confidence decay. This prefix rule
+does not apply to memories with recorded provenance, so shared content prefixes
+on those rows do not suppress different summaries. Existing rows with NULL
+provenance are not backfilled.
+
 ### The project record
 
 Beside each project's database sits `meta.json`, the project record: `cwd`, the git identity (`git`), the detected author `language` and `languageDetectedAt`, and the `lastIngest`, `lastCompact` and `lastPromote` timestamps. `src/daemon/project-meta.ts` is its only reader and writer: every other module reads through `readProjectMeta` / `readProjectMetaIn` and updates by key through `updateProjectMeta` / `updateProjectMetaIn`, which merge a patch into the current record in one synchronous read-modify-write and land it through a temporary file and a rename, so a crash mid-write cannot leave a torn file. The cwd-keyed update always re-asserts `cwd`, so a record is never left without the key that enumeration (`lcm export --all`, `lcm compact --all`, the compaction sweep, stats) selects on.
