@@ -515,7 +515,10 @@ Session reconciliation uses each transcript source's recovery checks before appl
    `src/transcript-source.ts`; changing that recovery rule retries older guards once
    on the next capture, including legacy guards without a rule version. Doctor reports
    the retained reason without requiring a matching file fingerprint and names
-   `lcm capture-retry --session <id>` or `lcm capture-retry --all` in the affected project.
+   `lcm import --provider codex --retry-blocked --session <id>` in the affected project.
+   Without `--session` it clears every terminal Codex guard in that project; `--all`
+   clears guards in every project with a project record. It requires `--provider codex`
+   and rejects `--replay`, `--rebuild`, `--dry-run`, and `--all` with `--session`.
    The command clears only terminal Codex guards through `/capture-retry`, under the
    project queue and mutation lease. The next capture rechecks alignment under current
    redaction rules; a remaining mismatch is blocked again and recorded once. Messages,

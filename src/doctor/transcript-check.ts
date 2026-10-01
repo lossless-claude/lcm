@@ -165,7 +165,7 @@ export function checkStalledSubagentCaptures(paths: LcmPaths, verbose = false): 
   const codex = terminal.length > 0
     ? `${terminal.length} Codex capture${terminal.length === 1 ? "" : "s"} terminally blocked by paginated transcript recovery:\n${doctorList(terminal, verbose, line => line).join("\n")}\n` +
       "     Stored history is preserved; NUL-cut repair cannot prove alignment.\n" +
-      "     Retry: run `lcm capture-retry --session <id>` (or `--all`) in the project above; the next capture rechecks alignment."
+      "     Retry: run `lcm import --provider codex --retry-blocked --session <id>` in the project above; the next capture rechecks alignment."
     : "";
   return {
     ...base, status: "warn",

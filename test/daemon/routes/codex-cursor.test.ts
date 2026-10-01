@@ -165,7 +165,7 @@ describe("Codex persistent ingest cursor", () => {
     expect(checkStalledSubagentCaptures(paths)).toMatchObject({ status: "warn" });
     expect(checkStalledSubagentCaptures(paths).message).toContain(fixture.sessionId);
     expect(checkStalledSubagentCaptures(paths).message).toContain("Codex capture");
-    expect(checkStalledSubagentCaptures(paths).message).toContain("lcm capture-retry --session <id>");
+    expect(checkStalledSubagentCaptures(paths).message).toContain("lcm import --provider codex --retry-blocked --session <id>");
     // An invalid file would fail parsing if capture retried it.
     appendFileSync(fixture.path, "not JSON\n");
     expect(await post(fixture)).toMatchObject({ status: 200, body: { ingested: 0, blocked: true } });

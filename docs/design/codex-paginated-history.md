@@ -55,8 +55,10 @@ which histories recovery can align: the next capture (scan or import included)
 clears an older entry and retries once. Legacy entries without a rule version are
 older. An unrelated package upgrade retains guards.
 
-`lcm capture-retry --session <id>` clears one terminal Codex guard;
-`lcm capture-retry --all` clears every terminal Codex guard in the current project.
+`lcm import --provider codex --retry-blocked` clears terminal Codex guards in the
+current project. Add `--session <id>` to clear only that session, or `--all` to
+clear guards in every project with a project record. It requires `--provider codex`
+and rejects `--replay`, `--rebuild`, `--dry-run`, and `--all` with `--session`.
 Doctor names the command. `/capture-retry` performs this under the project queue
 and mutation lease, preserving messages, summaries, cursors and Claude guards.
 The next capture rechecks alignment under current redaction rules. An unprovable
