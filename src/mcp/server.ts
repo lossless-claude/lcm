@@ -288,7 +288,17 @@ export async function startMcpServer(): Promise<void> {
     if (!resolved) return { content: [{ type: "text", text: `Unknown tool: ${req.params.name}` }], isError: true };
     if (resolved.destination.kind === "worker") return handleAgentWorkerTool(client, resolved.destination.action, resolved.args);
     if (resolved.destination.kind !== "daemon") throw new Error("Unreachable local tool destination");
-    const body = { ...resolved.args, cwd: process.env.PWD ?? process.cwd() };
+    const args = resolved.destination.route === "/store"
+      ? {
+        ...resolved.args,
+        metadata: {
+          ...resolved.args.metadata as Record<string, unknown> | undefined,
+          sessionId: (resolved.args.metadata as Record<string, unknown> | undefined)?.sessionId
+            ?? (process.env.CLAUDE_CODE_SESSION_ID || process.env.CODEX_THREAD_ID || "manual"),
+        },
+      }
+      : resolved.args;
+    const body = { ...args, cwd: process.env.PWD ?? process.cwd() };
     return handleDaemonRequest(client, resolved.destination.route, body, {
       port, pidFilePath,
       spawnCommand: process.execPath,

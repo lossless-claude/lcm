@@ -56,6 +56,8 @@ describe("MCP 2026-07-28 over stdio", () => {
   let id: number;
 
   beforeEach(async () => {
+    vi.stubEnv("CLAUDE_CODE_SESSION_ID", "");
+    vi.stubEnv("CODEX_THREAD_ID", "");
     input = new PassThrough();
     output = new PassThrough();
     lines = createInterface({ input: output });
@@ -70,6 +72,7 @@ describe("MCP 2026-07-28 over stdio", () => {
 
   afterEach(async () => {
     await state.handle?.close();
+    vi.unstubAllEnvs();
     lines.close();
     input.destroy();
     output.destroy();
@@ -136,7 +139,29 @@ describe("MCP 2026-07-28 over stdio", () => {
     });
     expect(error).toBeUndefined();
     expect(result).toMatchObject({ resultType: "complete", content: [{ type: "text", text: JSON.stringify({ matches: ["remembered"] }, null, 2) }] });
-    expect(state.post).toHaveBeenCalledWith(route, { ...args, cwd: process.env.PWD ?? process.cwd() });
+    expect(state.post).toHaveBeenCalledWith(route, { ...args, ...(name === "lcm_store" ? { metadata: { sessionId: "manual" } } : {}), cwd: process.env.PWD ?? process.cwd() });
+  });
+
+  it.each([
+    ["claude-session", "codex-thread", "claude-session"],
+    ["", "codex-thread", "codex-thread"],
+    ["", "", "manual"],
+  ])("store forwards caller provenance (%s, %s)", async (claude, codex, sessionId) => {
+    vi.stubEnv("CLAUDE_CODE_SESSION_ID", claude);
+    vi.stubEnv("CODEX_THREAD_ID", codex);
+    await request("tools/call", { name: "lcm_store", arguments: { text: "insight" } });
+    expect(state.post).toHaveBeenCalledWith("/store", {
+      cwd: process.env.PWD ?? process.cwd(), text: "insight", metadata: { sessionId },
+    });
+  });
+
+  it("store preserves explicit provenance and other metadata", async () => {
+    vi.stubEnv("CLAUDE_CODE_SESSION_ID", "harness-session");
+    const metadata = { sessionId: "explicit-session", projectId: "explicit-project", depth: 2 };
+    await request("tools/call", { name: "lcm_store", arguments: { text: "insight", metadata } });
+    expect(state.post).toHaveBeenCalledWith("/store", {
+      cwd: process.env.PWD ?? process.cwd(), text: "insight", metadata,
+    });
   });
 
   it("preserves local tool results and errors", async () => {
