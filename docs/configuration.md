@@ -88,6 +88,50 @@ Use it to run lcm against a scratch directory without touching your own memory â
 
 Both the daemon and the client must see the same value: a daemon started without it answers on the port from `~/.lossless-claude/config.json` and writes to the real databases.
 
+### Project store hygiene
+
+`lcm doctor` reports stores whose recorded working directory no longer exists and
+was under a system temporary directory, or has an `e2e-test-*` or
+`lossless-ingest-*`, `lossless-compact-*`, or `lossless-status-*` path component.
+Existing directories and ordinary missing checkouts are retained. Invalid or
+unreadable project records are reported as not checked and skipped by cleanup.
+
+Review the cleanup preview, then hold the daemon offline before applying it:
+
+```bash
+lcm doctor --cleanup-stale-projects --dry-run
+lcm daemon stop --hold
+lcm doctor --cleanup-stale-projects --apply
+lcm daemon start
+```
+
+Cleanup defaults to a dry run even without `--dry-run`. It runs separately from
+normal diagnostics, so a preview neither starts a daemon nor applies other doctor
+repairs. `--apply` requires an active hold and refuses a running daemon or retained
+live CLI database activity. It moves
+each eligible project directory and its events database, including WAL/SHM files,
+to `<lcm-home>/trash/projects/<batch>/`, and removes that project's references from
+`group-index.sqlite`. It never deletes the stored data. The command prints the
+trash directory; there is no automatic trash purge. To restore a store, hold the
+daemon offline, move its project directory back under `projects/` and its files
+from the batch's `events/` back under `events/`, then start the daemon. Once the
+recorded working directory exists again, project identity backfill rebuilds the
+group-index references.
+
+Doctor also reports orphan-summary counts and ids per store. An orphan is a
+summary that is absent from context and is not a source of another summary.
+The check opens existing databases read-only without migrations and reports
+unreadable or unsupported databases as not checked. It offers no automatic repair
+and preserves summaries and context.
+
+The test harness isolates both `LCM_HOME` and `HOME`, retains the OS user's real
+lcm home independently of those variables, rejects a temporary base inside that
+protected home before allocating test directories, and refuses that home whenever lcm
+resolves a home or builds its storage paths. The guard covers normalized paths,
+symlink aliases and inherited CLI child processes, in addition to the test
+harness's default-daemon-port guard. `LCM_TEST_REAL_HOME` carries the protected
+root in test processes; it is set by test setup, not user configuration.
+
 ## Daemon log
 
 The daemon writes one JSON record per line to `~/.lossless-claude/logs/daemon.log`. Every record has `ts`, `level` and `event`; the rest are fields such as `route`, `status`, `cwd`, `session_id`, `reason` and `err`. `lcm doctor` reads it for the `daemon-log` check. To answer "why did compaction not run for this project?", filter it by `cwd`:

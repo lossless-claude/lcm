@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { realpathSync } from "node:fs";
+import { basename, dirname, join, resolve, sep } from "node:path";
 
 /**
  * Where lcm keeps everything it owns: the daemon's port, token and pid, the per-project
@@ -12,5 +13,28 @@ import { join } from "node:path";
  */
 export function lcmHome(env: NodeJS.ProcessEnv = process.env): string {
   const override = env.LCM_HOME?.trim();
-  return override || join(homedir(), ".lossless-claude");
+  const home = override || join(homedir(), ".lossless-claude");
+  assertIsolatedTestHome(home);
+  return home;
+}
+
+/** Test setup retains the OS user's real root before isolating HOME; children inherit it. */
+export function assertIsolatedTestHome(home: string): void {
+  const protectedHome = process.env.LCM_TEST_REAL_HOME;
+  if (!protectedHome) return;
+  const realHome = resolve(protectedHome);
+  const inside = (path: string) => path === realHome || path.startsWith(realHome + sep);
+  if (inside(resolve(home)) || inside(resolveExistingPath(home))) {
+    throw new Error("[lcm test guard] refused the real lcm home; use an isolated test directory");
+  }
+}
+
+/** Resolve symlinked ancestors even when the target home has not been created. */
+function resolveExistingPath(path: string): string {
+  const absolute = resolve(path);
+  try { return realpathSync(absolute); } catch (error) {
+    if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+    const parent = dirname(absolute);
+    return parent === absolute ? absolute : join(resolveExistingPath(parent), basename(absolute));
+  }
 }

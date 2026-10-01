@@ -266,7 +266,7 @@ checkout.
 
 ### lcm_doctor
 
-Run diagnostics on the lcm installation. Checks daemon, hooks, MCP config, and summarizer health.
+Run diagnostics on the lcm installation. Checks daemon, hooks, MCP config, and summarizer health, and reports stale temporary/test project stores and orphan-summary counts and ids per store. These storage checks preserve stored data. Stale-store cleanup is an explicit CLI operation described in [configuration.md](configuration.md#project-store-hygiene); the tool does not apply it or repair orphan summaries.
 
 **Parameters:** none.
 

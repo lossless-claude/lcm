@@ -91,12 +91,19 @@ const HELP: Record<string, CommandHelp> = {
   },
 
   doctor: {
-    summary: "Run diagnostics — checks daemon health, hooks, MCP server, and summarizer.",
-    usage: "lcm doctor",
+    summary: "Run diagnostics — daemon, hooks, MCP, summarizer, stale project stores and orphan summaries.",
+    usage: "lcm doctor [--cleanup-stale-projects [--dry-run | --apply]]",
+    options: [
+      ["--cleanup-stale-projects", "Preview trashing stores for missing temporary or test directories"],
+      ["--dry-run", "Read-only cleanup preview (the default for cleanup)"],
+      ["--apply", "Move reviewed candidates to lcm's trash; requires a stopped, held daemon"],
+    ],
     examples: [
       ["lcm doctor", "Run all diagnostic checks"],
+      ["lcm doctor --cleanup-stale-projects --dry-run", "Review stale stores without changing them"],
+      ["lcm doctor --cleanup-stale-projects --apply", "Trash reviewed stores after lcm daemon stop --hold"],
     ],
-    notes: "Exits with code 1 if any check fails. Integrate into CI or shell startup for early detection.",
+    notes: "Exits with code 1 if any check fails. Cleanup runs separately from normal diagnostics and defaults to a dry run. Apply moves stores and event sidecars to <lcm-home>/trash/projects/<batch> and removes their group-index references; it never deletes their data. Run lcm daemon start afterwards. Orphan summaries are reported per store without repair.",
   },
 
   search: {

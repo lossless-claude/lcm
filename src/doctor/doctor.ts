@@ -26,6 +26,7 @@ import { readHookOutcomeLog } from "./hook-outcome-log.js";
 import { addHarnessGuidanceChecks } from "./guidance-checks.js";
 import { checkStalledSubagentCaptures, checkUncapturedTranscripts } from "./transcript-check.js";
 import { checkRebuildBackups } from "./rebuild-backup-check.js";
+import { checkOrphanSummaries, checkStaleProjectStores } from "./store-hygiene.js";
 import { loadDaemonConfig } from "../daemon/config.js";
 import { summarizerAvailability } from "../daemon/provider-config.js";
 
@@ -822,6 +823,8 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
   }));
   results.push(checkStalledSubagentCaptures(createLcmPaths(deps.lcmHome)));
   results.push(checkRebuildBackups(createLcmPaths(deps.lcmHome)));
+  results.push(checkStaleProjectStores(createLcmPaths(deps.lcmHome)));
+  results.push(checkOrphanSummaries(createLcmPaths(deps.lcmHome)));
 
   // ── Passive Learning ──
   const hooksInstalled = results.some(

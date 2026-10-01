@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { assertIsolatedTestHome } from "./lcm-home.js";
 
 /**
  * Every location lcm owns, derived from one root.
@@ -22,6 +23,7 @@ export type LcmPaths = {
 };
 
 export function createLcmPaths(home: string): LcmPaths {
+  assertIsolatedTestHome(home);
   return {
     home,
     projectsDir: join(home, "projects"),

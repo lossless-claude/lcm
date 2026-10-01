@@ -139,10 +139,20 @@ export function registerDiagnosticsCommands(program: Command, deps: DiagnosticsC
   program
     .command("doctor")
     .description("Run diagnostics: daemon, hooks, MCP, summarizer")
+    .option("--cleanup-stale-projects", "Preview trashing stores for missing temporary or test directories")
+    .option("--dry-run", "Preview cleanup without writing (the cleanup default)")
+    .option("--apply", "Apply the reviewed cleanup while the daemon is held offline")
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
       if (opts.help) await showHelpAndExit("doctor");
+      if (opts.apply && opts.dryRun) fail("--apply and --dry-run cannot be combined");
+      if ((opts.apply || opts.dryRun) && !opts.cleanupStaleProjects) fail("--apply and --dry-run require --cleanup-stale-projects");
+      if (opts.cleanupStaleProjects) {
+        const { cleanupStaleProjectStores } = await import("../doctor/store-hygiene.js");
+        console.log(cleanupStaleProjectStores(createLcmPaths(lcmHome()), Boolean(opts.apply)));
+        return;
+      }
       const { runDoctor, printResults } = await import("../doctor/doctor.js");
       const results = await runDoctor();
       printResults(results);

@@ -1,9 +1,16 @@
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll } from "vitest";
+import { assertIsolatedTestHome, lcmHome } from "../src/lcm-home.js";
+import { createLcmPaths } from "../src/lcm-paths.js";
+
+// OS identity is independent of HOME and LCM_HOME inherited from the runner.
+// Retain it in children so their later environment changes cannot select real stores.
+process.env.LCM_TEST_REAL_HOME = join(userInfo().homedir, ".lossless-claude");
+assertIsolatedTestHome(tmpdir()); // Reject a protected temporary base before allocating any directory.
 
 // Runs before every test file. The tests exercise the command hooks directly, and those
 // hooks go silent when the function-hooks module owns capture (CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1).
@@ -18,6 +25,7 @@ delete process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS;
 // Set before the test file's imports, since the root is resolved when a module loads.
 const lcmHomeDir = mkdtempSync(join(tmpdir(), "lcm-home-"));
 process.env.LCM_HOME = lcmHomeDir;
+createLcmPaths(lcmHome()); // Refuse an unsafe resolved root before the first write.
 afterAll(() => {
   rmSync(lcmHomeDir, { recursive: true, force: true });
 });

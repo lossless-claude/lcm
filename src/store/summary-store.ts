@@ -299,6 +299,17 @@ export class SummaryStore {
 
   // ── Summary CRUD ──────────────────────────────────────────────────────────
 
+  /** Summaries neither present in context nor used as source by another summary. */
+  getOrphanSummaryIds(): string[] {
+    const rows = this.db.prepare(`
+      SELECT s.summary_id FROM summaries s
+       WHERE NOT EXISTS (SELECT 1 FROM context_items c WHERE c.summary_id = s.summary_id)
+         AND NOT EXISTS (SELECT 1 FROM summary_parents p WHERE p.parent_summary_id = s.summary_id)
+       ORDER BY s.summary_id
+    `).all() as Array<{ summary_id: string }>;
+    return rows.map(row => row.summary_id);
+  }
+
   async insertSummary(input: CreateSummaryInput): Promise<SummaryRecord> {
     const conversation = this.db.prepare("SELECT session_id FROM conversations WHERE conversation_id = ?").get(input.conversationId) as { session_id: string } | undefined;
     if (conversation && new WorkerStore(this.db).excluded(conversation.session_id)) throw new Error("Worker session is excluded from compaction");
