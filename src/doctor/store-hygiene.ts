@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync } from "node:fs";
 import type { Dirent } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
@@ -19,7 +19,11 @@ const DOCTOR_LIST_LIMIT = 20;
 
 function temporaryOrTestCwd(cwd: string): boolean {
   const path = resolve(cwd);
-  const roots = [tmpdir(), "/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp"].map(root => resolve(root));
+  // Stored cwds are realpaths, so a symlinked temporary root (macOS /var/folders) counts in both forms.
+  const roots = [tmpdir(), "/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp"].flatMap(root => {
+    const resolved = resolve(root);
+    try { return [resolved, realpathSync(resolved)]; } catch { return [resolved]; }
+  });
   return roots.some(root => path.startsWith(root + sep))
     || path.split(sep).some(part => /^(?:e2e-test-|lossless-(?:ingest|compact|status)-)/.test(part));
 }

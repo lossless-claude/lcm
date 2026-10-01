@@ -91,7 +91,8 @@ Both the daemon and the client must see the same value: a daemon started without
 ### Project store hygiene
 
 `lcm doctor` reports stores whose recorded working directory no longer exists and
-was under a system temporary directory, or has an `e2e-test-*` or
+was under a system temporary directory (under its path or its resolved real path,
+such as macOS `/private/var/folders`), or has an `e2e-test-*` or
 `lossless-ingest-*`, `lossless-compact-*`, or `lossless-status-*` path component.
 Existing directories and ordinary missing checkouts are retained. Invalid or
 unreadable project records are reported as not checked and skipped by cleanup.

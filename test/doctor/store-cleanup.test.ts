@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { checkStaleProjectStores } from "../../src/doctor/store-hygiene.js";
 import { DatabaseSync } from "node:sqlite";
 import { createLcmPaths } from "../../src/lcm-paths.js";
 import { projectDir, projectId } from "../../src/daemon/project.js";
@@ -126,8 +129,9 @@ it("cleanup retains an invalid project record instead of guessing its cwd", () =
 });
 
 it("reports and trashes a vanished cwd alias using the store's recorded id", () => {
-  const target = join(home, "temporary-checkout");
-  const cwd = join(home, "cwd-alias");
+  // Test-named directories, so the store qualifies wherever the suite's working directory is.
+  const target = join(home, "e2e-test-checkout");
+  const cwd = join(home, "e2e-test-cwd-alias");
   mkdirSync(target);
   symlinkSync(target, cwd);
   const paths = fixture(cwd);
@@ -145,4 +149,11 @@ it("reports and trashes a vanished cwd alias using the store's recorded id", () 
   const db = new DatabaseSync(groupIndexPath(paths), { readOnly: true });
   try { expect(db.prepare("SELECT project_id FROM project_identity").all()).toEqual([]); }
   finally { db.close(); }
+});
+
+it("flags a gone store recorded under the temporary directory's real path", () => {
+  // Stored cwds are realpaths; on macOS tmpdir() is /var/folders/…, a symlink to /private/var/folders/….
+  const cwd = join(realpathSync(tmpdir()), `lcm-gone-${randomUUID()}`);
+  const paths = fixture(cwd);
+  expect(checkStaleProjectStores(paths)).toMatchObject({ status: "warn", message: expect.stringContaining(cwd) });
 });
