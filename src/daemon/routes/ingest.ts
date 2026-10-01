@@ -29,7 +29,7 @@ import { applyCutRowRepair, planCutRowRepair, type CutRepairClient } from "../..
 import { SessionCapture, STRUCTURED_INGEST_SHAPE, isSessionComplete, type CaptureInput, type CaptureResult, type TranscriptCaptureResult } from "../../capture.js";
 import type { DiscoveredSubagentTranscript } from "../../subagent-attribution.js";
 import {
-  forgetSubagentGuard, forgetSubagentGuardSession, rememberSubagentGuard, skipUnchangedSubagentGuard, subagentGuardFingerprint,
+  forgetSubagentGuard, forgetSubagentGuardSession, rememberSubagentGuard, skipUnchangedSubagentGuard, subagentGuardFingerprint, terminalTranscriptGuard,
 } from "../subagent-guard-failures.js";
 
 type ParsedMessage = CaptureInput["messages"][number];
@@ -281,6 +281,12 @@ export function createIngestHandler(
 
     const source = transcriptSource(input.client);
     const structured = Array.isArray(input.messages) ? input.messages.filter(isParsedMessage).map(({ workerClaims: _claims, workerPayloads: _payloads, ...message }) => message) : undefined;
+    const blocked = source.client === "codex" && !structured && input.rebuild !== true
+      ? terminalTranscriptGuard(cwd, paths, session_id) : undefined;
+    if (blocked) {
+      sendJson(res, 200, { ingested: 0, totalTokens: 0, blocked: true, error: blocked.message });
+      return;
+    }
     // Reject an unbound Claude file before opening storage, checking worker ancestry,
     // taking a completion shortcut or backing up a rebuild. Import uses filename ids too.
     if (source.client === "claude" && !structured) {

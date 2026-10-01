@@ -63,6 +63,8 @@ lcm import --codex
 lcm import --replay
 ```
 
+Paginated Codex rewrites resume capture only for a proven subagent tail match. Other paginated recovery mismatches are recorded once as terminal session guards and reported by `lcm doctor`; later capture requests skip the file. See [Codex capture rules](import.md) and [the design](design/codex-paginated-history.md).
+
 For current limitations and the manual MCP step for Codex TOML config, see [`docs/vscode-codex.md`](vscode-codex.md).
 
 Set recommended environment variables:

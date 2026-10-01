@@ -1,7 +1,7 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { projectDbPath, projectDir } from "../../src/daemon/project.js";
 import {
   forgetSubagentGuardSession, rememberSubagentGuard, skipUnchangedSubagentGuard, stalledSubagentGuards, subagentGuardFingerprint,
@@ -47,5 +47,38 @@ describe("subagent guard failures", () => {
 
     rememberSubagentGuard(cwd, paths, transcript, fingerprint, "agent-2", "parent", "prefix differs");
     expect(skipUnchangedSubagentGuard(cwd, paths, transcript, fingerprint)).toBe(false);
+  });
+
+  it("loads terminal guards in a fresh process state across upgrades and file removal, bound to the database", async () => {
+    const root = mkdtempSync(join(tmpdir(), "lcm-terminal-guard-"));
+    roots.push(root);
+    const paths = createLcmPaths(join(root, "lcm"));
+    const cwd = join(root, "work");
+    mkdirSync(projectDir(cwd, paths), { recursive: true });
+    const dbPath = projectDbPath(cwd, paths);
+    writeFileSync(dbPath, "");
+    const transcript = join(root, "rollout.jsonl");
+    writeFileSync(transcript, "{}\n");
+    rememberSubagentGuard(cwd, paths, transcript, subagentGuardFingerprint(transcript), "child", "parent", "tail differs",
+      { client: "codex", terminal: true });
+    const sidecar = join(projectDir(cwd, paths), "subagent-guard-failures.json");
+    const record = JSON.parse(readFileSync(sidecar, "utf8"));
+    record.version = "older-version";
+    writeFileSync(sidecar, JSON.stringify(record));
+    renameSync(transcript, join(root, "moved.jsonl"));
+
+    vi.resetModules();
+    const fresh = await import("../../src/daemon/subagent-guard-failures.js");
+    expect(fresh.terminalTranscriptGuard(cwd, paths, "child")).toMatchObject({ message: "tail differs" });
+    expect(fresh.stalledSubagentGuards(cwd, paths)).toHaveLength(1);
+    // Another path for the same session cannot overwrite the recorded evidence.
+    fresh.rememberSubagentGuard(cwd, paths, join(root, "moved.jsonl"), undefined, "child", "parent", "another error",
+      { client: "codex", terminal: true });
+    expect(JSON.parse(readFileSync(sidecar, "utf8"))).toEqual(record);
+
+    renameSync(dbPath, join(root, "old.db"));
+    writeFileSync(dbPath, "");
+    expect(fresh.terminalTranscriptGuard(cwd, paths, "child")).toBeUndefined();
+    expect(fresh.stalledSubagentGuards(cwd, paths)).toEqual([]);
   });
 });

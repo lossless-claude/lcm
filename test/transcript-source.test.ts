@@ -208,6 +208,45 @@ describe("Codex transcript source", () => {
       .rejects.toThrow("Codex transcript is shorter than stored history; restore the full transcript before retrying");
   });
 
+  it("re-anchors a paginated subagent's exact stored tail and captures growth after a window closes", async () => {
+    const { cwd, path } = fixture();
+    const first = await source.read(path, undefined, ctx(cwd));
+    const meta = JSON.stringify({ type: "session_meta", payload: {
+      id: sessionId, cwd, history_mode: "paginated", subagent_history_start_ordinal: 2,
+      source: { subagent: { thread_spawn: { parent_thread_id: "parent" } } },
+    } });
+    const compacted = JSON.stringify({ type: "compacted", payload: {
+      message: "summary", window_number: 1, previous_window_id: "window-0", replacement_history: [],
+    } });
+    writeFileSync(path, `${meta}\n${compacted}\n${record("assistant", "two")}\n`);
+    const anchor = await source.read(path, stored(first.messages, first.checkpoint), ctx(cwd));
+    expect(anchor).toMatchObject({ messages: [], sourceOffset: 2, checkpoint: { messageCount: 2, recordBoundary: true } });
+    appendFileSync(path, `${compacted}\n${record("user", "three")}\n`);
+    const growth = await source.read(path, stored(first.messages, anchor.checkpoint), ctx(cwd));
+    expect(growth.sourceOffset).toBe(2);
+    expect(growth.messages.map((message) => message.content)).toEqual(["three"]);
+    expect(growth.checkpoint).toMatchObject({ messageCount: 3 });
+  });
+
+  it.each([
+    { name: "different subagent tail", parent: "parent", boundary: 2, text: "different" },
+    { name: "root suffix", parent: undefined, boundary: undefined, text: "two" },
+    { name: "missing subagent boundary", parent: "parent", boundary: undefined, text: "two" },
+    { name: "empty subagent", parent: "parent", boundary: 2, text: undefined },
+    { name: "legacy NUL-cut tail", parent: "parent", boundary: 2, text: "two\0more" },
+    { name: "removed-redaction wildcard tail", parent: "parent", boundary: 2, text: "two longer" },
+  ])("records $name as a terminal paginated recovery mismatch", async ({ name, parent, boundary, text }) => {
+    const { cwd, path } = fixture();
+    const meta = JSON.stringify({ type: "session_meta", payload: {
+      id: sessionId, cwd, history_mode: "paginated", subagent_history_start_ordinal: boundary, forked_from_id: parent,
+    } });
+    const compacted = JSON.stringify({ type: "compacted", payload: { window_number: 1, previous_window_id: "window-0" } });
+    writeFileSync(path, `${meta}\n${compacted}\n${text === undefined ? "" : record("assistant", text) + "\n"}`);
+    const tail = name === "removed-redaction wildcard tail" ? "two [REDACTED]" : "two";
+    await expect(source.read(path, stored([{ role: "user", content: "one" }, { role: "assistant", content: tail }]), ctx(cwd)))
+      .rejects.toMatchObject({ terminal: true });
+  });
+
   it("compares the stored prefix under the current redaction rules", async () => {
     const { cwd, path } = fixture();
     const first = await source.read(path, undefined, ctx(cwd));

@@ -10,6 +10,7 @@ import { upsertRedactionCounts } from "./db/redaction-stats.js";
 import { invalidateClaudeTranscriptCursor } from "./db/transcript-cursor.js";
 import { openStandaloneLcmConnection } from "./db/connection.js";
 import { normalizeMessageContent } from "./message-content.js";
+import { rememberSubagentGuard, subagentGuardFingerprint, terminalTranscriptGuard } from "./daemon/subagent-guard-failures.js";
 import type { ScrubEngine } from "./scrub.js";
 import {
   ConversationStore,
@@ -191,6 +192,7 @@ export class SessionCapture {
       return undefined;
     }
     const source = transcriptSource(input.client);
+    if (source.client === "codex" && this.paths && terminalTranscriptGuard(input.cwd, this.paths, input.sessionId)) return undefined;
     const transcriptPath = source.locate(input);
     if (!transcriptPath) return undefined;
     const discoveredCwd = discoverWorkerDescendant(workers, input.sessionId, transcriptPath);
@@ -203,6 +205,12 @@ export class SessionCapture {
     const stored = await this.stored(input.sessionId);
     const delta = await source.read(transcriptPath, stored && this.storedTranscript(source, input.sessionId, stored, transcriptPath), {
       ...input, scrub: (text) => this.scrubber.scrubWithCounts(text).text, redactionKey: this.scrubber.rulesKey,
+    }).catch(error => {
+      if (error instanceof TranscriptSourceError && error.terminal && source.client === "codex" && this.paths) {
+        rememberSubagentGuard(input.cwd, this.paths, transcriptPath, subagentGuardFingerprint(transcriptPath),
+          input.sessionId, error.parentSessionId, error.message, { client: "codex", terminal: true });
+      }
+      throw error;
     });
     if (!stored && delta.messages.length === 0 && delta.checkpoint === undefined && !delta.boundaries?.length) return undefined;
     const written = await this.write({

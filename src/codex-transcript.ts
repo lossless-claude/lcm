@@ -48,6 +48,10 @@ interface CodexResponseItemPayload {
 export interface CodexSessionMeta {
   id?: string;
   cwd?: string;
+  history_mode?: string;
+  subagent_history_start_ordinal?: number;
+  forked_from_id?: string;
+  parent_thread_id?: string;
 }
 
 interface CodexLine {
@@ -164,10 +168,17 @@ export function parseCodexTranscriptRecord(record: string): ParsedCodexTranscrip
   const obj = value as CodexLine;
   if (obj.type === "session_meta") {
     const meta = obj.payload as CodexSessionMeta | undefined;
+    const boundary = meta?.subagent_history_start_ordinal;
+    const source = (obj.payload as { source?: { subagent?: { thread_spawn?: { parent_thread_id?: unknown } } } } | undefined)?.source;
+    const parent = meta?.parent_thread_id ?? source?.subagent?.thread_spawn?.parent_thread_id;
     return {
       sessionMeta: {
         id: typeof meta?.id === "string" && meta.id ? meta.id : undefined,
         cwd: typeof meta?.cwd === "string" && meta.cwd ? meta.cwd : undefined,
+        history_mode: typeof meta?.history_mode === "string" ? meta.history_mode : undefined,
+        subagent_history_start_ordinal: typeof boundary === "number" && Number.isSafeInteger(boundary) && boundary >= 0 ? boundary : undefined,
+        forked_from_id: typeof meta?.forked_from_id === "string" && meta.forked_from_id ? meta.forked_from_id : undefined,
+        parent_thread_id: typeof parent === "string" && parent ? parent : undefined,
       },
     };
   }

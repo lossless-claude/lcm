@@ -57,13 +57,15 @@ The installed hooks call the resolved LCM executable independently of the sessio
 | `SessionEnd` | Attempt a short final capture without starting the daemon. |
 | `PreCompact` | Capture first, then compact LCM memory; native Codex compaction continues normally. |
 
-After compaction, `SessionStart` with source `compact` restores LCM memory. No additional `PostCompact` handler is installed, so the two events cannot inject duplicate context. Hook failures do not block Codex. Interrupted or missed writes are retried when a subsequent lifecycle event reads the transcript. A valid record still being written is deferred until its newline arrives; historical imports can consume a complete final record without a newline.
+After compaction, `SessionStart` with source `compact` restores LCM memory. No additional `PostCompact` handler is installed, so the two events cannot inject duplicate context. Hook failures do not block Codex. Interrupted or missed writes without a terminal recovery guard are retried when a subsequent lifecycle event reads the transcript. A valid record still being written is deferred until its newline arrives; historical imports can consume a complete final record without a newline.
 
 On resume after automatic compaction, Codex can emit both `SessionStart(resume)` and `SessionStart(compact)`. LCM avoids repeating identical memory only when the transcript proves that a developer message already contains it after the latest compaction. If a new compaction occurred or that evidence is absent, LCM restores normally.
 
 Malformed completed records, unreadable files, and mismatched session/project metadata produce ingestion errors rather than successful empty imports. Hooks report these failures on stderr and allow the Codex operation to continue. Ingestion and compaction share the project write queue.
 
 Live ingestion uses a byte cursor persisted in SQLite with the newly captured messages. Subsequent events read only appended bytes and a bounded metadata header, using asynchronous file reads. Restarts reuse the checkpoint; missing or invalid checkpoints trigger recovery scans. The context-deduplication check also uses a bounded tail read instead of loading the complete rollout.
+
+Codex closes a live history window by appending a `compacted` checkpoint; paginated migration is a separate rewrite. A shorter paginated subagent file can resume capture only when its nonempty parsed messages exactly equal the stored tail under current redaction, with parent identity and a valid `subagent_history_start_ordinal`. LCM then re-anchors the cursor, preserving stored messages and summaries. Other paginated recovery mismatches stay terminally blocked: later captures skip the file even after growth or restart, and `lcm doctor` reports the reason. Existing inherited rows remain stored; new captures do not expand parent-history references. See [capture rules and upstream evidence](design/codex-paginated-history.md).
 
 Codex uses its own transcript parser and instruction lifecycle. LCM does not capture or replay `CLAUDE.md` into Codex. New sessions restore recent project context; resumed sessions restore their own context. Memory output is bounded, and full captured history remains searchable through `lcm search` and `lcm grep`.
 

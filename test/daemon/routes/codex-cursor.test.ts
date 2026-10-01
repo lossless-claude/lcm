@@ -5,6 +5,7 @@ import {
   renameSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,6 +17,7 @@ import { projectDbPath } from "../../../src/daemon/project.js";
 import { createDaemon, type DaemonInstance } from "../../../src/daemon/server.js";
 import { lcmHome } from "../../../src/lcm-home.js";
 import { createLcmPaths } from "../../../src/lcm-paths.js";
+import { checkStalledSubagentCaptures } from "../../../src/doctor/transcript-check.js";
 
 const paths = createLcmPaths(lcmHome());
 
@@ -138,6 +140,62 @@ describe("Codex persistent ingest cursor", () => {
 
     expect(await post(fixture)).toMatchObject({ status: 200, body: { ingested: 0 } });
     expect(readState(fixture.cwd, fixture.sessionId)).toEqual(first);
+  });
+
+  it.each(["root", "subagent"])("records an unprovable paginated %s once and skips later reads, growth and restarts", async (kind) => {
+    const fixture = createTranscript([messageLine("user", "one"), messageLine("assistant", "two")]);
+    await startDaemon();
+    await post(fixture);
+    const before = readState(fixture.cwd, fixture.sessionId);
+    const originalTimes = statSync(fixture.path);
+    const meta = JSON.stringify({ type: "session_meta", payload: {
+      id: fixture.sessionId, cwd: fixture.cwd, history_mode: "paginated",
+      ...(kind === "subagent" ? { forked_from_id: "parent", subagent_history_start_ordinal: 2 } : {}),
+    } });
+    const compacted = JSON.stringify({ type: "compacted", payload: { window_number: 1, previous_window_id: "window-0" } });
+    writeFileSync(fixture.path, `${meta}\n${compacted}\n${messageLine("user", kind === "root" ? "one" : "different")}\n`);
+    utimesSync(fixture.path, originalTimes.atime, originalTimes.mtime);
+    expect(await post(fixture)).toMatchObject({ status: 400 });
+    const guardPath = join(dirname(projectDbPath(fixture.cwd, paths)), "subagent-guard-failures.json");
+    const recorded = readFileSync(guardPath, "utf8");
+    expect(checkStalledSubagentCaptures(paths)).toMatchObject({ status: "warn" });
+    expect(checkStalledSubagentCaptures(paths).message).toContain(fixture.sessionId);
+    expect(checkStalledSubagentCaptures(paths).message).toContain("Codex capture");
+    // An invalid file would fail parsing if capture retried it.
+    appendFileSync(fixture.path, "not JSON\n");
+    expect(await post(fixture)).toMatchObject({ status: 200, body: { ingested: 0, blocked: true } });
+    await daemon!.stop();
+    daemon = undefined;
+    await startDaemon();
+    expect(await post(fixture)).toMatchObject({ status: 200, body: { ingested: 0, blocked: true } });
+    expect(readFileSync(guardPath, "utf8")).toBe(recorded);
+    expect(readState(fixture.cwd, fixture.sessionId)).toEqual(before);
+    expect(checkStalledSubagentCaptures(paths).message).toContain(fixture.sessionId);
+  });
+
+  it("persists a proven paginated re-anchor without changing stored rows, then resumes after restart", async () => {
+    const fixture = createTranscript([messageLine("user", "inherited"), messageLine("assistant", "own")]);
+    await startDaemon();
+    await post(fixture);
+    const before = readState(fixture.cwd, fixture.sessionId);
+    const meta = JSON.stringify({ type: "session_meta", payload: {
+      id: fixture.sessionId, cwd: fixture.cwd, history_mode: "paginated", forked_from_id: "parent",
+      subagent_history_start_ordinal: 2,
+    } });
+    const compacted = JSON.stringify({ type: "compacted", payload: { window_number: 1, previous_window_id: "window-0" } });
+    writeFileSync(fixture.path, `${meta}\n${compacted}\n${messageLine("assistant", "own")}\n`);
+    expect(await post(fixture)).toMatchObject({ status: 200, body: { ingested: 0 } });
+    expect(readState(fixture.cwd, fixture.sessionId)).toEqual({
+      cursor: { byte_offset: statSync(fixture.path).size, message_count: 2, record_boundary: 1 },
+      messages: before.messages,
+    });
+    await daemon!.stop();
+    daemon = undefined;
+    await startDaemon();
+    appendFileSync(fixture.path, `${compacted}\n${messageLine("user", "later")}\n`);
+    expect(await post(fixture)).toMatchObject({ status: 200, body: { ingested: 1 } });
+    expect(readState(fixture.cwd, fixture.sessionId).messages).toEqual([...before.messages, { role: "user", content: "later" }]);
+    expect(readState(fixture.cwd, fixture.sessionId).cursor.message_count).toBe(3);
   });
 
   it("does not advance past a partial UTF-8 record, then ingests it when completed", async () => {
