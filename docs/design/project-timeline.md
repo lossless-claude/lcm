@@ -34,7 +34,10 @@ With tracking on, it restores missing tracking and detach triggers and replaces
 definitions whose SQL differs from the current code, idempotently. With tracking
 off, it removes timeline triggers. It also removes `timeline_journal`,
 `timeline_input_cache`, `timeline_checkpoint`, the legacy `timeline_replay_complete`
-trigger and the unused `drain` column.
+trigger and the unused `drain` column. An already-current migration reads before
+writing: it takes no write lock unless schema/trigger repairs, missing state or
+timeline-derived promoted memories require changes. This permits read-only
+migration and reads behind concurrent writers on already-current stores.
 
 `lcm timeline enable` creates tracking and detach triggers, sets tracking and
 project generation on, and enters bootstrapping in one transaction. Bootstrap
@@ -47,7 +50,10 @@ including a new session whose sort position is behind the cursor.
 `lcm timeline teardown` removes the timeline's outgoing DAG and raw-message
 references, removes its context and plans, retires its nodes, and then drops the
 triggers in one transaction. It preserves historical node content and session
-counter tombstones. Re-enabling seeds and rebuilds metadata without resetting counters.
+counter tombstones. With `--remove-nodes`, teardown also detaches every edge to or
+from owner summaries, then deletes all owner summaries and timeline node rows in
+the same transaction. Session summaries and messages remain intact. Re-enabling
+seeds and rebuilds metadata without resetting counters.
 
 ## Revisions and persisted plan
 
@@ -118,11 +124,16 @@ Every admitted provider and fallback must be a named OpenAI or Anthropic HTTP
 endpoint with `maxConcurrent`. Shared endpoint admission places live work first,
 replay/background second and timeline last. Process, live-session, worker-pool
 and unbounded HTTP adapters cannot serve timeline work. Scripted test summarizers
-substitute for provider admission.
+substitute for provider admission. Endpoints with missing environment variables
+are skipped, and admission requires at least one runnable endpoint.
 The `/timeline` route checks admission before database work for generation requests.
 A refusal returns HTTP 409 with configuration guidance, printed verbatim by the CLI.
 It does not call the summarizer, flag `generate-failed`, back off or park a unit.
 Zero-call reconciliation remains available without an admitted provider.
+The first admitted generation settle releases legacy failures once, including
+configuration-induced backoff and parking. Legacy units lack failure causes,
+so legacy model failures also receive one retry. A persisted `admission_recovered`
+marker prevents later settles from bypassing model-error or conflict backoff.
 
 Model errors and publication conflicts persist exponential backoff, beginning at
 one minute and capped at one hour. Eight failures park a unit until one of its sessions changes.
@@ -135,7 +146,8 @@ cannot undo committed replay progress.
 `lcm status` and `lcm doctor` are read-only: they report pending, stale and dirty
 sessions, including dirt not yet reflected in node flags. They never migrate,
 repair triggers, reconcile or settle. Ordinary status counts work on unmigrated
-read-only stores. Conservative full reconciliation requires an
+read-only stores. Failed counts print `unavailable`, and ordinary counts use
+SQLite table counts minus indexed owner counts. Conservative full reconciliation requires an
 explicit `lcm timeline settle --calls 0 --reconcile full`. Doctor also compares
 tracking and detach definitions in `sqlite_master` read-only, reports missing or
 outdated triggers and names that repair command. Normal migrations repair those
@@ -176,5 +188,10 @@ and do not scan `summary_messages`, and tracking-off inserts have no timeline tr
 Real-corpus recall quality, citation accuracy and model cost remain unconfirmed.
 Additional time levels, cross-store synthesis, restore prefixing, memory
 anchors/corrections (#712) and session-to-commit references (#713) are deferred.
-Older versions do not exclude the synthetic owner and may promote its summaries:
-avoid promotion against a store containing timeline nodes while downgraded.
+Before downgrading, `lcm timeline teardown --remove-nodes` removes all owner
+summaries and timeline node rows while keeping session sources. Without removal,
+a downgraded lcm promotes timeline nodes at every session end, including after
+ordinary teardown. Re-upgrading archives promoted memories whose
+`source_summary_id` names an owner summary or whose `session_id` is
+`lcm:project-timeline`. Such rows are never legitimate promoted memories;
+archival leaves their content and provenance available for inspection.

@@ -1,7 +1,9 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it } from "vitest";
 import { runLcmMigrations } from "../src/db/migration.js";
-import { ensureTimelineOwner, enableTimeline } from "../src/db/project-timeline.js";
+import { ensureTimelineOwner, enableTimeline, teardownTimeline } from "../src/db/project-timeline.js";
 import { SummaryStore } from "../src/store/summary-store.js";
 import { clearConversationForRebuild } from "../src/claude-rebuild.js";
 
@@ -250,4 +252,99 @@ it("migration drops legacy guarded triggers on an opted-out store", () => {
   for (const name of ["timeline_journal", "timeline_input_cache", "timeline_checkpoint"]) {
     expect(db.prepare("SELECT name FROM sqlite_master WHERE name = ?").get(name)).toBeUndefined();
   }
+});
+
+
+it.each([false, true])("steady-state migration reads behind a writer and on a read-only store (tracking %s)", tracking => {
+  const dir = mkdtempSync(join(process.cwd(), ".timeline-migration-"));
+  const path = join(dir, "store.db");
+  const writer = new DatabaseSync(path);
+  let reader: DatabaseSync | undefined;
+  try {
+    writer.exec("PRAGMA journal_mode = WAL");
+    runLcmMigrations(writer, { fts5Available: false });
+    if (tracking) enableTimeline(writer);
+    reader = new DatabaseSync(path);
+    writer.exec("BEGIN IMMEDIATE");
+    expect(() => runLcmMigrations(reader!, { fts5Available: false })).not.toThrow();
+    reader.close();
+    reader = new DatabaseSync(path, { readOnly: true });
+    expect(() => runLcmMigrations(reader!, { fts5Available: false })).not.toThrow();
+  } finally {
+    reader?.close();
+    if (writer.isTransaction) writer.exec("ROLLBACK");
+    writer.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
+it.each([0, 1])("a session summary consumed only by a timeline node stays orphaned (active %s)", active => {
+  const db = fixture();
+  db.exec("INSERT INTO summaries(summary_id, conversation_id, kind, content, token_count) VALUES ('source', 1, 'leaf', 'source', 1)");
+  node(db);
+  db.exec("INSERT INTO summary_parents VALUES ('timeline', 'source', 0)");
+  db.prepare("UPDATE timeline_nodes SET active = ?").run(active);
+  expect(new SummaryStore(db).getOrphanSummaryIds()).toEqual(["source"]);
+  db.exec("INSERT INTO summaries(summary_id, conversation_id, kind, content, token_count) VALUES ('session-consumer', 1, 'condensed', 'source', 1); INSERT INTO summary_parents VALUES ('session-consumer', 'source', 0)");
+  expect(new SummaryStore(db).getOrphanSummaryIds()).toEqual(["session-consumer"]);
+});
+
+
+it("teardown can remove all owner summaries and timeline rows while keeping session sources", () => {
+  const db = fixture();
+  db.exec("INSERT INTO messages(conversation_id, seq, role, content, token_count) VALUES (1, 0, 'user', 'source', 1); INSERT INTO summaries(summary_id, conversation_id, kind, content, token_count) VALUES ('source', 1, 'leaf', 'source', 1); INSERT INTO summary_messages VALUES ('source', 1, 0)");
+  node(db);
+  const owner = ensureTimelineOwner(db);
+  db.prepare("INSERT INTO summaries(summary_id, conversation_id, kind, content, token_count) VALUES ('historical', ?, 'condensed', 'history', 1)").run(owner);
+  db.exec("INSERT INTO summary_parents VALUES ('timeline', 'source', 0); INSERT INTO summary_parents VALUES ('historical', 'timeline', 0); INSERT INTO summary_messages VALUES ('timeline', 1, 0)");
+  teardownTimeline(db, true);
+  expect(db.prepare("SELECT summary_id FROM summaries ORDER BY summary_id").all()).toEqual([{ summary_id: "source" }]);
+  expect(db.prepare("SELECT * FROM timeline_nodes").all()).toEqual([]);
+  expect(db.prepare("SELECT * FROM summary_parents").all()).toEqual([]);
+  expect(db.prepare("SELECT * FROM summary_messages").all()).toEqual([{ summary_id: "source", message_id: 1, ordinal: 0 }]);
+  expect(db.prepare("SELECT content FROM messages").all()).toEqual([{ content: "source" }]);
+  expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  expect(db.prepare("SELECT tracking, generation, phase FROM timeline_state").get()).toMatchObject({ tracking: 0, generation: 0, phase: "off" });
+});
+
+
+it.each([false, true])("migration archives only timeline-derived promoted memories (tracking %s)", tracking => {
+  const db = fixture();
+  node(db);
+  if (!tracking) teardownTimeline(db);
+  db.exec("INSERT INTO summaries(summary_id, conversation_id, kind, content, token_count) VALUES ('source', 1, 'leaf', 'source', 1)");
+  db.exec(`INSERT INTO promoted(id, content, project_id, session_id, source_summary_id) VALUES
+    ('by-source', 'timeline claim', 'project', 'other', 'timeline'),
+    ('by-session', 'timeline claim', 'project', 'lcm:project-timeline', 'removed-node'),
+    ('ordinary', 'session claim', 'project', 'session', 'source'),
+    ('manual', 'manual claim', 'project', 'manual', NULL);
+    INSERT INTO promoted(id, content, project_id, session_id, archived_at) VALUES
+    ('already-archived', 'timeline claim', 'project', 'lcm:project-timeline', '2026-01-01 00:00:00');`);
+  runLcmMigrations(db, { fts5Available: false });
+  expect(db.prepare("SELECT id FROM promoted WHERE archived_at IS NULL ORDER BY id").all()).toEqual([{ id: 'manual' }, { id: 'ordinary' }]);
+  expect(db.prepare("SELECT archived_at FROM promoted WHERE id = 'already-archived'").get()).toMatchObject({ archived_at: '2026-01-01 00:00:00' });
+  const archived = db.prepare("SELECT id, archived_at FROM promoted ORDER BY id").all();
+  const changes = db.prepare("SELECT total_changes() n").get();
+  runLcmMigrations(db, { fts5Available: false });
+  expect(db.prepare("SELECT id, archived_at FROM promoted ORDER BY id").all()).toEqual(archived);
+  expect(db.prepare("SELECT total_changes() n").get()).toEqual(changes);
+});
+
+it("archived timeline memories leave full-text search after a re-upgrade", () => {
+  const db = new DatabaseSync(":memory:");
+  handles.push(db);
+  runLcmMigrations(db, { fts5Available: true });
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'promoted_fts'").get()) return;
+  enableTimeline(db);
+  db.exec("INSERT INTO conversations(session_id) VALUES ('session')");
+  node(db);
+  db.exec(`INSERT INTO promoted(id, content, project_id, session_id, source_summary_id) VALUES
+    ('derived', 'zirconium timeline claim', 'project', 'lcm:project-timeline', 'timeline'),
+    ('ordinary', 'zirconium session claim', 'project', 'session', NULL);
+    INSERT INTO promoted_fts(rowid, content, tags) SELECT rowid, content, tags FROM promoted;`);
+  const matches = () => (db.prepare("SELECT p.id FROM promoted_fts f JOIN promoted p ON p.rowid = f.rowid WHERE promoted_fts MATCH 'zirconium' ORDER BY p.id").all() as Array<{ id: string }>).map(row => row.id);
+  expect(matches()).toEqual(["derived", "ordinary"]);
+  runLcmMigrations(db, { fts5Available: true });
+  expect(matches()).toEqual(["ordinary"]);
 });

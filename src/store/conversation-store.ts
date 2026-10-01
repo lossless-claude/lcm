@@ -672,7 +672,7 @@ export class ConversationStore {
     const row = (
       conversationId == null
         ? this.db.prepare((this.db.prepare("PRAGMA table_info(conversations)").all() as Array<{ name: string }>).some(column => column.name === "is_timeline")
-          ? "SELECT COUNT(*) AS count FROM messages WHERE conversation_id IN (SELECT conversation_id FROM conversations WHERE is_timeline = 0)"
+          ? "SELECT (SELECT COUNT(*) FROM messages) - (SELECT COUNT(*) FROM messages WHERE conversation_id = (SELECT conversation_id FROM conversations WHERE is_timeline = 1)) AS count"
           : "SELECT COUNT(*) AS count FROM messages").get()
         : this.db.prepare(`SELECT COUNT(*) AS count FROM messages WHERE conversation_id = ?`).get(conversationId)
     ) as unknown as CountRow;

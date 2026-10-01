@@ -106,7 +106,7 @@ it("replay reset retains and flags a node that references the reset session summ
   db.close();
 });
 
-it.each(["unbounded", "session-pool"])("refuses %s before timeline work and leaves units and nodes untouched", async provider => {
+it.each(["unbounded", "session-pool", "missing-env"])("refuses %s before timeline work and leaves units and nodes untouched", async provider => {
   const { cwd, paths } = fixture();
   const mock = loadDaemonConfig(paths.configPath, { summarizer: { mock: true }, timeline: { generationEnabled: true } });
   await invokeRoute(createTimelineHandler(mock, paths), { cwd, calls: 10 });
@@ -115,8 +115,8 @@ it.each(["unbounded", "session-pool"])("refuses %s before timeline work and leav
   await invokeRoute(createTimelineHandler(mock, paths), { cwd, calls: 0 });
   const tables = ["timeline_state", "timeline_dirty", "timeline_items", "timeline_units", "timeline_nodes"];
   const before = tables.map(table => db.prepare(`SELECT * FROM ${table}`).all());
-  const config = loadDaemonConfig(paths.configPath, { llm: { provider, ...(provider === "unbounded" ? { providers: {
-    unbounded: { type: "openai", apiKey: "fake", model: "fake" },
+  const config = loadDaemonConfig(paths.configPath, { llm: { provider, ...(provider !== "session-pool" ? { providers: {
+    [provider]: { type: "openai", apiKey: provider === "missing-env" ? "\${TIMELINE_TEST_ABSENT_KEY}" : "fake", model: "fake", ...(provider === "missing-env" ? { maxConcurrent: 1 } : {}) },
   } } : { fallbackProvider: "disabled" }) }, summarizer: { mock: false }, timeline: { generationEnabled: true } });
   const enqueue = vi.fn();
   const migrate = vi.spyOn(migrations, "runLcmMigrations");
@@ -201,4 +201,79 @@ it("enable creates tracking for an empty project before its first capture", asyn
     expect(db.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'timeline_%'").get()).toMatchObject({ n: expect.any(Number) });
     expect(db.prepare("SELECT COUNT(*) n FROM conversations").get()).toMatchObject({ n: 0 });
   } finally { db.close(); }
+});
+
+
+it.each([1, 8])("fixing admission releases legacy configuration failures once (failures %s)", async failures => {
+  const { cwd, paths, config: mock } = fixture();
+  await invokeRoute(createTimelineHandler(mock, paths), { cwd, calls: 0 });
+  const db = new DatabaseSync(projectDbPath(cwd, paths));
+  db.prepare("UPDATE timeline_units SET failures = ?, status = ?, next_try = '2999-01-01T00:00:00Z'")
+    .run(failures, failures === 8 ? "parked" : "ready");
+  const before = db.prepare("SELECT * FROM timeline_units").all();
+  const configured = () => loadDaemonConfig(paths.configPath, {
+    llm: { provider: "bounded", providers: { bounded: {
+      type: "openai", apiKey: "$" + "{TIMELINE_TEST_RECOVERY_KEY}", model: "fake", maxConcurrent: 1,
+    } } }, summarizer: { mock: false }, timeline: { generationEnabled: true },
+  });
+  const factory = vi.spyOn(summarizers, "createSummarizer").mockResolvedValue(async () => "Scripted timeline answer.");
+  vi.stubEnv("TIMELINE_TEST_RECOVERY_KEY", undefined);
+  try {
+    const refused = await invokeRoute(createTimelineHandler(configured(), paths), { cwd, calls: 1 }).catch(error => error);
+    expect(refused.status).toBe(409);
+    expect(db.prepare("SELECT * FROM timeline_units").all()).toEqual(before);
+    expect(factory).not.toHaveBeenCalled();
+    vi.stubEnv("TIMELINE_TEST_RECOVERY_KEY", "fake");
+    const config = configured();
+    expect(await invokeRoute(createTimelineHandler(config, paths), { cwd, calls: 1 })).toMatchObject({ generated: 1, calls: 1 });
+    await invokeRoute(createTimelineHandler(config, paths), { cwd, calls: 0 });
+    db.exec("UPDATE timeline_units SET failures = 8, status = 'parked', next_try = '2999-01-01T00:00:00Z'");
+    const later = db.prepare("SELECT * FROM timeline_units").all();
+    expect(later.length).toBeGreaterThan(0);
+    expect(await invokeRoute(createTimelineHandler(config, paths), { cwd, calls: 2 })).toMatchObject({ generated: 0, calls: 0 });
+    expect(db.prepare("SELECT * FROM timeline_units").all()).toEqual(later);
+  } finally { db.close(); factory.mockRestore(); vi.unstubAllEnvs(); }
+});
+
+
+it.each([false, true])("teardown removes nodes only when requested (removeNodes %s)", async removeNodes => {
+  const { cwd, paths, config } = fixture();
+  const handler = createTimelineHandler(config, paths);
+  await invokeRoute(handler, { cwd, calls: 10 });
+  await invokeRoute(handler, { cwd, action: "teardown", calls: 0, removeNodes });
+  const db = new DatabaseSync(projectDbPath(cwd, paths), { readOnly: true });
+  try {
+    const nodes = db.prepare("SELECT * FROM timeline_nodes").all();
+    const summaries = db.prepare("SELECT s.summary_id FROM summaries s JOIN conversations c USING(conversation_id) WHERE c.is_timeline = 1").all();
+    expect(nodes).toHaveLength(removeNodes ? 0 : 2);
+    expect(summaries).toHaveLength(removeNodes ? 0 : 2);
+    expect(db.prepare("SELECT content FROM messages").all()).toEqual([{ content: "We chose SQLite." }]);
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  } finally { db.close(); }
+});
+
+
+it("status uses SQLite table counts plus indexed owner subtraction for ordinary counts", async () => {
+  const { cwd, paths, config } = fixture();
+  const db = new DatabaseSync(projectDbPath(cwd, paths));
+  db.exec("INSERT INTO summaries(summary_id, conversation_id, kind, content, token_count) VALUES ('one', 1, 'leaf', 'source', 1), ('two', 1, 'leaf', 'source', 1)");
+  await invokeRoute(createTimelineHandler(config, paths), { cwd, calls: 10 });
+  const statements: string[] = [];
+  const original = DatabaseSync.prototype.prepare;
+  const prepare = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (sql) {
+    statements.push(sql);
+    return original.call(this, sql);
+  });
+  try {
+    const status = await invokeRoute<{ project: unknown }>(createStatusHandler(config, paths, Date.now()), { cwd });
+    expect(status.project).toMatchObject({ messageCount: 1, summaryCount: 2 });
+    prepare.mockRestore();
+    for (const table of ["messages", "summaries"]) {
+      const sql = statements.find(sql => sql.includes(`FROM ${table}`) && sql.includes("COUNT(*)"))!;
+      const program = db.prepare(`EXPLAIN ${sql}`).all() as Array<{ opcode: string }>;
+      expect(program.some(row => row.opcode === "Count")).toBe(true);
+      const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{ detail: string }>;
+      expect(plan.some(row => row.detail.includes("COVERING INDEX") && row.detail.includes("conversation_id=?"))).toBe(true);
+    }
+  } finally { prepare.mockRestore(); db.close(); }
 });

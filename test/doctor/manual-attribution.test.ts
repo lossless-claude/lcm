@@ -7,6 +7,7 @@ import { createLcmPaths } from "../../src/lcm-paths.js";
 import { projectDir, projectId, claudeProjectSlug } from "../../src/daemon/project.js";
 import { updateProjectMeta } from "../../src/daemon/project-meta.js";
 import { openStandaloneLcmConnection } from "../../src/db/connection.js";
+import { ensureTimelineOwner, TIMELINE_SESSION_ID } from "../../src/db/project-timeline.js";
 import { runLcmMigrations } from "../../src/db/migration.js";
 import { PromotedStore } from "../../src/db/promoted.js";
 import { writeHold } from "../../src/daemon/hold.js";
@@ -263,4 +264,27 @@ it("finds a store call in a nested Claude transcript even when its flat copy lac
     ] },
   }) + "\n");
   expect(command()).toContain(`${id}: attributable -> copied-session`);
+});
+
+
+it("ignores store-call evidence attributed to the timeline owner", () => {
+  const id = memory("Timeline owners cannot attribute manual memories.");
+  const db = openStandaloneLcmConnection(dbPath);
+  try { ensureTimelineOwner(db); } finally { db.close(); }
+  claude(TIMELINE_SESSION_ID, "Timeline owners cannot attribute manual memories.", false);
+  const before = row(id);
+  const output = command();
+  expect(output).toContain(`${dbPath}: 1 matched outside this store`);
+  expect(output).not.toContain(`${id}: attributable`);
+  expect(row(id)).toEqual(before);
+});
+
+
+it("accepts captured-session evidence on stores without the timeline column", () => {
+  const id = memory("Legacy session attribution remains available.");
+  claude("legacy-session", "Legacy session attribution remains available.");
+  const db = openStandaloneLcmConnection(dbPath);
+  try { db.exec("DROP INDEX timeline_owner_idx; ALTER TABLE conversations DROP COLUMN is_timeline"); }
+  finally { db.close(); }
+  expect(command()).toContain(`${id}: attributable -> legacy-session`);
 });

@@ -308,7 +308,9 @@ export class SummaryStore {
       SELECT s.summary_id FROM summaries s
        WHERE ${hasTimeline ? "NOT EXISTS (SELECT 1 FROM conversations owner WHERE owner.conversation_id = s.conversation_id AND owner.is_timeline = 1)" : "1"}
          AND NOT EXISTS (SELECT 1 FROM context_items c WHERE c.summary_id = s.summary_id)
-         AND NOT EXISTS (SELECT 1 FROM summary_parents p WHERE p.parent_summary_id = s.summary_id)
+         AND NOT EXISTS (SELECT 1 FROM summary_parents p
+           ${hasTimeline ? "JOIN summaries consumer ON consumer.summary_id = p.summary_id JOIN conversations owner ON owner.conversation_id = consumer.conversation_id" : ""}
+           WHERE p.parent_summary_id = s.summary_id ${hasTimeline ? "AND owner.is_timeline = 0" : ""})
        ORDER BY s.summary_id
     `).all() as Array<{ summary_id: string }>;
     return rows.map(row => row.summary_id);
@@ -711,7 +713,7 @@ export class SummaryStore {
     const row = (
       conversationId == null
         ? this.db.prepare((this.db.prepare("PRAGMA table_info(conversations)").all() as Array<{ name: string }>).some(column => column.name === "is_timeline")
-          ? "SELECT COUNT(*) AS n FROM summaries WHERE conversation_id IN (SELECT conversation_id FROM conversations WHERE is_timeline = 0)"
+          ? "SELECT (SELECT COUNT(*) FROM summaries) - (SELECT COUNT(*) FROM summaries WHERE conversation_id = (SELECT conversation_id FROM conversations WHERE is_timeline = 1)) AS n"
           : "SELECT COUNT(*) AS n FROM summaries").get()
         : this.db.prepare(`SELECT COUNT(*) AS n FROM summaries WHERE conversation_id = ?`).get(conversationId)
     ) as unknown as { n: number };

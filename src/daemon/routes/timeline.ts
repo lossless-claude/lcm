@@ -50,7 +50,7 @@ export function createTimelineHandler(config: DaemonConfig, paths: LcmPaths, job
       if (action !== "settle") await enqueue(projectId(cwd), () => withProjectMutation(projectId(cwd), async () => {
         if (action === "enable") enableTimeline(db);
         else if (action === "disable") disableTimeline(db);
-        else teardownTimeline(db);
+        else teardownTimeline(db, input.removeNodes === true);
       }));
       const report = await daemonTimeline(db, cwd, config, paths, jobs).settle({ calls: action === "settle" ? input.calls ?? 10 : 0, reconcile: input.reconcile });
       sendJson(res, 200, report);

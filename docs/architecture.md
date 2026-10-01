@@ -50,14 +50,22 @@ The timeline is a regenerable projection in the same SQLite store. Ordinary
 summary rows belong to the reserved `lcm:project-timeline` conversation, marked
 `is_timeline = 1`. Side tables retain exact coverage, revisions, stale state and
 replacement lineage. The owner is excluded from session readers, capture,
-restore selection, promotion, rebuild, replay and orphan checks.
+restore selection, promotion, rebuild, replay and manual attribution. Timeline
+edges do not count as consumers when checking session summaries for orphans.
 
 Migration installs no timeline triggers while tracking is off; while tracking is
 on it restores missing triggers and replaces outdated SQL. `lcm timeline enable`
 atomically creates tracking and detach triggers and starts paged bootstrap. Monotonic session counters
 survive deletion and recreation; bootstrap never resets them. Disable stops
 project generation while retaining tracking. Teardown removes dependent references
-before dropping triggers, preserving historical node content.
+before dropping triggers, preserving historical node content by default.
+`lcm timeline teardown --remove-nodes` also deletes all owner summaries and node
+rows after detaching their edges, keeping session summaries and messages intact.
+A downgraded lcm promotes retained timeline nodes at every session end. Re-upgrade
+migration archives promoted memories whose `source_summary_id` names an owner
+summary or whose `session_id` is `lcm:project-timeline`; such rows are never
+legitimate promoted memory. An already-current migration takes no write lock
+unless it finds schema/trigger repairs, missing state or memories to archive.
 
 `openProjectTimeline` exposes budgeted `settle` and model-free `describe`.
 Incremental settle reads dirty sessions through indexed frontier/remainder queries,
@@ -78,7 +86,11 @@ and replaced periods leave active context while retaining historical manifests.
 `timeline.generationEnabled` defaults to false. Automatic work also requires
 tracking and completed bootstrap, waits for 60 seconds of quiet and runs one unit
 per project per tick. Model errors and publication conflicts have persisted
-exponential backoff, with a one-hour cap and parking after eight failures. Replay holds expire after
+exponential backoff, with a one-hour cap and parking after eight failures.
+Admission requires at least one runnable endpoint. The first admitted generation
+settle releases legacy backed-off and parked units once: their persisted failures
+have no cause, so this also retries legacy model failures. Subsequent failures
+retain their backoff. Replay holds expire after
 five minutes without progress; ordinary ticks drain persisted work once generation
 is on and replay no longer holds it. Ledger inserts perform no timeline manifest scan.
 Every provider and fallback must support shared live/background/timeline admission through a

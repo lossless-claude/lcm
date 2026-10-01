@@ -16,6 +16,7 @@ export function installProjectTimeline(db: DatabaseSync): void {
   const tracking = db.prepare("SELECT tracking FROM timeline_state WHERE id = 1").get() as { tracking: number };
   if (tracking.tracking) installTimelineTriggers(db);
   else dropTimelineTriggers(db);
+  archiveTimelinePromotions(db);
 }
 
 function installTimelineTables(db: DatabaseSync): void {
@@ -61,9 +62,8 @@ function installTimelineTables(db: DatabaseSync): void {
       id INTEGER PRIMARY KEY CHECK(id = 1), tracking INTEGER NOT NULL DEFAULT 0,
       generation INTEGER NOT NULL DEFAULT 0, phase TEXT NOT NULL DEFAULT 'off',
       bootstrap_cursor TEXT NOT NULL DEFAULT '', reconcile_cursor INTEGER NOT NULL DEFAULT 0,
-      generator TEXT, published INTEGER NOT NULL DEFAULT 0
+      generator TEXT, published INTEGER NOT NULL DEFAULT 0, admission_recovered INTEGER NOT NULL DEFAULT 0
     );
-    INSERT OR IGNORE INTO timeline_state(id) VALUES (1);
     CREATE TABLE IF NOT EXISTS timeline_dirty (
       session_id TEXT PRIMARY KEY, rev INTEGER NOT NULL DEFAULT 0, dirty INTEGER NOT NULL DEFAULT 1,
       reason TEXT NOT NULL DEFAULT 'session-changed', bumped_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -94,7 +94,14 @@ function installTimelineTables(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS timeline_active_idx ON timeline_nodes(active, stale_reason);
     CREATE INDEX IF NOT EXISTS timeline_replay_session_idx ON replay_manifest(session_id, run_id);
   `);
-  if ((db.prepare("PRAGMA table_info(timeline_state)").all() as Array<{ name: string }>).some(column => column.name === "drain")) {
+  if (!db.prepare("SELECT 1 FROM timeline_state WHERE id = 1").get()) {
+    db.exec("INSERT OR IGNORE INTO timeline_state(id) VALUES (1)");
+  }
+  const stateColumns = db.prepare("PRAGMA table_info(timeline_state)").all() as Array<{ name: string }>;
+  if (!stateColumns.some(column => column.name === "admission_recovered")) {
+    db.exec("ALTER TABLE timeline_state ADD COLUMN admission_recovered INTEGER NOT NULL DEFAULT 0");
+  }
+  if (stateColumns.some(column => column.name === "drain")) {
     db.exec("ALTER TABLE timeline_state DROP COLUMN drain");
   }
 }
@@ -234,7 +241,7 @@ export function disableTimeline(db: DatabaseSync): void {
   transaction(db, () => { db.exec("UPDATE timeline_state SET generation = 0 WHERE id = 1"); });
 }
 /** Remove dependent references before removing deletion safety, in the same transaction. */
-export function teardownTimeline(db: DatabaseSync): void {
+export function teardownTimeline(db: DatabaseSync, removeNodes = false): void {
   transaction(db, () => {
     db.exec(`DELETE FROM summary_parents WHERE summary_id IN (SELECT summary_id FROM timeline_nodes);
       DELETE FROM summary_messages WHERE summary_id IN (SELECT summary_id FROM timeline_nodes);
@@ -245,12 +252,54 @@ export function teardownTimeline(db: DatabaseSync): void {
       DELETE FROM timeline_memory_dirty; DELETE FROM timeline_reconcile;
       UPDATE timeline_dirty SET dirty = 1;
       UPDATE timeline_state SET tracking = 0, generation = 0, phase = 'off', bootstrap_cursor = '', generator = NULL WHERE id = 1;`);
+    if (removeNodes) removeTimelineNodes(db);
     dropTimelineTriggers(db);
   });
+}
+
+function removeTimelineNodes(db: DatabaseSync): void {
+  const owned = "SELECT summary_id FROM summaries WHERE conversation_id IN (SELECT conversation_id FROM conversations WHERE is_timeline = 1)";
+  db.exec(`DELETE FROM summary_parents WHERE summary_id IN (${owned}) OR parent_summary_id IN (${owned});
+    DELETE FROM summary_messages WHERE summary_id IN (${owned});
+    DELETE FROM context_items WHERE summary_id IN (${owned});
+    DELETE FROM timeline_nodes;
+    DELETE FROM summaries WHERE summary_id IN (${owned});`);
 }
 
 /** Explicit healing repairs missing triggers and re-seeds without resetting counters or generation. */
 export function repairTimelineTracking(db: DatabaseSync): void {
   installTimelineTriggers(db);
   db.exec("UPDATE timeline_state SET phase = 'bootstrapping', bootstrap_cursor = '' WHERE tracking = 1");
+}
+
+/** Legacy units lack failure causes; give them one retry after provider admission. */
+export function recoverTimelineAdmission(db: DatabaseSync): void {
+  const state = db.prepare("SELECT admission_recovered FROM timeline_state WHERE id = 1").get() as { admission_recovered: number };
+  if (state.admission_recovered) return;
+  transaction(db, () => {
+    db.exec("UPDATE timeline_units SET failures = 0, next_try = NULL, status = 'ready' WHERE failures > 0 AND (SELECT admission_recovered FROM timeline_state WHERE id = 1) = 0");
+    db.exec("UPDATE timeline_state SET admission_recovered = 1 WHERE id = 1");
+  });
+}
+
+/** Timeline-derived promoted memories violate owner isolation, including after downgrade. */
+function archiveTimelinePromotions(db: DatabaseSync): void {
+  const rows = db.prepare(`SELECT p.id, p.rowid FROM promoted p WHERE p.archived_at IS NULL
+    AND (p.session_id = ? OR p.source_summary_id IN (
+      SELECT s.summary_id FROM summaries s JOIN conversations c USING(conversation_id) WHERE c.is_timeline = 1))`)
+    .all(TIMELINE_SESSION_ID) as Array<{ id: string; rowid: number }>;
+  if (!rows.length) return;
+  const hasFts = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'promoted_fts'").get();
+  db.exec("SAVEPOINT timeline_archive_promoted");
+  try {
+    for (const row of rows) {
+      db.prepare("UPDATE promoted SET archived_at = datetime('now') WHERE id = ? AND archived_at IS NULL").run(row.id);
+      if (hasFts) db.prepare("DELETE FROM promoted_fts WHERE rowid = ?").run(row.rowid);
+    }
+    db.exec("RELEASE timeline_archive_promoted");
+  } catch (error) {
+    db.exec("ROLLBACK TO timeline_archive_promoted");
+    db.exec("RELEASE timeline_archive_promoted");
+    throw error;
+  }
 }

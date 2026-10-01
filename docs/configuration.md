@@ -347,7 +347,15 @@ defaults to `false`:
 calling a model. Tracking is off until explicitly enabled: migration installs no
 timeline triggers while off, and restores missing or outdated definitions while on.
 `lcm timeline disable` stops project generation while retaining
-tracking. `lcm timeline teardown` removes dependent references and tracking triggers.
+tracking. `lcm timeline teardown` removes dependent references and tracking triggers
+while retaining historical nodes. Before downgrading, use
+`lcm timeline teardown --remove-nodes` to delete all owner summaries and timeline
+node rows in the same transaction, detaching edges first and retaining session
+summaries and messages. A downgraded lcm promotes retained timeline nodes at every
+session end, even after teardown without the flag. Re-upgrading archives those
+memories: migration matches `source_summary_id` against owner summaries, or
+`session_id = 'lcm:project-timeline'`. These are never legitimate promoted memories.
+Already-current migrations acquire no write lock unless repairs or archival are needed.
 
 `lcm timeline settle --calls 10` generates within a summarizer-call budget;
 `--calls 0` refreshes dirty-session metadata without a model, even when generation
@@ -370,13 +378,21 @@ Timeline providers and every fallback must be named OpenAI or Anthropic HTTP
 endpoints with `maxConcurrent`. Shared endpoint admission orders live work,
 replay/background and timeline. Process, live-session, session-pool and unbounded
 HTTP providers refuse timeline generation because they cannot enforce that order.
+Endpoints with missing environment variables are skipped; at least one endpoint
+must remain runnable, and every runnable endpoint must have `maxConcurrent`.
 Generation requests check admission before database work and return HTTP 409 with
 configuration guidance, printed verbatim by the CLI. Refusals never flag model
 failures, back off or park units; zero-call reconciliation remains available.
+The first admitted generation settle releases legacy backed-off or parked units
+once, including those blocked by missing environment variables. Legacy failures
+lack a recorded cause, so legacy model failures also receive one retry. Later
+failures retain their persisted backoff and parking.
 
 `lcm status` and `lcm doctor` read pending/stale/dirty counts without migration or
 settle, including dirty sessions not yet flagged. Ordinary counts remain available
-on unmigrated read-only stores. Historical timeline nodes remain readable by id.
+on unmigrated read-only stores. Failed ordinary counts print `unavailable` in the
+CLI; zero remains zero. Counts use SQLite table counts minus indexed owner counts.
+Historical timeline nodes remain readable by id unless explicitly removed.
 Doctor also checks tracking/detach SQL in `sqlite_master` read-only and reports
 missing or outdated triggers with `lcm timeline settle --calls 0 --reconcile full`.
 

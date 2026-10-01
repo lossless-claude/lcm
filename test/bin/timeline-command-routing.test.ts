@@ -40,3 +40,15 @@ it("prints a provider-admission configuration error verbatim", async () => {
     expect(process.exitCode).toBe(1);
   } finally { process.exitCode = previous; }
 });
+
+
+it("routes teardown node removal explicitly and preserves the default", async () => {
+  const post = vi.fn(async () => ({}));
+  vi.spyOn(process.stdout, "write").mockReturnValue(true);
+  const program = new Command().exitOverride();
+  registerTimelineCommands(program, { createDaemonClientOrExit: async () => ({ post }) } as never);
+  await program.parseAsync(["timeline", "teardown"], { from: "user" });
+  expect(post).toHaveBeenLastCalledWith("/timeline", { cwd: process.cwd(), action: "teardown", calls: 0 });
+  await program.parseAsync(["timeline", "teardown", "--remove-nodes"], { from: "user" });
+  expect(post).toHaveBeenLastCalledWith("/timeline", { cwd: process.cwd(), action: "teardown", calls: 0, removeNodes: true });
+});

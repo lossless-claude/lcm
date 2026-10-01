@@ -20,10 +20,10 @@ interface CommandHelp {
 const HELP: Record<string, CommandHelp> = {
   timeline: {
     summary: "Reconcile and generate the current project's timeline within a call budget.",
-    usage: "lcm timeline <enable|disable|teardown|settle> [--calls N] [--reconcile journal|full]",
-    options: [["--calls N", "Maximum summarizer calls (default 10); zero reconciles without generation"], ["--reconcile journal|full", "Explicit full reconciliation repairs tracking and checks aggregates"]],
+    usage: "lcm timeline <enable|disable|teardown|settle> [--calls N] [--reconcile journal|full] [--remove-nodes]",
+    options: [["--calls N", "Maximum summarizer calls (default 10); zero reconciles without generation"], ["--reconcile journal|full", "Explicit full reconciliation repairs tracking and checks aggregates"], ["--remove-nodes", "Teardown only: delete owner summaries and timeline nodes, retaining session sources"]],
     examples: [["lcm timeline settle --calls 0", "Report pending and stale nodes without model calls"], ["lcm timeline settle --calls 10", "Generate up to ten pending timeline nodes"]],
-    notes: "Enable tracking with lcm timeline enable. Generation requires timeline.generationEnabled: true (default false) and bounded HTTP endpoint admission. Disable retains tracking; teardown removes references and triggers. Automatic work is debounced and runs one unit per tick. Status and doctor read persisted counts without reconciliation. Replacements preserve historical nodes by id.",
+    notes: "Enable tracking with lcm timeline enable. Generation requires timeline.generationEnabled: true (default false) and bounded HTTP endpoint admission. Disable retains tracking; teardown removes references and triggers, retaining nodes unless --remove-nodes is passed. Remove nodes before downgrading: older lcm promotes them at every session end; re-upgrading archives those memories. Automatic work is debounced and runs one unit per tick. Status and doctor read persisted counts without reconciliation. Replacements preserve historical nodes by id.",
   },
   "summarize-claim": {
     summary: "Claim one pool job in a declared dedicated worker session.",

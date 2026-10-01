@@ -6,7 +6,7 @@ import { enqueue, withProjectMutation } from "./project-queue.js";
 import { projectId } from "./project.js";
 import { createSummarizer, resolveEffectiveProvider } from "./summarizer.js";
 import type { SummarizeJobStore } from "./summarize-jobs.js";
-import { TIMELINE_SESSION_ID } from "../db/project-timeline.js";
+import { TIMELINE_SESSION_ID, recoverTimelineAdmission } from "../db/project-timeline.js";
 
 const activeTimelines = new Set<string>();
 export const TIMELINE_ADMISSION_ERROR = "Timeline provider chain requires bounded HTTP admission: configure every provider and fallback as a named openai or anthropic endpoint with maxConcurrent";
@@ -33,7 +33,10 @@ export function daemonTimeline(db: DatabaseSync, cwd: string, config: DaemonConf
       if (budget.calls > 0 && !timelineProviderAdmitted(config)) throw new Error(TIMELINE_ADMISSION_ERROR);
       if (activeTimelines.has(pid)) throw new Error("Project timeline is already settling");
       activeTimelines.add(pid);
-      try { return await timeline.settle(budget); } finally { activeTimelines.delete(pid); }
+      try {
+        if (budget.calls > 0) await enqueue(pid, () => withProjectMutation(pid, async () => recoverTimelineAdmission(db)));
+        return await timeline.settle(budget);
+      } finally { activeTimelines.delete(pid); }
     },
   };
 
@@ -47,11 +50,10 @@ export function timelineProviderAdmitted(config: DaemonConfig): boolean {
   if (config.summarizer.mock) return true;
   if (!config.llm.providers) return false;
   const names = [resolveEffectiveProvider(config), ...(config.llm.fallback ?? [])];
-  return names.every(name => {
-    const endpoint = config.llm.providers![name];
-    if (endpoint && "missingEnv" in endpoint && endpoint.missingEnv?.length) return true;
-    return endpoint && (endpoint.type === "openai" || endpoint.type === "anthropic") && endpoint.maxConcurrent !== undefined;
-  });
+  const runnable = names.map(name => config.llm.providers![name])
+    .filter(endpoint => !endpoint || !("missingEnv" in endpoint) || !endpoint.missingEnv?.length);
+  return runnable.length > 0 && runnable.every(endpoint =>
+    endpoint && (endpoint.type === "openai" || endpoint.type === "anthropic") && endpoint.maxConcurrent !== undefined);
 }
 
 /** Clock-only admission; counts and diagnostics never enter this path. */
