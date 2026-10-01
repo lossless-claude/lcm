@@ -166,7 +166,14 @@ Store a durable insight in promoted memory: one concise insight and its why. Wha
 |-------|------|----------|---------|-------------|
 | `text` | string | ✅ | — | The content to store |
 | `tags` | string[] | | — | Canonical tags (see [tag-schema.md](tag-schema.md)) |
-| `metadata` | object | | — | Optional key/value metadata |
+| `metadata` | object | | — | Optional key/value metadata; explicit `sessionId` and `projectId` override inferred provenance |
+
+`lcm_store` and `lcm store` record the caller's session id from
+`CLAUDE_CODE_SESSION_ID`, then `CODEX_THREAD_ID` when the first is absent or empty.
+Without either, the session id is `"manual"`. The project id defaults to the id of
+the project database the memory is stored in, including the owning sibling checkout
+for a memory use or vote. Explicit `metadata.sessionId` and `metadata.projectId`
+values passed to `lcm_store` take precedence independently.
 
 **Examples:**
 

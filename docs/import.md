@@ -21,6 +21,16 @@ OMP discovery reads `<agentDir>/sessions/<encoded-cwd>/` for every `<agentDir>` 
 
 `--dry-run` lists the selected session count without starting the daemon, importing messages, or calling a model. Add `--verbose` for session identities. The count includes previously imported sessions; it describes selection, not new messages.
 
+After successful compaction, `lcm import --replay` automatically promotes durable insights from summaries, once per project it compacted. Promotion is best-effort, as with `lcm compact`; a promotion failure does not undo the import. Use `--no-promote` to skip it. Import without `--replay` does not compact or promote, and `--dry-run` writes no promotions. If the daemon becomes unreachable during import, automatic promotion is skipped.
+
+To catch up projects that already have summaries, use the existing promotion command; no replay is needed:
+
+```sh
+lcm promote --all --dry-run
+lcm promote --all
+lcm import --all --replay --no-promote
+```
+
 `lcm compact --replay` operates on conversations already stored in LCM, including Codex and OMP conversations. It does not scan transcript directories. Use `lcm import --replay` to discover historical files that LCM has not captured yet.
 
 `--parallel N` with `--replay` processes at most N projects concurrently, preserving session order and the replay ledger within each project. `--replay-provider session-pool` selects dedicated interactive workers for replay alone. See [summarize workers](summarize-workers.md).

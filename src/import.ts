@@ -63,6 +63,8 @@ interface ImportOptions {
   dryRun?: boolean;
   cwd?: string;
   replay?: boolean;
+  /** Skip automatic promotion after successful compaction. */
+  noPromote?: boolean;
   /** Replay only: discard recorded progress and start from scratch */
   restart?: boolean;
   /** Replay only: model label recorded in the ledger (shown on resume) */
@@ -309,6 +311,7 @@ async function ingestSessionList(
    * state the first pass had already started rebuilding.
    */
   clearedCwds: Set<string>,
+  compactedCwds: Set<string>,
 ): Promise<void> {
   // Replay runs are resumable: a manifest freezes the ordering and a ledger
   // records completed compactions, so a restarted run skips finished work.
@@ -510,6 +513,7 @@ async function ingestSessionList(
             client: sourceClient,
             ...(previousSummaryByCwd.get(cwd) !== undefined ? { previous_summary: previousSummaryByCwd.get(cwd) } : {}),
           });
+          if (compactRes.replayOutcome === "compacted") compactedCwds.add(cwd);
           const hadPrevious = previousSummaryByCwd.get(cwd) !== undefined;
           if (compactRes.latestSummaryContent !== undefined) {
             previousSummaryByCwd.set(cwd, compactRes.latestSummaryContent);
@@ -595,6 +599,7 @@ async function ingestSessionList(
             ? await loadLatestSessionSummary({ cwd, paths: options.paths, sessionId, notBefore: compactStartedAt })
             : null;
           if (recovered) {
+            compactedCwds.add(cwd);
             previousSummaryByCwd.set(cwd, recovered.content);
             const runId = replayRuns.get(cwd);
             if (runId !== undefined) {
@@ -684,6 +689,7 @@ export async function importSessions(
   // One --restart clear per project for the whole import, however many session
   // lists reach that project.
   const clearedCwds = new Set<string>();
+  const compactedCwds = new Set<string>();
 
   // --- Session lists, in import order: every Claude project dir, then Codex and OMP ---
   const sessionLists: SessionEntry[][] = [];
@@ -763,10 +769,21 @@ export async function importSessions(
   await runReplayProjects(sessionLists, (sessions) => sessions[0]?.cwd ?? "", parallel, async (ordered) => {
     for (const sessions of ordered) {
       if (result.daemonUnreachable) break;
-      await ingestSessionList(client, sessions, options, result, clearedCwds);
+      await ingestSessionList(client, sessions, options, result, clearedCwds, compactedCwds);
     }
   });
 
+  // Match compact's best-effort promotion, restricted to projects this run compacted.
+  if (!options.dryRun && !options.noPromote && !result.daemonUnreachable) {
+    let totalPromoted = 0;
+    for (const cwd of compactedCwds) {
+      try {
+        const promotion = await client.post<{ promoted: number }>("/promote", { cwd, dry_run: false });
+        totalPromoted += promotion.promoted;
+      } catch { /* non-fatal: promote is best-effort */ }
+    }
+    if (totalPromoted > 0) console.log(`  → ${totalPromoted} insight${totalPromoted !== 1 ? "s" : ""} promoted`);
+  }
   return result;
 }
 
