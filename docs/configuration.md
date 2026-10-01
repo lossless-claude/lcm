@@ -334,9 +334,76 @@ own gets its pack ensured when the project's language is detected — generated 
 already satisfied for English's built-in pack. See [search.md](./search.md) for how the pair is
 prepared and where the two language names are surfaced.
 
+### Project timeline opt-in
+
+`timeline.generationEnabled` gates manual and automatic model generation and
+defaults to `false`:
+
+```json
+{ "timeline": { "generationEnabled": true } }
+```
+
+`lcm timeline enable` installs tracking triggers and bootstraps metadata without
+calling a model. Tracking is off until explicitly enabled: migration installs no
+timeline triggers while off, and restores missing or outdated definitions while on.
+`lcm timeline disable` stops project generation while retaining
+tracking. `lcm timeline teardown` removes dependent references and tracking triggers
+while retaining historical nodes. Before downgrading, use
+`lcm timeline teardown --remove-nodes` to delete all owner summaries and timeline
+node rows in the same transaction, detaching edges first and retaining session
+summaries and messages. A downgraded lcm promotes retained timeline nodes at every
+session end, even after teardown without the flag. Re-upgrading archives those
+memories: migration matches `source_summary_id` against owner summaries, or
+`session_id = 'lcm:project-timeline'`. These are never legitimate promoted memories.
+Already-current migrations acquire no write lock unless repairs or archival are needed.
+
+`lcm timeline settle --calls 10` generates within a summarizer-call budget;
+`--calls 0` refreshes dirty-session metadata without a model, even when generation
+is disabled. `--reconcile full` explicitly repairs triggers and checks conservative
+conversation aggregates in resumable pages. Source text is read by id for ready
+units and never stored in a separate cache.
+Counter conflicts leave their sessions dirty for the next settle while other
+sessions and independent units proceed. The report stops with `conflict` only
+when nothing else could proceed.
+
+Automatic work checks each project every 30 seconds, requires tracking and completed
+bootstrap, and waits for 60 seconds without a newer session bump. Each tick runs
+at most one unit. Model errors and publication conflicts back off exponentially
+from one minute to one hour; eight failures park a unit until a contributing session changes. Only
+the latest replay run can hold work, and that hold expires five minutes after its
+last progress. Ordinary ticks drain persisted work once generation is on and replay
+no longer holds it; ledger inserts execute no timeline completion trigger or manifest scan.
+
+Timeline providers and every fallback must be named OpenAI or Anthropic HTTP
+endpoints with `maxConcurrent`. Shared endpoint admission orders live work,
+replay/background and timeline. Process, live-session, session-pool and unbounded
+HTTP providers refuse timeline generation because they cannot enforce that order.
+Endpoints with missing environment variables are skipped; at least one endpoint
+must remain runnable, and every runnable endpoint must have `maxConcurrent`.
+Generation requests check admission before database work and return HTTP 409 with
+configuration guidance, printed verbatim by the CLI. Refusals never flag model
+failures, back off or park units; zero-call reconciliation remains available.
+The first admitted generation settle releases legacy backed-off or parked units
+once, including those blocked by missing environment variables. Legacy failures
+lack a recorded cause, so legacy model failures also receive one retry. Later
+failures retain their persisted backoff and parking.
+
+`lcm status` and `lcm doctor` read pending/stale/dirty counts without migration or
+settle, including dirty sessions not yet flagged. Ordinary counts remain available
+on unmigrated read-only stores. Failed ordinary counts print `unavailable` in the
+CLI; zero remains zero. Counts use SQLite table counts minus indexed owner counts.
+Historical timeline nodes remain readable by id unless explicitly removed.
+Doctor also checks tracking/detach SQL in `sqlite_master` read-only and reports
+missing or outdated triggers with `lcm timeline settle --calls 0 --reconcile full`.
+
 ### Leaf chunk tokens
 
 `LCM_LEAF_CHUNK_TOKENS` (default `20000`) caps the amount of source material per leaf compaction pass.
+
+The project timeline uses the same limit for digest leaves and period chunks.
+It also closes a chunk at a UTC month change and keeps existing summaries
+indivisible. Changing the limit changes the timeline generator revision; settle
+flags prior nodes stale and publishes replacements.
 
 - Larger chunks create more comprehensive summaries from more material.
 - Smaller chunks create summaries more frequently from less material.
@@ -462,7 +529,7 @@ The same default deadline applies to the flat `openai` and `anthropic` providers
 
 OpenAI and Anthropic requests use a buffered Node HTTP transport: there is no separate 300-second headers or body timeout. HTTPS uses Node’s default certificate trust, including private CAs supplied through `NODE_EXTRA_CA_CERTS`. Proxy routing is not supported by this transport. Redirects are not followed either: `baseURL` must be the endpoint's final URL, scheme included, because a redirect response fails the request with its 3xx status.
 
-When `maxConcurrent` is set, the limit is shared by every project and session using that endpoint name, including separate summarizer instances. Extra calls wait in two classes, live and background: live is admitted first, FIFO within each class, without interrupting a request already running. Background is admitted whenever no live call is waiting. Priority is strict: background progresses between finite bursts of live compaction, but can wait indefinitely under continuous live saturation. Live compactions follow session lifecycle events, and each SessionStart catch-up sweep is capped by `compaction.autoCompactSessionStartMax`.
+When `maxConcurrent` is set, the limit is shared by every project and session using that endpoint name, including separate summarizer instances. Extra calls wait in three classes: live, background and timeline, admitted in that order and FIFO within each class, without interrupting a request already running. Background is admitted whenever no live call is waiting; timeline waits until both higher classes are empty. This admission order applies to the OpenAI and Anthropic HTTP adapters; see [timeline endpoint ordering](#project-timeline-opt-in) for the other providers. Priority is strict: background progresses between finite bursts of live compaction, but can wait indefinitely under continuous live saturation. Live compactions follow session lifecycle events, and each SessionStart catch-up sweep is capped by `compaction.autoCompactSessionStartMax`.
 
 PreCompact is live (`capture_required`, or OMP's `precompact_verified` after separate capture). SessionEnd, including its legacy hook fallback, and SessionStart catch-up explicitly send `work_class: "live"` alongside `skip_ingest: true`. Other `skip_ingest` compactions — `lcm import --replay`, batch `lcm compact`, and `lcm compact --replay` — are background. Direct compactions and summarizer calls without a class default to live. The class travels with every summary attempt, including retries and fallback endpoints.
 

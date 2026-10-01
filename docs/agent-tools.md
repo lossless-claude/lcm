@@ -63,6 +63,14 @@ Native episodic matches contain up to 1,000 characters of exact source context, 
 `sourceHash`, and `snippetTruncated`. These locate the excerpt in the retained source revision;
 they do not assert that the excerpt answers the question. Promoted memory output is unchanged.
 
+Timeline summaries appear in episodic results with `timeline.period` and
+`timeline.stale`. Stale timeline nodes are hidden by default; `includeStale`
+includes them with their reasons. They are projections over the session evidence,
+and are never promoted memories.
+
+Raw coverage ranges use zero-based session positions across all conversations
+(clear boundaries included), excluding compaction event rows.
+
 **Parameters:**
 
 | Param | Type | Required | Default | Description |
@@ -70,6 +78,7 @@ they do not assert that the excerpt answers the question. Promoted memory output
 | `query` | string | ✅ | — | Natural language search query |
 | `pivotQuery` | string | | — | Your own translation of `query` into the pivot language; its terms are added to the original's |
 | `limit` | number | | `5` | Max results per layer |
+| `includeStale` | boolean | | `false` | Include stale timeline nodes with their periods and reasons |
 | `layers` | string[] | | both | `"episodic"`, `"promoted"`, or both |
 | `tags` | string[] | | — | Filter to entries that include all specified tags |
 
@@ -140,6 +149,11 @@ lcm_grep(query: "config\\.threshold", scope: "summaries")
 ### lcm_describe
 
 Inspect metadata and lineage of a memory node without expanding content. Returns depth, token count, parent/child links, and whether the node was promoted to long-term memory.
+
+For a timeline node, `node.timeline` also contains `period`, exact session
+`coverage` (source summary ids and raw message ranges), `stale` reason/time,
+`memoryRefs` (id and revision), `generator`, and `replaces`. Describe never calls
+the model. Historical replaced nodes and digests retired after later session compaction remain readable by id.
 
 **Parameters:**
 

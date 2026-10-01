@@ -18,6 +18,13 @@ interface CommandHelp {
 }
 
 const HELP: Record<string, CommandHelp> = {
+  timeline: {
+    summary: "Reconcile and generate the current project's timeline within a call budget.",
+    usage: "lcm timeline <enable|disable|teardown|settle> [--calls N] [--reconcile journal|full] [--remove-nodes]",
+    options: [["--calls N", "Maximum summarizer calls (default 10); zero reconciles without generation"], ["--reconcile journal|full", "Explicit full reconciliation repairs tracking and checks aggregates"], ["--remove-nodes", "Teardown only: delete owner summaries and timeline nodes, retaining session sources"]],
+    examples: [["lcm timeline settle --calls 0", "Report pending and stale nodes without model calls"], ["lcm timeline settle --calls 10", "Generate up to ten pending timeline nodes"]],
+    notes: "Enable tracking with lcm timeline enable. Generation requires timeline.generationEnabled: true (default false) and bounded HTTP endpoint admission. Disable retains tracking; teardown removes references and triggers, retaining nodes unless --remove-nodes is passed. Remove nodes before downgrading: older lcm promotes them at every session end; re-upgrading archives those memories. Automatic work is debounced and runs one unit per tick. Status and doctor read persisted counts without reconciliation. Replacements preserve historical nodes by id.",
+  },
   "summarize-claim": {
     summary: "Claim one pool job in a declared dedicated worker session.",
     usage: "lcm summarize-claim",
@@ -112,9 +119,10 @@ const HELP: Record<string, CommandHelp> = {
 
   search: {
     summary: "Search memory across episodic and promoted layers for the current project.",
-    usage: "lcm search <query> [--limit N] [--layer episodic|promoted] [--tag <tag>]",
+    usage: "lcm search <query> [--limit N] [--layer episodic|promoted] [--tag <tag>] [--include-stale]",
     options: [
       ["--limit N", "Max results per layer (default: 5)"],
+      ["--include-stale", "Include stale timeline nodes with their periods and reasons"],
       ["--layer <name>", "Layer to search: episodic or promoted (repeatable)"],
       ["--tag <tag>", "Filter to entries that include all specified tags (repeatable)"],
     ],
@@ -485,6 +493,7 @@ const GROUPS = [
       { name: "grep <query> [--mode ...]", summary: "Search raw messages and summaries" },
       { name: "describe <nodeId>", summary: "Inspect metadata for a memory node" },
       { name: "expand <nodeId> [--depth N]", summary: "Expand a summary node into source detail" },
+      { name: "timeline settle [--calls N]", summary: "Reconcile and generate the project timeline" },
       { name: "store <text> [--tag ...]", summary: "Store a durable memory entry" },
       { name: "compact [--all] [--dry-run] [--replay] [--parallel <N>] [--replay-provider session-pool] [--restart] [--no-promote]", summary: "Compact conversations into DAG summaries (auto-promotes after)" },
       { name: "import [--provider claude|codex|omp|all] [--all] [--verbose] [--dry-run] [--replay] [--parallel <N>] [--replay-provider session-pool] [--restart]", summary: "Import Claude Code, Codex or Oh My Pi session transcripts" },

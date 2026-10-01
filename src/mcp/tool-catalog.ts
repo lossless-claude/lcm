@@ -25,7 +25,7 @@ type ToolCatalog = {
 };
 
 const SEARCH_DESCRIPTION =
-  "Search native project memory across episodic messages/summaries and promoted memories. Returns separate ranked layer lists. Episodic matches include bounded source context, exact spans and source hashes.";
+  "Search native project memory across episodic messages/summaries and promoted memories. Returns separate ranked layer lists. Episodic matches include bounded source context, exact spans and source hashes. Timeline matches include period and staleness; stale nodes are hidden by default.";
 
 const PIVOT_QUERY_DESCRIPTION =
   "Your own translation of `query` into the project's pivot language. Supply it when the author's language differs from the pivot language (both are named in this tool's description and in every search response); the daemon adds its terms to the original query rather than replacing it. Omit it when the two languages are the same.";
@@ -98,7 +98,7 @@ const ENTRIES: ToolEntry[] = [
   {
     definition: {
       name: "lcm_describe",
-      description: "Inspect metadata and lineage of a memory node without expanding content. Returns depth, token count, parent/child links, and whether it was promoted to long-term memory.",
+      description: "Inspect metadata and lineage of a memory node without expanding content. Returns depth, token count, parent/child links, and whether it was promoted to long-term memory. Timeline nodes also include period, coverage, staleness, memory revisions, generator and replacements.",
       inputSchema: {
         type: "object",
         properties: {
@@ -119,6 +119,7 @@ const ENTRIES: ToolEntry[] = [
         properties: {
           query: { type: "string", description: "Natural language search query" },
           pivotQuery: { type: "string", description: PIVOT_QUERY_DESCRIPTION },
+          includeStale: { type: "boolean", default: false, description: "Include stale timeline nodes with their reasons" },
           limit: { type: "number", description: "Max results per layer (default: 5)" },
           layers: { type: "array", items: { type: "string", enum: ["episodic", "promoted"] }, description: "Which memory layers to search (default: both)" },
           tags: { type: "array", items: { type: "string" }, description: "Filter results to entries that include all specified tags (e.g. ['reasoning'], ['decision', 'architecture'])" },

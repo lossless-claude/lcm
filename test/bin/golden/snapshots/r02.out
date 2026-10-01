@@ -19,6 +19,7 @@
     grep <query> [--mode ...]                                                                                                                          Search raw messages and summaries
     describe <nodeId>                                                                                                                                  Inspect metadata for a memory node
     expand <nodeId> [--depth N]                                                                                                                        Expand a summary node into source detail
+    timeline settle [--calls N]                                                                                                                        Reconcile and generate the project timeline
     store <text> [--tag ...]                                                                                                                           Store a durable memory entry
     compact [--all] [--dry-run] [--replay] [--parallel <N>] [--replay-provider session-pool] [--restart] [--no-promote]                                Compact conversations into DAG summaries (auto-promotes after)
     import [--provider claude|codex|omp|all] [--all] [--verbose] [--dry-run] [--replay] [--parallel <N>] [--replay-provider session-pool] [--restart]  Import Claude Code, Codex or Oh My Pi session transcripts

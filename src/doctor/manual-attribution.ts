@@ -92,7 +92,8 @@ function planStore(dbPath: string, matches: Map<string, Set<string>>, output: st
   let unmatched = 0;
   let elsewhere = 0;
   try {
-    const captured = new Set((db.prepare("SELECT DISTINCT session_id FROM conversations").all() as Array<{ session_id: string }>)
+    const hasTimeline = (db.prepare("PRAGMA table_info(conversations)").all() as Array<{ name: string }>).some(column => column.name === "is_timeline");
+    const captured = new Set((db.prepare(`SELECT DISTINCT session_id FROM conversations ${hasTimeline ? "WHERE is_timeline = 0" : ""}`).all() as Array<{ session_id: string }>)
       .map(row => row.session_id));
     // Only rows apply can change: active memories still attributed to "manual".
     for (const row of new PromotedStore(db).getAll().filter(row => row.session_id === "manual" && !row.archived_at)) {

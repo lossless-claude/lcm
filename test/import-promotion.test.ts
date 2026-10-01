@@ -24,6 +24,7 @@ function fixture() {
     for (const session of ["one", "two"]) writeFileSync(join(dir, `${session}.jsonl`), "");
   }
   const post = vi.fn(async (route: string, body: any) => {
+    if (route === "/timeline") return { generated: 0, stale: 0, pending: 0, calls: 0, stopped: "complete", failed: [] };
     if (route === "/ingest") return { ingested: 1, totalTokens: 100 };
     if (route === "/compact") return body.cwd.endsWith("skipped")
       ? { replayOutcome: "no_work" }

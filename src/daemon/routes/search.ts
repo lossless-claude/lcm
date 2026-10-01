@@ -78,8 +78,8 @@ export function createSearchHandler(config: DaemonConfig, paths: LcmPaths, log: 
               episodic = filterTags
                 ? []
                 : config.search.unionHistoryAcrossGroup
-                  ? await searchHistoryGroup(cwd, { query: searchQuery, limit, terms: searchTerms }, paths)
-                  : await searchNativeHistory(db, { query: searchQuery, limit, terms: searchTerms, project: projectRef(cwd) });
+                  ? await searchHistoryGroup(cwd, { query: searchQuery, limit, terms: searchTerms, includeStale: input.includeStale === true }, paths)
+                  : await searchNativeHistory(db, { query: searchQuery, limit, terms: searchTerms, project: projectRef(cwd), includeStale: input.includeStale === true });
             } catch (err) {
               // Non-fatal for the response, but never silent: a real failure
               // (malformed FTS5 syntax, missing table, corrupt index) must be

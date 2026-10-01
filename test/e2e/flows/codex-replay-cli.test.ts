@@ -166,7 +166,7 @@ describe("Codex replay through the built CLI", { timeout: 120_000 }, () => {
     let firstMessageCount: number;
     try {
       const sessions = db.prepare(
-        "SELECT session_id FROM conversations ORDER BY session_id",
+        "SELECT session_id FROM conversations WHERE is_timeline = 0 ORDER BY session_id",
       ).all() as { session_id: string }[];
       expect(sessions.map((row) => row.session_id)).toEqual([
         "claude-current",

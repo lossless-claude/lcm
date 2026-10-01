@@ -16,6 +16,7 @@ export function registerMemoryCommands(program: Command, deps: MemoryCommandDeps
     .command("search <query>")
     .description("Search memory across episodic and promoted layers")
     .option("--limit <n>", "Max results per layer", "5")
+    .option("--include-stale", "Include stale timeline nodes with reasons")
     .option("--layer <name>", "Layer to search: episodic or promoted (repeatable)", collectRepeatedOption, [])
     .option("--tag <tag>", "Require a tag on matching entries (repeatable)", collectRepeatedOption, [])
     .helpOption(false)
@@ -34,6 +35,7 @@ export function registerMemoryCommands(program: Command, deps: MemoryCommandDeps
         limit: parsePositiveInteger(String(opts.limit ?? "5"), "--limit"),
         layers,
         tags,
+        ...(opts.includeStale ? { includeStale: true } : {}),
       });
       printJson(result);
     });

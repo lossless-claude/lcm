@@ -1,3 +1,4 @@
+import { TIMELINE_SESSION_ID } from "./db/project-timeline.js";
 import { WorkerStore } from "./store/worker-store.js";
 import { discoverWorkerDescendant, discoveredWorkerDescendant } from "./worker-session.js";
 import type { DatabaseSync } from "node:sqlite";
@@ -186,6 +187,7 @@ export class SessionCapture {
    * since the last write reaches its attribution.
    */
   async captureTranscript(input: TranscriptCaptureInput): Promise<TranscriptCaptureResult | undefined> {
+    if (input.sessionId === TIMELINE_SESSION_ID) return undefined;
     const workers = new WorkerStore(this.db);
     if (workers.excluded(input.sessionId, input.attribution?.parentSessionId)) {
       await this.write({ sessionId: input.sessionId, cwd: input.cwd, messages: [], transcriptPath: input.transcriptPath, attribution: input.attribution });
@@ -269,6 +271,7 @@ export class SessionCapture {
    * result and the checkpoint belong to the last conversation written.
    */
   async write(input: CaptureInput): Promise<CaptureResult> {
+    if (input.sessionId === TIMELINE_SESSION_ID) return { conversationId: 0, records: [], totalCounts: { gitleaks: 0, builtIn: 0, global: 0, project: 0 } };
     const discoveredCwd = discoverWorkerDescendant(new WorkerStore(this.db), input.sessionId, input.transcriptPath);
     return this.conversationStore.withTransaction(() => this.writeInTransaction(input, discoveredCwd));
   }

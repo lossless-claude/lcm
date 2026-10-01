@@ -74,6 +74,7 @@ export function claudeRebuildCandidateIds(db: DatabaseSync): string[] {
   const hasShape = (db.prepare("PRAGMA table_info(conversations)").all() as Array<{ name: string }>)
     .some((column) => column.name === "parser_shape");
   const conditions = [
+    "c.session_id <> 'lcm:project-timeline'",
     ...(hasShape ? ["(c.parser_shape IS NULL OR c.parser_shape <> ?)"] : []),
     ...(hasCursors ? [`NOT EXISTS (SELECT 1 FROM codex_ingest_cursors k JOIN conversations kc ON kc.conversation_id = k.conversation_id WHERE kc.session_id = c.session_id${otherClientCursor(db)})`] : []),
   ];

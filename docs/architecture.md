@@ -44,6 +44,70 @@ Every summary carries:
 - **fileIds** — References to large files mentioned in the source
 - **tokenCount** — Estimated tokens
 
+### Project timeline storage
+
+The timeline is a regenerable projection in the same SQLite store. Ordinary
+summary rows belong to the reserved `lcm:project-timeline` conversation, marked
+`is_timeline = 1`. Side tables retain exact coverage, revisions, stale state and
+replacement lineage. The owner is excluded from session readers, capture,
+restore selection, promotion, rebuild, replay and manual attribution. Timeline
+edges do not count as consumers when checking session summaries for orphans.
+
+Migration installs no timeline triggers while tracking is off; while tracking is
+on it restores missing triggers and replaces outdated SQL. `lcm timeline enable`
+atomically creates tracking and detach triggers and starts paged bootstrap. Monotonic session counters
+survive deletion and recreation; bootstrap never resets them. Disable stops
+project generation while retaining tracking. Teardown removes dependent references
+before dropping triggers, preserving historical node content by default.
+`lcm timeline teardown --remove-nodes` also deletes all owner summaries and node
+rows after detaching their edges, keeping session summaries and messages intact.
+A downgraded lcm promotes retained timeline nodes at every session end. Re-upgrade
+migration archives promoted memories whose `source_summary_id` names an owner
+summary or whose `session_id` is `lcm:project-timeline`; such rows are never
+legitimate promoted memory. An already-current migration takes no write lock
+unless it finds schema/trigger repairs, missing state or memories to archive.
+
+`openProjectTimeline` exposes budgeted `settle` and model-free `describe`.
+Incremental settle reads dirty sessions through indexed frontier/remainder queries,
+then updates only those sessions' persisted metadata and affected UTC months.
+Counter conflicts leave the affected sessions dirty for the next pass while other
+sessions and independent units continue; conflict is reported only without progress.
+Items contain no text or hashes; ready units read text by id. Existing summaries
+are indivisible, chunking ignores depth, and digest output gates dependent periods.
+Manual memories enter as separate attributed claims; revisions cover content,
+tags and archived state. Attribution and confidence changes do not invalidate them.
+
+Generation releases the mutation lease. Publication takes one lease, validates
+only the unit's session counters and memory hashes, and synchronously commits a
+new immutable node and its references. Digest publication marks its month;
+period publication marks nothing. Publication never replans. Obsolete raw digests
+and replaced periods leave active context while retaining historical manifests.
+
+`timeline.generationEnabled` defaults to false. Automatic work also requires
+tracking and completed bootstrap, waits for 60 seconds of quiet and runs one unit
+per project per tick. Model errors and publication conflicts have persisted
+exponential backoff, with a one-hour cap and parking after eight failures.
+Admission requires at least one runnable endpoint. The first admitted generation
+settle releases legacy backed-off and parked units once: their persisted failures
+have no cause, so this also retries legacy model failures. Subsequent failures
+retain their backoff. Replay holds expire after
+five minutes without progress; ordinary ticks drain persisted work once generation
+is on and replay no longer holds it. Ledger inserts perform no timeline manifest scan.
+Every provider and fallback must support shared live/background/timeline admission through a
+bounded named HTTP endpoint. Unsupported providers refuse timeline generation
+with a configuration 4xx before database work, without failure flags or backoff.
+
+Status and doctor read persisted pending/stale/dirty counts, including sessions
+not yet flagged, without migration, reconciliation or generation.
+Doctor also reports missing or outdated tracking/detach SQL from `sqlite_master`
+read-only and names the repair command.
+Explicit `lcm timeline settle --calls 0 --reconcile full` repairs triggers and conservatively
+checks conversation aggregates in resumable pages. Equal-length edits and equal-count
+edge substitutions can escape that proof; NUL repair explicitly marks its sessions.
+Search hides stale nodes unless `lcm search --include-stale` is requested. Describe
+adds coverage; expansion behavior is unchanged. See [the design](design/project-timeline.md)
+for lifecycle, queries and the deferred session-dirt and month-repacking trade-offs.
+
 ### Context items
 
 The **context_items** table maintains the ordered list of what the model sees for each conversation. Each entry is either a message reference or a summary reference, identified by ordinal.
@@ -575,8 +639,9 @@ The guard uses the session because `/compact` resolves its newest conversation o
 an OMP clear can open another conversation under the same session id. Different sessions of one
 project can still summarize concurrently, subject to a named endpoint's `maxConcurrent` limit.
 The endpoint semaphore (`src/llm/endpoint-concurrency.ts`) is shared across all projects
-and summarizer instances using that name. It admits live before background, FIFO within
-each class, and leaves running requests to finish. `/compact` classifies PreCompact as live
+and summarizer instances using that name. Its HTTP adapters admit live before background
+and background before timeline, FIFO within each class, and leave running requests to finish.
+`/compact` classifies PreCompact as live
 from `capture_required` or OMP's `precompact_verified`; SessionEnd (including the legacy
 hook fallback) and SessionStart catch-up send `work_class: "live"` because they also use
 `skip_ingest`. Other `skip_ingest` callers, including import replay and batch compact with
