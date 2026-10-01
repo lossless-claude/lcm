@@ -13,7 +13,7 @@
  * Deduplication is performed on import via deduplicateAndInsert().
  */
 
-import { existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
@@ -25,7 +25,7 @@ import { deduplicateAndInsert } from "./promotion/dedup.js";
 import { ScrubEngine } from "./scrub.js";
 import { getLcmConnection, closeLcmConnection } from "./db/connection.js";
 import type { LcmPaths } from "./lcm-paths.js";
-import { readProjectMetaIn, updateProjectMetaIn } from "./daemon/project-meta.js";
+import { updateProjectMetaIn } from "./daemon/project-meta.js";
 
 export const EXPORT_VERSION = 1;
 
@@ -211,8 +211,8 @@ export async function importKnowledge(
   const projDir = resolveProjectDir(cwd, baseDir);
   const dbPath = resolveProjectDbPath(cwd, baseDir);
 
-  // Ensure project dir + DB exist
-  mkdirSync(projDir, { recursive: true });
+  // Record the destination before opening its store or processing any incoming memory.
+  updateProjectMetaIn(projDir, { cwd });
 
   const db = getLcmConnection(dbPath);
 
@@ -251,10 +251,6 @@ export async function importKnowledge(
   } finally {
     closeLcmConnection(dbPath);
   }
-
-  // Record the project if it has no record yet, so `lcm export --all` (which
-  // enumerates projects by their meta.json) can see it.
-  if (readProjectMetaIn(projDir) === null) updateProjectMetaIn(projDir, { cwd });
 
   return {
     total: doc.entries.length,

@@ -190,7 +190,7 @@ flowchart LR
 | `lcm_describe` | Inspect metadata and lineage of a memory node (depth, token count, parent/child links) |
 | `lcm_store` | Persist durable memory manually with optional tags |
 | `lcm_stats` | Show token savings, compression ratios, and usage statistics |
-| `lcm_doctor` | Diagnose setup and report stale project stores and orphan summaries |
+| `lcm_doctor` | Diagnose setup and report stale stores, record-less stores and orphan summaries |
 
 ## CLI
 
@@ -198,7 +198,7 @@ flowchart LR
 # Setup & diagnostics
 lcm install                # setup wizard
 lcm uninstall              # remove hooks, MCP, and config
-lcm doctor                 # diagnostics, bounded store lists and orphan-summary ids
+lcm doctor                 # diagnostics, bounded store lists (stale, record-less) and orphan-summary ids
 lcm doctor --verbose       # complete store lists, orphan ids and event details
 lcm diagnose               # scan recent sessions for hook failures
 lcm status                 # daemon + summarizer mode

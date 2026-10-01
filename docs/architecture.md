@@ -86,6 +86,17 @@ Beside each project's database sits `meta.json`, the project record: `cwd`, the 
 
 One corrupt-file policy, whichever code path meets the file first: a read treats an unparsable file as absent; an update moves it aside as `meta.json.corrupt-<timestamp>` and starts again from the caller's keys. The alternatives both lose something silently — refusing to write leaves the project invisible to every enumeration until someone deletes the file by hand, and overwriting in place discards the evidence — while moving aside heals the project on its next write and keeps the bad bytes for inspection.
 
+Project store creation records the destination cwd before opening its database.
+Transcript capture (`/ingest`, `/compact`), `/session-complete`, `/store`,
+worker enrollment, passive event promotion (`/promote-events`) and restore's
+`withProjectDb` use `openProject`. Summary promotion (`/promote`) requires an
+existing database and records its cwd before opening it on a write run; a dry
+run leaves its record untouched. Portable knowledge import writes the destination
+record before opening the database or processing entries, merging existing keys.
+Other database readers require an existing store. Store ids derive from the
+destination cwd's realpath when available; `/store`'s `metadata.projectId`
+overrides row provenance, not the destination store or its recorded cwd.
+
 ### Store hygiene
 
 `src/doctor/store-hygiene.ts` reports missing temporary or test working directories
@@ -104,6 +115,16 @@ their event sidecars to `<lcm-home>/trash/projects/<batch>/`. The selected
 in one transaction. A failed move or index update rolls back index changes and
 attempts to restore every moved file; files remain in trash if restoration fails.
 No stored data is deleted or automatically purged.
+
+For databases without an absolute cwd in their project record, doctor counts
+record-less stores and how many hold promoted rows, including archived memories
+and feedback signals. Unreadable databases have an unknown promoted-memory count.
+Cleanup preview reads existing databases without migrations and offers a cwd when
+structured `cwd` or `project_id` fields identify one working directory, directly
+or through a known project record. Conflicting evidence yields no suggestion.
+These stores remain skipped by cleanup, including explicit apply: an operator
+reviews the suggestion and restores the record manually; no record is written or
+store relocated by the preview.
 
 Doctor reads existing databases without migrations and skips an empty `summaries`
 table with a `SELECT 1 FROM summaries LIMIT 1` query before querying orphan

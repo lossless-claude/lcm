@@ -102,6 +102,15 @@ the cleanup preview lists each one. Normal doctor output shows at most 20 entrie
 per store list, followed by “... and N more”. Use `lcm doctor --verbose` (or `-v`)
 to review every store and all reported orphan-summary ids.
 
+Doctor also counts databases without a valid absolute cwd in their record and how
+many hold promoted memories (including archived memories and feedback signals).
+Unreadable databases are reported separately with unknown memory contents.
+The cleanup preview offers a recoverable cwd when structured rows carry one, or
+a project id that maps to a known project record. It offers no suggestion when
+the evidence names multiple working directories. Review and restore these project
+records manually; both preview and apply retain record-less stores and their
+event sidecars without changing their records or databases.
+
 Review the cleanup preview, then hold the daemon offline before applying it:
 
 ```bash
