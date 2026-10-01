@@ -1,14 +1,18 @@
+import { DatabaseSync } from "node:sqlite";
+import { runLcmMigrations } from "../src/db/migration.js";
 import { describe, it, expect, vi } from "vitest";
-import { LCM_CONFIG_DEFAULTS } from "../src/db/config.js";
+import { LCM_CONFIG_DEFAULTS, resolveLcmConfig } from "../src/db/config.js";
 import { CompactionEngine, compactEngineConfig, type CompactionSummarizeFn } from "../src/compaction.js";
-import type { ConversationStore } from "../src/store/conversation-store.js";
-import type { SummaryStore } from "../src/store/summary-store.js";
+import { ConversationStore } from "../src/store/conversation-store.js";
+import { SummaryStore } from "../src/store/summary-store.js";
+
+const CONTEXT_TOKENS = 50_000;
 
 function makeMinimalStores(): { conversationStore: ConversationStore; summaryStore: SummaryStore } {
   const summaryStore = {
-    getContextTokenCount: vi.fn().mockResolvedValue(50_000),
+    getContextTokenCount: vi.fn().mockResolvedValue(CONTEXT_TOKENS),
     getContextItems: vi.fn().mockResolvedValue([
-      { ordinal: 0, itemType: "message", messageId: 1, summaryId: null, tokenCount: 50_000 },
+      { ordinal: 0, itemType: "message", messageId: 1, summaryId: null, tokenCount: CONTEXT_TOKENS },
     ]),
     insertSummary: vi.fn().mockResolvedValue(undefined),
     linkSummaryToMessages: vi.fn().mockResolvedValue(undefined),
@@ -56,7 +60,6 @@ describe("CompactionEngine.compact — previousSummaryContent seeding", () => {
       freshTailCount: 0,
       leafMinFanout: 1,
       condensedMinFanout: 10,
-      condensedMinFanoutHard: 5,
       condensedTargetTokens: 900,
       language: "pt-BR",
     });
@@ -76,6 +79,13 @@ describe("CompactionEngine.compact — previousSummaryContent seeding", () => {
 });
 
 describe("compactEngineConfig", () => {
+  it("does not expose the unused hard-trigger fanout setting", () => {
+    const env = { LCM_CONDENSED_MIN_FANOUT_HARD: "7" };
+    expect(resolveLcmConfig(env)).not.toHaveProperty("condensedMinFanoutHard");
+    expect(compactEngineConfig({ env })).not.toHaveProperty("condensedMinFanoutHard");
+    expect(LCM_CONFIG_DEFAULTS).not.toHaveProperty("condensedMinFanoutHard");
+  });
+
   it("threads through the only per-caller value", () => {
     const scrubber = {} as never;
     const config = compactEngineConfig({ scrubber, language: "pt-BR" });
@@ -94,7 +104,6 @@ describe("compactEngineConfig", () => {
       freshTailCount: 8,
       leafMinFanout: 3,
       condensedMinFanout: 2,
-      condensedMinFanoutHard: 1,
       leafChunkTokens: 20000,
       condensedTargetTokens: 900,
     });
@@ -113,5 +122,47 @@ describe("compactEngineConfig", () => {
     const { scrubber: _b, ...routeRest } = route;
     const { scrubber: _d, ...benchRest } = bench;
     expect(benchRest).toEqual(routeRest);
+  });
+});
+
+describe("CompactionEngine fanout defaults", () => {
+  it.each([
+    { depth: 0, fanout: 3, key: "LCM_LEAF_MIN_FANOUT" },
+    { depth: 1, fanout: 2, key: "LCM_CONDENSED_MIN_FANOUT" },
+  ])("uses the configured default at depth $depth for non-positive fanout", async ({ depth, fanout, key }) => {
+    const sourceTokens = 1_000;
+    for (const value of ["0", "-1"]) {
+      for (const count of [fanout - 1, fanout]) {
+        const db = new DatabaseSync(":memory:");
+        try {
+          runLcmMigrations(db);
+          const conversationStore = new ConversationStore(db);
+          const summaryStore = new SummaryStore(db);
+          const { conversationId } = await conversationStore.getOrCreateConversation("fanout-session");
+          for (let i = 0; i < count; i++) {
+            const summaryId = `sum_fanout_${i}`;
+            await summaryStore.insertSummary({
+              summaryId, conversationId, kind: depth === 0 ? "leaf" : "condensed",
+              depth, content: "fact".repeat(sourceTokens), tokenCount: sourceTokens,
+            });
+            await summaryStore.replaceContextRangeWithSummary({
+              conversationId, startOrdinal: i, endOrdinal: i, summaryId,
+            });
+          }
+          const engine = new CompactionEngine(conversationStore, summaryStore, {
+            ...compactEngineConfig({ env: { [key]: value } }), freshTailCount: 0,
+          });
+          const result = await engine.compact({
+            conversationId, tokenBudget: CONTEXT_TOKENS, force: true,
+            summarize: async () => "Condensed durable facts",
+          });
+          expect(result.condensed).toBe(count === fanout);
+          expect((await summaryStore.getContextItems(conversationId)).length)
+            .toBe(count === fanout ? 1 : count);
+        } finally {
+          db.close();
+        }
+      }
+    }
   });
 });

@@ -130,7 +130,7 @@ The estimate is deterministic, and bounds each level where lcm's code fixes it:
       },
       "settings": {
         "contextThreshold": 0, "freshTailCount": 0, "leafMinFanout": 0, "condensedMinFanout": 0,
-        "condensedMinFanoutHard": 0, "leafChunkTokens": 0, "condensedTargetTokens": 0
+        "leafChunkTokens": 0, "condensedTargetTokens": 0
       },
       "contract": "sha256:<hash>",
       "corpus": "synthetic-planted@sha256:<hash>",

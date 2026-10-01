@@ -12,7 +12,6 @@ const CONFIG: CompactionConfig = {
   freshTailCount: 0,
   leafMinFanout: 2,
   condensedMinFanout: 2,
-  condensedMinFanoutHard: 2,
   leafChunkTokens: 2_000,
   condensedTargetTokens: 100,
 };
