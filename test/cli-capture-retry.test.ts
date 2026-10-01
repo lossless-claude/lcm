@@ -46,22 +46,25 @@ describe("import --retry-blocked", () => {
     expect(output).toHaveBeenCalledWith("Cleared 2 terminal Codex guards; the next capture will recheck alignment.");
   });
 
-  it("clears guards for every recorded project and prints each count", async () => {
+  it("clears guards for every recorded project that still exists and prints the projects that had any", async () => {
     const paths = createLcmPaths(lcmHome());
     const cwds = [join(lcmHome(), "project-a"), join(lcmHome(), "project-b")];
-    for (const [i, cwd] of cwds.entries()) {
+    const vanished = join(lcmHome(), "project-gone");
+    for (const [i, cwd] of [...cwds, vanished].entries()) {
       const dir = join(paths.projectsDir, String(i));
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, "meta.json"), JSON.stringify({ cwd }));
     }
+    for (const cwd of cwds) mkdirSync(cwd, { recursive: true });
     mkdirSync(join(paths.projectsDir, "no-record"), { recursive: true });
     const { program, post } = command();
     post.mockResolvedValueOnce({ cleared: 2 }).mockResolvedValueOnce({ cleared: 0 });
     const output = vi.spyOn(console, "log").mockImplementation(() => {});
     await program.parseAsync(["import", "--provider", "codex", "--retry-blocked", "--all"], { from: "user" });
     expect(post.mock.calls).toEqual(cwds.map(cwd => ["/capture-retry", { cwd, all: true }]));
-    expect(output).toHaveBeenCalledWith(`${cwds[0]}: Cleared 2 terminal Codex guards; the next capture will recheck alignment.`);
-    expect(output).toHaveBeenCalledWith(`${cwds[1]}: Cleared 0 terminal Codex guards; the next capture will recheck alignment.`);
+    expect(output).toHaveBeenCalledWith(`${cwds[0]}: cleared 2`);
+    expect(output).not.toHaveBeenCalledWith(`${cwds[1]}: cleared 0`);
+    expect(output).toHaveBeenCalledWith("Cleared 2 terminal Codex guards; the next capture will recheck alignment.");
   });
 
   it.each([

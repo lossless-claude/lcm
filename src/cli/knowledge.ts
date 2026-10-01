@@ -77,19 +77,23 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
             for (const entry of readdirSync(paths.projectsDir, { withFileTypes: true })) {
               if (!entry.isDirectory()) continue;
               const cwd = readProjectMetaIn(join(paths.projectsDir, entry.name))?.cwd;
-              if (cwd) cwds.push(cwd);
+              // A vanished directory has no capture to retry, and the daemon rejects its cwd.
+              if (cwd && existsSync(cwd)) cwds.push(cwd);
             }
           }
         } else {
           cwds.push(process.cwd());
         }
         const client = await createDaemonClientOrExit();
+        let cleared = 0;
         for (const cwd of cwds) {
           const result = await client.post<{ cleared: number }>("/capture-retry", {
             cwd, ...(opts.session !== undefined ? { session_id: opts.session } : { all: true }),
           });
-          console.log(`${all ? `${cwd}: ` : ""}Cleared ${result.cleared} terminal Codex guards; the next capture will recheck alignment.`);
+          cleared += result.cleared;
+          if (all && result.cleared) console.log(`${cwd}: cleared ${result.cleared}`);
         }
+        console.log(`Cleared ${cleared} terminal Codex guards; the next capture will recheck alignment.`);
         return;
       }
 
