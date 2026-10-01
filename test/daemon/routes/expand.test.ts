@@ -36,7 +36,7 @@ describe("POST /expand source messages", () => {
       await summaries.insertSummary({ summaryId: "sum_leaf", conversationId, kind: "leaf", content: "Bracket decision.", tokenCount: 3 });
       await summaries.linkSummaryToMessages("sum_leaf", messages.map(message => message.messageId));
       await summaries.insertSummary({ summaryId: "sum_parent", conversationId, kind: "condensed", content: "Project decisions.", tokenCount: 3 });
-      await summaries.linkSummaryToParents("sum_leaf", ["sum_parent"]);
+      await summaries.linkSummaryToParents("sum_parent", ["sum_leaf"]);
     } finally {
       db.close();
     }

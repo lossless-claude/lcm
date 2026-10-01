@@ -544,15 +544,15 @@ export class SummaryStore {
            SELECT ?, NULL, 0, ''
            UNION ALL
            SELECT
-             sp.summary_id,
              sp.parent_summary_id,
+             sp.summary_id,
              subtree.depth_from_root + 1,
              CASE
                WHEN subtree.path = '' THEN printf('%04d', sp.ordinal)
                ELSE subtree.path || '.' || printf('%04d', sp.ordinal)
              END
            FROM summary_parents sp
-           JOIN subtree ON sp.parent_summary_id = subtree.summary_id
+           JOIN subtree ON sp.summary_id = subtree.summary_id
          )
          SELECT
            s.summary_id,
@@ -573,7 +573,7 @@ export class SummaryStore {
            subtree.path,
            (
              SELECT COUNT(*) FROM summary_parents sp2
-             WHERE sp2.parent_summary_id = s.summary_id
+             WHERE sp2.summary_id = s.summary_id
            ) AS child_count
          FROM subtree
          JOIN summaries s ON s.summary_id = subtree.summary_id

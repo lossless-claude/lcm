@@ -306,7 +306,7 @@ export class RetrievalEngine {
     }
 
     if (summary.kind === "condensed") {
-      const children = await this.summaryStore.getSummaryChildren(summaryId);
+      const children = await this.summaryStore.getSummaryParents(summaryId);
 
       for (const child of children) {
         if (result.truncated) {
