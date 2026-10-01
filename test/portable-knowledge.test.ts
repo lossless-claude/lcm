@@ -236,6 +236,28 @@ describe("portable-knowledge — import", () => {
     db.close();
   });
 
+  it("imports an earlier export's string-encoded tags as an array", async () => {
+    const baseDir = makeTempDir();
+    const cwd = makeTempDir();
+    // An export taken before tag normalization emits a legacy row's tags as it parsed them: a string.
+    const entry = (content: string, tags: unknown) =>
+      ({ content, tags, confidence: 0.9, createdAt: new Date().toISOString(), sessionId: null }) as ExportDocument["entries"][number];
+    const doc = makeDoc([
+      entry("Encoded array of tags", JSON.stringify(["type:decision", "project:lcm"])),
+      entry("Single string tag", "type:gotcha"),
+      entry("Malformed tags", [1, 2]),
+    ]);
+
+    const result = await importKnowledge(cwd, doc, { _lcmBaseDir: baseDir });
+
+    expect(result).toMatchObject({ imported: 2, skipped: 1 });
+    const db = new DatabaseSync(join(baseDir, "projects", toProjectId(cwd), "db.sqlite"));
+    const tags = new PromotedStore(db).getAll({ projectId: toProjectId(cwd) })
+      .map((row) => [row.content, JSON.parse(row.tags)]).sort();
+    db.close();
+    expect(tags).toEqual([["Encoded array of tags", ["type:decision", "project:lcm"]], ["Single string tag", ["type:gotcha"]]]);
+  });
+
   it("dry-run returns expected counts without writing", async () => {
     const baseDir = makeTempDir();
     const cwd = makeTempDir();

@@ -1,15 +1,39 @@
 import { createLcmPaths } from "../../src/lcm-paths.js";
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { Command } from "commander";
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { shouldRunMain } from "../../bin/lcm.js";
+import type { DaemonClient } from "../../src/daemon/client.js";
 import { registerMemoryCommands } from "../../src/cli/memory.js";
 
 const memoryDeps = { paths: createLcmPaths("/unused"), createDaemonClientOrExit: async () => { throw new Error("not used in this test"); } };
 
 describe("memory command registration", () => {
+  afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
+
+  it.each([
+    ["claude-session", "codex-thread", "claude-session"],
+    ["", "codex-thread", "codex-thread"],
+    ["", "", "manual"],
+  ])("store forwards caller provenance (%s, %s)", async (claude, codex, sessionId) => {
+    vi.stubEnv("CLAUDE_CODE_SESSION_ID", claude);
+    vi.stubEnv("CODEX_THREAD_ID", codex);
+    vi.stubEnv("LCM_SUMMARIZE_WORKER", "");
+    vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    const post = vi.fn().mockResolvedValue({ stored: true });
+    const program = new Command("lcm");
+    registerMemoryCommands(program, {
+      paths: createLcmPaths(process.env.LCM_HOME!),
+      createDaemonClientOrExit: async () => ({ post }) as DaemonClient,
+    });
+    await program.parseAsync(["store", "insight", "--tag", "type:decision"], { from: "user" });
+    expect(post).toHaveBeenCalledWith("/store", {
+      cwd: process.cwd(), text: "insight", tags: ["type:decision"], metadata: { sessionId },
+    });
+  });
+
   it("registers all daemon-backed memory commands", () => {
     const program = new Command("lcm");
     registerMemoryCommands(program, memoryDeps);

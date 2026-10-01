@@ -2,6 +2,7 @@ import { WorkerStore } from "../../store/worker-store.js";
 import { EventsDb, type EventRow, type PatternReinforcementStats } from "../../hooks/events-db.js";
 import { eventsDbPath } from "../../db/events-path.js";
 import { PromotedStore } from "../../db/promoted.js";
+import { passiveTypeTag } from "../../promotion/passive-tags.js";
 import { deduplicateAndInsert } from "../../promotion/dedup.js";
 import { sendJson, type RouteHandler } from "../server.js";
 import { validateCwd } from "../validate-cwd.js";
@@ -12,16 +13,6 @@ import type { DaemonConfig } from "../config.js";
 import type { LcmPaths } from "../../lcm-paths.js";
 import { safeLogError } from "../../hooks/hook-errors.js";
 import { acquireProjectMutation, yieldToEventLoop } from "../project-queue.js";
-
-const AUTO_TAGS: Record<string, string> = {
-  decision: "type:preference",
-  error: "type:gotcha",      // overridden to "type:solution" for error→fix pairs
-  plan: "type:decision",
-  role: "type:user-context",
-  git: "type:workflow",
-  env: "type:environment",
-  file: "type:pattern",
-};
 
 const CORRELATION_WINDOW = 20;
 const MIN_REINFORCED_PATTERN_OCCURRENCES = 3;
@@ -71,7 +62,7 @@ function correlateErrors(events: EventRow[]): void {
         const matchToken = errorPrefix.split(":")[1]?.trim().split(" ")[0] ?? "";
         if (matchToken && candidatePrefix.includes(matchToken)) {
           // Correlation found — this is an error→fix pair
-          // Set the tag to 'type:solution' (overriding 'type:gotcha' from AUTO_TAGS)
+          // Set the tag to 'type:solution' (overriding 'type:gotcha' from the category mapping)
           (candidate as EventRow & { auto_tag?: string }).auto_tag = "type:solution";
           (candidate as EventRow & { _correlatedErrorId?: number })._correlatedErrorId = event.event_id;
           break; // only correlate with closest match
@@ -157,7 +148,7 @@ export function createPromoteEventsHandler(config: DaemonConfig, paths: LcmPaths
             await yieldToEventLoop();
             try {
               const autoTag = (event as EventRow & { auto_tag?: string }).auto_tag;
-              const tag = autoTag ?? AUTO_TAGS[event.category] ?? `category:${event.category}`;
+              const tag = autoTag ?? passiveTypeTag(event.category);
               const reinforcement = getPatternReinforcement(event);
               const reinforced = isReinforcedPattern(reinforcement);
               let confidence: number;

@@ -19,6 +19,24 @@ export function parseStoredTags(raw: string): string[] | null {
   }
 }
 
+/**
+ * Tags as an array of strings, decoding the legacy encodings older versions stored: an array
+ * JSON-encoded inside a string, or a single tag string. Null for anything else.
+ */
+export function decodeLegacyTags(value: unknown): string[] | null {
+  let tags = value;
+  if (typeof tags === "string") {
+    const text = tags;
+    try {
+      const decoded: unknown = JSON.parse(text);
+      tags = Array.isArray(decoded) ? decoded : [text];
+    } catch {
+      tags = [text];
+    }
+  }
+  return Array.isArray(tags) && tags.every((tag): tag is string => typeof tag === "string") ? tags : null;
+}
+
 /** Returns a stored signal's sole non-empty target, never an arbitrary one. */
 export function singleMemoryIdTag(tags: string[]): string | null {
   const targets = tags.filter((tag) => tag.startsWith("memory_id:"));

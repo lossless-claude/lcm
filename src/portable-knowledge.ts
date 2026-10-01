@@ -19,6 +19,7 @@ import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 
 import { PromotedStore } from "./db/promoted.js";
+import { decodeLegacyTags } from "./db/votes.js";
 import { runLcmMigrations } from "./db/migration.js";
 import { deduplicateAndInsert } from "./promotion/dedup.js";
 import { ScrubEngine } from "./scrub.js";
@@ -228,10 +229,13 @@ export async function importKnowledge(
     for (const entry of doc.entries) {
       const confidence = opts.confidence !== undefined ? opts.confidence : entry.confidence;
       try {
+        // An export taken before tag normalization carries a legacy row's tags as a string.
+        const tags = decodeLegacyTags(entry.tags);
+        if (!tags) throw new Error("tags must be an array of strings");
         await deduplicateAndInsert({
           store,
           content: entry.content,
-          tags: entry.tags,
+          tags,
           projectId: projId,
           sessionId: entry.sessionId ?? undefined,
           depth: 0,

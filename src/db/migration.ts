@@ -1,3 +1,5 @@
+import { passiveTypeTag } from "../promotion/passive-tags.js";
+import { decodeLegacyTags } from "./votes.js";
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
@@ -689,6 +691,53 @@ function backfillMessagePartsSkillCommand(db: DatabaseSync): void {
     .run(unmatchedSkillCount);
 }
 
+function legacyPromotedTags(stored: string): string[] | null {
+  try {
+    return decodeLegacyTags(JSON.parse(stored));
+  } catch {
+    return null;
+  }
+}
+
+/** Repair legacy encodings once, with row tags and their FTS entries committed together. */
+function backfillPromotedTagsOnce(db: DatabaseSync, fts5Available: boolean): void {
+  db.exec(`CREATE TABLE IF NOT EXISTS promoted_tags_backfill (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    completed_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
+  if (db.prepare("SELECT 1 FROM promoted_tags_backfill WHERE id = 1").get()) return;
+
+  db.exec("SAVEPOINT promoted_tags_backfill");
+  try {
+    const update = db.prepare("UPDATE promoted SET tags = ? WHERE rowid = ?");
+    const removeFts = fts5Available ? db.prepare("DELETE FROM promoted_fts WHERE rowid = ?") : null;
+    const insertFts = fts5Available ? db.prepare("INSERT INTO promoted_fts(rowid, content, tags) VALUES (?, ?, ?)") : null;
+    for (const row of db.prepare("SELECT rowid, content, tags, archived_at FROM promoted").iterate()) {
+      const { rowid, content, tags: stored, archived_at } = row as {
+        rowid: number; content: string; tags: string; archived_at: string | null;
+      };
+      let tags = legacyPromotedTags(stored);
+      if (!tags) continue;
+      if (tags.includes("source:passive-capture")) {
+        const category = tags.find((tag) => tag.startsWith("category:"))?.slice("category:".length) ?? "";
+        tags = tags.filter((tag) => !tag.startsWith("category:"));
+        if (!tags.some((tag) => tag.startsWith("type:"))) tags.push(passiveTypeTag(category));
+      }
+      const normalized = JSON.stringify(tags);
+      if (normalized === stored) continue;
+      update.run(normalized, rowid);
+      removeFts?.run(rowid);
+      if (archived_at === null) insertFts?.run(rowid, content, normalized);
+    }
+    db.prepare("INSERT INTO promoted_tags_backfill (id) VALUES (1)").run();
+    db.exec("RELEASE promoted_tags_backfill");
+  } catch (err) {
+    db.exec("ROLLBACK TO promoted_tags_backfill");
+    db.exec("RELEASE promoted_tags_backfill");
+    throw err;
+  }
+}
+
 export interface LcmMigrationOptions {
   fts5Available?: boolean;
   /** Override for `~/.claude/projects` — tests only, so the backfill never walks the real disk. */
@@ -1029,6 +1078,7 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
 
   const fts5Available = options?.fts5Available ?? getLcmDbFeatures(db).fts5Available;
   if (!fts5Available) {
+    backfillPromotedTagsOnce(db, false);
     return;
   }
 
@@ -1044,8 +1094,12 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
         tags,
         tokenize='porter unicode61'
       );
+      INSERT INTO promoted_fts(rowid, content, tags)
+      SELECT rowid, content, tags FROM promoted WHERE archived_at IS NULL;
     `);
   }
+
+  backfillPromotedTagsOnce(db, true);
 
   // FTS5 virtual tables for full-text search (cannot use IF NOT EXISTS, so check manually)
   const hasFts = db

@@ -108,6 +108,38 @@ async function postReviewStale(port: number, body: Record<string, unknown>) {
 }
 
 describe("POST /store — votes", () => {
+  it.each([undefined, { projectId: "explicit-project", sessionId: "explicit-session" }])(
+    "records destination project and preserves explicit provenance (%j)", async metadata => {
+      const { cwd } = checkout("git@github.com:lcm-vote-tests/provenance.git", []);
+      const { daemon, port } = await startDaemon();
+      try {
+        const { status, data } = await postStore(port, { cwd, text: "insight", metadata });
+        expect(status).toBe(200);
+        const db = new DatabaseSync(projectDbPath(cwd, paths));
+        try {
+          const row = new PromotedStore(db).getById(data.id as string)!;
+          expect(row.project_id).toBe(metadata?.projectId ?? projectId(cwd));
+          expect(row.session_id).toBe(metadata?.sessionId ?? "manual");
+        } finally { db.close(); }
+      } finally { await daemon.stop(); }
+    },
+  );
+
+  it.each(["signal:memory_vote", "signal:memory_used"])("records the destination project for sibling %s", async signal => {
+    const remote = "git@github.com:lcm-vote-tests/sibling-provenance.git";
+    const { cwd: owner, ids } = checkout(remote, ["target memory"]);
+    const { cwd } = checkout(remote, []);
+    const { daemon, port } = await startDaemon();
+    try {
+      const tags = [signal, `memory_id:${ids[0]}`, ...(signal === "signal:memory_vote" ? ["vote:+1"] : [])];
+      const { status, data } = await postStore(port, { cwd, text: "confirmed insight", tags });
+      expect(status).toBe(200);
+      const db = new DatabaseSync(projectDbPath(owner, paths));
+      try { expect(new PromotedStore(db).getById(data.id as string)!.project_id).toBe(projectId(owner)); }
+      finally { db.close(); }
+    } finally { await daemon.stop(); }
+  });
+
   it.each([
     ["missing target", ["signal:memory_used"]],
     ["empty target", ["signal:memory_used", "memory_id:"]],
