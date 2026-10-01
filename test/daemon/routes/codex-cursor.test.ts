@@ -1,6 +1,7 @@
 import {
   appendFileSync,
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -13,6 +14,9 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
+import { SessionCapture } from "../../../src/capture.js";
+import { ScrubEngine } from "../../../src/scrub.js";
+import { runLcmMigrations } from "../../../src/db/migration.js";
 import { projectDbPath } from "../../../src/daemon/project.js";
 import { createDaemon, type DaemonInstance } from "../../../src/daemon/server.js";
 import { lcmHome } from "../../../src/lcm-home.js";
@@ -161,6 +165,7 @@ describe("Codex persistent ingest cursor", () => {
     expect(checkStalledSubagentCaptures(paths)).toMatchObject({ status: "warn" });
     expect(checkStalledSubagentCaptures(paths).message).toContain(fixture.sessionId);
     expect(checkStalledSubagentCaptures(paths).message).toContain("Codex capture");
+    expect(checkStalledSubagentCaptures(paths).message).toContain("lcm import --provider codex --retry-blocked --session <id>");
     // An invalid file would fail parsing if capture retried it.
     appendFileSync(fixture.path, "not JSON\n");
     expect(await post(fixture)).toMatchObject({ status: 200, body: { ingested: 0, blocked: true } });
@@ -171,6 +176,78 @@ describe("Codex persistent ingest cursor", () => {
     expect(readFileSync(guardPath, "utf8")).toBe(recorded);
     expect(readState(fixture.cwd, fixture.sessionId)).toEqual(before);
     expect(checkStalledSubagentCaptures(paths).message).toContain(fixture.sessionId);
+  });
+
+  it.each(["restored", "mismatch"])("retries legacy rule guards and handles a %s transcript", async (outcome) => {
+    const fixture = createTranscript([messageLine("user", "one"), messageLine("assistant", "two")]);
+    const dbPath = projectDbPath(fixture.cwd, paths);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    try {
+      runLcmMigrations(db);
+      await new SessionCapture(db, "fixture", new ScrubEngine([], [])).captureTranscript({
+        client: "codex", sessionId: fixture.sessionId, cwd: fixture.cwd, transcriptPath: fixture.path,
+      });
+    } finally { db.close(); }
+    const before = readState(fixture.cwd, fixture.sessionId);
+    const guardPath = join(dirname(dbPath), "subagent-guard-failures.json");
+    const identity = statSync(dbPath);
+    writeFileSync(guardPath, JSON.stringify({ db: `${identity.dev}:${identity.ino}`, version: "older", failures: {
+      [fixture.path]: { db: `${identity.dev}:${identity.ino}`, fingerprint: "", sessionId: fixture.sessionId,
+        message: "old rule rejected", client: "codex", terminal: true },
+    } }));
+    if (outcome === "mismatch") {
+      const meta = JSON.stringify({ type: "session_meta", payload: {
+        id: fixture.sessionId, cwd: fixture.cwd, history_mode: "paginated",
+      } });
+      writeFileSync(fixture.path, `${meta}\n${messageLine("user", "different")}\n`);
+    } else appendFileSync(fixture.path, `${messageLine("assistant", "restored")}\n`);
+    await startDaemon();
+    expect(await post(fixture)).toMatchObject(outcome === "restored"
+      ? { status: 200, body: { ingested: 1 } } : { status: 400 });
+    const record = readFileSync(guardPath, "utf8");
+    expect(Object.keys(JSON.parse(record).failures)).toHaveLength(outcome === "restored" ? 0 : 1);
+    expect(await post(fixture)).toMatchObject({ status: 200, body: { ingested: 0,
+      ...(outcome === "mismatch" ? { blocked: true } : {}),
+    } });
+    expect(readFileSync(guardPath, "utf8")).toBe(record);
+    expect(readState(fixture.cwd, fixture.sessionId).messages).toEqual(outcome === "restored"
+      ? [...before.messages, { role: "assistant", content: "restored" }] : before.messages);
+  });
+
+  it.each(["session", "all"])("clears %s guards, rechecks alignment and records a persistent mismatch once", async (scope) => {
+    const fixture = createTranscript([messageLine("user", "one"), messageLine("assistant", "two")]);
+    await startDaemon();
+    await post(fixture);
+    const before = readState(fixture.cwd, fixture.sessionId);
+    const original = readFileSync(fixture.path, "utf8");
+    const meta = JSON.stringify({ type: "session_meta", payload: {
+      id: fixture.sessionId, cwd: fixture.cwd, history_mode: "paginated",
+    } });
+    writeFileSync(fixture.path, `${meta}\n${messageLine("user", "different")}\n`);
+    expect((await post(fixture)).status).toBe(400);
+    const guardPath = join(dirname(projectDbPath(fixture.cwd, paths)), "subagent-guard-failures.json");
+    const clear = async () => {
+      const response = await fetch(`http://127.0.0.1:${daemon!.address().port}/capture-retry`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cwd: fixture.cwd, ...(scope === "all" ? { all: true } : { session_id: fixture.sessionId }) }),
+      });
+      return { status: response.status, body: await response.json() };
+    };
+    expect(await clear()).toMatchObject({ status: 200, body: { cleared: 1 } });
+    expect(checkStalledSubagentCaptures(paths).status).toBe("pass");
+    expect(readState(fixture.cwd, fixture.sessionId)).toEqual(before);
+    expect((await post(fixture)).status).toBe(400);
+    const rerecorded = readFileSync(guardPath, "utf8");
+    expect(await post(fixture)).toMatchObject({ status: 200, body: { blocked: true } });
+    expect(readFileSync(guardPath, "utf8")).toBe(rerecorded);
+    expect(Object.keys(JSON.parse(rerecorded).failures)).toHaveLength(1);
+
+    writeFileSync(fixture.path, `${original}${messageLine("assistant", "restored")}\n`);
+    expect(await clear()).toMatchObject({ status: 200, body: { cleared: 1 } });
+    expect(await post(fixture)).toMatchObject({ status: 200, body: { ingested: 1 } });
+    expect(readState(fixture.cwd, fixture.sessionId).messages).toEqual([...before.messages, { role: "assistant", content: "restored" }]);
+    expect(await clear()).toMatchObject({ status: 200, body: { cleared: 0 } });
   });
 
   it("persists a proven paginated re-anchor without changing stored rows, then resumes after restart", async () => {

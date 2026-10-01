@@ -1,3 +1,5 @@
+import { CODEX_RECOVERY_RULE_VERSION } from "../transcript-source.js";
+import { stalledSubagentGuards } from "./subagent-guard-failures.js";
 import { createWorkerSessionHandler } from "./routes/worker-session.js";
 import { SummarizeJobStore } from "./summarize-jobs.js";
 import { summarizerAvailability } from "./provider-config.js";
@@ -25,6 +27,7 @@ import { createRecentHandler } from "./routes/recent.js";
 import { createIngestHandler } from "./routes/ingest.js";
 import { createPromptSearchHandler } from "./routes/prompt-search.js";
 import { createStatusHandler } from "./routes/status.js";
+import { createCaptureRetryHandler } from "./routes/capture-retry.js";
 import { createSessionCompleteHandler } from "./routes/session-complete.js";
 import { createPromoteEventsHandler } from "./routes/promote-events.js";
 import { createStatsHandler } from "./routes/stats.js";
@@ -210,6 +213,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   const beginTask: BeginBackgroundTask = (name) => beginBackgroundTask(inFlight, name);
   routes.set("POST /ingest", createIngestHandler(config, paths, log, beginTask));
   routes.set("POST /prompt-search", createPromptSearchHandler(config, paths));
+  routes.set("POST /capture-retry", createCaptureRetryHandler(paths));
   routes.set("POST /session-complete", createSessionCompleteHandler(paths));
   routes.set("POST /promote-events", createPromoteEventsHandler(config, paths));
   routes.set("POST /tool-event", createToolEventHandler(config, paths));
@@ -504,6 +508,17 @@ export async function scanForTranscripts(config: DaemonConfig, paths: LcmPaths, 
       const projectPath = join(projectsDir, entry.name);
       const meta = readProjectMetaIn(projectPath);
       if (!meta?.cwd) continue;
+
+      // Retained Codex guard paths need no Claude transcript directory to retry a new rule.
+      for (const { path, failure } of stalledSubagentGuards(meta.cwd, paths)) {
+        if (failure.client !== "codex" || !failure.terminal || failure.recoveryRuleVersion === CODEX_RECOVERY_RULE_VERSION) continue;
+        try {
+          await invokeRoute<IngestResult>(ingest, {
+            client: "codex", session_id: failure.sessionId, cwd: meta.cwd, transcript_path: path,
+          });
+        } catch { /* one rejected recovery must not end the sweep */ }
+        await yieldToEventLoop();
+      }
 
       // Find Claude Code session files for this project's cwd
       const sessionsDir = join(homedir(), ".claude", "projects", claudeProjectSlug(meta.cwd));

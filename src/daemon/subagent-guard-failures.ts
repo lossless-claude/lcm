@@ -2,11 +2,12 @@ import { readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { LcmPaths } from "../lcm-paths.js";
 import { projectDbPath, projectDir } from "./project.js";
+import { CODEX_RECOVERY_RULE_VERSION } from "../transcript-source.js";
 import { PKG_VERSION } from "./version.js";
 
 type Failure = {
   fingerprint: string; db: string; sessionId: string; parentSessionId?: string; message: string;
-  client?: "codex"; terminal?: boolean;
+  client?: "codex"; terminal?: boolean; recoveryRuleVersion?: number;
 };
 const failed = new Map<string, Failure>();
 const projectRecords = new Map<string, { db: string | undefined; failures: Record<string, Failure> }>();
@@ -89,8 +90,13 @@ export function skipUnchangedSubagentGuard(cwd: string, paths: LcmPaths, path: s
 
 /** Terminal Codex failures survive transcript growth, path changes and daemon restarts. */
 export function terminalTranscriptGuard(cwd: string, paths: LcmPaths, sessionId: string): Failure | undefined {
-  return Object.values(records(cwd, paths)).find(failure => failure?.terminal === true && failure.client === "codex" &&
+  const failure = Object.values(records(cwd, paths)).find(failure => failure?.terminal === true && failure.client === "codex" &&
     failure.sessionId === sessionId && failure.db === dbIdentity(cwd, paths) && typeof failure.message === "string");
+  if (failure && failure.recoveryRuleVersion !== CODEX_RECOVERY_RULE_VERSION) {
+    forgetSubagentGuardSession(cwd, paths, sessionId);
+    return undefined;
+  }
+  return failure;
 }
 
 export function rememberSubagentGuard(
@@ -101,7 +107,9 @@ export function rememberSubagentGuard(
   const db = dbIdentity(cwd, paths);
   if ((fingerprint === undefined && !options.terminal) || db === undefined) return;
   if (options.terminal && terminalTranscriptGuard(cwd, paths, sessionId)) return;
-  const failure = { fingerprint: fingerprint ?? "", db, sessionId, parentSessionId, message, ...options };
+  const failure = { fingerprint: fingerprint ?? "", db, sessionId, parentSessionId, message, ...options,
+    ...(options.terminal ? { recoveryRuleVersion: CODEX_RECOVERY_RULE_VERSION } : {}),
+  };
   const current = records(cwd, paths);
   current[path] = failure;
   // Skip only what doctor can list: an unrecorded failure stays retried every pass.
@@ -125,6 +133,22 @@ export function forgetSubagentGuardSession(cwd: string, paths: LcmPaths, session
   if (stale.length === 0) return;
   for (const path of stale) delete current[path];
   writeRecords(cwd, paths, current);
+}
+
+/** Explicitly retry terminal Codex guards without changing any stored history. */
+export function clearTerminalTranscriptGuards(cwd: string, paths: LcmPaths, sessionId?: string): number {
+  const current = records(cwd, paths);
+  const stale = Object.keys(current).filter(path => current[path]?.terminal === true && current[path]?.client === "codex" &&
+    (sessionId === undefined || current[path]?.sessionId === sessionId));
+  if (stale.length === 0) return 0;
+  const remaining = { ...current };
+  for (const path of stale) delete remaining[path];
+  if (!writeRecords(cwd, paths, remaining)) throw new Error("Could not clear terminal Codex guards");
+  for (const path of stale) {
+    delete current[path];
+    failed.delete(path);
+  }
+  return stale.length;
 }
 
 /** Doctor verifies unchanged-file guards and lists terminal failures independently of file growth. */

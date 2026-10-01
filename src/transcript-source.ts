@@ -34,6 +34,9 @@ import { parseTranscript, type ParsedMessage } from "./transcript.js";
  * selects an adapter itself.
  */
 
+/** Bump when Codex recovery can prove alignment that an older rule rejected. */
+export const CODEX_RECOVERY_RULE_VERSION = 1;
+
 /** What is known about a session's transcript before it is read. */
 export interface TranscriptLocator {
   sessionId: string;

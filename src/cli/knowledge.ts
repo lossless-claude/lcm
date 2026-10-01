@@ -29,8 +29,9 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
     .option("--replay-provider <provider>", "With --replay: use session-pool without changing live compactions")
     .option("--restart", "Discard recorded replay progress and start from scratch")
     .option("--rebuild", "Repair Claude history or historical NUL-cut Codex and OMP rows")
+    .option("--retry-blocked", "With --provider codex: clear terminal capture guards")
     .option("--yes", "With --rebuild: apply it (default: preview)")
-    .option("--session <id>", "With --rebuild: only this session")
+    .option("--session <id>", "With --rebuild or --retry-blocked: only this session")
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
@@ -62,6 +63,40 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
         }
       })();
 
+      if (opts.retryBlocked) {
+        if (provider !== "codex") fail("  --retry-blocked requires --provider codex");
+        if (replay || opts.rebuild || dryRun) fail("  --retry-blocked cannot be combined with --replay, --rebuild or --dry-run");
+        if (all && opts.session !== undefined) fail("  --all and --session cannot be combined with --retry-blocked");
+        if (opts.session !== undefined && !opts.session.trim()) fail("  --session must not be empty");
+        if (opts.yes) fail("  --yes applies only with --rebuild");
+        const cwds: string[] = [];
+        if (all) {
+          const { existsSync, readdirSync } = await import("node:fs");
+          const { readProjectMetaIn } = await import("../daemon/project-meta.js");
+          if (existsSync(paths.projectsDir)) {
+            for (const entry of readdirSync(paths.projectsDir, { withFileTypes: true })) {
+              if (!entry.isDirectory()) continue;
+              const cwd = readProjectMetaIn(join(paths.projectsDir, entry.name))?.cwd;
+              // A vanished directory has no capture to retry, and the daemon rejects its cwd.
+              if (cwd && existsSync(cwd)) cwds.push(cwd);
+            }
+          }
+        } else {
+          cwds.push(process.cwd());
+        }
+        const client = await createDaemonClientOrExit();
+        let cleared = 0;
+        for (const cwd of cwds) {
+          const result = await client.post<{ cleared: number }>("/capture-retry", {
+            cwd, ...(opts.session !== undefined ? { session_id: opts.session } : { all: true }),
+          });
+          cleared += result.cleared;
+          if (all && result.cleared) console.log(`${cwd}: cleared ${result.cleared}`);
+        }
+        console.log(`Cleared ${cleared} terminal Codex guards; the next capture will recheck alignment.`);
+        return;
+      }
+
       const config = loadDaemonConfig(paths.configPath);
       if (opts.rebuild) {
         if (provider === "all") fail("  --rebuild requires --provider claude, codex, or omp");
@@ -84,7 +119,7 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
         }
         return;
       }
-      if (opts.yes || opts.session !== undefined) fail("  --yes and --session apply only with --rebuild");
+      if (opts.yes || opts.session !== undefined) fail("  --yes applies only with --rebuild; --session applies only with --rebuild or --retry-blocked");
       const port = config.daemon?.port ?? 3737;
       const previewClient = new DaemonClient(`http://127.0.0.1:${port}`, paths.tokenPath);
       const preview = await importSessions(previewClient, { paths, all, provider, dryRun: true, verbose: dryRun && verbose, replay });
