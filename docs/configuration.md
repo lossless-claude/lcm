@@ -90,6 +90,20 @@ Use it to run lcm against a scratch directory without touching your own memory â
 
 Both the daemon and the client must see the same value: a daemon started without it answers on the port from `~/.lossless-claude/config.json` and writes to the real databases.
 
+### Compaction shadow artifacts
+
+The daemon exposes authenticated compaction shadow artifact routes, but no live
+shadow hook or model executor is enabled. Native compaction and restore keep their
+existing behavior. Artifacts live in each project's `compaction-shadow/` directory
+under the lcm home, use Capture's scrubbing rules, and expire after 30 days.
+
+`bench-corpora.json` is optional for shadow admission: a valid existing exclusion
+skips a project's cuts before Capture; missing or invalid policy does not disable
+admission. Offline evaluation requires a valid explicit policy and applies its
+exclusions before loading corpus content. See
+[compaction shadow artifacts](design/compaction-shadow.md) for wire fields,
+accounting, retention and privacy.
+
 ### Project store hygiene
 
 `lcm doctor` reports stores whose recorded working directory no longer exists and
