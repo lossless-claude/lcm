@@ -439,8 +439,9 @@ export class SessionCapture {
       if (!parts || parts.length === 0) continue;
       await this.conversationStore.createMessageParts(
         created[i].messageId,
+        // Structured ingest can carry parts of other shapes, without string args.
         parts.map((part, ordinal) => toMessagePartInput(sessionId,
-          part.args === null ? part : { ...part, args: this.scrubCounted(part.args, totalCounts) }, ordinal)),
+          typeof part.args === "string" ? { ...part, args: this.scrubCounted(part.args, totalCounts) } : part, ordinal)),
       );
     }
   }
