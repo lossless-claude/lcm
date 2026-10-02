@@ -169,9 +169,10 @@ Inspect metadata and lineage of a memory node without expanding content. Returns
 For a session, pass its lcm session id or `session:<id>`; `node.type` is `session`
 and `node.session` carries its newest conversation's source bounds. Sessions and
 summaries include `node.commits`: references with `sessionId`, `messageId`, `hash`,
-`subject`, `authorAt`, `branch`, `resolved`, `evidence` (`commit-output` or
+`subject`, `committedAt`, `authorAt`, `branch`, `resolved`, `evidence` (`commit-output` or
 `session-trailer`) and `evidenceValue` (observed hash or exact web session URL).
 Resolved hashes are full hashes; an unresolved abbreviation remains as observed.
+`committedAt` is the committer date used for event-time anchors; `authorAt` is reference metadata only.
 `commit-output` requires stored `git commit` output, including root-commit and
 detached-HEAD variants. Viewed hashes from `git log` or `git show`, bare hex lines
 and hex-looking words are excluded from references and event-time anchors.

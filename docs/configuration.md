@@ -349,7 +349,7 @@ The setting leaves transcript repair, existing references and anchors intact.
 There is no automatic git scan or remote fetch. References require a hash in stored
 `git commit` output (normal, root-commit or detached-HEAD), or an exact stored web session URL matching a commit's
 `Claude-Session:` trailer. Only evidence messages with unknown times receive a
-commit's author time, recorded with source `commit`. Hashes from `git log`, `git show`,
+commit's committer time, recorded with source `commit`; the author date is reference metadata only. Hashes from `git log`, `git show`,
 bare hex lines and hex-looking words create no reference or event-time anchor. Describe shows the references
 on sessions, summaries and timeline nodes. See [import repair](import.md#event-timestamps-and-existing-history).
 

@@ -193,12 +193,15 @@ function toConversationRecord(row: ConversationRow): ConversationRecord {
 }
 
 function toMessageRecord(row: MessageRow): MessageRecord {
+  if (row.event_time_source != null && row.event_time_source !== "transcript" && row.event_time_source !== "commit") {
+    throw new Error("Invalid event time source");
+  }
   return {
     messageId: row.message_id,
     conversationId: row.conversation_id,
     seq: row.seq,
     eventAt: row.event_at ? parseSqliteDate(row.event_at) : null,
-    eventTimeSource: row.event_time_source ?? null,
+    eventTimeSource: row.event_time_source ?? (row.event_at ? "transcript" : null),
     role: row.role,
     content: row.content,
     tokenCount: row.token_count,

@@ -425,6 +425,7 @@ class Timeline implements ProjectTimeline {
         summaryId: id, conversationId: owner, kind: work.level === "digest" ? "leaf" : "condensed",
         depth: work.level === "digest" ? 0 : Math.max(...work.items.map(item => item.depth)) + 1,
         content, tokenCount: Math.ceil(content.length / 4), earliestAt: new Date(work.from), latestAt: new Date(work.to),
+        hasEventTime: work.items.some(item => item.hasEventTime),
         descendantCount: work.items.reduce((sum, item) => sum + (item.summaryId ? 1 + item.descendantCount : 0), 0),
         descendantTokenCount: work.items.reduce((sum, item) => sum + (item.summaryId ? item.tokens + item.descendantTokens : 0), 0),
         sourceMessageTokenCount: work.items.reduce((sum, item) => sum + item.sourceTokens, 0),

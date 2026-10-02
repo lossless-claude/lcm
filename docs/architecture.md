@@ -17,7 +17,7 @@ Messages are stored with:
 - **tokenCount** — Estimated token count (~4 chars/token)
 - **createdAt** — Capture/insertion timestamp, independent of when the message happened
 - **eventAt** — Nullable transcript record timestamp or explicit commit anchor (`messages.event_at`), normalized to UTC
-- **eventTimeSource** — `transcript` or `commit` (`messages.event_time_source`); NULL when time is unknown
+- **eventTimeSource** — `transcript` or `commit` (`messages.event_time_source`); NULL when time is unknown. A legacy NULL source with a non-null `event_at` reads as `transcript`, without rewriting message rows during migration. Code validates the source values.
 
 `ConversationStore.getConversationTimeBounds` computes a selected conversation's
 `firstAt` / `lastAt` from its transcript messages,
@@ -48,7 +48,7 @@ idempotent retry after an interrupted repair. Existing summary text is retained.
 The project commit pass runs after transcript repair, including for stored sessions
 whose transcripts are gone. `commits.enabled` defaults to true and gates this pass.
 `CommitStore` retains session/message references to a full commit hash (the observed
-abbreviation when unresolved), subject, author time, branch when printed, evidence
+abbreviation when unresolved), subject, committer time, author time as reference metadata, branch when printed, evidence
 kind and evidence value. Evidence is a hash in stored `git commit` output
 (`[<branch> <hash>] <subject>`, including root-commit and detached-HEAD variants)
 that local git resolves to a commit, or a commit's `Claude-Session:` trailer whose exact web URL
@@ -59,11 +59,15 @@ or lazy fetching. No diffs, blobs, author emails or PR text are retained.
 Message and reference reads use pages of at most 256 rows; message reads prefilter
 tool output and session URLs. Matching git history is paged at 128 commits.
 Transactions are bounded and the pass yields between pages under the project queue
-and mutation lease. Resolved evidence fills only its message's NULL time with author
+and mutation lease. Git reads yield both the queue turn and mutation lease; writes
+recheck the candidate's evidence and worker exclusion after reacquiring them.
+Resolved evidence fills only its message's NULL time with committer
 time and source `commit`; other messages stay unknown. A later pass marks unavailable
 hashes unresolved, never re-resolves them, and clears a commit time once its message
 has no resolved reference. If other resolved references remain, the anchor stays
-tied to their author times. Transcript times are preserved. Disabling the pass retains
+tied to their committer times. Reruns also replace legacy author-date commit anchors
+with resolved committer times. Summary bounds are recomputed only for conversations
+whose commit anchors changed in the pass. Transcript times are preserved. Disabling the pass retains
 existing references and anchors.
 
 Describe accepts a session id or `session:<id>` and returns `node.commits`.
@@ -91,6 +95,7 @@ Every summary carries:
 - **conversationId** — Which conversation it belongs to
 - **depth** — Position in the hierarchy (0 = leaf)
 - **earliestAt / latestAt** — Bounds of known event times across source messages; capture bounds apply only when no source time is known, including across condensed summaries
+- **hasEventTime** — Whether those bounds rest on known times. Leaves derive it from their own messages; condensed summaries derive bounds and the flag from direct sources' stored metadata, without traversing their descendants. Migration persists the flag computed by the legacy summary backfill.
 - **descendantCount** — Total number of ancestor summaries (transitive)
 - **fileIds** — References to large files mentioned in the source
 - **tokenCount** — Estimated tokens

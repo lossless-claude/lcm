@@ -11,6 +11,7 @@ import { CompactionEngine } from "../src/compaction.js";
 import { ScrubEngine } from "../src/scrub.js";
 import { backfillProjectCommits } from "../src/session-commits.js";
 import { CommitStore } from "../src/store/commit-store.js";
+import { SummaryStore } from "../src/store/summary-store.js";
 import { RetrievalEngine } from "../src/retrieval.js";
 import { enableTimeline } from "../src/db/project-timeline.js";
 import { openProjectTimeline } from "../src/project-timeline.js";
@@ -42,15 +43,65 @@ function object(dir: string, type: string, content: string): string {
   return hash;
 }
 
-function fixtureCommit(dir: string, message = "Fixture change", authorTime = 1612325106): string {
+function fixtureCommit(dir: string, message = "Fixture change", authorTime = 1612325106, committerTime = authorTime): string {
   mkdirSync(join(dir, ".git", "refs", "heads"), { recursive: true });
   writeFileSync(join(dir, ".git", "config"), "[core]\nrepositoryformatversion = 0\nbare = false\n");
   writeFileSync(join(dir, ".git", "HEAD"), "ref: refs/heads/fixture\n");
   const tree = object(dir, "tree", "");
-  const hash = object(dir, "commit", `tree ${tree}\nauthor Fixture <fixture@example.invalid> ${authorTime} +0000\ncommitter Fixture <fixture@example.invalid> ${authorTime} +0000\n\n${message}\n`);
+  const hash = object(dir, "commit", `tree ${tree}\nauthor Fixture <fixture@example.invalid> ${authorTime} +0000\ncommitter Fixture <fixture@example.invalid> ${committerTime} +0000\n\n${message}\n`);
   writeFileSync(join(dir, ".git", "refs", "heads", "fixture"), hash + "\n");
   return hash;
 }
+
+it.each([false, true])("anchors rewritten commits at the committer date and retains the author date only as metadata (legacy: %s)", async legacy => {
+  const dir = mkdtempSync(join(tmpdir(), "lcm-commit-fixture-"));
+  try {
+    const hash = fixtureCommit(dir, "Rebased change", 1612325106, 1640995200);
+    const { records } = await capture.write({ sessionId: "rebased", messages: [
+      { role: "tool", content: `[fixture ${hash.slice(0, 7)}] Rebased change`, tokenCount: 10 },
+    ] });
+    if (legacy) {
+      db.exec("ALTER TABLE session_commits DROP COLUMN committed_at");
+      db.prepare(`INSERT INTO session_commits(session_id, message_id, hash, subject, author_at, branch, resolved, evidence, evidence_value)
+        VALUES ('rebased', ?, ?, 'Rebased change', '2021-02-03T04:05:06.000Z', 'fixture', 1, 'commit-output', ?)`)
+        .run(records[0].messageId, hash, hash.slice(0, 7));
+      db.prepare("UPDATE messages SET event_at = '2021-02-03T04:05:06.000Z', event_time_source = 'commit' WHERE message_id = ?")
+        .run(records[0].messageId);
+      runLcmMigrations(db, { claudeProjectsDir: process.env.HOME });
+    }
+    await backfillProjectCommits(db, dir);
+    expect(await capture.conversationStore.getMessageById(records[0].messageId)).toMatchObject({
+      eventAt: new Date("2022-01-01T00:00:00Z"), eventTimeSource: "commit",
+    });
+    expect(new CommitStore(db).forSession("rebased")).toMatchObject([{
+      authorAt: "2021-02-03T04:05:06.000Z", committedAt: "2022-01-01T00:00:00.000Z",
+    }]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("adds event time provenance without scanning or rewriting existing messages", async () => {
+  const { conversationId } = await capture.conversationStore.getOrCreateConversation("legacy");
+  const insert = db.prepare("INSERT INTO messages(conversation_id, seq, role, content, token_count, event_at) VALUES (?, ?, 'user', ?, 2048, '2021-02-03T04:05:06Z')");
+  db.exec("BEGIN");
+  for (let seq = 0; seq < 1024; seq++) insert.run(conversationId, seq, "x".repeat(8192));
+  db.exec("COMMIT");
+  db.exec("ALTER TABLE messages DROP COLUMN event_time_source");
+  const statements: string[] = [];
+  const execute = db.exec.bind(db);
+  const prepare = db.prepare.bind(db);
+  const execSpy = vi.spyOn(db, "exec").mockImplementation(sql => { statements.push(sql); execute(sql); });
+  const prepareSpy = vi.spyOn(db, "prepare").mockImplementation(sql => { statements.push(sql); return prepare(sql); });
+  try {
+    runLcmMigrations(db, { claudeProjectsDir: process.env.HOME });
+  } finally { execSpy.mockRestore(); prepareSpy.mockRestore(); }
+  expect(statements.filter(sql => /ALTER TABLE messages/i.test(sql))).toEqual([
+    "ALTER TABLE messages ADD COLUMN event_time_source TEXT",
+  ]);
+  expect(statements.filter(sql => !/^CREATE TRIGGER/i.test(sql) && /\b(UPDATE messages|FROM messages|JOIN messages)\b/i.test(sql))).toEqual([]);
+  expect(await capture.conversationStore.getMessageById(1)).toMatchObject({
+    eventAt: new Date("2021-02-03T04:05:06Z"), eventTimeSource: "transcript",
+  });
+});
 
 it("links commit output, anchors only the evidence message, and preserves transcript times", async () => {
   const dir = mkdtempSync(join(tmpdir(), "lcm-commit-fixture-"));
@@ -164,6 +215,139 @@ it("summary and conversation bounds ignore capture dates when any source time is
   await check();
   await capture.summaryStore.recomputeTimeBounds(conversationId);
   await check();
+});
+
+it("reads only direct summary metadata for condensation bounds, regardless of subtree size", async () => {
+  const { conversationId } = await capture.conversationStore.getOrCreateConversation("deep");
+  const sources: string[] = [];
+  for (let branch = 0; branch < 2; branch++) {
+    const leaves: string[] = [];
+    for (let index = 0; index < 32; index++) {
+      const leaf = `leaf_${branch}_${index}`;
+      const message = await capture.conversationStore.createMessage({ conversationId, seq: branch * 32 + index,
+        role: "user", content: "x".repeat(8192), tokenCount: 2048, eventAt: new Date("2021-02-03T04:05:06Z") });
+      await capture.summaryStore.insertSummary({ summaryId: leaf, conversationId, kind: "leaf", content: "Leaf", tokenCount: 1 });
+      await capture.summaryStore.linkSummaryToMessages(leaf, [message.messageId]);
+      leaves.push(leaf);
+    }
+    const source = `source_${branch}`;
+    await capture.summaryStore.insertSummary({ summaryId: source, conversationId, kind: "condensed", depth: 1, content: "Source", tokenCount: 1000 });
+    await capture.summaryStore.linkSummaryToParents(source, leaves);
+    sources.push(source);
+  }
+  await capture.summaryStore.recomputeTimeBounds(conversationId);
+  for (const [ordinal, summaryId] of sources.entries()) await capture.summaryStore.replaceContextRangeWithSummary({
+    conversationId, startOrdinal: ordinal, endOrdinal: ordinal, summaryId,
+  });
+  let rowsRead = 0;
+  let readingBounds = false;
+  const originalBounds = capture.summaryStore.getSourceEventTimeBounds.bind(capture.summaryStore);
+  const boundsSpy = vi.spyOn(capture.summaryStore, "getSourceEventTimeBounds").mockImplementation(ids => {
+    readingBounds = true;
+    try { return originalBounds(ids); } finally { readingBounds = false; }
+  });
+  const prepare = db.prepare.bind(db);
+  const spy = vi.spyOn(db, "prepare").mockImplementation(sql => {
+    const statement = prepare(sql);
+    if (!readingBounds) return statement;
+    expect(sql).not.toMatch(/\b(messages|summary_messages|summary_parents)\b/i);
+    const all = statement.all.bind(statement);
+    vi.spyOn(statement, "all").mockImplementation((...args) => {
+      const plan = prepare("EXPLAIN QUERY PLAN " + sql).all(...args) as Array<{ detail: string }>;
+      expect(plan.map(row => row.detail).join("\n")).not.toMatch(/SCAN s\b/);
+      const rows = all(...args);
+      rowsRead += rows.length;
+      return rows;
+    });
+    return statement;
+  });
+  try {
+    expect(capture.summaryStore.getSourceEventTimeBounds(sources)).toEqual({
+      earliestAt: new Date("2021-02-03T04:05:06Z"), latestAt: new Date("2021-02-03T04:05:06Z"),
+    });
+    expect(rowsRead).toBe(sources.length);
+    const engine = new CompactionEngine(capture.conversationStore, capture.summaryStore, { freshTailCount: 0, condensedMinFanout: 2 });
+    expect(await engine.compact({ conversationId, tokenBudget: 100, force: true, summarize: async () => "Direct bounds" }))
+      .toMatchObject({ condensed: true });
+    expect(rowsRead).toBe(2 * sources.length);
+    const summaries = await capture.summaryStore.getSummariesByConversation(conversationId);
+    expect(summaries.find(summary => summary.depth === 2)).toMatchObject({
+      hasEventTime: true, earliestAt: new Date("2021-02-03T04:05:06Z"), latestAt: new Date("2021-02-03T04:05:06Z"),
+    });
+  } finally { spy.mockRestore(); boundsSpy.mockRestore(); }
+});
+
+it("recomputes only conversations whose commit anchors changed, and does no bound work on an unchanged rerun", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "lcm-commit-fixture-"));
+  const recompute = vi.spyOn(SummaryStore.prototype, "recomputeTimeBounds");
+  try {
+    const hash = fixtureCommit(dir);
+    const affected = await capture.write({ sessionId: "affected", messages: [
+      { role: "tool", content: `[fixture ${hash.slice(0, 7)}] Fixture change`, tokenCount: 10 },
+    ] });
+    const quiet = await capture.write({ sessionId: "quiet", messages: [{ role: "user", content: "quiet", tokenCount: 1 }] });
+    for (const [id, conversation] of [["affected_leaf", affected], ["quiet_leaf", quiet]] as const) {
+      await capture.summaryStore.insertSummary({ summaryId: id, conversationId: conversation.conversationId,
+        kind: "leaf", content: "Summary", tokenCount: 1 });
+      await capture.summaryStore.linkSummaryToMessages(id, conversation.records.map(record => record.messageId));
+    }
+    await backfillProjectCommits(db, dir);
+    expect(recompute.mock.calls).toEqual([[affected.conversationId]]);
+    recompute.mockClear();
+    await backfillProjectCommits(db, dir);
+    expect(recompute).not.toHaveBeenCalled();
+    rmSync(join(dir, ".git", "objects", hash.slice(0, 2), hash.slice(2)));
+    await backfillProjectCommits(db, dir);
+    expect(recompute.mock.calls).toEqual([[affected.conversationId]]);
+    expect((await capture.summaryStore.getSummary("affected_leaf"))?.hasEventTime).toBe(false);
+  } finally { recompute.mockRestore(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("releases the mutation lease for every git read so a live capture can finish", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "lcm-commit-fixture-"));
+  try {
+    const hash = fixtureCommit(dir);
+    await capture.write({ sessionId: "commit", messages: [
+      { role: "tool", content: `[fixture ${hash.slice(0, 7)}] Fixture change`, tokenCount: 10 },
+    ] });
+    let reads = 0;
+    const report = await withProjectMutation(dir, lease => backfillProjectCommits(db, dir, true, {
+      yieldWhile: work => lease.yieldWhile(async () => {
+        reads++;
+        await withProjectMutation(dir, async () => {
+          await capture.write({ sessionId: `live_${reads}`, messages: [{ role: "user", content: "live capture", tokenCount: 1 }] });
+        });
+        return work();
+      }),
+    }));
+    expect(reads).toBe(2);
+    expect(report.updated).toBe(1);
+    expect(await capture.conversationStore.getConversationBySessionId("live_2")).not.toBeNull();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it.each(["deleted", "edited"] as const)("rechecks %s evidence after reacquiring the lease", async change => {
+  const dir = mkdtempSync(join(tmpdir(), "lcm-commit-fixture-"));
+  try {
+    const hash = fixtureCommit(dir);
+    const { records } = await capture.write({ sessionId: "changed", messages: [
+      { role: "tool", content: `[fixture ${hash.slice(0, 7)}] Fixture change`, tokenCount: 10 },
+    ] });
+    let changed = false;
+    const report = await withProjectMutation(dir, lease => backfillProjectCommits(db, dir, true, {
+      yieldWhile: work => lease.yieldWhile(async () => {
+        if (!changed) await withProjectMutation(dir, async () => {
+          changed = true;
+          if (change === "deleted") db.prepare("DELETE FROM context_items WHERE message_id = ?").run(records[0].messageId);
+          db.prepare(change === "deleted" ? "DELETE FROM messages WHERE message_id = ?"
+            : "UPDATE messages SET content = 'evidence removed' WHERE message_id = ?").run(records[0].messageId);
+        });
+        return work();
+      }),
+    }));
+    expect(report.updated).toBe(0);
+    expect(new CommitStore(db).forSession("changed")).toEqual([]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 it("condensed summary and timeline work bounds prefer known times across separate source items", async () => {

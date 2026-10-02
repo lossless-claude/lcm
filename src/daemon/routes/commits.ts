@@ -19,11 +19,11 @@ export function createCommitBackfillHandler(config: DaemonConfig, paths: LcmPath
       if (!config.commits.enabled || !existsSync(dbPath)) {
         sendJson(res, 200, { updated: 0, candidates: 0, references: 0 }); return;
       }
-      const report = await enqueue(projectId(cwd), () => withProjectMutation(projectId(cwd), async () => {
+      const report = await enqueue(projectId(cwd), turn => withProjectMutation(projectId(cwd), async lease => {
         const db = getLcmConnection(dbPath);
         try {
           runLcmMigrations(db);
-          return await backfillProjectCommits(db, cwd);
+          return await backfillProjectCommits(db, cwd, true, { yieldWhile: work => lease.yieldWhile(() => turn.yieldWhile(work)) });
         } finally { closeLcmConnection(dbPath); }
       }));
       sendJson(res, 200, report);

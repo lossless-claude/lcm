@@ -14,8 +14,6 @@ import {
 import { buildLikeSearchPlan, createFallbackSnippet } from "./full-text-fallback.js";
 import { validateRegex } from "./regex-safety.js";
 
-const UNIX_EPOCH_JULIAN_DAY = 2440587.5;
-const MILLISECONDS_PER_DAY = 86_400_000;
 const TIME_BOUNDS_PAGE_SIZE = 128;
 
 export type SummaryKind = "leaf" | "condensed";
@@ -31,6 +29,7 @@ export type CreateSummaryInput = {
   fileIds?: string[];
   earliestAt?: Date;
   latestAt?: Date;
+  hasEventTime?: boolean;
   descendantCount?: number;
   descendantTokenCount?: number;
   sourceMessageTokenCount?: number;
@@ -46,6 +45,7 @@ export type SummaryRecord = {
   fileIds: string[];
   earliestAt: Date | null;
   latestAt: Date | null;
+  hasEventTime: boolean;
   descendantCount: number;
   descendantTokenCount: number;
   sourceMessageTokenCount: number;
@@ -121,6 +121,7 @@ interface SummaryRow {
   file_ids: string;
   earliest_at: string | null;
   latest_at: string | null;
+  has_event_time: number;
   descendant_count: number | null;
   descendant_token_count: number | null;
   source_message_token_count: number | null;
@@ -206,6 +207,7 @@ function toSummaryRecord(row: SummaryRow): SummaryRecord {
     fileIds,
     earliestAt: row.earliest_at ? parseSqliteDate(row.earliest_at) : null,
     latestAt: row.latest_at ? parseSqliteDate(row.latest_at) : null,
+    hasEventTime: row.has_event_time === 1,
     descendantCount:
       typeof row.descendant_count === "number" &&
       Number.isFinite(row.descendant_count) &&
@@ -372,11 +374,12 @@ export class SummaryStore {
           file_ids,
           earliest_at,
           latest_at,
+          has_event_time,
           descendant_count,
           descendant_token_count,
           source_message_token_count
         )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.summaryId,
@@ -388,6 +391,7 @@ export class SummaryStore {
         fileIds,
         earliestAt,
         latestAt,
+        Number(input.hasEventTime ?? false),
         descendantCount,
         descendantTokenCount,
         sourceMessageTokenCount,
@@ -397,7 +401,7 @@ export class SummaryStore {
       .prepare(
         `SELECT summary_id, conversation_id, kind, depth, content, token_count, file_ids,
                 earliest_at, latest_at, descendant_count, created_at
-                , descendant_token_count, source_message_token_count
+                , descendant_token_count, source_message_token_count, has_event_time
        FROM summaries WHERE summary_id = ?`,
       )
       .get(input.summaryId) as unknown as SummaryRow;
@@ -429,7 +433,7 @@ export class SummaryStore {
       .prepare(
         `SELECT summary_id, conversation_id, kind, depth, content, token_count, file_ids,
                 earliest_at, latest_at, descendant_count, created_at
-                , descendant_token_count, source_message_token_count
+                , descendant_token_count, source_message_token_count, has_event_time
        FROM summaries WHERE summary_id = ?`,
       )
       .get(summaryId) as unknown as SummaryRow | undefined;
@@ -441,7 +445,7 @@ export class SummaryStore {
       .prepare(
         `SELECT summary_id, conversation_id, kind, depth, content, token_count, file_ids,
                 earliest_at, latest_at, descendant_count, created_at
-                , descendant_token_count, source_message_token_count
+                , descendant_token_count, source_message_token_count, has_event_time
        FROM summaries
        WHERE conversation_id = ?
        ORDER BY created_at`,
@@ -456,7 +460,7 @@ export class SummaryStore {
       .prepare(
         `SELECT summary_id, conversation_id, kind, depth, content, token_count, file_ids,
                 earliest_at, latest_at, descendant_count, created_at
-                , descendant_token_count, source_message_token_count
+                , descendant_token_count, source_message_token_count, has_event_time
        FROM summaries
        WHERE conversation_id = ?
        ORDER BY depth DESC, created_at DESC
@@ -472,7 +476,7 @@ export class SummaryStore {
       .prepare(
         `SELECT summary_id, conversation_id, kind, depth, content, token_count, file_ids,
                 earliest_at, latest_at, descendant_count, created_at
-                , descendant_token_count, source_message_token_count
+                , descendant_token_count, source_message_token_count, has_event_time
        FROM summaries
        ORDER BY created_at DESC
        LIMIT ?`,
@@ -483,29 +487,16 @@ export class SummaryStore {
 
   // ── Lineage ───────────────────────────────────────────────────────────────
 
-  /** Known message times across all source summaries; no per-message capture fallback. */
+  /** Known bounds from direct sources' persisted metadata, without reading their descendants. */
   getSourceEventTimeBounds(summaryIds: string[]): { earliestAt: Date; latestAt: Date } | null {
-    const row = this.db.prepare(`WITH RECURSIVE sources(id) AS (
-      SELECT value FROM json_each(?) UNION SELECT p.parent_summary_id FROM summary_parents p JOIN sources ON p.summary_id = sources.id
-    ) SELECT MIN(julianday(m.event_at)) first, MAX(julianday(m.event_at)) last
-      FROM summary_messages sm JOIN messages m USING(message_id) WHERE sm.summary_id IN (SELECT id FROM sources)`)
-      .get(JSON.stringify(summaryIds)) as { first: number | null; last: number | null };
-    if (row.first === null || row.last === null) return null;
-    const date = (julian: number) => new Date(Math.round((julian - UNIX_EPOCH_JULIAN_DAY) * MILLISECONDS_PER_DAY));
-    return { earliestAt: date(row.first), latestAt: date(row.last) };
-  }
-
-  async recomputeProjectTimeBounds(): Promise<void> {
-    let id = 0;
-    for (;;) {
-      const rows = this.db.prepare(`SELECT DISTINCT s.conversation_id FROM summaries s JOIN conversations c USING(conversation_id)
-        WHERE s.conversation_id > ? AND c.is_timeline = 0 ORDER BY s.conversation_id LIMIT ${TIME_BOUNDS_PAGE_SIZE}`)
-        .all(id) as Array<{ conversation_id: number }>;
-      for (const row of rows) await this.recomputeTimeBounds(row.conversation_id);
-      await yieldToEventLoop();
-      if (rows.length < TIME_BOUNDS_PAGE_SIZE) return;
-      id = rows.at(-1)!.conversation_id;
-    }
+    const rows = this.db.prepare(`SELECT s.earliest_at, s.latest_at FROM summaries s
+      WHERE s.summary_id IN (SELECT value FROM json_each(?)) AND s.has_event_time = 1`)
+      .all(JSON.stringify(summaryIds)) as Array<{ earliest_at: string; latest_at: string }>;
+    if (!rows.length) return null;
+    return {
+      earliestAt: new Date(Math.min(...rows.map(row => parseSqliteDate(row.earliest_at).getTime()))),
+      latestAt: new Date(Math.max(...rows.map(row => parseSqliteDate(row.latest_at).getTime()))),
+    };
   }
 
   /** Recompute leaves before their condensed descendants, yielding between bounded pages. */
@@ -519,21 +510,19 @@ export class SummaryStore {
       for (const summary of page) {
         const range = summary.kind === "leaf"
           ? this.db.prepare(`SELECT COALESCE(MIN(julianday(m.event_at)), MIN(julianday(m.created_at))) first,
-              COALESCE(MAX(julianday(m.event_at)), MAX(julianday(m.created_at))) last
+              COALESCE(MAX(julianday(m.event_at)), MAX(julianday(m.created_at))) last, COUNT(m.event_at) > 0 known
               FROM summary_messages sm JOIN messages m USING(message_id) WHERE sm.summary_id = ?`).get(summary.summary_id)
-          : this.db.prepare(`SELECT MIN(julianday(COALESCE(s.earliest_at, s.created_at))) first,
-              MAX(julianday(COALESCE(s.latest_at, s.created_at))) last
+          : this.db.prepare(`SELECT COALESCE(MIN(CASE WHEN s.has_event_time = 1 THEN julianday(s.earliest_at) END),
+                MIN(julianday(COALESCE(s.earliest_at, s.created_at)))) first,
+              COALESCE(MAX(CASE WHEN s.has_event_time = 1 THEN julianday(s.latest_at) END),
+                MAX(julianday(COALESCE(s.latest_at, s.created_at)))) last, COALESCE(MAX(s.has_event_time), 0) known
               FROM summary_parents p JOIN summaries s ON s.summary_id = p.parent_summary_id WHERE p.summary_id = ?`).get(summary.summary_id);
-        const bounds = range as { first: number | null; last: number | null };
-        const known = summary.kind === "condensed" ? this.getSourceEventTimeBounds([summary.summary_id]) : null;
-        if (known) {
-          bounds.first = (known.earliestAt.getTime() / MILLISECONDS_PER_DAY) + UNIX_EPOCH_JULIAN_DAY;
-          bounds.last = (known.latestAt.getTime() / MILLISECONDS_PER_DAY) + UNIX_EPOCH_JULIAN_DAY;
-        }
-        if (bounds.first !== null && bounds.last !== null) this.db.prepare(`UPDATE summaries
-          SET earliest_at = strftime('%Y-%m-%dT%H:%M:%fZ', ?), latest_at = strftime('%Y-%m-%dT%H:%M:%fZ', ?)
-          WHERE summary_id = ? AND (julianday(earliest_at) IS NOT ? OR julianday(latest_at) IS NOT ?)`)
-          .run(bounds.first, bounds.last, summary.summary_id, bounds.first, bounds.last);
+        const bounds = range as { first: number | null; last: number | null; known: number };
+        this.db.prepare(`UPDATE summaries
+          SET earliest_at = COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', ?), created_at),
+            latest_at = COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', ?), created_at), has_event_time = ?
+          WHERE summary_id = ? AND (julianday(earliest_at) IS NOT ? OR julianday(latest_at) IS NOT ? OR has_event_time != ?)`)
+          .run(bounds.first, bounds.last, bounds.known, summary.summary_id, bounds.first, bounds.last, bounds.known);
       }
       await yieldToEventLoop();
       if (page.length < TIME_BOUNDS_PAGE_SIZE) return;
@@ -598,7 +587,7 @@ export class SummaryStore {
       .prepare(
         `SELECT s.summary_id, s.conversation_id, s.kind, s.depth, s.content, s.token_count,
                 s.file_ids, s.earliest_at, s.latest_at, s.descendant_count, s.created_at
-                , s.descendant_token_count, s.source_message_token_count
+                , s.descendant_token_count, s.source_message_token_count, s.has_event_time
        FROM summaries s
        JOIN summary_parents sp ON sp.summary_id = s.summary_id
        WHERE sp.parent_summary_id = ?
@@ -613,7 +602,7 @@ export class SummaryStore {
       .prepare(
         `SELECT s.summary_id, s.conversation_id, s.kind, s.depth, s.content, s.token_count,
                 s.file_ids, s.earliest_at, s.latest_at, s.descendant_count, s.created_at
-                , s.descendant_token_count, s.source_message_token_count
+                , s.descendant_token_count, s.source_message_token_count, s.has_event_time
        FROM summaries s
        JOIN summary_parents sp ON sp.parent_summary_id = s.summary_id
        WHERE sp.summary_id = ?
@@ -652,7 +641,7 @@ export class SummaryStore {
            s.latest_at,
            s.descendant_count,
            s.descendant_token_count,
-           s.source_message_token_count,
+           s.source_message_token_count, s.has_event_time,
            s.created_at,
            subtree.depth_from_root,
            subtree.parent_summary_id,
@@ -1156,7 +1145,7 @@ export class SummaryStore {
       .prepare(
         `SELECT summary_id, conversation_id, kind, depth, content, token_count, file_ids,
                 earliest_at, latest_at, descendant_count, descendant_token_count,
-                source_message_token_count, created_at
+                source_message_token_count, has_event_time, created_at
          FROM summaries
          WHERE ${where.join(" AND ")}
          ORDER BY created_at DESC
@@ -1212,7 +1201,7 @@ export class SummaryStore {
       .prepare(
         `SELECT summary_id, conversation_id, kind, depth, content, token_count, file_ids,
                 earliest_at, latest_at, descendant_count, descendant_token_count,
-                source_message_token_count, created_at
+                source_message_token_count, has_event_time, created_at
          FROM summaries
          ${whereClause}
          ORDER BY created_at DESC
@@ -1263,7 +1252,7 @@ export class SummaryStore {
       .prepare(
         `SELECT summary_id, conversation_id, kind, depth, content, token_count, file_ids,
                 earliest_at, latest_at, descendant_count, descendant_token_count,
-                source_message_token_count, created_at
+                source_message_token_count, has_event_time, created_at
          FROM summaries
          ${whereClause}
          ORDER BY created_at DESC`,

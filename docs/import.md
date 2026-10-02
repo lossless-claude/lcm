@@ -92,15 +92,20 @@ an event time. Hashes from `git log`, `git show`, bare hex lines and hex-looking
 create no reference or event-time anchor. A
 `Claude-Session:` trailer matches only the exact `https://claude.ai/code/session_…`
 URL in the session's own stored messages; the web id is not an lcm session id.
-Only a message carrying resolved evidence gets author time with source `commit`,
+Only a message carrying resolved evidence gets committer time with source `commit`,
 and only if its time is NULL. Other unknown messages remain NULL. References retain
-hash, subject, author time, branch when known, and evidence; no diffs, blobs, author
+hash, subject, committer time, author time as reference metadata, branch when known, and evidence; no diffs, blobs, author
 emails or PR text are stored. They appear in session, summary and timeline describe
 output, separate from summary prose.
 
 Reruns mark hashes that no longer resolve as unresolved, never silently re-link
 them, and remove commit-derived times when no resolved evidence remains on a message.
-If another resolved reference remains, its author time supplies the anchor.
+If another resolved reference remains, its committer time supplies the anchor.
+Rebase, cherry-pick and amend therefore anchor at the new commit object's time.
+Reruns replace retained author-date commit anchors with resolved committer dates.
+Git reads release the project queue turn and mutation lease, and writes recheck
+the stored evidence. Summary bounds are recomputed only for conversations whose
+commit anchors changed. Missing-project skips do not add to the skipped-session count.
 `commits.enabled: false` disables the commit pass while retaining stored references
 and anchors. Transcript repair still runs. The reported unknown count from transcript
 repair covers its selected sessions before commit anchors are applied.

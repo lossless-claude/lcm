@@ -3,7 +3,6 @@ import type { DatabaseSync } from "node:sqlite";
 import { parseSqliteDate } from "../db/sqlite-date.js";
 import { parseStoredTags } from "../db/votes.js";
 import { yieldToEventLoop } from "../daemon/project-queue.js";
-import { SummaryStore } from "../store/summary-store.js";
 
 export type TimeBasis = "event" | "capture" | "mixed";
 
@@ -25,7 +24,7 @@ export type Work = {
   from: string; to: string; memories: Memory[]; generator: string;
 };
 type Message = { message_id: number; seq: number; content: string; role: string; token_count: number; created_at: string; event_at: string | null };
-type Summary = { summary_id: string; content: string; token_count: number; earliest_at: string | null; latest_at: string | null; created_at: string; depth: number; source_message_token_count: number; descendant_count: number; descendant_token_count: number };
+type Summary = { summary_id: string; content: string; token_count: number; earliest_at: string | null; latest_at: string | null; has_event_time: number; created_at: string; depth: number; source_message_token_count: number; descendant_count: number; descendant_token_count: number };
 
 export function hash(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -70,7 +69,7 @@ export const REMAINDER_SQL = `SELECT m.message_id, m.seq, m.content, m.role, m.t
     (SELECT 1 FROM message_parts p WHERE p.message_id = m.message_id AND p.part_type = 'compaction')
   AND NOT EXISTS (SELECT 1 FROM summary_messages sm JOIN summaries s ON s.summary_id = sm.summary_id
     WHERE sm.message_id = m.message_id AND s.conversation_id = m.conversation_id) ORDER BY m.seq`;
-export const FRONTIER_SQL = `SELECT s.summary_id, s.content, s.token_count, s.earliest_at, s.latest_at, s.created_at, s.depth,
+export const FRONTIER_SQL = `SELECT s.summary_id, s.content, s.token_count, s.earliest_at, s.latest_at, s.has_event_time, s.created_at, s.depth,
   s.source_message_token_count, s.descendant_count, s.descendant_token_count
   FROM summaries s WHERE s.conversation_id = ? AND NOT EXISTS (
     SELECT 1 FROM summary_parents p JOIN summaries child ON child.summary_id = p.summary_id
@@ -85,14 +84,12 @@ async function conversationItems(db: DatabaseSync, conversation: { conversation_
   const revision = hash([conversation.session_id, conversation.messageOffset, summaries, messages, count.known]);
   const timeBasis: TimeBasis = count.known === 0 ? "capture" : count.known === count.n ? "event" : "mixed";
   const base = { conversationId: id, sessionId: conversation.session_id, revision, timeBasis };
-  const store = new SummaryStore(db);
   const items: Item[] = summaries.map(summary => {
-    const known = store.getSourceEventTimeBounds([summary.summary_id]);
     return {
       id: summary.summary_id, summaryId: summary.summary_id, content: summary.content,
-      tokens: summary.token_count, from: known?.earliestAt.toISOString() ?? iso(summary.earliest_at ?? summary.created_at),
-      to: known?.latestAt.toISOString() ?? iso(summary.latest_at ?? summary.created_at), depth: summary.depth,
-      hasEventTime: known !== null,
+      tokens: summary.token_count, from: iso(summary.earliest_at ?? summary.created_at),
+      to: iso(summary.latest_at ?? summary.created_at), depth: summary.depth,
+      hasEventTime: summary.has_event_time === 1,
       sourceTokens: summary.source_message_token_count, descendantCount: summary.descendant_count, descendantTokens: summary.descendant_token_count,
       coverage: [{ ...base, summaryIds: [summary.summary_id], messageIds: [] }],
     };

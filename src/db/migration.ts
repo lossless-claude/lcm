@@ -103,6 +103,7 @@ function ensureSummaryMetadataColumns(db: DatabaseSync): boolean {
   const summaryColumns = db.prepare(`PRAGMA table_info(summaries)`).all() as SummaryColumnInfo[];
   const hasEarliestAt = summaryColumns.some((col) => col.name === "earliest_at");
   const hasLatestAt = summaryColumns.some((col) => col.name === "latest_at");
+  const hasEventTime = summaryColumns.some((col) => col.name === "has_event_time");
   const hasDescendantCount = summaryColumns.some((col) => col.name === "descendant_count");
   const hasDescendantTokenCount = summaryColumns.some((col) => col.name === "descendant_token_count");
   const hasSourceMessageTokenCount = summaryColumns.some(
@@ -115,6 +116,9 @@ function ensureSummaryMetadataColumns(db: DatabaseSync): boolean {
   if (!hasLatestAt) {
     db.exec(`ALTER TABLE summaries ADD COLUMN latest_at TEXT`);
   }
+  if (!hasEventTime) {
+    db.exec("ALTER TABLE summaries ADD COLUMN has_event_time INTEGER NOT NULL DEFAULT 0");
+  }
   if (!hasDescendantCount) {
     db.exec(`ALTER TABLE summaries ADD COLUMN descendant_count INTEGER NOT NULL DEFAULT 0`);
   }
@@ -124,7 +128,7 @@ function ensureSummaryMetadataColumns(db: DatabaseSync): boolean {
   if (!hasSourceMessageTokenCount) {
     db.exec(`ALTER TABLE summaries ADD COLUMN source_message_token_count INTEGER NOT NULL DEFAULT 0`);
   }
-  return !hasEarliestAt || !hasLatestAt || !hasDescendantCount ||
+  return !hasEarliestAt || !hasLatestAt || !hasEventTime || !hasDescendantCount ||
     !hasDescendantTokenCount || !hasSourceMessageTokenCount;
 }
 
@@ -343,7 +347,7 @@ function backfillSummaryMetadata(db: DatabaseSync): void {
 
   const updateMetadataStmt = db.prepare(
     `UPDATE summaries
-     SET earliest_at = ?, latest_at = ?, descendant_count = ?,
+     SET earliest_at = ?, latest_at = ?, has_event_time = ?, descendant_count = ?,
          descendant_token_count = ?, source_message_token_count = ?
      WHERE summary_id = ?`,
   );
@@ -503,6 +507,7 @@ function backfillSummaryMetadata(db: DatabaseSync): void {
       updateMetadataStmt.run(
         isoStringOrNull(metadata.earliestAt),
         isoStringOrNull(metadata.latestAt),
+        Number(metadata.hasEventTime),
         Math.max(0, metadata.descendantCount),
         Math.max(0, metadata.descendantTokenCount),
         Math.max(0, metadata.sourceMessageTokenCount),
@@ -900,16 +905,17 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
   const messageColumns = db.prepare("PRAGMA table_info(messages)").all() as SummaryColumnInfo[];
   if (!messageColumns.some(column => column.name === "event_at")) db.exec("ALTER TABLE messages ADD COLUMN event_at TEXT");
   if (!messageColumns.some(column => column.name === "event_time_source")) {
-    db.exec("ALTER TABLE messages ADD COLUMN event_time_source TEXT CHECK(event_time_source IN ('transcript', 'commit'))");
-    db.exec("UPDATE messages SET event_time_source = 'transcript' WHERE event_at IS NOT NULL");
+    db.exec("ALTER TABLE messages ADD COLUMN event_time_source TEXT");
   }
   db.exec(`CREATE TABLE IF NOT EXISTS session_commits (
     session_id TEXT NOT NULL, message_id INTEGER NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
-    hash TEXT NOT NULL, subject TEXT, author_at TEXT, branch TEXT, resolved INTEGER NOT NULL CHECK(resolved IN (0, 1)),
+    hash TEXT NOT NULL, subject TEXT, author_at TEXT, committed_at TEXT, branch TEXT, resolved INTEGER NOT NULL CHECK(resolved IN (0, 1)),
     evidence TEXT NOT NULL CHECK(evidence IN ('commit-output', 'session-trailer')), evidence_value TEXT NOT NULL,
     PRIMARY KEY(message_id, evidence, evidence_value, hash)
   );
   CREATE INDEX IF NOT EXISTS session_commits_session_idx ON session_commits(session_id);`);
+  const commitColumns = db.prepare("PRAGMA table_info(session_commits)").all() as SummaryColumnInfo[];
+  if (!commitColumns.some(column => column.name === "committed_at")) db.exec("ALTER TABLE session_commits ADD COLUMN committed_at TEXT");
   const depthAdded = ensureSummaryDepthColumn(db);
   db.exec("CREATE INDEX IF NOT EXISTS summaries_conv_depth_id_idx ON summaries (conversation_id, depth, summary_id)");
   const metadataAdded = ensureSummaryMetadataColumns(db);
