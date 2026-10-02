@@ -4,11 +4,18 @@ import { isAbsolute } from "node:path";
 const METADATA_BYTES = 4096;
 const SCALAR = /^(?:"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)/;
 
-/** Read only the leading envelope; payload fields are never decoded to infer ownership. */
+/** Read only leading envelopes; payload fields are never decoded to infer ownership. */
 export function recordedTranscriptCwd(path: string): string | undefined {
   if (!isAbsolute(path) || lstatSync(path).isSymbolicLink()) return undefined;
   const fd = openSync(path, "r"), buffer = Buffer.alloc(METADATA_BYTES);
-  try { return envelopeCwd(buffer.subarray(0, readSync(fd, buffer, 0, buffer.length, 0)).toString("utf8")); }
+  try {
+    const prefix = buffer.subarray(0, readSync(fd, buffer, 0, buffer.length, 0)).toString("utf8");
+    for (const line of prefix.split("\n")) {
+      const cwd = envelopeCwd(line);
+      if (cwd) return cwd;
+    }
+    return undefined;
+  }
   finally { closeSync(fd); }
 }
 function envelopeCwd(prefix: string): string | undefined {

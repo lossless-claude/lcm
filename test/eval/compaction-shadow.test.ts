@@ -75,6 +75,9 @@ describe("offline compaction shadow triage", () => {
     const excludedPath = history(excluded, "excluded");
     const unreadablePath = join(root, "unreadable.jsonl");
     writeFileSync(unreadablePath, JSON.stringify({ cwd: excluded, sessionId: "unreadable" }) + "\nnot valid corpus content\n");
+    const leadingMetadata = JSON.stringify({ type: "file-history-snapshot", snapshot: { files: {} } }) + "\n";
+    for (const path of [allowedPath, excludedPath, unreadablePath])
+      writeFileSync(path, leadingMetadata + readFileSync(path, "utf8"));
     const directory = claudeTranscriptDirectory(allowed); mkdirSync(directory, { recursive: true });
     for (const [name, path] of [["allowed", allowedPath], ["excluded", excludedPath], ["unreadable", unreadablePath]])
       writeFileSync(join(directory, `${name}.jsonl`), readFileSync(path));

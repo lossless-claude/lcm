@@ -65,7 +65,8 @@ excluded from metadata before loading transcripts or artifacts. Each transcript'
 own leading recorded absolute `cwd` determines ownership, including explicit
 manifest entries. A directory name cannot establish ownership because Claude
 directory names can collide. Transcripts without readable ownership metadata in
-the first 4096 bytes are ineligible. Exclusions take precedence over holdout.
+the first 4096 bytes are ineligible. The probe skips leading records without cwd
+without decoding their payloads. Exclusions take precedence over holdout.
 Missing or unresolvable corpus identity is not eligible for evaluation.
 
 ## Phase-1 triage
