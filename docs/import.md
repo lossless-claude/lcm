@@ -65,7 +65,11 @@ lcm import --backfill-event-times --dry-run
 ```
 
 This explicit repair selects discovered transcripts, including completed sessions,
-and fills only unknown event times. It captures no new tail, compacts nothing and
+records their main-chain Claude `remote_session_change` web URL declarations in
+`session_web_urls`, and fills only unknown event times. Normal import and hook capture
+also record declarations, including attachments in incremental hook reads.
+Sidechain attachments declare nothing, and an attachment creates no message.
+It captures no new tail, compacts nothing and
 makes no model calls. Positions span a session's clear boundaries and exclude
 internal compaction event rows. Role and content must match under the same
 redaction and NUL comparison rules as cursor recovery. For an OMP rewind, a
@@ -82,8 +86,8 @@ Rerunning is idempotent and fills remaining NULL values after interruption or af
 a missing transcript segment is restored. Leaf and condensed summary bounds are
 recomputed in indexed depth/id pages, retaining their text. Tracking marks affected
 sessions dirty; the next settle invalidates timeline nodes and replans their months.
-After the transcript pass, a project commit pass reads stored tool output and web
-session URLs in candidate pages of at most 256 messages. It includes stored sessions
+After the transcript pass, a project commit pass reads stored tool output and declared
+web session URLs in separate pages of at most 256 rows. It includes stored sessions
 whose transcripts are gone, in the current project or tracked projects with `--all`;
 the provider flag selects transcript sources, not commit evidence. Git is read-only,
 local, and never fetches. Only `git commit` output (normal, root-commit or detached-HEAD)
@@ -91,9 +95,10 @@ establishes a `commit-output` reference; its hash must resolve to a commit to an
 an event time. Hashes from `git log`, `git show`, bare hex lines and hex-looking words
 create no reference or event-time anchor. A
 `Claude-Session:` trailer matches only the exact `https://claude.ai/code/session_…`
-URL in the session's own stored messages; the web id is not an lcm session id.
-Each run scans trailer history once per session and exact URL, regardless of the number
-of messages mentioning it. Stored references are refreshed at the start of the run;
+URL declared by that session's main-chain attachment; the web id is not an lcm session id.
+Stored message content, tool output and prompts are never scanned for trailer URLs.
+Several sessions declaring one URL all link. Each run scans trailer history once per
+session and exact declared URL. Stored references are refreshed at the start of the run;
 trailer discovery does not verify already linked commits again.
 Trailer evidence creates one link per session and commit, with a representative message
 that is never used for dating. Only a message whose own commit output names exactly one
@@ -111,6 +116,9 @@ Reruns replace retained author-date anchors for eligible messages with committer
 The first enabled pass also collapses legacy duplicate trailer links and clears trailer-only
 or ambiguous output anchors. This repair runs once, changes only affected rows, recomputes
 their conversations' summary bounds and preserves summary text.
+Separately, a one-time identity repair deletes all existing `session-trailer` links and
+re-derives them from recorded declarations. Sessions without a declaration keep no
+trailer link. This identity repair changes no event times or summary bounds.
 Git reads release the project queue turn and mutation lease, and writes recheck
 the stored evidence. Summary bounds are recomputed only for conversations whose
 commit anchors changed. Missing-project skips do not add to the skipped-session count.

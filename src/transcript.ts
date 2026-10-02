@@ -2,7 +2,7 @@ import { isWorkerClaim, workerPayloadJobIds } from "./worker-markers.js";
 import { readFileSync } from "node:fs";
 
 /** Bump when the Claude parser changes the rows or fields a transcript yields. */
-export const CLAUDE_PARSER_SHAPE = "claude-v4";
+export const CLAUDE_PARSER_SHAPE = "claude-v5";
 
 interface ContentBlock {
   type?: string;
@@ -18,6 +18,9 @@ interface ContentBlock {
 }
 
 interface TranscriptLine {
+  sessionId?: unknown;
+  isSidechain?: boolean;
+  attachment?: { type?: string; url?: unknown };
   timestamp?: unknown;
   type?: string;
   message?: {
@@ -27,6 +30,8 @@ interface TranscriptLine {
     model?: string;
   };
 }
+
+export type SessionUrlDeclaration = { sessionId: string; url: string };
 
 /**
  * A skill invocation or slash command, recorded as structure rather than as a
@@ -199,10 +204,18 @@ function toolUseModels(obj: TranscriptLine): Map<string, string> {
 
 /** One Claude JSONL entry; full and incremental readers use exactly the same filtering and shape. */
 export function parseClaudeTranscriptRecord(record: string, toolShape: "current" | "legacy" = "current"):
-  { message?: ParsedMessage; toolUseModels: Map<string, string> } {
+  { message?: ParsedMessage; toolUseModels: Map<string, string>; sessionUrlDeclaration?: SessionUrlDeclaration } {
   try {
     const obj: TranscriptLine = JSON.parse(record);
     const models = toolUseModels(obj);
+    if (obj.type === "attachment") {
+      const attachment = obj.attachment;
+      if (!obj.isSidechain && attachment?.type === "remote_session_change" &&
+          typeof obj.sessionId === "string" && typeof attachment.url === "string" && attachment.url.length > 0) {
+        return { toolUseModels: models, sessionUrlDeclaration: { sessionId: obj.sessionId, url: attachment.url } };
+      }
+      return { toolUseModels: models };
+    }
     const entryRole = obj.message?.role;
     if (!entryRole || !["user", "assistant", "system"].includes(entryRole)) return { toolUseModels: models };
     // One transcript entry stays one message, whatever it holds.

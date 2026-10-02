@@ -914,7 +914,10 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
   if (!messageColumns.some(column => column.name === "event_time_source")) {
     db.exec("ALTER TABLE messages ADD COLUMN event_time_source TEXT");
   }
-  db.exec(`CREATE TABLE IF NOT EXISTS session_commits (
+  db.exec(`CREATE TABLE IF NOT EXISTS session_web_urls (
+    session_id TEXT NOT NULL, url TEXT NOT NULL, PRIMARY KEY(session_id, url)
+  );
+  CREATE TABLE IF NOT EXISTS session_commits (
     session_id TEXT NOT NULL, message_id INTEGER NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
     hash TEXT NOT NULL, subject TEXT, author_at TEXT, committed_at TEXT, branch TEXT, resolved INTEGER NOT NULL CHECK(resolved IN (0, 1)),
     evidence TEXT NOT NULL CHECK(evidence IN ('commit-output', 'session-trailer')), evidence_value TEXT NOT NULL,

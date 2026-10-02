@@ -9,6 +9,7 @@ import { NATIVE_PATTERNS, ScrubEngine } from "../src/scrub.js";
 import { EventsDb } from "../src/hooks/events-db.js";
 import { parseTranscript } from "../src/transcript.js";
 import { claudeRebuildCandidateIds } from "../src/claude-rebuild.js";
+import { WorkerStore } from "../src/store/worker-store.js";
 
 const io = { path: "" };
 
@@ -30,6 +31,47 @@ function fixture() {
   const capture = new SessionCapture(db, "proj", new ScrubEngine([], []));
   return { input, capture };
 }
+
+it("records main-chain web declarations on full and incremental hook capture without creating messages", async () => {
+  const { input, capture } = fixture();
+  const declaration = (url: string, isSidechain = false, sessionId = "session") => JSON.stringify({
+    type: "attachment", sessionId, isSidechain, attachment: { type: "remote_session_change", url },
+  }) + "\n";
+  const first = "https://claude.ai/code/session_first";
+  const resumed = "https://claude.ai/code/session_resumed";
+  writeFileSync(io.path, declaration(first) + line("one") + declaration(first));
+  expect((await capture.captureTranscript(input))?.records.map(record => record.content)).toEqual(["one"]);
+  appendFileSync(io.path, declaration(resumed) + declaration(first, true) +
+    declaration("https://claude.ai/code/session_subagent", true) +
+    declaration("https://claude.ai/code/session_other", false, "other"));
+  expect((await capture.captureTranscript(input))?.records).toEqual([]);
+  expect(db.prepare("SELECT session_id, url FROM session_web_urls ORDER BY url").all()).toEqual([
+    { session_id: "session", url: first }, { session_id: "session", url: resumed },
+  ]);
+  expect(await capture.conversationStore.getSessionMessageCount("session")).toBe(1);
+  expect((await capture.captureTranscript(input))?.records).toEqual([]);
+  expect(db.prepare("SELECT COUNT(*) count FROM session_web_urls").get()).toEqual({ count: 2 });
+});
+
+it("keeps declarations out of a write refused by the worker gate", async () => {
+  const { capture } = fixture();
+  new WorkerStore(db).exclude("session", dir, "claude");
+  const result = await capture.write({ sessionId: "session", messages: [],
+    sessionUrlDeclarations: [{ sessionId: "session", url: "https://claude.ai/code/session_worker" }] });
+  expect(result.records).toEqual([]);
+  expect(db.prepare("SELECT * FROM session_web_urls").all()).toEqual([]);
+});
+
+it("recovers declarations before an older parser's byte cursor", async () => {
+  const { input, capture } = fixture();
+  const url = "https://claude.ai/code/session_before_cursor";
+  writeFileSync(io.path, JSON.stringify({ type: "attachment", sessionId: "session",
+    attachment: { type: "remote_session_change", url } }) + "\n" + line("one"));
+  await capture.captureTranscript(input);
+  db.exec("DELETE FROM session_web_urls; UPDATE conversations SET parser_shape = 'claude-v4'");
+  expect((await capture.captureTranscript(input))?.records).toEqual([]);
+  expect(db.prepare("SELECT session_id, url FROM session_web_urls").all()).toEqual([{ session_id: "session", url }]);
+});
 
 it("parses only the append after reopening the database and forgetting the prefix memo", async () => {
   const { input, capture } = fixture();

@@ -5,6 +5,7 @@ import type { ParsedMessage } from "./transcript.js";
 import { WorkerStore } from "./store/worker-store.js";
 import { ConversationStore, type MessageRecord } from "./store/conversation-store.js";
 import { SummaryStore } from "./store/summary-store.js";
+import { recordSessionWebUrls } from "./store/session-url-store.js";
 import { transcriptSource, type TranscriptDelta } from "./transcript-source.js";
 import { compareStoredMessageContent, normalizeMessageContent } from "./message-content.js";
 import { yieldToEventLoop } from "./daemon/project-queue.js";
@@ -108,8 +109,11 @@ export async function backfillSessionEventTimes(
   const source = transcriptSource(input.client);
   const path = source.locate({ ...input, allowMissing: true });
   const scrub = (text: string) => scrubber.scrubWithCounts(text).text;
-  const read = path ? await source.read(path, undefined, { ...input, scrub, eventTimeRepair: true })
+  const read: TranscriptDelta = path ? await source.read(path, undefined, { ...input, scrub, eventTimeRepair: true })
     : { messages: [], sourceOffset: 0, backfillModels() {} };
+  await conversations.withTransaction(() => {
+    if (!new WorkerStore(db).excluded(input.sessionId)) recordSessionWebUrls(db, input.sessionId, read.sessionUrlDeclarations ?? []);
+  });
   const alignment = await alignmentFor(conversations, input.sessionId, read, scrub);
   let updated = 0, unknown = 0;
   const ids = new Set<number>();
