@@ -103,7 +103,6 @@ function ensureSummaryMetadataColumns(db: DatabaseSync): boolean {
   const summaryColumns = db.prepare(`PRAGMA table_info(summaries)`).all() as SummaryColumnInfo[];
   const hasEarliestAt = summaryColumns.some((col) => col.name === "earliest_at");
   const hasLatestAt = summaryColumns.some((col) => col.name === "latest_at");
-  const hasEventTime = summaryColumns.some((col) => col.name === "has_event_time");
   const hasDescendantCount = summaryColumns.some((col) => col.name === "descendant_count");
   const hasDescendantTokenCount = summaryColumns.some((col) => col.name === "descendant_token_count");
   const hasSourceMessageTokenCount = summaryColumns.some(
@@ -116,9 +115,6 @@ function ensureSummaryMetadataColumns(db: DatabaseSync): boolean {
   if (!hasLatestAt) {
     db.exec(`ALTER TABLE summaries ADD COLUMN latest_at TEXT`);
   }
-  if (!hasEventTime) {
-    db.exec("ALTER TABLE summaries ADD COLUMN has_event_time INTEGER NOT NULL DEFAULT 0");
-  }
   if (!hasDescendantCount) {
     db.exec(`ALTER TABLE summaries ADD COLUMN descendant_count INTEGER NOT NULL DEFAULT 0`);
   }
@@ -128,8 +124,19 @@ function ensureSummaryMetadataColumns(db: DatabaseSync): boolean {
   if (!hasSourceMessageTokenCount) {
     db.exec(`ALTER TABLE summaries ADD COLUMN source_message_token_count INTEGER NOT NULL DEFAULT 0`);
   }
-  return !hasEarliestAt || !hasLatestAt || !hasEventTime || !hasDescendantCount ||
+  return !hasEarliestAt || !hasLatestAt || !hasDescendantCount ||
     !hasDescendantTokenCount || !hasSourceMessageTokenCount;
+}
+
+/**
+ * Added on its own so it never triggers the summary backfill: existing summaries keep 0
+ * (bounds on capture time, as they were computed); compaction and recomputeTimeBounds set it.
+ */
+function ensureSummaryEventTimeFlag(db: DatabaseSync): void {
+  const summaryColumns = db.prepare(`PRAGMA table_info(summaries)`).all() as SummaryColumnInfo[];
+  if (!summaryColumns.some((col) => col.name === "has_event_time")) {
+    db.exec("ALTER TABLE summaries ADD COLUMN has_event_time INTEGER NOT NULL DEFAULT 0");
+  }
 }
 
 /** conversations.parent_session_id / subagent_type / subagent_desc — see docs/design/subagent-attribution-from-sidecar.md. */
@@ -919,6 +926,7 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
   const depthAdded = ensureSummaryDepthColumn(db);
   db.exec("CREATE INDEX IF NOT EXISTS summaries_conv_depth_id_idx ON summaries (conversation_id, depth, summary_id)");
   const metadataAdded = ensureSummaryMetadataColumns(db);
+  ensureSummaryEventTimeFlag(db);
   backfillSummaryFieldsOnce(db, depthAdded || metadataAdded);
   ensureMessagePartsSkillCommandTypes(db);
 
