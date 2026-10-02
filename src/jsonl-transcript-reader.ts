@@ -69,6 +69,7 @@ export interface ReadJsonlTranscriptDeltaOptions {
   includeTrailingRecord: boolean;
   /** Optional transient boundary proof, including records behind a resumed cursor. */
   recordMatches?: (record: string) => boolean;
+  signal?: AbortSignal;
 }
 
 export interface JsonlTranscriptDelta<M, R = JsonlTranscriptRecord<M>> {
@@ -354,7 +355,9 @@ export async function readJsonlTranscriptDelta<M, R extends JsonlTranscriptRecor
     const startOffset = resumed ? options.cursor!.offset : 0;
 
     let recordMatched = false;
+    options.signal?.throwIfAborted();
     const checkedFormat = options.recordMatches ? { ...format, parseRecord: (record: string) => {
+      options.signal?.throwIfAborted();
       recordMatched ||= options.recordMatches!(record);
       return format.parseRecord(record);
     } } : format;
@@ -368,7 +371,8 @@ export async function readJsonlTranscriptDelta<M, R extends JsonlTranscriptRecor
     );
     if (options.recordMatches && !recordMatched && startOffset > 0) {
       await scanRecords(handle, { ...format, selectMessages: undefined, parseRecord: (record: string) => {
-        recordMatched ||= options.recordMatches!(record);
+        options.signal?.throwIfAborted();
+      recordMatched ||= options.recordMatches!(record);
         return {} as R;
       } }, 0, startOffset, true, true);
     }

@@ -19,6 +19,8 @@ export type DaemonConfig = {
   version: number;
   daemon: { port: number; socketPath: string; logLevel: string; logMaxSizeMB: number; logRetentionDays: number; idleTimeoutMs: number };
   compaction: {
+    /** Overall safety deadline for a rendered Claude compaction, in milliseconds. */
+    hookDeadlineMs: number;
     /** Below this many tokens `lcm compact` leaves a conversation alone; 0 compacts every one. */
     autoCompactMinTokens: number;
     /** Max conversations of the same project a session start requests compaction for; a larger backlog drains over several starts. */
@@ -93,6 +95,7 @@ const DEFAULTS: DaemonConfig = {
   // storage root directly.
   daemon: { port: 3737, socketPath: "", logLevel: "info", logMaxSizeMB: 10, logRetentionDays: 7, idleTimeoutMs: 1800000 },
   compaction: {
+    hookDeadlineMs: 1_800_000,
     autoCompactMinTokens: 10000,
     autoCompactSessionStartMax: 2,
     promotionThresholds: {
@@ -179,6 +182,9 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
   // Precedence: DEFAULTS < fileConfig < overrides.
   const withFile = deepMerge(structuredClone(DEFAULTS) as Record<string, unknown>, fileConfig);
   const merged = deepMerge(withFile, overrides ?? {}) as DaemonConfig;
+  if (!Number.isSafeInteger(merged.compaction.hookDeadlineMs) || merged.compaction.hookDeadlineMs <= 0 || merged.compaction.hookDeadlineMs > 2_147_483_647) {
+    throw new Error("compaction.hookDeadlineMs must be a positive integer no greater than 2147483647 ms");
+  }
   if (typeof merged.timeline.generationEnabled !== "boolean") throw new Error("timeline.generationEnabled must be a boolean");
   if (typeof merged.commits.enabled !== "boolean") throw new Error("commits.enabled must be a boolean");
   if (!merged.daemon.socketPath) merged.daemon.socketPath = join(dirname(configPath), "daemon.sock");

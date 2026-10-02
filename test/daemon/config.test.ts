@@ -5,6 +5,13 @@ import { join } from "node:path";
 import { loadDaemonConfig, deepMerge } from "../../src/daemon/config.js";
 
 describe("loadDaemonConfig", () => {
+  it("provides a configurable minutes-scale compaction safety deadline", () => {
+    expect(loadDaemonConfig("/missing", {}, {}).compaction.hookDeadlineMs).toBe(1_800_000);
+    expect(loadDaemonConfig("/missing", { compaction: { hookDeadlineMs: 300_000 } }, {}).compaction.hookDeadlineMs).toBe(300_000);
+    for (const value of [0, -1, NaN, Infinity, "300000", 2_147_483_648]) {
+      expect(() => loadDaemonConfig("/missing", { compaction: { hookDeadlineMs: value } }, {})).toThrow("compaction.hookDeadlineMs");
+    }
+  });
   it("returns defaults when no config file exists", () => {
     const c = loadDaemonConfig("/nonexistent/config.json");
     expect(c.daemon.port).toBe(3737);

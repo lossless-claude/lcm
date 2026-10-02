@@ -2,6 +2,7 @@ import { WorkerStore } from "../../store/worker-store.js";
 import { workerExcluded } from "../../worker-session.js";
 import type { SummarizeJobStore } from "../summarize-jobs.js";
 import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { getLcmConnection, closeLcmConnection, openStandaloneLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
@@ -255,7 +256,7 @@ async function captureTranscriptForCompact(
 
 async function captureForCompact(
   capture: SessionCapture,
-  input: { sessionId: string; cwd: string; client?: string; transcriptPath?: string },
+  input: TranscriptCaptureInput,
   paths: LcmPaths,
   log: DaemonLog,
 ): Promise<CaptureResult | undefined> {
@@ -319,11 +320,16 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
 
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
+    const controller = new AbortController();
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    let deadlineAt: number | undefined;
+    const reply = (code: number, value: unknown) => { if (!controller.signal.aborted) sendJson(res, code, value); };
+    try {
     const { session_id, transcript_path, skip_ingest, client, previous_summary } = input;
     if (input.replay_provider !== undefined &&
         (input.replay_provider !== "session-pool" || skip_ingest !== true || input.capture_required === true
           || input.precompact_verified === true || input.work_class === "live")) {
-      sendJson(res, 400, { error: "replay_provider requires session-pool and skip_ingest, without live work" });
+      reply(400, { error: "replay_provider requires session-pool and skip_ingest, without live work" });
       return;
     }
     const captureRequired = input.capture_required === true;
@@ -331,9 +337,25 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     if (renderContext && (client !== "claude" || !captureRequired || skip_ingest ||
         !Number.isSafeInteger(input.context_budget_bytes) || input.context_budget_bytes <= 0 || input.context_budget_bytes > 65_536 ||
         typeof input.capture_through_uuid !== "string" || !input.capture_through_uuid.trim() || input.capture_through_uuid.length > 140)) {
-      sendJson(res, 400, { error: "render_context requires Claude Capture, a UUID boundary and a byte budget of 1..65536" }); return;
+      reply(400, { error: "render_context requires Claude Capture, a UUID boundary and a byte budget of 1..65536" }); return;
     }
     const contextStatus = (status: string) => renderContext ? { contextWindow: { version: 1, sessionId: session_id, status } } : {};
+    const model = input.compaction_summary_model ?? "sonnet";
+    const requester = renderContext && model !== "pool" && input.summary_via_requester === true;
+    if (renderContext && (!["haiku", "sonnet", "session", "pool"].includes(model) ||
+        model !== "pool" && (!requester || input.requester_session_id !== session_id))) {
+      reply(400, { error: "compaction model requires a matching requester, or pool" }); return;
+    }
+    if (renderContext) {
+      const timeoutMs = config.compaction.hookDeadlineMs ?? 1_800_000;
+      deadlineAt = Date.now() + timeoutMs;
+      deadlineTimer = setTimeout(() => {
+        controller.abort(new Error("Compaction deadline exceeded"));
+        sendJson(res, 408, { error: "Compaction deadline exceeded", ...contextStatus("deadline") });
+      }, timeoutMs);
+      deadlineTimer.unref();
+    }
+
     const precompactVerified = input.precompact_verified === true && client === "omp" && skip_ingest === true;
     // skip_ingest also serves post-capture live hooks, which mark their class explicitly.
     const workClass = skip_ingest && !precompactVerified && input.work_class !== "live" ? "background" : "live";
@@ -345,7 +367,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       : undefined;
 
     if (!session_id || !input.cwd) {
-      sendJson(res, 400, { error: "session_id and cwd are required" });
+      reply(400, { error: "session_id and cwd are required" });
       return;
     }
 
@@ -353,17 +375,17 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     try {
       cwd = validateCwd(input.cwd);
     } catch (err) {
-      sendJson(res, 400, { error: err instanceof Error ? err.message : "invalid cwd" });
+      reply(400, { error: err instanceof Error ? err.message : "invalid cwd" });
       return;
     }
 
     if (captureRequired && skip_ingest) {
-      sendJson(res, 400, { error: "capture_required and skip_ingest cannot be combined" });
+      reply(400, { error: "capture_required and skip_ingest cannot be combined" });
       return;
     }
 
     if (session_id === TIMELINE_SESSION_ID || workerExcluded(cwd, session_id, paths, transcript_path)) {
-      sendJson(res, 200, { summary: "", replayOutcome: "skipped", reason: session_id === TIMELINE_SESSION_ID ? "timeline-excluded" : "worker-excluded", ...contextStatus("excluded") }); return;
+      reply(200, { summary: "", replayOutcome: "skipped", reason: session_id === TIMELINE_SESSION_ID ? "timeline-excluded" : "worker-excluded", ...contextStatus("excluded") }); return;
     }
     const captureOnly = async () => {
       try {
@@ -377,9 +399,10 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         return await withProjectMutation(projectId(cwd), async () => {
           const db = openStandaloneLcmConnection(dbPath);
           try {
-            runLcmMigrations(db);
+            controller.signal.throwIfAborted();
+          runLcmMigrations(db);
             const captured = await captureForCompact(new SessionCapture(db, projectId(cwd), scrubber, paths), {
-              sessionId: session_id, cwd, client, transcriptPath: transcript_path,
+              sessionId: session_id, cwd, client, transcriptPath: transcript_path, signal: controller.signal,
             }, paths, log);
             const outcome = captured
               ? { status: "completed" as const, messages: captured.records.length }
@@ -408,7 +431,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         cwd, sessionId: session_id, client, operationId,
         summary: { status: "skipped", reason: "busy" },
       }, paths, log);
-      sendJson(res, 200, {
+      reply(200, {
         skipped: true,
         ...contextStatus("busy"),
         replayOutcome: "skipped",
@@ -457,7 +480,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           cwd, sessionId: session_id, client, operationId,
           summary: { status: "skipped", reason: "disabled" },
         }, paths, log);
-        sendJson(res, 200, {
+        reply(200, {
           summary: "Summarization disabled — no summarizer configured.",
           replayOutcome: "disabled",
           providerId: effectiveProvider,
@@ -487,6 +510,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         return withProjectMutation(pid, async (lease) => {
         const db = getLcmConnection(dbPath);
         try {
+          controller.signal.throwIfAborted();
           runLcmMigrations(db);
           if (new WorkerStore(db).excluded(session_id)) return { summary: "", replayOutcome: "skipped", reason: "worker-excluded" };
 
@@ -502,7 +526,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             try {
               captured = renderContext ? await captureTranscriptForCompact(capture, {
                 sessionId: session_id, client, cwd, transcriptPath: transcript_path,
-                requireComplete: true, captureThroughUuid: input.capture_through_uuid,
+                requireComplete: true, captureThroughUuid: input.capture_through_uuid, signal: controller.signal,
               }, paths, log) : await captureForCompact(capture, {
                 sessionId: session_id, client, cwd, transcriptPath: transcript_path,
               }, paths, log);
@@ -551,7 +575,9 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             };
           }
 
-          const activeSummarize = captureRequired ? await getSummarizer(effectiveProvider) : summarize;
+          const activeSummarize = requester
+            ? await createSummarizer(effectiveProvider, config, jobs, { model, operationId: operationId ?? randomUUID(), signal: controller.signal, deadlineAt })
+            : captureRequired ? await getSummarizer(effectiveProvider) : summarize;
           if (!activeSummarize) {
             return {
               summary: "Summarization disabled — no summarizer configured.",
@@ -638,6 +664,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             try {
               const answer = await lease.yieldWhile(() => turn.yieldWhile(() => activeSummarize(text, aggressive, {
                 ...ctx,
+                signal: controller.signal,
                 workClass,
                 sessionId: session_id,
                 client,
@@ -689,6 +716,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
               if (new WorkerStore(db).excluded(session_id)) throw new Error("Worker session excluded during compaction");
               // The engine gates every answer too; judging it here as well keeps an answer
               // the engine will reject from being counted as a successful call.
+              controller.signal.throwIfAborted();
               const summary = acceptSummaryText(answer, effectiveProvider);
               settleAttempt(true);
               return summary;
@@ -701,7 +729,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           const engine = new CompactionEngine(
             conversationStore,
             summaryStore,
-            { ...compactEngineConfig({ scrubber, language }), onAnswerDiscarded: () => { keptAnswers.pop(); } },
+            { ...compactEngineConfig({ scrubber, language }), signal: controller.signal, onAnswerDiscarded: () => { keptAnswers.pop(); } },
           );
 
           const compactResult = await engine.compact({
@@ -822,7 +850,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           ? { status: "completed" }
           : { status: "skipped", reason: result.replayOutcome },
       }, paths, log);
-      sendJson(res, 200, result);
+      reply(200, result);
     } catch (err) {
       log.write("error", "compact.failed", { cwd, session_id, err });
       if (captureRequired) {
@@ -850,7 +878,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         err instanceof Error
           ? (err as Error & { llmUsage?: CompactLlmUsage }).llmUsage
           : undefined;
-      sendJson(res, err instanceof TranscriptSourceError ? 400 : 500, {
+      reply(err instanceof TranscriptSourceError ? 400 : 500, {
         error: err instanceof Error ? err.message : "compact failed",
         ...contextStatus("capture-unverified"),
         ...(captureRequired ? {
@@ -864,5 +892,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     } finally {
       releaseCompacting();
     }
+
+    } finally { if (deadlineTimer) clearTimeout(deadlineTimer); }
   };
 }

@@ -216,6 +216,7 @@ export class SessionCapture {
       throw error;
     });
     if (!stored && delta.messages.length === 0 && delta.checkpoint === undefined && !delta.boundaries?.length) return undefined;
+    input.signal?.throwIfAborted();
     const written = await this.write({
       sessionId: input.sessionId,
       cwd: input.cwd,

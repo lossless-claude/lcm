@@ -18,7 +18,7 @@ Why: it removes the `claude` CLI process spawn per chunk that `claude-process` p
 | 4 | Integration seam | Provider seam (`LcmSummarizeFn`), not a "store a ready summary" route. The engine keeps all DAG bookkeeping. |
 | 5 | Transport daemon → module | The module long-polls `GET /summarize-jobs/next`; the daemon holds the request up to 25 s. One pending request per module at a time. If `$.http.fetch` cannot hold a 25 s request, fall back to polling every 2 s. |
 | 6 | Job timeout and fallback | A session job has 20 s to be claimed, then a fresh 60 s to be answered (`SESSION_COMPLETION_MS`). On timeout or `{error}` it delegates to the fallback provider; late answers are discarded. The completion window leaves room for a leaf answer within Claude PreCompact's 120 s outer bound, but that bound covers the whole compaction, not each job. See the bounds below. |
-| 7 | Fallback provider | `llm.fallbackProvider` when set; otherwise whatever today's `auto` resolution yields for the client. Never force `claude-process`. The user's configured provider is respected always: a config that names `openai`, `anthropic`, `codex-process`, … never routes through the module. |
+| 7 | Fallback provider | `llm.fallbackProvider` when set; otherwise whatever today's `auto` resolution yields for the client. Never force `claude-process`. Ordinary jobs use the configured provider; the explicit requester-first rendered-compaction override is described below. |
 | 8 | Which module may serve a job | Normal `session` jobs: only the module whose `$.session.id()` equals the job's `session_id`. Explicit workers (`LCM_SUMMARIZE_WORKER=1`) instead claim only `session-pool` jobs from the shared pool. |
 | 9 | Routing by node kind | leaf → `$.model.complete({ model: "haiku", system, prompt, maxTokens })`; condensed (depth ≥ 1) → `$.model.fork({ prompt })` with the rendered system + prompt as the one user message, so the model also sees the transcript. Workers use `complete` for both kinds, with Haiku by default or Sonnet explicitly selected; never `fork`. |
 | 10 | Fork returns `null` (cold cache, API error) | Try `complete` with `haiku`; if that fails too, answer `{error}`. |
@@ -43,7 +43,7 @@ helping a claimed leaf job.
 | Hook → daemon transport | `src/daemon/client.ts:DaemonClient.rawRequest` defaults POSTs to no timeout, but applies explicit `timeoutMs` as socket inactivity timeouts and honors an abort signal. Claude PreCompact supplies 120 s. `hooks/lcm-hooks.ts:postOnce` adds no explicit timeout to host `$.http.fetch`; a host-internal HTTP cap is not established by this repository. |
 | Codex PreCompact | `src/hooks/codex.ts:dispatchCodexHook` uses a 120 s abort signal and a 115 s `/compact` socket timeout. Codex has no session completion module, so extending a claimed job cannot supply a missing session worker. |
 | OMP pre-compaction | `hooks/omp/lcm.ts:lcm` (`session_before_compact`) awaits capture, then submits `/compact` without waiting. `nodeTransport` retains the default 1.5 s socket timeout; disconnect does not cancel daemon compaction. OMP serves pool jobs, not ordinary session jobs. |
-| Compact route and engine | `src/daemon/routes/compact.ts:createCompactHandler` awaits the project queue and `src/compaction.ts:CompactionEngine.compact` without an overall wall-clock deadline or disconnect cancellation. Deadline-bound PreCompact requests skip busy project work; that admission rule remains unchanged. `src/daemon/server.ts:createDaemon` records response close without cancelling the handler. |
+| Compact route and engine | `src/daemon/routes/compact.ts:createCompactHandler` awaits the project queue and `src/compaction.ts:CompactionEngine.compact`; ordinary requests have no overall wall-clock deadline, while rendered requests use `compaction.hookDeadlineMs`. Disconnect alone does not cancel ordinary work. Deadline-bound PreCompact requests skip busy project work; that admission rule remains unchanged. `src/daemon/server.ts:createDaemon` records response close without cancelling the handler. |
 | Daemon lifetime | `src/daemon/server.ts:createDaemon` (`resetIdleTimer`) resets `daemon.idleTimeoutMs` on each request; its default is 30 minutes and a non-positive value disables it. Idle expiry can end the daemon even with work pending, but session polling and replies count as requests. This is a configurable daemon lifetime bound, not a per-compaction deadline. |
 | SessionEnd | `src/hooks/session-end.ts:handleSessionEnd` budgets 1 s for acknowledgement (100 ms floor after elapsed work). `src/daemon/routes/session-end.ts:createSessionEndHandler` returns 202 before capture; `runPostIngestSequence` fires compaction afterwards. `runLegacyFallback` also fires compaction after bounded capture. Neither imposes a completion wait. |
 | SessionStart sweep | `src/daemon/routes/session-start-compact.ts:createSessionStartCompactHandler` returns 202 before scanning and fires eligible `/compact` requests. `src/hooks/daemon-requests.ts:fireDaemonRequest` / `fireCompactRequest` set no request timeout and unref the socket after sending. `hooks/lcm-hooks.ts:registerSessionStart` submits the sweep without awaiting it. |
@@ -52,6 +52,33 @@ The outer PreCompact timeout still wins when a whole compaction takes too long;
 the daemon can continue after its caller leaves. A session that has ended or a
 sweep targeting an absent module still falls back after the unchanged 20-second
 claim window. Increasing completion time cannot help those unclaimed jobs.
+
+## Requester-first rendered compaction
+
+A rendered Claude `/compact` request may explicitly select a requesting-session
+summary model independently of `llm.provider`. With `summary_via_requester: true`,
+matching source/requester session ids and model `haiku`, `sonnet` or `session`, the
+request-local provider chain first enqueues ordinary session-owned jobs marked
+`purpose: "compaction"`. These carry the chosen `model`, `operationId`, `timeoutMs`
+and operation `deadlineAt`. The requesting module serves both leaf and condensed
+jobs with the chosen model. Sonnet is the wire default and consumes Sonnet quota on
+every node; session-model forks require explicit selection.
+
+The session FIFO is separate from the worker pool. Workers cannot claim or answer
+these requester jobs. An unclaimed job falls back after 20 s; a claimed job uses
+`llm.poolCompletionMs`, subject to the operation's overall cancellation. Errors,
+spend-cap refusal and unavailable answers also advance to the configured provider
+chain. A global `session` primary is not attempted twice; its configured fallback
+follows the requester. Named endpoint order and disabled fallback remain authoritative.
+Late replies are discarded. Actual model usage, including prior failed attempts,
+retains `session:haiku`, `session:sonnet`, `session:fork` or the answering fallback's label.
+
+`compaction_summary_model: "pool"` bypasses requester jobs and preserves the configured
+provider chain, including its worker-pool admission and fallback. Ordinary compaction,
+replay and timeline routing are unaffected. The whole sweep retains the existing
+session guard and yields only the project queue/mutation lease during model waits;
+concurrent sweeps cannot select the same range. A later PreCompact request therefore
+sees busy while the owner is in flight, or no work after the owner completed.
 
 ## Dedicated workers and replay
 

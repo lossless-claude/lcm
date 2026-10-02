@@ -48,6 +48,7 @@ export interface TranscriptLocator {
   /** Repairs leave missing transcripts unknown rather than refusing the request. */
   allowMissing?: boolean;
   /** Claude compaction requires a verified, fully consumed snapshot through this UUID. */
+  signal?: AbortSignal;
   requireComplete?: boolean;
   captureThroughUuid?: string;
 }
@@ -227,7 +228,7 @@ const claudeSource: TranscriptSource = {
     }
     let delta: Awaited<ReturnType<typeof readClaudeTranscriptDelta>>;
     try {
-      delta = await readClaudeTranscriptDelta(path, { cursor: prior, includeTrailingRecord: true,
+      delta = await readClaudeTranscriptDelta(path, { cursor: prior, includeTrailingRecord: true, signal: ctx.signal,
         ...(ctx.requireComplete ? { recordMatches: (record: string) => {
           try { return JSON.parse(record).uuid === ctx.captureThroughUuid; } catch { return false; }
         } } : {}),

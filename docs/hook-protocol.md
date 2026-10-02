@@ -56,6 +56,15 @@ row: Capture skips it, preserving the original source messages and cursor counts
 so repeated compactions cannot capture nested copies of the generated context.
 Quoted or embedded marker text remains ordinary message content.
 
+Rendered requests additionally choose `compaction_summary_model`: `haiku`, `sonnet`
+(default), `session` or `pool`. Non-pool choices require `summary_via_requester: true`
+and a matching `requester_session_id`; `pool` uses the configured chain without
+requester jobs. An `operation_id` attributes jobs and hook outcomes. The daemon's
+`compaction.hookDeadlineMs` safety deadline applies to the whole rendered request;
+expiry returns HTTP 408 with `contextWindow.status: "deadline"`. Summary work has one
+owner under the existing session guard and project queue: concurrent same-session
+sweeps wait or receive busy/skip instead of selecting the same source range.
+
 ### OMP pre-compaction and shutdown
 
 OMP's `session_before_compact` callback awaits `/ingest` to confirm Capture, then submits an unawaited `/compact` request with `precompact_verified: true`. If another operation occupies the project's compaction queue, the daemon records a busy summary skip instead of running that summary after the native compaction window. It checks again immediately before enqueue because summarizer setup can await. OMP returns control to native compaction regardless of lcm's outcome. Its `session_shutdown` callback forces the final local observation snapshot after recording the capture attempt, even when a snapshot was written recently; `lcm doctor -v` reads that evidence when storage succeeds.

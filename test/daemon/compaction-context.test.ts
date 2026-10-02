@@ -9,6 +9,7 @@ import { lcmHome } from "../../src/lcm-home.js";
 import { DatabaseSync } from "node:sqlite";
 import { projectDbPath } from "../../src/daemon/project.js";
 import { WorkerStore } from "../../src/store/worker-store.js";
+import { SummarizeJobStore } from "../../src/daemon/summarize-jobs.js";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -32,6 +33,64 @@ async function invoke(handler: ReturnType<typeof createCompactHandler>, input: u
   return { status, body };
 }
 describe("complete /compact context", () => {
+  it("uses only the configured worker pool for the pool choice", async () => {
+    const { path, request } = fixture();
+    writeFileSync(path, Array.from({ length: 20 }, (_, i) => JSON.stringify({ uuid: `pool-${i}`,
+      message: { role: i % 2 ? "assistant" : "user", content: `message ${i} ${"source ".repeat(200)}` } })).join("\n") + "\n");
+    const jobs = new SummarizeJobStore();
+    const config = loadDaemonConfig("/missing", { llm: { provider: "session-pool", fallbackProvider: "disabled" }, summarizer: { language: "en" } }, {});
+    const result = invoke(createCompactHandler(config, paths, jobs), { ...request, capture_through_uuid: "pool-19" });
+    const job = await jobs.nextWorker("worker");
+    try {
+      expect(job?.pool).toBe(true);
+      expect(job?.purpose).toBeUndefined();
+      expect(await jobs.next("session", undefined, false)).toBeNull();
+      jobs.answer(job!.id, { text: "pool summary", providerId: "session-pool:haiku", usage: { input_tokens: 500, output_tokens: 3, estimated: false } }, "worker");
+      expect((await result).body.providerId).toBe("session-pool:haiku");
+    } finally { jobs.close(); await result; }
+  });
+  it("awaits requester drafts and refuses a concurrent sweep for the same ranges", async () => {
+    const { cwd, path, request } = fixture();
+    writeFileSync(path, Array.from({ length: 20 }, (_, i) => JSON.stringify({ uuid: `row-${i}`,
+      message: { role: i % 2 ? "assistant" : "user", content: `message ${i} ${"source ".repeat(200)}` } })).join("\n") + "\n");
+    const jobs = new SummarizeJobStore();
+    const config = loadDaemonConfig("/missing", { llm: { provider: "disabled" }, summarizer: { language: "en" } }, {});
+    const handler = createCompactHandler(config, paths, jobs);
+    const first = invoke(handler, { ...request, capture_through_uuid: "row-19", summary_via_requester: true,
+      requester_session_id: "session", compaction_summary_model: "sonnet", operation_id: "owned" });
+    const job = await jobs.next("session");
+    try {
+      expect(job).toMatchObject({ purpose: "compaction", model: "sonnet" });
+      const concurrent = await invoke(handler, { ...request, capture_through_uuid: "row-19", skip_ingest: true, capture_required: false, render_context: false });
+      expect(concurrent.body.replayOutcome).toBe("skipped");
+      jobs.answer(job!.id, { text: "compact source", providerId: "session:sonnet", usage: { input_tokens: 500, output_tokens: 3, estimated: false } });
+      const result = await first;
+      expect(result.body.contextWindow.status).toBe("ready");
+      expect(result.body.providerId).toBe("session:sonnet");
+      const after = await invoke(handler, { ...request, capture_through_uuid: "row-19", summary_via_requester: true,
+        requester_session_id: "session", compaction_summary_model: "sonnet", operation_id: "later" });
+      expect(after.body.replayOutcome).toBe("no_work");
+      expect(await jobs.next("session", undefined, false)).toBeNull();
+    } finally { jobs.close(); await first; }
+  });
+
+  it("expires a stalled sweep without publishing a late requester answer", async () => {
+    const { cwd, path, request } = fixture();
+    writeFileSync(path, Array.from({ length: 20 }, (_, i) => JSON.stringify({ uuid: `row-${i}`,
+      message: { role: i % 2 ? "assistant" : "user", content: `message ${i} ${"source ".repeat(200)}` } })).join("\n") + "\n");
+    const jobs = new SummarizeJobStore();
+    const config = loadDaemonConfig("/missing", { llm: { provider: "disabled" }, summarizer: { language: "en" }, compaction: { hookDeadlineMs: 1000 } }, {});
+    const handler = createCompactHandler(config, paths, jobs);
+    const first = invoke(handler, { ...request, capture_through_uuid: "row-19", summary_via_requester: true,
+      requester_session_id: "session", compaction_summary_model: "sonnet", operation_id: "expire" });
+    const job = await jobs.next("session");
+    try {
+      const result = await first;
+      expect(result.status).toBe(408);
+      expect(result.body.contextWindow.status).toBe("deadline");
+      expect(jobs.answer(job!.id, { text: "late summary" })).toBe("discarded");
+    } finally { jobs.close(); }
+  });
   it("returns a marked, fenced complete window and exact coverage after verified Capture", async () => {
     const { handler, request } = fixture();
     const { status, body } = await invoke(handler, request);

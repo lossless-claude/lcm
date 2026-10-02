@@ -49,6 +49,8 @@ export type SummarizerUsage = {
 };
 
 export type SummarizeContext = {
+  /** An expired compaction must not enqueue or publish another attempt. */
+  signal?: AbortSignal;
   /** Endpoint slot admission; live by default, background for bulk compaction. */
   workClass?: "live" | "background" | "timeline";
   /** Internal alternate task: send text verbatim with this system instruction. */

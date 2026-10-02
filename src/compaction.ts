@@ -25,6 +25,8 @@ export interface CompactionResult {
 }
 
 export interface CompactionConfig {
+  /** Cancel before publishing a summary after an expired request. */
+  signal?: AbortSignal;
   /** Context threshold as fraction of budget (default 0.75) */
   contextThreshold: number;
   /** Number of fresh tail turns to protect (default 8) */
@@ -254,6 +256,7 @@ export class CompactionEngine {
 
     // Phase 1: leaf passes over oldest raw chunks outside the protected tail.
     while (true) {
+      this.config.signal?.throwIfAborted();
       const leafChunk = await this.selectOldestLeafChunk(conversationId);
       if (leafChunk.items.length === 0) {
         break;
@@ -298,6 +301,7 @@ export class CompactionEngine {
 
     // Phase 2: depth-aware condensed passes, always processing shallowest depth first.
     while (true) {
+      this.config.signal?.throwIfAborted();
       const candidate = await this.selectShallowestCondensationCandidate({
         conversationId,
       });
@@ -848,6 +852,7 @@ export class CompactionEngine {
     });
 
     // Persist the leaf summary
+    this.config.signal?.throwIfAborted();
     const summaryId = generateSummaryId(summary.content);
     const tokenCount = estimateTokens(summary.content);
     const dated = messageContents.filter(message => message.eventAt);
@@ -950,6 +955,7 @@ export class CompactionEngine {
     });
 
     // Persist the condensed summary
+    this.config.signal?.throwIfAborted();
     const summaryId = generateSummaryId(condensed.content);
     const tokenCount = estimateTokens(condensed.content);
     const knownBounds = this.summaryStore.getSourceEventTimeBounds(summaryRecords.map(summary => summary.summaryId));
