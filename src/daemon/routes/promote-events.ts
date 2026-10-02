@@ -2,6 +2,7 @@ import { WorkerStore } from "../../store/worker-store.js";
 import { EventsDb, type EventRow, type PatternReinforcementStats } from "../../hooks/events-db.js";
 import { eventsDbPath } from "../../db/events-path.js";
 import { PromotedStore } from "../../db/promoted.js";
+import { ToolLessonStore } from "../../promotion/tool-lessons.js";
 import { passiveTypeTag } from "../../promotion/passive-tags.js";
 import { deduplicateAndInsert } from "../../promotion/dedup.js";
 import { sendJson, type RouteHandler } from "../server.js";
@@ -15,7 +16,6 @@ import type { LcmPaths } from "../../lcm-paths.js";
 import { safeLogError } from "../../hooks/hook-errors.js";
 import { acquireProjectMutation, yieldToEventLoop } from "../project-queue.js";
 
-const CORRELATION_WINDOW = 20;
 const MIN_REINFORCED_PATTERN_OCCURRENCES = 3;
 const MIN_REINFORCED_PATTERN_SESSIONS = 2;
 const AUTO_PROMOTABLE_PATTERN_CATEGORIES = new Set(["file", "mcp", "skill", "subagent"]);
@@ -31,46 +31,6 @@ interface PromoteResult {
 function isReinforcedPattern(stats: PatternReinforcementStats): boolean {
   return stats.totalCount >= MIN_REINFORCED_PATTERN_OCCURRENCES &&
     stats.distinctSessions >= MIN_REINFORCED_PATTERN_SESSIONS;
-}
-
-function correlateErrors(events: EventRow[]): void {
-  // Group by session
-  const bySession = new Map<string, EventRow[]>();
-  for (const e of events) {
-    const list = bySession.get(e.session_id) ?? [];
-    list.push(e);
-    bySession.set(e.session_id, list);
-  }
-
-  for (const sessionEvents of bySession.values()) {
-    // Sort by seq
-    sessionEvents.sort((a, b) => a.seq - b.seq);
-
-    // Find error→success pairs
-    for (let i = 0; i < sessionEvents.length; i++) {
-      const event = sessionEvents[i];
-      if (event.category !== "error") continue;
-
-      // Look for closest preceding error pattern match in the next CORRELATION_WINDOW events
-      const errorPrefix = event.data.split(/\s+/).slice(0, 3).join(" ").toLowerCase();
-
-      for (let j = i + 1; j < sessionEvents.length && (sessionEvents[j].seq - event.seq) <= CORRELATION_WINDOW; j++) {
-        const candidate = sessionEvents[j];
-        if (candidate.category === "error") continue; // skip other errors
-        const candidatePrefix = candidate.data.split(/\s+/).slice(0, 3).join(" ").toLowerCase();
-
-        // Match on command prefix overlap — guard against empty match token (data without colon)
-        const matchToken = errorPrefix.split(":")[1]?.trim().split(" ")[0] ?? "";
-        if (matchToken && candidatePrefix.includes(matchToken)) {
-          // Correlation found — this is an error→fix pair
-          // Set the tag to 'type:solution' (overriding 'type:gotcha' from the category mapping)
-          (candidate as EventRow & { auto_tag?: string }).auto_tag = "type:solution";
-          (candidate as EventRow & { _correlatedErrorId?: number })._correlatedErrorId = event.event_id;
-          break; // only correlate with closest match
-        }
-      }
-    }
-  }
 }
 
 export function createPromoteEventsHandler(config: DaemonConfig, paths: LcmPaths): RouteHandler {
@@ -102,14 +62,6 @@ export function createPromoteEventsHandler(config: DaemonConfig, paths: LcmPaths
 
       try {
         const events = edb.getUnprocessed();
-        if (events.length === 0) {
-          sendJson(res, 200, { ...result, message: "no unprocessed events" });
-          return;
-        }
-
-        // Correlate error→fix pairs
-        correlateErrors(events);
-
         // Open main project DB for promotion
         const pid = projectId(cwd);
         openProject(cwd, paths);
@@ -117,6 +69,11 @@ export function createPromoteEventsHandler(config: DaemonConfig, paths: LcmPaths
         const db = getLcmConnection(dbPath);
         try {
           runLcmMigrations(db);
+          if (input.skip_tool_lessons !== true) result.correlated = await new ToolLessonStore(db).refresh(pid);
+          if (events.length === 0) {
+            sendJson(res, 200, { ...result, message: "no unprocessed events" });
+            return;
+          }
           const store = new PromotedStore(db);
 
           const thresholds = config.compaction.promotionThresholds;
@@ -151,8 +108,7 @@ export function createPromoteEventsHandler(config: DaemonConfig, paths: LcmPaths
             if (new WorkerStore(db).excluded(event.session_id)) { processedIds.push(event.event_id); result.skipped++; continue; }
             await yieldToEventLoop();
             try {
-              const autoTag = (event as EventRow & { auto_tag?: string }).auto_tag;
-              const tag = autoTag ?? passiveTypeTag(event.category);
+              const tag = passiveTypeTag(event.category);
               const reinforcement = getPatternReinforcement(event);
               const reinforced = isReinforcedPattern(reinforcement);
               let confidence: number;
@@ -163,20 +119,12 @@ export function createPromoteEventsHandler(config: DaemonConfig, paths: LcmPaths
                 // Tier 1: immediate
                 if (event.category === "plan") {
                   confidence = eventConf.plan ?? 0.7;
-                } else if ((event as EventRow & { _correlatedErrorId?: number })._correlatedErrorId) {
-                  confidence = eventConf.errorFix ?? 0.4;
-                  result.correlated++;
                 } else {
                   confidence = eventConf.decision ?? 0.5;
                 }
               } else if (event.priority === 2) {
                 // Tier 2: batch
                 confidence = eventConf.batch ?? 0.3;
-                // Check if this is a correlated fix event
-                if ((event as EventRow & { _correlatedErrorId?: number })._correlatedErrorId) {
-                  confidence = eventConf.errorFix ?? 0.4;
-                  result.correlated++;
-                }
               } else {
                 // Tier 3: pattern-only — require either an existing promoted match or
                 // enough repeated passive evidence to bootstrap a new memory.
@@ -194,12 +142,6 @@ export function createPromoteEventsHandler(config: DaemonConfig, paths: LcmPaths
                     confidence + (thresholds.reinforcementBoost ?? 0.3),
                   );
                 }
-              }
-
-              // Set correlation chain
-              const correlatedErrorId = (event as EventRow & { _correlatedErrorId?: number })._correlatedErrorId;
-              if (correlatedErrorId) {
-                edb.setPrevEventId(event.event_id, correlatedErrorId);
               }
 
               // Promote via existing dedup pipeline

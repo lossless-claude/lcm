@@ -51,7 +51,7 @@ export function createToolEventHandler(config: DaemonConfig, paths: LcmPaths): R
     // session end. In-process, after the response, so the hook's dispatch is not held.
     if (outcome.hasPriority1) {
       const sink = { writeHead: () => {}, end: () => {} } as unknown as Parameters<RouteHandler>[1];
-      promoteEvents({} as Parameters<RouteHandler>[0], sink, JSON.stringify({ cwd }))
+      promoteEvents({} as Parameters<RouteHandler>[0], sink, JSON.stringify({ cwd, skip_tool_lessons: true }))
         .catch(err => safeLogError("tool-event", err, { cwd, paths }));
     }
   };

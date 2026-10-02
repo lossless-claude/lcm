@@ -123,6 +123,6 @@ describe("POST /tool-event", () => {
     db.close();
     expect(row).toMatchObject({ type: "error_tool", priority: 1, source_hook: "PostToolUseFailure" });
     await vi.waitFor(() => expect(promoteEvents).toHaveBeenCalledTimes(1));
-    expect(JSON.parse(promoteEvents.mock.calls[0][2])).toMatchObject({ cwd: expect.stringContaining("tool-event-") });
+    expect(JSON.parse(promoteEvents.mock.calls[0][2])).toMatchObject({ cwd: expect.stringContaining("tool-event-"), skip_tool_lessons: true });
   });
 });

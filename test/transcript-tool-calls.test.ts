@@ -63,6 +63,8 @@ it.each([
   ["ok", false, "succeeded", null],
   ["Exit code 7\nfailed", true, "failed", 7],
   ["The user doesn't want to proceed with this tool use.", true, "denied", null],
+  ["The user doesn't want to take this action right now", true, "denied", null],
+  ["The user doesn't want to", true, "denied", null],
   ["Permission denied by hook", true, "unknown", null],
   ["File does not exist.", true, "unknown", null],
   ["PreToolUse:Read hook error: refused", true, "blocked", null],

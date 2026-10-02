@@ -222,3 +222,21 @@ it("decodes Codex MCP JSON escapes before secret redaction", async () => {
     expect(db.prepare("SELECT input FROM transcript_tool_calls").get()).toEqual({ input: '{"token":"[REDACTED]"}' });
   } finally { db.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+it("keeps a scrubbed first line beside a blocked stored call", async () => {
+  const db = new DatabaseSync(":memory:");
+  const dir = mkdtempSync(join(tmpdir(), "lcm-block-reason-"));
+  try {
+    runLcmMigrations(db);
+    const path = join(dir, "session.jsonl");
+    writeFileSync(path, [
+      { message: { role: "assistant", content: [{ type: "tool_use", id: "blocked", name: "Bash", input: { command: "npm install" } }] } },
+      { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "blocked", is_error: true,
+        content: "PreToolUse:Bash hook error: SECRET_EXAMPLE /tmp/cache\nprivate second line" }] } },
+    ].map(line).join(""));
+    await new SessionCapture(db, "project", new ScrubEngine([], ["SECRET_EXAMPLE"]))
+      .captureTranscript({ cwd: dir, transcriptPath: path, sessionId: "session" });
+    const call = db.prepare("SELECT * FROM transcript_tool_calls").get();
+    expect(call).toMatchObject({ outcome: "blocked", block_reason: "PreToolUse:Bash hook error: [REDACTED] /tmp/cache" });
+  } finally { db.close(); rmSync(dir, { recursive: true, force: true }); }
+});

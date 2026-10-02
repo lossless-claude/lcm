@@ -112,6 +112,12 @@ If `source` is missing or unrecognized, lcm uses a recent compaction mark for th
 
 **Response:** Exit code `0`. Context is injected via stdout (printed as a `<context>` block that Claude Code prepends to the session).
 
+Up to three recent environment rules (deterministic tool lessons) also ride in
+`<learned-insights>`, one short shape line each, with counts and dates instead
+of confidence labels. Restore reads the
+published project snapshot; it never scans stored calls to derive lessons.
+Both command and function hooks preserve those counts without inventing a confidence score.
+
 After restore succeeds and `cwd` is present, the hook also fires one non-blocking `POST /session-start-compact` request (`{ cwd, session_id }`) to catch up conversations of the same project a previous session left uncompacted because it ended without `SessionEnd`. The daemon answers `202` at once and does the selection, exclusion and capping after the response — see `docs/configuration.md#sessionstart-catch-up-sweep` — so neither the hook nor another session's request waits on the scan; the request is never awaited.
 
 ## SessionEnd Hook
@@ -180,13 +186,13 @@ Invoked after a tool call **succeeds**, and only for the tools the `PostToolUse`
 | `tool_output` | object | Result envelope; lcm reads only `{ isError?: boolean }` |
 | `hook_event_name` | string | `"PostToolUse"` |
 
-**Response:** Always exit code `0`. This hook runs on every tool call and must be fast: it writes extracted events and a bounded outcome count to the local sidecar SQLite database, including calls whose extractor found no event. When an extracted event is priority 1 it also fires one unawaited `POST /promote-events` to the daemon.
+**Response:** Always exit code `0`. This hook runs on every tool call and must be fast: it writes extracted events and a bounded outcome count to the local sidecar SQLite database, including calls whose extractor found no event. When an extracted event is priority 1 it also fires one unawaited `POST /promote-events` to the daemon, with `skip_tool_lessons: true` so per-tool promotion does not scan project calls.
 
 ## Function hooks module (early access)
 
 **Module:** `hooks/lcm-hooks.ts`, named by `hooks/hooks.json` under `modules`. Claude Code loads it whenever its mods (function hooks) are on: by default from 2.1.287, which ignores `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS`; earlier early-access builds load it only with that variable set to `1`. The command hooks above stay registered and do the work in any session the module has not claimed (see the dedup rule below).
 
-One `tool.call` hook replaces both PostToolUse and PostToolUseFailure: it awaits the tool, reads `isError` on the result, and POSTs the same payload the command hook reads on stdin to the daemon's `POST /tool-event` route, which runs the same extractors and writes the same rows (`source_hook` is `PostToolUse` or `PostToolUseFailure` as before). The module runs in Claude Code's hooks worker with no Node and no SQLite, which is why the daemon writes. It reads the daemon port and bearer token once per load through a host command, because `$.fs` cannot leave the project directory.
+One `tool.call` hook replaces both PostToolUse and PostToolUseFailure: it awaits the tool, reads `isError` on the result, and POSTs the same payload the command hook reads on stdin to the daemon's `POST /tool-event` route, which runs the same extractors and writes the same rows (`source_hook` is `PostToolUse` or `PostToolUseFailure` as before). The module runs in Claude Code's hooks worker with no Node and no SQLite, which is why the daemon writes. Its immediate priority-1 promotion also sets `skip_tool_lessons: true`; capture/promotion boundaries refresh lessons separately. It reads the daemon port and bearer token once per load through a host command, because `$.fs` cannot leave the project directory.
 
 `prompt.submit` replaces UserPromptSubmit: it POSTs `/prompt-search` with `recordEvents: true` (the daemon extracts the prompt's events) and `format: "context"` (the daemon returns the rendered `<memory-context>` block), and attaches that block as hidden `context` on the prompt, which the model reads and the user never sees. The learning instruction no longer rides on every prompt: a `prompt.section` hook on the system prompt's `memory` section appends it once, cached for the session. This assumes the engine raises `prompt.section` for `memory` even when core omits the section (sections with null core text were observed firing in Claude Code 2.1.263). The module reports `learningInstructionBytes: 0` to `/prompt-search`, but the daemon's reserve is `max(reservedForLearningInstruction, learningInstructionBytes)`, so the hint budget stays what it was; the freed bytes are not spent on more hints. The module keeps a verbatim copy of `LEARNING_INSTRUCTION` from `src/guidance.ts`, as the OMP hook (`hooks/omp/lcm.ts`) does of `LEARNING_INSTRUCTION_CLI`; a test fails when either drifts.
 

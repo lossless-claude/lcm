@@ -20,6 +20,8 @@ export interface TranscriptToolCall {
   shellOutcome?: ToolOutcome;
   harnessError: boolean | null;
   exitCode: number | null;
+  /** First result line, retained only as evidence of a harness block. */
+  blockReason?: string;
 }
 
 /** Tool names, lowercased and without a `functions.` prefix, that run a shell command. */
@@ -124,7 +126,7 @@ export function transcriptToolResult(callId: string, client: "claude" | "codex" 
   else if (client === "claude") {
     if (/^\[Request interrupted by user/.test(output)) outcome = "interrupted";
     else if (error === true) {
-      if (output.startsWith("The user doesn't want to proceed")) outcome = "denied";
+      if (output.startsWith("The user doesn't want to")) outcome = "denied";
       else if (CLAUDE_BLOCK_EVIDENCE.test(output)) outcome = "blocked";
       else shellOutcome = "blocked";
     } else if (error === false) outcome = "succeeded";
@@ -135,5 +137,6 @@ export function transcriptToolResult(callId: string, client: "claude" | "codex" 
     else if (output.startsWith("Success. Updated the following files:")) outcome = "succeeded";
     else if (error === false) outcome = "succeeded";
   } else if (error === false) outcome = "succeeded";
-  return { callId, outcome, ...(shellOutcome ? { shellOutcome } : {}), harnessError: typeof error === "boolean" ? error : null, exitCode };
+  return { callId, outcome, ...(shellOutcome ? { shellOutcome } : {}),
+    ...((outcome === "blocked" || shellOutcome === "blocked") ? { blockReason: output.split(/\r?\n/, 1)[0] } : {}), harnessError: typeof error === "boolean" ? error : null, exitCode };
 }
