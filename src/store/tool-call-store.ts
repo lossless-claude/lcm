@@ -27,7 +27,9 @@ export function recordTranscriptToolCalls(
   if (calls.length === 0) return;
   const insert = db.prepare(`INSERT INTO transcript_tool_calls
     (session_id, call_id, message_id, name, input, input_bytes, truncated)
-    VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_id, call_id) DO NOTHING`);
+    VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_id, call_id) DO UPDATE SET
+      input = excluded.input, input_bytes = excluded.input_bytes, truncated = excluded.truncated
+    WHERE transcript_tool_calls.message_id = excluded.message_id AND transcript_tool_calls.name = excluded.name`);
   // A shell-only outcome applies once the stored call shows the tool was a shell command.
   const update = db.prepare(`UPDATE transcript_tool_calls SET outcome = CASE
       WHEN ? IS NOT NULL AND lower(CASE WHEN name LIKE 'functions.%' THEN substr(name, 11) ELSE name END)

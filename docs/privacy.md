@@ -17,7 +17,8 @@ existing message rows:
 
 | Tool class | Retained input |
 |---|---|
-| Shell (Claude Bash, Codex exec, OMP bash) | Command, scrubbed and capped at 2048 UTF-8 bytes |
+| Shell (Claude Bash, Codex exec_command, OMP bash) | Command, scrubbed and capped at 2048 UTF-8 bytes |
+| Script (Codex exec) | Raw script text, scrubbed and capped at 2048 UTF-8 bytes |
 | Write, Edit, MultiEdit, NotebookEdit, apply_patch | File paths and original input byte size; no file body or replacement text |
 | Read, Grep, Glob | Paths, patterns and range flags |
 | MCP tools | Input JSON, scrubbed and capped at 2048 UTF-8 bytes |
