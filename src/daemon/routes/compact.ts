@@ -690,6 +690,10 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                 sessionId: session_id,
                 client,
                 onAttempt: (next) => { attempt = next; },
+                onCut: ({ provider, model, reason, maxOutputTokens, outputTokens, tailRepetition }) => {
+                  log.write("warn", "summarizer.cut", { cwd, session_id, provider, model, reason,
+                    max_output_tokens: maxOutputTokens, output_tokens: outputTokens ?? null, tail_repetition: tailRepetition });
+                },
                 onFallback: ({ reason, fromProvider, toProvider }) => {
                   if (new WorkerStore(db).excluded(session_id)) throw new Error("Worker session excluded during compaction");
               settleAttempt(false); // the abandoned attempt was charged but answered nothing usable
