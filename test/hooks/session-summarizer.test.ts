@@ -368,6 +368,21 @@ describe("function-hook session summarizer", () => {
     expect(posts[0].body).toEqual({ text: "summary", providerId: "session:haiku", usage: { input_tokens: 3, output_tokens: 2, estimated: true } });
   });
 
+  // /clear, /resume and /branch continue under a new session id with no session.start.
+  it("polls for the current session id after it changes without session.start", async () => {
+    const harness = await start();
+    harness.engine.model.complete.mockImplementation(async () => {
+      harness.engine.session.id.mockResolvedValue("session/two");
+      return "summary";
+    });
+    await harness.trigger();
+    await harness.done;
+    const polls = harness.engine.http.fetch.mock.calls
+      .map(([url]) => String(url)).filter((url) => url.includes("/summarize-jobs/next"));
+    expect(polls[0]).toContain("session_id=session%2Fone");
+    expect(polls.at(-1)).toContain("session_id=session%2Ftwo");
+  });
+
   it("retains accepted delivery for a summary answer", async () => {
     const harness = await start();
     await harness.trigger();

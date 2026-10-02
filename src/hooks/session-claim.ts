@@ -3,14 +3,24 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 /**
- * A session claim: the file hooks/lcm-hooks.ts writes at session.start to say the
- * function-hooks module loaded and is doing the command hooks' work for this session.
+ * A session claim: the file hooks/lcm-hooks.ts writes to say the function-hooks module
+ * loaded and is doing the command hooks' work for this session. The module rewrites it
+ * on every classic hook event a claim-reading command hook listens to, before that
+ * command hook runs, and overwrites it with `ended` at `session.end`.
  *
  * The file lives in the temp dir because the claim must not outlive the session, and
  * because that is one of the two places the module's `$.fs` may write. Same shape as
  * the restore lock next to it.
  */
-export type SessionClaim = { sessionId: string; ts: number };
+export type SessionClaim = { sessionId: string; ts: number; ended?: string };
+
+/**
+ * How old a claim may be and still count. The module rewrites the claim inside the same
+ * event chain, just before the command hook reads it, so a live module's claim is
+ * milliseconds old; the window only absorbs a command hook that is slow to start. A
+ * crash skips `session.end`, and its claim stops counting once the window passes.
+ */
+export const CLAIM_FRESH_MS = 60_000;
 
 /** The function module uses this injective encoding for claim filenames. */
 function safeSessionId(sessionId: string): string {
@@ -22,32 +32,25 @@ export function claimPath(sessionId: string): string {
   return join(tmpdir(), `lcm-claim-${safeSessionId(sessionId)}.json`);
 }
 
-/** Whether Claude Code's function-hooks gate is open at all. */
-export function functionHooksActive(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS === "1";
-}
-
 /**
  * Whether the function-hooks module owns this session's capture, so a command hook
  * doing the same work would double it.
  *
- * The gate variable alone does not answer that. It says the host would load a module,
- * not that this one did: a validation error, a stripped `$`, or an older build leaves
- * the variable at "1" with nothing registered, and a hook that trusted it would fall
- * silent with no replacement — the session records nothing at all.
+ * Only the module can answer that. Claude Code may load it with or without any setting,
+ * and a validation error, a stripped `$`, mods turned off or an older build leave
+ * nothing registered; a command hook that assumed otherwise would fall silent with no
+ * replacement, and the session would record nothing at all.
  *
- * So the module has to say so itself, and anything short of a claim it wrote means no.
+ * So anything short of a fresh, unwithdrawn claim naming this session means no.
  * Capturing an event twice is a row the dedup key drops; capturing it zero times is
  * gone for good.
  */
-export function functionHooksOwnSession(
-  sessionId: string | undefined,
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  if (!functionHooksActive(env) || !sessionId) return false;
+export function functionHooksOwnSession(sessionId: string | undefined, now = Date.now()): boolean {
+  if (!sessionId) return false;
   try {
-    const claim = JSON.parse(readFileSync(claimPath(sessionId), "utf-8")) as SessionClaim;
-    return claim.sessionId === sessionId;
+    const claim = JSON.parse(readFileSync(claimPath(sessionId), "utf-8")) as Partial<SessionClaim>;
+    return claim.sessionId === sessionId && claim.ended === undefined
+      && typeof claim.ts === "number" && now - claim.ts < CLAIM_FRESH_MS;
   } catch {
     return false;
   }

@@ -7,12 +7,13 @@
 # "did this release move anything the module stands on".
 set -euo pipefail
 
-TYPES="${HOOKS_TYPES:-.claude/types/claude-code.d.ts}"
+TYPES="${HOOKS_TYPES:-.claude-plugin/types/claude-code/index.d.ts}"
 
 if [ ! -f "$TYPES" ]; then
   echo "Missing $TYPES."
   echo "The declarations are written from the running build and are not committed."
-  echo "Generate them by running /plugin-types in a Claude Code session, then run this again."
+  echo "Claude Code writes them to .claude-plugin/types/ when it loads a plugin from a folder"
+  echo "you own: start a session with \`claude --plugin-dir .\` here, then run this again."
   exit 1
 fi
 
@@ -38,10 +39,9 @@ elif [ "$declared" != "$running" ]; then
   echo "Declarations are from Claude Code $declared, but $running is installed."
   echo "The plugin API is early access and moves between releases, so this check would"
   echo "hold hooks/ to an API that may no longer exist."
-  # /plugin-types writes what the session it runs in knows, so a session started before
-  # the update regenerates the same old version however many times it is asked. Saying
-  # "run /plugin-types" alone sends the reader in a circle.
-  echo "Restart Claude Code so a session runs $running, then run /plugin-types in it."
+  # A session writes the declarations of its own build, so one started before the update
+  # rewrites the same old version however often it reloads. Only a new session helps.
+  echo "Start a new session with \`claude --plugin-dir .\` so Claude Code $running rewrites them."
   exit 1
 fi
 

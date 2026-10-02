@@ -575,7 +575,7 @@ Anything else fails the pass without trying the next link: a request the endpoin
 
 ### Session provider
 
-`llm.provider: "session"` asks the live Claude Code session that owns the transcript to run each summarization through its own client, via lcm's function-hooks module (`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`; see `docs/hook-protocol.md`). Leaf chunks go to `haiku` through `$.model.complete`; condensed nodes go through `$.model.fork`, so the session's own model sees the whole conversation. Tokens are charged to the session's Claude account.
+`llm.provider: "session"` asks the live Claude Code session that owns the transcript to run each summarization through its own client, via lcm's function-hooks module (loaded when Claude Code's mods are on; see `docs/hook-protocol.md`). Leaf chunks go to `haiku` through `$.model.complete`; condensed nodes go through `$.model.fork`, so the session's own model sees the whole conversation. Tokens are charged to the session's Claude account.
 
 ```json
 { "llm": { "provider": "session", "fallbackProvider": "claude-process" } }

@@ -6,7 +6,7 @@ import type { LcmPaths } from "../lcm-paths.js";
 import { recordPostToolEvents } from "./tool-events.js";
 
 // Back-compat re-export: some callers historically imported the function-hooks gate from this module.
-export { functionHooksActive, functionHooksOwnSession } from "./session-claim.js";
+export { functionHooksOwnSession } from "./session-claim.js";
 
 /** Daemon port from config.json — Claude Code does not pass it on stdin. */
 async function configuredDaemonPort(paths: LcmPaths): Promise<number> {
