@@ -728,8 +728,15 @@ function backfillPromotedTagsOnce(db: DatabaseSync, fts5Available: boolean): voi
   )`);
   if (db.prepare("SELECT 1 FROM promoted_tags_backfill WHERE id = 1").get()) return;
 
-  db.exec("SAVEPOINT promoted_tags_backfill");
+  // Reserve the write lock before reading: a deferred read-to-write upgrade
+  // can return SQLITE_BUSY without running the connection's busy handler.
+  db.exec("BEGIN IMMEDIATE");
   try {
+    // Another connection may have completed the repair while the lock waited.
+    if (db.prepare("SELECT 1 FROM promoted_tags_backfill WHERE id = 1").get()) {
+      db.exec("COMMIT");
+      return;
+    }
     const update = db.prepare("UPDATE promoted SET tags = ? WHERE rowid = ?");
     const removeFts = fts5Available ? db.prepare("DELETE FROM promoted_fts WHERE rowid = ?") : null;
     const insertFts = fts5Available ? db.prepare("INSERT INTO promoted_fts(rowid, content, tags) VALUES (?, ?, ?)") : null;
@@ -751,10 +758,9 @@ function backfillPromotedTagsOnce(db: DatabaseSync, fts5Available: boolean): voi
       if (archived_at === null) insertFts?.run(rowid, content, normalized);
     }
     db.prepare("INSERT INTO promoted_tags_backfill (id) VALUES (1)").run();
-    db.exec("RELEASE promoted_tags_backfill");
+    db.exec("COMMIT");
   } catch (err) {
-    db.exec("ROLLBACK TO promoted_tags_backfill");
-    db.exec("RELEASE promoted_tags_backfill");
+    db.exec("ROLLBACK");
     throw err;
   }
 }
@@ -767,8 +773,12 @@ function removePassiveIntentLabelsOnce(db: DatabaseSync, fts5Available: boolean)
   )`);
   if (db.prepare("SELECT 1 FROM passive_intent_repair WHERE id = 1").get()) return;
 
-  db.exec("SAVEPOINT passive_intent_repair");
+  db.exec("BEGIN IMMEDIATE");
   try {
+    if (db.prepare("SELECT 1 FROM passive_intent_repair WHERE id = 1").get()) {
+      db.exec("COMMIT");
+      return;
+    }
     const remove = db.prepare("DELETE FROM promoted WHERE rowid = ?");
     const removeFts = fts5Available ? db.prepare("DELETE FROM promoted_fts WHERE rowid = ?") : null;
     for (const row of db.prepare(`SELECT rowid, tags FROM promoted
@@ -780,10 +790,9 @@ function removePassiveIntentLabelsOnce(db: DatabaseSync, fts5Available: boolean)
       remove.run(rowid);
     }
     db.prepare("INSERT INTO passive_intent_repair (id) VALUES (1)").run();
-    db.exec("RELEASE passive_intent_repair");
+    db.exec("COMMIT");
   } catch (err) {
-    db.exec("ROLLBACK TO passive_intent_repair");
-    db.exec("RELEASE passive_intent_repair");
+    db.exec("ROLLBACK");
     throw err;
   }
 }

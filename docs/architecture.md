@@ -719,6 +719,19 @@ a file that grew or was rewritten between two runs.
 
 ## Operation serialization
 
+Every writable project database handle, pooled or independent, installs
+`PRAGMA busy_timeout = 5000` before initializing WAL or running migrations.
+Capture and the pending promoted-tag and passive-intent migrations take
+`BEGIN IMMEDIATE` before reading the rows they will change. A deferred savepoint
+that reads `promoted` before its first UPDATE, DELETE or completion-marker INSERT
+can fail immediately when another connection is backfilling message event times:
+SQLite refuses the read-to-write upgrade without invoking the busy handler,
+including `SQLITE_BUSY_SNAPSHOT` if that writer committed after the read.
+Reserving the write lock first makes contention wait within the busy timeout and
+prevents that stale snapshot. Migrations recheck completion after acquiring the
+lock; already-completed migrations skip their repair transaction.
+A lock held beyond the timeout still returns `database is locked`.
+
 Ordinary ingest and compact requests enter a **per-project** queue keyed by `projectId(cwd)`
 (`src/daemon/project-queue.ts`), not by session. Each queue turn runs exclusively, but compaction
 yields its turn while awaiting external language detection or summarization. Other captures can
@@ -778,7 +791,7 @@ event loop between items (`yieldToEventLoop`) to keep `/health` and other projec
 the lease is what stops a second run from reading the not-yet-promoted set before the first
 has written it.
 
-A project's `meta.json` is written by routes on different sessions of the same project, so the per-project queue is not what covers it; it needs no queue of its own because each update in `src/daemon/project-meta.ts` is a single synchronous read-modify-write that nothing in the process can interleave with. Writers in other processes are outside the daemon's trust boundary, as they are for the database.
+A project's `meta.json` is written by routes on different sessions of the same project, so the per-project queue is not what covers it; it needs no queue of its own because each update in `src/daemon/project-meta.ts` is a single synchronous read-modify-write that nothing in the process can interleave with. Metadata writers in other processes are outside that trust boundary; database lock contention follows the SQLite timeout above.
 
 ## Authentication
 

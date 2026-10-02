@@ -2,7 +2,7 @@ import { createReadStream, existsSync, lstatSync, readdirSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import { basename, join } from "node:path";
 import { openStandaloneLcmConnection } from "../db/connection.js";
 import { PromotedStore } from "../db/promoted.js";
@@ -114,7 +114,7 @@ function planStore(dbPath: string, matches: Map<string, Set<string>>, output: st
 }
 
 function applyStore(dbPath: string, repairs: Repair[], output: string[]): number {
-  const writable = new DatabaseSync(dbPath);
+  const writable = openStandaloneLcmConnection(dbPath);
   let applied = 0;
   try {
     const backup = `${dbPath}.bak-manual-attribution-${randomUUID()}`;
