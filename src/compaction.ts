@@ -4,7 +4,8 @@ import type { SummaryStore, SummaryRecord, ContextItemRecord } from "./store/sum
 import { extractFileIdsFromContent } from "./large-files.js";
 import type { ScrubEngine } from "./scrub.js";
 import { LCM_CONFIG_DEFAULTS, resolveLcmConfig } from "./db/config.js";
-import { acceptSummaryText } from "./llm/summary-rejection.js";
+import { acceptSummaryText, SummaryRejectedError } from "./llm/summary-rejection.js";
+import { ProviderChainExhaustedError } from "./llm/provider-chain.js";
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -98,6 +99,7 @@ export type CompactionSummarizeFn = (
   options?: CompactionSummarizeOptions,
 ) => Promise<string>;
 type PassResult = { summaryId: string; level: CompactionLevel };
+type EscalationResult = { content: string; level: CompactionLevel; keptAnswers: number };
 type LeafChunkSelection = {
   items: ContextItemRecord[];
   rawTokensOutsideTail: number;
@@ -117,6 +119,12 @@ type CondensedPhaseCandidate = {
 /** Estimate token count from character length (~4 chars per token). */
 function estimateTokens(content: string): number {
   return Math.ceil(content.length / 4);
+}
+
+/** An exhausted chain containing a cut can still converge on smaller source chunks. */
+function containsOutputCut(error: unknown): boolean {
+  if (error instanceof SummaryRejectedError) return error.reason !== "whitespace";
+  return error instanceof ProviderChainExhaustedError && error.failures.some(failure => containsOutputCut(failure.error));
 }
 
 /** Format a timestamp as `YYYY-MM-DD HH:mm TZ` for prompt source text. */
@@ -758,25 +766,32 @@ export class CompactionEngine {
    * Run three-level summarization escalation:
    * normal -> aggressive -> deterministic fallback.
    *
-   * Every provider answer passes the summary gate first. A rejected answer — an
-   * adapter's `SummaryRejectedError` or text that is only whitespace — throws out of
-   * the pass before anything is persisted; the deterministic fallback is reserved
-   * for accepted answers that failed to shrink, never for rejected ones.
+   * Exhausted output-cut retries halve at source boundaries, down to deterministic
+   * truncation of a single message (or condensed source summary). A binary split
+   * visits at most 2n - 1 chunks for n sources. Rejected answers never supply text.
+   * Whitespace and other provider failures still abort before persistence.
    */
   private async summarizeWithEscalation(params: {
-    sourceText: string;
+    sourceTexts: string[];
     summarize: CompactionSummarizeFn;
     options?: CompactionSummarizeOptions;
-  }): Promise<{ content: string; level: CompactionLevel }> {
-    const rawText = params.sourceText.trim();
+  }): Promise<EscalationResult> {
+    this.config.signal?.throwIfAborted();
+    const rawText = params.sourceTexts.join("\n\n").trim();
     const sourceText = this.config.scrubber ? this.config.scrubber.scrub(rawText) : rawText;
     if (!sourceText) {
       return {
         content: "[Truncated from 0 tokens]",
         level: "fallback",
+        keptAnswers: 0,
       };
     }
     const inputTokens = Math.max(1, estimateTokens(sourceText));
+    const fallback = (): EscalationResult => ({
+      content: `${sourceText.slice(0, FALLBACK_MAX_CHARS)}\n[Truncated from ${inputTokens} tokens]`,
+      level: "fallback",
+      keptAnswers: 0,
+    });
     const summarizeOptions = this.config.language?.trim()
       ? { ...params.options, language: this.config.language.trim() }
       : params.options;
@@ -784,26 +799,37 @@ export class CompactionEngine {
     const summarizeGated = async (aggressive: boolean) =>
       acceptSummaryText(await params.summarize(sourceText, aggressive, summarizeOptions), "summarizer");
 
-    let summaryText = await summarizeGated(false);
-    let level: CompactionLevel = "normal";
-
-    if (estimateTokens(summaryText) >= inputTokens) {
-      this.config.onAnswerDiscarded?.();
-      summaryText = await summarizeGated(true);
-      level = "aggressive";
+    try {
+      let summaryText = await summarizeGated(false);
+      let level: CompactionLevel = "normal";
 
       if (estimateTokens(summaryText) >= inputTokens) {
         this.config.onAnswerDiscarded?.();
-        const truncated =
-          sourceText.length > FALLBACK_MAX_CHARS
-            ? sourceText.slice(0, FALLBACK_MAX_CHARS)
-            : sourceText;
-        summaryText = `${truncated}\n[Truncated from ${inputTokens} tokens]`;
-        level = "fallback";
-      }
-    }
+        summaryText = await summarizeGated(true);
+        level = "aggressive";
 
-    return { content: summaryText, level };
+        if (estimateTokens(summaryText) >= inputTokens) {
+          this.config.onAnswerDiscarded?.();
+          return fallback();
+        }
+      }
+      return { content: summaryText, level, keptAnswers: 1 };
+    } catch (error) {
+      if (!containsOutputCut(error)) throw error;
+      if (params.sourceTexts.length <= 1) return fallback();
+      const midpoint = Math.floor(params.sourceTexts.length / 2);
+      const left = await this.summarizeWithEscalation({ ...params, sourceTexts: params.sourceTexts.slice(0, midpoint) });
+      const right = await this.summarizeWithEscalation({ ...params, sourceTexts: params.sourceTexts.slice(midpoint) });
+      const content = `${left.content}\n\n${right.content}`;
+      const keptAnswers = left.keptAnswers + right.keptAnswers;
+      if (estimateTokens(content) >= inputTokens) {
+        for (let i = 0; i < keptAnswers; i++) this.config.onAnswerDiscarded?.();
+        return fallback();
+      }
+      const level = left.level === "fallback" || right.level === "fallback" ? "fallback"
+        : left.level === "aggressive" || right.level === "aggressive" ? "aggressive" : "normal";
+      return { content, level, keptAnswers };
+    }
   }
 
   // ── Private: Leaf Pass ───────────────────────────────────────────────────
@@ -836,14 +862,13 @@ export class CompactionEngine {
       }
     }
 
-    const concatenated = messageContents
-      .map((message) => `[${formatTimestamp(message.createdAt, this.config.timezone)}]\n${message.content}`)
-      .join("\n\n");
+    const sourceTexts = messageContents
+      .map((message) => `[${formatTimestamp(message.createdAt, this.config.timezone)}]\n${message.content}`);
     const fileIds = dedupeOrderedIds(
       messageContents.flatMap((message) => extractFileIdsFromContent(message.content)),
     );
     const summary = await this.summarizeWithEscalation({
-      sourceText: concatenated,
+      sourceTexts,
       summarize,
       options: {
         previousSummary: previousSummaryContent,
@@ -925,15 +950,14 @@ export class CompactionEngine {
       }
     }
 
-    const concatenated = summaryRecords
+    const sourceTexts = summaryRecords
       .map((summary) => {
         const earliestAt = summary.earliestAt ?? summary.createdAt;
         const latestAt = summary.latestAt ?? summary.createdAt;
         const tz = this.config.timezone;
         const header = `[${formatTimestamp(earliestAt, tz)} - ${formatTimestamp(latestAt, tz)}]`;
         return `${header}\n${summary.content}`;
-      })
-      .join("\n\n");
+      });
     const fileIds = dedupeOrderedIds(
       summaryRecords.flatMap((summary) => [
         ...summary.fileIds,
@@ -945,7 +969,7 @@ export class CompactionEngine {
         ? await this.resolvePriorSummaryContextAtDepth(conversationId, summaryItems, targetDepth)
         : undefined;
     const condensed = await this.summarizeWithEscalation({
-      sourceText: concatenated,
+      sourceTexts,
       summarize,
       options: {
         previousSummary: previousSummaryContent,

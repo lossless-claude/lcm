@@ -18,6 +18,7 @@ import { projectDbPath } from "../../src/daemon/project.js";
 import type { RouteHandler } from "../../src/daemon/server.js";
 import { lcmHome } from "../../src/lcm-home.js";
 import { createLcmPaths } from "../../src/lcm-paths.js";
+import { noopDaemonLog } from "../../src/daemon/log.js";
 import { completion, httpError, startChatCompletionsServer } from "../helpers/chat-completions-server.js";
 
 const paths = createLcmPaths(lcmHome());
@@ -146,4 +147,36 @@ it("names the first runnable endpoint's configured model when the engine kept no
 
   expect(result.status).toBe(200);
   expect(result.body.llmUsage.model).toBe("deepseek-chat");
+});
+
+it("logs every cut's measurements without text and finishes compaction when all answers loop", async () => {
+  server.reset();
+  server.answer("deepseek", completion("PRIVATE generated phrase repeated forever ".repeat(100), "length", "served-model"));
+  const config = loadDaemonConfig("/nonexistent", { llm: { provider: "deepseek", providers: namedEndpoints() } }, {});
+  const dir = mkdtempSync(join(tmpdir(), "lcm-chain-"));
+  const log = { ...noopDaemonLog, write: vi.fn() };
+  try {
+    await invoke(createIngestHandler(config, paths), { cwd: dir, session_id: "looping", messages:
+      Array.from({ length: 10 }, (_, i) => ({ role: "user", content: `source-${i} ${"fact ".repeat(1_000)}`, tokenCount: 2_000 })) });
+
+    const result = await invoke(createCompactHandler(config, paths, undefined, log), { cwd: dir, session_id: "looping" });
+
+    expect(result.status).toBe(200);
+    expect(result.body.replayOutcome).toBe("compacted");
+    const cuts = log.write.mock.calls.filter(([, event]) => event === "summarizer.cut");
+    expect(cuts).toHaveLength(server.seen.length);
+    expect(cuts.length).toBeGreaterThan(1);
+    for (const [i, [, , fields]] of cuts.entries()) {
+      expect(fields).toMatchObject({ provider: "deepseek", model: "served-model", reason: "length",
+        max_output_tokens: server.seen[i].body.max_tokens, output_tokens: 100 });
+      expect(fields!.tail_repetition).toBeGreaterThan(0.9);
+    }
+    expect(JSON.stringify(log.write.mock.calls)).not.toMatch(/PRIVATE|generated phrase|source-0/);
+    const db = new DatabaseSync(projectDbPath(dir, paths));
+    try {
+      expect(db.prepare("SELECT COUNT(*) AS n FROM summaries WHERE content LIKE '%PRIVATE%'").get()).toEqual({ n: 0 });
+      expect(db.prepare("SELECT calls_ok, calls_failed FROM llm_usage_stats").get())
+        .toMatchObject({ calls_ok: 0, calls_failed: server.seen.length });
+    } finally { db.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

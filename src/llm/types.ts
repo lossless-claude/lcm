@@ -1,4 +1,5 @@
 import type { SessionClient } from "../session-client.js";
+import type { SummaryCutDiagnostic } from "./summary-rejection.js";
 
 export type SummarizerProvider =
   | "claude-process"
@@ -69,6 +70,8 @@ export type SummarizeContext = {
   /** The preceding chunk's summary, rendered into the prompt so chunks read as one thread. */
   previousSummary?: string;
   onUsage?: (usage: SummarizerUsage) => void;
+  /** One content-free measurement per cut answer, including answers without usage. */
+  onCut?: (diagnostic: SummaryCutDiagnostic) => void;
   /**
    * A chain link is about to run: its name (the usage label it reports under), how it
    * reaches its model, and the model it is configured with. Fires even for a link whose

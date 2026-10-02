@@ -6,7 +6,7 @@ import {
 } from "../summarize.js";
 import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "./types.js";
 import { buildSummaryPrompt } from "./prompt.js";
-import { acceptSummaryText, SummaryRejectedError } from "./summary-rejection.js";
+import { acceptSummaryText, rejectCutSummary, SummaryRejectedError } from "./summary-rejection.js";
 import { DEFAULT_HTTP_TIMEOUT_MS, isRequestTimeout, withRequestDeadline } from "./http-timeout.js";
 import { completionFetch } from "./http-fetch.js";
 import { withEndpointSlot } from "./endpoint-concurrency.js";
@@ -103,9 +103,11 @@ export function createAnthropicSummarizer(opts: SummarizerOptions): LcmSummarize
 
         // A max_tokens stop is a cut-off tail, not a summary, however readable it looks.
         if (response.stop_reason === "max_tokens") {
-          throw new SummaryRejectedError({
-            reason: "max_tokens", provider: opts.label ?? "anthropic", model: usage?.model ?? opts.model, maxOutputTokens,
-          });
+          rejectCutSummary({
+            reason: "max_tokens", provider: opts.label ?? "anthropic", model: response.model || opts.model, maxOutputTokens,
+            outputTokens: usage?.outputTokens,
+            text: response.content.filter((block: any) => block.type === "text").map((block: any) => block.text).join("\n"),
+          }, ctx.onCut);
         }
         const textContent = response.content.find((c: any) => c.type === "text")?.text ?? "";
         // Empty content is a failure, not a summary: falling back to a slice of
