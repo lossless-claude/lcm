@@ -97,6 +97,12 @@ function installTimelineTables(db: DatabaseSync): void {
   if (!db.prepare("SELECT 1 FROM timeline_state WHERE id = 1").get()) {
     db.exec("INSERT OR IGNORE INTO timeline_state(id) VALUES (1)");
   }
+  const sourceColumns = db.prepare("PRAGMA table_info(timeline_sources)").all() as Array<{ name: string }>;
+  if (!sourceColumns.some(column => column.name === "time_basis")) {
+    db.exec("ALTER TABLE timeline_sources ADD COLUMN time_basis TEXT NOT NULL DEFAULT 'capture'");
+    // Existing item metadata predates event time. Bootstrap refreshes it in resumable pages.
+    db.exec("UPDATE timeline_state SET phase = 'bootstrapping', bootstrap_cursor = '' WHERE tracking = 1");
+  }
   const stateColumns = db.prepare("PRAGMA table_info(timeline_state)").all() as Array<{ name: string }>;
   if (!stateColumns.some(column => column.name === "admission_recovered")) {
     db.exec("ALTER TABLE timeline_state ADD COLUMN admission_recovered INTEGER NOT NULL DEFAULT 0");

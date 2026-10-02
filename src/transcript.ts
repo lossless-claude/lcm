@@ -18,6 +18,7 @@ interface ContentBlock {
 }
 
 interface TranscriptLine {
+  timestamp?: unknown;
   type?: string;
   message?: {
     role?: string;
@@ -40,10 +41,19 @@ export interface ParsedMessage {
   role: string;
   content: string;
   tokenCount: number;
+  /** Transcript record time; absent when the source provides no valid timestamp. */
+  eventAt?: string;
   parts?: MessagePart[];
   workerClaims?: string[];
   /** A successful claim's result: the call it answers and the job id it carries. */
   workerPayloads?: WorkerPayload[];
+}
+
+/** Accept only an explicit timestamp with a timezone; never use the current clock. */
+export function transcriptEventTime(value: unknown): string | undefined {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) return undefined;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? new Date(time).toISOString() : undefined;
 }
 
 export type WorkerPayload = { callId: string; jobId: string };
@@ -205,7 +215,8 @@ export function parseClaudeTranscriptRecord(record: string, toolShape: "current"
       .map(block => block.id).filter((id): id is string => Boolean(id));
     const workerPayloads = blocks.filter(block => block.type === "tool_result" && !block.is_error && block.tool_use_id)
       .flatMap(block => workerPayloadJobIds(block.content).map(jobId => ({ callId: block.tool_use_id!, jobId })));
-    return { message: { role, content, tokenCount: estimateTokens(content), ...(parts.length ? { parts } : {}),
+    const eventAt = transcriptEventTime(obj.timestamp);
+    return { message: { role, content, tokenCount: estimateTokens(content), ...(eventAt ? { eventAt } : {}), ...(parts.length ? { parts } : {}),
       ...(workerClaims.length ? { workerClaims } : {}), ...(workerPayloads.length ? { workerPayloads } : {}) }, toolUseModels: models };
   } catch {
     // Claude's existing full parser skips malformed entries.

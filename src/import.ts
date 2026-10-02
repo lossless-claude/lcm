@@ -63,6 +63,8 @@ interface ImportOptions {
   dryRun?: boolean;
   cwd?: string;
   replay?: boolean;
+  /** Repair event times only; no capture, compaction or model call. */
+  backfillEventTimes?: boolean;
   /** Skip automatic promotion after successful compaction. */
   noPromote?: boolean;
   /** Replay only: discard recorded progress and start from scratch */
@@ -98,6 +100,8 @@ export interface ImportResult {
   totalMessages: number;
   totalTokens: number;
   tokensAfter: number;
+  backfilledEventTimes?: number;
+  unknownEventTimes?: number;
   /** Present when a replay run resumed from a previous run's recorded progress */
   resumed?: { doneCount: number; totalCount: number; model?: string };
   /** Present for an explicit `--provider omp`/`--omp` run: every OMP sessions root discovery scanned, in scan order. */
@@ -421,7 +425,7 @@ async function ingestSessionList(
     // Claude's adapter cannot recover a tail, so a completed Claude session whose transcript
     // has not changed since can skip /ingest; a resume appends to the same file.
     // Codex and OMP may have a final record deferred by live capture and must reach /ingest.
-    if (!options.replay && sourceClient === "claude" && options.paths && isSessionAlreadyIngested(cwd, sessionId, path, options.paths)) {
+    if (!options.replay && !options.backfillEventTimes && sourceClient === "claude" && options.paths && isSessionAlreadyIngested(cwd, sessionId, path, options.paths)) {
       result.skippedEmpty++;
       if (options.verbose) console.log(`  ↩️ ${sessionId}: already fully ingested`);
       options.onProgress?.({ completed: processedBase + result.imported + result.skippedEmpty + result.failed, total, current: { sessionId, messages: 0, tokens: 0, startedAt: Date.now() } });
@@ -442,11 +446,12 @@ async function ingestSessionList(
       // recovers a summary persisted after the call started — a stale one from
       // an earlier run is not mistaken for the in-flight call's result.
       let compactStartedAt = 0;
-      const res = await client.post<{ ingested: number; totalTokens: number }>('/ingest', {
+      const res = await client.post<{ ingested: number; totalTokens: number; backfilledEventTimes?: number; unknownEventTimes?: number }>('/ingest', {
         session_id: sessionId,
         cwd,
         transcript_path: path,
         source: "import",
+        ...(options.backfillEventTimes ? { backfill_event_times: true } : {}),
         ...(sourceClient !== "claude" ? { client: sourceClient } : {}),
         // A completed session's transcript may have grown; replay must ingest the tail.
         ...(options.replay ? { replay: true } : {}),
@@ -455,6 +460,10 @@ async function ingestSessionList(
         ...(attribution?.subagentType ? { subagent_type: attribution.subagentType } : {}),
         ...(attribution?.subagentDesc ? { subagent_desc: attribution.subagentDesc } : {}),
       });
+      if (options.backfillEventTimes) {
+        result.backfilledEventTimes = (result.backfilledEventTimes ?? 0) + (res.backfilledEventTimes ?? 0);
+        result.unknownEventTimes = (result.unknownEventTimes ?? 0) + (res.unknownEventTimes ?? 0);
+      }
       if (res.ingested === 0 && res.totalTokens === 0) {
         result.skippedEmpty++;
         if (options.verbose) console.log(`  \u23ed\ufe0f ${sessionId}: empty or already ingested`);
@@ -683,6 +692,7 @@ export async function importSessions(
   client: DaemonClient,
   options: ImportOptions,
 ): Promise<ImportResult> {
+  if (options.backfillEventTimes && (options.replay || options.restart)) throw new Error("--backfill-event-times cannot be combined with --replay or --restart");
   const parallel = replayParallelism(options);
   const paths = options.paths ?? (options._lcmDir ? createLcmPaths(options._lcmDir) : undefined);
   if (paths) options.paths = paths;

@@ -1,3 +1,4 @@
+import { backfillSessionEventTimes } from "../../event-time-backfill.js";
 import { WorkerStore } from "../../store/worker-store.js";
 import { workerExcluded } from "../../worker-session.js";
 import { existsSync } from "node:fs";
@@ -54,6 +55,8 @@ export interface IngestInput {
   client?: SessionClient;
   source?: "live" | "import";
   replay?: boolean;
+  /** Repair unknown event times only, including completed sessions. */
+  backfill_event_times?: boolean;
   /** Replace a Claude Code session's stored history with its transcript (`lcm import --provider claude --rebuild --yes`). */
   rebuild?: boolean;
   /** With `rebuild`: back the project database up first, and rebuild nothing when that fails. */
@@ -242,7 +245,15 @@ async function repairCutSession(
               throw new Error(`backup failed, nothing was repaired: ${error instanceof Error ? error.message : String(error)}`);
             }
           }
-          return { repair: plan, repaired: applyCutRowRepair(db, plan) };
+          const repaired = applyCutRowRepair(db, plan);
+          const capture = new SessionCapture(db, pid, scrubber, paths);
+          const conversations = new Set<number>();
+          for (const row of plan.rows) {
+            const message = await capture.conversationStore.getMessageById(row.messageId);
+            if (message) conversations.add(message.conversationId);
+          }
+          for (const id of conversations) await capture.summaryStore.recomputeTimeBounds(id);
+          return { repair: plan, repaired };
         } finally {
           closeLcmConnection(dbPath);
         }
@@ -281,7 +292,11 @@ export function createIngestHandler(
 
     const source = transcriptSource(input.client);
     const structured = Array.isArray(input.messages) ? input.messages.filter(isParsedMessage).map(({ workerClaims: _claims, workerPayloads: _payloads, ...message }) => message) : undefined;
-    const blocked = source.client === "codex" && !structured && input.rebuild !== true
+    if (input.backfill_event_times && (structured || input.rebuild || input.replay)) {
+      sendJson(res, 400, { error: "event-time backfill reads a transcript and cannot be combined with messages, rebuild or replay" });
+      return;
+    }
+    const blocked = source.client === "codex" && !structured && input.rebuild !== true && !input.backfill_event_times
       ? terminalTranscriptGuard(cwd, paths, session_id) : undefined;
     if (blocked) {
       sendJson(res, 200, { ingested: 0, totalTokens: 0, blocked: true, error: blocked.message });
@@ -340,6 +355,11 @@ export function createIngestHandler(
             return { ingested: 0, totalTokens: 0, excluded: true };
           }
 
+          if (input.backfill_event_times === true) {
+            const repaired = await backfillSessionEventTimes(db, { sessionId: session_id, cwd, transcriptPath: input.transcript_path, client: input.client, source: "import" }, scrubber);
+            return { ingested: 0, totalTokens: 0, backfilledEventTimes: repaired.updated, unknownEventTimes: repaired.unknown };
+          }
+
           // A session already fully ingested is skipped — on the same db connection to
           // avoid double-open overhead and lock contention — unless its transcript was
           // written to after completion (a resume appends to the same file). A client
@@ -391,6 +411,7 @@ export function createIngestHandler(
         }
         });
       });
+      if (input.backfill_event_times) { sendJson(res, 200, result); return; }
       // Subagent transcripts have no dispatcher of their own — this is the only
       // live path that discovers them (issue #434). Best-effort: a subagent
       // transcript problem must not turn an otherwise-successful ingest into

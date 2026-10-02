@@ -38,7 +38,7 @@ import { StringDecoder } from "node:string_decoder";
 import { TextDecoder } from "node:util";
 import { gunzipSync } from "node:zlib";
 import { ompSessionRoots } from "./daemon/project.js";
-import { estimateTokens } from "./transcript.js";
+import { estimateTokens, transcriptEventTime } from "./transcript.js";
 import type { ParsedMessage } from "./transcript.js";
 
 /** Throws on invalid UTF-8; the shared reader sanitizes the byte offset it reports. */
@@ -75,6 +75,7 @@ interface OmpMessage {
 }
 
 interface OmpEntry {
+  timestamp?: unknown;
   type?: string;
   id?: string;
   parentId?: string | null;
@@ -199,7 +200,8 @@ export function parseOmpTranscriptRecord(record: string): ParsedOmpTranscriptRec
   }
   if (entry.type !== "message" || !entry.message) return parsed;
   const messages = parseOmpMessageEntry(entry.message);
-  if (messages.length > 0) parsed.message = messages;
+  const eventAt = transcriptEventTime(entry.timestamp);
+  if (messages.length > 0) parsed.message = messages.map(message => ({ ...message, ...(eventAt ? { eventAt } : {}) }));
   return parsed;
 }
 

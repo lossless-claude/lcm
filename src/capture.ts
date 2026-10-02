@@ -23,7 +23,7 @@ import {
 } from "./store/conversation-store.js";
 import { SummaryStore } from "./store/summary-store.js";
 import { readSubagentAttribution } from "./subagent-attribution.js";
-import { CLAUDE_PARSER_SHAPE, parseTranscript, type MessagePart, type ParsedMessage } from "./transcript.js";
+import { CLAUDE_PARSER_SHAPE, parseTranscript, transcriptEventTime, type MessagePart, type ParsedMessage } from "./transcript.js";
 import { clearConversationForRebuild, planSessionRebuild, type SessionRebuildPlan } from "./claude-rebuild.js";
 import {
   transcriptSource,
@@ -41,7 +41,7 @@ import {
  * sibling rows (`context_items`, `message_parts`, redaction counts, the
  * transcript adapter's resume checkpoint) accompany a message are decided in
  * exactly one place. It is also
- * the one caller of the transcript-source seam (src/transcript-source.ts):
+ * the capture caller of the transcript-source seam (src/transcript-source.ts):
  * a route names the client and the session, and Capture picks the adapter.
  */
 
@@ -393,7 +393,8 @@ export class SessionCapture {
       totalCounts.builtIn += builtIn;
       totalCounts.global += globalCount;
       totalCounts.project += project;
-      return { conversationId, seq: storedCount + i, role: m.role as MessageRole, content: normalizeMessageContent(text), tokenCount: m.tokenCount };
+      const eventAt = transcriptEventTime(m.eventAt);
+      return { conversationId, seq: storedCount + i, role: m.role as MessageRole, content: normalizeMessageContent(text), tokenCount: m.tokenCount, eventAt: eventAt ? new Date(eventAt) : null };
     });
   }
 

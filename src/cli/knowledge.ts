@@ -28,6 +28,7 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
     .option("--parallel <N>", "With --replay: process N projects concurrently", "1")
     .option("--replay-provider <provider>", "With --replay: use session-pool without changing live compactions")
     .option("--restart", "Discard recorded replay progress and start from scratch")
+    .option("--backfill-event-times", "Fill unknown transcript event times in bounded batches, without model calls")
     .option("--rebuild", "Repair Claude history or historical NUL-cut Codex and OMP rows")
     .option("--retry-blocked", "With --provider codex: clear terminal capture guards")
     .option("--yes", "With --rebuild: apply it (default: preview)")
@@ -40,6 +41,7 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
       const verbose: boolean = opts.verbose ?? false;
       const dryRun: boolean = opts.dryRun ?? false;
       const replay: boolean = opts.replay ?? false;
+      if (opts.backfillEventTimes && (replay || opts.restart || opts.rebuild || opts.retryBlocked)) fail("  --backfill-event-times cannot be combined with --replay, --restart, --rebuild or --retry-blocked");
       const restart: boolean = opts.restart ?? false;
       const parallel = /^\d+$/.test(opts.parallel) ? Number(opts.parallel) : NaN;
       const replayProvider = opts.replayProvider as "session-pool" | undefined;
@@ -122,7 +124,7 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
       if (opts.yes || opts.session !== undefined) fail("  --yes applies only with --rebuild; --session applies only with --rebuild or --retry-blocked");
       const port = config.daemon?.port ?? 3737;
       const previewClient = new DaemonClient(`http://127.0.0.1:${port}`, paths.tokenPath);
-      const preview = await importSessions(previewClient, { paths, all, provider, dryRun: true, verbose: dryRun && verbose, replay });
+      const preview = await importSessions(previewClient, { paths, all, provider, dryRun: true, verbose: dryRun && verbose, replay, backfillEventTimes: opts.backfillEventTimes });
       if (dryRun) {
         console.log(`  [dry-run] ${preview.imported} ${provider} sessions selected (${all ? "all projects" : "current project"})${replay ? "; would compact each session" : ""}. No changes written.`);
         if (preview.skippedCwdMissing) console.log(`  Skipped (cwd missing): ${preview.skippedCwdMissing}`);
@@ -150,7 +152,7 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
       renderer.start();
 
       const result = await importSessions(client, {
-        paths, all, verbose, dryRun, replay, restart, provider, noPromote: !opts.promote,
+        paths, all, verbose, dryRun, replay, restart, provider, backfillEventTimes: opts.backfillEventTimes, noPromote: !opts.promote,
         parallel, replayProvider,
         replayModel: configuredSummaryModel(config, replayProvider ?? config.llm.provider),
         onBeforeSession: () => !renderer.shouldStop,
@@ -166,6 +168,7 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
       });
 
       renderer.stop();
+      if (opts.backfillEventTimes) console.log(`  Event times repaired: ${result.backfilledEventTimes ?? 0}; still unknown: ${result.unknownEventTimes ?? 0}`);
 
       if (isTTY && !verbose) {
         state.phases[0].status = "done";

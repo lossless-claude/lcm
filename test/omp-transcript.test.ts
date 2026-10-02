@@ -55,7 +55,7 @@ describe("parseOmpTranscriptRecord", () => {
 
   it("keeps user prose as a user message", () => {
     const parsed = parseOmpTranscriptRecord(message("user", [{ type: "text", text: "hello" }]));
-    expect(parsed.message).toEqual([{ role: "user", content: "hello", tokenCount: expect.any(Number) }]);
+    expect(parsed.message).toEqual([{ role: "user", content: "hello", tokenCount: expect.any(Number), eventAt: "2026-09-20T23:30:16.129Z" }]);
   });
 
   it("keeps assistant prose and only the name of each tool call", () => {
@@ -65,16 +65,16 @@ describe("parseOmpTranscriptRecord", () => {
       { type: "toolCall", id: "call_1", name: "bash", arguments: { command: "rm -rf /tmp/x" } },
     ]));
     expect(parsed.message).toEqual([
-      { role: "assistant", content: "Running it.", tokenCount: expect.any(Number) },
-      { role: "tool", content: "bash", tokenCount: expect.any(Number) },
+      { role: "assistant", content: "Running it.", tokenCount: expect.any(Number), eventAt: "2026-09-20T23:30:16.129Z" },
+      { role: "tool", content: "bash", tokenCount: expect.any(Number), eventAt: "2026-09-20T23:30:16.129Z" },
     ]);
   });
 
   it("keeps a tool result's output and marks a failure", () => {
     expect(parseOmpTranscriptRecord(message("toolResult", [{ type: "text", text: "exit 1" }], { toolCallId: "call_1", toolName: "bash", isError: true })).message)
-      .toEqual([{ role: "tool", content: "[tool error]\nexit 1", tokenCount: expect.any(Number) }]);
+      .toEqual([{ role: "tool", content: "[tool error]\nexit 1", tokenCount: expect.any(Number), eventAt: "2026-09-20T23:30:16.129Z" }]);
     expect(parseOmpTranscriptRecord(message("toolResult", [{ type: "text", text: "ok" }], { toolCallId: "call_2", toolName: "read" })).message)
-      .toEqual([{ role: "tool", content: "ok", tokenCount: expect.any(Number) }]);
+      .toEqual([{ role: "tool", content: "ok", tokenCount: expect.any(Number), eventAt: "2026-09-20T23:30:16.129Z" }]);
   });
 
   it("stores nothing for entries that carry no memory", () => {

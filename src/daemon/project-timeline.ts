@@ -28,6 +28,12 @@ export function daemonTimeline(db: DatabaseSync, cwd: string, config: DaemonConf
     },
   });
   return {
+    bootstrap: async () => {
+      if (activeTimelines.has(pid)) throw new Error("Project timeline is already settling");
+      activeTimelines.add(pid);
+      try { await timeline.bootstrap(); }
+      finally { activeTimelines.delete(pid); }
+    },
     describe: id => timeline.describe(id),
     settle: async budget => {
       if (budget.calls > 0 && !timelineProviderAdmitted(config)) throw new Error(TIMELINE_ADMISSION_ERROR);
@@ -60,7 +66,12 @@ export function timelineProviderAdmitted(config: DaemonConfig): boolean {
 export async function timelineTick(db: DatabaseSync, timeline: ProjectTimeline, enabled: boolean): Promise<void> {
   if (!enabled) return;
   const state = db.prepare("SELECT tracking, generation, phase FROM timeline_state WHERE id = 1").get() as { tracking: number; generation: number; phase: string };
-  if (!state.tracking || !state.generation || state.phase !== "ready") return;
+  if (!state.tracking || !state.generation) return;
+  if (state.phase === "bootstrapping") {
+    await timeline.bootstrap();
+    return;
+  }
+  if (state.phase !== "ready") return;
   const latest = db.prepare("SELECT MAX(bumped_at) at FROM timeline_dirty").get() as { at: string | null };
   if (latest.at && Date.now() - Date.parse(latest.at) < DEBOUNCE_MS) return;
   if (replayHeld(db)) return;

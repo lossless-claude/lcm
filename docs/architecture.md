@@ -15,9 +15,33 @@ Messages are stored with:
 - **role** — `user`, `assistant`, `system`, or `tool`
 - **content** — Plain text extraction of the message; NUL characters become U+FFFD before storage so SQLite reads preserve the text after them
 - **tokenCount** — Estimated token count (~4 chars/token)
-- **createdAt** — Insertion timestamp
+- **createdAt** — Capture/insertion timestamp, independent of when the message happened
+- **eventAt** — Nullable transcript record timestamp (`messages.event_at`), normalized to UTC; missing or invalid timestamps stay unknown
+
+`ConversationStore.getConversationTimeBounds` computes a selected conversation's
+`firstAt` / `lastAt` from its transcript messages,
+using event time where known and capture time otherwise. Internal compaction event
+rows are excluded. Conversation `createdAt` / `updatedAt` retain their storage
+lifecycle meaning; an empty conversation falls back to its creation time.
+Ordinary conversation fetches do not compute source bounds or read messages.
 
 Each message also has **message_parts** — structured content blocks that preserve the original shape. The part types are `text`, `reasoning`, `tool`, `patch`, `file`, `subtask`, `compaction`, `step_start`, `step_finish`, `snapshot`, `agent`, `retry`, `skill` (a skill expansion) and `command` (a slash command invocation); see `MessagePartType` in `src/store/conversation-store.ts`. This allows the assembler to reconstruct rich content when building model context, not just flat text.
+
+`lcm import --backfill-event-times` repairs discovered sessions without capturing
+new messages or making model calls. It compares session-relative positions,
+excluding compaction event rows and spanning clear boundaries, with the cursor's
+role/content checks under current redaction and NUL rules. OMP rewinds prefer a
+stored live-path prefix, otherwise only unique in-order file matches establish
+abandoned-branch positions. Repeated matches remain unknown.
+File-order alignment indexes role/content and NUL prefixes once, then checks
+remaining positions by lookup. Historical redaction wildcards share a session-wide
+budget of four comparisons per transcript record; if uniqueness cannot be proved
+within that budget, the remaining times stay unknown.
+It stops at the first unaligned position, fills only unknown timestamps in transactions of at most 256
+messages, and yields between pages. Missing transcripts leave times unknown.
+Rerunning resumes through NULL rows; leaf and condensed summary bounds are
+recomputed in depth order in pages of at most 128 summaries, including on an
+idempotent retry after an interrupted repair. Existing summary text is retained.
 
 ### The summary DAG
 
@@ -39,7 +63,7 @@ Every summary carries:
 - **summaryId** — `sum_` + 16 hex chars (SHA-256 of content + timestamp)
 - **conversationId** — Which conversation it belongs to
 - **depth** — Position in the hierarchy (0 = leaf)
-- **earliestAt / latestAt** — Time range of source material
+- **earliestAt / latestAt** — Source event-time bounds, falling back per message to capture time; condensed summaries inherit their source summaries' bounds
 - **descendantCount** — Total number of ancestor summaries (transitive)
 - **fileIds** — References to large files mentioned in the source
 - **tokenCount** — Estimated tokens
@@ -67,9 +91,14 @@ summary or whose `session_id` is `lcm:project-timeline`; such rows are never
 legitimate promoted memory. An already-current migration takes no write lock
 unless it finds schema/trigger repairs, missing state or memories to archive.
 
-`openProjectTimeline` exposes budgeted `settle` and model-free `describe`.
+`openProjectTimeline` exposes budgeted `settle`, single-page model-free `bootstrap`
+and model-free `describe`.
 Incremental settle reads dirty sessions through indexed frontier/remainder queries,
 then updates only those sessions' persisted metadata and affected UTC months.
+Raw message dates use event time when known; summaries carry the same derived
+bounds. Timeline coverage records `timeBasis` as `event`, `capture` or `mixed`;
+describe and timeline search expose it, and generation sources label unknown-event
+fallbacks. A schema upgrade refreshes older item metadata through paged bootstrap.
 Counter conflicts leave the affected sessions dirty for the next pass while other
 sessions and independent units continue; conflict is reported only without progress.
 Items contain no text or hashes; ready units read text by id. Existing summaries
@@ -83,9 +112,10 @@ new immutable node and its references. Digest publication marks its month;
 period publication marks nothing. Publication never replans. Obsolete raw digests
 and replaced periods leave active context while retaining historical manifests.
 
-`timeline.generationEnabled` defaults to false. Automatic work also requires
-tracking and completed bootstrap, waits for 60 seconds of quiet and runs one unit
-per project per tick. Model errors and publication conflicts have persisted
+`timeline.generationEnabled` defaults to false. Automatic work requires tracking
+and project generation enabled. Each tick resumes one bootstrap page of at most
+256 sessions without model calls. Once bootstrap completes, generation waits for
+60 seconds of quiet and runs one unit per project per tick. Model errors and publication conflicts have persisted
 exponential backoff, with a one-hour cap and parking after eight failures.
 Admission requires at least one runnable endpoint. The first admitted generation
 settle releases legacy backed-off and parked units once: their persisted failures
@@ -298,7 +328,7 @@ The **leaf pass** converts raw messages into leaf summaries:
 
 1. Identify the oldest contiguous chunk of raw messages outside the **fresh tail** (protected recent messages).
 2. Cap the chunk at `leafChunkTokens` (default 20k tokens).
-3. Concatenate message content with timestamps.
+3. Concatenate message content with event timestamps, falling back to capture time when event time is unknown.
 4. Resolve the most recent prior summary for continuity (passed as `previous_context` so the LLM avoids repeating known information).
 5. Send to the LLM with the leaf prompt.
 6. Normalize provider response blocks (Anthropic/OpenAI text, output_text, and nested content/summary shapes) into plain text.

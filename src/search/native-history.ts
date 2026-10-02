@@ -1,3 +1,4 @@
+import type { TimeBasis } from "../project-timeline/sources.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { RetrievalEngine } from "../retrieval.js";
@@ -8,7 +9,7 @@ import { prepareFts5Query } from "../store/fts5-query.js";
 const MAX_SNIPPET_CHARS = 1000;
 /** Reciprocal-rank offset: small enough that a top position still outweighs one corroborating source further down. */
 const FUSION_RANK_OFFSET = 10;
-type TimelineHitInfo = { period: { from: string; to: string }; stale: null | { reason: string; since: string } };
+type TimelineHitInfo = { timeBasis: TimeBasis; period: { from: string; to: string }; stale: null | { reason: string; since: string } };
 type HistoryHit = MessageSearchResult | SummarySearchResult;
 export type RankedHistoryHit = HistoryHit & { sessionId: string | null; timeline?: TimelineHitInfo };
 type SourceContext = {
@@ -233,9 +234,13 @@ function rankNativeHistorySync(
       if (!sessionOf.has(hit.conversationId)) {
         sessionOf.set(hit.conversationId, messages.getConversationSync(hit.conversationId)?.sessionId ?? null);
       }
-      const timeline = "summaryId" in hit ? db.prepare("SELECT period_from, period_to, stale_reason, stale_since FROM timeline_nodes WHERE summary_id = ?")
-        .get(hit.summaryId) as { period_from: string; period_to: string; stale_reason: string | null; stale_since: string | null } | undefined : undefined;
+      const timeline = "summaryId" in hit ? db.prepare(`SELECT period_from, period_to, stale_reason, stale_since,
+          (SELECT CASE WHEN COUNT(*) = 0 THEN 'capture' WHEN MIN(time_basis) = MAX(time_basis)
+            THEN MIN(time_basis) ELSE 'mixed' END FROM timeline_sources source WHERE source.summary_id = timeline_nodes.summary_id) time_basis
+          FROM timeline_nodes WHERE summary_id = ?`)
+        .get(hit.summaryId) as { time_basis: TimeBasis; period_from: string; period_to: string; stale_reason: string | null; stale_since: string | null } | undefined : undefined;
       ranked.push({ ...hit, sessionId: sessionOf.get(hit.conversationId) ?? null, ...(timeline ? { timeline: {
+        timeBasis: timeline.time_basis,
         period: { from: timeline.period_from, to: timeline.period_to },
         stale: timeline.stale_reason ? { reason: timeline.stale_reason, since: timeline.stale_since! } : null,
       } } : {}) });

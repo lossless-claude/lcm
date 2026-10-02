@@ -423,8 +423,8 @@ it("describes raw coverage across both sides of a clear with session-relative po
   ], boundaries: [{ entryId: "clear", at: 1 }] });
   await timeline.settle({ calls: 10 });
   expect(timeline.describe(nodes(db).at(-1)!.summary_id)!.coverage).toEqual([
-    { sessionId: "omp-session", summaryIds: [], messageRange: [0, 0] },
-    { sessionId: "omp-session", summaryIds: [], messageRange: [1, 1] },
+    { sessionId: "omp-session", summaryIds: [], messageRange: [0, 0], timeBasis: "capture" },
+    { sessionId: "omp-session", summaryIds: [], messageRange: [1, 1], timeBasis: "capture" },
   ]);
 });
 

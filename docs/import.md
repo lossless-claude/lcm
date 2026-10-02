@@ -45,6 +45,45 @@ A shorter paginated Codex subagent rollout with parent identity and a valid `sub
 
 `--replay` compacts selected sessions with context from earlier sessions in that project and source, resuming recorded progress on repeated runs. Replay context never crosses between projects or transcript sources. Codex imports and lifecycle hooks use the same session identity and ingestion path: repeated captures do not duplicate messages, while later transcript growth remains ingestible. User and assistant message text is extracted from Codex `response_item` records. A tool call becomes a `role: "tool"` message carrying only the tool's name (`arguments`/`input` are not stored), and a tool output becomes a `role: "tool"` message carrying its text. UI-projection event notifications are not imported, because they would duplicate the response items. OMP sessions use the session-file header identity and the same cursor-backed ingestion path for live capture and historical import. LCM's internal Codex summarizer runs without hooks and with ephemeral sessions, so its own work does not become future replay input.
 
+## Event timestamps and existing history
+
+Capture, import and rebuild store each transcript record's timestamp as nullable
+message `eventAt`, separately from capture `createdAt`. Missing or invalid source
+timestamps stay unknown. Summary bounds and explicitly requested conversation
+source bounds use event time where known and capture time otherwise. Timeline months follow those
+source periods; coverage identifies `event`, `capture` or `mixed` time bases.
+Search/grep `createdAt` filters and recent summary ordering continue to use storage
+time; describe exposes source bounds separately.
+
+```sh
+lcm import --backfill-event-times
+lcm import --provider claude --all --backfill-event-times
+lcm import --backfill-event-times --dry-run
+```
+
+This explicit repair selects discovered transcripts, including completed sessions,
+and fills only unknown event times. It captures no new tail, compacts nothing and
+makes no model calls. Positions span a session's clear boundaries and exclude
+internal compaction event rows. Role and content must match under the same
+redaction and NUL comparison rules as cursor recovery. For an OMP rewind, a
+stored live-path prefix takes precedence; otherwise only
+unique in-order matches in the full file can establish an abandoned branch's
+position. Repeated matches remain unknown. Repair stops at the first missing,
+ambiguous or unaligned position; it never guesses a timestamp.
+A missing transcript leaves its stored times unknown. Legacy parser-shape
+mismatches may require the existing rebuild repair first.
+
+Reads page by conversation and sequence through the message index. Writes are
+committed in batches of at most 256 messages, yielding between batches.
+Rerunning is idempotent and fills remaining NULL values after interruption or after
+a missing transcript segment is restored. Leaf and condensed summary bounds are
+recomputed in indexed depth/id pages, retaining their text. Tracking marks affected
+sessions dirty; the next settle invalidates timeline nodes and replans their months.
+The reported unknown count covers selected sessions; a transcript no longer discoverable is not selected.
+`--dry-run` lists selected sessions without repairing them.
+`--backfill-event-times` cannot be combined with replay, restart, rebuild or blocked
+capture retry.
+
 ## Rebuilding Claude Code sessions
 
 Before compaction stopped counting its own event rows as captured transcript messages, the capture of a Claude Code session after a compaction skipped as many transcript messages as the session held event rows, and the first capture after the fix stored the session's last messages a second time. Such a session holds gaps and a repeated tail until it is rebuilt. Capture now verifies a compacted session's stored messages against its transcript first, and stops capturing it, writing nothing, when they are not the transcript's prefix; the error names the rebuild.
@@ -73,6 +112,9 @@ Without `--yes` nothing is written and the daemon is not started. With `--yes`, 
 `--rebuild` cannot be combined with `--replay` or `--restart`. Regenerate the discarded summaries with `lcm compact`, or with threaded context through `lcm import --provider claude --replay`, which summarises the rebuilt sessions again because their replay progress was cleared.
 
 ## Repairing Codex and OMP rows cut at NUL
+
+A repaired row also fills its unknown event time from its matched transcript
+record. Summary bounds are recomputed; summary text and capture times are retained.
 
 Older captures could store a transcript message with a NUL so that SQLite reads returned only the text before its first NUL. Codex and OMP read transcripts by byte cursor, so their `--rebuild` mode repairs those rows in place:
 
