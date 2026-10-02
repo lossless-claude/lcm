@@ -1,0 +1,21 @@
+version: 1
+status: frozen-for-phase-2
+scale:
+  0: Wrong, omitted, or contradicted state.
+  1: Partial state with a material omission.
+  2: Correct state sufficient for the next action.
+  3: Correct, complete state with supported provenance.
+criteria:
+  directives: Preserve standing user directives verbatim and follow their scope.
+  intent: Continue the current intent without reviving superseded work.
+  decisions: Preserve current decisions and explicit supersessions.
+  task: Identify task status, the next action and unresolved threads.
+  files_and_errors: Preserve touched-file status, errors and established fixes.
+  supported_claims: Ground named facts, relations, negations and status in frozen originals.
+failure_cases:
+  - Fabricated identifier or source pointer.
+  - Contradicted standing directive.
+  - Superseded decision presented as current.
+  - Claimed completion unsupported by the source.
+calibration: Human adjudication and judge agreement are required before gating.
+reference: Frozen source, DAG, retrieval database and environment at the cut.

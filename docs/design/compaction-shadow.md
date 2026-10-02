@@ -27,6 +27,9 @@ source boundary, model, snapshot/scrubbing hashes, timestamps and expected arms.
 descriptors. `native.json` preserves observed summary text and tail, a pre-scrub text
 hash/byte count, optional usage and timing. `arm-<A|B|C>-<attempt-id>.json` records
 header/output, input/prompt hashes, outcome, model, timing and usage attempts.
+Arm records optionally preserve HTTP status, a bounded API error kind and known
+completion `maxTokens`/`effort`; provider error bodies are not stored. A failed arm
+is an experimental outcome, not a reason to regenerate another model's output.
 
 Native/arm delivery takes `cwd`, `session_id`, `cut_id`, `snapshot_hash` and `record`;
 arm delivery also takes `arm` and `attempt_id`. Usage retains uncached input, output,
@@ -57,3 +60,42 @@ a substring policy before its first capture.
 The offline evaluator requires a valid explicit policy and excludes projects from
 metadata before loading transcripts or artifacts. Exclusions take precedence over
 holdout. Missing or unresolvable corpus identity is not eligible for evaluation.
+
+## Phase-1 triage
+
+The repository tool `scripts/eval-compaction-shadow.mts` reads built evaluator
+modules, frozen shadow cuts and native JSONL `isCompactSummary` records. It makes
+no model, daemon, retrieval or database call. See configuration for invocation.
+Sampling is seeded by project, session and cut, targeting at least 30 cuts across
+3 allowed projects. Smaller samples are reported as insufficient. Existing
+historical cuts have no invented arms or reconstructed current DAG window.
+
+Historical originals require explicit `parentUuid` ancestry before the summary;
+compact boundaries and prior summary rows are not probe sources. Unresolvable,
+cyclic or incomplete transcripts are invalid sources. Source UUID/boundary and
+pre-scrub hash/byte count pair hook-observed native text with decoded JSONL text.
+Whitespace is significant; a mismatch disables native comparison for that cut.
+
+Every probe preserves a verbatim real user message and source address before the
+cut. Exact quote retention is a recall proxy. A versioned lexical classifier
+checks paths, issue numbers, summary ids, code identifiers and recognized command
+forms against captured originals; pointer resolution uses frozen raw/DAG lineage.
+Directive paraphrases fail the verbatim check. A valid generated summary pointer
+can still fail the strict literal identifier floor; these results are separate.
+Presence does not prove relationships, negation or task status.
+
+Outputs are `selection.json`, `probes.jsonl`, `metrics.json`, `report.md` and a hash
+`manifest.json`. Current Capture rules re-scrub source text without rewriting
+identity, role, usage or outcome metadata. Sizes describe scrubbed text, not the
+complete hidden tool/media state kept by an opaque engine handle.
+
+Optional prices have a `version` and `models` map keyed by reported requested model;
+each model has `inputPerMillion`, `outputPerMillion`, `cacheReadPerMillion` and
+`cacheCreationPerMillion`. Estimates retain failed-attempt spending and exact cache
+counters. Unknown usage/model/rates remain unknown. Native cost needs reported
+charge evidence; it is not inferred from another arm's model. DAG/retrieval cost
+attribution is unavailable, so this tool cannot establish an amortized-cost gate.
+
+Continuation scoring returns `not-run/phase-2`, with the frozen rubric hash and
+version. Phase 2 requires frozen source/DAG/retrieval/environment, held-out sessions
+and human calibration. Superiority and default-on are not phase-1 conclusions.

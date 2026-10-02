@@ -123,7 +123,7 @@ describe("daemon compaction shadow artifacts", () => {
   });
   it("rejects traversal and malformed accounting before writing", async () => {
     expect((await post("start", startInput("../escape"))).status).toBe(400);
-    const cut = await start(); const request = arm(cut); request.record.usage.output_tokens = -1;
+    const cut = await start(); const request = arm(cut); request.record.usage = { ...usage, output_tokens: -1 };
     expect((await post("arm", request)).status).toBe(400);
     expect(existsSync(join(dir(), "arm-A-first.json"))).toBe(false);
   });
@@ -146,5 +146,12 @@ describe("daemon compaction shadow artifacts", () => {
   it("does not require a valid evaluation policy for admission", async () => {
     writeFileSync(join(paths.home, "bench-corpora.json"), "broken JSON");
     expect((await start()).cut.state).toBe("pending");
+  });
+  it("preserves bounded failure classification and completion options without provider bodies", async () => {
+    const cut = await start();
+    expect((await post("arm", { ...arm(cut), record: { ...arm(cut).record, status: 400, errorKind: "invalid_request",
+      options: { maxTokens: 2000, effort: "high" }, providerBody: "PRIVATE_WORD" } })).status).toBe(200);
+    expect(artifact("arm-A-first.json")).toMatchObject({ status: 400, errorKind: "invalid_request", options: { maxTokens: 2000, effort: "high" } });
+    expect(artifact("arm-A-first.json")).not.toHaveProperty("providerBody");
   });
 });

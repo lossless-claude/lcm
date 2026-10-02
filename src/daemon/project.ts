@@ -38,9 +38,14 @@ export function claudeProjectSlug(cwd: string): string {
  * and `$.session.cwd()`, not `transcript_path`). Returns null for a session id that
  * is not a plain file name.
  */
+/** The harness-owned Claude transcript directory, shared by discovery and capture. */
+export function claudeTranscriptDirectory(cwd: string): string {
+  return join(homedir(), ".claude", "projects", claudeProjectSlug(cwd));
+}
+
 export function claudeTranscriptPath(cwd: string, sessionId: string): string | null {
   if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) return null;
-  return join(homedir(), ".claude", "projects", claudeProjectSlug(cwd), `${sessionId}.jsonl`);
+  return join(claudeTranscriptDirectory(cwd), `${sessionId}.jsonl`);
 }
 
 function tryRealpath(p: string): string {

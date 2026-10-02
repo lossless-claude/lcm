@@ -104,6 +104,23 @@ exclusions before loading corpus content. See
 [compaction shadow artifacts](design/compaction-shadow.md) for wire fields,
 accounting, retention and privacy.
 
+The repository's read-only phase-1 evaluator requires a built checkout and an
+explicit local output directory:
+
+```bash
+LCM_SKIP_CACHE_SYNC=1 npm run build
+node --experimental-strip-types scripts/eval-compaction-shadow.mts --home /path/to/lcm-home --output /path/to/new-report
+```
+
+The selected home must contain a valid `bench-corpora.json`. Held-out projects are
+reserved, and excluded projects are filtered from metadata before corpus reads.
+Optional `--transcripts` points to a JSON list of `{ cwd, sessionId, path }` entries
+for exported native transcripts; otherwise allowed projects' Claude transcript
+directories are discovered. `--seed` fixes selection, `--limit` defaults to 30 cuts,
+and `--rates` supplies a frozen model/cache rate table. No models are called.
+Reports distinguish missing evidence and unknown cost; continuation judging is a
+phase-2 stub. The output directory must not already exist.
+
 ### Project store hygiene
 
 `lcm doctor` reports stores whose recorded working directory no longer exists and

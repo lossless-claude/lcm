@@ -1,19 +1,19 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { LcmPaths } from "../../lcm-paths.js";
 import { projectDir } from "../project.js";
 import { readProjectMetaIn } from "../project-meta.js";
-import { objectHash, safeId, type ArmRecord, type NativeRecord, type ShadowManifest, type ShadowSnapshot } from "./types.js";
+import { HTTP, objectHash, safeId, type ArmRecord, type NativeRecord, type ShadowManifest, type ShadowSnapshot } from "./types.js";
 
 export class ShadowStoreError extends Error {
-  constructor(message: string, readonly status = 409) { super(message); }
+  constructor(message: string, readonly status: number = HTTP.conflict) { super(message); }
 }
 function directory(path: string): boolean {
   return existsSync(path) && lstatSync(path).isDirectory() && !lstatSync(path).isSymbolicLink();
 }
 export function readShadowJson<T>(path: string): T {
-  if (lstatSync(path).isSymbolicLink() || !lstatSync(path).isFile()) throw new ShadowStoreError("Invalid shadow artifact", 422);
+  if (lstatSync(path).isSymbolicLink() || !lstatSync(path).isFile()) throw new ShadowStoreError("Invalid shadow artifact", HTTP.unprocessable);
   return JSON.parse(readFileSync(path, "utf8")) as T;
 }
 function atomicWrite(path: string, value: unknown): void {
@@ -28,11 +28,11 @@ export class CompactionShadowStore {
   constructor(private readonly paths: LcmPaths) {}
   root(cwd: string): string { return join(projectDir(cwd, this.paths), "compaction-shadow"); }
   private cutDir(cwd: string, cutId: string): string {
-    if (!safeId(cutId)) throw new ShadowStoreError("Invalid cut id", 400);
+    if (!safeId(cutId)) throw new ShadowStoreError("Invalid cut id", HTTP.badRequest);
     const root = this.root(cwd);
-    if (existsSync(root) && !directory(root)) throw new ShadowStoreError("Invalid shadow directory", 422);
+    if (existsSync(root) && !directory(root)) throw new ShadowStoreError("Invalid shadow directory", HTTP.unprocessable);
     const path = join(root, cutId);
-    if (existsSync(path) && !directory(path)) throw new ShadowStoreError("Invalid cut directory", 422);
+    if (existsSync(path) && !directory(path)) throw new ShadowStoreError("Invalid cut directory", HTTP.unprocessable);
     return path;
   }
   read(cwd: string, cutId: string): { cut: ShadowManifest; snapshot: ShadowSnapshot } | undefined {
@@ -52,12 +52,12 @@ export class CompactionShadowStore {
       renameSync(staging, path);
     } finally { rmSync(staging, { recursive: true, force: true }); }
   }
-  bind(cwd: string, cutId: string, sessionId: string, snapshotHash: string): ShadowManifest {
+  bind(cwd: string, cutId: string, { sessionId, snapshotHash }: { sessionId: string; snapshotHash: string }): ShadowManifest {
     const found = this.read(cwd, cutId);
-    if (!found) throw new ShadowStoreError("Cut not found", 404);
+    if (!found) throw new ShadowStoreError("Cut not found", HTTP.notFound);
     if (found.cut.sessionId !== sessionId || found.cut.snapshotHash !== snapshotHash || objectHash(found.snapshot) !== snapshotHash)
       throw new ShadowStoreError("Cut identity or snapshot mismatch");
-    if (Date.parse(found.cut.expiresAt) <= Date.now()) throw new ShadowStoreError("Cut expired", 410);
+    if (Date.parse(found.cut.expiresAt) <= Date.now()) throw new ShadowStoreError("Cut expired", HTTP.gone);
     return found.cut;
   }
   writeNative(cut: ShadowManifest, record: NativeRecord): void { this.publish(cut, "native.json", record); }
@@ -73,32 +73,47 @@ export class CompactionShadowStore {
     const complete = files.includes("native.json") && cut.expectedArms.every(arm => files.some(file => file.startsWith(`arm-${arm}-`) && file.endsWith(".json")));
     if (complete) atomicWrite(join(path, "manifest.json"), { ...cut, state: "complete" });
   }
-  /** Bounded cleanup never walks outside the shadow namespace or follows links. */
-  recoverProject(cwd: string, now = Date.now(), limit = 64): void {
-    const root = this.root(cwd);
-    if (!directory(root)) return;
-    let changed = 0;
-    for (const entry of readdirSync(root)) {
-      if (changed >= limit || !safeId(entry)) continue;
-      try {
-      const path = this.cutDir(cwd, entry), file = join(path, "manifest.json");
-      if (!existsSync(file)) continue;
-      const cut = readShadowJson<ShadowManifest>(file);
-      if (cut.version !== 1 || cut.cwd !== cwd || cut.cutId !== entry) continue;
-      if (Date.parse(cut.expiresAt) <= now) { rmSync(path, { recursive: true }); changed++; }
-      else if (cut.state === "pending" && cut.owner !== this.owner) {
-        atomicWrite(file, { ...cut, state: "incomplete" }); changed++;
-      }
-      } catch { /* Corrupt or linked shadow data must not prevent native daemon startup. */ }
-    }
+}
+const RECOVERY_BATCH_SIZE = 64;
+/** Bounded cleanup never follows directory links or mutates episodic storage. */
+export function recoverShadowProject(store: CompactionShadowStore, cwd: string, { now = Date.now(), limit = RECOVERY_BATCH_SIZE } = {}): number {
+  const root = store.root(cwd);
+  if (!directory(root)) return 0;
+  let changed = 0, failures = 0;
+  for (const entry of readdirSync(root)) {
+    if (changed >= limit || !safeId(entry)) continue;
+    const result = recoverShadowEntry(join(root, entry), { cwd, owner: store.owner, now });
+    changed += Number(result.changed); failures += Number(result.failed);
   }
-  recover(): void {
-    if (!directory(this.paths.projectsDir)) return;
-    for (const entry of readdirSync(this.paths.projectsDir)) {
-      const path = join(this.paths.projectsDir, entry);
-      if (!directory(path)) continue;
+  return failures;
+}
+function recoverShadowEntry(path: string, context: { cwd: string; owner: string; now: number }): { changed: boolean; failed: boolean } {
+  try {
+    if (!directory(path) || !existsSync(join(path, "manifest.json"))) return { changed: false, failed: false };
+    const file = join(path, "manifest.json"), cut = readShadowJson<ShadowManifest>(file);
+    if (!recoverableCut(cut, context.cwd, path)) return { changed: false, failed: false };
+    if (Date.parse(cut.expiresAt) <= context.now) { rmSync(path, { recursive: true }); return { changed: true, failed: false }; }
+    return recoverPending(file, cut, context.owner);
+  } catch { return { changed: false, failed: true }; }
+}
+function recoverPending(file: string, cut: ShadowManifest, owner: string) {
+  if (cut.state !== "pending" || cut.owner === owner) return { changed: false, failed: false };
+  atomicWrite(file, { ...cut, state: "incomplete" });
+  return { changed: true, failed: false };
+}
+export function recoverShadowProjects(store: CompactionShadowStore, paths: LcmPaths): number {
+  if (!directory(paths.projectsDir)) return 0;
+  let failures = 0;
+  for (const entry of readdirSync(paths.projectsDir)) {
+    const path = join(paths.projectsDir, entry);
+    if (!directory(join(path, "compaction-shadow"))) continue;
+    try {
       const cwd = readProjectMetaIn(path)?.cwd;
-      if (cwd && projectDir(cwd, this.paths) === path) this.recoverProject(cwd);
-    }
+      if (typeof cwd === "string" && projectDir(cwd, paths) === path) failures += recoverShadowProject(store, cwd);
+    } catch { failures++; }
   }
+  return failures;
+}
+function recoverableCut(cut: ShadowManifest, cwd: string, path: string): boolean {
+  return cut.version === 1 && cut.cwd === cwd && basename(path) === cut.cutId;
 }
