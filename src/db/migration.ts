@@ -952,6 +952,20 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
   if (!messageColumns.some(column => column.name === "event_time_source")) {
     db.exec("ALTER TABLE messages ADD COLUMN event_time_source TEXT");
   }
+  db.exec(`CREATE TABLE IF NOT EXISTS transcript_tool_calls (
+    session_id TEXT NOT NULL,
+    call_id TEXT NOT NULL,
+    message_id INTEGER NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    input TEXT,
+    input_bytes INTEGER,
+    truncated INTEGER NOT NULL DEFAULT 0 CHECK(truncated IN (0, 1)),
+    outcome TEXT NOT NULL DEFAULT 'unknown' CHECK(outcome IN ('succeeded', 'failed', 'blocked', 'denied', 'interrupted', 'unknown')),
+    harness_error INTEGER CHECK(harness_error IN (0, 1)),
+    exit_code INTEGER,
+    PRIMARY KEY(session_id, call_id)
+  );
+  CREATE INDEX IF NOT EXISTS transcript_tool_calls_message_idx ON transcript_tool_calls(message_id);`);
   db.exec(`CREATE TABLE IF NOT EXISTS session_web_urls (
     session_id TEXT NOT NULL, url TEXT NOT NULL, PRIMARY KEY(session_id, url)
   );
