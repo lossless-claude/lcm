@@ -62,7 +62,10 @@ Ordinary evidence transactions are bounded and the pass yields between pages und
 and mutation lease. Git reads yield both the queue turn and mutation lease; writes
 recheck the candidate's evidence and worker exclusion after reacquiring them.
 Trailer evidence creates one reference per session and commit, retaining one representative
-message id that is never used for dating. Only a message whose own commit output names
+message id that is never used for dating. Each run scans trailer history once per session
+and exact URL, regardless of how many messages mention it. Stored references are refreshed
+at the start of the run; trailer discovery does not verify already linked commits again.
+Only a message whose own commit output names
 exactly one distinct, resolvable commit receives its committer time and source `commit`
 when its time is unknown. Multiple outputs, including unresolved candidates, stay unknown.
 Transcript times are preserved. A later pass marks unavailable hashes unresolved and never

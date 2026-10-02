@@ -490,7 +490,7 @@ it.each([
 });
 
 
-it("links repeated session URLs once per commit without dating any message", async () => {
+it.each([1, 5])("links session URLs in %s messages with the same git cost and without dating any message", async messageCount => {
   const dir = mkdtempSync(join(tmpdir(), "lcm-commit-fixture-"));
   try {
     const url = "https://claude.ai/code/session_many";
@@ -499,15 +499,20 @@ it("links repeated session URLs once per commit without dating any message", asy
       writeFileSync(join(dir, ".git", "refs", "heads", `commit${i}`), hash + "\n");
       return hash;
     });
-    const { records } = await capture.write({ sessionId: "many", messages: Array.from({ length: 5 }, () => ({
+    const { records } = await capture.write({ sessionId: "many", messages: Array.from({ length: messageCount }, () => ({
       role: "user" as const, content: url, tokenCount: 10,
     })) });
-    await backfillProjectCommits(db, dir);
+    let reads = 0;
+    const lease = { yieldWhile: async <T>(work: () => Promise<T>): Promise<T> => { reads++; return work(); } };
+    await backfillProjectCommits(db, dir, true, lease);
+    expect(reads).toBe(10); // One history read and three verification reads per new commit.
     expect(new CommitStore(db).forSession("many").map(ref => ref.hash).sort()).toEqual(hashes.sort());
     for (const record of records) expect(await capture.conversationStore.getMessageById(record.messageId))
       .toMatchObject({ eventAt: null, eventTimeSource: null });
     await capture.write({ sessionId: "many", messages: [{ role: "user", content: url, tokenCount: 10 }] });
-    await backfillProjectCommits(db, dir);
+    reads = 0;
+    await backfillProjectCommits(db, dir, true, lease);
+    expect(reads).toBe(7); // Two refresh reads per stored commit and one history read.
     expect(new CommitStore(db).forSession("many")).toHaveLength(hashes.length);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

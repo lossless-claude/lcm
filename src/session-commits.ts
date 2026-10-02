@@ -12,7 +12,7 @@ const HASH = /^[a-f0-9]{7,64}$/i;
 const GIT_READ_TIMEOUT_MS = 10_000;
 const GIT_OUTPUT_BYTES = 1024 * 1024;
 type GitLease = { yieldWhile<T>(work: () => Promise<T>): Promise<T> };
-type Context = { store: CommitStore; conversations: ConversationStore; workers: WorkerStore; cwd: string; changed: Set<number>; lease?: GitLease };
+type Context = { store: CommitStore; conversations: ConversationStore; workers: WorkerStore; cwd: string; changed: Set<number>; trailerUrls: Map<string, Set<string>>; lease?: GitLease };
 
 async function git(context: Context, args: string[]): Promise<string | null> {
   try {
@@ -71,7 +71,8 @@ async function* trailerHashes(context: Context, url: string): AsyncGenerator<str
 async function trailerReference(context: Context, message: CommitCandidate, evidence: { url: string; hash: string }): Promise<CommitReference | null> {
   const { url, hash } = evidence;
   const prior = context.store.find({ sessionId: message.session_id, messageId: message.message_id, evidence: "session-trailer", evidenceValue: url, hash });
-  if (prior && !prior.resolved) return null;
+  // Stored links were refreshed at the start of this run, including unavailable objects.
+  if (prior) return null;
   const trailers = await git(context, ["show", "--no-patch", "--format=%(trailers:key=Claude-Session,valueonly)", hash, "--"]);
   if (!trailers?.split("\n").some(value => value.trim() === url)) return null;
   return { ...await resolve(context, hash), sessionId: message.session_id, messageId: message.message_id,
@@ -87,7 +88,13 @@ async function* urlReferences(context: Context, message: CommitCandidate, url: s
 
 async function* trailerReferences(context: Context, message: CommitCandidate): AsyncGenerator<CommitReference> {
   const urls = new Set(`${message.content}\n${message.tool_output ?? ""}`.match(/https:\/\/claude\.ai\/code\/session_[a-zA-Z0-9_-]+/g) ?? []);
-  for (const url of urls) yield* urlReferences(context, message, url);
+  let seen = context.trailerUrls.get(message.session_id);
+  if (!seen) context.trailerUrls.set(message.session_id, seen = new Set());
+  for (const url of urls) {
+    if (seen.has(url)) continue;
+    yield* urlReferences(context, message, url);
+    seen.add(url);
+  }
 }
 
 async function* messageReferences(context: Context, message: CommitCandidate): AsyncGenerator<CommitReference> {
@@ -137,7 +144,7 @@ async function repairCandidate(context: Context, message: CommitCandidate): Prom
 export async function backfillProjectCommits(db: DatabaseSync, cwd: string, enabled = true, lease?: GitLease): Promise<{ updated: number; candidates: number; references: number }> {
   const report = { updated: 0, candidates: 0, references: 0 };
   if (!enabled) return report;
-  const context = { store: new CommitStore(db), conversations: new ConversationStore(db), workers: new WorkerStore(db), cwd, changed: new Set<number>(), lease };
+  const context = { store: new CommitStore(db), conversations: new ConversationStore(db), workers: new WorkerStore(db), cwd, changed: new Set<number>(), trailerUrls: new Map<string, Set<string>>(), lease };
   const summaries = new SummaryStore(db);
   if (context.store.needsEvidenceRepair()) {
     // The SQL repair is bounded and atomic; the recompute yields between pages, so it runs after
