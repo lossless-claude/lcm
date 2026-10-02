@@ -44,6 +44,18 @@ lcm is a memory layer, not a Claude Code plugin. It holds the same guarantees un
 Codex and under Claude Code, across command hooks and function hooks, and tracks the
 MCP protocol it speaks (#401).
 
+### What a compaction leaves is lcm's record
+
+When a host compacts a conversation, the model goes on with whatever replaced it. Where
+the host lets a plugin decide that, lcm decides it: the summaries it keeps, carrying the
+ids `lcm_expand` follows back to the original messages, stand in for the host's own
+summary, so nothing the model stops seeing is out of reach. Claude Code exposes that
+seam to mods (`session.compact`); a host that does not keeps today's behaviour, lcm's
+summary beside the host's, which is the guarantee parity asks for. We know it holds
+when, after a compaction, the model's context carries summary ids that expand to the
+originals, and recall measured on a real corpus is no worse than after the host's own
+compaction. Design: [docs/design/lcm-owns-compaction.md](docs/design/lcm-owns-compaction.md).
+
 ## Privacy
 
 Memory is captured passively, so redaction and sensitivity classification are part of
