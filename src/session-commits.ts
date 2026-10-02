@@ -39,10 +39,10 @@ async function resolve(cwd: string, hash: string): Promise<Pick<CommitReference,
 
 function outputs(content: string): Array<{ hash: string; branch: string | null }> {
   const found: Array<{ hash: string; branch: string | null }> = [];
-  // Normal, root and detached-HEAD commit output, plus git log/show's commit header.
-  const pattern = /\[(.+?)[ \t]+([a-f0-9]{7,64})\]|^commit\s+([a-f0-9]{40}|[a-f0-9]{64})(?:\s|$)|^([a-f0-9]{7,64})\s+.+$|^([a-f0-9]{40}|[a-f0-9]{64})$/gim;
-  for (const match of content.matchAll(pattern)) found.push({ hash: match[2] ?? match[3] ?? match[4] ?? match[5],
-    branch: match[1] ? (match[1].includes("detached HEAD") ? null : match[1].replace(/ \(root-commit\)$/, "")) : null });
+  // Only normal, root and detached-HEAD git commit output proves a session made a commit.
+  const pattern = /\[(.+?)[ \t]+([a-f0-9]{7,64})\]/gi;
+  for (const match of content.matchAll(pattern)) found.push({ hash: match[2],
+    branch: match[1].includes("detached HEAD") ? null : match[1].replace(/ \(root-commit\)$/, "") });
   return found;
 }
 

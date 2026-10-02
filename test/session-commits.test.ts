@@ -94,7 +94,7 @@ it("matches session trailers through the exact stored URL, never through an lcm 
   try {
     const url = "https://claude.ai/code/session_web123";
     const hash = fixtureCommit(dir, `Fixture change\n\nClaude-Session: ${url}`);
-    await capture.write({ sessionId: "local123", messages: [{ role: "user", content: `Web session: ${url}`, tokenCount: 10 }] });
+    const { records } = await capture.write({ sessionId: "local123", messages: [{ role: "user", content: `Web session: ${url}`, tokenCount: 10 }] });
     await capture.write({ sessionId: "session_web123", messages: [{ role: "user", content: "no URL", tokenCount: 10 }] });
     expect(await backfillProjectCommits(db, dir, false)).toEqual({ updated: 0, candidates: 0, references: 0 });
     expect(new CommitStore(db).forSession("local123")).toEqual([]);
@@ -102,6 +102,9 @@ it("matches session trailers through the exact stored URL, never through an lcm 
     expect(new CommitStore(db).forSession("local123")).toEqual([
       expect.objectContaining({ hash, evidence: "session-trailer", evidenceValue: url, resolved: true }),
     ]);
+    expect(await capture.conversationStore.getMessageById(records[0].messageId)).toMatchObject({
+      eventAt: new Date("2021-02-03T04:05:06Z"), eventTimeSource: "commit",
+    });
     expect(new CommitStore(db).forSession("session_web123")).toEqual([]);
     const mentioned = fixtureCommit(dir, `Mention ${url}\n\nNo session trailer here`);
     await backfillProjectCommits(db, dir);
@@ -261,11 +264,9 @@ it("reads only prefiltered candidate messages in bounded pages and yields betwee
 });
 
 it.each([
+  ["[fixture HASH] Fixture change", "fixture"],
   ["[fixture (root-commit) HASH] Fixture change", "fixture"],
   ["[detached HEAD HASH] Fixture change", null],
-  ["commit FULL", null],
-  ["HASH Fixture change", null],
-  ["FULL", null],
   ['{"output":"[fixture HASH] Fixture change\\n"}', "fixture"],
 ] as const)("recognizes commit output form %s", async (form, branch) => {
   const dir = mkdtempSync(join(tmpdir(), "lcm-commit-fixture-"));
@@ -273,8 +274,33 @@ it.each([
     const hash = fixtureCommit(dir);
     const content = form.replace("HASH", hash.slice(0, 7)).replace("FULL", hash);
     const conversation = await capture.conversationStore.getOrCreateConversation("session");
-    await capture.conversationStore.createMessage({ conversationId: conversation.conversationId, seq: 0, role: "tool", content, tokenCount: 10 });
+    const message = await capture.conversationStore.createMessage({ conversationId: conversation.conversationId, seq: 0, role: "tool", content, tokenCount: 10 });
     await backfillProjectCommits(db, dir);
-    expect(new CommitStore(db).forSession("session")).toMatchObject([{ hash, branch, resolved: true }]);
+    expect(new CommitStore(db).forSession("session")).toMatchObject([{ hash, branch, resolved: true, evidence: "commit-output" }]);
+    expect(await capture.conversationStore.getMessageById(message.messageId)).toMatchObject({
+      eventAt: new Date("2021-02-03T04:05:06Z"), eventTimeSource: "commit",
+    });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it.each([
+  "HASH Fixture change\ndeadbeef Older change",
+  "commit FULL\nAuthor: Fixture\n\n    Fixture change",
+  "FULL",
+  "FULL64",
+  "deadbeef checksum verified",
+])("does not link or anchor viewed hashes or hex-looking words: %s", async form => {
+  const dir = mkdtempSync(join(tmpdir(), "lcm-commit-fixture-"));
+  try {
+    const hash = fixtureCommit(dir);
+    const content = form.replace("FULL64", "a".repeat(64)).replace("FULL", hash).replace("HASH", hash.slice(0, 7));
+    const conversation = await capture.conversationStore.getOrCreateConversation("viewer");
+    const message = await capture.conversationStore.createMessage({ conversationId: conversation.conversationId,
+      seq: 0, role: "tool", content, tokenCount: 20 });
+    expect(await backfillProjectCommits(db, dir)).toMatchObject({ updated: 0, references: 0 });
+    expect(new CommitStore(db).forSession("viewer")).toEqual([]);
+    expect(await capture.conversationStore.getMessageById(message.messageId)).toMatchObject({ eventAt: null, eventTimeSource: null });
+    const engine = new RetrievalEngine(capture.conversationStore, capture.summaryStore);
+    expect(await engine.describe("viewer")).toMatchObject({ commits: [] });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

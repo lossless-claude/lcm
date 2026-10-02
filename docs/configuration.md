@@ -346,10 +346,11 @@ commit pass under the project queue and mutation lease. Disable the commit pass 
 ```
 
 The setting leaves transcript repair, existing references and anchors intact.
-There is no automatic git scan or remote fetch. References require a commit hash
-in stored tool output, or an exact stored web session URL matching a commit's
+There is no automatic git scan or remote fetch. References require a hash in stored
+`git commit` output (normal, root-commit or detached-HEAD), or an exact stored web session URL matching a commit's
 `Claude-Session:` trailer. Only evidence messages with unknown times receive a
-commit's author time, recorded with source `commit`. Describe shows the references
+commit's author time, recorded with source `commit`. Hashes from `git log`, `git show`,
+bare hex lines and hex-looking words create no reference or event-time anchor. Describe shows the references
 on sessions, summaries and timeline nodes. See [import repair](import.md#event-timestamps-and-existing-history).
 
 ### Project timeline opt-in

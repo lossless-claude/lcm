@@ -172,6 +172,9 @@ summaries include `node.commits`: references with `sessionId`, `messageId`, `has
 `subject`, `authorAt`, `branch`, `resolved`, `evidence` (`commit-output` or
 `session-trailer`) and `evidenceValue` (observed hash or exact web session URL).
 Resolved hashes are full hashes; an unresolved abbreviation remains as observed.
+`commit-output` requires stored `git commit` output, including root-commit and
+detached-HEAD variants. Viewed hashes from `git log` or `git show`, bare hex lines
+and hex-looking words are excluded from references and event-time anchors.
 
 For a timeline node, `node.timeline` also contains `period`, exact session
 `coverage` (source summary ids, raw message ranges and `timeBasis`), `stale` reason/time,

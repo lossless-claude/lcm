@@ -49,10 +49,12 @@ The project commit pass runs after transcript repair, including for stored sessi
 whose transcripts are gone. `commits.enabled` defaults to true and gates this pass.
 `CommitStore` retains session/message references to a full commit hash (the observed
 abbreviation when unresolved), subject, author time, branch when printed, evidence
-kind and evidence value. Evidence is a hash in stored tool output that local git
-resolves to a commit, or a commit's `Claude-Session:` trailer whose exact web URL
+kind and evidence value. Evidence is a hash in stored `git commit` output
+(`[<branch> <hash>] <subject>`, including root-commit and detached-HEAD variants)
+that local git resolves to a commit, or a commit's `Claude-Session:` trailer whose exact web URL
 appears in the session's own messages. A web id alone never matches an lcm session id;
-timestamp proximity establishes nothing. Git reads local objects without replacements
+`git log`, `git show`, bare hashes and hex-looking words establish neither references
+nor event times. Timestamp proximity establishes nothing. Git reads local objects without replacements
 or lazy fetching. No diffs, blobs, author emails or PR text are retained.
 Message and reference reads use pages of at most 256 rows; message reads prefilter
 tool output and session URLs. Matching git history is paged at 128 commits.

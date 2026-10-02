@@ -86,7 +86,10 @@ After the transcript pass, a project commit pass reads stored tool output and we
 session URLs in candidate pages of at most 256 messages. It includes stored sessions
 whose transcripts are gone, in the current project or tracked projects with `--all`;
 the provider flag selects transcript sources, not commit evidence. Git is read-only,
-local, and never fetches. Commit output hashes must resolve to commits. A
+local, and never fetches. Only `git commit` output (normal, root-commit or detached-HEAD)
+establishes a `commit-output` reference; its hash must resolve to a commit to anchor
+an event time. Hashes from `git log`, `git show`, bare hex lines and hex-looking words
+create no reference or event-time anchor. A
 `Claude-Session:` trailer matches only the exact `https://claude.ai/code/session_…`
 URL in the session's own stored messages; the web id is not an lcm session id.
 Only a message carrying resolved evidence gets author time with source `commit`,
