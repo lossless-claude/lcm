@@ -237,7 +237,9 @@ export class SessionCapture {
     });
     const databases = this.db.prepare("PRAGMA database_list").all() as Array<{ name: string; file: string }>;
     const dbPath = databases.find(row => row.name === "main")!.file;
-    return { ...written, transcriptPath, ...(delta.verification ? { verification: delta.verification } : {}), backfillModels: (events) => {
+    return { ...written, transcriptPath, ...(delta.verification ? { verification: {
+      ...delta.verification, verified: delta.verification.verified && written.conversationId > 0,
+    } } : {}), backfillModels: (events) => {
       if (!source.backfillModels || delta.checkpoint === undefined) return delta.backfillModels(events, input.sessionId);
       // /ingest replies and releases its connection before running this callback.
       const db = dbPath ? openStandaloneLcmConnection(dbPath, { readOnly: true }) : this.db;

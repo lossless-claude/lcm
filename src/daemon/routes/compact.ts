@@ -548,6 +548,10 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
               : { status: "deferred" as const, reason: "no-capture-result" as const }
             : undefined;
           const verification = (captured as TranscriptCaptureResult | undefined)?.verification;
+          if (renderContext && new WorkerStore(db).excluded(session_id)) return {
+            summary: "", replayOutcome: "skipped", captureOutcome: { status: "deferred", reason: "worker-excluded" },
+            summaryOutcome: { status: "skipped", reason: "worker-excluded" }, ...contextStatus("excluded"),
+          };
           if (renderContext && (!verification?.verified || !verification.complete || !verification.boundaryFound)) return {
             summary: "", replayOutcome: "skipped", captureOutcome: { status: "deferred", reason: "capture-unverified", ...verification },
             summaryOutcome: { status: "skipped", reason: "capture-unverified" }, ...contextStatus("capture-unverified"),
