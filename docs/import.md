@@ -92,6 +92,9 @@ an event time. Hashes from `git log`, `git show`, bare hex lines and hex-looking
 create no reference or event-time anchor. A
 `Claude-Session:` trailer matches only the exact `https://claude.ai/code/session_…`
 URL in the session's own stored messages; the web id is not an lcm session id.
+Each run scans trailer history once per session and exact URL, regardless of the number
+of messages mentioning it. Stored references are refreshed at the start of the run;
+trailer discovery does not verify already linked commits again.
 Trailer evidence creates one link per session and commit, with a representative message
 that is never used for dating. Only a message whose own commit output names exactly one
 distinct, resolvable commit gets committer time with source `commit`, and only if its time

@@ -349,7 +349,9 @@ The setting leaves transcript repair, existing references and anchors intact.
 There is no automatic git scan or remote fetch. References require a hash in stored
 `git commit` output (normal, root-commit or detached-HEAD), or an exact stored web session URL matching a commit's
 `Claude-Session:` trailer. Trailer evidence creates one link per session and commit;
-its representative message is never used for dating. Only messages whose own commit
+its representative message is never used for dating. Each run scans trailer history once
+per session and exact URL. Stored references are refreshed at the start of the run;
+trailer discovery does not verify already linked commits again. Only messages whose own commit
 output names exactly one distinct, resolvable commit receive its committer time when
 unknown, recorded with source `commit`; multiple outputs stay unknown. The first enabled
 pass repairs legacy duplicate trailer links and trailer-only or ambiguous anchors once,
