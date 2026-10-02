@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { EventsDb } from "../../../src/hooks/events-db.js";
 import { createPromoteEventsHandler } from "../../../src/daemon/routes/promote-events.js";
-import { projectDbPath } from "../../../src/daemon/project.js";
+import { projectDbPath, projectId } from "../../../src/daemon/project.js";
+import { PromotedStore } from "../../../src/db/promoted.js";
+import { extractUserPromptEvents } from "../../../src/hooks/extractors.js";
 import { runLcmMigrations } from "../../../src/db/migration.js";
 import type { DaemonConfig } from "../../../src/daemon/config.js";
 import { lcmHome } from "../../../src/lcm-home.js";
@@ -130,7 +132,6 @@ describe("promote-events route", () => {
     ["mcp", "type:pattern"],
     ["skill", "type:pattern"],
     ["subagent", "type:pattern"],
-    ["intent", "type:workflow"],
     ["task", "type:workflow"],
     ["security", "type:workflow"],
     ["context", "type:user-context"],
@@ -167,6 +168,51 @@ describe("promote-events route", () => {
     // Both events should be promoted
     expect(result.promoted).toBeGreaterThanOrEqual(2);
     expect(result.correlated).toBeGreaterThanOrEqual(1);
+  });
+
+  it.each([false, true])("never promotes repeated prompt intents (existing memories: %s)", async (seedMemories) => {
+    const prompts = ["fix the bug", "investigate the failure", "review the change", "refactor the module"];
+    const db = setupProjectDb(dir);
+    if (seedMemories) {
+      const store = new PromotedStore(db);
+      for (const content of ["implement", "investigate", "review", "refactor"]) {
+        store.insert({ content, projectId: projectId(dir), sessionId: "manual", tags: ["type:workflow"] });
+      }
+    }
+    db.close();
+    const edb = new EventsDb(sidecarPath);
+    for (const session of ["s1", "s2", "s3"]) {
+      for (const prompt of prompts) {
+        const events = extractUserPromptEvents(prompt);
+        expect(events).toHaveLength(1);
+        expect(events[0].category).toBe("intent");
+        edb.insertEvent(session, events[0], "UserPromptSubmit");
+      }
+    }
+    edb.close();
+
+    const { res, getBody } = mockRes();
+    await createPromoteEventsHandler(makeConfig(), paths)({} as any, res, JSON.stringify({ cwd: dir }));
+
+    expect(getBody()).toMatchObject({ promoted: 0, skipped: 12, correlated: 0, errors: 0 });
+    expect(deduplicateAndInsert).not.toHaveBeenCalled();
+    const processed = new EventsDb(sidecarPath);
+    try {
+      expect(processed.getUnprocessed()).toEqual([]);
+    } finally {
+      processed.close();
+    }
+  });
+
+  it.each([1, 2] as const)("skips intent events even at priority %s", async (priority) => {
+    setupProjectDb(dir).close();
+    const edb = new EventsDb(sidecarPath);
+    edb.insertEvent("s1", { type: "intent_implement", category: "intent", data: "implement", priority }, "UserPromptSubmit");
+    edb.close();
+    const { res, getBody } = mockRes();
+    await createPromoteEventsHandler(makeConfig(), paths)({} as any, res, JSON.stringify({ cwd: dir }));
+    expect(getBody()).toMatchObject({ promoted: 0, skipped: 1, errors: 0 });
+    expect(deduplicateAndInsert).not.toHaveBeenCalled();
   });
 
   it("marks all events as processed after promotion", async () => {

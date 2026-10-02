@@ -94,7 +94,9 @@ export async function handleSessionStart(stdin: string, client: DaemonClient, pa
     let stdout = result.context || "";
 
     if (result.insights && result.insights.length > 0) {
+      const seen = new Set<string>();
       const insightsBlock = result.insights
+        .filter((i) => !seen.has(i.content) && seen.add(i.content))
         .map((i) => `- ${i.content} (confidence: ${i.confidence})`)
         .join("\n");
       stdout += `\n<learned-insights source="passive-capture">\nRecent learnings from your previous sessions:\n${insightsBlock}\n</learned-insights>`;

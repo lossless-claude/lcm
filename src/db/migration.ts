@@ -759,6 +759,35 @@ function backfillPromotedTagsOnce(db: DatabaseSync, fts5Available: boolean): voi
   }
 }
 
+/** Remove bare prompt labels only when passive-capture provenance establishes their origin. */
+function removePassiveIntentLabelsOnce(db: DatabaseSync, fts5Available: boolean): void {
+  db.exec(`CREATE TABLE IF NOT EXISTS passive_intent_repair (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    completed_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
+  if (db.prepare("SELECT 1 FROM passive_intent_repair WHERE id = 1").get()) return;
+
+  db.exec("SAVEPOINT passive_intent_repair");
+  try {
+    const remove = db.prepare("DELETE FROM promoted WHERE rowid = ?");
+    const removeFts = fts5Available ? db.prepare("DELETE FROM promoted_fts WHERE rowid = ?") : null;
+    for (const row of db.prepare(`SELECT rowid, tags FROM promoted
+      WHERE content IN ('implement', 'investigate', 'review', 'refactor')
+        AND session_id IS NOT 'manual'`).iterate()) {
+      const { rowid, tags } = row as { rowid: number; tags: string };
+      if (!legacyPromotedTags(tags)?.includes("source:passive-capture")) continue;
+      removeFts?.run(rowid);
+      remove.run(rowid);
+    }
+    db.prepare("INSERT INTO passive_intent_repair (id) VALUES (1)").run();
+    db.exec("RELEASE passive_intent_repair");
+  } catch (err) {
+    db.exec("ROLLBACK TO passive_intent_repair");
+    db.exec("RELEASE passive_intent_repair");
+    throw err;
+  }
+}
+
 export interface LcmMigrationOptions {
   fts5Available?: boolean;
   /** Override for `~/.claude/projects` — tests only, so the backfill never walks the real disk. */
@@ -1120,6 +1149,7 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
   const fts5Available = options?.fts5Available ?? getLcmDbFeatures(db).fts5Available;
   if (!fts5Available) {
     backfillPromotedTagsOnce(db, false);
+    removePassiveIntentLabelsOnce(db, false);
     return;
   }
 
@@ -1141,6 +1171,7 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
   }
 
   backfillPromotedTagsOnce(db, true);
+  removePassiveIntentLabelsOnce(db, true);
 
   // FTS5 virtual tables for full-text search (cannot use IF NOT EXISTS, so check manually)
   const hasFts = db
