@@ -31,6 +31,7 @@ Results land in `test/bench/results/` as one JSON per model, provider, variant, 
 | `LCM_EVAL_BASE_URL` | `openai` provider only: the OpenAI-compatible endpoint. `LCM_EVAL_API_KEY` is optional. |
 | `LCM_EVAL_RUNS` | Runs per session, default `1`. Must be a positive integer. |
 | `LCM_EVAL_SESSIONS` | Comma-separated labels to run; default is every session in the corpus. |
+| `LCM_EVAL_TOOL_CONTEXT` | `on` (default) supplies window pairs and block reasons; `off` runs the old-prompt baseline. Baseline result filenames include `__baseline`. |
 | `LCM_EVAL_LANGUAGE` | Effective configured or detected BCP 47 language for the corpus. Omit only when production would have no known language. |
 | `LCM_EVAL_REASONING` | HTTP providers: the JSON sent as `reasoning`, e.g. `{"enabled":false}`. |
 | `LCM_EVAL_REASONING_EFFORT` | Shorthand for `LCM_EVAL_REASONING={"effort":"<value>"}`. |
@@ -58,7 +59,35 @@ npm run build && node -e 'import("./dist/src/daemon/project.js").then(p => conso
 
 The database is opened read-only through the immutable URI — the only form that opens these WAL databases without taking a lock, so it is safe to run against a live install. A conversation id that matches no messages fails rather than leaving an empty file behind.
 
-A synthetic session carrying planted facts is appended to the corpus, so fact-survival is scored even on a corpus of one — unless `LCM_EVAL_SESSIONS` is set to a label list that excludes its `synthetic-planted` label.
+Exports include each message's stored calls under `toolCalls`: call id, name,
+selected input, outcome, block reason and truncation flag. Re-export old
+message-only files to evaluate real failure windows. The in-memory engine loads
+these calls without reading the project's lesson snapshot. Message-only corpus
+files remain supported and supply no structured evidence.
+
+Two synthetic sessions are appended: `synthetic-planted` carries the existing
+facts and serves as a control without failed calls; `synthetic-tool-failures`
+adds a planted error→fix pair and block reason. `LCM_EVAL_SESSIONS` can exclude
+either label.
+
+To compare the new input with its baseline on the same corpus and model:
+
+```bash
+for mode in off on; do
+  LCM_EVAL_TOOL_CONTEXT="$mode" \
+  LCM_EVAL_MODEL=openai/gpt-oss-120b \
+  LCM_EVAL_CORPUS_DIR=test/bench/corpus \
+  LCM_EVAL_RUNS=2 \
+  npx vitest run --dir test test/bench/summarizer-eval.test.ts
+done
+```
+
+Use the same provider and language settings for both modes. These commands
+make real model calls. Compare leaf `toolPairRetention` entries and outputs in
+the result JSON. A pair passes the mechanical check only when both commands
+appear exactly; compressed or paraphrased pairs require human review. Control
+leaf prompts must be byte for byte identical; model output can still vary
+between identical requests.
 
 ## What it scores
 
@@ -76,6 +105,12 @@ Per run, in `totals`:
 Calls retain their source text, output and all usage reports, so billed retries
 remain included in token and cost totals. Leaf outputs remain visible even when
 the engine later condenses them.
+
+Each call also retains its actual `prompt`, window `toolContext`, and
+`toolPairRetention` checks. Structured evidence counts as source for unsupported
+detail checks. A baseline still records the window's evidence for retention
+scoring but excludes it from the actual model prompt. The run's
+`toolContextEnabled` distinguishes the modes.
 
 Calls count engine invocations. Their `attempts` record each provider-chain
 attempt's duration, including cap retries; an adapter's internal retries are

@@ -129,6 +129,7 @@ describe("summarizer eval harness (offline)", () => {
 //   LCM_EVAL_BASE_URL    openai only: OpenAI-compatible endpoint; LCM_EVAL_API_KEY optional
 //   LCM_EVAL_RUNS        runs per session (default 1)
 //   LCM_EVAL_SESSIONS    comma-separated labels to run (default all)
+//   LCM_EVAL_TOOL_CONTEXT on (default) | off (baseline without supplemental input)
 //   LCM_EVAL_REASONING         http providers: JSON sent as `reasoning`, e.g. {"enabled":false} (default none)
 //   LCM_EVAL_REASONING_EFFORT  shorthand for LCM_EVAL_REASONING={"effort":"<value>"}
 //   LCM_EVAL_DISABLE_THINKING  http providers: "1" sends chat_template_kwargs.enable_thinking=false (Qwen-style servers)
@@ -156,6 +157,11 @@ const model = process.env.LCM_EVAL_MODEL;
 const corpusDir = process.env.LCM_EVAL_CORPUS_DIR;
 const provider = parseProvider(process.env.LCM_EVAL_PROVIDER);
 const runs = parseRuns(process.env.LCM_EVAL_RUNS);
+const contextMode = process.env.LCM_EVAL_TOOL_CONTEXT ?? "on";
+if (contextMode !== "on" && contextMode !== "off") {
+  throw new Error("LCM_EVAL_TOOL_CONTEXT must be on or off");
+}
+const toolContext = contextMode === "on";
 const only = process.env.LCM_EVAL_SESSIONS?.split(",").map((s) => s.trim()).filter(Boolean);
 const language = process.env.LCM_EVAL_LANGUAGE
   ? parseLanguageTag(process.env.LCM_EVAL_LANGUAGE)
@@ -192,7 +198,7 @@ describe.skipIf(!model || !corpusDir)(`summarizer eval: ${model} via ${provider}
     throw new Error(`LCM_EVAL_CORPUS_DIR does not exist: ${corpusDir}`);
   }
   const sessions: CorpusSession[] = (corpusDir
-    ? [...loadCorpusDir(corpusDir), buildSyntheticSession()]
+    ? [...loadCorpusDir(corpusDir), buildSyntheticSession(), buildSyntheticSession({ toolFailures: true })]
     : []
   ).filter((s) => !only || only.includes(s.label));
 
@@ -204,7 +210,7 @@ describe.skipIf(!model || !corpusDir)(`summarizer eval: ${model} via ${provider}
     for (let run = 1; run <= runs; run++) {
       it(`${session.label} run ${run}`, async () => {
         const summarizer = await createEvalSummarizer(provider, model!);
-        const result = await runEval({ session, summarizer, model: model!, provider, variant, run, language });
+        const result = await runEval({ session, summarizer, model: model!, provider, variant, run, language, toolContext });
         const file = writeResult(RESULTS_DIR, result);
         const facts = result.plantedFacts
           ? ` facts=${result.plantedFacts.filter((f) => f.survived).length}/${result.plantedFacts.length}`

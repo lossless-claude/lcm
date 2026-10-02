@@ -123,9 +123,13 @@ describe("summarizer comparison", () => {
     runLcmMigrations(db);
     const store = new ConversationStore(db);
     const conversation = await store.getOrCreateConversation("test-session");
-    await store.createMessagesBulk(buildSyntheticSession().messages.map((message) => ({
+    const records = await store.createMessagesBulk(buildSyntheticSession().messages.map((message) => ({
       ...message, conversationId: conversation.conversationId,
     })));
+    const insertCall = db.prepare(`INSERT INTO transcript_tool_calls
+      (session_id, call_id, message_id, name, input, outcome) VALUES ('test-session', ?, ?, 'Bash', ?, ?)`);
+    insertCall.run("failed", records[0].messageId, "npm install legacy-widget", "failed");
+    insertCall.run("fixed", records[1].messageId, "npm install current-widget", "succeeded");
     db.close();
     writeFileSync(projectMetaPath(cwd, paths), JSON.stringify({ language: "pt-BR" }));
     const before = readFileSync(dbPath);
@@ -176,6 +180,9 @@ describe("summarizer comparison", () => {
       expect(first.totals.formatPass).toBe(first.totals.calls);
       expect(first.totals.unsupportedDetails).toBeGreaterThan(0);
       expect(first.calls[0]).toMatchObject({ source: expect.any(String), latencyMs: expect.any(Number), prefillMs: 12, decodeMs: 34 });
+      expect(first.calls[0].toolContext.errorFixPairs).toEqual([{
+        failedCommand: "npm install legacy-widget", succeededCommand: "npm install current-widget",
+      }]);
       expect(report.results[1].plantedFacts.every((fact: { survived: boolean }) => fact.survived)).toBe(true);
       expect(report.results[2].totals).toMatchObject({ costUsd: null, maxTokensHits: 1, rejectedCalls: 1 });
       expect(report.results[2].totals.inputTokens).toBe((report.results[2].totals.calls + 1) * 111);

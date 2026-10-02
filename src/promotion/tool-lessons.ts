@@ -171,6 +171,23 @@ export class ToolLessonStore {
   private readonly projection: ToolLessonProjection;
   constructor(private readonly db: DatabaseSync) { this.projection = new ToolLessonProjection(db); }
 
+  /** Derive only the selected messages' evidence; never read the project snapshot. */
+  async forMessages(messageIds: readonly number[]): Promise<ToolLesson[]> {
+    const ids = [...new Set(messageIds)].sort((a, b) => a - b);
+    const derivation = new LessonDerivation("");
+    for (let offset = 0; offset < ids.length; offset += BATCH_SIZE) {
+      const page = ids.slice(offset, offset + BATCH_SIZE);
+      const calls = this.db.prepare(`SELECT t.rowid AS row_id, t.*,
+        COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', m.event_at), strftime('%Y-%m-%dT%H:%M:%fZ', m.created_at)) AS seen
+        FROM transcript_tool_calls t JOIN messages m ON m.message_id = t.message_id
+        WHERE t.message_id IN (${page.map(() => "?").join(",")})
+        ORDER BY t.session_id, t.message_id, t.rowid`).all(...page) as unknown as StoredCall[];
+      for (const call of calls) derivation.add(call);
+      await yieldToEventLoop();
+    }
+    return [...(await derivation.finish()).values()].filter(lesson => lesson.kind !== "environment-rule");
+  }
+
   async refresh(project: string): Promise<number> {
     const state = this.db.prepare("SELECT generation FROM tool_lesson_state WHERE singleton = 1").get() as { generation: number } | undefined;
     const invalid = this.db.prepare("SELECT session_id FROM tool_lesson_invalid_sessions ORDER BY session_id LIMIT 1");

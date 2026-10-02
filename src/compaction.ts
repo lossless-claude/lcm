@@ -7,6 +7,7 @@ import type { ScrubEngine } from "./scrub.js";
 import { LCM_CONFIG_DEFAULTS, resolveLcmConfig } from "./db/config.js";
 import { acceptSummaryText, SummaryRejectedError } from "./llm/summary-rejection.js";
 import { ProviderChainExhaustedError } from "./llm/provider-chain.js";
+import { boundToolSummaryContext, type ToolSummaryContext } from "./tool-summary-context.js";
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -93,6 +94,7 @@ type CompactionSummarizeOptions = {
   isCondensed?: boolean;
   depth?: number;
   language?: string;
+  toolContext?: ToolSummaryContext;
 };
 export type CompactionSummarizeFn = (
   text: string,
@@ -103,6 +105,8 @@ type PassResult = { summaryId: string; level: CompactionLevel; tokenDelta: numbe
 type EscalationResult = { content: string; level: CompactionLevel; keptAnswers: number };
 type EscalationParams = {
   sourceTexts: string[];
+  /** Leaf source identities stay aligned with texts when output-cut recovery splits them. */
+  sourceMessageIds?: number[];
   summarize: CompactionSummarizeFn;
   options?: CompactionSummarizeOptions;
   /** Halvings already made after output cuts. */
@@ -833,9 +837,19 @@ export class CompactionEngine {
       level: "fallback",
       keptAnswers: 0,
     });
-    const summarizeOptions = this.config.language?.trim()
-      ? { ...params.options, language: this.config.language.trim() }
-      : params.options;
+    const lessons = params.sourceMessageIds
+      ? await this.conversationStore.getToolLessonsForMessages(params.sourceMessageIds) : [];
+    const toolContext = boundToolSummaryContext({
+      errorFixPairs: lessons.filter(lesson => lesson.kind === "error-fix").map(lesson => ({
+        failedCommand: lesson.failedCommand!, succeededCommand: lesson.succeededCommand!,
+      })),
+      blockReasons: lessons.filter(lesson => lesson.kind === "block-reason").map(lesson => lesson.reason!),
+    }, this.config.scrubber ? text => this.config.scrubber!.scrub(text) : undefined);
+    const summarizeOptions = {
+      ...params.options,
+      ...(this.config.language?.trim() ? { language: this.config.language.trim() } : {}),
+      ...(toolContext ? { toolContext } : {}),
+    };
 
     const summarizeGated = async (aggressive: boolean) =>
       acceptSummaryText(await params.summarize(sourceText, aggressive, summarizeOptions), "summarizer");
@@ -872,10 +886,14 @@ export class CompactionEngine {
     fallback: () => EscalationResult,
   ): Promise<EscalationResult> {
     const midpoint = Math.floor(params.sourceTexts.length / 2);
-    const left = await this.summarizeWithEscalation({ ...params, sourceTexts: params.sourceTexts.slice(0, midpoint) });
+    const left = await this.summarizeWithEscalation({
+      ...params, sourceTexts: params.sourceTexts.slice(0, midpoint),
+      sourceMessageIds: params.sourceMessageIds?.slice(0, midpoint),
+    });
     const right = await this.summarizeWithEscalation({
       ...params,
       sourceTexts: params.sourceTexts.slice(midpoint),
+      sourceMessageIds: params.sourceMessageIds?.slice(midpoint),
       options: { ...params.options, previousSummary: left.content },
     });
     const content = `${left.content}\n\n${right.content}`;
@@ -932,6 +950,7 @@ export class CompactionEngine {
     );
     const summary = await this.summarizeWithEscalation({
       sourceTexts,
+      sourceMessageIds: messageContents.map(message => message.messageId),
       summarize,
       options: {
         previousSummary: previousSummaryContent,

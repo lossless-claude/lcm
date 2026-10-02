@@ -473,6 +473,23 @@ flags prior nodes stale and publishes replacements.
 - Smaller chunks create summaries more frequently from less material.
 - This also affects the condensed minimum input threshold (10% of this value).
 
+### Leaf summary input
+
+Leaf summaries receive timestamped messages and the preceding summary for
+continuity. When the window's stored shell calls establish error→fix pairs or
+block reasons, the same summary call also receives a `tool_context` JSON block.
+It asks the model to keep failed approaches and what worked briefly, including
+masked block reasons. This uses the window's own calls, independently of the
+project's published tool lessons, and adds no model call.
+
+The structured JSON is capped at 8192 UTF-8 bytes. Each command and reason is
+capped at 2048 bytes, preserving UTF-8 boundaries and ending with `[truncated]`
+when capped, like stored call inputs. Complete entries that do not fit are
+omitted; `omitted` reports their count. The fixed prompt instructions are
+outside this byte budget. With no pairs or block reasons, the leaf prompt is
+unchanged, including in aggressive mode. These limits are fixed, not config
+settings. See [the eval bench](summarizer-bench.md) for retention checks.
+
 ### Summary language
 
 `summarizer.language` controls the language of newly generated summaries:

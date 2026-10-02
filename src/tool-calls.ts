@@ -38,6 +38,17 @@ function inputObject(input: unknown): Record<string, unknown> {
 }
 
 const INPUT_LIMIT_BYTES = 2048;
+const TRUNCATION_MARKER = "\n[truncated]";
+
+/** Cap UTF-8 text with the same marker as stored call inputs, without splitting a character. */
+export function truncateToolInput(text: string, limit = INPUT_LIMIT_BYTES): string {
+  const bytes = Buffer.from(text);
+  if (bytes.length <= limit) return text;
+  let end = limit - Buffer.byteLength(TRUNCATION_MARKER);
+  while ((bytes[end] & 0xc0) === 0x80) end--;
+  return bytes.subarray(0, end).toString("utf8") + TRUNCATION_MARKER;
+}
+
 const WRITE_TOOLS = new Set(["write", "edit", "multiedit", "notebookedit", "apply_patch"]);
 const READ_FIELDS = new Set([
   "file_path", "path", "paths", "pattern", "glob", "include", "type", "offset", "limit",
