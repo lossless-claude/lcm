@@ -12,7 +12,7 @@ CONFIG_FILE="$CONFIG_DIR/config.json"
 if [ "${XGH_DRY_RUN:-}" = "1" ]; then
   echo ""
   echo "  [dry-run] lossless-claude setup would:"
-  echo "    1. Prompt for LLM provider selection (auto / claude-process / codex-process / anthropic / openai / disabled)"
+  echo "    1. Prompt for LLM provider selection (auto / claude-process / codex-process / omp-process / anthropic / openai / disabled)"
   echo "    2. Write ~/.lossless-claude/config.json with the chosen llm block"
   echo "    3. Run: lcm install"
   echo "    4. Run: lcm doctor"
@@ -47,12 +47,13 @@ else
   echo ""
   echo "  Which LLM provider should lcm use for compaction/summarization?"
   echo ""
-  echo "    1) auto           — uses claude-process (or codex-process for Codex clients) [recommended]"
+  echo "    1) auto           — uses claude-process (or codex-process/omp-process for Codex/OMP clients) [recommended]"
   echo "    2) claude-process — Claude Code CLI subprocess (no API key needed)"
   echo "    3) codex-process  — Codex CLI subprocess (no API key needed)"
   echo "    4) anthropic      — Anthropic API (requires ANTHROPIC_API_KEY env var)"
   echo "    5) openai         — OpenAI-compatible API (uses OPENAI_API_KEY when required by the server)"
   echo "    6) disabled       — no LLM, import-only mode (no compaction)"
+  echo "    7) omp-process    — OMP CLI subprocess (no API key needed)"
   echo ""
 
   read -r -p "  Pick [1]: " PROVIDER_CHOICE
@@ -65,6 +66,7 @@ else
     4) PROVIDER="anthropic" ;;
     5) PROVIDER="openai" ;;
     6) PROVIDER="disabled" ;;
+    7) PROVIDER="omp-process" ;;
     *)
       echo "  Invalid choice — defaulting to auto"
       PROVIDER="auto"

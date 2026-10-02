@@ -1,5 +1,0 @@
----
-"@lossless-claude/lcm": minor
----
-
-Claude Code sessions captured after a compaction by an lcm earlier than the fix that stopped counting compaction's event rows may hold skipped messages and one repeated tail. Capture now checks a compacted Claude Code session's stored messages against its transcript and stops capturing it, writing nothing, when they are not the transcript's prefix. `lcm import --provider claude --rebuild` previews which compacted sessions are aligned, repairable, without a transcript, or ambiguous; with `--yes` it backs up each affected project database and rebuilds every repairable session from its transcript in one transaction, keeping the conversation, its large files and promoted memory and discarding its summaries, which `lcm compact` or `lcm import --provider claude --replay` regenerates. `--session <id>` limits it to one session. In this check, the rebuild's alignment and Codex transcript recovery, a stored `[REDACTED]` span left by a redaction pattern since removed or narrowed now matches the text it replaced, so removing a pattern no longer stalls capture.
