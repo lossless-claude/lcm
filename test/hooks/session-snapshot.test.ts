@@ -28,7 +28,6 @@ const sid = (name: string): string => `${name}-p${process.pid}`;
 
 describe("handleSessionSnapshot", () => {
   it("stays silent while the function-hooks module holds the session", async () => {
-    process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = "1";
     const { claimPath } = await import("../../src/hooks/session-claim.js");
     const { writeFileSync, rmSync } = await import("node:fs");
     writeFileSync(claimPath(sid("abc-123")), JSON.stringify({ sessionId: sid("abc-123"), ts: Date.now() }));
@@ -44,23 +43,17 @@ describe("handleSessionSnapshot", () => {
       expect(deps.writeFileSync).not.toHaveBeenCalled();
     } finally {
       rmSync(claimPath(sid("abc-123")), { force: true });
-      delete process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS;
     }
   });
 
-  it("ingests when the gate is open but the module never claimed the session", async () => {
-    process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = "1";
-    try {
-      const deps = makeDeps({ statSync: vi.fn().mockImplementation(() => { throw new Error("ENOENT"); }) });
-      const { handleSessionSnapshot } = await import("../../src/hooks/session-snapshot.js");
-      await handleSessionSnapshot(
-        JSON.stringify({ session_id: sid("unclaimed-1"), cwd: "/tmp/test", transcript_path: "/tmp/session.jsonl" }),
-        paths, deps,
-      );
-      expect(deps.post).toHaveBeenCalled();
-    } finally {
-      delete process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS;
-    }
+  it("ingests when the module never claimed the session", async () => {
+    const deps = makeDeps({ statSync: vi.fn().mockImplementation(() => { throw new Error("ENOENT"); }) });
+    const { handleSessionSnapshot } = await import("../../src/hooks/session-snapshot.js");
+    await handleSessionSnapshot(
+      JSON.stringify({ session_id: sid("unclaimed-1"), cwd: "/tmp/test", transcript_path: "/tmp/session.jsonl" }),
+      paths, deps,
+    );
+    expect(deps.post).toHaveBeenCalled();
   });
 
   it("ingests when no cursor file exists", async () => {

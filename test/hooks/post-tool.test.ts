@@ -59,7 +59,6 @@ describe("handlePostToolUse", () => {
   });
 
   it("stays silent while the function-hooks module holds the session (no double capture)", async () => {
-    process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = "1";
     vi.mocked(firePromoteEventsRequest).mockClear();
     const { claimPath } = await import("../../src/hooks/session-claim.js");
     const { writeFileSync, rmSync } = await import("node:fs");
@@ -75,23 +74,17 @@ describe("handlePostToolUse", () => {
       expect(existsSync(join(dir, "test.db"))).toBe(false);
     } finally {
       rmSync(claimPath("test-session"), { force: true });
-      delete process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS;
     }
   });
 
-  it("records when the gate is open but the module never claimed the session", async () => {
-    process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = "1";
-    try {
-      const stdin = JSON.stringify({
-        session_id: "unclaimed-session", tool_name: "Bash", tool_input: { command: "npm test" },
-        hook_event_name: "PostToolUseFailure", error: "Exit code 1",
-      });
-      expect(await handlePostToolUse(stdin, paths)).toEqual({ exitCode: 0, stdout: "" });
-      const { existsSync } = await import("node:fs");
-      expect(existsSync(join(dir, "test.db"))).toBe(true);
-    } finally {
-      delete process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS;
-    }
+  it("records when the module never claimed the session", async () => {
+    const stdin = JSON.stringify({
+      session_id: "unclaimed-session", tool_name: "Bash", tool_input: { command: "npm test" },
+      hook_event_name: "PostToolUseFailure", error: "Exit code 1",
+    });
+    expect(await handlePostToolUse(stdin, paths)).toEqual({ exitCode: 0, stdout: "" });
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(join(dir, "test.db"))).toBe(true);
   });
 
   it("exits gracefully on invalid stdin", async () => {

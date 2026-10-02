@@ -227,8 +227,7 @@ describe("handleSessionStart", () => {
     expect(mockEnsureDaemon).toHaveBeenCalledTimes(1);
   });
 
-  it("stays silent while the function-hooks module holds the session", async () => {
-    process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = "1";
+  it("stays silent while the function-hooks module holds the session, with no gate variable set", async () => {
     const owned = sid("s-owned");
     const { writeFileSync, rmSync } = await import("node:fs");
     writeFileSync(claimPath(owned), JSON.stringify({ sessionId: owned, ts: Date.now() }));
@@ -243,20 +242,33 @@ describe("handleSessionStart", () => {
       expect(mockEnsureDaemon).not.toHaveBeenCalled();
     } finally {
       rmSync(claimPath(owned), { force: true });
-      delete process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS;
     }
   });
 
-  it("restores when the gate is open but the module never claimed the session", async () => {
+  it("restores when the module never claimed the session", async () => {
+    mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
+    const client = { health: vi.fn(), post: vi.fn().mockResolvedValue({ context: "ctx" }) };
+    const result = await handleSessionStart(
+      JSON.stringify({ session_id: sid("s-unclaimed"), cwd: "/proj" }), client as any, paths,
+    );
+    expect(result.stdout).toBe("ctx");
+  });
+
+  // A crash skips session.end; a session resumed without the module must not stay silent.
+  it("restores when a crash left a stale claim behind, even with the gate variable set", async () => {
     process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = "1";
+    const crashed = sid("s-crashed");
+    const { writeFileSync, rmSync } = await import("node:fs");
+    writeFileSync(claimPath(crashed), JSON.stringify({ sessionId: crashed, ts: Date.now() - 10 * 60_000 }));
     try {
       mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
       const client = { health: vi.fn(), post: vi.fn().mockResolvedValue({ context: "ctx" }) };
       const result = await handleSessionStart(
-        JSON.stringify({ session_id: sid("s-unclaimed"), cwd: "/proj" }), client as any, paths,
+        JSON.stringify({ session_id: crashed, cwd: "/proj" }), client as any, paths,
       );
       expect(result.stdout).toBe("ctx");
     } finally {
+      rmSync(claimPath(crashed), { force: true });
       delete process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS;
     }
   });
