@@ -5,6 +5,7 @@ import type { ParsedMessage } from "./transcript.js";
 import { WorkerStore } from "./store/worker-store.js";
 import { ConversationStore, type MessageRecord } from "./store/conversation-store.js";
 import { SummaryStore } from "./store/summary-store.js";
+import { recordTranscriptToolCalls } from "./store/tool-call-store.js";
 import { recordSessionWebUrls } from "./store/session-url-store.js";
 import { transcriptSource, type TranscriptDelta } from "./transcript-source.js";
 import { compareStoredMessageContent, normalizeMessageContent } from "./message-content.js";
@@ -116,22 +117,49 @@ export async function backfillSessionEventTimes(
     if (!new WorkerStore(db).excluded(input.sessionId)) recordSessionWebUrls(db, input.sessionId, read.sessionUrlDeclarations ?? []);
   });
   const alignment = await alignmentFor(conversations, input.sessionId, read, scrub);
+  const toolCalls = (alignment.index ? read.eventTimeToolCalls : read.toolCalls) ?? [];
+  const verifiedCalls = new Set<string>();
+  const callsByMessage = new Map<ParsedMessage, NonNullable<TranscriptDelta["toolCalls"]>>();
+  for (const call of toolCalls) {
+    if (!call.message) continue;
+    const calls = callsByMessage.get(call.message) ?? [];
+    calls.push(call);
+    callsByMessage.set(call.message, calls);
+  }
   let updated = 0, unknown = 0;
   const ids = new Set<number>();
   let offset = 0;
   for await (const page of conversations.sessionMessagePages(input.sessionId, REPAIR_PAGE_SIZE)) {
+    const messageIds = new Map<ParsedMessage, number>();
     const repairs: Parameters<ConversationStore["backfillMessageEventTimes"]>[0][number][] = [];
     for (const [index, message] of page.entries()) {
       ids.add(message.conversationId);
       const record = await matchedRecord(alignment, message, offset + index, scrub);
+      if (record) messageIds.set(record, message.messageId);
       // A transcript time is the record's own; it replaces a commit anchor, never the reverse.
       if (message.eventAt && message.eventTimeSource !== "commit") continue;
       if (record?.eventAt) repairs.push({ messageId: message.messageId, content: message.content, role: message.role, eventAt: record.eventAt });
       else if (!message.eventAt) unknown++;
     }
-    updated += await conversations.withTransaction(() => conversations.backfillMessageEventTimes(repairs));
+    updated += await conversations.withTransaction(async () => {
+      if (new WorkerStore(db).excluded(input.sessionId)) return 0;
+      const calls = [...messageIds.keys()].flatMap(message => callsByMessage.get(message) ?? []);
+      for (const call of calls) if (call.name) verifiedCalls.add(call.callId);
+      recordTranscriptToolCalls(db, input.sessionId, calls, messageIds, scrubber);
+      return conversations.backfillMessageEventTimes(repairs);
+    });
     await yieldToEventLoop();
     offset += page.length;
+  }
+  // Empty successful results create no message row, but their call id still answers a verified call.
+  const emptyResults = toolCalls.filter(call => !call.message && !call.name && verifiedCalls.has(call.callId));
+  for (let start = 0; start < emptyResults.length; start += REPAIR_PAGE_SIZE) {
+    await conversations.withTransaction(() => {
+      if (!new WorkerStore(db).excluded(input.sessionId)) recordTranscriptToolCalls(
+        db, input.sessionId, emptyResults.slice(start, start + REPAIR_PAGE_SIZE), new Map(), scrubber,
+      );
+    });
+    await yieldToEventLoop();
   }
   // Also repairs bounds on an idempotent retry after an interrupted bounds pass.
   const summaries = new SummaryStore(db);

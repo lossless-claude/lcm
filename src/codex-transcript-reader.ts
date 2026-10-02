@@ -8,6 +8,7 @@
 
 import type { CodexSessionMeta } from "./codex-transcript.js";
 import { decodeCodexTranscriptUtf8, parseCodexTranscriptRecord } from "./codex-transcript.js";
+import type { TranscriptToolCall } from "./tool-calls.js";
 import type { ParsedMessage } from "./transcript.js";
 import { readJsonlTranscriptDelta, type JsonlTranscriptCursor, type ReadJsonlTranscriptDeltaOptions } from "./jsonl-transcript-reader.js";
 
@@ -16,6 +17,7 @@ export const CODEX_FINGERPRINT_VERSION = "codex-transcript-prefix-v4";
 export type CodexTranscriptCursor = JsonlTranscriptCursor;
 export type ReadCodexTranscriptDeltaOptions = ReadJsonlTranscriptDeltaOptions;
 export type CodexTranscriptDelta = {
+  toolCalls: TranscriptToolCall[];
   messages: ParsedMessage[];
   cursor: CodexTranscriptCursor;
   resumed: boolean;

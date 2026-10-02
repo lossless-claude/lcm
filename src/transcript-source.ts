@@ -1,3 +1,4 @@
+import type { TranscriptToolCall } from "./tool-calls.js";
 import { createHash } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { basename, dirname, join, sep } from "node:path";
@@ -92,6 +93,7 @@ export interface ConversationBoundary {
 }
 
 export interface TranscriptDelta {
+  toolCalls?: TranscriptToolCall[];
   /** Main-chain Claude attachments, including records read beyond a byte cursor. */
   sessionUrlDeclarations?: SessionUrlDeclaration[];
   /** Messages from `sourceOffset` onwards. */
@@ -99,6 +101,7 @@ export interface TranscriptDelta {
   verification?: { verified: boolean; complete: boolean; boundaryFound: boolean; boundaryScanExceeded?: boolean };
   /** Full file-order history when a repair must account for abandoned OMP branches. */
   eventTimeCandidates?: ParsedMessage[];
+  eventTimeToolCalls?: TranscriptToolCall[];
   /** The clears among `messages`, in order. Absent for a client whose clear starts a new session instead. */
   boundaries?: ConversationBoundary[];
   /** How many leading messages `messages` omits because they are stored. */
@@ -277,6 +280,7 @@ const claudeSource: TranscriptSource = {
         boundaryFound: Boolean(ctx.captureThroughUuid && delta.recordMatched),
         ...(delta.boundaryScanExceeded ? { boundaryScanExceeded: true } : {}) } } : {}),
       sessionUrlDeclarations: delta.sessionUrlDeclarations,
+      toolCalls: delta.toolCalls,
       sourceOffset: storedCount,
       restampParserShape,
       // Without a stable redaction identity, the next capture must compare the prefix again.
@@ -396,6 +400,7 @@ const codexSource: TranscriptSource = {
     }
     return {
       messages: reanchored ? [] : delta.messages,
+      toolCalls: delta.toolCalls,
       sourceOffset: reanchored ? stored!.storedCount : delta.resumed && prior ? prior.messageCount : 0,
       checkpoint: reanchored ? { ...delta.cursor, messageCount: stored!.storedCount } : delta.cursor,
       backfillModels(events, sessionId) {
@@ -437,7 +442,7 @@ function validateOmpMetadata(meta: OmpSessionMeta, ctx: ReadContext): void {
  */
 async function ompMessagesAfterStored(
   stored: StoredTranscript, records: readonly ParsedOmpTranscriptRecord[], ctx: ReadContext,
-): Promise<{ messages: ParsedMessage[]; boundaries: ConversationBoundary[] }> {
+): Promise<{ messages: ParsedMessage[]; boundaries: ConversationBoundary[]; toolCalls: TranscriptToolCall[] }> {
   const previous = await stored.storedMessages();
   if (previous.length !== stored.storedCount) throw new TranscriptSourceError("Stored OMP history changed during recovery");
   const same = (candidate: ParsedMessage, prior: { role: string; content: string }) =>
@@ -447,6 +452,7 @@ async function ompMessagesAfterStored(
     const after = previous.length;
     return {
       messages: live.messages.slice(after),
+      toolCalls: live.toolCalls,
       boundaries: live.boundaries.filter(({ at }) => at >= after).map((boundary) => ({ ...boundary, at: boundary.at - after })),
     };
   }
@@ -498,11 +504,11 @@ async function readOmpArchive(path: string, stored: StoredTranscript | undefined
     events.backfillToolCallModels(sessionId, archive?.turnModels() ?? new Map(), "omp");
   };
   if (stored) {
-    const { messages, boundaries } = await ompMessagesAfterStored(stored, records, ctx);
-    return { messages, boundaries, sourceOffset: stored.storedCount, backfillModels };
+    const { messages, boundaries, toolCalls } = await ompMessagesAfterStored(stored, records, ctx);
+    return { messages, boundaries, toolCalls, sourceOffset: stored.storedCount, backfillModels };
   }
-  const { messages, boundaries } = selectOmpLiveSegments(records, true);
-  return { messages, boundaries, sourceOffset: 0, backfillModels, ...(ctx.eventTimeRepair ? { eventTimeCandidates: records.flatMap(record => record.message ?? []) } : {}) };
+  const { messages, boundaries, toolCalls } = selectOmpLiveSegments(records, true);
+  return { messages, boundaries, toolCalls, sourceOffset: 0, backfillModels, ...(ctx.eventTimeRepair ? { eventTimeCandidates: records.flatMap(record => record.message ?? []), eventTimeToolCalls: records.flatMap(record => record.toolCalls ?? []) } : {}) };
 }
 
 const ompSource: TranscriptSource = {
@@ -539,13 +545,14 @@ const ompSource: TranscriptSource = {
       events.backfillToolCallModels(sessionId, extractOmpTurnModels(path), "omp");
     };
     if (!delta.resumed && stored) {
-      const { messages, boundaries } = await ompMessagesAfterStored(stored, delta.records ?? [], ctx);
+      const { messages, boundaries, toolCalls } = await ompMessagesAfterStored(stored, delta.records ?? [], ctx);
       const checkpoint = { ...delta.cursor, messageCount: stored.storedCount + messages.length };
-      return { messages, boundaries, sourceOffset: stored.storedCount, checkpoint, backfillModels };
+      return { messages, boundaries, toolCalls, sourceOffset: stored.storedCount, checkpoint, backfillModels };
     }
     return {
       messages: delta.messages,
-      ...(ctx.eventTimeRepair ? { eventTimeCandidates: (delta.records ?? []).flatMap(record => record.message ?? []) } : {}),
+      toolCalls: delta.toolCalls,
+      ...(ctx.eventTimeRepair ? { eventTimeCandidates: (delta.records ?? []).flatMap(record => record.message ?? []), eventTimeToolCalls: (delta.records ?? []).flatMap(record => record.toolCalls ?? []) } : {}),
       // The reader selected `messages` from these same records; this adds where the clears fall.
       boundaries: selectOmpLiveSegments(delta.records ?? []).boundaries,
       sourceOffset: delta.resumed && prior ? prior.messageCount : 0,

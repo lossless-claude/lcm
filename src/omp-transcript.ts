@@ -38,6 +38,7 @@ import { StringDecoder } from "node:string_decoder";
 import { TextDecoder } from "node:util";
 import { gunzipSync } from "node:zlib";
 import { ompSessionRoots } from "./daemon/project.js";
+import { transcriptToolInvocation, transcriptToolResult, type TranscriptToolCall } from "./tool-calls.js";
 import { estimateTokens, transcriptEventTime } from "./transcript.js";
 import type { ParsedMessage } from "./transcript.js";
 
@@ -60,6 +61,7 @@ export function decodeOmpTranscriptUtf8(bytes: Uint8Array, byteOffset?: number):
 interface OmpContentBlock {
   type?: string;
   text?: string;
+  arguments?: unknown;
   /** toolCall blocks */
   id?: string;
   name?: string;
@@ -72,6 +74,7 @@ interface OmpMessage {
   toolCallId?: string;
   toolName?: string;
   isError?: boolean;
+  details?: Record<string, unknown>;
 }
 
 interface OmpEntry {
@@ -95,6 +98,7 @@ export interface OmpTreeNode {
 }
 
 export interface ParsedOmpTranscriptRecord {
+  toolCalls?: TranscriptToolCall[];
   message?: ParsedMessage | ParsedMessage[];
   sessionMeta?: OmpSessionMeta;
   /** Every entry with an id has one; state entries are links in the parent chain too. */
@@ -128,9 +132,9 @@ function isToolCallBlock(block: OmpContentBlock): boolean {
 /**
  * One OMP entry becomes zero or more stored messages.
  *
- * A call keeps only its name — the arguments are the tool's input, not the
- * session's memory — mirroring the Claude and Codex parsers. A tool result
- * keeps its output; a failure is recorded with the shared searchable marker.
+ * A call keeps only its name in the message row, mirroring Claude and Codex.
+ * Selected input and outcome evidence travel beside the rows as tool-call
+ * structure. A result keeps its output and the shared searchable error marker.
  * `developer` turns re-ingest static instruction files, and `custom_message`
  * entries are extension injections (including this integration's own), so
  * neither is ingested.
@@ -202,6 +206,19 @@ export function parseOmpTranscriptRecord(record: string): ParsedOmpTranscriptRec
   const messages = parseOmpMessageEntry(entry.message);
   const eventAt = transcriptEventTime(entry.timestamp);
   if (messages.length > 0) parsed.message = messages.map(message => ({ ...message, ...(eventAt ? { eventAt } : {}) }));
+  const rows = parsed.message as ParsedMessage[] | undefined;
+  if (entry.message.role === "assistant" && Array.isArray(entry.message.content)) {
+    let index = extractOmpText(entry.message.content).trim() ? 1 : 0;
+    parsed.toolCalls = entry.message.content.filter(isToolCallBlock).flatMap(block => {
+      const message = rows?.[index++];
+      return block.id ? [transcriptToolInvocation(block.id, block.name || "toolCall", block.arguments, message)] : [];
+    });
+  } else if (entry.message.role === "toolResult" && entry.message.toolCallId) {
+    parsed.toolCalls = [{ ...transcriptToolResult(entry.message.toolCallId, "omp", {
+      output: extractOmpText(entry.message.content), error: entry.message.isError,
+      details: entry.message.details,
+    }), message: rows?.[0] }];
+  }
   return parsed;
 }
 
@@ -231,18 +248,20 @@ export function selectOmpLiveMessages(records: readonly ParsedOmpTranscriptRecor
  */
 export function selectOmpLiveSegments(
   records: readonly ParsedOmpTranscriptRecord[], wholeFile = false,
-): { messages: ParsedMessage[]; boundaries: OmpBoundary[] } {
+): { messages: ParsedMessage[]; boundaries: OmpBoundary[]; toolCalls: TranscriptToolCall[] } {
   const live = ompLivePath(records, wholeFile);
   const messages: ParsedMessage[] = [];
   const boundaries: OmpBoundary[] = [];
-  for (const { node, message, boundary } of records) {
+  const toolCalls: TranscriptToolCall[] = [];
+  for (const { node, message, boundary, toolCalls: calls } of records) {
     if (node && live?.has(node.id) === false) continue;
+    toolCalls.push(...calls ?? []);
     if (boundary) boundaries.push({ entryId: boundary.entryId, at: messages.length });
     if (!message) continue;
     if (Array.isArray(message)) messages.push(...message);
     else messages.push(message);
   }
-  return { messages, boundaries };
+  return { messages, boundaries, toolCalls };
 }
 
 /** The ids on the chain from the last entry; undefined when a whole-file chain breaks. */
