@@ -18,10 +18,12 @@ Messages are stored with:
 - **createdAt** — Capture/insertion timestamp, independent of when the message happened
 - **eventAt** — Nullable transcript record timestamp (`messages.event_at`), normalized to UTC; missing or invalid timestamps stay unknown
 
-Conversation `firstAt` / `lastAt` are the bounds of their transcript messages,
+`ConversationStore.getConversationTimeBounds` computes a selected conversation's
+`firstAt` / `lastAt` from its transcript messages,
 using event time where known and capture time otherwise. Internal compaction event
 rows are excluded. Conversation `createdAt` / `updatedAt` retain their storage
 lifecycle meaning; an empty conversation falls back to its creation time.
+Ordinary conversation fetches do not compute source bounds or read messages.
 
 Each message also has **message_parts** — structured content blocks that preserve the original shape. The part types are `text`, `reasoning`, `tool`, `patch`, `file`, `subtask`, `compaction`, `step_start`, `step_finish`, `snapshot`, `agent`, `retry`, `skill` (a skill expansion) and `command` (a slash command invocation); see `MessagePartType` in `src/store/conversation-store.ts`. This allows the assembler to reconstruct rich content when building model context, not just flat text.
 
@@ -89,7 +91,8 @@ summary or whose `session_id` is `lcm:project-timeline`; such rows are never
 legitimate promoted memory. An already-current migration takes no write lock
 unless it finds schema/trigger repairs, missing state or memories to archive.
 
-`openProjectTimeline` exposes budgeted `settle` and model-free `describe`.
+`openProjectTimeline` exposes budgeted `settle`, single-page model-free `bootstrap`
+and model-free `describe`.
 Incremental settle reads dirty sessions through indexed frontier/remainder queries,
 then updates only those sessions' persisted metadata and affected UTC months.
 Raw message dates use event time when known; summaries carry the same derived
@@ -109,9 +112,10 @@ new immutable node and its references. Digest publication marks its month;
 period publication marks nothing. Publication never replans. Obsolete raw digests
 and replaced periods leave active context while retaining historical manifests.
 
-`timeline.generationEnabled` defaults to false. Automatic work also requires
-tracking and completed bootstrap, waits for 60 seconds of quiet and runs one unit
-per project per tick. Model errors and publication conflicts have persisted
+`timeline.generationEnabled` defaults to false. Automatic work requires tracking
+and project generation enabled. Each tick resumes one bootstrap page of at most
+256 sessions without model calls. Once bootstrap completes, generation waits for
+60 seconds of quiet and runs one unit per project per tick. Model errors and publication conflicts have persisted
 exponential backoff, with a one-hour cap and parking after eight failures.
 Admission requires at least one runnable endpoint. The first admitted generation
 settle releases legacy backed-off and parked units once: their persisted failures

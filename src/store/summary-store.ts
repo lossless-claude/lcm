@@ -481,8 +481,8 @@ export class SummaryStore {
     let id = "";
     for (;;) {
       const page = this.db.prepare(`SELECT summary_id, depth, kind FROM summaries WHERE conversation_id = ?
-        AND (depth > ? OR (depth = ? AND summary_id > ?)) ORDER BY depth, summary_id LIMIT 128`)
-        .all(conversationId, depth, depth, id) as Array<{ summary_id: string; depth: number; kind: SummaryKind }>;
+        AND (depth, summary_id) > (?, ?) ORDER BY depth, summary_id LIMIT 128`)
+        .all(conversationId, depth, id) as Array<{ summary_id: string; depth: number; kind: SummaryKind }>;
       for (const summary of page) {
         const range = summary.kind === "leaf"
           ? this.db.prepare(`SELECT MIN(julianday(COALESCE(m.event_at, m.created_at))) first,

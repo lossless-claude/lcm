@@ -367,9 +367,10 @@ Counter conflicts leave their sessions dirty for the next settle while other
 sessions and independent units proceed. The report stops with `conflict` only
 when nothing else could proceed.
 
-Automatic work checks each project every 30 seconds, requires tracking and completed
-bootstrap, and waits for 60 seconds without a newer session bump. Each tick runs
-at most one unit. Model errors and publication conflicts back off exponentially
+Automatic work checks each project every 30 seconds and requires tracking and project
+generation enabled. During bootstrap, each tick seeds at most 256 sessions without
+model calls and yields. After bootstrap, generation waits for 60 seconds without
+a newer session bump. Each tick runs at most one unit. Model errors and publication conflicts back off exponentially
 from one minute to one hour; eight failures park a unit until a contributing session changes. Only
 the latest replay run can hold work, and that hold expires five minutes after its
 last progress. Ordinary ticks drain persisted work once generation is on and replay

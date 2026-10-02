@@ -892,6 +892,7 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
   const messageColumns = db.prepare("PRAGMA table_info(messages)").all() as SummaryColumnInfo[];
   if (!messageColumns.some(column => column.name === "event_at")) db.exec("ALTER TABLE messages ADD COLUMN event_at TEXT");
   const depthAdded = ensureSummaryDepthColumn(db);
+  db.exec("CREATE INDEX IF NOT EXISTS summaries_conv_depth_id_idx ON summaries (conversation_id, depth, summary_id)");
   const metadataAdded = ensureSummaryMetadataColumns(db);
   backfillSummaryFieldsOnce(db, depthAdded || metadataAdded);
   ensureMessagePartsSkillCommandTypes(db);

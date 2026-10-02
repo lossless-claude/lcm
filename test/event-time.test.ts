@@ -67,12 +67,12 @@ describe("transcript event time", () => {
     const summaries = await capture.summaryStore.getSummariesByConversation(conversationId);
     expect(summaries[0].earliestAt?.toISOString()).toBe("2021-02-01T00:00:00.000Z");
     expect(summaries[0].latestAt?.toISOString()).toBe(at);
-    const conversation = await capture.conversationStore.getConversation(conversationId);
+    const conversation = await capture.conversationStore.getConversationTimeBounds(conversationId);
     expect(conversation?.firstAt?.toISOString()).toBe("2021-02-01T00:00:00.000Z");
     expect(conversation?.lastAt?.toISOString()).toBe(at);
     const unknown = await capture.write({ sessionId: "unknown", messages: [{ role: "user", content: "no timestamp", tokenCount: 1 }] });
     expect(unknown.records[0].eventAt).toBeNull();
-    expect((await capture.conversationStore.getConversation(unknown.conversationId))?.firstAt?.toISOString()).toBe(unknown.records[0].createdAt.toISOString());
+    expect((await capture.conversationStore.getConversationTimeBounds(unknown.conversationId))?.firstAt?.toISOString()).toBe(unknown.records[0].createdAt.toISOString());
     expect(records[0].createdAt.getTime()).toBeGreaterThan(Date.parse(at));
   });
   it("backfills only an aligned prefix, resumes after a missing middle is restored, and recomputes summaries", async () => {
@@ -273,11 +273,12 @@ describe("transcript event time", () => {
     const path = join(dir, "session.jsonl");
     writeFileSync(path, messages.map(message => JSON.stringify({ timestamp: at, message })).join("\n") + "\n");
     const batches: number[] = [];
-    const original = capture.conversationStore.getSessionMessages;
-    const spy = vi.spyOn(Object.getPrototypeOf(capture.conversationStore), "getSessionMessages").mockImplementation(async function (session: string, offset?: number, limit?: number) {
-      const page = await original.call(this, session, offset, limit);
-      batches.push(page.length);
-      return page;
+    const original = capture.conversationStore.sessionMessagePages;
+    const spy = vi.spyOn(Object.getPrototypeOf(capture.conversationStore), "sessionMessagePages").mockImplementation(async function* (session: string, limit: number) {
+      for await (const page of original.call(this, session, limit)) {
+        batches.push(page.length);
+        yield page;
+      }
     });
     let yielded = false;
     setImmediate(() => { yielded = true; });

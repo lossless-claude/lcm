@@ -94,9 +94,6 @@ export type ConversationRecord = {
   bootstrappedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
-  /** Bounds of transcript messages, using capture time for unknown events. */
-  firstAt?: Date;
-  lastAt?: Date;
   /** "tagged" when the rows separate tool output from human text; null when unknown. */
   roleTagging: "tagged" | null;
   /** Claude parser output shape, or null when it cannot be established. */
@@ -130,8 +127,6 @@ export type MessageSearchResult = {
 // ── DB row shapes (snake_case) ────────────────────────────────────────────────
 
 interface ConversationRow {
-  first_at: string | null;
-  last_at: string | null;
   conversation_id: number;
   session_id: string;
   title: string | null;
@@ -174,13 +169,7 @@ interface MaxSeqRow {
 }
 
 const CONVERSATION_SELECT_COLUMNS = `SELECT conversation_id, session_id, title, bootstrapped_at, created_at, updated_at,
-       role_tagging, parser_shape, parent_session_id, subagent_type, subagent_desc,
-       (SELECT strftime('%Y-%m-%dT%H:%M:%fZ', MIN(julianday(COALESCE(m.event_at, m.created_at))))
-        FROM messages m WHERE m.conversation_id = conversations.conversation_id AND NOT EXISTS
-        (SELECT 1 FROM message_parts p WHERE p.message_id = m.message_id AND p.part_type = 'compaction')) first_at,
-       (SELECT strftime('%Y-%m-%dT%H:%M:%fZ', MAX(julianday(COALESCE(m.event_at, m.created_at))))
-        FROM messages m WHERE m.conversation_id = conversations.conversation_id AND NOT EXISTS
-        (SELECT 1 FROM message_parts p WHERE p.message_id = m.message_id AND p.part_type = 'compaction')) last_at`;
+       role_tagging, parser_shape, parent_session_id, subagent_type, subagent_desc`;
 
 // ── Row mappers ───────────────────────────────────────────────────────────────
 
@@ -192,8 +181,6 @@ function toConversationRecord(row: ConversationRow): ConversationRecord {
     bootstrappedAt: row.bootstrapped_at ? parseSqliteDate(row.bootstrapped_at) : null,
     createdAt: parseSqliteDate(row.created_at),
     updatedAt: parseSqliteDate(row.updated_at),
-    firstAt: parseSqliteDate(row.first_at ?? row.created_at),
-    lastAt: parseSqliteDate(row.last_at ?? row.created_at),
     roleTagging: row.role_tagging === "tagged" ? "tagged" : null,
     parserShape: row.parser_shape,
     parentSessionId: row.parent_session_id,
@@ -250,6 +237,23 @@ export class ConversationStore {
   private sessionFilter(alias = ""): string {
     const exists = (this.db.prepare("PRAGMA table_info(conversations)").all() as Array<{ name: string }>).some(column => column.name === "is_timeline");
     return exists ? `${alias}is_timeline = 0` : "1";
+  }
+
+  /** Read-only callers may open a store before its next schema migration. */
+  private eventTimeColumn(alias = ""): string {
+    const columns = this.db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>;
+    return columns.some(column => column.name === "event_at") ? `${alias}event_at` : "NULL";
+  }
+
+  /** Source bounds are requested separately so ordinary conversation reads never scan messages. */
+  async getConversationTimeBounds(conversationId: ConversationId): Promise<{ firstAt: Date; lastAt: Date } | null> {
+    const time = `COALESCE(${this.eventTimeColumn("m.")}, m.created_at)`;
+    const row = this.db.prepare(`SELECT
+      COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', MIN(julianday(${time}))), c.created_at) first_at,
+      COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', MAX(julianday(${time}))), c.created_at) last_at
+      FROM conversations c LEFT JOIN messages m ON m.conversation_id = c.conversation_id AND ${NOT_COMPACTION_EVENT}
+      WHERE c.conversation_id = ? GROUP BY c.conversation_id`).get(conversationId) as { first_at: string; last_at: string } | undefined;
+    return row ? { firstAt: parseSqliteDate(row.first_at), lastAt: parseSqliteDate(row.last_at) } : null;
   }
 
   // ── Transaction helpers ──────────────────────────────────────────────────
@@ -392,7 +396,7 @@ export class ConversationStore {
   async getSessionMessages(sessionId: string, offset = 0, limit = -1): Promise<MessageRecord[]> {
     const rows = this.db
       .prepare(
-        `SELECT m.message_id, m.conversation_id, m.seq, m.role, m.content, m.token_count, m.created_at, m.event_at
+        `SELECT m.message_id, m.conversation_id, m.seq, m.role, m.content, m.token_count, m.created_at, ${this.eventTimeColumn("m.")} AS event_at
          FROM messages m
          JOIN conversations c ON c.conversation_id = m.conversation_id
          WHERE c.session_id = ? AND ${NOT_COMPACTION_EVENT}
@@ -400,6 +404,24 @@ export class ConversationStore {
       )
       .all(sessionId, limit, offset) as unknown as MessageRow[];
     return rows.map(toMessageRecord);
+  }
+
+  /** Keyset pages retain session order across clears without sorting or rereading message prefixes. */
+  async *sessionMessagePages(sessionId: string, limit: number): AsyncGenerator<MessageRecord[]> {
+    const conversations = this.db.prepare(`SELECT conversation_id FROM conversations WHERE session_id = ?
+      ORDER BY created_at, conversation_id`).all(sessionId) as Array<{ conversation_id: number }>;
+    const page = this.db.prepare(`SELECT m.message_id, m.conversation_id, m.seq, m.role, m.content, m.token_count,
+      m.created_at, ${this.eventTimeColumn("m.")} AS event_at FROM messages m
+      WHERE m.conversation_id = ? AND m.seq > ? AND ${NOT_COMPACTION_EVENT} ORDER BY m.seq LIMIT ?`);
+    for (const conversation of conversations) {
+      let seq = -1;
+      for (;;) {
+        const rows = page.all(conversation.conversation_id, seq, limit) as unknown as MessageRow[];
+        if (rows.length) yield rows.map(toMessageRecord);
+        if (rows.length < limit) break;
+        seq = rows.at(-1)!.seq;
+      }
+    }
   }
 
   /** Fill unknown event times without changing capture timestamps or an earlier repair. */
@@ -569,7 +591,7 @@ export class ConversationStore {
 
     const row = this.db
       .prepare(
-        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, event_at
+        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, ${this.eventTimeColumn()} AS event_at
        FROM messages WHERE message_id = ?`,
       )
       .get(messageId) as unknown as MessageRow;
@@ -586,7 +608,7 @@ export class ConversationStore {
        VALUES (?, ?, ?, ?, ?, ?)`,
     );
     const selectStmt = this.db.prepare(
-      `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, event_at
+      `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, ${this.eventTimeColumn()} AS event_at
        FROM messages WHERE message_id = ?`,
     );
 
@@ -620,7 +642,7 @@ export class ConversationStore {
     if (limit != null) {
       const rows = this.db
         .prepare(
-          `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, event_at
+          `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, ${this.eventTimeColumn()} AS event_at
          FROM messages
          WHERE conversation_id = ? AND seq > ?
          ORDER BY seq
@@ -632,7 +654,7 @@ export class ConversationStore {
 
     const rows = this.db
       .prepare(
-        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, event_at
+        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, ${this.eventTimeColumn()} AS event_at
        FROM messages
        WHERE conversation_id = ? AND seq > ?
        ORDER BY seq`,
@@ -648,7 +670,7 @@ export class ConversationStore {
   getMessageByIdSync(messageId: MessageId): MessageRecord | null {
     const row = this.db
       .prepare(
-        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, event_at
+        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, ${this.eventTimeColumn()} AS event_at
        FROM messages WHERE message_id = ?`,
       )
       .get(messageId) as unknown as MessageRow | undefined;
@@ -876,7 +898,7 @@ export class ConversationStore {
 
     const rows = this.db
       .prepare(
-        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, event_at
+        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, ${this.eventTimeColumn()} AS event_at
          FROM messages
          WHERE ${where.join(" AND ")}
          ORDER BY created_at DESC
@@ -930,7 +952,7 @@ export class ConversationStore {
     const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
     const rows = this.db
       .prepare(
-        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, event_at
+        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, ${this.eventTimeColumn()} AS event_at
          FROM messages
          ${whereClause}
          ORDER BY created_at DESC
@@ -980,7 +1002,7 @@ export class ConversationStore {
     const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
     const rows = this.db
       .prepare(
-        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, event_at
+        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, ${this.eventTimeColumn()} AS event_at
          FROM messages
          ${whereClause}
          ORDER BY created_at DESC`,

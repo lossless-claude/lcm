@@ -45,7 +45,7 @@ migration and reads behind concurrent writers on already-current stores.
 `lcm timeline enable` creates tracking and detach triggers, sets tracking and
 project generation on, and enters bootstrapping in one transaction. Bootstrap
 seeds at most 256 sessions per lease, yielding between pages with a persisted
-cursor. Seeding uses insert-if-absent and never resets a write counter. Writes
+cursor. Seeding marks existing sessions dirty and never resets a write counter. Writes
 between trigger creation and the end of bootstrap therefore stay visible,
 including a new session whose sort position is behind the cursor.
 
@@ -123,9 +123,11 @@ and record their ids. Historical rows remain immutable and addressable.
 ## Scheduling and explicit healing
 
 `timeline.generationEnabled` gates model generation and defaults to false.
-Tracking and completed bootstrap are also required for automatic work. The daemon
-checks every 30 seconds, waits for 60 seconds without a newer session bump, and
-runs at most one unit per project per tick. Durable units resume across restarts.
+Tracking and project generation must also be enabled for automatic work. The daemon
+checks every 30 seconds and resumes one bootstrap page of at most 256 sessions per
+tick, yielding without model calls. Generation starts after bootstrap, waits for
+60 seconds without a newer session bump, and runs at most one unit per project per
+tick. Durable units resume across restarts.
 
 Every admitted provider and fallback must be a named OpenAI or Anthropic HTTP
 endpoint with `maxConcurrent`. Shared endpoint admission places live work first,

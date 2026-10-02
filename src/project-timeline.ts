@@ -21,6 +21,8 @@ export type TimelineNodeInfo = {
   generator: string; replaces: string[];
 };
 export interface ProjectTimeline {
+  /** Seed one resumable page without planning or calling a model. */
+  bootstrap(): Promise<void>;
   settle(budget: { calls: number; deadline?: Date; reconcile?: "journal" | "full" }): Promise<SettleReport>;
   describe(summaryId: string): TimelineNodeInfo | null;
 }
@@ -63,14 +65,15 @@ class Timeline implements ProjectTimeline {
     const dirty = this.db.prepare("SELECT COUNT(*) n FROM timeline_dirty WHERE dirty = 1").get() as { n: number };
     return { ...report, pending: pending.n, stale: stale.n, dirty: dirty.n };
   }
-  private async bootstrap(): Promise<void> {
-    while (this.state().phase === "bootstrapping") {
+  async bootstrap(): Promise<void> {
+    if (this.state().phase === "bootstrapping") {
       const cursor = this.state().bootstrap_cursor;
       const page = this.db.prepare(`SELECT DISTINCT session_id FROM conversations WHERE is_timeline = 0
         AND session_id > ? ORDER BY session_id LIMIT 256`).all(cursor) as Array<{ session_id: string }>;
       await this.mutate(() => {
         if (this.state().phase !== "bootstrapping" || this.state().bootstrap_cursor !== cursor) return;
-        for (const row of page) this.db.prepare("INSERT OR IGNORE INTO timeline_dirty(session_id) VALUES (?)").run(row.session_id);
+        for (const row of page) this.db.prepare(`INSERT INTO timeline_dirty(session_id) VALUES (?)
+          ON CONFLICT(session_id) DO UPDATE SET dirty = 1`).run(row.session_id);
         this.db.prepare("UPDATE timeline_state SET bootstrap_cursor = ?, phase = ? WHERE id = 1")
           .run(page.at(-1)?.session_id ?? cursor, page.length < 256 ? "ready" : "bootstrapping");
       });
@@ -142,7 +145,7 @@ class Timeline implements ProjectTimeline {
     });
   }
   private async reconcile(skipped: Set<string>, applied: Set<string>): Promise<void> {
-    await this.bootstrap();
+    while (this.state().phase === "bootstrapping") await this.bootstrap();
     await this.refreshSessions(skipped, applied);
     await this.refreshMemories();
     const config = resolveLcmConfig();

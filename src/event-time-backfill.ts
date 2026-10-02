@@ -50,17 +50,19 @@ function remaining(positions: number[] | undefined, next: number): number[] {
 
 /** Prefer the live prefix, as capture does; otherwise require unique file-order matches, as rebuild does. */
 async function alignmentFor(store: ConversationStore, sessionId: string, read: TranscriptDelta, scrub: Scrub): Promise<Alignment> {
-  if (read.eventTimeCandidates) for (let offset = 0; ; offset += REPAIR_PAGE_SIZE) {
-    const page = await store.getSessionMessages(sessionId, offset, REPAIR_PAGE_SIZE);
+  let offset = 0;
+  if (read.eventTimeCandidates) for await (const page of store.sessionMessagePages(sessionId, REPAIR_PAGE_SIZE)) {
     const aligned = page.every((message, index) => matches(message, read.messages[offset + index], scrub));
     await yieldToEventLoop();
     if (!aligned) return fileOrderAlignment(read.eventTimeCandidates, scrub);
-    if (page.length < REPAIR_PAGE_SIZE) break;
+    offset += page.length;
   }
   return { messages: read.messages, next: 0, aligned: true };
 }
 
 async function matchedRecord(state: Alignment, stored: MessageRecord, position: number, scrub: Scrub): Promise<ParsedMessage | undefined> {
+  // Every stored row, including one with a known time, verifies the prefix in order.
+  // A mismatch permanently stops positional alignment across pages and clear boundaries.
   if (!state.aligned) return undefined;
   let found = position;
   if (state.index) {
@@ -111,8 +113,8 @@ export async function backfillSessionEventTimes(
   const alignment = await alignmentFor(conversations, input.sessionId, read, scrub);
   let updated = 0, unknown = 0;
   const ids = new Set<number>();
-  for (let offset = 0; ; offset += REPAIR_PAGE_SIZE) {
-    const page = await conversations.getSessionMessages(input.sessionId, offset, REPAIR_PAGE_SIZE);
+  let offset = 0;
+  for await (const page of conversations.sessionMessagePages(input.sessionId, REPAIR_PAGE_SIZE)) {
     const repairs: Parameters<ConversationStore["backfillMessageEventTimes"]>[0][number][] = [];
     for (const [index, message] of page.entries()) {
       ids.add(message.conversationId);
@@ -123,7 +125,7 @@ export async function backfillSessionEventTimes(
     }
     updated += await conversations.withTransaction(() => conversations.backfillMessageEventTimes(repairs));
     await yieldToEventLoop();
-    if (page.length < REPAIR_PAGE_SIZE) break;
+    offset += page.length;
   }
   // Also repairs bounds on an idempotent retry after an interrupted bounds pass.
   const summaries = new SummaryStore(db);

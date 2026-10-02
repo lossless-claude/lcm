@@ -49,8 +49,8 @@ A shorter paginated Codex subagent rollout with parent identity and a valid `sub
 
 Capture, import and rebuild store each transcript record's timestamp as nullable
 message `eventAt`, separately from capture `createdAt`. Missing or invalid source
-timestamps stay unknown. Summary bounds and conversation `firstAt` / `lastAt` use
-event time where known and capture time otherwise. Timeline months follow those
+timestamps stay unknown. Summary bounds and explicitly requested conversation
+source bounds use event time where known and capture time otherwise. Timeline months follow those
 source periods; coverage identifies `event`, `capture` or `mixed` time bases.
 Search/grep `createdAt` filters and recent summary ordering continue to use storage
 time; describe exposes source bounds separately.
@@ -73,10 +73,11 @@ ambiguous or unaligned position; it never guesses a timestamp.
 A missing transcript leaves its stored times unknown. Legacy parser-shape
 mismatches may require the existing rebuild repair first.
 
-Writes are committed in batches of at most 256 messages, yielding between batches.
+Reads page by conversation and sequence through the message index. Writes are
+committed in batches of at most 256 messages, yielding between batches.
 Rerunning is idempotent and fills remaining NULL values after interruption or after
 a missing transcript segment is restored. Leaf and condensed summary bounds are
-recomputed in bounded pages, retaining their text. Tracking marks affected
+recomputed in indexed depth/id pages, retaining their text. Tracking marks affected
 sessions dirty; the next settle invalidates timeline nodes and replans their months.
 The reported unknown count covers selected sessions; a transcript no longer discoverable is not selected.
 `--dry-run` lists selected sessions without repairing them.
