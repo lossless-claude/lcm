@@ -48,9 +48,12 @@ A shorter paginated Codex subagent rollout with parent identity and a valid `sub
 ## Event timestamps and existing history
 
 Capture, import and rebuild store each transcript record's timestamp as nullable
-message `eventAt`, separately from capture `createdAt`. Missing or invalid source
-timestamps stay unknown. Summary bounds and explicitly requested conversation
-source bounds use event time where known and capture time otherwise. Timeline months follow those
+message `eventAt`, with `eventTimeSource: "transcript"`, separately from capture
+`createdAt`. Missing or invalid source timestamps stay unknown unless the explicit
+commit pass below finds evidence on that message. Summary bounds and explicitly
+requested conversation source bounds use known event times when any source message
+has one; capture bounds apply only when none do. Timeline units use the same rule
+across their sources. Timeline months follow those
 source periods; coverage identifies `event`, `capture` or `mixed` time bases.
 Search/grep `createdAt` filters and recent summary ordering continue to use storage
 time; describe exposes source bounds separately.
@@ -79,8 +82,34 @@ Rerunning is idempotent and fills remaining NULL values after interruption or af
 a missing transcript segment is restored. Leaf and condensed summary bounds are
 recomputed in indexed depth/id pages, retaining their text. Tracking marks affected
 sessions dirty; the next settle invalidates timeline nodes and replans their months.
-The reported unknown count covers selected sessions; a transcript no longer discoverable is not selected.
-`--dry-run` lists selected sessions without repairing them.
+After the transcript pass, a project commit pass reads stored tool output and web
+session URLs in candidate pages of at most 256 messages. It includes stored sessions
+whose transcripts are gone, in the current project or tracked projects with `--all`;
+the provider flag selects transcript sources, not commit evidence. Git is read-only,
+local, and never fetches. Only `git commit` output (normal, root-commit or detached-HEAD)
+establishes a `commit-output` reference; its hash must resolve to a commit to anchor
+an event time. Hashes from `git log`, `git show`, bare hex lines and hex-looking words
+create no reference or event-time anchor. A
+`Claude-Session:` trailer matches only the exact `https://claude.ai/code/session_…`
+URL in the session's own stored messages; the web id is not an lcm session id.
+Only a message carrying resolved evidence gets committer time with source `commit`,
+and only if its time is NULL. Other unknown messages remain NULL. References retain
+hash, subject, committer time, author time as reference metadata, branch when known, and evidence; no diffs, blobs, author
+emails or PR text are stored. They appear in session, summary and timeline describe
+output, separate from summary prose.
+
+Reruns mark hashes that no longer resolve as unresolved, never silently re-link
+them, and remove commit-derived times when no resolved evidence remains on a message.
+If another resolved reference remains, its committer time supplies the anchor.
+Rebase, cherry-pick and amend therefore anchor at the new commit object's time.
+Reruns replace retained author-date commit anchors with resolved committer dates.
+Git reads release the project queue turn and mutation lease, and writes recheck
+the stored evidence. Summary bounds are recomputed only for conversations whose
+commit anchors changed. Missing-project skips do not add to the skipped-session count.
+`commits.enabled: false` disables the commit pass while retaining stored references
+and anchors. Transcript repair still runs. The reported unknown count from transcript
+repair covers its selected sessions before commit anchors are applied.
+`--dry-run` lists selected transcripts without running either repair pass.
 `--backfill-event-times` cannot be combined with replay, restart, rebuild or blocked
 capture retry.
 

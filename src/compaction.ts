@@ -814,7 +814,7 @@ export class CompactionEngine {
     previousSummaryContent?: string,
   ): Promise<{ summaryId: string; level: CompactionLevel; content: string }> {
     // Fetch full message content for each context item
-    const messageContents: { messageId: number; content: string; createdAt: Date; tokenCount: number }[] =
+    const messageContents: { messageId: number; content: string; createdAt: Date; eventAt?: Date | null; tokenCount: number }[] =
       [];
     for (const item of messageItems) {
       if (item.messageId == null) {
@@ -826,6 +826,7 @@ export class CompactionEngine {
           messageId: msg.messageId,
           content: msg.content,
           createdAt: msg.eventAt ?? msg.createdAt,
+          eventAt: msg.eventAt,
           tokenCount: this.resolveMessageTokenCount(msg),
         });
       }
@@ -849,22 +850,25 @@ export class CompactionEngine {
     // Persist the leaf summary
     const summaryId = generateSummaryId(summary.content);
     const tokenCount = estimateTokens(summary.content);
+    const dated = messageContents.filter(message => message.eventAt);
+    const bounds = dated.length ? dated : messageContents;
 
     await this.summaryStore.insertSummary({
       summaryId,
       conversationId,
       kind: "leaf",
+      hasEventTime: dated.length > 0,
       depth: 0,
       content: summary.content,
       tokenCount,
       fileIds,
       earliestAt:
-        messageContents.length > 0
-          ? new Date(Math.min(...messageContents.map((message) => message.createdAt.getTime())))
+        bounds.length > 0
+          ? new Date(Math.min(...bounds.map((message) => message.createdAt.getTime())))
           : undefined,
       latestAt:
-        messageContents.length > 0
-          ? new Date(Math.max(...messageContents.map((message) => message.createdAt.getTime())))
+        bounds.length > 0
+          ? new Date(Math.max(...bounds.map((message) => message.createdAt.getTime())))
           : undefined,
       descendantCount: 0,
       descendantTokenCount: 0,
@@ -948,17 +952,19 @@ export class CompactionEngine {
     // Persist the condensed summary
     const summaryId = generateSummaryId(condensed.content);
     const tokenCount = estimateTokens(condensed.content);
+    const knownBounds = this.summaryStore.getSourceEventTimeBounds(summaryRecords.map(summary => summary.summaryId));
 
     await this.summaryStore.insertSummary({
       summaryId,
       conversationId,
       kind: "condensed",
+      hasEventTime: knownBounds !== null,
       depth: targetDepth + 1,
       content: condensed.content,
       tokenCount,
       fileIds,
       earliestAt:
-        summaryRecords.length > 0
+        knownBounds?.earliestAt ?? (summaryRecords.length > 0
           ? new Date(
               Math.min(
                 ...summaryRecords.map((summary) =>
@@ -966,15 +972,15 @@ export class CompactionEngine {
                 ),
               ),
             )
-          : undefined,
+          : undefined),
       latestAt:
-        summaryRecords.length > 0
+        knownBounds?.latestAt ?? (summaryRecords.length > 0
           ? new Date(
               Math.max(
                 ...summaryRecords.map((summary) => (summary.latestAt ?? summary.createdAt).getTime()),
               ),
             )
-          : undefined,
+          : undefined),
       descendantCount: summaryRecords.reduce((count, summary) => {
         const childDescendants =
           typeof summary.descendantCount === "number" && Number.isFinite(summary.descendantCount)

@@ -699,7 +699,7 @@ export async function importSessions(
   const provider = resolveImportProvider({ provider: options.provider });
   const result: ImportResult = { imported: 0, skippedEmpty: 0, skippedCwdMissing: 0, failed: 0, totalMessages: 0, totalTokens: 0, tokensAfter: 0 };
   const cwdMissing = new Map<string, boolean>();
-  const skipMissingCwd = (cwd: string): boolean => {
+  const skipMissingCwd = (cwd: string, countSession = true): boolean => {
     let missing = cwdMissing.get(cwd);
     if (missing === undefined) {
       // Only an absent path is skipped: a cwd that exists but cannot be read still reaches the daemon, which reports it.
@@ -712,7 +712,7 @@ export async function importSessions(
       }
       cwdMissing.set(cwd, missing);
     }
-    if (missing) result.skippedCwdMissing = (result.skippedCwdMissing ?? 0) + 1;
+    if (missing && countSession) result.skippedCwdMissing = (result.skippedCwdMissing ?? 0) + 1;
     return missing;
   };
   // One --restart clear per project for the whole import, however many session
@@ -803,6 +803,24 @@ export async function importSessions(
       await ingestSessionList(client, sessions, options, result, clearedCwds, compactedCwds);
     }
   });
+
+  if (options.backfillEventTimes && !options.dryRun && !result.daemonUnreachable) {
+    const projects = new Set(options.all
+      ? [...(paths ? buildProjectMap(paths).values() : []), ...sessionLists.flatMap(sessions => sessions.map(session => session.cwd))]
+      : [options.cwd ?? process.cwd()]);
+    for (const cwd of projects) {
+      if (skipMissingCwd(cwd, false) || options.onBeforeSession?.() === false) continue;
+      const done = options.trackInFlight?.();
+      try {
+        const repair = await client.post<{ updated: number }>("/backfill-commits", { cwd });
+        result.backfilledEventTimes = (result.backfilledEventTimes ?? 0) + (repair.updated ?? 0);
+      } catch (error) {
+        result.failed++;
+        if (isDaemonUnreachableError(error)) { result.daemonUnreachable = true; break; }
+        console.error(`  ⚠️ Commit repair failed: ${error instanceof Error ? error.message : String(error)}`);
+      } finally { done?.(); }
+    }
+  }
 
   // Match compact's best-effort promotion, restricted to projects this run compacted.
   if (!options.dryRun && !options.noPromote && !result.daemonUnreachable) {

@@ -15,6 +15,7 @@ export type Item = {
   id: string; content: string; tokens: number; from: string; to: string;
   summaryId?: string; messageId?: number; seq?: number; coverage: Coverage[];
   position?: number; depth: number;
+  hasEventTime?: boolean;
   sourceTokens: number; descendantCount: number; descendantTokens: number;
 };
 export type Memory = { memoryId: string; revision: string; content: string; createdAt: string };
@@ -23,7 +24,7 @@ export type Work = {
   from: string; to: string; memories: Memory[]; generator: string;
 };
 type Message = { message_id: number; seq: number; content: string; role: string; token_count: number; created_at: string; event_at: string | null };
-type Summary = { summary_id: string; content: string; token_count: number; earliest_at: string | null; latest_at: string | null; created_at: string; depth: number; source_message_token_count: number; descendant_count: number; descendant_token_count: number };
+type Summary = { summary_id: string; content: string; token_count: number; earliest_at: string | null; latest_at: string | null; has_event_time: number; created_at: string; depth: number; source_message_token_count: number; descendant_count: number; descendant_token_count: number };
 
 export function hash(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -68,7 +69,7 @@ export const REMAINDER_SQL = `SELECT m.message_id, m.seq, m.content, m.role, m.t
     (SELECT 1 FROM message_parts p WHERE p.message_id = m.message_id AND p.part_type = 'compaction')
   AND NOT EXISTS (SELECT 1 FROM summary_messages sm JOIN summaries s ON s.summary_id = sm.summary_id
     WHERE sm.message_id = m.message_id AND s.conversation_id = m.conversation_id) ORDER BY m.seq`;
-export const FRONTIER_SQL = `SELECT s.summary_id, s.content, s.token_count, s.earliest_at, s.latest_at, s.created_at, s.depth,
+export const FRONTIER_SQL = `SELECT s.summary_id, s.content, s.token_count, s.earliest_at, s.latest_at, s.has_event_time, s.created_at, s.depth,
   s.source_message_token_count, s.descendant_count, s.descendant_token_count
   FROM summaries s WHERE s.conversation_id = ? AND NOT EXISTS (
     SELECT 1 FROM summary_parents p JOIN summaries child ON child.summary_id = p.summary_id
@@ -83,13 +84,16 @@ async function conversationItems(db: DatabaseSync, conversation: { conversation_
   const revision = hash([conversation.session_id, conversation.messageOffset, summaries, messages, count.known]);
   const timeBasis: TimeBasis = count.known === 0 ? "capture" : count.known === count.n ? "event" : "mixed";
   const base = { conversationId: id, sessionId: conversation.session_id, revision, timeBasis };
-  const items: Item[] = summaries.map(summary => ({
-    id: summary.summary_id, summaryId: summary.summary_id, content: summary.content,
-    tokens: summary.token_count, from: iso(summary.earliest_at ?? summary.created_at),
-    to: iso(summary.latest_at ?? summary.created_at), depth: summary.depth,
-    sourceTokens: summary.source_message_token_count, descendantCount: summary.descendant_count, descendantTokens: summary.descendant_token_count,
-    coverage: [{ ...base, summaryIds: [summary.summary_id], messageIds: [] }],
-  }));
+  const items: Item[] = summaries.map(summary => {
+    return {
+      id: summary.summary_id, summaryId: summary.summary_id, content: summary.content,
+      tokens: summary.token_count, from: iso(summary.earliest_at ?? summary.created_at),
+      to: iso(summary.latest_at ?? summary.created_at), depth: summary.depth,
+      hasEventTime: summary.has_event_time === 1,
+      sourceTokens: summary.source_message_token_count, descendantCount: summary.descendant_count, descendantTokens: summary.descendant_token_count,
+      coverage: [{ ...base, summaryIds: [summary.summary_id], messageIds: [] }],
+    };
+  });
   // Disjoint gaps preserve transcript positions without repeatedly counting the entire prefix.
   let previousSeq = -1;
   let position = -1;
@@ -102,6 +106,7 @@ async function conversationItems(db: DatabaseSync, conversation: { conversation_
     items.push({ id: `msg_${message.message_id}`, messageId: message.message_id, seq: message.seq,
       content: `[${message.role}] ${message.content}`, tokens: message.token_count,
       from: iso(message.event_at ?? message.created_at), to: iso(message.event_at ?? message.created_at), depth: 0,
+      hasEventTime: message.event_at !== null,
       sourceTokens: message.token_count, descendantCount: 0, descendantTokens: 0,
       coverage: [{ ...base, summaryIds: [], messageIds: [message.message_id], messageRange: [at, at] }] });
   }
@@ -218,8 +223,10 @@ export function coverageOf(items: Item[]): Coverage[] {
 }
 
 export function workFor(items: Item[], level: Work["level"], memories: Memory[], generator: string): Work {
-  const from = items.reduce((date, item) => item.from < date ? item.from : date, items[0].from);
-  const to = items.reduce((date, item) => item.to > date ? item.to : date, items[0].to);
+  const known = items.filter(item => item.hasEventTime);
+  const bounds = known.length ? known : items;
+  const from = bounds.reduce((date, item) => item.from < date ? item.from : date, bounds[0].from);
+  const to = bounds.reduce((date, item) => item.to > date ? item.to : date, bounds[0].to);
   const claims = memories.filter(memory => memory.createdAt >= from && memory.createdAt <= to);
   const coverage = coverageOf(items);
   const key = hash({ level, inputs: items.map(({ content: _content, ...metadata }) => metadata), coverage, claims: claims.map(memory => [memory.memoryId, memory.revision]), generator });

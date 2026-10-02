@@ -16,11 +16,12 @@ Messages are stored with:
 - **content** — Plain text extraction of the message; NUL characters become U+FFFD before storage so SQLite reads preserve the text after them
 - **tokenCount** — Estimated token count (~4 chars/token)
 - **createdAt** — Capture/insertion timestamp, independent of when the message happened
-- **eventAt** — Nullable transcript record timestamp (`messages.event_at`), normalized to UTC; missing or invalid timestamps stay unknown
+- **eventAt** — Nullable transcript record timestamp or explicit commit anchor (`messages.event_at`), normalized to UTC
+- **eventTimeSource** — `transcript` or `commit` (`messages.event_time_source`); NULL when time is unknown. A legacy NULL source with a non-null `event_at` reads as `transcript`, without rewriting message rows during migration. Code validates the source values.
 
 `ConversationStore.getConversationTimeBounds` computes a selected conversation's
 `firstAt` / `lastAt` from its transcript messages,
-using event time where known and capture time otherwise. Internal compaction event
+using known event times if any message has one, and capture times only when none do. Internal compaction event
 rows are excluded. Conversation `createdAt` / `updatedAt` retain their storage
 lifecycle meaning; an empty conversation falls back to its creation time.
 Ordinary conversation fetches do not compute source bounds or read messages.
@@ -38,10 +39,40 @@ remaining positions by lookup. Historical redaction wildcards share a session-wi
 budget of four comparisons per transcript record; if uniqueness cannot be proved
 within that budget, the remaining times stay unknown.
 It stops at the first unaligned position, fills only unknown timestamps in transactions of at most 256
-messages, and yields between pages. Missing transcripts leave times unknown.
+messages, and yields between pages. Missing transcripts leave times unknown unless
+the following commit pass finds explicit evidence on that message.
 Rerunning resumes through NULL rows; leaf and condensed summary bounds are
 recomputed in depth order in pages of at most 128 summaries, including on an
 idempotent retry after an interrupted repair. Existing summary text is retained.
+
+The project commit pass runs after transcript repair, including for stored sessions
+whose transcripts are gone. `commits.enabled` defaults to true and gates this pass.
+`CommitStore` retains session/message references to a full commit hash (the observed
+abbreviation when unresolved), subject, committer time, author time as reference metadata, branch when printed, evidence
+kind and evidence value. Evidence is a hash in stored `git commit` output
+(`[<branch> <hash>] <subject>`, including root-commit and detached-HEAD variants)
+that local git resolves to a commit, or a commit's `Claude-Session:` trailer whose exact web URL
+appears in the session's own messages. A web id alone never matches an lcm session id;
+`git log`, `git show`, bare hashes and hex-looking words establish neither references
+nor event times. Timestamp proximity establishes nothing. Git reads local objects without replacements
+or lazy fetching. No diffs, blobs, author emails or PR text are retained.
+Message and reference reads use pages of at most 256 rows; message reads prefilter
+tool output and session URLs. Matching git history is paged at 128 commits.
+Transactions are bounded and the pass yields between pages under the project queue
+and mutation lease. Git reads yield both the queue turn and mutation lease; writes
+recheck the candidate's evidence and worker exclusion after reacquiring them.
+Resolved evidence fills only its message's NULL time with committer
+time and source `commit`; other messages stay unknown. A later pass marks unavailable
+hashes unresolved, never re-resolves them, and clears a commit time once its message
+has no resolved reference. If other resolved references remain, the anchor stays
+tied to their committer times. Reruns also replace legacy author-date commit anchors
+with resolved committer times. Summary bounds are recomputed only for conversations
+whose commit anchors changed in the pass. Transcript times are preserved. Disabling the pass retains
+existing references and anchors.
+
+Describe accepts a session id or `session:<id>` and returns `node.commits`.
+Session summaries list their sessions' references; timeline nodes list the references
+of all covered sessions. These references are metadata, separate from generated prose.
 
 ### The summary DAG
 
@@ -63,7 +94,8 @@ Every summary carries:
 - **summaryId** — `sum_` + 16 hex chars (SHA-256 of content + timestamp)
 - **conversationId** — Which conversation it belongs to
 - **depth** — Position in the hierarchy (0 = leaf)
-- **earliestAt / latestAt** — Source event-time bounds, falling back per message to capture time; condensed summaries inherit their source summaries' bounds
+- **earliestAt / latestAt** — Bounds of known event times across source messages; capture bounds apply only when no source time is known, including across condensed summaries
+- **hasEventTime** — Whether those bounds rest on known times. Leaves derive it from their own messages; condensed summaries derive bounds and the flag from direct sources' stored metadata, without traversing their descendants. Migration persists the flag computed by the legacy summary backfill.
 - **descendantCount** — Total number of ancestor summaries (transitive)
 - **fileIds** — References to large files mentioned in the source
 - **tokenCount** — Estimated tokens
@@ -95,8 +127,9 @@ unless it finds schema/trigger repairs, missing state or memories to archive.
 and model-free `describe`.
 Incremental settle reads dirty sessions through indexed frontier/remainder queries,
 then updates only those sessions' persisted metadata and affected UTC months.
-Raw message dates use event time when known; summaries carry the same derived
-bounds. Timeline coverage records `timeBasis` as `event`, `capture` or `mixed`;
+Raw message dates use event time when known; summaries and generation units prefer
+known times across their sources and use capture bounds only when none are known.
+Timeline coverage records `timeBasis` as `event`, `capture` or `mixed`;
 describe and timeline search expose it, and generation sources label unknown-event
 fallbacks. A schema upgrade refreshes older item metadata through paged bootstrap.
 Counter conflicts leave the affected sessions dirty for the next pass while other

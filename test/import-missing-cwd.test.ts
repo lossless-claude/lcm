@@ -37,6 +37,25 @@ describe("import with missing working directories", () => {
     return claudeProjectsDir;
   }
 
+  it.each([true, false])("counts sessions only when commit repair skips a missing project (transcripts: %s)", async transcripts => {
+    const root = mkdtempSync(join(tmpdir(), "lcm-import-missing-cwd-"));
+    roots.push(root);
+    const cwd = join(root, "removed-worktree");
+    const claudeProjectsDir = transcripts ? writeClaudeCandidates(root, cwd) : join(root, "claude");
+    if (!transcripts) {
+      const projectDir = join(root, "lcm", "projects", projectId(cwd));
+      mkdirSync(projectDir, { recursive: true });
+      writeFileSync(join(projectDir, "meta.json"), JSON.stringify({ cwd }));
+    }
+    const post = vi.fn();
+    const result = await importSessions({ post } as unknown as DaemonClient, {
+      all: true, provider: "claude", backfillEventTimes: true,
+      _claudeProjectsDir: claudeProjectsDir, _lcmDir: join(root, "lcm"),
+    });
+    expect(post).not.toHaveBeenCalled();
+    expect(result.skippedCwdMissing).toBe(transcripts ? 2 : 0);
+  });
+
   it.each([false, true])("skips every source before posting and counts Claude parents and subagents (replay: %s)", async (replay) => {
     const root = mkdtempSync(join(tmpdir(), "lcm-import-missing-cwd-"));
     roots.push(root);

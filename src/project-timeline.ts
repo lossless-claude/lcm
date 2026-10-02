@@ -5,6 +5,7 @@ import type { LcmSummarizeFn } from "./llm/types.js";
 import { ensureTimelineOwner, repairTimelineTracking } from "./db/project-timeline.js";
 import { resolveLcmConfig } from "./db/config.js";
 import { SummaryStore } from "./store/summary-store.js";
+import { CommitStore, type CommitReference } from "./store/commit-store.js";
 import { digestChunks, periodChunks, orderedWork, hash, readItems, readUnitMemories, workFor, type Memory, type TimeBasis, type Coverage, type Item, type Work } from "./project-timeline/sources.js";
 import type { acquireProjectMutation } from "./daemon/project-queue.js";
 
@@ -15,6 +16,7 @@ export type SettleReport = {
   failed: Array<{ summaryId?: string; reason: string }>;
 };
 export type TimelineNodeInfo = {
+  commits: CommitReference[];
   period: { from: string; to: string };
   coverage: Array<{ timeBasis: TimeBasis; sessionId: string; summaryIds: string[]; messageRange?: [number, number] }>;
   stale: null | { reason: string; since: string };
@@ -188,6 +190,7 @@ class Timeline implements ProjectTimeline {
       const summary = this.db.prepare(`SELECT token_count, depth, source_message_token_count, descendant_count, descendant_token_count
         FROM summaries WHERE summary_id = ?`).get(node.summary_id) as { token_count: number; depth: number; source_message_token_count: number; descendant_count: number; descendant_token_count: number };
       ready.push({ id: node.summary_id, summaryId: node.summary_id, content: "", tokens: summary.token_count,
+        hasEventTime: work.items.some(item => item.hasEventTime),
         from: work.from, to: work.to, depth: summary.depth, coverage: work.coverage, position: work.items[0].position, seq: work.items[0].seq,
         sourceTokens: summary.source_message_token_count, descendantCount: summary.descendant_count, descendantTokens: summary.descendant_token_count });
     }
@@ -368,6 +371,7 @@ class Timeline implements ProjectTimeline {
     const refs = this.db.prepare("SELECT memory_id, revision FROM timeline_memory_refs WHERE summary_id = ? ORDER BY memory_id")
       .all(summaryId) as Array<{ memory_id: string; revision: string }>;
     return {
+      commits: new CommitStore(this.db).forSummary(summaryId),
       period: { from: row.period_from, to: row.period_to },
       coverage: this.sources(summaryId).map(({ sessionId, summaryIds, messageRange, timeBasis }) => ({ sessionId, summaryIds, timeBasis: timeBasis ?? "capture", ...(messageRange ? { messageRange } : {}) })),
       stale: row.stale_reason ? { reason: row.stale_reason, since: row.stale_since! } : null,
@@ -421,6 +425,7 @@ class Timeline implements ProjectTimeline {
         summaryId: id, conversationId: owner, kind: work.level === "digest" ? "leaf" : "condensed",
         depth: work.level === "digest" ? 0 : Math.max(...work.items.map(item => item.depth)) + 1,
         content, tokenCount: Math.ceil(content.length / 4), earliestAt: new Date(work.from), latestAt: new Date(work.to),
+        hasEventTime: work.items.some(item => item.hasEventTime),
         descendantCount: work.items.reduce((sum, item) => sum + (item.summaryId ? 1 + item.descendantCount : 0), 0),
         descendantTokenCount: work.items.reduce((sum, item) => sum + (item.summaryId ? item.tokens + item.descendantTokens : 0), 0),
         sourceMessageTokenCount: work.items.reduce((sum, item) => sum + item.sourceTokens, 0),
