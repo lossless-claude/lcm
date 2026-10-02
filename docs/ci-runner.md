@@ -10,6 +10,11 @@ The job retains the `ci` check name and runs dependency installation, typecheck,
 build, tests, and workspace-artifact checks. Superseded runs for the same ref are
 cancelled, and each run has a 30-minute timeout.
 
+The host also runs other work, so CI time is not idle time. Each unit test gets 20 s
+(`testTimeout` in `vitest.config.ts`) instead of vitest's 5 s default. Setup-heavy tests
+that take 1–3 s on an idle machine otherwise time out under load, which fails the run
+without a defect in the code.
+
 ## Validate plugin manifest
 
 The step runs `claude plugin validate` twice, because the two invocations
