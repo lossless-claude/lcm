@@ -12,7 +12,6 @@ import { projectId, projectDbPath, projectDir } from "../project.js";
 import { noopDaemonLog, type DaemonLog } from "../log.js";
 import { openProject } from "../project-group.js";
 import { enqueue, hasBlockingProjectWork, withProjectMutation } from "../project-queue.js";
-import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { markSessionCompacted } from "../../db/session-compactions.js";
@@ -34,6 +33,9 @@ import {
 } from "../summarizer.js";
 import { validateCwd } from "../validate-cwd.js";
 import { scheduleProjectLanguageDetection } from "../project-language.js";
+import { createCompactionReply } from "../compaction-reply.js";
+import { CompactionDeadlineError } from "../../compaction-deadline.js";
+import { DEFAULT_COMPACTION_SUMMARY_MODEL, validCompactionSummaryModel, sessionSummaryProviderLabel } from "../summary-models.js";
 import { readCompactionContext } from "../compaction-context.js";
 import { TIMELINE_SESSION_ID } from "../../db/project-timeline.js";
 
@@ -323,7 +325,9 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     const controller = new AbortController();
     let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
     let deadlineAt: number | undefined;
-    const reply = (code: number, value: unknown) => { if (!controller.signal.aborted) sendJson(res, code, value); };
+    const reply = createCompactionReply(res, input.session_id, input.render_context === true);
+    let cwdForObservation: string | undefined;
+    let captureOutcomeForError: { status: "completed"; messages: number } | { status: "failed"; reason: string } | undefined;
     try {
     const { session_id, transcript_path, skip_ingest, client, previous_summary } = input;
     if (input.replay_provider !== undefined &&
@@ -339,10 +343,9 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         typeof input.capture_through_uuid !== "string" || !input.capture_through_uuid.trim() || input.capture_through_uuid.length > 140)) {
       reply(400, { error: "render_context requires Claude Capture, a UUID boundary and a byte budget of 1..65536" }); return;
     }
-    const contextStatus = (status: string) => renderContext ? { contextWindow: { version: 1, sessionId: session_id, status } } : {};
-    const model = input.compaction_summary_model ?? "sonnet";
+    const model = input.compaction_summary_model ?? DEFAULT_COMPACTION_SUMMARY_MODEL;
     const requester = renderContext && model !== "pool" && input.summary_via_requester === true;
-    if (renderContext && (!["haiku", "sonnet", "session", "pool"].includes(model) ||
+    if (renderContext && (!validCompactionSummaryModel(model) ||
         model !== "pool" && (!requester || input.requester_session_id !== session_id))) {
       reply(400, { error: "compaction model requires a matching requester, or pool" }); return;
     }
@@ -350,8 +353,14 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       const timeoutMs = config.compaction.hookDeadlineMs ?? 1_800_000;
       deadlineAt = Date.now() + timeoutMs;
       deadlineTimer = setTimeout(() => {
-        controller.abort(new Error("Compaction deadline exceeded"));
-        sendJson(res, 408, { error: "Compaction deadline exceeded", ...contextStatus("deadline") });
+        controller.abort(new CompactionDeadlineError());
+        const capture = captureOutcomeForError ?? { status: "deferred" as const, reason: "deadline" };
+        const summary = { status: "failed" as const, reason: "deadline" };
+        if (reply(408, { error: "Compaction deadline exceeded", reason: "deadline", captureOutcome: capture, summaryOutcome: summary })) {
+          log.write("warn", "compact.deadline", { cwd: cwdForObservation, session_id });
+          if (cwdForObservation) recordPrecompactStages({ cwd: cwdForObservation, sessionId: session_id,
+            client, operationId: input.operation_id, capture, summary }, paths, log);
+        }
       }, timeoutMs);
       deadlineTimer.unref();
     }
@@ -378,6 +387,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     let cwd: string;
     try {
       cwd = validateCwd(input.cwd);
+      cwdForObservation = cwd;
     } catch (err) {
       reply(400, { error: err instanceof Error ? err.message : "invalid cwd" });
       return;
@@ -389,7 +399,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     }
 
     if (session_id === TIMELINE_SESSION_ID || workerExcluded(cwd, session_id, paths, transcript_path)) {
-      reply(200, { summary: "", replayOutcome: "skipped", reason: session_id === TIMELINE_SESSION_ID ? "timeline-excluded" : "worker-excluded", ...contextStatus("excluded") }); return;
+      reply(200, { summary: "", replayOutcome: "skipped", reason: session_id === TIMELINE_SESSION_ID ? "timeline-excluded" : "worker-excluded", }); return;
     }
     const captureOnly = async () => {
       try {
@@ -418,6 +428,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           }
         });
       } catch (err) {
+        if (err instanceof CompactionDeadlineError) throw err;
         log.write("error", "precompact.capture_failed", { cwd, session_id, err });
         return { status: "failed" as const, reason: err instanceof TranscriptSourceError ? "invalid-source" as const : "capture-error" as const };
       }
@@ -437,7 +448,6 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       }, paths, log);
       reply(200, {
         skipped: true,
-        ...contextStatus("busy"),
         replayOutcome: "skipped",
         summary: captureRequired || precompactVerified ? "" : "Compaction already in progress for this session.",
         ...(captureRequired ? { captureOutcome, summaryOutcome: { status: "skipped", reason: "busy" } } : {}),
@@ -475,7 +485,6 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     };
     const providerLabel = providerLabels[effectiveProvider] ?? effectiveProvider;
 
-    let captureOutcomeForError: { status: "completed"; messages: number } | { status: "failed"; reason: string } | undefined;
     try {
       const summarize = captureRequired ? null : await getSummarizer(effectiveProvider);
       if (!summarize && !captureRequired) {
@@ -523,7 +532,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           // either way, since compaction needs the row even when nothing was read.
           const capture = new SessionCapture(db, pid, scrubber, paths);
           const { conversationStore, summaryStore } = capture;
-          if (conversationStore.isTimelineSession(session_id)) return { summary: "", replayOutcome: "skipped", reason: "timeline-excluded", ...contextStatus("excluded") };
+          if (conversationStore.isTimelineSession(session_id)) return { summary: "", replayOutcome: "skipped", reason: "timeline-excluded", };
           const structuredInput = (await conversationStore.getConversationBySessionId(session_id))?.parserShape === STRUCTURED_INGEST_SHAPE;
           let captured: CaptureResult | undefined;
           if (!skip_ingest) {
@@ -535,6 +544,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                 sessionId: session_id, client, cwd, transcriptPath: transcript_path,
               }, paths, log);
             } catch (err) {
+              if (err instanceof CompactionDeadlineError) throw err;
               if (captureRequired) captureOutcomeForError = {
                 status: "failed",
                 reason: err instanceof TranscriptSourceError ? "invalid-source" : "capture-error",
@@ -550,11 +560,11 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           const verification = (captured as TranscriptCaptureResult | undefined)?.verification;
           if (renderContext && new WorkerStore(db).excluded(session_id)) return {
             summary: "", replayOutcome: "skipped", captureOutcome: { status: "deferred", reason: "worker-excluded" },
-            summaryOutcome: { status: "skipped", reason: "worker-excluded" }, ...contextStatus("excluded"),
+            summaryOutcome: { status: "skipped", reason: "worker-excluded" },
           };
           if (renderContext && (!verification?.verified || !verification.complete || !verification.boundaryFound)) return {
-            summary: "", replayOutcome: "skipped", captureOutcome: { status: "deferred", reason: "capture-unverified", ...verification },
-            summaryOutcome: { status: "skipped", reason: "capture-unverified" }, ...contextStatus("capture-unverified"),
+            summary: "", replayOutcome: "skipped", captureOutcome: { status: "deferred", ...verification, reason: verification?.boundaryScanExceeded ? "boundary-scan-limit" : "capture-unverified" },
+            summaryOutcome: { status: "skipped", reason: verification?.boundaryScanExceeded ? "boundary-scan-limit" : "capture-unverified" },
           };
           if (renderContext && captureOutcome) Object.assign(captureOutcome, { verified: true, complete: true, boundaryFound: true });
           if (captureRequired) {
@@ -578,7 +588,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             // A replay ledgers this as done; otherwise every later run sees a gap here.
             return {
               summary: "No messages to compact.", replayOutcome: "no_work", providerId: effectiveProvider, providerLabel,
-              ...(renderContext ? { contextWindow: await readCompactionContext(summaryStore, conversation.conversationId, session_id, input.context_budget_bytes) } : {}),
+              ...(renderContext ? { renderedContext: await readCompactionContext(summaryStore, conversation.conversationId, input.context_budget_bytes) } : {}),
               ...(captureRequired ? { captureOutcome, summaryOutcome: { status: "skipped", reason: "no-work" } } : {}),
             };
           }
@@ -800,15 +810,14 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           llmUsage.model = keptAnswers.at(-1)?.model ?? configuredSummaryModel(config, effectiveProvider) ?? config.llm.model;
           const answeredBy = [...answeringProviders];
           const answeredProvider = answeredBy.length === 1 ? answeredBy[0] : effectiveProvider;
-          const sessionLabels: Record<string, string> = { "session:haiku": "Live session (haiku)", "session:fork": "Live session (fork)" };
           const answeredLabel = answeredProvider === effectiveProvider
             ? providerLabel
-            : (sessionLabels[answeredProvider] ?? providerLabels[answeredProvider as EffectiveProvider] ?? answeredProvider);
+            : (sessionSummaryProviderLabel(answeredProvider) ?? providerLabels[answeredProvider as EffectiveProvider] ?? answeredProvider);
           if (llmUsage.calls > 0) llmUsage.provider = answeredProvider;
 
           return {
             summary: summaryMsg,
-            ...(renderContext ? { contextWindow: await readCompactionContext(summaryStore, conversation.conversationId, session_id, input.context_budget_bytes) } : {}),
+            ...(renderContext ? { renderedContext: await readCompactionContext(summaryStore, conversation.conversationId, input.context_budget_bytes) } : {}),
             latestSummaryContent,
             latestSummaryId,
             latestSummaryIds,
@@ -861,6 +870,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       }, paths, log);
       reply(200, result);
     } catch (err) {
+      if (err instanceof CompactionDeadlineError) return;
       log.write("error", "compact.failed", { cwd, session_id, err });
       if (captureRequired) {
         if (captureOutcomeForError?.status !== "completed") {
@@ -889,7 +899,6 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           : undefined;
       reply(err instanceof TranscriptSourceError ? 400 : 500, {
         error: err instanceof Error ? err.message : "compact failed",
-        ...contextStatus("capture-unverified"),
         ...(captureRequired ? {
           captureOutcome: captureOutcomeForError ?? { status: "failed", reason: "capture-error" },
           summaryOutcome: captureOutcomeForError?.status === "completed"
@@ -902,6 +911,8 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       releaseCompacting();
     }
 
+    } catch (error) {
+      if (!(error instanceof CompactionDeadlineError)) throw error;
     } finally { if (deadlineTimer) clearTimeout(deadlineTimer); }
   };
 }

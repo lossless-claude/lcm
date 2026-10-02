@@ -3,13 +3,13 @@ import { wrapCompactionContext } from "../compaction-context.js";
 import { fenceContent } from "./content-fence.js";
 import { renderContextItems } from "./restore/context-items.js";
 
-export type ContextWindowStatus = "ready" | "empty" | "busy" | "deadline" | "over-budget" | "coverage-unverified" | "capture-unverified" | "excluded";
+export type ContextWindowStatus = "ready" | "empty" | "busy" | "deadline" | "over-budget" | "coverage-unverified" | "capture-unverified" | "excluded" | "no-summarizer" | "summary-failed" | "boundary-scan-limit" | "invalid-request";
 
-export async function readCompactionContext(store: SummaryStore, conversationId: number, sessionId: string, byteBudget: number) {
+export async function readCompactionContext(store: SummaryStore, conversationId: number, byteBudget: number) {
   const rows = await store.readContextWindow(conversationId, 0, { complete: true });
   const coverage = await store.readContextCoverage(conversationId, rows);
-  const base = { version: 1, sessionId, conversationId, byteBudget, ...coverage };
-  if (Buffer.byteLength(JSON.stringify(base), "utf8") > 1_048_576) return { version: 1, sessionId, conversationId, byteBudget, status: "over-budget" as const };
+  const base = { conversationId, byteBudget, ...coverage };
+  if (Buffer.byteLength(JSON.stringify(base), "utf8") > 1_048_576) return { conversationId, byteBudget, status: "over-budget" as const };
   if (!coverage.valid || coverage.uncoveredMessageIds.length > 0) return { ...base, status: "coverage-unverified" as const };
   if (rows.length === 0) return { ...base, status: "empty" as const };
   const text = wrapCompactionContext(fenceContent(renderContextItems(rows).join("\n\n"), "recent-session-context"));

@@ -16,6 +16,7 @@ import type { LcmSummarizeFn } from "../llm/types.js";
 import { acceptSummaryText } from "../llm/summary-rejection.js";
 import { createProviderChain, SessionJobUnclaimedError, SessionUnavailableError, SummarizerUnavailableError, type ProviderLink, type ProviderLinkKind } from "../llm/provider-chain.js";
 import type { SessionClient } from "../session-client.js";
+import { sessionSummaryProviderId, type RequesterSummaryModel } from "./summary-models.js";
 
 /** The client a /compact call came from; copilot never calls, but its summarizer can be pinned by name. */
 export type CompactClient = SessionClient | "copilot";
@@ -65,7 +66,7 @@ export function resolveEffectiveProvider(config: DaemonConfig, client?: CompactC
  * answer is a `SessionUnavailableError`, and a rejected answer a `SummaryRejectedError`:
  * the chain hands both to the next link.
  */
-export type RequesterSummary = { model: "haiku" | "sonnet" | "session"; operationId: string; signal?: AbortSignal; deadlineAt?: number };
+export type RequesterSummary = { model: RequesterSummaryModel; operationId: string; signal?: AbortSignal; deadlineAt?: number };
 
 function createSessionSummarizer(jobs?: Pick<SummarizeJobStore, "enqueue">, pool = false, requester?: RequesterSummary, completionMs = 180_000): LcmSummarizeFn {
   return async (text, aggressive, ctx = {}) => {
@@ -98,7 +99,7 @@ function createSessionSummarizer(jobs?: Pick<SummarizeJobStore, "enqueue">, pool
     const summary = answer.text ?? "";
     const inputTokens = answer.usage?.input_tokens ?? Math.ceil((system.length + prompt.length) / 4);
     const outputTokens = answer.usage?.output_tokens ?? Math.ceil(summary.length / 4);
-    const provider = answer.providerId ?? (pool ? "session-pool:haiku" : requester ? requester.model === "session" ? "session:fork" : `session:${requester.model}` : ctx.isCondensed ? "session:fork" : "session:haiku");
+    const provider = answer.providerId ?? (pool ? "session-pool:haiku" : sessionSummaryProviderId(requester?.model ?? (ctx.isCondensed ? "session" : "haiku")));
     // Reported before the answer is judged: a rejected answer was still charged.
     ctx.onUsage?.({ provider, model: provider.split(":")[1], inputTokens, outputTokens,
       tokensUsed: inputTokens + outputTokens, estimated: answer.usage?.estimated ?? true });

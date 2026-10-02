@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { SummarizeContext } from "../llm/types.js";
+import { validSessionSummaryProviderId, type RequesterSummaryModel, type SessionSummaryProviderId } from "./summary-models.js";
 
 export type SummarizeJob = {
   id: string; session_id: string; kind: "leaf" | "condensed"; depth: number;
@@ -8,18 +9,19 @@ export type SummarizeJob = {
   pool?: true;
   workClass?: SummarizeContext["workClass"];
   purpose?: "compaction";
-  model?: "haiku" | "sonnet" | "session";
+  model?: RequesterSummaryModel;
   operationId?: string;
   timeoutMs?: number;
   deadlineAt?: number;
 };
-export type SummaryProviderId = "session:haiku" | "session:sonnet" | "session:fork" | `session-pool:${string}`;
+export type SummaryProviderId = SessionSummaryProviderId | `session-pool:${string}`;
 export function validPoolModel(model: unknown): model is string {
   return typeof model === "string" && /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(model);
 }
 export function validSummaryProviderId(id: unknown): id is SummaryProviderId {
-  return id === "session:haiku" || id === "session:sonnet" || id === "session:fork" ||
-    typeof id === "string" && id.startsWith("session-pool:") && validPoolModel(id.slice("session-pool:".length));
+  if (validSessionSummaryProviderId(id)) return true;
+  if (typeof id !== "string") return false;
+  return id.startsWith("session-pool:") && validPoolModel(id.slice("session-pool:".length));
 }
 export type JobAnswer = {
   text?: string; error?: string; providerId?: SummaryProviderId;

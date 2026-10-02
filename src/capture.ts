@@ -93,7 +93,7 @@ export interface TranscriptCaptureInput extends TranscriptLocator {
 }
 
 export interface TranscriptCaptureResult extends CaptureResult {
-  verification?: { verified: boolean; complete: boolean; boundaryFound: boolean };
+  verification?: { verified: boolean; complete: boolean; boundaryFound: boolean; boundaryScanExceeded?: boolean };
   /** The transcript that was read, as the adapter located it. */
   transcriptPath: string;
   /** Fills the model on the session's events whose hook payload could not carry one. */

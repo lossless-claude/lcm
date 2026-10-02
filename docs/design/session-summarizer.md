@@ -61,8 +61,9 @@ matching source/requester session ids and model `haiku`, `sonnet` or `session`, 
 request-local provider chain first enqueues ordinary session-owned jobs marked
 `purpose: "compaction"`. These carry the chosen `model`, `operationId`, `timeoutMs`
 and operation `deadlineAt`. The requesting module serves both leaf and condensed
-jobs with the chosen model. Sonnet is the wire default and consumes Sonnet quota on
-every node; session-model forks require explicit selection.
+jobs with the chosen model. The wire default is `pool`, preserving the configured pipeline and cost profile.
+Opt-in Sonnet consumes Sonnet quota on every node; session-model forks also require
+explicit selection.
 
 Compaction `instructions` flow through the shared provider prompt renderer into
 leaf, condensed, aggressive and configured-provider fallback prompts. The daemon

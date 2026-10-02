@@ -40,6 +40,21 @@ Send `client: "claude"`, `capture_required: true`, `render_context: true`,
 The captured file must be verified through that UUID and fully consumed; an incomplete
 trailing record, unverified legacy prefix or absent boundary leaves the context unavailable.
 
+Every parsed request with `render_context: true` receives one `contextWindow` from
+the typed reply constructor. Non-ready statuses distinguish `excluded`,
+`no-summarizer`, `summary-failed`, `deadline`, `boundary-scan-limit`,
+`capture-unverified`, `coverage-unverified`, `busy`, `empty`, `over-budget`, and
+`invalid-request`. A successful Capture followed by a provider error reports
+`summary-failed`; it does not invalidate the Capture result. Deadline expiry is a
+warning-level outcome with the `deadline` observation code, including expiry while
+reading the transcript. Cancellation and response ownership are separate: only an
+actual response suppresses another reply.
+
+A UUID behind the capture cursor is searched only in the last 1 MiB of the consumed
+prefix. If that bounded window cannot establish the boundary, the daemon returns
+`boundary-scan-limit` and no installable text. It does not scan unbounded history
+while holding the project's mutation lease.
+
 The additive `contextWindow` response identifies version 1, session and conversation,
 byte budget, all captured source-message ids, rendered raw-message ids, each rendered
 active summary's recursive source ids, and any uncovered source ids. A `ready` result
@@ -62,8 +77,7 @@ condensed, aggressive and fallback-provider prompt for this request. Existing
 summaries are not rewritten solely to apply new directions. Invalid instruction
 values are rejected with HTTP 400.
 
-Rendered requests additionally choose `compaction_summary_model`: `haiku`, `sonnet`
-(default), `session` or `pool`. Non-pool choices require `summary_via_requester: true`
+Rendered requests additionally choose `compaction_summary_model`: `pool` (default), `haiku`, `sonnet` or `session`. Non-pool choices require `summary_via_requester: true`
 and a matching `requester_session_id`; `pool` uses the configured chain without
 requester jobs. An `operation_id` attributes jobs and hook outcomes. The daemon's
 `compaction.hookDeadlineMs` safety deadline applies to the whole rendered request;

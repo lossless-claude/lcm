@@ -645,9 +645,10 @@ previously committed passes remain stored. Database resources and the session gu
 remain owned until outstanding operations settle.
 
 The wire field `compaction_summary_model` accepts `haiku`, `sonnet`, `session`, or
-`pool` and defaults to `sonnet`. The first three require `summary_via_requester: true`
+`pool` and defaults to `pool`. The first three require `summary_via_requester: true`
 and `requester_session_id` equal to the source `session_id`. They prepend requesting-session
 jobs to the configured provider chain without changing global provider selection.
+`pool` retains the configured pipeline and its existing cost profile. The opt-in
 `sonnet` requests Sonnet for **every leaf and condensed node** of the sweep; on large
 conversations these calls consume substantial real session quota. `haiku` uses Haiku;
 `session` requests the session's model through a fork. A failed or unclaimed requester
