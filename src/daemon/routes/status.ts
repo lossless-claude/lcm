@@ -16,7 +16,7 @@ import { compactingSessionsFor } from "./compact.js";
 import { PromotedStore } from "../../db/promoted.js";
 import { ConversationStore } from "../../store/conversation-store.js";
 import { SummaryStore } from "../../store/summary-store.js";
-import type { SettleReport } from "../../project-timeline.js";
+import type { TimelineStatusReport } from "../../project-timeline.js";
 
 export function createStatusHandler(config: DaemonConfig, paths: LcmPaths, startTime: number, actualPort?: number): RouteHandler {
   return async (_req, res, body) => {
@@ -46,7 +46,7 @@ export function createStatusHandler(config: DaemonConfig, paths: LcmPaths, start
       let messageCount: number | null = 0;
       let summaryCount: number | null = 0;
       let promotedCount: number | null = 0;
-      let timeline: SettleReport | undefined;
+      let timeline: TimelineStatusReport | undefined;
 
       const dbPath = projectDbPath(cwd, paths);
       if (existsSync(dbPath)) {
@@ -59,10 +59,11 @@ export function createStatusHandler(config: DaemonConfig, paths: LcmPaths, start
           summaryCount = await count(() => new SummaryStore(db).countSummaries());
           promotedCount = await count(() => new PromotedStore(db).count());
           try {
-            const pending = db.prepare("SELECT (SELECT COUNT(*) FROM timeline_units WHERE month NOT IN (SELECT month FROM timeline_months WHERE replan = 1)) + (SELECT COUNT(*) FROM timeline_months WHERE replan = 1) n").get() as { n: number };
+            const pending = db.prepare("SELECT COUNT(*) n FROM timeline_units WHERE status = 'ready'").get() as { n: number };
+            const replanMonths = db.prepare("SELECT COUNT(*) n FROM timeline_months WHERE replan = 1").get() as { n: number };
             const dirty = db.prepare("SELECT COUNT(*) n FROM timeline_dirty WHERE dirty = 1").get() as { n: number };
             const stale = db.prepare("SELECT COUNT(*) n FROM timeline_nodes WHERE active = 1 AND stale_reason IS NOT NULL").get() as { n: number };
-            timeline = { generated: 0, calls: 0, pending: pending.n, stale: stale.n, dirty: dirty.n, stopped: "complete", failed: [] };
+            timeline = { generated: 0, calls: 0, pending: pending.n, replanMonths: replanMonths.n, stale: stale.n, dirty: dirty.n, stopped: "complete", failed: [] };
           } catch { /* Older stores or unavailable timeline counts leave that field absent. */ }
         } finally {
           db.close();

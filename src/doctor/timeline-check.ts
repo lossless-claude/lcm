@@ -1,7 +1,7 @@
 import type { CheckResult, DoctorDeps } from "./types.js";
 import { createLcmPaths } from "../lcm-paths.js";
 import { projectDbPath } from "../daemon/project.js";
-import type { SettleReport } from "../project-timeline.js";
+import type { TimelineStatusReport } from "../project-timeline.js";
 import { openStandaloneLcmConnection } from "../db/connection.js";
 import { timelineTriggerIssues } from "../db/project-timeline.js";
 
@@ -29,12 +29,12 @@ export async function checkProjectTimeline(deps: DoctorDeps, port: number): Prom
       body: JSON.stringify({ cwd }),
     });
     if (!response.ok) throw new Error("Timeline status unavailable");
-    const status = await response.json() as { project: { timeline?: SettleReport } };
+    const status = await response.json() as { project: { timeline?: TimelineStatusReport } };
     const report = status.project.timeline;
     if (!report) return { ...result, status: triggers ? "warn" : "pass", message: ["Timeline counts unavailable; no reconciliation performed", triggers].filter(Boolean).join(". ") };
     if (report.calls !== 0 || !Number.isInteger(report.pending) || !Number.isInteger(report.stale)) throw new Error("Unsupported timeline response");
-    return { ...result, status: triggers || report.stale || report.pending || report.dirty ? "warn" : "pass",
-      message: [`Timeline: ${report.pending} pending, ${report.stale} stale, ${report.dirty ?? 0} dirty sessions; persisted counts, no reconciliation${report.pending ? ". Generate with: lcm timeline settle" : ""}`, triggers].filter(Boolean).join(". ") };
+    return { ...result, status: triggers || report.stale || report.pending || report.replanMonths || report.dirty ? "warn" : "pass",
+      message: [`Timeline: ${report.pending} pending units, ${report.replanMonths ?? "unavailable"} months awaiting replan, ${report.stale} stale, ${report.dirty ?? 0} dirty sessions; persisted counts, no reconciliation${report.pending || report.replanMonths ? ". Generate with: lcm timeline settle" : ""}`, triggers].filter(Boolean).join(". ") };
   } catch {
     return { ...result, status: "warn", message: ["Timeline counts unavailable: daemon unavailable or lacks status support", triggers].filter(Boolean).join(". ") };
   }

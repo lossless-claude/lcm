@@ -66,7 +66,7 @@ export function registerDiagnosticsCommands(program: Command, deps: DiagnosticsC
           console.log(`  Messages: ${statusData.project.messageCount ?? "unavailable"}`);
           console.log(`  Summaries: ${statusData.project.summaryCount ?? "unavailable"}`);
           console.log(`  Promoted: ${statusData.project.promotedCount ?? "unavailable"}`);
-          if (statusData.project.timeline) console.log(`  Timeline: ${statusData.project.timeline.pending} pending, ${statusData.project.timeline.stale} stale`);
+          if (statusData.project.timeline) console.log(`  Timeline: ${statusData.project.timeline.pending} pending units, ${statusData.project.timeline.replanMonths ?? "unavailable"} months awaiting replan, ${statusData.project.timeline.stale} stale`);
           if (statusData.project.lastIngest) console.log(`  Last Ingest: ${statusData.project.lastIngest}`);
           if (statusData.project.lastCompact) console.log(`  Last Compact: ${statusData.project.lastCompact}`);
           if (statusData.project.lastPromote) console.log(`  Last Promote: ${statusData.project.lastPromote}`);

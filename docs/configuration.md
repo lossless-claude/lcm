@@ -435,10 +435,13 @@ once, including those blocked by missing environment variables. Legacy failures
 lack a recorded cause, so legacy model failures also receive one retry. Later
 failures retain their persisted backoff and parking.
 
-`lcm status` and `lcm doctor` read pending/stale/dirty counts without migration or
-settle, including dirty sessions not yet flagged. Ordinary counts remain available
+`lcm status` and `lcm doctor` separately report ready timeline units (`pending`)
+and months awaiting replan (`replanMonths`), plus stale nodes and dirty sessions,
+without migration or settle. Ready units include those in months awaiting replan
+and those waiting for retry; parked units are excluded. Timeline counts read
+indexed tables, including dirty sessions not yet flagged. Ordinary counts remain available
 on unmigrated read-only stores. Failed ordinary counts print `unavailable` in the
-CLI; zero remains zero. Counts use SQLite table counts minus indexed owner counts.
+CLI; zero remains zero. Ordinary counts use SQLite table counts minus indexed owner counts.
 Historical timeline nodes remain readable by id unless explicitly removed.
 Doctor also checks tracking/detach SQL in `sqlite_master` read-only and reports
 missing or outdated triggers with `lcm timeline settle --calls 0 --reconcile full`.
