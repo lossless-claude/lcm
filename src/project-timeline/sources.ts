@@ -4,7 +4,10 @@ import { parseSqliteDate } from "../db/sqlite-date.js";
 import { parseStoredTags } from "../db/votes.js";
 import { yieldToEventLoop } from "../daemon/project-queue.js";
 
+export type TimeBasis = "event" | "capture" | "mixed";
+
 export type Coverage = {
+  timeBasis?: TimeBasis;
   conversationId: number; sessionId: string; revision: string;
   summaryIds: string[]; messageIds: number[]; messageRange?: [number, number];
 };
@@ -19,7 +22,7 @@ export type Work = {
   key: string; level: "digest" | "period"; items: Item[]; coverage: Coverage[];
   from: string; to: string; memories: Memory[]; generator: string;
 };
-type Message = { message_id: number; seq: number; content: string; role: string; token_count: number; created_at: string };
+type Message = { message_id: number; seq: number; content: string; role: string; token_count: number; created_at: string; event_at: string | null };
 type Summary = { summary_id: string; content: string; token_count: number; earliest_at: string | null; latest_at: string | null; created_at: string; depth: number; source_message_token_count: number; descendant_count: number; descendant_token_count: number };
 
 export function hash(value: unknown): string {
@@ -60,7 +63,7 @@ export async function readItems(db: DatabaseSync, sessionId: string): Promise<In
   return inputs;
 }
 
-export const REMAINDER_SQL = `SELECT m.message_id, m.seq, m.content, m.role, m.token_count, m.created_at
+export const REMAINDER_SQL = `SELECT m.message_id, m.seq, m.content, m.role, m.token_count, m.created_at, m.event_at
   FROM messages m WHERE m.conversation_id = ? AND NOT EXISTS
     (SELECT 1 FROM message_parts p WHERE p.message_id = m.message_id AND p.part_type = 'compaction')
   AND NOT EXISTS (SELECT 1 FROM summary_messages sm JOIN summaries s ON s.summary_id = sm.summary_id
@@ -75,10 +78,11 @@ async function conversationItems(db: DatabaseSync, conversation: { conversation_
   const id = conversation.conversation_id;
   const summaries = await readRows<Summary>(db, FRONTIER_SQL, [id], "summary_id");
   const messages = await readRows<Message>(db, REMAINDER_SQL, [id], "seq");
-  const count = db.prepare(`SELECT COUNT(*) n FROM messages m WHERE m.conversation_id = ? AND NOT EXISTS
-    (SELECT 1 FROM message_parts p WHERE p.message_id = m.message_id AND p.part_type = 'compaction')`).get(id) as { n: number };
-  const revision = hash([conversation.session_id, conversation.messageOffset, summaries, messages]);
-  const base = { conversationId: id, sessionId: conversation.session_id, revision };
+  const count = db.prepare(`SELECT COUNT(*) n, COUNT(m.event_at) known FROM messages m WHERE m.conversation_id = ? AND NOT EXISTS
+    (SELECT 1 FROM message_parts p WHERE p.message_id = m.message_id AND p.part_type = 'compaction')`).get(id) as { n: number; known: number };
+  const revision = hash([conversation.session_id, conversation.messageOffset, summaries, messages, count.known]);
+  const timeBasis: TimeBasis = count.known === 0 ? "capture" : count.known === count.n ? "event" : "mixed";
+  const base = { conversationId: id, sessionId: conversation.session_id, revision, timeBasis };
   const items: Item[] = summaries.map(summary => ({
     id: summary.summary_id, summaryId: summary.summary_id, content: summary.content,
     tokens: summary.token_count, from: iso(summary.earliest_at ?? summary.created_at),
@@ -97,7 +101,7 @@ async function conversationItems(db: DatabaseSync, conversation: { conversation_
     const at = conversation.messageOffset + position;
     items.push({ id: `msg_${message.message_id}`, messageId: message.message_id, seq: message.seq,
       content: `[${message.role}] ${message.content}`, tokens: message.token_count,
-      from: iso(message.created_at), to: iso(message.created_at), depth: 0,
+      from: iso(message.event_at ?? message.created_at), to: iso(message.event_at ?? message.created_at), depth: 0,
       sourceTokens: message.token_count, descendantCount: 0, descendantTokens: 0,
       coverage: [{ ...base, summaryIds: [], messageIds: [message.message_id], messageRange: [at, at] }] });
   }

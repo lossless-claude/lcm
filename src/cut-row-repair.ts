@@ -12,7 +12,7 @@ export interface CutRowRepairPlan {
   sessionId: string;
   client: CutRepairClient;
   kind: "aligned" | "repairable" | "ambiguous" | "unavailable";
-  rows: Array<{ messageId: number; storedContent: string; content: string }>;
+  rows: Array<{ messageId: number; storedContent: string; content: string; eventAt?: string }>;
   reason?: string;
 }
 
@@ -106,7 +106,7 @@ export async function planCutRowRepair(db: DatabaseSync, input: RepairInput): Pr
   const rows = stored.flatMap((row, index) => {
     const message = aligned[index];
     return message.content.includes("\u0000") && compareStoredMessageContent(row.content, message.content, input.scrub) === "cut"
-      ? [{ messageId: row.messageId, storedContent: row.content, content: normalizeMessageContent(input.scrub(message.content)) }]
+      ? [{ messageId: row.messageId, storedContent: row.content, content: normalizeMessageContent(input.scrub(message.content)), ...(message.eventAt ? { eventAt: message.eventAt } : {}) }]
       : [];
   });
   return { ...base, rows, kind: rows.length ? "repairable" : "aligned" };

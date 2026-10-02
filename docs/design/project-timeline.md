@@ -20,7 +20,8 @@ replay selection, orphan checks and session statistics. Expansion behavior is un
   The default and the compatibility value `journal` both select incremental work.
   Zero calls perform no generation. Physical provider attempts are outside the budget.
 - `describe(summaryId)`: period, session coverage, summary ids, session-relative
-  raw-message ranges, stale reason/time, memory revisions, generator and replacements;
+  raw-message ranges and each conversation's time basis, stale reason/time, memory
+  revisions, generator and replacements;
   null for an ordinary session summary.
 
 Reports contain generated, pending, stale, dirty, calls, failures and the stop reason.
@@ -30,6 +31,8 @@ failures leave durable work available for a later invocation.
 ## Opt-in lifecycle
 
 Migration creates metadata tables and leaves tracking off until explicitly enabled.
+Adding the event-time coverage field restarts bootstrap for already-tracked stores,
+so persisted metadata is refreshed in resumable pages.
 With tracking on, it restores missing tracking and detach triggers and replaces
 definitions whose SQL differs from the current code, idempotently. With tracking
 off, it removes timeline triggers. It also removes `timeline_journal`,
@@ -42,7 +45,7 @@ migration and reads behind concurrent writers on already-current stores.
 `lcm timeline enable` creates tracking and detach triggers, sets tracking and
 project generation on, and enters bootstrapping in one transaction. Bootstrap
 seeds at most 256 sessions per lease, yielding between pages with a persisted
-cursor. Seeding uses insert-if-absent and never resets a write counter. Writes
+cursor. Seeding marks existing sessions dirty and never resets a write counter. Writes
 between trigger creation and the end of bootstrap therefore stay visible,
 including a new session whose sort position is behind the cursor.
 
@@ -95,7 +98,11 @@ manual origin; that distinction remains unconfirmed.
    that session dirty for the next settle; other sessions continue in this pass.
 4. Replan marked months from metadata only. Existing summaries are indivisible;
    chunking ignores summary depth and closes at the configured leaf token limit
-   or a UTC month boundary, assigned by latest coverage date. The latest replay
+   or a UTC month boundary, assigned by latest coverage date. Raw dates use
+   `messages.event_at` when known and capture `created_at` otherwise; summary
+   bounds use the same per-message fallback. Source `timeBasis` is `event`,
+   `capture` or `mixed`, persisted in coverage and exposed by describe and search.
+   Generation sources explicitly label capture-time fallback. The latest replay
    manifest supplies session order; otherwise order by date, session, conversation,
    sequence and id. Actual coverage bounds are preserved for spanning summaries.
 5. Hydrate one ready unit by source id and call the summarizer outside the lease.
@@ -116,9 +123,11 @@ and record their ids. Historical rows remain immutable and addressable.
 ## Scheduling and explicit healing
 
 `timeline.generationEnabled` gates model generation and defaults to false.
-Tracking and completed bootstrap are also required for automatic work. The daemon
-checks every 30 seconds, waits for 60 seconds without a newer session bump, and
-runs at most one unit per project per tick. Durable units resume across restarts.
+Tracking and project generation must also be enabled for automatic work. The daemon
+checks every 30 seconds and resumes one bootstrap page of at most 256 sessions per
+tick, yielding without model calls. Generation starts after bootstrap, waits for
+60 seconds without a newer session bump, and runs at most one unit per project per
+tick. Durable units resume across restarts.
 
 Every admitted provider and fallback must be a named OpenAI or Anthropic HTTP
 endpoint with `maxConcurrent`. Shared endpoint admission places live work first,

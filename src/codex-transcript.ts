@@ -21,7 +21,7 @@ import { homedir } from "node:os";
 import { StringDecoder } from "node:string_decoder";
 import { TextDecoder } from "node:util";
 import { isWorkerClaim, workerPayloadJobIds } from "./worker-markers.js";
-import { estimateTokens } from "./transcript.js";
+import { estimateTokens, transcriptEventTime } from "./transcript.js";
 import type { ParsedMessage } from "./transcript.js";
 
 // ---------------------------------------------------------------------------
@@ -190,8 +190,9 @@ export function parseCodexTranscriptRecord(record: string): ParsedCodexTranscrip
   const payload = obj.payload as CodexResponseItemPayload | undefined;
   if (!payload) return {};
 
+  const eventAt = transcriptEventTime(obj.timestamp);
   const tool = parseCodexToolRecord(payload);
-  if (tool) return { message: tool };
+  if (tool) return { message: { ...tool, ...(eventAt ? { eventAt } : {}) } };
 
   if (payload.type !== "message") return {};
 
@@ -203,7 +204,7 @@ export function parseCodexTranscriptRecord(record: string): ParsedCodexTranscrip
   if (!content.trim()) return {};
 
   return {
-    message: { role, content, tokenCount: estimateTokens(content) },
+    message: { role, content, tokenCount: estimateTokens(content), ...(eventAt ? { eventAt } : {}) },
   };
 }
 

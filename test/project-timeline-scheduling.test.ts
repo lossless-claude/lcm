@@ -53,3 +53,56 @@ it("timeline providers require admission on every fallback", () => {
   expect(timelineProviderAdmitted(http)).toBe(true);
   http.llm.fallback = ["unbounded"]; expect(timelineProviderAdmitted(http)).toBe(false);
 });
+
+it("ticks alone resume migrated bootstrap one bounded page at a time before model work", async () => {
+  const { db, timeline, summarize } = await fixture();
+  const insert = db.prepare("INSERT INTO conversations(session_id) VALUES (?)");
+  for (let index = 0; index < 600; index++) insert.run(`session-${String(index).padStart(3, "0")}`);
+  db.exec("UPDATE timeline_state SET phase = 'ready'; ALTER TABLE timeline_sources DROP COLUMN time_basis");
+  runLcmMigrations(db);
+  expect(db.prepare("SELECT phase, bootstrap_cursor FROM timeline_state").get()).toMatchObject({ phase: "bootstrapping", bootstrap_cursor: "" });
+  const cursors: string[] = [];
+  const prepare = db.prepare.bind(db);
+  const pages: number[] = [];
+  vi.spyOn(db, "prepare").mockImplementation(sql => {
+    const statement = prepare(sql);
+    if (sql.includes("SELECT DISTINCT session_id FROM conversations")) {
+      const all = statement.all.bind(statement);
+      vi.spyOn(statement, "all").mockImplementation((...args) => { const rows = all(...args); pages.push(rows.length); return rows; });
+    }
+    return statement;
+  });
+  let yielded = false; setImmediate(() => { yielded = true; });
+  for (let tick = 0; tick < 3; tick++) {
+    await timelineTick(db, timeline, true);
+    cursors.push((prepare("SELECT bootstrap_cursor FROM timeline_state").get() as { bootstrap_cursor: string }).bootstrap_cursor);
+    expect(pages).toHaveLength(tick + 1);
+    expect(summarize).not.toHaveBeenCalled();
+  }
+  expect(pages).toEqual([256, 256, 89]);
+  expect(new Set(cursors).size).toBe(3);
+  expect(yielded).toBe(true);
+  expect(prepare("SELECT phase FROM timeline_state").get()).toMatchObject({ phase: "ready" });
+  db.prepare("UPDATE timeline_dirty SET bumped_at = ?").run(new Date().toISOString());
+  vi.setSystemTime(Date.now() + 60000);
+  await timelineTick(db, timeline, true);
+  expect(summarize).toHaveBeenCalledTimes(1);
+});
+
+it("migrated bootstrap refreshes clean session metadata without resetting write counters", async () => {
+  const { db, timeline, summarize } = await fixture();
+  db.exec(`UPDATE timeline_items SET metadata = json_remove(metadata, '$.coverage[0].timeBasis');
+    UPDATE timeline_sessions SET fingerprint = 'pre-event-time';
+    ALTER TABLE timeline_sources DROP COLUMN time_basis`);
+  const before = db.prepare("SELECT rev FROM timeline_dirty WHERE session_id = 'session'").get();
+  expect(db.prepare("SELECT dirty FROM timeline_dirty WHERE session_id = 'session'").get()).toMatchObject({ dirty: 0 });
+  runLcmMigrations(db);
+  await timelineTick(db, timeline, true);
+  expect(db.prepare("SELECT dirty FROM timeline_dirty WHERE session_id = 'session'").get()).toMatchObject({ dirty: 1 });
+  expect(db.prepare("SELECT rev FROM timeline_dirty WHERE session_id = 'session'").get()).toEqual(before);
+  vi.setSystemTime(Date.now() + 60000);
+  await timelineTick(db, timeline, true);
+  const row = db.prepare("SELECT json_extract(metadata, '$.coverage[0].timeBasis') basis FROM timeline_items").get();
+  expect(row).toEqual({ basis: "capture" });
+  expect(summarize).toHaveBeenCalledTimes(1);
+});

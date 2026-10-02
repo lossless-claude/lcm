@@ -53,6 +53,19 @@ repository (promoted memory is shared across every checkout). Pass that suffix a
 argument to `lcm_describe` or `lcm_expand` — the bare id, read against the current project, would
 resolve to a different node or nothing at all.
 
+## Timestamp meanings
+
+| Surface | Timestamp shown |
+|---|---|
+| `recent` library call / `/recent` | Summary `createdAt` and newest-first ordering use summary insertion time; `earliestAt` / `latestAt` describe the source period. |
+| Search / grep | Message `createdAt` is capture time; summary `createdAt` is summary insertion time. Time filters use these storage timestamps. Timeline hits additionally expose their source `period` and `timeBasis`. |
+| Describe | Summary `createdAt` is insertion time; `earliestAt` / `latestAt` use source event time with capture-time fallback. |
+| Timeline | Source periods and UTC months use event time when known, otherwise capture time. Coverage `timeBasis` is `event`, `capture` or `mixed`; timeline search reports the aggregate basis. |
+
+Capture, import and rebuild preserve transcript record timestamps separately as
+nullable message `eventAt`. Repair older history with
+`lcm import --backfill-event-times`; missing or unaligned records remain unknown.
+
 ## Tool reference
 
 ### lcm_search
@@ -64,7 +77,8 @@ Native episodic matches contain up to 1,000 characters of exact source context, 
 they do not assert that the excerpt answers the question. Promoted memory output is unchanged.
 
 Timeline summaries appear in episodic results with `timeline.period` and
-`timeline.stale`. Stale timeline nodes are hidden by default; `includeStale`
+`timeline.stale`, plus `timeline.timeBasis` (`event`, `capture` or `mixed`).
+Stale timeline nodes are hidden by default; `includeStale`
 includes them with their reasons. They are projections over the session evidence,
 and are never promoted memories.
 
@@ -151,7 +165,7 @@ lcm_grep(query: "config\\.threshold", scope: "summaries")
 Inspect metadata and lineage of a memory node without expanding content. Returns depth, token count, parent/child links, and whether the node was promoted to long-term memory.
 
 For a timeline node, `node.timeline` also contains `period`, exact session
-`coverage` (source summary ids and raw message ranges), `stale` reason/time,
+`coverage` (source summary ids, raw message ranges and `timeBasis`), `stale` reason/time,
 `memoryRefs` (id and revision), `generator`, and `replaces`. Describe never calls
 the model. Historical replaced nodes and digests retired after later session compaction remain readable by id.
 
