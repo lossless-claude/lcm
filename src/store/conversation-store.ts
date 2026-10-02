@@ -43,6 +43,7 @@ export type CreateMessageInput = {
   role: MessageRole;
   content: string;
   tokenCount: number;
+  eventAt?: Date | null;
 };
 
 export type MessageRecord = {
@@ -53,6 +54,7 @@ export type MessageRecord = {
   content: string;
   tokenCount: number;
   createdAt: Date;
+  eventAt?: Date | null;
 };
 
 export type CreateMessagePartInput = {
@@ -92,6 +94,9 @@ export type ConversationRecord = {
   bootstrappedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+  /** Bounds of transcript messages, using capture time for unknown events. */
+  firstAt?: Date;
+  lastAt?: Date;
   /** "tagged" when the rows separate tool output from human text; null when unknown. */
   roleTagging: "tagged" | null;
   /** Claude parser output shape, or null when it cannot be established. */
@@ -125,6 +130,8 @@ export type MessageSearchResult = {
 // ── DB row shapes (snake_case) ────────────────────────────────────────────────
 
 interface ConversationRow {
+  first_at: string | null;
+  last_at: string | null;
   conversation_id: number;
   session_id: string;
   title: string | null;
@@ -139,6 +146,7 @@ interface ConversationRow {
 }
 
 interface MessageRow {
+  event_at: string | null;
   message_id: number;
   conversation_id: number;
   seq: number;
@@ -166,7 +174,13 @@ interface MaxSeqRow {
 }
 
 const CONVERSATION_SELECT_COLUMNS = `SELECT conversation_id, session_id, title, bootstrapped_at, created_at, updated_at,
-       role_tagging, parser_shape, parent_session_id, subagent_type, subagent_desc`;
+       role_tagging, parser_shape, parent_session_id, subagent_type, subagent_desc,
+       (SELECT strftime('%Y-%m-%dT%H:%M:%fZ', MIN(julianday(COALESCE(m.event_at, m.created_at))))
+        FROM messages m WHERE m.conversation_id = conversations.conversation_id AND NOT EXISTS
+        (SELECT 1 FROM message_parts p WHERE p.message_id = m.message_id AND p.part_type = 'compaction')) first_at,
+       (SELECT strftime('%Y-%m-%dT%H:%M:%fZ', MAX(julianday(COALESCE(m.event_at, m.created_at))))
+        FROM messages m WHERE m.conversation_id = conversations.conversation_id AND NOT EXISTS
+        (SELECT 1 FROM message_parts p WHERE p.message_id = m.message_id AND p.part_type = 'compaction')) last_at`;
 
 // ── Row mappers ───────────────────────────────────────────────────────────────
 
@@ -178,6 +192,8 @@ function toConversationRecord(row: ConversationRow): ConversationRecord {
     bootstrappedAt: row.bootstrapped_at ? parseSqliteDate(row.bootstrapped_at) : null,
     createdAt: parseSqliteDate(row.created_at),
     updatedAt: parseSqliteDate(row.updated_at),
+    firstAt: parseSqliteDate(row.first_at ?? row.created_at),
+    lastAt: parseSqliteDate(row.last_at ?? row.created_at),
     roleTagging: row.role_tagging === "tagged" ? "tagged" : null,
     parserShape: row.parser_shape,
     parentSessionId: row.parent_session_id,
@@ -191,6 +207,7 @@ function toMessageRecord(row: MessageRow): MessageRecord {
     messageId: row.message_id,
     conversationId: row.conversation_id,
     seq: row.seq,
+    eventAt: row.event_at ? parseSqliteDate(row.event_at) : null,
     role: row.role,
     content: row.content,
     tokenCount: row.token_count,
@@ -372,24 +389,32 @@ export class ConversationStore {
   }
 
   /** Every conversation's transcript messages of the session, oldest conversation first, each in `seq` order; compaction's own event rows are left out. */
-  async getSessionMessages(sessionId: string, offset = 0): Promise<MessageRecord[]> {
+  async getSessionMessages(sessionId: string, offset = 0, limit = -1): Promise<MessageRecord[]> {
     const rows = this.db
       .prepare(
-        `SELECT m.message_id, m.conversation_id, m.seq, m.role, m.content, m.token_count, m.created_at
+        `SELECT m.message_id, m.conversation_id, m.seq, m.role, m.content, m.token_count, m.created_at, m.event_at
          FROM messages m
          JOIN conversations c ON c.conversation_id = m.conversation_id
          WHERE c.session_id = ? AND ${NOT_COMPACTION_EVENT}
-         ORDER BY c.created_at, c.conversation_id, m.seq LIMIT -1 OFFSET ?`,
+         ORDER BY c.created_at, c.conversation_id, m.seq LIMIT ? OFFSET ?`,
       )
-      .all(sessionId, offset) as unknown as MessageRow[];
+      .all(sessionId, limit, offset) as unknown as MessageRow[];
     return rows.map(toMessageRecord);
   }
 
+  /** Fill unknown event times without changing capture timestamps or an earlier repair. */
+  backfillMessageEventTimes(rows: ReadonlyArray<{ messageId: number; content: string; role: MessageRole; eventAt: string }>): number {
+    const update = this.db.prepare("UPDATE messages SET event_at = ? WHERE message_id = ? AND event_at IS NULL AND content = ? AND role = ?");
+    let updated = 0;
+    for (const row of rows) updated += Number(update.run(row.eventAt, row.messageId, row.content, row.role).changes);
+    return updated;
+  }
+
   /** Rewrite only verified historical NUL-cut rows and their full-text entries as one unit. */
-  repairCutMessageContent(rows: ReadonlyArray<{ messageId: number; storedContent: string; content: string }>): number {
+  repairCutMessageContent(rows: ReadonlyArray<{ messageId: number; storedContent: string; content: string; eventAt?: string }>): number {
     if (rows.length === 0) return 0;
     const update = this.db.prepare(
-      `UPDATE messages SET content = ? WHERE message_id = ? AND
+      `UPDATE messages SET content = ?, event_at = COALESCE(event_at, ?) WHERE message_id = ? AND
        (content = ? OR (instr(content, char(0)) > 0 AND substr(content, 1, instr(content, char(0)) - 1) = ?))`,
     );
     const timelineTracking = this.db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'timeline_state'").get()
@@ -403,7 +428,7 @@ export class ConversationStore {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       for (const row of rows) {
-        if (update.run(row.content, row.messageId, row.storedContent, row.storedContent).changes !== 1) {
+        if (update.run(row.content, row.eventAt ?? null, row.messageId, row.storedContent, row.storedContent).changes !== 1) {
           throw new Error(`cut message ${row.messageId} changed before repair`);
         }
         markDirty?.run(row.messageId);
@@ -502,7 +527,7 @@ export class ConversationStore {
   async latestActiveConversation(excludingSessionId: string): Promise<ConversationRecord | null> {
     const row = this.db
       .prepare(
-        `${CONVERSATION_SELECT_COLUMNS}
+        `${CONVERSATION_SELECT_COLUMNS.replaceAll("conversations.", "c.")}
        FROM conversations c
        WHERE c.session_id != ? AND ${this.sessionFilter("c.")}
          AND (EXISTS (
@@ -533,10 +558,10 @@ export class ConversationStore {
   async createMessage(input: CreateMessageInput): Promise<MessageRecord> {
     const result = this.db
       .prepare(
-        `INSERT INTO messages (conversation_id, seq, role, content, token_count)
-       VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO messages (conversation_id, seq, role, content, token_count, event_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
       )
-      .run(input.conversationId, input.seq, input.role, input.content, input.tokenCount);
+      .run(input.conversationId, input.seq, input.role, input.content, input.tokenCount, input.eventAt?.toISOString() ?? null);
 
     const messageId = Number(result.lastInsertRowid);
 
@@ -544,7 +569,7 @@ export class ConversationStore {
 
     const row = this.db
       .prepare(
-        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
+        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, event_at
        FROM messages WHERE message_id = ?`,
       )
       .get(messageId) as unknown as MessageRow;
@@ -557,11 +582,11 @@ export class ConversationStore {
       return [];
     }
     const insertStmt = this.db.prepare(
-      `INSERT INTO messages (conversation_id, seq, role, content, token_count)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO messages (conversation_id, seq, role, content, token_count, event_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     );
     const selectStmt = this.db.prepare(
-      `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
+      `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, event_at
        FROM messages WHERE message_id = ?`,
     );
 
@@ -573,6 +598,7 @@ export class ConversationStore {
         input.role,
         input.content,
         input.tokenCount,
+        input.eventAt?.toISOString() ?? null,
       );
 
       const messageId = Number(result.lastInsertRowid);
@@ -594,7 +620,7 @@ export class ConversationStore {
     if (limit != null) {
       const rows = this.db
         .prepare(
-          `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
+          `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, event_at
          FROM messages
          WHERE conversation_id = ? AND seq > ?
          ORDER BY seq
@@ -606,7 +632,7 @@ export class ConversationStore {
 
     const rows = this.db
       .prepare(
-        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
+        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, event_at
        FROM messages
        WHERE conversation_id = ? AND seq > ?
        ORDER BY seq`,
@@ -622,7 +648,7 @@ export class ConversationStore {
   getMessageByIdSync(messageId: MessageId): MessageRecord | null {
     const row = this.db
       .prepare(
-        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
+        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, event_at
        FROM messages WHERE message_id = ?`,
       )
       .get(messageId) as unknown as MessageRow | undefined;
@@ -850,7 +876,7 @@ export class ConversationStore {
 
     const rows = this.db
       .prepare(
-        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
+        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, event_at
          FROM messages
          WHERE ${where.join(" AND ")}
          ORDER BY created_at DESC
@@ -904,7 +930,7 @@ export class ConversationStore {
     const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
     const rows = this.db
       .prepare(
-        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
+        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, event_at
          FROM messages
          ${whereClause}
          ORDER BY created_at DESC
@@ -954,7 +980,7 @@ export class ConversationStore {
     const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
     const rows = this.db
       .prepare(
-        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
+        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, event_at
          FROM messages
          ${whereClause}
          ORDER BY created_at DESC`,

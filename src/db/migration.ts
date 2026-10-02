@@ -365,8 +365,8 @@ function backfillSummaryMetadata(db: DatabaseSync): void {
       .prepare(
         `SELECT
            sm.summary_id,
-           MIN(m.created_at) AS earliest_at,
-           MAX(m.created_at) AS latest_at,
+           strftime('%Y-%m-%dT%H:%M:%fZ', MIN(julianday(COALESCE(m.event_at, m.created_at)))) AS earliest_at,
+           strftime('%Y-%m-%dT%H:%M:%fZ', MAX(julianday(COALESCE(m.event_at, m.created_at)))) AS latest_at,
            COALESCE(SUM(m.token_count), 0) AS source_message_token_count
          FROM summary_messages sm
          JOIN messages m ON m.message_id = sm.message_id
@@ -889,6 +889,8 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
     db.exec(`ALTER TABLE conversations ADD COLUMN bootstrapped_at TEXT`);
   }
 
+  const messageColumns = db.prepare("PRAGMA table_info(messages)").all() as SummaryColumnInfo[];
+  if (!messageColumns.some(column => column.name === "event_at")) db.exec("ALTER TABLE messages ADD COLUMN event_at TEXT");
   const depthAdded = ensureSummaryDepthColumn(db);
   const metadataAdded = ensureSummaryMetadataColumns(db);
   backfillSummaryFieldsOnce(db, depthAdded || metadataAdded);

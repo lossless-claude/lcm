@@ -1,3 +1,4 @@
+import { yieldToEventLoop } from "../daemon/project-queue.js";
 import { SUMMARY_SOURCE_IDS_SQL } from "./summary-lineage.js";
 import { WorkerStore } from "./worker-store.js";
 import type { DatabaseSync } from "node:sqlite";
@@ -473,6 +474,35 @@ export class SummaryStore {
   }
 
   // ── Lineage ───────────────────────────────────────────────────────────────
+
+  /** Recompute leaves before their condensed descendants, yielding between bounded pages. */
+  async recomputeTimeBounds(conversationId: number): Promise<void> {
+    let depth = -1;
+    let id = "";
+    for (;;) {
+      const page = this.db.prepare(`SELECT summary_id, depth, kind FROM summaries WHERE conversation_id = ?
+        AND (depth > ? OR (depth = ? AND summary_id > ?)) ORDER BY depth, summary_id LIMIT 128`)
+        .all(conversationId, depth, depth, id) as Array<{ summary_id: string; depth: number; kind: SummaryKind }>;
+      for (const summary of page) {
+        const range = summary.kind === "leaf"
+          ? this.db.prepare(`SELECT MIN(julianday(COALESCE(m.event_at, m.created_at))) first,
+              MAX(julianday(COALESCE(m.event_at, m.created_at))) last
+              FROM summary_messages sm JOIN messages m USING(message_id) WHERE sm.summary_id = ?`).get(summary.summary_id)
+          : this.db.prepare(`SELECT MIN(julianday(COALESCE(s.earliest_at, s.created_at))) first,
+              MAX(julianday(COALESCE(s.latest_at, s.created_at))) last
+              FROM summary_parents p JOIN summaries s ON s.summary_id = p.parent_summary_id WHERE p.summary_id = ?`).get(summary.summary_id);
+        const bounds = range as { first: number | null; last: number | null };
+        if (bounds.first !== null && bounds.last !== null) this.db.prepare(`UPDATE summaries
+          SET earliest_at = strftime('%Y-%m-%dT%H:%M:%fZ', ?), latest_at = strftime('%Y-%m-%dT%H:%M:%fZ', ?)
+          WHERE summary_id = ? AND (julianday(earliest_at) IS NOT ? OR julianday(latest_at) IS NOT ?)`)
+          .run(bounds.first, bounds.last, summary.summary_id, bounds.first, bounds.last);
+      }
+      await yieldToEventLoop();
+      if (page.length < 128) return;
+      depth = page.at(-1)!.depth;
+      id = page.at(-1)!.summary_id;
+    }
+  }
 
   async linkSummaryToMessages(summaryId: string, messageIds: number[]): Promise<void> {
     this.linkSummaryToMessagesSync(summaryId, messageIds);

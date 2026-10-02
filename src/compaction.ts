@@ -825,7 +825,7 @@ export class CompactionEngine {
         messageContents.push({
           messageId: msg.messageId,
           content: msg.content,
-          createdAt: msg.createdAt,
+          createdAt: msg.eventAt ?? msg.createdAt,
           tokenCount: this.resolveMessageTokenCount(msg),
         });
       }

@@ -30,7 +30,7 @@ import { parseTranscript, type ParsedMessage } from "./transcript.js";
  * a byte-offset cursor and verifies the stored prefix when it cannot — its own
  * validation rules, and its own resume checkpoint, opaque to callers. It also
  * states the capabilities the ingest route forks on, so no shared code names a
- * client. `SessionCapture` (src/capture.ts) is the only reader; no route
+ * client. `SessionCapture` (src/capture.ts) and the explicit event-time repair are its readers; no route
  * selects an adapter itself.
  */
 
@@ -45,6 +45,8 @@ export interface TranscriptLocator {
   /** The caller's transcript path; Claude derives one from the session when absent. */
   transcriptPath?: string;
   source?: "live" | "import";
+  /** Repairs leave missing transcripts unknown rather than refusing the request. */
+  allowMissing?: boolean;
 }
 
 /** What is already stored for the session, as an adapter needs it to find the delta. */
@@ -69,6 +71,8 @@ export interface StoredTranscript {
 export interface ReadContext extends TranscriptLocator {
   /** The current redaction rules, applied to both sides of a prefix comparison. */
   scrub(text: string): string;
+  /** Include full file-order candidates for conservative timestamp repair after rewinds. */
+  eventTimeRepair?: boolean;
   /** Stable identity of the current redaction rules. Without one, prefix validation is not memoized. */
   redactionKey?: string;
 }
@@ -86,6 +90,8 @@ export interface ConversationBoundary {
 export interface TranscriptDelta {
   /** Messages from `sourceOffset` onwards. */
   messages: ParsedMessage[];
+  /** Full file-order history when a repair must account for abandoned OMP branches. */
+  eventTimeCandidates?: ParsedMessage[];
   /** The clears among `messages`, in order. Absent for a client whose clear starts a new session instead. */
   boundaries?: ConversationBoundary[];
   /** How many leading messages `messages` omits because they are stored. */
@@ -341,7 +347,10 @@ const codexSource: TranscriptSource = {
     if (!input.transcriptPath) return undefined;
     const safe = isSafeTranscriptPath(input.transcriptPath, input.cwd, "codex");
     if (!safe) throw new TranscriptSourceError("Codex transcript path is not allowed");
-    if (!existsSync(safe)) throw new TranscriptSourceError("Codex transcript is unreadable");
+    if (!existsSync(safe)) {
+      if (input.allowMissing) return undefined;
+      throw new TranscriptSourceError("Codex transcript is unreadable");
+    }
     return safe;
   },
   async read(path, stored, ctx) {
@@ -477,7 +486,7 @@ async function readOmpArchive(path: string, stored: StoredTranscript | undefined
     return { messages, boundaries, sourceOffset: stored.storedCount, backfillModels };
   }
   const { messages, boundaries } = selectOmpLiveSegments(records, true);
-  return { messages, boundaries, sourceOffset: 0, backfillModels };
+  return { messages, boundaries, sourceOffset: 0, backfillModels, ...(ctx.eventTimeRepair ? { eventTimeCandidates: records.flatMap(record => record.message ?? []) } : {}) };
 }
 
 const ompSource: TranscriptSource = {
@@ -489,7 +498,10 @@ const ompSource: TranscriptSource = {
     if (!input.transcriptPath) return undefined;
     const safe = isSafeTranscriptPath(input.transcriptPath, input.cwd, "omp");
     if (!safe) throw new TranscriptSourceError("OMP transcript path is not allowed");
-    if (!existsSync(safe)) throw new TranscriptSourceError("OMP transcript is unreadable");
+    if (!existsSync(safe)) {
+      if (input.allowMissing) return undefined;
+      throw new TranscriptSourceError("OMP transcript is unreadable");
+    }
     return safe;
   },
   async read(path, stored, ctx) {
@@ -517,6 +529,7 @@ const ompSource: TranscriptSource = {
     }
     return {
       messages: delta.messages,
+      ...(ctx.eventTimeRepair ? { eventTimeCandidates: (delta.records ?? []).flatMap(record => record.message ?? []) } : {}),
       // The reader selected `messages` from these same records; this adds where the clears fall.
       boundaries: selectOmpLiveSegments(delta.records ?? []).boundaries,
       sourceOffset: delta.resumed && prior ? prior.messageCount : 0,
