@@ -84,7 +84,7 @@ export async function runSummarizerComparison(options: ComparisonOptions): Promi
         if (!(error instanceof TypeError)) throw error;
         return { error: `lcm daemon is not running on port ${config.daemon.port} (${error.message}); start it with lcm daemon start --detach` };
       }
-      if (answer.error === "job timeout") {
+      if (answer.error === "job timeout" || answer.error === "job unclaimed") {
         return { ...answer, error: "session-pool job timed out; start a dedicated worker with LCM_SUMMARIZE_WORKER=1 (see docs/summarize-workers.md)" };
       }
       return answer;

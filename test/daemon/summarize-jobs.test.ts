@@ -63,7 +63,7 @@ describe("session summarize jobs", () => {
   it("expires queued jobs and removes finished entries after a minute", async () => {
     const pending = store.enqueue(input);
     await vi.advanceTimersByTimeAsync(20_000);
-    await expect(pending).resolves.toEqual({ error: "job timeout" });
+    await expect(pending).resolves.toEqual({ error: "job unclaimed" });
     const next = store.next("one");
     await vi.advanceTimersByTimeAsync(25_000);
     await expect(next).resolves.toBeNull();
@@ -200,7 +200,7 @@ describe("session summarize jobs", () => {
     await vi.advanceTimersByTimeAsync(10_000);
     void store.enqueue({ ...input, pool: true, workClass: "timeline" });
     await vi.advanceTimersByTimeAsync(10_000);
-    await expect(unclaimed).resolves.toEqual({ error: "job timeout" });
+    await expect(unclaimed).resolves.toEqual({ error: "job unclaimed" });
     const timeline = await store.nextWorker("timeline-worker", undefined, false);
     expect(timeline?.workClass).toBe("timeline");
     store.answer(timeline!.id, { text: "timeline summary" });

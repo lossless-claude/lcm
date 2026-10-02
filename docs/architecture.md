@@ -115,7 +115,11 @@ and replaced periods leave active context while retaining historical manifests.
 `timeline.generationEnabled` defaults to false. Automatic work requires tracking
 and project generation enabled. Each tick resumes one bootstrap page of at most
 256 sessions without model calls. Once bootstrap completes, generation waits for
-60 seconds of quiet and runs one unit per project per tick. Model errors and publication conflicts have persisted
+60 seconds of quiet and runs one unit per project per tick.
+Unclaimed pool jobs stop timeline settle as `busy`, leaving failure counts, retry
+deadlines and node flags unchanged for the next tick. Claimed jobs that time out
+remain model errors.
+Model errors and publication conflicts have persisted
 exponential backoff, with a one-hour cap and parking after eight failures.
 Admission requires at least one runnable endpoint. The first admitted generation
 settle releases legacy backed-off and parked units once: their persisted failures

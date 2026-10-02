@@ -33,6 +33,14 @@ export class SessionUnavailableError extends Error {
   }
 }
 
+/** A timeline pool job expired before any worker claimed it; stop without fallback or backoff. */
+export class SessionJobUnclaimedError extends Error {
+  constructor() {
+    super("job unclaimed");
+    this.name = "SessionJobUnclaimedError";
+  }
+}
+
 /**
  * No link of the chain can run: every endpoint in it references an environment
  * variable that was unset when the config loaded. Thrown when a summary is asked

@@ -3,9 +3,11 @@ import { afterEach, expect, it, vi } from "vitest";
 import { runLcmMigrations } from "../src/db/migration.js";
 import { enableTimeline } from "../src/db/project-timeline.js";
 import { openProjectTimeline } from "../src/project-timeline.js";
-import { timelineTick, timelineProviderAdmitted } from "../src/daemon/project-timeline.js";
+import { daemonTimeline, timelineTick, timelineProviderAdmitted } from "../src/daemon/project-timeline.js";
 import { withProjectMutation } from "../src/daemon/project-queue.js";
 import { loadDaemonConfig } from "../src/daemon/config.js";
+import { SummarizeJobStore } from "../src/daemon/summarize-jobs.js";
+import { createLcmPaths } from "../src/lcm-paths.js";
 const handles: DatabaseSync[] = [];
 afterEach(() => { handles.splice(0).forEach(db => db.close()); vi.useRealTimers(); });
 async function fixture() {
@@ -108,4 +110,49 @@ it("migrated bootstrap refreshes clean session metadata without resetting write 
   const row = db.prepare("SELECT json_extract(metadata, '$.coverage[0].timeBasis') basis FROM timeline_items").get();
   expect(row).toEqual({ basis: "capture" });
   expect(summarize).toHaveBeenCalledTimes(1);
+});
+
+it("unclaimed timeline ticks stay ready behind background work and generate after it drains", async () => {
+  const { db, timeline: scripted } = await fixture();
+  await scripted.settle({ calls: 10 });
+  db.exec("UPDATE messages SET content = 'Changed source'");
+  await scripted.settle({ calls: 0 });
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+  vi.setSystemTime(Date.now() + 60_000);
+  const config = loadDaemonConfig("/dev/null", { llm: { provider: "session-pool", fallbackProvider: "disabled" } }, {});
+  const jobs = new SummarizeJobStore();
+  const timeline = daemonTimeline(db, "/timeline-pool-test", config, createLcmPaths(process.env.LCM_HOME!), jobs);
+  // Complete the one-time admission recovery before comparing persisted retry state.
+  await timeline.settle({ calls: 1, deadline: new Date() });
+  db.prepare("UPDATE timeline_dirty SET bumped_at = ?").run(new Date(Date.now() - 60_000).toISOString());
+  const units = () => db.prepare("SELECT work_key, failures, next_try, status FROM timeline_units ORDER BY work_key").all();
+  const flags = () => db.prepare("SELECT summary_id, stale_reason, stale_since FROM timeline_nodes ORDER BY summary_id").all();
+  const beforeUnits = units(), beforeFlags = flags();
+  const settle = vi.spyOn(timeline, "settle");
+  try {
+    for (let tick = 0; tick < 9; tick++) {
+      const background = jobs.enqueue({ session_id: "replay", pool: true, workClass: "background",
+        kind: "leaf", depth: 0, system: "system", prompt: "background", targetTokens: 100, maxTokens: 200 });
+      const pending = timelineTick(db, timeline, true);
+      await vi.advanceTimersByTimeAsync(19_000);
+      const job = await jobs.nextWorker("worker", undefined, false);
+      expect(job?.workClass).toBe("background");
+      await vi.advanceTimersByTimeAsync(1_000);
+      await pending;
+      expect(await settle.mock.results.at(-1)!.value).toMatchObject({ stopped: "busy", generated: 0, failed: [] });
+      expect(units()).toEqual(beforeUnits);
+      expect(units()).toEqual(expect.arrayContaining([expect.objectContaining({ failures: 0, status: "ready" })]));
+      expect(flags()).toEqual(beforeFlags);
+      expect(flags()).not.toEqual(expect.arrayContaining([expect.objectContaining({ stale_reason: "generate-failed" })]));
+      jobs.answer(job!.id, { text: "Background summary" });
+      await background;
+    }
+    const pending = timelineTick(db, timeline, true);
+    await vi.advanceTimersByTimeAsync(0);
+    const job = await jobs.nextWorker("worker", undefined, false);
+    expect(job?.workClass).toBe("timeline");
+    jobs.answer(job!.id, { text: "Timeline summary" });
+    await pending;
+    expect(await settle.mock.results.at(-1)!.value).toMatchObject({ generated: 1, failed: [] });
+  } finally { jobs.close(); }
 });

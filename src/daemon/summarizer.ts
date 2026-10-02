@@ -14,7 +14,7 @@ import { createOmpProcessSummarizer } from "../llm/omp-process.js";
 import { createMockSummarizer } from "../llm/mock-summarizer.js";
 import type { LcmSummarizeFn } from "../llm/types.js";
 import { acceptSummaryText } from "../llm/summary-rejection.js";
-import { createProviderChain, SessionUnavailableError, SummarizerUnavailableError, type ProviderLink, type ProviderLinkKind } from "../llm/provider-chain.js";
+import { createProviderChain, SessionJobUnclaimedError, SessionUnavailableError, SummarizerUnavailableError, type ProviderLink, type ProviderLinkKind } from "../llm/provider-chain.js";
 import type { SessionClient } from "../session-client.js";
 
 /** The client a /compact call came from; copilot never calls, but its summarizer can be pinned by name. */
@@ -86,6 +86,7 @@ function createSessionSummarizer(jobs?: Pick<SummarizeJobStore, "enqueue">, pool
         tokensUsed: attempt.usage.input_tokens + attempt.usage.output_tokens,
         estimated: attempt.usage.estimated, failed: attempt.failed ?? true });
     }
+    if (pool && ctx.workClass === "timeline" && answer.error === "job unclaimed") throw new SessionJobUnclaimedError();
     if (answer.error) throw new SessionUnavailableError(String(answer.error));
     const summary = answer.text ?? "";
     const inputTokens = answer.usage?.input_tokens ?? Math.ceil((system.length + prompt.length) / 4);

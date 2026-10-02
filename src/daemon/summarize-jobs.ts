@@ -100,7 +100,9 @@ export class SummarizeJobStore {
   }
 
   private expireAfter(id: string, ms: number): ReturnType<typeof setTimeout> {
-    const timer = setTimeout(() => this.finish(id, { error: "job timeout" }, "expired"), ms);
+    const timer = setTimeout(() => this.finish(id, {
+      error: this.jobs.get(id)?.state === "queued" ? "job unclaimed" : "job timeout",
+    }, "expired"), ms);
     timer.unref();
     return timer;
   }

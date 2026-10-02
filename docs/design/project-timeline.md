@@ -148,6 +148,9 @@ configuration-induced backoff and parking. Legacy units lack failure causes,
 so legacy model failures also receive one retry. A persisted `admission_recovered`
 marker prevents later settles from bypassing model-error or conflict backoff.
 
+Unclaimed pool jobs stop timeline settle as `busy`, leaving failure counts, retry
+deadlines and node flags unchanged for the next tick. Claimed jobs that time out
+remain model errors.
 Model errors and publication conflicts persist exponential backoff, beginning at
 one minute and capped at one hour. Eight failures park a unit until one of its sessions changes.
 Only the latest replay manifest can hold work; an unfinished run's hold expires
