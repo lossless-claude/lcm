@@ -53,7 +53,7 @@ function tryRealpath(p: string): string {
  * This ensures symlinked parent directories are resolved even when the leaf
  * path doesn't exist yet (e.g. a transcript file not yet created).
  */
-function realpathDeep(p: string): string {
+export function realpathDeep(p: string): string {
   try { return realpathSync(p); } catch { /* fall through */ }
   // Walk up to find the nearest existing ancestor, then reconstruct
   const parts: string[] = [];
