@@ -22,6 +22,8 @@ import {
   type SubagentAttributionInput,
 } from "./store/conversation-store.js";
 import { SummaryStore } from "./store/summary-store.js";
+import { recordTranscriptToolCalls } from "./store/tool-call-store.js";
+import type { TranscriptToolCall } from "./tool-calls.js";
 import { recordSessionWebUrls } from "./store/session-url-store.js";
 import { readSubagentAttribution } from "./subagent-attribution.js";
 import { CLAUDE_PARSER_SHAPE, parseTranscript, transcriptEventTime, type MessagePart, type ParsedMessage, type SessionUrlDeclaration } from "./transcript.js";
@@ -59,6 +61,7 @@ export interface StoredSession {
 }
 
 export interface CaptureInput {
+  toolCalls?: TranscriptToolCall[];
   sessionUrlDeclarations?: SessionUrlDeclaration[];
   sessionId: string;
   cwd?: string;
@@ -229,6 +232,7 @@ export class SessionCapture {
       cwd: input.cwd,
       messages: delta.messages,
       sessionUrlDeclarations: delta.sessionUrlDeclarations,
+      toolCalls: delta.toolCalls,
       parserShape: source.client === "claude" ? CLAUDE_PARSER_SHAPE : null,
       restampParserShape: delta.restampParserShape,
       sourceOffset: delta.sourceOffset,
@@ -314,6 +318,7 @@ export class SessionCapture {
       const rebuild: CaptureInput = {
         sessionId: input.sessionId, messages: delta.messages, parserShape: CLAUDE_PARSER_SHAPE,
         sessionUrlDeclarations: delta.sessionUrlDeclarations,
+        toolCalls: delta.toolCalls,
         transcriptPath, attribution: input.attribution,
       };
       // The gate runs before the clear: a session it refuses keeps its stored history.
@@ -370,14 +375,16 @@ export class SessionCapture {
     let start = Math.max(0, storedCount - (input.sourceOffset ?? 0));
     let conversationId = conversation.conversationId;
     const records: MessageRecord[] = [];
+    const messageIds = new Map<ParsedMessage, number>();
     const totalCounts: RedactionCounts = { gitleaks: 0, builtIn: 0, global: 0, project: 0 };
     for (const { entryId, at } of input.boundaries ?? []) {
       if (at < start) continue;
-      records.push(...await this.append(input.sessionId, conversationId, input.messages.slice(start, at), totalCounts));
+      records.push(...await this.append(input.sessionId, conversationId, input.messages.slice(start, at), totalCounts, messageIds));
       conversationId = (await this.conversationStore.getOrOpenConversationAt(input.sessionId, entryId, attribution, parserShape)).conversationId;
       start = at;
     }
-    records.push(...await this.append(input.sessionId, conversationId, input.messages.slice(start), totalCounts));
+    records.push(...await this.append(input.sessionId, conversationId, input.messages.slice(start), totalCounts, messageIds));
+    recordTranscriptToolCalls(this.db, input.sessionId, input.toolCalls ?? [], messageIds, this.scrubber);
     if (input.restampParserShape) this.conversationStore.setSessionParserShape(input.sessionId, CLAUDE_PARSER_SHAPE);
     else if (parserShape === STRUCTURED_INGEST_SHAPE) this.conversationStore.setSessionParserShape(input.sessionId, STRUCTURED_INGEST_SHAPE);
     if (records.length > 0) upsertRedactionCounts(this.db, this.projectId, totalCounts);
@@ -387,12 +394,13 @@ export class SessionCapture {
 
   /** Appends messages after what the conversation already stores, with their context items and parts. */
   private async append(
-    sessionId: string, conversationId: number, newMessages: ParsedMessage[], totalCounts: RedactionCounts,
+    sessionId: string, conversationId: number, newMessages: ParsedMessage[], totalCounts: RedactionCounts, messageIds: Map<ParsedMessage, number>,
   ): Promise<MessageRecord[]> {
     if (newMessages.length === 0) return [];
     const storedCount = await this.conversationStore.getMessageCount(conversationId);
     const inputs = this.scrub(newMessages, conversationId, storedCount, totalCounts);
     const created = await this.conversationStore.createMessagesBulk(inputs);
+    created.forEach((record, index) => messageIds.set(newMessages[index], record.messageId));
     await this.summaryStore.appendContextMessages(conversationId, created.map((r) => r.messageId));
     await this.persistMessageParts(sessionId, newMessages, created);
     return created;

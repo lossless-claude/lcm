@@ -21,6 +21,7 @@ import { homedir } from "node:os";
 import { StringDecoder } from "node:string_decoder";
 import { TextDecoder } from "node:util";
 import { isWorkerClaim, workerPayloadJobIds } from "./worker-markers.js";
+import { transcriptToolInvocation, transcriptToolResult, type TranscriptToolCall } from "./tool-calls.js";
 import { estimateTokens, transcriptEventTime } from "./transcript.js";
 import type { ParsedMessage } from "./transcript.js";
 
@@ -41,6 +42,8 @@ interface CodexResponseItemPayload {
   name?: string;
   /** Tool output on a `*_output` record. */
   output?: unknown;
+  input?: unknown;
+  is_error?: boolean;
   arguments?: unknown;
   call_id?: string;
 }
@@ -66,6 +69,7 @@ interface CodexTurnContext {
 }
 
 export interface ParsedCodexTranscriptRecord {
+  toolCalls?: TranscriptToolCall[];
   message?: ParsedMessage;
   sessionMeta?: CodexSessionMeta;
 }
@@ -127,8 +131,8 @@ const TOOL_OUTPUT_TYPES = new Set(["function_call_output", "custom_tool_call_out
  * 120 947 of them in a 300-transcript sample. Dropped, a Codex session arrives
  * with no tool rows at all, and the ingest would have to be done twice.
  *
- * A call keeps only its name. `arguments` and `input` hold whole commands and
- * scripts, which is the tool's input, not the session's memory.
+ * A call keeps only its name in the message row. Selected input and result
+ * evidence travel separately as tool-call structure, preserving the row shape.
  */
 function parseCodexToolRecord(payload: CodexResponseItemPayload): ParsedMessage | null {
   const type = payload.type;
@@ -150,6 +154,16 @@ function parseCodexToolRecord(payload: CodexResponseItemPayload): ParsedMessage 
   const callId = payload.call_id;
   const workerPayloads = callId ? workerPayloadJobIds(output).map(jobId => ({ callId, jobId })) : [];
   return { role: "tool", content: output, tokenCount: estimateTokens(output), ...(workerPayloads.length ? { workerPayloads } : {}) };
+}
+
+function codexToolCalls(payload: CodexResponseItemPayload, message?: ParsedMessage): TranscriptToolCall[] {
+  if (!payload.call_id) return [];
+  if (TOOL_CALL_TYPES.has(payload.type!)) return [
+    transcriptToolInvocation(payload.call_id, payload.name || payload.type!, payload.arguments ?? payload.input, message),
+  ];
+  if (!TOOL_OUTPUT_TYPES.has(payload.type!)) return [];
+  const output = typeof payload.output === "string" ? payload.output : extractCodexText(payload.output as CodexContentBlock[]);
+  return [{ ...transcriptToolResult(payload.call_id, "codex", { output, error: payload.is_error }), message }];
 }
 
 /**
@@ -192,9 +206,16 @@ export function parseCodexTranscriptRecord(record: string): ParsedCodexTranscrip
 
   const eventAt = transcriptEventTime(obj.timestamp);
   const tool = parseCodexToolRecord(payload);
-  if (tool) return { message: { ...tool, ...(eventAt ? { eventAt } : {}) } };
+  if (tool) {
+    const message = { ...tool, ...(eventAt ? { eventAt } : {}) };
+    const toolCalls = codexToolCalls(payload, message);
+    return { message, ...(toolCalls.length ? { toolCalls } : {}) };
+  }
 
-  if (payload.type !== "message") return {};
+  if (payload.type !== "message") {
+    const toolCalls = codexToolCalls(payload);
+    return toolCalls.length ? { toolCalls } : {};
+  }
 
   const role = payload.role;
   // `tool` joins the two: a Codex transcript can also state the role outright.

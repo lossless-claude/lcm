@@ -26,6 +26,38 @@ rows are excluded. Conversation `createdAt` / `updatedAt` retain their storage
 lifecycle meaning; an empty conversation falls back to its creation time.
 Ordinary conversation fetches do not compute source bounds or read messages.
 
+Tool calls are stored beside messages in `transcript_tool_calls`, keyed by
+`(session_id, call_id)` and referencing the call's `message_id`. Claude's
+`tool_use` id, Codex's `call_id` and OMP's `toolCall` id join subsequent results
+to the original call, including when the result arrives in later incremental bytes.
+Parsers carry this structure separately; message role, content, token count,
+parser stamps and byte-cursor versions are unchanged.
+
+The call retains its name and selected input: shell commands; file-write paths
+and original input byte size; Read/Grep/Glob paths, patterns and range flags;
+MCP input JSON; Agent/Task types and descriptions. File bodies, edit replacement
+text and subagent prompts are never retained in call input. Capture applies its
+own `ScrubEngine` before storage. Shell commands and MCP JSON are capped at
+2048 UTF-8 bytes, including a `[truncated]` suffix; `truncated` also records the cap.
+
+Each call has an `outcome`: `succeeded`, `failed`, `blocked`, `denied`,
+`interrupted` or `unknown`, a separate nullable `harness_error` flag, and
+an `exit_code` when exposed. No result or missing evidence leaves the outcome
+unknown. Claude's exit-code result establishes execution; user-refusal text
+establishes denial; other error-flagged results establish a pre-execution block.
+Codex and OMP use only exposed status text or result metadata; an unclassified
+error flag alone cannot distinguish execution failure from a refusal.
+
+Capture records new calls and updates prior outcomes in the same transaction
+as its message delta and checkpoint. Worker sessions are excluded by the same
+gate as messages. `lcm import --backfill-event-times` also fills calls for
+verified existing message positions, even when their timestamps are known,
+without changing their content or capturing a new tail. Unknown positions
+establish no call. Repair pages contain at most 256 messages and yield between
+transactions. Full-text message search indexes the scrubbed selected inputs
+beside message text; matches retain the original message id and summary coverage.
+The non-FTS fallback searches the same inputs.
+
 Each message also has **message_parts** — structured content blocks that preserve the original shape. The part types are `text`, `reasoning`, `tool`, `patch`, `file`, `subtask`, `compaction`, `step_start`, `step_finish`, `snapshot`, `agent`, `retry`, `skill` (a skill expansion) and `command` (a slash command invocation); see `MessagePartType` in `src/store/conversation-store.ts`. This allows the assembler to reconstruct rich content when building model context, not just flat text.
 
 `lcm import --backfill-event-times` repairs discovered sessions without capturing

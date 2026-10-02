@@ -6,11 +6,32 @@ lcm stores your conversation history locally to enable memory across sessions. T
 
 All storage is on your machine:
 
-- **`~/.lossless-claude/projects/{hash}/db.sqlite`** — Conversation messages, summaries, and promoted long-term memory for each project. The hash is a SHA-256 of the project directory path.
+- **`~/.lossless-claude/projects/{hash}/db.sqlite`** — Conversation messages, summaries, selected transcript tool-call inputs and outcomes, and promoted long-term memory for each project. The hash is a SHA-256 of the project directory path.
 - **`~/.lossless-claude/projects/{hash}/sensitive-patterns.txt`** — Per-project sensitive patterns (if configured).
 - **`~/.lossless-claude/events/{hash}.db`** — The passive-learning sidecar (see [passive-learning.md](passive-learning.md)): structured metadata extracted from tool calls and prompts. Raw tool input and output are not stored, except that an `AskUserQuestion` event keeps the truncated question and the answer you chose, which is the decision it exists to record. One extractor and one truncation rule cover both harnesses; a row also records `client` (`claude` or `codex`, the harness that produced it) and `model` (the model that issued the call, when known). Neither field changes what an extractor is allowed to read.
 - **`~/.lossless-claude/config.json`** — Global configuration including the optional `security.sensitivePatterns` array.
 - **`~/.lossless-claude/daemon.pid`** — Daemon process ID (transient).
+
+Transcript tool calls in the project database retain selected input beside the
+existing message rows:
+
+| Tool class | Retained input |
+|---|---|
+| Shell (Claude Bash, Codex exec, OMP bash) | Command, scrubbed and capped at 2048 UTF-8 bytes |
+| Write, Edit, MultiEdit, NotebookEdit, apply_patch | File paths and original input byte size; no file body or replacement text |
+| Read, Grep, Glob | Paths, patterns and range flags |
+| MCP tools | Input JSON, scrubbed and capped at 2048 UTF-8 bytes |
+| Agent / Task | Subagent type and description; no prompt |
+| Other tools | Name only |
+
+Selected input uses the same secret-redaction rules as message capture.
+Capped input ends with `[truncated]` and carries a truncation flag.
+Each call also retains its result outcome, the harness's error flag separately,
+and an exit code when exposed. Missing evidence remains unknown.
+Calls reference their original stored message; keyword search can find retained
+commands without changing that message's text. Incremental results update prior
+calls, and `lcm import --backfill-event-times` fills verified existing sessions
+whose transcripts remain available. Declared summarize worker sessions are excluded.
 
 No data is sent to any lcm server. There is no telemetry.
 
