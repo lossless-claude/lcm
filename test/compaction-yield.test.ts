@@ -32,6 +32,24 @@ async function fixture(count: number, config: Partial<CompactionConfig> = {}, to
   return { db, conversations, summaries, conversationId, messages, compact };
 }
 
+it("replaces a context range in one synchronous transaction, so a concurrent BEGIN IMMEDIATE on the connection succeeds", async () => {
+  const contextItems = 600;
+  const { db, summaries, conversationId, messages } = await fixture(contextItems);
+  await summaries.insertSummary({ summaryId: "range-summary", conversationId, kind: "leaf", depth: 0, content: "range", tokenCount: 1 });
+  let concurrentError: unknown;
+  setImmediate(() => {
+    try { db.exec("BEGIN IMMEDIATE"); db.exec("COMMIT"); } catch (error) { concurrentError = error; }
+  });
+  await summaries.replaceContextRangeWithSummary({ conversationId, startOrdinal: 10, endOrdinal: 300, summaryId: "range-summary" });
+  await new Promise(resolve => setImmediate(resolve));
+  expect(concurrentError).toBeUndefined();
+  const items = await summaries.getContextItems(conversationId);
+  expect(items.map(item => item.ordinal)).toEqual(items.map((_, index) => index));
+  expect(items[10]).toMatchObject({ itemType: "summary", summaryId: "range-summary" });
+  expect(items.filter(item => item.itemType === "message").map(item => item.messageId))
+    .toEqual([...messages.slice(0, 10), ...messages.slice(301)].map(message => message.messageId));
+});
+
 it("keeps timer gaps below 1,000 ms for 30,000 context items with unchanged summaries, links and tokens", async () => {
   const { summaries, conversationId, messages, compact } = await fixture(30_000);
   const leafContents: string[] = [];

@@ -1016,28 +1016,15 @@ export class SummaryStore {
         )
         .run(conversationId, startOrdinal, summaryId);
 
-      // Page forward through original ordinals; moved rows stay behind the cursor.
-      // Negative ordinals avoid collisions only inside a synchronous page, so
-      // every yield exposes ordered, nonnegative context on this connection.
-      const page = this.db.prepare(`SELECT ordinal FROM context_items
-        WHERE conversation_id = ? AND ordinal > ? ORDER BY ordinal LIMIT ?`);
-      const update = this.db.prepare(`UPDATE context_items SET ordinal = ?
-        WHERE conversation_id = ? AND ordinal = ?`);
-      let afterOrdinal = -1;
-      let nextOrdinal = 0;
-      while (true) {
-        const items = page.all(conversationId, afterOrdinal, CONTEXT_PAGE_SIZE) as unknown as { ordinal: number }[];
-        for (let i = 0; i < items.length; i++) {
-          if (items[i].ordinal !== nextOrdinal + i) update.run(-(i + 1), conversationId, items[i].ordinal);
-        }
-        for (let i = 0; i < items.length; i++) {
-          if (items[i].ordinal !== nextOrdinal + i) update.run(nextOrdinal + i, conversationId, -(i + 1));
-        }
-        if (items.length < CONTEXT_PAGE_SIZE) break;
-        afterOrdinal = items[items.length - 1].ordinal;
-        nextOrdinal += items.length;
-        await yieldToEventLoop();
-      }
+      // 3. Resequence to contiguous ordinals 0..n-1 in two set-based statements. The
+      //    transaction stays synchronous: a yield here would expose it to other requests
+      //    on this pooled connection. Negating first keeps every ordinal unique.
+      this.db.prepare("UPDATE context_items SET ordinal = -1 - ordinal WHERE conversation_id = ?").run(conversationId);
+      this.db.prepare(`UPDATE context_items SET ordinal = ranked.position
+        FROM (SELECT ordinal AS negated, ROW_NUMBER() OVER (ORDER BY ordinal DESC) - 1 AS position
+              FROM context_items WHERE conversation_id = ?) AS ranked
+        WHERE context_items.conversation_id = ? AND context_items.ordinal = ranked.negated`)
+        .run(conversationId, conversationId);
 
       this.db.exec("COMMIT");
     } catch (err) {
