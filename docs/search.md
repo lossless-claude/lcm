@@ -284,7 +284,7 @@ LCM_BENCH_GROUP=holdout npx tsx scripts/bench-corpora.mts run   # grade, once, h
 ```
 
 The split is by corpus, not by question, so no session appears on both sides. The machine owner
-sets it in `bench-corpora.json` in the lcm home, outside the repository, as project paths:
+sets it in `bench-corpora.json` in the lcm home, outside the repository, as absolute project paths:
 
 ```json
 { "holdout": ["/path/to/project"], "exclude": ["/path/to/project"] }
@@ -292,7 +292,8 @@ sets it in `bench-corpora.json` in the lcm home, outside the repository, as proj
 
 `holdout` is graded and everything else is tuned against; a project in both lists is excluded.
 Without the file nothing is held out: `tune` covers every corpus and `holdout` stops with an
-error. A malformed file or an unknown key also stops the run. This repository's own corpus belongs
+error. A malformed file, an unknown key, or an entry that is neither on disk nor an ingested
+project (a typo, a relative path, an unexpanded `~`) also stops the run. This repository's own corpus belongs
 on the tuning side, since its questions have already been scored across a sweep. Build the held-out questions with `LCM_BENCH_SEED` set to something other than the
 default, so they are a different sample from the ones any sweep has already seen; `LCM_BENCH_N`
 raises the count per corpus. Grade the held-out group **once**, after the parameter is fixed — a

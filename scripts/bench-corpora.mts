@@ -21,11 +21,11 @@
  */
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { basename, delimiter, dirname, join } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { buildBench, runBench } from "../src/bench.js";
-import { projectDbPath, projectId } from "../src/daemon/project.js";
+import { projectDbPath, projectDir, projectId } from "../src/daemon/project.js";
 import { lcmHome } from "../src/lcm-home.js";
 import { createLcmPaths, type LcmPaths } from "../src/lcm-paths.js";
 
@@ -53,10 +53,12 @@ const VALIDATION_FILENAME = ".lcm-bench-validation.json";
  * their directories before reading anything in them, and an `LCM_BENCH_CORPORA`
  * entry naming one is dropped. A project in both lists is excluded.
  *
- * Entries are project paths, compared by project id, so two checkouts that share a
- * directory name stay apart. A missing file holds nothing out and excludes nothing.
- * A malformed file or an unknown key stops the run: read silently as empty, a typo
- * would grade a project its owner meant to keep out.
+ * Entries are absolute project paths, compared by project id, so two checkouts that
+ * share a directory name stay apart. Each one must exist on disk or name an ingested
+ * project; anything else (a typo, a relative path, an unexpanded "~") hashes to an id
+ * no project has. A missing file holds nothing out and excludes nothing. A malformed
+ * file, an unknown key or an entry that matches nothing stops the run: read silently,
+ * any of them would grade a project its owner meant to keep out.
  */
 export type CorpusConfig = { holdout: ReadonlySet<string>; exclude: ReadonlySet<string> };
 
@@ -66,7 +68,7 @@ export function corpusConfigPath(lcmPaths: LcmPaths): string {
   return join(lcmPaths.home, "bench-corpora.json");
 }
 
-export function readCorpusConfig(file: string): CorpusConfig {
+export function readCorpusConfig(file: string, lcmPaths: LcmPaths): CorpusConfig {
   let text: string;
   try {
     text = readFileSync(file, "utf-8");
@@ -83,8 +85,12 @@ export function readCorpusConfig(file: string): CorpusConfig {
   if (unknown.length > 0) throw new Error(`${file}: unknown key ${unknown.map(key => `"${key}"`).join(", ")}.`);
   const projectIds = (key: (typeof CONFIG_KEYS)[number]): Set<string> => {
     const value = config[key] ?? [];
-    if (!Array.isArray(value) || !value.every(entry => typeof entry === "string" && entry.length > 0)) {
-      throw new Error(`${file}: "${key}" must be a list of project paths.`);
+    if (!Array.isArray(value) || !value.every(entry => typeof entry === "string" && isAbsolute(entry))) {
+      throw new Error(`${file}: "${key}" must be a list of absolute project paths ("~" is not expanded).`);
+    }
+    const unmatched = value.filter(entry => !existsSync(entry) && !existsSync(projectDir(entry, lcmPaths)));
+    if (unmatched.length > 0) {
+      throw new Error(`${file}: "${key}" names ${unmatched.join(", ")}, neither on disk nor an ingested project.`);
     }
     return new Set(value.map(projectId));
   };
@@ -257,7 +263,8 @@ async function run(corpora: string[]): Promise<void> {
 if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   const command = process.argv[2] ?? "run";
   const selected = group();
-  const config = readCorpusConfig(corpusConfigPath(paths));
+  const config = readCorpusConfig(corpusConfigPath(paths), paths);
+  if (config.exclude.size > 0) console.log(`excluding ${config.exclude.size} project(s) listed in ${corpusConfigPath(paths)}`);
   const corpora = groupCorpora(await discoverCorpora(paths, config.exclude, process.env.LCM_BENCH_CORPORA), selected, config.holdout);
   if (selected !== "all") console.log(`group: ${selected} (${corpora.length} corpora)\n`);
   if (selected === "tune" && config.holdout.size === 0) {

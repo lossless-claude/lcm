@@ -41,24 +41,29 @@ function writeConfig(text: string): string {
 
 describe("readCorpusConfig", () => {
   it("holds nothing out and excludes nothing without a file", () => {
-    const config = readCorpusConfig(corpusConfigPath(paths));
+    const config = readCorpusConfig(corpusConfigPath(paths), paths);
     expect([...config.holdout, ...config.exclude]).toEqual([]);
   });
 
-  it("keys project paths by project id", () => {
-    const config = readCorpusConfig(writeConfig(JSON.stringify({ holdout: [project("held")], exclude: [project("private")] })));
+  it("keys project paths on disk, and ingested projects no longer on disk, by project id", () => {
+    mkdirSync(project("held"), { recursive: true });
+    ingest(project("removed"));
+    const config = readCorpusConfig(writeConfig(JSON.stringify({ holdout: [project("held")], exclude: [project("removed")] })), paths);
     expect([...config.holdout]).toEqual([projectId(project("held"))]);
-    expect([...config.exclude]).toEqual([projectId(project("private"))]);
+    expect([...config.exclude]).toEqual([projectId(project("removed"))]);
   });
 
   it.each([
-    ["an unknown key", JSON.stringify({ excludes: ["/x"] }), /unknown key "excludes"/],
-    ["a value that is not a list", JSON.stringify({ exclude: "/x" }), /"exclude" must be a list of project paths/],
-    ["an empty entry", JSON.stringify({ holdout: [""] }), /"holdout" must be a list of project paths/],
-    ["a list at the top", JSON.stringify(["/x"]), /must hold a JSON object/],
-    ["malformed JSON", "{", /JSON/],
+    ["an unknown key", () => JSON.stringify({ excludes: ["/x"] }), /unknown key "excludes"/],
+    ["a value that is not a list", () => JSON.stringify({ exclude: "/x" }), /"exclude" must be a list of absolute project paths/],
+    ["an empty entry", () => JSON.stringify({ holdout: [""] }), /"holdout" must be a list of absolute project paths/],
+    ["a relative path", () => JSON.stringify({ exclude: ["work/private"] }), /"exclude" must be a list of absolute project paths/],
+    ["an unexpanded home", () => JSON.stringify({ exclude: ["~/private"] }), /"exclude" must be a list of absolute project paths/],
+    ["a path that matches no project", () => JSON.stringify({ exclude: [project("typo")] }), /neither on disk nor an ingested project/],
+    ["a list at the top", () => JSON.stringify(["/x"]), /must hold a JSON object/],
+    ["malformed JSON", () => "{", /JSON/],
   ])("stops on %s", (_case, text, message) => {
-    expect(() => readCorpusConfig(writeConfig(text))).toThrow(message);
+    expect(() => readCorpusConfig(writeConfig(text()), paths)).toThrow(message);
   });
 });
 
