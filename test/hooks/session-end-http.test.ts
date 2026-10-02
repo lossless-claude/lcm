@@ -10,7 +10,6 @@ import { DaemonClient } from "../../src/daemon/client.js";
 import { createDaemon, type DaemonInstance, type RouteHandler } from "../../src/daemon/server.js";
 import { createSessionEndHandler } from "../../src/daemon/routes/session-end.js";
 import { loadDaemonConfig } from "../../src/daemon/config.js";
-import { noopDaemonLog } from "../../src/daemon/log.js";
 import { createLcmPaths, type LcmPaths } from "../../src/lcm-paths.js";
 import { handleSessionEnd } from "../../src/hooks/session-end.js";
 import { readHookOutcomeLog } from "../../src/doctor/hook-outcome-log.js";
@@ -23,7 +22,33 @@ vi.mock("../../src/hooks/daemon-requests.js", () => ({
   fireSessionCompleteRequest: fired.complete,
 }));
 
+const RESPONSE_GRACE_MS = 100;
+const RESPONSE_DELAY_MS = 50;
+const HANDOFF_BUDGET_MS = 300;
+const DELAYED_TURN_MS = 1000;
+const PROCESS_HANG_GUARD_MS = 10_000;
+
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const event = () => {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+};
+
+// Freeze hook deadlines while real HTTP reaches each milestone. Native
+// AbortSignal.timeout does not use fake timers, so give it the same clock.
+// Disable the client's socket timeout to prove the hook's signal cancels HTTP.
+const hookClock = (client: DaemonClient) => {
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+  vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), ms);
+    return controller.signal;
+  });
+  const post = client.post.bind(client);
+  return vi.spyOn(client, "post").mockImplementation((path, body, options = {}) =>
+    post(path, body, { ...options, timeoutMs: 0 }));
+};
 
 describe("SessionEnd HTTP handoff", () => {
   let home: string;
@@ -37,6 +62,8 @@ describe("SessionEnd HTTP handoff", () => {
     vi.clearAllMocks();
   });
   afterEach(async () => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
     if (server) {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server!.close(() => resolve()));
@@ -56,28 +83,41 @@ describe("SessionEnd HTTP handoff", () => {
     return { port, client: new DaemonClient(`http://127.0.0.1:${port}`) };
   };
 
-  it("returns in under 500 ms without an answer and records the fully written request as submitted", async () => {
+  it("cancels at the response deadline without an answer and records the fully written request as submitted", async () => {
     let received = "";
+    const submitted = event();
     const { client, port } = await listen((req, _res) => {
       req.on("data", (chunk) => { received += chunk; });
+      req.on("end", submitted.resolve);
       // No answer: a responsive client must leave before a busy daemon can reply.
     });
-    const started = performance.now();
-    expect(await handleSessionEnd(input(), client, paths, port)).toEqual({ exitCode: 0, stdout: "" });
-    expect(performance.now() - started).toBeLessThan(500);
+    const post = hookClock(client);
+    let returned = false;
+    const result = handleSessionEnd(input(), client, paths, port).then((value) => {
+      returned = true;
+      return value;
+    });
+    await submitted.promise;
+    const signal = post.mock.calls[0][2]!.signal!;
+    await vi.advanceTimersByTimeAsync(RESPONSE_GRACE_MS - 1);
+    expect(signal.aborted).toBe(false);
+    expect(returned).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(signal.aborted).toBe(true);
+    expect(await result).toEqual({ exitCode: 0, stdout: "" });
+    await vi.advanceTimersByTimeAsync(DELAYED_TURN_MS);
     expect(JSON.parse(received)).toEqual(JSON.parse(input()));
-    expect(outcomes()).toEqual([expect.objectContaining({ operation: "session-end", status: "submitted" })]);
+    expect(outcomes()).toEqual([expect.objectContaining({ operation: "session-end", status: "submitted", reason: "response-grace" })]);
   });
 
-  it("lets the built hook process exit inside the host budget while the server stays silent", async () => {
+  it("lets the built hook process exit without waiting for a silent server", async () => {
     const requests: string[] = [];
     const { port } = await listen((req, _res) => { requests.push(req.url!); req.resume(); });
     writeFileSync(paths.configPath, JSON.stringify({ daemon: { port } }));
-    const started = performance.now();
     const child = spawn(process.execPath, [fileURLToPath(new URL("../../dist/bin/lcm.js", import.meta.url)), "session-end"], {
       env: { ...process.env, LCM_HOME: home }, stdio: ["pipe", "pipe", "pipe"],
     });
-    const kill = setTimeout(() => child.kill(), 2000);
+    const kill = setTimeout(() => child.kill(), PROCESS_HANG_GUARD_MS);
     let stdout = "";
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stdin.end(input());
@@ -87,7 +127,6 @@ describe("SessionEnd HTTP handoff", () => {
         child.once("exit", resolve);
       });
       expect(code).toBe(0);
-      expect(performance.now() - started).toBeLessThan(1500);
       expect(stdout).toBe("");
       expect(requests).toEqual(["/session-end"]);
       expect(outcomes()).toEqual([expect.objectContaining({ status: "submitted" })]);
@@ -100,33 +139,48 @@ describe("SessionEnd HTTP handoff", () => {
       res.writeHead(202, { "Content-Type": "application/json" });
       res.end('{"accepted":true}');
     });
+    hookClock(client);
     expect(await handleSessionEnd(input(), client, paths, port)).toEqual({ exitCode: 0, stdout: "" });
     expect(outcomes()).toEqual([expect.objectContaining({ status: "accepted" })]);
   });
 
   it("processes Capture and all follow-ups after a late 202 and a disconnected client", async () => {
-    // Hold dispatch after the real server has read the complete body, modeling a
-    // busy daemon whose loop cannot acknowledge the hook for several seconds.
+    // Hold dispatch until the hook has returned and the server observes closure.
     const config = loadDaemonConfig(paths.configPath, { daemon: { port: 0, idleTimeoutMs: 0 } });
     const ingest = vi.fn<RouteHandler>(async (_req, res, body) => {
       expect(JSON.parse(body)).toEqual(JSON.parse(input()));
       res.writeHead(200);
       res.end('{"ingested":3}');
     });
-    daemon = await createDaemon(config, { paths, log: { ...noopDaemonLog, prepare: async () => { await delay(3000); } } });
+    const dispatch = event();
+    const release = event();
+    daemon = await createDaemon(config, { paths });
     const { port } = daemon.address();
     const handler = createSessionEndHandler(config, port, paths, ingest);
     let disconnected = false;
     daemon.registerRoute("POST", "/session-end", async (req, res, body) => {
+      const closed = event();
+      res.once("close", closed.resolve);
+      dispatch.resolve();
+      await release.promise;
+      await closed.promise;
       disconnected = res.destroyed;
       await handler(req, res, body);
     });
-    const started = performance.now();
-    const result = await handleSessionEnd(input(), new DaemonClient(`http://127.0.0.1:${port}`), paths, port);
-    const elapsed = performance.now() - started;
-    await vi.waitFor(() => expect(fired.complete).toHaveBeenCalledTimes(1), { timeout: 4000 });
+    const client = new DaemonClient(`http://127.0.0.1:${port}`);
+    const post = hookClock(client);
+    const resultPromise = handleSessionEnd(input(), client, paths, port);
+    await dispatch.promise;
+    await vi.advanceTimersByTimeAsync(DELAYED_TURN_MS);
+    const result = await resultPromise;
+    expect(post.mock.calls[0][2]!.signal!.aborted).toBe(true);
+    expect(ingest).not.toHaveBeenCalled();
+    // Dispatch resumes only after the hook has returned and HTTP has closed.
+    const completed = event();
+    fired.complete.mockImplementationOnce(completed.resolve);
+    release.resolve();
+    await completed.promise;
     expect(result).toEqual({ exitCode: 0, stdout: "" });
-    expect(elapsed).toBeLessThan(500);
     expect(disconnected).toBe(true);
     expect(ingest).toHaveBeenCalledTimes(1);
     expect(fired.compact).toHaveBeenCalledTimes(1);
@@ -137,19 +191,43 @@ describe("SessionEnd HTTP handoff", () => {
 
   it("keeps the 404 fallback inside the exit budget when the older daemon's ingest hangs", async () => {
     const requests: string[] = [];
+    const sessionEnd = event();
+    const ingest = event();
     const { client, port } = await listen((req, res) => {
       requests.push(req.url!);
       req.resume();
       if (req.url === "/session-end") {
-        res.writeHead(404);
-        res.end('{"error":"not found"}');
+        setTimeout(() => {
+          res.writeHead(404);
+          res.end('{"error":"not found"}');
+        }, RESPONSE_DELAY_MS);
+        sessionEnd.resolve();
+      } else {
+        req.on("end", ingest.resolve);
       }
     });
-    const started = performance.now();
-    expect(await handleSessionEnd(input(), client, paths, port)).toEqual({ exitCode: 0, stdout: "" });
-    expect(performance.now() - started).toBeLessThan(500);
+    const post = hookClock(client);
+    let returned = false;
+    const result = handleSessionEnd(input(), client, paths, port).then((value) => {
+      returned = true;
+      return value;
+    });
+    await sessionEnd.promise;
+    await vi.advanceTimersByTimeAsync(RESPONSE_DELAY_MS);
+    await ingest.promise;
+    const options = post.mock.calls[1][2]!;
+    const remainingMs = HANDOFF_BUDGET_MS - RESPONSE_DELAY_MS;
+    expect(options.timeoutMs).toBe(remainingMs);
+    await vi.advanceTimersByTimeAsync(remainingMs - 1);
+    expect(options.signal!.aborted).toBe(false);
+    expect(returned).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(options.signal!.aborted).toBe(true);
+    expect(await result).toEqual({ exitCode: 0, stdout: "" });
+    // Assertions remain valid even when their event-loop turn runs late.
+    await vi.advanceTimersByTimeAsync(DELAYED_TURN_MS);
     expect(requests).toEqual(["/session-end", "/ingest"]);
-    expect(fired.complete).not.toHaveBeenCalled();
+    for (const followUp of Object.values(fired)) expect(followUp).not.toHaveBeenCalled();
     expect(outcomes()).toEqual(expect.arrayContaining([
       expect.objectContaining({ operation: "capture", status: "unconfirmed", reason: "timeout" }),
     ]));
@@ -163,6 +241,7 @@ describe("SessionEnd HTTP handoff", () => {
       res.writeHead(req.url === "/session-end" ? 404 : 200);
       res.end(req.url === "/session-end" ? '{"error":"not found"}' : '{"ingested":2}');
     });
+    hookClock(client);
     expect(await handleSessionEnd(input(), client, paths, port)).toEqual({ exitCode: 0, stdout: "" });
     expect(requests).toEqual(["/session-end", "/ingest"]);
     expect(fired.compact).toHaveBeenCalledTimes(1);
@@ -173,17 +252,30 @@ describe("SessionEnd HTTP handoff", () => {
 
   it("records submitted without starting the fallback for a 404 after the grace", async () => {
     const requests: string[] = [];
-    let answer: Promise<void> = Promise.resolve();
+    const received = event();
+    const answered = event();
     const { client, port } = await listen((req, res) => {
       requests.push(req.url!);
       req.resume();
-      answer = delay(250).then(() => { res.writeHead(404); res.end('{"error":"not found"}'); });
+      req.on("end", () => {
+        received.resolve();
+        setTimeout(() => {
+          res.writeHead(404);
+          res.end('{"error":"not found"}');
+          answered.resolve();
+        }, RESPONSE_GRACE_MS + RESPONSE_DELAY_MS);
+      });
     });
-    expect(await handleSessionEnd(input(), client, paths, port)).toEqual({ exitCode: 0, stdout: "" });
-    await answer;
+    hookClock(client);
+    const result = handleSessionEnd(input(), client, paths, port);
+    await received.promise;
+    await vi.advanceTimersByTimeAsync(RESPONSE_GRACE_MS);
+    expect(await result).toEqual({ exitCode: 0, stdout: "" });
+    await vi.advanceTimersByTimeAsync(RESPONSE_DELAY_MS);
+    await answered.promise;
     expect(requests).toEqual(["/session-end"]);
     expect(fired.complete).not.toHaveBeenCalled();
-    expect(outcomes()).toEqual([expect.objectContaining({ status: "submitted" })]);
+    expect(outcomes()).toEqual([expect.objectContaining({ status: "submitted", reason: "response-grace" })]);
   });
 
   it("ignores a request disconnected before its complete body was sent", async () => {
@@ -206,9 +298,10 @@ describe("SessionEnd HTTP handoff", () => {
     const { client, port } = await listen((_req, res) => { res.end(); });
     await new Promise<void>((resolve) => server!.close(() => resolve()));
     server = undefined;
-    const started = performance.now();
+    hookClock(client);
     expect(await handleSessionEnd(input(), client, paths, port)).toEqual({ exitCode: 0, stdout: "" });
-    expect(performance.now() - started).toBeLessThan(200);
+    await vi.advanceTimersByTimeAsync(DELAYED_TURN_MS);
+    expect(vi.getTimerCount()).toBe(0);
     expect(outcomes()).toEqual([expect.objectContaining({ status: "unconfirmed", reason: "daemon-unavailable" })]);
   });
 });
