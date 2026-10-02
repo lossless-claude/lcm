@@ -12,7 +12,8 @@ export type SummaryRejectionReason = "length" | "max_tokens" | "whitespace";
 /**
  * The model answered, but the answer must not be persisted. Adapters throw it after
  * reporting usage (the tokens were charged); the compaction engine throws it for any
- * provider's whitespace answer. It never becomes a deterministic fallback summary.
+ * provider's whitespace answer. Rejected answer text is never stored; output-cut
+ * recovery may instead truncate the original source deterministically.
  */
 export class SummaryRejectedError extends Error {
   readonly reason: SummaryRejectionReason;
@@ -40,6 +41,42 @@ export class SummaryRejectedError extends Error {
   get retryable(): boolean {
     return this.reason === "whitespace";
   }
+}
+
+/** Content-free diagnostics for one answer stopped at its output cap. */
+export type SummaryCutDiagnostic = {
+  reason: "length" | "max_tokens";
+  provider: string;
+  model?: string;
+  maxOutputTokens: number;
+  outputTokens?: number;
+  tailRepetition: number;
+};
+
+/** Share of four-word windows repeated earlier in the last 256 words (at most 8 KiB). */
+function tailRepetition(text: unknown): number {
+  if (typeof text !== "string" || !text.trim()) return 0;
+  const words = text.slice(-8_192).trim().toLowerCase().split(/\s+/).slice(-256);
+  const windows = words.length - 3;
+  if (windows <= 0) return 0;
+  const seen = new Set<string>();
+  let repeated = 0;
+  for (let i = 0; i < windows; i++) {
+    const gram = words.slice(i, i + 4).join(" ");
+    if (seen.has(gram)) repeated++;
+    seen.add(gram);
+  }
+  return repeated / windows;
+}
+
+/** Report only measurements, then reject; neither the diagnostic nor the error retains text. */
+export function rejectCutSummary(
+  opts: Omit<SummaryCutDiagnostic, "tailRepetition"> & { text: unknown },
+  onCut?: (diagnostic: SummaryCutDiagnostic) => void,
+): never {
+  const { text, ...diagnostic } = opts;
+  onCut?.({ ...diagnostic, tailRepetition: tailRepetition(text) });
+  throw new SummaryRejectedError(diagnostic);
 }
 
 function describe(reason: SummaryRejectionReason): string {

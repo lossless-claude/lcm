@@ -529,8 +529,30 @@ Every summarization attempt follows this escalation:
 2. **Aggressive** — Tighter prompt requesting only durable facts, temperature 0.1, lower target tokens
 3. **Fallback** — Deterministic truncation to ~512 tokens, ending in a `[Truncated from N tokens]` marker (N is the input size)
 
-The fallback keeps compaction making progress when the LLM answers but does not shrink its
-input; it never stands in for a rejected answer.
+The fallback keeps compaction making progress when accepted answers do not shrink their
+input, or when a single source message still gets cut answers after the provider chain's
+retry. It truncates the source, never a rejected answer. Raw messages and their summary
+links remain in the store, reachable through `lcm_expand`.
+
+When the chain is exhausted with an output-cut rejection, the engine splits the chunk into
+two halves at a message boundary and summarizes each through the normal escalation. It
+keeps halving, at most three times (eight pieces), down to a single message; a piece that is
+still cut at that limit, or a single message, gets deterministic source truncation at
+`fallback`. Condensation uses the same recovery at source-summary
+boundaries. The halves' results are joined in source order into one summary linked to the
+original sources; its level is the highest level used by either half. If joining does not
+shrink the source, the combined result uses source truncation at `fallback` without another
+model call. Nothing from the split is published until the whole pass succeeds.
+
+For a chunk with **n** source messages (or summaries) and **p** resolved provider links, let
+**k = min(n, 8)**. Halving visits at most **2k − 1** chunks, at most 15. If every answer is
+cut, each chunk makes at most two calls per link: **2p(2k − 1)** calls total, **4p(k − 1)**
+extra calls from splitting. If smaller chunks return accepted answers that fail to shrink,
+their own aggressive escalation raises the conservative bound to **3p(2k − 1)** provider
+invocations, or **6p(k − 1)** extra invocations from splitting. Each HTTP invocation has at
+most three adapter attempts, so including transient retries the extra HTTP request bound is
+**18p(k − 1)**. A compaction's split cost is bounded by the sum over its selected chunks;
+fallback and joining make no model calls. Existing cancellation still stops new attempts.
 
 ### Rejected answers
 
@@ -552,11 +574,20 @@ is raised rather than derived; a condensed prompt has no aggressive form and get
 cap alone. A request that was already aggressive is not retried, which bounds the retry to one
 per link per chunk. The engine does not see the retry: the level it reports stays `normal`.
 
-A rejected answer moves the provider chain below to its next link, as an error does. With no
-link left, the rejection fails the pass: nothing from it is persisted and context is unchanged,
-while passes that finished earlier in the same compaction stay. `/compact` answers 500 naming
-the rejection and logs `compact.failed`, so a replay does not ledger the session and the next
-run retries it. The rejected call's tokens are recorded in `llm_usage_stats` as a failed call.
+A rejected answer moves the provider chain below to its next link, as an error does. An
+exhausted chain containing an output-cut rejection invokes the split recovery above. A
+failure without an output cut, including whitespace-only answers, still fails the pass:
+nothing from that pass is persisted and context is unchanged, while earlier completed passes
+stay. `/compact` answers 500 and logs `compact.failed`, so replay retries that session.
+Rejected calls' tokens are recorded in `llm_usage_stats` as failed calls even when recovery
+completes the compaction.
+
+Each cut answer emits `summarizer.cut` in the compaction log with its provider, model,
+reason, `max_output_tokens`, `output_tokens` (null when unreported) and `tail_repetition`.
+The repetition measure is the fraction of four-word windows repeated earlier in the last
+256 words of the answer, sampling at most its final 8 KiB; it ranges from 0 to 1. A high
+value suggests a generation loop; a low value does not prove the cap is too small, since
+hidden reasoning can consume it. Neither answer text nor source text is logged.
 
 ### Provider chain
 
@@ -579,8 +610,8 @@ retries (408, 429, 5xx), or a failed CLI run. Anything else — a 400/422, a can
 a missing client library, an unclassified exception — is thrown at once, since trying the next
 link would hide it. The exception is a 400/422 answering the retry of a length stop: its larger
 cap may exceed the model's output limit, so the next link runs. When more than one link ran and all failed, the chain throws
-`ProviderChainExhaustedError`, naming each failure; like a rejection, it fails the pass and
-never becomes the deterministic fallback above.
+`ProviderChainExhaustedError`, naming each failure. The engine recovers when it contains an
+output cut as described above; other exhaustion still fails the pass.
 
 The chain calls `onFallback` between attempts, which is where `/compact` settles the abandoned
 attempt as failed before the next one reports its usage. A link's retry of its own length stop
