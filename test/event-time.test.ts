@@ -161,6 +161,44 @@ describe("transcript event time", () => {
       expect(check.prepare("SELECT content, event_at FROM messages").all()).toEqual([{ content: "original", event_at: at }]);
     } finally { check.close(); }
   });
+  it.each([false, true])("import records declared web identity (backfill-event-times: %s)", async backfillEventTimes => {
+    const paths = createLcmPaths(join(dir, "lcm"));
+    const transcripts = join(dir, "transcripts");
+    const project = join(transcripts, claudeProjectSlug(dir));
+    mkdirSync(project, { recursive: true });
+    mkdirSync(projectDir(dir, paths), { recursive: true });
+    const url = "https://claude.ai/code/session_imported";
+    writeFileSync(join(project, "session.jsonl"), [
+      { type: "attachment", sessionId: "session", attachment: { type: "remote_session_change", url } },
+      { timestamp: at, message: { role: "user", content: "original" } },
+      { message: { role: "assistant", content: "new tail" } },
+    ].map(entry => JSON.stringify(entry)).join("\n") + "\n");
+    if (backfillEventTimes) {
+      const stored = new DatabaseSync(projectDbPath(dir, paths));
+      try {
+        runLcmMigrations(stored, { claudeProjectsDir: dir });
+        await new SessionCapture(stored, "project", new ScrubEngine([], [])).write({ sessionId: "session",
+          messages: [{ role: "user", content: "original", tokenCount: 1 }] });
+        markSessionComplete(stored, "session", 1);
+      } finally { stored.close(); }
+    }
+    const ingest = createIngestHandler(loadDaemonConfig(join(dir, "missing-config")), paths);
+    const post = vi.fn(async (route: string, body: unknown) => {
+      if (route === "/ingest") return invokeRoute(ingest, body);
+      if (route === "/session-complete" || route === "/backfill-commits") return { updated: 0 };
+      throw new Error(`Unexpected route: ${route}`);
+    });
+    const result = await importSessions({ post } as unknown as DaemonClient, {
+      cwd: dir, provider: "claude", _claudeProjectsDir: transcripts, paths, backfillEventTimes,
+    });
+    expect(result.failed).toBe(0);
+    const check = new DatabaseSync(projectDbPath(dir, paths), { readOnly: true });
+    try {
+      expect(check.prepare("SELECT session_id, url FROM session_web_urls").all()).toEqual([{ session_id: "session", url }]);
+      expect(check.prepare("SELECT content FROM messages ORDER BY seq").all()).toEqual(backfillEventTimes
+        ? [{ content: "original" }] : [{ content: "original" }, { content: "new tail" }]);
+    } finally { check.close(); }
+  });
   it("assigns imported sessions to event months", async () => {
     enableTimeline(db);
     await capture.write({ sessionId: "session", messages: [{ role: "user", content: "old event", tokenCount: 1, eventAt: at }] });

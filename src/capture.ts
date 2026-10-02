@@ -22,8 +22,9 @@ import {
   type SubagentAttributionInput,
 } from "./store/conversation-store.js";
 import { SummaryStore } from "./store/summary-store.js";
+import { recordSessionWebUrls } from "./store/session-url-store.js";
 import { readSubagentAttribution } from "./subagent-attribution.js";
-import { CLAUDE_PARSER_SHAPE, parseTranscript, transcriptEventTime, type MessagePart, type ParsedMessage } from "./transcript.js";
+import { CLAUDE_PARSER_SHAPE, parseTranscript, transcriptEventTime, type MessagePart, type ParsedMessage, type SessionUrlDeclaration } from "./transcript.js";
 import { clearConversationForRebuild, planSessionRebuild, type SessionRebuildPlan } from "./claude-rebuild.js";
 import {
   transcriptSource,
@@ -58,6 +59,7 @@ export interface StoredSession {
 }
 
 export interface CaptureInput {
+  sessionUrlDeclarations?: SessionUrlDeclaration[];
   sessionId: string;
   cwd?: string;
   /** Transcript messages, from the first one or from `sourceOffset` onwards. Whatever is already stored is skipped. */
@@ -214,11 +216,17 @@ export class SessionCapture {
       }
       throw error;
     });
-    if (!stored && delta.messages.length === 0 && delta.checkpoint === undefined && !delta.boundaries?.length) return undefined;
+    if (!stored && delta.messages.length === 0 && delta.checkpoint === undefined && !delta.boundaries?.length) {
+      if (delta.sessionUrlDeclarations?.length) await this.conversationStore.withTransaction(() => {
+        if (!workers.excluded(input.sessionId)) recordSessionWebUrls(this.db, input.sessionId, delta.sessionUrlDeclarations ?? []);
+      });
+      return undefined;
+    }
     const written = await this.write({
       sessionId: input.sessionId,
       cwd: input.cwd,
       messages: delta.messages,
+      sessionUrlDeclarations: delta.sessionUrlDeclarations,
       parserShape: source.client === "claude" ? CLAUDE_PARSER_SHAPE : null,
       restampParserShape: delta.restampParserShape,
       sourceOffset: delta.sourceOffset,
@@ -301,6 +309,7 @@ export class SessionCapture {
       if (plan.kind !== "repairable" || plan.conversationId === undefined || !delta) return { plan, ingested: 0 };
       const rebuild: CaptureInput = {
         sessionId: input.sessionId, messages: delta.messages, parserShape: CLAUDE_PARSER_SHAPE,
+        sessionUrlDeclarations: delta.sessionUrlDeclarations,
         transcriptPath, attribution: input.attribution,
       };
       // The gate runs before the clear: a session it refuses keeps its stored history.
@@ -346,6 +355,7 @@ export class SessionCapture {
     if (this.refusedByWorkerGate(input, discoveredCwd)) {
       return { conversationId: 0, records: [], totalCounts: { gitleaks: 0, builtIn: 0, global: 0, project: 0 } };
     }
+    recordSessionWebUrls(this.db, input.sessionId, input.sessionUrlDeclarations ?? []);
     const attribution = input.attribution
       ?? (input.transcriptPath ? attributionFromTranscriptPath(input.transcriptPath) : undefined);
     // Only a caller that knows the provenance stamps it; an unknown one is verified on its next Claude capture.

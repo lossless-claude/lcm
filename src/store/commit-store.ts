@@ -8,6 +8,7 @@ export type CommitReference = {
   evidence: "commit-output" | "session-trailer"; evidenceValue: string;
 };
 export type CommitCandidate = { message_id: number; conversation_id: number; session_id: string; role: string; content: string; tool_output: string | null };
+export type TrailerCandidate = Pick<CommitCandidate, "message_id" | "conversation_id" | "session_id"> & { url: string };
 type Row = { session_id: string; message_id: number; hash: string; subject: string | null; author_at: string | null; committed_at: string | null; branch: string | null; resolved: number; evidence: CommitReference["evidence"]; evidence_value: string };
 const reference = (row: Row): CommitReference => ({
   sessionId: row.session_id, messageId: row.message_id, hash: row.hash, subject: row.subject,
@@ -19,6 +20,33 @@ const OUTPUT_HASH_PREFILTER = "*[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]
 /** Explicit evidence and reference metadata only; no git content is retained. */
 export class CommitStore {
   constructor(private db: DatabaseSync) {}
+
+  isCurrentDeclaration(candidate: TrailerCandidate): boolean {
+    return this.db.prepare(`SELECT 1 FROM session_web_urls u JOIN conversations c USING(session_id)
+      JOIN messages m USING(conversation_id)
+      WHERE u.session_id = ? AND u.url = ? AND m.message_id = ? AND c.is_timeline = 0
+        AND NOT EXISTS (SELECT 1 FROM message_parts p WHERE p.message_id = m.message_id AND p.part_type = 'compaction')`)
+      .get(candidate.session_id, candidate.url, candidate.message_id) !== undefined;
+  }
+
+  async *declarationPages(): AsyncGenerator<TrailerCandidate[]> {
+    let sessionId = "", url = "";
+    const page = this.db.prepare(`SELECT u.session_id, u.url, m.message_id, m.conversation_id
+      FROM session_web_urls u JOIN messages m ON m.message_id = (
+        SELECT first.message_id FROM messages first JOIN conversations c USING(conversation_id)
+        WHERE c.session_id = u.session_id AND c.is_timeline = 0
+          AND NOT EXISTS (SELECT 1 FROM message_parts p WHERE p.message_id = first.message_id AND p.part_type = 'compaction')
+        ORDER BY first.message_id LIMIT 1
+      )
+      WHERE (u.session_id, u.url) > (?, ?) ORDER BY u.session_id, u.url LIMIT ${CANDIDATE_PAGE_SIZE}`);
+    for (;;) {
+      const rows = page.all(sessionId, url) as TrailerCandidate[];
+      if (rows.length) yield rows;
+      await yieldToEventLoop();
+      if (rows.length < CANDIDATE_PAGE_SIZE) return;
+      ({ session_id: sessionId, url } = rows.at(-1)!);
+    }
+  }
 
   isCurrentCandidate(candidate: CommitCandidate): boolean {
     const row = this.db.prepare(`SELECT m.role, m.content,
@@ -39,11 +67,9 @@ export class CommitStore {
       FROM messages m JOIN conversations c USING(conversation_id)
       WHERE m.message_id > ? AND c.is_timeline = 0
         AND NOT EXISTS (SELECT 1 FROM message_parts p WHERE p.message_id = m.message_id AND p.part_type = 'compaction')
-        AND (m.content LIKE '%https://claude.ai/code/session_%'
-          OR (m.role = 'tool' AND (m.content LIKE '%[%]%' OR m.content LIKE '%commit %' OR lower(m.content) GLOB '${OUTPUT_HASH_PREFILTER}'))
+        AND ((m.role = 'tool' AND (m.content LIKE '%[%]%' OR m.content LIKE '%commit %' OR lower(m.content) GLOB '${OUTPUT_HASH_PREFILTER}'))
           OR EXISTS (SELECT 1 FROM message_parts p WHERE p.message_id = m.message_id AND p.part_type = 'tool' AND p.session_id = c.session_id
-            AND (p.tool_output LIKE '%[%]%' OR p.tool_output LIKE '%commit %' OR lower(p.tool_output) GLOB '${OUTPUT_HASH_PREFILTER}'
-              OR p.tool_output LIKE '%https://claude.ai/code/session_%')))
+            AND (p.tool_output LIKE '%[%]%' OR p.tool_output LIKE '%commit %' OR lower(p.tool_output) GLOB '${OUTPUT_HASH_PREFILTER}')))
       ORDER BY m.message_id LIMIT ${CANDIDATE_PAGE_SIZE}`);
     for (;;) {
       const rows = page.all(id) as CommitCandidate[];
@@ -135,6 +161,13 @@ export class CommitStore {
 
   finishEvidenceRepair(): void {
     this.db.prepare("INSERT INTO commit_evidence_backfill (id) VALUES (1)").run();
+  }
+
+  repairTrailerIdentityOnce(): void {
+    this.db.exec("CREATE TABLE IF NOT EXISTS session_trailer_identity_backfill (id INTEGER PRIMARY KEY CHECK(id = 1))");
+    if (this.db.prepare("SELECT 1 FROM session_trailer_identity_backfill WHERE id = 1").get()) return;
+    this.db.prepare("DELETE FROM session_commits WHERE evidence = 'session-trailer'").run();
+    this.db.prepare("INSERT INTO session_trailer_identity_backfill (id) VALUES (1)").run();
   }
 
   forSession(sessionId: string): CommitReference[] {

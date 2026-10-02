@@ -52,18 +52,24 @@ abbreviation when unresolved), subject, committer time, author time as reference
 kind and evidence value. Evidence is a hash in stored `git commit` output
 (`[<branch> <hash>] <subject>`, including root-commit and detached-HEAD variants)
 that local git resolves to a commit, or a commit's `Claude-Session:` trailer whose exact web URL
-appears in the session's own messages. A web id alone never matches an lcm session id;
+equals a URL declared by that session. `session_web_urls` stores the URLs from main-chain
+Claude `remote_session_change` attachments, keyed by lcm session id and exact URL.
+Hook capture (including incremental reads), import and `--backfill-event-times` record
+declarations; the backfill fills existing sessions from their transcripts. Sidechain
+attachments declare nothing, and attachments create no message. Several sessions
+declaring the same URL all link. Message content, tool output and prompts are never
+scanned for trailer URLs. A web id alone never matches an lcm session id;
 `git log`, `git show`, bare hashes and hex-looking words establish neither references
 nor event times. Timestamp proximity establishes nothing. Git reads local objects without replacements
 or lazy fetching. No diffs, blobs, author emails or PR text are retained.
-Message and reference reads use pages of at most 256 rows; message reads prefilter
-tool output and session URLs. Matching git history is paged at 128 commits.
+Message, declaration and reference reads use pages of at most 256 rows; message reads
+prefilter commit output. Matching git history is paged at 128 commits.
 Ordinary evidence transactions are bounded and the pass yields between pages under the project queue
 and mutation lease. Git reads yield both the queue turn and mutation lease; writes
 recheck the candidate's evidence and worker exclusion after reacquiring them.
 Trailer evidence creates one reference per session and commit, retaining one representative
 message id that is never used for dating. Each run scans trailer history once per session
-and exact URL, regardless of how many messages mention it. Stored references are refreshed
+and exact declared URL. Stored references are refreshed
 at the start of the run; trailer discovery does not verify already linked commits again.
 Only a message whose own commit output names
 exactly one distinct, resolvable commit receives its committer time and source `commit`
@@ -74,6 +80,9 @@ legacy author-date anchors with committer dates for eligible messages.
 The first enabled pass repairs legacy evidence atomically: duplicate trailer links collapse,
 trailer-only and ambiguous output anchors return to unknown, and affected conversations'
 summary bounds are recomputed before recording completion. Summary text is preserved.
+Separately, a one-time identity repair deletes every existing `session-trailer` link
+and the pass re-derives them from declared URLs. Sessions with no declaration keep no
+trailer link. This identity repair changes no event times or summary bounds.
 Ordinary passes recompute bounds only for conversations whose anchors changed. Disabling
 the pass retains existing references and anchors.
 

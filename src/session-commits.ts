@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { DatabaseSync } from "node:sqlite";
-import { CommitStore, type CommitCandidate, type CommitReference } from "./store/commit-store.js";
+import { CommitStore, type CommitCandidate, type CommitReference, type TrailerCandidate } from "./store/commit-store.js";
 import { ConversationStore } from "./store/conversation-store.js";
 import { SummaryStore } from "./store/summary-store.js";
 import { yieldToEventLoop } from "./daemon/project-queue.js";
@@ -12,7 +12,7 @@ const HASH = /^[a-f0-9]{7,64}$/i;
 const GIT_READ_TIMEOUT_MS = 10_000;
 const GIT_OUTPUT_BYTES = 1024 * 1024;
 type GitLease = { yieldWhile<T>(work: () => Promise<T>): Promise<T> };
-type Context = { store: CommitStore; conversations: ConversationStore; workers: WorkerStore; cwd: string; changed: Set<number>; trailerUrls: Map<string, Set<string>>; lease?: GitLease };
+type Context = { store: CommitStore; conversations: ConversationStore; workers: WorkerStore; cwd: string; changed: Set<number>; lease?: GitLease };
 
 async function git(context: Context, args: string[]): Promise<string | null> {
   try {
@@ -68,7 +68,7 @@ async function* trailerHashes(context: Context, url: string): AsyncGenerator<str
   }
 }
 
-async function trailerReference(context: Context, message: CommitCandidate, evidence: { url: string; hash: string }): Promise<CommitReference | null> {
+async function trailerReference(context: Context, message: TrailerCandidate, evidence: { url: string; hash: string }): Promise<CommitReference | null> {
   const { url, hash } = evidence;
   const prior = context.store.find({ sessionId: message.session_id, messageId: message.message_id, evidence: "session-trailer", evidenceValue: url, hash });
   // Stored links were refreshed at the start of this run, including unavailable objects.
@@ -79,28 +79,30 @@ async function trailerReference(context: Context, message: CommitCandidate, evid
     branch: null, evidence: "session-trailer", evidenceValue: url };
 }
 
-async function* urlReferences(context: Context, message: CommitCandidate, url: string): AsyncGenerator<CommitReference> {
+async function* urlReferences(context: Context, message: TrailerCandidate, url: string): AsyncGenerator<CommitReference> {
   for await (const hash of trailerHashes(context, url)) {
     const ref = await trailerReference(context, message, { url, hash });
     if (ref) yield ref;
   }
 }
 
-async function* trailerReferences(context: Context, message: CommitCandidate): AsyncGenerator<CommitReference> {
-  const urls = new Set(`${message.content}\n${message.tool_output ?? ""}`.match(/https:\/\/claude\.ai\/code\/session_[a-zA-Z0-9_-]+/g) ?? []);
-  let seen = context.trailerUrls.get(message.session_id);
-  if (!seen) context.trailerUrls.set(message.session_id, seen = new Set());
-  for (const url of urls) {
-    if (seen.has(url)) continue;
-    yield* urlReferences(context, message, url);
-    seen.add(url);
+async function recordDeclaration(context: Context, declaration: TrailerCandidate): Promise<number> {
+  if (context.workers.excluded(declaration.session_id)) return 0;
+  let references = 0;
+  for await (const ref of urlReferences(context, declaration, declaration.url)) {
+    const recorded = await context.conversations.withTransaction(() => {
+      if (context.workers.excluded(declaration.session_id) || !context.store.isCurrentDeclaration(declaration)) return false;
+      context.store.record(ref);
+      return true;
+    });
+    if (recorded) references++;
   }
+  return references;
 }
 
 async function* messageReferences(context: Context, message: CommitCandidate): AsyncGenerator<CommitReference> {
   const output = `${message.role === "tool" ? message.content : ""}\n${message.tool_output ?? ""}`;
   for (const found of outputs(output)) yield await outputReference(context, message, found);
-  yield* trailerReferences(context, message);
 }
 
 async function refreshReference(context: Context, ref: CommitReference): Promise<void> {
@@ -144,7 +146,7 @@ async function repairCandidate(context: Context, message: CommitCandidate): Prom
 export async function backfillProjectCommits(db: DatabaseSync, cwd: string, enabled = true, lease?: GitLease): Promise<{ updated: number; candidates: number; references: number }> {
   const report = { updated: 0, candidates: 0, references: 0 };
   if (!enabled) return report;
-  const context = { store: new CommitStore(db), conversations: new ConversationStore(db), workers: new WorkerStore(db), cwd, changed: new Set<number>(), trailerUrls: new Map<string, Set<string>>(), lease };
+  const context = { store: new CommitStore(db), conversations: new ConversationStore(db), workers: new WorkerStore(db), cwd, changed: new Set<number>(), lease };
   const summaries = new SummaryStore(db);
   if (context.store.needsEvidenceRepair()) {
     // The SQL repair is bounded and atomic; the recompute yields between pages, so it runs after
@@ -153,6 +155,7 @@ export async function backfillProjectCommits(db: DatabaseSync, cwd: string, enab
     for (const conversationId of context.store.conversationsWithCommits()) await summaries.recomputeTimeBounds(conversationId);
     context.store.finishEvidenceRepair();
   }
+  await context.conversations.withTransaction(() => { context.store.repairTrailerIdentityOnce(); });
   for await (const page of context.store.referencePages()) {
     for (const ref of page) await refreshReference(context, ref);
   }
@@ -164,6 +167,9 @@ export async function backfillProjectCommits(db: DatabaseSync, cwd: string, enab
       report.references += repaired.references;
     }
     await yieldToEventLoop();
+  }
+  for await (const page of context.store.declarationPages()) {
+    for (const declaration of page) report.references += await recordDeclaration(context, declaration);
   }
   for (const conversationId of context.changed) await summaries.recomputeTimeBounds(conversationId);
   return report;

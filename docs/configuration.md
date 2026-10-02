@@ -347,8 +347,13 @@ commit pass under the project queue and mutation lease. Disable the commit pass 
 
 The setting leaves transcript repair, existing references and anchors intact.
 There is no automatic git scan or remote fetch. References require a hash in stored
-`git commit` output (normal, root-commit or detached-HEAD), or an exact stored web session URL matching a commit's
-`Claude-Session:` trailer. Trailer evidence creates one link per session and commit;
+`git commit` output (normal, root-commit or detached-HEAD), or a commit's
+`Claude-Session:` trailer equal to a web URL declared by that session's main-chain
+Claude `remote_session_change` attachment. Hook capture, import and the transcript
+backfill store declarations in `session_web_urls`; incremental hook reads record new
+declarations too. Sidechain attachments declare nothing and attachments create no message.
+Stored message content, tool output and prompts are never scanned for trailer URLs.
+Several sessions declaring one URL all link. Trailer evidence creates one link per session and commit;
 its representative message is never used for dating. Each run scans trailer history once
 per session and exact URL. Stored references are refreshed at the start of the run;
 trailer discovery does not verify already linked commits again. Only messages whose own commit
@@ -358,6 +363,10 @@ pass repairs legacy duplicate trailer links and trailer-only or ambiguous anchor
 recomputing affected summary bounds. The author date is reference metadata only. Hashes from `git log`, `git show`,
 bare hex lines and hex-looking words create no reference or event-time anchor. Describe shows the references
 on sessions, summaries and timeline nodes. See [import repair](import.md#event-timestamps-and-existing-history).
+
+A separate one-time identity repair deletes all existing `session-trailer` links and
+re-derives them from declared URLs. A session with no declaration keeps no trailer link.
+This repair changes no event times or summary bounds.
 
 ### Project timeline opt-in
 
