@@ -79,10 +79,16 @@ export type Exclusion = { under: readonly string[]; containing: readonly string[
 
 const CONFIG_KEYS = ["holdout", "exclude", "excludeCwdContaining"] as const;
 
+/**
+ * Case is ignored: macOS and Windows file systems usually ignore it, and a cwd
+ * recorded in another casing must not slip past. On a case-sensitive file system
+ * this can only exclude more, never less.
+ */
 export function isExcluded(cwd: string, exclusion: Exclusion): boolean {
-  const forms = [resolve(cwd), realpathDeep(resolve(cwd))];
+  const forms = [resolve(cwd), realpathDeep(resolve(cwd))].map(form => form.toLowerCase());
   return forms.some(form =>
-    exclusion.under.some(root => within(form, root)) || exclusion.containing.some(name => form.includes(name)));
+    exclusion.under.some(root => within(form, root.toLowerCase())) ||
+    exclusion.containing.some(name => form.includes(name.toLowerCase())));
 }
 
 function within(path: string, root: string): boolean {

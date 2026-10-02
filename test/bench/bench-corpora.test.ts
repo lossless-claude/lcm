@@ -89,6 +89,13 @@ describe("excluding a repository", () => {
     expect(await discoverCorpora(paths, config.exclude)).toEqual([project("kept")]);
   });
 
+  it("ignores case in paths and names", () => {
+    const exclusion = { under: [project("excluded-repo")], containing: ["other-repo"] };
+    expect(isExcluded(project("Excluded-Repo", "sub"), exclusion)).toBe(true);
+    expect(isExcluded(join(root, "scratch", "-Work-Other-Repo"), exclusion)).toBe(true);
+    expect(isExcluded(project("kept"), exclusion)).toBe(false);
+  });
+
   it("accepts a path gone from disk while projects under it remain ingested", async () => {
     ingest(join(repo(), "sub"));
     const config = readCorpusConfig(writeConfig(JSON.stringify({ exclude: [repo()] })), paths);

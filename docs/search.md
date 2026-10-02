@@ -299,8 +299,8 @@ tuned against. The other two keys keep a repository out of every group, which ta
 path, because each worktree, each subdirectory a session started in and each agent scratchpad is
 its own lcm project. `exclude` lists absolute paths and covers each one and everything under it,
 including worktrees created there later. `excludeCwdContaining` covers every project whose `cwd`
-contains the name (case-sensitive), which reaches agent worktrees and scratchpads outside the
-tree, even after they are deleted. A scratchpad directory replaces every character other than a
+contains the name, which reaches agent worktrees and scratchpads outside the tree, even after they
+are deleted. Both ignore case, since macOS and Windows file systems usually do. A scratchpad directory replaces every character other than a
 letter or digit with `-`, so a name with a dot does not match its own scratchpad. Excluded beats
 held out, and an `LCM_BENCH_CORPORA` entry that is excluded is dropped.
 
