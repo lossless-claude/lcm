@@ -149,12 +149,12 @@ it("matches session trailers through the exact stored URL, never through an lcm 
     await capture.write({ sessionId: "session_web123", messages: [{ role: "user", content: "no URL", tokenCount: 10 }] });
     expect(await backfillProjectCommits(db, dir, false)).toEqual({ updated: 0, candidates: 0, references: 0 });
     expect(new CommitStore(db).forSession("local123")).toEqual([]);
-    expect(await backfillProjectCommits(db, dir)).toMatchObject({ updated: 1 });
+    expect(await backfillProjectCommits(db, dir)).toMatchObject({ updated: 0 });
     expect(new CommitStore(db).forSession("local123")).toEqual([
       expect.objectContaining({ hash, evidence: "session-trailer", evidenceValue: url, resolved: true }),
     ]);
     expect(await capture.conversationStore.getMessageById(records[0].messageId)).toMatchObject({
-      eventAt: new Date("2021-02-03T04:05:06Z"), eventTimeSource: "commit",
+      eventAt: null, eventTimeSource: null,
     });
     expect(new CommitStore(db).forSession("session_web123")).toEqual([]);
     const mentioned = fixtureCommit(dir, `Mention ${url}\n\nNo session trailer here`);
@@ -400,7 +400,7 @@ it("marks a pruned reference unresolved and never re-resolves an unresolved abbr
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-it("keeps a commit anchor tied to surviving evidence when one of two commits is pruned", async () => {
+it("keeps multiple commit outputs unknown even when one commit is pruned", async () => {
   const dir = mkdtempSync(join(tmpdir(), "lcm-commit-fixture-"));
   try {
     const first = fixtureCommit(dir);
@@ -411,7 +411,7 @@ it("keeps a commit anchor tied to surviving evidence when one of two commits is 
     rmSync(join(dir, ".git", "objects", first.slice(0, 2), first.slice(2)));
     await backfillProjectCommits(db, dir);
     expect(await capture.conversationStore.getMessageById(records[0].messageId)).toMatchObject({
-      eventAt: new Date("2022-01-01T00:00:00Z"), eventTimeSource: "commit",
+      eventAt: null, eventTimeSource: null,
     });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
@@ -426,7 +426,7 @@ it("reads only prefiltered candidate messages in bounded pages and yields betwee
     const prepare = db.prepare.bind(db);
     const spy = vi.spyOn(db, "prepare").mockImplementation(sql => {
       const statement = prepare(sql);
-      if (sql.includes("AS tool_output") || sql.includes(") tool_output")) {
+      if (sql.includes("m.message_id > ?") && (sql.includes("AS tool_output") || sql.includes(") tool_output"))) {
         expect(sql).toContain("LIKE");
         expect(sql).toContain("LIMIT 256");
         const all = statement.all.bind(statement);
@@ -487,4 +487,92 @@ it.each([
     const engine = new RetrievalEngine(capture.conversationStore, capture.summaryStore);
     expect(await engine.describe("viewer")).toMatchObject({ commits: [] });
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+it("links repeated session URLs once per commit without dating any message", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "lcm-commit-fixture-"));
+  try {
+    const url = "https://claude.ai/code/session_many";
+    const hashes = Array.from({ length: 3 }, (_, i) => {
+      const hash = fixtureCommit(dir, `Change ${i}\n\nClaude-Session: ${url}`, 1612325106 + i);
+      writeFileSync(join(dir, ".git", "refs", "heads", `commit${i}`), hash + "\n");
+      return hash;
+    });
+    const { records } = await capture.write({ sessionId: "many", messages: Array.from({ length: 5 }, () => ({
+      role: "user" as const, content: url, tokenCount: 10,
+    })) });
+    await backfillProjectCommits(db, dir);
+    expect(new CommitStore(db).forSession("many").map(ref => ref.hash).sort()).toEqual(hashes.sort());
+    for (const record of records) expect(await capture.conversationStore.getMessageById(record.messageId))
+      .toMatchObject({ eventAt: null, eventTimeSource: null });
+    await capture.write({ sessionId: "many", messages: [{ role: "user", content: url, tokenCount: 10 }] });
+    await backfillProjectCommits(db, dir);
+    expect(new CommitStore(db).forSession("many")).toHaveLength(hashes.length);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it.each([false, true])("does not date multiple distinct commit outputs (second unresolved: %s)", async unresolved => {
+  const dir = mkdtempSync(join(tmpdir(), "lcm-commit-fixture-"));
+  try {
+    const first = fixtureCommit(dir);
+    const second = unresolved ? "deadbeef" : fixtureCommit(dir, "Second change", 1640995200);
+    const { records } = await capture.write({ sessionId: "multiple", messages: [{ role: "tool",
+      content: `[fixture ${first.slice(0, 7)}] Change\n[fixture ${second.slice(0, 7)}] Second change`, tokenCount: 20 }] });
+    expect(await backfillProjectCommits(db, dir)).toMatchObject({ updated: 0 });
+    expect(await capture.conversationStore.getMessageById(records[0].messageId)).toMatchObject({ eventAt: null, eventTimeSource: null });
+    expect(new CommitStore(db).forSession("multiple")).toHaveLength(2);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("repairs legacy trailer duplicates and guessed anchors once, preserving unrelated rows and summary text", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "lcm-commit-fixture-"));
+  const recompute = vi.spyOn(SummaryStore.prototype, "recomputeTimeBounds");
+  try {
+    const url = "https://claude.ai/code/session_legacy";
+    const first = fixtureCommit(dir, `Change\n\nClaude-Session: ${url}`);
+    const second = fixtureCommit(dir, "Second change", 1640995200);
+    const affected = await capture.write({ sessionId: "legacy", messages: [
+      { role: "user", content: url, tokenCount: 10 },
+      { role: "user", content: url, tokenCount: 10 },
+      { role: "tool", content: `[fixture ${first.slice(0, 7)}] Change\n[fixture ${second.slice(0, 7)}] Second change`, tokenCount: 20 },
+    ] });
+    const quiet = await capture.write({ sessionId: "quiet", messages: [
+      { role: "tool", content: `[fixture ${first.slice(0, 7)}] Change`, tokenCount: 10, eventAt: "2020-01-01T00:00:00Z" },
+    ] });
+    const insert = db.prepare(`INSERT INTO session_commits(session_id, message_id, hash, committed_at, resolved, evidence, evidence_value)
+      VALUES ('legacy', ?, ?, '2021-02-03T04:05:06.000Z', 1, ?, ?)`);
+    for (const record of affected.records.slice(0, 2)) insert.run(record.messageId, first, "session-trailer", url);
+    for (const hash of [first, second]) insert.run(affected.records[2].messageId, hash, "commit-output", hash.slice(0, 7));
+    db.prepare("UPDATE messages SET event_at = '2021-02-03T04:05:06.000Z', event_time_source = 'commit' WHERE conversation_id = ?")
+      .run(affected.conversationId);
+    await capture.summaryStore.insertSummary({ summaryId: "legacy_leaf", conversationId: affected.conversationId, kind: "leaf", content: "Keep prose", tokenCount: 1 });
+    await capture.summaryStore.linkSummaryToMessages("legacy_leaf", affected.records.map(record => record.messageId));
+    await capture.summaryStore.insertSummary({ summaryId: "legacy_parent", conversationId: affected.conversationId, kind: "condensed", depth: 1, content: "Keep parent", tokenCount: 1 });
+    await capture.summaryStore.linkSummaryToParents("legacy_parent", ["legacy_leaf"]);
+    await capture.summaryStore.recomputeTimeBounds(affected.conversationId);
+    const quietBefore = db.prepare("SELECT * FROM messages WHERE conversation_id = ?").all(quiet.conversationId);
+    recompute.mockClear();
+    // An interrupted first run leaves the marker unwritten, and the rerun recomputes the same set.
+    const insideTransaction: boolean[] = [];
+    recompute.mockImplementationOnce(async () => { insideTransaction.push(db.isTransaction); throw new Error("interrupted"); });
+    await expect(backfillProjectCommits(db, dir)).rejects.toThrow("interrupted");
+    expect(insideTransaction).toEqual([false]);
+    recompute.mockClear();
+    await backfillProjectCommits(db, dir);
+    expect(new CommitStore(db).forSession("legacy").filter(ref => ref.evidence === "session-trailer")).toHaveLength(1);
+    for (const record of affected.records) expect(await capture.conversationStore.getMessageById(record.messageId))
+      .toMatchObject({ eventAt: null, eventTimeSource: null });
+    expect(db.prepare("SELECT * FROM messages WHERE conversation_id = ?").all(quiet.conversationId)).toEqual(quietBefore);
+    expect(recompute.mock.calls).toEqual([[affected.conversationId]]);
+    for (const id of ["legacy_leaf", "legacy_parent"]) expect(await capture.summaryStore.getSummary(id))
+      .toMatchObject({ hasEventTime: false, content: id === "legacy_leaf" ? "Keep prose" : "Keep parent" });
+    recompute.mockClear();
+    const prepare = db.prepare.bind(db);
+    const statements: string[] = [];
+    const spy = vi.spyOn(db, "prepare").mockImplementation(sql => { statements.push(sql); return prepare(sql); });
+    try { await backfillProjectCommits(db, dir); } finally { spy.mockRestore(); }
+    expect(recompute).not.toHaveBeenCalled();
+    expect(statements.some(sql => /DELETE FROM session_commits/i.test(sql))).toBe(false);
+  } finally { recompute.mockRestore(); rmSync(dir, { recursive: true, force: true }); }
 });

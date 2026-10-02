@@ -50,7 +50,7 @@ function outputs(content: string): Array<{ hash: string; branch: string | null }
 }
 
 async function outputReference(context: Context, message: CommitCandidate, found: { hash: string; branch: string | null }): Promise<CommitReference> {
-  const prior = context.store.find({ messageId: message.message_id, evidence: "commit-output", evidenceValue: found.hash });
+  const prior = context.store.find({ sessionId: message.session_id, messageId: message.message_id, evidence: "commit-output", evidenceValue: found.hash });
   const metadata = prior && !prior.resolved ? prior : await resolve(context, prior?.hash ?? found.hash);
   return { ...metadata, sessionId: message.session_id, messageId: message.message_id, branch: prior?.branch ?? found.branch,
     evidence: "commit-output", evidenceValue: found.hash };
@@ -70,7 +70,7 @@ async function* trailerHashes(context: Context, url: string): AsyncGenerator<str
 
 async function trailerReference(context: Context, message: CommitCandidate, evidence: { url: string; hash: string }): Promise<CommitReference | null> {
   const { url, hash } = evidence;
-  const prior = context.store.find({ messageId: message.message_id, evidence: "session-trailer", evidenceValue: url, hash });
+  const prior = context.store.find({ sessionId: message.session_id, messageId: message.message_id, evidence: "session-trailer", evidenceValue: url, hash });
   if (prior && !prior.resolved) return null;
   const trailers = await git(context, ["show", "--no-patch", "--format=%(trailers:key=Claude-Session,valueonly)", hash, "--"]);
   if (!trailers?.split("\n").some(value => value.trim() === url)) return null;
@@ -111,18 +111,25 @@ async function repairCandidate(context: Context, message: CommitCandidate): Prom
   const report = { updated: 0, candidates: 0, references: 0 };
   if (context.workers.excluded(message.session_id)) return report;
   report.candidates++;
+  const outputRefs = new Map<string, CommitReference>();
   for await (const ref of messageReferences(context, message)) {
-    const updated = await context.conversations.withTransaction(() => {
+    if (ref.evidence === "commit-output") outputRefs.set(ref.hash, ref);
+    const recorded = await context.conversations.withTransaction(() => {
       if (context.workers.excluded(message.session_id) || !context.store.isCurrentCandidate(message)) return null;
       const current = context.store.find(ref);
       if (current && !current.resolved && ref.resolved) return null;
-      return context.store.record(ref);
+      context.store.record(ref);
+      return true;
     });
-    if (updated === null) continue;
-    report.updated += updated;
-    if (updated) context.changed.add(message.conversation_id);
+    if (recorded === null) continue;
     report.references++;
   }
+  const updated = await context.conversations.withTransaction(() => {
+    if (context.workers.excluded(message.session_id) || !context.store.isCurrentCandidate(message)) return 0;
+    return context.store.anchor(message.message_id, outputRefs.size === 1 ? [...outputRefs.values()][0] : null);
+  });
+  report.updated += updated;
+  if (updated) context.changed.add(message.conversation_id);
   return report;
 }
 
@@ -131,6 +138,14 @@ export async function backfillProjectCommits(db: DatabaseSync, cwd: string, enab
   const report = { updated: 0, candidates: 0, references: 0 };
   if (!enabled) return report;
   const context = { store: new CommitStore(db), conversations: new ConversationStore(db), workers: new WorkerStore(db), cwd, changed: new Set<number>(), lease };
+  const summaries = new SummaryStore(db);
+  if (context.store.needsEvidenceRepair()) {
+    // The SQL repair is bounded and atomic; the recompute yields between pages, so it runs after
+    // the commit, over a set a rerun after an interruption reproduces, and the marker comes last.
+    await context.conversations.withTransaction(() => { context.store.repairLegacyEvidence(); });
+    for (const conversationId of context.store.conversationsWithCommits()) await summaries.recomputeTimeBounds(conversationId);
+    context.store.finishEvidenceRepair();
+  }
   for await (const page of context.store.referencePages()) {
     for (const ref of page) await refreshReference(context, ref);
   }
@@ -143,7 +158,6 @@ export async function backfillProjectCommits(db: DatabaseSync, cwd: string, enab
     }
     await yieldToEventLoop();
   }
-  const summaries = new SummaryStore(db);
   for (const conversationId of context.changed) await summaries.recomputeTimeBounds(conversationId);
   return report;
 }

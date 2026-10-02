@@ -105,6 +105,18 @@ describe("transcript event time", () => {
       .toEqual(records.map(record => record.createdAt));
   });
 
+  it("replaces a commit anchor with the transcript's own time when the transcript returns", async () => {
+    const { records } = await capture.write({ sessionId: "session", messages: [{ role: "user", content: "anchored", tokenCount: 1 }] });
+    db.prepare("UPDATE messages SET event_at = '2020-01-01T00:00:00.000Z', event_time_source = 'commit' WHERE message_id = ?").run(records[0].messageId);
+    const path = join(dir, "session.jsonl");
+    writeFileSync(path, JSON.stringify({ timestamp: "2021-02-01T00:00:00Z", message: { role: "user", content: "anchored" } }) + "\n");
+    const input = { sessionId: "session", cwd: dir, transcriptPath: path, client: "claude" as const, source: "import" as const };
+    expect(await backfillSessionEventTimes(db, input, new ScrubEngine([], []))).toEqual({ updated: 1, unknown: 0 });
+    expect(await capture.conversationStore.getMessageById(records[0].messageId))
+      .toMatchObject({ eventTimeSource: "transcript" });
+    expect((await capture.conversationStore.getMessageById(records[0].messageId))?.eventAt?.toISOString()).toBe("2021-02-01T00:00:00.000Z");
+  });
+
   it.each(["claude", "codex", "omp"])("keeps %s times unknown when its transcript is gone or its prefix does not align", async client => {
     await capture.write({ sessionId: "session", messages: [{ role: "user", content: "original", tokenCount: 1 }] });
     const path = join(dir, "session.jsonl");

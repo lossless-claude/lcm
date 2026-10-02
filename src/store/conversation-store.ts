@@ -442,7 +442,7 @@ export class ConversationStore {
 
   /** Fill unknown event times without changing capture timestamps or an earlier repair. */
   backfillMessageEventTimes(rows: ReadonlyArray<{ messageId: number; content: string; role: MessageRole; eventAt: string }>): number {
-    const update = this.db.prepare("UPDATE messages SET event_at = ?, event_time_source = 'transcript' WHERE message_id = ? AND event_at IS NULL AND content = ? AND role = ?");
+    const update = this.db.prepare("UPDATE messages SET event_at = ?, event_time_source = 'transcript' WHERE message_id = ? AND (event_at IS NULL OR event_time_source = 'commit') AND content = ? AND role = ?");
     let updated = 0;
     for (const row of rows) updated += Number(update.run(row.eventAt, row.messageId, row.content, row.role).changes);
     return updated;

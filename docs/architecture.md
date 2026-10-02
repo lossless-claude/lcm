@@ -58,17 +58,21 @@ nor event times. Timestamp proximity establishes nothing. Git reads local object
 or lazy fetching. No diffs, blobs, author emails or PR text are retained.
 Message and reference reads use pages of at most 256 rows; message reads prefilter
 tool output and session URLs. Matching git history is paged at 128 commits.
-Transactions are bounded and the pass yields between pages under the project queue
+Ordinary evidence transactions are bounded and the pass yields between pages under the project queue
 and mutation lease. Git reads yield both the queue turn and mutation lease; writes
 recheck the candidate's evidence and worker exclusion after reacquiring them.
-Resolved evidence fills only its message's NULL time with committer
-time and source `commit`; other messages stay unknown. A later pass marks unavailable
-hashes unresolved, never re-resolves them, and clears a commit time once its message
-has no resolved reference. If other resolved references remain, the anchor stays
-tied to their committer times. Reruns also replace legacy author-date commit anchors
-with resolved committer times. Summary bounds are recomputed only for conversations
-whose commit anchors changed in the pass. Transcript times are preserved. Disabling the pass retains
-existing references and anchors.
+Trailer evidence creates one reference per session and commit, retaining one representative
+message id that is never used for dating. Only a message whose own commit output names
+exactly one distinct, resolvable commit receives its committer time and source `commit`
+when its time is unknown. Multiple outputs, including unresolved candidates, stay unknown.
+Transcript times are preserved. A later pass marks unavailable hashes unresolved and never
+re-resolves them; a lost sole output reference clears its commit anchor. Reruns replace
+legacy author-date anchors with committer dates for eligible messages.
+The first enabled pass repairs legacy evidence atomically: duplicate trailer links collapse,
+trailer-only and ambiguous output anchors return to unknown, and affected conversations'
+summary bounds are recomputed before recording completion. Summary text is preserved.
+Ordinary passes recompute bounds only for conversations whose anchors changed. Disabling
+the pass retains existing references and anchors.
 
 Describe accepts a session id or `session:<id>` and returns `node.commits`.
 Session summaries list their sessions' references; timeline nodes list the references

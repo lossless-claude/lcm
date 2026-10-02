@@ -348,8 +348,12 @@ commit pass under the project queue and mutation lease. Disable the commit pass 
 The setting leaves transcript repair, existing references and anchors intact.
 There is no automatic git scan or remote fetch. References require a hash in stored
 `git commit` output (normal, root-commit or detached-HEAD), or an exact stored web session URL matching a commit's
-`Claude-Session:` trailer. Only evidence messages with unknown times receive a
-commit's committer time, recorded with source `commit`; the author date is reference metadata only. Hashes from `git log`, `git show`,
+`Claude-Session:` trailer. Trailer evidence creates one link per session and commit;
+its representative message is never used for dating. Only messages whose own commit
+output names exactly one distinct, resolvable commit receive its committer time when
+unknown, recorded with source `commit`; multiple outputs stay unknown. The first enabled
+pass repairs legacy duplicate trailer links and trailer-only or ambiguous anchors once,
+recomputing affected summary bounds. The author date is reference metadata only. Hashes from `git log`, `git show`,
 bare hex lines and hex-looking words create no reference or event-time anchor. Describe shows the references
 on sessions, summaries and timeline nodes. See [import repair](import.md#event-timestamps-and-existing-history).
 

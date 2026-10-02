@@ -92,17 +92,22 @@ an event time. Hashes from `git log`, `git show`, bare hex lines and hex-looking
 create no reference or event-time anchor. A
 `Claude-Session:` trailer matches only the exact `https://claude.ai/code/session_…`
 URL in the session's own stored messages; the web id is not an lcm session id.
-Only a message carrying resolved evidence gets committer time with source `commit`,
-and only if its time is NULL. Other unknown messages remain NULL. References retain
+Trailer evidence creates one link per session and commit, with a representative message
+that is never used for dating. Only a message whose own commit output names exactly one
+distinct, resolvable commit gets committer time with source `commit`, and only if its time
+is NULL. Several distinct outputs, including unresolved candidates, remain unknown. References retain
 hash, subject, committer time, author time as reference metadata, branch when known, and evidence; no diffs, blobs, author
 emails or PR text are stored. They appear in session, summary and timeline describe
 output, separate from summary prose.
 
 Reruns mark hashes that no longer resolve as unresolved, never silently re-link
-them, and remove commit-derived times when no resolved evidence remains on a message.
-If another resolved reference remains, its committer time supplies the anchor.
+them, and remove commit-derived times when the sole output reference no longer resolves.
+Trailer references never supply an anchor.
 Rebase, cherry-pick and amend therefore anchor at the new commit object's time.
-Reruns replace retained author-date commit anchors with resolved committer dates.
+Reruns replace retained author-date anchors for eligible messages with committer dates.
+The first enabled pass also collapses legacy duplicate trailer links and clears trailer-only
+or ambiguous output anchors. This repair runs once, changes only affected rows, recomputes
+their conversations' summary bounds and preserves summary text.
 Git reads release the project queue turn and mutation lease, and writes recheck
 the stored evidence. Summary bounds are recomputed only for conversations whose
 commit anchors changed. Missing-project skips do not add to the skipped-session count.
