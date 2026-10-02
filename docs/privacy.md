@@ -62,7 +62,7 @@ When using an external summarizer, only the text being summarized is sent — no
 
 ## Secret redaction
 
-lcm scrubs secrets from message content **before writing to SQLite** and **before sending to the summarizer**. Redaction happens at both write points to ensure secrets are never persisted or transmitted.
+lcm scrubs secrets from message content **before writing to SQLite** and **before sending to the summarizer**. Redaction happens at both write points to ensure secrets are never persisted or transmitted. The same rules apply to the text stored beside a message: skill and slash-command arguments, and selected tool-call input. Their matches are counted with the message's.
 
 ### Built-in patterns
 

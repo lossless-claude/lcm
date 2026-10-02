@@ -402,7 +402,7 @@ export class SessionCapture {
     const created = await this.conversationStore.createMessagesBulk(inputs);
     created.forEach((record, index) => messageIds.set(newMessages[index], record.messageId));
     await this.summaryStore.appendContextMessages(conversationId, created.map((r) => r.messageId));
-    await this.persistMessageParts(sessionId, newMessages, created);
+    await this.persistMessageParts(sessionId, newMessages, created, totalCounts);
     return created;
   }
 
@@ -410,14 +410,20 @@ export class SessionCapture {
     newMessages: ParsedMessage[], conversationId: number, storedCount: number, totalCounts: RedactionCounts,
   ): CreateMessageInput[] {
     return newMessages.map((m, i) => {
-      const { text, gitleaks, builtIn, global: globalCount, project } = this.scrubber.scrubWithCounts(m.content);
-      totalCounts.gitleaks += gitleaks;
-      totalCounts.builtIn += builtIn;
-      totalCounts.global += globalCount;
-      totalCounts.project += project;
+      const text = this.scrubCounted(m.content, totalCounts);
       const eventAt = transcriptEventTime(m.eventAt);
       return { conversationId, seq: storedCount + i, role: m.role as MessageRole, content: normalizeMessageContent(text), tokenCount: m.tokenCount, eventAt: eventAt ? new Date(eventAt) : null };
     });
+  }
+
+  /** Every text capture persists goes through here, so its matches are counted with the rest. */
+  private scrubCounted(text: string, totalCounts: RedactionCounts): string {
+    const scrubbed = this.scrubber.scrubWithCounts(text);
+    totalCounts.gitleaks += scrubbed.gitleaks;
+    totalCounts.builtIn += scrubbed.builtIn;
+    totalCounts.global += scrubbed.global;
+    totalCounts.project += scrubbed.project;
+    return scrubbed.text;
   }
 
   /**
@@ -425,13 +431,16 @@ export class SessionCapture {
    * (see src/transcript.ts) — this just writes what it found, for whichever
    * newly-inserted message carried it.
    */
-  private async persistMessageParts(sessionId: string, sourceMessages: ParsedMessage[], created: MessageRecord[]): Promise<void> {
+  private async persistMessageParts(
+    sessionId: string, sourceMessages: ParsedMessage[], created: MessageRecord[], totalCounts: RedactionCounts,
+  ): Promise<void> {
     for (let i = 0; i < created.length; i++) {
       const parts = sourceMessages[i]?.parts;
       if (!parts || parts.length === 0) continue;
       await this.conversationStore.createMessageParts(
         created[i].messageId,
-        parts.map((part, ordinal) => toMessagePartInput(sessionId, part, ordinal)),
+        parts.map((part, ordinal) => toMessagePartInput(sessionId,
+          part.args === null ? part : { ...part, args: this.scrubCounted(part.args, totalCounts) }, ordinal)),
       );
     }
   }
