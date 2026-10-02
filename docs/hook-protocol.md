@@ -56,6 +56,12 @@ row: Capture skips it, preserving the original source messages and cursor counts
 so repeated compactions cannot capture nested copies of the generated context.
 Quoted or embedded marker text remains ordinary message content.
 
+`instructions` is an optional string of at most 50000 characters. The daemon scrubs
+it with the project's rules and forwards it as operator directions to every leaf,
+condensed, aggressive and fallback-provider prompt for this request. Existing
+summaries are not rewritten solely to apply new directions. Invalid instruction
+values are rejected with HTTP 400.
+
 Rendered requests additionally choose `compaction_summary_model`: `haiku`, `sonnet`
 (default), `session` or `pool`. Non-pool choices require `summary_via_requester: true`
 and a matching `requester_session_id`; `pool` uses the configured chain without

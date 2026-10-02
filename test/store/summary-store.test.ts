@@ -162,6 +162,21 @@ describe("SummaryStore — context", () => {
     expect((await fx.store.readContextCoverage(fx.convId, rows)).valid).toBe(false);
   });
 
+  it("rejects a dangling raw reference even when the valid raw rows cover every source", async () => {
+    await appendMessages(fx, ["source"]);
+    fx.db.exec("PRAGMA foreign_keys = OFF");
+    fx.db.prepare("INSERT INTO context_items(conversation_id, ordinal, item_type, message_id) VALUES (?, 1, 'message', 999999)").run(fx.convId);
+    expect((await fx.store.readContextCoverage(fx.convId, await fx.store.readContextWindow(fx.convId, 0, { complete: true }))).valid).toBe(false);
+  });
+
+  it("rejects an empty covering summary", async () => {
+    const [source] = await appendMessages(fx, ["source"]);
+    await fx.store.insertSummary({ summaryId: "empty", conversationId: fx.convId, kind: "leaf", content: "", tokenCount: 0 });
+    await fx.store.linkSummaryToMessages("empty", [source.messageId]);
+    await fx.store.replaceContextRangeWithSummary({ conversationId: fx.convId, startOrdinal: 0, endOrdinal: 0, summaryId: "empty" });
+    expect((await fx.store.readContextCoverage(fx.convId, await fx.store.readContextWindow(fx.convId, 0, { complete: true }))).valid).toBe(false);
+  });
+
   it("reads complete legacy raw context but excludes generated compaction events", async () => {
     const records = await fx.conversations.createMessagesBulk([
       { conversationId: fx.convId, seq: 0, role: "system", content: "source system", tokenCount: 1 },

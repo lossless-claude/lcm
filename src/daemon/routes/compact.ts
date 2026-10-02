@@ -365,6 +365,10 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     const validatedPreviousSummary = typeof previous_summary === "string"
       ? previous_summary.slice(0, MAX_PREVIOUS_SUMMARY_LENGTH)
       : undefined;
+    if (input.instructions !== undefined && (typeof input.instructions !== "string" || input.instructions.length > 50_000)) {
+      reply(400, { error: "instructions must be a string of at most 50000 characters" }); return;
+    }
+    const instructions = input.instructions as string | undefined;
 
     if (!session_id || !input.cwd) {
       reply(400, { error: "session_id and cwd are required" });
@@ -665,6 +669,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
               const answer = await lease.yieldWhile(() => turn.yieldWhile(() => activeSummarize(text, aggressive, {
                 ...ctx,
                 signal: controller.signal,
+                customInstructions: instructions === undefined ? undefined : scrubber.scrub(instructions),
                 workClass,
                 sessionId: session_id,
                 client,

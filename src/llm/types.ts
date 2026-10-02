@@ -49,6 +49,8 @@ export type SummarizerUsage = {
 };
 
 export type SummarizeContext = {
+  /** Operator directions supplied with a compaction request. */
+  customInstructions?: string;
   /** An expired compaction must not enqueue or publish another attempt. */
   signal?: AbortSignal;
   /** Endpoint slot admission; live by default, background for bulk compaction. */

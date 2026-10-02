@@ -770,13 +770,16 @@ export class SummaryStore {
     const memo = new Map<string, Set<number>>();
     const visiting = new Set<string>();
     const renderedRoots = new Set(items.filter(i => i.itemType === "summary").map(i => i.summaryId));
-    let valid = [...activeRoots].every(id => renderedRoots.has(id));
+    const dangling = this.db.prepare(`SELECT 1 FROM context_items ci WHERE ci.conversation_id = ? AND (
+      (ci.item_type = 'message' AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.message_id = ci.message_id AND m.conversation_id = ci.conversation_id)) OR
+      (ci.item_type = 'summary' AND NOT EXISTS (SELECT 1 FROM summaries s WHERE s.summary_id = ci.summary_id AND s.conversation_id = ci.conversation_id))) LIMIT 1`).get(conversationId);
+    let valid = !dangling && [...activeRoots].every(id => renderedRoots.has(id));
     const visit = async (id: string): Promise<Set<number>> => {
       if (visiting.has(id)) { valid = false; return new Set(); }
       const known = memo.get(id);
       if (known) return known;
       const summary = await this.getSummary(id);
-      if (!summary || summary.conversationId !== conversationId) { valid = false; return new Set(); }
+      if (!summary || !summary.content.trim() || summary.conversationId !== conversationId) { valid = false; return new Set(); }
       visiting.add(id);
       const source = new Set((messages.all(id) as { message_id: number }[]).map(r => r.message_id));
       if ([...source].some(messageId => !captured.has(messageId))) valid = false;

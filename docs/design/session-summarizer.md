@@ -64,6 +64,11 @@ and operation `deadlineAt`. The requesting module serves both leaf and condensed
 jobs with the chosen model. Sonnet is the wire default and consumes Sonnet quota on
 every node; session-model forks require explicit selection.
 
+Compaction `instructions` flow through the shared provider prompt renderer into
+leaf, condensed, aggressive and configured-provider fallback prompts. The daemon
+validates their length and applies project scrubbing before handing over the job.
+They guide new summaries without modifying stored summaries or system instructions.
+
 The session FIFO is separate from the worker pool. Workers cannot claim or answer
 these requester jobs. An unclaimed job falls back after 20 s; a claimed job uses
 `llm.poolCompletionMs`, subject to the operation's overall cancellation. Errors,

@@ -57,10 +57,11 @@ describe("complete /compact context", () => {
     const config = loadDaemonConfig("/missing", { llm: { provider: "disabled" }, summarizer: { language: "en" } }, {});
     const handler = createCompactHandler(config, paths, jobs);
     const first = invoke(handler, { ...request, capture_through_uuid: "row-19", summary_via_requester: true,
-      requester_session_id: "session", compaction_summary_model: "sonnet", operation_id: "owned" });
+      requester_session_id: "session", compaction_summary_model: "sonnet", operation_id: "owned", instructions: "Keep the migration rationale." });
     const job = await jobs.next("session");
     try {
       expect(job).toMatchObject({ purpose: "compaction", model: "sonnet" });
+      expect(job!.prompt).toContain("Operator instructions:\nKeep the migration rationale.");
       const concurrent = await invoke(handler, { ...request, capture_through_uuid: "row-19", skip_ingest: true, capture_required: false, render_context: false });
       expect(concurrent.body.replayOutcome).toBe("skipped");
       jobs.answer(job!.id, { text: "compact source", providerId: "session:sonnet", usage: { input_tokens: 500, output_tokens: 3, estimated: false } });
@@ -72,6 +73,21 @@ describe("complete /compact context", () => {
       expect(after.body.replayOutcome).toBe("no_work");
       expect(await jobs.next("session", undefined, false)).toBeNull();
     } finally { jobs.close(); await first; }
+  });
+
+  it.each([null, 3, "x".repeat(50_001)])("rejects invalid operator instructions", async instructions => {
+    const { handler, request } = fixture();
+    expect((await invoke(handler, { ...request, instructions })).status).toBe(400);
+  });
+
+  it.each(["image", "attachment"])("does not claim a source window from an %s-only user turn", async kind => {
+    const { handler, request, path } = fixture();
+    writeFileSync(path, JSON.stringify(kind === "image"
+      ? { uuid: "media", message: { role: "user", content: [{ type: "image", source: { type: "base64", data: "fixture" } }] } }
+      : { uuid: "media", type: "attachment", attachment: { type: "file", content: "fixture" } }) + "\n");
+    const { body } = await invoke(handler, { ...request, capture_through_uuid: "media" });
+    expect(body.contextWindow.status).not.toBe("ready");
+    expect(body.contextWindow.text).toBeUndefined();
   });
 
   it("expires a stalled sweep without publishing a late requester answer", async () => {
