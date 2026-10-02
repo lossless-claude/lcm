@@ -47,15 +47,16 @@ async function admitCut({ paths, store, cwd, scrubber }: Admission, input: Recor
   recoverShadowProject(store, cwd);
   const prior = store.read(cwd, cutId);
   const instructions = scrubber.scrub(input.instructions as string ?? "");
+  const model = scrubber.scrub(input.model as string);
   if (prior) {
-    if (identityHash(prior.cut) !== identityHash({ sessionId: input.session_id, boundaryUuid: input.boundary_uuid, model: input.model, trigger: input.trigger, instructions }))
+    if (identityHash(prior.cut) !== identityHash({ sessionId: input.session_id, boundaryUuid: input.boundary_uuid, model, trigger: input.trigger, instructions }))
       throw new ShadowStoreError("Cut request conflicts with its identity");
     return { admitted: true, ...prior };
   }
   const { snapshot, conversationId } = await captureShadowSnapshot(paths, scrubber, { cwd, sessionId: input.session_id as string, boundaryUuid: input.boundary_uuid as string, transcriptPath: input.transcript_path as string | undefined });
   snapshot.engineMessages = shadowMessages(input.engine_messages, scrubber);
   const cut: ShadowManifest = { version: 1, cutId, cwd, projectId: projectId(cwd), sessionId: input.session_id as string, conversationId,
-    boundaryUuid: input.boundary_uuid as string, model: scrubber.scrub(input.model as string), trigger: input.trigger as ShadowManifest["trigger"], instructions,
+    boundaryUuid: input.boundary_uuid as string, model, trigger: input.trigger as ShadowManifest["trigger"], instructions,
     snapshotHash: objectHash(snapshot), rulesKey: scrubber.rulesKey, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + SHADOW_RETENTION_MS).toISOString(),
     state: "pending", owner: store.owner, expectedArms: ["A", "B", "C"] };
   const concurrent = store.read(cwd, cutId);

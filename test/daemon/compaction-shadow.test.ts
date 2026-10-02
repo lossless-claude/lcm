@@ -7,6 +7,8 @@ import { loadDaemonConfig } from "../../src/daemon/config.js";
 import { createLcmPaths, type LcmPaths } from "../../src/lcm-paths.js";
 import { projectDir, projectDbPath } from "../../src/daemon/project.js";
 import { ensureAuthToken, readAuthToken } from "../../src/daemon/auth.js";
+import { DatabaseSync } from "node:sqlite";
+import { SummaryStore } from "../../src/store/summary-store.js";
 
 let root: string, cwd: string, paths: LcmPaths, daemon: DaemonInstance, token: string, transcript: string;
 const usage = { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 100, cache_creation_input_tokens: 20 };
@@ -44,6 +46,12 @@ function native(cut: any, text = "  native summary\n") {
 function arm(cut: any, label = "A") {
   return { ...binding(cut), arm: label, attempt_id: "first", record: { text: "PRIVATE_WORD", header: null, outcome: "api-error", requestedModel: "session-model-id", usage, durationMs: 12, inputHash: cut.cut.snapshotHash, promptHash: "a".repeat(64) } };
 }
+function databaseExists() { return existsSync(projectDbPath(cwd, paths)); }
+async function withSummaryStore(operation: (store: SummaryStore) => Promise<void>) {
+  const db = new DatabaseSync(projectDbPath(cwd, paths));
+  try { await operation(new SummaryStore(db)); }
+  finally { db.close(); }
+}
 describe("daemon compaction shadow artifacts", () => {
   it("admits without benchmark policy and freezes verified all-role raw sources", async () => {
     const cut = await start();
@@ -57,13 +65,13 @@ describe("daemon compaction shadow artifacts", () => {
     writeFileSync(join(paths.home, "bench-corpora.json"), JSON.stringify({ exclude: [cwd] }));
     writeFileSync(transcript, "malformed content\n");
     expect(await post("start", startInput())).toMatchObject({ status: 200, body: { admitted: false, reason: "excluded" } });
-    expect(existsSync(projectDbPath(cwd, paths))).toBe(false);
+    expect(databaseExists()).toBe(false);
     expect(existsSync(dir())).toBe(false);
   });
   it("recognizes a substring exclusion for a not-yet-captured project", async () => {
     writeFileSync(join(paths.home, "bench-corpora.json"), JSON.stringify({ excludeCwdContaining: ["work"] }));
     expect((await post("start", startInput())).body.admitted).toBe(false);
-    expect(existsSync(projectDbPath(cwd, paths))).toBe(false);
+    expect(databaseExists()).toBe(false);
   });
   it("refuses an absent or stale boundary instead of freezing post-cut content", async () => {
     expect((await post("start", { ...startInput(), boundary_uuid: "absent" })).status).toBe(422);
@@ -92,6 +100,24 @@ describe("daemon compaction shadow artifacts", () => {
     expect(artifact("arm-A-first.json").usage).toEqual(usage);
     for (const name of readdirSync(dir())) expect(readFileSync(join(dir(), name), "utf8")).not.toContain("PRIVATE_WORD");
   });
+  it("scrubs historical summary text in the frozen window with current rules", async () => {
+    const first = await start();
+    await withSummaryStore(async store => {
+      await store.insertSummary({ summaryId: "sum_old", conversationId: first.cut.conversationId,
+        kind: "leaf", content: "Old PRIVATE_WORD summary", tokenCount: 8 });
+      await store.linkSummaryToMessages("sum_old", first.snapshot.originals.map((row: any) => row.id));
+      await store.replaceContextRangeWithSummary({ conversationId: first.cut.conversationId,
+        startOrdinal: 0, endOrdinal: 1, summaryId: "sum_old" });
+      const second = await start("cut-b");
+      expect(second.snapshot.window.coverage.summaryCoverage).toEqual([
+        { summaryId: "sum_old", messageIds: first.snapshot.originals.map((row: any) => row.id) },
+      ]);
+      expect(second.snapshot.window.text).toContain("Old");
+      expect(second.snapshot.window.text).not.toContain("PRIVATE_WORD");
+      expect(readFileSync(join(dir("cut-b"), "snapshot.json"), "utf8")).not.toContain("PRIVATE_WORD");
+      expect((await store.getSummary("sum_old"))?.content).toBe("Old PRIVATE_WORD summary");
+    });
+  });
   it("pairs out-of-order concurrent results without losing any arm", async () => {
     const cut = await start();
     const results = await Promise.all([post("arm", arm(cut, "B")), post("native", native(cut)), post("arm", arm(cut, "A")), post("arm", arm(cut, "C"))]);
@@ -107,6 +133,16 @@ describe("daemon compaction shadow artifacts", () => {
     expect((await post("native", native(cut, "different"))).status).toBe(409);
     expect((await post("arm", { ...arm(cut), snapshot_hash: "b".repeat(64) })).status).toBe(409);
     expect((await post("start", { ...startInput(), model: "other" })).status).toBe(409);
+  });
+  it("compares scrubbed model identities when retrying admission", async () => {
+    const request = { ...startInput(), model: "PRIVATE_WORD" };
+    const first = await post("start", request);
+    expect(first.status).toBe(200);
+    expect(first.body.cut.model).not.toContain("PRIVATE_WORD");
+    const retry = await post("start", request);
+    expect(retry.status).toBe(200);
+    expect(retry.body.cut.snapshotHash).toBe(first.body.cut.snapshotHash);
+    expect((await post("start", { ...request, model: "other" })).status).toBe(409);
   });
   it("marks stranded records incomplete on daemon restart", async () => {
     await start(); await daemon.stop(); await boot();

@@ -104,7 +104,7 @@ export function readCorpusConfig(file: string, lcmPaths: LcmPaths, options: { re
   if (!config && options.required) throw new Error("An explicit bench-corpora.json policy is required for evaluation.");
   if (!config) return { holdout: new Set(), exclude: { under: [], containing: [] } };
   const list =(key: (typeof CONFIG_KEYS)[number], valid: (entry: string) => boolean, shape: string): string[] => {
-    const value = config[key] ?? [];
+    const value = Object.hasOwn(config, key) ? config[key] : [];
     if (!Array.isArray(value) || !value.every(entry => typeof entry === "string" && valid(entry))) {
       throw new Error(`${file}: "${key}" must be a list of ${shape}.`);
     }
@@ -130,4 +130,3 @@ export function readCorpusConfig(file: string, lcmPaths: LcmPaths, options: { re
     exclude: { under: under.flatMap(entry => roots(entry).under), containing },
   };
 }
-

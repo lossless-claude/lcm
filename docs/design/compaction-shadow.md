@@ -39,7 +39,9 @@ Independent files and atomic publication preserve out-of-order completion. Once
 native and all three arms have records, the manifest is complete even when an arm
 reports a non-answer.
 
-Persisted text uses Capture's global/project scrubbing rules. Engine descriptors
+Every persisted text field, including frozen windows and historical summary text,
+uses Capture's current global/project scrubbing rules. Scrubbing the shadow copy
+does not rewrite stored DAG summaries. Engine descriptors
 allow only role, text and opaque handle; arbitrary result objects and media bytes
 are omitted. Artifacts have private file/directory permissions. Nothing uploads
 them; later model calls through the session client can still transmit prompts.
@@ -57,9 +59,14 @@ missing or invalid policy leaves admission available. Paths and cwd substrings u
 the shared canonical, case-insensitive benchmark rules. A candidate cwd can resolve
 a substring policy before its first capture.
 
-The offline evaluator requires a valid explicit policy and excludes projects from
-metadata before loading transcripts or artifacts. Exclusions take precedence over
-holdout. Missing or unresolvable corpus identity is not eligible for evaluation.
+The offline evaluator requires a valid explicit policy; present exclusion and
+holdout fields must be lists, including when empty. Null is invalid. Projects are
+excluded from metadata before loading transcripts or artifacts. Each transcript's
+own leading recorded absolute `cwd` determines ownership, including explicit
+manifest entries. A directory name cannot establish ownership because Claude
+directory names can collide. Transcripts without readable ownership metadata in
+the first 4096 bytes are ineligible. Exclusions take precedence over holdout.
+Missing or unresolvable corpus identity is not eligible for evaluation.
 
 ## Phase-1 triage
 
@@ -70,7 +77,8 @@ Sampling is seeded by project, session and cut, targeting at least 30 cuts acros
 3 allowed projects. Smaller samples are reported as insufficient. Existing
 historical cuts have no invented arms or reconstructed current DAG window.
 
-Historical originals require explicit `parentUuid` ancestry before the summary;
+Historical originals require explicit `parentUuid` ancestry before the summary.
+Every ancestor must precede its child in transcript row order;
 compact boundaries and prior summary rows are not probe sources. Unresolvable,
 cyclic or incomplete transcripts are invalid sources. Source UUID/boundary and
 pre-scrub hash/byte count pair hook-observed native text with decoded JSONL text.

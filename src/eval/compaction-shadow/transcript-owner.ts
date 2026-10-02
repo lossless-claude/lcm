@@ -1,0 +1,38 @@
+import { closeSync, lstatSync, openSync, readSync } from "node:fs";
+import { isAbsolute } from "node:path";
+
+const METADATA_BYTES = 4096;
+const SCALAR = /^(?:"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)/;
+
+/** Read only the leading envelope; payload fields are never decoded to infer ownership. */
+export function recordedTranscriptCwd(path: string): string | undefined {
+  if (!isAbsolute(path) || lstatSync(path).isSymbolicLink()) return undefined;
+  const fd = openSync(path, "r"), buffer = Buffer.alloc(METADATA_BYTES);
+  try { return envelopeCwd(buffer.subarray(0, readSync(fd, buffer, 0, buffer.length, 0)).toString("utf8")); }
+  finally { closeSync(fd); }
+}
+function envelopeCwd(prefix: string): string | undefined {
+  let remainder = prefix.trimStart();
+  if (!remainder.startsWith("{")) return undefined;
+  remainder = remainder.slice(1).trimStart();
+  while (remainder.length) {
+    const key = scalar(remainder);
+    if (!key || typeof key.value !== "string") return undefined;
+    remainder = remainder.slice(key.length).trimStart();
+    if (!remainder.startsWith(":")) return undefined;
+    if (["message", "content", "attachment", "data"].includes(key.value)) return undefined;
+    remainder = remainder.slice(1).trimStart();
+    const value = scalar(remainder);
+    if (!value) return undefined;
+    if (key.value === "cwd") return typeof value.value === "string" && isAbsolute(value.value) ? value.value : undefined;
+    remainder = remainder.slice(value.length).trimStart();
+    if (!remainder.startsWith(",")) return undefined;
+    remainder = remainder.slice(1).trimStart();
+  }
+  return undefined;
+}
+function scalar(text: string): { value: unknown; length: number } | undefined {
+  const match = SCALAR.exec(text);
+  if (!match) return undefined;
+  return { value: JSON.parse(match[0]), length: match[0].length };
+}

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { createLcmPaths, type LcmPaths } from "../../src/lcm-paths.js";
-import { projectDir, projectId } from "../../src/daemon/project.js";
+import { projectDir, projectId, claudeTranscriptDirectory } from "../../src/daemon/project.js";
 import { objectHash, digest, type ShadowHeader } from "../../src/daemon/shadow/types.js";
 import { ScrubEngine } from "../../src/scrub.js";
 
@@ -44,7 +44,7 @@ function history(owner = cwd, sessionId = "s1", suffix = "", nativeText = "Keep 
     { uuid: "boundary", parentUuid: "two", type: "system", subtype: "compact_boundary" },
     { uuid: "native-1", parentUuid: "boundary", type: "user", isCompactSummary: true, message: { role: "user", content: [{ type: "text", text: nativeText }] } },
     { uuid: "future", parentUuid: "native-1", type: "user", message: { role: "user", content: "Use future.ts PRIVATE_WORD" } },
-  ].map(row => JSON.stringify(row)).join("\n") + "\n");
+  ].map(row => JSON.stringify({ cwd: owner, ...row })).join("\n") + "\n");
   transcripts.push({ cwd: owner, sessionId, path }); return path;
 }
 beforeEach(() => {
@@ -57,17 +57,44 @@ beforeEach(() => {
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 function run(extra: string[] = []) {
   const manifest = join(root, "transcripts.json"); writeFileSync(manifest, JSON.stringify(transcripts));
+  return runCli(["--transcripts", manifest, ...extra]);
+}
+function runCli(extra: string[] = []) {
   return spawnSync(process.execPath, ["--experimental-strip-types", "scripts/eval-compaction-shadow.mts", "--home", paths.home, "--output", output,
-    "--transcripts", manifest, "--seed", "frozen-seed", ...extra], { encoding: "utf8" });
+    "--seed", "frozen-seed", ...extra], { encoding: "utf8" });
 }
 function report() {
   const result = run(); expect(result.status, result.stderr).toBe(0); return JSON.parse(readFileSync(join(output, "metrics.json"), "utf8"));
 }
 describe("offline compaction shadow triage", () => {
+  it.each(["discovery", "manifest"])("uses recorded cwd before loading a transcript in a colliding directory (%s)", mode => {
+    const allowed = project("demo-a"), excluded = project("demo/a");
+    expect(claudeTranscriptDirectory(allowed)).toBe(claudeTranscriptDirectory(excluded));
+    writeFileSync(join(paths.home, "bench-corpora.json"), JSON.stringify({ exclude: [excluded] }));
+    const allowedPath = history(allowed, "allowed");
+    const excludedPath = history(excluded, "excluded");
+    const unreadablePath = join(root, "unreadable.jsonl");
+    writeFileSync(unreadablePath, JSON.stringify({ cwd: excluded, sessionId: "unreadable" }) + "\nnot valid corpus content\n");
+    const directory = claudeTranscriptDirectory(allowed); mkdirSync(directory, { recursive: true });
+    for (const [name, path] of [["allowed", allowedPath], ["excluded", excludedPath], ["unreadable", unreadablePath]])
+      writeFileSync(join(directory, `${name}.jsonl`), readFileSync(path));
+    transcripts = [allowedPath, excludedPath, unreadablePath].map((path, index) => ({ cwd: allowed, sessionId: ["allowed", "excluded", "unreadable"][index], path }));
+    const result = mode === "discovery" ? runCli() : run(); expect(result.status, result.stderr).toBe(0);
+    const metrics = JSON.parse(readFileSync(join(output, "metrics.json"), "utf8"));
+    expect(metrics.counts.invalidSources).toBe(0);
+    expect(metrics.cuts.filter((cut: any) => cut.source === "historical").map((cut: any) => cut.sessionId)).toEqual(["allowed"]);
+    expect(metrics.cuts.every((cut: any) => cut.projectId !== projectId(excluded))).toBe(true);
+  });
   it("requires a policy before loading any corpus", () => {
     rmSync(join(paths.home, "bench-corpora.json")); const result = run();
     expect(result.status).toBe(1); expect(result.stderr).toContain("policy is required"); expect(existsSync(output)).toBe(false);
   });
+  it.each(["holdout", "exclude", "excludeCwdContaining"].flatMap(key => [null, false, 0, "all", {}].map(value => ({ key, value }))))(
+    "fails closed on every non-list policy value ($key=$value)", ({ key, value }) => {
+      writeFileSync(join(paths.home, "bench-corpora.json"), JSON.stringify({ [key]: value }));
+      const result = run();
+      expect(result.status).toBe(1); expect(result.stderr).toContain("must be a list"); expect(existsSync(output)).toBe(false);
+    });
   it.each(["broken JSON", JSON.stringify({ excludeCwdContaining: ["unmatched"] })])("fails closed on malformed or unresolvable policy (%s)", policy => {
     writeFileSync(join(paths.home, "bench-corpora.json"), policy); const result = run();
     expect(result.status).toBe(1); expect(result.stderr).toMatch(/JSON|matches no ingested project/); expect(existsSync(output)).toBe(false);
@@ -98,6 +125,18 @@ describe("offline compaction shadow triage", () => {
     expect(metrics.cuts).toHaveLength(1); expect(probes).toContain(directive);
     expect(probes).not.toContain("abandoned.ts"); expect(probes).not.toContain("future.ts");
     expect(metrics.cuts[0].arms.A).toBeNull(); expect(metrics.cuts[0].windowOnly).toBeNull();
+  });
+  it.each(["native-1", "boundary"])("rejects a forward ancestor reached from %s before admitting probes", uuid => {
+    rmSync(join(projectDir(cwd, paths), "compaction-shadow"), { recursive: true });
+    const path = history();
+    const rows = readFileSync(path, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    rows.find(row => row.uuid === uuid).parentUuid = "future";
+    rows.find(row => row.uuid === "future").parentUuid = "one";
+    writeFileSync(path, rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+    const metrics = report();
+    expect(metrics.counts.invalidSources).toBe(1);
+    expect(metrics.cuts).toEqual([]);
+    expect(readFileSync(join(output, "probes.jsonl"), "utf8")).not.toContain("future.ts");
   });
   it("pairs native hook text with identical decoded JSONL and deduplicates the cut", () => {
     history(); const metrics = report();

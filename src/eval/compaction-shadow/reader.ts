@@ -73,7 +73,8 @@ function validateCutManifest(manifest: ShadowManifest, { cwd, entry }: { cwd: st
   if (manifest.cutId !== entry) throw new Error("Invalid cut identity");
 }
 export function discoverTranscripts(cwds: readonly string[]): TranscriptInput[] {
-  return cwds.flatMap(projectTranscripts);
+  const found = cwds.flatMap(projectTranscripts);
+  return [...new Map(found.map(input => [input.path, input])).values()];
 }
 function projectTranscripts(cwd: string): TranscriptInput[] {
   const root = claudeTranscriptDirectory(cwd);
@@ -93,17 +94,20 @@ function nativeText(row: Record<string, unknown>): string {
 function nativeTextBlock(block: unknown): boolean {
   return object(block) && block.type === "text" && typeof block.text === "string";
 }
-function ancestry(rows: Map<string, { row: Record<string, unknown>; line: string }>, parent: unknown) {
-  const ordered: { row: Record<string, unknown>; line: string }[] = [], seen = new Set<string>();
+type HistoryRecord = { row: Record<string, unknown>; line: string; ordinal: number };
+function ancestry(rows: Map<string, HistoryRecord>, parent: unknown, before: number) {
+  const ordered: HistoryRecord[] = [], seen = new Set<string>();
   while (parent !== null) {
     if (typeof parent !== "string") throw new Error("Missing cut parent");
     if (seen.has(parent) || !rows.has(parent)) throw new Error("Unresolvable cut ancestry");
-    seen.add(parent); const record = rows.get(parent)!; ordered.push(record); parent = record.row.parentUuid;
+    const record = rows.get(parent)!;
+    if (record.ordinal >= before) throw new Error("Cut ancestry reaches a later transcript row");
+    seen.add(parent); ordered.push(record); parent = record.row.parentUuid; before = record.ordinal;
   }
   return ordered.reverse();
 }
-function prefix(rows: Map<string, { row: Record<string, unknown>; line: string }>, parent: unknown) {
-  const originals = ancestry(rows, parent).flatMap(originalRecord).map((row, index) => ({ ...row, id: index + 1, seq: index }));
+function prefix(rows: Map<string, HistoryRecord>, parent: unknown, before: number) {
+  const originals = ancestry(rows, parent, before).flatMap(originalRecord).map((row, index) => ({ ...row, id: index + 1, seq: index }));
   if (!originals.length) throw new Error("No verified pre-cut originals");
   return { originals, boundaryUuid: originals.at(-1)!.uuid! };
 }
@@ -118,12 +122,12 @@ function realUserRow(row: Record<string, unknown>, role: string): boolean {
 }
 export function historicalCuts(input: TranscriptInput): EvaluationCut[] {
   if (!isAbsolute(input.path) || !safeId(input.sessionId) || lstatSync(input.path).isSymbolicLink()) throw new Error("Invalid transcript metadata");
-  const raw = readFileSync(input.path, "utf8"), rows = new Map<string, { row: Record<string, unknown>; line: string }>();
+  const raw = readFileSync(input.path, "utf8"), rows = new Map<string, HistoryRecord>();
   indexHistory(raw, input.sessionId, rows);
   const result: EvaluationCut[] = [];
-  for (const { row } of rows.values()) {
+  for (const { row, ordinal } of rows.values()) {
     if (row.isCompactSummary !== true) continue;
-    const { originals, boundaryUuid } = prefix(rows, row.parentUuid), text = nativeText(row);
+    const { originals, boundaryUuid } = prefix(rows, row.parentUuid, ordinal), text = nativeText(row);
     result.push({ cutId: `historical-${digest(JSON.stringify([projectId(input.cwd), input.sessionId, row.uuid])).slice(0, 24)}`, projectId: projectId(input.cwd), cwd: input.cwd,
       sessionId: input.sessionId, boundaryUuid, source: "historical", sourceHash: digest(raw), snapshotHash: null, originals, summaryCoverage: [], window: null, arms: [], nativeParity: "not-checked",
       native: { text, outcome: "answered", usage: null, durationMs: null, costUsd: null, tail: [], summaryUuid: row.uuid as string, rawTextHash: digest(text), rawTextBytes: Buffer.byteLength(text) } });
@@ -131,13 +135,14 @@ export function historicalCuts(input: TranscriptInput): EvaluationCut[] {
   return result;
 }
 
-function indexHistory(raw: string, sessionId: string, rows: Map<string, { row: Record<string, unknown>; line: string }>): void {
-  for (const line of raw.split("\n").filter(line => line.trim())) {
+function indexHistory(raw: string, sessionId: string, rows: Map<string, HistoryRecord>): void {
+  for (const [ordinal, line] of raw.split("\n").entries()) {
+    if (!line.trim()) continue;
     const row: unknown = JSON.parse(line);
     if (!object(row) || row.sessionId !== undefined && row.sessionId !== sessionId) throw new Error("Transcript identity mismatch");
     if (typeof row.uuid !== "string") continue;
     if (rows.has(row.uuid)) throw new Error("Duplicate transcript uuid");
-    rows.set(row.uuid, { row, line });
+    rows.set(row.uuid, { row, line, ordinal });
   }
 
 }

@@ -8,6 +8,7 @@ import { corpusConfigPath, readCorpusConfig, isExcluded } from "../corpus-policy
 import { digest, object, objectHash, validUsage, validHeader, HEADER_SECTIONS, type ShadowUsage, type ArmRecord } from "../../daemon/shadow/types.js";
 import { allowedProjects, shadowCandidates, discoverTranscripts, historicalCuts, type CutCandidate, type EvaluationCut, type TranscriptInput, type ReadCounts } from "./reader.js";
 import { checkFaithfulness, renderHeader } from "./faithfulness.js";
+import { recordedTranscriptCwd } from "./transcript-owner.js";
 import { continuationStub } from "./continuation.js";
 
 const TOKENS_PER_MILLION = 1_000_000;
@@ -204,6 +205,11 @@ async function loadCuts(options: Phase1Options, policy: ReturnType<typeof readCo
 
 function appendHistorical(input: TranscriptInput, context: { policy: ReturnType<typeof readCorpusConfig>; ids: Set<string>; histories: EvaluationCut[]; counts: ReadCounts }): void {
   if (isExcluded(input.cwd, context.policy.exclude) || isExcluded(input.path, context.policy.exclude)) return;
-  if (!context.ids.has(projectId(input.cwd))) return;
-  try { context.histories.push(...historicalCuts(input)); } catch { context.counts.invalidSources++; }
+  try {
+    const cwd = recordedTranscriptCwd(input.path);
+    if (!cwd) { context.counts.invalidSources++; return; }
+    if (isExcluded(cwd, context.policy.exclude)) return;
+    if (!context.ids.has(projectId(cwd))) return;
+    context.histories.push(...historicalCuts({ ...input, cwd }));
+  } catch { context.counts.invalidSources++; }
 }

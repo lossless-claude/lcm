@@ -35,8 +35,9 @@ export async function captureShadowSnapshot(paths: LcmPaths, scrubber: ScrubEngi
         throw new ShadowStoreError("Captured originals do not match the source", HTTP.unprocessable);
       if (readFileSync(captured.transcriptPath, "utf8") !== raw) throw new ShadowStoreError("Source changed during snapshot", HTTP.unprocessable);
       const { capturedMessageIds, renderedMessageIds, summaryCoverage, uncoveredMessageIds, valid } = window;
-      return { conversationId: captured.conversationId, snapshot: { version: 1, originals, engineMessages: [], sourceHash: digest(raw),
-        window: { text: window.text, coverage: { capturedMessageIds, renderedMessageIds, summaryCoverage, uncoveredMessageIds, valid } } } };
+      return { conversationId: captured.conversationId, snapshot: { version: 1,
+        originals: originals.map(row => ({ ...row, text: scrubber.scrub(row.text) })), engineMessages: [], sourceHash: digest(raw),
+        window: { text: scrubber.scrub(window.text), coverage: { capturedMessageIds, renderedMessageIds, summaryCoverage, uncoveredMessageIds, valid } } } };
     } finally { db.close(); }
   });
 }
