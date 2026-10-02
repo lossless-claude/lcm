@@ -325,6 +325,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     const controller = new AbortController();
     let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
     let deadlineAt: number | undefined;
+    let deadlineReplied = false;
     const reply = createCompactionReply(res, input.session_id, input.render_context === true);
     let cwdForObservation: string | undefined;
     let captureOutcomeForError: { status: "completed"; messages: number } | { status: "failed"; reason: string } | undefined;
@@ -349,6 +350,8 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         model !== "pool" && (!requester || input.requester_session_id !== session_id))) {
       reply(400, { error: "compaction model requires a matching requester, or pool" }); return;
     }
+    const operationId = typeof input.operation_id === "string" && input.operation_id.length <= 140
+      ? input.operation_id : undefined;
     if (renderContext) {
       const timeoutMs = config.compaction.hookDeadlineMs ?? 1_800_000;
       deadlineAt = Date.now() + timeoutMs;
@@ -357,9 +360,10 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         const capture = captureOutcomeForError ?? { status: "deferred" as const, reason: "deadline" };
         const summary = { status: "failed" as const, reason: "deadline" };
         if (reply(408, { error: "Compaction deadline exceeded", reason: "deadline", captureOutcome: capture, summaryOutcome: summary })) {
+          deadlineReplied = true;
           log.write("warn", "compact.deadline", { cwd: cwdForObservation, session_id });
           if (cwdForObservation) recordPrecompactStages({ cwd: cwdForObservation, sessionId: session_id,
-            client, operationId: input.operation_id, capture, summary }, paths, log);
+            client, operationId, capture, summary }, paths, log);
         }
       }, timeoutMs);
       deadlineTimer.unref();
@@ -368,8 +372,6 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     const precompactVerified = input.precompact_verified === true && client === "omp" && skip_ingest === true;
     // skip_ingest also serves post-capture live hooks, which mark their class explicitly.
     const workClass = skip_ingest && !precompactVerified && input.work_class !== "live" ? "background" : "live";
-    const operationId = typeof input.operation_id === "string" && input.operation_id.length <= 140
-      ? input.operation_id : undefined;
     const MAX_PREVIOUS_SUMMARY_LENGTH = 50_000;
     const validatedPreviousSummary = typeof previous_summary === "string"
       ? previous_summary.slice(0, MAX_PREVIOUS_SUMMARY_LENGTH)
@@ -848,6 +850,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         });
       }); // end enqueue
 
+      if (deadlineReplied) return;
       if (result.replayOutcome === "compacted" && "tokensBefore" in result) {
         log.write("info", "compact.done", { cwd, session_id, tokens_before: result.tokensBefore, tokens_after: result.tokensAfter });
       } else {
@@ -870,7 +873,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       }, paths, log);
       reply(200, result);
     } catch (err) {
-      if (err instanceof CompactionDeadlineError) return;
+      if (deadlineReplied || err instanceof CompactionDeadlineError) return;
       log.write("error", "compact.failed", { cwd, session_id, err });
       if (captureRequired) {
         if (captureOutcomeForError?.status !== "completed") {
