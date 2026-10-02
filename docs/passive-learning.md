@@ -101,13 +101,14 @@ evidence of a successful command.
 
 Lessons live in `tool_lessons` in the main project database, separate from promoted
 memory. `/promote-events` refreshes them at capture/promotion boundaries, including
-when no sidecar events are pending. It reads, derives, writes and prunes snapshots
+when no sidecar events are pending, and skips the refresh when no stored call was
+added, removed or resolved since the published snapshot. It reads, derives, writes and prunes snapshots
 in batches of at most 128 calls or lessons, yielding to the event loop between
 batches. The project mutation lease serializes refreshes. Readers see the previous
 complete snapshot until a single generation switch publishes the next one.
 Immediate per-tool callers set `skip_tool_lessons: true`; they do no project lesson
-scan. Restore reads at most five active lessons from the published snapshot and
-never derives them on the SessionStart path.
+scan. Restore reads at most three active environment rules from the published
+snapshot and never derives them on the SessionStart path.
 
 Lesson tags are `type:solution` for pairs, `type:gotcha` for block reasons, and
 `type:environment` for environment rules, together with `source:tool-calls` and
@@ -118,10 +119,13 @@ events written to promoted memory.
 
 ### Learned Insights
 
-On SessionStart, recent active tool lessons and promoted passive insights are
-surfaced in a `<learned-insights>` block, capped at five combined entries, with
-tool lessons first. Lessons show counts and first and last seen dates; promoted
-event memories retain their confidence scores. Both use the configured age limit.
+On SessionStart, up to three recent active environment rules and promoted passive
+insights are surfaced in a `<learned-insights>` block, capped at five combined
+entries, with rules first. A rule is one line naming the command shape (cut at 120
+characters), its session count and last date; it never carries a command. Error→fix
+pairs and block reasons carry whole commands, so they stay in the snapshot and are
+not shown until shadow measurement shows that showing them prevents repeats.
+Promoted event memories retain their confidence scores. Both use the configured age limit.
 Identical content appears once, retaining the first insight's metadata and order.
 
 ## Configuration
@@ -160,7 +164,7 @@ When a pattern crosses the reinforcement threshold, `reinforcementBoost` is adde
 
 - **Tool lesson snapshots**: `tool_lessons` and `tool_lesson_state` in the main project database
   - Derived from scrubbed stored calls; no model or confidence scoring
-  - Published by generation; active lessons are surfaced during restore
+  - Published by generation; active environment rules are surfaced during restore
   - These are derived observations, outside promoted-memory search and deduplication
 
 - **Error log**: `error_log` table in each sidecar DB

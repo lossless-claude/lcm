@@ -28,19 +28,25 @@ export function readInsights(db: DatabaseSync, config: DaemonConfig): Insight[] 
       && (!r.createdAt || Date.parse(r.createdAt) >= cutoffMs))
     .slice(0, 5)
     .map((r) => ({ content: r.content, confidence: r.confidence, tags: r.tags }));
-  const lessons = new ToolLessonStore(db).list({ limit: 5 })
+  // Only environment rules ride along, as one short line each. Error→fix pairs and block
+  // reasons carry whole commands; they stay in the store until shadow measurement (#772)
+  // shows that showing them prevents repeats.
+  const lessons = new ToolLessonStore(db).list({ kind: "environment-rule", limit: SESSION_START_RULES })
     .filter(lesson => Date.parse(lesson.lastSeen) >= cutoffMs)
     .map(lessonInsight);
   return [...lessons, ...passive].slice(0, 5);
 }
 
+/** Environment rules shown at session start. */
+const SESSION_START_RULES = 3;
+/** A rule line names a command shape, never a command. */
+const RULE_SHAPE_MAX_CHARS = 120;
+
 function lessonInsight(lesson: ToolLesson): Insight {
   const sessionCount = Object.keys(lesson.sessionCounts).length;
-  const evidence = `${lesson.count} occurrence(s) in ${sessionCount} session(s); first seen ${lesson.firstSeen}; last seen ${lesson.lastSeen}`;
-  let content: string;
-  if (lesson.kind === "error-fix") content = `Observed failure→success for ${lesson.shape}: "${lesson.failedCommand}" → "${lesson.succeededCommand}".`;
-  else if (lesson.kind === "block-reason") content = `Observed block reason: ${lesson.reason}.`;
-  else content = `Environment rule: ${lesson.shape} failed or was blocked across sessions, with no observed success since its first failure.`;
-  return { content: `${content} ${evidence}`, tags: lesson.tags,
+  const fullShape = lesson.shape ?? "";
+  const shape = fullShape.length > RULE_SHAPE_MAX_CHARS ? `${fullShape.slice(0, RULE_SHAPE_MAX_CHARS)}…` : fullShape;
+  const content = `Environment rule: \`${shape}\` failed or was blocked in ${sessionCount} sessions, with no success since (last ${lesson.lastSeen.slice(0, 10)}).`;
+  return { content, tags: lesson.tags,
     count: lesson.count, sessionCount, firstSeen: lesson.firstSeen, lastSeen: lesson.lastSeen };
 }

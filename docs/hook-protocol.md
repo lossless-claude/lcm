@@ -112,8 +112,9 @@ If `source` is missing or unrecognized, lcm uses a recent compaction mark for th
 
 **Response:** Exit code `0`. Context is injected via stdout (printed as a `<context>` block that Claude Code prepends to the session).
 
-Recent deterministic tool lessons also ride in `<learned-insights>`, with counts
-and first and last seen dates instead of confidence labels. Restore reads the
+Up to three recent environment rules (deterministic tool lessons) also ride in
+`<learned-insights>`, one short shape line each, with counts and dates instead
+of confidence labels. Restore reads the
 published project snapshot; it never scans stored calls to derive lessons.
 Both command and function hooks preserve those counts without inventing a confidence score.
 

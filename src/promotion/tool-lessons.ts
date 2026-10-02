@@ -230,6 +230,8 @@ export class ToolLessonStore {
   constructor(private readonly db: DatabaseSync) {}
 
   async refresh(project: string): Promise<number> {
+    const calls = this.callsFingerprint();
+    if (calls === this.publishedFingerprint()) return 0;
     const derivation = new LessonDerivation(project);
     let session = "", messageId = 0, rowId = 0;
     const page = this.db.prepare(`SELECT t.rowid AS row_id, t.*,
@@ -248,14 +250,29 @@ export class ToolLessonStore {
     }
     const lessons = await derivation.finish();
     await this.publish(lessons);
+    this.db.prepare("UPDATE tool_lesson_state SET calls_seen = ? WHERE singleton = 1").run(calls);
     return derivation.pairCount;
   }
 
-  list(options: { limit?: number; includeRetired?: boolean } = {}): ToolLesson[] {
+  /** Changes whenever a call is added or removed, or a call's outcome resolves. */
+  private callsFingerprint(): string {
+    const row = this.db.prepare(`SELECT count(*) AS calls, COALESCE(max(rowid), 0) AS last,
+      COALESCE(sum(outcome <> 'unknown'), 0) AS resolved FROM transcript_tool_calls`).get() as { calls: number; last: number; resolved: number };
+    return `${row.calls}:${row.last}:${row.resolved}`;
+  }
+
+  /** The calls fingerprint the published lessons were derived from. */
+  private publishedFingerprint(): string | null {
+    const row = this.db.prepare("SELECT calls_seen FROM tool_lesson_state WHERE singleton = 1").get() as { calls_seen: string | null } | undefined;
+    return row?.calls_seen ?? null;
+  }
+
+  list(options: { kind?: ToolLesson["kind"]; limit?: number; includeRetired?: boolean } = {}): ToolLesson[] {
     return this.db.prepare(`SELECT data FROM tool_lessons
       WHERE generation = (SELECT generation FROM tool_lesson_state WHERE singleton = 1)
-        ${options.includeRetired ? "" : "AND retired = 0"} ORDER BY last_seen DESC, lesson_key LIMIT ?`)
-      .all(options.limit ?? -1)
+        ${options.includeRetired ? "" : "AND retired = 0"} AND (? IS NULL OR kind = ?)
+      ORDER BY last_seen DESC, lesson_key LIMIT ?`)
+      .all(options.kind ?? null, options.kind ?? null, options.limit ?? -1)
       .map(row => JSON.parse(row.data as string) as ToolLesson);
   }
 
@@ -267,7 +284,7 @@ export class ToolLessonStore {
       insert.run(generation, key, lesson.kind, Number(lesson.retired), lesson.lastSeen, JSON.stringify(lesson));
       if (++written % BATCH_SIZE === 0) await yieldToEventLoop();
     }
-    this.db.prepare("INSERT INTO tool_lesson_state VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET generation = excluded.generation").run(generation);
+    this.db.prepare("INSERT INTO tool_lesson_state (singleton, generation) VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET generation = excluded.generation").run(generation);
     const cleanup = this.db.prepare("DELETE FROM tool_lessons WHERE rowid IN (SELECT rowid FROM tool_lessons WHERE generation < ? LIMIT ?)");
     while (cleanup.run(generation, BATCH_SIZE).changes) await yieldToEventLoop();
   }

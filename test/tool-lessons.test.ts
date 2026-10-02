@@ -108,18 +108,43 @@ it.each([19, 20])("bounds error→fix pairs by all calls in the session (%s inte
 });
 
 
-it("restores lessons with counts and dates, without confidence scores", async () => {
-  storedCall("session", "npm install old", "failed", { at: new Date().toISOString() });
-  storedCall("session", "npm install new", "succeeded", { at: new Date().toISOString() });
+it("restores only environment rules, as short shape lines without commands or confidence", async () => {
+  const now = new Date().toISOString();
+  storedCall("session", "npm install old", "failed", { at: now });
+  storedCall("session", "npm install new", "succeeded", { at: now });
+  for (const session of ["one", "two", "three"]) storedCall(session, "make deploy --target secret-host", "failed", { at: now });
   await lessons.refresh("project");
+  expect(lessons.list().map(lesson => lesson.kind).sort()).toEqual(["environment-rule", "error-fix"]);
   const config = { compaction: { promotionThresholds: {} } } as DaemonConfig;
   const insights = readInsights(db, config);
   expect(insights).toHaveLength(1);
-  expect(insights[0]).toMatchObject({ count: 1, sessionCount: 1, firstSeen: expect.any(String), lastSeen: expect.any(String) });
-  expect(insights[0].content).toContain("npm install old");
-  expect(insights[0].content).toContain("npm install new");
-  expect(insights[0].content).toContain("1 occurrence");
+  expect(insights[0]).toMatchObject({ count: 3, sessionCount: 3, firstSeen: expect.any(String), lastSeen: expect.any(String) });
+  expect(insights[0].content).toContain("`make --target <args>`");
+  expect(insights[0].content).not.toContain("secret-host");
+  expect(insights[0].content).not.toContain("npm install");
   expect(insights[0]).not.toHaveProperty("confidence");
+});
+
+it("restores at most three environment rules", async () => {
+  const now = new Date().toISOString();
+  for (const tool of ["alpha", "beta", "gamma", "delta"]) {
+    for (const session of ["one", "two", "three"]) storedCall(session, `${tool} run`, "failed", { at: now });
+  }
+  await lessons.refresh("project");
+  const insights = readInsights(db, { compaction: { promotionThresholds: {} } } as DaemonConfig);
+  expect(insights.filter(insight => insight.content.startsWith("Environment rule"))).toHaveLength(3);
+});
+
+it("skips a refresh when no call was added, removed or resolved since the last one", async () => {
+  storedCall("session", "npm install old", "failed");
+  await lessons.refresh("project");
+  const generation = () => (db.prepare("SELECT generation FROM tool_lesson_state").get() as { generation: number }).generation;
+  const published = generation();
+  await lessons.refresh("project");
+  expect(generation()).toBe(published);
+  db.prepare("UPDATE transcript_tool_calls SET outcome = 'unknown'").run();
+  await lessons.refresh("project");
+  expect(generation()).toBeGreaterThan(published);
 });
 
 it("yields during refresh and publishes a complete snapshot after an empty one", async () => {

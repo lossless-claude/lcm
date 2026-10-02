@@ -970,7 +970,7 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
   if (!callColumns.some(column => column.name === "block_reason")) db.exec("ALTER TABLE transcript_tool_calls ADD COLUMN block_reason TEXT");
   db.exec(`CREATE INDEX IF NOT EXISTS transcript_tool_calls_session_message_idx ON transcript_tool_calls(session_id, message_id);
     CREATE TABLE IF NOT EXISTS tool_lesson_state (
-      singleton INTEGER PRIMARY KEY CHECK(singleton = 1), generation INTEGER NOT NULL
+      singleton INTEGER PRIMARY KEY CHECK(singleton = 1), generation INTEGER NOT NULL, calls_seen TEXT
     );
     CREATE TABLE IF NOT EXISTS tool_lessons (
       generation INTEGER NOT NULL, lesson_key TEXT NOT NULL,
