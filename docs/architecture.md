@@ -534,20 +534,22 @@ links remain in the store, reachable through `lcm_expand`.
 
 When the chain is exhausted with an output-cut rejection, the engine splits the chunk into
 two halves at a message boundary and summarizes each through the normal escalation. It
-keeps halving down to a single message. Condensation uses the same recovery at source-summary
+keeps halving, at most three times (eight pieces), down to a single message; a piece that is
+still cut at that limit, or a single message, gets deterministic source truncation at
+`fallback`. Condensation uses the same recovery at source-summary
 boundaries. The halves' results are joined in source order into one summary linked to the
 original sources; its level is the highest level used by either half. If joining does not
 shrink the source, the combined result uses source truncation at `fallback` without another
 model call. Nothing from the split is published until the whole pass succeeds.
 
-For a chunk with **n** source messages (or summaries) and **p** resolved provider links,
-halving visits at most **2n − 1** chunks. If every answer is cut, each chunk makes at most
-two calls per link: **2p(2n − 1)** calls total, **4p(n − 1)** extra calls from splitting.
-If smaller chunks return accepted answers that fail to shrink, their own aggressive
-escalation raises the conservative bound to **3p(2n − 1)** provider invocations, or
-**6p(n − 1)** extra invocations from splitting. Each HTTP invocation has at most three
-adapter attempts, so including transient retries the extra HTTP request bound is
-**18p(n − 1)**. A compaction's split cost is bounded by the sum over its selected chunks;
+For a chunk with **n** source messages (or summaries) and **p** resolved provider links, let
+**k = min(n, 8)**. Halving visits at most **2k − 1** chunks, at most 15. If every answer is
+cut, each chunk makes at most two calls per link: **2p(2k − 1)** calls total, **4p(k − 1)**
+extra calls from splitting. If smaller chunks return accepted answers that fail to shrink,
+their own aggressive escalation raises the conservative bound to **3p(2k − 1)** provider
+invocations, or **6p(k − 1)** extra invocations from splitting. Each HTTP invocation has at
+most three adapter attempts, so including transient retries the extra HTTP request bound is
+**18p(k − 1)**. A compaction's split cost is bounded by the sum over its selected chunks;
 fallback and joining make no model calls. Existing cancellation still stops new attempts.
 
 ### Rejected answers

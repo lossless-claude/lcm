@@ -86,6 +86,19 @@ it("always-cut chunks halve at message boundaries with at most 4n - 2 provider c
   for (let i = 0; i < 5; i++) expect(summary!.content).toContain(`message-${i}:`);
 });
 
+it("halving stops at eight pieces, so a large always-cut chunk visits at most 15 chunks", async () => {
+  const sourceCount = 12;
+  const { summaries, messages, compact } = await fixture(sourceCount);
+  const { adapter, summarize } = alwaysCut();
+
+  const result = await compact(summarize);
+
+  expect(result).toMatchObject({ actionTaken: true, level: "fallback" });
+  // 1 + 2 + 4 + 8 chunks, two calls each; without the limit, 2n - 1 = 23 chunks.
+  expect(adapter).toHaveBeenCalledTimes(30);
+  expect(await summaries.getSummaryMessages(result.createdSummaryId!)).toEqual(messages.map(message => message.messageId));
+});
+
 it("splits when every endpoint cuts, retaining the same bound per endpoint", async () => {
   const { compact } = await fixture(3);
   const adapters = [alwaysCut(), alwaysCut()];

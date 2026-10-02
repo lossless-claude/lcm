@@ -779,8 +779,9 @@ response ends with `finish_reason: "length"`, or the `anthropic` provider's with
 the output budget ran out, often spent on reasoning. So is an answer from any
 provider that holds only whitespace. A rejected answer moves the chain to its next
 link. With none left, an output-cut rejection makes compaction halve the source chunk
-at message boundaries, each half through the normal escalation, down to a single
-message. If that message still gets cut answers, deterministic source truncation is
+at message boundaries, each half through the normal escalation, at most three times
+(eight pieces). If a single message, or a piece at that limit, still gets cut answers,
+deterministic source truncation is
 stored at level `fallback`; raw messages remain reachable through `lcm_expand`.
 Condensation splits at source-summary boundaries. Rejected answer text is never stored.
 Whitespace-only exhaustion and other failures still abort the pass (`compact.failed`),

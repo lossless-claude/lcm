@@ -183,6 +183,8 @@ function generateSummaryId(content: string): string {
 
 /** Maximum characters for the deterministic fallback truncation (512 tokens * 4 chars). */
 const FALLBACK_MAX_CHARS = 512 * 4;
+/** Halvings after repeated output cuts: at most 2^3 = 8 pieces per chunk, so the extra calls stay bounded. */
+const MAX_CUT_SPLIT_DEPTH = 3;
 const DEFAULT_LEAF_CHUNK_TOKENS = 20_000;
 const CONDENSED_MIN_INPUT_RATIO = 0.1;
 
@@ -766,15 +768,18 @@ export class CompactionEngine {
    * Run three-level summarization escalation:
    * normal -> aggressive -> deterministic fallback.
    *
-   * Exhausted output-cut retries halve at source boundaries, down to deterministic
-   * truncation of a single message (or condensed source summary). A binary split
-   * visits at most 2n - 1 chunks for n sources. Rejected answers never supply text.
+   * Exhausted output-cut retries halve at source boundaries, at most
+   * MAX_CUT_SPLIT_DEPTH times, down to deterministic truncation of a piece that is
+   * still cut (a single message, a condensed source summary, or a piece at the depth
+   * limit). A split visits at most 2·min(n, 8) - 1 chunks for n sources. Rejected
+   * answers never supply text.
    * Whitespace and other provider failures still abort before persistence.
    */
   private async summarizeWithEscalation(params: {
     sourceTexts: string[];
     summarize: CompactionSummarizeFn;
     options?: CompactionSummarizeOptions;
+    splitDepth?: number;
   }): Promise<EscalationResult> {
     this.config.signal?.throwIfAborted();
     const rawText = params.sourceTexts.join("\n\n").trim();
@@ -816,10 +821,11 @@ export class CompactionEngine {
       return { content: summaryText, level, keptAnswers: 1 };
     } catch (error) {
       if (!containsOutputCut(error)) throw error;
-      if (params.sourceTexts.length <= 1) return fallback();
+      const depth = params.splitDepth ?? 0;
+      if (params.sourceTexts.length <= 1 || depth >= MAX_CUT_SPLIT_DEPTH) return fallback();
       const midpoint = Math.floor(params.sourceTexts.length / 2);
-      const left = await this.summarizeWithEscalation({ ...params, sourceTexts: params.sourceTexts.slice(0, midpoint) });
-      const right = await this.summarizeWithEscalation({ ...params, sourceTexts: params.sourceTexts.slice(midpoint) });
+      const left = await this.summarizeWithEscalation({ ...params, sourceTexts: params.sourceTexts.slice(0, midpoint), splitDepth: depth + 1 });
+      const right = await this.summarizeWithEscalation({ ...params, sourceTexts: params.sourceTexts.slice(midpoint), splitDepth: depth + 1 });
       const content = `${left.content}\n\n${right.content}`;
       const keptAnswers = left.keptAnswers + right.keptAnswers;
       if (estimateTokens(content) >= inputTokens) {
