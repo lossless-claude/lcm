@@ -65,8 +65,9 @@ resolve to a different node or nothing at all.
 Capture, import and rebuild preserve transcript record timestamps separately as
 nullable message `eventAt` and `eventTimeSource: "transcript"`. Repair older history
 with `lcm import --backfill-event-times`; its subsequent local commit pass can anchor
-messages carrying explicit resolved evidence with source `commit`. Other missing or
-unaligned records remain unknown. See [import repair](import.md#event-timestamps-and-existing-history).
+messages whose own commit output names exactly one distinct, resolvable commit,
+with source `commit`. Trailer evidence never anchors; multiple outputs remain unknown.
+Other missing or unaligned records remain unknown. See [import repair](import.md#event-timestamps-and-existing-history).
 
 ## Tool reference
 
@@ -172,7 +173,10 @@ summaries include `node.commits`: references with `sessionId`, `messageId`, `has
 `subject`, `committedAt`, `authorAt`, `branch`, `resolved`, `evidence` (`commit-output` or
 `session-trailer`) and `evidenceValue` (observed hash or exact web session URL).
 Resolved hashes are full hashes; an unresolved abbreviation remains as observed.
-`committedAt` is the committer date used for event-time anchors; `authorAt` is reference metadata only.
+`committedAt` is the committer date used for an unknown message's event-time anchor only
+when its own output names exactly one distinct, resolvable commit. `authorAt` is reference
+metadata only. Trailer references occur once per session and commit; their `messageId`
+is a representative message that is never used for dating.
 `commit-output` requires stored `git commit` output, including root-commit and
 detached-HEAD variants. Viewed hashes from `git log` or `git show`, bare hex lines
 and hex-looking words are excluded from references and event-time anchors.

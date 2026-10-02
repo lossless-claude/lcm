@@ -70,37 +70,65 @@ export class CommitStore {
     this.db.prepare(`UPDATE session_commits SET resolved = 0
       WHERE message_id = ? AND evidence = ? AND evidence_value = ? AND hash = ?`)
       .run(ref.messageId, ref.evidence, ref.evidenceValue, ref.hash);
-    const changed = this.db.prepare(`UPDATE messages SET event_at = (
-        SELECT committed_at FROM session_commits WHERE message_id = messages.message_id AND resolved = 1 AND committed_at IS NOT NULL
-        ORDER BY committed_at, hash LIMIT 1
-      ), event_time_source = CASE WHEN EXISTS (
-        SELECT 1 FROM session_commits WHERE message_id = messages.message_id AND resolved = 1 AND committed_at IS NOT NULL
-      ) THEN 'commit' ELSE NULL END
+    if (ref.evidence !== "commit-output") return null;
+    const changed = this.db.prepare(`UPDATE messages SET event_at = NULL, event_time_source = NULL
       WHERE message_id = ? AND event_time_source = 'commit' AND NOT EXISTS (
-        SELECT 1 FROM session_commits WHERE message_id = messages.message_id AND resolved = 1
-          AND julianday(committed_at) = julianday(messages.event_at)
+        SELECT 1 FROM session_commits WHERE message_id = messages.message_id AND evidence = 'commit-output'
+          AND resolved = 1 AND julianday(committed_at) = julianday(messages.event_at)
       ) RETURNING conversation_id`).get(ref.messageId) as { conversation_id: number } | undefined;
     return changed?.conversation_id ?? null;
   }
 
-  find(key: Pick<CommitReference, "messageId" | "evidence" | "evidenceValue"> & { hash?: string }): CommitReference | null {
-    const row = this.db.prepare(`SELECT * FROM session_commits WHERE message_id = ? AND evidence = ? AND evidence_value = ?
-      ${key.hash ? "AND hash = ?" : ""} LIMIT 1`)
-      .get(key.messageId, key.evidence, key.evidenceValue, ...(key.hash ? [key.hash] : [])) as Row | undefined;
+  find(key: Pick<CommitReference, "messageId" | "evidence" | "evidenceValue"> & { sessionId: string; hash?: string }): CommitReference | null {
+    const trailer = key.evidence === "session-trailer";
+    const row = this.db.prepare(`SELECT * FROM session_commits WHERE ${trailer ? "session_id" : "message_id"} = ? AND evidence = ?
+      ${trailer ? "" : "AND evidence_value = ?"} ${key.hash ? "AND hash = ?" : ""} LIMIT 1`)
+      .get(trailer ? key.sessionId : key.messageId, key.evidence,
+        ...(trailer ? [] : [key.evidenceValue]), ...(key.hash ? [key.hash] : [])) as Row | undefined;
     return row ? reference(row) : null;
   }
 
-  record(ref: CommitReference): number {
+  record(ref: CommitReference): void {
+    const prior = ref.evidence === "session-trailer" ? this.find(ref) : null;
     this.db.prepare(`INSERT INTO session_commits(session_id, message_id, hash, subject, author_at, committed_at, branch, resolved, evidence, evidence_value)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(message_id, evidence, evidence_value, hash)
       DO UPDATE SET resolved = excluded.resolved, committed_at = excluded.committed_at`)
-      .run(ref.sessionId, ref.messageId, ref.hash, ref.subject, ref.authorAt, ref.committedAt, ref.branch, Number(ref.resolved), ref.evidence, ref.evidenceValue);
-    if (!ref.resolved || !ref.committedAt) return 0;
-    return Number(this.db.prepare(`UPDATE messages SET event_at = ?, event_time_source = 'commit'
-      WHERE message_id = ? AND (event_at IS NULL OR (event_time_source = 'commit' AND NOT EXISTS (
-        SELECT 1 FROM session_commits WHERE message_id = messages.message_id AND resolved = 1
-          AND julianday(committed_at) = julianday(messages.event_at)
-      )))`).run(ref.committedAt, ref.messageId).changes);
+      .run(ref.sessionId, prior?.messageId ?? ref.messageId, ref.hash, ref.subject, ref.authorAt, ref.committedAt, ref.branch,
+        Number(ref.resolved), ref.evidence, prior?.evidenceValue ?? ref.evidenceValue);
+  }
+
+  anchor(messageId: number, ref: CommitReference | null): number {
+    const date = ref?.evidence === "commit-output" && ref.resolved && this.find(ref)?.resolved ? ref.committedAt : null;
+    return Number(this.db.prepare(`UPDATE messages SET event_at = ?, event_time_source = ?
+      WHERE message_id = ? AND (event_time_source = 'commit' OR event_at IS NULL)
+        AND (event_at IS NOT ? OR event_time_source IS NOT ?)`)
+      .run(date, date ? "commit" : null, messageId, date, date ? "commit" : null).changes);
+  }
+
+  needsEvidenceRepair(): boolean {
+    this.db.exec("CREATE TABLE IF NOT EXISTS commit_evidence_backfill (id INTEGER PRIMARY KEY CHECK(id = 1))");
+    return !this.db.prepare("SELECT 1 FROM commit_evidence_backfill WHERE id = 1").get();
+  }
+
+  repairLegacyEvidence(): number[] {
+    // Trailer matches identify a session, never the event that made a commit.
+    const changed = this.db.prepare(`UPDATE messages SET event_at = NULL, event_time_source = NULL
+      WHERE event_time_source = 'commit' AND message_id IN (SELECT message_id FROM session_commits)
+        AND ((SELECT COUNT(DISTINCT hash) FROM session_commits WHERE message_id = messages.message_id
+          AND evidence = 'commit-output') != 1 OR NOT EXISTS (
+          SELECT 1 FROM session_commits WHERE message_id = messages.message_id AND evidence = 'commit-output'
+            AND resolved = 1 AND (committed_at IS NULL OR julianday(committed_at) = julianday(messages.event_at))
+        )) RETURNING conversation_id`).all() as Array<{ conversation_id: number }>;
+    this.db.exec(`DELETE FROM session_commits WHERE evidence = 'session-trailer' AND rowid NOT IN (
+      SELECT MIN(rowid) FROM session_commits WHERE evidence = 'session-trailer' GROUP BY session_id, hash
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS session_commits_trailer_idx ON session_commits(session_id, hash)
+      WHERE evidence = 'session-trailer';`);
+    return [...new Set(changed.map(row => row.conversation_id))];
+  }
+
+  finishEvidenceRepair(): void {
+    this.db.prepare("INSERT INTO commit_evidence_backfill (id) VALUES (1)").run();
   }
 
   forSession(sessionId: string): CommitReference[] {
