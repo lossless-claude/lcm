@@ -261,7 +261,9 @@ npx tsx scripts/bench-corpora.mts run     # score them all, print the pooled hit
 ```
 
 Corpora come from `LCM_BENCH_CORPORA` (the platform path delimiter — `:`, or `;` on Windows) or, unset, from every
-ingested project whose database is large enough to hold one. Question sets are written next to
+ingested project whose database is large enough to hold one. Either way, a project listed under
+`exclude` in `bench-corpora.json` in the lcm home is never a corpus: discovery skips its directory
+before reading anything in it, and an `LCM_BENCH_CORPORA` entry naming it is dropped. Question sets are written next to
 each project database as `.lcm-bench-validation.json` and the seed is fixed, so two runs score
 the same questions and are comparable. Each row also prints the corpus's session count: a live
 corpus grows between runs, and a delta measured over different content is not a delta.
@@ -281,8 +283,18 @@ LCM_BENCH_GROUP=tune    npx tsx scripts/bench-corpora.mts run   # sweep a parame
 LCM_BENCH_GROUP=holdout npx tsx scripts/bench-corpora.mts run   # grade, once, here
 ```
 
-The split is by corpus (`HELD_OUT_CORPORA` in the script), not by question, so no session appears
-on both sides. Build the held-out questions with `LCM_BENCH_SEED` set to something other than the
+The split is by corpus, not by question, so no session appears on both sides. The machine owner
+sets it in `bench-corpora.json` in the lcm home, outside the repository, as absolute project paths:
+
+```json
+{ "holdout": ["/path/to/project"], "exclude": ["/path/to/project"] }
+```
+
+`holdout` is graded and everything else is tuned against; a project in both lists is excluded.
+Without the file nothing is held out: `tune` covers every corpus and `holdout` stops with an
+error. A malformed file, an unknown key, or an entry that is neither on disk nor an ingested
+project (a typo, a relative path, an unexpanded `~`) also stops the run. This repository's own corpus belongs
+on the tuning side, since its questions have already been scored across a sweep. Build the held-out questions with `LCM_BENCH_SEED` set to something other than the
 default, so they are a different sample from the ones any sweep has already seen; `LCM_BENCH_N`
 raises the count per corpus. Grade the held-out group **once**, after the parameter is fixed — a
 second look at it makes it a tuning set too.
