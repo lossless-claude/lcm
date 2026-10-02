@@ -161,6 +161,12 @@ stops new work and settles in-flight work; rerunning resumes its ledger.
 `--restart` retains its existing reset behavior. Live compaction keeps its
 configured provider unless the pool is explicitly selected there too.
 
+Pool claims prioritize live compaction, then replay/background, then timeline,
+FIFO within each class. A timeline job waits while either higher class is queued;
+running jobs finish without interruption. Timeline generation can select the pool
+through the existing provider chain; see
+[timeline configuration](configuration.md#project-timeline-opt-in).
+
 A queued job has 20 seconds to be claimed. After claim, `llm.poolCompletionMs`
 sets the completion deadline, default 180000 ms (3 minutes).
 `LCM_POOL_COMPLETION_MS` overrides it in the daemon's environment. It applies to

@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
+import type { SummarizeContext } from "../llm/types.js";
 
 export type SummarizeJob = {
   id: string; session_id: string; kind: "leaf" | "condensed"; depth: number;
   system: string; prompt: string; targetTokens: number; maxTokens: number; createdAt: number;
   /** Only dedicated workers may claim these jobs. */
   pool?: true;
+  workClass?: SummarizeContext["workClass"];
 };
 export type SummaryProviderId = "session:haiku" | "session:fork" | `session-pool:${string}`;
 export function validPoolModel(model: unknown): model is string {
@@ -38,7 +40,8 @@ export const POOL_COMPLETION_MS = 180_000;
 export const SESSION_COMPLETION_MS = 60_000;
 
 /**
- * Process-local FIFO. Jobs have a claim window, then a separate completion deadline
+ * Process-local FIFOs. Pool claims prefer live, then background, then timeline.
+ * Jobs have a claim window, then a separate completion deadline
  * for the session or pool provider.
  */
 export class SummarizeJobStore {
@@ -59,7 +62,7 @@ export class SummarizeJobStore {
     return new Promise((resolve) => {
       const timer = this.expireAfter(job.id, this.deadlineMs);
       this.jobs.set(job.id, { job, resolve, timer, state: "queued" });
-      const key = job.pool ? "pool" : `session:${job.session_id}`;
+      const key = job.pool ? `pool:${job.workClass ?? "live"}` : `session:${job.session_id}`;
       const queue = this.queues.get(key) ?? [];
       queue.push(job.id);
       this.queues.set(key, queue);
@@ -70,6 +73,13 @@ export class SummarizeJobStore {
 
   private claim(key: string, workerId?: string, workerIdentity?: string): SummarizeJob | null {
     if (workerId && this.activeWorkers.has(workerId)) return null;
+    if (key === "pool") {
+      for (const workClass of ["live", "background", "timeline"]) {
+        const job = this.claim(`pool:${workClass}`, workerId, workerIdentity);
+        if (job) return job;
+      }
+      return null;
+    }
     const queue = this.queues.get(key);
     while (queue?.length) {
       const entry = this.jobs.get(queue.shift()!);
@@ -159,7 +169,7 @@ export class SummarizeJobStore {
     entry.workerIdentity = undefined;
     entry.state = "queued";
     entry.timer = this.expireAfter(id, Math.max(1, this.deadlineMs - (Date.now() - entry.job.createdAt)));
-    const key = entry.job.pool ? "pool" : `session:${entry.job.session_id}`;
+    const key = entry.job.pool ? `pool:${entry.job.workClass ?? "live"}` : `session:${entry.job.session_id}`;
     this.queues.set(key, [id, ...(this.queues.get(key) ?? [])]);
     if (entry.job.pool) this.wakeWorkers();
     else this.waiters.get(key)?.(this.claim(key));
@@ -177,7 +187,7 @@ export class SummarizeJobStore {
     if (!entry || (entry.state !== "queued" && entry.state !== "claimed")) return;
     clearTimeout(entry.timer);
     entry.state = state;
-    const key = entry.job.pool ? "pool" : `session:${entry.job.session_id}`;
+    const key = entry.job.pool ? `pool:${entry.job.workClass ?? "live"}` : `session:${entry.job.session_id}`;
     const queue = this.queues.get(key)?.filter((queued) => queued !== id);
     if (queue?.length) this.queues.set(key, queue);
     else this.queues.delete(key);

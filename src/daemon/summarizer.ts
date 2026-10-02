@@ -78,7 +78,7 @@ function createSessionSummarizer(jobs?: Pick<SummarizeJobStore, "enqueue">, pool
       session_id: ctx.sessionId, kind: ctx.isCondensed ? "condensed" : "leaf",
       depth: ctx.depth ?? (ctx.isCondensed ? 1 : 0), system, prompt, targetTokens,
       maxTokens: pool && ctx.maxOutputTokens !== undefined ? ctx.maxOutputTokens : resolveMaxOutputTokens(targetTokens),
-      ...(pool ? { pool: true as const } : {}),
+      ...(pool ? { pool: true as const, workClass: ctx.workClass ?? "live" } : {}),
     });
     for (const attempt of answer.usageAttempts ?? []) {
       ctx.onUsage?.({ provider: attempt.providerId, model: attempt.providerId.split(":")[1],

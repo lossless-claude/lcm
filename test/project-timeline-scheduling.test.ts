@@ -45,13 +45,16 @@ it("replay holds expire without ledger progress and older unfinished runs do not
 });
 it("timeline providers require admission on every fallback", () => {
   const config = loadDaemonConfig("/dev/null", { llm: { provider: "session-pool", fallbackProvider: "disabled" } });
-  expect(timelineProviderAdmitted(config)).toBe(false);
+  expect(timelineProviderAdmitted(config)).toBe(true);
+  config.llm.fallbackProvider = "auto"; expect(timelineProviderAdmitted(config)).toBe(false);
   const http = loadDaemonConfig("/dev/null", { llm: { provider: "bounded", providers: {
     bounded: { type: "openai", apiKey: "fake", model: "fake", maxConcurrent: 1 },
     unbounded: { type: "anthropic", apiKey: "fake", model: "fake" },
   } } });
   expect(timelineProviderAdmitted(http)).toBe(true);
   http.llm.fallback = ["unbounded"]; expect(timelineProviderAdmitted(http)).toBe(false);
+  http.llm.provider = "session-pool"; expect(timelineProviderAdmitted(http)).toBe(false);
+  http.llm.fallback = ["bounded"]; expect(timelineProviderAdmitted(http)).toBe(true);
 });
 
 it("ticks alone resume migrated bootstrap one bounded page at a time before model work", async () => {

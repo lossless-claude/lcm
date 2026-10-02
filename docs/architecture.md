@@ -123,8 +123,11 @@ have no cause, so this also retries legacy model failures. Subsequent failures
 retain their backoff. Replay holds expire after
 five minutes without progress; ordinary ticks drain persisted work once generation
 is on and replay no longer holds it. Ledger inserts perform no timeline manifest scan.
-Every provider and fallback must support shared live/background/timeline admission through a
-bounded named HTTP endpoint. Unsupported providers refuse timeline generation
+Every provider and fallback must support shared live/background/timeline admission through
+`session-pool` or a bounded named HTTP endpoint. Flat pool configuration requires
+`llm.fallbackProvider: "disabled"`; named pool chains require bounded HTTP fallbacks.
+Timeline pool jobs retain the reserved `lcm:project-timeline` session binding.
+Unsupported providers refuse timeline generation
 with a configuration 4xx before database work, without failure flags or backoff.
 
 Status and doctor read persisted pending/stale/dirty counts, including sessions
@@ -682,7 +685,9 @@ hook fallback) and SessionStart catch-up send `work_class: "live"` because they 
 `skip_ingest`. Other `skip_ingest` callers, including import replay and batch compact with
 or without replay, are background.
 Direct compactions default to live. `SummarizeContext.workClass` carries that choice through
-the provider chain, retries and fallback to the OpenAI and Anthropic adapters.
+the provider chain, retries and fallback to the OpenAI and Anthropic adapters and
+the session pool. Pool claims use the same class order and FIFO within each class;
+their separate claim and completion deadlines remain unchanged.
 
 Live slot waits expire after the endpoint's `timeoutMs` (default 600000 ms), allowing
 fallback even when the daemon continues after PreCompact's 120-second client deadline.

@@ -75,6 +75,32 @@ describe("session summarize jobs", () => {
     expect(store.answer(job!.id, { text: "late" })).toBe("missing");
   });
 
+  it("claims every replay job before timeline jobs, FIFO within each class", async () => {
+    const answers = [
+      store.enqueue({ ...input, pool: true, workClass: "timeline", prompt: "timeline-1" }),
+      store.enqueue({ ...input, pool: true, workClass: "background", prompt: "replay-1" }),
+      store.enqueue({ ...input, pool: true, workClass: "timeline", prompt: "timeline-2" }),
+      store.enqueue({ ...input, pool: true, workClass: "background", prompt: "replay-2" }),
+    ];
+    const jobs = await Promise.all([1, 2, 3, 4].map(id => store.nextWorker(`worker-${id}`, undefined, false)));
+    expect(jobs.map(job => job?.prompt)).toEqual(["replay-1", "replay-2", "timeline-1", "timeline-2"]);
+    jobs.forEach(job => store.answer(job!.id, { text: "summary" }));
+    await Promise.all(answers);
+  });
+
+  it("lets later live jobs jump ahead of queued replay and timeline jobs", async () => {
+    const answers = [
+      store.enqueue({ ...input, pool: true, workClass: "timeline", prompt: "timeline" }),
+      store.enqueue({ ...input, pool: true, workClass: "background", prompt: "replay" }),
+      store.enqueue({ ...input, pool: true, prompt: "live-1" }),
+      store.enqueue({ ...input, pool: true, workClass: "live", prompt: "live-2" }),
+    ];
+    const jobs = await Promise.all([1, 2, 3, 4].map(id => store.nextWorker(`worker-${id}`, undefined, false)));
+    expect(jobs.map(job => job?.prompt)).toEqual(["live-1", "live-2", "replay", "timeline"]);
+    jobs.forEach(job => store.answer(job!.id, { text: "summary" }));
+    await Promise.all(answers);
+  });
+
   it("removes an aborted waiter without claiming a later job", async () => {
     const controller = new AbortController();
     const waiting = store.next("one", controller.signal);
@@ -157,6 +183,42 @@ describe("session summarize jobs", () => {
     await vi.advanceTimersByTimeAsync(20_000);
     await expect(unclaimed).resolves.toBe("fallback summary");
     expect(fallback).toHaveBeenCalledOnce();
+  });
+
+  it.each(["live", "background", "timeline"] as const)("carries %s work class through the pool provider", async workClass => {
+    const config = loadDaemonConfig("/nonexistent", { llm: { provider: "session-pool", fallbackProvider: "disabled" } }, {});
+    const summarize = (await createSummarizer("session-pool", config, store))!;
+    const pending = summarize("conversation", false, { sessionId: "one", workClass });
+    const job = await store.nextWorker("worker");
+    try { expect(job?.workClass).toBe(workClass); }
+    finally { store.answer(job!.id, { text: "worker summary" }); }
+    await expect(pending).resolves.toBe("worker summary");
+  });
+
+  it.each(["live", "background"] as const)("keeps %s pool deadlines independent of newer timeline jobs", async workClass => {
+    const unclaimed = store.enqueue({ ...input, pool: true, workClass });
+    await vi.advanceTimersByTimeAsync(10_000);
+    void store.enqueue({ ...input, pool: true, workClass: "timeline" });
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(unclaimed).resolves.toEqual({ error: "job timeout" });
+    const timeline = await store.nextWorker("timeline-worker", undefined, false);
+    expect(timeline?.workClass).toBe("timeline");
+    store.answer(timeline!.id, { text: "timeline summary" });
+
+    const claimed = store.enqueue({ ...input, pool: true, workClass });
+    await vi.advanceTimersByTimeAsync(19_000);
+    const job = await store.nextWorker("worker", undefined, false);
+    const settled = vi.fn();
+    void claimed.then(settled);
+    await vi.advanceTimersByTimeAsync(10_000);
+    void store.enqueue({ ...input, pool: true, workClass: "timeline" });
+    const laterTimeline = await store.nextWorker("timeline-worker", undefined, false);
+    await vi.advanceTimersByTimeAsync(POOL_COMPLETION_MS - 10_001);
+    expect(settled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(claimed).resolves.toEqual({ error: "job timeout" });
+    expect(store.answer(job!.id, { text: "late" })).toBe("discarded");
+    expect(store.answer(laterTimeline!.id, { text: "timeline summary" })).toBe("accepted");
   });
 
   it("falls along the provider chain after a claimed pool job expires and accepts the worker's next answer", async () => {
