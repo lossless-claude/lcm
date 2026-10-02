@@ -335,6 +335,23 @@ own gets its pack ensured when the project's language is detected — generated 
 already satisfied for English's built-in pack. See [search.md](./search.md) for how the pair is
 prepared and where the two language names are surfaced.
 
+### Session commit references
+
+`commits.enabled` defaults to `true`. The explicit
+`lcm import --backfill-event-times` operation runs transcript repair, then a local
+commit pass under the project queue and mutation lease. Disable the commit pass with:
+
+```json
+{ "commits": { "enabled": false } }
+```
+
+The setting leaves transcript repair, existing references and anchors intact.
+There is no automatic git scan or remote fetch. References require a commit hash
+in stored tool output, or an exact stored web session URL matching a commit's
+`Claude-Session:` trailer. Only evidence messages with unknown times receive a
+commit's author time, recorded with source `commit`. Describe shows the references
+on sessions, summaries and timeline nodes. See [import repair](import.md#event-timestamps-and-existing-history).
+
 ### Project timeline opt-in
 
 `timeline.generationEnabled` gates manual and automatic model generation and

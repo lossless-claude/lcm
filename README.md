@@ -187,7 +187,7 @@ flowchart LR
 | `lcm_search` | Search across episodic memory (messages and summaries) and promoted memory |
 | `lcm_grep` | Regex or full-text search across raw messages and summaries |
 | `lcm_expand` | Decompress a summary node into its source content by traversing the DAG |
-| `lcm_describe` | Inspect metadata and lineage of a memory node (depth, token count, parent/child links) |
+| `lcm_describe` | Inspect session or summary metadata, lineage and explicit commit references |
 | `lcm_store` | Persist durable memory manually with optional tags |
 | `lcm_stats` | Show token savings, compression ratios, and usage statistics |
 | `lcm_doctor` | Diagnose setup and report stale stores, record-less stores and orphan summaries |
@@ -208,7 +208,7 @@ lcm -V                     # version
 # Memory inspection
 lcm search "query"        # search episodic and promoted memory
 lcm grep "pattern"        # search messages and summaries
-lcm describe <nodeId>      # inspect metadata for a memory node
+lcm describe <nodeId>      # inspect session or summary metadata and commit references
 lcm expand <nodeId>        # expand a summary node into source detail
 lcm store "content"       # persist a durable memory entry
 lcm stats                  # memory and compression overview

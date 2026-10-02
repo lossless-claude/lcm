@@ -104,6 +104,10 @@ function installTimelineTables(db: DatabaseSync): void {
     db.exec("UPDATE timeline_state SET phase = 'bootstrapping', bootstrap_cursor = '' WHERE tracking = 1");
   }
   const stateColumns = db.prepare("PRAGMA table_info(timeline_state)").all() as Array<{ name: string }>;
+  if (!stateColumns.some(column => column.name === "known_time_bounds")) {
+    db.exec("ALTER TABLE timeline_state ADD COLUMN known_time_bounds INTEGER NOT NULL DEFAULT 1");
+    db.exec("UPDATE timeline_state SET phase = 'bootstrapping', bootstrap_cursor = '' WHERE tracking = 1");
+  }
   if (!stateColumns.some(column => column.name === "admission_recovered")) {
     db.exec("ALTER TABLE timeline_state ADD COLUMN admission_recovered INTEGER NOT NULL DEFAULT 0");
   }

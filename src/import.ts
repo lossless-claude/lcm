@@ -804,6 +804,24 @@ export async function importSessions(
     }
   });
 
+  if (options.backfillEventTimes && !options.dryRun && !result.daemonUnreachable) {
+    const projects = new Set(options.all
+      ? [...(paths ? buildProjectMap(paths).values() : []), ...sessionLists.flatMap(sessions => sessions.map(session => session.cwd))]
+      : [options.cwd ?? process.cwd()]);
+    for (const cwd of projects) {
+      if (skipMissingCwd(cwd) || options.onBeforeSession?.() === false) continue;
+      const done = options.trackInFlight?.();
+      try {
+        const repair = await client.post<{ updated: number }>("/backfill-commits", { cwd });
+        result.backfilledEventTimes = (result.backfilledEventTimes ?? 0) + (repair.updated ?? 0);
+      } catch (error) {
+        result.failed++;
+        if (isDaemonUnreachableError(error)) { result.daemonUnreachable = true; break; }
+        console.error(`  ⚠️ Commit repair failed: ${error instanceof Error ? error.message : String(error)}`);
+      } finally { done?.(); }
+    }
+  }
+
   // Match compact's best-effort promotion, restricted to projects this run compacted.
   if (!options.dryRun && !options.noPromote && !result.daemonUnreachable) {
     let totalPromoted = 0;

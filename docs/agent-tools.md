@@ -59,12 +59,14 @@ resolve to a different node or nothing at all.
 |---|---|
 | `recent` library call / `/recent` | Summary `createdAt` and newest-first ordering use summary insertion time; `earliestAt` / `latestAt` describe the source period. |
 | Search / grep | Message `createdAt` is capture time; summary `createdAt` is summary insertion time. Time filters use these storage timestamps. Timeline hits additionally expose their source `period` and `timeBasis`. |
-| Describe | Summary `createdAt` is insertion time; `earliestAt` / `latestAt` use source event time with capture-time fallback. |
-| Timeline | Source periods and UTC months use event time when known, otherwise capture time. Coverage `timeBasis` is `event`, `capture` or `mixed`; timeline search reports the aggregate basis. |
+| Describe | Summary `createdAt` is insertion time; source bounds use known message event times if any exist, otherwise capture times. |
+| Timeline | Source bounds prefer known event times across involved messages; capture bounds apply only when none are known. Coverage `timeBasis` is `event`, `capture` or `mixed`; timeline search reports the aggregate basis. |
 
 Capture, import and rebuild preserve transcript record timestamps separately as
-nullable message `eventAt`. Repair older history with
-`lcm import --backfill-event-times`; missing or unaligned records remain unknown.
+nullable message `eventAt` and `eventTimeSource: "transcript"`. Repair older history
+with `lcm import --backfill-event-times`; its subsequent local commit pass can anchor
+messages carrying explicit resolved evidence with source `commit`. Other missing or
+unaligned records remain unknown. See [import repair](import.md#event-timestamps-and-existing-history).
 
 ## Tool reference
 
@@ -164,16 +166,25 @@ lcm_grep(query: "config\\.threshold", scope: "summaries")
 
 Inspect metadata and lineage of a memory node without expanding content. Returns depth, token count, parent/child links, and whether the node was promoted to long-term memory.
 
+For a session, pass its lcm session id or `session:<id>`; `node.type` is `session`
+and `node.session` carries its newest conversation's source bounds. Sessions and
+summaries include `node.commits`: references with `sessionId`, `messageId`, `hash`,
+`subject`, `authorAt`, `branch`, `resolved`, `evidence` (`commit-output` or
+`session-trailer`) and `evidenceValue` (observed hash or exact web session URL).
+Resolved hashes are full hashes; an unresolved abbreviation remains as observed.
+
 For a timeline node, `node.timeline` also contains `period`, exact session
 `coverage` (source summary ids, raw message ranges and `timeBasis`), `stale` reason/time,
-`memoryRefs` (id and revision), `generator`, and `replaces`. Describe never calls
+`memoryRefs` (id and revision), `generator`, `replaces`, and `commits` from every
+covered session. Commit references appear in metadata, separate from generated prose.
+Resolution reflects the latest explicit repair pass. Describe never calls
 the model. Historical replaced nodes and digests retired after later session compaction remain readable by id.
 
 **Parameters:**
 
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `nodeId` | string | ✅ | — | Node ID to describe (e.g. `sum_abc123`) |
+| `nodeId` | string | ✅ | — | Summary/file node id, lcm session id, or `session:<id>` |
 | `projectId` | string | | current project | The `project.id` of the search result the node came from. Required whenever the node did not come from this project, since node ids are only unique within one project |
 
 **Examples:**

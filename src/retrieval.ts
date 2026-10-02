@@ -1,3 +1,4 @@
+import type { CommitReference } from "./store/commit-store.js";
 import type {
   ConversationStore,
   MessageRecord,
@@ -14,7 +15,9 @@ import type {
 
 export interface DescribeResult {
   id: string;
-  type: "summary" | "file";
+  type: "summary" | "file" | "session";
+  commits?: CommitReference[];
+  session?: { sessionId: string; conversationId: number; firstAt: Date; lastAt: Date };
   /** Summary-specific fields */
   summary?: {
     conversationId: number;
@@ -141,7 +144,12 @@ export class RetrievalEngine {
     if (id.startsWith("file_")) {
       return this.describeFile(id);
     }
-    return null;
+    const sessionId = id.startsWith("session:") ? id.slice("session:".length) : id;
+    const conversation = await this.conversationStore.getConversationBySessionId(sessionId);
+    if (!conversation) return null;
+    const bounds = await this.conversationStore.getConversationTimeBounds(conversation.conversationId);
+    return { id, type: "session", session: { sessionId, conversationId: conversation.conversationId,
+      firstAt: bounds!.firstAt, lastAt: bounds!.lastAt }, commits: this.conversationStore.getSessionCommitReferences(sessionId) };
   }
 
   private async describeSummary(id: string): Promise<DescribeResult | null> {
@@ -161,6 +169,7 @@ export class RetrievalEngine {
     return {
       id,
       type: "summary",
+      commits: this.summaryStore.getCommitReferences(id),
       summary: {
         conversationId: summary.conversationId,
         kind: summary.kind,

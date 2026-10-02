@@ -98,11 +98,11 @@ const ENTRIES: ToolEntry[] = [
   {
     definition: {
       name: "lcm_describe",
-      description: "Inspect metadata and lineage of a memory node without expanding content. Returns depth, token count, parent/child links, and whether it was promoted to long-term memory. Timeline nodes also include period, coverage, staleness, memory revisions, generator and replacements.",
+      description: "Inspect metadata and lineage of a memory node without expanding content. Returns depth, token count, parent/child links, and whether it was promoted to long-term memory. Sessions and summaries include explicit commit references. Pass a session id or session:<id> to describe a session. Timeline nodes also include period, coverage, staleness, memory revisions, generator, replacements and covered sessions\' commit references.",
       inputSchema: {
         type: "object",
         properties: {
-          nodeId: { type: "string", description: "Node ID to describe" },
+          nodeId: { type: "string", description: "Summary/file node id, lcm session id, or session:<id>" },
           projectId: { type: "string", description: PROJECT_ID_DESCRIPTION },
         },
         required: ["nodeId"],

@@ -1,3 +1,4 @@
+import { CommitStore } from "./commit-store.js";
 import { yieldToEventLoop } from "../daemon/project-queue.js";
 import { SUMMARY_SOURCE_IDS_SQL } from "./summary-lineage.js";
 import { WorkerStore } from "./worker-store.js";
@@ -12,6 +13,10 @@ import {
 } from "./fts5-query.js";
 import { buildLikeSearchPlan, createFallbackSnippet } from "./full-text-fallback.js";
 import { validateRegex } from "./regex-safety.js";
+
+const UNIX_EPOCH_JULIAN_DAY = 2440587.5;
+const MILLISECONDS_PER_DAY = 86_400_000;
+const TIME_BOUNDS_PAGE_SIZE = 128;
 
 export type SummaryKind = "leaf" | "condensed";
 export type ContextItemType = "message" | "summary";
@@ -265,6 +270,9 @@ function toLargeFileRecord(row: LargeFileRow): LargeFileRecord {
 // ── SummaryStore ──────────────────────────────────────────────────────────────
 
 export class SummaryStore {
+  getCommitReferences(summaryId: string) {
+    return new CommitStore(this.db).forSummary(summaryId);
+  }
   private readonly fts5Available: boolean;
   private readonly includeStale: boolean;
 
@@ -475,30 +483,60 @@ export class SummaryStore {
 
   // ── Lineage ───────────────────────────────────────────────────────────────
 
+  /** Known message times across all source summaries; no per-message capture fallback. */
+  getSourceEventTimeBounds(summaryIds: string[]): { earliestAt: Date; latestAt: Date } | null {
+    const row = this.db.prepare(`WITH RECURSIVE sources(id) AS (
+      SELECT value FROM json_each(?) UNION SELECT p.parent_summary_id FROM summary_parents p JOIN sources ON p.summary_id = sources.id
+    ) SELECT MIN(julianday(m.event_at)) first, MAX(julianday(m.event_at)) last
+      FROM summary_messages sm JOIN messages m USING(message_id) WHERE sm.summary_id IN (SELECT id FROM sources)`)
+      .get(JSON.stringify(summaryIds)) as { first: number | null; last: number | null };
+    if (row.first === null || row.last === null) return null;
+    const date = (julian: number) => new Date(Math.round((julian - UNIX_EPOCH_JULIAN_DAY) * MILLISECONDS_PER_DAY));
+    return { earliestAt: date(row.first), latestAt: date(row.last) };
+  }
+
+  async recomputeProjectTimeBounds(): Promise<void> {
+    let id = 0;
+    for (;;) {
+      const rows = this.db.prepare(`SELECT DISTINCT s.conversation_id FROM summaries s JOIN conversations c USING(conversation_id)
+        WHERE s.conversation_id > ? AND c.is_timeline = 0 ORDER BY s.conversation_id LIMIT ${TIME_BOUNDS_PAGE_SIZE}`)
+        .all(id) as Array<{ conversation_id: number }>;
+      for (const row of rows) await this.recomputeTimeBounds(row.conversation_id);
+      await yieldToEventLoop();
+      if (rows.length < TIME_BOUNDS_PAGE_SIZE) return;
+      id = rows.at(-1)!.conversation_id;
+    }
+  }
+
   /** Recompute leaves before their condensed descendants, yielding between bounded pages. */
   async recomputeTimeBounds(conversationId: number): Promise<void> {
     let depth = -1;
     let id = "";
     for (;;) {
       const page = this.db.prepare(`SELECT summary_id, depth, kind FROM summaries WHERE conversation_id = ?
-        AND (depth, summary_id) > (?, ?) ORDER BY depth, summary_id LIMIT 128`)
+        AND (depth, summary_id) > (?, ?) ORDER BY depth, summary_id LIMIT ${TIME_BOUNDS_PAGE_SIZE}`)
         .all(conversationId, depth, id) as Array<{ summary_id: string; depth: number; kind: SummaryKind }>;
       for (const summary of page) {
         const range = summary.kind === "leaf"
-          ? this.db.prepare(`SELECT MIN(julianday(COALESCE(m.event_at, m.created_at))) first,
-              MAX(julianday(COALESCE(m.event_at, m.created_at))) last
+          ? this.db.prepare(`SELECT COALESCE(MIN(julianday(m.event_at)), MIN(julianday(m.created_at))) first,
+              COALESCE(MAX(julianday(m.event_at)), MAX(julianday(m.created_at))) last
               FROM summary_messages sm JOIN messages m USING(message_id) WHERE sm.summary_id = ?`).get(summary.summary_id)
           : this.db.prepare(`SELECT MIN(julianday(COALESCE(s.earliest_at, s.created_at))) first,
               MAX(julianday(COALESCE(s.latest_at, s.created_at))) last
               FROM summary_parents p JOIN summaries s ON s.summary_id = p.parent_summary_id WHERE p.summary_id = ?`).get(summary.summary_id);
         const bounds = range as { first: number | null; last: number | null };
+        const known = summary.kind === "condensed" ? this.getSourceEventTimeBounds([summary.summary_id]) : null;
+        if (known) {
+          bounds.first = (known.earliestAt.getTime() / MILLISECONDS_PER_DAY) + UNIX_EPOCH_JULIAN_DAY;
+          bounds.last = (known.latestAt.getTime() / MILLISECONDS_PER_DAY) + UNIX_EPOCH_JULIAN_DAY;
+        }
         if (bounds.first !== null && bounds.last !== null) this.db.prepare(`UPDATE summaries
           SET earliest_at = strftime('%Y-%m-%dT%H:%M:%fZ', ?), latest_at = strftime('%Y-%m-%dT%H:%M:%fZ', ?)
           WHERE summary_id = ? AND (julianday(earliest_at) IS NOT ? OR julianday(latest_at) IS NOT ?)`)
           .run(bounds.first, bounds.last, summary.summary_id, bounds.first, bounds.last);
       }
       await yieldToEventLoop();
-      if (page.length < 128) return;
+      if (page.length < TIME_BOUNDS_PAGE_SIZE) return;
       depth = page.at(-1)!.depth;
       id = page.at(-1)!.summary_id;
     }

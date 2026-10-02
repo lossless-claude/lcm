@@ -149,12 +149,12 @@ const HELP: Record<string, CommandHelp> = {
   },
 
   describe: {
-    summary: "Inspect metadata and lineage for a stored summary node.",
+    summary: "Inspect metadata, lineage and commit references for a session or summary.",
     usage: "lcm describe <nodeId>",
     examples: [
       ["lcm describe sum_abc123def456", "Show metadata for a summary node"],
     ],
-    notes: "Use lcm search or lcm grep first to find a node ID worth inspecting.",
+    notes: "Use lcm search or lcm grep first to find a node ID worth inspecting. A session id or session:<id> shows its commit references.",
   },
 
   expand: {
@@ -219,7 +219,7 @@ const HELP: Record<string, CommandHelp> = {
       ["--parallel <N>", "With --replay: process N projects concurrently (default 1), retaining order within each project"],
       ["--replay-provider <provider>", "With --replay: use session-pool; live compactions keep their configured provider"],
       ["--restart", "With --replay: discard recorded progress and all summaries in the conversations the run touches, then start from scratch"],
-      ["--backfill-event-times", "Repair unknown transcript event times and source bounds in bounded batches, without model calls"],
+      ["--backfill-event-times", "Repair unknown transcript or commit-anchor times and source bounds in bounded batches, without model calls"],
       ["--rebuild", "With --provider claude: replace repairable stored history; with --provider codex|omp: repair only verified rows cut at NUL (previews unless --yes)"],
       ["--retry-blocked", "With --provider codex: clear terminal capture guards (default: current project; --all: every project with a project record)"],
       ["--yes", "With --rebuild: apply it, after backing up each project database it changes"],
@@ -242,7 +242,7 @@ const HELP: Record<string, CommandHelp> = {
       ["lcm import --provider codex --retry-blocked --session <id>", "Clear one terminal Codex guard in the current project"],
       ["lcm import --provider codex --retry-blocked --all", "Clear terminal Codex guards in every project with a project record"],
     ],
-    notes: "Claude transcripts come from ~/.claude/projects/; Codex transcripts from ~/.codex/sessions/ and ~/.codex/archived_sessions/; Oh My Pi session files from <agent dir>/sessions/ (PI_CODING_AGENT_DIR, default ~/.omp/agent). Codex requires session_meta.cwd and OMP requires the session header's cwd; unknown projects are skipped. Every provider is included unless --provider, --codex or --omp selects one. --all includes other projects. Dry-run never starts the daemon. After successful compaction, import automatically promotes insights for the projects it compacted; --no-promote skips that step. Use lcm promote --all to promote existing summaries without replaying. Codex and OMP import share incremental ingestion with their hooks, so later transcript growth is captured without duplicating prior messages. --backfill-event-times fills only unknown timestamps at verified session positions, yields between batches, and makes no model calls. Missing or unaligned records stay unknown; rerun to resume. It cannot run with --replay, --restart, --rebuild or --retry-blocked. --rebuild requires one provider and never runs with --replay. For Claude it replaces repairable history and discards summaries; for Codex and OMP it updates verified NUL-cut message content, event timestamps and full-text entries, recomputing summary bounds while preserving summary text and cursors. --yes backs up the project database before changes. --retry-blocked requires --provider codex and cannot run with --replay, --rebuild or --dry-run, or with --all and --session together. Stored messages and summaries are preserved. The next capture rechecks alignment under current recovery and redaction rules; a mismatch is blocked again and recorded once. Recovery-rule changes automatically retry older guards once, including legacy guards without a rule version; unrelated upgrades keep guards. Guard clearing uses the daemon's project queue and mutation lease.",
+    notes: "Claude transcripts come from ~/.claude/projects/; Codex transcripts from ~/.codex/sessions/ and ~/.codex/archived_sessions/; Oh My Pi session files from <agent dir>/sessions/ (PI_CODING_AGENT_DIR, default ~/.omp/agent). Codex requires session_meta.cwd and OMP requires the session header's cwd; unknown projects are skipped. Every provider is included unless --provider, --codex or --omp selects one. --all includes other projects. Dry-run never starts the daemon. After successful compaction, import automatically promotes insights for the projects it compacted; --no-promote skips that step. Use lcm promote --all to promote existing summaries without replaying. Codex and OMP import share incremental ingestion with their hooks, so later transcript growth is captured without duplicating prior messages. --backfill-event-times repairs transcript times, then builds local commit references from stored tool output and matching session URLs, including sessions whose transcripts are gone. Only resolved evidence messages with unknown times get commit author times; other unknowns stay NULL. It yields between bounded batches and makes no model calls or remote fetches. commits.enabled=false disables the commit pass; rerun to resume. It cannot run with --replay, --restart, --rebuild or --retry-blocked. --rebuild requires one provider and never runs with --replay. For Claude it replaces repairable history and discards summaries; for Codex and OMP it updates verified NUL-cut message content, event timestamps and full-text entries, recomputing summary bounds while preserving summary text and cursors. --yes backs up the project database before changes. --retry-blocked requires --provider codex and cannot run with --replay, --rebuild or --dry-run, or with --all and --session together. Stored messages and summaries are preserved. The next capture rechecks alignment under current recovery and redaction rules; a mismatch is blocked again and recorded once. Recovery-rule changes automatically retry older guards once, including legacy guards without a rule version; unrelated upgrades keep guards. Guard clearing uses the daemon's project queue and mutation lease.",
   },
 
   promote: {

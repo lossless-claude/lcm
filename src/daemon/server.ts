@@ -27,6 +27,7 @@ import { createDescribeHandler } from "./routes/describe.js";
 import { createStoreHandler } from "./routes/store.js";
 import { createRecentHandler } from "./routes/recent.js";
 import { createIngestHandler } from "./routes/ingest.js";
+import { createCommitBackfillHandler } from "./routes/commits.js";
 import { createPromptSearchHandler } from "./routes/prompt-search.js";
 import { createStatusHandler } from "./routes/status.js";
 import { createCaptureRetryHandler } from "./routes/capture-retry.js";
@@ -216,6 +217,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   const inFlight = new Set<InFlightRequest>();
   const beginTask: BeginBackgroundTask = (name) => beginBackgroundTask(inFlight, name);
   routes.set("POST /ingest", createIngestHandler(config, paths, log, beginTask));
+  routes.set("POST /backfill-commits", createCommitBackfillHandler(config, paths));
   routes.set("POST /prompt-search", createPromptSearchHandler(config, paths));
   routes.set("POST /capture-retry", createCaptureRetryHandler(paths));
   routes.set("POST /session-complete", createSessionCompleteHandler(paths));

@@ -39,6 +39,7 @@ type SummaryDepthRow = {
 
 type SummaryMessageTimeRangeRow = {
   summary_id: string;
+  known_event_count: number;
   earliest_at: string | null;
   latest_at: string | null;
   source_message_token_count: number | null;
@@ -365,8 +366,9 @@ function backfillSummaryMetadata(db: DatabaseSync): void {
       .prepare(
         `SELECT
            sm.summary_id,
-           strftime('%Y-%m-%dT%H:%M:%fZ', MIN(julianday(COALESCE(m.event_at, m.created_at)))) AS earliest_at,
-           strftime('%Y-%m-%dT%H:%M:%fZ', MAX(julianday(COALESCE(m.event_at, m.created_at)))) AS latest_at,
+           COUNT(m.event_at) AS known_event_count,
+           strftime('%Y-%m-%dT%H:%M:%fZ', COALESCE(MIN(julianday(m.event_at)), MIN(julianday(m.created_at)))) AS earliest_at,
+           strftime('%Y-%m-%dT%H:%M:%fZ', COALESCE(MAX(julianday(m.event_at)), MAX(julianday(m.created_at)))) AS latest_at,
            COALESCE(SUM(m.token_count), 0) AS source_message_token_count
          FROM summary_messages sm
          JOIN messages m ON m.message_id = sm.message_id
@@ -379,6 +381,7 @@ function backfillSummaryMetadata(db: DatabaseSync): void {
       leafRanges.map((row) => [
         row.summary_id,
         {
+          hasEventTime: row.known_event_count > 0,
           earliestAt: row.earliest_at,
           latestAt: row.latest_at,
           sourceMessageTokenCount: row.source_message_token_count,
@@ -405,6 +408,7 @@ function backfillSummaryMetadata(db: DatabaseSync): void {
     const metadataBySummaryId = new Map<
       string,
       {
+        hasEventTime: boolean;
         earliestAt: Date | null;
         latestAt: Date | null;
         descendantCount: number;
@@ -424,6 +428,7 @@ function backfillSummaryMetadata(db: DatabaseSync): void {
         const latestAt = parseTimestamp(range?.latestAt ?? summary.created_at) ?? fallbackDate;
 
         metadataBySummaryId.set(summary.summary_id, {
+          hasEventTime: range?.hasEventTime ?? false,
           earliestAt,
           latestAt,
           descendantCount: 0,
@@ -439,6 +444,7 @@ function backfillSummaryMetadata(db: DatabaseSync): void {
       const parentIds = parentsBySummaryId.get(summary.summary_id) ?? [];
       if (parentIds.length === 0) {
         metadataBySummaryId.set(summary.summary_id, {
+          hasEventTime: false,
           earliestAt: fallbackDate,
           latestAt: fallbackDate,
           descendantCount: 0,
@@ -453,6 +459,7 @@ function backfillSummaryMetadata(db: DatabaseSync): void {
       let descendantCount = 0;
       let descendantTokenCount = 0;
       let sourceMessageTokenCount = 0;
+      const hasEventTime = parentIds.some(id => metadataBySummaryId.get(id)?.hasEventTime);
 
       for (const parentId of parentIds) {
         const parentMetadata = metadataBySummaryId.get(parentId);
@@ -461,12 +468,12 @@ function backfillSummaryMetadata(db: DatabaseSync): void {
         }
 
         const parentEarliest = parentMetadata.earliestAt;
-        if (parentEarliest && (!earliestAt || parentEarliest < earliestAt)) {
+        if ((parentMetadata.hasEventTime || !hasEventTime) && parentEarliest && (!earliestAt || parentEarliest < earliestAt)) {
           earliestAt = parentEarliest;
         }
 
         const parentLatest = parentMetadata.latestAt;
-        if (parentLatest && (!latestAt || parentLatest > latestAt)) {
+        if ((parentMetadata.hasEventTime || !hasEventTime) && parentLatest && (!latestAt || parentLatest > latestAt)) {
           latestAt = parentLatest;
         }
 
@@ -478,6 +485,7 @@ function backfillSummaryMetadata(db: DatabaseSync): void {
       }
 
       metadataBySummaryId.set(summary.summary_id, {
+        hasEventTime,
         earliestAt: earliestAt ?? fallbackDate,
         latestAt: latestAt ?? fallbackDate,
         descendantCount: Math.max(0, descendantCount),
@@ -891,6 +899,17 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
 
   const messageColumns = db.prepare("PRAGMA table_info(messages)").all() as SummaryColumnInfo[];
   if (!messageColumns.some(column => column.name === "event_at")) db.exec("ALTER TABLE messages ADD COLUMN event_at TEXT");
+  if (!messageColumns.some(column => column.name === "event_time_source")) {
+    db.exec("ALTER TABLE messages ADD COLUMN event_time_source TEXT CHECK(event_time_source IN ('transcript', 'commit'))");
+    db.exec("UPDATE messages SET event_time_source = 'transcript' WHERE event_at IS NOT NULL");
+  }
+  db.exec(`CREATE TABLE IF NOT EXISTS session_commits (
+    session_id TEXT NOT NULL, message_id INTEGER NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
+    hash TEXT NOT NULL, subject TEXT, author_at TEXT, branch TEXT, resolved INTEGER NOT NULL CHECK(resolved IN (0, 1)),
+    evidence TEXT NOT NULL CHECK(evidence IN ('commit-output', 'session-trailer')), evidence_value TEXT NOT NULL,
+    PRIMARY KEY(message_id, evidence, evidence_value, hash)
+  );
+  CREATE INDEX IF NOT EXISTS session_commits_session_idx ON session_commits(session_id);`);
   const depthAdded = ensureSummaryDepthColumn(db);
   db.exec("CREATE INDEX IF NOT EXISTS summaries_conv_depth_id_idx ON summaries (conversation_id, depth, summary_id)");
   const metadataAdded = ensureSummaryMetadataColumns(db);

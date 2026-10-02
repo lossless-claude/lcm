@@ -21,7 +21,7 @@ replay selection, orphan checks and session statistics. Expansion behavior is un
   Zero calls perform no generation. Physical provider attempts are outside the budget.
 - `describe(summaryId)`: period, session coverage, summary ids, session-relative
   raw-message ranges and each conversation's time basis, stale reason/time, memory
-  revisions, generator and replacements;
+  revisions, generator, replacements and commit references from the covered sessions;
   null for an ordinary session summary.
 
 Reports contain generated, pending, stale, dirty, calls, failures and the stop reason.
@@ -31,7 +31,7 @@ failures leave durable work available for a later invocation.
 ## Opt-in lifecycle
 
 Migration creates metadata tables and leaves tracking off until explicitly enabled.
-Adding the event-time coverage field restarts bootstrap for already-tracked stores,
+Adding the event-time coverage field or the known-time bounds marker restarts bootstrap for already-tracked stores,
 so persisted metadata is refreshed in resumable pages.
 With tracking on, it restores missing tracking and detach triggers and replaces
 definitions whose SQL differs from the current code, idempotently. With tracking
@@ -100,7 +100,8 @@ manual origin; that distinction remains unconfirmed.
    chunking ignores summary depth and closes at the configured leaf token limit
    or a UTC month boundary, assigned by latest coverage date. Raw dates use
    `messages.event_at` when known and capture `created_at` otherwise; summary
-   bounds use the same per-message fallback. Source `timeBasis` is `event`,
+   and generation-unit bounds prefer known times across their source messages,
+   falling back to capture bounds only when none are known. Source `timeBasis` is `event`,
    `capture` or `mixed`, persisted in coverage and exposed by describe and search.
    Generation sources explicitly label capture-time fallback. The latest replay
    manifest supplies session order; otherwise order by date, session, conversation,

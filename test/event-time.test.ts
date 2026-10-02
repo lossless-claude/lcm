@@ -123,8 +123,9 @@ describe("transcript event time", () => {
     writeFileSync(join(project, "session.jsonl"), JSON.stringify({ timestamp: at, message: { role: "user", content: "old" } }) + "\n");
     const post = vi.fn(async () => ({ ingested: 0, totalTokens: 0, backfilledEventTimes: 1, unknownEventTimes: 0 }));
     const result = await importSessions({ post } as unknown as DaemonClient, { cwd: dir, provider: "claude", _claudeProjectsDir: dir, backfillEventTimes: true });
-    expect(post.mock.calls).toHaveLength(1);
+    expect(post.mock.calls).toHaveLength(2);
     expect(post.mock.calls[0]).toEqual(["/ingest", expect.objectContaining({ backfill_event_times: true, session_id: "session" })]);
+    expect(post.mock.calls[1]).toEqual(["/backfill-commits", { cwd: dir }]);
     expect(result.backfilledEventTimes).toBe(1);
   });
   it("repairs a completed session through ingest without capturing a new tail", async () => {
