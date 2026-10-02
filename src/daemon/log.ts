@@ -1,6 +1,7 @@
 // src/daemon/log.ts
 import { appendFileSync, closeSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, unlinkSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ScrubEngine } from "../scrub.js";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -222,14 +223,37 @@ function renderField(key: string, value: unknown, scrub: Scrub): unknown {
   return scrub(JSON.stringify(value));
 }
 
-/** Name, message and code are all set by whoever threw, so all three are free-form text. */
+/** Keep only lcm frame locations: headers and function labels can contain error data. */
+function sourceStack(stack: string | undefined): string | undefined {
+  if (!stack) return undefined;
+  const modulePath = fileURLToPath(import.meta.url);
+  const sourceRoot = dirname(dirname(modulePath));
+  const bundled = basename(dirname(modulePath)) === "bundle";
+  const frames: string[] = [];
+  for (const line of stack.split("\n")) {
+    const frame = /^\s+at (?:.* \()?((?:file:\/\/\/|\/)[^()]+):(\d+):(\d+)\)?$/.exec(line);
+    if (!frame) continue;
+    const path = frame[1].startsWith("file:") ? fileURLToPath(frame[1]) : frame[1];
+    const local = relative(sourceRoot, path);
+    if (bundled && path !== modulePath) continue;
+    if (!bundled && (isAbsolute(local) || local.startsWith("..") || !/^[\w/.-]+\.[cm]?[jt]s$/.test(local) || local.split("/").includes("node_modules"))) continue;
+    frames.push(`    at ${bundled ? `bundle/${basename(path)}` : `src/${local}`}:${frame[2]}:${frame[3]}`);
+  }
+  return frames.length ? frames.join("\n") : undefined;
+}
+
+/** Error text is scrubbed; SQLite messages are omitted because they can contain SQL or captured data. */
 function describeError(value: unknown, freeForm: Scrub): Record<string, unknown> {
   if (!(value instanceof Error)) return { message: freeForm(String(value)) };
-  const code = (value as NodeJS.ErrnoException).code;
+  const { code, errcode, errstr } = value as NodeJS.ErrnoException & { errcode?: number; errstr?: string };
+  const stack = sourceStack(value.stack);
   return {
     name: freeForm(value.name),
-    message: freeForm(value.message),
+    ...(typeof code === "string" && code.startsWith("ERR_SQLITE_") ? {} : { message: freeForm(value.message) }),
     ...(typeof code === "string" || typeof code === "number" ? { code: freeForm(String(code)) } : {}),
+    ...(typeof errcode === "number" ? { errcode } : {}),
+    ...(typeof errstr === "string" ? { errstr: freeForm(errstr) } : {}),
+    ...(stack ? { stack: freeForm(stack) } : {}),
   };
 }
 
