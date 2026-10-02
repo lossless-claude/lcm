@@ -460,6 +460,23 @@ The **condensed pass** merges summaries at the same depth into a higher-level su
 - Phase 2: Repeatedly runs condensation passes starting from the shallowest eligible depth
 - Each pass checks for progress; stops if no tokens were saved
 
+The sweep computes the context token total once, then applies each pass's inserted
+minus replaced stored token counts. Chunk selection's content-length fallback does
+not change that accounting. Capture can append messages while a model call releases
+the mutation lease; after replacement, the sweep adds only those new context items
+to its running total. Compaction event messages remain outside context.
+
+The engine yields to the event loop between leaf and condensed steps and every 64
+items during selection and source preparation. Source links and transactional
+ordinal resequencing use pages of at most 128 items and yield between pages.
+Context reads and the initial token count retain their single-statement snapshots.
+Resequencing restores nonnegative, ordered
+ordinals before each yield and commits the complete replacement atomically. The
+project mutation lease remains held during database work. Message event-column
+presence is checked once per connection, including legacy read-only schemas, and
+message-by-id reads reuse a prepared statement.
+The 30,000-item timer regression enforces a maximum event-loop gap of 1,000 ms.
+
 ### Resumable replay runs
 
 `lcm import --replay` and `lcm compact --replay` are resumable. At the start of
@@ -551,6 +568,8 @@ boundaries. The halves' results are joined in source order into one summary link
 original sources; its level is the highest level used by either half. If joining does not
 shrink the source, the combined result uses source truncation at `fallback` without another
 model call. Nothing from the split is published until the whole pass succeeds.
+The left half receives the chunk's previous summary; the right half receives the
+left half's completed summary, including when either half splits again.
 
 For a chunk with **n** source messages (or summaries) and **p** resolved provider links, let
 **k = min(n, 8)**. Halving visits at most **2k − 1** chunks, at most 15. If every answer is

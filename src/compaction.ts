@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { yieldToEventLoop } from "./daemon/project-queue.js";
 import type { ConversationStore, CreateMessagePartInput } from "./store/conversation-store.js";
 import type { SummaryStore, SummaryRecord, ContextItemRecord } from "./store/summary-store.js";
 import { extractFileIdsFromContent } from "./large-files.js";
@@ -98,7 +99,7 @@ export type CompactionSummarizeFn = (
   aggressive?: boolean,
   options?: CompactionSummarizeOptions,
 ) => Promise<string>;
-type PassResult = { summaryId: string; level: CompactionLevel };
+type PassResult = { summaryId: string; level: CompactionLevel; tokenDelta: number };
 type EscalationResult = { content: string; level: CompactionLevel; keptAnswers: number };
 type EscalationParams = {
   sourceTexts: string[];
@@ -115,8 +116,6 @@ function highestLevel(a: CompactionLevel, b: CompactionLevel): CompactionLevel {
 }
 type LeafChunkSelection = {
   items: ContextItemRecord[];
-  rawTokensOutsideTail: number;
-  threshold: number;
 };
 type CondensedChunkSelection = {
   items: ContextItemRecord[];
@@ -143,15 +142,19 @@ function containsOutputCut(error: unknown): boolean {
 /** Format a timestamp as `YYYY-MM-DD HH:mm TZ` for prompt source text. */
 export function formatTimestamp(value: Date, timezone: string = "UTC"): string {
   try {
-    const fmt = new Intl.DateTimeFormat("en-CA", {
-      timeZone: timezone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    });
+    let fmt = timestampFormatters.get(timezone);
+    if (!fmt) {
+      fmt = new Intl.DateTimeFormat("en-CA", {
+        timeZone: timezone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      });
+      timestampFormatters.set(timezone, fmt);
+    }
     const parts = Object.fromEntries(
       fmt.formatToParts(value).map((p) => [p.type, p.value]),
     );
@@ -200,6 +203,9 @@ const FALLBACK_MAX_CHARS = 512 * 4;
 const MAX_CUT_SPLIT_DEPTH = 3;
 const DEFAULT_LEAF_CHUNK_TOKENS = 20_000;
 const CONDENSED_MIN_INPUT_RATIO = 0.1;
+/** Bound synchronous selection and source preparation between event-loop turns. */
+const COMPACTION_YIELD_EVERY = 64;
+const timestampFormatters = new Map<string, Intl.DateTimeFormat>();
 
 function dedupeOrderedIds(ids: Iterable<string>): string[] {
   const seen = new Set<string>();
@@ -275,10 +281,23 @@ export class CompactionEngine {
     // Seed from caller (cross-session replay) or start fresh
     let previousSummaryContent: string | undefined;
     let previousTokens = tokensBefore;
+    let contextTokens = tokensBefore;
+    let contextItemCount = contextItems.length;
+    const updateTokens = async (pass: PassResult, replacedItemCount: number): Promise<number> => {
+      contextTokens += pass.tokenDelta;
+      contextItemCount -= replacedItemCount - 1;
+      // Capture can append while the model releases the project mutation lease.
+      // Read only that suffix after replacement resequences the old context.
+      const appended = await this.summaryStore.getContextItems(conversationId, { afterOrdinal: contextItemCount - 1 });
+      contextTokens += await this.countStoredContextTokens(appended);
+      contextItemCount += appended.length;
+      return contextTokens;
+    };
     let isFirstLeafPass = true;
 
     // Phase 1: leaf passes over oldest raw chunks outside the protected tail.
     while (true) {
+      await yieldToEventLoop();
       this.config.signal?.throwIfAborted();
       const leafChunk = await this.selectOldestLeafChunk(conversationId);
       if (leafChunk.items.length === 0) {
@@ -293,14 +312,14 @@ export class CompactionEngine {
         isFirstLeafPass = false;
       }
 
-      const passTokensBefore = await this.summaryStore.getContextTokenCount(conversationId);
+      const passTokensBefore = contextTokens;
       const leafResult = await this.leafPass(
         conversationId,
         leafChunk.items,
         summarize,
         previousSummaryContent,
       );
-      const passTokensAfter = await this.summaryStore.getContextTokenCount(conversationId);
+      const passTokensAfter = await updateTokens(leafResult, leafChunk.items.length);
       await this.persistCompactionEvents({
         conversationId,
         tokensBefore: passTokensBefore,
@@ -324,6 +343,7 @@ export class CompactionEngine {
 
     // Phase 2: depth-aware condensed passes, always processing shallowest depth first.
     while (true) {
+      await yieldToEventLoop();
       this.config.signal?.throwIfAborted();
       const candidate = await this.selectShallowestCondensationCandidate({
         conversationId,
@@ -332,14 +352,14 @@ export class CompactionEngine {
         break;
       }
 
-      const passTokensBefore = await this.summaryStore.getContextTokenCount(conversationId);
+      const passTokensBefore = contextTokens;
       const condenseResult = await this.condensedPass(
         conversationId,
         candidate.chunk.items,
         candidate.targetDepth,
         summarize,
       );
-      const passTokensAfter = await this.summaryStore.getContextTokenCount(conversationId);
+      const passTokensAfter = await updateTokens(condenseResult, candidate.chunk.items.length);
       await this.persistCompactionEvents({
         conversationId,
         tokensBefore: passTokensBefore,
@@ -361,7 +381,7 @@ export class CompactionEngine {
       previousTokens = passTokensAfter;
     }
 
-    const tokensAfter = await this.summaryStore.getContextTokenCount(conversationId);
+    const tokensAfter = contextTokens;
 
     return {
       actionTaken,
@@ -458,13 +478,28 @@ export class CompactionEngine {
     return estimateTokens(message.content);
   }
 
+  private async countStoredContextTokens(items: ContextItemRecord[]): Promise<number> {
+    let total = 0;
+    for (let i = 0; i < items.length; i++) {
+      if (i % COMPACTION_YIELD_EVERY === 0) await yieldToEventLoop();
+      const item = items[i];
+      const record = item.itemType === "message" && item.messageId != null
+        ? await this.conversationStore.getMessageById(item.messageId)
+        : item.summaryId ? await this.summaryStore.getSummary(item.summaryId) : null;
+      total += record?.tokenCount ?? 0;
+    }
+    return total;
+  }
+
   /** Sum raw message tokens outside the protected fresh tail. */
   private async countRawTokensOutsideFreshTail(conversationId: number): Promise<number> {
     const contextItems = await this.summaryStore.getContextItems(conversationId);
     const freshTailOrdinal = this.resolveFreshTailOrdinal(contextItems);
     let rawTokens = 0;
 
+    let processed = 0;
     for (const item of contextItems) {
+      if (processed++ % COMPACTION_YIELD_EVERY === 0) await yieldToEventLoop();
       if (item.ordinal >= freshTailOrdinal) {
         break;
       }
@@ -488,21 +523,12 @@ export class CompactionEngine {
     const freshTailOrdinal = this.resolveFreshTailOrdinal(contextItems);
     const threshold = this.resolveLeafChunkTokens();
 
-    let rawTokensOutsideTail = 0;
-    for (const item of contextItems) {
-      if (item.ordinal >= freshTailOrdinal) {
-        break;
-      }
-      if (item.itemType !== "message" || item.messageId == null) {
-        continue;
-      }
-      rawTokensOutsideTail += await this.getMessageTokenCount(item.messageId);
-    }
-
     const chunk: ContextItemRecord[] = [];
     let chunkTokens = 0;
     let started = false;
+    let processed = 0;
     for (const item of contextItems) {
+      if (processed++ % COMPACTION_YIELD_EVERY === 0) await yieldToEventLoop();
       if (item.ordinal >= freshTailOrdinal) {
         break;
       }
@@ -531,7 +557,7 @@ export class CompactionEngine {
       }
     }
 
-    return { items: chunk, rawTokensOutsideTail, threshold };
+    return { items: chunk };
   }
 
   /**
@@ -694,7 +720,9 @@ export class CompactionEngine {
 
     const chunk: ContextItemRecord[] = [];
     let summaryTokens = 0;
+    let processed = 0;
     for (const item of contextItems) {
+      if (processed++ % COMPACTION_YIELD_EVERY === 0) await yieldToEventLoop();
       if (item.ordinal >= freshTailOrdinal) {
         break;
       }
@@ -845,7 +873,11 @@ export class CompactionEngine {
   ): Promise<EscalationResult> {
     const midpoint = Math.floor(params.sourceTexts.length / 2);
     const left = await this.summarizeWithEscalation({ ...params, sourceTexts: params.sourceTexts.slice(0, midpoint) });
-    const right = await this.summarizeWithEscalation({ ...params, sourceTexts: params.sourceTexts.slice(midpoint) });
+    const right = await this.summarizeWithEscalation({
+      ...params,
+      sourceTexts: params.sourceTexts.slice(midpoint),
+      options: { ...params.options, previousSummary: left.content },
+    });
     const content = `${left.content}\n\n${right.content}`;
     const keptAnswers = left.keptAnswers + right.keptAnswers;
     if (estimateTokens(content) >= inputTokens) {
@@ -865,16 +897,20 @@ export class CompactionEngine {
     messageItems: ContextItemRecord[],
     summarize: CompactionSummarizeFn,
     previousSummaryContent?: string,
-  ): Promise<{ summaryId: string; level: CompactionLevel; content: string }> {
+  ): Promise<PassResult & { content: string }> {
     // Fetch full message content for each context item
     const messageContents: { messageId: number; content: string; createdAt: Date; eventAt?: Date | null; tokenCount: number }[] =
       [];
+    let replacedTokens = 0;
+    let processed = 0;
     for (const item of messageItems) {
+      if (processed++ % COMPACTION_YIELD_EVERY === 0) await yieldToEventLoop();
       if (item.messageId == null) {
         continue;
       }
       const msg = await this.conversationStore.getMessageById(item.messageId);
       if (msg) {
+        replacedTokens += msg.tokenCount ?? 0;
         messageContents.push({
           messageId: msg.messageId,
           content: msg.content,
@@ -885,8 +921,12 @@ export class CompactionEngine {
       }
     }
 
-    const sourceTexts = messageContents
-      .map((message) => `[${formatTimestamp(message.createdAt, this.config.timezone)}]\n${message.content}`);
+    const sourceTexts: string[] = [];
+    for (let i = 0; i < messageContents.length; i++) {
+      if (i % COMPACTION_YIELD_EVERY === 0) await yieldToEventLoop();
+      const message = messageContents[i];
+      sourceTexts.push(`[${formatTimestamp(message.createdAt, this.config.timezone)}]\n${message.content}`);
+    }
     const fileIds = dedupeOrderedIds(
       messageContents.flatMap((message) => extractFileIdsFromContent(message.content)),
     );
@@ -947,7 +987,7 @@ export class CompactionEngine {
       summaryId,
     });
 
-    return { summaryId, level: summary.level, content: summary.content };
+    return { summaryId, level: summary.level, content: summary.content, tokenDelta: tokenCount - replacedTokens };
   }
 
   // ── Private: Condensed Pass ──────────────────────────────────────────────
@@ -963,7 +1003,9 @@ export class CompactionEngine {
   ): Promise<PassResult> {
     // Fetch full summary records
     const summaryRecords: SummaryRecord[] = [];
+    let processed = 0;
     for (const item of summaryItems) {
+      if (processed++ % COMPACTION_YIELD_EVERY === 0) await yieldToEventLoop();
       if (item.summaryId == null) {
         continue;
       }
@@ -973,14 +1015,16 @@ export class CompactionEngine {
       }
     }
 
-    const sourceTexts = summaryRecords
-      .map((summary) => {
-        const earliestAt = summary.earliestAt ?? summary.createdAt;
-        const latestAt = summary.latestAt ?? summary.createdAt;
-        const tz = this.config.timezone;
-        const header = `[${formatTimestamp(earliestAt, tz)} - ${formatTimestamp(latestAt, tz)}]`;
-        return `${header}\n${summary.content}`;
-      });
+    const sourceTexts: string[] = [];
+    for (let i = 0; i < summaryRecords.length; i++) {
+      if (i % COMPACTION_YIELD_EVERY === 0) await yieldToEventLoop();
+      const summary = summaryRecords[i];
+      const earliestAt = summary.earliestAt ?? summary.createdAt;
+      const latestAt = summary.latestAt ?? summary.createdAt;
+      const tz = this.config.timezone;
+      const header = `[${formatTimestamp(earliestAt, tz)} - ${formatTimestamp(latestAt, tz)}]`;
+      sourceTexts.push(`${header}\n${summary.content}`);
+    }
     const fileIds = dedupeOrderedIds(
       summaryRecords.flatMap((summary) => [
         ...summary.fileIds,
@@ -1075,7 +1119,7 @@ export class CompactionEngine {
       summaryId,
     });
 
-    return { summaryId, level: condensed.level };
+    return { summaryId, level: condensed.level, tokenDelta: tokenCount - summaryRecords.reduce((sum, source) => sum + source.tokenCount, 0) };
   }
 
   /**
