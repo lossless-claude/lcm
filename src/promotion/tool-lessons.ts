@@ -2,6 +2,7 @@ import { basename } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { SHELL_TOOLS, type ToolOutcome } from "../tool-calls.js";
 import { yieldToEventLoop } from "../daemon/project-queue.js";
+import { BATCH_SIZE, ToolLessonProjection, withLessonTransaction } from "./tool-lesson-projection.js";
 
 const SUBCOMMAND_TOOLS = new Set(["git", "npm", "pnpm", "yarn", "pip", "pip3", "brew", "cargo", "docker", "kubectl", "gh", "lcm"]);
 
@@ -56,10 +57,15 @@ function subcommandIndex(words: readonly string[], executable: string): number {
   return -1;
 }
 
-function shapeFlag(word: string): { name: string; hasValue: boolean } {
+function shapeFlag(word: string, executable: string): { name: string; hasValue: boolean } {
+  // Only rm's documented value-free flags can establish a cluster. An unknown
+  // executable may take a value on its first short flag, even when it looks like -rf.
+  if (/^-[a-zA-Z].+/.test(word)) {
+    if (executable === "rm" && /^-[dfiPRrvW]+$/.test(word)) return { name: word, hasValue: false };
+    return { name: word.slice(0, 2), hasValue: true };
+  }
   const equals = word.indexOf("=");
   if (equals >= 0) return { name: word.slice(0, equals), hasValue: true };
-  if (/^-[a-zA-Z].*[\\/]/.test(word)) return { name: word.slice(0, 2), hasValue: true };
   return { name: word, hasValue: false };
 }
 
@@ -80,7 +86,7 @@ export function commandShape(command: string): string | null {
     const word = words[index];
     if (word === "--") { positional = true; continue; }
     if (!positional && /^--?[a-zA-Z]/.test(word)) {
-      const flag = shapeFlag(word);
+      const flag = shapeFlag(word, executable);
       flags.add(flag.name);
       hasValues ||= flag.hasValue;
     } else hasValues = true;
@@ -89,8 +95,6 @@ export function commandShape(command: string): string | null {
 }
 
 const CALL_WINDOW = 20;
-const BATCH_SIZE = 128;
-const ENVIRONMENT_SESSION_THRESHOLD = 3;
 
 export interface ToolLesson {
   kind: "error-fix" | "block-reason" | "environment-rule";
@@ -106,12 +110,11 @@ export interface ToolLesson {
   tags: string[];
 }
 
-interface StoredCall {
+export interface StoredCall {
   row_id: number; session_id: string; message_id: number; name: string;
   input: string | null; outcome: ToolOutcome; block_reason: string | null;
   truncated: number; seen: string;
 }
-interface PendingFailure { call: StoredCall; shape: string; ordinal: number }
 
 function observe(lesson: ToolLesson, call: StoredCall): void {
   lesson.count++;
@@ -138,154 +141,143 @@ export function maskBlockReason(reason: string): string {
     .replace(/\b\d+\b/g, "<id>");
 }
 
-class LessonDerivation {
-  readonly lessons = new Map<string, ToolLesson>();
-  pairCount = 0;
-  private readonly environments = new Map<string, ToolLesson>();
-  private readonly firstFailures = new Map<string, string>();
-  private readonly lastSuccesses = new Map<string, { order: string; seen: string }>();
-  private session = "";
-  private ordinal = 0;
-  private pending: PendingFailure[] = [];
-  constructor(private readonly project: string) {}
-
-  add(call: StoredCall): void {
-    this.advanceSession(call.session_id);
-    if (!SHELL_TOOLS.includes(call.name.replace(/^functions\./, "").toLowerCase())) return;
-    if (call.outcome === "blocked" && call.block_reason) this.block(call);
-    const shape = call.input === null || call.truncated ? null : commandShape(call.input);
-    if (shape === null) return;
-    if (call.outcome === "failed" || call.outcome === "blocked") {
-      this.environment(shape, call);
-      this.pending.push({ call, shape, ordinal: this.ordinal });
-    } else if (call.outcome === "succeeded") this.success(shape, call);
-  }
-
-  private advanceSession(session: string): void {
-    if (session !== this.session) {
-      this.session = session; this.ordinal = 0; this.pending = [];
-    }
-    this.ordinal++;
-    this.pending = this.pending.filter(failure => this.ordinal - failure.ordinal <= CALL_WINDOW);
-  }
-
-  private success(shape: string, call: StoredCall): void {
-    const order = this.order(call);
-    if (order > (this.lastSuccesses.get(shape)?.order ?? "")) this.lastSuccesses.set(shape, { order, seen: call.seen });
-    for (const failure of this.pending.filter(item => item.shape === shape)) this.pair(failure, call);
-    this.pending = this.pending.filter(item => item.shape !== shape);
-  }
-
-  async finish(): Promise<ReadonlyMap<string, ToolLesson>> {
-    let processed = 0;
-    for (const [shape, lesson] of this.environments) {
-      if (++processed % BATCH_SIZE === 0) await yieldToEventLoop();
-      if (Object.keys(lesson.sessionCounts).length < ENVIRONMENT_SESSION_THRESHOLD) continue;
-      this.retireOnSuccess(shape, lesson);
-      this.lessons.set(JSON.stringify(["environment-rule", shape]), lesson);
-    }
-    return this.lessons;
-  }
-
-  private retireOnSuccess(shape: string, lesson: ToolLesson): void {
-    const success = this.lastSuccesses.get(shape);
-    if (!success || success.order <= this.firstFailures.get(shape)!) return;
-    lesson.retired = true;
-    lesson.lastSeen = lesson.lastSeen > success.seen ? lesson.lastSeen : success.seen;
-  }
-
-  private environment(shape: string, call: StoredCall): void {
-    const lesson = this.environments.get(shape) ?? { ...newLesson("environment-rule", call, this.project), shape };
-    observe(lesson, call);
-    this.environments.set(shape, lesson);
-    const order = this.order(call);
-    if (!this.firstFailures.has(shape) || order < this.firstFailures.get(shape)!) this.firstFailures.set(shape, order);
-  }
-
-  private order(call: StoredCall): string {
-    return call.seen + String(call.message_id).padStart(16, "0") + String(call.row_id).padStart(16, "0");
-  }
-
-  private block(call: StoredCall): void {
-    const reason = maskBlockReason(call.block_reason!);
-    const key = JSON.stringify(["block-reason", reason]);
-    const lesson = this.lessons.get(key) ?? { ...newLesson("block-reason", call, this.project), reason };
-    observe(lesson, call);
-    this.lessons.set(key, lesson);
-  }
-
-  private pair(failure: PendingFailure, success: StoredCall): void {
-    this.pairCount++;
-    const key = JSON.stringify(["error-fix", failure.shape, failure.call.input, success.input]);
-    const lesson = this.lessons.get(key) ?? { ...newLesson("error-fix", failure.call, this.project),
-      shape: failure.shape, failedCommand: failure.call.input!, succeededCommand: success.input! };
-    observe(lesson, failure.call);
-    lesson.lastSeen = lesson.lastSeen > success.seen ? lesson.lastSeen : success.seen;
-    this.lessons.set(key, lesson);
-  }
+function callShape(call: StoredCall): string | null {
+  if (!SHELL_TOOLS.includes(call.name.replace(/^functions\./, "").toLowerCase()) || call.input === null || call.truncated) return null;
+  return commandShape(call.input);
 }
 
-/** Rebuilds derived snapshots only at promotion boundaries, reading and writing bounded pages. */
+function blockLesson(call: StoredCall, project: string): ToolLesson | undefined {
+  if (!SHELL_TOOLS.includes(call.name.replace(/^functions\./, "").toLowerCase())) return;
+  if (call.outcome !== "blocked" || !call.block_reason) return;
+  const lesson = { ...newLesson("block-reason", call, project), reason: maskBlockReason(call.block_reason) };
+  observe(lesson, call);
+  return lesson;
+}
+
+function environmentLesson(call: StoredCall, project: string): ToolLesson | undefined {
+  const shape = callShape(call);
+  if (!shape || (call.outcome !== "failed" && call.outcome !== "blocked")) return;
+  const lesson = { ...newLesson("environment-rule", call, project), shape };
+  observe(lesson, call);
+  return lesson;
+}
+
+const CALL_SELECT = `SELECT t.rowid AS row_id, t.*,
+  COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', m.event_at), strftime('%Y-%m-%dT%H:%M:%fZ', m.created_at)) AS seen
+  FROM transcript_tool_calls t JOIN messages m ON m.message_id = t.message_id`;
+
+/** Refreshes journaled calls and their bounded pairing windows. Callers hold the project mutation lease. */
 export class ToolLessonStore {
-  constructor(private readonly db: DatabaseSync) {}
+  private readonly projection: ToolLessonProjection;
+  constructor(private readonly db: DatabaseSync) { this.projection = new ToolLessonProjection(db); }
 
   async refresh(project: string): Promise<number> {
-    const calls = this.callsFingerprint();
-    if (calls === this.publishedFingerprint()) return 0;
-    const derivation = new LessonDerivation(project);
-    let session = "", messageId = 0, rowId = 0;
-    const page = this.db.prepare(`SELECT t.rowid AS row_id, t.*,
-      COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', m.event_at), strftime('%Y-%m-%dT%H:%M:%fZ', m.created_at)) AS seen
-      FROM transcript_tool_calls t JOIN messages m ON m.message_id = t.message_id
-      WHERE (t.session_id, t.message_id, t.rowid) > (?, ?, ?)
-        AND NOT EXISTS (SELECT 1 FROM summarize_workers w WHERE w.session_id = t.session_id)
-      ORDER BY t.session_id, t.message_id, t.rowid LIMIT ?`);
+    const state = this.db.prepare("SELECT generation FROM tool_lesson_state WHERE singleton = 1").get() as { generation: number } | undefined;
+    const invalid = this.db.prepare("SELECT session_id FROM tool_lesson_invalid_sessions ORDER BY session_id LIMIT 1");
     while (true) {
-      const calls = page.all(session, messageId, rowId, BATCH_SIZE) as unknown as StoredCall[];
-      if (!calls.length) break;
-      for (const call of calls) derivation.add(call);
-      const last = calls[calls.length - 1];
-      session = last.session_id; messageId = last.message_id; rowId = last.row_id;
+      const session = invalid.get() as { session_id: string } | undefined;
+      if (!session) break;
+      await this.invalidateSession(session.session_id);
+    }
+
+    await this.refreshChanges(project);
+    const pending = this.db.prepare("SELECT pending FROM tool_lesson_progress WHERE singleton = 1").get()!.pending;
+    if (state && !pending && !this.db.prepare("SELECT 1 FROM tool_lesson_totals WHERE dirty = 1 LIMIT 1").get()) return 0;
+    await this.projection.publish((state?.generation ?? 0) + 1);
+    return Number(this.db.prepare("SELECT pair_count FROM tool_lesson_progress WHERE singleton = 1").get()!.pair_count);
+  }
+
+  private async refreshChanges(project: string): Promise<void> {
+    const changes = this.db.prepare("SELECT session_id, call_id FROM tool_lesson_changes ORDER BY session_id, call_id LIMIT ?");
+    const callById = this.db.prepare(CALL_SELECT + `
+      WHERE t.session_id = ? AND t.call_id = ?
+      AND NOT EXISTS (SELECT 1 FROM summarize_workers w WHERE w.session_id = t.session_id)`);
+    while (true) {
+      const page = changes.all(BATCH_SIZE) as { session_id: string; call_id: string }[];
+      if (!page.length) break;
+      for (const change of page) {
+        withLessonTransaction(this.db, () => {
+          const call = callById.get(change.session_id, change.call_id) as unknown as StoredCall | undefined;
+          if (call) this.updateCall(call, project);
+          this.db.prepare("DELETE FROM tool_lesson_changes WHERE session_id = ? AND call_id = ?").run(change.session_id, change.call_id);
+          this.db.prepare("UPDATE tool_lesson_progress SET pending = 1 WHERE singleton = 1").run();
+        });
+      }
       await yieldToEventLoop();
     }
-    const lessons = await derivation.finish();
-    await this.publish(lessons);
-    this.db.prepare("UPDATE tool_lesson_state SET calls_seen = ? WHERE singleton = 1").run(calls);
-    return derivation.pairCount;
   }
 
-  /** Changes whenever a call is added or removed, or a call's outcome resolves. */
-  private callsFingerprint(): string {
-    const row = this.db.prepare(`SELECT count(*) AS calls, COALESCE(max(rowid), 0) AS last,
-      COALESCE(sum(outcome <> 'unknown'), 0) AS resolved FROM transcript_tool_calls`).get() as { calls: number; last: number; resolved: number };
-    return `${row.calls}:${row.last}:${row.resolved}`;
+  private updateCall(call: StoredCall, project: string): void {
+    const shape = callShape(call);
+    this.projection.replaceContribution(call.row_id, "block-reason", { call, lesson: blockLesson(call, project) });
+    this.projection.replaceContribution(call.row_id, "environment-rule", { call, lesson: environmentLesson(call, project) });
+    this.projection.removeSuccess(call.row_id);
+    if (shape && call.outcome === "succeeded") {
+      this.projection.recordSuccess(call, shape);
+    }
+    // Insertion or resolution can change only this call and failures in its
+    // preceding window. Non-shell calls still consume positions in that window.
+    const previous = this.db.prepare(CALL_SELECT + `
+      WHERE t.session_id = ? AND (t.message_id, t.rowid) < (?, ?)
+      ORDER BY t.message_id DESC, t.rowid DESC LIMIT ?`)
+      .all(call.session_id, call.message_id, call.row_id, CALL_WINDOW) as unknown as StoredCall[];
+    for (const failure of [call, ...previous]) this.updatePair(failure, project);
   }
 
-  /** The calls fingerprint the published lessons were derived from. */
-  private publishedFingerprint(): string | null {
-    const row = this.db.prepare("SELECT calls_seen FROM tool_lesson_state WHERE singleton = 1").get() as { calls_seen: string | null } | undefined;
-    return row?.calls_seen ?? null;
+  private updatePair(call: StoredCall, project: string): void {
+    let pair: ToolLesson | undefined;
+    const shape = callShape(call);
+    if (shape && (call.outcome === "failed" || call.outcome === "blocked")) {
+      const window = this.db.prepare(CALL_SELECT + `
+        WHERE t.session_id = ? AND (t.message_id, t.rowid) > (?, ?)
+        ORDER BY t.message_id, t.rowid LIMIT ?`)
+        .all(call.session_id, call.message_id, call.row_id, CALL_WINDOW) as unknown as StoredCall[];
+      const success = window.find(next => next.outcome === "succeeded" && callShape(next) === shape);
+      if (success) {
+        pair = { ...newLesson("error-fix", call, project), shape,
+          failedCommand: call.input!, succeededCommand: success.input! };
+        observe(pair, call);
+        pair.lastSeen = pair.lastSeen > success.seen ? pair.lastSeen : success.seen;
+      }
+    }
+    this.projection.replaceContribution(call.row_id, "error-fix", { call, lesson: pair });
+  }
+
+  /** Only deletion/movement/exclusion replays a session, including pairs whose window shrank. */
+  private async invalidateSession(session: string): Promise<void> {
+    const evidence = this.db.prepare("SELECT call_row, kind FROM tool_lesson_contributions WHERE session_id = ? ORDER BY call_row, kind LIMIT ?");
+    while (true) {
+      const page = evidence.all(session, BATCH_SIZE) as { call_row: number; kind: ToolLesson["kind"] }[];
+      if (!page.length) break;
+      withLessonTransaction(this.db, () => { for (const row of page) this.projection.replaceContribution(row.call_row, row.kind); });
+      await yieldToEventLoop();
+    }
+    const successes = this.db.prepare("SELECT call_row FROM tool_lesson_successes WHERE session_id = ? ORDER BY call_row LIMIT ?");
+    while (true) {
+      const page = successes.all(session, BATCH_SIZE) as { call_row: number }[];
+      if (!page.length) break;
+      withLessonTransaction(this.db, () => { for (const row of page) this.projection.removeSuccess(row.call_row); });
+      await yieldToEventLoop();
+    }
+    withLessonTransaction(this.db, () => {
+      this.db.prepare("DELETE FROM tool_lesson_changes WHERE session_id = ?").run(session);
+      this.db.prepare(`INSERT OR IGNORE INTO tool_lesson_changes
+        SELECT session_id, call_id FROM transcript_tool_calls WHERE session_id = ?
+          AND NOT EXISTS (SELECT 1 FROM summarize_workers WHERE session_id = ?)`).run(session, session);
+      this.db.prepare("DELETE FROM tool_lesson_invalid_sessions WHERE session_id = ?").run(session);
+      this.db.prepare("UPDATE tool_lesson_progress SET pending = 1 WHERE singleton = 1").run();
+    });
   }
 
   list(options: { kind?: ToolLesson["kind"]; limit?: number; includeRetired?: boolean } = {}): ToolLesson[] {
-    return this.db.prepare(`SELECT data FROM tool_lessons
-      WHERE generation = (SELECT generation FROM tool_lesson_state WHERE singleton = 1)
-        ${options.includeRetired ? "" : "AND retired = 0"} AND (? IS NULL OR kind = ?)
-      ORDER BY last_seen DESC, lesson_key LIMIT ?`)
+    return this.db.prepare(`SELECT t.data FROM tool_lessons t
+      WHERE t.generation <= (SELECT generation FROM tool_lesson_state WHERE singleton = 1)
+        AND t.generation = (SELECT MAX(v.generation) FROM tool_lessons v WHERE v.lesson_key = t.lesson_key
+          AND v.generation <= (SELECT generation FROM tool_lesson_state WHERE singleton = 1))
+        AND t.kind <> 'deleted' ${options.includeRetired ? "" : "AND t.retired = 0"}
+        AND (? IS NULL OR t.kind = ?) ORDER BY t.last_seen DESC, t.lesson_key LIMIT ?`)
       .all(options.kind ?? null, options.kind ?? null, options.limit ?? -1)
       .map(row => JSON.parse(row.data as string) as ToolLesson);
   }
 
-  private async publish(lessons: ReadonlyMap<string, ToolLesson>): Promise<void> {
-    const generation = Number((this.db.prepare("SELECT MAX(COALESCE((SELECT MAX(generation) FROM tool_lessons), 0), COALESCE((SELECT generation FROM tool_lesson_state WHERE singleton = 1), 0)) + 1 AS next").get()!).next);
-    const insert = this.db.prepare("INSERT INTO tool_lessons (generation, lesson_key, kind, retired, last_seen, data) VALUES (?, ?, ?, ?, ?, ?)");
-    let written = 0;
-    for (const [key, lesson] of lessons) {
-      insert.run(generation, key, lesson.kind, Number(lesson.retired), lesson.lastSeen, JSON.stringify(lesson));
-      if (++written % BATCH_SIZE === 0) await yieldToEventLoop();
-    }
-    this.db.prepare("INSERT INTO tool_lesson_state (singleton, generation) VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET generation = excluded.generation").run(generation);
-    const cleanup = this.db.prepare("DELETE FROM tool_lessons WHERE rowid IN (SELECT rowid FROM tool_lessons WHERE generation < ? LIMIT ?)");
-    while (cleanup.run(generation, BATCH_SIZE).changes) await yieldToEventLoop();
-  }
 }

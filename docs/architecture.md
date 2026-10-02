@@ -62,9 +62,12 @@ tool, excluded from shell classification and Claude's shell-only refusal rule;
 Deterministic shell lessons are derived into `tool_lessons`, published through
 `tool_lesson_state` generations. They retain counts and dates without confidence
 scores, independently of promoted memory. See [Passive Learning](passive-learning.md#deterministic-tool-lessons)
-for shapes, pairing, masking and retirement. Refreshes use bounded pages that yield
-at promotion boundaries; immediate per-tool promotion skips them, and restore
-only reads the published snapshot.
+for shapes, pairing, masking and retirement. A transactional call-change journal
+drives incremental refreshes at promotion boundaries. Persisted per-call contributions
+and indexed success evidence update only affected lesson versions; removing a call
+re-derives its session. Bounded pages yield between updates, and one generation
+switch publishes the complete result. Immediate per-tool promotion skips refresh,
+and restore only reads the published snapshot.
 
 Capture records new calls and updates prior outcomes in the same transaction
 as its message delta and checkpoint. Worker sessions are excluded by the same

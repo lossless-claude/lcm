@@ -115,7 +115,7 @@ it("previews Claude rebuild on an unmigrated read-only store without modifying i
   const legacy = new DatabaseSync(projectDbPath(dir, paths));
   runLcmMigrations(legacy, { claudeProjectsDir: dir });
   await new SessionCapture(legacy, "project", new ScrubEngine([], [])).write({ sessionId: "session", messages: [{ role: "user", content: "first", tokenCount: 1 }] });
-  legacy.exec("ALTER TABLE messages DROP COLUMN event_at; ALTER TABLE conversations DROP COLUMN parser_shape");
+  legacy.exec("DROP TRIGGER tool_lesson_message_time; ALTER TABLE messages DROP COLUMN event_at; ALTER TABLE conversations DROP COLUMN parser_shape");
   const schema = legacy.prepare("SELECT type, name, sql FROM sqlite_master ORDER BY type, name").all();
   legacy.close();
   const transcripts = join(dir, "transcripts");
@@ -134,7 +134,7 @@ it.each(["codex", "omp"] as const)("previews %s cut-row repair on an unmigrated 
   const legacy = new DatabaseSync(dbPath);
   runLcmMigrations(legacy, { claudeProjectsDir: dir });
   await new SessionCapture(legacy, "project", new ScrubEngine([], [])).write({ sessionId: "session", messages: [{ role: "user", content: "before", tokenCount: 1 }] });
-  legacy.exec("ALTER TABLE messages DROP COLUMN event_at"); legacy.close();
+  legacy.exec("DROP TRIGGER tool_lesson_message_time; ALTER TABLE messages DROP COLUMN event_at"); legacy.close();
   const path = join(dir, "session.jsonl");
   const entries = client === "codex" ? [{ type: "session_meta", payload: { id: "session", cwd: dir } },
     { type: "response_item", timestamp: at, payload: { type: "message", role: "user", content: "before\u0000after" } }]

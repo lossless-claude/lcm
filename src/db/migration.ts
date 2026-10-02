@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { getLcmDbFeatures } from "./features.js";
 import { ensureTranscriptCursorTable } from "./transcript-cursor.js";
+import { ensureToolLessonIncrementalSchema } from "./tool-lesson-schema.js";
 import { installProjectTimeline } from "./project-timeline.js";
 import { walkSubagentTranscripts } from "../subagent-attribution.js";
 import { extractCommandParts, type MessagePart } from "../transcript.js";
@@ -1101,6 +1102,7 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
     last_activity TEXT NOT NULL DEFAULT (datetime('now'))
   );`);
   const workerColumns = db.prepare("PRAGMA table_info(summarize_workers)").all() as Array<{ name: string }>;
+  ensureToolLessonIncrementalSchema(db);
   if (!workerColumns.some(column => column.name === "exclusion_reason")) {
     db.exec("ALTER TABLE summarize_workers ADD COLUMN exclusion_reason TEXT");
   }
