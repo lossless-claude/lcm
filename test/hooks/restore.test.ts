@@ -158,6 +158,16 @@ describe("handleSessionStart", () => {
     expect(result.stdout).toContain("</learned-insights>");
   });
 
+  it("renders deterministic lessons without a confidence label", async () => {
+    mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
+    const client = { health: vi.fn(), post: vi.fn().mockResolvedValue({
+      context: "ctx", insights: [{ content: "Observed fix; 2 occurrences; first seen Jan 1; last seen Jan 2", tags: ["source:tool-calls"] }],
+    }) };
+    const result = await handleSessionStart(JSON.stringify({ session_id: sid("lessons") }), client as any, paths);
+    expect(result.stdout).toContain("2 occurrences");
+    expect(result.stdout).not.toContain("confidence");
+  });
+
   it("omits learned-insights block when daemon returns no insights", async () => {
     mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
     const client = {

@@ -966,6 +966,19 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
     PRIMARY KEY(session_id, call_id)
   );
   CREATE INDEX IF NOT EXISTS transcript_tool_calls_message_idx ON transcript_tool_calls(message_id);`);
+  const callColumns = db.prepare("PRAGMA table_info(transcript_tool_calls)").all() as SummaryColumnInfo[];
+  if (!callColumns.some(column => column.name === "block_reason")) db.exec("ALTER TABLE transcript_tool_calls ADD COLUMN block_reason TEXT");
+  db.exec(`CREATE INDEX IF NOT EXISTS transcript_tool_calls_session_message_idx ON transcript_tool_calls(session_id, message_id);
+    CREATE TABLE IF NOT EXISTS tool_lesson_state (
+      singleton INTEGER PRIMARY KEY CHECK(singleton = 1), generation INTEGER NOT NULL, calls_seen TEXT
+    );
+    CREATE TABLE IF NOT EXISTS tool_lessons (
+      generation INTEGER NOT NULL, lesson_key TEXT NOT NULL,
+      kind TEXT NOT NULL, retired INTEGER NOT NULL DEFAULT 0,
+      last_seen TEXT NOT NULL, data TEXT NOT NULL,
+      PRIMARY KEY(generation, lesson_key)
+    );
+    CREATE INDEX IF NOT EXISTS tool_lessons_recent_idx ON tool_lessons(generation, retired, last_seen DESC, lesson_key);`);
   db.exec(`CREATE TABLE IF NOT EXISTS session_web_urls (
     session_id TEXT NOT NULL, url TEXT NOT NULL, PRIMARY KEY(session_id, url)
   );

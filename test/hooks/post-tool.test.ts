@@ -110,7 +110,7 @@ describe("handlePostToolUse", () => {
       tool_input: { questions: [{ question: "Which db?" }] },
       tool_response: "postgres",
     }), paths);
-    expect(firePromoteEventsRequest).toHaveBeenCalledWith(4242, expect.objectContaining({ cwd: expect.any(String) }), expect.anything());
+    expect(firePromoteEventsRequest).toHaveBeenCalledWith(4242, expect.objectContaining({ cwd: expect.any(String), skip_tool_lessons: true }), expect.anything());
   });
 
   it("labels PostToolUseFailure events with their real source hook", async () => {

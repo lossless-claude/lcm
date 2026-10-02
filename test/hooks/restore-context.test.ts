@@ -58,6 +58,15 @@ describe("function-hook restore context", () => {
     expect(block.text).toContain("- prefers pnpm (confidence: 0.8)");
   });
 
+  it("renders deterministic lessons without a confidence label", async () => {
+    const { fire } = await start({ context: "ctx", insights: [
+      { content: "Observed fix; 2 occurrences; first seen Jan 1; last seen Jan 2", tags: ["source:tool-calls"] },
+    ] });
+    const text = (await fire()).blocks.at(-1).text;
+    expect(text).toContain("2 occurrences");
+    expect(text).not.toContain("confidence");
+  });
+
   it("adds no block when the daemon has nothing to restore", async () => {
     const { fire } = await start({ context: "" });
     expect((await fire()).blocks).toEqual(coreBlocks);

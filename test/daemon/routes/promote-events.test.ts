@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
@@ -11,6 +11,9 @@ import { extractUserPromptEvents } from "../../../src/hooks/extractors.js";
 import { runLcmMigrations } from "../../../src/db/migration.js";
 import type { DaemonConfig } from "../../../src/daemon/config.js";
 import { lcmHome } from "../../../src/lcm-home.js";
+import { SessionCapture } from "../../../src/capture.js";
+import { ScrubEngine } from "../../../src/scrub.js";
+import { ToolLessonStore } from "../../../src/promotion/tool-lessons.js";
 import { createLcmPaths } from "../../../src/lcm-paths.js";
 
 const paths = createLcmPaths(lcmHome());
@@ -151,7 +154,7 @@ describe("promote-events route", () => {
     ]);
   });
 
-  it("correlates error→fix pairs within session", async () => {
+  it("never correlates sidecar errors without stored success evidence", async () => {
     const edb = new EventsDb(sidecarPath);
     edb.insertEvent("s1", { type: "error_tool", category: "error", data: "Bash error: npm install", priority: 1 }, "PostToolUse");
     edb.insertEvent("s1", { type: "env_install", category: "env", data: "npm install --legacy-peer-deps", priority: 2 }, "PostToolUse");
@@ -167,7 +170,32 @@ describe("promote-events route", () => {
     const result = getBody();
     // Both events should be promoted
     expect(result.promoted).toBeGreaterThanOrEqual(2);
-    expect(result.correlated).toBeGreaterThanOrEqual(1);
+    expect(result.correlated).toBe(0);
+  });
+
+  it.each([false, true])("refreshes stored-call lessons outside per-tool promotions (skip: %s)", async skipToolLessons => {
+    const db = setupProjectDb(dir);
+    const transcriptPath = join(dir, "session.jsonl");
+    writeFileSync(transcriptPath, [
+      { message: { role: "assistant", content: [{ type: "tool_use", id: "failure", name: "Bash", input: { command: "git diff --stat old.ts" } }] } },
+      { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "failure", is_error: true, content: "Exit code 1\nfailed" }] } },
+      { message: { role: "assistant", content: [{ type: "tool_use", id: "success", name: "Bash", input: { command: "git diff --stat new.ts" } }] } },
+      { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "success", is_error: false, content: "done" }] } },
+    ].map(record => JSON.stringify(record) + "\n").join(""));
+    await new SessionCapture(db, projectId(dir), new ScrubEngine([], []))
+      .captureTranscript({ cwd: dir, transcriptPath, sessionId: "session" });
+    db.close();
+
+    const { res, getBody } = mockRes();
+    await createPromoteEventsHandler(makeConfig(), paths)({} as any, res, JSON.stringify({ cwd: dir, skip_tool_lessons: skipToolLessons }));
+    expect(getBody().correlated).toBe(skipToolLessons ? 0 : 1);
+    const refreshed = setupProjectDb(dir);
+    try {
+      expect(new ToolLessonStore(refreshed).list()).toEqual(skipToolLessons ? [] : [expect.objectContaining({
+        kind: "error-fix", failedCommand: "git diff --stat old.ts", succeededCommand: "git diff --stat new.ts",
+      })]);
+    } finally { refreshed.close(); }
+    expect(deduplicateAndInsert).not.toHaveBeenCalled();
   });
 
   it.each([false, true])("never promotes repeated prompt intents (existing memories: %s)", async (seedMemories) => {
