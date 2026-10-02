@@ -33,11 +33,12 @@ to the original call, including when the result arrives in later incremental byt
 Parsers carry this structure separately; message role, content, token count,
 parser stamps and byte-cursor versions are unchanged.
 
-The call retains its name and selected input: shell commands; file-write paths
+The call retains its name and selected input: shell commands; Codex `exec` raw
+script text; file-write paths
 and original input byte size; Read/Grep/Glob paths, patterns and range flags;
 MCP input JSON; Agent/Task types and descriptions. File bodies, edit replacement
 text and subagent prompts are never retained in call input. Capture applies its
-own `ScrubEngine` before storage. Shell commands and MCP JSON are capped at
+own `ScrubEngine` before storage. Shell commands, `exec` scripts and MCP JSON are capped at
 2048 UTF-8 bytes, including a `[truncated]` suffix; `truncated` also records the cap.
 
 Each call has an `outcome`: `succeeded`, `failed`, `blocked`, `denied`,
@@ -51,6 +52,12 @@ for a shell command, which reports an exit code whenever it ran; for any other
 tool it stays unknown, since the tool may have run and failed.
 Codex and OMP use only exposed status text or result metadata; an unclassified
 error flag alone cannot distinguish execution failure from a refusal.
+Codex script results use their first line: `Script completed` means succeeded,
+`Script failed` means failed, `aborted by user` means interrupted, and
+`Script running with cell ID N` stays unknown. These script statuses take
+precedence over shell exit codes printed within the output. `exec` is a script
+tool, excluded from shell classification and Claude's shell-only refusal rule;
+`exec_command` and the other shell tools retain their command behaviour.
 
 Deterministic shell lessons are derived into `tool_lessons`, published through
 `tool_lesson_state` generations. They retain counts and dates without confidence
@@ -61,7 +68,8 @@ only reads the published snapshot.
 
 Capture records new calls and updates prior outcomes in the same transaction
 as its message delta and checkpoint. Worker sessions are excluded by the same
-gate as messages. `lcm import --backfill-event-times` also fills calls for
+gate as messages. `lcm import --backfill-event-times` also fills calls and
+re-derives existing calls' selected inputs and outcomes for
 verified existing message positions, even when their timestamps are known,
 without changing their content or capturing a new tail. Unknown positions
 establish no call. Repair pages contain at most 256 messages and yield between

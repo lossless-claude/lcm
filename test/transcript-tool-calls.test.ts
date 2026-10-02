@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseClaudeTranscriptRecord, estimateTokens } from "../src/transcript.js";
 import { parseCodexTranscriptRecord } from "../src/codex-transcript.js";
 import { parseOmpTranscriptRecord, selectOmpLiveSegments } from "../src/omp-transcript.js";
+import { SHELL_TOOLS } from "../src/tool-calls.js";
 
 const parsers = {
   claude(name: string, input: unknown) {
@@ -56,6 +57,19 @@ it("Codex custom apply_patch keeps paths and byte size, including a move, withou
   expect(record.toolCalls?.[0]).toMatchObject({ input: '{"paths":["a.ts","b.ts","c.ts","d.ts"]}', inputBytes: Buffer.byteLength(input) });
 });
 
+it.each(["exec", "functions.exec"])("Codex custom %s retains its raw script input", name => {
+  const input = "text(await tools.example({ query: 'example' }));\ntext('done');";
+  const record = parseCodexTranscriptRecord(JSON.stringify({ type: "response_item", payload: {
+    type: "custom_tool_call", call_id: "script", name, input,
+  } }));
+  expect(record.toolCalls?.[0]).toMatchObject({ callId: "script", name, input, inputLimit: 2048 });
+});
+
+it("exec scripts are excluded from shell classification while command tools stay shell-shaped", () => {
+  expect(SHELL_TOOLS).not.toContain("exec");
+  expect(SHELL_TOOLS).toEqual(expect.arrayContaining(["bash", "exec_command", "shell", "shell_command"]));
+});
+
 const claudeResult = (output: string, is_error?: boolean) => parseClaudeTranscriptRecord(JSON.stringify({
   message: { role: "user", content: [{ type: "tool_result", tool_use_id: "call", content: output, ...(is_error === undefined ? {} : { is_error }) }] },
 })).toolCalls?.[0];
@@ -87,6 +101,31 @@ it.each([
 ])("Codex classifies exposed output: %s", (output, outcome, exitCode) => {
   const record = parseCodexTranscriptRecord(JSON.stringify({ type: "response_item", payload: { type: "function_call_output", call_id: "call", output } }));
   expect(record.toolCalls?.[0]).toMatchObject({ outcome, exitCode, harnessError: null });
+});
+
+it.each([
+  ["Script completed", "succeeded"],
+  ["Script failed", "failed"],
+  ["aborted by user after 4s", "interrupted"],
+  ["Script running with cell ID 18", "unknown"],
+  ["Script completed\nProcess exited with code 9", "succeeded"],
+  ["Script failed\nProcess exited with code 0", "failed"],
+  ["aborted by user after 4s\nProcess exited with code 0", "interrupted"],
+  ["Script running with cell ID 18\nProcess exited with code 0", "unknown"],
+  ["output\nScript completed", "unknown"],
+  ["output\nScript failed", "unknown"],
+])("Codex script outcome comes from its first line: %s", (output, outcome) => {
+  const record = parseCodexTranscriptRecord(JSON.stringify({ type: "response_item", payload: {
+    type: "custom_tool_call_output", call_id: "script", output,
+  } }));
+  expect(record.toolCalls?.[0]).toMatchObject({ outcome, exitCode: null, harnessError: null });
+});
+
+it("a running Codex script stays unknown even with a non-error flag", () => {
+  const record = parseCodexTranscriptRecord(JSON.stringify({ type: "response_item", payload: {
+    type: "custom_tool_call_output", call_id: "script", output: "Script running with cell ID 18", is_error: false,
+  } }));
+  expect(record.toolCalls?.[0]).toMatchObject({ outcome: "unknown", exitCode: null, harnessError: false });
 });
 
 it.each([

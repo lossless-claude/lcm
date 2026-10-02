@@ -47,6 +47,39 @@ describe("tool-call capture and repair", () => {
   const calls = () => db.prepare("SELECT * FROM transcript_tool_calls ORDER BY call_id").all() as Array<Record<string, unknown>>;
   const input = (client: Client) => ({ cwd: dir, transcriptPath: path, sessionId: "session", client });
 
+  it.each([
+    ["Script completed", "succeeded"],
+    ["Script failed", "failed"],
+    ["aborted by user after 4s", "interrupted"],
+    ["Script running with cell ID 18", "unknown"],
+  ])("captures a raw exec script and its later %s result", async (output, outcome) => {
+    const script = "text('SECRET_EXAMPLE');\ntext(await tools.example());";
+    writeFileSync(path, fixture("codex", dir).header + line({ type: "response_item", payload: {
+      type: "custom_tool_call", call_id: "script", name: "exec", input: script,
+    } }));
+    const first = await capture.captureTranscript(input("codex"));
+    expect(calls()[0]).toMatchObject({ name: "exec", input: "text('[REDACTED]');\ntext(await tools.example());", truncated: 0, outcome: "unknown" });
+    appendFileSync(path, line({ type: "response_item", payload: { type: "custom_tool_call_output", call_id: "script", output } }));
+    await capture.captureTranscript(input("codex"));
+    expect(calls()).toHaveLength(1);
+    expect(calls()[0]).toMatchObject({ message_id: first!.records[0].messageId, outcome, exit_code: null, harness_error: null });
+  });
+
+  it("scrubs exec scripts before the UTF-8 2 KB cap and marks truncation", async () => {
+    writeFileSync(path, fixture("codex", dir).header + line({ type: "response_item", payload: {
+      type: "custom_tool_call", call_id: "script", name: "exec", input: "text('SECRET_EXAMPLE');\n" + "界".repeat(1200),
+    } }));
+    await capture.captureTranscript(input("codex"));
+    const call = calls()[0];
+    expect(call.input).toContain("text('[REDACTED]');\n");
+    expect(call.input).not.toContain("SECRET_EXAMPLE");
+    expect(call.input).not.toContain("�");
+    expect(Buffer.byteLength(String(call.input))).toBeLessThanOrEqual(2048);
+    expect(call.input).toMatch(/\[truncated\]$/);
+    expect(call.truncated).toBe(1);
+    expect(db.prepare("SELECT content FROM messages").get()).toEqual({ content: "exec" });
+  });
+
   it.each(["claude", "codex", "omp"] as const)("updates a %s call when its result arrives in later bytes, without changing message rows", async client => {
     const f = fixture(client, dir);
     writeFileSync(path, f.header + line(f.call));
@@ -92,6 +125,35 @@ describe("tool-call capture and repair", () => {
     expect(db.prepare("SELECT * FROM messages ORDER BY message_id").all()).toEqual(before);
     await backfillSessionEventTimes(db, input(client), scrubber);
     expect(calls()).toHaveLength(1);
+  });
+
+  it("backfill repairs an existing exec call's missing input and unknown outcome without changing messages", async () => {
+    const script = "text('backfilledscript SECRET_EXAMPLE');\n" + "界".repeat(1200);
+    const header = fixture("codex", dir).header;
+    writeFileSync(path, header + line({ type: "response_item", payload: {
+      type: "custom_tool_call", call_id: "script", name: "exec", input: script,
+    } }) + line({ type: "response_item", payload: {
+      type: "custom_tool_call_output", call_id: "script", output: "Script failed\nProcess exited with code 0",
+    } }));
+    await capture.write({ sessionId: "session", messages: parseCodexTranscript(path)
+      .map(message => ({ ...message, eventAt: "2026-01-01T00:00:00Z" })) });
+    const before = db.prepare("SELECT * FROM messages ORDER BY message_id").all();
+    db.prepare("INSERT INTO transcript_tool_calls (session_id, call_id, message_id, name) VALUES (?, ?, ?, ?)")
+      .run("session", "script", before[0].message_id, "exec");
+    expect(calls()[0]).toMatchObject({ input: null, outcome: "unknown" });
+
+    await backfillSessionEventTimes(db, input("codex"), scrubber);
+    const repaired = calls()[0];
+    expect(repaired).toMatchObject({ outcome: "failed", exit_code: null, harness_error: null, truncated: 1 });
+    expect(repaired.input).toContain("text('backfilledscript [REDACTED]');\n");
+    expect(repaired.input).not.toContain("SECRET_EXAMPLE");
+    expect(repaired.input).not.toContain("�");
+    expect(repaired.input).toMatch(/\[truncated\]$/);
+    expect(Buffer.byteLength(String(repaired.input))).toBeLessThanOrEqual(2048);
+    expect(capture.conversationStore.searchMessagesSync({ query: "backfilledscript", mode: "full_text" })).toHaveLength(1);
+    expect(db.prepare("SELECT * FROM messages ORDER BY message_id").all()).toEqual(before);
+    await backfillSessionEventTimes(db, input("codex"), scrubber);
+    expect(calls()).toEqual([repaired]);
   });
 
   it("does not attribute an unaligned historical call to an unrelated stored message", async () => {
@@ -168,10 +230,12 @@ describe("tool-call capture and repair", () => {
       { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "shell", is_error: true, content: refusal }] } },
       { message: { role: "assistant", content: [{ type: "tool_use", id: "read", name: "Read", input: { file_path: "missing.ts" } }] } },
       { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "read", is_error: true, content: "File does not exist." }] } },
+      { message: { role: "assistant", content: [{ type: "tool_use", id: "script", name: "exec", input: "text('example');" }] } },
+      { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "script", is_error: true, content: refusal }] } },
     ].map(line).join(""));
     await capture.captureTranscript(input("claude"));
     expect(Object.fromEntries(calls().map(call => [call.call_id, [call.outcome, call.harness_error]])))
-      .toEqual({ shell: ["blocked", 1], read: ["unknown", 1] });
+      .toEqual({ shell: ["blocked", 1], read: ["unknown", 1], script: ["unknown", 1] });
   });
 
   it("a cut-content repair keeps the message's call inputs searchable", async () => {

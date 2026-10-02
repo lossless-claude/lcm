@@ -8,7 +8,7 @@ export interface TranscriptToolCall {
   name?: string;
   input?: string;
   inputBytes?: number;
-  /** Only shell commands and MCP JSON have a byte budget. */
+  /** Shell commands, exec scripts and MCP JSON have a byte budget. */
   inputLimit?: number;
   message?: ParsedMessage;
   outcome: ToolOutcome;
@@ -25,7 +25,7 @@ export interface TranscriptToolCall {
 }
 
 /** Tool names, lowercased and without a `functions.` prefix, that run a shell command. */
-export const SHELL_TOOLS = ["bash", "exec", "exec_command", "shell", "shell_command"];
+export const SHELL_TOOLS = ["bash", "exec_command", "shell", "shell_command"];
 
 /** Claude's own refusal texts: a hook, the permission classifier, or a harness rule. */
 const CLAUDE_BLOCK_EVIDENCE = /^(?:PreToolUse:\S+ hook error:|Permission for this action was denied|The server-side auto mode classifier gave no verdict|<tool_use_error>Blocked:)/;
@@ -48,6 +48,7 @@ const READ_FIELDS = new Set([
 /** Select before scrubbing; file bodies and subagent prompts never enter stored input. */
 export function transcriptToolInput(name: string, input: unknown): Pick<TranscriptToolCall, "input" | "inputBytes" | "inputLimit"> {
   const tool = name.replace(/^functions\./, "").toLowerCase();
+  if (tool === "exec" && typeof input === "string") return { input, inputLimit: INPUT_LIMIT_BYTES };
   const object = inputObject(input);
   if (SHELL_TOOLS.includes(tool)) {
     const command = object.command ?? object.cmd;
@@ -114,14 +115,25 @@ function ompOutcome(evidence: ResultEvidence): ToolOutcome | undefined {
   return undefined;
 }
 
+function codexScriptOutcome(output: string): ToolOutcome | undefined {
+  if (/^Script completed(?:\r?\n|$)/.test(output)) return "succeeded";
+  if (/^Script failed(?:\r?\n|$)/.test(output)) return "failed";
+  if (/^aborted by user\b/.test(output)) return "interrupted";
+  if (/^Script running with cell ID \S+/.test(output)) return "unknown";
+  return undefined;
+}
+
 /** Classify only harness evidence; no result or missing status never implies success. */
 export function transcriptToolResult(callId: string, client: "claude" | "codex" | "omp", evidence: ResultEvidence): TranscriptToolCall {
   const { output, error } = evidence;
-  const exitCode = resultExitCode(client, evidence);
+  const script = client === "codex" ? codexScriptOutcome(output) : undefined;
+  // A script's output may contain statuses from nested shell calls.
+  const exitCode = script === undefined ? resultExitCode(client, evidence) : null;
   let outcome: ToolOutcome = "unknown";
   let shellOutcome: ToolOutcome | undefined;
   const omp = client === "omp" ? ompOutcome(evidence) : undefined;
-  if (omp !== undefined) outcome = omp;
+  if (script !== undefined) outcome = script;
+  else if (omp !== undefined) outcome = omp;
   else if (exitCode !== null) outcome = exitCode === 0 ? "succeeded" : "failed";
   else if (client === "claude") {
     if (/^\[Request interrupted by user/.test(output)) outcome = "interrupted";
