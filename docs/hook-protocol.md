@@ -30,6 +30,61 @@ Invoked by Claude Code before it runs its built-in compaction. The daemon attemp
 
 **Response:** Exit code `0`. Summary text on stdout when the daemon compacted; empty stdout to defer.
 
+### Complete compaction context
+
+`POST /compact` can return a complete conversation window after Capture and a summary sweep.
+This opt-in daemon contract does not change the command hook's stdout or replace the harness's messages.
+Send `client: "claude"`, `capture_required: true`, `render_context: true`,
+`capture_through_uuid` (the engine's last model-visible append UUID), and
+`context_budget_bytes` (a positive integer up to 65536). `skip_ingest` is incompatible.
+The captured file must be verified through that UUID and fully consumed; an incomplete
+trailing record, unverified legacy prefix or absent boundary leaves the context unavailable.
+
+Every parsed request with `render_context: true` receives one `contextWindow` from
+the typed reply constructor. Non-ready statuses distinguish `excluded`,
+`no-summarizer`, `summary-failed`, `deadline`, `boundary-scan-limit`,
+`capture-unverified`, `coverage-unverified`, `busy`, `empty`, `over-budget`, and
+`invalid-request`. A successful Capture followed by a provider error reports
+`summary-failed`; it does not invalidate the Capture result. Deadline expiry is a
+warning-level outcome with the `deadline` observation code, including expiry while
+reading the transcript. Cancellation and response ownership are separate: only an
+actual response suppresses another reply.
+
+A UUID behind the capture cursor is searched only in the last 1 MiB of the consumed
+prefix. If that bounded window cannot establish the boundary, the daemon returns
+`boundary-scan-limit` and no installable text. It does not scan unbounded history
+while holding the project's mutation lease.
+
+The additive `contextWindow` response identifies version 1, session and conversation,
+byte budget, all captured source-message ids, rendered raw-message ids, each rendered
+active summary's recursive source ids, and any uncovered source ids. A `ready` result
+also contains fenced `text` and its UTF-8 `bytes`. Empty, busy, excluded, unverified
+Capture or coverage, and over-budget results contain no installable text. A partial
+window is never returned as ready. Every source message must be represented by a
+whole raw item or the lineage of a rendered active summary; overlap with a retained
+engine tail is allowed.
+
+The text uses `<lcm-compaction-context version="1">` around a
+`<recent-session-context>` block. Each summary begins `Summary [sum_…]:`;
+raw messages retain their speaker labels. The exact generated envelope is a control
+row: Capture skips it, preserving the original source messages and cursor counts,
+so repeated compactions cannot capture nested copies of the generated context.
+Quoted or embedded marker text remains ordinary message content.
+
+`instructions` is an optional string of at most 50000 characters. The daemon scrubs
+it with the project's rules and forwards it as operator directions to every leaf,
+condensed, aggressive and fallback-provider prompt for this request. Existing
+summaries are not rewritten solely to apply new directions. Invalid instruction
+values are rejected with HTTP 400.
+
+Rendered requests additionally choose `compaction_summary_model`: `pool` (default), `haiku`, `sonnet` or `session`. Non-pool choices require `summary_via_requester: true`
+and a matching `requester_session_id`; `pool` uses the configured chain without
+requester jobs. An `operation_id` attributes jobs and hook outcomes. The daemon's
+`compaction.hookDeadlineMs` safety deadline applies to the whole rendered request;
+expiry returns HTTP 408 with `contextWindow.status: "deadline"`. Summary work has one
+owner under the existing session guard and project queue: concurrent same-session
+sweeps wait or receive busy/skip instead of selecting the same source range.
+
 ### OMP pre-compaction and shutdown
 
 OMP's `session_before_compact` callback awaits `/ingest` to confirm Capture, then submits an unawaited `/compact` request with `precompact_verified: true`. If another operation occupies the project's compaction queue, the daemon records a busy summary skip instead of running that summary after the native compaction window. It checks again immediately before enqueue because summarizer setup can await. OMP returns control to native compaction regardless of lcm's outcome. Its `session_shutdown` callback forces the final local observation snapshot after recording the capture attempt, even when a snapshot was written recently; `lcm doctor -v` reads that evidence when storage succeeds.

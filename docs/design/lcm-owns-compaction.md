@@ -24,7 +24,7 @@ From the mods reference ([events](https://code.claude.com/docs/en/plugins/mods/r
 1. **The module answers `manual`, `auto` and `plugin` for the main conversation.** It does not call `next`, so Claude Code's summarizer does not run. `precompute` and `agentId` are later steps (see [Out of scope](#out-of-scope-for-the-first-cut)).
 2. **Capture first, as today.** The answer is built only from a conversation whose transcript the daemon has captured up to the compaction; a failed or unverified Capture means no answer.
 3. **No gap, duplication allowed.** Every message the engine drops is covered by a summary in the answer or kept in the tail. A message both summarized and kept costs tokens; a message in neither is lost to the model. When the two cannot be aligned, keep more, never less.
-4. **The daemon renders, the module keeps.** The daemon returns the conversation's context window as text: `SummaryStore.readContextWindow`, the reader Codex restore already uses, fitted to a budget. Its items are summaries and the daemon's own unsummarized messages, and both ride in the text; an unsummarized message is never dropped because the engine tail may also hold it (decision 3). The module builds one `user` message from that text and appends the tail from `e.messages`, with handles, starting at a clean boundary: a user message that is not a tool result, so no `tool_use` loses its `tool_result`.
+4. **The daemon renders, the module keeps.** The daemon returns the conversation's context window as text: `SummaryStore.readContextWindow`, the reader Codex restore already uses, checked against a strict byte budget. The complete window is rejected when it exceeds that budget; restore's fit-by-dropping rule never applies. Its items are summaries and the daemon's own unsummarized messages, and both ride in the text; an unsummarized message is never dropped because the engine tail may also hold it (decision 3). The module builds one `user` message from that text and appends the tail from `e.messages`, with handles, starting at a clean boundary: a user message that is not a tool result, so no `tool_use` loses its `tool_result`.
 5. **Anything short of a clean answer falls back to `next(e)`.** Claude Code then compacts as it does today. The cases: the daemon is unreachable, busy or over budget; the context is empty; the tail cannot be cut cleanly; or a captured message older than the engine tail is covered by neither a summary nor a rendered item. That last check enforces decision 3. A compaction never fails because lcm could not answer.
 6. **`/compact` instructions reach lcm.** `instructions` is passed to the daemon, which can steer the summaries it writes for this compaction.
 
@@ -32,13 +32,19 @@ From the mods reference ([events](https://code.claude.com/docs/en/plugins/mods/r
 
 ### Module (`hooks/lcm-hooks.ts`)
 
-- `on("session.compact", hook)`: skip `precompute` and any `agentId` with `next(e)`. Otherwise POST `/compact` for the session with `capture_required: true`, `instructions`, and a request for the rendered context; on a clean answer, return `{ messages: [contextMessage, ...tail] }`.
+- `on("session.compact", hook)`: skip `precompute` and any `agentId` with `next(e)`. Otherwise POST `/compact` for the session with `capture_required: true`, `instructions`, a UUID capture boundary, and a strict rendered-context budget; on a clean answer, return `{ messages: [contextMessage, ...tail] }`.
 - The tail is the last `freshTailCount` engine messages (default 8, `LCM_FRESH_TAIL_COUNT`), extended backwards to the nearest clean boundary.
 - When the hook answers, the PreCompact command hook does not run, so the hook does the Capture and summarization PreCompact did. When it falls back with `next(e)`, PreCompact runs as today. A fallback after the hook's own `/compact` must leave PreCompact's request no work to repeat; the implementation tests that.
 
+Leaf and condensed summaries default to the configured pipeline (`pool`), preserving
+its cost profile. A later PR adds a separate working-state header with Sonnet as its
+default; presenting that header does not regenerate stored history.
+
 ### Daemon (`POST /compact`)
 
-- One more response field: the conversation's context window, rendered and fenced as restore renders summaries, with each summary's id in the text.
+- One response field, `contextWindow`, on every rendered request: the complete conversation window, rendered and fenced with each summary's id, or a typed non-ready outcome. A window over the byte budget is rejected, never trimmed or truncated.
+- Capture is verified through the UUID boundary before the real summary sweep. `compaction_summary_model` defaults to `pool`, preserving the configured pipeline; `haiku`, `sonnet` and `session` opt into requester jobs. Sonnet writes every node only when explicitly selected.
+- Replies distinguish exclusions, missing summarizer, provider failure, deadline and a bounded boundary-scan failure; deadlines have their own warning/observation code.
 - It reports which captured messages its summaries cover, so the module can check decision 3 against the tail it keeps.
 
 ## How Claude Code 2.1.287 handles an answer

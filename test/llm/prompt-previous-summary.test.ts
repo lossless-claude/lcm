@@ -7,6 +7,14 @@ import { buildSummaryPrompt, buildSummaryPromptWithSystem } from "../../src/llm/
  * rendered into the prompt (#380).
  */
 describe("buildSummaryPrompt carries the previous chunk's summary", () => {
+  it.each([
+    [false, false, 0], [true, false, 0], [false, true, 1], [false, true, 2], [false, true, 3],
+  ])("forwards operator instructions (aggressive=%s, condensed=%s, depth=%s)", (aggressive, isCondensed, depth) => {
+    const prompt = buildSummaryPrompt("source", aggressive as boolean, {
+      isCondensed: isCondensed as boolean, depth: depth as number, customInstructions: "Keep the migration rationale.",
+    });
+    expect(prompt).toContain("Operator instructions:\nKeep the migration rationale.");
+  });
   const PREVIOUS = "Earlier the user chose SQLite over Postgres for the event store.";
 
   /** The block the leaf template fills with the previous summary, or "(none)". */

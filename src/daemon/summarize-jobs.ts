@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { SummarizeContext } from "../llm/types.js";
+import { validSessionSummaryProviderId, type RequesterSummaryModel, type SessionSummaryProviderId } from "./summary-models.js";
 
 export type SummarizeJob = {
   id: string; session_id: string; kind: "leaf" | "condensed"; depth: number;
@@ -7,14 +8,20 @@ export type SummarizeJob = {
   /** Only dedicated workers may claim these jobs. */
   pool?: true;
   workClass?: SummarizeContext["workClass"];
+  purpose?: "compaction";
+  model?: RequesterSummaryModel;
+  operationId?: string;
+  timeoutMs?: number;
+  deadlineAt?: number;
 };
-export type SummaryProviderId = "session:haiku" | "session:fork" | `session-pool:${string}`;
+export type SummaryProviderId = SessionSummaryProviderId | `session-pool:${string}`;
 export function validPoolModel(model: unknown): model is string {
   return typeof model === "string" && /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(model);
 }
 export function validSummaryProviderId(id: unknown): id is SummaryProviderId {
-  return id === "session:haiku" || id === "session:fork" ||
-    typeof id === "string" && id.startsWith("session-pool:") && validPoolModel(id.slice("session-pool:".length));
+  if (validSessionSummaryProviderId(id)) return true;
+  if (typeof id !== "string") return false;
+  return id.startsWith("session-pool:") && validPoolModel(id.slice("session-pool:".length));
 }
 export type JobAnswer = {
   text?: string; error?: string; providerId?: SummaryProviderId;
@@ -31,6 +38,7 @@ type Entry = {
   resolve: (answer: JobAnswer) => void; timer: ReturnType<typeof setTimeout>;
   workerId?: string;
   workerIdentity?: string;
+  removeAbort?: () => void;
 };
 
 /** How long a worker has to answer a pool job once claimed; replay chunks take a model longer than a claim. */
@@ -57,11 +65,17 @@ export class SummarizeJobStore {
     private sessionCompletionMs = SESSION_COMPLETION_MS,
   ) {}
 
-  enqueue(input: Omit<SummarizeJob, "id" | "createdAt">): Promise<JobAnswer> {
+  enqueue(input: Omit<SummarizeJob, "id" | "createdAt">, signal?: AbortSignal): Promise<JobAnswer> {
+    if (signal?.aborted) return Promise.resolve({ error: "operation cancelled" });
     const job = { ...input, id: randomUUID(), createdAt: Date.now() };
     return new Promise((resolve) => {
       const timer = this.expireAfter(job.id, this.deadlineMs);
       this.jobs.set(job.id, { job, resolve, timer, state: "queued" });
+      if (signal) {
+        const abort = () => this.finish(job.id, { error: "operation cancelled" }, "expired");
+        signal.addEventListener("abort", abort, { once: true });
+        this.jobs.get(job.id)!.removeAbort = () => signal.removeEventListener("abort", abort);
+      }
       const key = job.pool ? `pool:${job.workClass ?? "live"}` : `session:${job.session_id}`;
       const queue = this.queues.get(key) ?? [];
       queue.push(job.id);
@@ -92,7 +106,8 @@ export class SummarizeJobStore {
           this.activeWorkers.set(workerId, entry.job.id);
         }
         clearTimeout(entry.timer);
-        entry.timer = this.expireAfter(entry.job.id, entry.job.pool ? this.poolCompletionMs : this.sessionCompletionMs);
+        entry.timer = this.expireAfter(entry.job.id, entry.job.purpose === "compaction" && entry.job.timeoutMs
+          ? entry.job.timeoutMs : entry.job.pool ? this.poolCompletionMs : this.sessionCompletionMs);
         return entry.job;
       }
     }
@@ -149,6 +164,7 @@ export class SummarizeJobStore {
     const entry = this.jobs.get(id);
     if (!entry) return "missing";
     if (entry.state !== "claimed") return "discarded";
+    if (entry.job.purpose === "compaction" && workerId !== undefined) return "discarded";
     if (entry.workerIdentity && (entry.workerId !== workerId || entry.workerIdentity !== identity)) return "discarded";
     if (entry.job.pool && answer.usage === undefined) answer = { ...answer, usage: {
       input_tokens: Math.ceil((entry.job.system.length + entry.job.prompt.length) / 4),
@@ -188,6 +204,7 @@ export class SummarizeJobStore {
     const entry = this.jobs.get(id);
     if (!entry || (entry.state !== "queued" && entry.state !== "claimed")) return;
     clearTimeout(entry.timer);
+    entry.removeAbort?.();
     entry.state = state;
     const key = entry.job.pool ? `pool:${entry.job.workClass ?? "live"}` : `session:${entry.job.session_id}`;
     const queue = this.queues.get(key)?.filter((queued) => queued !== id);
@@ -204,6 +221,7 @@ export class SummarizeJobStore {
     for (const waiter of this.waiters.values()) waiter(null);
     for (const entry of this.jobs.values()) {
       clearTimeout(entry.timer);
+      entry.removeAbort?.();
       entry.resolve({ error: "daemon stopped" });
     }
     this.jobs.clear();

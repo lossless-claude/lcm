@@ -115,6 +115,10 @@ function resolveLinks(links: ProviderLink[], ctx: SummarizeContext): ResolvedLin
   return links.map((link) => link(ctx)).filter((link) => !seen.has(link.name) && Boolean(seen.add(link.name)));
 }
 
+function checkCancellation(ctx: SummarizeContext): void {
+  ctx.signal?.throwIfAborted();
+}
+
 /**
  * Runs the links in order, each once per call, until one returns a summary. A link whose
  * answer stopped at the output cap is asked once more before the chain moves on (see
@@ -127,12 +131,15 @@ export function createProviderChain(links: ProviderLink[]): LcmSummarizeFn {
     const resolved = resolveLinks(links, ctx);
     const failures: { provider: string; error: unknown }[] = [];
     for (const [i, link] of resolved.entries()) {
+      checkCancellation(ctx);
       let outcome = await runLink(link, [text, aggressive, ctx]);
+      checkCancellation(ctx);
       const cap = overrunCap(outcome, aggressive);
       let retried = false;
       if (cap !== undefined && "error" in outcome) {
         ctx.onFallback?.({ reason: messageOf(outcome.error), fromProvider: attemptName(link), toProvider: link.name });
         outcome = await runLink(link, [text, true, { ...ctx, maxOutputTokens: 2 * cap }]);
+        checkCancellation(ctx);
         retried = true;
       }
       if ("summary" in outcome) return outcome.summary;

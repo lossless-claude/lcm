@@ -13,13 +13,15 @@
  */
 
 import { createHash } from "node:crypto";
-import { open, type FileHandle } from "node:fs/promises";
+import { open, stat, type FileHandle } from "node:fs/promises";
 import type { ParsedMessage } from "./transcript.js";
 
 const READ_CHUNK_BYTES = 64 * 1024;
 const METADATA_LIMIT_BYTES = 1024 * 1024;
 const YIELD_AFTER_BYTES = 1024 * 1024;
 const FINGERPRINT_WINDOW_BYTES = 4096;
+/** Limit transient UUID proofs while the caller owns a mutation lease. */
+export const MAX_BOUNDARY_SCAN_BYTES = 1024 * 1024;
 
 /** The client-agnostic resume checkpoint: byte-level, format-blind. */
 export interface JsonlTranscriptCursor {
@@ -67,12 +69,18 @@ export interface ReadJsonlTranscriptDeltaOptions {
   cursor?: JsonlTranscriptCursor;
   /** Include and strictly validate a final record without a trailing newline. */
   includeTrailingRecord: boolean;
+  /** Optional transient boundary proof, including records behind a resumed cursor. */
+  recordMatches?: (record: string) => boolean;
+  signal?: AbortSignal;
 }
 
 export interface JsonlTranscriptDelta<M, R = JsonlTranscriptRecord<M>> {
   messages: ParsedMessage[];
   cursor: JsonlTranscriptCursor;
   resumed: boolean;
+  complete: boolean;
+  recordMatched?: boolean;
+  boundaryScanExceeded?: boolean;
   sessionMeta: M;
   /** The delta's records in file order; present only for a format that selects its messages. */
   records?: R[];
@@ -180,6 +188,22 @@ async function yieldToEventLoop(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
+async function findBoundaryInTail(
+  handle: FileHandle, offset: number, label: string,
+  matches: (record: string) => boolean, signal?: AbortSignal,
+): Promise<{ matched: boolean; exceeded: boolean }> {
+  const length = Math.min(offset, MAX_BOUNDARY_SCAN_BYTES);
+  const start = offset - length;
+  const lines = (await readWindow(handle, start, length, label)).toString("utf8").split("\n");
+  // The first fragment may start inside a record or a UTF-8 code point.
+  if (start > 0) lines.shift();
+  for (const line of lines) {
+    signal?.throwIfAborted();
+    if (line.trim() && matches(line.trim())) return { matched: true, exceeded: false };
+  }
+  return { matched: false, exceeded: start > 0 };
+}
+
 async function scanRecords<M, R extends JsonlTranscriptRecord<M>>(
   handle: FileHandle,
   format: JsonlTranscriptFormat<M, R>,
@@ -187,6 +211,7 @@ async function scanRecords<M, R extends JsonlTranscriptRecord<M>>(
   snapshotSize: number,
   includeTrailingRecord: boolean,
   initialRecordBoundary: boolean,
+  signal?: AbortSignal,
 ): Promise<ScanResult<R>> {
   const messages: ParsedMessage[] = [];
   const records: R[] = [];
@@ -206,6 +231,7 @@ async function scanRecords<M, R extends JsonlTranscriptRecord<M>>(
   let bytesSinceYield = 0;
 
   while (position < snapshotSize) {
+    signal?.throwIfAborted();
     const requested = Math.min(buffer.length, snapshotSize - position);
     const { bytesRead } = await handle.read(buffer, 0, requested, position);
     if (bytesRead === 0) throw new Error(`${format.label} transcript changed while reading`);
@@ -220,6 +246,7 @@ async function scanRecords<M, R extends JsonlTranscriptRecord<M>>(
         pendingLength += segment.length;
       }
 
+      signal?.throwIfAborted();
       take(parseCompleteRecord(format, decodeRecord(format, pending, pendingLength, pendingOffset), pendingOffset));
       const nextOffset = position + index + 1;
 
@@ -349,14 +376,28 @@ export async function readJsonlTranscriptDelta<M, R extends JsonlTranscriptRecor
     const sessionMeta = format.hasSessionMeta === false ? undefined : await readSessionMeta(handle, format, snapshotSize);
     const startOffset = resumed ? options.cursor!.offset : 0;
 
+    let recordMatched = false;
+    let boundaryScanExceeded = false;
+    options.signal?.throwIfAborted();
+    const checkedFormat = options.recordMatches ? { ...format, parseRecord: (record: string) => {
+      recordMatched ||= options.recordMatches!(record);
+      return format.parseRecord(record);
+    } } : format;
     const scan = await scanRecords(
       handle,
-      format,
+      checkedFormat,
       startOffset,
       snapshotSize,
       options.includeTrailingRecord,
       resumed ? options.cursor!.recordBoundary : startOffset === 0,
+      options.signal,
     );
+    options.signal?.throwIfAborted();
+    if (options.recordMatches && !recordMatched && startOffset > 0) {
+      const boundary = await findBoundaryInTail(handle, startOffset, format.label, options.recordMatches, options.signal);
+      recordMatched = boundary.matched;
+      boundaryScanExceeded = boundary.exceeded;
+    }
     const initialMessageCount = resumed ? options.cursor!.messageCount : 0;
     const checkpointBefore = await fingerprintPrefix(handle, scan.offset, format);
     const guardAfter = scan.offset === guardOffset
@@ -384,6 +425,9 @@ export async function readJsonlTranscriptDelta<M, R extends JsonlTranscriptRecor
         fingerprint,
       },
       resumed,
+      complete: scan.offset === snapshotSize && (!options.recordMatches || await stat(transcriptPath, { bigint: true })
+        .then(now => now.size === stats.size && now.dev === stats.dev && now.ino === stats.ino, () => false)),
+      ...(options.recordMatches ? { recordMatched, boundaryScanExceeded } : {}),
       sessionMeta: sessionMeta ?? ({} as M),
     };
   } finally {

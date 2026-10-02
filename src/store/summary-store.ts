@@ -73,8 +73,18 @@ export type ContextWindowItem = {
   summaryId: string | null;
   ordinal: number;
   itemType: ContextItemType;
-  role: "user" | "assistant" | null;
+  role: "user" | "assistant" | "tool" | "system" | null;
   content: string;
+  messageId?: number | null;
+  seq?: number | null;
+};
+
+export type ContextCoverage = {
+  capturedMessageIds: number[];
+  renderedMessageIds: number[];
+  summaryCoverage: { summaryId: string; messageIds: number[] }[];
+  uncoveredMessageIds: number[];
+  valid: boolean;
 };
 
 export type SummarySearchInput = {
@@ -698,7 +708,24 @@ export class SummaryStore {
    * were materialised has none; its last `limit` user/assistant messages
    * stand in, in seq order.
    */
-  async readContextWindow(conversationId: number, limit: number): Promise<ContextWindowItem[]> {
+  async readContextWindow(conversationId: number, limit: number, options: { complete?: boolean } = {}): Promise<ContextWindowItem[]> {
+    if (options.complete) {
+      const hasContext = this.db.prepare("SELECT 1 FROM context_items WHERE conversation_id = ? LIMIT 1").get(conversationId);
+      const rows = this.db.prepare(hasContext ? `
+        SELECT ci.ordinal, ci.item_type, ci.summary_id AS summaryId, m.message_id AS messageId,
+               m.seq, m.role, COALESCE(m.content, s.content) AS content
+        FROM context_items ci
+        LEFT JOIN messages m ON ci.item_type = 'message' AND m.message_id = ci.message_id AND m.conversation_id = ci.conversation_id
+        LEFT JOIN summaries s ON ci.item_type = 'summary' AND s.summary_id = ci.summary_id AND s.conversation_id = ci.conversation_id
+        WHERE ci.conversation_id = ? AND COALESCE(m.content, s.content) IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM message_parts p WHERE p.message_id = m.message_id AND p.part_type = 'compaction')
+        ORDER BY ci.ordinal` : `
+        SELECT m.seq AS ordinal, 'message' AS item_type, NULL AS summaryId, m.message_id AS messageId,
+               m.seq, m.role, m.content FROM messages m WHERE m.conversation_id = ?
+          AND NOT EXISTS (SELECT 1 FROM message_parts p WHERE p.message_id = m.message_id AND p.part_type = 'compaction')
+        ORDER BY m.seq`).all(conversationId) as unknown as Array<ContextWindowItem & { item_type: ContextItemType }>;
+      return rows.map(({ item_type, ...row }) => ({ ...row, itemType: item_type }));
+    }
     const contextRows = this.db
       .prepare(
         `WITH ranked AS (
@@ -729,6 +756,54 @@ export class SummaryStore {
       )
       .all(conversationId, limit) as unknown as ContextWindowRow[];
     return messageRows.reverse().map(toContextWindowItem);
+  }
+
+  /** Exact source coverage of complete rendered items; malformed lineage never proves coverage. */
+  async readContextCoverage(conversationId: number, items: readonly ContextWindowItem[]): Promise<ContextCoverage> {
+    const capturedMessageIds = (this.db.prepare(`SELECT m.message_id FROM messages m WHERE m.conversation_id = ?
+      AND NOT EXISTS (SELECT 1 FROM message_parts p WHERE p.message_id = m.message_id AND p.part_type = 'compaction')
+      ORDER BY m.seq`).all(conversationId) as { message_id: number }[]).map(r => r.message_id);
+    const captured = new Set(capturedMessageIds);
+    const activeRoots = new Set((await this.getContextItems(conversationId)).map(i => i.summaryId).filter(Boolean));
+    const parents = this.db.prepare("SELECT parent_summary_id FROM summary_parents WHERE summary_id = ? ORDER BY ordinal");
+    const messages = this.db.prepare("SELECT message_id FROM summary_messages WHERE summary_id = ? ORDER BY ordinal");
+    const memo = new Map<string, Set<number>>();
+    const visiting = new Set<string>();
+    const renderedRoots = new Set(items.filter(i => i.itemType === "summary").map(i => i.summaryId));
+    const dangling = this.db.prepare(`SELECT 1 FROM context_items ci WHERE ci.conversation_id = ? AND (
+      (ci.item_type = 'message' AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.message_id = ci.message_id AND m.conversation_id = ci.conversation_id)) OR
+      (ci.item_type = 'summary' AND NOT EXISTS (SELECT 1 FROM summaries s WHERE s.summary_id = ci.summary_id AND s.conversation_id = ci.conversation_id))) LIMIT 1`).get(conversationId);
+    let valid = !dangling && [...activeRoots].every(id => renderedRoots.has(id));
+    const visit = async (id: string): Promise<Set<number>> => {
+      if (visiting.has(id)) { valid = false; return new Set(); }
+      const known = memo.get(id);
+      if (known) return known;
+      const summary = await this.getSummary(id);
+      if (!summary || !summary.content.trim() || summary.conversationId !== conversationId) { valid = false; return new Set(); }
+      visiting.add(id);
+      const source = new Set((messages.all(id) as { message_id: number }[]).map(r => r.message_id));
+      if ([...source].some(messageId => !captured.has(messageId))) valid = false;
+      const parentIds = (parents.all(id) as { parent_summary_id: string }[]).map(r => r.parent_summary_id);
+      if (source.size === 0 && parentIds.length === 0) valid = false;
+      for (const parentId of parentIds) for (const messageId of await visit(parentId)) source.add(messageId);
+      visiting.delete(id);
+      memo.set(id, source);
+      await yieldToEventLoop();
+      return source;
+    };
+    const renderedMessageIds = items.flatMap(i => i.itemType === "message" && i.messageId != null ? [i.messageId] : []);
+    if (renderedMessageIds.some(id => !captured.has(id))) valid = false;
+    const covered = new Set(renderedMessageIds);
+    const summaryCoverage: ContextCoverage["summaryCoverage"] = [];
+    for (const item of items) {
+      if (item.itemType !== "summary" || !item.summaryId) continue;
+      if (!activeRoots.has(item.summaryId)) valid = false;
+      const ids = [...await visit(item.summaryId)].sort((a, b) => a - b);
+      summaryCoverage.push({ summaryId: item.summaryId, messageIds: ids });
+      for (const id of ids) covered.add(id);
+    }
+    return { capturedMessageIds, renderedMessageIds, summaryCoverage,
+      uncoveredMessageIds: capturedMessageIds.filter(id => !covered.has(id)), valid };
   }
 
   async getDistinctDepthsInContext(

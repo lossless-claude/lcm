@@ -643,11 +643,52 @@ Anything else fails the pass without trying the next link: a request the endpoin
 { "llm": { "provider": "session", "fallbackProvider": "claude-process" } }
 ```
 
-- A job has 20 s to be claimed, then a fresh 60 s completion deadline from claim. `llm.fallbackProvider` answers an unclaimed or expired job, or a session error (including spend cap reached or an answer holding only whitespace); late replies are discarded. Any provider except `session` and `session-pool` is valid. When absent, the `auto` resolution above applies. A provider you name explicitly in `llm.provider` is never replaced by the session path.
-- Claude PreCompact has a 120 s outer hook window and a 120 s `/compact` request timeout. The 60 s completion allowance leaves headroom for a leaf answer, but capture, multiple jobs and fallback share the outer window. The daemon's compact route has no overall completion timer and continues after a caller disconnects. SessionEnd waits only for acknowledgement; its subsequent compaction and the SessionStart sweep are fire-and-forget. An absent session module still falls back after 20 s: the longer completion deadline helps only claimed jobs. See [live compaction bounds](design/session-summarizer.md#live-compaction-bounds) for the code references and other host paths.
+- A job has 20 s to be claimed, then a fresh 60 s completion deadline from claim. `llm.fallbackProvider` answers an unclaimed or expired job, or a session error (including spend cap reached or an answer holding only whitespace); late replies are discarded. Any provider except `session` and `session-pool` is valid. When absent, the `auto` resolution above applies. Ordinary compactions honor the provider named in `llm.provider`; an explicit requester-first rendered compaction prepends its requesting session as described below.
+- Claude PreCompact has a 120 s outer hook window and a 120 s `/compact` request timeout. The 60 s completion allowance leaves headroom for a leaf answer, but capture, multiple jobs and fallback share the outer window. Ordinary daemon compaction has no overall completion timer and continues after a caller disconnects; the opt-in rendered path uses `compaction.hookDeadlineMs`. SessionEnd waits only for acknowledgement; its subsequent compaction and the SessionStart sweep are fire-and-forget. An absent session module still falls back after 20 s: the longer completion deadline helps only claimed jobs. See [live compaction bounds](design/session-summarizer.md#live-compaction-bounds) for the code references and other host paths.
 - With `llm.providers`, the session is the first link of the chain above and `llm.fallback` replaces `llm.fallbackProvider`; there is no implicit `auto` fallback.
 - The module stops serving jobs when recorded output reaches `sessionSummarizerMaxOutputTokens`; set it in the plugin's `userConfig` (default 50000, 0 disables serving jobs). `$.model.complete` is limited to the remaining allowance, but `$.model.fork` has no output-token limit and can overshoot on its final call.
 - Usage is recorded as `session:haiku` or `session:fork`; current hosts report exact `complete` usage, while older text-only results use estimated token counts recorded in `llm_usage_stats.calls_estimated`.
+
+### Rendered Claude compaction
+
+`POST /compact` with `render_context: true` waits for verified Capture and a real
+summary sweep, then returns a complete, strictly fitted conversation window.
+`compaction.hookDeadlineMs` bounds the whole opt-in operation, including admission,
+Capture, requester jobs, configured-provider fallback and rendering. It defaults to
+1800000 ms (30 minutes) and accepts a positive integer up to 2147483647. Increase it
+for conversations requiring many sequential summary calls. Expiry returns HTTP 408
+with a non-ready context, cancels pending jobs and prevents late summary publication;
+previously committed passes remain stored. Database resources and the session guard
+remain owned until outstanding operations settle.
+
+The wire field `compaction_summary_model` accepts `haiku`, `sonnet`, `session`, or
+`pool` and defaults to `pool`. The first three require `summary_via_requester: true`
+and `requester_session_id` equal to the source `session_id`. They prepend requesting-session
+jobs to the configured provider chain without changing global provider selection.
+`pool` retains the configured pipeline and its existing cost profile. The opt-in
+`sonnet` requests Sonnet for **every leaf and condensed node** of the sweep; on large
+conversations these calls consume substantial real session quota. `haiku` uses Haiku;
+`session` requests the session's model through a fork. A failed or unclaimed requester
+job falls back to the configured chain, so its actual model/cost may differ.
+`pool` creates no requester jobs: it preserves the configured chain and its cost
+profile, including Haiku workers and fallback when that is the configured provider.
+The daemon contract carries the model choice; exposing it as a plugin setting and
+serving compaction-purpose jobs are responsibilities of the calling module.
+
+Requester jobs keep the 20 s claim window and use `llm.poolCompletionMs` as their
+claimed completion allowance (3 minutes by default); ordinary session jobs retain
+60 s. Compaction jobs carry `timeoutMs` and an operation `deadlineAt`, so the caller
+bounds a model completion to the smaller remaining allowance. The operation owns its
+overall cancellation timer. Requester jobs are separate from worker-pool jobs and
+cannot be claimed or answered through a worker identity. The existing session output
+cap still applies in the serving module; Sonnet usage is labeled `session:sonnet`.
+
+The complete answer budget is separate from `restoration.maxInjectedMemoryBytes`.
+A caller reserves its handled tail and passes `context_budget_bytes` (1 through
+65536); the daemon counts the full marked/fenced context in UTF-8 bytes, includes
+all raw items even when they overlap the caller's tail, and rejects overflow rather
+than truncating it. See [the wire contract](hook-protocol.md#complete-compaction-context).
+The command PreCompact path keeps its existing 120 s client/host deadlines.
 
 ### Summarize worker pool
 

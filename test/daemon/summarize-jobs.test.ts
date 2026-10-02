@@ -17,6 +17,30 @@ describe("session summarize jobs", () => {
   beforeEach(() => { vi.useFakeTimers(); store = new SummarizeJobStore(); });
   afterEach(() => { store.close(); vi.useRealTimers(); vi.clearAllMocks(); });
 
+  it("routes compaction drafts to the requester ahead of the configured API provider", async () => {
+    fallback.mockResolvedValue("configured fallback");
+    const config = loadDaemonConfig("/missing", { llm: { provider: "openai" } }, {});
+    const summarize = (await createSummarizer("openai", config, store, { model: "sonnet", operationId: "compact-one" }))!;
+    const response = summarize("source text", false, { sessionId: "one", client: "claude" });
+    await Promise.resolve();
+    const job = await store.next("one", undefined, false);
+    expect(job).toMatchObject({ purpose: "compaction", model: "sonnet", operationId: "compact-one", timeoutMs: 180_000 });
+    expect(await store.nextWorker("worker", undefined, false)).toBeNull();
+    expect(store.answer(job!.id, { text: "wrong worker" }, "worker")).toBe("discarded");
+    store.answer(job!.id, { text: "requester summary", providerId: "session:sonnet", usage: { input_tokens: 9, output_tokens: 3, estimated: false } });
+    await expect(response).resolves.toBe("requester summary");
+    expect(fallback).not.toHaveBeenCalled();
+  });
+
+  it("uses the configured provider when a requester never claims", async () => {
+    fallback.mockResolvedValue("configured fallback");
+    const config = loadDaemonConfig("/missing", { llm: { provider: "openai" } }, {});
+    const summarize = (await createSummarizer("openai", config, store, { model: "haiku", operationId: "compact-two" }))!;
+    const response = summarize("source", false, { sessionId: "one", client: "claude" });
+    await vi.advanceTimersByTimeAsync(20_000);
+    await expect(response).resolves.toBe("configured fallback");
+  });
+
   it("delivers concurrent jobs in FIFO order only to the matching session", async () => {
     const firstAnswer = store.enqueue(input);
     const secondAnswer = store.enqueue({ ...input, prompt: "second" });

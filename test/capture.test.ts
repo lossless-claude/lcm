@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -36,6 +36,34 @@ describe("SessionCapture", () => {
       `SELECT m.seq, part_type, tool_name, tool_input FROM message_parts mp
        JOIN messages m ON m.message_id = mp.message_id ORDER BY m.seq, ordinal`,
     ).all(),
+  });
+
+  it("verifies complete capture through a flushed UUID, including a boundary behind its cursor", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "lcm-boundary-"));
+    try {
+      const path = join(dir, "s1.jsonl");
+      writeFileSync(path, JSON.stringify({ uuid: "boundary", message: { role: "user", content: "source" } }) + "\n");
+      const input = { sessionId: "s1", cwd: dir, transcriptPath: path, requireComplete: true, captureThroughUuid: "boundary" };
+      expect((await capture.captureTranscript(input))?.verification).toEqual({ verified: true, complete: true, boundaryFound: true });
+      expect((await capture.captureTranscript(input))?.verification).toEqual({ verified: true, complete: true, boundaryFound: true });
+      appendFileSync(path, '{"uuid":"unfinished","message":');
+      expect((await capture.captureTranscript(input))?.verification).toEqual({ verified: true, complete: false, boundaryFound: true });
+      expect((await capture.captureTranscript({ ...input, captureThroughUuid: "not-flushed" }))?.verification?.boundaryFound).toBe(false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("does not recapture a generated compaction envelope or lose source messages after it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "lcm-recursion-"));
+    try {
+      const path = join(dir, "s1.jsonl");
+      const row = (content: string) => JSON.stringify({ message: { role: "user", content } }) + "\n";
+      writeFileSync(path, row("original"));
+      await capture.captureTranscript({ sessionId: "s1", cwd: dir, transcriptPath: path });
+      appendFileSync(path, row('<lcm-compaction-context version="1">\n<recent-session-context>\nUser:\noriginal\n</recent-session-context>\n</lcm-compaction-context>') + row("new material"));
+      await capture.captureTranscript({ sessionId: "s1", cwd: dir, transcriptPath: path });
+      expect((await capture.conversationStore.getSessionMessages("s1")).map(r => r.content)).toEqual(["original", "new material"]);
+      expect((await capture.captureTranscript({ sessionId: "s1", cwd: dir, transcriptPath: path }))?.records).toHaveLength(0);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
   it("writes only the delta past the stored count, twice in a row", async () => {

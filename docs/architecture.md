@@ -557,9 +557,14 @@ endpoint's `body` is merged into its request under the fields the adapter genera
 
 ## Context assembly
 
-There is no message-array assembler: nothing in lcm rewrites the harness's message list.
-What a session starts with is one block of text, and `POST /restore` is the only thing that
-builds it.
+The command hooks do not rewrite the harness's message list. `POST /restore` builds
+startup context as text. `POST /compact` with `render_context: true` additionally
+builds a complete conversation window after verified Capture and summarization.
+Its strict reader includes every raw role and all active summaries in context order,
+checks exact recursive source coverage, and refuses incomplete or oversized windows.
+Restore's recent-item reader and budget fitting remain separate.
+The generated `<lcm-compaction-context version="1">` envelope is excluded from
+source Capture, so the next window cannot recursively contain its predecessor.
 
 1. Read the session's recent summaries deepest-first, and the project's promoted memory.
 2. Render each block as plain text and fence it. Each restored summary begins with

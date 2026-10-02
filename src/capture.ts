@@ -95,6 +95,7 @@ export interface TranscriptCaptureInput extends TranscriptLocator {
 }
 
 export interface TranscriptCaptureResult extends CaptureResult {
+  verification?: { verified: boolean; complete: boolean; boundaryFound: boolean; boundaryScanExceeded?: boolean };
   /** The transcript that was read, as the adapter located it. */
   transcriptPath: string;
   /** Fills the model on the session's events whose hook payload could not carry one. */
@@ -222,6 +223,7 @@ export class SessionCapture {
       });
       return undefined;
     }
+    input.signal?.throwIfAborted();
     const written = await this.write({
       sessionId: input.sessionId,
       cwd: input.cwd,
@@ -243,7 +245,9 @@ export class SessionCapture {
     });
     const databases = this.db.prepare("PRAGMA database_list").all() as Array<{ name: string; file: string }>;
     const dbPath = databases.find(row => row.name === "main")!.file;
-    return { ...written, transcriptPath, backfillModels: (events) => {
+    return { ...written, transcriptPath, ...(delta.verification ? { verification: {
+      ...delta.verification, verified: delta.verification.verified && written.conversationId > 0,
+    } } : {}), backfillModels: (events) => {
       if (!source.backfillModels || delta.checkpoint === undefined) return delta.backfillModels(events, input.sessionId);
       // /ingest replies and releases its connection before running this callback.
       const db = dbPath ? openStandaloneLcmConnection(dbPath, { readOnly: true }) : this.db;

@@ -47,6 +47,10 @@ export interface TranscriptLocator {
   source?: "live" | "import";
   /** Repairs leave missing transcripts unknown rather than refusing the request. */
   allowMissing?: boolean;
+  /** Claude compaction requires a verified, fully consumed snapshot through this UUID. */
+  signal?: AbortSignal;
+  requireComplete?: boolean;
+  captureThroughUuid?: string;
 }
 
 /** What is already stored for the session, as an adapter needs it to find the delta. */
@@ -92,6 +96,7 @@ export interface TranscriptDelta {
   sessionUrlDeclarations?: SessionUrlDeclaration[];
   /** Messages from `sourceOffset` onwards. */
   messages: ParsedMessage[];
+  verification?: { verified: boolean; complete: boolean; boundaryFound: boolean; boundaryScanExceeded?: boolean };
   /** Full file-order history when a repair must account for abandoned OMP branches. */
   eventTimeCandidates?: ParsedMessage[];
   /** The clears among `messages`, in order. Absent for a client whose clear starts a new session instead. */
@@ -225,8 +230,13 @@ const claudeSource: TranscriptSource = {
     }
     let delta: Awaited<ReturnType<typeof readClaudeTranscriptDelta>>;
     try {
-      delta = await readClaudeTranscriptDelta(path, { cursor: prior, includeTrailingRecord: true });
+      delta = await readClaudeTranscriptDelta(path, { cursor: prior, includeTrailingRecord: true, signal: ctx.signal,
+        ...(ctx.requireComplete ? { recordMatches: (record: string) => {
+          try { return JSON.parse(record).uuid === ctx.captureThroughUuid; } catch { return false; }
+        } } : {}),
+      });
     } catch (error) {
+      ctx.signal?.throwIfAborted();
       throw new TranscriptSourceError(error instanceof Error ? error.message : "invalid transcript");
     }
     const messages = delta.resumed ? delta.messages : parseTranscript(path, "current", delta.messages);
@@ -263,6 +273,9 @@ const claudeSource: TranscriptSource = {
     }
     return {
       messages: delta.resumed ? messages : messages.slice(storedCount),
+      ...(ctx.requireComplete ? { verification: { verified: validated, complete: delta.complete,
+        boundaryFound: Boolean(ctx.captureThroughUuid && delta.recordMatched),
+        ...(delta.boundaryScanExceeded ? { boundaryScanExceeded: true } : {}) } } : {}),
       sessionUrlDeclarations: delta.sessionUrlDeclarations,
       sourceOffset: storedCount,
       restampParserShape,

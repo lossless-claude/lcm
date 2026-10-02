@@ -2,6 +2,7 @@ import { WorkerStore } from "../../store/worker-store.js";
 import { workerExcluded } from "../../worker-session.js";
 import type { SummarizeJobStore } from "../summarize-jobs.js";
 import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { getLcmConnection, closeLcmConnection, openStandaloneLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
@@ -11,11 +12,10 @@ import { projectId, projectDbPath, projectDir } from "../project.js";
 import { noopDaemonLog, type DaemonLog } from "../log.js";
 import { openProject } from "../project-group.js";
 import { enqueue, hasBlockingProjectWork, withProjectMutation } from "../project-queue.js";
-import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { markSessionCompacted } from "../../db/session-compactions.js";
-import { SessionCapture, STRUCTURED_INGEST_SHAPE, type CaptureResult, type TranscriptCaptureResult } from "../../capture.js";
+import { SessionCapture, STRUCTURED_INGEST_SHAPE, type CaptureResult, type TranscriptCaptureResult, type TranscriptCaptureInput } from "../../capture.js";
 import { EventsDb } from "../../hooks/events-db.js";
 import { withHookWrite } from "../../hooks/write-admission.js";
 import { eventsDbPath } from "../../db/events-path.js";
@@ -33,6 +33,11 @@ import {
 } from "../summarizer.js";
 import { validateCwd } from "../validate-cwd.js";
 import { scheduleProjectLanguageDetection } from "../project-language.js";
+import { createCompactionReply } from "../compaction-reply.js";
+import { CompactionDeadlineError } from "../../compaction-deadline.js";
+import { DEFAULT_COMPACTION_SUMMARY_MODEL, validCompactionSummaryModel, sessionSummaryProviderLabel } from "../summary-models.js";
+import { readCompactionContext } from "../compaction-context.js";
+import { TIMELINE_SESSION_ID } from "../../db/project-timeline.js";
 
 function fmtN(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
@@ -228,7 +233,7 @@ export function recordCompactLlmUsage(db: DatabaseSync, usage: CompactLlmUsage):
 
 async function captureTranscriptForCompact(
   capture: SessionCapture,
-  input: { sessionId: string; cwd: string; client?: string; transcriptPath?: string },
+  input: TranscriptCaptureInput,
   paths: LcmPaths,
   log: DaemonLog,
 ): Promise<TranscriptCaptureResult | undefined> {
@@ -253,7 +258,7 @@ async function captureTranscriptForCompact(
 
 async function captureForCompact(
   capture: SessionCapture,
-  input: { sessionId: string; cwd: string; client?: string; transcriptPath?: string },
+  input: TranscriptCaptureInput,
   paths: LcmPaths,
   log: DaemonLog,
 ): Promise<CaptureResult | undefined> {
@@ -317,14 +322,49 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
 
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}");
+    const controller = new AbortController();
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    let deadlineAt: number | undefined;
+    const reply = createCompactionReply(res, input.session_id, input.render_context === true);
+    let cwdForObservation: string | undefined;
+    let captureOutcomeForError: { status: "completed"; messages: number } | { status: "failed"; reason: string } | undefined;
+    try {
     const { session_id, transcript_path, skip_ingest, client, previous_summary } = input;
     if (input.replay_provider !== undefined &&
         (input.replay_provider !== "session-pool" || skip_ingest !== true || input.capture_required === true
           || input.precompact_verified === true || input.work_class === "live")) {
-      sendJson(res, 400, { error: "replay_provider requires session-pool and skip_ingest, without live work" });
+      reply(400, { error: "replay_provider requires session-pool and skip_ingest, without live work" });
       return;
     }
     const captureRequired = input.capture_required === true;
+    const renderContext = input.render_context === true;
+    if (renderContext && (client !== "claude" || !captureRequired || skip_ingest ||
+        !Number.isSafeInteger(input.context_budget_bytes) || input.context_budget_bytes <= 0 || input.context_budget_bytes > 65_536 ||
+        typeof input.capture_through_uuid !== "string" || !input.capture_through_uuid.trim() || input.capture_through_uuid.length > 140)) {
+      reply(400, { error: "render_context requires Claude Capture, a UUID boundary and a byte budget of 1..65536" }); return;
+    }
+    const model = input.compaction_summary_model ?? DEFAULT_COMPACTION_SUMMARY_MODEL;
+    const requester = renderContext && model !== "pool" && input.summary_via_requester === true;
+    if (renderContext && (!validCompactionSummaryModel(model) ||
+        model !== "pool" && (!requester || input.requester_session_id !== session_id))) {
+      reply(400, { error: "compaction model requires a matching requester, or pool" }); return;
+    }
+    if (renderContext) {
+      const timeoutMs = config.compaction.hookDeadlineMs ?? 1_800_000;
+      deadlineAt = Date.now() + timeoutMs;
+      deadlineTimer = setTimeout(() => {
+        controller.abort(new CompactionDeadlineError());
+        const capture = captureOutcomeForError ?? { status: "deferred" as const, reason: "deadline" };
+        const summary = { status: "failed" as const, reason: "deadline" };
+        if (reply(408, { error: "Compaction deadline exceeded", reason: "deadline", captureOutcome: capture, summaryOutcome: summary })) {
+          log.write("warn", "compact.deadline", { cwd: cwdForObservation, session_id });
+          if (cwdForObservation) recordPrecompactStages({ cwd: cwdForObservation, sessionId: session_id,
+            client, operationId: input.operation_id, capture, summary }, paths, log);
+        }
+      }, timeoutMs);
+      deadlineTimer.unref();
+    }
+
     const precompactVerified = input.precompact_verified === true && client === "omp" && skip_ingest === true;
     // skip_ingest also serves post-capture live hooks, which mark their class explicitly.
     const workClass = skip_ingest && !precompactVerified && input.work_class !== "live" ? "background" : "live";
@@ -334,27 +374,32 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     const validatedPreviousSummary = typeof previous_summary === "string"
       ? previous_summary.slice(0, MAX_PREVIOUS_SUMMARY_LENGTH)
       : undefined;
+    if (input.instructions !== undefined && (typeof input.instructions !== "string" || input.instructions.length > 50_000)) {
+      reply(400, { error: "instructions must be a string of at most 50000 characters" }); return;
+    }
+    const instructions = input.instructions as string | undefined;
 
     if (!session_id || !input.cwd) {
-      sendJson(res, 400, { error: "session_id and cwd are required" });
+      reply(400, { error: "session_id and cwd are required" });
       return;
     }
 
     let cwd: string;
     try {
       cwd = validateCwd(input.cwd);
+      cwdForObservation = cwd;
     } catch (err) {
-      sendJson(res, 400, { error: err instanceof Error ? err.message : "invalid cwd" });
+      reply(400, { error: err instanceof Error ? err.message : "invalid cwd" });
       return;
     }
 
     if (captureRequired && skip_ingest) {
-      sendJson(res, 400, { error: "capture_required and skip_ingest cannot be combined" });
+      reply(400, { error: "capture_required and skip_ingest cannot be combined" });
       return;
     }
 
-    if (workerExcluded(cwd, session_id, paths, transcript_path)) {
-      sendJson(res, 200, { summary: "", replayOutcome: "skipped", reason: "worker-excluded" }); return;
+    if (session_id === TIMELINE_SESSION_ID || workerExcluded(cwd, session_id, paths, transcript_path)) {
+      reply(200, { summary: "", replayOutcome: "skipped", reason: session_id === TIMELINE_SESSION_ID ? "timeline-excluded" : "worker-excluded", }); return;
     }
     const captureOnly = async () => {
       try {
@@ -368,9 +413,10 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         return await withProjectMutation(projectId(cwd), async () => {
           const db = openStandaloneLcmConnection(dbPath);
           try {
-            runLcmMigrations(db);
+            controller.signal.throwIfAborted();
+          runLcmMigrations(db);
             const captured = await captureForCompact(new SessionCapture(db, projectId(cwd), scrubber, paths), {
-              sessionId: session_id, cwd, client, transcriptPath: transcript_path,
+              sessionId: session_id, cwd, client, transcriptPath: transcript_path, signal: controller.signal,
             }, paths, log);
             const outcome = captured
               ? { status: "completed" as const, messages: captured.records.length }
@@ -382,6 +428,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           }
         });
       } catch (err) {
+        if (err instanceof CompactionDeadlineError) throw err;
         log.write("error", "precompact.capture_failed", { cwd, session_id, err });
         return { status: "failed" as const, reason: err instanceof TranscriptSourceError ? "invalid-source" as const : "capture-error" as const };
       }
@@ -399,7 +446,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         cwd, sessionId: session_id, client, operationId,
         summary: { status: "skipped", reason: "busy" },
       }, paths, log);
-      sendJson(res, 200, {
+      reply(200, {
         skipped: true,
         replayOutcome: "skipped",
         summary: captureRequired || precompactVerified ? "" : "Compaction already in progress for this session.",
@@ -438,7 +485,6 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     };
     const providerLabel = providerLabels[effectiveProvider] ?? effectiveProvider;
 
-    let captureOutcomeForError: { status: "completed"; messages: number } | { status: "failed"; reason: string } | undefined;
     try {
       const summarize = captureRequired ? null : await getSummarizer(effectiveProvider);
       if (!summarize && !captureRequired) {
@@ -447,7 +493,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           cwd, sessionId: session_id, client, operationId,
           summary: { status: "skipped", reason: "disabled" },
         }, paths, log);
-        sendJson(res, 200, {
+        reply(200, {
           summary: "Summarization disabled — no summarizer configured.",
           replayOutcome: "disabled",
           providerId: effectiveProvider,
@@ -477,6 +523,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         return withProjectMutation(pid, async (lease) => {
         const db = getLcmConnection(dbPath);
         try {
+          controller.signal.throwIfAborted();
           runLcmMigrations(db);
           if (new WorkerStore(db).excluded(session_id)) return { summary: "", replayOutcome: "skipped", reason: "worker-excluded" };
 
@@ -485,14 +532,19 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           // either way, since compaction needs the row even when nothing was read.
           const capture = new SessionCapture(db, pid, scrubber, paths);
           const { conversationStore, summaryStore } = capture;
+          if (conversationStore.isTimelineSession(session_id)) return { summary: "", replayOutcome: "skipped", reason: "timeline-excluded", };
           const structuredInput = (await conversationStore.getConversationBySessionId(session_id))?.parserShape === STRUCTURED_INGEST_SHAPE;
           let captured: CaptureResult | undefined;
           if (!skip_ingest) {
             try {
-              captured = await captureForCompact(capture, {
+              captured = renderContext ? await captureTranscriptForCompact(capture, {
+                sessionId: session_id, client, cwd, transcriptPath: transcript_path,
+                requireComplete: true, captureThroughUuid: input.capture_through_uuid, signal: controller.signal,
+              }, paths, log) : await captureForCompact(capture, {
                 sessionId: session_id, client, cwd, transcriptPath: transcript_path,
               }, paths, log);
             } catch (err) {
+              if (err instanceof CompactionDeadlineError) throw err;
               if (captureRequired) captureOutcomeForError = {
                 status: "failed",
                 reason: err instanceof TranscriptSourceError ? "invalid-source" : "capture-error",
@@ -505,6 +557,16 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
               ? { status: "completed" as const, messages: captured.records.length }
               : { status: "deferred" as const, reason: "no-capture-result" as const }
             : undefined;
+          const verification = (captured as TranscriptCaptureResult | undefined)?.verification;
+          if (renderContext && new WorkerStore(db).excluded(session_id)) return {
+            summary: "", replayOutcome: "skipped", captureOutcome: { status: "deferred", reason: "worker-excluded" },
+            summaryOutcome: { status: "skipped", reason: "worker-excluded" },
+          };
+          if (renderContext && (!verification?.verified || !verification.complete || !verification.boundaryFound)) return {
+            summary: "", replayOutcome: "skipped", captureOutcome: { status: "deferred", ...verification, reason: verification?.boundaryScanExceeded ? "boundary-scan-limit" : "capture-unverified" },
+            summaryOutcome: { status: "skipped", reason: verification?.boundaryScanExceeded ? "boundary-scan-limit" : "capture-unverified" },
+          };
+          if (renderContext && captureOutcome) Object.assign(captureOutcome, { verified: true, complete: true, boundaryFound: true });
           if (captureRequired) {
             log.write("info", "precompact.capture", { cwd, session_id, ...captureOutcome });
             if (captured) captureOutcomeForError = captureOutcome as { status: "completed"; messages: number };
@@ -526,11 +588,14 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             // A replay ledgers this as done; otherwise every later run sees a gap here.
             return {
               summary: "No messages to compact.", replayOutcome: "no_work", providerId: effectiveProvider, providerLabel,
+              ...(renderContext ? { renderedContext: await readCompactionContext(summaryStore, conversation.conversationId, input.context_budget_bytes) } : {}),
               ...(captureRequired ? { captureOutcome, summaryOutcome: { status: "skipped", reason: "no-work" } } : {}),
             };
           }
 
-          const activeSummarize = captureRequired ? await getSummarizer(effectiveProvider) : summarize;
+          const activeSummarize = requester
+            ? await createSummarizer(effectiveProvider, config, jobs, { model, operationId: operationId ?? randomUUID(), signal: controller.signal, deadlineAt })
+            : captureRequired ? await getSummarizer(effectiveProvider) : summarize;
           if (!activeSummarize) {
             return {
               summary: "Summarization disabled — no summarizer configured.",
@@ -617,6 +682,8 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             try {
               const answer = await lease.yieldWhile(() => turn.yieldWhile(() => activeSummarize(text, aggressive, {
                 ...ctx,
+                signal: controller.signal,
+                customInstructions: instructions === undefined ? undefined : scrubber.scrub(instructions),
                 workClass,
                 sessionId: session_id,
                 client,
@@ -668,6 +735,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
               if (new WorkerStore(db).excluded(session_id)) throw new Error("Worker session excluded during compaction");
               // The engine gates every answer too; judging it here as well keeps an answer
               // the engine will reject from being counted as a successful call.
+              controller.signal.throwIfAborted();
               const summary = acceptSummaryText(answer, effectiveProvider);
               settleAttempt(true);
               return summary;
@@ -680,7 +748,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           const engine = new CompactionEngine(
             conversationStore,
             summaryStore,
-            { ...compactEngineConfig({ scrubber, language }), onAnswerDiscarded: () => { keptAnswers.pop(); } },
+            { ...compactEngineConfig({ scrubber, language }), signal: controller.signal, onAnswerDiscarded: () => { keptAnswers.pop(); } },
           );
 
           const compactResult = await engine.compact({
@@ -742,14 +810,14 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           llmUsage.model = keptAnswers.at(-1)?.model ?? configuredSummaryModel(config, effectiveProvider) ?? config.llm.model;
           const answeredBy = [...answeringProviders];
           const answeredProvider = answeredBy.length === 1 ? answeredBy[0] : effectiveProvider;
-          const sessionLabels: Record<string, string> = { "session:haiku": "Live session (haiku)", "session:fork": "Live session (fork)" };
           const answeredLabel = answeredProvider === effectiveProvider
             ? providerLabel
-            : (sessionLabels[answeredProvider] ?? providerLabels[answeredProvider as EffectiveProvider] ?? answeredProvider);
+            : (sessionSummaryProviderLabel(answeredProvider) ?? providerLabels[answeredProvider as EffectiveProvider] ?? answeredProvider);
           if (llmUsage.calls > 0) llmUsage.provider = answeredProvider;
 
           return {
             summary: summaryMsg,
+            ...(renderContext ? { renderedContext: await readCompactionContext(summaryStore, conversation.conversationId, input.context_budget_bytes) } : {}),
             latestSummaryContent,
             latestSummaryId,
             latestSummaryIds,
@@ -800,8 +868,9 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           ? { status: "completed" }
           : { status: "skipped", reason: result.replayOutcome },
       }, paths, log);
-      sendJson(res, 200, result);
+      reply(200, result);
     } catch (err) {
+      if (err instanceof CompactionDeadlineError) return;
       log.write("error", "compact.failed", { cwd, session_id, err });
       if (captureRequired) {
         if (captureOutcomeForError?.status !== "completed") {
@@ -828,7 +897,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         err instanceof Error
           ? (err as Error & { llmUsage?: CompactLlmUsage }).llmUsage
           : undefined;
-      sendJson(res, err instanceof TranscriptSourceError ? 400 : 500, {
+      reply(err instanceof TranscriptSourceError ? 400 : 500, {
         error: err instanceof Error ? err.message : "compact failed",
         ...(captureRequired ? {
           captureOutcome: captureOutcomeForError ?? { status: "failed", reason: "capture-error" },
@@ -841,5 +910,9 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     } finally {
       releaseCompacting();
     }
+
+    } catch (error) {
+      if (!(error instanceof CompactionDeadlineError)) throw error;
+    } finally { if (deadlineTimer) clearTimeout(deadlineTimer); }
   };
 }

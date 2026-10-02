@@ -16,6 +16,7 @@ import type { LcmSummarizeFn } from "../llm/types.js";
 import { acceptSummaryText } from "../llm/summary-rejection.js";
 import { createProviderChain, SessionJobUnclaimedError, SessionUnavailableError, SummarizerUnavailableError, type ProviderLink, type ProviderLinkKind } from "../llm/provider-chain.js";
 import type { SessionClient } from "../session-client.js";
+import { sessionSummaryProviderId, type RequesterSummaryModel } from "./summary-models.js";
 
 /** The client a /compact call came from; copilot never calls, but its summarizer can be pinned by name. */
 export type CompactClient = SessionClient | "copilot";
@@ -65,9 +66,13 @@ export function resolveEffectiveProvider(config: DaemonConfig, client?: CompactC
  * answer is a `SessionUnavailableError`, and a rejected answer a `SummaryRejectedError`:
  * the chain hands both to the next link.
  */
-function createSessionSummarizer(jobs?: Pick<SummarizeJobStore, "enqueue">, pool = false): LcmSummarizeFn {
+export type RequesterSummary = { model: RequesterSummaryModel; operationId: string; signal?: AbortSignal; deadlineAt?: number };
+
+function createSessionSummarizer(jobs?: Pick<SummarizeJobStore, "enqueue">, pool = false, requester?: RequesterSummary, completionMs = 180_000): LcmSummarizeFn {
   return async (text, aggressive, ctx = {}) => {
     if (!jobs || !ctx.sessionId) throw new SessionUnavailableError("no live session job queue");
+    const signal = requester?.signal ?? ctx.signal;
+    signal?.throwIfAborted();
     const targetTokens = ctx.targetTokens ?? resolveTargetTokens({
       inputTokens: Math.ceil(text.length / 4), mode: aggressive ? "aggressive" : "normal",
       isCondensed: ctx.isCondensed ?? false, condensedTargetTokens: 2000,
@@ -77,21 +82,24 @@ function createSessionSummarizer(jobs?: Pick<SummarizeJobStore, "enqueue">, pool
     const answer = await jobs.enqueue({
       session_id: ctx.sessionId, kind: ctx.isCondensed ? "condensed" : "leaf",
       depth: ctx.depth ?? (ctx.isCondensed ? 1 : 0), system, prompt, targetTokens,
-      maxTokens: pool && ctx.maxOutputTokens !== undefined ? ctx.maxOutputTokens : resolveMaxOutputTokens(targetTokens),
+      maxTokens: (pool || requester) && ctx.maxOutputTokens !== undefined ? ctx.maxOutputTokens : resolveMaxOutputTokens(targetTokens),
       ...(pool ? { pool: true as const, workClass: ctx.workClass ?? "live" } : {}),
-    });
+      ...(requester ? { purpose: "compaction" as const, model: requester.model, operationId: requester.operationId,
+        timeoutMs: completionMs, ...(requester.deadlineAt ? { deadlineAt: requester.deadlineAt } : {}) } : {}),
+    }, signal);
     for (const attempt of answer.usageAttempts ?? []) {
       ctx.onUsage?.({ provider: attempt.providerId, model: attempt.providerId.split(":")[1],
         inputTokens: attempt.usage.input_tokens, outputTokens: attempt.usage.output_tokens,
         tokensUsed: attempt.usage.input_tokens + attempt.usage.output_tokens,
         estimated: attempt.usage.estimated, failed: attempt.failed ?? true });
     }
+    signal?.throwIfAborted();
     if (pool && ctx.workClass === "timeline" && answer.error === "job unclaimed") throw new SessionJobUnclaimedError();
     if (answer.error) throw new SessionUnavailableError(String(answer.error));
     const summary = answer.text ?? "";
     const inputTokens = answer.usage?.input_tokens ?? Math.ceil((system.length + prompt.length) / 4);
     const outputTokens = answer.usage?.output_tokens ?? Math.ceil(summary.length / 4);
-    const provider = answer.providerId ?? (pool ? "session-pool:haiku" : ctx.isCondensed ? "session:fork" : "session:haiku");
+    const provider = answer.providerId ?? (pool ? "session-pool:haiku" : sessionSummaryProviderId(requester?.model ?? (ctx.isCondensed ? "session" : "haiku")));
     // Reported before the answer is judged: a rejected answer was still charged.
     ctx.onUsage?.({ provider, model: provider.split(":")[1], inputTokens, outputTokens,
       tokensUsed: inputTokens + outputTokens, estimated: answer.usage?.estimated ?? true });
@@ -207,6 +215,7 @@ export async function createSummarizer(
   provider: EffectiveProvider,
   config: DaemonConfig,
   jobs?: Pick<SummarizeJobStore, "enqueue">,
+  requester?: RequesterSummary,
 ): Promise<LcmSummarizeFn | null> {
   const configuredLanguage = configuredSummarizerLanguage(config);
   const withConfiguredLanguage = (summarizer: LcmSummarizeFn): LcmSummarizeFn => {
@@ -217,8 +226,14 @@ export async function createSummarizer(
 
   // Mock summarizer for E2E testing — deterministic, no LLM calls
   if (config.summarizer?.mock) return withConfiguredLanguage(createMockSummarizer());
-  if (provider === "disabled") return null;
-  const links = chainOf(provider, config, new LinkFactory(config, jobs));
+  if (provider === "disabled" && !requester) return null;
+  const factory = new LinkFactory(config, jobs);
+  const links = provider === "disabled" ? [] : chainOf(provider, config, factory);
+  if (requester) {
+    const configured = links.filter(link => link({}).name !== "session");
+    const session = createSessionSummarizer(jobs, false, requester, config.llm.poolCompletionMs);
+    links.splice(0, links.length, () => ({ name: "requester-session", kind: "session", summarizer: async () => session }), ...configured);
+  }
   if (links.length === 0) {
     // Surfaced when a summary is asked for, not at load: the rest of the daemon still runs.
     const unavailable = unavailableEndpoints(config.llm);
