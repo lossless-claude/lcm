@@ -100,6 +100,19 @@ export type CompactionSummarizeFn = (
 ) => Promise<string>;
 type PassResult = { summaryId: string; level: CompactionLevel };
 type EscalationResult = { content: string; level: CompactionLevel; keptAnswers: number };
+type EscalationParams = {
+  sourceTexts: string[];
+  summarize: CompactionSummarizeFn;
+  options?: CompactionSummarizeOptions;
+  /** Halvings already made after output cuts. */
+  splitDepth?: number;
+};
+
+const LEVEL_ORDER: CompactionLevel[] = ["normal", "aggressive", "fallback"];
+/** A joined summary reports the strongest escalation either half needed. */
+function highestLevel(a: CompactionLevel, b: CompactionLevel): CompactionLevel {
+  return LEVEL_ORDER[Math.max(LEVEL_ORDER.indexOf(a), LEVEL_ORDER.indexOf(b))];
+}
 type LeafChunkSelection = {
   items: ContextItemRecord[];
   rawTokensOutsideTail: number;
@@ -775,12 +788,7 @@ export class CompactionEngine {
    * answers never supply text.
    * Whitespace and other provider failures still abort before persistence.
    */
-  private async summarizeWithEscalation(params: {
-    sourceTexts: string[];
-    summarize: CompactionSummarizeFn;
-    options?: CompactionSummarizeOptions;
-    splitDepth?: number;
-  }): Promise<EscalationResult> {
+  private async summarizeWithEscalation(params: EscalationParams): Promise<EscalationResult> {
     this.config.signal?.throwIfAborted();
     const rawText = params.sourceTexts.join("\n\n").trim();
     const sourceText = this.config.scrubber ? this.config.scrubber.scrub(rawText) : rawText;
@@ -805,37 +813,46 @@ export class CompactionEngine {
       acceptSummaryText(await params.summarize(sourceText, aggressive, summarizeOptions), "summarizer");
 
     try {
-      let summaryText = await summarizeGated(false);
-      let level: CompactionLevel = "normal";
-
-      if (estimateTokens(summaryText) >= inputTokens) {
-        this.config.onAnswerDiscarded?.();
-        summaryText = await summarizeGated(true);
-        level = "aggressive";
-
-        if (estimateTokens(summaryText) >= inputTokens) {
-          this.config.onAnswerDiscarded?.();
-          return fallback();
-        }
-      }
-      return { content: summaryText, level, keptAnswers: 1 };
+      return await this.escalate(summarizeGated, inputTokens, fallback);
     } catch (error) {
       if (!containsOutputCut(error)) throw error;
       const depth = params.splitDepth ?? 0;
       if (params.sourceTexts.length <= 1 || depth >= MAX_CUT_SPLIT_DEPTH) return fallback();
-      const midpoint = Math.floor(params.sourceTexts.length / 2);
-      const left = await this.summarizeWithEscalation({ ...params, sourceTexts: params.sourceTexts.slice(0, midpoint), splitDepth: depth + 1 });
-      const right = await this.summarizeWithEscalation({ ...params, sourceTexts: params.sourceTexts.slice(midpoint), splitDepth: depth + 1 });
-      const content = `${left.content}\n\n${right.content}`;
-      const keptAnswers = left.keptAnswers + right.keptAnswers;
-      if (estimateTokens(content) >= inputTokens) {
-        for (let i = 0; i < keptAnswers; i++) this.config.onAnswerDiscarded?.();
-        return fallback();
-      }
-      const level = left.level === "fallback" || right.level === "fallback" ? "fallback"
-        : left.level === "aggressive" || right.level === "aggressive" ? "aggressive" : "normal";
-      return { content, level, keptAnswers };
+      return this.summarizeHalves({ ...params, splitDepth: depth + 1 }, inputTokens, fallback);
     }
+  }
+
+  /** Normal, then aggressive when the answer did not shrink, then the deterministic fallback. */
+  private async escalate(
+    summarizeGated: (aggressive: boolean) => Promise<string>,
+    inputTokens: number,
+    fallback: () => EscalationResult,
+  ): Promise<EscalationResult> {
+    const normal = await summarizeGated(false);
+    if (estimateTokens(normal) < inputTokens) return { content: normal, level: "normal", keptAnswers: 1 };
+    this.config.onAnswerDiscarded?.();
+    const aggressive = await summarizeGated(true);
+    if (estimateTokens(aggressive) < inputTokens) return { content: aggressive, level: "aggressive", keptAnswers: 1 };
+    this.config.onAnswerDiscarded?.();
+    return fallback();
+  }
+
+  /** Each half of the sources through the full escalation, joined in order; a join that does not shrink falls back. */
+  private async summarizeHalves(
+    params: EscalationParams,
+    inputTokens: number,
+    fallback: () => EscalationResult,
+  ): Promise<EscalationResult> {
+    const midpoint = Math.floor(params.sourceTexts.length / 2);
+    const left = await this.summarizeWithEscalation({ ...params, sourceTexts: params.sourceTexts.slice(0, midpoint) });
+    const right = await this.summarizeWithEscalation({ ...params, sourceTexts: params.sourceTexts.slice(midpoint) });
+    const content = `${left.content}\n\n${right.content}`;
+    const keptAnswers = left.keptAnswers + right.keptAnswers;
+    if (estimateTokens(content) >= inputTokens) {
+      for (let i = 0; i < keptAnswers; i++) this.config.onAnswerDiscarded?.();
+      return fallback();
+    }
+    return { content, level: highestLevel(left.level, right.level), keptAnswers };
   }
 
   // ── Private: Leaf Pass ───────────────────────────────────────────────────
