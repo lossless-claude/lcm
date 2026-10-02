@@ -779,7 +779,9 @@ function restoreBlockText(body: Record<string, unknown> | null): string {
   const context = result.context ?? "";
   const insights = result.insights ?? [];
   if (insights.length === 0) return context;
-  const lines = insights.map((i) => `- ${i.content} (confidence: ${i.confidence})`).join("\n");
+  const seen = new Set<string>();
+  const lines = insights.filter((i) => !seen.has(i.content) && seen.add(i.content))
+    .map((i) => `- ${i.content} (confidence: ${i.confidence})`).join("\n");
   return `${context}\n<learned-insights source="passive-capture">\n`
     + `Recent learnings from your previous sessions:\n${lines}\n</learned-insights>`;
 }

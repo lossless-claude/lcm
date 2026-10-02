@@ -146,6 +146,8 @@ export function createPromoteEventsHandler(config: DaemonConfig, paths: LcmPaths
           const processedIds: number[] = [];
 
           for (const event of events) {
+            // Prompt intents are session metadata, never durable insights.
+            if (event.category === "intent") { processedIds.push(event.event_id); result.skipped++; continue; }
             if (new WorkerStore(db).excluded(event.session_id)) { processedIds.push(event.event_id); result.skipped++; continue; }
             await yieldToEventLoop();
             try {

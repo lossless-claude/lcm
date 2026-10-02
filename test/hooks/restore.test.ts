@@ -169,6 +169,22 @@ describe("handleSessionStart", () => {
     expect(result.stdout).not.toContain("<learned-insights");
   });
 
+  it("renders insights with identical content only once, preserving their first occurrence", async () => {
+    mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
+    const client = { post: vi.fn().mockResolvedValue({
+      context: "ctx",
+      insights: [
+        { content: "Prefer pnpm", confidence: 0.8, tags: [] },
+        { content: "Prefer pnpm", confidence: 0.2, tags: ["type:pattern"] },
+        { content: "Use SQLite", confidence: 0.6, tags: [] },
+      ],
+    }) };
+    const result = await handleSessionStart(JSON.stringify({ session_id: sid("s1") }), client as any, paths);
+    expect(result.stdout.match(/- Prefer pnpm/g)).toHaveLength(1);
+    expect(result.stdout).toContain("- Prefer pnpm (confidence: 0.8)");
+    expect(result.stdout).toContain("- Use SQLite (confidence: 0.6)");
+  });
+
   it("omits learned-insights block when insights array is empty", async () => {
     mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
     const client = {
