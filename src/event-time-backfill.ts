@@ -111,7 +111,8 @@ export async function backfillSessionEventTimes(
   const scrub = (text: string) => scrubber.scrubWithCounts(text).text;
   const read: TranscriptDelta = path ? await source.read(path, undefined, { ...input, scrub, eventTimeRepair: true })
     : { messages: [], sourceOffset: 0, backfillModels() {} };
-  await conversations.withTransaction(() => {
+  // BEGIN IMMEDIATE takes the write lock even with nothing to insert, so a session without declarations skips it.
+  if (read.sessionUrlDeclarations?.length) await conversations.withTransaction(() => {
     if (!new WorkerStore(db).excluded(input.sessionId)) recordSessionWebUrls(db, input.sessionId, read.sessionUrlDeclarations ?? []);
   });
   const alignment = await alignmentFor(conversations, input.sessionId, read, scrub);
