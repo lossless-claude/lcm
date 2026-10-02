@@ -11,6 +11,9 @@ node-compile-cache/
 .claude/*
 !.claude/skills/
 !.claude/workflows/
+# Declarations Claude Code writes from the running build when it loads this checkout as a
+# plugin (`claude --plugin-dir .`); see docs/hook-protocol.md.
+.claude-plugin/types/
 data/
 
 # Tools

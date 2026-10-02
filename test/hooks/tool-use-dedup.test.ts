@@ -16,8 +16,8 @@ import { createLcmPaths, type LcmPaths } from "../../src/lcm-paths.js";
 
 /**
  * The command hook and the function-hooks module both receive Claude Code's
- * `tool_use_id`. A session that runs both (the remote gate loads the module
- * without CLAUDE_CODE_ENABLE_FUNCTION_HOOKS) must record each call once.
+ * `tool_use_id`. A session that runs both (the module's claim was never written,
+ * or lapsed before a command hook read it) must record each call once.
  */
 describe("tool call dedup on (session_id, tool_use_id)", () => {
   let dir: string;

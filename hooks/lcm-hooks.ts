@@ -1,9 +1,12 @@
 // hooks/lcm-hooks.ts — lcm's function-hooks module (Claude Code early access).
 //
-// Loaded only when CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1. It claims the session in a temp-dir
-// file at session.start, and while that claim stands the PostToolUse, PostToolUseFailure,
-// UserPromptSubmit and Stop command hooks stay silent (functionHooksOwnSession in
-// src/hooks/session-claim.ts) and this module does their work through the daemon:
+// Claude Code loads it whenever its mods (function hooks) are on; the command hooks remain
+// for when they are not. It claims the session in a temp-dir file, rewritten in every
+// classic event a claim-reading command hook listens to, before that command hook runs,
+// and withdrawn at session.end. While the claim stands the SessionStart, PostToolUse,
+// PostToolUseFailure, UserPromptSubmit and Stop command hooks stay silent
+// (functionHooksOwnSession in src/hooks/session-claim.ts) and this module does their work
+// through the daemon:
 //   tool.call       → POST /tool-event    (the daemon writes the passive-learning rows)
 //   prompt.submit   → POST /prompt-search (memory hits ride as hidden context on the prompt)
 //   prompt.section  → the learning instruction is appended once to the system prompt's
@@ -13,7 +16,8 @@
 //                     POST /promote-events, at most once a minute, replacing the Stop hook.
 // The module has no Node and no SQLite, so the daemon does every write.
 //
-// Types: run /plugin-types in a session, then `import type { Register } from "claude-code"`.
+// Types: Claude Code writes them to .claude-plugin/types/ when it loads this plugin from a
+// folder you own (`claude --plugin-dir .`); then `import type { Register } from "claude-code"`.
 // They are written from the running build and not committed, so the check is on demand:
 // `npm run typecheck:hooks`. Run it after a Claude Code update too — the API is early
 // access, and a green run is the answer to whether the release moved anything under this.
@@ -194,16 +198,74 @@ function readHostEnv($: EngineInterface): Promise<HostEnv> {
 
 /**
  * Tell the command hooks this module is live for this session, so they stay silent
- * instead of doing the same work again. Written before the first prompt and read by
- * functionHooksOwnSession in src/hooks/session-claim.ts, which names the same file from
- * Node's os.tmpdir(). No claim means "not mine", costing a duplicate row rather than a
- * lost one, so nothing here is worth failing session.start over.
+ * instead of doing the same work again. Read by functionHooksOwnSession in
+ * src/hooks/session-claim.ts, which names the same file from Node's os.tmpdir() and
+ * counts it only while `ts` is fresh and no `ended` is set. No claim means "not mine",
+ * costing a duplicate row rather than a lost one, so nothing here is worth failing an
+ * event over.
  */
-async function claimSession($: EngineInterface, sessionId: string): Promise<void> {
+async function writeClaim($: EngineInterface, sessionId: string, ended?: string): Promise<void> {
   if (!sessionId) return;
   const { tmpDir } = await readHostEnv($);
   const file = `${tmpDir}/lcm-claim-${sessionFileId(sessionId)}.json`;
-  await $.fs.write(file, JSON.stringify({ sessionId, ts: Date.now() }));
+  await $.fs.write(file, JSON.stringify({ sessionId, ts: Date.now(), ...(ended ? { ended } : {}) }));
+}
+
+/** Sessions whose claim could not be written, so the failure is logged once, not per event. */
+const unclaimedSessions = new Set<string>();
+
+async function claimSession($: EngineInterface, sessionId: string, hook: string): Promise<void> {
+  let claimed = true;
+  await writeClaim($, sessionId).catch((error: unknown) => {
+    claimed = false;
+    if (unclaimedSessions.has(sessionId)) return;
+    unclaimedSessions.add(sessionId);
+    $.ui.log(`[lcm] could not claim the session, command hooks stay active: ${String(error)}`);
+  });
+  noteHook(sessionId, hook, "claim", "execution", claimed ? "completed" : "failed",
+    claimed ? "" : "write-failed");
+}
+
+/**
+ * The claim is rewritten in each classic event a claim-reading command hook listens to.
+ * Modules run before the command hooks of the same event, which run inside `next(e)`,
+ * so the claim is fresh when they read it. That also covers a session id that begins
+ * with /clear, /resume or /branch, where no session.start fires: its classic
+ * SessionStart claims it before the SessionStart command hook can restore.
+ */
+function registerSessionClaim(on: On): void {
+  on("classic.SessionStart", async ($, e, next) => {
+    await claimSession($, e.session_id, "classic.SessionStart");
+    return next(e);
+  });
+  on("classic.UserPromptSubmit", async ($, e, next) => {
+    await claimSession($, e.session_id, "classic.UserPromptSubmit");
+    return next(e);
+  });
+  on("classic.PostToolUse", async ($, e, next) => {
+    await claimSession($, e.session_id, "classic.PostToolUse");
+    return next(e);
+  });
+  on("classic.PostToolUseFailure", async ($, e, next) => {
+    await claimSession($, e.session_id, "classic.PostToolUseFailure");
+    return next(e);
+  });
+  on("classic.Stop", async ($, e, next) => {
+    await claimSession($, e.session_id, "classic.Stop");
+    return next(e);
+  });
+}
+
+/**
+ * session.end fires on exit, /clear, /resume and /branch. The ending id's claim is
+ * withdrawn so a later run of that id without this module records again; a crash skips
+ * this, and its claim lapses with its timestamp instead.
+ */
+function registerSessionEnd(on: On): void {
+  on("session.end", async ($, e, next) => {
+    await writeClaim($, e.sessionId, e.reason).catch(() => { /* the claim lapses on its own */ });
+    return next(e);
+  });
 }
 
 /** Last time this module asked the host to start the daemon; one attempt per cooldown window. */
@@ -687,13 +749,7 @@ function registerSessionStart(on: On, summaryCap: number): void {
         });
       }
     }
-    let claimed = true;
-    await claimSession($, sessionId).catch((error: unknown) => {
-      claimed = false;
-      $.ui.log(`[lcm] could not claim the session, command hooks stay active: ${String(error)}`);
-    });
-    noteHook(sessionId, "session.start", "claim", "execution", claimed ? "completed" : "failed",
-      claimed ? "" : "write-failed");
+    await claimSession($, sessionId, "session.start");
     await flushHookObservations($, sessionId);
     void readHostEnv($).then(({ port }) => {
       const startedAt = Date.now();
@@ -863,6 +919,8 @@ export const register: Register = (on, options) => {
   const summaryCap = typeof configuredCap === "number" && Number.isFinite(configuredCap)
     ? Math.max(0, configuredCap) : DEFAULT_SUMMARY_OUTPUT_CAP;
   registerSessionStart(on, summaryCap);
+  registerSessionClaim(on);
+  registerSessionEnd(on);
   registerRestoreContext(on);
   registerLearningInstruction(on);
   registerPromptSearch(on);

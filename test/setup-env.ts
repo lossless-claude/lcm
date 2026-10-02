@@ -12,12 +12,6 @@ import { createLcmPaths } from "../src/lcm-paths.js";
 process.env.LCM_TEST_REAL_HOME = join(userInfo().homedir, ".lossless-claude");
 assertIsolatedTestHome(tmpdir()); // Reject a protected temporary base before allocating any directory.
 
-// Runs before every test file. The tests exercise the command hooks directly, and those
-// hooks go silent when the function-hooks module owns capture (CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1).
-// A developer's own Claude Code session sets that variable, and vitest inherits it, so the
-// suite must not see it.
-delete process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS;
-
 // Everything lcm stores goes to a directory this file owns, so no test can reach the
 // developer's real memory — and, because each test file gets its own, two files cannot
 // contend for one project database. That contention is not hypothetical: it answered

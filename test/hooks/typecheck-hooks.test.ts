@@ -47,17 +47,16 @@ describe("typecheck-hooks staleness guard", () => {
     const result = await run({ header: "// Written by Claude Code 2.1.263.", claudeVersion: "2.1.267" });
     expect(result.exitCode).toBe(1);
     expect(result.output).toContain("Declarations are from Claude Code 2.1.263, but 2.1.267 is installed");
-    expect(result.output).toContain("/plugin-types");
+    expect(result.output).toContain("claude --plugin-dir .");
     expect(result.output).not.toContain("stub-tsc");
   });
 
-  // /plugin-types writes what the session it runs in knows. After an update the running
-  // session is still the old build, so regenerating there returns the old version and a
-  // message naming only that command sends the reader round in a circle.
-  it("says to restart before regenerating, since a running session writes its own build", async () => {
+  // A session writes the declarations of its own build. After an update a running session
+  // is still the old build, so reloading there rewrites the old version.
+  it("says to start a new session, since a running session writes its own build", async () => {
     const result = await run({ header: "// Written by Claude Code 2.1.267.", claudeVersion: "2.1.268" });
     expect(result.exitCode).toBe(1);
-    expect(result.output).toContain("Restart Claude Code so a session runs 2.1.268");
+    expect(result.output).toContain("Start a new session with `claude --plugin-dir .` so Claude Code 2.1.268 rewrites them");
   });
 
   it("compiles when the declarations match the installed build", async () => {
@@ -82,10 +81,10 @@ describe("typecheck-hooks staleness guard", () => {
     expect(result.output).toContain("no version in its header");
   });
 
-  it("names /plugin-types when the declarations are missing entirely", async () => {
+  it("says how Claude Code writes the declarations when they are missing entirely", async () => {
     const result = await run({ claudeVersion: "2.1.267" });
     expect(result.exitCode).toBe(1);
-    expect(result.output).toContain("/plugin-types");
+    expect(result.output).toContain("claude --plugin-dir .");
     expect(result.output).not.toContain("stub-tsc");
   });
 });

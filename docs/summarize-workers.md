@@ -136,7 +136,8 @@ Claude workers use `$.model.complete` for both leaf and condensed jobs, never
 In Claude Code 2.1.285, the completion operation dispatches to `cOe` and the `TU`
 side-query helper, which returns the SDK response and records telemetry without
 appending transcript messages. This is a versioned host implementation contract;
-regenerate `/plugin-types` and inspect the operation when adopting a changed host.
+regenerate the declarations (see [hook protocol](hook-protocol.md)) and inspect the
+operation when adopting a changed host.
 
 OMP's `pi-ai.complete` operates on supplied messages and returns an assistant
 message without session-manager writes. The worker never uses `sendMessage` or
