@@ -124,7 +124,7 @@ After restore succeeds and `cwd` is present, the hook also fires one non-blockin
 
 **Command:** `lcm session-end`
 
-Invoked when the Claude Code session ends. The hook posts its stdin once to `POST /session-end` without bootstrap, a health probe or daemon spawning. It allows at most 200 ms to flush the complete request and then a 100 ms response grace, bounding the handoff to 300 ms plus local startup and diagnostic work. A `202` within the grace records `accepted` delivery in `hook-outcomes.log`; a fully written request without an answer records `submitted`, which establishes neither acceptance nor completed Capture. A refused connection exits 0 immediately and records unconfirmed delivery.
+Invoked when the Claude Code session ends. The hook posts its stdin once to `POST /session-end` without bootstrap, a health probe or daemon spawning. It allows at most 200 ms to flush the complete request and then a 100 ms response grace, giving the handoff a 300 ms timer budget plus local startup and diagnostic work. These deadlines cancel the outstanding HTTP request; a delayed event-loop turn can increase elapsed time, so they are not a strict wall-clock bound. A `202` within the grace records `accepted` delivery in `hook-outcomes.log`; a fully written request without an answer records `submitted`, which establishes neither acceptance nor completed Capture. A refused connection exits 0 immediately and records unconfirmed delivery.
 
 The daemon answers `202` before doing any work, then runs the ingest on its own and, once it has landed, fires compact, promote, promote-events and session-complete — only the ingest is sequenced, because the other four depend on it. The host gives SessionEnd hooks a shared budget of about 1.5s, far shorter than a large ingest, and a hook killed mid-sequence would never send the steps after the kill — so the daemon owns the sequence and the hook only hands it over. Once the complete request body has arrived, the daemon runs the sequence even if the client disconnects before the `202`; a request disconnected before its body is complete is ignored.
 
@@ -254,7 +254,7 @@ Every hook bounds its daemon call so a wedged daemon can never hold the session 
 |------|-------|-----------------|--------------|
 | PreCompact | `/compact` | 120s — summarization calls an LLM | `timeout: 120` on the PreCompact entry in `.claude-plugin/plugin.json` |
 | SessionStart | `/restore` | 10s | host default |
-| SessionEnd | `/session-end` | 200 ms to flush the body, then 100 ms response grace; a 404 fallback uses the remainder of the same 300 ms budget | host default (SessionEnd hooks share a budget of about 1.5s) |
+| SessionEnd | `/session-end` | 200 ms to flush the body, then 100 ms response grace; a 404 fallback uses the remainder of the same 300 ms timer budget | host default (SessionEnd hooks share a budget of about 1.5s) |
 | UserPromptSubmit | `/prompt-search` | 5s | host default |
 
 A client deadline longer than the host timeout is dead code — the host kills the hook first. PreCompact is the only hook that declares a matching host `timeout`, and the two must stay in sync.
