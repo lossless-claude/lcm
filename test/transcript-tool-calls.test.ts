@@ -63,7 +63,12 @@ it.each([
   ["ok", false, "succeeded", null],
   ["Exit code 7\nfailed", true, "failed", 7],
   ["The user doesn't want to proceed with this tool use.", true, "denied", null],
-  ["Permission denied by hook", true, "blocked", null],
+  ["Permission denied by hook", true, "unknown", null],
+  ["File does not exist.", true, "unknown", null],
+  ["PreToolUse:Read hook error: refused", true, "blocked", null],
+  ["Permission for this action was denied by the Claude Code auto mode classifier.", true, "blocked", null],
+  ["The server-side auto mode classifier gave no verdict (error)", true, "blocked", null],
+  ["<tool_use_error>Blocked: standalone sleep</tool_use_error>", true, "blocked", null],
   ["[Request interrupted by user for tool use]", true, "interrupted", null],
   ["output with no status", undefined, "unknown", null],
 ])("Claude classifies %s independently of its error flag", (output, flag, outcome, exitCode) => {
@@ -138,6 +143,12 @@ it("Codex interruption follows the wall-time line in exec output", () => {
 it("Codex reads outcome text from structured text output blocks", () => {
   const record = parseCodexTranscriptRecord(JSON.stringify({ type: "response_item", payload: { type: "function_call_output", call_id: "call", output: [{ type: "text", text: "Process exited with code 6" }] } }));
   expect(record.toolCalls?.[0]).toMatchObject({ outcome: "failed", exitCode: 6 });
+});
+
+it("a Claude error without block evidence is a block only if the call was a shell command", () => {
+  expect(claudeResult("This guard refuses the command", true)).toMatchObject({ outcome: "unknown", shellOutcome: "blocked" });
+  expect(claudeResult("Exit code 1\nfailed", true)).not.toHaveProperty("shellOutcome");
+  expect(claudeResult("PreToolUse:Bash hook error: refused", true)).not.toHaveProperty("shellOutcome");
 });
 
 it("a Claude exit code counts only on the result's first line", () => {

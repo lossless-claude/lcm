@@ -12,9 +12,21 @@ export interface TranscriptToolCall {
   inputLimit?: number;
   message?: ParsedMessage;
   outcome: ToolOutcome;
+  /**
+   * The outcome when the call turns out to be a shell command. A Claude shell command that ran
+   * always reports `Exit code N` on failure, so an error without one was refused before running;
+   * any other tool's error without block evidence stays `unknown`.
+   */
+  shellOutcome?: ToolOutcome;
   harnessError: boolean | null;
   exitCode: number | null;
 }
+
+/** Tool names, lowercased and without a `functions.` prefix, that run a shell command. */
+export const SHELL_TOOLS = ["bash", "exec", "exec_command", "shell", "shell_command"];
+
+/** Claude's own refusal texts: a hook, the permission classifier, or a harness rule. */
+const CLAUDE_BLOCK_EVIDENCE = /^(?:PreToolUse:\S+ hook error:|Permission for this action was denied|The server-side auto mode classifier gave no verdict|<tool_use_error>Blocked:)/;
 
 function inputObject(input: unknown): Record<string, unknown> {
   if (typeof input === "string") {
@@ -35,7 +47,7 @@ const READ_FIELDS = new Set([
 export function transcriptToolInput(name: string, input: unknown): Pick<TranscriptToolCall, "input" | "inputBytes" | "inputLimit"> {
   const tool = name.replace(/^functions\./, "").toLowerCase();
   const object = inputObject(input);
-  if (["bash", "exec", "exec_command", "shell", "shell_command"].includes(tool)) {
+  if (SHELL_TOOLS.includes(tool)) {
     const command = object.command ?? object.cmd;
     if (typeof command === "string") return { input: command, inputLimit: INPUT_LIMIT_BYTES };
     if (Array.isArray(command) && command.every(item => typeof item === "string")) return { input: JSON.stringify(command), inputLimit: INPUT_LIMIT_BYTES };
@@ -105,13 +117,17 @@ export function transcriptToolResult(callId: string, client: "claude" | "codex" 
   const { output, error } = evidence;
   const exitCode = resultExitCode(client, evidence);
   let outcome: ToolOutcome = "unknown";
+  let shellOutcome: ToolOutcome | undefined;
   const omp = client === "omp" ? ompOutcome(evidence) : undefined;
   if (omp !== undefined) outcome = omp;
   else if (exitCode !== null) outcome = exitCode === 0 ? "succeeded" : "failed";
   else if (client === "claude") {
     if (/^\[Request interrupted by user/.test(output)) outcome = "interrupted";
-    else if (error === true) outcome = output.startsWith("The user doesn't want to proceed") ? "denied" : "blocked";
-    else if (error === false) outcome = "succeeded";
+    else if (error === true) {
+      if (output.startsWith("The user doesn't want to proceed")) outcome = "denied";
+      else if (CLAUDE_BLOCK_EVIDENCE.test(output)) outcome = "blocked";
+      else shellOutcome = "blocked";
+    } else if (error === false) outcome = "succeeded";
   } else if (client === "codex") {
     if (/(?:^|\n)\s*aborted by user\b/.test(output)) outcome = "interrupted";
     else if (/^(?:[\w.]+ failed: )?(?:User rejected|.*rejected by user)/i.test(output)) outcome = "denied";
@@ -119,5 +135,5 @@ export function transcriptToolResult(callId: string, client: "claude" | "codex" 
     else if (output.startsWith("Success. Updated the following files:")) outcome = "succeeded";
     else if (error === false) outcome = "succeeded";
   } else if (error === false) outcome = "succeeded";
-  return { callId, outcome, harnessError: typeof error === "boolean" ? error : null, exitCode };
+  return { callId, outcome, ...(shellOutcome ? { shellOutcome } : {}), harnessError: typeof error === "boolean" ? error : null, exitCode };
 }

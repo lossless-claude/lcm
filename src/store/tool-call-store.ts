@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { ParsedMessage } from "../transcript.js";
-import type { TranscriptToolCall } from "../tool-calls.js";
+import { SHELL_TOOLS, type TranscriptToolCall } from "../tool-calls.js";
 import type { ScrubEngine } from "../scrub.js";
 import { normalizeMessageContent } from "../message-content.js";
 import { getLcmDbFeatures } from "../db/features.js";
@@ -28,7 +28,12 @@ export function recordTranscriptToolCalls(
   const insert = db.prepare(`INSERT INTO transcript_tool_calls
     (session_id, call_id, message_id, name, input, input_bytes, truncated)
     VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_id, call_id) DO NOTHING`);
-  const update = db.prepare(`UPDATE transcript_tool_calls SET outcome = ?, harness_error = ?, exit_code = ?
+  // A shell-only outcome applies once the stored call shows the tool was a shell command.
+  const update = db.prepare(`UPDATE transcript_tool_calls SET outcome = CASE
+      WHEN ? IS NOT NULL AND lower(CASE WHEN name LIKE 'functions.%' THEN substr(name, 11) ELSE name END)
+        IN (${SHELL_TOOLS.map(() => "?").join(", ")}) THEN ?
+      ELSE ? END,
+    harness_error = ?, exit_code = ?
     WHERE session_id = ? AND call_id = ?`);
   const indexed = new Set<number>();
   for (const call of calls) {
@@ -40,7 +45,8 @@ export function recordTranscriptToolCalls(
         input.text, call.inputBytes ?? null, input.truncated);
       indexed.add(messageId);
     } else {
-      update.run(call.outcome, call.harnessError === null ? null : Number(call.harnessError), call.exitCode, sessionId, call.callId);
+      update.run(call.shellOutcome ?? null, ...SHELL_TOOLS, call.shellOutcome ?? null, call.outcome,
+        call.harnessError === null ? null : Number(call.harnessError), call.exitCode, sessionId, call.callId);
     }
   }
   if (!getLcmDbFeatures(db).fts5Available || indexed.size === 0 ||

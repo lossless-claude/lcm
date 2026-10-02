@@ -44,7 +44,10 @@ Each call has an `outcome`: `succeeded`, `failed`, `blocked`, `denied`,
 `interrupted` or `unknown`, a separate nullable `harness_error` flag, and
 an `exit_code` when exposed. No result or missing evidence leaves the outcome
 unknown. Claude's exit-code result establishes execution; user-refusal text
-establishes denial; other error-flagged results establish a pre-execution block.
+establishes denial; a hook, permission-classifier or harness refusal prefix
+establishes a pre-execution block. Another error-flagged result is a block only
+for a shell command, which reports an exit code whenever it ran; for any other
+tool it stays unknown, since the tool may have run and failed.
 Codex and OMP use only exposed status text or result metadata; an unclassified
 error flag alone cannot distinguish execution failure from a refusal.
 

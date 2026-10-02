@@ -161,6 +161,19 @@ describe("tool-call capture and repair", () => {
     expect(calls()[0]).toMatchObject({ outcome: "failed", exit_code: 9 });
   });
 
+  it("a refusal without block evidence is blocked for a shell command and unknown for any other tool", async () => {
+    const refusal = "This guard refuses the call";
+    writeFileSync(path, [
+      { message: { role: "assistant", content: [{ type: "tool_use", id: "shell", name: "Bash", input: { command: "printf x" } }] } },
+      { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "shell", is_error: true, content: refusal }] } },
+      { message: { role: "assistant", content: [{ type: "tool_use", id: "read", name: "Read", input: { file_path: "missing.ts" } }] } },
+      { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "read", is_error: true, content: "File does not exist." }] } },
+    ].map(line).join(""));
+    await capture.captureTranscript(input("claude"));
+    expect(Object.fromEntries(calls().map(call => [call.call_id, [call.outcome, call.harness_error]])))
+      .toEqual({ shell: ["blocked", 1], read: ["unknown", 1] });
+  });
+
   it("a cut-content repair keeps the message's call inputs searchable", async () => {
     const f = fixture("codex", dir);
     writeFileSync(path, f.header + line(f.call));
