@@ -23,6 +23,7 @@ import { decodeLegacyTags } from "./db/votes.js";
 import { runLcmMigrations } from "./db/migration.js";
 import { deduplicateAndInsert } from "./promotion/dedup.js";
 import { ScrubEngine } from "./scrub.js";
+import { loadDaemonConfig } from "./daemon/config.js";
 import { getLcmConnection, closeLcmConnection } from "./db/connection.js";
 import type { LcmPaths } from "./lcm-paths.js";
 import { updateProjectMetaIn } from "./daemon/project-meta.js";
@@ -112,11 +113,12 @@ export async function exportKnowledge(
       tags: opts.tags,
     });
 
-    // Build scrubber for secret redaction
+    // Export is an exit: scrub with every rule capture uses, including the global patterns.
     let scrubber: ScrubEngine | null = null;
     if (!opts.skipScrub) {
       const projDir = resolveProjectDir(cwd, baseDir);
-      scrubber = await ScrubEngine.forProject([], projDir);
+      const config = loadDaemonConfig(join(baseDir, "config.json"));
+      scrubber = await ScrubEngine.forProject(config.security?.sensitivePatterns ?? [], projDir);
     }
 
     entries = rows.map((r) => {
