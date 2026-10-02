@@ -68,8 +68,9 @@ This explicit repair selects discovered transcripts, including completed session
 records their main-chain Claude `remote_session_change` web URL declarations in
 `session_web_urls`, and fills only unknown event times. Normal import and hook capture
 also record declarations, including attachments in incremental hook reads.
-The repair also fills tool-call input and outcomes beside verified existing
-messages, including messages whose times are already known. Shell commands and
+The repair also fills tool calls and re-derives existing calls' selected inputs
+and outcomes beside verified existing messages, including messages whose times
+are already known. Shell commands, Codex `exec` scripts and
 MCP JSON use capture's redaction rules and 2048-byte cap; file bodies and
 subagent prompts are excluded. Missing or unaligned transcripts establish no call.
 Sidechain attachments declare nothing, and an attachment creates no message.
