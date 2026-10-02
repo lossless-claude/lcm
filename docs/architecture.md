@@ -171,8 +171,13 @@ Timeline pool jobs retain the reserved `lcm:project-timeline` session binding.
 Unsupported providers refuse timeline generation
 with a configuration 4xx before database work, without failure flags or backoff.
 
-Status and doctor read persisted pending/stale/dirty counts, including sessions
-not yet flagged, without migration, reconciliation or generation.
+Status and doctor report persisted ready (`status = 'ready'`) timeline units
+as `pending`, months awaiting replan as `replanMonths` and parked units as `parked`, separately from stale
+nodes and dirty sessions, including sessions not yet flagged. Ready units include
+those in months awaiting replan and those waiting for retry; parked units are
+excluded from pending. Doctor warns about parked units and names the remedy:
+a contributing session must change, then `lcm timeline settle` reconciles that
+change and releases them. Counts use indexed tables without migration, reconciliation or generation.
 Doctor also reports missing or outdated tracking/detach SQL from `sqlite_master`
 read-only and names the repair command.
 Explicit `lcm timeline settle --calls 0 --reconcile full` repairs triggers and conservatively

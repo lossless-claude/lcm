@@ -61,6 +61,30 @@ it("status performs no migration or settle and preserves counts when the timelin
     expect(failed.project).toMatchObject({ messageCount: 1, summaryCount: 1, promotedCount: 1 });
   } finally { migrate.mockRestore(); }
 });
+it("status counts ready timeline units separately from months awaiting replan without writes", async () => {
+  const { cwd, paths, config } = fixture();
+  const db = new DatabaseSync(projectDbPath(cwd, paths));
+  db.exec(`INSERT INTO timeline_months(month, replan) VALUES ('2026-08', 1), ('2026-09', 0);
+    INSERT INTO timeline_units(work_key, level, month, metadata, status, period_to) VALUES
+      ('one', 'digest', '2026-08', '{}', 'ready', '2026-08-01'),
+      ('two', 'digest', '2026-08', '{}', 'ready', '2026-08-02'),
+      ('three', 'digest', '2026-08', '{}', 'ready', '2026-08-03'),
+      ('parked', 'digest', '2026-09', '{}', 'parked', '2026-09-01');`);
+  const tables = ['timeline_units', 'timeline_months', 'timeline_dirty', 'timeline_state'];
+  const before = tables.map(table => db.prepare(`SELECT * FROM ${table}`).all());
+  const schema = db.prepare("SELECT * FROM sqlite_master ORDER BY name").all();
+  const migrate = vi.spyOn(migrations, "runLcmMigrations");
+  const factory = vi.spyOn(summarizers, "createSummarizer");
+  try {
+    const status = await invokeRoute<{ project: unknown }>(createStatusHandler(config, paths, Date.now()), { cwd });
+    expect(status.project).toMatchObject({ timeline: { calls: 0, pending: 3, replanMonths: 1, parked: 1, stale: 0 } });
+    expect(migrate).not.toHaveBeenCalled();
+    expect(factory).not.toHaveBeenCalled();
+    expect(tables.map(table => db.prepare(`SELECT * FROM ${table}`).all())).toEqual(before);
+    expect(db.prepare("SELECT * FROM sqlite_master ORDER BY name").all()).toEqual(schema);
+  } finally { migrate.mockRestore(); factory.mockRestore(); db.close(); }
+});
+
 afterEach(() => dirs.splice(0).forEach(dir => rmSync(dir, { recursive: true, force: true })));
 function fixture() {
   const cwd = mkdtempSync(join(tmpdir(), "lcm-timeline-route-")); dirs.push(cwd);
@@ -308,4 +332,28 @@ it("status uses SQLite table counts plus indexed owner subtraction for ordinary 
       expect(plan.some(row => row.detail.includes("COVERING INDEX") && row.detail.includes("conversation_id=?"))).toBe(true);
     }
   } finally { prepare.mockRestore(); db.close(); }
+});
+
+it("status reads timeline unit and replan counts through covering indexes", async () => {
+  const { cwd, paths, config } = fixture();
+  const statements: string[] = [];
+  const original = DatabaseSync.prototype.prepare;
+  const prepare = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (sql) {
+    statements.push(sql);
+    return original.call(this, sql);
+  });
+  try {
+    await invokeRoute(createStatusHandler(config, paths, Date.now()), { cwd });
+  } finally { prepare.mockRestore(); }
+  const db = new DatabaseSync(projectDbPath(cwd, paths), { readOnly: true });
+  try {
+    for (const table of ["timeline_units", "timeline_months"]) {
+      const queries = statements.filter(sql => sql.includes(`FROM ${table}`) && sql.includes("COUNT(*)"));
+      expect(queries).toHaveLength(table === "timeline_units" ? 2 : 1);
+      for (const sql of queries) {
+        const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{ detail: string }>;
+        expect(plan.some(row => row.detail.includes("COVERING INDEX"))).toBe(true);
+      }
+    }
+  } finally { db.close(); }
 });
