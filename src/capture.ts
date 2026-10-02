@@ -217,7 +217,7 @@ export class SessionCapture {
       throw error;
     });
     if (!stored && delta.messages.length === 0 && delta.checkpoint === undefined && !delta.boundaries?.length) {
-      await this.conversationStore.withTransaction(() => {
+      if (delta.sessionUrlDeclarations?.length) await this.conversationStore.withTransaction(() => {
         if (!workers.excluded(input.sessionId)) recordSessionWebUrls(this.db, input.sessionId, delta.sessionUrlDeclarations ?? []);
       });
       return undefined;
