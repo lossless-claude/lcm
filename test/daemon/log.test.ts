@@ -2,10 +2,16 @@ import { describe, it, expect, afterEach } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { openDaemonLog, readDaemonLog, type DaemonLogOptions } from "../../src/daemon/log.js";
 import { checkDaemonLog } from "../../src/doctor/daemon-log-check.js";
 import { createDaemon, type DaemonInstance } from "../../src/daemon/server.js";
 import { loadDaemonConfig } from "../../src/daemon/config.js";
+import { createIngestHandler } from "../../src/daemon/routes/ingest.js";
+import { invokeRoute } from "../../src/daemon/routes/session-end.js";
+import { createLcmPaths } from "../../src/lcm-paths.js";
+import { projectDbPath } from "../../src/daemon/project.js";
+import { openStandaloneLcmConnection } from "../../src/db/connection.js";
 
 const SECRET = "sk-ant-api03-" + "a".repeat(40);
 const EPOCH = new Date(0);
@@ -72,6 +78,72 @@ describe("daemon log", () => {
     expect(record.err).toMatchObject({ name: "Error" });
     expect(String((record.err as { message: string }).message)).toContain("[REDACTED]");
   });
+
+  it("logs the SQLite throw site and codes of a failed capture without message content", async () => {
+    const opts = options();
+    const paths = createLcmPaths(home);
+    const log = openDaemonLog(opts);
+    await log.prepare(home);
+    const handler = createIngestHandler(loadDaemonConfig("/nonexistent", {
+      summarizer: { mock: true },
+    }), paths, log);
+    await invokeRoute(handler, {
+      cwd: home, session_id: "seed", messages: [{ role: "user", content: "seed", tokenCount: 1 }],
+    });
+    const content = "private captured message";
+    const db = openStandaloneLcmConnection(projectDbPath(home, paths));
+    try {
+      // A real SQLite exception whose message contains data must not copy that data to the log.
+      db.exec(`CREATE TRIGGER fail_capture BEFORE INSERT ON messages
+        BEGIN SELECT RAISE(ABORT, 'private captured message'); END`);
+    } finally { db.close(); }
+
+    await expect(invokeRoute(handler, {
+      cwd: home, session_id: "failed", messages: [{ role: "user", content, tokenCount: 1 }],
+    })).rejects.toThrow("HTTP 500");
+    const records = readDaemonLog(opts.path, { since: EPOCH });
+    const failure = records.find(record => record.event === "ingest.failed");
+    expect(failure).toMatchObject({
+      err: { name: "Error", code: "ERR_SQLITE_ERROR", errcode: 1811, errstr: "constraint failed" },
+    });
+    const err = failure!.err as { stack: string; message?: string };
+    expect(err.stack).toMatch(/src\/store\/conversation-store\.ts:\d+:\d+/);
+    expect(err.stack).toMatch(/src\/daemon\/routes\/ingest\.ts:\d+:\d+/);
+    expect(err.stack.split("\n").every(frame => /^\s+at src\/[\w/.-]+:\d+:\d+$/.test(frame))).toBe(true);
+    expect(err.message).toBeUndefined();
+    expect(JSON.stringify(records)).not.toContain(content);
+    expect(err.stack).not.toContain(home);
+    expect(err.stack).not.toContain("node_modules");
+    expect(err.stack).not.toContain("node:");
+  });
+
+  it.each(["route.failed", "compact.failed", "ingest.subagent_failed"])(
+    "%s keeps only lcm frame locations and omits SQL error data", event => {
+      const opts = options();
+      const source = new URL("../../src/store/conversation-store.ts", import.meta.url);
+      const dependency = new URL("../../src/node_modules/dependency/index.js", import.meta.url);
+      const outside = new URL("../../src-other/capture.ts", import.meta.url);
+      const err = Object.assign(new Error("private message and SQL"), {
+        code: "ERR_SQLITE_ERROR", errcode: 5, errstr: "database is locked",
+        sql: "private SQL", parameters: ["private parameter"],
+      });
+      err.stack = [
+        "Error: private message and SQL", "private continuation",
+        `    at privateLabel (${source.href}:12:34)`,
+        `    at ${fileURLToPath(source)}:56:78`,
+        `    at dependency (${dependency.href}:1:2)`,
+        `    at outside (${outside.href}:3:4)`,
+        "    at read (/private/transcript.jsonl:5:6)",
+        "    at node:internal/process/task_queues:7:8",
+      ].join("\n");
+      openDaemonLog(opts).write("error", event, { err });
+      const [record] = readDaemonLog(opts.path, { since: EPOCH });
+      expect(record.err).toEqual({
+        name: "Error", code: "ERR_SQLITE_ERROR", errcode: 5, errstr: "database is locked",
+        stack: "    at src/store/conversation-store.ts:12:34\n    at src/store/conversation-store.ts:56:78",
+      });
+    },
+  );
 
   it("scrubs identity fields and an error name that is not an identifier", () => {
     const opts = options();
