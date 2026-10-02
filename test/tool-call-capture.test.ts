@@ -161,6 +161,16 @@ describe("tool-call capture and repair", () => {
     expect(calls()[0]).toMatchObject({ outcome: "failed", exit_code: 9 });
   });
 
+  it("a cut-content repair keeps the message's call inputs searchable", async () => {
+    const f = fixture("codex", dir);
+    writeFileSync(path, f.header + line(f.call));
+    await capture.captureTranscript(input("codex"));
+    const messageId = Number(calls()[0].message_id);
+    const stored = String((db.prepare("SELECT content FROM messages WHERE message_id = ?").get(messageId) as { content: string }).content);
+    expect(capture.conversationStore.repairCutMessageContent([{ messageId, storedContent: stored, content: stored }])).toBe(1);
+    expect(capture.conversationStore.searchMessagesSync({ query: "searchable_command", mode: "full_text" })).toHaveLength(1);
+  });
+
   it("scrubs and caps MCP JSON before storing it", async () => {
     writeFileSync(path, line({ message: { role: "assistant", content: [{ type: "tool_use", id: "mcp", name: "mcp__service__query", input: { token: "SECRET_EXAMPLE", value: "x".repeat(3000) } }] } }));
     await capture.captureTranscript(input("claude"));

@@ -472,7 +472,10 @@ export class ConversationStore {
       ON CONFLICT(session_id) DO UPDATE SET rev = rev + 1, dirty = 1, bumped_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`) : undefined;
     const hasFts = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts'").get() !== undefined;
     const removeFts = hasFts ? this.db.prepare("DELETE FROM messages_fts WHERE rowid = ?") : undefined;
-    const addFts = hasFts ? this.db.prepare("INSERT INTO messages_fts(rowid, content) VALUES (?, ?)") : undefined;
+    // Re-index with the message's stored call inputs, as capture indexes them.
+    const addFts = hasFts ? this.db.prepare(`INSERT INTO messages_fts(rowid, content) SELECT ?, ? || COALESCE((
+      SELECT char(10) || group_concat(input, char(10)) FROM transcript_tool_calls WHERE message_id = ?
+    ), '')`) : undefined;
     this.db.exec("BEGIN IMMEDIATE");
     try {
       for (const row of rows) {
@@ -481,7 +484,7 @@ export class ConversationStore {
         }
         markDirty?.run(row.messageId);
         removeFts?.run(row.messageId);
-        addFts?.run(row.messageId, row.content);
+        addFts?.run(row.messageId, row.content, row.messageId);
       }
       this.db.exec("COMMIT");
       return rows.length;

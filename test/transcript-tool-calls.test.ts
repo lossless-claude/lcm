@@ -140,6 +140,11 @@ it("Codex reads outcome text from structured text output blocks", () => {
   expect(record.toolCalls?.[0]).toMatchObject({ outcome: "failed", exitCode: 6 });
 });
 
+it("a Claude exit code counts only on the result's first line", () => {
+  expect(claudeResult("built\nExit code 1 appears in the build log", false)).toMatchObject({ outcome: "succeeded", exitCode: null });
+  expect(claudeResult("Exit code 2\nboom", true)).toMatchObject({ outcome: "failed", exitCode: 2 });
+});
+
 it("known successful exit status wins over refusal-like text printed by a command", () => {
   expect(claudeResult("The user doesn't want to proceed", false)?.outcome).toBe("succeeded");
   const record = parseCodexTranscriptRecord(JSON.stringify({ type: "response_item", payload: { type: "function_call_output", call_id: "call", output: "Process exited with code 0\nFinal output:\nUser rejected exec command" } }));

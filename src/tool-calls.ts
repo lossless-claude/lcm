@@ -81,7 +81,8 @@ type ResultEvidence = { output: string; error?: boolean; details?: Record<string
 
 function resultExitCode(client: string, evidence: ResultEvidence): number | null {
   if (typeof evidence.details?.exitCode === "number" && Number.isSafeInteger(evidence.details.exitCode)) return evidence.details.exitCode;
-  const match = client === "claude" ? evidence.output.match(/^Exit code (-?\d+)\b/m)
+  // Claude puts the exit code on a failed result's first line; a later line is command output.
+  const match = client === "claude" ? evidence.output.match(/^Exit code (-?\d+)\b/)
     : evidence.output.match(/^(?:Process exited with code|Command exited with code|Exit code:?) (-?\d+)\b/m);
   return match ? Number(match[1]) : null;
 }
