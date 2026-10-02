@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { corpusConfigPath, discoverCorpora, groupCorpora, readCorpusConfig } from "../../scripts/bench-corpora.mts";
+import { corpusConfigPath, discoverCorpora, groupCorpora, isExcluded, readCorpusConfig } from "../../scripts/bench-corpora.mts";
 import { projectDir, projectId } from "../../src/daemon/project.js";
 import { createLcmPaths, type LcmPaths } from "../../src/lcm-paths.js";
 
@@ -42,15 +42,15 @@ function writeConfig(text: string): string {
 describe("readCorpusConfig", () => {
   it("holds nothing out and excludes nothing without a file", () => {
     const config = readCorpusConfig(corpusConfigPath(paths), paths);
-    expect([...config.holdout, ...config.exclude]).toEqual([]);
+    expect([...config.holdout, ...config.exclude.under, ...config.exclude.containing]).toEqual([]);
   });
 
-  it("keys project paths on disk, and ingested projects no longer on disk, by project id", () => {
+  it("keys held-out paths by project id and excludes an ingested project no longer on disk", () => {
     mkdirSync(project("held"), { recursive: true });
     ingest(project("removed"));
     const config = readCorpusConfig(writeConfig(JSON.stringify({ holdout: [project("held")], exclude: [project("removed")] })), paths);
     expect([...config.holdout]).toEqual([projectId(project("held"))]);
-    expect([...config.exclude]).toEqual([projectId(project("removed"))]);
+    expect(isExcluded(project("removed"), config.exclude)).toBe(true);
   });
 
   it.each([
@@ -59,7 +59,8 @@ describe("readCorpusConfig", () => {
     ["an empty entry", () => JSON.stringify({ holdout: [""] }), /"holdout" must be a list of absolute project paths/],
     ["a relative path", () => JSON.stringify({ exclude: ["work/private"] }), /"exclude" must be a list of absolute project paths/],
     ["an unexpanded home", () => JSON.stringify({ exclude: ["~/private"] }), /"exclude" must be a list of absolute project paths/],
-    ["a path that matches no project", () => JSON.stringify({ exclude: [project("typo")] }), /neither on disk nor an ingested project/],
+    ["a path that matches no project", () => JSON.stringify({ exclude: [project("typo")] }), /matches no ingested project/],
+    ["an empty name", () => JSON.stringify({ excludeCwdContaining: [""] }), /"excludeCwdContaining" must be a list of non-empty names/],
     ["a list at the top", () => JSON.stringify(["/x"]), /must hold a JSON object/],
     ["malformed JSON", () => "{", /JSON/],
   ])("stops on %s", (_case, text, message) => {
@@ -67,23 +68,59 @@ describe("readCorpusConfig", () => {
   });
 });
 
-describe("discoverCorpora", () => {
-  it("skips an excluded project before reading its meta.json", async () => {
-    ingest(project("kept"));
-    // Read, this meta.json would list "kept" a second time.
-    ingest(project("private"), project("kept"));
-    expect(await discoverCorpora(paths, new Set([projectId(project("private"))]))).toEqual([project("kept")]);
+describe("excluding a repository", () => {
+  const repo = () => project("excluded-repo");
+
+  it("covers worktrees and subdirectories under the path, including ones created after the file was read", async () => {
+    mkdirSync(repo(), { recursive: true });
+    const config = readCorpusConfig(writeConfig(JSON.stringify({ exclude: [repo()] })), paths);
+    ingest(repo());
+    ingest(join(repo(), ".claude", "worktrees", "new"));
+    ingest(join(repo(), "packages", "app"));
+    ingest(project("excluded-repo-sibling"));
+    expect(await discoverCorpora(paths, config.exclude)).toEqual([project("excluded-repo-sibling")]);
   });
 
-  it("drops an excluded project named in LCM_BENCH_CORPORA", async () => {
-    const configured = [project("kept"), project("private")].join(delimiter);
-    expect(await discoverCorpora(paths, new Set([projectId(project("private"))]), configured)).toEqual([project("kept")]);
+  it("covers projects outside the tree whose cwd contains a listed name, on disk or not", async () => {
+    ingest(join(root, "agents", "worktrees", "7c89", "excluded-repo"));
+    ingest(join(root, "tmp", "-work-excluded-repo", "session", "scratchpad"));
+    ingest(project("kept"));
+    const config = readCorpusConfig(writeConfig(JSON.stringify({ excludeCwdContaining: ["excluded-repo"] })), paths);
+    expect(await discoverCorpora(paths, config.exclude)).toEqual([project("kept")]);
+  });
+
+  it("ignores case in paths and names", () => {
+    const exclusion = { under: [project("excluded-repo")], containing: ["other-repo"] };
+    expect(isExcluded(project("Excluded-Repo", "sub"), exclusion)).toBe(true);
+    expect(isExcluded(join(root, "scratch", "-Work-Other-Repo"), exclusion)).toBe(true);
+    expect(isExcluded(project("kept"), exclusion)).toBe(false);
+  });
+
+  it("accepts a path gone from disk while projects under it remain ingested", async () => {
+    ingest(join(repo(), "sub"));
+    const config = readCorpusConfig(writeConfig(JSON.stringify({ exclude: [repo()] })), paths);
+    expect(await discoverCorpora(paths, config.exclude)).toEqual([]);
+  });
+
+  it("stops on a name that no ingested project's cwd contains", () => {
+    ingest(project("kept"));
+    expect(() => readCorpusConfig(writeConfig(JSON.stringify({ excludeCwdContaining: ["no-such-repo"] })), paths))
+      .toThrow(/matches no ingested project/);
+  });
+});
+
+describe("discoverCorpora", () => {
+  const exclusion = () => ({ under: [project("private")], containing: ["secret"] });
+
+  it("drops LCM_BENCH_CORPORA entries under an excluded path or containing an excluded name", async () => {
+    const configured = [project("kept"), project("private", "sub"), project("secret-scratch")].join(delimiter);
+    expect(await discoverCorpora(paths, exclusion(), configured)).toEqual([project("kept")]);
   });
 
   it("excludes a project that is also held out", async () => {
-    const both = new Set([projectId(project("private"))]);
-    const corpora = await discoverCorpora(paths, both, [project("held"), project("private")].join(delimiter));
-    expect(groupCorpora(corpora, "holdout", new Set([...both, projectId(project("held"))]))).toEqual([project("held")]);
+    const corpora = await discoverCorpora(paths, exclusion(), [project("held"), project("private")].join(delimiter));
+    const holdout = new Set([projectId(project("private")), projectId(project("held"))]);
+    expect(groupCorpora(corpora, "holdout", holdout)).toEqual([project("held")]);
   });
 });
 

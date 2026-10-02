@@ -19,13 +19,13 @@
  * from every ingested project whose database is large enough to hold one, less
  * the projects the corpus config excludes.
  */
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { buildBench, runBench } from "../src/bench.js";
-import { projectDbPath, projectDir, projectId } from "../src/daemon/project.js";
+import { projectDbPath, projectDir, projectId, realpathDeep } from "../src/daemon/project.js";
 import { lcmHome } from "../src/lcm-home.js";
 import { createLcmPaths, type LcmPaths } from "../src/lcm-paths.js";
 
@@ -36,7 +36,11 @@ const VALIDATION_FILENAME = ".lcm-bench-validation.json";
 /**
  * The machine owner's corpus split, in `bench-corpora.json` under the lcm home:
  *
- *   { "holdout": ["/path/to/project"], "exclude": ["/path/to/project"] }
+ *   {
+ *     "holdout": ["/path/to/project"],
+ *     "exclude": ["/path/to/repository"],
+ *     "excludeCwdContaining": ["repository-name"]
+ *   }
  *
  * It lives outside the repository, so no tracked file names a project.
  *
@@ -49,52 +53,114 @@ const VALIDATION_FILENAME = ".lcm-bench-validation.json";
  * tuning side: its questions have already been scored across a parameter sweep and
  * cannot serve as unseen.
  *
- * `exclude` lists projects that are never a corpus, in any group: discovery skips
- * their directories before reading anything in them, and an `LCM_BENCH_CORPORA`
- * entry naming one is dropped. A project in both lists is excluded.
+ * The other two keys keep a repository out of every group. One repository is many
+ * lcm projects: each worktree, each subdirectory a session started in and each
+ * agent scratchpad named after it has its own cwd. `exclude` covers a path and
+ * everything under it, so a worktree created inside the repository later is covered
+ * too. `excludeCwdContaining` covers every project whose cwd contains a name, which
+ * reaches agent worktrees and scratchpads outside the tree, even once deleted. The
+ * decision reads a project's meta.json cwd and never opens its database; an
+ * `LCM_BENCH_CORPORA` entry that matches is dropped. Excluded beats held out.
  *
- * Entries are absolute project paths, compared by project id, so two checkouts that
- * share a directory name stay apart. Each one must exist on disk or name an ingested
- * project; anything else (a typo, a relative path, an unexpanded "~") hashes to an id
- * no project has. A missing file holds nothing out and excludes nothing. A malformed
- * file, an unknown key or an entry that matches nothing stops the run: read silently,
- * any of them would grade a project its owner meant to keep out.
+ * `holdout` entries are absolute project paths compared by project id, so two
+ * checkouts that share a directory name stay apart; they stay exact so a new
+ * project under a held-out path cannot move questions already tuned on into the
+ * held-out grade. Every path must be absolute and exist on disk or match an ingested
+ * project; every name must occur in an ingested project's cwd. Anything else (a typo,
+ * a relative path, an unexpanded "~") matches no project. A missing file holds
+ * nothing out and excludes nothing. A malformed file, an unknown key or an entry that
+ * matches nothing stops the run: read silently, any of them would grade a project its
+ * owner meant to keep out.
  */
-export type CorpusConfig = { holdout: ReadonlySet<string>; exclude: ReadonlySet<string> };
+export type CorpusConfig = { holdout: ReadonlySet<string>; exclude: Exclusion };
 
-const CONFIG_KEYS = ["holdout", "exclude"] as const;
+/** Paths whose subtrees are excluded, each in its given and canonical form, and names a cwd must not contain. */
+export type Exclusion = { under: readonly string[]; containing: readonly string[] };
+
+const CONFIG_KEYS = ["holdout", "exclude", "excludeCwdContaining"] as const;
+
+/**
+ * Case is ignored: macOS and Windows file systems usually ignore it, and a cwd
+ * recorded in another casing must not slip past. On a case-sensitive file system
+ * this can only exclude more, never less.
+ */
+export function isExcluded(cwd: string, exclusion: Exclusion): boolean {
+  const forms = [resolve(cwd), realpathDeep(resolve(cwd))].map(form => form.toLowerCase());
+  return forms.some(form =>
+    exclusion.under.some(root => within(form, root.toLowerCase())) ||
+    exclusion.containing.some(name => form.includes(name.toLowerCase())));
+}
+
+function within(path: string, root: string): boolean {
+  const rel = relative(root, path);
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+
+/** The cwd every ingested project's meta.json records. Opens no database. */
+function ingestedCwds(lcmPaths: LcmPaths): string[] {
+  if (!existsSync(lcmPaths.projectsDir)) return [];
+  return readdirSync(lcmPaths.projectsDir).flatMap(entry => readMetaCwd(join(lcmPaths.projectsDir, entry, "meta.json")) ?? []);
+}
+
+function readMetaCwd(meta: string): string | undefined {
+  try {
+    return (JSON.parse(readFileSync(meta, "utf-8")) as { cwd?: string }).cwd || undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export function corpusConfigPath(lcmPaths: LcmPaths): string {
   return join(lcmPaths.home, "bench-corpora.json");
 }
 
-export function readCorpusConfig(file: string, lcmPaths: LcmPaths): CorpusConfig {
+/** The file's object with only known keys, or undefined when there is no file. */
+function readConfigObject(file: string): Record<string, unknown> | undefined {
   let text: string;
   try {
     text = readFileSync(file, "utf-8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { holdout: new Set(), exclude: new Set() };
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
   }
   const parsed: unknown = JSON.parse(text);
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error(`${file} must hold a JSON object with "holdout" and "exclude" lists.`);
+    throw new Error(`${file} must hold a JSON object of project lists.`);
   }
-  const config = parsed as Record<string, unknown>;
-  const unknown = Object.keys(config).filter(key => !(CONFIG_KEYS as readonly string[]).includes(key));
+  const unknown = Object.keys(parsed).filter(key => !(CONFIG_KEYS as readonly string[]).includes(key));
   if (unknown.length > 0) throw new Error(`${file}: unknown key ${unknown.map(key => `"${key}"`).join(", ")}.`);
-  const projectIds = (key: (typeof CONFIG_KEYS)[number]): Set<string> => {
+  return parsed as Record<string, unknown>;
+}
+
+export function readCorpusConfig(file: string, lcmPaths: LcmPaths): CorpusConfig {
+  const config = readConfigObject(file);
+  if (!config) return { holdout: new Set(), exclude: { under: [], containing: [] } };
+  const list =(key: (typeof CONFIG_KEYS)[number], valid: (entry: string) => boolean, shape: string): string[] => {
     const value = config[key] ?? [];
-    if (!Array.isArray(value) || !value.every(entry => typeof entry === "string" && isAbsolute(entry))) {
-      throw new Error(`${file}: "${key}" must be a list of absolute project paths ("~" is not expanded).`);
+    if (!Array.isArray(value) || !value.every(entry => typeof entry === "string" && valid(entry))) {
+      throw new Error(`${file}: "${key}" must be a list of ${shape}.`);
     }
-    const unmatched = value.filter(entry => !existsSync(entry) && !existsSync(projectDir(entry, lcmPaths)));
-    if (unmatched.length > 0) {
-      throw new Error(`${file}: "${key}" names ${unmatched.join(", ")}, neither on disk nor an ingested project.`);
-    }
-    return new Set(value.map(projectId));
+    return value;
   };
-  return { holdout: projectIds("holdout"), exclude: projectIds("exclude") };
+  let cwds: string[] | undefined;
+  const ingested = () => (cwds ??= ingestedCwds(lcmPaths));
+  const requireMatch = (key: string, entries: string[], matches: (entry: string) => boolean): void => {
+    const unmatched = entries.filter(entry => !matches(entry));
+    if (unmatched.length > 0) throw new Error(`${file}: "${key}" entry ${unmatched.join(", ")} matches no ingested project.`);
+  };
+
+  const absolute = 'absolute project paths ("~" is not expanded)';
+  const holdout = list("holdout", isAbsolute, absolute);
+  requireMatch("holdout", holdout, entry => existsSync(entry) || existsSync(projectDir(entry, lcmPaths)));
+  const under = list("exclude", isAbsolute, absolute);
+  const roots = (entry: string): Exclusion => ({ under: [resolve(entry), realpathDeep(resolve(entry))], containing: [] });
+  requireMatch("exclude", under, entry => existsSync(entry) || ingested().some(cwd => isExcluded(cwd, roots(entry))));
+  const containing = list("excludeCwdContaining", entry => entry.length > 0, "non-empty names");
+  requireMatch("excludeCwdContaining", containing, name => ingested().some(cwd => isExcluded(cwd, { under: [], containing: [name] })));
+  return {
+    holdout: new Set(holdout.map(projectId)),
+    exclude: { under: under.flatMap(entry => roots(entry).under), containing },
+  };
 }
 
 export type Group = "tune" | "holdout" | "all";
@@ -149,27 +215,31 @@ const MIN_DB_BYTES = 2 * 1024 * 1024;
 
 /**
  * The corpora to score: `configured` (the `LCM_BENCH_CORPORA` list) when set,
- * otherwise every ingested project under `lcmPaths`, minus `exclude`. Excluded
- * project directories are skipped by name, before their meta.json is read, and
- * the result is filtered again by project id: a cwd whose canonical path changed
- * since ingestion would otherwise reach an excluded database through another
- * directory.
+ * otherwise every ingested project under `lcmPaths`, minus `exclude`. Exclusion
+ * is decided from the cwd alone, so no excluded database is ever opened: the
+ * harness opens only the databases of the cwds returned here.
  */
-export async function discoverCorpora(lcmPaths: LcmPaths, exclude: ReadonlySet<string>, configured?: string): Promise<string[]> {
-  const corpora = configured ? configured.split(delimiter).filter(Boolean) : await ingestedProjects(lcmPaths, exclude);
-  return corpora.filter(cwd => {
-    if (!exclude.has(projectId(cwd))) return true;
-    console.log(`${cwd}: excluded by ${corpusConfigPath(lcmPaths)}`);
-    return false;
-  });
+export async function discoverCorpora(lcmPaths: LcmPaths, exclude: Exclusion, configured?: string): Promise<string[]> {
+  if (configured) {
+    return configured.split(delimiter).filter(Boolean).filter(cwd => {
+      if (!isExcluded(cwd, exclude)) return true;
+      console.log(`${cwd}: excluded by ${corpusConfigPath(lcmPaths)}`);
+      return false;
+    });
+  }
+  const ingested = await ingestedProjects(lcmPaths);
+  const kept = ingested.filter(cwd => !isExcluded(cwd, exclude));
+  if (kept.length < ingested.length) {
+    console.log(`${ingested.length - kept.length} project(s) excluded by ${corpusConfigPath(lcmPaths)}`);
+  }
+  return kept;
 }
 
-async function ingestedProjects(lcmPaths: LcmPaths, exclude: ReadonlySet<string>): Promise<string[]> {
+async function ingestedProjects(lcmPaths: LcmPaths): Promise<string[]> {
   const root = lcmPaths.projectsDir;
   if (!existsSync(root)) return [];
   const found: Array<{ cwd: string; size: number }> = [];
   for (const entry of await readdir(root)) {
-    if (exclude.has(entry)) continue;
     const db = join(root, entry, "db.sqlite");
     const meta = join(root, entry, "meta.json");
     if (!existsSync(db) || !existsSync(meta)) continue;
@@ -180,12 +250,8 @@ async function ingestedProjects(lcmPaths: LcmPaths, exclude: ReadonlySet<string>
       continue;
     }
     if (size < MIN_DB_BYTES) continue;
-    try {
-      const cwd = (JSON.parse(readFileSync(meta, "utf-8")) as { cwd?: string }).cwd;
-      if (cwd && existsSync(projectDbPath(cwd, lcmPaths))) found.push({ cwd, size });
-    } catch {
-      continue;
-    }
+    const cwd = readMetaCwd(meta);
+    if (cwd && existsSync(projectDbPath(cwd, lcmPaths))) found.push({ cwd, size });
   }
   return found.sort((a, b) => b.size - a.size).map(entry => entry.cwd);
 }
@@ -264,7 +330,6 @@ if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToP
   const command = process.argv[2] ?? "run";
   const selected = group();
   const config = readCorpusConfig(corpusConfigPath(paths), paths);
-  if (config.exclude.size > 0) console.log(`excluding ${config.exclude.size} project(s) listed in ${corpusConfigPath(paths)}`);
   const corpora = groupCorpora(await discoverCorpora(paths, config.exclude, process.env.LCM_BENCH_CORPORA), selected, config.holdout);
   if (selected !== "all") console.log(`group: ${selected} (${corpora.length} corpora)\n`);
   if (selected === "tune" && config.holdout.size === 0) {
