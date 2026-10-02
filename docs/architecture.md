@@ -400,7 +400,9 @@ uncompacted and asks `/compact` for them directly, with `skip_ingest: true`
 (`docs/configuration.md#sessionstart-catch-up-sweep`). PreCompact can Capture inside `/compact`, before lcm summarization, with
 separate outcomes for the two operations. `POST /session-end` hands the whole end-of-session sequence to the daemon —
 ingest, then compact, promote and session-complete — after acknowledging with `202`, so a
-host that stops waiting for the hook cannot drop the steps behind it.
+host that stops waiting for the hook cannot drop the steps behind it. Once the entire
+request body has arrived, client disconnection before acknowledgement does not cancel
+the sequence; a request cut short before its body is complete is ignored.
 
 Every route that lands transcript content in `messages` — `/ingest`, the subagent path inside it, and `/compact` — writes through one module, `src/capture.ts` (`SessionCapture`). It owns what "already stored" means (the delta past the message count of the session's conversations), scrubbing, the bulk insert, `context_items`, `message_parts`, redaction counts, the transcript cursors and `session_ingest_log`. `/session-complete` records a session in that log, with its completion time, when the session ends. `/ingest` and `lcm import` skip a Claude Code session so recorded (Codex and OMP always reach capture, whose read may recover a deferred tail) unless its transcript file was modified after that time: a resumed session appends to the same file under the same session id, so its new turns are captured, and completing it again moves the time forward. When the caller passes no attribution and the transcript is a subagent transcript, the module reads the `.meta.json` sidecar itself, so which route sees a session first does not change what is stored about it.
 

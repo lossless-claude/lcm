@@ -142,7 +142,7 @@ describe("dispatchHook", () => {
     vi.mocked(loadDaemonConfig).mockReturnValue({ daemon: { port: 3737 } } as any);
   });
 
-  it("calls ensureBootstrapped with session_id before dispatching non-compact hooks", async () => {
+  it("calls ensureBootstrapped with session_id before dispatching startup hooks", async () => {
     vi.mocked(handleSessionStart).mockResolvedValue({ exitCode: 0, stdout: "" });
     vi.mocked(ensureBootstrapped).mockClear();
     await dispatchHook("restore", JSON.stringify({ session_id: "test-sess-123" }));
@@ -154,6 +154,15 @@ describe("dispatchHook", () => {
     vi.mocked(ensureBootstrapped).mockClear();
     await dispatchHook("compact", JSON.stringify({ session_id: "test-sess-123" }));
     expect(ensureBootstrapped).not.toHaveBeenCalled();
+  });
+
+  it("dispatches SessionEnd without bootstrap, health probing or daemon spawning", async () => {
+    vi.mocked(ensureBootstrapped).mockClear();
+    vi.mocked(handleSessionEnd).mockClear();
+    expect(await dispatchHook("session-end", JSON.stringify({ session_id: "ending" })))
+      .toEqual({ exitCode: 0, stdout: "" });
+    expect(ensureBootstrapped).not.toHaveBeenCalled();
+    expect(handleSessionEnd).toHaveBeenCalledTimes(1);
   });
 
   it("fails open when the session's daemon is unusable: exit 0, empty stdout, handler not called", async () => {

@@ -72,16 +72,18 @@ doctor` and the `lcm daemon start` hint.
 
 ## Fail open, with one line
 
-The first hook of a session runs `ensureCore` and writes its verdict into the
-session's bootstrap flag; every later hook reads the flag back
+The first bootstrapped hook of a session runs `ensureCore` and writes its verdict into the
+session's bootstrap flag; later bootstrapped hooks read the flag back
 (`ensureBootstrapped`, `src/bootstrap.ts`). When the daemon did not start, or is
 newer, the first hook writes one line on stderr naming the command that repairs
 it: `lcm daemon start`, or the update command for this distribution (`claude
 plugin update lcm@lossless-claude` from `bundle/lcm.js`, `npm install -g
 @lossless-claude/lcm@latest` otherwise; `src/hooks/fail-open.ts`). An
-incompatible daemon marks the session unusable: every hook then exits 0 with
-nothing on stdout. `lcm doctor` reports the same three conditions, and checks
-that the installed plugin carries `bundle/lcm.js`.
+incompatible daemon marks the session unusable: bootstrapped hooks then exit 0 with
+nothing on stdout. SessionEnd skips bootstrap and version probing: it submits directly
+to the existing listener with a short response grace and never starts a daemon.
+`lcm doctor` reports the same three conditions, and checks that the installed
+plugin carries `bundle/lcm.js`.
 
 A missing bundle cannot exit 0: node itself exits 1 before lcm runs, since there
 is no launcher any more. That case is reported by `lcm doctor` (`plugin-bundle`)
