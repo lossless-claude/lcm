@@ -29,8 +29,8 @@ async function fixture(count: number, config: Partial<CompactionConfig> = {}, co
     leafChunkTokens: 20_000, condensedTargetTokens: 100,
     ...config,
   });
-  const compact = (summarize: CompactionSummarizeFn) =>
-    engine.compact({ conversationId, tokenBudget: 10_000, summarize, force: true });
+  const compact = (summarize: CompactionSummarizeFn, previousSummaryContent?: string) =>
+    engine.compact({ conversationId, tokenBudget: 10_000, summarize, force: true, previousSummaryContent });
   return { conversations, summaries, messages, compact };
 }
 
@@ -42,6 +42,33 @@ function alwaysCut() {
   const summarize = createProviderChain([() => ({ name: "test", kind: "http", summarizer: async () => adapter })]);
   return { adapter, summarize };
 }
+
+it("threads each left half's summary into the right half, including nested splits", async () => {
+  const { summaries, messages, compact } = await fixture(4);
+  const calls: { sources: number[]; previousSummary?: string }[] = [];
+  const summarize: CompactionSummarizeFn = async (text, _aggressive, options) => {
+    const sources = [...text.matchAll(/message-(\d+):/g)].map(match => Number(match[1]));
+    calls.push({ sources, previousSummary: options?.previousSummary });
+    if (sources.length > 1) throw new SummaryRejectedError({ reason: "length", provider: "test" });
+    return `summary-${sources[0]}`;
+  };
+
+  const result = await compact(summarize, "chunk previous");
+
+  expect(calls).toEqual([
+    { sources: [0, 1, 2, 3], previousSummary: "chunk previous" },
+    { sources: [0, 1], previousSummary: "chunk previous" },
+    { sources: [0], previousSummary: "chunk previous" },
+    { sources: [1], previousSummary: "summary-0" },
+    { sources: [2, 3], previousSummary: "summary-0\n\nsummary-1" },
+    { sources: [2], previousSummary: "summary-0\n\nsummary-1" },
+    { sources: [3], previousSummary: "summary-2" },
+  ]);
+  expect(await summaries.getSummary(result.createdSummaryId!)).toMatchObject({
+    content: "summary-0\n\nsummary-1\n\nsummary-2\n\nsummary-3",
+  });
+  expect(await summaries.getSummaryMessages(result.createdSummaryId!)).toEqual(messages.map(message => message.messageId));
+});
 
 it("a single message cut twice completes at fallback and retains its raw source", async () => {
   const { conversations, summaries, messages, compact } = await fixture(1);

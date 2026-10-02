@@ -15,6 +15,7 @@ import { buildLikeSearchPlan, createFallbackSnippet } from "./full-text-fallback
 import { validateRegex } from "./regex-safety.js";
 
 const TIME_BOUNDS_PAGE_SIZE = 128;
+const CONTEXT_PAGE_SIZE = 128;
 
 export type SummaryKind = "leaf" | "condensed";
 export type ContextItemType = "message" | "summary";
@@ -542,10 +543,13 @@ export class SummaryStore {
   }
 
   async linkSummaryToMessages(summaryId: string, messageIds: number[]): Promise<void> {
-    this.linkSummaryToMessagesSync(summaryId, messageIds);
+    for (let offset = 0; offset < messageIds.length; offset += CONTEXT_PAGE_SIZE) {
+      this.linkSummaryToMessagesSync(summaryId, messageIds.slice(offset, offset + CONTEXT_PAGE_SIZE), offset);
+      await yieldToEventLoop();
+    }
   }
 
-  linkSummaryToMessagesSync(summaryId: string, messageIds: number[]): void {
+  linkSummaryToMessagesSync(summaryId: string, messageIds: number[], ordinalOffset = 0): void {
     if (messageIds.length === 0) {
       return;
     }
@@ -557,15 +561,18 @@ export class SummaryStore {
     );
 
     for (let idx = 0; idx < messageIds.length; idx++) {
-      stmt.run(summaryId, messageIds[idx], idx);
+      stmt.run(summaryId, messageIds[idx], ordinalOffset + idx);
     }
   }
 
   async linkSummaryToParents(summaryId: string, parentSummaryIds: string[]): Promise<void> {
-    this.linkSummaryToParentsSync(summaryId, parentSummaryIds);
+    for (let offset = 0; offset < parentSummaryIds.length; offset += CONTEXT_PAGE_SIZE) {
+      this.linkSummaryToParentsSync(summaryId, parentSummaryIds.slice(offset, offset + CONTEXT_PAGE_SIZE), offset);
+      await yieldToEventLoop();
+    }
   }
 
-  linkSummaryToParentsSync(summaryId: string, parentSummaryIds: string[]): void {
+  linkSummaryToParentsSync(summaryId: string, parentSummaryIds: string[], ordinalOffset = 0): void {
     if (parentSummaryIds.length === 0) {
       return;
     }
@@ -577,7 +584,7 @@ export class SummaryStore {
     );
 
     for (let idx = 0; idx < parentSummaryIds.length; idx++) {
-      stmt.run(summaryId, parentSummaryIds[idx], idx);
+      stmt.run(summaryId, parentSummaryIds[idx], ordinalOffset + idx);
     }
   }
 
@@ -689,15 +696,13 @@ export class SummaryStore {
 
   // ── Context items ─────────────────────────────────────────────────────────
 
-  async getContextItems(conversationId: number): Promise<ContextItemRecord[]> {
-    const rows = this.db
-      .prepare(
-        `SELECT conversation_id, ordinal, item_type, message_id, summary_id, created_at
+  async getContextItems(conversationId: number, options?: { afterOrdinal?: number }): Promise<ContextItemRecord[]> {
+    const rows = this.db.prepare(
+      `SELECT conversation_id, ordinal, item_type, message_id, summary_id, created_at
        FROM context_items
-       WHERE conversation_id = ?
+       WHERE conversation_id = ? ${options?.afterOrdinal != null ? "AND ordinal > ?" : ""}
        ORDER BY ordinal`,
-      )
-      .all(conversationId) as unknown as ContextItemRow[];
+    ).all(...(options?.afterOrdinal != null ? [conversationId, options.afterOrdinal] : [conversationId])) as unknown as ContextItemRow[];
     return rows.map(toContextItemRecord);
   }
 
@@ -1011,28 +1016,27 @@ export class SummaryStore {
         )
         .run(conversationId, startOrdinal, summaryId);
 
-      // 3. Resequence all ordinals to maintain contiguity (no gaps).
-      //    Fetch current items, then update ordinals in order.
-      const items = this.db
-        .prepare(
-          `SELECT ordinal FROM context_items
-         WHERE conversation_id = ?
-         ORDER BY ordinal`,
-        )
-        .all(conversationId) as unknown as { ordinal: number }[];
-
-      const updateStmt = this.db.prepare(
-        `UPDATE context_items
-         SET ordinal = ?
-         WHERE conversation_id = ? AND ordinal = ?`,
-      );
-
-      // Use negative temp ordinals first to avoid unique constraint conflicts
-      for (let i = 0; i < items.length; i++) {
-        updateStmt.run(-(i + 1), conversationId, items[i].ordinal);
-      }
-      for (let i = 0; i < items.length; i++) {
-        updateStmt.run(i, conversationId, -(i + 1));
+      // Page forward through original ordinals; moved rows stay behind the cursor.
+      // Negative ordinals avoid collisions only inside a synchronous page, so
+      // every yield exposes ordered, nonnegative context on this connection.
+      const page = this.db.prepare(`SELECT ordinal FROM context_items
+        WHERE conversation_id = ? AND ordinal > ? ORDER BY ordinal LIMIT ?`);
+      const update = this.db.prepare(`UPDATE context_items SET ordinal = ?
+        WHERE conversation_id = ? AND ordinal = ?`);
+      let afterOrdinal = -1;
+      let nextOrdinal = 0;
+      while (true) {
+        const items = page.all(conversationId, afterOrdinal, CONTEXT_PAGE_SIZE) as unknown as { ordinal: number }[];
+        for (let i = 0; i < items.length; i++) {
+          if (items[i].ordinal !== nextOrdinal + i) update.run(-(i + 1), conversationId, items[i].ordinal);
+        }
+        for (let i = 0; i < items.length; i++) {
+          if (items[i].ordinal !== nextOrdinal + i) update.run(nextOrdinal + i, conversationId, -(i + 1));
+        }
+        if (items.length < CONTEXT_PAGE_SIZE) break;
+        afterOrdinal = items[items.length - 1].ordinal;
+        nextOrdinal += items.length;
+        await yieldToEventLoop();
       }
 
       this.db.exec("COMMIT");
