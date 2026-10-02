@@ -9,7 +9,7 @@ import type { SummarizeJobStore } from "./summarize-jobs.js";
 import { TIMELINE_SESSION_ID, recoverTimelineAdmission } from "../db/project-timeline.js";
 
 const activeTimelines = new Set<string>();
-export const TIMELINE_ADMISSION_ERROR = "Timeline provider chain requires bounded HTTP admission: configure every provider and fallback as a named openai or anthropic endpoint with maxConcurrent";
+export const TIMELINE_ADMISSION_ERROR = "Timeline provider chain requires ordered admission: use session-pool with fallbackProvider disabled, or configure the pool and every fallback through llm.providers with named openai or anthropic endpoints with maxConcurrent";
 export function hasTimelineWork(pid: string): boolean { return activeTimelines.has(pid); }
 
 /** Each acquisition owns a separate queue turn; none encloses a model call. */
@@ -54,12 +54,17 @@ const REPLAY_HOLD_MS = 300_000;
 /** Every possible adapter must provide the same live/background/timeline admission. */
 export function timelineProviderAdmitted(config: DaemonConfig): boolean {
   if (config.summarizer.mock) return true;
-  if (!config.llm.providers) return false;
+  if (!config.llm.providers) return resolveEffectiveProvider(config) === "session-pool" && config.llm.fallbackProvider === "disabled";
   const names = [resolveEffectiveProvider(config), ...(config.llm.fallback ?? [])];
-  const runnable = names.map(name => config.llm.providers![name])
-    .filter(endpoint => !endpoint || !("missingEnv" in endpoint) || !endpoint.missingEnv?.length);
-  return runnable.length > 0 && runnable.every(endpoint =>
-    endpoint && (endpoint.type === "openai" || endpoint.type === "anthropic") && endpoint.maxConcurrent !== undefined);
+  const runnable = names.filter(name => {
+    const endpoint = config.llm.providers![name];
+    return !endpoint || !("missingEnv" in endpoint) || !endpoint.missingEnv?.length;
+  });
+  return runnable.length > 0 && runnable.every(name => {
+    if (name === "session-pool") return true;
+    const endpoint = config.llm.providers![name];
+    return endpoint && (endpoint.type === "openai" || endpoint.type === "anthropic") && endpoint.maxConcurrent !== undefined;
+  });
 }
 
 /** Clock-only admission; counts and diagnostics never enter this path. */

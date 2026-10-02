@@ -56,8 +56,9 @@ claim window. Increasing completion time cannot help those unclaimed jobs.
 ## Dedicated workers and replay
 
 `session-pool` is a separate provider link, using the same rendered-prompt and
-usage protocol as `session`. `SummarizeJobStore.nextWorker` claims the pool FIFO
-atomically, records one active claim per worker id, and releases the claim when
+usage protocol as `session`. `SummarizeJobStore.nextWorker` claims live work first,
+replay/background second and timeline last, FIFO within each class. Claims are
+atomic, record one active claim per worker id, and release the claim when
 it is answered or expires. Session and worker queues and waiters are disjoint.
 `GET /summarize-jobs/next?worker_id=…` selects pool work; `session_id=…` retains
 decision 8 for ordinary sessions. Pool jobs carry `pool: true`, which both worker
@@ -65,7 +66,9 @@ hosts validate before running a prompt. A pool job has the 20-second deadline to
 be claimed, then `llm.poolCompletionMs` / `LCM_POOL_COMPLETION_MS` (default `POOL_COMPLETION_MS`, 3 minutes) to be answered: a replay chunk
 takes a model longer than the 60-second live-session completion deadline. Expiry uses the same
 provider-chain fallback; no persistent queue or additional endpoint semaphore is
-needed, because each polling worker already serializes its calls.
+needed, because each polling worker already serializes its calls. Timeline pool
+jobs retain the reserved `lcm:project-timeline` session binding; their presence
+does not extend the existing claim or completion deadlines of other jobs.
 
 `--replay-provider session-pool` on import or batch compact sends the provider
 selection on only those `/compact` requests. Hook capture paths and requests

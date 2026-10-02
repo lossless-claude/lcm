@@ -20,6 +20,8 @@ import { enableTimeline, TIMELINE_SESSION_ID } from "../../src/db/project-timeli
 import { createDaemon } from "../../src/daemon/server.js";
 import * as summarizers from "../../src/daemon/summarizer.js";
 import * as migrations from "../../src/db/migration.js";
+import { timelineProviderAdmitted, TIMELINE_ADMISSION_ERROR } from "../../src/daemon/project-timeline.js";
+import { SummarizeJobStore } from "../../src/daemon/summarize-jobs.js";
 
 const dirs: string[] = [];
 
@@ -106,6 +108,36 @@ it("replay reset retains and flags a node that references the reset session summ
   db.close();
 });
 
+it.each([false, true])("admits the session pool with only ordered fallbacks (named endpoints %s)", named => {
+  const { paths } = fixture();
+  const config = loadDaemonConfig(paths.configPath, { llm: {
+    provider: "session-pool",
+    ...(named ? { providers: { bounded: { type: "openai", model: "fake", apiKey: "fake", maxConcurrent: 1 } }, fallback: ["bounded"] }
+      : { fallbackProvider: "disabled" }),
+  } }, {});
+  expect(timelineProviderAdmitted(config)).toBe(true);
+});
+
+it("generates timeline nodes through pool jobs bound to the reserved timeline session", async () => {
+  const { cwd, paths } = fixture();
+  const config = loadDaemonConfig(paths.configPath, { llm: { provider: "session-pool", fallbackProvider: "disabled" },
+    summarizer: { mock: false }, timeline: { generationEnabled: true } }, {});
+  const jobs = new SummarizeJobStore();
+  const worker = (async () => {
+    for (let count = 0; count < 2; count++) {
+      const job = await jobs.nextWorker("timeline-worker");
+      expect(job).toMatchObject({ pool: true, session_id: TIMELINE_SESSION_ID, workClass: "timeline" });
+      jobs.answer(job!.id, { text: "The project chose SQLite.", providerId: "session-pool:haiku" });
+    }
+  })();
+  try {
+    await expect(Promise.all([
+      invokeRoute<SettleReport>(createTimelineHandler(config, paths, jobs), { cwd, calls: 2 }),
+      worker,
+    ])).resolves.toMatchObject([{ generated: 2, calls: 2, stopped: "complete" }, undefined]);
+  } finally { jobs.close(); }
+});
+
 it.each(["unbounded", "session-pool", "missing-env"])("refuses %s before timeline work and leaves units and nodes untouched", async provider => {
   const { cwd, paths } = fixture();
   const mock = loadDaemonConfig(paths.configPath, { summarizer: { mock: true }, timeline: { generationEnabled: true } });
@@ -117,14 +149,14 @@ it.each(["unbounded", "session-pool", "missing-env"])("refuses %s before timelin
   const before = tables.map(table => db.prepare(`SELECT * FROM ${table}`).all());
   const config = loadDaemonConfig(paths.configPath, { llm: { provider, ...(provider !== "session-pool" ? { providers: {
     [provider]: { type: "openai", apiKey: provider === "missing-env" ? "\${TIMELINE_TEST_ABSENT_KEY}" : "fake", model: "fake", ...(provider === "missing-env" ? { maxConcurrent: 1 } : {}) },
-  } } : { fallbackProvider: "disabled" }) }, summarizer: { mock: false }, timeline: { generationEnabled: true } });
+  } } : { fallbackProvider: "auto" }) }, summarizer: { mock: false }, timeline: { generationEnabled: true } });
   const enqueue = vi.fn();
   const migrate = vi.spyOn(migrations, "runLcmMigrations");
   const factory = vi.spyOn(summarizers, "createSummarizer");
   try {
     const refusal = await invokeRoute(createTimelineHandler(config, paths, { enqueue } as never), { cwd, calls: 2 }).catch(error => error);
     expect(refusal.status).toBe(409);
-    expect(refusal.message).toBe('HTTP 409: {"error":"Timeline provider chain requires bounded HTTP admission: configure every provider and fallback as a named openai or anthropic endpoint with maxConcurrent"}');
+    expect(refusal.message).toBe(`HTTP 409: ${JSON.stringify({ error: TIMELINE_ADMISSION_ERROR })}`);
     expect(enqueue).not.toHaveBeenCalled();
     expect(migrate).not.toHaveBeenCalled();
     expect(factory).not.toHaveBeenCalled();

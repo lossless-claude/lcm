@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
+import { SessionJobUnclaimedError } from "./llm/provider-chain.js";
 import type { LcmSummarizeFn } from "./llm/types.js";
 import { ensureTimelineOwner, repairTimelineTracking } from "./db/project-timeline.js";
 import { resolveLcmConfig } from "./db/config.js";
@@ -10,7 +11,7 @@ import type { acquireProjectMutation } from "./daemon/project-queue.js";
 export type Lease = Awaited<ReturnType<typeof acquireProjectMutation>>;
 export type SettleReport = {
   generated: number; stale: number; pending: number; calls: number; dirty?: number;
-  stopped: "complete" | "budget" | "deadline" | "conflict" | "model-error";
+  stopped: "complete" | "budget" | "deadline" | "conflict" | "model-error" | "busy";
   failed: Array<{ summaryId?: string; reason: string }>;
 };
 export type TimelineNodeInfo = {
@@ -281,7 +282,8 @@ class Timeline implements ProjectTimeline {
           workClass: "timeline", targetTokens: 900, isCondensed: work.level === "period",
         });
         if (!content.trim()) throw new Error("empty timeline summary");
-      } catch {
+      } catch (error) {
+        if (error instanceof SessionJobUnclaimedError) { report.stopped = "busy"; break; }
         report.failed.push({ reason: "timeline generation failed" }); report.stopped = "model-error";
         await this.fail(unit, work, "generate-failed"); break;
       }

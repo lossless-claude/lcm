@@ -129,10 +129,14 @@ tick, yielding without model calls. Generation starts after bootstrap, waits for
 60 seconds without a newer session bump, and runs at most one unit per project per
 tick. Durable units resume across restarts.
 
-Every admitted provider and fallback must be a named OpenAI or Anthropic HTTP
-endpoint with `maxConcurrent`. Shared endpoint admission places live work first,
-replay/background second and timeline last. Process, live-session, worker-pool
-and unbounded HTTP adapters cannot serve timeline work. Scripted test summarizers
+Every admitted provider and fallback must be `session-pool` or a named OpenAI or
+Anthropic HTTP endpoint with `maxConcurrent`. Shared endpoint and pool admission
+place live work first, replay/background second and timeline last, FIFO within each
+class. The existing `llm.provider` chain selects the timeline provider. Flat pool
+configuration requires `llm.fallbackProvider: "disabled"`; named pool chains may
+fall back only to bounded HTTP endpoints. Pool jobs use `lcm:project-timeline` as
+their session binding and do not extend live or replay deadlines.
+Process, live-session and unbounded HTTP adapters cannot serve timeline work. Scripted test summarizers
 substitute for provider admission. Endpoints with missing environment variables
 are skipped, and admission requires at least one runnable endpoint.
 The `/timeline` route checks admission before database work for generation requests.
@@ -144,6 +148,9 @@ configuration-induced backoff and parking. Legacy units lack failure causes,
 so legacy model failures also receive one retry. A persisted `admission_recovered`
 marker prevents later settles from bypassing model-error or conflict backoff.
 
+Unclaimed pool jobs stop timeline settle as `busy`, leaving failure counts, retry
+deadlines and node flags unchanged for the next tick. Claimed jobs that time out
+remain model errors.
 Model errors and publication conflicts persist exponential backoff, beginning at
 one minute and capped at one hour. Eight failures park a unit until one of its sessions changes.
 Only the latest replay manifest can hold work; an unfinished run's hold expires

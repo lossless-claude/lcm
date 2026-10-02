@@ -370,18 +370,41 @@ when nothing else could proceed.
 Automatic work checks each project every 30 seconds and requires tracking and project
 generation enabled. During bootstrap, each tick seeds at most 256 sessions without
 model calls and yields. After bootstrap, generation waits for 60 seconds without
-a newer session bump. Each tick runs at most one unit. Model errors and publication conflicts back off exponentially
+a newer session bump. Each tick runs at most one unit.
+Unclaimed pool jobs stop timeline settle as `busy`, leaving failure counts, retry
+deadlines and node flags unchanged for the next tick. Claimed jobs that time out
+remain model errors.
+Model errors and publication conflicts back off exponentially
 from one minute to one hour; eight failures park a unit until a contributing session changes. Only
 the latest replay run can hold work, and that hold expires five minutes after its
 last progress. Ordinary ticks drain persisted work once generation is on and replay
 no longer holds it; ledger inserts execute no timeline completion trigger or manifest scan.
 
-Timeline providers and every fallback must be named OpenAI or Anthropic HTTP
-endpoints with `maxConcurrent`. Shared endpoint admission orders live work,
-replay/background and timeline. Process, live-session, session-pool and unbounded
-HTTP providers refuse timeline generation because they cannot enforce that order.
-Endpoints with missing environment variables are skipped; at least one endpoint
-must remain runnable, and every runnable endpoint must have `maxConcurrent`.
+Timeline generation uses the existing `llm.provider` chain. It accepts
+`session-pool` and named OpenAI or Anthropic HTTP endpoints with `maxConcurrent`.
+Both admit live work first, replay/background second and timeline last, FIFO within
+each class, without interrupting jobs already running. A timeline job never starts
+while a higher-class job is waiting. Process, live-session and unbounded HTTP
+providers refuse timeline generation because they cannot enforce that order.
+Endpoints with missing environment variables are skipped; at least one provider
+must remain runnable, and every runnable HTTP endpoint must have `maxConcurrent`.
+
+To use only dedicated workers, select the pool and disable its implicit process
+fallback:
+
+```json
+{
+  "llm": { "provider": "session-pool", "fallbackProvider": "disabled" },
+  "timeline": { "generationEnabled": true }
+}
+```
+
+This also selects the pool for live compaction. For HTTP fallbacks, select
+`llm.provider: "session-pool"`, declare bounded endpoints in `llm.providers`,
+and list them in `llm.fallback`; the pool needs no endpoint entry. Timeline pool
+jobs belong to the reserved `lcm:project-timeline` session, never a real session.
+Their presence does not extend live or replay claim or completion deadlines.
+
 Generation requests check admission before database work and return HTTP 409 with
 configuration guidance, printed verbatim by the CLI. Refusals never flag model
 failures, back off or park units; zero-call reconciliation remains available.
@@ -589,11 +612,16 @@ Anything else fails the pass without trying the next link: a request the endpoin
 
 ### Summarize worker pool
 
-`session-pool` sends the same rendered prompts to dedicated interactive workers. It
-uses a separate FIFO from `session`: an ordinary session can claim only its own
-jobs, and a worker can claim only pool jobs, one at a time. A job no worker claims
+`session-pool` sends the same rendered prompts to dedicated interactive workers.
+Its queues are separate from `session`: an ordinary session can claim only its own
+jobs, and a worker can claim only pool jobs, one at a time. Pool claims serve live
+compaction first, replay/background second and timeline last, FIFO within each
+class. Calls without a class default to live. Running jobs finish without
+interruption; queued lower classes can expire under continuous higher-class work.
+A job no worker claims
 within 20 s, or a claimed job not answered within `llm.poolCompletionMs` (default 180000 ms), falls along the
-configured provider chain; late replies are discarded. With flat configuration it uses `llm.fallbackProvider` (or `auto` when
+configured provider chain; late replies are discarded. Unclaimed timeline jobs instead
+stop as `busy` so the next tick can retry without backoff. With flat configuration it uses `llm.fallbackProvider` (or `auto` when
 unset); with named endpoints it uses `llm.fallback`. Set `fallbackProvider` to
 `disabled` to fail an unavailable pool job without starting a process provider.
 
@@ -902,8 +930,9 @@ no supported transport.
 maximum 2147483647. `LCM_POOL_COMPLETION_MS` overrides it when the daemon loads
 configuration. It bounds time after claim for every pool transport. Jobs have a
 20000 ms queue claim window; session-owned jobs have a fresh 60000 ms completion
-window after claim. Pool expiry falls along the provider chain and discards late
-answers without changing worker admission or permanent capture exclusion. An
+window after claim. Pool expiry falls along the provider chain, except unclaimed
+timeline jobs stop as `busy`. Late answers are discarded without changing worker
+admission or permanent capture exclusion. An
 abandoned worker with a valid owner, cwd and client binding becomes active on its
 next poll; finished bindings and ownerless exclusions cannot regain admission.
 Agent transports are described in

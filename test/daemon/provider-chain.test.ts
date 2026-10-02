@@ -102,7 +102,7 @@ describe("summarizer provider chain", () => {
       await expect(summarize("conversation", false, { sessionId: "live", onFallback })).resolves.toBe("the summary");
 
       expect(onFallback.mock.calls.map(([fallback]) => fallback))
-        .toEqual([{ reason: "job timeout", fromProvider: "session", toProvider: "deepseek" },
+        .toEqual([{ reason: "job unclaimed", fromProvider: "session", toProvider: "deepseek" },
           { reason: expect.stringContaining("summary rejected"), fromProvider: "deepseek", toProvider: "deepseek" },
           { reason: expect.stringContaining("summary rejected"), fromProvider: "deepseek", toProvider: "openrouter" }]);
       expect(endpointsCalled()).toEqual(["deepseek", "deepseek", "openrouter"]);
@@ -280,7 +280,7 @@ describe("the flat llm config, without llm.providers", () => {
 
       await expect(summarize("conversation", false, { sessionId: "live", onFallback })).resolves.toBe("the summary");
 
-      expect(onFallback).toHaveBeenCalledExactlyOnceWith({ reason: "job timeout", fromProvider: "session", toProvider: "openai" });
+      expect(onFallback).toHaveBeenCalledExactlyOnceWith({ reason: "job unclaimed", fromProvider: "session", toProvider: "openai" });
     } finally {
       jobs.close();
     }
