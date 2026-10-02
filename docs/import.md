@@ -82,6 +82,11 @@ mismatches may require the existing rebuild repair first.
 
 Reads page by conversation and sequence through the message index. Writes are
 committed in batches of at most 256 messages, yielding between batches.
+Capture of the same project can continue during the repair. All writable project
+connections wait up to five seconds for another connection's write lock, including
+during connection setup. Capture and pending data migrations reserve the write lock
+before reading, preventing an immediate failure from a stale SQLite snapshot.
+A lock held beyond the timeout still reports `database is locked`.
 Rerunning is idempotent and fills remaining NULL values after interruption or after
 a missing transcript segment is restored. Leaf and condensed summary bounds are
 recomputed in indexed depth/id pages, retaining their text. Tracking marks affected

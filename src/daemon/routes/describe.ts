@@ -1,6 +1,5 @@
-import { existsSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { existsSync } from "node:fs";
+import { openStandaloneLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
 import type { LcmPaths } from "../../lcm-paths.js";
 import { projectDbPath } from "../project.js";
@@ -49,16 +48,16 @@ export function createDescribeHandler(config: DaemonConfig, paths: LcmPaths): Ro
 
     try {
       const dbPath = projectDbPath(source, paths);
-      mkdirSync(dirname(dbPath), { recursive: true });
-      const db = new DatabaseSync(dbPath);
-      runLcmMigrations(db);
-      const convStore = new ConversationStore(db);
-      const summStore = new SummaryStore(db);
-      const engine = new RetrievalEngine(convStore, summStore);
-      const result = await engine.describe(nodeId);
-      const timeline = daemonTimeline(db, source, config, paths).describe(nodeId);
-      db.close();
-      sendJson(res, 200, { node: result && timeline ? { ...result, timeline } : result });
+      const db = openStandaloneLcmConnection(dbPath);
+      try {
+        runLcmMigrations(db);
+        const convStore = new ConversationStore(db);
+        const summStore = new SummaryStore(db);
+        const engine = new RetrievalEngine(convStore, summStore);
+        const result = await engine.describe(nodeId);
+        const timeline = daemonTimeline(db, source, config, paths).describe(nodeId);
+        sendJson(res, 200, { node: result && timeline ? { ...result, timeline } : result });
+      } finally { db.close(); }
     } catch (err) {
       sendJson(res, 200, { node: null, error: err instanceof Error ? err.message : "describe failed" });
     }

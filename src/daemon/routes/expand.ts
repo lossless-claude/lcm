@@ -1,6 +1,5 @@
-import { existsSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { existsSync } from "node:fs";
+import { openStandaloneLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
 import type { LcmPaths } from "../../lcm-paths.js";
 import { projectDbPath } from "../project.js";
@@ -50,16 +49,16 @@ export function createExpandHandler(_config: DaemonConfig, paths: LcmPaths): Rou
 
     try {
       const dbPath = projectDbPath(source, paths);
-      mkdirSync(dirname(dbPath), { recursive: true });
-      const db = new DatabaseSync(dbPath);
-      runLcmMigrations(db);
-      const convStore = new ConversationStore(db);
-      const summStore = new SummaryStore(db);
-      const retrieval = new RetrievalEngine(convStore, summStore);
-      const orchestrator = new ExpansionOrchestrator(retrieval);
-      const result = await orchestrator.expand({ summaryIds: [nodeId], maxDepth: depth, includeMessages: true });
-      db.close();
-      sendJson(res, 200, result);
+      const db = openStandaloneLcmConnection(dbPath);
+      try {
+        runLcmMigrations(db);
+        const convStore = new ConversationStore(db);
+        const summStore = new SummaryStore(db);
+        const retrieval = new RetrievalEngine(convStore, summStore);
+        const orchestrator = new ExpansionOrchestrator(retrieval);
+        const result = await orchestrator.expand({ summaryIds: [nodeId], maxDepth: depth, includeMessages: true });
+        sendJson(res, 200, result);
+      } finally { db.close(); }
     } catch (err) {
       sendJson(res, 200, { expanded: null, error: err instanceof Error ? err.message : "expansion failed" });
     }
