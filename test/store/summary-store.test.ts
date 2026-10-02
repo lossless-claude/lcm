@@ -145,6 +145,51 @@ describe("SummaryStore — context", () => {
     fx = await makeFixture();
   });
 
+  it("reads a complete compaction window including old messages, tools and source ids", async () => {
+    const [first, second] = await appendMessages(fx, ["old", "recent"]);
+    const [tool] = await appendMessages(fx, ["tool output"], "tool");
+    const rows = await fx.store.readContextWindow(fx.convId, 1, { complete: true });
+    expect(rows.map(r => [r.messageId, r.role, r.content])).toEqual([
+      [first.messageId, "user", "old"], [second.messageId, "user", "recent"], [tool.messageId, "tool", "tool output"],
+    ]);
+  });
+
+  it("rejects dangling active roots even when every captured message is rendered", async () => {
+    await appendMessages(fx, ["source"]);
+    fx.db.exec("PRAGMA foreign_keys = OFF");
+    fx.db.prepare("INSERT INTO context_items(conversation_id, ordinal, item_type, summary_id) VALUES (?, 1, 'summary', 'missing')").run(fx.convId);
+    const rows = await fx.store.readContextWindow(fx.convId, 0, { complete: true });
+    expect((await fx.store.readContextCoverage(fx.convId, rows)).valid).toBe(false);
+  });
+
+  it("reads complete legacy raw context but excludes generated compaction events", async () => {
+    const records = await fx.conversations.createMessagesBulk([
+      { conversationId: fx.convId, seq: 0, role: "system", content: "source system", tokenCount: 1 },
+      { conversationId: fx.convId, seq: 1, role: "tool", content: "source tool", tokenCount: 1 },
+      { conversationId: fx.convId, seq: 2, role: "system", content: "compaction bookkeeping", tokenCount: 1 },
+    ]);
+    await fx.conversations.createMessageParts(records[2].messageId, [{ sessionId: "legacy", partType: "compaction", ordinal: 0 }]);
+    const rows = await fx.store.readContextWindow(fx.convId, 0, { complete: true });
+    expect(rows.map(r => [r.role, r.content])).toEqual([["system", "source system"], ["tool", "source tool"]]);
+    expect((await fx.store.readContextCoverage(fx.convId, rows)).capturedMessageIds).toEqual(records.slice(0, 2).map(r => r.messageId));
+  });
+
+  it("proves coverage through condensed active roots and reports a missing raw item", async () => {
+    const [first, second, third] = await appendMessages(fx, ["one", "two", "three"]);
+    await fx.store.insertSummary({ summaryId: "leaf", conversationId: fx.convId, kind: "leaf", content: "leaf", tokenCount: 1 });
+    await fx.store.linkSummaryToMessages("leaf", [first.messageId, second.messageId]);
+    await fx.store.insertSummary({ summaryId: "root", conversationId: fx.convId, kind: "condensed", content: "root", tokenCount: 1 });
+    await fx.store.linkSummaryToParents("root", ["leaf"]);
+    await fx.store.replaceContextRangeWithSummary({ conversationId: fx.convId, startOrdinal: 0, endOrdinal: 1, summaryId: "root" });
+    const rows = await fx.store.readContextWindow(fx.convId, 0, { complete: true });
+    expect(await fx.store.readContextCoverage(fx.convId, rows)).toEqual({
+      capturedMessageIds: [first.messageId, second.messageId, third.messageId],
+      renderedMessageIds: [third.messageId], summaryCoverage: [{ summaryId: "root", messageIds: [first.messageId, second.messageId] }],
+      uncoveredMessageIds: [], valid: true,
+    });
+    expect((await fx.store.readContextCoverage(fx.convId, rows.slice(0, 1))).uncoveredMessageIds).toEqual([third.messageId]);
+  });
+
   it("appendContextMessages then getContextItems returns the messages in order with contiguous ordinals", async () => {
     await fx.store.appendContextMessages(fx.convId, []);
     expect(await fx.store.getContextItems(fx.convId)).toHaveLength(0);

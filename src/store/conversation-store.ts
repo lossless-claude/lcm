@@ -422,6 +422,10 @@ export class ConversationStore {
     return rows.map(toMessageRecord);
   }
 
+  isTimelineSession(sessionId: string): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM conversations WHERE session_id = ? AND is_timeline = 1 LIMIT 1").get(sessionId));
+  }
+
   /** Keyset pages retain session order across clears without sorting or rereading message prefixes. */
   async *sessionMessagePages(sessionId: string, limit: number): AsyncGenerator<MessageRecord[]> {
     const conversations = this.db.prepare(`SELECT conversation_id FROM conversations WHERE session_id = ?

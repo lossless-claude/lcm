@@ -15,7 +15,7 @@ import { sendJson } from "../server.js";
 import type { RouteHandler } from "../server.js";
 import { runLcmMigrations } from "../../db/migration.js";
 import { markSessionCompacted } from "../../db/session-compactions.js";
-import { SessionCapture, STRUCTURED_INGEST_SHAPE, type CaptureResult, type TranscriptCaptureResult } from "../../capture.js";
+import { SessionCapture, STRUCTURED_INGEST_SHAPE, type CaptureResult, type TranscriptCaptureResult, type TranscriptCaptureInput } from "../../capture.js";
 import { EventsDb } from "../../hooks/events-db.js";
 import { withHookWrite } from "../../hooks/write-admission.js";
 import { eventsDbPath } from "../../db/events-path.js";
@@ -33,6 +33,8 @@ import {
 } from "../summarizer.js";
 import { validateCwd } from "../validate-cwd.js";
 import { scheduleProjectLanguageDetection } from "../project-language.js";
+import { readCompactionContext } from "../compaction-context.js";
+import { TIMELINE_SESSION_ID } from "../../db/project-timeline.js";
 
 function fmtN(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
@@ -228,7 +230,7 @@ export function recordCompactLlmUsage(db: DatabaseSync, usage: CompactLlmUsage):
 
 async function captureTranscriptForCompact(
   capture: SessionCapture,
-  input: { sessionId: string; cwd: string; client?: string; transcriptPath?: string },
+  input: TranscriptCaptureInput,
   paths: LcmPaths,
   log: DaemonLog,
 ): Promise<TranscriptCaptureResult | undefined> {
@@ -325,6 +327,13 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       return;
     }
     const captureRequired = input.capture_required === true;
+    const renderContext = input.render_context === true;
+    if (renderContext && (client !== "claude" || !captureRequired || skip_ingest ||
+        !Number.isSafeInteger(input.context_budget_bytes) || input.context_budget_bytes <= 0 || input.context_budget_bytes > 65_536 ||
+        typeof input.capture_through_uuid !== "string" || !input.capture_through_uuid.trim() || input.capture_through_uuid.length > 140)) {
+      sendJson(res, 400, { error: "render_context requires Claude Capture, a UUID boundary and a byte budget of 1..65536" }); return;
+    }
+    const contextStatus = (status: string) => renderContext ? { contextWindow: { version: 1, sessionId: session_id, status } } : {};
     const precompactVerified = input.precompact_verified === true && client === "omp" && skip_ingest === true;
     // skip_ingest also serves post-capture live hooks, which mark their class explicitly.
     const workClass = skip_ingest && !precompactVerified && input.work_class !== "live" ? "background" : "live";
@@ -353,8 +362,8 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       return;
     }
 
-    if (workerExcluded(cwd, session_id, paths, transcript_path)) {
-      sendJson(res, 200, { summary: "", replayOutcome: "skipped", reason: "worker-excluded" }); return;
+    if (session_id === TIMELINE_SESSION_ID || workerExcluded(cwd, session_id, paths, transcript_path)) {
+      sendJson(res, 200, { summary: "", replayOutcome: "skipped", reason: session_id === TIMELINE_SESSION_ID ? "timeline-excluded" : "worker-excluded", ...contextStatus("excluded") }); return;
     }
     const captureOnly = async () => {
       try {
@@ -401,6 +410,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       }, paths, log);
       sendJson(res, 200, {
         skipped: true,
+        ...contextStatus("busy"),
         replayOutcome: "skipped",
         summary: captureRequired || precompactVerified ? "" : "Compaction already in progress for this session.",
         ...(captureRequired ? { captureOutcome, summaryOutcome: { status: "skipped", reason: "busy" } } : {}),
@@ -485,11 +495,15 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           // either way, since compaction needs the row even when nothing was read.
           const capture = new SessionCapture(db, pid, scrubber, paths);
           const { conversationStore, summaryStore } = capture;
+          if (conversationStore.isTimelineSession(session_id)) return { summary: "", replayOutcome: "skipped", reason: "timeline-excluded", ...contextStatus("excluded") };
           const structuredInput = (await conversationStore.getConversationBySessionId(session_id))?.parserShape === STRUCTURED_INGEST_SHAPE;
           let captured: CaptureResult | undefined;
           if (!skip_ingest) {
             try {
-              captured = await captureForCompact(capture, {
+              captured = renderContext ? await captureTranscriptForCompact(capture, {
+                sessionId: session_id, client, cwd, transcriptPath: transcript_path,
+                requireComplete: true, captureThroughUuid: input.capture_through_uuid,
+              }, paths, log) : await captureForCompact(capture, {
                 sessionId: session_id, client, cwd, transcriptPath: transcript_path,
               }, paths, log);
             } catch (err) {
@@ -505,6 +519,12 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
               ? { status: "completed" as const, messages: captured.records.length }
               : { status: "deferred" as const, reason: "no-capture-result" as const }
             : undefined;
+          const verification = (captured as TranscriptCaptureResult | undefined)?.verification;
+          if (renderContext && (!verification?.verified || !verification.complete || !verification.boundaryFound)) return {
+            summary: "", replayOutcome: "skipped", captureOutcome: { status: "deferred", reason: "capture-unverified", ...verification },
+            summaryOutcome: { status: "skipped", reason: "capture-unverified" }, ...contextStatus("capture-unverified"),
+          };
+          if (renderContext && captureOutcome) Object.assign(captureOutcome, { verified: true, complete: true, boundaryFound: true });
           if (captureRequired) {
             log.write("info", "precompact.capture", { cwd, session_id, ...captureOutcome });
             if (captured) captureOutcomeForError = captureOutcome as { status: "completed"; messages: number };
@@ -526,6 +546,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             // A replay ledgers this as done; otherwise every later run sees a gap here.
             return {
               summary: "No messages to compact.", replayOutcome: "no_work", providerId: effectiveProvider, providerLabel,
+              ...(renderContext ? { contextWindow: await readCompactionContext(summaryStore, conversation.conversationId, session_id, input.context_budget_bytes) } : {}),
               ...(captureRequired ? { captureOutcome, summaryOutcome: { status: "skipped", reason: "no-work" } } : {}),
             };
           }
@@ -750,6 +771,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
 
           return {
             summary: summaryMsg,
+            ...(renderContext ? { contextWindow: await readCompactionContext(summaryStore, conversation.conversationId, session_id, input.context_budget_bytes) } : {}),
             latestSummaryContent,
             latestSummaryId,
             latestSummaryIds,
@@ -830,6 +852,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           : undefined;
       sendJson(res, err instanceof TranscriptSourceError ? 400 : 500, {
         error: err instanceof Error ? err.message : "compact failed",
+        ...contextStatus("capture-unverified"),
         ...(captureRequired ? {
           captureOutcome: captureOutcomeForError ?? { status: "failed", reason: "capture-error" },
           summaryOutcome: captureOutcomeForError?.status === "completed"

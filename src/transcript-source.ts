@@ -47,6 +47,9 @@ export interface TranscriptLocator {
   source?: "live" | "import";
   /** Repairs leave missing transcripts unknown rather than refusing the request. */
   allowMissing?: boolean;
+  /** Claude compaction requires a verified, fully consumed snapshot through this UUID. */
+  requireComplete?: boolean;
+  captureThroughUuid?: string;
 }
 
 /** What is already stored for the session, as an adapter needs it to find the delta. */
@@ -90,6 +93,7 @@ export interface ConversationBoundary {
 export interface TranscriptDelta {
   /** Messages from `sourceOffset` onwards. */
   messages: ParsedMessage[];
+  verification?: { verified: boolean; complete: boolean; boundaryFound: boolean };
   /** Full file-order history when a repair must account for abandoned OMP branches. */
   eventTimeCandidates?: ParsedMessage[];
   /** The clears among `messages`, in order. Absent for a client whose clear starts a new session instead. */
@@ -223,7 +227,11 @@ const claudeSource: TranscriptSource = {
     }
     let delta: Awaited<ReturnType<typeof readClaudeTranscriptDelta>>;
     try {
-      delta = await readClaudeTranscriptDelta(path, { cursor: prior, includeTrailingRecord: true });
+      delta = await readClaudeTranscriptDelta(path, { cursor: prior, includeTrailingRecord: true,
+        ...(ctx.requireComplete ? { recordMatches: (record: string) => {
+          try { return JSON.parse(record).uuid === ctx.captureThroughUuid; } catch { return false; }
+        } } : {}),
+      });
     } catch (error) {
       throw new TranscriptSourceError(error instanceof Error ? error.message : "invalid transcript");
     }
@@ -261,6 +269,8 @@ const claudeSource: TranscriptSource = {
     }
     return {
       messages: delta.resumed ? messages : messages.slice(storedCount),
+      ...(ctx.requireComplete ? { verification: { verified: validated, complete: delta.complete,
+        boundaryFound: Boolean(ctx.captureThroughUuid && delta.recordMatched) } } : {}),
       sourceOffset: storedCount,
       restampParserShape,
       // Without a stable redaction identity, the next capture must compare the prefix again.

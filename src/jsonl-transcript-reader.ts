@@ -13,7 +13,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { open, type FileHandle } from "node:fs/promises";
+import { open, stat, type FileHandle } from "node:fs/promises";
 import type { ParsedMessage } from "./transcript.js";
 
 const READ_CHUNK_BYTES = 64 * 1024;
@@ -67,12 +67,16 @@ export interface ReadJsonlTranscriptDeltaOptions {
   cursor?: JsonlTranscriptCursor;
   /** Include and strictly validate a final record without a trailing newline. */
   includeTrailingRecord: boolean;
+  /** Optional transient boundary proof, including records behind a resumed cursor. */
+  recordMatches?: (record: string) => boolean;
 }
 
 export interface JsonlTranscriptDelta<M, R = JsonlTranscriptRecord<M>> {
   messages: ParsedMessage[];
   cursor: JsonlTranscriptCursor;
   resumed: boolean;
+  complete: boolean;
+  recordMatched?: boolean;
   sessionMeta: M;
   /** The delta's records in file order; present only for a format that selects its messages. */
   records?: R[];
@@ -349,14 +353,25 @@ export async function readJsonlTranscriptDelta<M, R extends JsonlTranscriptRecor
     const sessionMeta = format.hasSessionMeta === false ? undefined : await readSessionMeta(handle, format, snapshotSize);
     const startOffset = resumed ? options.cursor!.offset : 0;
 
+    let recordMatched = false;
+    const checkedFormat = options.recordMatches ? { ...format, parseRecord: (record: string) => {
+      recordMatched ||= options.recordMatches!(record);
+      return format.parseRecord(record);
+    } } : format;
     const scan = await scanRecords(
       handle,
-      format,
+      checkedFormat,
       startOffset,
       snapshotSize,
       options.includeTrailingRecord,
       resumed ? options.cursor!.recordBoundary : startOffset === 0,
     );
+    if (options.recordMatches && !recordMatched && startOffset > 0) {
+      await scanRecords(handle, { ...format, selectMessages: undefined, parseRecord: (record: string) => {
+        recordMatched ||= options.recordMatches!(record);
+        return {} as R;
+      } }, 0, startOffset, true, true);
+    }
     const initialMessageCount = resumed ? options.cursor!.messageCount : 0;
     const checkpointBefore = await fingerprintPrefix(handle, scan.offset, format);
     const guardAfter = scan.offset === guardOffset
@@ -384,6 +399,9 @@ export async function readJsonlTranscriptDelta<M, R extends JsonlTranscriptRecor
         fingerprint,
       },
       resumed,
+      complete: scan.offset === snapshotSize && (!options.recordMatches || await stat(transcriptPath, { bigint: true })
+        .then(now => now.size === stats.size && now.dev === stats.dev && now.ino === stats.ino, () => false)),
+      ...(options.recordMatches ? { recordMatched } : {}),
       sessionMeta: sessionMeta ?? ({} as M),
     };
   } finally {

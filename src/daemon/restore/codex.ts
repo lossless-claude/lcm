@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { ConversationStore } from "../../store/conversation-store.js";
 import { SummaryStore } from "../../store/summary-store.js";
 import { fitRecentContextItems } from "./budget.js";
+import { renderContextItems } from "./context-items.js";
 
 /**
  * Codex's recent context: the conversation's context items — summaries and the last
@@ -38,10 +39,7 @@ export async function readCodexContext(
 
   if (!conversation || rows.length === 0) return "";
 
-  const speaker = (role: string | null) => (role === "assistant" ? "Assistant" : "User");
-  const items = rows.map((row) => row.itemType === "summary"
-    ? `Summary [${row.summaryId}]:\n${row.content}`
-    : `${speaker(row.role)}:\n${row.content}`);
+  const items = renderContextItems(rows);
   const tag = isCurrentSession ? "recent-session-context" : "recent-project-context";
   return fitRecentContextItems(items, tag, byteBudget);
 }

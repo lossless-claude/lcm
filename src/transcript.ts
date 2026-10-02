@@ -1,4 +1,5 @@
 import { isWorkerClaim, workerPayloadJobIds } from "./worker-markers.js";
+import { isCompactionContext } from "./compaction-context.js";
 import { readFileSync } from "node:fs";
 
 /** Bump when the Claude parser changes the rows or fields a transcript yields. */
@@ -210,6 +211,9 @@ export function parseClaudeTranscriptRecord(record: string, toolShape: "current"
     const role = roleOf(entryRole, obj.message?.content);
     const content = role === "tool" ? toolContent(blocks, toolShape === "legacy") : extractText(obj.message?.content);
     if (!content.trim()) return { toolUseModels: models };
+    // Generated envelopes are control rows; their source content is already captured.
+    if (role === "user" && isCompactionContext(content) &&
+        (typeof obj.message?.content === "string" || blocks.every(block => block.type === "text"))) return { toolUseModels: models };
     const parts = [...extractSkillParts(blocks), ...extractCommandParts(content)];
     const workerClaims = blocks.filter(block => block.type === "tool_use" && isWorkerClaim(block.name, block.input))
       .map(block => block.id).filter((id): id is string => Boolean(id));
