@@ -206,7 +206,8 @@ jq -c 'select(.cwd == "/path/to/project")' ~/.lossless-claude/logs/daemon.log*
 - **Requests**: one `request` record per request, with its route, status and duration. `/session-end`, `/compact` and `/session-start-compact` are logged at `info`, so a `/session-end` with no `/compact` after it is visible. `/tool-event`, `/health` and `/summarize-jobs/*` are logged at `debug`. A 5xx is logged at `error`, and a 4xx at `warn`. At `debug`, each request also gets a `request.start` record (route, `cwd`, `session_id`) when its body has been read, so a request that never completes still leaves a trace.
 - **Outcomes**: `compact.done`, `compact.skipped` (`reason`: `already-compacting`, `disabled`, `no_work`, `auto-compact-disabled`), `compact.sweep`, `promote.done` and `session_end.ingested`.
 - **Transcript scan**: `scan.missing_cwd` (`debug`) reports the `sessions` skipped because their working directory no longer exists, once per scan with skipped candidates. They are eligible again when the directory returns.
-- **Failures**: `route.failed`, `compact.failed`, `promote.failed`, `daemon_request.failed` (a follow-up request the daemon could not send to itself), `ingest.subagent_failed`, `daemon.crash` (with its scrubbed stack), `summarizer.fallback` (`from_provider` produced no summary, so `to_provider` summarized instead; the same endpoint at both ends when it is asked again after stopping at the output cap), and `summarizer.endpoint_unavailable` at startup, once per named endpoint left out because `missing_env` is unset.
+- **Failures**: `ingest.failed`, `route.failed`, `compact.failed`, `promote.failed`, `daemon_request.failed` (a follow-up request the daemon could not send to itself), `ingest.subagent_failed`, `daemon.crash` (with its scrubbed stack), `summarizer.fallback` (`from_provider` produced no summary, so `to_provider` summarized instead; the same endpoint at both ends when it is asked again after stopping at the output cap), and `summarizer.endpoint_unavailable` at startup, once per named endpoint left out because `missing_env` is unset.
+  Errors serialized in `err` include a scrubbed `stack` when lcm frames are available: only source-relative file locations, lines and columns are retained, without error headers, function labels, dependency frames or absolute path prefixes. Compiled code uses `src/*.js` locations; a plugin bundle retains only its own `bundle/*.js` locations. SQLite errors include `code` and, when present, numeric `errcode` and scrubbed `errstr`. Their `message` is omitted because it can contain SQL or captured text; SQL parameters and other error properties are not serialized. Stack and string fields follow the project scrubber's existing omission rules while its patterns are pending or unavailable.
 - **Continuity**:
   - `daemon.start` records `prev`: `clean` when the previous daemon left a `daemon.stop`, `unclean` when it did not, and `none` for the first log.
   - `daemon.stop` is written on idle shutdown, SIGTERM, SIGINT and an uncaught exception. `lcm daemon stop` sends SIGTERM.
@@ -347,15 +348,26 @@ commit pass under the project queue and mutation lease. Disable the commit pass 
 
 The setting leaves transcript repair, existing references and anchors intact.
 There is no automatic git scan or remote fetch. References require a hash in stored
-`git commit` output (normal, root-commit or detached-HEAD), or an exact stored web session URL matching a commit's
-`Claude-Session:` trailer. Trailer evidence creates one link per session and commit;
-its representative message is never used for dating. Only messages whose own commit
+`git commit` output (normal, root-commit or detached-HEAD), or a commit's
+`Claude-Session:` trailer equal to a web URL declared by that session's main-chain
+Claude `remote_session_change` attachment. Hook capture, import and the transcript
+backfill store declarations in `session_web_urls`; incremental hook reads record new
+declarations too. Sidechain attachments declare nothing and attachments create no message.
+Stored message content, tool output and prompts are never scanned for trailer URLs.
+Several sessions declaring one URL all link. Trailer evidence creates one link per session and commit;
+its representative message is never used for dating. Each run scans trailer history once
+per session and exact URL. Stored references are refreshed at the start of the run;
+trailer discovery does not verify already linked commits again. Only messages whose own commit
 output names exactly one distinct, resolvable commit receive its committer time when
 unknown, recorded with source `commit`; multiple outputs stay unknown. The first enabled
 pass repairs legacy duplicate trailer links and trailer-only or ambiguous anchors once,
 recomputing affected summary bounds. The author date is reference metadata only. Hashes from `git log`, `git show`,
 bare hex lines and hex-looking words create no reference or event-time anchor. Describe shows the references
 on sessions, summaries and timeline nodes. See [import repair](import.md#event-timestamps-and-existing-history).
+
+A separate one-time identity repair deletes all existing `session-trailer` links and
+re-derives them from declared URLs. A session with no declaration keeps no trailer link.
+This repair changes no event times or summary bounds.
 
 ### Project timeline opt-in
 
@@ -435,10 +447,15 @@ once, including those blocked by missing environment variables. Legacy failures
 lack a recorded cause, so legacy model failures also receive one retry. Later
 failures retain their persisted backoff and parking.
 
-`lcm status` and `lcm doctor` read pending/stale/dirty counts without migration or
-settle, including dirty sessions not yet flagged. Ordinary counts remain available
+`lcm status` and `lcm doctor` separately report ready timeline units (`pending`),
+months awaiting replan (`replanMonths`) and parked units (`parked`), plus stale nodes and dirty sessions,
+without migration or settle. Ready units include those in months awaiting replan
+and those waiting for retry; parked units are excluded from pending. Doctor warns
+when units are parked: a contributing session must change, then
+`lcm timeline settle` reconciles that change and releases them. Timeline counts read
+indexed tables, including dirty sessions not yet flagged. Ordinary counts remain available
 on unmigrated read-only stores. Failed ordinary counts print `unavailable` in the
-CLI; zero remains zero. Counts use SQLite table counts minus indexed owner counts.
+CLI; zero remains zero. Ordinary counts use SQLite table counts minus indexed owner counts.
 Historical timeline nodes remain readable by id unless explicitly removed.
 Doctor also checks tracking/detach SQL in `sqlite_master` read-only and reports
 missing or outdated triggers with `lcm timeline settle --calls 0 --reconcile full`.

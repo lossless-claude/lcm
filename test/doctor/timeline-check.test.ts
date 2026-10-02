@@ -43,3 +43,29 @@ it("doctor reports missing and outdated triggers read-only before migration repa
     expect(await checkProjectTimeline(deps as never, 1000)).toMatchObject({ status: "pass" });
   } finally { db.close(); }
 });
+
+it.each([[3, 1, 0, "warn"], [0, 2, 0, "warn"], [0, 0, 1, "warn"], [0, 0, 0, "pass"]])(
+  "doctor separates %s pending units, %s months awaiting replan and %s parked units",
+  async (pending, replanMonths, parked, status) => {
+    const paths = createLcmPaths(process.env.LCM_HOME!);
+    const path = projectDbPath("/counts", paths);
+    mkdirSync(dirname(path), { recursive: true });
+    const db = new DatabaseSync(path);
+    try {
+      runLcmMigrations(db);
+      const fetch = vi.fn(async () => ({ ok: true, json: async () => ({ project: {
+        timeline: { calls: 0, stale: 0, dirty: 0, pending, replanMonths, parked },
+      } }) }));
+      const deps = { cwd: "/counts", lcmHome: paths.home, existsSync, readFileSync: () => "test-token", fetch };
+      const report = await checkProjectTimeline(deps as never, 1000);
+      expect(report.status).toBe(status);
+      expect(report.message).toContain(`${pending} pending units, ${replanMonths} months awaiting replan, ${parked} parked units`);
+      if (parked) {
+        expect(report.message).toContain("contributing session changes");
+        expect(report.message).toContain("lcm timeline settle");
+      }
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(fetch.mock.calls[0][0]).toBe("http://127.0.0.1:1000/status");
+    } finally { db.close(); }
+  },
+);

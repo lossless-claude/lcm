@@ -1,4 +1,4 @@
-import { DatabaseSync } from "node:sqlite";
+import { openStandaloneLcmConnection } from "../../db/connection.js";
 import { projectDbPath } from "../project.js";
 import { openProject } from "../project-group.js";
 import { sendJson } from "../server.js";
@@ -24,9 +24,8 @@ export function createSessionCompleteHandler(paths: LcmPaths): RouteHandler {
       return;
     }
     openProject(cwd, paths);
-    const db = new DatabaseSync(projectDbPath(cwd, paths));
+    const db = openStandaloneLcmConnection(projectDbPath(cwd, paths));
     try {
-      db.exec("PRAGMA busy_timeout = 5000");
       runLcmMigrations(db);
       markSessionComplete(db, session_id, message_count ?? 0);
       sendJson(res, 200, { recorded: true });

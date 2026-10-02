@@ -1,6 +1,5 @@
-import { existsSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { existsSync } from "node:fs";
+import { openStandaloneLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
 import type { LcmPaths } from "../../lcm-paths.js";
 import { projectDbPath } from "../project.js";
@@ -34,11 +33,10 @@ export function createRecentHandler(_config: DaemonConfig, paths: LcmPaths): Rou
         sendJson(res, 200, { summaries: [] });
         return;
       }
-      mkdirSync(dirname(dbPath), { recursive: true });
-      const db = new DatabaseSync(dbPath);
-      runLcmMigrations(db);
+      const db = openStandaloneLcmConnection(dbPath);
       let summaries;
       try {
+        runLcmMigrations(db);
         summaries = await new SummaryStore(db).listRecent(limit);
       } finally {
         db.close();

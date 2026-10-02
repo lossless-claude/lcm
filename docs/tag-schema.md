@@ -95,8 +95,9 @@ counted, not to be recalled as a memory in its own right.
 
 ## Passive promotion
 
-Every passive promotion has a `type:` tag, using the same mapping for new events and the
-legacy-row migration (see [Passive Learning](passive-learning.md#promotion-tags)):
+Every passive promotion has a `type:` tag. New events use the mapping below
+(see [Passive Learning](passive-learning.md#promotion-tags)); legacy-row migration uses
+the same mapping, with legacy intent categories mapped to `type:workflow`.
 
 | Event category | Type tag |
 |----------------|----------|
@@ -105,7 +106,8 @@ legacy-row migration (see [Passive Learning](passive-learning.md#promotion-tags)
 | `error` | `type:gotcha` |
 | `role`, `context` | `type:user-context` |
 | `env` | `type:environment` |
-| `git`, `intent`, `task`, `security` | `type:workflow` |
+| `git`, `task`, `security` | `type:workflow` |
+| `intent` | Not promoted |
 | `file`, `mcp`, `skill`, `subagent`, unknown | `type:pattern` |
 
 Correlated error→fix events use `type:solution` instead. `category:` is no longer written
@@ -113,3 +115,6 @@ by passive promotion. The migration removes it only from `source:passive-capture
 adding the mapped type only if no type already exists; explicitly stored memories keep
 their tags. It also normalizes JSON-string tag encodings to arrays of strings. New insert
 and update writes require arrays of strings.
+
+Intent events remain session metadata. A separate one-time repair removes old
+passive-capture memories containing only an exact intent label, preserving manual memories.

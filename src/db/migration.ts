@@ -728,8 +728,15 @@ function backfillPromotedTagsOnce(db: DatabaseSync, fts5Available: boolean): voi
   )`);
   if (db.prepare("SELECT 1 FROM promoted_tags_backfill WHERE id = 1").get()) return;
 
-  db.exec("SAVEPOINT promoted_tags_backfill");
+  // Reserve the write lock before reading: a deferred read-to-write upgrade
+  // can return SQLITE_BUSY without running the connection's busy handler.
+  db.exec("BEGIN IMMEDIATE");
   try {
+    // Another connection may have completed the repair while the lock waited.
+    if (db.prepare("SELECT 1 FROM promoted_tags_backfill WHERE id = 1").get()) {
+      db.exec("COMMIT");
+      return;
+    }
     const update = db.prepare("UPDATE promoted SET tags = ? WHERE rowid = ?");
     const removeFts = fts5Available ? db.prepare("DELETE FROM promoted_fts WHERE rowid = ?") : null;
     const insertFts = fts5Available ? db.prepare("INSERT INTO promoted_fts(rowid, content, tags) VALUES (?, ?, ?)") : null;
@@ -751,10 +758,41 @@ function backfillPromotedTagsOnce(db: DatabaseSync, fts5Available: boolean): voi
       if (archived_at === null) insertFts?.run(rowid, content, normalized);
     }
     db.prepare("INSERT INTO promoted_tags_backfill (id) VALUES (1)").run();
-    db.exec("RELEASE promoted_tags_backfill");
+    db.exec("COMMIT");
   } catch (err) {
-    db.exec("ROLLBACK TO promoted_tags_backfill");
-    db.exec("RELEASE promoted_tags_backfill");
+    db.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+/** Remove bare prompt labels only when passive-capture provenance establishes their origin. */
+function removePassiveIntentLabelsOnce(db: DatabaseSync, fts5Available: boolean): void {
+  db.exec(`CREATE TABLE IF NOT EXISTS passive_intent_repair (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    completed_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
+  if (db.prepare("SELECT 1 FROM passive_intent_repair WHERE id = 1").get()) return;
+
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (db.prepare("SELECT 1 FROM passive_intent_repair WHERE id = 1").get()) {
+      db.exec("COMMIT");
+      return;
+    }
+    const remove = db.prepare("DELETE FROM promoted WHERE rowid = ?");
+    const removeFts = fts5Available ? db.prepare("DELETE FROM promoted_fts WHERE rowid = ?") : null;
+    for (const row of db.prepare(`SELECT rowid, tags FROM promoted
+      WHERE content IN ('implement', 'investigate', 'review', 'refactor')
+        AND session_id IS NOT 'manual'`).iterate()) {
+      const { rowid, tags } = row as { rowid: number; tags: string };
+      if (!legacyPromotedTags(tags)?.includes("source:passive-capture")) continue;
+      removeFts?.run(rowid);
+      remove.run(rowid);
+    }
+    db.prepare("INSERT INTO passive_intent_repair (id) VALUES (1)").run();
+    db.exec("COMMIT");
+  } catch (err) {
+    db.exec("ROLLBACK");
     throw err;
   }
 }
@@ -914,7 +952,10 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
   if (!messageColumns.some(column => column.name === "event_time_source")) {
     db.exec("ALTER TABLE messages ADD COLUMN event_time_source TEXT");
   }
-  db.exec(`CREATE TABLE IF NOT EXISTS session_commits (
+  db.exec(`CREATE TABLE IF NOT EXISTS session_web_urls (
+    session_id TEXT NOT NULL, url TEXT NOT NULL, PRIMARY KEY(session_id, url)
+  );
+  CREATE TABLE IF NOT EXISTS session_commits (
     session_id TEXT NOT NULL, message_id INTEGER NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
     hash TEXT NOT NULL, subject TEXT, author_at TEXT, committed_at TEXT, branch TEXT, resolved INTEGER NOT NULL CHECK(resolved IN (0, 1)),
     evidence TEXT NOT NULL CHECK(evidence IN ('commit-output', 'session-trailer')), evidence_value TEXT NOT NULL,
@@ -1117,6 +1158,7 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
   const fts5Available = options?.fts5Available ?? getLcmDbFeatures(db).fts5Available;
   if (!fts5Available) {
     backfillPromotedTagsOnce(db, false);
+    removePassiveIntentLabelsOnce(db, false);
     return;
   }
 
@@ -1138,6 +1180,7 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
   }
 
   backfillPromotedTagsOnce(db, true);
+  removePassiveIntentLabelsOnce(db, true);
 
   // FTS5 virtual tables for full-text search (cannot use IF NOT EXISTS, so check manually)
   const hasFts = db

@@ -63,6 +63,18 @@ describe("function-hook restore context", () => {
     expect((await fire()).blocks).toEqual(coreBlocks);
   });
 
+  it("renders identical passive insight content once, preserving the first occurrence", async () => {
+    const { fire } = await start({ context: "ctx", insights: [
+      { content: "Prefer pnpm", confidence: 0.8, tags: [] },
+      { content: "Prefer pnpm", confidence: 0.2, tags: ["type:pattern"] },
+      { content: "Use SQLite", confidence: 0.6, tags: [] },
+    ] });
+    const text = (await fire()).blocks.at(-1).text;
+    expect(text.match(/- Prefer pnpm/g)).toHaveLength(1);
+    expect(text).toContain("- Prefer pnpm (confidence: 0.8)");
+    expect(text).toContain("- Use SQLite (confidence: 0.6)");
+  });
+
   it("leaves the core blocks alone when the daemon is unreachable", async () => {
     const { fire } = await start(null, { status: 500 });
     expect((await fire()).blocks).toEqual(coreBlocks);

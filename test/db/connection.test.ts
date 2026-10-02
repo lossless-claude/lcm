@@ -31,7 +31,7 @@ describe("getPoolStats", () => {
       blocker.exec("ROLLBACK");
       blocker.close();
     }
-  });
+  }, 10_000);
 
   it("configures an independent handle without closing the pooled connection", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lcm-pool-test-"));

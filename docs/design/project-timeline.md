@@ -160,8 +160,13 @@ drain persisted work once generation is on and replay no longer holds it; ledger
 inserts execute no timeline completion trigger or manifest scan. Timeline failures
 cannot undo committed replay progress.
 
-`lcm status` and `lcm doctor` are read-only: they report pending, stale and dirty
-sessions, including dirt not yet reflected in node flags. They never migrate,
+`lcm status` and `lcm doctor` are read-only: they report ready timeline units
+(`pending`), months awaiting replan (`replanMonths`) and parked units (`parked`) as separate counts, plus
+stale nodes and dirty sessions, including dirt not yet reflected in node flags.
+Ready units include those in months awaiting replan and those waiting for retry;
+parked units are excluded from pending. Doctor warns about parked units: a
+contributing session must change, then `lcm timeline settle` reconciles that
+change and releases them. Unit status and month replan counts use covering indexes. They never migrate,
 repair triggers, reconcile or settle. Ordinary status counts work on unmigrated
 read-only stores. Failed counts print `unavailable`, and ordinary counts use
 SQLite table counts minus indexed owner counts. Conservative full reconciliation requires an

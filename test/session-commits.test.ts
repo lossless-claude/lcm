@@ -53,6 +53,25 @@ function fixtureCommit(dir: string, message = "Fixture change", authorTime = 161
   return hash;
 }
 
+it.each(["tool output", "task notification", "dispatch prompt", "structured tool output"])(
+  "does not link a viewer carrying a trailer URL in %s without a declaration", async source => {
+    const dir = mkdtempSync(join(tmpdir(), "lcm-commit-fixture-"));
+    try {
+      const url = "https://claude.ai/code/session_viewed";
+      fixtureCommit(dir, `Viewed change\n\nClaude-Session: ${url}`);
+      const { records } = await capture.write({ sessionId: "viewer", messages: [{
+        role: source === "tool output" ? "tool" : "user",
+        content: source === "structured tool output" ? "Tool completed" : `${source}: ${url}`, tokenCount: 10,
+      }] });
+      if (source === "structured tool output") await capture.conversationStore.createMessageParts(records[0].messageId, [
+        { sessionId: "viewer", partType: "tool", ordinal: 0, toolOutput: url },
+      ]);
+      expect(await backfillProjectCommits(db, dir)).toMatchObject({ references: 0, updated: 0 });
+      expect(new CommitStore(db).forSession("viewer")).toEqual([]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  },
+);
+
 it.each([false, true])("anchors rewritten commits at the committer date and retains the author date only as metadata (legacy: %s)", async legacy => {
   const dir = mkdtempSync(join(tmpdir(), "lcm-commit-fixture-"));
   try {
@@ -140,12 +159,40 @@ it("links commit output, anchors only the evidence message, and preserves transc
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-it("matches session trailers through the exact stored URL, never through an lcm session id or prose mention", async () => {
+it("links resume-chain declarations by exact trailer equality and excludes repeated sidechain declarations", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "lcm-commit-fixture-"));
+  try {
+    const url = "https://claude.ai/code/session_declared";
+    const hash = fixtureCommit(dir, `Fixture change\n\nClaude-Session: ${url}`);
+    for (const [sessionId, declaredUrl, isSidechain] of [
+      ["author", url, false], ["resume", url, false], ["subagent", url, true], ["different", `${url}_suffix`, false],
+    ] as const) {
+      const path = join(dir, `${sessionId}.jsonl`);
+      const declaration = { type: "attachment", sessionId, isSidechain, attachment: { type: "remote_session_change", url: declaredUrl } };
+      writeFileSync(path, [declaration, declaration, { message: { role: "user", content: "ordinary history" } }]
+        .map(entry => JSON.stringify(entry)).join("\n") + "\n");
+      await capture.captureTranscript({ sessionId, cwd: dir, transcriptPath: path, source: "import" });
+    }
+    expect(await backfillProjectCommits(db, dir)).toMatchObject({ updated: 0, references: 2 });
+    for (const sessionId of ["author", "resume"]) {
+      expect(new CommitStore(db).forSession(sessionId)).toEqual([
+        expect.objectContaining({ hash, evidence: "session-trailer", evidenceValue: url }),
+      ]);
+      expect((await capture.conversationStore.getSessionMessages(sessionId))[0]).toMatchObject({ eventAt: null, eventTimeSource: null });
+    }
+    expect(new CommitStore(db).forSession("subagent")).toEqual([]);
+    expect(new CommitStore(db).forSession("different")).toEqual([]);
+    expect(await backfillProjectCommits(db, dir)).toMatchObject({ references: 0 });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("matches session trailers through the exact declared URL, never through an lcm session id or prose mention", async () => {
   const dir = mkdtempSync(join(tmpdir(), "lcm-commit-fixture-"));
   try {
     const url = "https://claude.ai/code/session_web123";
     const hash = fixtureCommit(dir, `Fixture change\n\nClaude-Session: ${url}`);
-    const { records } = await capture.write({ sessionId: "local123", messages: [{ role: "user", content: `Web session: ${url}`, tokenCount: 10 }] });
+    const { records } = await capture.write({ sessionId: "local123", sessionUrlDeclarations: [{ sessionId: "local123", url }],
+      messages: [{ role: "user", content: "ordinary history", tokenCount: 10 }] });
     await capture.write({ sessionId: "session_web123", messages: [{ role: "user", content: "no URL", tokenCount: 10 }] });
     expect(await backfillProjectCommits(db, dir, false)).toEqual({ updated: 0, candidates: 0, references: 0 });
     expect(new CommitStore(db).forSession("local123")).toEqual([]);
@@ -161,6 +208,46 @@ it("matches session trailers through the exact stored URL, never through an lcm 
     await backfillProjectCommits(db, dir);
     expect(new CommitStore(db).forSession("local123").map(ref => ref.hash)).not.toContain(mentioned);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("repairs legacy trailer identity once without changing event times or summary bounds", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "lcm-commit-fixture-"));
+  const recompute = vi.spyOn(SummaryStore.prototype, "recomputeTimeBounds");
+  try {
+    const wrong = fixtureCommit(dir, "Unrelated change");
+    // Simulate a database that completed the older event-time repair before identity capture existed.
+    db.exec("CREATE TABLE commit_evidence_backfill (id INTEGER PRIMARY KEY CHECK(id = 1)); INSERT INTO commit_evidence_backfill VALUES (1)");
+    const url = "https://claude.ai/code/session_identity";
+    const hash = fixtureCommit(dir, `Declared change\n\nClaude-Session: ${url}`);
+    const legacy = new CommitStore(db);
+    for (const sessionId of ["declared", "viewer"]) {
+      const { records, conversationId } = await capture.write({ sessionId, messages: [
+        { role: "user", content: url, tokenCount: 1, eventAt: "2020-01-01T00:00:00Z" },
+      ], ...(sessionId === "declared" ? { sessionUrlDeclarations: [{ sessionId, url }] } : {}) });
+      legacy.record({ sessionId, messageId: records[0].messageId, hash: wrong, subject: "Unrelated change",
+        authorAt: null, committedAt: "2021-02-03T04:05:06.000Z", branch: null, resolved: true,
+        evidence: "session-trailer", evidenceValue: url });
+      db.prepare("UPDATE messages SET event_time_source = 'commit' WHERE message_id = ?").run(records[0].messageId);
+      await capture.summaryStore.insertSummary({ summaryId: `identity_${sessionId}`, conversationId, kind: "leaf",
+        content: "Keep summary", tokenCount: 1, earliestAt: new Date("2020-01-01"), latestAt: new Date("2020-01-01") });
+      await capture.summaryStore.linkSummaryToMessages(`identity_${sessionId}`, [records[0].messageId]);
+    }
+    const messagesBefore = db.prepare("SELECT * FROM messages ORDER BY message_id").all();
+    const summariesBefore = db.prepare("SELECT * FROM summaries ORDER BY summary_id").all();
+    recompute.mockClear();
+    expect(await backfillProjectCommits(db, dir)).toMatchObject({ updated: 0 });
+    expect(legacy.forSession("viewer")).toEqual([]);
+    expect(legacy.forSession("declared")).toEqual([expect.objectContaining({ hash, evidenceValue: url })]);
+    expect(db.prepare("SELECT * FROM messages ORDER BY message_id").all()).toEqual(messagesBefore);
+    expect(db.prepare("SELECT * FROM summaries ORDER BY summary_id").all()).toEqual(summariesBefore);
+    expect(recompute).not.toHaveBeenCalled();
+    const prepare = db.prepare.bind(db);
+    const statements: string[] = [];
+    const spy = vi.spyOn(db, "prepare").mockImplementation(sql => { statements.push(sql); return prepare(sql); });
+    try { await backfillProjectCommits(db, dir); } finally { spy.mockRestore(); }
+    expect(statements.some(sql => /DELETE FROM session_commits/i.test(sql))).toBe(false);
+    expect(legacy.forSession("declared")).toHaveLength(1);
+  } finally { recompute.mockRestore(); rmSync(dir, { recursive: true, force: true }); }
 });
 
 it("runs the queued commit repair after transcript discovery even when no transcript remains, with an off switch", async () => {
@@ -379,7 +466,7 @@ it("marks a pruned reference unresolved and never re-resolves an unresolved abbr
   try {
     const url = "https://claude.ai/code/session_pruned";
     const hash = fixtureCommit(dir, `Fixture change\n\nClaude-Session: ${url}`);
-    const { records } = await capture.write({ sessionId: "pruned", messages: [
+    const { records } = await capture.write({ sessionId: "pruned", sessionUrlDeclarations: [{ sessionId: "pruned", url }], messages: [
       { role: "tool", content: `[fixture ${hash.slice(0, 7)}] Fixture change`, tokenCount: 10 },
       { role: "user", content: url, tokenCount: 10 },
     ] });
@@ -490,7 +577,7 @@ it.each([
 });
 
 
-it("links repeated session URLs once per commit without dating any message", async () => {
+it.each([1, 5])("links declared session URLs with %s messages at the same git cost and without dating any message", async messageCount => {
   const dir = mkdtempSync(join(tmpdir(), "lcm-commit-fixture-"));
   try {
     const url = "https://claude.ai/code/session_many";
@@ -499,15 +586,21 @@ it("links repeated session URLs once per commit without dating any message", asy
       writeFileSync(join(dir, ".git", "refs", "heads", `commit${i}`), hash + "\n");
       return hash;
     });
-    const { records } = await capture.write({ sessionId: "many", messages: Array.from({ length: 5 }, () => ({
+    const { records } = await capture.write({ sessionId: "many", sessionUrlDeclarations: [{ sessionId: "many", url }],
+      messages: Array.from({ length: messageCount }, () => ({
       role: "user" as const, content: url, tokenCount: 10,
     })) });
-    await backfillProjectCommits(db, dir);
+    let reads = 0;
+    const lease = { yieldWhile: async <T>(work: () => Promise<T>): Promise<T> => { reads++; return work(); } };
+    await backfillProjectCommits(db, dir, true, lease);
+    expect(reads).toBe(10); // One history read and three verification reads per new commit.
     expect(new CommitStore(db).forSession("many").map(ref => ref.hash).sort()).toEqual(hashes.sort());
     for (const record of records) expect(await capture.conversationStore.getMessageById(record.messageId))
       .toMatchObject({ eventAt: null, eventTimeSource: null });
     await capture.write({ sessionId: "many", messages: [{ role: "user", content: url, tokenCount: 10 }] });
-    await backfillProjectCommits(db, dir);
+    reads = 0;
+    await backfillProjectCommits(db, dir, true, lease);
+    expect(reads).toBe(7); // Two refresh reads per stored commit and one history read.
     expect(new CommitStore(db).forSession("many")).toHaveLength(hashes.length);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
@@ -531,8 +624,9 @@ it("repairs legacy trailer duplicates and guessed anchors once, preserving unrel
   try {
     const url = "https://claude.ai/code/session_legacy";
     const first = fixtureCommit(dir, `Change\n\nClaude-Session: ${url}`);
+    writeFileSync(join(dir, ".git", "refs", "heads", "declared"), first + "\n");
     const second = fixtureCommit(dir, "Second change", 1640995200);
-    const affected = await capture.write({ sessionId: "legacy", messages: [
+    const affected = await capture.write({ sessionId: "legacy", sessionUrlDeclarations: [{ sessionId: "legacy", url }], messages: [
       { role: "user", content: url, tokenCount: 10 },
       { role: "user", content: url, tokenCount: 10 },
       { role: "tool", content: `[fixture ${first.slice(0, 7)}] Change\n[fixture ${second.slice(0, 7)}] Second change`, tokenCount: 20 },

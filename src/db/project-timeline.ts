@@ -84,6 +84,7 @@ function installTimelineTables(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS timeline_unit_month_idx ON timeline_units(month);
     CREATE INDEX IF NOT EXISTS timeline_unit_ready_idx ON timeline_units(status, period_to);
     CREATE TABLE IF NOT EXISTS timeline_months (month TEXT PRIMARY KEY, replan INTEGER NOT NULL DEFAULT 1);
+    CREATE INDEX IF NOT EXISTS timeline_month_replan_idx ON timeline_months(replan);
     CREATE TABLE IF NOT EXISTS timeline_memory_dirty (memory_id TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS timeline_reconcile (conversation_id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, fingerprint TEXT NOT NULL);
     DROP TABLE IF EXISTS timeline_input_cache_batches;

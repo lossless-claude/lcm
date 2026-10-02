@@ -261,7 +261,9 @@ npx tsx scripts/bench-corpora.mts run     # score them all, print the pooled hit
 ```
 
 Corpora come from `LCM_BENCH_CORPORA` (the platform path delimiter — `:`, or `;` on Windows) or, unset, from every
-ingested project whose database is large enough to hold one. Question sets are written next to
+ingested project whose database is large enough to hold one. Either way, a project that
+`bench-corpora.json` in the lcm home excludes is never a corpus (see below): the decision reads
+the project's `meta.json` `cwd`, never its database. Question sets are written next to
 each project database as `.lcm-bench-validation.json` and the seed is fixed, so two runs score
 the same questions and are comparable. Each row also prints the corpus's session count: a live
 corpus grows between runs, and a delta measured over different content is not a delta.
@@ -281,8 +283,32 @@ LCM_BENCH_GROUP=tune    npx tsx scripts/bench-corpora.mts run   # sweep a parame
 LCM_BENCH_GROUP=holdout npx tsx scripts/bench-corpora.mts run   # grade, once, here
 ```
 
-The split is by corpus (`HELD_OUT_CORPORA` in the script), not by question, so no session appears
-on both sides. Build the held-out questions with `LCM_BENCH_SEED` set to something other than the
+The split is by corpus, not by question, so no session appears on both sides. The machine owner
+sets it in `bench-corpora.json` in the lcm home, outside the repository:
+
+```json
+{
+  "holdout": ["/path/to/project"],
+  "exclude": ["/path/to/repository"],
+  "excludeCwdContaining": ["repository-name"]
+}
+```
+
+`holdout` lists absolute project paths, matched exactly: they are graded and everything else is
+tuned against. The other two keys keep a repository out of every group, which takes more than one
+path, because each worktree, each subdirectory a session started in and each agent scratchpad is
+its own lcm project. `exclude` lists absolute paths and covers each one and everything under it,
+including worktrees created there later. `excludeCwdContaining` covers every project whose `cwd`
+contains the name, which reaches agent worktrees and scratchpads outside the tree, even after they
+are deleted. Both ignore case, since macOS and Windows file systems usually do. A scratchpad directory replaces every character other than a
+letter or digit with `-`, so a name with a dot does not match its own scratchpad. Excluded beats
+held out, and an `LCM_BENCH_CORPORA` entry that is excluded is dropped.
+
+Without the file nothing is held out: `tune` covers every corpus and `holdout` stops with an
+error. A malformed file, an unknown key, or an entry that matches nothing also stops the run: a
+path that is neither on disk nor at or above an ingested project's `cwd` (a typo, a relative path,
+an unexpanded `~`), or a name that no ingested project's `cwd` contains. This repository's own corpus belongs
+on the tuning side, since its questions have already been scored across a sweep. Build the held-out questions with `LCM_BENCH_SEED` set to something other than the
 default, so they are a different sample from the ones any sweep has already seen; `LCM_BENCH_N`
 raises the count per corpus. Grade the held-out group **once**, after the parameter is fixed — a
 second look at it makes it a tuning set too.

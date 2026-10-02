@@ -1,6 +1,5 @@
-import { existsSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { existsSync } from "node:fs";
+import { openStandaloneLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
 import type { LcmPaths } from "../../lcm-paths.js";
 import { projectDbPath } from "../project.js";
@@ -43,24 +42,24 @@ export function createGrepHandler(_config: DaemonConfig, paths: LcmPaths): Route
         sendJson(res, 200, { matches: [] });
         return;
       }
-      mkdirSync(dirname(dbPath), { recursive: true });
-      const db = new DatabaseSync(dbPath);
-      runLcmMigrations(db);
-      const convStore = new ConversationStore(db);
-      const summStore = new SummaryStore(db);
-      const engine = new RetrievalEngine(convStore, summStore);
-      const searchMode = mode ?? "full_text";
-      const result = await engine.grep({
-        query,
-        mode: searchMode,
-        scope: scope ?? "both",
-        summaryId: input.summary_id,
-        conversationId: input.sessionId ? (await convStore.getConversationBySessionId(input.sessionId))?.conversationId ?? -1 : undefined,
-        since: since ? new Date(since) : undefined,
-        terms: searchMode === "full_text" ? extractQueryTerms(query, paths, languageList(projectAuthorLanguage(cwd, paths))) : undefined,
-      });
-      db.close();
-      sendJson(res, 200, result);
+      const db = openStandaloneLcmConnection(dbPath);
+      try {
+        runLcmMigrations(db);
+        const convStore = new ConversationStore(db);
+        const summStore = new SummaryStore(db);
+        const engine = new RetrievalEngine(convStore, summStore);
+        const searchMode = mode ?? "full_text";
+        const result = await engine.grep({
+          query,
+          mode: searchMode,
+          scope: scope ?? "both",
+          summaryId: input.summary_id,
+          conversationId: input.sessionId ? (await convStore.getConversationBySessionId(input.sessionId))?.conversationId ?? -1 : undefined,
+          since: since ? new Date(since) : undefined,
+          terms: searchMode === "full_text" ? extractQueryTerms(query, paths, languageList(projectAuthorLanguage(cwd, paths))) : undefined,
+        });
+        sendJson(res, 200, result);
+      } finally { db.close(); }
     } catch (err) {
       sendJson(res, 200, { matches: [] });
     }

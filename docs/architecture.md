@@ -52,17 +52,26 @@ abbreviation when unresolved), subject, committer time, author time as reference
 kind and evidence value. Evidence is a hash in stored `git commit` output
 (`[<branch> <hash>] <subject>`, including root-commit and detached-HEAD variants)
 that local git resolves to a commit, or a commit's `Claude-Session:` trailer whose exact web URL
-appears in the session's own messages. A web id alone never matches an lcm session id;
+equals a URL declared by that session. `session_web_urls` stores the URLs from main-chain
+Claude `remote_session_change` attachments, keyed by lcm session id and exact URL.
+Hook capture (including incremental reads), import and `--backfill-event-times` record
+declarations; the backfill fills existing sessions from their transcripts. Sidechain
+attachments declare nothing, and attachments create no message. Several sessions
+declaring the same URL all link. Message content, tool output and prompts are never
+scanned for trailer URLs. A web id alone never matches an lcm session id;
 `git log`, `git show`, bare hashes and hex-looking words establish neither references
 nor event times. Timestamp proximity establishes nothing. Git reads local objects without replacements
 or lazy fetching. No diffs, blobs, author emails or PR text are retained.
-Message and reference reads use pages of at most 256 rows; message reads prefilter
-tool output and session URLs. Matching git history is paged at 128 commits.
+Message, declaration and reference reads use pages of at most 256 rows; message reads
+prefilter commit output. Matching git history is paged at 128 commits.
 Ordinary evidence transactions are bounded and the pass yields between pages under the project queue
 and mutation lease. Git reads yield both the queue turn and mutation lease; writes
 recheck the candidate's evidence and worker exclusion after reacquiring them.
 Trailer evidence creates one reference per session and commit, retaining one representative
-message id that is never used for dating. Only a message whose own commit output names
+message id that is never used for dating. Each run scans trailer history once per session
+and exact declared URL. Stored references are refreshed
+at the start of the run; trailer discovery does not verify already linked commits again.
+Only a message whose own commit output names
 exactly one distinct, resolvable commit receives its committer time and source `commit`
 when its time is unknown. Multiple outputs, including unresolved candidates, stay unknown.
 Transcript times are preserved. A later pass marks unavailable hashes unresolved and never
@@ -71,6 +80,9 @@ legacy author-date anchors with committer dates for eligible messages.
 The first enabled pass repairs legacy evidence atomically: duplicate trailer links collapse,
 trailer-only and ambiguous output anchors return to unknown, and affected conversations'
 summary bounds are recomputed before recording completion. Summary text is preserved.
+Separately, a one-time identity repair deletes every existing `session-trailer` link
+and the pass re-derives them from declared URLs. Sessions with no declaration keep no
+trailer link. This identity repair changes no event times or summary bounds.
 Ordinary passes recompute bounds only for conversations whose anchors changed. Disabling
 the pass retains existing references and anchors.
 
@@ -171,8 +183,13 @@ Timeline pool jobs retain the reserved `lcm:project-timeline` session binding.
 Unsupported providers refuse timeline generation
 with a configuration 4xx before database work, without failure flags or backoff.
 
-Status and doctor read persisted pending/stale/dirty counts, including sessions
-not yet flagged, without migration, reconciliation or generation.
+Status and doctor report persisted ready (`status = 'ready'`) timeline units
+as `pending`, months awaiting replan as `replanMonths` and parked units as `parked`, separately from stale
+nodes and dirty sessions, including sessions not yet flagged. Ready units include
+those in months awaiting replan and those waiting for retry; parked units are
+excluded from pending. Doctor warns about parked units and names the remedy:
+a contributing session must change, then `lcm timeline settle` reconciles that
+change and releases them. Counts use indexed tables without migration, reconciliation or generation.
 Doctor also reports missing or outdated tracking/detach SQL from `sqlite_master`
 read-only and names the repair command.
 Explicit `lcm timeline settle --calls 0 --reconcile full` repairs triggers and conservatively
@@ -707,6 +724,19 @@ a file that grew or was rewritten between two runs.
 
 ## Operation serialization
 
+Every writable project database handle, pooled or independent, installs
+`PRAGMA busy_timeout = 5000` before initializing WAL or running migrations.
+Capture and the pending promoted-tag and passive-intent migrations take
+`BEGIN IMMEDIATE` before reading the rows they will change. A deferred savepoint
+that reads `promoted` before its first UPDATE, DELETE or completion-marker INSERT
+can fail immediately when another connection is backfilling message event times:
+SQLite refuses the read-to-write upgrade without invoking the busy handler,
+including `SQLITE_BUSY_SNAPSHOT` if that writer committed after the read.
+Reserving the write lock first makes contention wait within the busy timeout and
+prevents that stale snapshot. Migrations recheck completion after acquiring the
+lock; already-completed migrations skip their repair transaction.
+A lock held beyond the timeout still returns `database is locked`.
+
 Ordinary ingest and compact requests enter a **per-project** queue keyed by `projectId(cwd)`
 (`src/daemon/project-queue.ts`), not by session. Each queue turn runs exclusively, but compaction
 yields its turn while awaiting external language detection or summarization. Other captures can
@@ -766,7 +796,7 @@ event loop between items (`yieldToEventLoop`) to keep `/health` and other projec
 the lease is what stops a second run from reading the not-yet-promoted set before the first
 has written it.
 
-A project's `meta.json` is written by routes on different sessions of the same project, so the per-project queue is not what covers it; it needs no queue of its own because each update in `src/daemon/project-meta.ts` is a single synchronous read-modify-write that nothing in the process can interleave with. Writers in other processes are outside the daemon's trust boundary, as they are for the database.
+A project's `meta.json` is written by routes on different sessions of the same project, so the per-project queue is not what covers it; it needs no queue of its own because each update in `src/daemon/project-meta.ts` is a single synchronous read-modify-write that nothing in the process can interleave with. Metadata writers in other processes are outside that trust boundary; database lock contention follows the SQLite timeout above.
 
 ## Authentication
 

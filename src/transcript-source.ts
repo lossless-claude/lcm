@@ -19,7 +19,7 @@ import { readOmpTranscriptDelta, type OmpTranscriptCursor, type OmpTranscriptDel
 import { compareStoredMessageContent, normalizeMessageContent } from "./message-content.js";
 import type { SessionClient } from "./session-client.js";
 import { discoverSubagentTranscripts, type DiscoveredSubagentTranscript } from "./subagent-attribution.js";
-import { parseTranscript, type ParsedMessage } from "./transcript.js";
+import { parseTranscript, type ParsedMessage, type SessionUrlDeclaration } from "./transcript.js";
 
 /**
  * The transcript-source seam: one interface answering "what does this
@@ -92,6 +92,8 @@ export interface ConversationBoundary {
 }
 
 export interface TranscriptDelta {
+  /** Main-chain Claude attachments, including records read beyond a byte cursor. */
+  sessionUrlDeclarations?: SessionUrlDeclaration[];
   /** Messages from `sourceOffset` onwards. */
   messages: ParsedMessage[];
   verification?: { verified: boolean; complete: boolean; boundaryFound: boolean; boundaryScanExceeded?: boolean };
@@ -274,6 +276,7 @@ const claudeSource: TranscriptSource = {
       ...(ctx.requireComplete ? { verification: { verified: validated, complete: delta.complete,
         boundaryFound: Boolean(ctx.captureThroughUuid && delta.recordMatched),
         ...(delta.boundaryScanExceeded ? { boundaryScanExceeded: true } : {}) } } : {}),
+      sessionUrlDeclarations: delta.sessionUrlDeclarations,
       sourceOffset: storedCount,
       restampParserShape,
       // Without a stable redaction identity, the next capture must compare the prefix again.
