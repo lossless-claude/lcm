@@ -12,7 +12,7 @@ import { SummaryStore } from "../../../src/store/summary-store.js";
 import { lcmHome } from "../../../src/lcm-home.js";
 import { createLcmPaths } from "../../../src/lcm-paths.js";
 import { DaemonClient } from "../../../src/daemon/client.js";
-import { clearReplayState, createReplayRun } from "../../../src/replay-resume.js";
+import { clearReplayState, createReplayRun, replaySessionsToClear } from "../../../src/replay-resume.js";
 import { EventsDb } from "../../../src/hooks/events-db.js";
 import { eventsDbPath } from "../../../src/db/events-path.js";
 
@@ -43,6 +43,12 @@ vi.mock("../../../src/llm/copilot-process.js", () => ({
 vi.mock("../../../src/llm/omp-process.js", () => ({
   createOmpProcessSummarizer: vi.fn().mockReturnValue(async () => "omp-process-summary"),
 }));
+
+// Observed, not replaced: a test can tell when /replay-reset has read its manifest.
+vi.mock("../../../src/replay-resume.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/replay-resume.js")>();
+  return { ...actual, replaySessionsToClear: vi.fn(actual.replaySessionsToClear) };
+});
 
 vi.mock("../../../src/daemon/project-language.js", () => ({
   scheduleProjectLanguageDetection: vi.fn().mockResolvedValue(undefined),
@@ -1743,9 +1749,11 @@ describe("replay restart during compaction", () => {
       });
       compacting = client.post("/compact", { cwd, session_id: "first", skip_ingest: true });
       await entered.promise;
+      vi.mocked(replaySessionsToClear).mockClear();
       const resetting = client.post("/replay-reset", { cwd, command: "import" });
       resetting.catch(() => {});
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // The reset has read its manifest and now waits on the first session's guard.
+      await vi.waitFor(() => expect(replaySessionsToClear).toHaveBeenCalledTimes(1));
       // Another replay adds a session while the reset waits for the first one's summary.
       createReplayRun({ cwd, paths, command: "import", runId: "second-run", sessions: [{ sessionId: "added" }] });
       release.resolve();
