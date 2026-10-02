@@ -208,6 +208,63 @@ describe("transcript event time", () => {
     ]);
   });
 
+  it("bounds scrubbing for a large misaligned OMP session", async () => {
+    const count = 2000;
+    const messages = Array.from({ length: count }, (_, index) => ({ role: "user", content: `message ${index}`, tokenCount: 1 }));
+    await capture.write({ sessionId: "session", messages });
+    const path = join(dir, "session.jsonl");
+    const entries = [{ type: "session", id: "session", cwd: dir },
+      ...messages.map((message, index) => ({ type: "message", id: `turn-${index}`, parentId: index ? `turn-${index - 1}` : null, timestamp: at, message })),
+      { type: "message", id: "rewind", parentId: "turn-0", timestamp: at, message: { role: "user", content: "uncaptured branch" } }];
+    writeFileSync(path, entries.map(entry => JSON.stringify(entry)).join("\n") + "\n");
+    const scrubber = new ScrubEngine([], []);
+    const original = scrubber.scrubWithCounts.bind(scrubber);
+    let calls = 0;
+    scrubber.scrubWithCounts = text => { calls++; return original(text); };
+    expect(await backfillSessionEventTimes(db, { sessionId: "session", cwd: dir, transcriptPath: path, client: "omp" }, scrubber))
+      .toEqual({ updated: count, unknown: 0 });
+    expect(calls).toBeLessThanOrEqual(12 * count);
+  }, 60_000);
+
+  it.each([
+    { stored: "before", current: ["before\u0000after"], updated: 2, unknown: 0 },
+    { stored: "before�after", current: ["before\u0000after"], updated: 2, unknown: 0 },
+    { stored: "token [REDACTED] end", current: ["token secret end"], updated: 2, unknown: 0 },
+    { stored: "token [REDACTED] end", current: ["token first end", "token second end"], updated: 1, unknown: 1 },
+  ])("preserves exceptional file-order matches: $stored / $current", async ({ stored, current, updated, unknown }) => {
+    await capture.write({ sessionId: "session", messages: ["root", stored].map(content => ({ role: "user", content, tokenCount: 1 })) });
+    const path = join(dir, "session.jsonl");
+    const entries = [{ type: "session", id: "session", cwd: dir },
+      ...["root", ...current].map((content, index) => ({ type: "message", id: `turn-${index}`, parentId: index ? `turn-${index - 1}` : null, timestamp: at, message: { role: "user", content } })),
+      { type: "message", id: "rewind", parentId: "turn-0", timestamp: at, message: { role: "assistant", content: "other branch" } }];
+    writeFileSync(path, entries.map(entry => JSON.stringify(entry)).join("\n") + "\n");
+    expect(await backfillSessionEventTimes(db, { sessionId: "session", cwd: dir, transcriptPath: path, client: "omp" }, new ScrubEngine([], [])))
+      .toEqual({ updated, unknown });
+  });
+
+  it("bounds historical redaction comparisons and leaves an unproven suffix unknown", async () => {
+    const count = 100;
+    const messages = Array.from({ length: count }, (_, index) => ({ role: "user", content: index ? `message ${index} [REDACTED]` : "root", tokenCount: 1 }));
+    await capture.write({ sessionId: "session", messages });
+    const path = join(dir, "session.jsonl");
+    const entries = [{ type: "session", id: "session", cwd: dir },
+      ...messages.map((message, index) => ({ type: "message", id: `turn-${index}`, parentId: index ? `turn-${index - 1}` : null, timestamp: at, message: { ...message, content: message.content.replace("[REDACTED]", "secret") } })),
+      { type: "message", id: "rewind", parentId: "turn-0", timestamp: at, message: { role: "assistant", content: "other branch" } }];
+    writeFileSync(path, entries.map(entry => JSON.stringify(entry)).join("\n") + "\n");
+    const scrubber = new ScrubEngine([], []);
+    const original = scrubber.scrubWithCounts.bind(scrubber);
+    let calls = 0;
+    scrubber.scrubWithCounts = text => { calls++; return original(text); };
+    const result = await backfillSessionEventTimes(db, { sessionId: "session", cwd: dir, transcriptPath: path, client: "omp" }, scrubber);
+    expect(result.updated).toBeGreaterThan(1);
+    expect(result.unknown).toBeGreaterThan(0);
+    expect(result.updated + result.unknown).toBe(count);
+    expect(calls).toBeLessThanOrEqual(20 * count);
+    const repaired = await capture.conversationStore.getSessionMessages("session");
+    expect(repaired.slice(0, result.updated).every(message => message.eventAt?.toISOString() === at)).toBe(true);
+    expect(repaired.slice(result.updated).every(message => message.eventAt === null)).toBe(true);
+  });
+
   it("yields between bounded repair batches and preserves positions across clears and compaction events", async () => {
     const messages = Array.from({ length: 600 }, (_, index) => ({ role: "user", content: `message ${index}`, tokenCount: 1 }));
     const { conversationId } = await capture.write({ sessionId: "session", messages, boundaries: [{ entryId: "clear", at: 300 }] });

@@ -30,8 +30,12 @@ new messages or making model calls. It compares session-relative positions,
 excluding compaction event rows and spanning clear boundaries, with the cursor's
 role/content checks under current redaction and NUL rules. OMP rewinds prefer a
 stored live-path prefix, otherwise only unique in-order file matches establish
-abandoned-branch positions. Repeated matches remain unknown. It stops at the first
-unaligned position, fills only unknown timestamps in transactions of at most 256
+abandoned-branch positions. Repeated matches remain unknown.
+File-order alignment indexes role/content and NUL prefixes once, then checks
+remaining positions by lookup. Historical redaction wildcards share a session-wide
+budget of four comparisons per transcript record; if uniqueness cannot be proved
+within that budget, the remaining times stay unknown.
+It stops at the first unaligned position, fills only unknown timestamps in transactions of at most 256
 messages, and yields between pages. Missing transcripts leave times unknown.
 Rerunning resumes through NULL rows; leaf and condensed summary bounds are
 recomputed in depth order in pages of at most 128 summaries, including on an
