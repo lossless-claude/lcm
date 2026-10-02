@@ -34,28 +34,30 @@ From the mods reference ([events](https://code.claude.com/docs/en/plugins/mods/r
 
 - `on("session.compact", hook)`: skip `precompute` and any `agentId` with `next(e)`. Otherwise POST `/compact` for the session with `capture_required: true`, `instructions`, and a request for the rendered context; on a clean answer, return `{ messages: [contextMessage, ...tail] }`.
 - The tail is the last `freshTailCount` engine messages (default 8, `LCM_FRESH_TAIL_COUNT`), extended backwards to the nearest clean boundary.
-- The hook owns the session's pre-compaction, or lcm summarizes twice. `handlePreCompact` (`src/hooks/compact.ts`) does not read the session claim today. If the spike shows PreCompact still fires when a mod answers, it gains the same check the other command hooks make (`functionHooksOwnSession`, fixed by #738 and #739).
+- When the hook answers, the PreCompact command hook does not run, so the hook does the Capture and summarization PreCompact did. When it falls back with `next(e)`, PreCompact runs as today. A fallback after the hook's own `/compact` must leave PreCompact's request no work to repeat; the implementation tests that.
 
 ### Daemon (`POST /compact`)
 
 - One more response field: the conversation's context window, rendered and fenced as restore renders summaries, with each summary's id in the text.
 - It reports which captured messages its summaries cover, so the module can check decision 3 against the tail it keeps.
 
-## Open questions the spike answers first
+## What the spike established (Claude Code 2.1.287)
 
-A throwaway mod that answers `session.compact` with `e.messages` unchanged plus one built marker message, run in a session that loads it, answers:
+A throwaway mod answered a manual `/compact` with one built marker message followed by the last engine messages from a clean boundary, kept with their handles.
 
-1. **Does the engine install the answer?** After the compaction, `$.session.messages()` holds the marker, and `tokensAfter` is reported.
-2. **Does the classic PreCompact hook still run when a mod answers?** The declarations say core answers `session.compact` when a PreCompact hook blocks, so the two meet. Whether PreCompact runs at all when the chain never reaches core decides whether the session claim alone keeps lcm from summarizing twice.
-3. **What budget does the hook get?** `next.budget.ms` on each trigger, against the 120 s lcm allows a PreCompact summary today.
-4. **How do engine messages align with captured messages?** `e.messages.length` against the daemon's stored count for the session, and where they diverge (attachments, notices, tool results).
-5. **What does a built message accept?** Role, text only, tool blocks, and whether the answer must start with a `user` message.
+1. **The engine installs the answer.** The conversation after `/compact` was the marker followed by the kept messages, and the context's token count fell.
+2. **The PreCompact command hook does not run when a mod answers.** The daemon received no `/compact` for that session; lcm's other hooks ran as usual.
+3. **The hook's own budget is 10 s** on a manual compaction (`next.budget.ms`). The reference excludes time spent inside mods API calls, so a daemon round trip through `$.http.fetch` should not count against it. That is not yet measured.
+4. **A built `user` message is accepted first, even before a kept `user` message.** It carried text only.
+5. **Engine messages are not turns.** An assistant reply can arrive as several messages, one per content block: three prompts gave seven messages, one an assistant message with no text. `e.messages` carries handles; `$.session.messages()` does not, and it returns the transcript, not the compacted context.
 
-The design changes if question 1 fails: the module then rewrites `instructions` and `messages` on the way down instead, which steers Claude Code's summary but does not replace it.
+## Open question
+
+How the module's tail lines up with the daemon's captured messages, so decision 3 can be checked. Counting is unsafe (point 5); the implementation needs a key both sides hold, or it keeps more, as decision 3 allows.
 
 ## Dependencies
 
-- #738 and #739: the module and the command hooks must agree on who owns a session before the module takes over its compaction.
+- #738 and #739: the module and the command hooks must agree on who owns a session before the module takes over its compaction. Compaction itself does not double (point 2 above), but restore and capture around it do until those land.
 - The implementing change supersedes the [Context assembly](../architecture.md#context-assembly) statement that nothing in lcm rewrites the harness's message list, and updates it.
 
 ## Out of scope for the first cut
