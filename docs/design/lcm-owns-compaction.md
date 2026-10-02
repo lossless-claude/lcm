@@ -41,15 +41,15 @@ From the mods reference ([events](https://code.claude.com/docs/en/plugins/mods/r
 - One more response field: the conversation's context window, rendered and fenced as restore renders summaries, with each summary's id in the text.
 - It reports which captured messages its summaries cover, so the module can check decision 3 against the tail it keeps.
 
-## What the spike established (Claude Code 2.1.287)
+## How Claude Code 2.1.287 handles an answer
 
-A throwaway mod answered a manual `/compact` with one built marker message followed by the last engine messages from a clean boundary, kept with their handles.
+Established for a manual `/compact` answered with one built message followed by engine messages kept with their handles:
 
-1. **The engine installs the answer.** The conversation after `/compact` was the marker followed by the kept messages, and the context's token count fell.
-2. **The PreCompact command hook does not run when a mod answers.** The daemon received no `/compact` for that session; lcm's other hooks ran as usual.
-3. **The hook's own budget is 10 s** on a manual compaction (`next.budget.ms`). The reference excludes time spent inside mods API calls, so a daemon round trip through `$.http.fetch` should not count against it. That is not yet measured.
-4. **A built `user` message is accepted first, even before a kept `user` message.** It carried text only.
-5. **Engine messages are not turns.** An assistant reply can arrive as several messages, one per content block: three prompts gave seven messages, one an assistant message with no text. `e.messages` carries handles; `$.session.messages()` does not, and it returns the transcript, not the compacted context.
+1. **The engine installs the answer.** The conversation after the compaction is the answer, and the context's token count reflects it.
+2. **The PreCompact command hook does not run when a mod answers.** The other command hooks run as usual.
+3. **The hook's own budget is 10 s** on a manual compaction (`next.budget.ms`). The reference excludes time spent inside mods API calls, so a daemon round trip through `$.http.fetch` should not count against it; that is not yet measured.
+4. **A built `user` message may come first, even before a kept `user` message.** Text-only built messages are confirmed; tool blocks are not.
+5. **Engine messages are not turns.** An assistant reply can arrive as several messages, one per content block, including one with no text. `e.messages` carries handles; `$.session.messages()` does not, and it returns the transcript, not the compacted context.
 
 ## Open question
 
