@@ -68,10 +68,9 @@ export async function dispatchHook(
     return handlePostToolUse(stdinText, paths);
   }
 
-  // Skip bootstrap for compact — the daemon is already running by the time
-  // PreCompact fires (SessionStart ensures it). Skipping saves ~5s of
-  // ensureDaemon timeout budget under the hook runner's tight deadline.
-  if (command !== "compact") {
+  // PreCompact expects an existing daemon; SessionEnd must never probe or
+  // spawn one inside the host's short exit budget.
+  if (command !== "compact" && command !== "session-end") {
     // Lazy bootstrap: create config + start daemon on first hook fire per session.
     // A session whose daemon is incompatible fails open: exit 0, nothing on stdout.
     try {
