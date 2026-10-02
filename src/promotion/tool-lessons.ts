@@ -2,7 +2,7 @@ import { basename } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { SHELL_TOOLS, type ToolOutcome } from "../tool-calls.js";
 import { yieldToEventLoop } from "../daemon/project-queue.js";
-import { BATCH_SIZE, ToolLessonProjection, withLessonTransaction } from "./tool-lesson-projection.js";
+import { BATCH_SIZE, lessonKey, ToolLessonProjection, withLessonTransaction } from "./tool-lesson-projection.js";
 
 const SUBCOMMAND_TOOLS = new Set(["git", "npm", "pnpm", "yarn", "pip", "pip3", "brew", "cargo", "docker", "kubectl", "gh", "lcm"]);
 
@@ -171,21 +171,40 @@ export class ToolLessonStore {
   private readonly projection: ToolLessonProjection;
   constructor(private readonly db: DatabaseSync) { this.projection = new ToolLessonProjection(db); }
 
-  /** Derive only the selected messages' evidence; never read the project snapshot. */
+  /** Pairs and block reasons from the selected messages' calls alone; the window is that set, never the project snapshot. */
   async forMessages(messageIds: readonly number[]): Promise<ToolLesson[]> {
     const ids = [...new Set(messageIds)].sort((a, b) => a - b);
-    const derivation = new LessonDerivation("");
+    const calls: StoredCall[] = [];
     for (let offset = 0; offset < ids.length; offset += BATCH_SIZE) {
       const page = ids.slice(offset, offset + BATCH_SIZE);
-      const calls = this.db.prepare(`SELECT t.rowid AS row_id, t.*,
-        COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', m.event_at), strftime('%Y-%m-%dT%H:%M:%fZ', m.created_at)) AS seen
-        FROM transcript_tool_calls t JOIN messages m ON m.message_id = t.message_id
-        WHERE t.message_id IN (${page.map(() => "?").join(",")})
-        ORDER BY t.session_id, t.message_id, t.rowid`).all(...page) as unknown as StoredCall[];
-      for (const call of calls) derivation.add(call);
+      calls.push(...this.db.prepare(CALL_SELECT + ` WHERE t.message_id IN (${page.map(() => "?").join(",")})`)
+        .all(...page) as unknown as StoredCall[]);
       await yieldToEventLoop();
     }
-    return [...(await derivation.finish()).values()].filter(lesson => lesson.kind !== "environment-rule");
+    calls.sort((a, b) => (a.session_id < b.session_id ? -1 : a.session_id > b.session_id ? 1 : 0)
+      || a.message_id - b.message_id || a.row_id - b.row_id);
+    const lessons = new Map<string, ToolLesson>();
+    const merge = (lesson: ToolLesson, call: StoredCall) => {
+      const existing = lessons.get(lessonKey(lesson));
+      if (!existing) return lessons.set(lessonKey(lesson), lesson);
+      observe(existing, call);
+      existing.lastSeen = existing.lastSeen > lesson.lastSeen ? existing.lastSeen : lesson.lastSeen;
+    };
+    calls.forEach((call, index) => {
+      const block = blockLesson(call, "");
+      if (block) merge(block, call);
+      const shape = callShape(call);
+      if (!shape || (call.outcome !== "failed" && call.outcome !== "blocked")) return;
+      // Non-shell calls still take positions in the window, as in a project refresh.
+      const window = calls.slice(index + 1, index + 1 + CALL_WINDOW).filter(next => next.session_id === call.session_id);
+      const success = window.find(next => next.outcome === "succeeded" && callShape(next) === shape);
+      if (!success) return;
+      const pair = { ...newLesson("error-fix", call, ""), shape, failedCommand: call.input!, succeededCommand: success.input! };
+      observe(pair, call);
+      pair.lastSeen = pair.lastSeen > success.seen ? pair.lastSeen : success.seen;
+      merge(pair, call);
+    });
+    return [...lessons.values()];
   }
 
   async refresh(project: string): Promise<number> {
