@@ -139,10 +139,13 @@ export async function backfillProjectCommits(db: DatabaseSync, cwd: string, enab
   if (!enabled) return report;
   const context = { store: new CommitStore(db), conversations: new ConversationStore(db), workers: new WorkerStore(db), cwd, changed: new Set<number>(), lease };
   const summaries = new SummaryStore(db);
-  if (context.store.needsEvidenceRepair()) await context.conversations.withTransaction(async () => {
-    for (const conversationId of context.store.repairLegacyEvidence()) await summaries.recomputeTimeBounds(conversationId);
+  if (context.store.needsEvidenceRepair()) {
+    // The SQL repair is bounded and atomic; the recompute yields between pages, so it runs after
+    // the commit, over a set a rerun after an interruption reproduces, and the marker comes last.
+    await context.conversations.withTransaction(() => { context.store.repairLegacyEvidence(); });
+    for (const conversationId of context.store.conversationsWithCommits()) await summaries.recomputeTimeBounds(conversationId);
     context.store.finishEvidenceRepair();
-  });
+  }
   for await (const page of context.store.referencePages()) {
     for (const ref of page) await refreshReference(context, ref);
   }

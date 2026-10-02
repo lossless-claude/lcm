@@ -553,6 +553,12 @@ it("repairs legacy trailer duplicates and guessed anchors once, preserving unrel
     await capture.summaryStore.recomputeTimeBounds(affected.conversationId);
     const quietBefore = db.prepare("SELECT * FROM messages WHERE conversation_id = ?").all(quiet.conversationId);
     recompute.mockClear();
+    // An interrupted first run leaves the marker unwritten, and the rerun recomputes the same set.
+    const insideTransaction: boolean[] = [];
+    recompute.mockImplementationOnce(async () => { insideTransaction.push(db.isTransaction); throw new Error("interrupted"); });
+    await expect(backfillProjectCommits(db, dir)).rejects.toThrow("interrupted");
+    expect(insideTransaction).toEqual([false]);
+    recompute.mockClear();
     await backfillProjectCommits(db, dir);
     expect(new CommitStore(db).forSession("legacy").filter(ref => ref.evidence === "session-trailer")).toHaveLength(1);
     for (const record of affected.records) expect(await capture.conversationStore.getMessageById(record.messageId))

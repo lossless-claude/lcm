@@ -119,9 +119,10 @@ export async function backfillSessionEventTimes(
     for (const [index, message] of page.entries()) {
       ids.add(message.conversationId);
       const record = await matchedRecord(alignment, message, offset + index, scrub);
-      if (message.eventAt) continue;
+      // A transcript time is the record's own; it replaces a commit anchor, never the reverse.
+      if (message.eventAt && message.eventTimeSource !== "commit") continue;
       if (record?.eventAt) repairs.push({ messageId: message.messageId, content: message.content, role: message.role, eventAt: record.eventAt });
-      else unknown++;
+      else if (!message.eventAt) unknown++;
     }
     updated += await conversations.withTransaction(() => conversations.backfillMessageEventTimes(repairs));
     await yieldToEventLoop();

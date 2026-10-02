@@ -110,21 +110,27 @@ export class CommitStore {
     return !this.db.prepare("SELECT 1 FROM commit_evidence_backfill WHERE id = 1").get();
   }
 
-  repairLegacyEvidence(): number[] {
+  repairLegacyEvidence(): void {
     // Trailer matches identify a session, never the event that made a commit.
-    const changed = this.db.prepare(`UPDATE messages SET event_at = NULL, event_time_source = NULL
+    this.db.prepare(`UPDATE messages SET event_at = NULL, event_time_source = NULL
       WHERE event_time_source = 'commit' AND message_id IN (SELECT message_id FROM session_commits)
         AND ((SELECT COUNT(DISTINCT hash) FROM session_commits WHERE message_id = messages.message_id
           AND evidence = 'commit-output') != 1 OR NOT EXISTS (
           SELECT 1 FROM session_commits WHERE message_id = messages.message_id AND evidence = 'commit-output'
             AND resolved = 1 AND (committed_at IS NULL OR julianday(committed_at) = julianday(messages.event_at))
-        )) RETURNING conversation_id`).all() as Array<{ conversation_id: number }>;
+        ))`).run();
     this.db.exec(`DELETE FROM session_commits WHERE evidence = 'session-trailer' AND rowid NOT IN (
       SELECT MIN(rowid) FROM session_commits WHERE evidence = 'session-trailer' GROUP BY session_id, hash
     );
     CREATE UNIQUE INDEX IF NOT EXISTS session_commits_trailer_idx ON session_commits(session_id, hash)
       WHERE evidence = 'session-trailer';`);
-    return [...new Set(changed.map(row => row.conversation_id))];
+  }
+
+  /** Every conversation of a session with commit evidence: the same set on any rerun. */
+  conversationsWithCommits(): number[] {
+    return (this.db.prepare(`SELECT conversation_id FROM conversations
+      WHERE session_id IN (SELECT DISTINCT session_id FROM session_commits) ORDER BY conversation_id`).all() as Array<{ conversation_id: number }>)
+      .map(row => row.conversation_id);
   }
 
   finishEvidenceRepair(): void {
