@@ -1,7 +1,7 @@
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCompactHandler } from "../../src/daemon/routes/compact.js";
 import { loadDaemonConfig } from "../../src/daemon/config.js";
 import { createLcmPaths } from "../../src/lcm-paths.js";
@@ -13,6 +13,7 @@ import { SummarizeJobStore } from "../../src/daemon/summarize-jobs.js";
 import { noopDaemonLog } from "../../src/daemon/log.js";
 import { EventsDb } from "../../src/hooks/events-db.js";
 import { eventsDbPath } from "../../src/db/events-path.js";
+import { SummaryStore } from "../../src/store/summary-store.js";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -36,6 +37,44 @@ async function invoke(handler: ReturnType<typeof createCompactHandler>, input: u
   return { status, body };
 }
 describe("complete /compact context", () => {
+  it.each([
+    { sweep: false }, { sweep: true }, { sweep: false, operation_id: "valid" },
+    { sweep: false, operation_id: "x".repeat(141) }, { sweep: false, operation_id: { invalid: true } },
+  ])("keeps the deadline as the only outcome when context reading resumes ($sweep, $operation_id)", async ({ sweep, operation_id }) => {
+    const { cwd, path, request } = fixture();
+    if (sweep) writeFileSync(path, Array.from({ length: 20 }, (_, i) => JSON.stringify({ uuid: `row-${i}`,
+      message: { role: i % 2 ? "assistant" : "user", content: `message ${i} ${"source ".repeat(200)}` } })).join("\n") + "\n");
+    let entered!: () => void, release!: () => void;
+    const parked = new Promise<void>(resolve => { entered = resolve; });
+    const resume = new Promise<void>(resolve => { release = resolve; });
+    const read = SummaryStore.prototype.readContextCoverage;
+    const spy = vi.spyOn(SummaryStore.prototype, "readContextCoverage").mockImplementation(async function (...args) {
+      const coverage = await read.apply(this, args);
+      entered(); await resume; return coverage;
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const config = loadDaemonConfig("/missing", { summarizer: { mock: true, language: "en" }, compaction: { hookDeadlineMs: 1000 } }, {});
+    const records: string[] = [];
+    const log = { ...noopDaemonLog, write: (_level: string, event: string) => { records.push(event); } };
+    let responses = 0, status = 0;
+    const pending = createCompactHandler(config, paths, undefined, log)({} as any, {
+      writeHead: (code: number) => { status = code; responses++; }, end: () => {},
+    } as any, JSON.stringify({ ...request, operation_id, capture_through_uuid: sweep ? "row-19" : "two" }));
+    try {
+      await parked;
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(status).toBe(408);
+      release(); await pending;
+      const events = new EventsDb(eventsDbPath(cwd, paths));
+      try {
+        expect(events.getHookObservationSummary("session").filter(row => row.operation === "summary"))
+          .toEqual([expect.objectContaining({ status: "failed", reason: "deadline", count: 1 })]);
+      } finally { events.close(); }
+      expect(responses).toBe(1);
+      expect(records).not.toContain("precompact.observation_failed");
+      expect(records).not.toContain("precompact.summary");
+    } finally { release(); await pending; spy.mockRestore(); vi.useRealTimers(); }
+  });
   it("defaults to the configured pipeline and reports a missing summarizer explicitly", async () => {
     const { request } = fixture();
     const config = loadDaemonConfig("/missing", { llm: { provider: "disabled" }, summarizer: { language: "en" } }, {});
