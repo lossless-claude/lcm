@@ -77,7 +77,7 @@ it("status counts ready timeline units separately from months awaiting replan wi
   const factory = vi.spyOn(summarizers, "createSummarizer");
   try {
     const status = await invokeRoute<{ project: unknown }>(createStatusHandler(config, paths, Date.now()), { cwd });
-    expect(status.project).toMatchObject({ timeline: { calls: 0, pending: 3, replanMonths: 1, stale: 0 } });
+    expect(status.project).toMatchObject({ timeline: { calls: 0, pending: 3, replanMonths: 1, parked: 1, stale: 0 } });
     expect(migrate).not.toHaveBeenCalled();
     expect(factory).not.toHaveBeenCalled();
     expect(tables.map(table => db.prepare(`SELECT * FROM ${table}`).all())).toEqual(before);
@@ -348,9 +348,12 @@ it("status reads timeline unit and replan counts through covering indexes", asyn
   const db = new DatabaseSync(projectDbPath(cwd, paths), { readOnly: true });
   try {
     for (const table of ["timeline_units", "timeline_months"]) {
-      const sql = statements.find(sql => sql.includes(`FROM ${table}`) && sql.includes("COUNT(*)"))!;
-      const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{ detail: string }>;
-      expect(plan.some(row => row.detail.includes("COVERING INDEX"))).toBe(true);
+      const queries = statements.filter(sql => sql.includes(`FROM ${table}`) && sql.includes("COUNT(*)"));
+      expect(queries).toHaveLength(table === "timeline_units" ? 2 : 1);
+      for (const sql of queries) {
+        const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{ detail: string }>;
+        expect(plan.some(row => row.detail.includes("COVERING INDEX"))).toBe(true);
+      }
     }
   } finally { db.close(); }
 });

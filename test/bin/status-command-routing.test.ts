@@ -24,8 +24,8 @@ it("status displays pending timeline units and months awaiting replan separately
   registerDiagnosticsCommands(program, { createDaemonClientOrExit: async () => ({
     health: async () => ({}),
     post: async () => ({ daemon: { version: "test", uptime: 0, port: 0 },
-      project: { timeline: { pending: 3, replanMonths: 1, stale: 0 } } }),
+      project: { timeline: { pending: 3, replanMonths: 1, parked: 2, stale: 0 } } }),
   }) } as never);
   await program.parseAsync(["status"], { from: "user" });
-  expect(log).toHaveBeenCalledWith("  Timeline: 3 pending units, 1 months awaiting replan, 0 stale");
+  expect(log).toHaveBeenCalledWith("  Timeline: 3 pending units, 1 months awaiting replan, 2 parked units, 0 stale");
 });

@@ -60,10 +60,11 @@ export function createStatusHandler(config: DaemonConfig, paths: LcmPaths, start
           promotedCount = await count(() => new PromotedStore(db).count());
           try {
             const pending = db.prepare("SELECT COUNT(*) n FROM timeline_units WHERE status = 'ready'").get() as { n: number };
+            const parked = db.prepare("SELECT COUNT(*) n FROM timeline_units WHERE status = 'parked'").get() as { n: number };
             const replanMonths = db.prepare("SELECT COUNT(*) n FROM timeline_months WHERE replan = 1").get() as { n: number };
             const dirty = db.prepare("SELECT COUNT(*) n FROM timeline_dirty WHERE dirty = 1").get() as { n: number };
             const stale = db.prepare("SELECT COUNT(*) n FROM timeline_nodes WHERE active = 1 AND stale_reason IS NOT NULL").get() as { n: number };
-            timeline = { generated: 0, calls: 0, pending: pending.n, replanMonths: replanMonths.n, stale: stale.n, dirty: dirty.n, stopped: "complete", failed: [] };
+            timeline = { generated: 0, calls: 0, pending: pending.n, parked: parked.n, replanMonths: replanMonths.n, stale: stale.n, dirty: dirty.n, stopped: "complete", failed: [] };
           } catch { /* Older stores or unavailable timeline counts leave that field absent. */ }
         } finally {
           db.close();

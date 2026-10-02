@@ -15,7 +15,7 @@ export type SettleReport = {
   stopped: "complete" | "budget" | "deadline" | "conflict" | "model-error" | "busy";
   failed: Array<{ summaryId?: string; reason: string }>;
 };
-export type TimelineStatusReport = SettleReport & { replanMonths: number };
+export type TimelineStatusReport = SettleReport & { replanMonths: number; parked: number };
 export type TimelineNodeInfo = {
   commits: CommitReference[];
   period: { from: string; to: string };

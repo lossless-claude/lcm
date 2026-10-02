@@ -33,8 +33,8 @@ export async function checkProjectTimeline(deps: DoctorDeps, port: number): Prom
     const report = status.project.timeline;
     if (!report) return { ...result, status: triggers ? "warn" : "pass", message: ["Timeline counts unavailable; no reconciliation performed", triggers].filter(Boolean).join(". ") };
     if (report.calls !== 0 || !Number.isInteger(report.pending) || !Number.isInteger(report.stale)) throw new Error("Unsupported timeline response");
-    return { ...result, status: triggers || report.stale || report.pending || report.replanMonths || report.dirty ? "warn" : "pass",
-      message: [`Timeline: ${report.pending} pending units, ${report.replanMonths ?? "unavailable"} months awaiting replan, ${report.stale} stale, ${report.dirty ?? 0} dirty sessions; persisted counts, no reconciliation${report.pending || report.replanMonths ? ". Generate with: lcm timeline settle" : ""}`, triggers].filter(Boolean).join(". ") };
+    return { ...result, status: triggers || report.stale || report.pending || report.replanMonths || report.parked || report.dirty ? "warn" : "pass",
+      message: [`Timeline: ${report.pending} pending units, ${report.replanMonths ?? "unavailable"} months awaiting replan, ${report.parked ?? "unavailable"} parked units, ${report.stale} stale, ${report.dirty ?? 0} dirty sessions; persisted counts, no reconciliation${report.pending || report.replanMonths ? ". Generate with: lcm timeline settle" : ""}${report.parked ? ". Parked units are released when a contributing session changes; reconcile that change with: lcm timeline settle" : ""}`, triggers].filter(Boolean).join(". ") };
   } catch {
     return { ...result, status: "warn", message: ["Timeline counts unavailable: daemon unavailable or lacks status support", triggers].filter(Boolean).join(". ") };
   }
