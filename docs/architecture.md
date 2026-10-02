@@ -42,14 +42,22 @@ own `ScrubEngine` before storage. Shell commands and MCP JSON are capped at
 
 Each call has an `outcome`: `succeeded`, `failed`, `blocked`, `denied`,
 `interrupted` or `unknown`, a separate nullable `harness_error` flag, and
-an `exit_code` when exposed. No result or missing evidence leaves the outcome
+an `exit_code` when exposed. Blocked results also retain a scrubbed first line in
+`block_reason`, capped at 2048 UTF-8 bytes. No result or missing evidence leaves the outcome
 unknown. Claude's exit-code result establishes execution; user-refusal text
-establishes denial; a hook, permission-classifier or harness refusal prefix
+starting `The user doesn't want to` establishes denial; a hook, permission-classifier or harness refusal prefix
 establishes a pre-execution block. Another error-flagged result is a block only
 for a shell command, which reports an exit code whenever it ran; for any other
 tool it stays unknown, since the tool may have run and failed.
 Codex and OMP use only exposed status text or result metadata; an unclassified
 error flag alone cannot distinguish execution failure from a refusal.
+
+Deterministic shell lessons are derived into `tool_lessons`, published through
+`tool_lesson_state` generations. They retain counts and dates without confidence
+scores, independently of promoted memory. See [Passive Learning](passive-learning.md#deterministic-tool-lessons)
+for shapes, pairing, masking and retirement. Refreshes use bounded pages that yield
+at promotion boundaries; immediate per-tool promotion skips them, and restore
+only reads the published snapshot.
 
 Capture records new calls and updates prior outcomes in the same transaction
 as its message delta and checkpoint. Worker sessions are excluded by the same
@@ -858,7 +866,9 @@ mutation lease, so it does not make PreCompact busy. The same session's in-fligh
 always makes its PreCompact summary busy. `hasQueuedProjectWork` still reports all pending queue
 requests, including yielded ones; admission uses `hasBlockingProjectWork` instead.
 
-`/promote` and `/promote-events` hold the same mutation lease for their whole run. They walk
+`/promote` and `/promote-events` hold the same mutation lease for their whole run.
+Tool lesson refreshes on `/promote-events` also yield between bounded pages and
+publish a complete snapshot before retiring the previous generation. They walk
 every summary or event not yet promoted, and `node:sqlite` is synchronous, so each yields to the
 event loop between items (`yieldToEventLoop`) to keep `/health` and other projects answering;
 the lease is what stops a second run from reading the not-yet-promoted set before the first

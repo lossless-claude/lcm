@@ -8,7 +8,7 @@ Passive learning captures your Claude Code sessions automatically; durable insig
 
 Two hooks capture events during your session:
 
-- **PostToolUse** / **PostToolUseFailure** — fire after every tool call, success or failure. Extract structured metadata (tool name, command, file path) from tool inputs. Raw tool input and output are not captured, with one deliberate exception: `AskUserQuestion` stores the truncated question and the answer you chose, because the answer *is* the decision the event records.
+- **PostToolUse** / **PostToolUseFailure** — fire after every tool call, success or failure. Extract structured metadata (tool name, command, file path) from tool inputs. The sidecar does not capture raw tool input and output, with one deliberate exception: `AskUserQuestion` stores the truncated question and the answer you chose, because the answer *is* the decision the event records.
 - **UserPromptSubmit** — fires on each user prompt. Detects role statements ("I'm a data scientist") and intent patterns. Intent events are session metadata and are never promoted, even when repeated or matching an existing memory. It does not detect decisions: a keyword match is not a lasting decision (see [decision-detection-eval.md](design/decision-detection-eval.md)).
 
 Both Claude Code and Codex CLI drive the same tool-event extractor. Codex maps native `apply_patch` inputs and accepts `exec_command` as a compatibility spelling for unified command execution; unknown names remain untouched. Every event records `client` (`claude` or `codex`, the harness that produced it — `claude` by default) and `model` (the model that issued the tool call). When a hook does not carry the model, the next transcript ingest fills it without overwriting an existing value: Claude joins tool-call IDs, and Codex joins `turn_id` values against the transcript's `turn_context` records.
@@ -39,7 +39,7 @@ Events are written to a **sidecar SQLite database** (`~/.lossless-claude/events/
 
 Events are promoted to cross-session memory at session boundaries (session-end, pre-compact, or next session start):
 
-**Tier 1 — Immediate promotion** (priority 1): Decisions, plan approvals, and error→fix pairs are promoted directly with high confidence (0.4–0.7).
+**Tier 1 — Immediate promotion** (priority 1): Decisions, plan approvals, and error observations are promoted directly with confidence scores. Immediate per-tool promotion does not refresh tool lessons.
 
 **Tier 2 — Batch promotion** (priority 2): Git and environment events are promoted with moderate confidence (0.3).
 
@@ -62,21 +62,71 @@ remain in the sidecar database, and promoted-memory filters select on `type:`.
 | `intent` | Not promoted |
 | `file`, `mcp`, `skill`, `subagent`, unknown | `type:pattern` |
 
-Error→fix correlation overrides the successful event's mapped type with `type:solution`.
-These tags classify observations; they do not change promotion priorities or reinforcement
-requirements.
+### Deterministic Tool Lessons
 
-### Error→Fix Correlation
+Tool lessons come from stored shell calls in `transcript_tool_calls`, independently
+of sidecar event text. They are scoped to the project, use no model calls, and carry
+occurrence counts, counts per session, and first and last seen dates instead of
+confidence scores. Dates use the call message's transcript time, falling back to
+its capture time. Declared summarize-worker sessions are excluded.
 
-When a tool error is followed by a successful command with a matching prefix (within 20 events), the system correlates them as an error→fix pair. These are tagged `type:solution` (overriding the `type:gotcha` an error event would otherwise take) and promoted with higher priority.
+- **Command shape**: the executable's basename and a recognized subcommand, followed
+  by sorted, unique flags. Positional paths and values, including attached flag
+  values, collapse to `<args>`. For example, `git diff --stat src/a.ts` becomes
+  `git diff --stat <args>`. Common command families such as git, npm, pip, cargo,
+  docker and gh retain their first subcommand. Other executables retain their
+  executable and flags. Quoted words and stored argument arrays are supported.
+  Compound shell commands, substitutions, shell wrappers and truncated inputs
+  do not establish a shape.
+- **Error→fix pair**: a `failed` or `blocked` shell call followed by the first
+  `succeeded` call of the same shape in the same session, within the next
+  20 stored calls. All calls count toward the window, including non-shell and
+  `unknown` calls. A pair keeps both scrubbed commands. Matching a shape records
+  an observed failure→success sequence; it does not establish that the command's
+  changed values caused the success. This replaces the token-prefix correlator.
+- **Block reason**: the blocked result's first line, with paths, filenames and
+  identifiers masked, counted across the project and separately for each session.
+  Capture retains this line, scrubbed and capped at 2048 UTF-8 bytes, beside the call
+  as `block_reason`. Older calls without that evidence contribute no block reason
+  until transcript capture or backfill records it.
+- **Environment rule**: a shape that was `failed` or `blocked` in at least three
+  distinct sessions, with no `succeeded` call since its earliest failure.
+  A later success retires the rule across the project, even in a different session.
+  A success before the first failure does not retire it. Transcript time orders
+  that evidence, with stored message and call order breaking ties.
+
+`unknown`, `denied` and `interrupted` calls establish neither failure nor success
+for these lessons. In particular, an ordinary non-error sidecar event is not
+evidence of a successful command.
+
+Lessons live in `tool_lessons` in the main project database, separate from promoted
+memory. `/promote-events` refreshes them at capture/promotion boundaries, including
+when no sidecar events are pending. It reads, derives, writes and prunes snapshots
+in batches of at most 128 calls or lessons, yielding to the event loop between
+batches. The project mutation lease serializes refreshes. Readers see the previous
+complete snapshot until a single generation switch publishes the next one.
+Immediate per-tool callers set `skip_tool_lessons: true`; they do no project lesson
+scan. Restore reads at most five active lessons from the published snapshot and
+never derives them on the SessionStart path.
+
+Lesson tags are `type:solution` for pairs, `type:gotcha` for block reasons, and
+`type:environment` for environment rules, together with `source:tool-calls` and
+`project:<project-id>`. Retired rules stay in the snapshot for inspection and
+are excluded from learned insights. The promotion response's `correlated` count
+reports the pairs in the refreshed snapshot; `promoted` still counts sidecar
+events written to promoted memory.
 
 ### Learned Insights
 
-On SessionStart, recently promoted passive insights are surfaced in a `<learned-insights>` block. Identical content appears once, retaining the first insight's confidence and order. This closes the feedback loop — the system learns from your sessions and applies those learnings in future ones.
+On SessionStart, recent active tool lessons and promoted passive insights are
+surfaced in a `<learned-insights>` block, capped at five combined entries, with
+tool lessons first. Lessons show counts and first and last seen dates; promoted
+event memories retain their confidence scores. Both use the configured age limit.
+Identical content appears once, retaining the first insight's metadata and order.
 
 ## Configuration
 
-All thresholds are configurable in `~/.lossless-claude/config.json` under `compaction.promotionThresholds`:
+Event promotion thresholds and the insight age limit are configurable in `~/.lossless-claude/config.json` under `compaction.promotionThresholds`:
 
 ```json
 {
@@ -85,7 +135,6 @@ All thresholds are configurable in `~/.lossless-claude/config.json` under `compa
       "eventConfidence": {
         "decision": 0.5,
         "plan": 0.7,
-        "errorFix": 0.4,
         "batch": 0.3,
         "pattern": 0.2
       },
@@ -97,6 +146,8 @@ All thresholds are configurable in `~/.lossless-claude/config.json` under `compa
 }
 ```
 
+The legacy `eventConfidence.errorFix` field remains accepted for compatibility; tool lessons do not use it. Their 20-call window and three-session environment threshold are fixed.
+
 When a pattern crosses the reinforcement threshold, `reinforcementBoost` is added to the base pattern confidence, capped by `maxConfidence`, only when bootstrapping a new promoted entry.
 
 ## Data Storage
@@ -106,6 +157,11 @@ When a pattern crosses the reinforcement threshold, `reinforcementBoost` is adde
   - Processed events pruned after 7 days
   - Unprocessed events capped at 10,000 rows (oldest pruned first)
   - Schema versioned for future migrations (`SCHEMA_VERSION` in `src/hooks/events-db.ts`)
+
+- **Tool lesson snapshots**: `tool_lessons` and `tool_lesson_state` in the main project database
+  - Derived from scrubbed stored calls; no model or confidence scoring
+  - Published by generation; active lessons are surfaced during restore
+  - These are derived observations, outside promoted-memory search and deduplication
 
 - **Error log**: `error_log` table in each sidecar DB
   - Records hook errors with timestamp and session ID

@@ -33,7 +33,7 @@ export function recordTranscriptToolCalls(
       WHEN ? IS NOT NULL AND lower(CASE WHEN name LIKE 'functions.%' THEN substr(name, 11) ELSE name END)
         IN (${SHELL_TOOLS.map(() => "?").join(", ")}) THEN ?
       ELSE ? END,
-    harness_error = ?, exit_code = ?
+    harness_error = ?, exit_code = ?, block_reason = ?
     WHERE session_id = ? AND call_id = ?`);
   const indexed = new Set<number>();
   for (const call of calls) {
@@ -46,7 +46,9 @@ export function recordTranscriptToolCalls(
       indexed.add(messageId);
     } else {
       update.run(call.shellOutcome ?? null, ...SHELL_TOOLS, call.shellOutcome ?? null, call.outcome,
-        call.harnessError === null ? null : Number(call.harnessError), call.exitCode, sessionId, call.callId);
+        call.harnessError === null ? null : Number(call.harnessError), call.exitCode,
+        call.blockReason === undefined ? null : storedInput({ ...call, input: call.blockReason, inputLimit: 2048 }, scrubber).text,
+        sessionId, call.callId);
     }
   }
   if (!getLcmDbFeatures(db).fts5Available || indexed.size === 0 ||

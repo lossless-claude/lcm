@@ -57,6 +57,7 @@ Use it when a memory would be misleading outside that project.
 | `source:review` | From a code or design review |
 | `source:ci` | From automated CI output |
 | `source:agent` | From a subagent's report |
+| `source:tool-calls` | Deterministic project lessons derived from stored shell calls |
 
 ### `priority:` — how urgent
 
@@ -110,8 +111,12 @@ the same mapping, with legacy intent categories mapped to `type:workflow`.
 | `intent` | Not promoted |
 | `file`, `mcp`, `skill`, `subagent`, unknown | `type:pattern` |
 
-Correlated error→fix events use `type:solution` instead. `category:` is no longer written
-by passive promotion. The migration removes it only from `source:passive-capture` rows,
+Stored-call lessons use `type:solution` for error→fix pairs, `type:gotcha` for
+masked block reasons and `type:environment` for environment rules. They also carry
+`source:tool-calls` and `project:<project-id>`, with counts and dates in their own
+project table rather than confidence-scored promoted memories. Retired environment
+rules are excluded from learned insights. Sidecar events are not correlated into
+fixes. `category:` is no longer written by passive promotion. The migration removes it only from `source:passive-capture` rows,
 adding the mapped type only if no type already exists; explicitly stored memories keep
 their tags. It also normalizes JSON-string tag encodings to arrays of strings. New insert
 and update writes require arrays of strings.

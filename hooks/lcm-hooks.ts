@@ -770,7 +770,7 @@ function registerSessionStart(on: On, summaryCap: number): void {
 
 type RestoreResponse = {
   context?: string;
-  insights?: { content: string; confidence: number; tags: string[] }[];
+  insights?: { content: string; confidence?: number; tags: string[] }[];
 };
 
 /** The text the SessionStart command hook printed: the daemon's context, plus its insights. */
@@ -781,7 +781,7 @@ function restoreBlockText(body: Record<string, unknown> | null): string {
   if (insights.length === 0) return context;
   const seen = new Set<string>();
   const lines = insights.filter((i) => !seen.has(i.content) && seen.add(i.content))
-    .map((i) => `- ${i.content} (confidence: ${i.confidence})`).join("\n");
+    .map((i) => `- ${i.content}${typeof i.confidence === "number" ? ` (confidence: ${i.confidence})` : ""}`).join("\n");
   return `${context}\n<learned-insights source="passive-capture">\n`
     + `Recent learnings from your previous sessions:\n${lines}\n</learned-insights>`;
 }
