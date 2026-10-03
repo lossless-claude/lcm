@@ -47,11 +47,17 @@ export type DaemonNotice = { line: string; usable: boolean };
  * hooks of this session may still use the daemon.
  */
 export function daemonNotice(
-  result: { connected: boolean; port: number; ownership?: string; daemonVersion?: string },
+  result: { connected: boolean; port: number; ownership?: string; daemonVersion?: string; unresponsive?: boolean },
   callerVersion: string | undefined,
   entry: string | undefined = process.argv[1],
 ): DaemonNotice | undefined {
   const mine = callerVersion ?? "unknown";
+  if (result.unresponsive) {
+    return {
+      usable: true,
+      line: `lcm: listener on port ${result.port} did not answer; it is starting, busy or stuck. Memory is off until it answers. Check: ${cliInvocation(entry)} doctor`,
+    };
+  }
   if (result.ownership === "incompatible") {
     return {
       usable: false,

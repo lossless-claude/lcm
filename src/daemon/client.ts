@@ -22,6 +22,8 @@ export type RequestOptions = {
   timeoutMs?: number;
   /** Optional caller-controlled cancellation. */
   signal?: AbortSignal;
+  /** Called once the complete request has been flushed to the socket. */
+  onSubmitted?: () => void;
 };
 
 /**
@@ -171,6 +173,10 @@ export class DaemonClient {
           fail(err);
         }, { once: true });
       }
+
+      req.on("finish", () => {
+        if (!settled) opts.onSubmitted?.();
+      });
 
       if (json !== undefined) req.write(json);
       req.end();

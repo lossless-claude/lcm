@@ -81,7 +81,7 @@ export async function handleSessionStart(stdin: string, client: DaemonClient, pa
       observe("deferred", "daemon-unavailable");
       return { exitCode: 0, stdout: "" };
     }
-    let result: { context: string; insights?: Array<{ content: string; confidence: number; tags: string[] }> };
+    let result: { context: string; insights?: Array<{ content: string; confidence?: number; tags: string[] }> };
     try {
       result = await client.post<typeof result>("/restore", input, { timeoutMs: RESTORE_TIMEOUT_MS });
     } catch (error) {
@@ -97,7 +97,7 @@ export async function handleSessionStart(stdin: string, client: DaemonClient, pa
       const seen = new Set<string>();
       const insightsBlock = result.insights
         .filter((i) => !seen.has(i.content) && seen.add(i.content))
-        .map((i) => `- ${i.content} (confidence: ${i.confidence})`)
+        .map((i) => `- ${i.content}${typeof i.confidence === "number" ? ` (confidence: ${i.confidence})` : ""}`)
         .join("\n");
       stdout += `\n<learned-insights source="passive-capture">\nRecent learnings from your previous sessions:\n${insightsBlock}\n</learned-insights>`;
     }

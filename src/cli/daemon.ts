@@ -173,25 +173,32 @@ export function registerDaemonCommands(program: Command): void {
 
   daemonCmd.command("restart")
     .description("Restart the background daemon")
+    .option("--release-hold", "Release an offline hold before restarting")
     .option("-h, --help", "Show help")
     .action(async (opts) => {
       if (helpRequested(daemonCmd, opts)) await showHelpAndExit("daemon");
       const { stopDaemon, ensureDaemon, checkDaemonHealth, describeUnansweredDaemon } = await import("../daemon/lifecycle.js");
       const { loadDaemonConfig } = await import("../daemon/config.js");
       const { PKG_VERSION, BUILD_ID } = await import("../daemon/version.js");
-      const { clearHold } = await import("../daemon/hold.js");
+      const { clearHold, readHold } = await import("../daemon/hold.js");
       const { lcDir, pidFilePath, configPath, logsDir } = daemonPaths();
       const port = loadDaemonConfig(configPath).daemon?.port ?? 3737;
-      // A restart ends with the daemon up, so it releases a hold the same way start does.
-      if (clearHold(pidFilePath)) console.log("released the daemon hold");
+      if (opts.releaseHold && clearHold(pidFilePath)) console.log("released the daemon hold");
+      const refuseHold = () => {
+        const hold = readHold(pidFilePath);
+        if (hold) fail(`lcm daemon held down until ${hold.until} (pid ${hold.pid}: ${hold.reason ?? "no reason given"}) — release with: lcm daemon start`);
+      };
+      refuseHold();
       const { stopped, pid } = await stopDaemon({ port, pidFilePath });
       if (!stopped) {
         fail(`lcm daemon on port ${port} is still up (pid ${pid ?? "?"}) — stop it manually`);
       }
+      refuseHold();
       const { mkdirSync } = await import("node:fs");
       mkdirSync(lcDir, { recursive: true });
       const { connected } = await ensureDaemon({ port, pidFilePath, spawnTimeoutMs: 10000, expectedVersion: PKG_VERSION, expectedBuild: BUILD_ID });
       if (!connected) {
+        refuseHold();
         fail(describeUnansweredDaemon(port, logsDir));
       }
       const h = await checkDaemonHealth(port);

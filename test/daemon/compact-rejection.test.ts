@@ -62,26 +62,26 @@ const contextState = (db: DatabaseSync) => ({
   contextItems: db.prepare("SELECT ordinal, item_type, message_id, summary_id FROM context_items ORDER BY ordinal").all(),
 });
 
-it("fails a compaction whose summary was cut off, storing nothing and counting the attempt as failed", async () => {
+it("finishes compaction despite repeated cuts and counts every rejected attempt as failed", async () => {
   openai.mockImplementation(async (_text: string, _aggressive: boolean, ctx: any) => {
     ctx.onUsage(OPENAI_USAGE);
-    throw new SummaryRejectedError({ reason: "length", provider: "openai", model: "reasoner" });
+    throw new SummaryRejectedError({ reason: "length", provider: "openai", model: "reasoner", maxOutputTokens: 1_024 });
   });
   const config = loadDaemonConfig("/x", { llm: { provider: "openai", model: "reasoner" } }, {});
   const cwd = await ingestedSession(config, "session-cut-off");
-  const before = readDb(cwd, contextState);
 
   const result = await invoke(createCompactHandler(config, paths), { cwd, session_id: "session-cut-off" });
 
-  // Not no_work and not compacted: a replay leaves the session unledgered and retries it.
-  expect(result.status).toBe(500);
-  expect(result.body.error).toContain("summary rejected");
-  expect(result.body.replayOutcome).toBeUndefined();
-  expect(result.body.llmUsage).toMatchObject({ calls: 1, okCalls: 0, failedCalls: 1, tokensSpent: 16_024 });
+  expect(result.status).toBe(200);
+  expect(result.body.replayOutcome).toBe("compacted");
+  const calls = openai.mock.calls.length;
+  expect(calls).toBeGreaterThan(2);
+  expect(result.body.llmUsage).toMatchObject({ calls, okCalls: 0, failedCalls: calls, tokensSpent: calls * 16_024 });
   readDb(cwd, (db) => {
-    expect(contextState(db)).toEqual(before);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM summaries").get()).toEqual({ n: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM summary_messages").get()).toEqual({ n: 32 });
     expect(db.prepare("SELECT provider, calls_total, calls_ok, calls_failed, tokens_output_total FROM llm_usage_stats").all())
-      .toEqual([{ provider: "openai", calls_total: 1, calls_ok: 0, calls_failed: 1, tokens_output_total: 1_024 }]);
+      .toEqual([{ provider: "openai", calls_total: calls, calls_ok: 0, calls_failed: calls, tokens_output_total: calls * 1_024 }]);
   });
 });
 

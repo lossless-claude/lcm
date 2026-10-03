@@ -85,6 +85,22 @@ describe("SessionCapture", () => {
     expect(parts).toEqual([{ seq: 2, part_type: "command", tool_name: "/model", tool_input: "opus" }]);
   });
 
+  it("scrubs command and skill arguments in message parts, and counts their matches", async () => {
+    const scrubbing = new SessionCapture(db, "proj", new ScrubEngine(["ZQX-PRIVATE-\\d+"], []));
+    const result = await scrubbing.write({ sessionId: "s1", messages: [
+      msg("user", "<command-name>/deploy</command-name> ZQX-PRIVATE-7781",
+        [{ type: "command", name: "/deploy", args: "--key ZQX-PRIVATE-7781" }]),
+      msg("assistant", "launching", [{ type: "skill", name: "release", args: "token ZQX-PRIVATE-4410" }]),
+    ] });
+    const { messages, parts } = stored();
+    expect(JSON.stringify([messages, parts])).not.toContain("ZQX-PRIVATE-");
+    expect(parts).toEqual([
+      expect.objectContaining({ part_type: "command", tool_name: "/deploy", tool_input: expect.stringContaining("--key ") }),
+      expect.objectContaining({ part_type: "skill", tool_name: "release", tool_input: expect.stringContaining("token ") }),
+    ]);
+    expect(result.totalCounts.global).toBe(3);
+  });
+
   it.each(["claude", "codex"])("keeps a %s tool output after a NUL through capture and readback", async (client) => {
     const dir = mkdtempSync(join(tmpdir(), "lcm-nul-capture-"));
     try {

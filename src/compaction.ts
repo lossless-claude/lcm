@@ -1,10 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
+import { yieldToEventLoop } from "./daemon/project-queue.js";
 import type { ConversationStore, CreateMessagePartInput } from "./store/conversation-store.js";
 import type { SummaryStore, SummaryRecord, ContextItemRecord } from "./store/summary-store.js";
 import { extractFileIdsFromContent } from "./large-files.js";
 import type { ScrubEngine } from "./scrub.js";
 import { LCM_CONFIG_DEFAULTS, resolveLcmConfig } from "./db/config.js";
-import { acceptSummaryText } from "./llm/summary-rejection.js";
+import { acceptSummaryText, SummaryRejectedError } from "./llm/summary-rejection.js";
+import { ProviderChainExhaustedError } from "./llm/provider-chain.js";
+import { boundToolSummaryContext, type ToolSummaryContext } from "./tool-summary-context.js";
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -91,17 +94,32 @@ type CompactionSummarizeOptions = {
   isCondensed?: boolean;
   depth?: number;
   language?: string;
+  toolContext?: ToolSummaryContext;
 };
 export type CompactionSummarizeFn = (
   text: string,
   aggressive?: boolean,
   options?: CompactionSummarizeOptions,
 ) => Promise<string>;
-type PassResult = { summaryId: string; level: CompactionLevel };
+type PassResult = { summaryId: string; level: CompactionLevel; tokenDelta: number };
+type EscalationResult = { content: string; level: CompactionLevel; keptAnswers: number };
+type EscalationParams = {
+  sourceTexts: string[];
+  /** Leaf source identities stay aligned with texts when output-cut recovery splits them. */
+  sourceMessageIds?: number[];
+  summarize: CompactionSummarizeFn;
+  options?: CompactionSummarizeOptions;
+  /** Halvings already made after output cuts. */
+  splitDepth?: number;
+};
+
+const LEVEL_ORDER: CompactionLevel[] = ["normal", "aggressive", "fallback"];
+/** A joined summary reports the strongest escalation either half needed. */
+function highestLevel(a: CompactionLevel, b: CompactionLevel): CompactionLevel {
+  return LEVEL_ORDER[Math.max(LEVEL_ORDER.indexOf(a), LEVEL_ORDER.indexOf(b))];
+}
 type LeafChunkSelection = {
   items: ContextItemRecord[];
-  rawTokensOutsideTail: number;
-  threshold: number;
 };
 type CondensedChunkSelection = {
   items: ContextItemRecord[];
@@ -119,18 +137,28 @@ function estimateTokens(content: string): number {
   return Math.ceil(content.length / 4);
 }
 
+/** An exhausted chain containing a cut can still converge on smaller source chunks. */
+function containsOutputCut(error: unknown): boolean {
+  if (error instanceof SummaryRejectedError) return error.reason !== "whitespace";
+  return error instanceof ProviderChainExhaustedError && error.failures.some(failure => containsOutputCut(failure.error));
+}
+
 /** Format a timestamp as `YYYY-MM-DD HH:mm TZ` for prompt source text. */
 export function formatTimestamp(value: Date, timezone: string = "UTC"): string {
   try {
-    const fmt = new Intl.DateTimeFormat("en-CA", {
-      timeZone: timezone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    });
+    let fmt = timestampFormatters.get(timezone);
+    if (!fmt) {
+      fmt = new Intl.DateTimeFormat("en-CA", {
+        timeZone: timezone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      });
+      timestampFormatters.set(timezone, fmt);
+    }
     const parts = Object.fromEntries(
       fmt.formatToParts(value).map((p) => [p.type, p.value]),
     );
@@ -175,8 +203,13 @@ function generateSummaryId(content: string): string {
 
 /** Maximum characters for the deterministic fallback truncation (512 tokens * 4 chars). */
 const FALLBACK_MAX_CHARS = 512 * 4;
+/** Halvings after repeated output cuts: at most 2^3 = 8 pieces per chunk, so the extra calls stay bounded. */
+const MAX_CUT_SPLIT_DEPTH = 3;
 const DEFAULT_LEAF_CHUNK_TOKENS = 20_000;
 const CONDENSED_MIN_INPUT_RATIO = 0.1;
+/** Bound synchronous selection and source preparation between event-loop turns. */
+const COMPACTION_YIELD_EVERY = 64;
+const timestampFormatters = new Map<string, Intl.DateTimeFormat>();
 
 function dedupeOrderedIds(ids: Iterable<string>): string[] {
   const seen = new Set<string>();
@@ -252,10 +285,25 @@ export class CompactionEngine {
     // Seed from caller (cross-session replay) or start fresh
     let previousSummaryContent: string | undefined;
     let previousTokens = tokensBefore;
+    let contextTokens = tokensBefore;
+    let lastContextOrdinal = contextItems[contextItems.length - 1].ordinal;
+    const updateTokens = async (pass: PassResult, replacedItems: ContextItemRecord[]): Promise<number> => {
+      contextTokens += pass.tokenDelta;
+      // Capture can append while the model releases the project mutation lease.
+      // Sparse ordinals are ordering keys: a count cannot identify that suffix.
+      const appended = await this.summaryStore.getContextItems(conversationId, { afterOrdinal: lastContextOrdinal });
+      contextTokens += await this.countStoredContextTokens(appended);
+      // Replacing the last item lowers MAX(ordinal); the next append may reuse a gap.
+      const remainingLastOrdinal = replacedItems[replacedItems.length - 1].ordinal === lastContextOrdinal
+        ? replacedItems[0].ordinal : lastContextOrdinal;
+      lastContextOrdinal = appended[appended.length - 1]?.ordinal ?? remainingLastOrdinal;
+      return contextTokens;
+    };
     let isFirstLeafPass = true;
 
     // Phase 1: leaf passes over oldest raw chunks outside the protected tail.
     while (true) {
+      await yieldToEventLoop();
       this.config.signal?.throwIfAborted();
       const leafChunk = await this.selectOldestLeafChunk(conversationId);
       if (leafChunk.items.length === 0) {
@@ -270,14 +318,14 @@ export class CompactionEngine {
         isFirstLeafPass = false;
       }
 
-      const passTokensBefore = await this.summaryStore.getContextTokenCount(conversationId);
+      const passTokensBefore = contextTokens;
       const leafResult = await this.leafPass(
         conversationId,
         leafChunk.items,
         summarize,
         previousSummaryContent,
       );
-      const passTokensAfter = await this.summaryStore.getContextTokenCount(conversationId);
+      const passTokensAfter = await updateTokens(leafResult, leafChunk.items);
       await this.persistCompactionEvents({
         conversationId,
         tokensBefore: passTokensBefore,
@@ -301,6 +349,7 @@ export class CompactionEngine {
 
     // Phase 2: depth-aware condensed passes, always processing shallowest depth first.
     while (true) {
+      await yieldToEventLoop();
       this.config.signal?.throwIfAborted();
       const candidate = await this.selectShallowestCondensationCandidate({
         conversationId,
@@ -309,14 +358,14 @@ export class CompactionEngine {
         break;
       }
 
-      const passTokensBefore = await this.summaryStore.getContextTokenCount(conversationId);
+      const passTokensBefore = contextTokens;
       const condenseResult = await this.condensedPass(
         conversationId,
         candidate.chunk.items,
         candidate.targetDepth,
         summarize,
       );
-      const passTokensAfter = await this.summaryStore.getContextTokenCount(conversationId);
+      const passTokensAfter = await updateTokens(condenseResult, candidate.chunk.items);
       await this.persistCompactionEvents({
         conversationId,
         tokensBefore: passTokensBefore,
@@ -338,7 +387,7 @@ export class CompactionEngine {
       previousTokens = passTokensAfter;
     }
 
-    const tokensAfter = await this.summaryStore.getContextTokenCount(conversationId);
+    const tokensAfter = contextTokens;
 
     return {
       actionTaken,
@@ -435,13 +484,28 @@ export class CompactionEngine {
     return estimateTokens(message.content);
   }
 
+  private async countStoredContextTokens(items: ContextItemRecord[]): Promise<number> {
+    let total = 0;
+    for (let i = 0; i < items.length; i++) {
+      if (i % COMPACTION_YIELD_EVERY === 0) await yieldToEventLoop();
+      const item = items[i];
+      const record = item.itemType === "message" && item.messageId != null
+        ? await this.conversationStore.getMessageById(item.messageId)
+        : item.summaryId ? await this.summaryStore.getSummary(item.summaryId) : null;
+      total += record?.tokenCount ?? 0;
+    }
+    return total;
+  }
+
   /** Sum raw message tokens outside the protected fresh tail. */
   private async countRawTokensOutsideFreshTail(conversationId: number): Promise<number> {
     const contextItems = await this.summaryStore.getContextItems(conversationId);
     const freshTailOrdinal = this.resolveFreshTailOrdinal(contextItems);
     let rawTokens = 0;
 
+    let processed = 0;
     for (const item of contextItems) {
+      if (processed++ % COMPACTION_YIELD_EVERY === 0) await yieldToEventLoop();
       if (item.ordinal >= freshTailOrdinal) {
         break;
       }
@@ -465,21 +529,12 @@ export class CompactionEngine {
     const freshTailOrdinal = this.resolveFreshTailOrdinal(contextItems);
     const threshold = this.resolveLeafChunkTokens();
 
-    let rawTokensOutsideTail = 0;
-    for (const item of contextItems) {
-      if (item.ordinal >= freshTailOrdinal) {
-        break;
-      }
-      if (item.itemType !== "message" || item.messageId == null) {
-        continue;
-      }
-      rawTokensOutsideTail += await this.getMessageTokenCount(item.messageId);
-    }
-
     const chunk: ContextItemRecord[] = [];
     let chunkTokens = 0;
     let started = false;
+    let processed = 0;
     for (const item of contextItems) {
+      if (processed++ % COMPACTION_YIELD_EVERY === 0) await yieldToEventLoop();
       if (item.ordinal >= freshTailOrdinal) {
         break;
       }
@@ -508,7 +563,7 @@ export class CompactionEngine {
       }
     }
 
-    return { items: chunk, rawTokensOutsideTail, threshold };
+    return { items: chunk };
   }
 
   /**
@@ -671,7 +726,9 @@ export class CompactionEngine {
 
     const chunk: ContextItemRecord[] = [];
     let summaryTokens = 0;
+    let processed = 0;
     for (const item of contextItems) {
+      if (processed++ % COMPACTION_YIELD_EVERY === 0) await yieldToEventLoop();
       if (item.ordinal >= freshTailOrdinal) {
         break;
       }
@@ -758,52 +815,98 @@ export class CompactionEngine {
    * Run three-level summarization escalation:
    * normal -> aggressive -> deterministic fallback.
    *
-   * Every provider answer passes the summary gate first. A rejected answer — an
-   * adapter's `SummaryRejectedError` or text that is only whitespace — throws out of
-   * the pass before anything is persisted; the deterministic fallback is reserved
-   * for accepted answers that failed to shrink, never for rejected ones.
+   * Exhausted output-cut retries halve at source boundaries, at most
+   * MAX_CUT_SPLIT_DEPTH times, down to deterministic truncation of a piece that is
+   * still cut (a single message, a condensed source summary, or a piece at the depth
+   * limit). A split visits at most 2·min(n, 8) - 1 chunks for n sources. Rejected
+   * answers never supply text.
+   * Whitespace and other provider failures still abort before persistence.
    */
-  private async summarizeWithEscalation(params: {
-    sourceText: string;
-    summarize: CompactionSummarizeFn;
-    options?: CompactionSummarizeOptions;
-  }): Promise<{ content: string; level: CompactionLevel }> {
-    const rawText = params.sourceText.trim();
+  private async summarizeWithEscalation(params: EscalationParams): Promise<EscalationResult> {
+    this.config.signal?.throwIfAborted();
+    const rawText = params.sourceTexts.join("\n\n").trim();
     const sourceText = this.config.scrubber ? this.config.scrubber.scrub(rawText) : rawText;
     if (!sourceText) {
       return {
         content: "[Truncated from 0 tokens]",
         level: "fallback",
+        keptAnswers: 0,
       };
     }
     const inputTokens = Math.max(1, estimateTokens(sourceText));
-    const summarizeOptions = this.config.language?.trim()
-      ? { ...params.options, language: this.config.language.trim() }
-      : params.options;
+    const fallback = (): EscalationResult => ({
+      content: `${sourceText.slice(0, FALLBACK_MAX_CHARS)}\n[Truncated from ${inputTokens} tokens]`,
+      level: "fallback",
+      keptAnswers: 0,
+    });
+    const lessons = params.sourceMessageIds
+      ? await this.conversationStore.getToolLessonsForMessages(params.sourceMessageIds) : [];
+    const toolContext = boundToolSummaryContext({
+      errorFixPairs: lessons.filter(lesson => lesson.kind === "error-fix").map(lesson => ({
+        failedCommand: lesson.failedCommand!, succeededCommand: lesson.succeededCommand!,
+      })),
+      blocked: lessons.filter(lesson => lesson.kind === "block-reason").map(lesson => ({
+        command: lesson.command, reason: lesson.reason,
+      })),
+    }, this.config.scrubber ? text => this.config.scrubber!.scrub(text) : undefined);
+    const summarizeOptions = {
+      ...params.options,
+      ...(this.config.language?.trim() ? { language: this.config.language.trim() } : {}),
+      ...(toolContext ? { toolContext } : {}),
+    };
 
     const summarizeGated = async (aggressive: boolean) =>
       acceptSummaryText(await params.summarize(sourceText, aggressive, summarizeOptions), "summarizer");
 
-    let summaryText = await summarizeGated(false);
-    let level: CompactionLevel = "normal";
-
-    if (estimateTokens(summaryText) >= inputTokens) {
-      this.config.onAnswerDiscarded?.();
-      summaryText = await summarizeGated(true);
-      level = "aggressive";
-
-      if (estimateTokens(summaryText) >= inputTokens) {
-        this.config.onAnswerDiscarded?.();
-        const truncated =
-          sourceText.length > FALLBACK_MAX_CHARS
-            ? sourceText.slice(0, FALLBACK_MAX_CHARS)
-            : sourceText;
-        summaryText = `${truncated}\n[Truncated from ${inputTokens} tokens]`;
-        level = "fallback";
-      }
+    try {
+      return await this.escalate(summarizeGated, inputTokens, fallback);
+    } catch (error) {
+      if (!containsOutputCut(error)) throw error;
+      const depth = params.splitDepth ?? 0;
+      if (params.sourceTexts.length <= 1 || depth >= MAX_CUT_SPLIT_DEPTH) return fallback();
+      return this.summarizeHalves({ ...params, splitDepth: depth + 1 }, inputTokens, fallback);
     }
+  }
 
-    return { content: summaryText, level };
+  /** Normal, then aggressive when the answer did not shrink, then the deterministic fallback. */
+  private async escalate(
+    summarizeGated: (aggressive: boolean) => Promise<string>,
+    inputTokens: number,
+    fallback: () => EscalationResult,
+  ): Promise<EscalationResult> {
+    const normal = await summarizeGated(false);
+    if (estimateTokens(normal) < inputTokens) return { content: normal, level: "normal", keptAnswers: 1 };
+    this.config.onAnswerDiscarded?.();
+    const aggressive = await summarizeGated(true);
+    if (estimateTokens(aggressive) < inputTokens) return { content: aggressive, level: "aggressive", keptAnswers: 1 };
+    this.config.onAnswerDiscarded?.();
+    return fallback();
+  }
+
+  /** Each half of the sources through the full escalation, joined in order; a join that does not shrink falls back. */
+  private async summarizeHalves(
+    params: EscalationParams,
+    inputTokens: number,
+    fallback: () => EscalationResult,
+  ): Promise<EscalationResult> {
+    const midpoint = Math.floor(params.sourceTexts.length / 2);
+    const left = await this.summarizeWithEscalation({
+      ...params, sourceTexts: params.sourceTexts.slice(0, midpoint),
+      sourceMessageIds: params.sourceMessageIds?.slice(0, midpoint),
+    });
+    const right = await this.summarizeWithEscalation({
+      ...params,
+      sourceTexts: params.sourceTexts.slice(midpoint),
+      sourceMessageIds: params.sourceMessageIds?.slice(midpoint),
+      options: { ...params.options, previousSummary: left.content },
+    });
+    const content = `${left.content}\n\n${right.content}`;
+    const keptAnswers = left.keptAnswers + right.keptAnswers;
+    if (estimateTokens(content) >= inputTokens) {
+      for (let i = 0; i < keptAnswers; i++) this.config.onAnswerDiscarded?.();
+      return fallback();
+    }
+    return { content, level: highestLevel(left.level, right.level), keptAnswers };
   }
 
   // ── Private: Leaf Pass ───────────────────────────────────────────────────
@@ -816,16 +919,20 @@ export class CompactionEngine {
     messageItems: ContextItemRecord[],
     summarize: CompactionSummarizeFn,
     previousSummaryContent?: string,
-  ): Promise<{ summaryId: string; level: CompactionLevel; content: string }> {
+  ): Promise<PassResult & { content: string }> {
     // Fetch full message content for each context item
     const messageContents: { messageId: number; content: string; createdAt: Date; eventAt?: Date | null; tokenCount: number }[] =
       [];
+    let replacedTokens = 0;
+    let processed = 0;
     for (const item of messageItems) {
+      if (processed++ % COMPACTION_YIELD_EVERY === 0) await yieldToEventLoop();
       if (item.messageId == null) {
         continue;
       }
       const msg = await this.conversationStore.getMessageById(item.messageId);
       if (msg) {
+        replacedTokens += msg.tokenCount ?? 0;
         messageContents.push({
           messageId: msg.messageId,
           content: msg.content,
@@ -836,14 +943,18 @@ export class CompactionEngine {
       }
     }
 
-    const concatenated = messageContents
-      .map((message) => `[${formatTimestamp(message.createdAt, this.config.timezone)}]\n${message.content}`)
-      .join("\n\n");
+    const sourceTexts: string[] = [];
+    for (let i = 0; i < messageContents.length; i++) {
+      if (i % COMPACTION_YIELD_EVERY === 0) await yieldToEventLoop();
+      const message = messageContents[i];
+      sourceTexts.push(`[${formatTimestamp(message.createdAt, this.config.timezone)}]\n${message.content}`);
+    }
     const fileIds = dedupeOrderedIds(
       messageContents.flatMap((message) => extractFileIdsFromContent(message.content)),
     );
     const summary = await this.summarizeWithEscalation({
-      sourceText: concatenated,
+      sourceTexts,
+      sourceMessageIds: messageContents.map(message => message.messageId),
       summarize,
       options: {
         previousSummary: previousSummaryContent,
@@ -899,7 +1010,7 @@ export class CompactionEngine {
       summaryId,
     });
 
-    return { summaryId, level: summary.level, content: summary.content };
+    return { summaryId, level: summary.level, content: summary.content, tokenDelta: tokenCount - replacedTokens };
   }
 
   // ── Private: Condensed Pass ──────────────────────────────────────────────
@@ -915,7 +1026,9 @@ export class CompactionEngine {
   ): Promise<PassResult> {
     // Fetch full summary records
     const summaryRecords: SummaryRecord[] = [];
+    let processed = 0;
     for (const item of summaryItems) {
+      if (processed++ % COMPACTION_YIELD_EVERY === 0) await yieldToEventLoop();
       if (item.summaryId == null) {
         continue;
       }
@@ -925,15 +1038,16 @@ export class CompactionEngine {
       }
     }
 
-    const concatenated = summaryRecords
-      .map((summary) => {
-        const earliestAt = summary.earliestAt ?? summary.createdAt;
-        const latestAt = summary.latestAt ?? summary.createdAt;
-        const tz = this.config.timezone;
-        const header = `[${formatTimestamp(earliestAt, tz)} - ${formatTimestamp(latestAt, tz)}]`;
-        return `${header}\n${summary.content}`;
-      })
-      .join("\n\n");
+    const sourceTexts: string[] = [];
+    for (let i = 0; i < summaryRecords.length; i++) {
+      if (i % COMPACTION_YIELD_EVERY === 0) await yieldToEventLoop();
+      const summary = summaryRecords[i];
+      const earliestAt = summary.earliestAt ?? summary.createdAt;
+      const latestAt = summary.latestAt ?? summary.createdAt;
+      const tz = this.config.timezone;
+      const header = `[${formatTimestamp(earliestAt, tz)} - ${formatTimestamp(latestAt, tz)}]`;
+      sourceTexts.push(`${header}\n${summary.content}`);
+    }
     const fileIds = dedupeOrderedIds(
       summaryRecords.flatMap((summary) => [
         ...summary.fileIds,
@@ -945,7 +1059,7 @@ export class CompactionEngine {
         ? await this.resolvePriorSummaryContextAtDepth(conversationId, summaryItems, targetDepth)
         : undefined;
     const condensed = await this.summarizeWithEscalation({
-      sourceText: concatenated,
+      sourceTexts,
       summarize,
       options: {
         previousSummary: previousSummaryContent,
@@ -1028,7 +1142,7 @@ export class CompactionEngine {
       summaryId,
     });
 
-    return { summaryId, level: condensed.level };
+    return { summaryId, level: condensed.level, tokenDelta: tokenCount - summaryRecords.reduce((sum, source) => sum + source.tokenCount, 0) };
   }
 
   /**

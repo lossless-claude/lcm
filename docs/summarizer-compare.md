@@ -144,3 +144,12 @@ The shared engine and planted-facts corpus live in `src/eval/engine.ts`; the
 [developer bench](summarizer-bench.md) imports the same implementation. These
 measurements can support [model certification](design/model-certification.md),
 but this command does not certify or change the selected summarizer.
+
+## Window tool evidence
+
+Stored-session comparisons carry each message's selected tool inputs and
+resolved outcomes into the in-memory engine. Leaf calls receive only their
+window's error→fix pairs and masked block reasons. The JSON report retains
+`prompt`, `toolContext` and exact-command `toolPairRetention` checks per call;
+paraphrases need human review. See [the eval bench](summarizer-bench.md) for
+baseline runs and the planted failure corpus.

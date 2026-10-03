@@ -14,6 +14,7 @@
 
 import { createHash } from "node:crypto";
 import { open, stat, type FileHandle } from "node:fs/promises";
+import type { TranscriptToolCall } from "./tool-calls.js";
 import type { ParsedMessage } from "./transcript.js";
 
 const READ_CHUNK_BYTES = 64 * 1024;
@@ -40,6 +41,7 @@ export interface JsonlTranscriptCursor {
 
 /** One decoded record: the messages it contributes and any session metadata it carries. */
 export interface JsonlTranscriptRecord<M> {
+  toolCalls?: TranscriptToolCall[];
   message?: ParsedMessage | ParsedMessage[];
   sessionMeta?: M;
 }
@@ -63,6 +65,7 @@ export interface JsonlTranscriptFormat<M, R extends JsonlTranscriptRecord<M> = J
    * Absent, each record's messages are kept as read.
    */
   selectMessages?(records: readonly R[]): ParsedMessage[];
+  selectToolCalls?(records: readonly R[]): TranscriptToolCall[];
 }
 
 export interface ReadJsonlTranscriptDeltaOptions {
@@ -75,6 +78,7 @@ export interface ReadJsonlTranscriptDeltaOptions {
 }
 
 export interface JsonlTranscriptDelta<M, R = JsonlTranscriptRecord<M>> {
+  toolCalls: TranscriptToolCall[];
   messages: ParsedMessage[];
   cursor: JsonlTranscriptCursor;
   resumed: boolean;
@@ -87,6 +91,7 @@ export interface JsonlTranscriptDelta<M, R = JsonlTranscriptRecord<M>> {
 }
 
 interface ScanResult<R> {
+  toolCalls: TranscriptToolCall[];
   messages: ParsedMessage[];
   records?: R[];
   offset: number;
@@ -215,8 +220,10 @@ async function scanRecords<M, R extends JsonlTranscriptRecord<M>>(
 ): Promise<ScanResult<R>> {
   const messages: ParsedMessage[] = [];
   const records: R[] = [];
+  const toolCalls: TranscriptToolCall[] = [];
   const take = (parsed: R | undefined): void => {
     if (!parsed) return;
+    toolCalls.push(...parsed.toolCalls ?? []);
     if (format.selectMessages) records.push(parsed);
     else if (Array.isArray(parsed.message)) messages.push(...parsed.message);
     else if (parsed.message) messages.push(parsed.message);
@@ -281,8 +288,8 @@ async function scanRecords<M, R extends JsonlTranscriptRecord<M>>(
     }
   }
 
-  if (!format.selectMessages) return { messages, offset: committedOffset, recordBoundary };
-  return { messages: format.selectMessages(records), records, offset: committedOffset, recordBoundary };
+  if (!format.selectMessages) return { messages, toolCalls, offset: committedOffset, recordBoundary };
+  return { messages: format.selectMessages(records), toolCalls: format.selectToolCalls?.(records) ?? toolCalls, records, offset: committedOffset, recordBoundary };
 }
 
 async function readSessionMeta<M, R extends JsonlTranscriptRecord<M>>(handle: FileHandle, format: JsonlTranscriptFormat<M, R>, snapshotSize: number): Promise<M | undefined> {
@@ -415,6 +422,7 @@ export async function readJsonlTranscriptDelta<M, R extends JsonlTranscriptRecor
 
     return {
       messages: scan.messages,
+      toolCalls: scan.toolCalls,
       records: scan.records,
       cursor: {
         offset: scan.offset,

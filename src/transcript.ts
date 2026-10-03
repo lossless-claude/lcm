@@ -1,5 +1,6 @@
 import { isWorkerClaim, workerPayloadJobIds } from "./worker-markers.js";
 import { isCompactionContext } from "./compaction-context.js";
+import { transcriptToolInvocation, transcriptToolResult, type TranscriptToolCall } from "./tool-calls.js";
 import { readFileSync } from "node:fs";
 
 /** Bump when the Claude parser changes the rows or fields a transcript yields. */
@@ -11,7 +12,7 @@ interface ContentBlock {
   name?: string;
   is_error?: boolean;
   content?: string | ContentBlock[];
-  /** `tool_use` input — only read when `name === "Skill"`, for the skill's name and args. */
+  /** Tool input, selected separately from the unchanged message rows. */
   input?: Record<string, unknown>;
   tool_use_id?: string;
   /** `tool_use` id — the same id a PostToolUse hook payload carries as `tool_use_id`. */
@@ -115,10 +116,9 @@ function roleOf(entryRole: string, content: string | ContentBlock[] | undefined)
 /**
  * What to store for an entry that holds no prose.
  *
- * A `tool_use` carries the call, whose input can be an entire file; only the
- * name is kept, so the record says a tool ran without dragging its argument
- * into memory. A `tool_result` carries the output, which is worth keeping, and
- * its failure flag is recorded as a searchable marker.
+ * A `tool_use` keeps its name in the message row; selected inputs travel beside
+ * it as tool-call structure. A `tool_result` keeps its output and its failure
+ * flag as a searchable marker. Tool-call metadata never changes these rows.
  */
 function toolContent(blocks: ContentBlock[], legacyToolShape = false): string {
   const lines: string[] = [];
@@ -203,9 +203,18 @@ function toolUseModels(obj: TranscriptLine): Map<string, string> {
   return models;
 }
 
+function claudeToolCalls(blocks: ContentBlock[], message?: ParsedMessage): TranscriptToolCall[] {
+  return blocks.flatMap(block => {
+    if (block.type === "tool_use" && block.id) return [transcriptToolInvocation(block.id, block.name || "tool_use", block.input, message)];
+    if (block.type === "tool_result" && block.tool_use_id) return [{ ...transcriptToolResult(block.tool_use_id, "claude",
+      { output: extractText(block.content), error: block.is_error }), message }];
+    return [];
+  });
+}
+
 /** One Claude JSONL entry; full and incremental readers use exactly the same filtering and shape. */
 export function parseClaudeTranscriptRecord(record: string, toolShape: "current" | "legacy" = "current"):
-  { message?: ParsedMessage; toolUseModels: Map<string, string>; sessionUrlDeclaration?: SessionUrlDeclaration } {
+  { message?: ParsedMessage; toolUseModels: Map<string, string>; toolCalls?: TranscriptToolCall[]; sessionUrlDeclaration?: SessionUrlDeclaration } {
   try {
     const obj: TranscriptLine = JSON.parse(record);
     const models = toolUseModels(obj);
@@ -223,7 +232,7 @@ export function parseClaudeTranscriptRecord(record: string, toolShape: "current"
     const blocks = blocksOf(obj.message?.content);
     const role = roleOf(entryRole, obj.message?.content);
     const content = role === "tool" ? toolContent(blocks, toolShape === "legacy") : extractText(obj.message?.content);
-    if (!content.trim()) return { toolUseModels: models };
+    if (!content.trim()) return { toolUseModels: models, toolCalls: claudeToolCalls(blocks) };
     // Generated envelopes are control rows; their source content is already captured.
     if (role === "user" && isCompactionContext(content) &&
         (typeof obj.message?.content === "string" || blocks.every(block => block.type === "text"))) return { toolUseModels: models };
@@ -233,8 +242,10 @@ export function parseClaudeTranscriptRecord(record: string, toolShape: "current"
     const workerPayloads = blocks.filter(block => block.type === "tool_result" && !block.is_error && block.tool_use_id)
       .flatMap(block => workerPayloadJobIds(block.content).map(jobId => ({ callId: block.tool_use_id!, jobId })));
     const eventAt = transcriptEventTime(obj.timestamp);
-    return { message: { role, content, tokenCount: estimateTokens(content), ...(eventAt ? { eventAt } : {}), ...(parts.length ? { parts } : {}),
-      ...(workerClaims.length ? { workerClaims } : {}), ...(workerPayloads.length ? { workerPayloads } : {}) }, toolUseModels: models };
+    const message: ParsedMessage = { role, content, tokenCount: estimateTokens(content), ...(eventAt ? { eventAt } : {}), ...(parts.length ? { parts } : {}),
+      ...(workerClaims.length ? { workerClaims } : {}), ...(workerPayloads.length ? { workerPayloads } : {}) };
+    const toolCalls = claudeToolCalls(blocks, message);
+    return { message, toolUseModels: models, ...(toolCalls.length ? { toolCalls } : {}) };
   } catch {
     // Claude's existing full parser skips malformed entries.
     return { toolUseModels: new Map() };

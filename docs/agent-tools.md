@@ -128,6 +128,8 @@ one — a hit through either side counts. `lcm_grep` is unaffected: its semantic
 ### lcm_grep
 
 Search conversation history by keyword or regex across raw messages and summaries.
+Message search also finds retained scrubbed tool-call inputs, including commands;
+the match references the original call's message and its covering summaries.
 
 **Parameters:**
 

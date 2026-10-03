@@ -1,10 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { isSignalTagged, parseStoredTags, singleMemoryIdTag } from "./votes.js";
 
-function escapeLikePattern(value: string): string {
-  return value.replace(/[\\%_]/g, "\\$&");
-}
-
 export interface RecallStats {
   memoriesSurfaced: number;
   memoriesActedUpon: number;
@@ -176,21 +172,20 @@ export class RecallStore {
 
   private collectUsageCounts(memoryIds?: string[]): Map<string, number> {
     if (memoryIds && memoryIds.length === 0) return new Map();
-
-    const memoryIdSet = memoryIds ? new Set(memoryIds) : null;
-    const filterClause = memoryIdSet && memoryIdSet.size > 0
-      ? ` AND (${[...memoryIdSet].map(() => "tags LIKE ? ESCAPE '\\'").join(" OR ")})`
-      : "";
-    const filterParams = memoryIdSet
-      ? [...memoryIdSet].map((memoryId) => `%"memory_id:${escapeLikePattern(memoryId)}"%`)
-      : [];
+    if (memoryIds) {
+      const ids = [...new Set(memoryIds)];
+      const rows = this.db.prepare(
+        `SELECT memory_id, COUNT(*) AS usage_count FROM recall_usage
+         WHERE memory_id IN (${ids.map(() => "?").join(", ")}) GROUP BY memory_id`
+      ).all(...ids) as Array<{ memory_id: string; usage_count: number }>;
+      return new Map(rows.map(row => [row.memory_id, row.usage_count]));
+    }
 
     const actedRows = this.db.prepare(
       `SELECT tags FROM promoted
        WHERE archived_at IS NULL
-       AND tags LIKE '%"signal:memory_used"%'
-       ${filterClause}`
-    ).all(...filterParams) as Array<{ tags: string }>;
+       AND tags LIKE '%"signal:memory_used"%'`
+    ).all() as Array<{ tags: string }>;
 
     const memoryIdCounts = new Map<string, number>();
     for (const row of actedRows) {
@@ -198,7 +193,6 @@ export class RecallStore {
       if (!tags) continue;
       const memId = singleMemoryIdTag(tags);
       if (!memId) continue;
-      if (memoryIdSet && !memoryIdSet.has(memId)) continue;
       memoryIdCounts.set(memId, (memoryIdCounts.get(memId) ?? 0) + 1);
     }
 

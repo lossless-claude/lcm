@@ -1,10 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import type { Dirent } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, resolve, sep } from "node:path";
-import { readProjectMetaIn } from "../daemon/project-meta.js";
+import { isAbsolute, join, parse, resolve, sep } from "node:path";
+import { projectMetaPathIn, readProjectMetaIn } from "../daemon/project-meta.js";
 import { groupIndexPath } from "../daemon/project-group.js";
 import { readHold } from "../daemon/hold.js";
 import { openStandaloneLcmConnection } from "../db/connection.js";
@@ -67,20 +69,43 @@ function temporaryOrTestCwd(cwd: string): boolean {
     || path.split(sep).some(part => /^(?:e2e-test-|lossless-(?:ingest|compact|status)-)/.test(part));
 }
 
-function staleProjectStores(paths: LcmPaths): { stale: ProjectStore[]; unchecked: string[]; recordless: RecordlessStore[] } {
+function staleProjectStores(paths: LcmPaths, cwdErrors?: Map<string, NodeJS.ErrnoException | null>): {
+  stale: ProjectStore[]; unchecked: string[]; recordless: RecordlessStore[]; missingMeta: number; missingCwds: number;
+} {
   const stale: ProjectStore[] = [];
   const unchecked: string[] = [];
   const recordless: RecordlessStore[] = [];
+  let missingMeta = 0;
+  let missingCwds = 0;
   let entries;
   try { entries = readdirSync(paths.projectsDir, { withFileTypes: true }); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") unchecked.push(paths.projectsDir);
-    return { stale, unchecked, recordless };
+    return { stale, unchecked, recordless, missingMeta, missingCwds };
   }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const dir = join(paths.projectsDir, entry.name);
     try {
-      const cwd = readProjectMetaIn(dir)?.cwd;
+      const meta = readProjectMetaIn(dir);
+      if (meta === null) {
+        try { statSync(projectMetaPathIn(dir)); } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") missingMeta++;
+          else throw error;
+        }
+      }
+      const cwd = meta?.cwd;
+      let cwdError: NodeJS.ErrnoException | undefined;
+      if (typeof cwd === "string" && isAbsolute(cwd)) {
+        try {
+          if (cwdErrors) {
+            const error = cwdErrors.get(dir);
+            if (error !== null) throw error ?? new Error("cwd not checked");
+          } else statSync(cwd);
+        } catch (error) {
+          cwdError = error as NodeJS.ErrnoException;
+          if (cwdError.code === "ENOENT" || cwdError.code === "ENOTDIR") missingCwds++;
+        }
+      }
       // The store id is authoritative: re-hashing a vanished cwd loses its realpath,
       // so an alias can no longer reproduce the id used when the store was created.
       if (typeof cwd !== "string" || !isAbsolute(cwd) || !/^[a-f0-9]{64}$/.test(entry.name)) {
@@ -90,22 +115,116 @@ function staleProjectStores(paths: LcmPaths): { stale: ProjectStore[]; unchecked
         }
         continue;
       }
+      if (cwdErrors && cwdError && cwdError.code !== "ENOENT" && cwdError.code !== "ENOTDIR") continue;
       if (!temporaryOrTestCwd(cwd)) continue;
-      try { statSync(cwd); } catch (error) {
+      if (cwdError) {
         // Permission or I/O failures do not establish that a checkout vanished.
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        if (cwdError.code !== "ENOENT") throw cwdError;
         stale.push({ id: entry.name, dir, cwd });
       }
     } catch { unchecked.push(dir); }
   }
-  return { stale, unchecked, recordless };
+  return { stale, unchecked, recordless, missingMeta, missingCwds };
+}
+
+// Long enough for a local stat on a heavily loaded machine; short enough to bound an unreachable mount.
+export const CWD_CHECK_DEADLINE_MS = 1000;
+const DEFAULT_THREADPOOL_SIZE = 4;
+const configuredPoolSize = Number.parseInt(process.env.UV_THREADPOOL_SIZE ?? String(DEFAULT_THREADPOOL_SIZE), 10);
+// Invalid or non-positive settings conservatively get no cwd slots.
+const threadpoolSize = Number.isNaN(configuredPoolSize) ? 1 : Math.max(1, configuredPoolSize);
+// Timed-out stats cannot be cancelled. Reserve at least one thread for doctor's
+// later filesystem/DNS work (two with libuv's default pool); a one-thread pool skips cwds.
+const MAX_CWD_CHECK_CONCURRENCY = 2;
+export const CWD_CHECK_CONCURRENCY = Math.min(MAX_CWD_CHECK_CONCURRENCY, threadpoolSize - 1);
+type CwdStat = (cwd: string) => Promise<unknown>;
+
+// Read the kernel's mount table without stat'ing ancestors on a potentially dead mount.
+function cwdMountPoints(): string[] {
+  try {
+    const decode = (path: string) => path.replace(/\\([0-7]{3})/g, (_, octal: string) => String.fromCharCode(parseInt(octal, 8)));
+    if (process.platform === "linux") {
+      return readFileSync("/proc/self/mountinfo", "utf8").trim().split("\n")
+        .map(line => decode(line.split(" ")[4]));
+    }
+    if (process.platform === "darwin") {
+      return execFileSync("/sbin/mount", { encoding: "utf8", timeout: CWD_CHECK_DEADLINE_MS })
+        .split("\n").flatMap(line => {
+          const point = / on (.*) \([^)]*\)$/.exec(line)?.[1];
+          return point ? [decode(point)] : [];
+        });
+    }
+  } catch { /* Without a mount table, quarantine conservatively by filesystem root. */ }
+  return [];
+}
+
+async function checkCwds(paths: LcmPaths, statCwd: CwdStat, mountPoints: readonly string[]): Promise<{
+  cwdErrors: Map<string, NodeJS.ErrnoException | null>; uncheckedCwds: string[];
+}> {
+  const errors = new Map<string, NodeJS.ErrnoException | null>();
+  const projects: Array<{ dir: string; cwd: string }> = [];
+  let entries: Dirent[];
+  try { entries = readdirSync(paths.projectsDir, { withFileTypes: true }); } catch {
+    return { cwdErrors: errors, uncheckedCwds: [] };
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dir = join(paths.projectsDir, entry.name);
+    const cwd = readProjectMetaIn(dir)?.cwd;
+    if (typeof cwd === "string" && isAbsolute(cwd)) {
+      projects.push({ dir, cwd });
+      errors.set(dir, new Error("cwd not checked"));
+    }
+  }
+  const mounts = [...mountPoints].map(point => resolve(point)).sort((a, b) => b.length - a.length);
+  const groups = new Map<string, typeof projects>();
+  for (const project of projects) {
+    const cwd = resolve(project.cwd);
+    const mount = mounts.find(point => cwd === point || cwd.startsWith(point.endsWith(sep) ? point : point + sep))
+      ?? parse(cwd).root;
+    const group = groups.get(mount) ?? [];
+    group.push(project);
+    groups.set(mount, group);
+  }
+  const queue = [...groups.values()];
+  let next = 0;
+  const worker = async () => {
+    while (next < queue.length) {
+      // Only one worker probes each mount. A timeout quarantines its remaining cwds.
+      for (const { dir, cwd } of queue[next++]) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timeout = Symbol("timeout");
+        try {
+          const result = await Promise.race([
+            Promise.resolve().then(() => statCwd(cwd)).then(() => null, error => error as NodeJS.ErrnoException),
+            new Promise<typeof timeout>(resolve => { timer = setTimeout(() => resolve(timeout), CWD_CHECK_DEADLINE_MS); }),
+          ]);
+          // A timed-out stat cannot be cancelled. Keep its slot occupied instead of
+          // launching an unbounded number of operations against an unreachable mount.
+          if (result === timeout) return;
+          errors.set(dir, result);
+        } finally { clearTimeout(timer); }
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(CWD_CHECK_CONCURRENCY, queue.length) }, worker));
+  const uncheckedCwds = projects.filter(({ dir }) => {
+    const error = errors.get(dir);
+    return error && error.code !== "ENOENT" && error.code !== "ENOTDIR";
+  }).map(({ cwd }) => cwd);
+  return { cwdErrors: errors, uncheckedCwds };
 }
 
 /** Read-only: a missing ordinary checkout may be an unmounted disk and is retained. */
-export function checkStaleProjectStores(paths: LcmPaths, verbose = false): CheckResult {
-  const { stale, unchecked, recordless } = staleProjectStores(paths);
+export async function checkStaleProjectStores(paths: LcmPaths, verbose = false, statCwd: CwdStat = stat, mountPoints: readonly string[] = cwdMountPoints()): Promise<CheckResult> {
+  const { cwdErrors, uncheckedCwds } = await checkCwds(paths, statCwd, mountPoints);
+  const { stale, unchecked, recordless, missingMeta, missingCwds } = staleProjectStores(paths, cwdErrors);
   // The full list belongs to the cleanup preview; doctor shows enough to recognise the pattern.
   const lines = doctorList(stale, verbose, store => `     ${store.id}: ${store.cwd}`);
+  lines.push(`     ${missingMeta} project directories without meta.json`);
+  lines.push(`     ${missingCwds} project directories with missing cwd`);
+  lines.push(`     ${uncheckedCwds.length} project directories with unchecked cwd`);
+  lines.push(...doctorList(uncheckedCwds, verbose, cwd => `     ${cwd}: not checked (deadline exceeded or filesystem error)`));
   if (verbose) lines.push(...unchecked.map(dir => `     ${dir}: not checked (unreadable or invalid project record)`));
   if (unchecked.length) lines.push(`     ${unchecked.length} stores not checked (unreadable or invalid project record)`);
   if (recordless.length) {
@@ -116,7 +235,7 @@ export function checkStaleProjectStores(paths: LcmPaths, verbose = false): Check
   if (stale.length || unchecked.length) lines.push("     Preview cleanup: lcm doctor --cleanup-stale-projects --dry-run");
   return {
     name: "stale-project-stores", category: "Storage",
-    status: stale.length || unchecked.length ? "warn" : "pass",
+    status: stale.length || unchecked.length || uncheckedCwds.length ? "warn" : "pass",
     message: `${stale.length} stale project stores (missing temporary or test directories)` + (lines.length ? `\n${lines.join("\n")}` : ""),
   };
 }
@@ -153,6 +272,7 @@ function processAlive(pid: number): boolean {
 
 /** Defaults to a read-only preview. Apply preserves the complete store in lcm's trash. */
 export function cleanupStaleProjectStores(paths: LcmPaths, apply = false): string {
+  if (apply) requireOffline(paths);
   const { stale, unchecked, recordless } = staleProjectStores(paths);
   const lines = stale.map(store => `     ${store.id}: ${store.cwd}`);
   for (const dir of unchecked) lines.push(`     ${dir}: skipped (unreadable or invalid project record)`);
@@ -164,18 +284,19 @@ export function cleanupStaleProjectStores(paths: LcmPaths, apply = false): strin
     return `[dry-run] Would trash ${stale.length} project stores and their event sidecars\n${lines.join("\n")}\n` +
       "After review: lcm daemon stop --hold; lcm doctor --cleanup-stale-projects --apply; lcm daemon start";
   }
-  requireOffline(paths);
-  if (!stale.length) return `Trashed 0 project stores\n${lines.join("\n")}`;
-
   const batch = join(paths.home, "trash", "projects", `${Date.now()}-${randomUUID()}`);
   const moves: Array<{ from: string; to: string }> = [];
   const move = (from: string, to: string) => {
+    requireOffline(paths);
     renameSync(from, to);
     moves.push({ from, to });
   };
-  const index = existsSync(groupIndexPath(paths)) ? new DatabaseSync(groupIndexPath(paths)) : undefined;
+  let index: DatabaseSync | undefined;
   let transaction = false;
   try {
+    requireOffline(paths);
+    if (!stale.length) return `Trashed 0 project stores\n${lines.join("\n")}`;
+    index = existsSync(groupIndexPath(paths)) ? new DatabaseSync(groupIndexPath(paths)) : undefined;
     if (index) {
       index.exec("PRAGMA busy_timeout = 5000");
       index.exec("BEGIN IMMEDIATE");
@@ -199,20 +320,33 @@ export function cleanupStaleProjectStores(paths: LcmPaths, apply = false): strin
         mkdirSync(join(batch, "events"), { recursive: true });
         move(join(paths.eventsDir, name), join(batch, "events", name));
       }
+      requireOffline(paths);
       index?.prepare("DELETE FROM project_remote WHERE project_id = ?").run(store.id);
       index?.prepare("DELETE FROM project_identity WHERE project_id = ?").run(store.id);
     }
+    requireOffline(paths);
     if (index) { index.exec("COMMIT"); transaction = false; }
   } catch (error) {
     let rollbackFailed = false;
     if (transaction) {
       try { index!.exec("ROLLBACK"); } catch { rollbackFailed = true; }
     }
-    const failed: string[] = [];
-    for (const { from, to } of moves.reverse()) {
-      try { renameSync(to, from); } catch { failed.push(to); }
+    if (!readHold(paths.pidPath)) {
+      const moved = moves.map(({ from, to }) => `     ${from} -> ${to}`);
+      throw new Error(`Cleanup stopped: offline hold lost; moved ${moves.length} path${moves.length === 1 ? "" : "s"}` +
+        (moved.length ? `\nPreserved files needing manual restoration:\n${moved.join("\n")}\nTrash directory: ${batch}` : "") +
+        (rollbackFailed ? "\nGroup-index rollback could not be confirmed" : ""), { cause: error });
     }
-    if (failed.length) throw new Error(`Cleanup failed; preserved files needing manual restoration: ${failed.join(", ")}`, { cause: error });
+    const failed: string[] = [];
+    let holdLost = false;
+    for (const { from, to } of moves.reverse()) {
+      if (holdLost) { failed.push(to); continue; }
+      try { requireOffline(paths); renameSync(to, from); } catch {
+        failed.push(to);
+        holdLost = !readHold(paths.pidPath);
+      }
+    }
+    if (failed.length) throw new Error(`Cleanup ${holdLost ? "stopped: offline hold lost" : "failed"}; preserved files needing manual restoration: ${failed.join(", ")}`, { cause: error });
     if (rollbackFailed) throw new Error("Cleanup failed; files restored but group-index rollback could not be confirmed", { cause: error });
     throw error;
   } finally { index?.close(); }

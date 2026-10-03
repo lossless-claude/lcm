@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { DaemonConfig } from "../config.js";
+import { ToolLessonStore, type ToolLesson } from "../../promotion/tool-lessons.js";
 import { PromotedStore } from "../../db/promoted.js";
 
 /**
@@ -8,7 +9,11 @@ import { PromotedStore } from "../../db/promoted.js";
  */
 export interface Insight {
   content: string;
-  confidence: number;
+  confidence?: number;
+  count?: number;
+  sessionCount?: number;
+  firstSeen?: string;
+  lastSeen?: string;
   tags: string[];
 }
 
@@ -17,10 +22,34 @@ export function readInsights(db: DatabaseSync, config: DaemonConfig): Insight[] 
   const thresholds = config.compaction.promotionThresholds;
   const minConfidence = thresholds.eventConfidence?.pattern ?? 0.3;
   const cutoffMs = Date.now() - (thresholds.insightsMaxAgeDays ?? 90) * 24 * 60 * 60 * 1000;
-  return new PromotedStore(db)
+  const passive = new PromotedStore(db)
     .search("source passive capture", 10, ["source:passive-capture"])
     .filter((r) => r.confidence >= minConfidence
       && (!r.createdAt || Date.parse(r.createdAt) >= cutoffMs))
     .slice(0, 5)
     .map((r) => ({ content: r.content, confidence: r.confidence, tags: r.tags }));
+  // Only environment rules ride along, as one short line each. Error→fix pairs and block
+  // reasons carry whole commands; they stay in the store until shadow measurement (#772)
+  // shows that showing them prevents repeats.
+  const lessons = new ToolLessonStore(db).list({ kind: "environment-rule", limit: SESSION_START_RULES })
+    .filter(lesson => Date.parse(lesson.lastSeen) >= cutoffMs)
+    .map(lessonInsight);
+  return [...lessons, ...passive].slice(0, 5);
+}
+
+/** Environment rules shown at session start. */
+const SESSION_START_RULES = 3;
+/** A rule line names a command shape, never a command. */
+const RULE_SHAPE_MAX_CHARS = 120;
+
+export function formatEnvironmentRule(fullShape: string, sessionCount: number, lastSeen: string): string {
+  const shape = fullShape.length > RULE_SHAPE_MAX_CHARS ? `${fullShape.slice(0, RULE_SHAPE_MAX_CHARS)}…` : fullShape;
+  return `Environment rule: \`${shape}\` failed or was blocked in ${sessionCount} sessions, with no success since (last ${lastSeen.slice(0, 10)}).`;
+}
+
+function lessonInsight(lesson: ToolLesson): Insight {
+  const sessionCount = Object.keys(lesson.sessionCounts).length;
+  const content = formatEnvironmentRule(lesson.shape ?? "", sessionCount, lesson.lastSeen);
+  return { content, tags: lesson.tags,
+    count: lesson.count, sessionCount, firstSeen: lesson.firstSeen, lastSeen: lesson.lastSeen };
 }

@@ -21,7 +21,8 @@ export function writeResult(dir: string, result: EvalRunResult): string {
   // the model request, so omitting one would let unlike runs overwrite each other.
   const variant = result.variant ? `__${safe(result.variant)}` : "";
   const language = result.language ? `__lang-${safe(result.language)}` : "";
-  const file = join(dir, `${safe(result.model)}__${safe(result.provider)}${variant}${language}__${result.label}__run${result.run}.json`);
+  const baseline = result.toolContextEnabled === false ? "__baseline" : "";
+  const file = join(dir, `${safe(result.model)}__${safe(result.provider)}${variant}${language}${baseline}__${result.label}__run${result.run}.json`);
   writeFileSync(file, JSON.stringify(result, null, 2));
   return file;
 }

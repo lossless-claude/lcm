@@ -58,13 +58,13 @@ Consumers of the frozen result:
 
 ### Every spawner
 
-All of them go through `ensureDaemon`, so each passes its own process environment.
+Spawning callers go through `ensureDaemon`, so each passes its own process environment.
 
 | Spawner | Where | Spawns? | Environment it passes |
 |---|---|---|---|
-| Claude Code command hooks, first hook of a session | `src/hooks/dispatch.ts` → `src/bootstrap.ts:ensureCore` | yes (not for `post-tool`, `compact`) | the harness's hook process |
+| Claude Code command hooks, first hook of a session | `src/hooks/dispatch.ts` → `src/bootstrap.ts:ensureCore` | yes (not for `post-tool`, `compact`, `session-end`) | the harness's hook process |
 | SessionStart, UserPromptSubmit, PreCompact | `src/hooks/restore.ts:handleSessionStart`, `src/hooks/user-prompt.ts:handleUserPromptSubmit`, `src/hooks/compact.ts:handlePreCompact` | yes, 5 s budget | the harness's hook process |
-| SessionEnd | `src/hooks/session-end.ts:handleSessionEnd` | never (`noSpawn`) | — |
+| SessionEnd | `src/hooks/session-end.ts:handleSessionEnd` | never (direct submission, no bootstrap or health probe) | — |
 | Codex lifecycle hooks | `src/hooks/codex.ts:defaultDeps` (`connect`) | yes, except short-deadline events (`noSpawn`) | Codex's hook process; whether Codex passes its full environment to hooks is **unconfirmed** |
 | Claude Code function-hooks module | `hooks/lcm-hooks.ts:startDaemon` → `sh -c 'lcm daemon start --detach --automatic'` → the CLI's `ensureDaemon` | yes, two hops | whatever the host's `$.process.run` gives a child; assumed to be the host's environment, **unconfirmed** |
 | MCP server, at start and on a dropped connection | `src/mcp/server.ts:startMcpServer`, `handleDaemonRequest` | yes, 10 s | what the MCP host gives the server; some hosts filter it, **unconfirmed** per host |

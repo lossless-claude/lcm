@@ -366,7 +366,10 @@ describe("function-hook session summarizer", () => {
 
   it("does not report a snapshot write failure when the wait throws", async () => {
     const harness = await start({ sessionSummarizerMaxOutputTokens: 0 });
-    harness.engine.clock.sleep.mockImplementation(() => { throw new Error("clock unavailable"); });
+    harness.engine.clock.sleep.mockImplementation((ms: number) => {
+      if (ms === 250) throw new Error("clock unavailable");
+      return new Promise<void>(() => {});
+    });
     await expect(harness.trigger()).resolves.toEqual({});
     expect(harness.engine.ui.log).not.toHaveBeenCalled();
   });

@@ -1,5 +1,51 @@
 # @lossless-claude/lcm
 
+## 0.15.0
+
+### Minor Changes
+
+- b9b1d2c: Add opt-in complete compaction windows (defaulting to the configured pipeline and cost profile) with verified transcript boundaries, exact summary coverage, strict byte budgets, generated-context capture exclusion, requester-first model jobs with configured-provider fallback, a configurable compaction deadline, and operator-instruction forwarding across summary modes.
+
+  Requester models are optional; Sonnet for every node is an explicit quota-consuming choice. Rendered replies carry typed outcomes and UUID boundary lookups are bounded.
+
+- 2bf587d: Derive project-scoped error→fix pairs, masked block reasons and retiring environment rules from stored shell calls. Surface counts and dates without confidence scores, refresh snapshots in bounded batches outside per-tool promotion, and classify Claude user refusal texts consistently as denied.
+- 6599fe1: Add `lcm stats --warning-backtest` to replay stored shell calls offline and report point-in-time environment-rule matches, precision, coverage and would-be context cost. Pre-tool warnings remain off.
+- dc8871c: Give leaf summaries bounded structured input containing their window's error→fix pairs and blocked commands with their masked reasons in the existing summary call. Preserve prompts without failure evidence and add corpus export, retention scoring and baseline evaluation support.
+- b8f6f5d: Retain scrubbed tool-call inputs and result outcomes beside unchanged Claude, Codex and OMP message rows. Commands and MCP JSON are capped at 2 KB; file writes retain paths and byte size, and subagent calls retain type and description without prompts. Incremental capture updates later results, transcript event-time repair backfills existing calls, and full-text search finds stored commands.
+
+### Patch Changes
+
+- 186b568: Yield on a time budget while scrubbing captured message batches and string arguments, before opening the write transaction. Preserve stored text and redaction counts.
+- e2600aa: Retain scrubbed, capped Codex exec script inputs and classify their first-line result status. Exclude scripts from shell-only rules and repair existing tool-call inputs and outcomes with event-time backfill.
+- 0765e47: Derive deterministic tool lessons from shell commands with directory and environment
+  prefixes, shell wrappers, chains and pipelines. Keep values masked and chain outcomes
+  separate from their segments, and re-derive stored calls once to replace old shape keys.
+- 71cb203: Preserve the deadline outcome when rendered compaction finishes reading its context after the deadline has replied. Deadline observations use the validated operation id.
+- dd7ddb4: Compaction now logs `compact.failed` for a non-deadline error that follows the deadline reply.
+- d8f558c: Recover from repeatedly cut summaries by halving chunks at source boundaries and using deterministic source truncation for a single message. Preserve raw sources for expansion, bound split calls by the source count, and log content-free cut diagnostics including tail repetition.
+- 5d8b18c: Match Claude-Session commit trailers only against web URLs declared by main-chain transcript attachments. Capture declarations during hook capture, import and event-time backfill, and repair legacy trailer links once without changing event times or summary bounds.
+- 703eb81: Bound doctor cwd checks with asynchronous stats, per-path deadlines and limited concurrency. Report timed-out and unattempted cwds as unchecked instead of missing, and continue reporting other doctor checks.
+- 3cec96a: `lcm knowledge export` now scrubs with `security.sensitivePatterns` from `config.json`, as capture, import and `/store` do. Before, a value matched only by a global pattern was written to the export file in plaintext.
+- 344fe39: Wait for concurrent project writes during capture and event-time backfill. Reserve migration write locks before reading, install the SQLite busy timeout before connection setup, and configure every writable project handle consistently.
+- a623a38: Refresh tool lessons incrementally from changed calls and their pairing windows, re-deriving only affected sessions after deletion. Mask attached short-flag values in command shapes while retaining known value-free clusters.
+- 45ba714: Record lcm throw-site frames and SQLite error codes in daemon failure logs without retaining SQLite messages, SQL parameters or external frame paths.
+- c74a133: Deduplicate tool-lesson pair evaluations, cache command shapes per refresh page,
+  and yield on a 10 ms work budget outside transactions while preserving resumable
+  journal and snapshot publication.
+- 0ca6683: Keep SessionEnd within the exit budget by submitting directly without a health probe or daemon spawn, waiting only a short response grace, and recording submitted delivery when a busy daemon has not yet acknowledged. Preserve the older-daemon fallback within the same budget.
+- 1278bd1: Avoid repeated git reads during commit backfill by scanning trailer history once per session and URL per run and reusing the initial refresh of stored references.
+- 7271977: Keep prompt intent labels out of passive promoted memory, deduplicate identical restored insights, and repair previously promoted passive intent labels once while preserving manual memories.
+- 2c08864: Cache unchanged transcript-scan project records, remember missing metadata until
+  the project directory changes, and yield on an elapsed time budget. Doctor now
+  reports counts of project directories without metadata and with missing working
+  directories without changing their stores.
+- 3aad685: Capture now scrubs skill and slash-command arguments before storing them in `message_parts`, and counts their matches with the message's. A secret passed as an argument was redacted from the stored message but kept in plaintext in the part beside it. Rows captured before this release are not rewritten.
+- de4801e: Preserve gaps in context ordinals so compaction replaces only its selected range instead of renumbering the entire conversation. Keep context order, fresh-tail selection and incremental token totals correct with sparse ordinals, without migrating existing stores.
+- 40bf56b: Keep large compactions responsive with bounded database and source-preparation batches, incremental context token totals, and cached message schema checks and lookups. Preserve summary text, links and stored token accounting, including messages captured during model waits. Thread the left half's completed summary into the right half when recovering from cut answers.
+- 85ba499: Report ready timeline units, months awaiting replan and parked units separately in status and doctor, using read-only indexed counts. Doctor warns about parked work and explains that a contributing session change followed by timeline settle releases it.
+- 496225d: Escape `<` in the leaf summary's `tool_context` JSON so a stored command cannot close the block early, name the error when the warning backtest cannot read its store, and document the leaf evidence in the privacy notes.
+- 16d628c: Yield between project-group members during prompt search, skip migration sweeps for current stores, and read recall usage feedback through an index of the requested memory ids while preserving hits and ranking.
+
 ## 0.14.0
 
 ### Minor Changes

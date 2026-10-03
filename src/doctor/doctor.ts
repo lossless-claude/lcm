@@ -824,7 +824,7 @@ export async function runDoctor(overrides?: Partial<DoctorDeps>, verbose = false
   }));
   results.push(checkStalledSubagentCaptures(createLcmPaths(deps.lcmHome), verbose));
   results.push(checkRebuildBackups(createLcmPaths(deps.lcmHome), verbose));
-  results.push(checkStaleProjectStores(createLcmPaths(deps.lcmHome), verbose));
+  results.push(await checkStaleProjectStores(createLcmPaths(deps.lcmHome), verbose));
   results.push(checkOrphanSummaries(createLcmPaths(deps.lcmHome), verbose));
   results.push(await checkProjectTimeline(deps, config.port));
 

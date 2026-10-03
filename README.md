@@ -213,6 +213,7 @@ lcm expand <nodeId>        # expand a summary node into source detail
 lcm store "content"       # persist a durable memory entry
 lcm stats                  # memory and compression overview
 lcm stats -v               # per-conversation breakdown
+lcm stats --warning-backtest # offline environment-warning backtest for the current project; warnings stay off
 lcm stats --pool           # connection pool statistics
 lcm stats --pool --json    # connection pool statistics as JSON
 

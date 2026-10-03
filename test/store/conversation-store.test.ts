@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { DatabaseSync } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
 import { getLcmConnection, closeLcmConnection } from "../../src/db/connection.js";
 import { runLcmMigrations } from "../../src/db/migration.js";
 import { ConversationStore } from "../../src/store/conversation-store.js";
@@ -28,6 +28,41 @@ function makeDb(): DatabaseSync {
 function makeStore(db: DatabaseSync): ConversationStore {
   return new ConversationStore(db, { fts5Available: false });
 }
+
+it("checks message event columns once per connection and reuses the message lookup statement", async () => {
+  const db = makeDb();
+  const prepare = db.prepare.bind(db);
+  const sql: string[] = [];
+  db.prepare = ((query: string) => { sql.push(query); return prepare(query); }) as typeof db.prepare;
+  const store = makeStore(db);
+  const { conversationId } = await store.getOrCreateConversation("cached-columns");
+  const message = await store.createMessage({ conversationId, seq: 0, role: "user", content: "dated", tokenCount: 2,
+    eventAt: new Date("2026-01-01T00:00:00Z") });
+  for (let i = 0; i < 10; i++) expect(store.getMessageByIdSync(message.messageId)).toEqual(message);
+  expect(await makeStore(db).getMessageById(message.messageId)).toEqual(message);
+  expect(sql.filter(query => query === "PRAGMA table_info(messages)")).toHaveLength(1);
+  // The create read, one reusable lookup for this store, and one for the second store.
+  expect(sql.filter(query => query.includes("FROM messages WHERE message_id = ?"))).toHaveLength(3);
+});
+
+it("keeps cached event-column presence separate for legacy and migrated connections", async () => {
+  const legacy = new DatabaseSync(":memory:");
+  try {
+    legacy.exec(`CREATE TABLE messages (message_id INTEGER PRIMARY KEY, conversation_id INTEGER, seq INTEGER,
+      role TEXT, content TEXT, token_count INTEGER, created_at TEXT);
+      INSERT INTO messages VALUES (1, 1, 0, 'user', 'legacy', 2, '2026-01-01 00:00:00')`);
+    const oldStore = makeStore(legacy);
+    expect(oldStore.getMessageByIdSync(1)).toMatchObject({ eventAt: null, eventTimeSource: null });
+    const store = makeStore(makeDb());
+    const { conversationId } = await store.getOrCreateConversation("new-columns");
+    const dated = await store.createMessage({ conversationId, seq: 0, role: "user", content: "new", tokenCount: 1,
+      eventAt: new Date("2026-01-01T00:00:00Z") });
+    expect(store.getMessageByIdSync(dated.messageId)).toMatchObject({ eventAt: dated.eventAt, eventTimeSource: "transcript" });
+    expect(oldStore.getMessageByIdSync(1)).toMatchObject({ eventAt: null, eventTimeSource: null });
+  } finally {
+    legacy.close();
+  }
+});
 
 it("searches conversations by session for the session-prefix queries", async () => {
   const db = makeDb();

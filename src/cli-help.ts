@@ -68,21 +68,23 @@ const HELP: Record<string, CommandHelp> = {
 
   daemon: {
     summary: "Start, stop or restart the context daemon that stores and processes memory.",
-    usage: "lcm daemon <start [--detach] | stop [--hold] | restart>",
+    usage: "lcm daemon <start [--detach] | stop [--hold] | restart [--release-hold]>",
     options: [
       ["--detach", "Run in the background; saves PID to ~/.lossless-claude/daemon.pid"],
       ["--hold", "On stop: keep it down, so session hooks cannot spawn it again"],
       ["--minutes <n>", "How long a hold lasts before it expires (default 30)"],
       ["--reason <text>", "Why the daemon is held down; shown to whoever runs into it"],
+      ["--release-hold", "On restart: explicitly release an offline hold"],
     ],
     examples: [
       ["lcm daemon start --detach", "Start daemon in background (recommended); no-op if already running"],
       ["lcm daemon start", "Start daemon in foreground (for debugging)"],
       ["lcm daemon restart", "Stop the running daemon and start a fresh one (after an upgrade or rebuild)"],
+      ["lcm daemon restart --release-hold", "Release an offline hold and restart the daemon"],
       ["lcm daemon stop", "Stop the background daemon"],
       ["lcm daemon stop --hold --reason \"migration\"", "Claim an offline window; release it with lcm daemon start"],
     ],
-    notes: "The daemon runs on port 3737 by default. Configure via ~/.lossless-claude/config.json. Without --hold a stop does not last: every session hook spawns the daemon again within seconds.",
+    notes: "The daemon runs on port 3737 by default. Configure via ~/.lossless-claude/config.json. Without --hold a stop does not last: every session hook spawns the daemon again within seconds. A restart preserves an active hold and refuses with its owner, reason and expiry. Release it with lcm daemon start or lcm daemon restart --release-hold, or wait for expiry.",
   },
 
   status: {
@@ -263,15 +265,17 @@ const HELP: Record<string, CommandHelp> = {
 
   stats: {
     summary: "Show memory inventory: message counts, compression ratios, and summary statistics.",
-    usage: "lcm stats [-v] [--pool [--json]]",
+    usage: "lcm stats [-v] [--warning-backtest | --pool [--json]]",
     options: [
       ["-v, --verbose", "Show per-conversation breakdown"],
       ["--pool", "Show connection pool statistics from the daemon"],
       ["--json", "Output structured JSON (use with --pool)"],
+      ["--warning-backtest", "Offline environment-warning backtest for the current project; scans stored calls, warnings stay off"],
     ],
     examples: [
       ["lcm stats", "Summary view across all projects"],
       ["lcm stats -v", "Per-conversation detail"],
+      ["lcm stats --warning-backtest", "Measure matches, precision, coverage and would-be context cost (no daemon or model)"],
       ["lcm stats --pool --json", "Connection pool statistics as JSON"],
     ],
   },

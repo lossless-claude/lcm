@@ -89,6 +89,7 @@ const INTERNAL_ENV = new Set([
   "LCM_EVAL_REASONING_EFFORT", // test/bench summarizer-eval harness: reasoning effort level
   "LCM_EVAL_RUNS", // test/bench summarizer-eval harness: number of eval runs
   "LCM_EVAL_SESSIONS", // test/bench summarizer-eval harness: session count for the eval
+  "LCM_EVAL_TOOL_CONTEXT", // test/bench summarizer-eval harness: baseline without supplemental tool input
   "LCM_REAL_BENCH_FILE", // test/bench/real-corpus.test.ts: fixed bench file for the real-corpus test
   "LCM_REAL_BENCH_PROJECT", // test/bench/real-corpus.test.ts: fixed project for the real-corpus test
   "LCM_SKIP_CACHE_SYNC", // scripts/sync-plugin-cache.sh + ci.yml: skip the plugin cache sync step

@@ -54,7 +54,7 @@ async function admitCliDatabaseWork(): Promise<void> {
   }
 }
 
-async function createDaemonClientOrExit(spawnTimeoutMs = 5000): Promise<DaemonClient> {
+async function createDaemonClientOrExit(spawnTimeoutMs = 10000): Promise<DaemonClient> {
   await admitCliDatabaseWork();
   const { ensureDaemon } = await import("../src/daemon/lifecycle.js");
   const { loadDaemonConfig } = await import("../src/daemon/config.js");

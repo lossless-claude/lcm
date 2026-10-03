@@ -75,6 +75,43 @@ describe("complete /compact context", () => {
       expect(records).not.toContain("precompact.summary");
     } finally { release(); await pending; spy.mockRestore(); vi.useRealTimers(); }
   });
+  it("logs compact.failed for an ordinary error that follows the deadline reply, without a second outcome", async () => {
+    const { cwd, request } = fixture();
+    let entered!: () => void, release!: () => void;
+    const parked = new Promise<void>(resolve => { entered = resolve; });
+    const resume = new Promise<void>(resolve => { release = resolve; });
+    const failure = new Error("context read failed after the deadline");
+    const spy = vi.spyOn(SummaryStore.prototype, "readContextCoverage").mockImplementation(async () => {
+      entered(); await resume; throw failure;
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const config = loadDaemonConfig("/missing", { summarizer: { mock: true, language: "en" }, compaction: { hookDeadlineMs: 1000 } }, {});
+    const records: { level: string; event: string; fields: any }[] = [];
+    const log = { ...noopDaemonLog, write: (level: string, event: string, fields?: any) => { records.push({ level, event, fields }); } };
+    let responses = 0, status = 0;
+    const pending = createCompactHandler(config, paths, undefined, log)({} as any, {
+      writeHead: (code: number) => { status = code; responses++; }, end: () => {},
+    } as any, JSON.stringify(request));
+    try {
+      await parked;
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(status).toBe(408);
+      release(); await pending;
+      expect(records).toContainEqual({ level: "error", event: "compact.failed",
+        fields: expect.objectContaining({ session_id: "session", err: failure }) });
+      expect(responses).toBe(1);
+      expect(status).toBe(408);
+      const events = new EventsDb(eventsDbPath(cwd, paths));
+      try {
+        expect(events.getHookObservationSummary("session").filter(row => row.operation === "summary"))
+          .toEqual([expect.objectContaining({ status: "failed", reason: "deadline", count: 1 })]);
+      } finally { events.close(); }
+      const loggedEvents = records.map(r => r.event);
+      expect(loggedEvents).not.toContain("precompact.summary");
+      expect(loggedEvents).not.toContain("precompact.capture_failed");
+      expect(loggedEvents).not.toContain("precompact.observation_failed");
+    } finally { release(); await pending; spy.mockRestore(); vi.useRealTimers(); }
+  });
   it("defaults to the configured pipeline and reports a missing summarizer explicitly", async () => {
     const { request } = fixture();
     const config = loadDaemonConfig("/missing", { llm: { provider: "disabled" }, summarizer: { language: "en" } }, {});

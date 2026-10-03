@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { projectDir, projectId, realpathDeep } from "../daemon/project.js";
-import { readProjectMetaIn } from "../daemon/project-meta.js";
+import { projectMetaPathIn, readProjectMetaIn } from "../daemon/project-meta.js";
 import type { LcmPaths } from "../lcm-paths.js";
 
 /**
@@ -70,11 +70,16 @@ function within(path: string, root: string): boolean {
 /** The cwd every ingested project's meta.json records. Opens no database. */
 function ingestedCwds(lcmPaths: LcmPaths): string[] {
   if (!existsSync(lcmPaths.projectsDir)) return [];
-  return readdirSync(lcmPaths.projectsDir).flatMap(entry => readProjectMetaIn(join(lcmPaths.projectsDir, entry))?.cwd ?? []);
+  return readdirSync(lcmPaths.projectsDir).flatMap(entry => readMetaCwd(projectMetaPathIn(join(lcmPaths.projectsDir, entry))) ?? []);
 }
 
+/** Corpus discovery skips entries whose metadata is absent, invalid or unreadable. */
 export function readMetaCwd(meta: string): string | undefined {
-  return readProjectMetaIn(dirname(meta))?.cwd;
+  try {
+    return readProjectMetaIn(dirname(meta))?.cwd;
+  } catch {
+    return undefined;
+  }
 }
 
 export function corpusConfigPath(lcmPaths: LcmPaths): string {

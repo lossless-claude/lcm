@@ -175,7 +175,8 @@ describe("agent worker transports", () => {
         env: { get: async (name: string) => name === "LCM_SUMMARIZE_WORKER" ? "1" : undefined },
         session: { id: async () => "old", cwd: async () => f.cwd },
         process: { run: async () => ({ stdout: "fake-token\n__CONFIG__\n{}\n__TMPDIR__/tmp", exitCode: 0 }) },
-        fs: { write: vi.fn(async () => {}) }, ui: { log: vi.fn() }, clock: { after: vi.fn((_ms, callback) => callback()) },
+        fs: { write: vi.fn(async () => {}) }, ui: { log: vi.fn() },
+        clock: { after: vi.fn((_ms, callback) => callback()), sleep: () => new Promise<void>(() => {}) },
         http: { fetch: async (url: string, init: any) => {
           if (new URL(url).pathname === "/worker-session" && !["finish", "check"].includes(JSON.parse(init.body).action)) registrations.push(JSON.parse(init.body));
           if (new URL(url).pathname === "/worker-session" && JSON.parse(init.body).action === "check") {

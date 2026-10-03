@@ -26,6 +26,66 @@ rows are excluded. Conversation `createdAt` / `updatedAt` retain their storage
 lifecycle meaning; an empty conversation falls back to its creation time.
 Ordinary conversation fetches do not compute source bounds or read messages.
 
+Tool calls are stored beside messages in `transcript_tool_calls`, keyed by
+`(session_id, call_id)` and referencing the call's `message_id`. Claude's
+`tool_use` id, Codex's `call_id` and OMP's `toolCall` id join subsequent results
+to the original call, including when the result arrives in later incremental bytes.
+Parsers carry this structure separately; message role, content, token count,
+parser stamps and byte-cursor versions are unchanged.
+
+The call retains its name and selected input: shell commands; Codex `exec` raw
+script text; file-write paths
+and original input byte size; Read/Grep/Glob paths, patterns and range flags;
+MCP input JSON; Agent/Task types and descriptions. File bodies, edit replacement
+text and subagent prompts are never retained in call input. Capture applies its
+own `ScrubEngine` before storage. Shell commands, `exec` scripts and MCP JSON are capped at
+2048 UTF-8 bytes, including a `[truncated]` suffix; `truncated` also records the cap.
+
+Each call has an `outcome`: `succeeded`, `failed`, `blocked`, `denied`,
+`interrupted` or `unknown`, a separate nullable `harness_error` flag, and
+an `exit_code` when exposed. Blocked results also retain a scrubbed first line in
+`block_reason`, capped at 2048 UTF-8 bytes. No result or missing evidence leaves the outcome
+unknown. Claude's exit-code result establishes execution; user-refusal text
+starting `The user doesn't want to` establishes denial; a hook, permission-classifier or harness refusal prefix
+establishes a pre-execution block. Another error-flagged result is a block only
+for a shell command, which reports an exit code whenever it ran; for any other
+tool it stays unknown, since the tool may have run and failed.
+Codex and OMP use only exposed status text or result metadata; an unclassified
+error flag alone cannot distinguish execution failure from a refusal.
+Codex script results use their first line: `Script completed` means succeeded,
+`Script failed` means failed, `aborted by user` means interrupted, and
+`Script running with cell ID N` stays unknown. These script statuses take
+precedence over shell exit codes printed within the output. `exec` is a script
+tool, excluded from shell classification and Claude's shell-only refusal rule;
+`exec_command` and the other shell tools retain their command behaviour.
+
+Deterministic shell lessons are derived into `tool_lessons`, published through
+`tool_lesson_state` generations. They retain counts and dates without confidence
+scores, independently of promoted memory. See [Passive Learning](passive-learning.md#deterministic-tool-lessons)
+for shapes, pairing, masking and retirement. A transactional call-change journal
+drives incremental refreshes at promotion boundaries. Persisted per-call contributions
+and indexed success evidence update only affected lesson versions; removing a call
+re-derives its session. Pages collect distinct affected pair calls in transcript
+order, reuse page-local shapes, and avoid repeating predecessors across page
+boundaries. A journal entry is consumed only after its contributions and affected
+pairs are durable. `REFRESH_TIME_BUDGET_MS` (10 ms) makes call updates, pair updates,
+invalidation and publication yield between synchronous units once the budget is
+spent, always after releasing their savepoints. One unit may overrun the budget;
+pages also yield at their boundaries. One generation switch publishes the complete
+result. Immediate per-tool promotion skips refresh,
+and restore only reads the published snapshot.
+
+Capture records new calls and updates prior outcomes in the same transaction
+as its message delta and checkpoint. Worker sessions are excluded by the same
+gate as messages. `lcm import --backfill-event-times` also fills calls and
+re-derives existing calls' selected inputs and outcomes for
+verified existing message positions, even when their timestamps are known,
+without changing their content or capturing a new tail. Unknown positions
+establish no call. Repair pages contain at most 256 messages and yield between
+transactions. Full-text message search indexes the scrubbed selected inputs
+beside message text; matches retain the original message id and summary coverage.
+The non-FTS fallback searches the same inputs.
+
 Each message also has **message_parts** — structured content blocks that preserve the original shape. The part types are `text`, `reasoning`, `tool`, `patch`, `file`, `subtask`, `compaction`, `step_start`, `step_finish`, `snapshot`, `agent`, `retry`, `skill` (a skill expansion) and `command` (a slash command invocation); see `MessagePartType` in `src/store/conversation-store.ts`. This allows the assembler to reconstruct rich content when building model context, not just flat text.
 
 `lcm import --backfill-event-times` repairs discovered sessions without capturing
@@ -201,9 +261,21 @@ for lifecycle, queries and the deferred session-dirt and month-repacking trade-o
 
 ### Context items
 
-The **context_items** table maintains the ordered list of what the model sees for each conversation. Each entry is either a message reference or a summary reference, identified by ordinal.
+The **context_items** table maintains the ordered list of what the model sees for each conversation. Each entry is either a message reference or a summary reference, identified by ordinal. Ordinals are unique ordering keys within a conversation, not array positions; they may have gaps.
 
-When compaction creates a summary from a range of messages (or summaries), the source items are replaced by a single summary item. This keeps the context list compact while preserving ordering.
+When compaction creates a summary from a range of messages (or summaries), the source items are replaced by a single summary item at the range's first ordinal. Other items keep their ordinals. Replacement deletes only the selected range and inserts one row, synchronously in one transaction; it does not renumber the conversation. Existing dense stores already satisfy this contract and need no migration.
+
+Context readers use these keys as follows:
+
+| Reader | Behaviour with gaps |
+|---|---|
+| `SummaryStore.getContextItems`, range replacement and `getDistinctDepthsInContext` | Order by ordinal and compare actual ordinal bounds, including exclusive suffix cursors. |
+| `SummaryStore.appendContextMessages` and project timeline publication | Append at `MAX(ordinal) + 1`, after every surviving item. No reader infers the next or previous item from `ordinal + 1` or `ordinal - 1`. |
+| `CompactionEngine` fresh tail, leaf chunks and condensation | Count messages in the ordered array, then use their actual ordinals as boundaries. Contiguous chunks mean adjacent items in that array. Incremental token accounting tracks the last known ordinal, lowering it when a replacement removes the final item. |
+| Batch compaction selection | Computes its own dense `ROW_NUMBER()` over raw messages ordered by context ordinal. |
+| `src/search/language.ts` | Computes its own `ROW_NUMBER()` over message sequence numbers; it does not read context ordinals. |
+| Restore, compaction context export and protocol responses | `readContextWindow` orders by ordinal; window limits count rows through `ROW_NUMBER()`. Rendering and source coverage preserve item order and use message/summary ids, independently of gaps. |
+| Evaluation and context reset | Evaluation iterates ordered items. An explicit reset rebuilds the whole projection in message sequence order; it may produce dense ordinals. Project timeline reordering is confined to its reserved conversation. |
 
 ### The store surface
 
@@ -284,12 +356,17 @@ records are counted as not checked, with their complete list in the cleanup prev
 Doctor bounds per-store lists to 20 entries followed by the remaining count;
 verbose diagnostics show the complete lists. Cleanup is a separate CLI path that defaults
 to a read-only preview; explicit apply requires a stopped daemon under an active
-hold and no retained live database activity marker. It rechecks eligibility before
+hold and no retained live database activity marker. It checks the offline guard
+before listing project records, before each store's batch, before each move and
+before committing index changes. It rechecks eligibility before
 moving complete project directories and
 their event sidecars to `<lcm-home>/trash/projects/<batch>/`. The selected
 `project_identity` and `project_remote` rows in `group-index.sqlite` are removed
 in one transaction. A failed move or index update rolls back index changes and
-attempts to restore every moved file; files remain in trash if restoration fails.
+attempts to restore every moved file while the hold remains active; files remain
+in trash if restoration fails. If the hold is lost, cleanup stops without
+restoring files and reports every moved path and its trash location for manual
+restoration under a new hold.
 No stored data is deleted or automatically purged.
 
 For databases without an absolute cwd in their project record, doctor counts
@@ -331,7 +408,16 @@ PostToolUseFailure); the function-hooks module speaks the same routes through
 
 Capture itself happens on `POST /ingest`, reached from `session-end`, the Stop snapshot, and
 the periodic transcript scan (`scanForTranscripts` in `src/daemon/server.ts`, every 10
-minutes) that recovers a session whose `SessionEnd` never ran. The scan skips a session
+minutes) that recovers a session whose `SessionEnd` never ran.
+Project metadata reads are cached in memory by `meta.json` file identity, size and
+modification/change timestamps. Missing records are remembered by the project
+directory's identity and timestamps until that directory changes. Unchanged
+passes do not read `meta.json`; removed project directories leave the cache.
+A directory whose record cannot be checked is skipped for that pass without ending it.
+The project walk yields after 10 ms of elapsed work, rather than a fixed directory
+count, and yields between transcripts within a project. A single synchronous
+metadata operation can exceed that budget; the scan yields before the next directory.
+The scan skips a session
 whose cwd no longer exists, including retained Codex recovery-guard retries, before
 calling `/ingest`. One `scan.missing_cwd` debug entry counts skipped session candidates
 per pass, without per-session warnings. The cwd is checked afresh on each pass, so a
@@ -358,14 +444,15 @@ sidecar is retried. Other subagent failures and failed tool-call model backfills
 scan asks `/ingest` to run before replying with `backfill_before_reply`) remain retryable on
 the next pass. A parent Claude 400 rejection, including a prefix-guard failure, is cached
 only in memory and retried when its fingerprint changes or the daemon restarts. The scan
-yields to the event loop between transcripts within a project as well as during the project
-walk. The scan never marks a session complete. The SessionStart catch-up sweep is a
+never marks a session complete. The SessionStart catch-up sweep is a
 different thing and never reaches `/ingest`: it finds conversations a killed session left
 uncompacted and asks `/compact` for them directly, with `skip_ingest: true`
 (`docs/configuration.md#sessionstart-catch-up-sweep`). PreCompact can Capture inside `/compact`, before lcm summarization, with
 separate outcomes for the two operations. `POST /session-end` hands the whole end-of-session sequence to the daemon —
 ingest, then compact, promote and session-complete — after acknowledging with `202`, so a
-host that stops waiting for the hook cannot drop the steps behind it.
+host that stops waiting for the hook cannot drop the steps behind it. Once the entire
+request body has arrived, client disconnection before acknowledgement does not cancel
+the sequence; a request cut short before its body is complete is ignored.
 
 Every route that lands transcript content in `messages` — `/ingest`, the subagent path inside it, and `/compact` — writes through one module, `src/capture.ts` (`SessionCapture`). It owns what "already stored" means (the delta past the message count of the session's conversations), scrubbing, the bulk insert, `context_items`, `message_parts`, redaction counts, the transcript cursors and `session_ingest_log`. `/session-complete` records a session in that log, with its completion time, when the session ends. `/ingest` and `lcm import` skip a Claude Code session so recorded (Codex and OMP always reach capture, whose read may recover a deferred tail) unless its transcript file was modified after that time: a resumed session appends to the same file under the same session id, so its new turns are captured, and completing it again moves the time forward. When the caller passes no attribution and the transcript is a subagent transcript, the module reads the `.meta.json` sidecar itself, so which route sees a session first does not change what is stored about it.
 
@@ -391,7 +478,15 @@ The **leaf pass** converts raw messages into leaf summaries:
 2. Cap the chunk at `leafChunkTokens` (default 20k tokens).
 3. Concatenate message content with event timestamps, falling back to capture time when event time is unknown.
 4. Resolve the most recent prior summary for continuity (passed as `previous_context` so the LLM avoids repeating known information).
-5. Send to the LLM with the leaf prompt.
+5. Derive error→fix pairs and masked block reasons from the calls whose messages
+   are in this chunk, using the deterministic shell lesson rules. Pass this
+   structured evidence beside the messages in the existing leaf summary call;
+   the project lesson snapshot is not used. The prompt asks for failed approaches
+   and what worked briefly in the summary text.
+   The JSON has an 8192-byte UTF-8 budget. Commands and reasons use the stored
+   input's 2048-byte cap and `[truncated]` suffix; whole entries that do not fit
+   are omitted and counted. Empty evidence leaves the prompt byte for byte
+   unchanged. Output-cut splitting derives evidence again for each half's messages.
 6. Normalize provider response blocks (Anthropic/OpenAI text, output_text, and nested content/summary shapes) into plain text.
 7. Reject an answer the model did not finish or that holds no text (see [Rejected answers](#rejected-answers)): the pass stops before anything is persisted.
 8. If the summary is larger than the input (LLM failure), retry with the aggressive prompt. If still too large, fall back to deterministic truncation.
@@ -414,6 +509,23 @@ The **condensed pass** merges summaries at the same depth into a higher-level su
 - Phase 1: Repeatedly runs leaf passes until no more eligible chunks
 - Phase 2: Repeatedly runs condensation passes starting from the shallowest eligible depth
 - Each pass checks for progress; stops if no tokens were saved
+
+The sweep computes the context token total once, then applies each pass's inserted
+minus replaced stored token counts. Chunk selection's content-length fallback does
+not change that accounting. Capture can append messages while a model call releases
+the mutation lease; after replacement, the sweep adds only those new context items
+to its running total. Compaction event messages remain outside context.
+
+The engine yields to the event loop between leaf and condensed steps and every 64
+items during selection and source preparation. Source links and transactional
+ordinal resequencing use pages of at most 128 items and yield between pages.
+Context reads and the initial token count retain their single-statement snapshots.
+Resequencing restores nonnegative, ordered
+ordinals before each yield and commits the complete replacement atomically. The
+project mutation lease remains held during database work. Message event-column
+presence is checked once per connection, including legacy read-only schemas, and
+message-by-id reads reuse a prepared statement.
+The 30,000-item timer regression enforces a maximum event-loop gap of 1,000 ms.
 
 ### Resumable replay runs
 
@@ -492,8 +604,32 @@ Every summarization attempt follows this escalation:
 2. **Aggressive** — Tighter prompt requesting only durable facts, temperature 0.1, lower target tokens
 3. **Fallback** — Deterministic truncation to ~512 tokens, ending in a `[Truncated from N tokens]` marker (N is the input size)
 
-The fallback keeps compaction making progress when the LLM answers but does not shrink its
-input; it never stands in for a rejected answer.
+The fallback keeps compaction making progress when accepted answers do not shrink their
+input, or when a single source message still gets cut answers after the provider chain's
+retry. It truncates the source, never a rejected answer. Raw messages and their summary
+links remain in the store, reachable through `lcm_expand`.
+
+When the chain is exhausted with an output-cut rejection, the engine splits the chunk into
+two halves at a message boundary and summarizes each through the normal escalation. It
+keeps halving, at most three times (eight pieces), down to a single message; a piece that is
+still cut at that limit, or a single message, gets deterministic source truncation at
+`fallback`. Condensation uses the same recovery at source-summary
+boundaries. The halves' results are joined in source order into one summary linked to the
+original sources; its level is the highest level used by either half. If joining does not
+shrink the source, the combined result uses source truncation at `fallback` without another
+model call. Nothing from the split is published until the whole pass succeeds.
+The left half receives the chunk's previous summary; the right half receives the
+left half's completed summary, including when either half splits again.
+
+For a chunk with **n** source messages (or summaries) and **p** resolved provider links, let
+**k = min(n, 8)**. Halving visits at most **2k − 1** chunks, at most 15. If every answer is
+cut, each chunk makes at most two calls per link: **2p(2k − 1)** calls total, **4p(k − 1)**
+extra calls from splitting. If smaller chunks return accepted answers that fail to shrink,
+their own aggressive escalation raises the conservative bound to **3p(2k − 1)** provider
+invocations, or **6p(k − 1)** extra invocations from splitting. Each HTTP invocation has at
+most three adapter attempts, so including transient retries the extra HTTP request bound is
+**18p(k − 1)**. A compaction's split cost is bounded by the sum over its selected chunks;
+fallback and joining make no model calls. Existing cancellation still stops new attempts.
 
 ### Rejected answers
 
@@ -515,11 +651,20 @@ is raised rather than derived; a condensed prompt has no aggressive form and get
 cap alone. A request that was already aggressive is not retried, which bounds the retry to one
 per link per chunk. The engine does not see the retry: the level it reports stays `normal`.
 
-A rejected answer moves the provider chain below to its next link, as an error does. With no
-link left, the rejection fails the pass: nothing from it is persisted and context is unchanged,
-while passes that finished earlier in the same compaction stay. `/compact` answers 500 naming
-the rejection and logs `compact.failed`, so a replay does not ledger the session and the next
-run retries it. The rejected call's tokens are recorded in `llm_usage_stats` as a failed call.
+A rejected answer moves the provider chain below to its next link, as an error does. An
+exhausted chain containing an output-cut rejection invokes the split recovery above. A
+failure without an output cut, including whitespace-only answers, still fails the pass:
+nothing from that pass is persisted and context is unchanged, while earlier completed passes
+stay. `/compact` answers 500 and logs `compact.failed`, so replay retries that session.
+Rejected calls' tokens are recorded in `llm_usage_stats` as failed calls even when recovery
+completes the compaction.
+
+Each cut answer emits `summarizer.cut` in the compaction log with its provider, model,
+reason, `max_output_tokens`, `output_tokens` (null when unreported) and `tail_repetition`.
+The repetition measure is the fraction of four-word windows repeated earlier in the last
+256 words of the answer, sampling at most its final 8 KiB; it ranges from 0 to 1. A high
+value suggests a generation loop; a low value does not prove the cap is too small, since
+hidden reasoning can consume it. Neither answer text nor source text is logged.
 
 ### Provider chain
 
@@ -542,8 +687,8 @@ retries (408, 429, 5xx), or a failed CLI run. Anything else — a 400/422, a can
 a missing client library, an unclassified exception — is thrown at once, since trying the next
 link would hide it. The exception is a 400/422 answering the retry of a length stop: its larger
 cap may exceed the model's output limit, so the next link runs. When more than one link ran and all failed, the chain throws
-`ProviderChainExhaustedError`, naming each failure; like a rejection, it fails the pass and
-never becomes the deterministic fallback above.
+`ProviderChainExhaustedError`, naming each failure. The engine recovers when it contains an
+output cut as described above; other exhaustion still fails the pass.
 
 The chain calls `onFallback` between attempts, which is where `/compact` settles the abandoned
 attempt as failed before the next one reports its usage. A link's retry of its own length stop
@@ -600,6 +745,21 @@ summaries it replaced recursively, and their linked messages. The scope follows
 search limits. Message matches name all covering leaf and condensed summaries in
 `summaryIds`, ordered by depth then id; an unsummarized message has an empty list.
 Summary matches carry their own `summaryId`.
+
+### Prompt search
+
+Prompt search reads promoted memory across the cwd's project group and yields
+between members, after releasing each member's connection. Current stores open
+read-only without a migration sweep; an older store is upgraded once before its
+first group read. Empty stores and queries with no hits skip recall feedback.
+Per-member hits retain their existing reciprocal-rank fusion and feedback.
+
+Usage feedback looks up only the requested memory ids through
+`recall_usage_memory_idx`. Migration backfills `recall_usage` once from active
+usage signals with valid tags and a single non-empty target. Promoted-row insert,
+update and delete triggers keep it current, including archive and restore.
+The target tag retains feedback's existing literal matching in stored JSON.
+Surfacing feedback uses the existing index on `recall_surfacing.memory_id`.
 
 ## Expansion system
 
@@ -790,7 +950,10 @@ mutation lease, so it does not make PreCompact busy. The same session's in-fligh
 always makes its PreCompact summary busy. `hasQueuedProjectWork` still reports all pending queue
 requests, including yielded ones; admission uses `hasBlockingProjectWork` instead.
 
-`/promote` and `/promote-events` hold the same mutation lease for their whole run. They walk
+`/promote` and `/promote-events` hold the same mutation lease for their whole run.
+Tool lesson refreshes on `/promote-events` also yield after their 10 ms work budget
+is spent and between bounded pages, with no transaction open across a yield, and
+publish a complete snapshot before retiring the previous generation. They walk
 every summary or event not yet promoted, and `node:sqlite` is synchronous, so each yields to the
 event loop between items (`yieldToEventLoop`) to keep `/health` and other projects answering;
 the lease is what stops a second run from reading the not-yet-promoted set before the first

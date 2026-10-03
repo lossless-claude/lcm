@@ -11,7 +11,7 @@ async function start(restoreBody: unknown, options: { status?: number } = {}) {
     session: { id: vi.fn(async () => sessionId), cwd: vi.fn(async () => "/proj") },
     process: { run: vi.fn(async () => ({ stdout: "secret\n__CONFIG__\n{}\n__TMPDIR__/tmp", exitCode: 0 })) },
     fs: { writeFile: vi.fn(async () => undefined) },
-    clock: { after: vi.fn() },
+    clock: { after: vi.fn(), sleep: vi.fn(() => new Promise<void>(() => {})) },
     ui: { log: vi.fn() },
     http: {
       fetch: vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
@@ -56,6 +56,15 @@ describe("function-hook restore context", () => {
     const block = result.blocks.at(-1);
     expect(block.text).toContain('<learned-insights source="passive-capture">');
     expect(block.text).toContain("- prefers pnpm (confidence: 0.8)");
+  });
+
+  it("renders deterministic lessons without a confidence label", async () => {
+    const { fire } = await start({ context: "ctx", insights: [
+      { content: "Observed fix; 2 occurrences; first seen Jan 1; last seen Jan 2", tags: ["source:tool-calls"] },
+    ] });
+    const text = (await fire()).blocks.at(-1).text;
+    expect(text).toContain("2 occurrences");
+    expect(text).not.toContain("confidence");
   });
 
   it("adds no block when the daemon has nothing to restore", async () => {

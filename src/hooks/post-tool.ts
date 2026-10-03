@@ -44,7 +44,7 @@ export async function handlePostToolUse(
     // so events already promoted by this call won't be re-promoted by the batch route
     // at session-end. No additional de-duplication guard needed.
     if (outcome.hasPriority1) {
-      firePromoteEventsRequest(await configuredDaemonPort(paths), { cwd }, paths);
+      firePromoteEventsRequest(await configuredDaemonPort(paths), { cwd, skip_tool_lessons: true }, paths);
     }
   } catch (error) {
     safeLogError(sourceHook, error, { cwd, paths });

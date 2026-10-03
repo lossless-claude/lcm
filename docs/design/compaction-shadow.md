@@ -92,9 +92,14 @@ cut manifests, and skips links.
 
 `bench-corpora.json` is an evaluation policy, not a prerequisite for shadow mode.
 Admission uses a valid existing policy to skip excluded projects before Capture;
-missing or invalid policy leaves admission available. Paths and cwd substrings use
-the shared canonical, case-insensitive benchmark rules. A candidate cwd can resolve
-a substring policy before its first capture.
+the response is HTTP 200 with `{ admitted: false, reason: "excluded" }`.
+A missing policy leaves admission available. An unreadable or invalid policy
+refuses admission before Capture with HTTP 200 and
+`{ admitted: false, reason: "policy-unavailable" }` and emits a
+`compaction-shadow.policy_unavailable` warning in the daemon log.
+Corpus discovery skips non-directory project entries and unreadable metadata.
+Paths and cwd substrings use the shared canonical, case-insensitive benchmark
+rules. A candidate cwd can resolve a substring policy before its first capture.
 
 The offline evaluator requires a valid explicit policy; present exclusion and
 holdout fields must be lists, including when empty. Null is invalid. Projects are

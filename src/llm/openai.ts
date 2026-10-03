@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "./types.js";
 import { buildSummaryPrompt } from "./prompt.js";
-import { acceptSummaryText, SummaryRejectedError } from "./summary-rejection.js";
+import { acceptSummaryText, rejectCutSummary, SummaryRejectedError } from "./summary-rejection.js";
 import { DEFAULT_HTTP_TIMEOUT_MS, isRequestTimeout, withRequestDeadline } from "./http-timeout.js";
 import { completionFetch } from "./http-fetch.js";
 import { withEndpointSlot } from "./endpoint-concurrency.js";
@@ -136,9 +136,10 @@ export function createOpenAISummarizer(opts: OpenAISummarizerOptions): LcmSummar
         const choice = response.choices[0];
         // A length stop is a cut-off tail, not a summary, however readable it looks.
         if (choice?.finish_reason === "length") {
-          throw new SummaryRejectedError({
-            reason: "length", provider: opts.label ?? "openai", model: usage?.model ?? opts.model, maxOutputTokens,
-          });
+          rejectCutSummary({
+            reason: "length", provider: opts.label ?? "openai", model: response.model || opts.model, maxOutputTokens,
+            outputTokens: usage?.outputTokens, text: choice?.message?.content,
+          }, ctx.onCut);
         }
         // Empty content is a failure, not a summary: falling back to a slice of
         // the input would persist raw conversation text as a fake summary.

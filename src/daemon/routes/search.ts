@@ -94,7 +94,7 @@ export function createSearchHandler(config: DaemonConfig, paths: LcmPaths, log: 
           // measurement.
           if (activeLayers.includes("promoted")) {
             try {
-              promoted = searchPromotedGroup(cwd, { query: searchQuery, limit, tags: filterTags, terms: searchTerms }, paths).hits;
+              promoted = (await searchPromotedGroup(cwd, { query: searchQuery, limit, tags: filterTags, terms: searchTerms }, paths)).hits;
             } catch (err) {
               log.write("warn", "search.layer_failed", { cwd, layer: "promoted", err });
               errors.push(`promoted: ${describeError(err)}`);
