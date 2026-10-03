@@ -104,8 +104,12 @@ Native tails must match frozen engine handles in order, with the same role and
 current-rule scrubbed text; conflicting deliveries return HTTP 409.
 
 `bench-corpora.json` is optional for shadow admission: a valid existing exclusion
-skips a project's cuts before Capture; missing or invalid policy does not disable
-admission. Offline evaluation requires a valid explicit policy and applies its
+skips a project's cuts before Capture with HTTP 200 and
+`{ admitted: false, reason: "excluded" }`. A missing policy leaves admission
+available; an unreadable or invalid policy refuses admission with HTTP 200 and
+`{ admitted: false, reason: "policy-unavailable" }` and logs a warning.
+Corpus discovery skips non-directory project entries and unreadable metadata.
+Offline evaluation requires a valid explicit policy and applies its
 exclusions before loading corpus content. See
 [compaction shadow artifacts](design/compaction-shadow.md) for wire fields,
 accounting, retention and privacy.

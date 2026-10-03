@@ -102,6 +102,19 @@ describe("excluding a repository", () => {
     expect(await discoverCorpora(paths, config.exclude)).toEqual([]);
   });
 
+  it.each(["exclude", "excludeCwdContaining"])("skips non-directory entries and unreadable metadata when applying %s", async key => {
+    ingest(join(repo(), "sub"));
+    ingest(project("kept"));
+    ingest(project("unreadable"));
+    const meta = join(projectDir(project("unreadable"), paths), "meta.json");
+    rmSync(meta);
+    mkdirSync(meta);
+    writeFileSync(join(paths.projectsDir, ".DS_Store"), "not a project directory");
+    const policy = { [key]: [key === "exclude" ? repo() : "excluded-repo"] };
+    const config = readCorpusConfig(writeConfig(JSON.stringify(policy)), paths);
+    expect(await discoverCorpora(paths, config.exclude)).toEqual([project("kept")]);
+  });
+
   it("stops on a name that no ingested project's cwd contains", () => {
     ingest(project("kept"));
     expect(() => readCorpusConfig(writeConfig(JSON.stringify({ excludeCwdContaining: ["no-such-repo"] })), paths))

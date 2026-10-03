@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDaemon, type DaemonInstance } from "../../src/daemon/server.js";
 import { loadDaemonConfig } from "../../src/daemon/config.js";
+import { openDaemonLog, readDaemonLog } from "../../src/daemon/log.js";
 import { createLcmPaths, type LcmPaths } from "../../src/lcm-paths.js";
 import { projectDir, projectDbPath } from "../../src/daemon/project.js";
 import { ensureAuthToken, readAuthToken } from "../../src/daemon/auth.js";
@@ -15,7 +16,10 @@ const fileForProject = projectDbPath;
 const usage = { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 100, cache_creation_input_tokens: 20 };
 async function boot(patterns = ["PRIVATE_WORD"]) {
   daemon = await createDaemon(loadDaemonConfig("/missing", { daemon: { port: 0, idleTimeoutMs: 0 }, llm: { provider: "disabled" },
-    summarizer: { language: "en" }, security: { sensitivePatterns: patterns } }, {}), { paths, tokenPath: paths.tokenPath });
+    summarizer: { language: "en" }, security: { sensitivePatterns: patterns } }, {}), { paths, tokenPath: paths.tokenPath,
+    log: openDaemonLog({ path: join(paths.logsDir, "daemon.log"), level: "warn", maxSizeMB: 10, retentionDays: 7,
+      globalPatterns: patterns, projectDirFor: cwd => projectDir(cwd, paths), version: "test" }),
+  });
 }
 beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), "lcm-shadow-")); cwd = join(root, "work"); mkdirSync(cwd);
@@ -75,6 +79,15 @@ describe("daemon compaction shadow artifacts", () => {
     writeFileSync(join(paths.home, "bench-corpora.json"), JSON.stringify({ excludeCwdContaining: ["work"] }));
     expect((await post("start", startInput())).body.admitted).toBe(false);
     expect(databaseExists()).toBe(false);
+  });
+  it("honors a valid corpus policy with a non-directory entry in projects", async () => {
+    mkdirSync(paths.projectsDir, { recursive: true });
+    writeFileSync(join(paths.projectsDir, ".DS_Store"), "not a project directory");
+    writeFileSync(join(paths.home, "bench-corpora.json"), JSON.stringify({ excludeCwdContaining: ["work"] }));
+    writeFileSync(transcript, "malformed content\n");
+    expect(await post("start", startInput())).toEqual({ status: 200, body: { admitted: false, reason: "excluded" } });
+    expect(databaseExists()).toBe(false);
+    expect(existsSync(dir())).toBe(false);
   });
   it("refuses an absent or stale boundary instead of freezing post-cut content", async () => {
     expect((await post("start", { ...startInput(), boundary_uuid: "absent" })).status).toBe(422);
@@ -372,9 +385,20 @@ describe("daemon compaction shadow artifacts", () => {
     expect(readFileSync(join(outside, "keep.txt"), "utf8")).toBe("keep");
     expect((await fetch(`http://127.0.0.1:${daemon.address().port}/health`)).status).toBe(200);
   });
-  it("does not require a valid evaluation policy for admission", async () => {
-    writeFileSync(join(paths.home, "bench-corpora.json"), "broken JSON");
-    expect((await start()).cut.state).toBe("pending");
+  it.each([
+    ["malformed JSON", "broken JSON"],
+    ["invalid policy", JSON.stringify({ exclude: null })],
+    ["unreadable policy", undefined],
+  ])("refuses admission before Capture and logs a warning for %s", async (_case, policy) => {
+    const file = join(paths.home, "bench-corpora.json");
+    if (policy === undefined) mkdirSync(file);
+    else writeFileSync(file, policy);
+    expect(await post("start", startInput())).toEqual({ status: 200, body: { admitted: false, reason: "policy-unavailable" } });
+    expect(databaseExists()).toBe(false);
+    expect(existsSync(dir())).toBe(false);
+    expect(readDaemonLog(join(paths.logsDir, "daemon.log"), { since: new Date(0) })).toContainEqual(expect.objectContaining({
+      level: "warn", event: "compaction-shadow.policy_unavailable", cwd: realpathSync(cwd),
+    }));
   });
   it("preserves bounded failure classification and completion options without provider bodies", async () => {
     const cut = await start();

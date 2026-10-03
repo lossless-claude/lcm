@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DaemonConfig } from "../config.js";
+import { noopDaemonLog, type DaemonLog } from "../log.js";
 import type { LcmPaths } from "../../lcm-paths.js";
 import { ScrubEngine } from "../../scrub.js";
 import { corpusConfigPath, isExcluded, readCorpusConfig } from "../../eval/corpus-policy.js";
@@ -12,12 +13,17 @@ import { verifyNativeTail } from "../shadow/tail.js";
 import { CompactionShadowStore, ShadowStoreError, recoverShadowProject, recoverShadowProjects } from "../shadow/store.js";
 import { SHADOW_RETENTION_MS, HTTP, hash, object, objectHash, safeId, validModelName, type ShadowManifest } from "../shadow/types.js";
 
-/** Benchmark policy is optional for capture, mandatory only for offline evaluation. */
-function excluded(cwd: string, paths: LcmPaths): boolean {
-  try { return isExcluded(cwd, readCorpusConfig(corpusConfigPath(paths), paths, { candidateCwds: [cwd] }).exclude); }
-  catch { return false; }
+/** A missing benchmark policy permits admission; an unreadable or invalid policy refuses it. */
+function policyRefusal(cwd: string, paths: LcmPaths, log: DaemonLog): "excluded" | "policy-unavailable" | undefined {
+  try {
+    const config = readCorpusConfig(corpusConfigPath(paths), paths, { candidateCwds: [cwd] });
+    return isExcluded(cwd, config.exclude) ? "excluded" : undefined;
+  } catch (err) {
+    log.write("warn", "compaction-shadow.policy_unavailable", { cwd, err });
+    return "policy-unavailable";
+  }
 }
-export function createCompactionShadowHandlers(config: DaemonConfig, paths: LcmPaths): Record<"start" | "native" | "arm", RouteHandler> {
+export function createCompactionShadowHandlers(config: DaemonConfig, paths: LcmPaths, log: DaemonLog = noopDaemonLog): Record<"start" | "native" | "arm", RouteHandler> {
   const store = new CompactionShadowStore(paths);
   recoverShadowProjects(store, paths);
   const handle = (kind: "start" | "native" | "arm"): RouteHandler => async (_req, res, body) => {
@@ -25,7 +31,10 @@ export function createCompactionShadowHandlers(config: DaemonConfig, paths: LcmP
       const input: unknown = JSON.parse(body);
       validateIdentity(input);
       const cwd = validateCwd(input.cwd);
-      if (kind === "start" && excluded(cwd, paths)) { sendJson(res, HTTP.ok, { admitted: false, reason: "excluded" }); return; }
+      if (kind === "start") {
+        const reason = policyRefusal(cwd, paths, log);
+        if (reason) { sendJson(res, HTTP.ok, { admitted: false, reason }); return; }
+      }
       const scrubber = await ScrubEngine.forProject(config.security.sensitivePatterns, projectDir(cwd, paths));
       for (const id of [input.session_id, input.cut_id, input.boundary_uuid].filter(id => id !== undefined)) correlationId(id, scrubber);
       if (kind !== "start") {
