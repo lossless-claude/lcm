@@ -94,9 +94,14 @@ Both the daemon and the client must see the same value: a daemon started without
 
 `lcm doctor` counts project directories without a `meta.json` file and directories
 whose recorded absolute cwd no longer exists, including ordinary missing
-checkouts. Corrupt or unreadable records are not counted as missing files.
-These counts are read-only and do not change the check's status; cleanup remains an
-explicit operator action.
+checkouts. Cwd checks run asynchronously with a 100 ms deadline per stat and at
+most four outstanding stats. A timed-out stat keeps its concurrency slot: if all
+slots time out, remaining cwds are left unchecked. Doctor reports timed-out,
+unattempted and unreadable cwds separately from missing cwds, warns about them,
+and continues reporting its other checks. Unchecked cwds never count as missing
+or stale. Corrupt or unreadable records are not counted as missing files.
+Missing-file counts are read-only and do not change the check's status; cleanup
+remains an explicit operator action.
 
 `lcm doctor` reports stores whose recorded working directory no longer exists and
 was under a system temporary directory (under its path or its resolved real path,

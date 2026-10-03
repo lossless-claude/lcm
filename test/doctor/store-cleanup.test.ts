@@ -151,9 +151,9 @@ it("reports and trashes a vanished cwd alias using the store's recorded id", () 
   finally { db.close(); }
 });
 
-it("flags a gone store recorded under the temporary directory's real path", () => {
+it("flags a gone store recorded under the temporary directory's real path", async () => {
   // Stored cwds are realpaths; on macOS tmpdir() is /var/folders/…, a symlink to /private/var/folders/….
   const cwd = join(realpathSync(tmpdir()), `lcm-gone-${randomUUID()}`);
   const paths = fixture(cwd);
-  expect(checkStaleProjectStores(paths)).toMatchObject({ status: "warn", message: expect.stringContaining(cwd) });
+  expect(await checkStaleProjectStores(paths)).toMatchObject({ status: "warn", message: expect.stringContaining(cwd) });
 });
