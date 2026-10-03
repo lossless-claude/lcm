@@ -25,6 +25,7 @@
 // declared at the top level, and calls on it must be spelled `$.noun.method(...)`.
 import type { Register, EngineInterface } from "claude-code";
 import { sharedSessionOutputBudget, type SessionOutputBudget } from "./model-budget.js";
+import type { ShadowAppend } from "./shadow-boundaries.js";
 import { ShadowSessionState, runCompactionShadow, type ShadowTransport, type ShadowEngine } from "./compaction-shadow.js";
 
 /** Same set the PostToolUse matcher in plugin.json names; `mcp__*` is matched by prefix. */
@@ -993,28 +994,20 @@ function registerCompactionShadow(on: On, cap: number): void {
     let sessionId: string;
     try { sessionId = await $.session.id(); }
     catch { noteHook("unknown", "session.append", "shadow", "execution", "unavailable", "identity"); return next(event); }
-    const previous = shadowSessions.boundary(sessionId);
-    observeShadowAppend(sessionId, event);
-    let result: Awaited<ReturnType<typeof next>>;
-    try { result = await next(event); }
-    catch (error) { shadowSessions.restore(sessionId, event.uuid, previous); throw error; }
-    settledShadowAppend({ sessionId, event, previous }, result);
+    const owner = event.agentId === undefined ? shadowSessions.beginAppend(sessionId, event.door) : undefined;
+    const result = await next(event);
+    settledShadowAppend(owner, result);
     return result;
   });
   on("session.compact", async ($, event, next) => {
     return runCompactionShadow(shadowEngine($), { event, next, state: shadowSessions, cap, signal: next.signal }, shadowTransport($));
   });
 }
-function observeShadowAppend(sessionId: string, event: import("claude-code").Args<"session.append">): void {
-  if (event.agentId !== undefined || event.message.role === undefined) return;
-  const text = event.message.content.filter(block => block.type === "text").map(block => block.text).join("\n");
-  shadowSessions.append(sessionId, { uuid: event.uuid, text, door: event.door });
-}
-function settledShadowAppend({ sessionId, event, previous }: { sessionId: string; event: import("claude-code").Args<"session.append">; previous?: string }, result: import("claude-code").EventResult<"session.append">): void {
-  if (result.deny !== undefined) { shadowSessions.restore(sessionId, event.uuid, previous); return; }
-  if (event.agentId !== undefined || result.message.role === undefined || shadowSessions.boundary(sessionId) !== event.uuid) return;
+function settledShadowAppend(owner: ShadowAppend | undefined, result: import("claude-code").EventResult<"session.append">): void {
+  if (!owner || result.deny !== undefined) return;
+  if (result.message.role === undefined) return;
   const text = result.message.content.filter(block => block.type === "text").map(block => block.text).join("\n");
-  shadowSessions.append(sessionId, { uuid: result.uuid, text, door: "stored" });
+  shadowSessions.storedAppend(owner, { uuid: result.uuid, text });
 }
 function normalizedSummaryCap(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_SUMMARY_OUTPUT_CAP;

@@ -341,14 +341,39 @@ describe("opt-in compaction shadow hook", () => {
     expect(await pending).toBe(result); expect(next).toHaveBeenCalledTimes(1);
     expect(harness.engine.model.fork).not.toHaveBeenCalled(); expect(harness.engine.model.complete).not.toHaveBeenCalled();
   });
-  it("captures a boundary before an append has settled while preserving its returned object", async () => {
-    const harness = await setup(), stored = Promise.withResolvers<any>();
+  it.each(["summary", "tail", "handles"])("retains known native accounting when %s extraction is ambiguous", async ambiguity => {
+    const harness = await setup(); await harness.append(); const event = compact();
+    const result = { ...nativeResult(), tokensBefore: 8905, tokensAfter: 222 };
+    if (ambiguity === "summary") result.messages.unshift({ ...result.messages[0], text: "another summary" });
+    if (ambiguity === "tail") result.messages[1].text = "unverified tail";
+    if (ambiguity === "handles") event.messages[1].handle = event.messages[0].handle;
+    expect(await harness.fire("session.compact", event, vi.fn(async () => result))).toBe(result);
+    expect(harness.posts.find(post => post.route.endsWith("/native"))!.body.record).toMatchObject({ outcome: "unavailable", usage, tokensBefore: 8905, tokensAfter: 222 });
+  });
+  it("retains the last stored boundary when overlapping appends A and B are denied", async () => {
+    const harness = await setup(); await harness.append("stored");
+    const first = Promise.withResolvers<any>(), second = Promise.withResolvers<any>();
+    const row = (uuid: string) => ({ uuid, door: "response", message: { type: "assistant", role: "assistant", content: [{ type: "text", text: uuid }] } });
+    const firstNext = vi.fn(() => first.promise), secondNext = vi.fn(() => second.promise);
+    const pendingFirst = harness.fire("session.append", row("rejected-A"), firstNext);
+    await vi.waitFor(() => expect(firstNext).toHaveBeenCalledTimes(1));
+    const pendingSecond = harness.fire("session.append", row("rejected-B"), secondNext);
+    await vi.waitFor(() => expect(secondNext).toHaveBeenCalledTimes(1));
+    first.resolve({ deny: "blocked" }); await pendingFirst;
+    second.resolve({ deny: "blocked" }); await pendingSecond;
+    await harness.fire("session.compact", compact(), vi.fn(async () => nativeResult()));
+    expect(harness.posts.find(post => post.route.endsWith("/start"))!.body.boundary_uuid).toBe("stored");
+  });
+  it("uses only stored boundaries while an append is pending and preserves its returned object", async () => {
+    const harness = await setup(), stored = Promise.withResolvers<any>(); await harness.append("last-stored");
     const event = { uuid: "before-flush", door: "response", origin: { kind: "model", model: "session-model" }, message: { type: "assistant", role: "assistant", content: [{ type: "text", text: "pending" }] } };
     const enteredCore = Promise.withResolvers<void>();
     const pending = harness.fire("session.append", event, vi.fn(() => { enteredCore.resolve(); return stored.promise; }));
     await enteredCore.promise;
     await harness.fire("session.compact", compact(), vi.fn(async () => nativeResult()));
-    expect(harness.posts.find(post => post.route.endsWith("/start"))!.body.boundary_uuid).toBe("before-flush");
+    expect(harness.posts.find(post => post.route.endsWith("/start"))!.body.boundary_uuid).toBe("last-stored");
     const result = { uuid: event.uuid, message: event.message }; stored.resolve(result); expect(await pending).toBe(result);
+    await harness.fire("session.compact", compact(), vi.fn(async () => nativeResult()));
+    expect(harness.posts.filter(post => post.route.endsWith("/start")).at(-1)!.body.boundary_uuid).toBe("before-flush");
   });
 });

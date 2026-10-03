@@ -1,6 +1,7 @@
 import type { EngineInterface, SessionCompactInput, SessionCompactResult, SessionMessage } from "claude-code";
 import { captureHeaderModel, executeHeaderFork, executeHeaderPair, type HeaderCall, type HeaderOutcome, type SessionModelAtCut } from "./compaction-header.js";
 import { sharedSessionOutputBudget } from "./model-budget.js";
+import { ShadowBoundaries, type ShadowAppend } from "./shadow-boundaries.js";
 
 export type ShadowEngine = { session: Pick<EngineInterface["session"], "id" | "cwd" | "model">; model: Pick<EngineInterface["model"], "fork" | "complete">; env: Pick<EngineInterface["env"], "get"> };
 
@@ -21,25 +22,23 @@ type Cut = {
 type BoundaryEpoch = { uuid: string; epoch: number };
 export class ShadowSessionState {
   private epochs = new Map<string, number>();
-  private boundaries = new Map<string, string>();
+  private boundaries = new ShadowBoundaries();
   private cuts = new Map<string, Set<Cut>>();
   private tasks = new Set<Promise<void>>();
-  boundary(sessionId: string): string | undefined { return this.boundaries.get(sessionId); }
+  boundary(sessionId: string): string | undefined { return this.boundaries.boundary(sessionId); }
   epoch(sessionId: string): number { return this.epochs.get(sessionId) ?? 0; }
   freezeBoundaries(): ReadonlyMap<string, BoundaryEpoch> {
-    return new Map([...this.boundaries].map(([sessionId, uuid]) => [sessionId, { uuid, epoch: this.epoch(sessionId) }]));
+    return new Map(this.boundaries.entries().map(([sessionId, uuid]) => [sessionId, { uuid, epoch: this.epoch(sessionId) }]));
   }
-  restore(sessionId: string, uuid: string, previous?: string): void {
-    if (this.boundaries.get(sessionId) !== uuid) return;
-    if (previous === undefined) this.boundaries.delete(sessionId); else this.boundaries.set(sessionId, previous);
-  }
-  append(sessionId: string, { uuid, text, door }: { uuid: string; text: string; door: string }): void {
-    this.boundaries.set(sessionId, uuid);
-    if (door === "compaction") this.cuts.get(sessionId)?.forEach(cut => cut.appended.push({ uuid, text }));
+  beginAppend(sessionId: string, door: string): ShadowAppend { return this.boundaries.begin(sessionId, this.epoch(sessionId), door); }
+  storedAppend(owner: ShadowAppend, { uuid, text }: { uuid: string; text: string }): void {
+    if (owner.epoch !== this.epoch(owner.sessionId)) return;
+    this.boundaries.complete(owner, uuid);
+    if (owner.door === "compaction") this.cuts.get(owner.sessionId)?.forEach(cut => cut.appended.push({ uuid, text }));
   }
   reset(sessionId: string): void {
     this.epochs.set(sessionId, this.epoch(sessionId) + 1);
-    this.boundaries.delete(sessionId);
+    this.boundaries.reset(sessionId);
     this.cuts.get(sessionId)?.forEach(cancelCut);
   }
   add(cut: Cut): void { const cuts = this.cuts.get(cut.sessionId) ?? new Set<Cut>(); cuts.add(cut); this.cuts.set(cut.sessionId, cuts); }
@@ -179,14 +178,18 @@ function extractedNative(cut: Cut, result: SessionCompactResult | null) {
   if (!result || result.skip !== undefined) return { text: "", outcome: result ? "skipped" : "aborted", fidelity: result ? "skipped" : "aborted", tail: [], observedMessages: [], candidateIndices: [] };
   const original = new Map(cut.messages.map((message, index) => [message.handle, { message, index }]));
   const candidates = result.messages.flatMap((message, index) => !message.handle || !original.has(message.handle) ? [index] : []);
-  const observedMessages = descriptors(result.messages);
-  if (original.size !== cut.messages.length || original.has(undefined)) return { text: "", outcome: "unavailable", fidelity: "native-tail-unverified", tail: [], observedMessages, candidateIndices: candidates };
-  if (!uniqueSummary(candidates)) return { text: "", outcome: "unavailable", fidelity: "native-summary-unverified", tail: [], observedMessages, candidateIndices: candidates };
+  const observed = { observedMessages: descriptors(result.messages), candidateIndices: candidates, usage: result.usage, tokensBefore: result.tokensBefore, tokensAfter: result.tokensAfter };
+  if (original.size !== cut.messages.length || original.has(undefined)) return { text: "", outcome: "unavailable", fidelity: "native-tail-unverified", tail: [], ...observed };
+  if (!uniqueSummary(candidates)) return { text: "", outcome: "unavailable", fidelity: "native-summary-unverified", tail: [], ...observed };
   const tail = result.messages.slice(1);
-  if (!tailMatches(tail, original)) return { text: "", outcome: "unavailable", fidelity: "native-tail-unverified", tail: [], observedMessages, candidateIndices: candidates };
-  const summary = result.messages[0], rows = cut.appended.filter(row => row.text === summary.text);
-  return { text: summary.text, outcome: "answered", fidelity: "verified", tail: descriptors(tail), observedMessages, candidateIndices: candidates,
-    ...(rows.length === 1 ? { summaryUuid: rows[0].uuid } : {}), usage: result.usage, tokensBefore: result.tokensBefore, tokensAfter: result.tokensAfter };
+  if (!tailMatches(tail, original)) return { text: "", outcome: "unavailable", fidelity: "native-tail-unverified", tail: [], ...observed };
+  const summary = result.messages[0];
+  return { text: summary.text, outcome: "answered", fidelity: "verified", tail: descriptors(tail), ...observed,
+    ...nativeAppendIdentity(cut, summary.text) };
+}
+function nativeAppendIdentity(cut: Cut, text: string): { summaryUuid?: string } {
+  const rows = cut.appended.filter(row => row.text === text);
+  return rows.length === 1 ? { summaryUuid: rows[0].uuid } : {};
 }
 function uniqueSummary(indices: readonly number[]): boolean { return indices.length === 1 && indices[0] === 0; }
 
