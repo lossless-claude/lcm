@@ -75,13 +75,13 @@ export class CompactionShadowStore {
       renameSync(staging, path);
     } finally { removeShadowDirectory(staging, this.projectsDir); }
   }
-  bind(cwd: string, cutId: string, { sessionId, snapshotHash }: { sessionId: string; snapshotHash: string }): ShadowManifest {
+  bind(cwd: string, cutId: string, { sessionId, snapshotHash }: { sessionId: string; snapshotHash: string }): { cut: ShadowManifest; snapshot: ShadowSnapshot } {
     const found = this.read(cwd, cutId);
     if (!found) throw new ShadowStoreError("Cut not found", HTTP.notFound);
     if (found.cut.sessionId !== sessionId || found.cut.snapshotHash !== snapshotHash || objectHash(found.snapshot) !== snapshotHash)
       throw new ShadowStoreError("Cut identity or snapshot mismatch");
     if (Date.parse(found.cut.expiresAt) <= Date.now()) throw new ShadowStoreError("Cut expired", HTTP.gone);
-    return found.cut;
+    return found;
   }
   writeNative(cut: ShadowManifest, record: NativeRecord): void { this.publish(cut, "native.json", record); }
   writeArm(cut: ShadowManifest, record: ArmRecord): void { this.publish(cut, `arm-${record.arm}-${record.attemptId}.json`, record); }

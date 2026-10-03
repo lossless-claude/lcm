@@ -100,6 +100,8 @@ Recovery skips linked project/shadow/cut directories and checks real-path
 containment before recursive cleanup. Correlation identifiers are validated and
 preserved exactly; sensitive identifiers are rejected. Admission retries compare
 a digest of raw identity fields, so redaction cannot hide a changed request.
+Native tails must match frozen engine handles in order, with the same role and
+current-rule scrubbed text; conflicting deliveries return HTTP 409.
 
 `bench-corpora.json` is optional for shadow admission: a valid existing exclusion
 skips a project's cuts before Capture; missing or invalid policy does not disable
@@ -124,7 +126,10 @@ for exported native transcripts; otherwise allowed projects' Claude transcript
 directories are discovered. Ownership metadata is scanned on every row; an omitted
 `cwd` inherits the prior row's. Any excluded cwd removes the whole session,
 including paired shadow evidence. A directory or manifest label cannot establish
-ownership. Malformed exported identifiers, including non-UUID row ids, invalidate
+ownership. Every recorded session id is validated against the supplied label
+before acting on exclusion; mismatches invalidate the source, and exclusions
+block its recorded session ids. Stored tails that conflict with the frozen
+messages also invalidate a cut. Malformed exported identifiers, including non-UUID row ids, invalidate
 the source. `--seed` fixes selection, `--limit` defaults to 30 cuts,
 and `--rates` supplies a frozen model/cache rate table. No models are called.
 Reports distinguish missing evidence and unknown cost; continuation judging is a

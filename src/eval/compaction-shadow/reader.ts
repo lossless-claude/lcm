@@ -6,14 +6,14 @@ import { readProjectMetaIn } from "../../daemon/project-meta.js";
 import { parseClaudeTranscriptRecord } from "../../transcript.js";
 import { isExcluded, type CorpusConfig } from "../corpus-policy.js";
 import { readShadowJson } from "../../daemon/shadow/store.js";
-import { digest, object, objectHash, safeId, type ArmRecord, type NativeRecord, type ShadowManifest, type ShadowOriginal, type ShadowSnapshot } from "../../daemon/shadow/types.js";
+import { digest, object, objectHash, safeId, type ArmRecord, type NativeRecord, type ShadowManifest, type ShadowOriginal, type ShadowSnapshot, type ShadowMessage } from "../../daemon/shadow/types.js";
 import { requireIdentifier, validUuid } from "./identifiers.js";
 
 export type TranscriptInput = { cwd: string; sessionId: string; path: string };
 export type EvaluationCut = {
   cutId: string; projectId: string; cwd: string; sessionId: string; boundaryUuid: string;
   source: "shadow" | "historical"; sourceHash: string; snapshotHash: string | null;
-  originals: ShadowOriginal[]; summaryCoverage: { summaryId: string; messageIds: number[] }[]; window: string | null; native: NativeRecord | null; arms: ArmRecord[];
+  originals: ShadowOriginal[]; engineMessages: ShadowMessage[]; summaryCoverage: { summaryId: string; messageIds: number[] }[]; window: string | null; native: NativeRecord | null; arms: ArmRecord[];
   nativeParity: "not-checked" | "matched" | "mismatched";
 };
 export type CutCandidate = { projectId: string; sessionId: string; cutId: string; boundaryUuid?: string; native?: NativeRecord | null; load(): EvaluationCut };
@@ -43,7 +43,7 @@ function loadShadow(path: string, manifest: ShadowManifest): EvaluationCut {
   const native = existsSync(join(path, "native.json")) ? readShadowJson<NativeRecord>(join(path, "native.json")) : null;
   const arms = readdirSync(path).filter(file => /^arm-[ABC]-[A-Za-z0-9_-]+\.json$/.test(file)).sort().map(file => readShadowJson<ArmRecord>(join(path, file)));
   return { cutId: manifest.cutId, cwd: manifest.cwd, projectId: manifest.projectId, sessionId: manifest.sessionId, boundaryUuid: manifest.boundaryUuid,
-    source: "shadow", sourceHash: snapshot.sourceHash, snapshotHash: manifest.snapshotHash, originals: snapshot.originals, summaryCoverage: snapshot.window.coverage.summaryCoverage, window: snapshot.window.text, native, arms, nativeParity: "not-checked" };
+    source: "shadow", sourceHash: snapshot.sourceHash, snapshotHash: manifest.snapshotHash, originals: snapshot.originals, engineMessages: snapshot.engineMessages, summaryCoverage: snapshot.window.coverage.summaryCoverage, window: snapshot.window.text, native, arms, nativeParity: "not-checked" };
 }
 function validSnapshot(snapshot: ShadowSnapshot, manifest: ShadowManifest): boolean {
   if (snapshot.version !== 1 || objectHash(snapshot) !== manifest.snapshotHash) return false;
@@ -133,7 +133,7 @@ export function historicalCuts(input: TranscriptInput): EvaluationCut[] {
     if (row.isCompactSummary !== true) continue;
     const { originals, boundaryUuid } = prefix(rows, row.parentUuid, ordinal), text = nativeText(row);
     result.push({ cutId: `historical-${digest(JSON.stringify([projectId(input.cwd), input.sessionId, row.uuid])).slice(0, 24)}`, projectId: projectId(input.cwd), cwd: input.cwd,
-      sessionId: input.sessionId, boundaryUuid, source: "historical", sourceHash: digest(raw), snapshotHash: null, originals, summaryCoverage: [], window: null, arms: [], nativeParity: "not-checked",
+      sessionId: input.sessionId, boundaryUuid, source: "historical", sourceHash: digest(raw), snapshotHash: null, originals, engineMessages: [], summaryCoverage: [], window: null, arms: [], nativeParity: "not-checked",
       native: { text, outcome: "answered", usage: null, durationMs: null, costUsd: null, tail: [], summaryUuid: row.uuid as string, rawTextHash: digest(text), rawTextBytes: Buffer.byteLength(text) } });
   }
   return result;

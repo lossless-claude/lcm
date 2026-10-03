@@ -45,6 +45,14 @@ Independent files and atomic publication preserve out-of-order completion. Once
 native and all three arms have records, the manifest is complete even when an arm
 reports a non-answer.
 
+A native tail must resolve each handle uniquely to the frozen engine messages,
+in strictly increasing order, with identical roles and text after both copies
+are scrubbed under the current rules. Empty tails and ordered subsequences are
+allowed. Missing, unknown, ambiguous, reused or reordered handles and changed
+content are conflicts: native delivery returns HTTP 409 before publication.
+The evaluator applies the same check to legacy stored tails; a conflicting cut
+is counted invalid and skipped, even when its native summary text matches JSONL.
+
 Free text from transcripts, the instructions and model outputs is scrubbed with
 Capture's current global/project rules, including frozen windows and historical
 summary text. Scrubbing the shadow copy
@@ -88,7 +96,11 @@ evaluator scans root metadata on every transcript row, including after the cut,
 without decoding message payloads. A missing `cwd` inherits the previous row's;
 a model-visible row with no established ownership is ineligible. Any recorded
 excluded cwd disqualifies the whole session, including paired shadow cuts. Holdout
-rows also reserve the session. A directory or manifest label cannot establish
+rows also reserve the session. Every recorded row session id must be a UUID and
+match the supplied session label before exclusion is acted on; a mismatch counts
+as an invalid source. Exclusions block the session ids actually recorded by the
+transcript, including when its label is wrong. At least one recorded session id
+is required. A directory or manifest label cannot establish
 ownership because Claude directory names can collide. Exclusions take precedence over holdout.
 Missing or unresolvable corpus identity is not eligible for evaluation.
 

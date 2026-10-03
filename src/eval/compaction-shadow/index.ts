@@ -4,6 +4,7 @@ import type { LcmPaths } from "../../lcm-paths.js";
 import { loadDaemonConfig } from "../../daemon/config.js";
 import { projectDir, projectId } from "../../daemon/project.js";
 import { ScrubEngine } from "../../scrub.js";
+import { verifyNativeTail } from "../../daemon/shadow/tail.js";
 import { corpusConfigPath, readCorpusConfig, isExcluded } from "../corpus-policy.js";
 import { digest, object, objectHash, validUsage, validHeader, HEADER_SECTIONS, type ShadowUsage, type ArmRecord } from "../../daemon/shadow/types.js";
 import { allowedProjects, shadowCandidates, discoverTranscripts, historicalCuts, type CutCandidate, type EvaluationCut, type TranscriptInput, type ReadCounts } from "./reader.js";
@@ -203,7 +204,9 @@ async function loadCuts(options: Phase1Options, { policy, seed, limit }: { polic
   for (const candidate of sample(candidates, seed, limit)) {
     try {
       const cut = candidate.load(); validateCutIdentifiers(cut);
-      cuts.push(scrubCut(cut, scrubbers.get(candidate.projectId)!));
+      const scrubber = scrubbers.get(candidate.projectId)!;
+      if (cut.native) verifyNativeTail(cut.native.tail, cut.engineMessages, text => scrubber.scrub(text));
+      cuts.push(scrubCut(cut, scrubber));
     } catch { counts.invalidSources++; }
   }
   return { cuts, counts };
@@ -211,10 +214,13 @@ async function loadCuts(options: Phase1Options, { policy, seed, limit }: { polic
 
 async function appendHistorical(input: TranscriptInput, context: { policy: ReturnType<typeof readCorpusConfig>; ids: Set<string>; histories: EvaluationCut[]; counts: ReadCounts; blockedSessions: Set<string> }): Promise<void> {
   const excluded = (cwd: string) => isExcluded(cwd, context.policy.exclude) || context.policy.holdout.has(projectId(cwd));
-  if (excluded(input.cwd) || isExcluded(input.path, context.policy.exclude)) { context.blockedSessions.add(input.sessionId); return; }
   try {
-    const { cwd, excluded: blocked } = await transcriptOwnership(input.path, excluded);
-    if (blocked) { context.blockedSessions.add(input.sessionId); return; }
+    const ownership = await transcriptOwnership(input.path, { label: input.sessionId, excluded });
+    const { cwd } = ownership;
+    const blocked = ownership.excluded || excluded(input.cwd) || isExcluded(input.path, context.policy.exclude);
+    if (blocked) for (const id of ownership.sessionIds) context.blockedSessions.add(id);
+    if (ownership.invalidIdentity) { context.counts.invalidSources++; return; }
+    if (blocked) return;
     if (!context.ids.has(projectId(cwd))) return;
     context.histories.push(...historicalCuts({ ...input, cwd }));
   } catch { context.counts.invalidSources++; }

@@ -8,6 +8,7 @@ import { validateCwd } from "../validate-cwd.js";
 import { sendJson, type RouteHandler } from "../server.js";
 import { shadowMessages, nativeRecord, armRecord, correlationId } from "../shadow/records.js";
 import { captureShadowSnapshot } from "../shadow/snapshot.js";
+import { verifyNativeTail } from "../shadow/tail.js";
 import { CompactionShadowStore, ShadowStoreError, recoverShadowProject, recoverShadowProjects } from "../shadow/store.js";
 import { SHADOW_RETENTION_MS, HTTP, hash, object, objectHash, safeId, validModelName, type ShadowManifest } from "../shadow/types.js";
 
@@ -90,8 +91,12 @@ function validateIdentity(input: unknown): asserts input is Record<string, unkno
 function storeResult({ store, cwd, scrubber }: Pick<Admission, "store" | "cwd" | "scrubber">, input: Record<string, unknown>, kind: "native" | "arm"): void {
   if (!safeId(input.cut_id) || !hash(input.snapshot_hash)) throw new ShadowStoreError("Invalid result binding", HTTP.badRequest);
   if (!object(input.record)) throw new ShadowStoreError("Invalid result record", HTTP.badRequest);
-  const cut = store.bind(cwd, input.cut_id, { sessionId: input.session_id as string, snapshotHash: input.snapshot_hash });
-  if (kind === "native") store.writeNative(cut, nativeRecord(input.record, scrubber));
+  const { cut, snapshot } = store.bind(cwd, input.cut_id, { sessionId: input.session_id as string, snapshotHash: input.snapshot_hash });
+  if (kind === "native") {
+    const record = nativeRecord(input.record, scrubber);
+    verifyNativeTail(record.tail, snapshot.engineMessages, text => scrubber.scrub(text));
+    store.writeNative(cut, record);
+  }
   else store.writeArm(cut, armRecord(input, input.record, scrubber));
 }
 function requestIdentityHash(input: Record<string, unknown>, cutId: string): string {

@@ -24,7 +24,8 @@ function project(name: string) {
 function file(name: string) { return join(projectDir(cwd, paths), "compaction-shadow", "cut-a", name); }
 function writeShadow() {
   const snapshot = { version: 1, originals: [{ id: 1, seq: 0, role: "user", text: directive, origin: "user", uuid: UUIDS.one },
-    { id: 2, seq: 1, role: "assistant", text: "raw assistant", origin: "other", uuid: UUIDS.two }], engineMessages: [], sourceHash: "a".repeat(64),
+    { id: 2, seq: 1, role: "assistant", text: "raw assistant", origin: "other", uuid: UUIDS.two }],
+    engineMessages: [{ role: "user", text: directive, handle: "h1" }, { role: "assistant", text: "raw assistant", handle: "h2" }], sourceHash: "a".repeat(64),
     window: { text: directive + "\nraw assistant", coverage: { capturedMessageIds: [1, 2], renderedMessageIds: [1, 2], summaryCoverage: [], uncoveredMessageIds: [], valid: true } } };
   mkdirSync(join(projectDir(cwd, paths), "compaction-shadow", "cut-a"), { recursive: true });
   writeFileSync(file("snapshot.json"), JSON.stringify(snapshot));
@@ -46,7 +47,7 @@ function history({ owner = cwd, sessionId = UUIDS.session, suffix = "", nativeTe
     { uuid: UUIDS.boundary, parentUuid: UUIDS.two, type: "system", subtype: "compact_boundary" },
     { uuid: UUIDS.native, parentUuid: UUIDS.boundary, type: "user", isCompactSummary: true, message: { role: "user", content: [{ type: "text", text: nativeText }] } },
     { uuid: UUIDS.future, parentUuid: UUIDS.native, type: "user", message: { role: "user", content: "Use future.ts PRIVATE_WORD" } },
-  ].map(row => JSON.stringify({ cwd: owner, ...row })).join("\n") + "\n");
+  ].map(row => JSON.stringify({ cwd: owner, sessionId, ...row })).join("\n") + "\n");
   transcripts.push({ cwd: owner, sessionId, path }); return path;
 }
 beforeEach(() => {
@@ -119,6 +120,25 @@ describe("offline compaction shadow triage", () => {
     expect(metrics.cuts).toHaveLength(1);
     expect(readFileSync(join(output, "probes.jsonl"), "utf8")).toContain(directive);
   });
+  it.each(["first-excluded", "later-excluded", "mismatch-after-exclusion"])("validates recorded session identity before %s and blocks the recorded session", placement => {
+    const excluded = project("excluded"), path = history();
+    writeFileSync(join(paths.home, "bench-corpora.json"), JSON.stringify({ exclude: [excluded] }));
+    const rows = readFileSync(path, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    rows[placement === "first-excluded" ? 0 : 2].cwd = excluded;
+    if (placement === "mismatch-after-exclusion") rows[5].sessionId = fixtureUuid(99);
+    else transcripts[0].sessionId = fixtureUuid(99);
+    writeFileSync(path, rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+    const metrics = report();
+    expect(metrics.counts.invalidSources).toBe(1);
+    expect(metrics.cuts).toEqual([]);
+    expect(readFileSync(join(output, "probes.jsonl"), "utf8")).toBe("");
+  });
+  it("counts a mismatched recorded session as invalid even without an exclusion", () => {
+    history(); transcripts[0].sessionId = fixtureUuid(99);
+    const metrics = report();
+    expect(metrics.counts.invalidSources).toBe(1);
+    expect(metrics.cuts.filter((cut: any) => cut.source === "historical")).toEqual([]);
+  });
   it.each(["holdout", "exclude", "excludeCwdContaining"].flatMap(key => [null, false, 0, "all", {}].map(value => ({ key, value }))))(
     "fails closed on every non-list policy value ($key=$value)", ({ key, value }) => {
       writeFileSync(join(paths.home, "bench-corpora.json"), JSON.stringify({ [key]: value }));
@@ -133,8 +153,9 @@ describe("offline compaction shadow triage", () => {
     const privateCwd = project("private");
     const privateCut = join(projectDir(privateCwd, paths), "compaction-shadow", "bad"); mkdirSync(privateCut, { recursive: true });
     writeFileSync(join(privateCut, "manifest.json"), "unreadable excluded corpus");
-    const badPath = join(root, "bad.jsonl"); writeFileSync(badPath, "unreadable excluded corpus");
-    transcripts.push({ cwd: privateCwd, sessionId: "private", path: badPath });
+    const badPath = join(root, "bad.jsonl");
+    writeFileSync(badPath, JSON.stringify({ cwd: privateCwd, sessionId: fixtureUuid(90) }) + "\nunreadable excluded corpus");
+    transcripts.push({ cwd: privateCwd, sessionId: fixtureUuid(90), path: badPath });
     writeFileSync(join(paths.home, "bench-corpora.json"), JSON.stringify({ exclude: [privateCwd] }));
     const metrics = report(); expect(metrics.counts.excludedProjects).toBe(1); expect(metrics.counts.invalidSources).toBe(0);
     expect(metrics.cuts).toHaveLength(1);
@@ -206,6 +227,20 @@ describe("offline compaction shadow triage", () => {
     history(); const metrics = report();
     expect(metrics.cuts).toHaveLength(1); expect(metrics.nativeTextPairs).toMatchObject({ matched: 1, mismatched: 0 });
     expect(metrics.cuts[0].nativeComparisonEligible).toBe(true);
+  });
+  it.each(["unknown", "text", "order"])("skips a legacy native tail with %s correspondence even when summary text matches", defect => {
+    history();
+    const native = JSON.parse(readFileSync(file("native.json"), "utf8"));
+    const rows = [
+      { role: "user", text: directive, handle: "h1" },
+      { role: "assistant", text: "raw assistant", handle: "h2" },
+    ];
+    native.tail = defect === "order" ? rows.reverse() : [{ role: "assistant", text: directive, handle: defect === "unknown" ? "unknown_handle" : "h2" }];
+    writeFileSync(file("native.json"), JSON.stringify(native));
+    const metrics = report();
+    expect(metrics.counts.invalidSources).toBe(1);
+    expect(metrics.cuts).toEqual([]);
+    expect(readFileSync(join(output, "probes.jsonl"), "utf8")).toBe("");
   });
   it("does not normalize away a hook/JSONL native text mismatch", () => {
     history({ nativeText: "Keep parser.ts.\n" }); const metrics = report();

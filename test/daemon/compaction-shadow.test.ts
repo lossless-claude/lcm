@@ -35,7 +35,8 @@ async function post(route: string, body: unknown, auth = true) {
   });
   return { status: response.status, body: await response.json() as any };
 }
-function startInput(cut_id = "cut-a") { return { cwd, session_id: "session", cut_id, trigger: "manual", model: "session-model-id", boundary_uuid: "two", transcript_path: transcript }; }
+function startInput(cut_id = "cut-a") { return { cwd, session_id: "session", cut_id, trigger: "manual", model: "session-model-id", boundary_uuid: "two", transcript_path: transcript,
+  engine_messages: [{ role: "user", text: "PRIVATE_WORD", handle: "kept" }] }; }
 function dir(cut = "cut-a") { return join(projectDir(cwd, paths), "compaction-shadow", cut); }
 function artifact(name: string, cut = "cut-a") { return JSON.parse(readFileSync(join(dir(cut), name), "utf8")); }
 async function start(cut = "cut-a") {
@@ -101,6 +102,39 @@ describe("daemon compaction shadow artifacts", () => {
     expect(artifact("native.json").rawTextBytes).toBe(17);
     expect(artifact("arm-A-first.json").usage).toEqual(usage);
     for (const name of readdirSync(dir())) expect(readFileSync(join(dir(), name), "utf8")).not.toContain("PRIVATE_WORD");
+  });
+  it.each(["unknown", "text", "order", "duplicate", "missing", "role", "ambiguous"])("rejects a native tail with %s correspondence to frozen engine messages", async defect => {
+    const messages = [
+      { role: "user", text: "first message", handle: "h1" },
+      { role: "assistant", text: "second message", handle: "h2" },
+      { role: "user", text: "third message", handle: "h3" },
+    ];
+    if (defect === "ambiguous") messages[0].handle = "h2";
+    const admitted = await post("start", { ...startInput(), engine_messages: messages });
+    expect(admitted.status).toBe(200);
+    const tail: { role: string; text: string; handle?: string }[] = messages.slice(1).map(row => ({ ...row }));
+    if (defect === "unknown") tail[0] = { ...tail[0], handle: "unknown_handle", text: "after-cut evidence" };
+    if (defect === "text") tail[0].text = "after-cut evidence";
+    if (defect === "order") tail.reverse();
+    if (defect === "duplicate") tail[1] = { ...tail[0] };
+    if (defect === "missing") delete tail[0].handle;
+    if (defect === "role") tail[0].role = "user";
+    const request = native(admitted.body);
+    expect((await post("native", { ...request, record: { ...request.record, tail } })).status).toBe(409);
+    expect(existsSync(join(dir(), "native.json"))).toBe(false);
+  });
+  it.each(["empty", "subsequence"])("accepts an %s native tail using current rules on both frozen and delivered text", async shape => {
+    const messages = [
+      { role: "user", text: "LATER_WORD", handle: "h1" },
+      { role: "assistant", text: "omitted message", handle: "h2" },
+      { role: "user", text: "last message", handle: "h3" },
+    ];
+    const admitted = await post("start", { ...startInput(), engine_messages: messages });
+    expect(admitted.status).toBe(200);
+    await daemon.stop(); await boot(["PRIVATE_WORD", "LATER_WORD"]);
+    const request = native(admitted.body), tail = shape === "empty" ? [] : [messages[0], messages[2]];
+    expect((await post("native", { ...request, record: { ...request.record, tail } })).status).toBe(200);
+    expect(artifact("native.json").tail).toEqual(shape === "empty" ? [] : [{ ...messages[0], text: "[REDACTED]" }, messages[2]]);
   });
   it.each(["PRIVATE_WORD", "Bearer PRIVATE_WORD", "bad.handle", ""])("rejects unsafe engine and native handles (%s) without storing them", async handle => {
     const rejected = await post("start", { ...startInput(), engine_messages: [{ role: "user", text: "safe", handle }] });
@@ -178,7 +212,7 @@ describe("daemon compaction shadow artifacts", () => {
     const result = await post("start", { ...startInput(), engine_messages: [{ role: "assistant", text: "PRIVATE_WORD", handle }] });
     expect(result.status).toBe(200);
     expect(result.body.snapshot.engineMessages[0].handle).toBe(handle);
-    const request = native(result.body); request.record.tail[0].handle = handle;
+    const request = native(result.body); request.record.tail[0].handle = handle; request.record.tail[0].role = "assistant";
     expect((await post("native", { ...request, record: { ...request.record, summaryUuid: "summary_123" } })).status).toBe(200);
     expect(artifact("native.json")).toMatchObject({ summaryUuid: "summary_123", tail: [{ handle }] });
     const header = { version: 1, directives: [], intent: [], decisions: [{ text: "safe", sources: ["[raw:cut-a:1]", "[sum:sum_known]"], supersedes: ["decision_1"] }],
