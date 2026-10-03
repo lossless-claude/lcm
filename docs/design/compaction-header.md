@@ -2,8 +2,9 @@
 
 Header generation is separate from leaf and condensed summaries, which stay on
 the configured pipeline, including `pool`. Preparing a header never regenerates
-the DAG. The executor is a library interface with no registered compaction hook;
-native remains the baseline. Dispatch and daemon job transport are integration work.
+the DAG. The executor is a library interface used by the opt-in
+[shadow hook](compaction-shadow.md#shadow-hook); native remains the baseline. The
+hook never installs its output.
 
 ## Document and excerpts
 
@@ -25,7 +26,8 @@ complete command/system tags or the exact engine boilerplate sentence; ordinary
 prose such as `Caveat:` is not a generated-row marker. Excerpts are historical
 evidence; inclusion does not make every past request an instruction still in force.
 Shell-interaction tags (`bash-input`, `bash-stdout`, `bash-stderr`) and the exact
-`[Request interrupted by user]` row are not citable user words. A command run
+`[Request interrupted by user]` and
+`[Request interrupted by user for tool use]` rows are not citable user words. A command run
 with `!` is not addressed to the assistant; it remains in the window and tail.
 
 Every source block carried in either header prompt is individually fenced with
@@ -85,11 +87,11 @@ produces the header. Each item records `resolved`, `missing` or `ambiguous`, wit
 the individual source checks and matched original ids. Quotes matching multiple
 originals are ambiguous and never guessed. The daemon recomputes this result
 against the frozen cut before persisting `citations` on the arm record. Shadow
-outcomes remain `answered` even when citations fail. C4 uses the single
+outcomes remain `answered` even when citations fail. Future installation uses the single
 `allCitationsResolved` predicate to refuse any missing or ambiguous citation;
 absent resolution data also refuses.
 
-## Arms and shared budget
+## Arms and output accounts
 
 `captureHeaderModel` reads `$.session.model()` once at the cut and freezes its
 exact identifier. A uses `$.model.fork` over the session prefix, with extraction
@@ -98,23 +100,27 @@ same frozen prompt, hashes and output allowance: B uses the captured model;
 C uses `sonnet`. Fork invocation precedes its first await; pair work can await
 immutable remainder readiness independently of the caller.
 
-All module work shares `sessionSummarizerMaxOutputTokens` through a stable module
-owner keyed by session id, independent of dispatch facade identity. Spending
-survives poller restarts. B/C reserve equal bounded allowances atomically;
-The registration cap is normalized once: finite values are floored and clamped
-to the nonnegative safe-integer range; invalid values retain the default.
-ordinary jobs wait for pending reservations. An uncapped fork starts immediately
-or records unavailable/refused and blocks later admission until settled. Its
-overshoot is recorded; strict aggregate enforcement is impossible for fork.
-Spending, including failed/invalid output, is charged before delivery. Known
-unused allowance is released. Unknown usage consumes the full lease reservation
-and sets `usageUnknown`; it never releases that allowance as zero spending.
-Other concurrent reservations keep their allowance, and later admission uses
-only the remaining conservative budget. A failed fallback retains unknown usage
-even when a preceding attempt reported counters.
-Invalid host usage, including missing counters that yield NaN, is also unknown.
-Settlement always releases a valid outstanding lease after charging its full
-reservation; queued work cannot remain parked behind malformed usage.
+Ordinary summaries and shadow arms use separate stable accounts keyed by session
+id, independent of dispatch facade identity. Both use the existing
+`sessionSummarizerMaxOutputTokens` value, with no new configuration key. Ordinary
+allowance and admission never depend on shadow spending or in-flight reservations;
+shadow cannot trigger ordinary spend-cap replies or the daemon fallback provider.
+Known shadow usage stays in the shadow account. Combined spending is not bounded
+by one copy of this limit while shadow runs.
+
+B/C reserve equal shadow allowances atomically. An uncapped fork starts immediately
+or records unavailable/refused, and later shadow admission waits until it settles.
+Fork overshoot is recorded. Spending, including failed/invalid output, is charged
+before delivery; known unused allowance is released. Unknown shadow usage sets
+`usageUnknown` on the arm and consumes its shadow reservation conservatively. Every
+later shadow arm is refused with `refusalReason: usageUnknown`, including when a
+bounded failed call leaves some nominal allowance. It never changes the ordinary
+account. Ordinary unknown usage still consumes its own full reservation.
+
+Finite registration caps are floored and clamped to nonnegative safe integers;
+invalid caps retain the default. Invalid host usage is unknown. Settlement releases
+the lease after charging, so queued work cannot hang behind malformed usage. The
+accounts persist for the loaded module's session; unload is not durable storage.
 
 Attempts retain uncached input, output, cache-read and cache-creation counters,
 including fork cache reads. Unknown prices remain unknown. API errors, empty
@@ -124,8 +130,8 @@ A too-long fork retains the observed API classification; an arbitrary 400 does
 not imply prompt-too-long. Provider exception bodies are omitted.
 
 Declarations establish shapes, not background lifetime, fork snapshot timing,
-effective fork model or provider concurrency. Installation must verify these live
-and choose a dispatch or session-lifetime executor. Unload discards the in-memory
+effective fork model or provider concurrency. Supervised live verification must establish these before relying on the shadow
+hook, and choose a dispatch or session-lifetime executor. Unload discards the in-memory
 budget owner; persistence across unload is not claimed. Phase-1 triage measures
 version-2 documents and overflow using deterministic excerpts. Continuation
 judgment, superiority and default-on remain phase-2 work.

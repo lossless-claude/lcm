@@ -74,12 +74,24 @@ function basicRecord(record: Record<string, unknown>, scrubber: ScrubEngine) {
 export function nativeRecord(record: Record<string, unknown>, scrubber: ScrubEngine): NativeRecord {
   const base = basicRecord(record, scrubber);
   if (record.summaryUuid !== undefined) correlationId(record.summaryUuid, scrubber);
-  return { ...base, tail: shadowMessages(record.tail, scrubber), rawTextHash: digest(record.text as string), rawTextBytes: Buffer.byteLength(record.text as string, "utf8"),
+  return { ...base, ...nativeExtraction(record, scrubber), ...shadowAdmission(record.shadowAdmission), tail: shadowMessages(record.tail, scrubber), rawTextHash: digest(record.text as string), rawTextBytes: Buffer.byteLength(record.text as string, "utf8"),
     ...(record.summaryUuid ? { summaryUuid: record.summaryUuid as string } : {}),
     ...(record.tokensBefore !== undefined ? { tokensBefore: measurement(record.tokensBefore)! } : {}),
     ...(record.tokensAfter !== undefined ? { tokensAfter: measurement(record.tokensAfter)! } : {}),
     ...(record.hookAddedMs !== undefined ? { hookAddedMs: measurement(record.hookAddedMs)! } : {}),
   };
+}
+function shadowAdmission(value: unknown): Pick<NativeRecord, "shadowAdmission"> {
+  if (value === undefined) return {};
+  if (value !== "cancelled" && value !== "unavailable") throw new ShadowStoreError("Invalid shadow admission outcome", HTTP.badRequest);
+  return { shadowAdmission: value };
+}
+function nativeExtraction(record: Record<string, unknown>, scrubber: ScrubEngine): Pick<NativeRecord, "fidelity" | "observedMessages" | "candidateIndices"> {
+  if (record.fidelity === undefined) return {};
+  if (!["verified", "native-summary-unverified", "native-tail-unverified", "skipped", "aborted", "unavailable"].includes(record.fidelity as string)) throw new ShadowStoreError("Invalid native fidelity", HTTP.badRequest);
+  const candidateIndices = record.candidateIndices ?? [];
+  if (!Array.isArray(candidateIndices) || candidateIndices.some(value => !Number.isSafeInteger(value) || value < 0)) throw new ShadowStoreError("Invalid native candidates", HTTP.badRequest);
+  return { fidelity: record.fidelity as NativeRecord["fidelity"], candidateIndices, observedMessages: shadowMessages(record.observedMessages, scrubber) };
 }
 export function armRecord(input: Record<string, unknown>, record: Record<string, unknown>, scrubber: ScrubEngine): ArmRecord {
   validateArmIdentity(input, record);
@@ -88,10 +100,39 @@ export function armRecord(input: Record<string, unknown>, record: Record<string,
   const attempts = usageAttempts(record.usageAttempts);
   const options = completionOptions(record.options);
   const classification = failureClassification(record, scrubber);
-  return { ...basicRecord(record, scrubber), arm: input.arm as ArmRecord["arm"], attemptId: input.attempt_id as string,
+  return { ...basicRecord(record, scrubber), ...hookTimings(record.timings), ...armAccounting(record), ...armRefusal(record), arm: input.arm as ArmRecord["arm"], attemptId: input.attempt_id as string,
     requestedModel: record.requestedModel as string, inputHash: record.inputHash as string | null, promptHash: record.promptHash as string | null, header: header(record.header, scrubber),
     usageAttempts: attempts, ...classification, ...(options ? { options } : {}),
   };
+}
+function armRefusal(record: Record<string, unknown>): Pick<ArmRecord, "usageUnknown" | "refusalReason"> {
+  const result: Pick<ArmRecord, "usageUnknown" | "refusalReason"> = {};
+  if (record.usageUnknown !== undefined) {
+    if (typeof record.usageUnknown !== "boolean") throw new ShadowStoreError("Invalid shadow usage state", HTTP.badRequest);
+    result.usageUnknown = record.usageUnknown;
+  }
+  if (record.refusalReason !== undefined) {
+    if (record.refusalReason !== "usageUnknown" && record.refusalReason !== "spendCap") throw new ShadowStoreError("Invalid shadow refusal", HTTP.badRequest);
+    result.refusalReason = record.refusalReason;
+  }
+  return result;
+}
+function armAccounting(record: Record<string, unknown>): Pick<ArmRecord, "queueMs" | "budget"> {
+  const result: Pick<ArmRecord, "queueMs" | "budget"> = {};
+  if (record.queueMs !== undefined) result.queueMs = measurement(record.queueMs)!;
+  if (record.budget !== undefined) result.budget = budgetAccounting(record.budget);
+  return result;
+}
+function budgetAccounting(value: unknown): NonNullable<ArmRecord["budget"]> {
+  if (!object(value) || !["spent", "reserved", "available", "overshoot"].every(key => nonnegative(value[key]))) throw new ShadowStoreError("Invalid arm budget", HTTP.badRequest);
+  if (typeof value.unbounded !== "boolean" || typeof value.usageUnknown !== "boolean") throw new ShadowStoreError("Invalid arm budget state", HTTP.badRequest);
+  return { spent: value.spent as number, reserved: value.reserved as number, available: value.available as number, overshoot: value.overshoot as number,
+    unbounded: value.unbounded, usageUnknown: value.usageUnknown };
+}
+function hookTimings(value: unknown): Pick<ArmRecord, "timings"> {
+  if (value === undefined) return {};
+  if (!object(value) || !["setupMs", "nativeMs", "pairingMs", "hookMs"].every(key => nonnegative(value[key]))) throw new ShadowStoreError("Invalid hook timings", HTTP.badRequest);
+  return { timings: { setupMs: value.setupMs as number, nativeMs: value.nativeMs as number, pairingMs: value.pairingMs as number, hookMs: value.hookMs as number } };
 }
 
 
@@ -144,6 +185,6 @@ function apiStatus(value: unknown): number | null {
 }
 
 function validatePromptHashes(record: Record<string, unknown>): void {
-  const known = (value: unknown) => hash(value) || value === null && record.outcome === "unavailable";
+  const known = (value: unknown) => hash(value) || value === null && ["unavailable", "aborted"].includes(record.outcome as string);
   if (!known(record.inputHash) || !known(record.promptHash)) throw new ShadowStoreError("Invalid prompt hashes", HTTP.badRequest);
 }

@@ -17,7 +17,10 @@ function humanSpans(row: ShadowOriginal): string[] {
   return generatedText(text) ? [] : [row.text];
 }
 function generatedText(text: string): boolean {
-  return GENERATED_TAG.test(text) || text.trim() === "[Request interrupted by user]" || exactBoilerplate(text);
+  return GENERATED_TAG.test(text) || interruptedRow(text) || exactBoilerplate(text);
+}
+function interruptedRow(text: string): boolean {
+  return text.trim() === "[Request interrupted by user]" || text.trim() === "[Request interrupted by user for tool use]";
 }
 function exactBoilerplate(text: string): boolean {
   return text.trim() === LOCAL_COMMAND_CAVEAT || text.startsWith(CONTINUATION_BOILERPLATE);

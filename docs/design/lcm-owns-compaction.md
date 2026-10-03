@@ -4,7 +4,11 @@ Roadmap theme: [What a compaction leaves is lcm's record](../../ROADMAP.md#what-
 
 ## What it is
 
-When Claude Code compacts a conversation, the function-hooks module answers the `session.compact` event itself. The conversation the model continues with is then lcm's context for that conversation (its summaries, each carrying the `sum_` id `lcm_expand` follows) followed by the most recent messages, kept as Claude Code holds them. Claude Code's own summarizer does not run.
+This installation design is future work. The current opt-in
+[shadow hook](compaction-shadow.md#shadow-hook) records alternative documents
+beside native and returns native unchanged.
+
+Under the installation design, when Claude Code compacts a conversation, the function-hooks module answers the `session.compact` event itself. The conversation the model continues with is then lcm's context for that conversation (its summaries, each carrying the `sum_` id `lcm_expand` follows) followed by the most recent messages, kept as Claude Code holds them. Claude Code's own summarizer does not run.
 
 Today the PreCompact command hook prints lcm's summary and Claude Code still writes its own, and that summary replaces the conversation. The model reads the host's summary; lcm's DAG sits beside it and is reached only by searching. `session.compact` is the seam that lets lcm's record become the conversation.
 

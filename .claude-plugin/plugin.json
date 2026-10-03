@@ -17,6 +17,12 @@
     "lcm"
   ],
   "userConfig": {
+    "compactionShadow": {
+      "type": "boolean",
+      "title": "Compaction shadow measurement",
+      "description": "Run three additional header arms beside native compaction, with substantial extra model spending while enabled.",
+      "default": false
+    },
     "sessionSummarizerMaxOutputTokens": {
       "type": "number",
       "title": "Session summarizer output token cap",

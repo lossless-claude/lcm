@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,15 @@ import { ensureAuthToken, readAuthToken } from "../../src/daemon/auth.js";
 import { DatabaseSync } from "node:sqlite";
 import { SummaryStore } from "../../src/store/summary-store.js";
 import { workingHeader } from "../compaction-header/fixtures.js";
+
+const preparationFault = vi.hoisted(() => ({ enabled: false }));
+vi.mock("node:fs", async original => {
+  const fs = await original<typeof import("node:fs")>();
+  return { ...fs, readFileSync: (...args: Parameters<typeof fs.readFileSync>) => {
+    if (preparationFault.enabled && String(args[0]).endsWith("/compaction-header.yaml")) throw new Error("header prompt unavailable");
+    return fs.readFileSync(...args);
+  } };
+});
 
 let root: string, cwd: string, paths: LcmPaths, daemon: DaemonInstance, token: string, transcript: string, databaseFile: string;
 const fileForProject = projectDbPath;
@@ -61,6 +70,39 @@ async function withSummaryStore(operation: (store: SummaryStore) => Promise<void
   finally { db.close(); }
 }
 describe("daemon compaction shadow artifacts", () => {
+  it("creates no cut when header prompt preparation throws", async () => {
+    preparationFault.enabled = true;
+    try {
+      const result = await post("start", { ...startInput(), prepare_header: true });
+      expect(result.status).toBe(422); expect(existsSync(dir())).toBe(false);
+    } finally { preparationFault.enabled = false; }
+    const retried = await post("start", { ...startInput(), prepare_header: true });
+    expect(retried.status).toBe(200); expect(retried.body.job.forkPrompt).toContain("instructionsInForce");
+  });
+  it("prepares fork and paired completion jobs from the same immutable cut on request", async () => {
+    const admitted = await post("start", { ...startInput(), prepare_header: true });
+    expect(admitted.status).toBe(200); expect(admitted.body.job.forkPrompt).toContain("instructionsInForce");
+    const nativeRequest = native(admitted.body);
+    const paired = await post("native", { ...nativeRequest, prepare_header: true });
+    expect(paired.status).toBe(200); expect(paired.body.job.completePrompt).toContain("[REDACTED]");
+    expect(paired.body.job.inputHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(paired.body.job.evidence.cutId).toBe(admitted.body.cut.cutId);
+  });
+  it("stores a rendered C3 document and measured hook timing beside an arm", async () => {
+    const cut = await start(); expect((await post("native", { ...native(cut), record: { ...native(cut).record, fidelity: "verified" } })).status).toBe(200);
+    const timings = { setupMs: 2, nativeMs: 5, pairingMs: 3, hookMs: 10 };
+    expect((await post("arm", { ...arm(cut), record: { ...arm(cut).record, outcome: "answered", header: workingHeader(), timings } })).status).toBe(200);
+    const stored = artifact("arm-A-first.json");
+    expect(stored.timings).toEqual(timings); expect(stored.document.text).toContain("user's own words");
+    expect(stored.document.text).toContain("## Engine tail"); expect(stored.document.bytes).toBe(Buffer.byteLength(stored.document.text));
+  });
+  it("stores explicit native extraction ambiguity and does not prepare completion input", async () => {
+    const cut = await start();
+    const paired = await post("native", { ...binding(cut), prepare_header: true, record: { text: "", outcome: "unavailable", fidelity: "native-summary-unverified", tail: [],
+      observedMessages: [{ role: "user", text: "candidate one" }, { role: "user", text: "candidate two" }], candidateIndices: [0, 1] } });
+    expect(paired.status).toBe(200); expect(paired.body.job).toBeNull();
+    expect(artifact("native.json")).toMatchObject({ outcome: "unavailable", fidelity: "native-summary-unverified", candidateIndices: [0, 1] });
+  });
   it("admits without benchmark policy and freezes verified all-role raw sources", async () => {
     const cut = await start();
     expect(cut.snapshot.originals.map((row: any) => row.role)).toEqual(["user", "tool"]);
@@ -404,6 +446,26 @@ describe("daemon compaction shadow artifacts", () => {
     const cut = await start(); const request = arm(cut); request.record.usage = { ...usage, output_tokens: -1 };
     expect((await post("arm", request)).status).toBe(400);
     expect(existsSync(join(dir(), "arm-A-first.json"))).toBe(false);
+  });
+  it("persists separate arm queue time and conservative budget accounting", async () => {
+    const cut = await start(), budget = { spent: 103, reserved: 0, unbounded: false, usageUnknown: true, available: 0, overshoot: 3 };
+    const request = { ...arm(cut), record: { ...arm(cut).record, queueMs: 7, budget } };
+    expect((await post("arm", request)).status).toBe(200);
+    expect(artifact("arm-A-first.json")).toMatchObject({ queueMs: 7, budget });
+  });
+  it("persists cancelled shadow admission separately from native's answer and accounting", async () => {
+    const cut = await start(), request = native(cut);
+    request.record = { ...request.record, shadowAdmission: "cancelled", usage, tokensBefore: 8905, tokensAfter: 222 };
+    expect((await post("native", request)).status).toBe(200);
+    expect(artifact("native.json")).toMatchObject({ shadowAdmission: "cancelled", outcome: "answered", usage, tokensBefore: 8905, tokensAfter: 222 });
+  });
+  it("persists validated unknown-usage flags and shadow refusal reasons", async () => {
+    const cut = await start();
+    expect((await post("arm", { ...arm(cut), record: { ...arm(cut).record, usage: null, usageUnknown: true } })).status).toBe(200);
+    expect(artifact("arm-A-first.json")).toMatchObject({ usage: null, usageUnknown: true });
+    expect((await post("arm", { ...arm(cut, "B"), record: { ...arm(cut, "B").record, outcome: "spend-cap", refusalReason: "usageUnknown" } })).status).toBe(200);
+    expect(artifact("arm-B-first.json")).toMatchObject({ refusalReason: "usageUnknown" });
+    expect((await post("arm", { ...arm(cut, "C"), record: { ...arm(cut, "C").record, refusalReason: "PRIVATE_WORD" } })).status).toBe(400);
   });
   it("requires daemon authentication", async () => {
     expect((await post("start", startInput(), false)).status).toBe(401);

@@ -14,6 +14,7 @@ import { checkFaithfulness, renderHeader } from "./faithfulness.js";
 import { transcriptOwnership } from "./transcript-owner.js";
 import { continuationStub } from "./continuation.js";
 import { validateCutIdentifiers } from "./identifiers.js";
+import { hookAddedLatency, milliseconds, summarizeHookLatency } from "./latency.js";
 
 const TOKENS_PER_MILLION = 1_000_000;
 const CHARS_PER_TOKEN = 4;
@@ -105,10 +106,10 @@ function measures(cut: EvaluationCut, rates?: RateTable) {
       faithfulness: valid ? checkFaithfulness(primary.header!, { originals: cut.originals, cutId: cut.cutId, summaries: summaryIds, ...(prepared ? { excerpts: prepared.excerpts } : {}) }) : null,
       documentOverflowBytes: sized?.overflowBytes ?? null, documentTargetBytes: sized?.targetBytes ?? null, omittedSummaryIds: sized?.omittedSummaryIds ?? null,
       documentBytes: Buffer.byteLength(document), estimatedTokens: Math.ceil(document.length / CHARS_PER_TOKEN), probeRetention: retention(document, probes),
-      usage: primary.usage, durationMs: primary.durationMs, status: primary.status ?? null, errorKind: primary.errorKind ?? null, options: primary.options ?? null, costUsd: armCost(records, rates) }];
+      usage: primary.usage, durationMs: primary.durationMs, queueMs: milliseconds(primary.queueMs), status: primary.status ?? null, errorKind: primary.errorKind ?? null, options: primary.options ?? null, costUsd: armCost(records, rates) }];
   }));
   return { probes, metrics: { projectId: cut.projectId, sessionId: cut.sessionId, cutId: cut.cutId, source: cut.source,
-    sourceHash: cut.sourceHash, snapshotHash: cut.snapshotHash, nativeParity: cut.nativeParity,
+    sourceHash: cut.sourceHash, snapshotHash: cut.snapshotHash, nativeParity: cut.nativeParity, hookAddedMs: hookAddedLatency(cut.arms),
     nativeComparisonEligible: Boolean(cut.native?.outcome === "answered" && cut.nativeParity !== "mismatched"), native, arms,
     contrasts: {
       A_B: { intendedFactor: "input", bothAnswered: ["A", "B"].every(label => cut.arms.some(arm => arm.arm === label && arm.outcome === "answered")),
@@ -166,6 +167,7 @@ function writeReport(output: string, metrics: ReturnType<typeof collectMetrics>,
   lines.push("", "| Cut / arm | Outcome | Quote retention proxy | Estimated header cost USD | Duration ms |", "|---|---|---:|---:|---:|");
   const rows = metrics.cuts.flatMap(cut => (["A", "B", "C"] as const).map(label => ({ cutId: cut.cutId, label, row: cut.arms[label] })));
   for (const { cutId, label, row } of rows) if (row) lines.push(`| ${cutId} / ${label} | ${row.outcome} | ${row.probeRetention ?? "unknown"} | ${row.costUsd ?? "unknown"} | ${row.durationMs ?? "unknown"} |`);
+  lines.push("", `Hook added latency: ${metrics.hookLatency.recordedCuts} recorded cuts, ${metrics.hookLatency.unknownCuts} unknown; p50 ${metrics.hookLatency.p50Ms ?? "unknown"} ms, p95 ${metrics.hookLatency.p95Ms ?? "unknown"} ms.`);
   lines.push("", `Native text pairs: ${metrics.nativeTextPairs.matched} matched, ${metrics.nativeTextPairs.mismatched} mismatched. Invalid sources: ${metrics.counts.invalidSources}.`, "", "Continuation scoring: not-run/phase-2. Amortized cost: unknown.", "", ...metrics.limitations.map(line => `- ${line}`));
   if (existsSync(output)) throw new Error("Output directory must not already exist");
   mkdirSync(output, { recursive: true, mode: 0o700 });
@@ -183,7 +185,7 @@ function collectMetrics({ cuts, measured, counts, seed, policyFile, rates }: {
     rateHash: rates ? objectHash(rates) : null, counts,
     sampleAdequacy: { sufficient: cuts.length >= MINIMUM_CUTS && projects >= MINIMUM_PROJECTS, cuts: cuts.length, projects, requiredCuts: MINIMUM_CUTS, requiredProjects: MINIMUM_PROJECTS },
     nativeTextPairs: { matched: cuts.filter(cut => cut.nativeParity === "matched").length, mismatched: cuts.filter(cut => cut.nativeParity === "mismatched").length },
-    cuts: measured.map(result => result.metrics), amortizedCostUsd: null, continuation: continuationStub(),
+    cuts: measured.map(result => result.metrics), hookLatency: summarizeHookLatency(measured.map(result => result.metrics.hookAddedMs)), amortizedCostUsd: null, continuation: continuationStub(),
     limitations: ["Exact user-quote retention is a recall proxy, not semantic answer recall.", "Identifier presence does not prove relations or status; the versioned lexical classifier is a floor.", "Historical kept tails, usage and latency are unknown without frozen evidence.", "DAG/retrieval cost attribution is unavailable; no amortized-cost gate can be claimed.", "Native cost requires reported charge evidence, not a session-model guess.", "Sizes describe scrubbed text; opaque handles do not reproduce retained tool/media blocks.", "Absent prompt options and unverified effective models limit causal arm comparisons."] };
   const armSummary = Object.fromEntries((["A", "B", "C"] as const).map(label => {
     const rows = metrics.cuts.map(cut => cut.arms[label]).filter(row => row !== null);

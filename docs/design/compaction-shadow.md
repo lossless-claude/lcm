@@ -1,15 +1,83 @@
 # Compaction shadow artifacts
 
 Shadow measurement stores alternative compaction documents beside native's result.
-It does not install a document, change restore, regenerate the DAG or enable model
-calls. A live hook and its executor are separate work; their lifetime and fork/native
-concurrency require verification in the engine.
+It does not install a document, change restore or regenerate the DAG. The opt-in
+function hook runs model arms; background lifetime and fork/native concurrency
+require verification in the engine.
 
 See [compaction header jobs](compaction-header.md) for the document, version-2
-schema and executor rules. The library installs no compaction hook.
+schema and executor rules. The shadow hook preserves native compaction.
 Version-2 arms persist per-item citation resolution without changing shadow
 `answered` outcomes; the live acceptance predicate refuses missing or ambiguous
 references. Human messages are never removed from excerpts by a classifier.
+
+## Shadow hook
+
+Plugin `userConfig.compactionShadow` defaults to `false`. While off, there are no
+shadow requests or model calls. While enabled, it incurs substantial extra model
+spending and uses a separate shadow account under the existing
+`sessionSummarizerMaxOutputTokens` limit. Ordinary summaries retain their full
+allowance regardless of shadow spending/reservations. Unknown shadow usage is
+recorded as `usageUnknown` and refuses later shadow arms with that reason, without
+pushing ordinary jobs onto their cap or fallback provider. Leaf and
+condensed summaries remain on the configured pipeline.
+
+Only real main-session manual, auto and plugin cuts are admitted. Precompute,
+subagent/fork and dedicated worker loops pass through; A cannot recursively sample
+its own compaction. The append observer remembers the last model-visible UUID and
+advances only for stored rows and resets on clear, resume, branch and session end.
+Pending/denied/rejected appends never become the boundary; completion order cannot
+restore a rejected predecessor. Unavailable boundaries are recorded
+without guessing. Entry freezes the observed boundary, session/cwd/model, trigger, instructions
+and all original engine messages before awaiting the host. The pending cut is registered with its captured lifecycle epoch before admission
+awaits the transport, and rechecks that epoch after admission returns and before
+starting any arm. A changed epoch records cancelled admission without arm calls or
+arm records; native pairing retains that stage in `shadowAdmission`. Cut nonce and snapshot hash bind
+every asynchronous callback, independently of later session changes.
+
+The hook awaits admission, calls the original `next(e)` exactly once unchanged,
+awaits native pairing, and returns the identical native object. Admission and
+pairing each have one fixed 2000 ms deadline covering every prerequisite and HTTP,
+raced with abort. Expiry allows no admission arms; unavailable storage is recorded
+in diagnostics without a fresh wait. Foreground requests make one attempt and
+late prerequisites cannot advance to a new transport stage. A starts before
+native; B/C are owned background tasks waiting for the native remainder. No model
+completion or arm delivery is awaited after native returns. Failure/refusal stays
+in diagnostics or artifact outcomes and never replaces native. Native rejection is
+re-thrown unchanged after recording it. Abort/session end prohibit queued provider calls and record unstarted arms.
+Already-running calls retain the host's eventual outcome and usage; a lost promise
+leaves an incomplete cut rather than a fabricated terminal result. Background
+promise survival is not established
+by ownership in a module registry.
+
+Summary extraction requires exactly one new message at index zero relative to
+unique original handles. The remaining descriptors must match original handles,
+roles and text in increasing order. Missing or ambiguous correspondence records
+`native-summary-unverified` or `native-tail-unverified` with safe observed message
+projections and candidate indices. It supplies no guessed remainder to B/C. Known native usage and token counts
+remain recorded even when extraction is ambiguous.
+A uniquely matching compaction append supplies the observed summary UUID; duplicate
+matches leave it unknown. Hook-observed native text is preserved exactly, including
+whitespace, and its pre-scrub hash/length support exact historical JSONL parity.
+A live paired cut must verify text equality before cross-source evaluation is trusted.
+
+`prepare_header: true` on admission requests the daemon's C3 fork prompt/evidence;
+on verified native delivery it requests the common complete prompt/evidence.
+Admission prepares its header job before creating the cut; a preparation failure
+creates no manifest or snapshot in the shadow namespace. Both
+use the frozen window and current scrubbing rules. A receives extraction rules and
+excerpts; B/C receive identical window/tail input and equal output allowances. All
+three documents use excerpts, working-state header, yielding window, engine tail.
+The daemon renders and persists answered version-2 documents with targets,
+overflow and elision metadata. It resolves citations again against frozen evidence;
+missing/ambiguous citations retain an `answered` shadow outcome. Future installation
+must use `allCitationsResolved` before accepting a header.
+
+Arms retain separate queue and model durations, setup/native/pairing/total-hook
+measurements, four exact usage counters, conservative budget state and uncapped
+fork overshoot. Pairing/storage failures are unconfirmed or unavailable, never
+invented zero cost. Transport retries reuse frozen results rather than regenerate
+models. Provider error bodies and arbitrary engine tool/media objects are omitted.
 
 ## Admission and storage
 
@@ -155,7 +223,10 @@ complete hidden tool/media state kept by an opaque engine handle.
 Optional prices have a `version` and `models` map keyed by reported requested model;
 each model has `inputPerMillion`, `outputPerMillion`, `cacheReadPerMillion` and
 `cacheCreationPerMillion`. Estimates retain failed-attempt spending and exact cache
-counters. Unknown usage/model/rates remain unknown. Native cost needs reported
+counters. The primary usage describes the arm call once; `usageAttempts` adds
+only other attempts, never a duplicate of the primary call. Hook overhead excludes
+native duration and reports p50/p95 over recorded cuts; absent or conflicting
+timings remain unknown. Unknown usage/model/rates remain unknown. Native cost needs reported
 charge evidence; it is not inferred from another arm's model. DAG/retrieval cost
 attribution is unavailable, so this tool cannot establish an amortized-cost gate.
 

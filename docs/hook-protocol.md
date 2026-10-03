@@ -214,9 +214,54 @@ Setting `LCM_SUMMARIZE_WORKER=1` before launch changes summary serving to `GET /
 
 The summarizer's output budget is owned by a stable module registry keyed by
 session id. It survives poller restarts and charges output before answer delivery.
-The unwired header executor shares this owner, reserves equal B/C allowances and
-records fork overshoot; it adds no `session.compact` registration. See
+The opt-in header executor uses a separate shadow account under the same configured
+limit, reserves equal B/C allowances and records fork overshoot. Unknown shadow
+usage refuses later shadow work, while ordinary allowance remains unchanged. See
 [compaction header jobs](design/compaction-header.md).
+
+**Compaction shadow:** plugin `userConfig.compactionShadow` is boolean and defaults
+to `false`. Enabling it causes substantial extra model spending, with the existing
+configured output limit applied independently to ordinary and shadow accounts.
+Shadow cannot exhaust or reserve ordinary allowance or trigger its fallback provider. When off, neither shadow model calls
+nor daemon shadow requests occur. When on, `session.append` observes main-session
+model-visible UUIDs without changing the input or result. Only successfully stored
+appends advance the boundary; pending, denied and rejected appends do not, including
+overlapping completions. Clear, resume and branch reset its boundary; session end also cancels unfinished delivery ownership.
+
+The `session.compact` observer handles real main-session `manual`, `auto` and
+`plugin` cuts; `precompute`, subagent/fork `agentId` and `LCM_SUMMARIZE_WORKER=1`
+sessions pass through. It freezes identity, model, instructions and original
+messages, then awaits `/compaction-shadow/start` admission. A refusal or unavailable
+boundary is diagnostic evidence; native still runs. One fixed 2000 ms deadline
+(`SHADOW_WAIT_MS`) covers the entire admission operation: identity, cwd, model and
+worker reads, host-environment/token discovery and the HTTP request. It races
+with dispatch abort. Expiry starts no arms and lets native proceed; unavailability
+is recorded in diagnostic counts when storage cannot be reached within that budget.
+Late prerequisites cannot start a later transport stage. Foreground shadow requests
+make one attempt; background arm delivery retains the ordinary transport policy.
+
+The pending cut is registered with its captured session epoch before admission's
+first await. The epoch is checked again after admission returns, synchronously
+before any arm starts. Clear/end in either interval records `cancelled` and starts
+no arm. When native pairing can be persisted, `native.json.shadowAdmission` records
+that stage separately from native's result, usage and token counts.
+
+A's fork starts before the
+original `next(e)` is called once with unchanged input. Owned B/C tasks wait for the
+frozen native-kept remainder: B uses the cut's session model, C uses `sonnet`.
+
+After native resolves, the observer writes `/compaction-shadow/native` and returns
+that same result object. This pairing operation has its own fixed 2000 ms deadline,
+covering host-environment discovery and HTTP, and also races with abort. It never
+waits for header models or `/arm` writes, never
+installs a document, and preserves downstream rejection. Ambiguous summaries or
+unmatched tails are recorded as fidelity outcomes, retaining native's known usage
+and token counts even when summary/tail extraction is ambiguous. Background callbacks carry the
+frozen cut identity even after the session changes. Abort/end prevent queued completions from starting. Already-running arms retain
+the host's eventual outcome and usage; lost promises leave incomplete cuts. Provider
+cancellation or promise survival after host unload is not guaranteed. Scheduling, actual append
+flush and hook/JSONL text parity require live verification. See
+[shadow artifacts](design/compaction-shadow.md) for pairing and stored fields.
 
 **Daemon lifecycle:** the daemon exits when idle, and the command hooks bring it back through `ensureDaemon`. The module does the same when a connection is refused (the error names `ECONNREFUSED`, or a non-timeout failure came back within a second): it runs `lcm daemon start --detach` through the host (at most once per minute, with a 15s command deadline) and retries the request once. A timeout, including the module's own 500 ms `/health` deadline, is never treated as a refused connection. The module bounds `/restore` at 10s, other POST waits at 5s, and its summary-job long poll at 30s, allowing the daemon's 25s hold. It reports a non-answering listener once, leaves delivery unconfirmed, and waits for the next capture instead of starting or immediately retrying. These waits use the host clock; they do not cancel the host's outstanding fetch, which may still complete. Pool summary answers use the bounded delivery retries described above. `session.start` starts a `/health` check without awaiting it. This needs an `lcm` binary on PATH (the npm CLI); without one the module logs it once and events are lost until a command hook (SessionStart or Stop), which runs from the bundle and needs no binary, restarts the daemon.
 

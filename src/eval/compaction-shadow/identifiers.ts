@@ -45,7 +45,7 @@ function validateNative(record: NativeRecord): void {
 function validateArm(record: ArmRecord): void {
   requireIdentifier(record.arm, value => ["A", "B", "C"].includes(value as string));
   requireIdentifier(record.attemptId, exactSafeId); requireIdentifier(record.requestedModel, validModelName);
-  const promptHash = (value: unknown) => exactHash(value) || value === null && record.outcome === "unavailable";
+  const promptHash = (value: unknown) => exactHash(value) || value === null && ["unavailable", "aborted"].includes(record.outcome);
   requireIdentifier(record.inputHash, promptHash); requireIdentifier(record.promptHash, promptHash);
   requireIdentifier(record.outcome, exactSafeId);
   record.usageAttempts.forEach(attempt => requireIdentifier(attempt.model, validModelName));

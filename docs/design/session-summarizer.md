@@ -199,6 +199,7 @@ provider; their selection and fallback rules are unchanged.
 
 The module keeps the session output budget in a stable owner keyed by session id,
 retaining spending across poller restarts and charging before delivery. Pending
-header reservations share this owner; ordinary jobs wait for them. The
-[header executor](compaction-header.md) remains unwired, and does not change the
-configured leaf/condensed pipeline. Module unload is not durable budget storage.
+header reservations use a separate shadow account; ordinary jobs do not wait for
+them or lose allowance to shadow spending. The
+[header executor](compaction-header.md) runs only through the opt-in shadow hook
+and does not change the configured leaf/condensed pipeline. Module unload is not durable budget storage.

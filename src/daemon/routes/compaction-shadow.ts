@@ -10,10 +10,10 @@ import { sendJson, type RouteHandler } from "../server.js";
 import { shadowMessages, nativeRecord, armRecord, correlationId } from "../shadow/records.js";
 import { captureShadowSnapshot } from "../shadow/snapshot.js";
 import { verifyNativeTail } from "../shadow/tail.js";
-import { headerCitationEvidence } from "../shadow/header-job.js";
+import { headerCitationEvidence, prepareHeaderJob, renderCompactionDocument } from "../shadow/header-job.js";
 import { resolveHeaderCitations } from "../../../hooks/header-citations.js";
 import { CompactionShadowStore, ShadowStoreError, recoverShadowProject, recoverShadowProjects } from "../shadow/store.js";
-import { SHADOW_RETENTION_MS, HTTP, hash, object, objectHash, safeId, validModelName, type ShadowManifest } from "../shadow/types.js";
+import { SHADOW_RETENTION_MS, HTTP, hash, object, objectHash, safeId, validModelName, type ShadowManifest, type ShadowSnapshot, type ShadowMessage } from "../shadow/types.js";
 
 /** A missing benchmark policy permits admission; an unreadable or invalid policy refuses it. */
 function policyRefusal(cwd: string, paths: LcmPaths, log: DaemonLog): "excluded" | "policy-unavailable" | undefined {
@@ -40,10 +40,11 @@ export function createCompactionShadowHandlers(config: DaemonConfig, paths: LcmP
       const scrubber = await ScrubEngine.forProject(config.security.sensitivePatterns, projectDir(cwd, paths));
       for (const id of [input.session_id, input.cut_id, input.boundary_uuid].filter(id => id !== undefined)) correlationId(id, scrubber);
       if (kind !== "start") {
-        storeResult({ store, cwd, scrubber }, input, kind);
-        sendJson(res, HTTP.ok, { stored: true }); return;
+        const job = storeResult({ store, cwd, scrubber }, input, kind);
+        sendJson(res, HTTP.ok, { stored: true, ...(input.prepare_header === true ? { job } : {}) }); return;
       }
-      sendJson(res, HTTP.ok, await admitCut({ paths, store, cwd, scrubber }, input));
+      const admitted = await admitCut({ paths, store, cwd, scrubber }, input);
+      sendJson(res, HTTP.ok, admitted);
     } catch (error) {
       const status = error instanceof ShadowStoreError ? error.status : error instanceof SyntaxError ? HTTP.badRequest : HTTP.unprocessable;
       sendJson(res, status, { error: error instanceof ShadowStoreError ? error.message : "Shadow request could not be verified" });
@@ -66,7 +67,7 @@ async function admitCut({ paths, store, cwd, scrubber }: Admission, input: Recor
   if (prior) {
     if (prior.cut.requestIdentityHash !== requestHash)
       throw new ShadowStoreError("Cut request conflicts with its identity");
-    return { admitted: true, ...prior };
+    return preparedAdmission(prior, input, scrubber);
   }
   const { snapshot, conversationId } = await captureShadowSnapshot(paths, scrubber, { cwd, sessionId: input.session_id as string, boundaryUuid: input.boundary_uuid as string, transcriptPath: input.transcript_path as string | undefined });
   snapshot.engineMessages = engineMessages;
@@ -78,9 +79,14 @@ async function admitCut({ paths, store, cwd, scrubber }: Admission, input: Recor
   if (concurrent) {
     const same = concurrent.cut.snapshotHash === cut.snapshotHash && concurrent.cut.requestIdentityHash === requestHash;
     if (!same) throw new ShadowStoreError("Concurrent cut request conflicts with its identity");
-    return { admitted: true, ...concurrent };
+    return preparedAdmission(concurrent, input, scrubber);
   }
-  store.create(cut, snapshot); return { admitted: true, cut, snapshot };
+  const admitted = preparedAdmission({ cut, snapshot }, input, scrubber);
+  store.create(cut, snapshot); return admitted;
+}
+function preparedAdmission(context: { cut: ShadowManifest; snapshot: ShadowSnapshot }, input: Record<string, unknown>, scrubber: ScrubEngine) {
+  const job = input.prepare_header === true ? cutHeaderJob(context, [], scrubber) : undefined;
+  return { admitted: true, ...context, ...(job ? { job } : {}) };
 }
 function validateSnapshotInput(input: Record<string, unknown>): void {
   if (!safeId(input.boundary_uuid)) throw new ShadowStoreError("Invalid source boundary", HTTP.badRequest);
@@ -98,22 +104,38 @@ function validateIdentity(input: unknown): asserts input is Record<string, unkno
   if (!object(input) || typeof input.cwd !== "string") throw new ShadowStoreError("Invalid project identity", HTTP.badRequest);
   if (!safeId(input.session_id)) throw new ShadowStoreError("Invalid session identity", HTTP.badRequest);
   if (!safeId(input.cut_id ?? "generated")) throw new ShadowStoreError("Invalid cut identity", HTTP.badRequest);
+  if (input.prepare_header !== undefined && typeof input.prepare_header !== "boolean") throw new ShadowStoreError("Invalid job request", HTTP.badRequest);
 }
-function storeResult({ store, cwd, scrubber }: Pick<Admission, "store" | "cwd" | "scrubber">, input: Record<string, unknown>, kind: "native" | "arm"): void {
+function storeResult({ store, cwd, scrubber }: Pick<Admission, "store" | "cwd" | "scrubber">, input: Record<string, unknown>, kind: "native" | "arm") {
   if (!safeId(input.cut_id) || !hash(input.snapshot_hash)) throw new ShadowStoreError("Invalid result binding", HTTP.badRequest);
   if (!object(input.record)) throw new ShadowStoreError("Invalid result record", HTTP.badRequest);
   const { cut, snapshot } = store.bind(cwd, input.cut_id, { sessionId: input.session_id as string, snapshotHash: input.snapshot_hash });
-  if (kind === "native") {
-    const record = nativeRecord(input.record, scrubber);
-    verifyNativeTail(record.tail, snapshot.engineMessages, text => scrubber.scrub(text));
-    store.writeNative(cut, record);
-  }
-  else {
-    const record = armRecord(input, input.record, scrubber);
-    if (record.header?.version === 2) record.citations = resolveHeaderCitations(record.header, headerCitationEvidence(cut.cutId,
-      snapshot.originals.map(row => ({ ...row, text: scrubber.scrub(row.text) })), snapshot.window.items ?? []));
-    store.writeArm(cut, record);
-  }
+  const context = { store, scrubber, cut, snapshot };
+  return kind === "native" ? publishNative(context, input.record, input.prepare_header === true) : publishArm(context, input);
+}
+type BoundCut = { store: CompactionShadowStore; scrubber: ScrubEngine; cut: ShadowManifest; snapshot: ShadowSnapshot };
+function publishNative(context: BoundCut, input: Record<string, unknown>, prepare: boolean) {
+  const { store, scrubber, cut, snapshot } = context, record = nativeRecord(input, scrubber);
+  verifyNativeTail(record.tail, snapshot.engineMessages, text => scrubber.scrub(text));
+  store.writeNative(cut, record);
+  return prepare && nativeVerified(record) ? cutHeaderJob(context, record.tail, scrubber) : null;
+}
+function publishArm(context: BoundCut, input: Record<string, unknown>) {
+  const { store, scrubber, cut, snapshot } = context, record = armRecord(input, input.record as Record<string, unknown>, scrubber);
+  if (record.header?.version === 2) record.citations = resolveHeaderCitations(record.header, headerCitationEvidence(cut.cutId,
+    snapshot.originals.map(row => ({ ...row, text: scrubber.scrub(row.text) })), snapshot.window.items ?? []));
+  const native = store.readNative(cut);
+  if (record.header?.version === 2 && native && nativeVerified(native)) record.document = renderCompactionDocument(cutHeaderJob(context, native.tail, scrubber), record.header);
+  store.writeArm(cut, record); return null;
+}
+function nativeVerified(record: import("../shadow/types.js").NativeRecord): boolean {
+  return record.outcome === "answered" && (record.fidelity === undefined || record.fidelity === "verified");
+}
+function cutHeaderJob({ cut, snapshot }: { cut: ShadowManifest; snapshot: ShadowSnapshot }, tail: ShadowMessage[], scrubber: ScrubEngine) {
+  if (!snapshot.window.items) throw new ShadowStoreError("Structured header input is unavailable", HTTP.unprocessable);
+  return prepareHeaderJob({ cutId: cut.cutId, instructions: scrubber.scrub(cut.instructions),
+    originals: snapshot.originals.map(row => ({ ...row, text: scrubber.scrub(row.text) })), window: snapshot.window.items.map(row => ({ ...row, content: scrubber.scrub(row.content) })),
+    engineMessages: snapshot.engineMessages.map(row => ({ ...row, text: scrubber.scrub(row.text) })), tail: tail.map(row => ({ ...row, text: scrubber.scrub(row.text) })) });
 }
 function requestIdentityHash(input: Record<string, unknown>, cutId: string): string {
   return objectHash([input.cwd, cutId, input.session_id, input.boundary_uuid, input.model, input.trigger, input.instructions, engineMessagesHash(input.engine_messages)]);
