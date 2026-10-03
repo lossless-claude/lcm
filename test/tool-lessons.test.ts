@@ -117,6 +117,27 @@ it("derives a window's pairs and block reasons from the selected messages only",
   expect((await lessons.forMessages(messageIds(late, ...lateFillers, lateFix))).some(lesson => lesson.kind === "error-fix")).toBe(false);
 });
 
+it("keeps distinct blocked command/reason pairs in the window without changing published lessons", async () => {
+  const rows = [
+    storedCall("one", "make deploy", "blocked", { reason: "disabled 42" }),
+    storedCall("one", "make deploy", "blocked", { reason: "disabled 43" }),
+    storedCall("one", "make release", "blocked", { reason: "disabled 44" }),
+    storedCall("one", "make deploy", "blocked", { reason: "permission denied" }),
+  ];
+  const ids = rows.map(row => Number(db.prepare("SELECT message_id FROM transcript_tool_calls WHERE rowid = ?").get(row)!.message_id));
+  const blocked = (await lessons.forMessages(ids)).filter(lesson => lesson.kind === "block-reason");
+  expect(blocked.map(({ command, reason }) => ({ command, reason }))).toEqual([
+    { command: "make deploy", reason: "disabled <id>" },
+    { command: "make release", reason: "disabled <id>" },
+    { command: "make deploy", reason: "permission denied" },
+  ]);
+  await lessons.refresh("project");
+  const published = lessons.list({ kind: "block-reason" });
+  expect(published).toHaveLength(2);
+  expect(published.find(lesson => lesson.reason === "disabled <id>")?.count).toBe(3);
+  for (const lesson of published) expect(lesson).not.toHaveProperty("command");
+});
+
 it("bounds refresh work by changed calls and their pair windows", async () => {
   for (let index = 0; index < 400; index++) {
     storedCall("large-session", "git status", "blocked", { reason: "Blocked: permission" });

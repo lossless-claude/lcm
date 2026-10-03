@@ -120,5 +120,12 @@ it("provides a planted failure corpus for the live evaluation", async () => {
   });
   expect(result.label).toBe("synthetic-tool-failures");
   expect(result.calls[0].toolPairRetention?.[0].retained).toBe(true);
+  expect(result.calls[0].toolContext?.blocked).toEqual([{
+    command: "make deploy", reason: "PreToolUse:Bash hook error: deployments are disabled",
+  }]);
+  expect(result.calls[0].toolContext?.errorFixPairs).toEqual([{
+    failedCommand: "npm install legacy-widget", succeededCommand: "npm install current-widget",
+  }]);
+  expect(prompts[0]).toContain('"command":"make deploy"');
   expect(prompts[0]).toContain("deployments are disabled");
 });

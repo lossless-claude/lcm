@@ -843,7 +843,9 @@ export class CompactionEngine {
       errorFixPairs: lessons.filter(lesson => lesson.kind === "error-fix").map(lesson => ({
         failedCommand: lesson.failedCommand!, succeededCommand: lesson.succeededCommand!,
       })),
-      blockReasons: lessons.filter(lesson => lesson.kind === "block-reason").map(lesson => lesson.reason!),
+      blocked: lessons.filter(lesson => lesson.kind === "block-reason").map(lesson => ({
+        command: lesson.command, reason: lesson.reason,
+      })),
     }, this.config.scrubber ? text => this.config.scrubber!.scrub(text) : undefined);
     const summarizeOptions = {
       ...params.options,

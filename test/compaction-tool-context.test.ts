@@ -66,8 +66,10 @@ it("supplies the window's pairs and block reasons in the existing leaf call and 
   expect(prompts).toHaveLength(1);
   expect(contexts[0]).toMatchObject({ toolContext: {
     errorFixPairs: [{ failedCommand: "npm install old", succeededCommand: "npm install new" }],
-    blockReasons: ["PreToolUse:Bash hook error: deployments are disabled"],
+    blocked: [{ command: "make deploy", reason: "PreToolUse:Bash hook error: deployments are disabled" }],
   } });
+  expect(contexts[0]!.toolContext!.errorFixPairs).toEqual([{ failedCommand: "npm install old", succeededCommand: "npm install new" }]);
+  expect(prompts[0]).toContain("Each failure, fix and block belongs only to the command it names.");
   expect(prompts[0]).toContain('<tool_context>');
   expect(prompts[0]).toContain('"failedCommand":"npm install old"');
   expect(prompts[0]).toContain("failed approaches and what worked");
@@ -150,4 +152,36 @@ it("bounds structured input to 8192 UTF-8 bytes and commands to the stored 2048-
   const structured = prompts[0].split("<tool_context>\n")[1].split("\n</tool_context>")[0];
   expect(Buffer.byteLength(structured)).toBeLessThanOrEqual(8192);
   expect(JSON.parse(structured)).toEqual(context);
+});
+
+it("scrubs and caps blocked commands and reasons as complete budgeted entries", async () => {
+  const cid = await window();
+  for (let index = 0; index < 4; index++) {
+    await call(cid, `make deploy-${index}-SECRET-${"界".repeat(1500)}`, "blocked", `blocked SECRET ${"界".repeat(1500)}`);
+  }
+  const engine = new CompactionEngine(conversations, summaries, {
+    contextThreshold: 0.75, freshTailCount: 0, leafMinFanout: 10, condensedMinFanout: 10,
+    scrubber: { scrub: (text: string) => text.replaceAll("SECRET", "MASKED") },
+  });
+  const contexts: Parameters<CompactionSummarizeFn>[2][] = [];
+  await engine.compact({ conversationId: cid, tokenBudget: 200_000, force: true,
+    summarize: async (_text, _aggressive, options) => {
+      contexts.push(options);
+      return "Files: none\nBuild checked.\nExpand for details about: build";
+    },
+  });
+  expect(contexts).toHaveLength(1);
+  const context = contexts[0]!.toolContext!;
+  expect(Buffer.byteLength(JSON.stringify(context))).toBeLessThanOrEqual(8192);
+  expect(context.blocked.length).toBeGreaterThan(0);
+  expect(context.omitted).toBe(4 - context.blocked.length);
+  for (const block of context.blocked) {
+    for (const text of [block.command, block.reason]) {
+      expect(text).toContain("MASKED");
+      expect(text).not.toContain("SECRET");
+      expect(text).not.toContain("�");
+      expect(Buffer.byteLength(text)).toBeLessThanOrEqual(2048);
+      expect(text).toMatch(/\n\[truncated\]$/);
+    }
+  }
 });

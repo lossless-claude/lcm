@@ -107,8 +107,11 @@ remain included in token and cost totals. Leaf outputs remain visible even when
 the engine later condenses them.
 
 Each call also retains its actual `prompt`, window `toolContext`, and
-`toolPairRetention` checks. Structured evidence counts as source for unsupported
-detail checks. A baseline still records the window's evidence for retention
+`toolPairRetention` checks. The window's `toolContext.errorFixPairs` names each
+failed and successful command; `toolContext.blocked` contains distinct
+`{ command, reason }` entries for blocked stored calls with masked reasons.
+Failures, fixes and blocks belong only to the commands they name. Structured
+evidence counts as source for unsupported detail checks. A baseline still records the window's evidence for retention
 scoring but excludes it from the actual model prompt. The run's
 `toolContextEnabled` distinguishes the modes.
 

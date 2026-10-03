@@ -479,8 +479,11 @@ Leaf summaries receive timestamped messages and the preceding summary for
 continuity. When the window's stored shell calls establish error→fix pairs or
 block reasons, the same summary call also receives a `tool_context` JSON block.
 It asks the model to keep failed approaches and what worked briefly, including
-masked block reasons. This uses the window's own calls, independently of the
-project's published tool lessons, and adds no model call.
+masked block reasons. `errorFixPairs` names the failed and successful commands;
+`blocked` contains distinct `{ command, reason }` entries, with the command read
+from its stored call and the reason masked. Each failure, fix and block belongs
+only to the command it names. This uses the window's own calls, independently of
+the project's published tool lessons, and adds no model call.
 
 The structured JSON is capped at 8192 UTF-8 bytes. Each command and reason is
 capped at 2048 bytes, preserving UTF-8 boundaries and ending with `[truncated]`
