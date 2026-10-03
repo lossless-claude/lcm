@@ -180,6 +180,8 @@ it("makes the backtest an explicit stats option without starting a daemon", asyn
   try {
     await program.parseAsync(["stats", "--warning-backtest"], { from: "user" });
     expect(log.mock.calls.flat().join("\n")).toContain("No stored calls; precision, coverage and context cost are unknown.");
+    // The all-project inventory is not printed with the single-project backtest.
+    expect(log.mock.calls.flat().join("\n")).not.toContain("lossless-claude");
     expect(daemon).not.toHaveBeenCalled();
   } finally { log.mockRestore(); }
 });

@@ -133,13 +133,16 @@ export function registerDiagnosticsCommands(program: Command, deps: DiagnosticsC
         return;
       }
 
-      const verbose: boolean = opts.verbose ?? false;
-      const { collectStats, printStats } = await import("../stats.js");
-      printStats(collectStats(createLcmPaths(lcmHome())), verbose);
+      // The backtest reads one project's store; the inventory scans every project, so it is not printed with it.
       if (opts.warningBacktest) {
         const { collectWarningBacktest, formatWarningBacktest } = await import("../warning-backtest.js");
         console.log(formatWarningBacktest(collectWarningBacktest(process.cwd(), createLcmPaths(lcmHome()))));
+        return;
       }
+
+      const verbose: boolean = opts.verbose ?? false;
+      const { collectStats, printStats } = await import("../stats.js");
+      printStats(collectStats(createLcmPaths(lcmHome())), verbose);
     });
 
   // ─── doctor ────────────────────────────────────────────────────────────────

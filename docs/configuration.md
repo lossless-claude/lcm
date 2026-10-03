@@ -943,8 +943,8 @@ SELECT summary_id, depth, token_count FROM summaries ORDER BY token_count DESC L
 
 ### Environment-warning measurement
 
-Run `lcm stats --warning-backtest` in a project directory to append its offline
-environment-warning report to the usual stats overview. Stats fits this measurement
+Run `lcm stats --warning-backtest` in a project directory to print its offline
+environment-warning report instead of the all-project stats overview. Stats fits this measurement
 of stored memory; doctor is for installation health. The backtest runs directly in the
 CLI, without a daemon, a model call, migrations or writes to the project database.
 It scans stored calls only when this flag is supplied, since a large store may take
