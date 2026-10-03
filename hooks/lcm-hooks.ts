@@ -24,7 +24,8 @@
 // `claude plugin validate` reads this file statically: `$` may only be passed to a function
 // declared at the top level, and calls on it must be spelled `$.noun.method(...)`.
 import type { Register, EngineInterface } from "claude-code";
-import { sharedSessionOutputBudget, type SessionOutputBudget } from "./model-budget.js";
+import { endSharedSessionBudget, sharedSessionOutputBudget, type SessionOutputBudget } from "./model-budget.js";
+import { endShadowSessionBudget } from "./shadow-budget.js";
 import type { ShadowDeadline } from "./shadow-deadline.js";
 import type { ShadowAppend } from "./shadow-boundaries.js";
 import { ShadowSessionState, runCompactionShadow, type ShadowTransport, type ShadowEngine } from "./compaction-shadow.js";
@@ -275,6 +276,7 @@ function registerSessionClaim(on: On, shadow?: ShadowSessionState): void {
 function registerSessionEnd(on: On, shadow?: ShadowSessionState): void {
   on("session.end", async ($, e, next) => {
     shadow?.reset(e.sessionId);
+    endSharedSessionBudget(e.sessionId); endShadowSessionBudget(e.sessionId);
     await writeClaim($, e.sessionId, e.reason).catch(() => { /* the claim lapses on its own */ });
     return next(e);
   });

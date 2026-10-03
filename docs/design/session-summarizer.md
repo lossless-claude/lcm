@@ -203,3 +203,10 @@ header reservations use a separate shadow account; ordinary jobs do not wait for
 them or lose allowance to shadow spending. The
 [header executor](compaction-header.md) runs only through the opt-in shadow hook
 and does not change the configured leaf/condensed pipeline. Module unload is not durable budget storage.
+
+`session.end` (which also fires for the old id on clear, resume and branch) removes the
+ended id's ordinary and shadow entries, but only once no lease or waiting reservation
+is outstanding: an entry with a pending lease is dropped when its last lease settles,
+and a lookup of that id before then revives it. Work that already holds a budget keeps
+spending on it after removal; a later event for a removed id starts from a fresh
+entry, and spending settled before the end is not carried over.
