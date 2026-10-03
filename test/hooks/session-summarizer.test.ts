@@ -54,6 +54,24 @@ function summaryGet(url: string, { jobs, finish }: { jobs: unknown[]; finish: ()
 describe("function-hook session summarizer", () => {
   beforeEach(() => vi.resetModules());
 
+  it.each([{ configured: 2500.5, normalized: 2500 }, { configured: 1e18, normalized: Number.MAX_SAFE_INTEGER }])("normalizes finite cap $configured without stopping the summarizer", async ({ configured, normalized }) => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: configured }, [{ ...leaf, maxTokens: 4000 }]);
+    await harness.trigger();
+    await vi.waitFor(() => expect(harness.engine.model.complete).toHaveBeenCalled());
+    await harness.done;
+    expect(harness.engine.model.complete).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: Math.min(4000, normalized) }));
+    expect(harness.engine.ui.log.mock.calls.flat().join("\n")).not.toContain("session summarizer stopped");
+    const { sharedSessionOutputBudget } = await import("../../hooks/model-budget.js");
+    expect(sharedSessionOutputBudget(sessionId, normalized).cap).toBe(normalized);
+  });
+  it.each([NaN, Infinity, -Infinity])("retains main's default for invalid cap %s", async configured => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: configured });
+    await harness.trigger(); await harness.done;
+    const { sharedSessionOutputBudget } = await import("../../hooks/model-budget.js");
+    expect(sharedSessionOutputBudget(sessionId, 50000).cap).toBe(50000);
+    expect(harness.engine.model.complete).toHaveBeenCalled();
+  });
+
   it("charges an unreported failed completion at its full reservation alongside a concurrent header lease", async () => {
     const harness = await start({ sessionSummarizerMaxOutputTokens: 12 }, [{ ...leaf, maxTokens: 4 }]);
     const { sharedSessionOutputBudget } = await import("../../hooks/model-budget.js");

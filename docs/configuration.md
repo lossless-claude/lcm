@@ -113,6 +113,10 @@ Every human message remains in excerpts; oversized messages have a raw-row
 middle-elision marker. Arm records include production-time citation resolution.
 Unknown model usage consumes the full shared reservation rather than restoring
 allowance, while retaining the `usageUnknown` flag.
+Finite registration caps are floored and clamped to safe integers; invalid values
+use the existing default. Invalid host usage consumes the full reservation and
+releases the lease. Shell-interaction and interruption rows are excluded from
+user excerpts, and header source blocks use context-window fencing.
 
 `bench-corpora.json` is optional for shadow admission: a valid existing exclusion
 skips a project's cuts before Capture with HTTP 200 and

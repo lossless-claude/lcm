@@ -40,9 +40,9 @@ export class SessionOutputBudget {
     let settled = false;
     return { allowance, ...(maxTokens !== undefined ? { maxTokens } : {}), settle: (output, usageUnknown = false) => {
       if (settled) throw new Error("Budget reservation already settled");
-      if (output !== null && (!Number.isSafeInteger(output) || output < 0)) throw new Error("Invalid output usage");
       settled = true;
-      this.finish({ allowance, maxTokens }, { output, usageUnknown });
+      const reported = validOutputUsage(output) ? output : null;
+      this.finish({ allowance, maxTokens }, { output: reported, usageUnknown: usageUnknown || reported === null });
     } };
   }
   private finish({ allowance, maxTokens }: { allowance: number; maxTokens?: number }, { output, usageUnknown }: { output: number | null; usageUnknown: boolean }): void {
@@ -54,6 +54,9 @@ export class SessionOutputBudget {
     const waiters = this.waiters; this.waiters = [];
     waiters.forEach(resolve => resolve());
   }
+}
+function validOutputUsage(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 const owners = new WeakMap<object, Map<string, SessionOutputBudget>>();
 const moduleOwner = {};

@@ -24,6 +24,16 @@ keyword classifier selects survivors. Generated rows are identified by `isMeta`,
 complete command/system tags or the exact engine boilerplate sentence; ordinary
 prose such as `Caveat:` is not a generated-row marker. Excerpts are historical
 evidence; inclusion does not make every past request an instruction still in force.
+Shell-interaction tags (`bash-input`, `bash-stdout`, `bash-stderr`) and the exact
+`[Request interrupted by user]` row are not citable user words. A command run
+with `!` is not addressed to the assistant; it remains in the window and tail.
+
+Every source block carried in either header prompt is individually fenced with
+the context window's `fenceContent` helper: instructions, excerpts, summaries,
+raw rows and tail text. Matching closing tags are escaped, so source content
+cannot close its fence and promote a forged heading or citation. Raw verbatim
+spans remain in the separate citation evidence, not as duplicate unfenced prompt
+content. Document rendering uses the same source-block fences.
 
 An individual message exceeding its 4096-byte size target is shortened in the
 middle, keeping its Unicode-safe head and tail with an explicit marker naming
@@ -91,6 +101,8 @@ immutable remainder readiness independently of the caller.
 All module work shares `sessionSummarizerMaxOutputTokens` through a stable module
 owner keyed by session id, independent of dispatch facade identity. Spending
 survives poller restarts. B/C reserve equal bounded allowances atomically;
+The registration cap is normalized once: finite values are floored and clamped
+to the nonnegative safe-integer range; invalid values retain the default.
 ordinary jobs wait for pending reservations. An uncapped fork starts immediately
 or records unavailable/refused and blocks later admission until settled. Its
 overshoot is recorded; strict aggregate enforcement is impossible for fork.
@@ -100,6 +112,9 @@ and sets `usageUnknown`; it never releases that allowance as zero spending.
 Other concurrent reservations keep their allowance, and later admission uses
 only the remaining conservative budget. A failed fallback retains unknown usage
 even when a preceding attempt reported counters.
+Invalid host usage, including missing counters that yield NaN, is also unknown.
+Settlement always releases a valid outstanding lease after charging its full
+reservation; queued work cannot remain parked behind malformed usage.
 
 Attempts retain uncached input, output, cache-read and cache-creation counters,
 including fork cache reads. Unknown prices remain unknown. API errors, empty

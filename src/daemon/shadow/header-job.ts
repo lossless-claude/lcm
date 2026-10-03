@@ -23,8 +23,9 @@ export function prepareHeaderJob(input: HeaderJobInput, { messageTargetBytes = 4
   if (checkExcerpts(selection.excerpts, input.originals, input.cutId).length) throw new Error("Non-verbatim excerpt");
   const window = input.window.map(row => ({ ...row })).sort((a, b) => a.ordinal - b.ordinal);
   const tail = input.tail.map(row => ({ ...row }));
-  const shared = { instructions: input.instructions, excerpts: selection.excerpts.map(row => ({ ...row, pointer: `[excerpt:${row.id}]` })) };
-  const evidence = { ...shared, window: renderWindow(window, input.cutId), tail };
+  const shared = { instructions: sourceBlock(input.instructions), excerpts: selection.excerpts.map(row => ({ id: row.id, rawMessageId: row.rawMessageId,
+    sources: row.sources, pointer: `[excerpt:${row.id}]`, text: sourceBlock(row.text) })) };
+  const evidence = { ...shared, window: renderWindow(window, input.cutId), tail: tail.map(row => ({ ...row, text: sourceBlock(row.text) })) };
   const completePrompt = prompt(evidence), forkPrompt = prompt({ ...shared, transcript: "Use your existing fork prefix; no digested window is supplied." });
   return { version: 1, cutId: input.cutId, excerpts: selection.excerpts, window, tail, completePrompt, forkPrompt,
     inputHash: objectHash(evidence), promptHash: objectHash(completePrompt), forkPromptHash: objectHash(forkPrompt),
@@ -38,8 +39,11 @@ function prompt(evidence: unknown): string {
   return renderTemplate("compaction-header", { word_target: String(HEADER_WORD_TARGET), evidence: fenceContent(JSON.stringify(evidence), "compaction-evidence") });
 }
 function renderWindow(window: readonly ContextWindowItem[], cutId: string): string {
-  return window.map(row => row.itemType === "summary" ? `[sum:${row.summaryId}]\n${row.content}`
-    : `[raw:${cutId}:${row.messageId}] ${row.role}:\n${row.content}`).join("\n\n");
+  return window.map(row => row.itemType === "summary" ? `[sum:${row.summaryId}]\n${sourceBlock(row.content)}`
+    : `[raw:${cutId}:${row.messageId}] ${row.role}:\n${sourceBlock(row.content)}`).join("\n\n");
+}
+function sourceBlock(text: string): string {
+  return fenceContent(text, "compaction-source");
 }
 const TITLES = ["Current intent", "Instructions in force", "Decisions", "Task state", "How the work is being done", "Next steps", "Open threads", "Files", "Errors and fixes"];
 const sourceText = (source: HeaderSource) => typeof source === "string" ? source : JSON.stringify(source);
@@ -53,8 +57,8 @@ function renderItem(item: CompactionHeader[typeof COMPACTION_HEADER_SECTIONS[num
   return [...fields, item.sources.map(sourceText).join(" ")].join("\n");
 }
 function documentText(job: PreparedHeaderJob, header: string, { window, excerpts = job.excerpts }: { window: readonly ContextWindowItem[]; excerpts?: UserExcerpt[] }): string {
-  return [renderExcerpts(excerpts), header, `## Window\n${renderWindow(window, job.cutId)}`,
-    `## Engine tail\n${job.tail.map(row => `${row.role}:\n${row.text}`).join("\n\n")}`].join("\n\n");
+  return [renderExcerpts(excerpts, sourceBlock), header, `## Window\n${renderWindow(window, job.cutId)}`,
+    `## Engine tail\n${job.tail.map(row => `${row.role}:\n${sourceBlock(row.text)}`).join("\n\n")}`].join("\n\n");
 }
 export function renderCompactionDocument(job: PreparedHeaderJob, header: CompactionHeader, { targetBytes = DOCUMENT_BYTE_TARGET } = {}) {
   if (!Number.isSafeInteger(targetBytes) || targetBytes < 0) throw new Error("Invalid document size target");

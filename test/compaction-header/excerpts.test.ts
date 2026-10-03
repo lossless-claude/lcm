@@ -4,6 +4,10 @@ import type { ShadowOriginal } from "../../src/daemon/shadow/types.js";
 
 const user = (id: number, text: string): ShadowOriginal => ({ id, seq: id, role: "user", origin: "user", text });
 describe("compaction user excerpts", () => {
+  it.each(["<bash-stdout>output</bash-stdout>", "<bash-stderr>error</bash-stderr>", "<bash-input>echo hi</bash-input>", "[Request interrupted by user]"])("excludes non-assistant-directed shell/interruption rows (%s)", text => {
+    const rows = [user(1, text), user(2, "Leave production untouched.")];
+    expect(assembleExcerpts(rows, "cut-a").excerpts.map(row => row.rawMessageId)).toEqual([2]);
+  });
   it.each(["Caveat: never publish this branch.", "Base directory for this skill needs changing.", "This session is being continued deliberately."])("keeps human prose regardless of its first words (%s)", text => {
     expect(assembleExcerpts([user(1, text)], "cut-a").excerpts[0]?.text).toBe(text);
   });

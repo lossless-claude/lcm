@@ -2,6 +2,25 @@ import { describe, expect, it } from "vitest";
 import { sessionOutputBudget } from "../../hooks/model-budget.js";
 
 describe("session model output budget", () => {
+  it.each([NaN, undefined, Infinity, -1, 1.5, 1e18])("treats invalid host output %s as unknown and releases its bounded lease", async output => {
+    const budget = sessionOutputBudget({}, "invalid-host", 20);
+    const failed = await budget.reserveComplete(6), concurrent = await budget.reserveComplete(5);
+    const later = budget.reserveOrdinary(2, false);
+    expect(() => failed!.settle(output as number)).not.toThrow();
+    expect(budget.snapshot()).toMatchObject({ spent: 6, reserved: 5, usageUnknown: true });
+    concurrent!.settle(2);
+    const next = await later;
+    expect(next?.maxTokens).toBe(2);
+    next!.settle(1);
+    expect(budget.snapshot()).toMatchObject({ spent: 9, reserved: 0, available: 11 });
+  });
+  it("releases an invalid fork lease so a queued completion cannot hang", async () => {
+    const budget = sessionOutputBudget({}, "invalid-fork", 10), fork = budget.reserveFork();
+    const later = budget.reserveComplete(2);
+    expect(() => fork!.settle(NaN)).not.toThrow();
+    expect(await later).toBeNull();
+    expect(budget.snapshot()).toMatchObject({ spent: 10, unbounded: false, usageUnknown: true });
+  });
   it("spends an unknown lease at its reservation while preserving other concurrent allowances", async () => {
     const budget = sessionOutputBudget({}, "concurrent", 20);
     const failed = await budget.reserveComplete(6), other = await budget.reserveComplete(5);

@@ -791,7 +791,10 @@ function probeSessionDaemon($: EngineInterface): void {
   void readHostEnv($).then(({ port }) => {
     const startedAt = Date.now();
     return fetchDaemon($, `http://127.0.0.1:${port}/health`, undefined, HEALTH_PROBE_TIMEOUT_MS).then(() => undefined,
-      (error: unknown) => isDaemonUnreachableError(error, startedAt) ? startDaemon($) : reportBusyDaemon($));
+      async (error: unknown) => {
+        if (isDaemonUnreachableError(error, startedAt)) await startDaemon($);
+        else reportBusyDaemon($);
+      });
   });
 }
 function registerSessionStart(on: On, summaryCap: number): void {
@@ -962,9 +965,7 @@ function registerToolCapture(on: On): void {
 }
 
 export const register: Register = (on, options) => {
-  const configuredCap = options.sessionSummarizerMaxOutputTokens;
-  const summaryCap = typeof configuredCap === "number" && Number.isFinite(configuredCap)
-    ? Math.max(0, configuredCap) : DEFAULT_SUMMARY_OUTPUT_CAP;
+  const summaryCap = normalizedSummaryCap(options.sessionSummarizerMaxOutputTokens);
   registerSessionStart(on, summaryCap);
   registerSessionClaim(on);
   registerSessionEnd(on);
@@ -974,3 +975,7 @@ export const register: Register = (on, options) => {
   registerTurnIngest(on);
   registerToolCapture(on);
 };
+function normalizedSummaryCap(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_SUMMARY_OUTPUT_CAP;
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(value)));
+}
