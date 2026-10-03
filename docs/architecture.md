@@ -65,8 +65,14 @@ scores, independently of promoted memory. See [Passive Learning](passive-learnin
 for shapes, pairing, masking and retirement. A transactional call-change journal
 drives incremental refreshes at promotion boundaries. Persisted per-call contributions
 and indexed success evidence update only affected lesson versions; removing a call
-re-derives its session. Bounded pages yield between updates, and one generation
-switch publishes the complete result. Immediate per-tool promotion skips refresh,
+re-derives its session. Pages collect distinct affected pair calls in transcript
+order, reuse page-local shapes, and avoid repeating predecessors across page
+boundaries. A journal entry is consumed only after its contributions and affected
+pairs are durable. `REFRESH_TIME_BUDGET_MS` (10 ms) makes call updates, pair updates,
+invalidation and publication yield between synchronous units once the budget is
+spent, always after releasing their savepoints. One unit may overrun the budget;
+pages also yield at their boundaries. One generation switch publishes the complete
+result. Immediate per-tool promotion skips refresh,
 and restore only reads the published snapshot.
 
 Capture records new calls and updates prior outcomes in the same transaction
@@ -905,7 +911,8 @@ always makes its PreCompact summary busy. `hasQueuedProjectWork` still reports a
 requests, including yielded ones; admission uses `hasBlockingProjectWork` instead.
 
 `/promote` and `/promote-events` hold the same mutation lease for their whole run.
-Tool lesson refreshes on `/promote-events` also yield between bounded pages and
+Tool lesson refreshes on `/promote-events` also yield after their 10 ms work budget
+is spent and between bounded pages, with no transaction open across a yield, and
 publish a complete snapshot before retiring the previous generation. They walk
 every summary or event not yet promoted, and `node:sqlite` is synchronous, so each yields to the
 event loop between items (`yieldToEventLoop`) to keep `/health` and other projects answering;

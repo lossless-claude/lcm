@@ -4,6 +4,17 @@ import type { StoredCall, ToolLesson } from "./tool-lessons.js";
 
 export const BATCH_SIZE = 128;
 export const ENVIRONMENT_SESSION_THRESHOLD = 3;
+// A synchronous unit may overrun this budget; yield before starting another.
+export const REFRESH_TIME_BUDGET_MS = 10;
+
+export class LessonRefreshBudget {
+  private started = performance.now();
+  exhausted(): boolean { return performance.now() - this.started >= REFRESH_TIME_BUDGET_MS; }
+  async yield(): Promise<void> {
+    await yieldToEventLoop();
+    this.started = performance.now();
+  }
+}
 
 function callOrder(call: StoredCall): string {
   return call.seen + String(call.message_id).padStart(16, "0") + String(call.row_id).padStart(16, "0");
@@ -100,7 +111,7 @@ export class ToolLessonProjection {
     lesson.lastSeen = lesson.lastSeen > success.seen ? lesson.lastSeen : success.seen;
   }
 
-  async publish(generation: number): Promise<void> {
+  async publish(generation: number, budget = new LessonRefreshBudget()): Promise<void> {
     // Changed keys get a new version; unchanged keys retain their published
     // version, so publication never copies the project's snapshot.
     const page = this.db.prepare("SELECT lesson_key, data FROM tool_lesson_totals WHERE dirty = 1 AND lesson_key > ? ORDER BY lesson_key LIMIT ?");
@@ -109,14 +120,15 @@ export class ToolLessonProjection {
     while (true) {
       const rows = page.all(cursor, BATCH_SIZE) as { lesson_key: string; data: string }[];
       if (!rows.length) break;
-      withLessonTransaction(this.db, () => {
-        for (const row of rows) {
+      for (const row of rows) {
+        withLessonTransaction(this.db, () => {
           const lesson = this.aggregate(row.lesson_key, row.data);
           insert.run(generation, row.lesson_key, lesson?.kind ?? "deleted", Number(lesson?.retired ?? true), lesson?.lastSeen ?? "", JSON.stringify(lesson));
-        }
-      });
+        });
+        if (budget.exhausted()) await budget.yield();
+      }
       cursor = rows[rows.length - 1].lesson_key;
-      await yieldToEventLoop();
+      await budget.yield();
     }
     withLessonTransaction(this.db, () => {
       this.db.prepare(`INSERT INTO tool_lesson_state (singleton, generation) VALUES (1, ?)
@@ -128,16 +140,17 @@ export class ToolLessonProjection {
     while (true) {
       const rows = page.all(cursor, BATCH_SIZE) as { lesson_key: string; data: string }[];
       if (!rows.length) break;
-      withLessonTransaction(this.db, () => {
-        for (const row of rows) {
+      for (const row of rows) {
+        withLessonTransaction(this.db, () => {
           this.db.prepare("DELETE FROM tool_lessons WHERE lesson_key = ? AND generation < ?").run(row.lesson_key, generation);
           this.db.prepare("DELETE FROM tool_lessons WHERE lesson_key = ? AND generation = ? AND kind = 'deleted'").run(row.lesson_key, generation);
           this.db.prepare("UPDATE tool_lesson_totals SET dirty = 0 WHERE lesson_key = ?").run(row.lesson_key);
           this.db.prepare("DELETE FROM tool_lesson_totals WHERE lesson_key = ? AND json_extract(data, '$.count') = 0").run(row.lesson_key);
-        }
-      });
+        });
+        if (budget.exhausted()) await budget.yield();
+      }
       cursor = rows[rows.length - 1].lesson_key;
-      await yieldToEventLoop();
+      await budget.yield();
     }
   }
 }

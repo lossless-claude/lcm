@@ -2,7 +2,7 @@ import { basename } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { SHELL_TOOLS, type ToolOutcome } from "../tool-calls.js";
 import { yieldToEventLoop } from "../daemon/project-queue.js";
-import { BATCH_SIZE, lessonKey, ToolLessonProjection, withLessonTransaction } from "./tool-lesson-projection.js";
+import { BATCH_SIZE, LessonRefreshBudget, lessonKey, ToolLessonProjection, withLessonTransaction } from "./tool-lesson-projection.js";
 
 const SUBCOMMAND_TOOLS = new Set(["git", "npm", "pnpm", "yarn", "pip", "pip3", "brew", "cargo", "docker", "kubectl", "gh", "lcm"]);
 const SHELL_WRAPPERS = new Set(["sh", "bash", "zsh"]);
@@ -253,8 +253,7 @@ function blockLesson(call: StoredCall, project: string): ToolLesson | undefined 
   return lesson;
 }
 
-function environmentLesson(call: StoredCall, project: string): ToolLesson | undefined {
-  const shape = callShape(call);
+function environmentLesson(call: StoredCall, project: string, shape: string | null = callShape(call)): ToolLesson | undefined {
   if (!shape || (call.outcome !== "failed" && call.outcome !== "blocked")) return;
   const lesson = { ...newLesson("environment-rule", call, project), shape };
   observe(lesson, call);
@@ -308,67 +307,95 @@ export class ToolLessonStore {
   }
 
   async refresh(project: string): Promise<number> {
+    const budget = new LessonRefreshBudget();
     const state = this.db.prepare("SELECT generation FROM tool_lesson_state WHERE singleton = 1").get() as { generation: number } | undefined;
     const invalid = this.db.prepare("SELECT session_id FROM tool_lesson_invalid_sessions ORDER BY session_id LIMIT 1");
     while (true) {
       const session = invalid.get() as { session_id: string } | undefined;
       if (!session) break;
-      await this.invalidateSession(session.session_id);
+      await this.invalidateSession(session.session_id, budget);
     }
 
-    await this.refreshChanges(project);
+    await this.refreshChanges(project, budget);
     const pending = this.db.prepare("SELECT pending FROM tool_lesson_progress WHERE singleton = 1").get()!.pending;
     if (state && !pending && !this.db.prepare("SELECT 1 FROM tool_lesson_totals WHERE dirty = 1 LIMIT 1").get()) return 0;
-    await this.projection.publish((state?.generation ?? 0) + 1);
+    await this.projection.publish((state?.generation ?? 0) + 1, budget);
     return Number(this.db.prepare("SELECT pair_count FROM tool_lesson_progress WHERE singleton = 1").get()!.pair_count);
   }
 
-  private async refreshChanges(project: string): Promise<void> {
-    const changes = this.db.prepare("SELECT session_id, call_id FROM tool_lesson_changes ORDER BY session_id, call_id LIMIT ?");
+  private async refreshChanges(project: string, budget: LessonRefreshBudget): Promise<void> {
+    // Call ids need not follow transcript order. Ordered pages let the last changed
+    // call delimit predecessor windows already evaluated by the previous page.
+    const changes = this.db.prepare(`SELECT c.session_id, c.call_id FROM tool_lesson_changes c
+      LEFT JOIN transcript_tool_calls t ON t.session_id = c.session_id AND t.call_id = c.call_id
+      ORDER BY c.session_id, t.message_id, t.rowid LIMIT ?`);
     const callById = this.db.prepare(CALL_SELECT + `
       WHERE t.session_id = ? AND t.call_id = ?
       AND NOT EXISTS (SELECT 1 FROM summarize_workers w WHERE w.session_id = t.session_id)`);
+    const predecessors = this.db.prepare(CALL_SELECT + `
+      WHERE t.session_id = ? AND (t.message_id, t.rowid) < (?, ?)
+      ORDER BY t.message_id DESC, t.rowid DESC LIMIT ?`);
+    let frontier: StoredCall | undefined;
     while (true) {
       const page = changes.all(BATCH_SIZE) as { session_id: string; call_id: string }[];
       if (!page.length) break;
+      if (budget.exhausted()) await budget.yield();
+      const affected = new Map<number, StoredCall>();
+      const shapes = new Map<number, string | null>();
+      const shapeOf = (call: StoredCall): string | null => {
+        if (!shapes.has(call.row_id)) shapes.set(call.row_id, callShape(call));
+        return shapes.get(call.row_id)!;
+      };
+      let last = frontier;
       for (const change of page) {
-        withLessonTransaction(this.db, () => {
-          const call = callById.get(change.session_id, change.call_id) as unknown as StoredCall | undefined;
-          if (call) this.updateCall(call, project);
-          this.db.prepare("DELETE FROM tool_lesson_changes WHERE session_id = ? AND call_id = ?").run(change.session_id, change.call_id);
-          this.db.prepare("UPDATE tool_lesson_progress SET pending = 1 WHERE singleton = 1").run();
-        });
+        const call = callById.get(change.session_id, change.call_id) as unknown as StoredCall | undefined;
+        if (!call) continue;
+        withLessonTransaction(this.db, () => this.updateCall(call, project, shapeOf(call)));
+        if (budget.exhausted()) await budget.yield();
+        affected.set(call.row_id, call);
+        const previous = predecessors.all(call.session_id, call.message_id, call.row_id, CALL_WINDOW) as unknown as StoredCall[];
+        for (const prior of previous) {
+          if (frontier?.session_id === prior.session_id && (prior.message_id < frontier.message_id
+            || (prior.message_id === frontier.message_id && prior.row_id <= frontier.row_id))) continue;
+          affected.set(prior.row_id, prior);
+        }
+        last = call;
+        if (budget.exhausted()) await budget.yield();
       }
-      await yieldToEventLoop();
+      for (const call of affected.values()) {
+        withLessonTransaction(this.db, () => this.updatePair(call, project, shapeOf));
+        if (budget.exhausted()) await budget.yield();
+      }
+      // Keep every page entry replayable until all its affected pairs are durable.
+      withLessonTransaction(this.db, () => {
+        for (const change of page) {
+          this.db.prepare("DELETE FROM tool_lesson_changes WHERE session_id = ? AND call_id = ?").run(change.session_id, change.call_id);
+        }
+        this.db.prepare("UPDATE tool_lesson_progress SET pending = 1 WHERE singleton = 1").run();
+      });
+      frontier = last;
+      await budget.yield();
     }
   }
 
-  private updateCall(call: StoredCall, project: string): void {
-    const shape = callShape(call);
+  private updateCall(call: StoredCall, project: string, shape: string | null): void {
     this.projection.replaceContribution(call.row_id, "block-reason", { call, lesson: blockLesson(call, project) });
-    this.projection.replaceContribution(call.row_id, "environment-rule", { call, lesson: environmentLesson(call, project) });
+    this.projection.replaceContribution(call.row_id, "environment-rule", { call, lesson: environmentLesson(call, project, shape) });
     this.projection.removeSuccess(call.row_id);
     if (shape && call.outcome === "succeeded") {
       this.projection.recordSuccess(call, shape);
     }
-    // Insertion or resolution can change only this call and failures in its
-    // preceding window. Non-shell calls still consume positions in that window.
-    const previous = this.db.prepare(CALL_SELECT + `
-      WHERE t.session_id = ? AND (t.message_id, t.rowid) < (?, ?)
-      ORDER BY t.message_id DESC, t.rowid DESC LIMIT ?`)
-      .all(call.session_id, call.message_id, call.row_id, CALL_WINDOW) as unknown as StoredCall[];
-    for (const failure of [call, ...previous]) this.updatePair(failure, project);
   }
 
-  private updatePair(call: StoredCall, project: string): void {
+  private updatePair(call: StoredCall, project: string, shapeOf: typeof callShape): void {
     let pair: ToolLesson | undefined;
-    const shape = callShape(call);
+    const shape = shapeOf(call);
     if (shape && (call.outcome === "failed" || call.outcome === "blocked")) {
       const window = this.db.prepare(CALL_SELECT + `
         WHERE t.session_id = ? AND (t.message_id, t.rowid) > (?, ?)
         ORDER BY t.message_id, t.rowid LIMIT ?`)
         .all(call.session_id, call.message_id, call.row_id, CALL_WINDOW) as unknown as StoredCall[];
-      const success = window.find(next => next.outcome === "succeeded" && callShape(next) === shape);
+      const success = window.find(next => next.outcome === "succeeded" && shapeOf(next) === shape);
       if (success) {
         pair = { ...newLesson("error-fix", call, project), shape,
           failedCommand: call.input!, succeededCommand: success.input! };
@@ -380,20 +407,26 @@ export class ToolLessonStore {
   }
 
   /** Only deletion/movement/exclusion replays a session, including pairs whose window shrank. */
-  private async invalidateSession(session: string): Promise<void> {
+  private async invalidateSession(session: string, budget: LessonRefreshBudget): Promise<void> {
     const evidence = this.db.prepare("SELECT call_row, kind FROM tool_lesson_contributions WHERE session_id = ? ORDER BY call_row, kind LIMIT ?");
     while (true) {
       const page = evidence.all(session, BATCH_SIZE) as { call_row: number; kind: ToolLesson["kind"] }[];
       if (!page.length) break;
-      withLessonTransaction(this.db, () => { for (const row of page) this.projection.replaceContribution(row.call_row, row.kind); });
-      await yieldToEventLoop();
+      for (const row of page) {
+        withLessonTransaction(this.db, () => this.projection.replaceContribution(row.call_row, row.kind));
+        if (budget.exhausted()) await budget.yield();
+      }
+      await budget.yield();
     }
     const successes = this.db.prepare("SELECT call_row FROM tool_lesson_successes WHERE session_id = ? ORDER BY call_row LIMIT ?");
     while (true) {
       const page = successes.all(session, BATCH_SIZE) as { call_row: number }[];
       if (!page.length) break;
-      withLessonTransaction(this.db, () => { for (const row of page) this.projection.removeSuccess(row.call_row); });
-      await yieldToEventLoop();
+      for (const row of page) {
+        withLessonTransaction(this.db, () => this.projection.removeSuccess(row.call_row));
+        if (budget.exhausted()) await budget.yield();
+      }
+      await budget.yield();
     }
     withLessonTransaction(this.db, () => {
       this.db.prepare("DELETE FROM tool_lesson_changes WHERE session_id = ?").run(session);
@@ -403,6 +436,7 @@ export class ToolLessonStore {
       this.db.prepare("DELETE FROM tool_lesson_invalid_sessions WHERE session_id = ?").run(session);
       this.db.prepare("UPDATE tool_lesson_progress SET pending = 1 WHERE singleton = 1").run();
     });
+    if (budget.exhausted()) await budget.yield();
   }
 
   list(options: { kind?: ToolLesson["kind"]; limit?: number; includeRetired?: boolean } = {}): ToolLesson[] {
