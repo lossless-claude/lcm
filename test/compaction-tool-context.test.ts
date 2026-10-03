@@ -72,7 +72,8 @@ it("supplies the window's pairs and block reasons in the existing leaf call and 
   expect(prompts[0]).toContain("Each failure, fix and block belongs only to the command it names.");
   expect(prompts[0]).toContain('<tool_context>');
   expect(prompts[0]).toContain('"failedCommand":"npm install old"');
-  expect(prompts[0]).toContain("failed approaches and what worked");
+  expect(prompts[0]).toContain("the failed command and the command that worked after it");
+  expect(prompts[0]).toContain("the command and why it was blocked");
   expect(prompts[0]).not.toContain("unrelated");
   const items = await summaries.getContextItems(cid);
   expect((await summaries.getSummary(items[0].summaryId!))?.content).toContain("npm install old failed; npm install new worked.");

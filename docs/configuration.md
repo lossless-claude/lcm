@@ -478,8 +478,9 @@ flags prior nodes stale and publishes replacements.
 Leaf summaries receive timestamped messages and the preceding summary for
 continuity. When the window's stored shell calls establish error→fix pairs or
 block reasons, the same summary call also receives a `tool_context` JSON block.
-It asks the model to keep failed approaches and what worked briefly, including
-masked block reasons. `errorFixPairs` names the failed and successful commands;
+It asks the model to keep each entry briefly: for every pair, the failed command
+and the command that worked after it; for every block, the command and its masked
+reason. `errorFixPairs` names the failed and successful commands;
 `blocked` contains distinct `{ command, reason }` entries, with the command read
 from its stored call and the reason masked. Each failure, fix and block belongs
 only to the command it names. This uses the window's own calls, independently of
