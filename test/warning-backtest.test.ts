@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync, readFileSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -153,6 +153,18 @@ it("reports no stored calls as unknown, rather than zero-valued measurements", a
   expect(report).toMatchObject({ status: "no-data", precision: null, coverage: null });
   const { formatWarningBacktest } = await import("../src/warning-backtest.js");
   expect(formatWarningBacktest(report)).toContain("No stored calls; precision, coverage and context cost are unknown.");
+});
+
+it("names the error when the stored evidence cannot be read", async () => {
+  const { collectWarningBacktest, formatWarningBacktest } = await import("../src/warning-backtest.js");
+  const paths = createLcmPaths(process.env.LCM_HOME!);
+  const cwd = "/tmp/lcm-backtest-corrupt-store";
+  const path = projectDbPath(cwd, paths);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, "this is plain text, not SQLite");
+  const report = collectWarningBacktest(cwd, paths);
+  expect(report).toMatchObject({ status: "unavailable", error: expect.stringContaining("file is not a database") });
+  expect(formatWarningBacktest(report)).toContain("file is not a database");
 });
 
 it("reads each call once in bounded pages without writing the source or deriving lessons", async () => {

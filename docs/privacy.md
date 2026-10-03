@@ -58,7 +58,7 @@ OMP session. Set `llm.provider` to `disabled` to keep everything local.
 | `anthropic` | Messages sent to Anthropic API (your API key) |
 | `openai` | Messages sent to OpenAI API (your API key) |
 
-When using an external summarizer, only the text being summarized is sent — not your full history. The summarizer receives a batch of recent messages to compress into a summary.
+When using an external summarizer, only the text being summarized is sent — not your full history. The summarizer receives a batch of recent messages to compress into a summary. When that batch contains failed or blocked shell calls, a leaf summary call also receives those calls' scrubbed commands, the commands that worked after them and the masked block reasons, within the caps in [configuration](configuration.md#leaf-summary-input).
 
 ## Secret redaction
 
@@ -124,7 +124,7 @@ The `Security` section of the doctor output shows:
 ## Summary
 
 - All data is local — SQLite in `~/.lossless-claude/`.
-- External summarizer (optional) receives only the text to be summarized, after scrubbing.
+- External summarizer (optional) receives only the text to be summarized, plus the batch's scrubbed failed, fixed and blocked commands, after scrubbing.
 - Built-in patterns redact common secret formats automatically.
 - Add project-specific patterns with `lcm sensitive add`.
 - `lcm uninstall` removes lcm's hooks, MCP entry and daemon service; delete stored memory by removing `~/.lossless-claude/`.

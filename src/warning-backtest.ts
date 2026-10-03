@@ -10,6 +10,8 @@ import { estimateTokens } from "./transcript.js";
 
 export interface WarningBacktestReport {
   status: "no-data" | "unavailable" | "measured";
+  /** Why the stored evidence could not be read, when `status` is "unavailable". */
+  error?: string;
   calls: number;
   shapedCalls: number;
   matches: number;
@@ -133,15 +135,15 @@ export function collectWarningBacktest(cwd: string, paths: LcmPaths): WarningBac
     db.exec("PRAGMA temp_store = FILE; PRAGMA cache_size = -1024");
     if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'transcript_tool_calls'").get()) return emptyReport();
     return backtestWarnings(db);
-  } catch {
-    return { ...emptyReport(), status: "unavailable" };
+  } catch (error) {
+    return { ...emptyReport(), status: "unavailable", error: error instanceof Error ? error.message : String(error) };
   } finally { db?.close(); }
 }
 
 export function formatWarningBacktest(report: WarningBacktestReport): string {
   const prefix = "Environment warning backtest (current project): warnings stay off. ";
   if (report.status === "no-data") return prefix + "No stored calls; precision, coverage and context cost are unknown.";
-  if (report.status === "unavailable") return prefix + "Stored evidence unavailable; precision, coverage and context cost are unknown.";
+  if (report.status === "unavailable") return prefix + `Stored evidence unavailable (${report.error ?? "unknown error"}); precision, coverage and context cost are unknown.`;
   const percent = (value: number | null) => value === null ? "unknown (no eligible denominator)" : `${(value * 100).toFixed(1)}%`;
   const excluded = report.excludedOutcomes;
   const cost = report.contextCost;
