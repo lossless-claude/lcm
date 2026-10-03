@@ -2,8 +2,9 @@
 
 Header generation is separate from leaf and condensed summaries, which stay on
 the configured pipeline, including `pool`. Preparing a header never regenerates
-the DAG. The executor is a library interface with no registered compaction hook;
-native remains the baseline. Dispatch and daemon job transport are integration work.
+the DAG. The executor is a library interface used by the opt-in
+[shadow hook](compaction-shadow.md#shadow-hook); native remains the baseline. The
+hook never installs its output.
 
 ## Document and excerpts
 
@@ -25,7 +26,8 @@ complete command/system tags or the exact engine boilerplate sentence; ordinary
 prose such as `Caveat:` is not a generated-row marker. Excerpts are historical
 evidence; inclusion does not make every past request an instruction still in force.
 Shell-interaction tags (`bash-input`, `bash-stdout`, `bash-stderr`) and the exact
-`[Request interrupted by user]` row are not citable user words. A command run
+`[Request interrupted by user]` and
+`[Request interrupted by user for tool use]` rows are not citable user words. A command run
 with `!` is not addressed to the assistant; it remains in the window and tail.
 
 Every source block carried in either header prompt is individually fenced with
@@ -85,7 +87,7 @@ produces the header. Each item records `resolved`, `missing` or `ambiguous`, wit
 the individual source checks and matched original ids. Quotes matching multiple
 originals are ambiguous and never guessed. The daemon recomputes this result
 against the frozen cut before persisting `citations` on the arm record. Shadow
-outcomes remain `answered` even when citations fail. C4 uses the single
+outcomes remain `answered` even when citations fail. Future installation uses the single
 `allCitationsResolved` predicate to refuse any missing or ambiguous citation;
 absent resolution data also refuses.
 
@@ -124,8 +126,8 @@ A too-long fork retains the observed API classification; an arbitrary 400 does
 not imply prompt-too-long. Provider exception bodies are omitted.
 
 Declarations establish shapes, not background lifetime, fork snapshot timing,
-effective fork model or provider concurrency. Installation must verify these live
-and choose a dispatch or session-lifetime executor. Unload discards the in-memory
+effective fork model or provider concurrency. Supervised live verification must establish these before relying on the shadow
+hook, and choose a dispatch or session-lifetime executor. Unload discards the in-memory
 budget owner; persistence across unload is not claimed. Phase-1 triage measures
 version-2 documents and overflow using deterministic excerpts. Continuation
 judgment, superiority and default-on remain phase-2 work.

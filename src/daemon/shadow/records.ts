@@ -95,10 +95,27 @@ export function armRecord(input: Record<string, unknown>, record: Record<string,
   const attempts = usageAttempts(record.usageAttempts);
   const options = completionOptions(record.options);
   const classification = failureClassification(record, scrubber);
-  return { ...basicRecord(record, scrubber), arm: input.arm as ArmRecord["arm"], attemptId: input.attempt_id as string,
+  return { ...basicRecord(record, scrubber), ...hookTimings(record.timings), ...armAccounting(record), arm: input.arm as ArmRecord["arm"], attemptId: input.attempt_id as string,
     requestedModel: record.requestedModel as string, inputHash: record.inputHash as string | null, promptHash: record.promptHash as string | null, header: header(record.header, scrubber),
     usageAttempts: attempts, ...classification, ...(options ? { options } : {}),
   };
+}
+function armAccounting(record: Record<string, unknown>): Pick<ArmRecord, "queueMs" | "budget"> {
+  const result: Pick<ArmRecord, "queueMs" | "budget"> = {};
+  if (record.queueMs !== undefined) result.queueMs = measurement(record.queueMs)!;
+  if (record.budget !== undefined) result.budget = budgetAccounting(record.budget);
+  return result;
+}
+function budgetAccounting(value: unknown): NonNullable<ArmRecord["budget"]> {
+  if (!object(value) || !["spent", "reserved", "available", "overshoot"].every(key => nonnegative(value[key]))) throw new ShadowStoreError("Invalid arm budget", HTTP.badRequest);
+  if (typeof value.unbounded !== "boolean" || typeof value.usageUnknown !== "boolean") throw new ShadowStoreError("Invalid arm budget state", HTTP.badRequest);
+  return { spent: value.spent as number, reserved: value.reserved as number, available: value.available as number, overshoot: value.overshoot as number,
+    unbounded: value.unbounded, usageUnknown: value.usageUnknown };
+}
+function hookTimings(value: unknown): Pick<ArmRecord, "timings"> {
+  if (value === undefined) return {};
+  if (!object(value) || !["setupMs", "nativeMs", "pairingMs", "hookMs"].every(key => nonnegative(value[key]))) throw new ShadowStoreError("Invalid hook timings", HTTP.badRequest);
+  return { timings: { setupMs: value.setupMs as number, nativeMs: value.nativeMs as number, pairingMs: value.pairingMs as number, hookMs: value.hookMs as number } };
 }
 
 

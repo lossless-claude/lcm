@@ -84,6 +84,10 @@ export class CompactionShadowStore {
     return found;
   }
   writeNative(cut: ShadowManifest, record: NativeRecord): void { this.publish(cut, "native.json", record); }
+  readNative(cut: ShadowManifest): NativeRecord | undefined {
+    const path = join(this.cutDir(cut.cwd, cut.cutId), "native.json");
+    return existsSync(path) ? readShadowJson<NativeRecord>(path) : undefined;
+  }
   writeArm(cut: ShadowManifest, record: ArmRecord): void { this.publish(cut, `arm-${record.arm}-${record.attemptId}.json`, record); }
   private publish(cut: ShadowManifest, name: string, record: NativeRecord | ArmRecord): void {
     const path = this.cutDir(cut.cwd, cut.cutId), file = join(path, name);

@@ -92,9 +92,19 @@ Both the daemon and the client must see the same value: a daemon started without
 
 ### Compaction shadow artifacts
 
-The daemon exposes authenticated compaction shadow artifact routes, but no live
-shadow hook or model executor is enabled. Native compaction and restore keep their
-existing behavior. Artifacts live in each project's `compaction-shadow/` directory
+Set the plugin's boolean `userConfig.compactionShadow` to `true` to measure three
+header arms beside native compaction. It defaults to `false`; while off, the
+module makes no shadow daemon request or shadow model call. Enabling it causes
+substantial extra model spending. It adds no separate spend cap: arms and ordinary
+module summaries share `sessionSummarizerMaxOutputTokens`.
+
+The hook observes real main-session manual, auto and plugin cuts. Precompute,
+subagent, fork and dedicated worker sessions pass through. Native receives the
+same event once and its exact result object is returned. Only admission and native
+pairing writes are awaited around native; model work and arm writes run in owned
+background tasks. No shadow document enters the conversation or changes restore.
+Host background lifetime and fork/native scheduling require supervised live
+verification before relying on complete arm delivery. Artifacts live in each project's `compaction-shadow/` directory
 under the lcm home, use Capture's scrubbing rules, and expire after 30 days.
 Recovery skips linked project/shadow/cut directories and checks real-path
 containment before recursive cleanup. Correlation identifiers are validated and
@@ -102,15 +112,16 @@ preserved exactly; sensitive identifiers are rejected. Admission retries compare
 a digest of raw identity fields, so redaction cannot hide a changed request.
 Native tails must match frozen engine handles in order, with the same role and
 current-rule scrubbed text; conflicting deliveries return HTTP 409.
-The header library prepares version-2 state and deterministic verbatim excerpts,
-without registering a compaction hook. Ordinary summaries and header arms share
+The daemon prepares version-2 state inputs and deterministic verbatim excerpts. Ordinary summaries and header arms share
 the existing `sessionSummarizerMaxOutputTokens` owner by session id, preserving
 spending across poller restarts. Complete requests reserve allowances; uncapped
 fork overshoot and unknown usage remain explicit. Document/header sizes are
 targets and instruction overflow is measured. See
 [compaction header jobs](design/compaction-header.md).
 Every human message remains in excerpts; oversized messages have a raw-row
-middle-elision marker. Arm records include production-time citation resolution.
+middle-elision marker. Arm records include production-time citation resolution, rendered C3 documents,
+queue/model duration and setup/native/pairing/total-hook timings. Missing or
+ambiguous citations remain measurements on shadow answers.
 Unknown model usage consumes the full shared reservation rather than restoring
 allowance, while retaining the `usageUnknown` flag.
 Finite registration caps are floored and clamped to safe integers; invalid values

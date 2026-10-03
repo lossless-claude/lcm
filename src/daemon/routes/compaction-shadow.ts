@@ -10,10 +10,10 @@ import { sendJson, type RouteHandler } from "../server.js";
 import { shadowMessages, nativeRecord, armRecord, correlationId } from "../shadow/records.js";
 import { captureShadowSnapshot } from "../shadow/snapshot.js";
 import { verifyNativeTail } from "../shadow/tail.js";
-import { headerCitationEvidence, prepareHeaderJob } from "../shadow/header-job.js";
+import { headerCitationEvidence, prepareHeaderJob, renderCompactionDocument } from "../shadow/header-job.js";
 import { resolveHeaderCitations } from "../../../hooks/header-citations.js";
 import { CompactionShadowStore, ShadowStoreError, recoverShadowProject, recoverShadowProjects } from "../shadow/store.js";
-import { SHADOW_RETENTION_MS, HTTP, hash, object, objectHash, safeId, validModelName, type ShadowManifest } from "../shadow/types.js";
+import { SHADOW_RETENTION_MS, HTTP, hash, object, objectHash, safeId, validModelName, type ShadowManifest, type ShadowSnapshot, type ShadowMessage } from "../shadow/types.js";
 
 /** A missing benchmark policy permits admission; an unreadable or invalid policy refuses it. */
 function policyRefusal(cwd: string, paths: LcmPaths, log: DaemonLog): "excluded" | "policy-unavailable" | undefined {
@@ -106,22 +106,28 @@ function storeResult({ store, cwd, scrubber }: Pick<Admission, "store" | "cwd" |
   if (!safeId(input.cut_id) || !hash(input.snapshot_hash)) throw new ShadowStoreError("Invalid result binding", HTTP.badRequest);
   if (!object(input.record)) throw new ShadowStoreError("Invalid result record", HTTP.badRequest);
   const { cut, snapshot } = store.bind(cwd, input.cut_id, { sessionId: input.session_id as string, snapshotHash: input.snapshot_hash });
-  if (kind === "native") {
-    const record = nativeRecord(input.record, scrubber);
-    verifyNativeTail(record.tail, snapshot.engineMessages, text => scrubber.scrub(text));
-    store.writeNative(cut, record);
-    return input.prepare_header === true && record.outcome === "answered" && (record.fidelity === undefined || record.fidelity === "verified")
-      ? cutHeaderJob({ cut, snapshot }, record.tail, scrubber) : null;
-  }
-  else {
-    const record = armRecord(input, input.record, scrubber);
-    if (record.header?.version === 2) record.citations = resolveHeaderCitations(record.header, headerCitationEvidence(cut.cutId,
-      snapshot.originals.map(row => ({ ...row, text: scrubber.scrub(row.text) })), snapshot.window.items ?? []));
-    store.writeArm(cut, record);
-    return null;
-  }
+  const context = { store, scrubber, cut, snapshot };
+  return kind === "native" ? publishNative(context, input.record, input.prepare_header === true) : publishArm(context, input);
 }
-function cutHeaderJob({ cut, snapshot }: { cut: ShadowManifest; snapshot: import("../shadow/types.js").ShadowSnapshot }, tail: import("../shadow/types.js").ShadowMessage[], scrubber: ScrubEngine) {
+type BoundCut = { store: CompactionShadowStore; scrubber: ScrubEngine; cut: ShadowManifest; snapshot: ShadowSnapshot };
+function publishNative(context: BoundCut, input: Record<string, unknown>, prepare: boolean) {
+  const { store, scrubber, cut, snapshot } = context, record = nativeRecord(input, scrubber);
+  verifyNativeTail(record.tail, snapshot.engineMessages, text => scrubber.scrub(text));
+  store.writeNative(cut, record);
+  return prepare && nativeVerified(record) ? cutHeaderJob(context, record.tail, scrubber) : null;
+}
+function publishArm(context: BoundCut, input: Record<string, unknown>) {
+  const { store, scrubber, cut, snapshot } = context, record = armRecord(input, input.record as Record<string, unknown>, scrubber);
+  if (record.header?.version === 2) record.citations = resolveHeaderCitations(record.header, headerCitationEvidence(cut.cutId,
+    snapshot.originals.map(row => ({ ...row, text: scrubber.scrub(row.text) })), snapshot.window.items ?? []));
+  const native = store.readNative(cut);
+  if (record.header?.version === 2 && native && nativeVerified(native)) record.document = renderCompactionDocument(cutHeaderJob(context, native.tail, scrubber), record.header);
+  store.writeArm(cut, record); return null;
+}
+function nativeVerified(record: import("../shadow/types.js").NativeRecord): boolean {
+  return record.outcome === "answered" && (record.fidelity === undefined || record.fidelity === "verified");
+}
+function cutHeaderJob({ cut, snapshot }: { cut: ShadowManifest; snapshot: ShadowSnapshot }, tail: ShadowMessage[], scrubber: ScrubEngine) {
   if (!snapshot.window.items) throw new ShadowStoreError("Structured header input is unavailable", HTTP.unprocessable);
   return prepareHeaderJob({ cutId: cut.cutId, instructions: scrubber.scrub(cut.instructions),
     originals: snapshot.originals.map(row => ({ ...row, text: scrubber.scrub(row.text) })), window: snapshot.window.items.map(row => ({ ...row, content: scrubber.scrub(row.content) })),

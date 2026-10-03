@@ -25,6 +25,7 @@
 // declared at the top level, and calls on it must be spelled `$.noun.method(...)`.
 import type { Register, EngineInterface } from "claude-code";
 import { sharedSessionOutputBudget, type SessionOutputBudget } from "./model-budget.js";
+import { ShadowSessionState, runCompactionShadow, type ShadowTransport, type ShadowEngine } from "./compaction-shadow.js";
 
 /** Same set the PostToolUse matcher in plugin.json names; `mcp__*` is matched by prefix. */
 const CAPTURED_TOOLS = new Set([
@@ -240,8 +241,9 @@ async function claimSession($: EngineInterface, sessionId: string, hook: string)
  * with /clear, /resume or /branch, where no session.start fires: its classic
  * SessionStart claims it before the SessionStart command hook can restore.
  */
-function registerSessionClaim(on: On): void {
+function registerSessionClaim(on: On, shadow?: ShadowSessionState): void {
   on("classic.SessionStart", async ($, e, next) => {
+    if (["clear", "resume", "fork"].includes(e.source)) shadow?.reset(e.session_id);
     await claimSession($, e.session_id, "classic.SessionStart");
     return next(e);
   });
@@ -268,8 +270,9 @@ function registerSessionClaim(on: On): void {
  * withdrawn so a later run of that id without this module records again; a crash skips
  * this, and its claim lapses with its timestamp instead.
  */
-function registerSessionEnd(on: On): void {
+function registerSessionEnd(on: On, shadow?: ShadowSessionState): void {
   on("session.end", async ($, e, next) => {
+    shadow?.reset(e.sessionId);
     await writeClaim($, e.sessionId, e.reason).catch(() => { /* the claim lapses on its own */ });
     return next(e);
   });
@@ -966,15 +969,53 @@ function registerToolCapture(on: On): void {
 
 export const register: Register = (on, options) => {
   const summaryCap = normalizedSummaryCap(options.sessionSummarizerMaxOutputTokens);
+  const shadow = options.compactionShadow === true ? shadowSessions : undefined;
   registerSessionStart(on, summaryCap);
-  registerSessionClaim(on);
-  registerSessionEnd(on);
+  registerSessionClaim(on, shadow);
+  registerSessionEnd(on, shadow);
   registerRestoreContext(on);
   registerLearningInstruction(on);
   registerPromptSearch(on);
   registerTurnIngest(on);
   registerToolCapture(on);
+  if (options.compactionShadow === true) registerCompactionShadow(on, summaryCap);
 };
+const shadowSessions = new ShadowSessionState();
+function shadowTransport($: EngineInterface): ShadowTransport {
+  return { post: (route, body) => postDaemonOutcome($, route, body), observe: (status, reason, sessionId) => noteHook(sessionId ?? "unknown", "session.compact", "shadow", "execution", status, reason) };
+}
+function shadowEngine($: EngineInterface): ShadowEngine {
+  return { env: { get: () => $.env.get("LCM_SUMMARIZE_WORKER") }, session: { id: () => $.session.id(), cwd: () => $.session.cwd(), model: () => $.session.model() },
+    model: { fork: request => $.model.fork(request), complete: (request, options) => $.model.complete(request, options) } };
+}
+function registerCompactionShadow(on: On, cap: number): void {
+  on("session.append", async ($, event, next) => {
+    let sessionId: string;
+    try { sessionId = await $.session.id(); }
+    catch { noteHook("unknown", "session.append", "shadow", "execution", "unavailable", "identity"); return next(event); }
+    const previous = shadowSessions.boundary(sessionId);
+    observeShadowAppend(sessionId, event);
+    let result: Awaited<ReturnType<typeof next>>;
+    try { result = await next(event); }
+    catch (error) { shadowSessions.restore(sessionId, event.uuid, previous); throw error; }
+    settledShadowAppend({ sessionId, event, previous }, result);
+    return result;
+  });
+  on("session.compact", async ($, event, next) => {
+    return runCompactionShadow(shadowEngine($), { event, next, state: shadowSessions, cap, signal: next.signal }, shadowTransport($));
+  });
+}
+function observeShadowAppend(sessionId: string, event: import("claude-code").Args<"session.append">): void {
+  if (event.agentId !== undefined || event.message.role === undefined) return;
+  const text = event.message.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+  shadowSessions.append(sessionId, { uuid: event.uuid, text, door: event.door });
+}
+function settledShadowAppend({ sessionId, event, previous }: { sessionId: string; event: import("claude-code").Args<"session.append">; previous?: string }, result: import("claude-code").EventResult<"session.append">): void {
+  if (result.deny !== undefined) { shadowSessions.restore(sessionId, event.uuid, previous); return; }
+  if (event.agentId !== undefined || result.message.role === undefined || shadowSessions.boundary(sessionId) !== event.uuid) return;
+  const text = result.message.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+  shadowSessions.append(sessionId, { uuid: result.uuid, text, door: "stored" });
+}
 function normalizedSummaryCap(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_SUMMARY_OUTPUT_CAP;
   return Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(value)));

@@ -70,6 +70,14 @@ describe("daemon compaction shadow artifacts", () => {
     expect(paired.body.job.inputHash).toMatch(/^[a-f0-9]{64}$/);
     expect(paired.body.job.evidence.cutId).toBe(admitted.body.cut.cutId);
   });
+  it("stores a rendered C3 document and measured hook timing beside an arm", async () => {
+    const cut = await start(); expect((await post("native", { ...native(cut), record: { ...native(cut).record, fidelity: "verified" } })).status).toBe(200);
+    const timings = { setupMs: 2, nativeMs: 5, pairingMs: 3, hookMs: 10 };
+    expect((await post("arm", { ...arm(cut), record: { ...arm(cut).record, outcome: "answered", header: workingHeader(), timings } })).status).toBe(200);
+    const stored = artifact("arm-A-first.json");
+    expect(stored.timings).toEqual(timings); expect(stored.document.text).toContain("user's own words");
+    expect(stored.document.text).toContain("## Engine tail"); expect(stored.document.bytes).toBe(Buffer.byteLength(stored.document.text));
+  });
   it("stores explicit native extraction ambiguity and does not prepare completion input", async () => {
     const cut = await start();
     const paired = await post("native", { ...binding(cut), prepare_header: true, record: { text: "", outcome: "unavailable", fidelity: "native-summary-unverified", tail: [],
@@ -420,6 +428,12 @@ describe("daemon compaction shadow artifacts", () => {
     const cut = await start(); const request = arm(cut); request.record.usage = { ...usage, output_tokens: -1 };
     expect((await post("arm", request)).status).toBe(400);
     expect(existsSync(join(dir(), "arm-A-first.json"))).toBe(false);
+  });
+  it("persists separate arm queue time and conservative budget accounting", async () => {
+    const cut = await start(), budget = { spent: 103, reserved: 0, unbounded: false, usageUnknown: true, available: 0, overshoot: 3 };
+    const request = { ...arm(cut), record: { ...arm(cut).record, queueMs: 7, budget } };
+    expect((await post("arm", request)).status).toBe(200);
+    expect(artifact("arm-A-first.json")).toMatchObject({ queueMs: 7, budget });
   });
   it("requires daemon authentication", async () => {
     expect((await post("start", startInput(), false)).status).toBe(401);

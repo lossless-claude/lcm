@@ -40,6 +40,10 @@ export type ArmRecord = {
   status?: number | null; errorKind?: string;
   options?: { maxTokens?: number; effort?: string };
   citations?: HeaderCitations;
+  queueMs?: number;
+  budget?: { spent: number; reserved: number; unbounded: boolean; usageUnknown: boolean; available: number; overshoot: number };
+  timings?: { setupMs: number; nativeMs: number; pairingMs: number; hookMs: number };
+  document?: { text: string; bytes: number; targetBytes: number; overflowBytes: number; omittedSummaryIds: string[]; elidedExcerptIds: number[]; headerWords: number; headerWordTarget: number; cutId: string };
 };
 export const digest = (text: string): string => createHash("sha256").update(text).digest("hex");
 export const objectHash = (value: unknown): string => digest(JSON.stringify(value));
