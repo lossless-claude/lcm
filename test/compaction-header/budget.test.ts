@@ -1,0 +1,60 @@
+import { describe, expect, it } from "vitest";
+import { sessionOutputBudget } from "../../hooks/model-budget.js";
+
+describe("session model output budget", () => {
+  it("reserves allowance and charges actual output, releasing unused tokens", async () => {
+    const budget = sessionOutputBudget({}, "session-a", 10);
+    const lease = await budget.reserveComplete(8);
+    expect(lease?.maxTokens).toBe(8);
+    expect(budget.snapshot()).toMatchObject({ spent: 0, reserved: 8, available: 2 });
+    lease!.settle(3);
+    expect(budget.snapshot()).toMatchObject({ spent: 3, reserved: 0, available: 7 });
+    expect(() => lease!.settle(3)).toThrow("settled");
+  });
+  it("reserves equal allowances atomically for B/C while another completion is pending", async () => {
+    const budget = sessionOutputBudget({}, "session-a", 11);
+    const ordinary = await budget.reserveComplete(3);
+    const pair = await budget.reserveComplete(9, 2);
+    expect(pair?.maxTokens).toBe(4);
+    expect(await budget.reserveComplete(1)).toBeNull();
+    ordinary!.settle(2); pair!.settle(5);
+    expect(budget.snapshot()).toMatchObject({ spent: 7, available: 4, reserved: 0 });
+  });
+  it("blocks bounded admissions behind an uncapped fork and records its unavoidable overshoot", async () => {
+    const budget = sessionOutputBudget({}, "session-a", 5);
+    const fork = budget.reserveFork(); expect(fork).not.toBeNull();
+    let admitted = false;
+    const completion = budget.reserveComplete(3).then(lease => { admitted = true; return lease; });
+    await Promise.resolve(); expect(admitted).toBe(false);
+    fork!.settle(8);
+    expect(await completion).toBeNull();
+    expect(budget.snapshot()).toMatchObject({ spent: 8, overshoot: 3, available: 0 });
+  });
+  it("does not defer a cut-time fork behind an existing request", async () => {
+    const budget = sessionOutputBudget({}, "session-a", 10);
+    const ordinary = await budget.reserveComplete(3);
+    expect(budget.reserveFork()).toBeNull();
+    ordinary!.settle(1);
+    expect(budget.reserveFork()).not.toBeNull();
+  });
+  it("preserves spending across owner reuse and separates changed sessions and owners", async () => {
+    const owner = {}, budget = sessionOutputBudget(owner, "a", 10);
+    (await budget.reserveComplete(4))!.settle(4);
+    expect(sessionOutputBudget(owner, "a", 10)).toBe(budget);
+    expect(sessionOutputBudget(owner, "a", 10).snapshot().spent).toBe(4);
+    expect(sessionOutputBudget(owner, "b", 10).snapshot().spent).toBe(0);
+    expect(sessionOutputBudget({}, "a", 10).snapshot().spent).toBe(0);
+  });
+  it("keeps unavailable usage unknown and closes further admission", async () => {
+    const budget = sessionOutputBudget({}, "a", 10);
+    (await budget.reserveComplete(4))!.settle(null);
+    expect(budget.snapshot()).toMatchObject({ usageUnknown: true, spent: 0, available: 0 });
+    expect(await budget.reserveComplete(1)).toBeNull();
+    expect(budget.reserveFork()).toBeNull();
+  });
+  it.each([0, 1])("refuses a pair when the shared cap is %i without spending", async cap => {
+    const budget = sessionOutputBudget({}, "a", cap);
+    expect(await budget.reserveComplete(10, 2)).toBeNull();
+    expect(budget.snapshot().spent).toBe(0);
+  });
+});

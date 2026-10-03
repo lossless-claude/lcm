@@ -1,0 +1,10 @@
+export const workingHeader = () => ({ version: 2,
+  intent: [{ text: "Fix parser.ts", sources: ["[excerpt:u1]"] }],
+  instructionsInForce: [{ sources: ["[excerpt:u1]"] }],
+  decisions: [{ text: "The parser change supersedes the earlier format", sources: ["[raw:cut-a:1]"], supersedes: ["[sum:sum_old]"] }],
+  taskState: [{ text: "Parser work", status: "in progress", provenance: "authorized by the user", sources: ["[excerpt:u1]"] }],
+  procedure: [{ text: "Run npm test", sources: [{ quote: "Run npm test" }] }],
+  nextSteps: [{ text: "Continue parser work", provenance: "authorized by the user", sources: ["[excerpt:u1]"] }],
+  openThreads: [], files: [{ text: "parser.ts", status: "modified", sources: ["[raw:cut-a:1]"] }],
+  errors: [{ text: "Earlier assertion failed", fix: "Updated parser", state: "reported", sources: ["[sum:sum_old]"] }],
+});
