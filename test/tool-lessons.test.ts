@@ -1,9 +1,102 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
+import { readFileSync } from "node:fs";
 import { runLcmMigrations } from "../src/db/migration.js";
+import { ensureToolLessonIncrementalSchema } from "../src/db/tool-lesson-schema.js";
 import { readInsights } from "../src/daemon/restore/insights.js";
 import type { DaemonConfig } from "../src/daemon/config.js";
 import { commandShape, maskBlockReason, ToolLessonStore } from "../src/promotion/tool-lessons.js";
+
+it.each([
+  ["cd /tmp/private-work && npm install widget", "npm install <args>"],
+  ["cd '/tmp/private work'; git diff --stat src/a.ts", "git diff --stat <args>"],
+  ["TOKEN=private-value MODE=test npm install widget", "npm install <args>"],
+  ["TOKEN='private value' mysql -psecret", "mysql -p <args>"],
+  ["bash -lc 'npm install widget'", "npm install <args>"],
+  ["sh -c 'git diff --stat src/a.ts'", "git diff --stat <args>"],
+  ["zsh -lc 'mysql -psecret -uadmin'", "mysql -p -u <args>"],
+  ['["bash","-lc","npm install widget"]', "npm install <args>"],
+  ['["sh","-c","git diff --stat src/a.ts"]', "git diff --stat <args>"],
+  ['["zsh","-lc","mysql -psecret -uadmin"]', "mysql -p -u <args>"],
+  ["npm run build && npm test", "npm run <args> && npm test"],
+  ["npm install widget || npm install other", "npm install <args> || npm install <args>"],
+  ["git diff --stat src/a.ts; git status", "git diff --stat <args> ; git status"],
+  ["git diff src/a.ts | cat", "git diff <args> | cat"],
+  ["cd /tmp/private-work || npm test", "cd <args> || npm test"],
+  ["bash -lc 'npm install widget || npm test' && git status", "(npm install <args> || npm test) && git status"],
+  ["cd /tmp/private-work && bash -lc 'npm install widget || npm test'", "npm install <args> || npm test"],
+  ["cd /tmp/private-work && TOKEN=private-value npm install widget && npm test", "npm install <args> && npm test"],
+  ["bash -lc 'cd /tmp/private-work; TOKEN=private-value mysql -psecret | cat'", "mysql -p <args> | cat"],
+  ["npm install 'quoted && value' && npm test", "npm install <args> && npm test"],
+  ["npm install widget && git diff src/a.ts | cat; npm test", "npm install <args> && git diff <args> | cat ; npm test"],
+])("shapes shell setup, wrappers and complete chains: %s", (command, shape) => {
+  expect(commandShape(command)).toBe(shape);
+});
+
+it.each(["privatevalue", "/tmp/private-directory", "private quoted value", "a&&b|c;d"]) (
+  "keeps values out of shapes across representative forms: %s", value => {
+    const commands = [
+      `cd '${value}' && mysql -p'${value}' -u'${value}' --output='${value}' '${value}'`,
+      `TOKEN='${value}' OTHER='${value}' mysql -p'${value}'`,
+      JSON.stringify(["bash", "-lc", `cd '${value}'; TOKEN='${value}' mysql -p'${value}' | cat '${value}'`]),
+      `git '${value}'`,
+      `npm install '${value}' && mysql -p'${value}'`,
+    ];
+    for (const command of commands) {
+      const shape = commandShape(command);
+      expect(shape).not.toBeNull();
+      expect(shape).not.toContain(value);
+      expect(shape).not.toContain("TOKEN");
+      expect(shape).not.toContain("OTHER");
+      expect(shape).not.toMatch(/["']/);
+      expect(shape).toContain("<args>");
+    }
+  },
+);
+
+it("shapes more mixed shell calls while declining invalid and unsupported forms", () => {
+  const commands = JSON.parse(readFileSync(new URL("./fixtures/tool-lesson-command-shapes.json", import.meta.url), "utf8")) as string[];
+  expect(commands.map(commandShape).filter(Boolean)).toHaveLength(22);
+});
+
+it.each([
+  "npm install widget && sudo npm test",
+  "git diff | env TOKEN=value cat",
+  "npm install widget &&",
+  "npm install widget; ; npm test",
+  "TOKEN=private-value",
+  "bash -lc",
+  "bash -lc 'npm install widget",
+  `bash -lc "npm install 'unterminated"`,
+  '["bash","-lc","npm install \\\"unterminated"]',
+  "npm install widget && npm test 'unterminated",
+  "npm install widget | npm test $(cat file)",
+  "npm install widget > /tmp/output",
+  "'TOKEN=private-value' npm test",
+  "TOKEN\\=private-value npm test",
+  "npm test # ignored && git status",
+])("declines the whole command when parsing or any segment fails: %s", command => {
+  expect(commandShape(command)).toBeNull();
+});
+
+it("bounds wrapper nesting and shapes chains and flags near the stored input cap", () => {
+  const chain = Array.from({ length: 128 }, () => "npm test").join(" && ");
+  expect(Buffer.byteLength(chain)).toBeLessThan(2048);
+  expect(commandShape(chain)).toBe(chain);
+  const flags = Array.from({ length: 100 }, (_, index) => `--flag${index}=value`);
+  const command = "fixturetool " + flags.join(" ");
+  expect(Buffer.byteLength(command)).toBeLessThan(2048);
+  expect(commandShape(command)).toBe("fixturetool " + flags.map(flag => flag.split("=")[0]).sort().join(" ") + " <args>");
+  const nested = (depth: number) => {
+    let command = "npm test";
+    while (depth--) command = "bash -c " + JSON.stringify(command);
+    return command;
+  };
+  expect(Buffer.byteLength(nested(9))).toBeLessThan(2048);
+  expect(commandShape(nested(9))).toBeNull();
+  expect(commandShape(nested(8))).toBe("npm test");
+  expect(commandShape(`bash -lc 'bash -c "npm test"'`)).toBe("npm test");
+});
 
 it("forms command shapes with sorted flags and placeholders for paths and values", () => {
   expect(commandShape('git diff --output="/tmp/a.patch" --stat src/a.ts'))
@@ -60,6 +153,108 @@ function rebuiltSnapshot() {
   }
   return { db: rebuilt, store: new ToolLessonStore(rebuilt) };
 }
+
+it.each(["&&", "||", ";", "|"])("keeps %s chain evidence separate from every segment", async operator => {
+  const shape = `npm install <args> ${operator} npm test`;
+  const now = new Date().toISOString();
+  for (const session of ["one", "two", "three"]) {
+    storedCall(session, `npm install old ${operator} npm test`, "failed", { at: now });
+    storedCall(session, "npm install new", "succeeded", { at: now });
+    storedCall(session, "npm test", "succeeded", { at: now });
+  }
+  await lessons.refresh("project");
+  expect(lessons.list()).toEqual([expect.objectContaining({ kind: "environment-rule", shape, count: 3, retired: false })]);
+  const insights = readInsights(db, { compaction: { promotionThresholds: {} } } as DaemonConfig);
+  expect(insights).toHaveLength(1);
+  expect(insights[0].content).toContain(`\`${shape}\``);
+
+  storedCall("one", `npm install new ${operator} npm test`, "succeeded", { at: now });
+  await lessons.refresh("project");
+  expect(lessons.list()).toEqual([expect.objectContaining({ kind: "error-fix", shape, count: 1 })]);
+  expect(lessons.list({ kind: "environment-rule", includeRetired: true })).toEqual([
+    expect.objectContaining({ shape, retired: true }),
+  ]);
+});
+
+it("does not retire a single-segment rule with a successful chain", async () => {
+  for (const session of ["one", "two", "three"]) storedCall(session, "npm test", "failed");
+  storedCall("success", "npm install widget && npm test", "succeeded", { at: "2026-01-03T00:00:00Z" });
+  await lessons.refresh("project");
+  expect(lessons.list()).toEqual([expect.objectContaining({ shape: "npm test", retired: false })]);
+  expect(commandShape("npm install widget && npm test")).toBe("npm install <args> && npm test");
+});
+
+it("declines truncated wrapper calls even when their visible command has a shape", async () => {
+  for (const session of ["one", "two", "three"]) storedCall(session, "bash -lc 'npm install widget'", "failed");
+  await lessons.refresh("project");
+  expect(lessons.list()).toEqual([expect.objectContaining({ shape: "npm install <args>" })]);
+  db.exec("UPDATE transcript_tool_calls SET truncated = 1");
+  await lessons.refresh("project");
+  expect(lessons.list()).toEqual([]);
+});
+
+it("re-derives shapes once on stores that already have the incremental schema", async () => {
+  for (const session of ["one", "two", "three"]) {
+    storedCall(session, "git privatevalue", "failed");
+    storedCall(session, "bash -lc 'cd /tmp/private-work; TOKEN=private-value npm install widget'", "failed");
+  }
+  storedCall("success", "sh -c 'git privatevalue'", "succeeded", { at: "2026-01-03T00:00:00Z" });
+  const changed = storedCall("pending", "Read", "unknown", { name: "Read" });
+  await lessons.refresh("project");
+  const legacy = { ...lessons.list({ kind: "environment-rule", includeRetired: true }).find(lesson => lesson.shape === "git privatevalue")!, shape: "git privatevalue" };
+  // The old parser retained quoted subcommands; the new format masks them.
+  db.prepare("UPDATE transcript_tool_calls SET input = ? WHERE input = 'git privatevalue'").run("git 'privatevalue'");
+  db.prepare("UPDATE transcript_tool_calls SET input = ? WHERE input LIKE 'sh -c %'").run(`sh -c "git 'privatevalue'"`);
+  const key = JSON.stringify(["environment-rule", legacy.shape]);
+  const legacyContribution = { ...legacy, count: 1, sessionCounts: {} };
+  for (const row of db.prepare("SELECT call_row, session_id FROM tool_lesson_contributions WHERE lesson_key = ?").all(key)) {
+    db.prepare("UPDATE tool_lesson_contributions SET data = ? WHERE call_row = ? AND kind = 'environment-rule'")
+      .run(JSON.stringify({ ...legacyContribution, sessionCounts: { [String(row.session_id)]: 1 } }), row.call_row);
+  }
+  db.exec("DELETE FROM tool_lesson_changes; DROP TABLE IF EXISTS tool_lesson_shape_backfill");
+  db.prepare("INSERT INTO tool_lesson_changes SELECT session_id, call_id FROM transcript_tool_calls WHERE rowid = ?").run(changed);
+  const published = lessons.list({ includeRetired: true });
+  const generation = db.prepare("SELECT generation FROM tool_lesson_state").get()!.generation;
+
+  runLcmMigrations(db);
+  expect(lessons.list({ includeRetired: true })).toEqual(published);
+  expect(db.prepare("SELECT COUNT(*) AS count FROM tool_lesson_changes").get()!.count).toBe(8);
+  runLcmMigrations(db);
+  expect(db.prepare("SELECT COUNT(*) AS count FROM tool_lesson_changes").get()!.count).toBe(8);
+  await new ToolLessonStore(db).refresh("project");
+  expect(lessons.list({ kind: "environment-rule", includeRetired: true })).toEqual(expect.arrayContaining([
+    expect.objectContaining({ shape: "git <args>", count: 3, retired: true }),
+    expect.objectContaining({ shape: "npm install <args>", count: 3, retired: false }),
+  ]));
+  for (const table of ["tool_lessons", "tool_lesson_contributions", "tool_lesson_totals"]) {
+    expect(db.prepare(`SELECT 1 FROM ${table} WHERE lesson_key = ?`).get(key)).toBeUndefined();
+  }
+  expect(db.prepare("SELECT 1 FROM tool_lesson_successes WHERE shape = 'git privatevalue'").get()).toBeUndefined();
+  expect(db.prepare("SELECT generation FROM tool_lesson_state").get()!.generation).toBe(Number(generation) + 1);
+  runLcmMigrations(db);
+  expect(db.prepare("SELECT COUNT(*) AS count FROM tool_lesson_changes").get()!.count).toBe(0);
+  expect(await lessons.refresh("project")).toBe(0);
+  expect(db.prepare("SELECT generation FROM tool_lesson_state").get()!.generation).toBe(Number(generation) + 1);
+});
+
+it("commits the shape-upgrade journal and marker together and retries after rollback", async () => {
+  storedCall("one", "bash -lc 'npm install widget'", "failed");
+  await lessons.refresh("project");
+  db.exec(`DELETE FROM tool_lesson_shape_backfill;
+    CREATE TRIGGER fail_shape_marker BEFORE INSERT ON tool_lesson_shape_backfill BEGIN
+      SELECT RAISE(ABORT, 'interrupted shape upgrade');
+    END;`);
+  expect(() => ensureToolLessonIncrementalSchema(db)).toThrow("interrupted shape upgrade");
+  expect(db.prepare("SELECT 1 FROM tool_lesson_changes").get()).toBeUndefined();
+  expect(db.prepare("SELECT 1 FROM tool_lesson_shape_backfill").get()).toBeUndefined();
+  db.exec("DROP TRIGGER fail_shape_marker");
+  ensureToolLessonIncrementalSchema(db);
+  expect(db.prepare("SELECT COUNT(*) AS count FROM tool_lesson_changes").get()!.count).toBe(1);
+  expect(db.prepare("SELECT id FROM tool_lesson_shape_backfill").get()!.id).toBe(1);
+  await lessons.refresh("project");
+  ensureToolLessonIncrementalSchema(db);
+  expect(db.prepare("SELECT 1 FROM tool_lesson_changes").get()).toBeUndefined();
+});
 
 it("matches a full rebuild through adds, resolutions, corrections and removals", async () => {
   const first = storedCall("one", "npm install old", "unknown");
@@ -453,9 +648,6 @@ it.each([
 });
 
 it.each([
-  "npm install a && npm test",
-  "git diff | cat",
-  "bash -c 'npm install'",
   "env TOKEN=value npm install",
   "npm install $(cat file)",
   "npm install 'unterminated",

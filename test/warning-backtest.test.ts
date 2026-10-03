@@ -116,7 +116,8 @@ it("keeps non-shell, truncated and shapeless failures outside coverage", async (
   call("four", "failed");
   call("five", "failed", { name: "Read" });
   call("six", "failed", { truncated: true });
-  call("seven", "blocked", { command: "npm install a && npm test" });
+  // A redirection has no shape; chains do since #796.
+  call("seven", "blocked", { command: "npm install a > install.log" });
   call("eight", "failed", { command: null });
   expect(await measure()).toMatchObject({ calls: 8, shapedCalls: 4, matches: 1, matchedFailures: 1,
     unmatchedFailures: 3, unshapedFailures: 3, coverage: 1 / 4 });
