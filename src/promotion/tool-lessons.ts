@@ -131,28 +131,6 @@ function shapeFlag(word: string, executable: string): { name: string; hasValue: 
   return { name: word, hasValue: false };
 }
 
-interface FlagNode { children: Map<string, FlagNode>; flag?: string }
-
-/** Trie ordering visits each flag character once; each node has a fixed ASCII alphabet. */
-function sortedFlags(flags: Set<string>): string[] {
-  const root: FlagNode = { children: new Map() };
-  for (const flag of flags) {
-    let node = root;
-    for (const char of flag) {
-      if (!node.children.has(char)) node.children.set(char, { children: new Map() });
-      node = node.children.get(char)!;
-    }
-    node.flag = flag;
-  }
-  const sorted: string[] = [], pending = [root];
-  while (pending.length) {
-    const node = pending.pop()!;
-    if (node.flag) sorted.push(node.flag);
-    for (const char of [...node.children.keys()].sort().reverse()) pending.push(node.children.get(char)!);
-  }
-  return sorted;
-}
-
 function simpleCommandShape(words: readonly string[]): string | null {
   const executable = basename(words[0]);
   if (!/^[a-zA-Z][\w.-]*$/.test(executable)) return null;
@@ -172,7 +150,7 @@ function simpleCommandShape(words: readonly string[]): string | null {
       hasValues ||= flag.hasValue;
     } else hasValues = true;
   }
-  return [...parts, ...sortedFlags(flags), ...(hasValues ? ["<args>"] : [])].join(" ");
+  return [...parts, ...[...flags].sort(), ...(hasValues ? ["<args>"] : [])].join(" ");
 }
 
 function shellCommandShape(command: string, depth: number): string | null {
