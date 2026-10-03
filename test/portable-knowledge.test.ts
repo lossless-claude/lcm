@@ -104,6 +104,21 @@ describe("portable-knowledge — export", () => {
     expect(typeof doc.entries[0].createdAt).toBe("string");
   });
 
+  it("scrubs with the global sensitive patterns from config.json", async () => {
+    const baseDir = makeTempDir();
+    const cwd = makeTempDir();
+    const outFile = join(makeTempDir(), "out.json");
+    // Only the global pattern matches this value: no gitleaks or built-in rule knows its shape.
+    writeFileSync(join(baseDir, "config.json"), JSON.stringify({ security: { sensitivePatterns: ["ZQX-PRIVATE-\\d+"] } }));
+    seedProject(baseDir, cwd, [{ content: "deploy key ZQX-PRIVATE-7781 lives in the vault" }]);
+
+    await exportKnowledge(cwd, { output: outFile, _lcmBaseDir: baseDir });
+
+    const doc: ExportDocument = JSON.parse(readFileSync(outFile, "utf-8"));
+    expect(doc.entries[0].content).not.toContain("ZQX-PRIVATE-7781");
+    expect(doc.entries[0].content).toContain("lives in the vault");
+  });
+
   it("exports to a file when --output is specified", async () => {
     const baseDir = makeTempDir();
     const cwd = makeTempDir();
