@@ -17,6 +17,7 @@ export type ShadowSnapshot = {
 export type ShadowManifest = {
   version: 1; cutId: string; projectId: string; cwd: string; sessionId: string; conversationId: number;
   boundaryUuid: string; model: string; trigger: "manual" | "auto" | "plugin"; instructions: string;
+  requestIdentityHash?: string;
   snapshotHash: string; rulesKey: string; createdAt: string; expiresAt: string;
   state: "pending" | "complete" | "incomplete"; owner: string; expectedArms: ("A" | "B" | "C")[];
 };

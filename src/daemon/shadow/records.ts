@@ -4,27 +4,47 @@ import { HTTP, HEADER_SECTIONS, digest, hash, object, safeId, nonnegative, valid
   type ArmRecord, type NativeRecord, type ShadowMessage, type ShadowHeader, type ShadowUsage } from "./types.js";
 
 const OUTCOMES = new Set(["answered", "skipped", "nothing-to-fork", "api-error", "empty-reply", "aborted", "invalid-output", "unavailable", "spend-cap", "unconfirmed"]);
+/** Correlation ids are preserved exactly or refused; redaction would change their identity. */
+export function correlationId(value: unknown, scrubber: ScrubEngine): string {
+  if (!safeId(value) || scrubber.scrub(value) !== value) throw new ShadowStoreError("Invalid shadow identifier", HTTP.badRequest);
+  return value;
+}
 function validEngineMessage(row: unknown): boolean {
   if (!object(row)) return false;
   if (typeof row.role !== "string" || !["user", "assistant"].includes(row.role)) return false;
   if (typeof row.text !== "string") return false;
-  return row.handle === undefined || typeof row.handle === "string";
+  return row.handle === undefined || safeId(row.handle);
 }
 export function shadowMessages(value: unknown, scrubber: ScrubEngine): ShadowMessage[] {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.some(row => !validEngineMessage(row)))
     throw new ShadowStoreError("Invalid engine messages", HTTP.badRequest);
-  return value.map(row => ({ role: row.role, text: scrubber.scrub(row.text), ...(row.handle !== undefined ? { handle: row.handle } : {}) }));
+  return value.map(row => ({ role: row.role, text: scrubber.scrub(row.text), ...(row.handle !== undefined ? { handle: correlationId(row.handle, scrubber) } : {}) }));
+}
+function sourcePointer(value: string | { quote: string }, scrubber: ScrubEngine): string | { quote: string } {
+  if (typeof value !== "string") return { quote: scrubber.scrub(value.quote) };
+  const raw = /^\[raw:([A-Za-z0-9_-]+):(\d+)\]$/.exec(value);
+  const summary = /^\[sum:(sum_[A-Za-z0-9_-]+)\]$/.exec(value);
+  const id = raw?.[1] ?? summary?.[1];
+  if (!id) throw new ShadowStoreError("Invalid source pointer", HTTP.badRequest);
+  correlationId(id, scrubber);
+  if (raw && (!Number.isSafeInteger(Number(raw[2])) || Number(raw[2]) <= 0)) throw new ShadowStoreError("Invalid raw source id", HTTP.badRequest);
+  return value;
+}
+function supersessions(value: unknown, scrubber: ScrubEngine): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new ShadowStoreError("Invalid supersessions", HTTP.badRequest);
+  return value.map(id => correlationId(id, scrubber));
 }
 function header(value: unknown, scrubber: ScrubEngine): ShadowHeader | null {
   if (value === undefined || value === null) return null;
   if (!validHeader(value)) throw new ShadowStoreError("Invalid header", HTTP.badRequest);
   const result = { version: 1 } as ShadowHeader;
   for (const key of HEADER_SECTIONS) result[key] = value[key].map(item => ({
-    text: scrubber.scrub(item.text), sources: item.sources.map(source => typeof source === "string" ? scrubber.scrub(source) : { quote: scrubber.scrub(source.quote) }),
+    text: scrubber.scrub(item.text), sources: item.sources.map(source => sourcePointer(source, scrubber)),
     ...(typeof item.status === "string" ? { status: scrubber.scrub(item.status) } : {}),
     ...(typeof item.fix === "string" ? { fix: scrubber.scrub(item.fix) } : {}),
-    ...(Array.isArray(item.supersedes) && item.supersedes.every(id => typeof id === "string") ? { supersedes: item.supersedes.map(id => scrubber.scrub(id)) } : {}),
+    ...(item.supersedes !== undefined ? { supersedes: supersessions(item.supersedes, scrubber) } : {}),
   }));
   return result;
 }
@@ -45,7 +65,7 @@ function basicRecord(record: Record<string, unknown>, scrubber: ScrubEngine) {
 }
 export function nativeRecord(record: Record<string, unknown>, scrubber: ScrubEngine): NativeRecord {
   const base = basicRecord(record, scrubber);
-  if (record.summaryUuid !== undefined && !safeId(record.summaryUuid)) throw new ShadowStoreError("Invalid summary uuid", HTTP.badRequest);
+  if (record.summaryUuid !== undefined) correlationId(record.summaryUuid, scrubber);
   return { ...base, tail: shadowMessages(record.tail, scrubber), rawTextHash: digest(record.text as string), rawTextBytes: Buffer.byteLength(record.text as string, "utf8"),
     ...(record.summaryUuid ? { summaryUuid: record.summaryUuid as string } : {}),
     ...(record.tokensBefore !== undefined ? { tokensBefore: measurement(record.tokensBefore)! } : {}),
@@ -55,9 +75,11 @@ export function nativeRecord(record: Record<string, unknown>, scrubber: ScrubEng
 }
 export function armRecord(input: Record<string, unknown>, record: Record<string, unknown>, scrubber: ScrubEngine): ArmRecord {
   validateArmIdentity(input, record);
+  correlationId(input.attempt_id, scrubber);
+  for (const value of [record.inputHash, record.promptHash]) correlationId(value, scrubber);
   const attempts = usageAttempts(record.usageAttempts, scrubber);
   const options = completionOptions(record.options);
-  const classification = failureClassification(record);
+  const classification = failureClassification(record, scrubber);
   return { ...basicRecord(record, scrubber), arm: input.arm as ArmRecord["arm"], attemptId: input.attempt_id as string,
     requestedModel: scrubber.scrub(record.requestedModel as string), inputHash: record.inputHash as string, promptHash: record.promptHash as string, header: header(record.header, scrubber),
     usageAttempts: attempts, ...classification, ...(options ? { options } : {}),
@@ -68,7 +90,7 @@ export function armRecord(input: Record<string, unknown>, record: Record<string,
 function validateArmIdentity(input: Record<string, unknown>, record: Record<string, unknown>): void {
   if (typeof input.arm !== "string" || !["A", "B", "C"].includes(input.arm)) throw new ShadowStoreError("Invalid arm", HTTP.badRequest);
   if (!safeId(input.attempt_id)) throw new ShadowStoreError("Invalid attempt", HTTP.badRequest);
-  if (typeof record.requestedModel !== "string" || !record.requestedModel) throw new ShadowStoreError("Invalid model", HTTP.badRequest);
+  if (!safeId(record.requestedModel)) throw new ShadowStoreError("Invalid model", HTTP.badRequest);
   validatePromptHashes(record);
 }
 function usageAttempts(value: unknown, scrubber: ScrubEngine): ArmRecord["usageAttempts"] {
@@ -76,7 +98,7 @@ function usageAttempts(value: unknown, scrubber: ScrubEngine): ArmRecord["usageA
   if (!Array.isArray(value)) throw new ShadowStoreError("Invalid usage attempts", HTTP.badRequest);
   return value.map(attempt => {
     if (!object(attempt)) throw new ShadowStoreError("Invalid usage attempt", HTTP.badRequest);
-    if (typeof attempt.failed !== "boolean" || typeof attempt.model !== "string") throw new ShadowStoreError("Invalid usage attribution", HTTP.badRequest);
+    if (typeof attempt.failed !== "boolean" || !safeId(attempt.model)) throw new ShadowStoreError("Invalid usage attribution", HTTP.badRequest);
     const reported = usage(attempt.usage);
     if (!reported) throw new ShadowStoreError("Missing attempt usage", HTTP.badRequest);
     return { usage: reported, failed: attempt.failed, model: scrubber.scrub(attempt.model) };
@@ -97,12 +119,12 @@ function modelEffort(value: unknown): string {
   if (typeof value !== "string" || !["low", "medium", "high", "xhigh", "max"].includes(value)) throw new ShadowStoreError("Invalid effort", HTTP.badRequest);
   return value;
 }
-function failureClassification(record: Record<string, unknown>): Pick<ArmRecord, "status" | "errorKind"> {
+function failureClassification(record: Record<string, unknown>, scrubber: ScrubEngine): Pick<ArmRecord, "status" | "errorKind"> {
   const result: Pick<ArmRecord, "status" | "errorKind"> = {};
   if (record.status !== undefined) result.status = apiStatus(record.status);
   if (record.errorKind !== undefined) {
     if (typeof record.errorKind !== "string" || !/^[a-z_]{1,80}$/.test(record.errorKind)) throw new ShadowStoreError("Invalid API error kind", HTTP.badRequest);
-    result.errorKind = record.errorKind;
+    result.errorKind = correlationId(record.errorKind, scrubber);
   }
   return result;
 }

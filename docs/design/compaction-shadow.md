@@ -35,6 +35,11 @@ Native/arm delivery takes `cwd`, `session_id`, `cut_id`, `snapshot_hash` and `re
 arm delivery also takes `arm` and `attempt_id`. Usage retains uncached input, output,
 cache-read and cache-creation counters. Missing usage or cost is unknown, never zero.
 Identical retries are accepted; conflicting results or identities are rejected.
+`requestIdentityHash` binds the raw cwd, cut nonce, session, boundary, model,
+trigger and instruction presence/value before redaction. Only its SHA-256 digest
+is stored beside the scrubbed display fields. A retry cannot change those inputs,
+even when both redact to the same text. Legacy cuts without this digest remain
+readable for evaluation and expiry, but admission retries require a new cut nonce.
 Independent files and atomic publication preserve out-of-order completion. Once
 native and all three arms have records, the manifest is complete even when an arm
 reports a non-answer.
@@ -43,13 +48,23 @@ Every persisted text field, including frozen windows and historical summary text
 uses Capture's current global/project scrubbing rules. Scrubbing the shadow copy
 does not rewrite stored DAG summaries. Engine descriptors
 allow only role, text and opaque handle; arbitrary result objects and media bytes
-are omitted. Artifacts have private file/directory permissions. Nothing uploads
+are omitted. Correlation identifiers are 1–140 ASCII letters, digits, underscores
+or hyphens, and are rejected if current scrubbing rules flag them. Accepted handles,
+session/cut/boundary/source/attempt identifiers, supersession ids and source pointers
+retain their exact values. Source pointers must use `[raw:<cut-id>:<positive-id>]`
+or `[sum:<summary-id>]` with a `sum_` prefix; quoted evidence uses `{ "quote": "..." }`. Caller-supplied
+digests and error kinds retain their stricter shapes and are also checked for
+sensitive values. Model labels use the identifier shape and are scrubbed for display.
+Artifacts have private file/directory permissions. Nothing uploads
 them; later model calls through the session client can still transmit prompts.
 
 Cuts expire after 30 days. Startup and admission prune expired cuts in bounded
 update batches, only in this namespace, and mark another daemon owner's pending
 cuts incomplete. Delivery to an expired cut is rejected. A local evaluation export
-has its own lifetime. Cleanup does not follow directory links.
+has its own lifetime. Recovery checks every descended directory with `lstat`,
+including project, shadow and cut directories, and skips links. Every recursive
+removal, including staging cleanup, rechecks the directory chain and verifies its
+real path is strictly inside the lcm home's real projects directory.
 
 ## Corpus policy
 

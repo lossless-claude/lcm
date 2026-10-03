@@ -137,7 +137,7 @@ export async function evaluateCompactionShadow(options: Phase1Options) {
   validateRates(options.rates);
   const seed = options.seed ?? "compaction-shadow-phase-1-v1", limit = options.limit ?? MINIMUM_CUTS;
   if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("Sample limit must be a positive integer");
-  const { cuts, counts } = await loadCuts(options, policy, seed, limit);
+  const { cuts, counts } = await loadCuts(options, { policy, seed, limit });
   const measured = cuts.map(cut => measures(cut, options.rates));
   const reportMetrics = collectMetrics({ cuts, measured, counts, seed, policyFile, rates: options.rates });
   writeReport(options.output, reportMetrics, measured.flatMap(result => result.probes));
@@ -186,7 +186,7 @@ function collectMetrics({ cuts, measured, counts, seed, policyFile, rates }: {
   return reportMetrics;
 }
 
-async function loadCuts(options: Phase1Options, policy: ReturnType<typeof readCorpusConfig>, seed: string, limit: number) {
+async function loadCuts(options: Phase1Options, { policy, seed, limit }: { policy: ReturnType<typeof readCorpusConfig>; seed: string; limit: number }) {
   const counts: ReadCounts = { excludedProjects: 0, heldOutProjects: 0, invalidSources: 0, deduplicated: 0 };
   const cwds = allowedProjects(options.paths, policy, counts), ids = new Set(cwds.map(projectId));
   const config = loadDaemonConfig(options.paths.configPath), scrubbers = new Map<string, ScrubEngine>();

@@ -139,10 +139,13 @@ function indexHistory(raw: string, sessionId: string, rows: Map<string, HistoryR
   for (const [ordinal, line] of raw.split("\n").entries()) {
     if (!line.trim()) continue;
     const row: unknown = JSON.parse(line);
-    if (!object(row) || row.sessionId !== undefined && row.sessionId !== sessionId) throw new Error("Transcript identity mismatch");
+    validateHistoryIdentity(row, sessionId);
     if (typeof row.uuid !== "string") continue;
     if (rows.has(row.uuid)) throw new Error("Duplicate transcript uuid");
     rows.set(row.uuid, { row, line, ordinal });
   }
 
+}
+function validateHistoryIdentity(row: unknown, sessionId: string): asserts row is Record<string, unknown> {
+  if (!object(row) || row.sessionId !== undefined && row.sessionId !== sessionId) throw new Error("Transcript identity mismatch");
 }

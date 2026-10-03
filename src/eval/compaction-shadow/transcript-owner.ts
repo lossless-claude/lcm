@@ -23,20 +23,25 @@ function envelopeCwd(prefix: string): string | undefined {
   if (!remainder.startsWith("{")) return undefined;
   remainder = remainder.slice(1).trimStart();
   while (remainder.length) {
-    const key = scalar(remainder);
-    if (!key || typeof key.value !== "string") return undefined;
-    remainder = remainder.slice(key.length).trimStart();
-    if (!remainder.startsWith(":")) return undefined;
-    if (["message", "content", "attachment", "data"].includes(key.value)) return undefined;
-    remainder = remainder.slice(1).trimStart();
-    const value = scalar(remainder);
-    if (!value) return undefined;
-    if (key.value === "cwd") return typeof value.value === "string" && isAbsolute(value.value) ? value.value : undefined;
-    remainder = remainder.slice(value.length).trimStart();
+    const field = envelopeField(remainder);
+    if (!field) return undefined;
+    if (field.key === "cwd") return typeof field.value === "string" && isAbsolute(field.value) ? field.value : undefined;
+    remainder = field.remainder;
     if (!remainder.startsWith(",")) return undefined;
     remainder = remainder.slice(1).trimStart();
   }
   return undefined;
+}
+function envelopeField(remainder: string): { key: string; value: unknown; remainder: string } | undefined {
+  const key = scalar(remainder);
+  if (!key || typeof key.value !== "string") return undefined;
+  remainder = remainder.slice(key.length).trimStart();
+  if (!remainder.startsWith(":")) return undefined;
+  if (["message", "content", "attachment", "data"].includes(key.value)) return undefined;
+  remainder = remainder.slice(1).trimStart();
+  const value = scalar(remainder);
+  if (!value) return undefined;
+  return { key: key.value, value: value.value, remainder: remainder.slice(value.length).trimStart() };
 }
 function scalar(text: string): { value: unknown; length: number } | undefined {
   const match = SCALAR.exec(text);

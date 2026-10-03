@@ -6,7 +6,7 @@ import { corpusConfigPath, isExcluded, readCorpusConfig } from "../../eval/corpu
 import { projectDir, projectId } from "../project.js";
 import { validateCwd } from "../validate-cwd.js";
 import { sendJson, type RouteHandler } from "../server.js";
-import { shadowMessages, nativeRecord, armRecord } from "../shadow/records.js";
+import { shadowMessages, nativeRecord, armRecord, correlationId } from "../shadow/records.js";
 import { captureShadowSnapshot } from "../shadow/snapshot.js";
 import { CompactionShadowStore, ShadowStoreError, recoverShadowProject, recoverShadowProjects } from "../shadow/store.js";
 import { SHADOW_RETENTION_MS, HTTP, hash, object, objectHash, safeId, type ShadowManifest } from "../shadow/types.js";
@@ -26,6 +26,7 @@ export function createCompactionShadowHandlers(config: DaemonConfig, paths: LcmP
       const cwd = validateCwd(input.cwd);
       if (kind === "start" && excluded(cwd, paths)) { sendJson(res, HTTP.ok, { admitted: false, reason: "excluded" }); return; }
       const scrubber = await ScrubEngine.forProject(config.security.sensitivePatterns, projectDir(cwd, paths));
+      for (const id of [input.session_id, input.cut_id, input.boundary_uuid].filter(id => id !== undefined)) correlationId(id, scrubber);
       if (kind !== "start") {
         storeResult({ store, cwd, scrubber }, input, kind);
         sendJson(res, HTTP.ok, { stored: true }); return;
@@ -46,22 +47,24 @@ async function admitCut({ paths, store, cwd, scrubber }: Admission, input: Recor
   const cutId = input.cut_id as string | undefined ?? randomUUID();
   recoverShadowProject(store, cwd);
   const prior = store.read(cwd, cutId);
+  const requestHash = requestIdentityHash(input, cutId);
+  const engineMessages = shadowMessages(input.engine_messages, scrubber);
   const instructions = scrubber.scrub(input.instructions as string ?? "");
   const model = scrubber.scrub(input.model as string);
   if (prior) {
-    if (identityHash(prior.cut) !== identityHash({ sessionId: input.session_id, boundaryUuid: input.boundary_uuid, model, trigger: input.trigger, instructions }))
+    if (prior.cut.requestIdentityHash !== requestHash)
       throw new ShadowStoreError("Cut request conflicts with its identity");
     return { admitted: true, ...prior };
   }
   const { snapshot, conversationId } = await captureShadowSnapshot(paths, scrubber, { cwd, sessionId: input.session_id as string, boundaryUuid: input.boundary_uuid as string, transcriptPath: input.transcript_path as string | undefined });
-  snapshot.engineMessages = shadowMessages(input.engine_messages, scrubber);
+  snapshot.engineMessages = engineMessages;
   const cut: ShadowManifest = { version: 1, cutId, cwd, projectId: projectId(cwd), sessionId: input.session_id as string, conversationId,
-    boundaryUuid: input.boundary_uuid as string, model, trigger: input.trigger as ShadowManifest["trigger"], instructions,
+    boundaryUuid: input.boundary_uuid as string, model, trigger: input.trigger as ShadowManifest["trigger"], instructions, requestIdentityHash: requestHash,
     snapshotHash: objectHash(snapshot), rulesKey: scrubber.rulesKey, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + SHADOW_RETENTION_MS).toISOString(),
     state: "pending", owner: store.owner, expectedArms: ["A", "B", "C"] };
   const concurrent = store.read(cwd, cutId);
   if (concurrent) {
-    const same = concurrent.cut.snapshotHash === cut.snapshotHash && identityHash(concurrent.cut) === identityHash(cut);
+    const same = concurrent.cut.snapshotHash === cut.snapshotHash && concurrent.cut.requestIdentityHash === requestHash;
     if (!same) throw new ShadowStoreError("Concurrent cut request conflicts with its identity");
     return { admitted: true, ...concurrent };
   }
@@ -69,7 +72,7 @@ async function admitCut({ paths, store, cwd, scrubber }: Admission, input: Recor
 }
 function validateSnapshotInput(input: Record<string, unknown>): void {
   if (!safeId(input.boundary_uuid)) throw new ShadowStoreError("Invalid source boundary", HTTP.badRequest);
-  if (typeof input.model !== "string" || !input.model.trim()) throw new ShadowStoreError("Invalid model", HTTP.badRequest);
+  if (!safeId(input.model)) throw new ShadowStoreError("Invalid model", HTTP.badRequest);
   if (typeof input.trigger !== "string" || !["manual", "auto", "plugin"].includes(input.trigger)) throw new ShadowStoreError("Invalid trigger", HTTP.badRequest);
   validateOptionalText(input.instructions, MAX_INSTRUCTIONS_LENGTH);
   validateOptionalText(input.transcript_path);
@@ -91,6 +94,6 @@ function storeResult({ store, cwd, scrubber }: Pick<Admission, "store" | "cwd" |
   if (kind === "native") store.writeNative(cut, nativeRecord(input.record, scrubber));
   else store.writeArm(cut, armRecord(input, input.record, scrubber));
 }
-function identityHash(cut: { sessionId?: unknown; boundaryUuid?: unknown; model?: unknown; trigger?: unknown; instructions?: unknown }): string {
-  return objectHash([cut.sessionId, cut.boundaryUuid, cut.model, cut.trigger, cut.instructions]);
+function requestIdentityHash(input: Record<string, unknown>, cutId: string): string {
+  return objectHash([input.cwd, cutId, input.session_id, input.boundary_uuid, input.model, input.trigger, input.instructions]);
 }

@@ -35,7 +35,7 @@ function writeShadow() {
     text: arm === "C" ? "Touch ghost.ts." : directive, header: arm === "C" ? header("Touch ghost.ts.") : header(directive, arm === "B" ? "[sum:sum_fake]" : undefined),
     inputHash: objectHash(snapshot), promptHash: "b".repeat(64), outcome: "answered", usage, usageAttempts: [], durationMs: 12, costUsd: null }));
 }
-function history(owner = cwd, sessionId = "s1", suffix = "", nativeText = "Keep parser.ts.") {
+function history({ owner = cwd, sessionId = "s1", suffix = "", nativeText = "Keep parser.ts." } = {}) {
   const path = join(root, `${sessionId}${suffix}.jsonl`);
   writeFileSync(path, [
     { uuid: "one", parentUuid: null, type: "user", message: { role: "user", content: directive } },
@@ -71,8 +71,8 @@ describe("offline compaction shadow triage", () => {
     const allowed = project("demo-a"), excluded = project("demo/a");
     expect(claudeTranscriptDirectory(allowed)).toBe(claudeTranscriptDirectory(excluded));
     writeFileSync(join(paths.home, "bench-corpora.json"), JSON.stringify({ exclude: [excluded] }));
-    const allowedPath = history(allowed, "allowed");
-    const excludedPath = history(excluded, "excluded");
+    const allowedPath = history({ owner: allowed, sessionId: "allowed" });
+    const excludedPath = history({ owner: excluded, sessionId: "excluded" });
     const unreadablePath = join(root, "unreadable.jsonl");
     writeFileSync(unreadablePath, JSON.stringify({ cwd: excluded, sessionId: "unreadable" }) + "\nnot valid corpus content\n");
     const leadingMetadata = JSON.stringify({ type: "file-history-snapshot", snapshot: { files: {} } }) + "\n";
@@ -147,13 +147,13 @@ describe("offline compaction shadow triage", () => {
     expect(metrics.cuts[0].nativeComparisonEligible).toBe(true);
   });
   it("does not normalize away a hook/JSONL native text mismatch", () => {
-    history(cwd, "s1", "", "Keep parser.ts.\n"); const metrics = report();
+    history({ nativeText: "Keep parser.ts.\n" }); const metrics = report();
     expect(metrics.nativeTextPairs.mismatched).toBe(1); expect(metrics.cuts[0].nativeComparisonEligible).toBe(false);
   });
   it("samples reproducibly across at least 30 sessions and 3 allowed projects", () => {
     for (const name of ["alpha", "beta", "gamma"]) {
       const owner = name === "alpha" ? cwd : project(name);
-      for (let i = 0; i < 11; i++) history(owner, `${name}-${i}`, `-${name}`);
+      for (let i = 0; i < 11; i++) history({ owner, sessionId: `${name}-${i}`, suffix: `-${name}` });
     }
     const first = report(); const selection = readFileSync(join(output, "selection.json"), "utf8");
     rmSync(output, { recursive: true }); const second = report();

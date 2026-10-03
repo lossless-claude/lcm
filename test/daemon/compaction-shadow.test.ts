@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDaemon, type DaemonInstance } from "../../src/daemon/server.js";
@@ -10,15 +10,17 @@ import { ensureAuthToken, readAuthToken } from "../../src/daemon/auth.js";
 import { DatabaseSync } from "node:sqlite";
 import { SummaryStore } from "../../src/store/summary-store.js";
 
-let root: string, cwd: string, paths: LcmPaths, daemon: DaemonInstance, token: string, transcript: string;
+let root: string, cwd: string, paths: LcmPaths, daemon: DaemonInstance, token: string, transcript: string, databaseFile: string;
+const fileForProject = projectDbPath;
 const usage = { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 100, cache_creation_input_tokens: 20 };
-async function boot() {
+async function boot(patterns = ["PRIVATE_WORD"]) {
   daemon = await createDaemon(loadDaemonConfig("/missing", { daemon: { port: 0, idleTimeoutMs: 0 }, llm: { provider: "disabled" },
-    summarizer: { language: "en" }, security: { sensitivePatterns: ["PRIVATE_WORD"] } }, {}), { paths, tokenPath: paths.tokenPath });
+    summarizer: { language: "en" }, security: { sensitivePatterns: patterns } }, {}), { paths, tokenPath: paths.tokenPath });
 }
 beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), "lcm-shadow-")); cwd = join(root, "work"); mkdirSync(cwd);
   paths = createLcmPaths(join(root, "lcm")); ensureAuthToken(paths.tokenPath); token = readAuthToken(paths.tokenPath)!;
+  databaseFile = fileForProject(cwd, paths);
   transcript = join(cwd, "session.jsonl");
   writeFileSync(transcript, [
     { uuid: "one", type: "user", message: { role: "user", content: "Keep tests. PRIVATE_WORD" } },
@@ -46,9 +48,9 @@ function native(cut: any, text = "  native summary\n") {
 function arm(cut: any, label = "A") {
   return { ...binding(cut), arm: label, attempt_id: "first", record: { text: "PRIVATE_WORD", header: null, outcome: "api-error", requestedModel: "session-model-id", usage, durationMs: 12, inputHash: cut.cut.snapshotHash, promptHash: "a".repeat(64) } };
 }
-function databaseExists() { return existsSync(projectDbPath(cwd, paths)); }
-async function withSummaryStore(operation: (store: SummaryStore) => Promise<void>) {
-  const db = new DatabaseSync(projectDbPath(cwd, paths));
+function databaseExists() { return existsSync(databaseFile); }
+async function withSummaryStore(operation: (store: SummaryStore) => Promise<void>, connect: typeof DatabaseSync = DatabaseSync) {
+  const db = new connect(databaseFile);
   try { await operation(new SummaryStore(db)); }
   finally { db.close(); }
 }
@@ -100,6 +102,61 @@ describe("daemon compaction shadow artifacts", () => {
     expect(artifact("arm-A-first.json").usage).toEqual(usage);
     for (const name of readdirSync(dir())) expect(readFileSync(join(dir(), name), "utf8")).not.toContain("PRIVATE_WORD");
   });
+  it.each(["PRIVATE_WORD", "Bearer PRIVATE_WORD", "bad.handle", ""])("rejects unsafe engine and native handles (%s) without storing them", async handle => {
+    const rejected = await post("start", { ...startInput(), engine_messages: [{ role: "user", text: "safe", handle }] });
+    expect(rejected.status).toBe(400);
+    expect(existsSync(dir())).toBe(false);
+    const cut = await start();
+    const request = native(cut); request.record.tail[0].handle = handle;
+    expect((await post("native", request)).status).toBe(400);
+    expect(existsSync(join(dir(), "native.json"))).toBe(false);
+  });
+  it.each(["session_id", "cut_id", "boundary_uuid"])("rejects sensitive %s instead of persisting or rewriting it", async field => {
+    expect((await post("start", { ...startInput(), [field]: "PRIVATE_WORD" })).status).toBe(400);
+  });
+  it.each(["attempt_id", "summaryUuid", "source", "supersedes"])("rejects sensitive result identifier %s", async field => {
+    const cut = await start();
+    const request = field === "summaryUuid" ? { ...native(cut), record: { ...native(cut).record, summaryUuid: "PRIVATE_WORD" } }
+      : { ...arm(cut), ...(field === "attempt_id" ? { attempt_id: "PRIVATE_WORD" } : {}),
+        record: { ...arm(cut).record, header: field === "attempt_id" ? null : {
+          version: 1, directives: [], intent: [], decisions: [{ text: "safe", sources: [field === "source" ? "[raw:PRIVATE_WORD:1]" : "[raw:cut-a:1]"],
+            ...(field === "supersedes" ? { supersedes: ["PRIVATE_WORD"] } : {}) }], taskAndNextStep: [], openThreads: [], files: [], errors: [],
+        } } };
+    expect((await post(field === "summaryUuid" ? "native" : "arm", request)).status).toBe(400);
+  });
+  it("rejects unsafe source UUIDs before publishing a snapshot", async () => {
+    const rows = readFileSync(transcript, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    rows[0].uuid = "PRIVATE_WORD";
+    writeFileSync(transcript, rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+    expect((await post("start", startInput())).status).toBe(400);
+    expect(existsSync(dir())).toBe(false);
+  });
+  it("validates model label shapes on admission and every usage record", async () => {
+    expect((await post("start", { ...startInput(), model: "Bearer PRIVATE_WORD" })).status).toBe(400);
+    const cut = await start();
+    expect((await post("arm", { ...arm(cut), record: { ...arm(cut).record, requestedModel: "Bearer PRIVATE_WORD" } })).status).toBe(400);
+    expect((await post("arm", { ...arm(cut), record: { ...arm(cut).record, usageAttempts: [{ model: "Bearer PRIVATE_WORD", failed: true, usage }] } })).status).toBe(400);
+  });
+  it.each(["errorKind", "inputHash", "promptHash"])("rejects sensitive identifier in %s metadata", async field => {
+    const value = field === "errorKind" ? "private_word" : "a".repeat(64);
+    await daemon.stop(); await boot(["PRIVATE_WORD", `^${value}$`]);
+    const cut = await start();
+    expect((await post("arm", { ...arm(cut), record: { ...arm(cut).record, [field]: value } })).status).toBe(400);
+    expect(existsSync(join(dir(), "arm-A-first.json"))).toBe(false);
+  });
+  it("preserves accepted identifiers and source pointers exactly", async () => {
+    const handle = "handle_abc-123";
+    const result = await post("start", { ...startInput(), engine_messages: [{ role: "assistant", text: "PRIVATE_WORD", handle }] });
+    expect(result.status).toBe(200);
+    expect(result.body.snapshot.engineMessages[0].handle).toBe(handle);
+    const request = native(result.body); request.record.tail[0].handle = handle;
+    expect((await post("native", { ...request, record: { ...request.record, summaryUuid: "summary_123" } })).status).toBe(200);
+    expect(artifact("native.json")).toMatchObject({ summaryUuid: "summary_123", tail: [{ handle }] });
+    const header = { version: 1, directives: [], intent: [], decisions: [{ text: "safe", sources: ["[raw:cut-a:1]", "[sum:sum_known]"], supersedes: ["decision_1"] }],
+      taskAndNextStep: [], openThreads: [], files: [], errors: [] };
+    expect((await post("arm", { ...arm(result.body), record: { ...arm(result.body).record, header } })).status).toBe(200);
+    expect(artifact("arm-A-first.json").header).toEqual(header);
+  });
   it("scrubs historical summary text in the frozen window with current rules", async () => {
     const first = await start();
     await withSummaryStore(async store => {
@@ -134,7 +191,7 @@ describe("daemon compaction shadow artifacts", () => {
     expect((await post("arm", { ...arm(cut), snapshot_hash: "b".repeat(64) })).status).toBe(409);
     expect((await post("start", { ...startInput(), model: "other" })).status).toBe(409);
   });
-  it("compares scrubbed model identities when retrying admission", async () => {
+  it("accepts identical raw model identities while storing only the scrubbed label", async () => {
     const request = { ...startInput(), model: "PRIVATE_WORD" };
     const first = await post("start", request);
     expect(first.status).toBe(200);
@@ -143,6 +200,35 @@ describe("daemon compaction shadow artifacts", () => {
     expect(retry.status).toBe(200);
     expect(retry.body.cut.snapshotHash).toBe(first.body.cut.snapshotHash);
     expect((await post("start", { ...request, model: "other" })).status).toBe(409);
+  });
+  it.each([
+    { field: "model", value: "opus" }, { field: "instructions", value: "directive-two" },
+    { field: "session_id", value: "other-session" }, { field: "boundary_uuid", value: "one" }, { field: "trigger", value: "auto" },
+  ])("rejects a changed raw $field on retry even when redaction hides it", async ({ field, value }) => {
+    await daemon.stop(); await boot(["PRIVATE_WORD", "^(?:sonnet|opus|directive-one|directive-two)$"]);
+    const request = { ...startInput(), model: "sonnet", instructions: "directive-one" };
+    const first = await post("start", request); expect(first.status).toBe(200);
+    expect(first.body.cut.model).toBe("[REDACTED]"); expect(first.body.cut.instructions).toBe("[REDACTED]");
+    const before = readFileSync(join(dir(), "manifest.json"), "utf8");
+    expect((await post("start", { ...request, [field]: value })).status).toBe(409);
+    expect((await post("start", request)).status).toBe(200);
+    expect(readFileSync(join(dir(), "manifest.json"), "utf8")).toBe(before);
+    expect(before).not.toContain("sonnet"); expect(before).not.toContain("directive-one");
+  });
+  it("rejects changed raw instruction presence instead of comparing defaulted display text", async () => {
+    await start();
+    expect((await post("start", { ...startInput(), instructions: "" })).status).toBe(409);
+  });
+  it("refuses admission retries for legacy cuts with no raw identity digest", async () => {
+    await start();
+    const manifest = artifact("manifest.json"); delete manifest.requestIdentityHash;
+    writeFileSync(join(dir(), "manifest.json"), JSON.stringify(manifest));
+    expect((await post("start", startInput())).status).toBe(409);
+  });
+  it("rejects concurrent identities that collapse to the same scrubbed model", async () => {
+    await daemon.stop(); await boot(["PRIVATE_WORD", "^(?:sonnet|opus)$"]);
+    const results = await Promise.all([post("start", { ...startInput(), model: "sonnet" }), post("start", { ...startInput(), model: "opus" })]);
+    expect(results.map(result => result.status).sort()).toEqual([200, 409]);
   });
   it("marks stranded records incomplete on daemon restart", async () => {
     await start(); await daemon.stop(); await boot();
@@ -156,6 +242,20 @@ describe("daemon compaction shadow artifacts", () => {
     await daemon.stop(); await boot();
     expect(existsSync(dir())).toBe(false);
     expect(readFileSync(join(projectDir(cwd, paths), "unrelated.txt"), "utf8")).toBe("keep");
+  });
+  it.each(["project", "shadow", "cut"])("does not recover or prune through a linked %s directory", async level => {
+    await start(); await daemon.stop();
+    const manifest = artifact("manifest.json"); manifest.expiresAt = new Date(0).toISOString();
+    writeFileSync(join(dir(), "manifest.json"), JSON.stringify(manifest));
+    const levels = { project: projectDir(cwd, paths), shadow: join(projectDir(cwd, paths), "compaction-shadow"), cut: dir() };
+    const outside = join(root, "outside"), linked = levels[level as keyof typeof levels];
+    renameSync(linked, outside); symlinkSync(outside, linked);
+    const target = { project: join(outside, "compaction-shadow", "cut-a"), shadow: join(outside, "cut-a"), cut: outside };
+    const file = join(target[level as keyof typeof target], "manifest.json"), before = readFileSync(file, "utf8");
+    await boot();
+    expect(existsSync(file)).toBe(true);
+    expect(readFileSync(file, "utf8")).toBe(before);
+    expect((await fetch(`http://127.0.0.1:${daemon.address().port}/health`)).status).toBe(200);
   });
   it("rejects traversal and malformed accounting before writing", async () => {
     expect((await post("start", startInput("../escape"))).status).toBe(400);
