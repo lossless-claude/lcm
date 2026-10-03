@@ -30,6 +30,7 @@ export type NativeRecord = {
   tail: ShadowMessage[]; rawTextHash: string; rawTextBytes: number; summaryUuid?: string;
   tokensBefore?: number; tokensAfter?: number; hookAddedMs?: number; costUsd: number | null;
   fidelity?: "verified" | "native-summary-unverified" | "native-tail-unverified" | "skipped" | "aborted" | "unavailable";
+  shadowAdmission?: "cancelled" | "unavailable";
   observedMessages?: ShadowMessage[]; candidateIndices?: number[];
 };
 export type ArmRecord = {

@@ -74,12 +74,17 @@ function basicRecord(record: Record<string, unknown>, scrubber: ScrubEngine) {
 export function nativeRecord(record: Record<string, unknown>, scrubber: ScrubEngine): NativeRecord {
   const base = basicRecord(record, scrubber);
   if (record.summaryUuid !== undefined) correlationId(record.summaryUuid, scrubber);
-  return { ...base, ...nativeExtraction(record, scrubber), tail: shadowMessages(record.tail, scrubber), rawTextHash: digest(record.text as string), rawTextBytes: Buffer.byteLength(record.text as string, "utf8"),
+  return { ...base, ...nativeExtraction(record, scrubber), ...shadowAdmission(record.shadowAdmission), tail: shadowMessages(record.tail, scrubber), rawTextHash: digest(record.text as string), rawTextBytes: Buffer.byteLength(record.text as string, "utf8"),
     ...(record.summaryUuid ? { summaryUuid: record.summaryUuid as string } : {}),
     ...(record.tokensBefore !== undefined ? { tokensBefore: measurement(record.tokensBefore)! } : {}),
     ...(record.tokensAfter !== undefined ? { tokensAfter: measurement(record.tokensAfter)! } : {}),
     ...(record.hookAddedMs !== undefined ? { hookAddedMs: measurement(record.hookAddedMs)! } : {}),
   };
+}
+function shadowAdmission(value: unknown): Pick<NativeRecord, "shadowAdmission"> {
+  if (value === undefined) return {};
+  if (value !== "cancelled" && value !== "unavailable") throw new ShadowStoreError("Invalid shadow admission outcome", HTTP.badRequest);
+  return { shadowAdmission: value };
 }
 function nativeExtraction(record: Record<string, unknown>, scrubber: ScrubEngine): Pick<NativeRecord, "fidelity" | "observedMessages" | "candidateIndices"> {
   if (record.fidelity === undefined) return {};

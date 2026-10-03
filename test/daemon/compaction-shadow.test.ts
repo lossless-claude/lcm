@@ -435,6 +435,12 @@ describe("daemon compaction shadow artifacts", () => {
     expect((await post("arm", request)).status).toBe(200);
     expect(artifact("arm-A-first.json")).toMatchObject({ queueMs: 7, budget });
   });
+  it("persists cancelled shadow admission separately from native's answer and accounting", async () => {
+    const cut = await start(), request = native(cut);
+    request.record = { ...request.record, shadowAdmission: "cancelled", usage, tokensBefore: 8905, tokensAfter: 222 };
+    expect((await post("native", request)).status).toBe(200);
+    expect(artifact("native.json")).toMatchObject({ shadowAdmission: "cancelled", outcome: "answered", usage, tokensBefore: 8905, tokensAfter: 222 });
+  });
   it("requires daemon authentication", async () => {
     expect((await post("start", startInput(), false)).status).toBe(401);
   });

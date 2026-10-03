@@ -101,7 +101,8 @@ module summaries share `sessionSummarizerMaxOutputTokens`.
 The hook observes real main-session manual, auto and plugin cuts. Precompute,
 subagent, fork and dedicated worker sessions pass through. Native receives the
 same event once and its exact result object is returned. Only admission and native
-pairing writes are awaited around native; model work and arm writes run in owned
+pairing writes are awaited around native, each with a fixed 2000 ms deadline
+covering host reads and HTTP and raced with abort; model work and arm writes run in owned
 background tasks. No shadow document enters the conversation or changes restore.
 Host background lifetime and fork/native scheduling require supervised live
 verification before relying on complete arm delivery. Artifacts live in each project's `compaction-shadow/` directory

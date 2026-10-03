@@ -21,14 +21,22 @@ condensed summaries remain on the configured pipeline.
 Only real main-session manual, auto and plugin cuts are admitted. Precompute,
 subagent/fork and dedicated worker loops pass through; A cannot recursively sample
 its own compaction. The append observer remembers the last model-visible UUID and
-resets on clear, resume, branch and session end. Unavailable boundaries are recorded
+advances only for stored rows and resets on clear, resume, branch and session end.
+Pending/denied/rejected appends never become the boundary; completion order cannot
+restore a rejected predecessor. Unavailable boundaries are recorded
 without guessing. Entry freezes the observed boundary, session/cwd/model, trigger, instructions
-and all original engine messages before awaiting the host. A lifecycle epoch
-prevents an admission still pending at clear/resume/branch from starting models. Cut nonce and snapshot hash bind
+and all original engine messages before awaiting the host. The pending cut is registered with its captured lifecycle epoch before admission
+awaits the transport, and rechecks that epoch after admission returns and before
+starting any arm. A changed epoch records cancelled admission without arm calls or
+arm records; native pairing retains that stage in `shadowAdmission`. Cut nonce and snapshot hash bind
 every asynchronous callback, independently of later session changes.
 
 The hook awaits admission, calls the original `next(e)` exactly once unchanged,
-awaits native pairing, and returns the identical native object. A starts before
+awaits native pairing, and returns the identical native object. Admission and
+pairing each have one fixed 2000 ms deadline covering every prerequisite and HTTP,
+raced with abort. Expiry allows no admission arms; unavailable storage is recorded
+in diagnostics without a fresh wait. Foreground requests make one attempt and
+late prerequisites cannot advance to a new transport stage. A starts before
 native; B/C are owned background tasks waiting for the native remainder. No model
 completion or arm delivery is awaited after native returns. Failure/refusal stays
 in diagnostics or artifact outcomes and never replaces native. Native rejection is
@@ -42,7 +50,8 @@ Summary extraction requires exactly one new message at index zero relative to
 unique original handles. The remaining descriptors must match original handles,
 roles and text in increasing order. Missing or ambiguous correspondence records
 `native-summary-unverified` or `native-tail-unverified` with safe observed message
-projections and candidate indices. It supplies no guessed remainder to B/C.
+projections and candidate indices. It supplies no guessed remainder to B/C. Known native usage and token counts
+remain recorded even when extraction is ambiguous.
 A uniquely matching compaction append supplies the observed summary UUID; duplicate
 matches leave it unknown. Hook-observed native text is preserved exactly, including
 whitespace, and its pre-scrub hash/length support exact historical JSONL parity.

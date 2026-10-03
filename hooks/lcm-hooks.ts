@@ -25,6 +25,7 @@
 // declared at the top level, and calls on it must be spelled `$.noun.method(...)`.
 import type { Register, EngineInterface } from "claude-code";
 import { sharedSessionOutputBudget, type SessionOutputBudget } from "./model-budget.js";
+import type { ShadowDeadline } from "./shadow-deadline.js";
 import type { ShadowAppend } from "./shadow-boundaries.js";
 import { ShadowSessionState, runCompactionShadow, type ShadowTransport, type ShadowEngine } from "./compaction-shadow.js";
 
@@ -983,10 +984,21 @@ export const register: Register = (on, options) => {
 };
 const shadowSessions = new ShadowSessionState();
 function shadowTransport($: EngineInterface): ShadowTransport {
-  return { post: (route, body) => postDaemonOutcome($, route, body), observe: (status, reason, sessionId) => noteHook(sessionId ?? "unknown", "session.compact", "shadow", "execution", status, reason) };
+  return { post: (route, body, deadline) => postShadow($, { route, body }, deadline), observe: (status, reason, sessionId) => noteHook(sessionId ?? "unknown", "session.compact", "shadow", "execution", status, reason) };
+}
+async function postShadow($: EngineInterface, { route, body }: { route: string; body: unknown }, deadline?: ShadowDeadline): Promise<PostOutcome> {
+  if (!deadline) return postDaemonOutcome($, route, body);
+  deadline.check();
+  const { port, token } = await readHostEnv($);
+  deadline.check();
+  const response = await $.http.fetch(`http://127.0.0.1:${port}${route}`, {
+    method: "POST", headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body),
+  });
+  deadline.check();
+  return { body: response.ok ? JSON.parse(response.text) as Record<string, unknown> : null, connectionFailed: false, httpStatus: response.status };
 }
 function shadowEngine($: EngineInterface): ShadowEngine {
-  return { env: { get: () => $.env.get("LCM_SUMMARIZE_WORKER") }, session: { id: () => $.session.id(), cwd: () => $.session.cwd(), model: () => $.session.model() },
+  return { clock: { after: (ms, callback) => $.clock.after(ms, callback) }, env: { get: () => $.env.get("LCM_SUMMARIZE_WORKER") }, session: { id: () => $.session.id(), cwd: () => $.session.cwd(), model: () => $.session.model() },
     model: { fork: request => $.model.fork(request), complete: (request, options) => $.model.complete(request, options) } };
 }
 function registerCompactionShadow(on: On, cap: number): void {

@@ -222,21 +222,39 @@ records fork overshoot. See
 to `false`. Enabling it causes substantial extra model spending, with the existing
 session output cap shared by all module jobs. When off, neither shadow model calls
 nor daemon shadow requests occur. When on, `session.append` observes main-session
-model-visible UUIDs without changing the input or result. Clear, resume and branch
-reset its boundary; session end also cancels unfinished delivery ownership.
+model-visible UUIDs without changing the input or result. Only successfully stored
+appends advance the boundary; pending, denied and rejected appends do not, including
+overlapping completions. Clear, resume and branch reset its boundary; session end also cancels unfinished delivery ownership.
 
 The `session.compact` observer handles real main-session `manual`, `auto` and
 `plugin` cuts; `precompute`, subagent/fork `agentId` and `LCM_SUMMARIZE_WORKER=1`
 sessions pass through. It freezes identity, model, instructions and original
 messages, then awaits `/compaction-shadow/start` admission. A refusal or unavailable
-boundary is diagnostic evidence; native still runs. A's fork starts before the
+boundary is diagnostic evidence; native still runs. One fixed 2000 ms deadline
+(`SHADOW_WAIT_MS`) covers the entire admission operation: identity, cwd, model and
+worker reads, host-environment/token discovery and the HTTP request. It races
+with dispatch abort. Expiry starts no arms and lets native proceed; unavailability
+is recorded in diagnostic counts when storage cannot be reached within that budget.
+Late prerequisites cannot start a later transport stage. Foreground shadow requests
+make one attempt; background arm delivery retains the ordinary transport policy.
+
+The pending cut is registered with its captured session epoch before admission's
+first await. The epoch is checked again after admission returns, synchronously
+before any arm starts. Clear/end in either interval records `cancelled` and starts
+no arm. When native pairing can be persisted, `native.json.shadowAdmission` records
+that stage separately from native's result, usage and token counts.
+
+A's fork starts before the
 original `next(e)` is called once with unchanged input. Owned B/C tasks wait for the
 frozen native-kept remainder: B uses the cut's session model, C uses `sonnet`.
 
 After native resolves, the observer writes `/compaction-shadow/native` and returns
-that same result object. It never waits for header models or `/arm` writes, never
+that same result object. This pairing operation has its own fixed 2000 ms deadline,
+covering host-environment discovery and HTTP, and also races with abort. It never
+waits for header models or `/arm` writes, never
 installs a document, and preserves downstream rejection. Ambiguous summaries or
-unmatched tails are recorded as fidelity outcomes. Background callbacks carry the
+unmatched tails are recorded as fidelity outcomes, retaining native's known usage
+and token counts even when summary/tail extraction is ambiguous. Background callbacks carry the
 frozen cut identity even after the session changes. Abort/end prevent queued completions from starting. Already-running arms retain
 the host's eventual outcome and usage; lost promises leave incomplete cuts. Provider
 cancellation or promise survival after host unload is not guaranteed. Scheduling, actual append
